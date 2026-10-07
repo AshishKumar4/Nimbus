@@ -5,6 +5,104 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a write wave ignored mounts. A W7 wave (`writeBatchStream`, which
+  `git clone`, `git checkout` and `npm install` use) wrote every record to
+  the session's SQLite store, even under a mount. A file under a mount
+  point was written to SQLite, where the mount hid it, or failed with
+  ENOENT when its directory existed only on the mount. Now each record
+  goes where the namespace places it, as the matching single call would:
+  a file is one `writeFile`, a directory one `mkdir`, a removal one
+  `rm -r`, and a link one `symlink`. Removing a directory above a mount
+  point fails with EBUSY, and a file there with EISDIR, before anything is
+  written. If the namespace changes under a wave (a link repointed, a
+  mount made), the wave fails with ESTALE instead of writing where the
+  name no longer leads. Records that stay in SQLite cost what they did
+  before routing.
+  Limits:
+  - A wave writes a file to a mount in one call, up to 4 MiB
+    (`ROUTED_FILE_MAX`). A larger file fails with ENOTSUP before anything
+    is written. Write it to the mount directly.
+  - A link's target on a mount is at most 4,096 bytes
+    (`ROUTED_LINK_TARGET_MAX`); a longer one fails with ENAMETOOLONG.
+  - A mounted record cannot be applied twice. If a resent wave reaches a
+    mounted record that an earlier attempt may already have applied, the
+    wave stops there with EIO ("outcome unknown"). Check that path on the
+    mount before you write it again.
+  - A link on a mount is made under a temporary name first, then renamed
+    over its name. The temporary name is `.<name>.nimbus-wave-<wave>-<record>`,
+    in the link's directory. If the session crashes between the two steps,
+    that temporary link stays, at most one per link being written. Nimbus
+    does not remove it; delete it by that pattern.
+
+- Fixed: `npx create-react-router` stopped while copying its template with
+  "TypeError: dest.write is not a function". `stream.pipeline` turned every
+  stream without a `pipe` of its own into a Readable, its destination
+  included (tar-fs 3's extract), so the gunzip stream piped into a stream it
+  cannot write. It now adapts only the source, as Node's does.
+- `node` reads its command line as Node does: `--conditions`/`-C` (on the
+  command line or in `NODE_OPTIONS`) choose a program's `#imports` and its
+  packages' `exports`, for `import` and `require` alike; `process.execArgv`
+  holds node's options and `process.argv` the program's own; an option Node
+  refuses is refused with Node's message and exit code 9.
+- `node -p` prints the code's value when the process exits, as Node does,
+  and `echo code | node -p` too; it was refused. `-r`/`--require` and
+  `--import` load their modules before the program (`node -r dotenv/config
+  app.js`); they were ignored. In `-e` and `-p` code, `crypto` is
+  node:crypto, as in Node.
+- Fixed: `react-router dev` (React Router 8.4) exited at once with "Oops, Node
+  v22.19.0 detected": processes now report Node v22.22.3, the release the
+  tests use as Node's reference, which meets its `>=22.22.0` engines floor.
+- Fixed: a file a process faulted in could stay unreadable for good when its
+  fetch completed without its bytes landing (a barrier spoiled the fill, or
+  the store refused it): the path counted as asked. It is now asked for again
+  by the next read that misses it, and an `import()`'s prefetch takes another
+  round for it (`astro dev`, now and then: "Cannot load module
+  '…/zod/v4/classic/index.js'").
+- Fixed: a process whose file store was at its storage budget could never
+  read a file it had not staged: the fetch a refused read starts was declined
+  for want of room, room was asked for only afterwards, and the fetch was not
+  tried again (`nuxt dev` stuck at "Starting Nuxt..."). The fetch now asks for
+  the room first, and concurrent asks each get theirs.
+- Fixed: `astro dev` logged an unhandled "EAGAIN … aria-query/lib/index.js":
+  Vite's dependency optimizer reads, synchronously, the entries of what a
+  framework includes for itself (Astro's dev toolbar includes `astro >
+  aria-query`, `astro > axobject-query` and `astro > html-escaper`), and a
+  launch planned only the entries of the project's own dependencies. It now
+  also plans the entries of those dependencies' dependencies.
+- Fixed: `vinext dev` answered every App Router page 404, because `fs.glob`
+  matched no braces: `fs.glob`, `fs.globSync` and `fs.promises.glob` are now
+  Node's own, its Glob over the minimatch it vendors, with every option
+  (`cwd`, `exclude`, `withFileTypes`). `fs.glob` and `fs.globSync` were missing.
+- Fixed: `nuxt dev` died at start with "BroadcastChannel is not a constructor":
+  `node:worker_threads` and the global now provide `BroadcastChannel`, which
+  delivers to the process's other open channels of the same name as Node does
+  and keeps the process alive until it is closed or unref'd.
+- Fixed: an `import()` that reaches installed files a launch did not stage
+  loads them on the first run. A launch's store holds its static closure and
+  its data plan; any other file on disk was known by name but not held, and the
+  synchronous load an `import()` ends in failed with "Cannot load module '…':
+  it was not in this launch's module map; the next launch of the same command
+  stages it" (or "Cannot find module", when it was a `package.json` that
+  resolution needed). That never helped a file named afresh on each run.
+  `astro dev` failed its first request this way, on `zod/v4` imported by its
+  server code, and so did Vite's own config loading on react-router's
+  template: the config Vite bundles to `node_modules/.vite-temp` imports
+  `@react-router/dev`. Before loading, `import()` now fetches through the
+  store's own fill: exactly the files Node's resolvers read for it (a bare
+  name's `package.json`, a file URL's package scope, through links), then
+  every module the target requests, as the runtime-code interpreter's parser
+  reads requests and each resolved as the loader will evaluate it (a static
+  import under `require`'s conditions, `import()` under `import`'s), outside
+  the launch's map, breadth first. The bound, 4096 files and 64 MiB of raw
+  bytes, is charged as each fetch is issued and as each range of it is
+  read, manifests included; past it nothing more is fetched and the `import()`
+  fails with `ERR_NIMBUS_PREFETCH_BOUND` rather than load on part of its
+  closure. A file whose fetches never land fails it with
+  `ERR_NIMBUS_PREFETCH_UNREADABLE`, naming the file, rather than resolve past
+  it. Its reads are its own: a file the program itself failed to
+  read stays in the program's exit report. A floating `import(...).then(...)`
+  keeps the process while it fetches, and an `import()` of a module already
+  loaded fetches nothing.
 - Fixed: `node` and `bun` with no script opened a REPL that evaluated
   nothing ("workerd CSP: cannot evaluate JS at request time"). The REPL is
   now a program the runtime runs, as Node's is, and each line compiles
@@ -169,6 +267,48 @@ published independently in the `@nimbus-sh` npm scope.
   dev server again exposes every key of a CommonJS `module.exports = {...}`
   literal as a named export (for example `color-name`'s `red`), checked
   against Vite 7.3.6.
+- Fixed: `create-nimbus-app` wrote a `wrangler.jsonc` without
+  `limits.cpu_ms`, so a scaffolded session ran under the 30 s default CPU
+  limit. The scaffold now writes the config that `@nimbus-sh/config`
+  builds, with `limits.cpu_ms` 300000.
+- Fixed: `nimbus wrangler dev` and its unsupported-binding warning refused a
+  `wrangler.jsonc` with a trailing comma, which wrangler accepts. Every
+  reader of the file now parses it as wrangler does, and refuses a config
+  that is not an object.
+- Fixed: a warm Worker Loader slot could run a stale WebAssembly image. An
+  image was identified by its name, its length and its first and last
+  bytes, so two images that matched there shared a slot. An image is now
+  identified by its SHA-256.
+- Fixed: the named preview host of a session whose id holds `--`
+  (`api--team--sandbox`) did not resolve, and a capability host accepted a
+  zero-padded port (`03000`) that no Nimbus URL contains. One grammar now
+  parses every preview host form, as the URL builders write it.
+- Fixed: the dev server served every HTML page but the root `index.html`
+  (a multi-page app's `/about/`) without the error overlay, the HMR client,
+  the Tailwind bundle or the mount base on its paths. Every page now gets
+  the root page's dev head; only the root page gets a `<base>`.
+- Fixed: an SDK sandbox whose id holds capitals, `_` or `.` (for example
+  `Build_7.a`) could not finish the Agent's Cloudflare login: its OAuth
+  start and callback were refused with 400.
+
+### Breaking changes for embedders
+
+These need a minor version of fabric and of platform at the next publish.
+
+- fabric: `recordFacetNameMinted` is removed. Its callers set a facet-name
+  count of their own, and three such counters drifted apart, so the
+  lifetime facet-ID count could miss names. Charge a name with
+  `chargeFacetName(ctx, name, { refuseAtWall })`. It counts a name's
+  first use once, in this incarnation or any later one. The slot book
+  charges its own names.
+- fabric: a `FacetPoolContext`'s `storage.put` takes one object of
+  entries, Durable Object storage's atomic multi-key form, in place of
+  `put(key, value)`. The facet-name ledger writes a charge's counts and
+  its name's mark in that one put. A `DurableObjectState` already
+  provides it.
+- platform: `SQLITE_MAX_BOUND_PARAMETERS` is removed. It was a second name
+  for the same measured bound as `SQL_MAX_BOUND_PARAMETERS`, which every
+  caller uses. Use `SQL_MAX_BOUND_PARAMETERS`.
 
 ## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 

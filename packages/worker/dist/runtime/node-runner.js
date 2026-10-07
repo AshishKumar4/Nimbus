@@ -68,7 +68,8 @@ export async function runFresh(facetMgr, code, opts) {
     // invocations (skipSpawn) keep the one-shot fast path — those are CLIs, and
     // their PID accounting assumes a single foreground exec.
     const wantsLongRunning = opts.forceLongRunning ||
-        isLongRunningInvocation(args) ||
+        // Node's options are its execArgv now, not its argv (node-cli.ts).
+        isLongRunningInvocation([...(opts.node?.execArgv ?? []), ...args]) ||
         (!opts.skipSpawn && opts.launchesServer === true);
     if (!wantsLongRunning) {
         // Short path: fresh-isolate-per-call via facetMgr.exec.
@@ -125,6 +126,7 @@ export async function runFresh(facetMgr, code, opts) {
             callerPid: opts.callerPid,
             invokerPid: opts.invokerPid,
             bundleProfile: opts.bundleProfile,
+            ...(opts.node ? { node: opts.node } : {}),
         });
     }
     catch (e) {

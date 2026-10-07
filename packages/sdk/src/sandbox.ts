@@ -3,9 +3,8 @@
  */
 
 import {
-  buildPreviewHost,
-  buildPublicPreviewHost,
   isPreviewHostSafeSid,
+  previewHostUrl,
   readPreviewHostSuffix,
 } from '@nimbus-sh/worker/preview-host';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -20,6 +19,7 @@ import {
 } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { z } from 'zod/v4';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
+import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
 
 export type RuntimeSpec = string;
 export type RuntimeName =
@@ -758,7 +758,7 @@ export class NimbusSandbox {
   }
 
   private get root(): string {
-    return this.options.root ?? this.profile.root ?? '/home/user';
+    return this.options.root ?? this.profile.root ?? DEFAULT_HOME;
   }
 
   private stub(): NimbusSessionSurface {
@@ -1285,15 +1285,7 @@ export class NimbusSandbox {
   ): string | undefined {
     const hostSuffix = this.config.previewHostSuffix;
     if (hostSuffix && !this.profile.preview?.pathStyle && isPreviewHostSafeSid(this.id)) {
-      // The name stands where the port stands when the app has one. The
-      // public form names its bearer in the label: a public port with a
-      // capability builds the unauthenticated host, anything else keeps the
-      // session-attached one.
-      const label = options.name ?? port;
-      if (options.visibility === 'public' && options.capability !== undefined) {
-        return `https://${buildPublicPreviewHost(this.id, label, options.capability, hostSuffix)}/`;
-      }
-      return `https://${buildPreviewHost(this.id, label, hostSuffix)}/`;
+      return previewHostUrl(this.id, { port, ...options }, hostSuffix);
     }
     const door = options.name !== undefined ? `/app/${options.name}/` : `/port/${port}/`;
     const explicit = this.profile.preview?.baseUrl;

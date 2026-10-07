@@ -755,7 +755,7 @@ export async function _rpcWriteBatch(self, payload, pid) {
         chunkId: c.chunkId,
         data: normalizeWriteBatchChunkData(c.data),
     }));
-    return self.sqliteFs.as(callerCred(self, pid)).writeBatch({
+    return self.sqliteFs.as(callerCred(self, pid)).writeBatchPlaced({
         inodes,
         chunks,
         deletePaths,
@@ -1851,35 +1851,4 @@ export async function _rpcCancelHostProcess(self, workerKey) {
     }
     catch { /* best-effort */ }
     return { cancelled: true };
-}
-// ── Cache-observability stats forward (cache metrics support) ──────
-//
-// SupervisorRPC handlers run in a SEPARATE isolate from the DO they
-// service (loopback service-binding semantics). When they bump
-// per-tier cache counters via src/_shared/cache-stats.ts, they bump
-// the LOCAL singleton in the SupervisorRPC isolate. /api/_diag/cache
-// reads the DO's singleton — different grid, no visibility.
-//
-// Fix: SupervisorRPC handlers forward the bump via this DO-side RPC.
-// Pattern mirrors recordR2RaceCounters in installer.ts:1168 where the
-// facet returns counters and the supervisor folds them into the DO
-// singleton. Here the loopback boundary is the equivalent of the
-// facet-supervisor boundary.
-//
-// One forward per (tier, kind, isHit, bytes) tuple. Batch via the
-// `events` array so a single supervisor RPC handler can flush multiple
-// bumps in one round-trip.
-import { recordHit as _rpcRecordHit, recordMiss as _rpcRecordMiss } from '@nimbus-sh/core/_shared/cache-stats.js';
-export async function _rpcRecordCacheStats(_self, events) {
-    // Defensive iteration — caller is in-house (supervisor-rpc.ts) but
-    // a malformed event must NOT throw and break the install. Iterate
-    // with type-narrowing; an unknown `kind` is silently skipped.
-    for (const e of events) {
-        if (e.kind === 'hit') {
-            _rpcRecordHit(e.tier, e.cacheKind, e.bytes);
-        }
-        else if (e.kind === 'miss') {
-            _rpcRecordMiss(e.tier, e.cacheKind);
-        }
-    }
 }

@@ -408,6 +408,24 @@ export declare class ViteDevServer {
     handleRequest(request: Request, pathname: string, mountBase?: string): Promise<Response>;
     private _handleRequestInner;
     private serveIndexHtml;
+    /**
+     * An HTML page as the dev server serves it: `rootHead` (the root page's
+     * <base>), the Tailwind Play bundle for a Tailwind project, and the error
+     * overlay and HMR client, before </head> (else before <body, else first),
+     * with absolute paths under the mount base.
+     */
+    private withDevHead;
+    /**
+     * A pre-bundle as the browser loads it under the mount `base`, from
+     * esbuild's base-independent output. `__require("external")` calls (CJS
+     * source with esbuild externals) become ESM `import * as` + dispatch, so
+     * externalized packages (react, scheduler) work. Bare imports esbuild
+     * marked external carry the base: without it `import X from "scheduler"`
+     * 404s. A CJS-only package's __commonJS wrapper emits only `export
+     * default`, so its named exports are synthesized from a static scan, or
+     * `import { createRoot } from "react-dom/client"` would fail.
+     */
+    private servablePrebundle;
     private getBarrelModuleCacheInfo;
     /**
      * Whether a cached bundle answers this request. A bundle synthesized from

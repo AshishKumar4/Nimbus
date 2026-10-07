@@ -2,7 +2,7 @@ import { createModuleMap, ProcessExitError } from './index.js';
 import { createModuleShim } from './module.js';
 import { Buffer } from './buffer.js';
 import { emitCommonJs, generatedNames, readEsmRecords } from '../../../runtime/async-module-lowering.js';
-import { applySourceEdits, forEachNode, hasTopLevelModuleSyntax, parseJavaScriptModule, parseJavaScriptProgram } from '../../../runtime/javascript-ast.js';
+import { applySourceEdits, hasTopLevelModuleSyntax, MODULE_PARSE_OPTIONS, parseStatements, PROGRAM_PARSE_OPTIONS } from '../../../runtime/javascript-ast.js';
 import { fileURLToPath } from './url.js';
 import { scanCjsExports } from '../../../runtime/cjs-export-names.js';
 import { resolve, dirname, join, extname } from '../utils/path.js';
@@ -29,25 +29,41 @@ export function stripShebang(src) {
 }
 /**
  * The `import.meta` and dynamic `import()` expressions of `source`, as acorn
- * parses it: as a module, or for CommonJS (`esm` false) as Node would run it,
- * a script whose top level may `return`. A CommonJS source that does not
- * parse has none here; compiling it reports the SyntaxError.
+ * parses it (with no tree of the whole, parseStatements: a bundle's source
+ * can be MiBs): as a module, or for CommonJS (`esm` false) as Node would run
+ * it, a module else a script whose top level may `return`. A CommonJS
+ * source that does not parse has none here; compiling it reports the
+ * SyntaxError.
  */
 function moduleOnlyExpressions(source, esm = true) {
-    const found = { meta: [], dynamic: [] };
     // Neither can occur without the keyword followed by `.` or `(`: a source without one needs no parse.
     if (!/\bimport\s*[.(]/.test(source))
+        return { meta: [], dynamic: [] };
+    const collect = (options) => {
+        const found = { meta: [], dynamic: [] };
+        parseStatements(source, options, {
+            onNode: (node) => {
+                if (node.type === 'MetaProperty' && node.meta.name === 'import')
+                    found.meta.push({ start: node.start, end: node.end });
+                else if (node.type === 'ImportExpression')
+                    found.dynamic.push({ start: node.start, end: node.end });
+            },
+        });
         return found;
-    const program = esm ? parseJavaScriptModule(source) : parseJavaScriptProgram(source);
-    if (program === null)
-        return found;
-    forEachNode(program, (node) => {
-        if (node.type === 'MetaProperty' && node.meta.name === 'import')
-            found.meta.push(node);
-        else if (node.type === 'ImportExpression')
-            found.dynamic.push(node);
-    });
-    return found;
+    };
+    if (esm)
+        return collect(MODULE_PARSE_OPTIONS);
+    try {
+        return collect({ ...PROGRAM_PARSE_OPTIONS, sourceType: 'module' });
+    }
+    catch {
+        try {
+            return collect({ ...PROGRAM_PARSE_OPTIONS, sourceType: 'script' });
+        }
+        catch {
+            return { meta: [], dynamic: [] };
+        }
+    }
 }
 /**
  * Whether `source` is an ES module by its syntax, as Node's detection reads

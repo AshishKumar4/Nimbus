@@ -798,8 +798,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     }).catch((error: unknown) => { throw failure(error, call); });
   }
 
-  writeBatch(payload: Parameters<CredentialedVfs['writeBatch']>[0]) {
-    return this.vfs.writeBatch(payload);
+  /** Where the namespace places it: atomic on SQLite, a routed wave when a record lands on a mount. */
+  writeBatch(payload: Parameters<CredentialedVfs['writeBatch']>[0], options?: { signal?: AbortSignal }) {
+    return this.vfs.writeBatchPlaced(payload, options);
   }
 
   writeStream(stream: ReadableStream<Uint8Array>, options?: Parameters<CredentialedVfs['writeStream']>[1]) {
