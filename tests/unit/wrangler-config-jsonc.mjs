@@ -71,13 +71,13 @@ async function read(text) {
   assert.deepEqual(config.deploy, expected);
 }
 
-// Text that is not JSONC: every reader refuses it.
-{
-  const config = await read('{ "name": "app" "main": "src/index.ts" }');
-  assert.equal(config.dev, null);
-  assert.match(config.logs.join(''), /could not parse .*wrangler\.jsonc/);
-  assert.deepEqual(config.unsupported, []);
-  assert.ok(config.deploy instanceof Error, 'the deploy gate refuses it');
+// Text that is not JSONC, or JSONC that is not an object: every reader refuses it.
+for (const text of ['{ "name": "app" "main": "src/index.ts" }', '[]', 'null']) {
+  const config = await read(text);
+  assert.equal(config.dev, null, text);
+  assert.match(config.logs.join(''), /could not parse .*wrangler\.jsonc/, text);
+  assert.deepEqual(config.unsupported, [], text);
+  assert.ok(config.deploy instanceof Error, `the deploy gate refuses ${text}`);
 }
 
 console.log('wrangler-config-jsonc: ok');
