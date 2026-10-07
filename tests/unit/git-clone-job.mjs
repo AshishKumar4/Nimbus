@@ -22,6 +22,8 @@
 //     once a retry lists them the hold goes, the destinations are reserved
 //     and cleaned up, and writes are served; a listing that keeps failing
 //     keeps the hold;
+//   - a clone on a mount: reserved at the root its record names, cleaned up
+//     through the namespace, nothing else on the mount touched;
 //   - as the record's credential: what it may not remove refuses, and the
 //     record stays.
 
@@ -29,8 +31,10 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import {
-  CloneRecovery, RECOVERY_FENCE_REASON, cleanUpClone, finishReservedClones, listCloneJobs, listInterruptedClones, reserveInterruptedClones, writeCloneJob,
+  CloneRecovery, RECOVERY_FENCE_REASON, bridgeCleanupFs, cleanUpClone, finishReservedClones, listCloneJobs, listInterruptedClones, reserveInterruptedClones, writeCloneJob,
 } from '../../packages/worker/src/git/clone-job.ts';
 import { memoryStorage } from './lib/do-storage.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -232,6 +236,38 @@ const list = (user, dir) => user.readdir(dir).map(({ name }) => name).sort();
   await Promise.all(stuckTasks);
   assert.throws(() => user2.writeFile('home/user/late.txt', 'x'), (error) => error?.code === 'EBUSY', 'still held');
   console.log('  ok  a listing that fails: every write refused (named), nothing lost; served again once a retry lists the records, held while none does');
+}
+
+// ── a clone on a mount: reserved at its recorded root, cleaned up through the namespace ──
+{
+  const { vfs, storage } = session();
+  const files = new ProcessFiles(vfs);
+  const mount = new MemoryVFS({ uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid });
+  files.vfs.mount('/mnt/data', mount);
+  const ns = files.view({ pid: 9, cred: CRED_SESSION_USER });
+  for (const path of ['/mnt/data/repo/.git/objects/pack', '/mnt/data/repo/src/deep']) await ns.mkdir(path, { recursive: true });
+  await ns.writeFile('/mnt/data/repo/.git/nimbus-clone-job', JSON.stringify({ version: 1, jobId: 'job-30', optionsHash: 'h' }));
+  for (let i = 0; i < 9; i++) await ns.writeFile(`/mnt/data/repo/src/deep/f${i}`, String(i));
+  await ns.writeFile('/mnt/data/mine.txt', 'mine');
+  await writeCloneJob(storage, record('/mnt/data/repo', 'job-30', { generation: 1, root: '/mnt/data/repo', mount: true }));
+  const recovery = {
+    as: (cred, options) => vfs.as(cred, options),
+    releaseExclusiveMutation: (owner) => vfs.releaseExclusiveMutation(owner),
+    namespace: (cred, owner) => {
+      const host = files.openHost(cred);
+      return { fs: bridgeCleanupFs(host.fs, owner), dispose: () => host.dispose() };
+    },
+  };
+  const reserved = reserveInterruptedClones(recovery, await listInterruptedClones(storage, 2));
+  assert.equal(reserved.length, 1);
+  await assert.rejects(ns.writeFile('/mnt/data/repo/late.txt', 'x'), /EBUSY/, 'a write there is refused while it is reserved');
+  await ns.writeFile('/mnt/data/mine.txt', 'still mine');
+  const outcomes = await finishReservedClones(recovery, storage, reserved, { sliceEntries: 3, yieldBetween: async () => {} });
+  assert.deepEqual(outcomes.map((o) => o.outcome), ['removed']);
+  assert.equal(await ns.stat('/mnt/data/repo'), null, 'the clone on the mount is gone');
+  assert.equal(new TextDecoder().decode(await ns.readFile('/mnt/data/mine.txt')), 'still mine', 'and nothing else on it');
+  assert.deepEqual(await listCloneJobs(storage), []);
+  console.log('  ok  a clone on a mount: reserved at its recorded root, cleaned up through the namespace, nothing else touched');
 }
 
 // ── as the record's credential ──
