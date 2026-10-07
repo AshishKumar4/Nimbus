@@ -46,7 +46,7 @@ import { parseFacetBundleProfile, type FacetBundleProfile } from './bundle-profi
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { errorText } from '../_shared/error-text.js';
-import { ES_MODULE_UNBOUND_NAMES, esModuleSource, isEsModuleFile, isEsModuleInput } from './module-format.js';
+import { isEsModuleFile, isEsModuleInput } from './module-format.js';
 import { packageScopeType } from './require-resolution.js';
 import { exists, isDirectory } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerLaunchHost } from './server-launch.js';
@@ -72,6 +72,12 @@ export interface RuntimeRunOpts {
   filename: string;
   dirname: string;
   command: string;
+  /**
+   * The program is an ES module the handler lowered (module-format.ts): its
+   * own require is its static imports, and what escapes its evaluation is
+   * explained as Node's loader explains it.
+   */
+  esModule?: boolean;
   /** Primitive #1/G4 hooks. node-runner consumes these; other
    *  runtimes ignore them safely. */
   skipSpawn?: boolean;
@@ -381,6 +387,7 @@ export function buildRuntimeHandler(
       stdin?: Pick<RuntimeRunOpts, 'stdin' | 'stdinFile'>;
       reserved?: boolean;
       launchesServer?: boolean;
+      esModule?: boolean;
     }): Promise<number> => {
       const result = await spec.run(code, {
         cred: ctx.cred,
@@ -397,6 +404,7 @@ export function buildRuntimeHandler(
         ...(captureOutput ? { captureOutput: true } : {}),
         ...(bundleProfile ? { bundleProfile } : {}),
         ...(program.launchesServer ? { launchesServer: true } : {}),
+        ...(program.esModule ? { esModule: true } : {}),
       });
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
@@ -440,8 +448,8 @@ export function buildRuntimeHandler(
       try {
         const eb = await getEsbuild();
         // An ES module keeps its scope (module-format.ts): strict, no CommonJS wrapper name.
-        return (await eb.transform(esm ? esModuleSource(code) : code, {
-          loader, format: 'cjs', dynamicImportParent: url, moduleMetadata: true, ...(esm ? { define: ES_MODULE_UNBOUND_NAMES } : {}),
+        return (await eb.transform(code, {
+          loader, format: 'cjs', dynamicImportParent: url, moduleMetadata: true, ...(esm ? { esModuleScope: true } : {}),
         })).code;
       } catch (e) {
         ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);
@@ -474,12 +482,14 @@ export function buildRuntimeHandler(
         ctx.stderr.write(`${name}: -e requires an argument\n`);
         return 1;
       }
-      if (isEsModuleInput(code, inputType)) {
+      const esModule = isEsModuleInput(code, inputType);
+      if (esModule) {
         const lowered = await lowerToCommonJs(code, 'js', evalUrl(), '[eval]', true);
         if (lowered === null) return 1;
         code = lowered;
       }
       return runProgram(code, {
+        esModule,
         argv: args.slice(evalIdx + 2),
         filename: '<eval>',
         dirname: ctx.cwd || '/home/user',
@@ -527,12 +537,14 @@ export function buildRuntimeHandler(
     // program's own stdin is what is left after the read: nothing.
     if (scriptPath === '-') {
       let code = ctx.stdin ? (await ctx.stdin.readAll()) : '';
-      if (isEsModuleInput(code, inputType)) {
+      const esModule = isEsModuleInput(code, inputType);
+      if (esModule) {
         const lowered = await lowerToCommonJs(code, 'js', evalUrl(), '[stdin]', true);
         if (lowered === null) return 1;
         code = lowered;
       }
       return runProgram(code, {
+        esModule,
         argv: [...args.slice(0, scriptIdx), '-', ...args.slice(scriptIdx + 1)],
         filename: '[stdin]',
         dirname: ctx.cwd || '/home/user',
@@ -646,6 +658,7 @@ export function buildRuntimeHandler(
       ? filename.substring(0, filename.lastIndexOf('/'))
       : '/';
     return runProgram(code, {
+      esModule: esm,
       argv: [...args.slice(0, scriptIdx), filename, ...args.slice(scriptIdx + 1)],
       filename,
       dirname,

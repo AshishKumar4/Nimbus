@@ -106,6 +106,8 @@ export interface RunFreshOpts {
   signal?: AbortSignal;
   /** Running the program starts a server (RuntimeRunOpts.launchesServer, server-launch.ts). */
   launchesServer?: boolean;
+  /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+  esModule?: boolean;
 }
 
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
@@ -176,6 +178,7 @@ export async function runFresh(
       cwd,
       filename: opts.filename,
       dirname: opts.dirname,
+      ...(opts.esModule ? { esModule: true } : {}),
       command,
       port,
       attachedTty: opts.attachedTty,

@@ -121,6 +121,12 @@ export interface EsbuildTransformOptions {
     rewriteOnly?: boolean;
     /** Bind compiler-produced import.meta references to the wrapper module. */
     moduleMetadata?: boolean;
+    /**
+     * The code is an ES module, as Node runs it (module-format.ts): lowered
+     * strict, its top-level \`this\` undefined, and with none of CommonJS's
+     * names (esModuleSource, ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs).
+     */
+    esModuleScope?: boolean;
 }
 export interface TransformResult {
     code: string;

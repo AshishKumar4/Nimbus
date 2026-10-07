@@ -117,6 +117,7 @@ export async function runFresh(facetMgr, code, opts) {
             cwd,
             filename: opts.filename,
             dirname: opts.dirname,
+            ...(opts.esModule ? { esModule: true } : {}),
             command,
             port,
             attachedTty: opts.attachedTty,
