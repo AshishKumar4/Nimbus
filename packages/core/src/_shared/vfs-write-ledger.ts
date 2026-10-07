@@ -44,7 +44,17 @@ function __nimbusProcessFs() {
       writeBatchStream: (stream, fence, owner) => (owner === undefined
         ? supervisor().writeBatchStream(stream, fence)
         : supervisor().writeBatchStream(stream, fence, owner)),
+      // The subtrees the process writes often enough: decided here
+      // (__nimbusDecidedHere), sent in its waves, recalled by another's access.
+      grants: {
+        acquire: (path, delegate) => supervisor().fsAcquireExclusiveMutation(path, { delegate }),
+        release: async (owner) => { await supervisor().fsReleaseExclusiveMutation(owner); },
+        awaitRecall: (owner, waitMs) => supervisor().fsAwaitRecall(owner, waitMs),
+        recalled: async (owner, kind) => { await supervisor().fsRecalled(owner, kind); },
+      },
     },
+    // Home directories themselves are never held: the shell and the editor live there.
+    isHomeRoot: (key) => (key.startsWith("home/") && key.length > 5 && !key.includes("/", 5)) || key === "root",
     timers: { setTimeout: __nimbusRawTimer, clearTimeout: __nimbusRawClearTimer },
   });
   globalThis.__nimbusProcessFs = __nimbusProcessFsInstance;
@@ -67,6 +77,33 @@ function __nimbusSubmitVfs(op, acknowledged = false) {
   const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
   answer.then(settled, settled);
   return answer;
+}
+
+/**
+ * Whether a change at \`path\` is decided here: in a subtree the process
+ * holds, its async form is answered once it is logged (its sync view is
+ * already changed), and the session's answer comes with the log's waves; a
+ * refusal then is reported as an acknowledged change's is. Counts the change
+ * toward taking the subtree when none is held.
+ */
+function __nimbusDecidedHere(path) {
+  return typeof __supervisor !== "undefined" && __supervisor !== null
+    && __nimbusProcessFs().holder(__nimbusVfsPathKey(path)) !== undefined;
+}
+
+/**
+ * \`work\`, a change the program was already told succeeded (a synchronous
+ * call, or an async one decided here): not awaited, and its refusal or
+ * unknown fate reported as the client reports its own, at the next effect
+ * and when the process settles.
+ */
+function __nimbusAcknowledged(work, syscall, path) {
+  if (!work || typeof work.then !== "function") return;
+  work.then(undefined, (error) => {
+    if (typeof __supervisor === "undefined" || __supervisor === null) return;
+    const code = error && typeof error.code === "string" ? error.code : "EIO";
+    __nimbusProcessFs().noteFailure({ op: syscall, path: __nimbusVfsPathKey(path), errno: code, message: error && error.message ? error.message : String(error) });
+  });
 }
 
 /** A mutation no call record carries, made by \`run\` in its place in the client's log (ProcessFsClient.call). */
@@ -732,14 +769,22 @@ async function __nimbusPersistVfsWrite(supervisor, path, content, snapshot) {
     // answers a re-sent one rather than appending it twice.
     for (const operation of __nimbusVfsAppendOperations(snapshot)) {
       __nimbusBeginVfsAppendOperation(snapshot, operation);
-      await __nimbusSubmitVfs({ type: "call", call: { call: "appendFile", path: key, mode: 0o666, data: operation.bytes } });
+      const release = await __nimbusProcessFs().room(operation.bytes.byteLength);
+      try { await __nimbusSubmitVfs({ type: "call", call: { call: "appendFile", path: key, mode: 0o666, data: operation.bytes } }); }
+      finally { release(); }
       __nimbusCommitVfsAppendOperation(snapshot, operation);
     }
     return __nimbusVfsAppendRangeResult;
   }
   // The revision this write produced. It is what lets the ACQUIRE barrier
-  // tell this facet's own mutation apart from a peer's.
-  const answer = await __nimbusSubmitVfs({ type: "call", call: { call: "writeFile", path: key, mode: 0o666, data: __nimbusVfsCellBytes(content) } });
+  // tell this facet's own mutation apart from a peer's. Logged a window at a
+  // time: a drain of thousands of parked cells never holds them all twice.
+  // The window is asked before the cell is encoded: thousands of parked
+  // cells waiting for one are never all encoded at once.
+  const release = await __nimbusProcessFs().room(typeof content === "string" ? content.length : content.byteLength);
+  let answer;
+  try { answer = await __nimbusSubmitVfs({ type: "call", call: { call: "writeFile", path: key, mode: 0o666, data: __nimbusVfsCellBytes(content) } }); }
+  finally { release(); }
   return answer.receipt?.revision;
 }
 

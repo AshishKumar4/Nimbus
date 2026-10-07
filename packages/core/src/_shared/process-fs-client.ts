@@ -145,7 +145,8 @@ export interface ProcessFsClientOptions {
 
 export interface ProcessFsClient {
   /**
-   * Log `op` (its bytes copied now, its place in the log taken now) and
+   * Log `op` (its place in the log taken now; its bytes are the client's
+   * from now on: the caller hands over a buffer nothing writes to again) and
    * answer once the session has it: resolved when committed, rejected with
    * its errno when refused. `acknowledged`: the program was already told
    * it succeeded (a synchronous call), so its refusal is a failure to
@@ -166,8 +167,23 @@ export interface ProcessFsClient {
   settle(): Promise<void>;
   /** The failures not yet reported, taken (the next effect reports them). */
   takeFailures(): ProcessFsFailure[];
+  /**
+   * A change the program was told succeeded, refused or unanswered where the
+   * runtime awaited it on the program's behalf (a synchronous call's own
+   * work): reported with the client's own (takeFailures, settle).
+   */
+  noteFailure(failure: ProcessFsFailure): void;
   /** Bytes logged and not yet answered. */
   readonly pendingBytes: number;
+  /**
+   * A window for `bytes` a writer is about to log, granted in the order
+   * asked once the bytes granted and not yet given back leave room for them
+   * under PROCESS_FS_ROOM_BYTES (or when none are): a writer with many to
+   * send (a drain of parked writes) logs them a window at a time, so they
+   * are never all held twice. Answers the window's release, for when the
+   * bytes are answered.
+   */
+  room(bytes: number): Promise<() => void>;
   /**
    * The grant a mutation at `key` is decided under now (held, not shared),
    * or undefined: the session decides it. Counts the mutation toward taking
@@ -204,6 +220,9 @@ export interface ProcessFsStats {
 
 /** A synchronous loop's bytes held at once, at most (ProcessFsClientOptions.syncCapBytes). */
 export const PROCESS_FS_SYNC_CAP_BYTES = 64 * 1024 * 1024;
+
+/** What a writer that waits for room (ProcessFsClient.room) lets the client hold unanswered: two waves' worth. */
+export const PROCESS_FS_ROOM_BYTES = 2 * WAVE_BYTES;
 
 /** A data call's bytes per op: a larger one is sent as its first piece, then writes at offsets. */
 const DATA_PIECE_BYTES = WAVE_BYTES;
@@ -293,12 +312,6 @@ function fsError(errno: string, message: string, path: string): Error & { code: 
   return Object.assign(new Error(message), { code: errno, path });
 }
 
-/** The op with its bytes copied: a caller's buffer may change after the call returns. */
-function owned(op: ProcessFsOp): ProcessFsOp {
-  if (op.type !== 'call' || !('data' in op.call)) return op;
-  return { type: 'call', call: { ...op.call, data: op.call.data.slice() } };
-}
-
 /** A data call larger than a piece: its first piece as the call, the rest as writes at their offsets. */
 function pieces(op: ProcessFsOp): ProcessFsOp[] {
   if (op.type !== 'call' || !('data' in op.call) || op.call.data.byteLength <= DATA_PIECE_BYTES) return [op];
@@ -338,6 +351,22 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   let logged = 0;
   let answered = 0;
   const marks: { mark: number; resolve(): void }[] = [];
+  /** Bytes in granted windows, and the writers waiting for one, in the order they asked. */
+  let windowed = 0;
+  const roomWaiters: { bytes: number; resolve(release: () => void): void }[] = [];
+  const grantRoom = (bytes: number): (() => void) => {
+    windowed += bytes;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      windowed -= bytes;
+      while (roomWaiters.length > 0 && (windowed === 0 || windowed + roomWaiters[0]!.bytes <= PROCESS_FS_ROOM_BYTES)) {
+        const next = roomWaiters.shift()!;
+        next.resolve(grantRoom(next.bytes));
+      }
+    };
+  };
   const counters: ProcessFsStats = {
     ops: 0, waves: 0, resends: 0, epochs: 0, refused: 0, lost: 0, maxWaveOps: 0,
     grants: 0, grantsRefused: 0, recalls: 0, released: 0, widened: 0,
@@ -659,6 +688,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         for (const grant of covered) await end(grant);
         counters.widened++;
       }
+      // What was logged lands first (the directory may be one of its own mkdirs).
+      await client.flush();
       paused = true;
       await quiet();
       const inos = (rangeOf.get(target) ?? GRANT_INOS / 2) * 2;
@@ -666,9 +697,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       try {
         charge('fsAcquireExclusiveMutation');
         granted = await port.acquire('/' + target, { reads: true, inos, bytes: GRANT_BYTES });
-      } catch {
-        // EBUSY (another's lease), EPERM (the session's own), ENOSPC: the session decides there.
-        refusedRoots.add(target);
+      } catch (error) {
+        // EBUSY (another's lease), EPERM (the session's own), ENOSPC: the
+        // session decides there, from now on. A directory not there (yet) may be asked for again.
+        if ((error as { code?: unknown } | null)?.code !== 'ENOENT') refusedRoots.add(target);
         counters.grantsRefused++;
         return;
       }
@@ -710,11 +742,17 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       if (session.grants === undefined || settling) return undefined;
       // Shared, or another's: the session decides; a subtree it refused is not asked for again.
       if (grants.some((grant) => !grant.ended && within(key, grant.root))) return undefined;
-      const root = parentKey(key);
-      if (!allowedRoot(root) || [...refusedRoots].some((refused) => within(root, refused))) return undefined;
-      const seen = (mutations.get(root) ?? 0) + 1;
-      mutations.set(root, seen);
-      if (seen >= grantAfter) claim(root);
+      // Counted at each directory above it: the deepest one that has had
+      // GRANT_AFTER mutations is taken (a loop writing across many
+      // directories of one tree takes the tree, not each directory).
+      let deepest: string | undefined;
+      for (let root = parentKey(key); allowedRoot(root); root = parentKey(root)) {
+        if ([...refusedRoots].some((refused) => within(root, refused))) break;
+        const seen = (mutations.get(root) ?? 0) + 1;
+        mutations.set(root, seen);
+        if (seen >= grantAfter && deepest === undefined) deepest = root;
+      }
+      if (deepest !== undefined) claim(deepest);
       return undefined;
     },
     number(grant) {
@@ -741,7 +779,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       const acknowledged = submitOptions?.acknowledged === true;
       const named = pathsOf(op);
       for (const path of named) if (!canonical(path)) throw fsError('EINVAL', `EINVAL: not a filesystem path the session takes: '${path}'`, path);
-      const parts = pieces(owned(op));
+      const parts = pieces(op);
       const bytes = parts.reduce((sum, part) => sum + (part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0), 0);
       if (acknowledged && pendingSyncBytes + bytes > syncCap) {
         throw fsError('ENOMEM', `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, pathsOf(op)[0] ?? '');
@@ -806,7 +844,14 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     takeFailures() {
       return failures.splice(0, failures.length);
     },
+    noteFailure(failure) {
+      failures.push(failure);
+    },
     get pendingBytes() { return pendingBytes; },
+    room(bytes) {
+      if (roomWaiters.length === 0 && (windowed === 0 || windowed + bytes <= PROCESS_FS_ROOM_BYTES)) return Promise.resolve(grantRoom(bytes));
+      return new Promise<() => void>((resolve) => { roomWaiters.push({ bytes, resolve }); });
+    },
     stats() { return { ...counters }; },
   };
   return client;

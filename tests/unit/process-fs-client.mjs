@@ -308,4 +308,38 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   assert.equal(s.text('home/user/after'), 'a');
 }
 
+// ── A loop across many directories of one tree takes the tree, and its waves carry the rest ──
+{
+  const s = session();
+  s.kernel.mkdir('home/user/tree', { mode: 0o755 });
+  s.kernel.chown('home/user/tree', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  for (let d = 0; d < 16; d++) {
+    s.kernel.mkdir(`home/user/tree/d${d}`, { mode: 0o755 });
+    s.kernel.chown(`home/user/tree/d${d}`, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  }
+  const c = client(s, { grantAfter: 8, grantIdleMs: 60_000, recallPollMs: 100 });
+  // Each directory has one write before the tree has eight.
+  for (let i = 0; i < 8; i++) c.holder(`home/user/tree/d${i}/f`);
+  const grant = await until(() => c.holder('home/user/tree/d9/f'), 'the tree');
+  assert.equal(grant.root, 'home/user/tree', 'a loop across directories took a directory, not their tree');
+  await c.settle();
+}
+
+// ── room: a writer with many to send waits while two waves' worth are unanswered ──
+{
+  const s = session();
+  const c = client(s);
+  const big = new Uint8Array(3 * 1024 * 1024);
+  let roomed = 0;
+  const writers = [0, 1, 2, 3].map(async (i) => {
+    const release = await c.room(big.byteLength);
+    roomed++;
+    try { await c.submit(writeFile(`home/user/big${i}`, big)); } finally { release(); }
+  });
+  await Promise.resolve();
+  assert.ok(roomed <= 2, `${roomed} writers took room at once for 12 MiB (a window is 8 MiB)`);
+  await Promise.all(writers);
+  assert.equal(c.pendingBytes, 0);
+}
+
 console.log('process-fs-client: ok');
