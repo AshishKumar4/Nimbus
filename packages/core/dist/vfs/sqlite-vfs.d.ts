@@ -27,7 +27,7 @@
  * state-0 content and publish it atomically.
  */
 import { VfsEventEmitter, type VfsEvent } from './events.js';
-import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
+import { type BatchWritePayload, type VfsInodeKind, type W7DataCall, type W7PathCall } from '@nimbus-sh/platform/w7-frame.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { type Principal, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
@@ -338,6 +338,12 @@ export interface WriteBatchStreamProgress {
     /** 1-based sequence of the last durable publish group; zero means none. */
     committedGroupSequence: number;
     committedPathCount: number;
+    /**
+     * The wave's operations committed, in order: each removal, directory,
+     * file, rename, truncate, attribute change and call counts one. On a
+     * refusal, the refused operation is the one at this index.
+     */
+    committedOps: number;
     inodes: number;
     chunks: number;
     /** Each published file and link, by the path the stream named, as stat will report it. */
@@ -354,6 +360,8 @@ export interface WriteStreamReceipt {
     uid: number;
     gid: number;
     dev: number;
+    /** The session's revision once a call's file landed: what its writeFile answers. */
+    revision?: number;
 }
 /** One chunk of a routed file's bytes, held by the wave's credit until `release`. */
 export interface RoutedChunk {
@@ -383,6 +391,18 @@ export type RoutedWaveRecord = {
     readonly type: 'symlink';
     readonly path: string;
     readonly target: string;
+}
+/** A process's call (W7Call), made by the namespace's operation of that name. */
+ | {
+    readonly type: 'call';
+    readonly call: W7PathCall;
+} | {
+    readonly type: 'data-call';
+    readonly call: W7DataCall;
+    readonly path: string;
+    readonly mode: number;
+    readonly size: number;
+    readonly chunks: AsyncIterable<RoutedChunk>;
 };
 /** A routed name's stat once published: what its receipt reports. */
 export interface RoutedStat {
@@ -448,7 +468,7 @@ export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
         code: 'ERR_WRITE_BATCH_STREAM';
         phase: WriteBatchStreamFailurePhase;
         message: string;
-        /** The refusal's errno (EACCES, EROFS, …) when the filesystem refused; absent otherwise. */
+        /** The refusal's errno (EACCES, EEXIST, EROFS, …) when the filesystem refused; absent otherwise. */
         errno?: string;
     };
 });

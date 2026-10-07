@@ -617,5 +617,6 @@ function keyOfOp(op) {
         case 'directory':
         case 'file': return op.inode.path;
         case 'rename': return op.from;
+        case 'call': return op.call.path;
     }
 }

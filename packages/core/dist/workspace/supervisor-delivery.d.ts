@@ -27,25 +27,9 @@
  * mutation without a receipt for its repeat to find.
  */
 import type { SupervisorOpDispatch } from './supervisor-op.js';
-<<<<<<< HEAD
 import { type SupervisorDeliveredOpName, type SupervisorJoinedReadOpName } from './supervisor-ops.js';
-export type { SupervisorDeliveredOpName, SupervisorJoinedReadOpName };
-=======
 import type { WaveMountReach } from '../vfs/sqlite-vfs.js';
-/**
- * The filesystem mutations a process's supervisor delivers exactly once.
- *
- * Not here, so sent once: `writeBatchStream` (its stream is consumed by the
- * first delivery: its writer re-sends a lost wave re-encoded, under a newer
- * fence in an epoch the host issued — {@link SupervisorDeliveries.admitWave}),
- * the descriptor read `fsRead` (it advances the position and
- * answers bytes a receipt would have to hold), `fsAppend`/`fsAppendAck` (the
- * append ledger's own writer/module/operation identity already makes them
- * repeatable), and the process, socket and storage-grant ops.
- */
-export declare const SUPERVISOR_DELIVERED_OPS: readonly ["writeFile", "writeFileStat", "fsWrite", "fsWriteRange", "fsTruncate", "writeBatch", "mkdir", "rmdir", "unlink", "rename", "symlink", "utimes", "chmod", "chown", "fsOpen", "fsClose", "fsDup", "fsSeek", "fsSetStatus", "fsSync", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsRemove", "fsCopyFile", "fsCopyTree", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation"];
-export type SupervisorDeliveredOpName = (typeof SUPERVISOR_DELIVERED_OPS)[number];
->>>>>>> work/w7-mount-routing
+export type { SupervisorDeliveredOpName, SupervisorJoinedReadOpName };
 /**
  * The delivered mutation `op` names, as this module's own string — a receipt
  * holds that one copy, not the one each envelope arrived with — or undefined

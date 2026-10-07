@@ -96,7 +96,51 @@ async function applyRecord(ns, cleanup, record) {
         case 'file':
             await spool(ns, cleanup, record);
             return statOf(await ns.stat(record.path, { follow: false }));
+        case 'call': {
+            // The call itself, as the namespace makes it: its own refusals (EEXIST, ENOTEMPTY, …).
+            const call = record.call;
+            if (call.call === 'mkdir')
+                await ns.mkdir(call.path, { mode: call.mode });
+            else if (call.call === 'unlink')
+                await ns.unlink(call.path);
+            else if (call.call === 'rmdir')
+                await ns.rmdir(call.path);
+            else
+                await ns.symlink(call.target, call.path);
+            return null;
+        }
+        case 'data-call': {
+            // A writeFile or appendFile is the namespace's call with the whole bytes.
+            const bytes = await gathered(record);
+            if (record.call === 'appendFile') {
+                const prior = await ns.stat(record.path);
+                if (prior === null)
+                    await ns.writeFile(record.path, bytes, { mode: record.mode });
+                else
+                    await ns.writeRange(record.path, prior.size, bytes);
+            }
+            else {
+                await ns.writeFile(record.path, bytes, { mode: record.mode });
+            }
+            return statOf(await ns.stat(record.path));
+        }
     }
+}
+/** A call's bytes whole, up to HELD_FILE_BYTES; each chunk's credit released once copied. */
+async function gathered(record) {
+    const iterator = record.chunks[Symbol.asyncIterator]();
+    if (record.size > HELD_FILE_BYTES) {
+        await drainIterator(iterator).catch(() => { });
+        throw new VfsError('ENOTSUP', `a process's ${record.call} to a mount carries at most ${HELD_FILE_BYTES} bytes in one call; this one is ${record.size}`, record.path);
+    }
+    const bytes = new Uint8Array(record.size);
+    let at = 0;
+    for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
+        bytes.set(next.value.data, at);
+        at += next.value.data.byteLength;
+        next.value.release();
+    }
+    return bytes;
 }
 /**
  * Write a file at a staged name chunk by chunk, each chunk's credit

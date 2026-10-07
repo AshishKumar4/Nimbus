@@ -54,6 +54,8 @@ var RecordTag;
     RecordTag[RecordTag["Rename"] = 8] = "Rename";
     RecordTag[RecordTag["Truncate"] = 9] = "Truncate";
     RecordTag[RecordTag["SetAttr"] = 10] = "SetAttr";
+    /** A W7PathCall (v4). A data call is a FileBegin whose metadata names its call. */
+    RecordTag[RecordTag["Call"] = 11] = "Call";
 })(RecordTag || (RecordTag = {}));
 const MODE = 'program-order-committed-prefix';
 /** v3's batch mode. Delete with v3 decoding. */
@@ -361,6 +363,15 @@ v3) {
                     yield record;
                     break;
                 }
+                case RecordTag.Call: {
+                    if (v3)
+                        throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
+                    summary.pathCount++;
+                    summary.opCount++;
+                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target']);
+                    yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
+                    break;
+                }
                 case RecordTag.Rename:
                 case RecordTag.Truncate:
                 case RecordTag.SetAttr: {
@@ -467,6 +478,11 @@ async function* encodeRecords(batchId, ops) {
                 state.summary.opCount++;
                 yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs }, state);
                 break;
+            case 'call':
+                state.summary.pathCount++;
+                state.summary.opCount++;
+                yield encodeMetadataRecord(RecordTag.Call, { ...op.call }, state);
+                break;
         }
     }
     const end = {
@@ -485,6 +501,7 @@ async function* encodeFile(file, state) {
         contentId: file.contentId,
         size: file.inode.size,
         chunkCount: file.inode.chunkCount,
+        ...(file.inode.call === undefined ? {} : { call: file.inode.call }),
     }, state);
     let fileCheck = 0;
     let chunkId = 0;
@@ -666,6 +683,21 @@ function prepareOps(payload, batchId) {
                 return { kind: 'truncate', path: ownedPaths.claim(canonicalPath(op.path, 'truncate path')), size: safeInteger(op.size, 'truncate size') };
             case 'setattr':
                 return { kind: 'setattr', path: ownedPaths.claim(canonicalPath(op.path, 'setattr path')), attrs: parseAttrs(op.attrs, 'setattr') };
+            case 'call': {
+                const call = op.call;
+                if (call.call === 'writeFile' || call.call === 'appendFile') {
+                    const path = ownedPaths.claim(canonicalPath(call.path, `${call.call} path`));
+                    // A call's file stamps no time of its own: the session's operation does.
+                    const inode = normalizeInode({
+                        path, parentPath: parentPath(path), kind: 'file', isDir: false,
+                        size: call.data.byteLength, mtime: 0, mode: u32(call.mode, `${call.call} mode`), chunkCount: w7ChunkCount(call.data.byteLength),
+                    });
+                    inode.call = call.call;
+                    const chunks = w7Chunks(path, call.data);
+                    return { kind: 'file', file: { inode, contentId: `${batchId}:${fileIndex++}`, chunks, source: null } };
+                }
+                return { kind: 'call', call: parsePathCall({ ...call }, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
+            }
         }
     });
 }
@@ -703,7 +735,7 @@ function parseDirectory(bytes, v3) {
     return { ...parseInodeMetadata(value, 'directory'), kind: 'directory' };
 }
 function parseFileBegin(bytes, v3) {
-    const value = parseObject(bytes, 'file-begin', ['path', 'kind', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'], inodeOptional(v3));
+    const value = parseObject(bytes, 'file-begin', ['path', 'kind', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'], v3 ? inodeOptional(v3) : [...inodeOptional(v3), 'call']);
     const base = parseInodeMetadata(value, 'file-begin');
     if (value.kind !== 'file' && value.kind !== 'symlink') {
         throw new Error(`w7-frame: unsupported file-begin kind ${String(value.kind)}`);
@@ -718,7 +750,34 @@ function parseFileBegin(bytes, v3) {
     if (chunkCount !== expected) {
         throw new Error(`w7-frame: ${base.path}: expected ${expected} chunks, got ${chunkCount}`);
     }
-    return { ...base, kind: value.kind, contentId, size, chunkCount };
+    if (value.call !== undefined && value.call !== 'writeFile' && value.call !== 'appendFile') {
+        throw new Error(`w7-frame: ${base.path}: unknown data call ${String(value.call)}`);
+    }
+    if (value.call !== undefined && value.kind !== 'file')
+        throw new Error(`w7-frame: ${base.path}: a ${String(value.call)} writes a file`);
+    return { ...base, kind: value.kind, contentId, size, chunkCount, ...(value.call === undefined ? {} : { call: value.call }) };
+}
+/** A path call's fields, exactly: its paths made canonical (and claimed) by `path`. */
+function parsePathCall(value, path) {
+    const keys = Object.keys(value).sort().join(',');
+    switch (value.call) {
+        case 'mkdir':
+            if (keys !== 'call,mode,path')
+                break;
+            return { call: 'mkdir', path: path(value.path, 'mkdir path'), mode: u32(value.mode, 'mkdir mode') };
+        case 'unlink':
+        case 'rmdir':
+            if (keys !== 'call,path')
+                break;
+            return { call: value.call, path: path(value.path, `${value.call} path`) };
+        case 'symlink':
+            if (keys !== 'call,path,target')
+                break;
+            return { call: 'symlink', path: path(value.path, 'symlink path'), target: boundedString(value.target, 'symlink target', MAX_PATH_BYTES) };
+        default:
+            throw new Error(`w7-frame: unknown call ${String(value.call)}`);
+    }
+    throw new Error(`w7-frame: ${String(value.call)} takes other fields: got ${keys}`);
 }
 function parseFileEnd(bytes) {
     const value = parseObject(bytes, 'file-end', ['contentId', 'size', 'chunkCount', 'check']);
@@ -864,6 +923,7 @@ function fileInode(metadata) {
         mode: metadata.mode,
         chunkCount: metadata.chunkCount,
         ...(metadata.ino === undefined ? {} : { ino: metadata.ino }),
+        ...(metadata.call === undefined ? {} : { call: metadata.call }),
     };
 }
 function inodeMetadata(inode) {

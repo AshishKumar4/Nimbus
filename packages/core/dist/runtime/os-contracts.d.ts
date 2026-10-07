@@ -225,11 +225,7 @@ export declare function gateSyncLaunch(gate: {
 export declare function launchNamedPaths(cwd: string, program: string | null, argv: readonly string[]): string[];
 /** A live view sharing namespace, credentials and descriptor state. */
 export type RuntimeSynchronousFs = {
-<<<<<<< HEAD
-    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch' | 'awaitRecall'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
-=======
-    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeBatch' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
->>>>>>> work/w7-mount-routing
+    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeBatch' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch' | 'awaitRecall'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
 };
 /**
  * The path's revision immediately before and after one mutation, read in
@@ -401,13 +397,7 @@ export interface RuntimeFsBridge {
      * later one; it throws to refuse them (a fenced write wave its writer has
      * since re-sent: SupervisorDeliveries.admitWave).
      */
-<<<<<<< HEAD
-    writeStream(stream: ReadableStream<Uint8Array>, options?: {
-        signal?: AbortSignal;
-        mutationOwner?: string;
-        decodeDrainStartedAt?: number;
-        admit?: () => void;
-    }): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
+    writeStream(stream: ReadableStream<Uint8Array>, options?: import('../vfs/sqlite-vfs.js').WriteStreamOptions): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
     /**
      * An exclusive-mutation lease on the subtree at `path`. With `delegate`,
      * a delegation: the process decides the subtree's operations itself and
@@ -416,15 +406,6 @@ export interface RuntimeFsBridge {
      * how long the process has to answer a recall (recallTimeoutMs).
      */
     acquireExclusiveMutation(path: RuntimeFsPath, options?: ExclusiveMutationRequest): Awaitable<ExclusiveMutationGrant>;
-=======
-    writeStream(stream: ReadableStream<Uint8Array>, options?: import('../vfs/sqlite-vfs.js').WriteStreamOptions): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
-    acquireExclusiveMutation(path: RuntimeFsPath, options?: {
-        includeMissingAncestors?: boolean;
-    }): Awaitable<{
-        root: string;
-        owner: string;
-    }>;
->>>>>>> work/w7-mount-routing
     releaseExclusiveMutation(owner: string): Awaitable<void>;
     /** The next recall of the process's delegation `owner`; null when none is asked within `waitMs` (ask again), or once it has ended. */
     awaitRecall(owner: string, waitMs?: number): Awaitable<RecallKind | null>;

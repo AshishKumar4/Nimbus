@@ -37,11 +37,7 @@ import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { acquireSupervisorAllocation, tryAcquireSupervisorAllocation, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { enc, dec } from '../_shared/bytes.js';
-<<<<<<< HEAD
-import { decodeWriteBatchStream, w7ChunkCount, w7Chunks, } from '@nimbus-sh/platform/w7-frame.js';
-=======
-import { decodeWriteBatchStream, encodeWriteBatchStream, } from '@nimbus-sh/platform/w7-frame.js';
->>>>>>> work/w7-mount-routing
+import { decodeWriteBatchStream, w7ChunkCount, w7Chunks, encodeWriteBatchStream, } from '@nimbus-sh/platform/w7-frame.js';
 import { WeightedCreditPool, } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
@@ -532,6 +528,7 @@ function recordPaths(record) {
         case 'directory':
         case 'file-begin': return [record.inode.path];
         case 'rename': return [record.from, record.to];
+        case 'call': return [record.call.path];
         default: return [];
     }
 }
@@ -575,7 +572,7 @@ const OWNED_MUTATIONS = new Set([
 ]);
 /** The mutations of a credentialed view that span turns (their slices carry the caller's lease themselves). */
 const SPANNING_MUTATIONS = new Set([
-    'writeFileFrom', 'copyTreeAsync', 'writeStream',
+    'writeFileFrom', 'copyTreeAsync', 'writeStream', 'writeBatchPlaced',
 ]);
 const NO_STRUCTURAL_CHANGES = new Map();
 /** The directories among `inodes`, each reported as having gone from its name. */
@@ -2063,7 +2060,7 @@ export class SqliteVFS {
                 return this.spanning(() => this.copyTreeInSlices(job, owner, origin), owner);
             },
             writeBatch: (payload) => this.writeBatch(payload, bound),
-            writeBatchPlaced: (payload) => this.writeBatchPlaced(payload, bound, origin),
+            writeBatchPlaced: (payload) => this.writeBatchPlaced(payload, bound, origin, mutationOwner),
             writeStream: (stream, options) => this.writeStream(stream, mutationOwner === undefined ? options : { ...options, mutationOwner }, bound, origin),
             mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
             revision: (path) => this.revision(path, bound),
@@ -2079,38 +2076,7 @@ export class SqliteVFS {
             // Live: a view outlives rotateIncarnation.
             get epoch() { return engine._epoch; },
         };
-<<<<<<< HEAD
         return this.callerView(view, { origin, privileged: bound.uid === 0, mutationOwner, holds: options?.holds, landed: options?.landed === true });
-=======
-        if (mutationOwner !== undefined) {
-            // Only synchronous mutations enter an ambient scope; spanning work carries the owner per slice.
-            const mutations = {
-                mkdir: (path, options) => this.withMutationOwner(mutationOwner, () => this.mkdir(path, options, bound)),
-                writeFile: (path, content, options) => this.withMutationOwner(mutationOwner, () => this.writeFile(path, content, options, bound)),
-                symlink: (target, path) => this.withMutationOwner(mutationOwner, () => this.symlink(target, path, bound)),
-                writeRange: (path, offset, bytes) => this.withMutationOwner(mutationOwner, () => this.writeRange(path, offset, bytes, bound)),
-                appendOnce: (path, pid, writerId, moduleId, operationId, digest, bytes) => this.withMutationOwner(mutationOwner, () => this.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes, bound)),
-                acknowledgeAppend: (pid, writerId, moduleId, operationId) => this.withMutationOwner(mutationOwner, () => this.acknowledgeAppend(pid, writerId, moduleId, operationId)),
-                truncate: (path, size) => this.withMutationOwner(mutationOwner, () => this.truncate(path, size, bound)),
-                utimes: (path, atimeMs, mtimeMs, options) => this.withMutationOwner(mutationOwner, () => this.utimes(path, atimeMs, mtimeMs, bound, options?.followSymlinks !== false)),
-                chmod: (path, mode) => this.withMutationOwner(mutationOwner, () => this.chmod(path, mode, bound)),
-                setDefaultAcl: (path, perms) => this.withMutationOwner(mutationOwner, () => this.setDefaultAcl(path, perms, bound)),
-                chown: (path, uid, gid, options) => this.withMutationOwner(mutationOwner, () => this.chown(path, uid, gid, bound, options?.followSymlinks !== false)),
-                unlink: (path) => this.withMutationOwner(mutationOwner, () => this.unlink(path, bound)),
-                rmdir: (path) => this.withMutationOwner(mutationOwner, () => this.rmdir(path, bound)),
-                removeRecursive: (path) => this.withMutationOwner(mutationOwner, () => this.removeRecursive(path, bound)),
-                rename: (from, to) => this.withMutationOwner(mutationOwner, () => this.rename(from, to, bound)),
-                copyFile: (from, to) => this.withMutationOwner(mutationOwner, () => this.copyFile(from, to, bound)),
-                copyTree: (from, to, options) => this.withMutationOwner(mutationOwner, () => this.copyTreeNow(this.planCopyTree(from, to, bound, options))),
-                writeBatch: (payload) => this.withMutationOwner(mutationOwner, () => this.writeBatch(payload, bound)),
-                writeBatchPlaced: (payload) => this.writeBatchPlaced(payload, bound, origin, mutationOwner),
-                mkdirBatch: (paths) => this.withMutationOwner(mutationOwner, () => this.mkdirBatch(paths, bound)),
-            };
-            Object.assign(view, mutations);
-        }
-        const settling = this.settlingView(view, origin);
-        return bound.uid === 0 ? this.privilegedView(settling) : settling;
->>>>>>> work/w7-mount-routing
     }
     /** `run` as `origin`'s call: the principal its write events name. */
     asOrigin(origin, run) {
@@ -7577,6 +7543,19 @@ export class SqliteVFS {
                 at.committed(null);
                 return true;
             }
+            case 'call': {
+                const call = record.call;
+                if (call.call !== 'mkdir')
+                    at.routes.clear();
+                if (await mountOf(call.path) === null)
+                    return false;
+                at.setPhase('publish');
+                at.settleBefore();
+                reached();
+                await router.apply({ type: 'call', call: { ...call, path: '/' + call.path } }, cred, at.guard);
+                at.committed(null);
+                return true;
+            }
             case 'file-begin': {
                 if (await mountOf(record.inode.path) === null)
                     return false;
@@ -7590,16 +7569,19 @@ export class SqliteVFS {
                 const queue = new ChunkQueue();
                 const named = record.inode.path;
                 const path = '/' + named;
-                const published = record.inode.kind === 'symlink'
-                    ? (async () => {
-                        const parts = [];
-                        for await (const chunk of queue) {
-                            parts.push(chunk.data.slice());
-                            chunk.release();
-                        }
-                        return router.apply({ type: 'symlink', path, target: new TextDecoder().decode(concatBytes(parts)) }, cred, at.guard);
-                    })()
-                    : router.apply({ type: 'file', path, mode: record.inode.mode, size: record.inode.size, chunks: queue }, cred, at.guard);
+                const call = record.inode.call;
+                const published = call !== undefined
+                    ? router.apply({ type: 'data-call', call, path, mode: record.inode.mode, size: record.inode.size, chunks: queue }, cred, at.guard)
+                    : record.inode.kind === 'symlink'
+                        ? (async () => {
+                            const parts = [];
+                            for await (const chunk of queue) {
+                                parts.push(chunk.data.slice());
+                                chunk.release();
+                            }
+                            return router.apply({ type: 'symlink', path, target: new TextDecoder().decode(concatBytes(parts)) }, cred, at.guard);
+                        })()
+                        : router.apply({ type: 'file', path, mode: record.inode.mode, size: record.inode.size, chunks: queue }, cred, at.guard);
                 // Its failure is the file's, met at its end (or the wave's).
                 published.catch(() => { });
                 at.file = { streamContentId: record.streamContentId, named, size: record.inode.size, received: 0, nextChunk: 0, queue, published };
@@ -7676,9 +7658,12 @@ export class SqliteVFS {
         /** Staging contents this stream created and has not yet published. */
         const ownedStaging = new Set();
         let activeFile = null;
+        /** A call's file (W7DataCall), its bytes gathered until its end. */
+        let callFile = null;
         const progress = {
             committedGroupSequence: 0,
             committedPathCount: 0,
+            committedOps: 0,
             inodes: 0,
             chunks: 0,
             receipts: [],
@@ -7689,7 +7674,7 @@ export class SqliteVFS {
         const routed = { file: null };
         /** Each directory's resolved namespace path, while the wave changes no link and removes nothing. */
         const routes = new Map();
-        /** The index of the record being applied, as committedOps counts them. */
+        /** The index of the operation being applied, as committedOps counts them. */
         let recordIndex = -1;
         // The pending publish group. Everything reset by a flush lives here.
         let group = this.newPlan();
@@ -7791,6 +7776,7 @@ export class SqliteVFS {
                 }
                 progress.committedGroupSequence++;
                 progress.committedPathCount += paths;
+                progress.committedOps += paths;
                 progress.inodes += result.inodes;
                 progress.chunks += publishedChunks;
                 for (const entry of plan.inodes) {
@@ -7824,6 +7810,7 @@ export class SqliteVFS {
             const result = asCaller(() => (this.writeBatch({ inodes, chunks: [] }, cred)));
             progress.committedGroupSequence++;
             progress.committedPathCount += inodes.length;
+            progress.committedOps += inodes.length;
             progress.inodes += result.inodes;
         };
         // A removal observes everything the stream wrote before it.
@@ -7837,6 +7824,7 @@ export class SqliteVFS {
             });
             progress.committedGroupSequence++;
             progress.committedPathCount += affected;
+            progress.committedOps++;
         };
         // The wave's leading removals and directories (an encoder sends them
         // before its first file) are held until the first file or the end, and
@@ -7966,13 +7954,101 @@ export class SqliteVFS {
                     throw new Error('w7-frame: stream ended without batch-end');
                 }
                 const record = next.value;
-<<<<<<< HEAD
                 // A record that lands in another holder's delegation waits for it to
                 // be given up first, here between records, where the stream may wait:
                 // its group's commit would otherwise be refused.
                 if (this.exclusiveMutationLeases.size > 0) {
                     for (const lands of recordPaths(record))
                         await this.recallDelegationsAt(lands, options.mutationOwner);
+                }
+                if (record.type !== 'file-chunk' && record.type !== 'file-end' && record.type !== 'batch-end')
+                    recordIndex++;
+                if (router !== null && await this.routeRecord(record, router, cred, {
+                    get file() { return routed.file; },
+                    set file(file) { routed.file = file; },
+                    index: recordIndex,
+                    routes,
+                    signal: options.signal,
+                    reach: options.mountReach,
+                    // Right before each call to the backend: the wave is still admitted, and not cancelled.
+                    guard: () => {
+                        options.signal?.throwIfAborted();
+                        options.admit?.();
+                    },
+                    // Whatever the wave wrote here before the record commits first.
+                    settleBefore: () => {
+                        endLeading();
+                        flushDirectories();
+                        flushGroup();
+                        options.admit?.();
+                    },
+                    setPhase: (next) => { phase = next; },
+                    committed: (receipt) => {
+                        progress.committedGroupSequence++;
+                        progress.committedPathCount++;
+                        progress.committedOps++;
+                        if (receipt !== null)
+                            progress.receipts.push(receipt);
+                    },
+                }))
+                    continue;
+                // A call's bytes are gathered whole, and the call made at its end.
+                if (record.type === 'file-begin' && record.inode.call !== undefined) {
+                    phase = 'validation';
+                    this.validateInodeContentShape(record.inode);
+                    callFile = { streamContentId: record.streamContentId, path: record.inode.path, call: record.inode.call, mode: record.inode.mode, size: record.inode.size, parts: [], received: 0, nextChunk: 0 };
+                    continue;
+                }
+                if (callFile !== null && record.type === 'file-chunk') {
+                    phase = 'validation';
+                    if (record.streamContentId !== callFile.streamContentId || record.path !== callFile.path) {
+                        throw vfsError('EINVAL', `streamed chunk ownership mismatch: ${record.path}`);
+                    }
+                    if (record.chunkId !== callFile.nextChunk || callFile.received + record.data.byteLength > callFile.size) {
+                        throw vfsError('EINVAL', record.path, `chunk ${record.chunkId} out of order or past size`);
+                    }
+                    callFile.nextChunk++;
+                    callFile.received += record.data.byteLength;
+                    // Copied out, and the chunk's credit given back.
+                    callFile.parts.push(record.data.slice());
+                    record.retention.release();
+                    continue;
+                }
+                if (callFile !== null && record.type === 'file-end') {
+                    phase = 'validation';
+                    const file = callFile;
+                    callFile = null;
+                    if (record.streamContentId !== file.streamContentId)
+                        throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
+                    if (file.received !== file.size)
+                        throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.size} bytes`);
+                    phase = 'publish';
+                    endLeading();
+                    flushGroup();
+                    flushDirectories();
+                    options.admit?.();
+                    const bytes = concatBytes(file.parts);
+                    const stat = this.withHolds(holds, () => asCaller(() => {
+                        if (file.call === 'appendFile') {
+                            const prior = this.checkAccess(file.path, 0, cred, { allowMissingLeaf: true }).inode;
+                            if (prior === undefined)
+                                this.writeFile(file.path, bytes, { mode: file.mode }, cred);
+                            else
+                                this.writeRange(file.path, prior.size, bytes, cred);
+                        }
+                        else {
+                            this.writeFile(file.path, bytes, { mode: file.mode }, cred);
+                        }
+                        return this.stat(file.path, cred, true);
+                    }));
+                    progress.receipts.push({
+                        path: file.path, ino: stat.ino, mode: stat.mode, size: stat.size, mtimeMs: stat.mtime, ctimeMs: stat.ctime,
+                        uid: stat.uid, gid: stat.gid, dev: this.deviceId, revision: this._revision,
+                    });
+                    progress.committedGroupSequence++;
+                    progress.committedPathCount++;
+                    progress.committedOps++;
+                    continue;
                 }
                 // A name a delegation's holder made is the caller's, as a create of
                 // its own would make it (creationAttrs): its owner, and a setgid
@@ -8020,57 +8096,6 @@ export class SqliteVFS {
                             // Authorising a file reads its parent from the committed inode
                             // tree, so pending directories become visible first.
                             endLeading();
-=======
-                if (record.type === 'delete' || record.type === 'directory' || record.type === 'file-begin')
-                    recordIndex++;
-                if (router !== null && await this.routeRecord(record, router, cred, {
-                    get file() { return routed.file; },
-                    set file(file) { routed.file = file; },
-                    index: recordIndex,
-                    routes,
-                    signal: options.signal,
-                    reach: options.mountReach,
-                    // Right before each call to the backend: the wave is still admitted, and not cancelled.
-                    guard: () => {
-                        options.signal?.throwIfAborted();
-                        options.admit?.();
-                    },
-                    // Whatever the wave wrote here before the record commits first.
-                    settleBefore: () => {
-                        endLeading();
-                        flushDirectories();
-                        flushGroup();
-                        options.admit?.();
-                    },
-                    setPhase: (next) => { phase = next; },
-                    committed: (receipt) => {
-                        progress.committedGroupSequence++;
-                        progress.committedPathCount++;
-                        if (receipt !== null)
-                            progress.receipts.push(receipt);
-                    },
-                }))
-                    continue;
-                switch (record.type) {
-                    case 'delete': {
-                        phase = 'publish';
-                        if (leading)
-                            leadingDeletes.push(record.path);
-                        else
-                            commitDelete(record.path);
-                        break;
-                    }
-                    case 'directory': {
-                        phase = 'validation';
-                        this.validateFileChunks(record.inode, []);
-                        phase = 'publish';
-                        // Directory inodes carry no payload: rows are the only bound in
-                        // reach, priced by the plan's own accounting (each row, the
-                        // parent it dates, and a snapshot's before-images of both), so
-                        // the strict batch the flush commits always fits. The leading
-                        // ones are bounded as they commit (endLeading).
-                        if (!leading && this.newPlan().wouldExceedInodes(pendingDirectories.length + 1) !== null)
->>>>>>> work/w7-mount-routing
                             flushDirectories();
                             phase = 'validation';
                             // The file lands where its name resolves (links followed, as a
@@ -8223,6 +8248,36 @@ export class SqliteVFS {
                             });
                             progress.committedGroupSequence++;
                             progress.committedPathCount += record.type === 'rename' ? 2 : 1;
+                            progress.committedOps++;
+                            break;
+                        }
+                        case 'call': {
+                            // A call observes everything the stream wrote before it.
+                            phase = 'publish';
+                            endLeading();
+                            flushGroup();
+                            flushDirectories();
+                            options.admit?.();
+                            const call = record.call;
+                            asCaller(() => {
+                                if (call.call === 'mkdir') {
+                                    // mkdir(2): a name that is there, whatever it is, is EEXIST
+                                    // (the engine's mkdir keeps an existing directory as made).
+                                    if (this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode !== undefined) {
+                                        throw vfsError('EEXIST', call.path);
+                                    }
+                                    this.mkdir(call.path, { mode: call.mode }, cred);
+                                }
+                                else if (call.call === 'unlink')
+                                    this.unlink(call.path, cred);
+                                else if (call.call === 'rmdir')
+                                    this.rmdir(call.path, cred);
+                                else
+                                    this.symlink(call.target, call.path, cred);
+                            });
+                            progress.committedGroupSequence++;
+                            progress.committedPathCount++;
+                            progress.committedOps++;
                             break;
                         }
                         case 'batch-end':
@@ -10176,7 +10231,6 @@ function batchMutationPaths(payload) {
 function subtreeRange(root) {
     return root === '' ? { lower: '', upper: null } : { lower: `${root}/`, upper: `${root}0` };
 }
-<<<<<<< HEAD
 /** `items`, then `last`. */
 function* followedBy(items, last) {
     yield* items;
@@ -10200,12 +10254,11 @@ function subtreeWhere(root, options = {}) {
         ? { sql: `${column} > ?`, params: [after] }
         : { sql: `${column} > ? AND ${column} < ?`, params: [after, below] };
     return options.withRoot ? { sql: `(${column} = ? OR (${under.sql}))`, params: [root, ...under.params] } : under;
-=======
+}
 /** An error's errno (an `E…` code), if it carries one. */
 function errnoOf(error) {
     const code = typeof error === 'object' && error !== null ? error.code : undefined;
     return typeof code === 'string' && /^E[A-Z0-9]+$/.test(code) ? code : undefined;
->>>>>>> work/w7-mount-routing
 }
 /**
  * The engine's refusal, `${code}: ${what}`, with its reason (`detail`), which

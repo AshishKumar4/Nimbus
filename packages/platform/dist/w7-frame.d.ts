@@ -71,6 +71,48 @@ export type W7Attrs = {
     atime: number;
     mtime: number;
 };
+/**
+ * A process's filesystem call as a record (v4), applied by the session's own
+ * operation of that name with that operation's semantics and refusals: a
+ * writeFile follows a link at its name and refuses a directory (EISDIR), a
+ * new file is `mode` less the process's umask and an existing one keeps its
+ * mode, owner and inode, a mkdir refuses a name that exists (EEXIST), and
+ * nothing makes a missing parent. The program-order counterpart of the
+ * syscall, where `file` and `directory` are a checkout's upserts.
+ */
+export type W7Call = {
+    call: 'writeFile';
+    path: string;
+    mode: number;
+    data: Uint8Array;
+} | {
+    call: 'appendFile';
+    path: string;
+    mode: number;
+    data: Uint8Array;
+} | {
+    call: 'mkdir';
+    path: string;
+    mode: number;
+} | {
+    call: 'unlink';
+    path: string;
+} | {
+    call: 'rmdir';
+    path: string;
+} | {
+    call: 'symlink';
+    path: string;
+    target: string;
+};
+/** A call whose bytes travel as a file's chunks. */
+export type W7DataCall = Extract<W7Call, {
+    data: Uint8Array;
+}>['call'];
+/** A call that is one metadata record. */
+export type W7PathCall = Exclude<W7Call, {
+    data: Uint8Array;
+}>;
 /** One operation of a program-order payload (BatchWritePayload.ops). */
 export type W7Op = {
     type: 'delete';
@@ -98,6 +140,9 @@ export type W7Op = {
     type: 'setattr';
     path: string;
     attrs: W7Attrs;
+} | {
+    type: 'call';
+    call: W7Call;
 };
 export declare const W7_MAGIC: Uint8Array<ArrayBuffer>;
 /**
@@ -124,7 +169,7 @@ export interface W7BatchSummary {
     fileCount: number;
     chunkCount: number;
     byteCount: number;
-    /** Renames, truncates and attribute changes (v4; none in v3). */
+    /** Renames, truncates, attribute changes and path calls (v4; none in v3). */
     opCount: number;
     check: number;
 }
@@ -140,9 +185,11 @@ type W7DirectoryInode = BatchInodeEntry & {
     kind: 'directory';
     isDir: true;
 };
+/** `call`: the file is a W7DataCall's bytes (its path, mode and size), not an upsert's inode. */
 type W7ContentInode = BatchInodeEntry & {
     kind: 'file' | 'symlink';
     isDir: false;
+    call?: W7DataCall;
 };
 export type W7DecodedRecord = {
     type: 'delete';
@@ -180,6 +227,9 @@ export type W7DecodedRecord = {
     type: 'setattr';
     path: string;
     attrs: W7Attrs;
+} | {
+    type: 'call';
+    call: W7PathCall;
 } | {
     type: 'batch-end';
     summary: W7BatchSummary;
