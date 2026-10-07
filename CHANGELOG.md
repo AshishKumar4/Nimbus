@@ -5,6 +5,10 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: a process compiles a wasm image its launch carries when the
+  program first compiles it, not when the process starts. A Vite 8 or Astro
+  dev server no longer compiles lightningcss's 15.8 MB image on every launch,
+  only when it transforms CSS with lightningcss.
 - Changed: a long-running launch no longer stages, at boot, what modules it
   reaches only through an `import()` read synchronously; that `import()`
   fetches them before the module evaluates. A Vite 8 dev server's boot drops

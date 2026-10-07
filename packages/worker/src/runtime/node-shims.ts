@@ -292,11 +292,12 @@ function __nimbusVfsAcquireArgs() {
 // A wasm image can only become a WebAssembly.Module through the Worker
 // Loader's module map; new WebAssembly.Module(bytes) at request time is
 // refused by the runtime. A launch whose closure carries an image (its VFS
-// path, or its content digest for an image inlined as base64) gets it
-// compiled at load and parked here. fs.readFileSync tags the bytes it hands
-// out for such a path, and the WebAssembly seam below answers a compile of
-// tagged or digest-matched bytes with the module the loader already built —
-// so a package's own new WebAssembly.Module(readFileSync(__dirname + '/x.wasm'))
+// path, or its content digest for an image inlined as base64) parks here the
+// compile of its map member, which runs on first use (the runner's
+// facetWasmImportsSource). fs.readFileSync tags the bytes it hands out for
+// such a path, and the WebAssembly seam below answers a compile of tagged or
+// digest-matched bytes with the module the loader builds for them — so a
+// package's own new WebAssembly.Module(readFileSync(__dirname + '/x.wasm'))
 // works unchanged.
 const __nimbusPrecompiledWasm = globalThis.__nimbusPrecompiledWasm instanceof Map
   ? globalThis.__nimbusPrecompiledWasm : new Map();
@@ -337,13 +338,16 @@ function __nimbusWasmDigest(bytes) {
   const WA = globalThis.WebAssembly;
   if (!WA || WA.__nimbusPrecompiledSeam) return;
   const RealModule = WA.Module;
+  // A parked image is its compile, run on first use; it keeps what it built.
+  const built = (image) => (typeof image === "function" ? image() : image);
   const tagged = (bytes) => {
     if (!bytes || typeof bytes !== "object") return undefined;
     const byTag = bytes[__nimbusWasmModuleTag];
-    if (byTag !== undefined) return byTag;
+    if (byTag !== undefined) return built(byTag);
     if (__nimbusPrecompiledWasmByDigest.size === 0) return undefined;
     const digest = __nimbusWasmDigest(bytes);
-    return digest === null ? undefined : __nimbusPrecompiledWasmByDigest.get(digest);
+    const image = digest === null ? undefined : __nimbusPrecompiledWasmByDigest.get(digest);
+    return image === undefined ? undefined : built(image);
   };
   // The runtime compiles wasm only while the loader stages a module map; a
   // compile from bytes at any later point is refused with a message that names
