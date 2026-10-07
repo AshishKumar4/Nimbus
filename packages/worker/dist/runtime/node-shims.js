@@ -2724,9 +2724,9 @@ const __fsMod = (() => {
     else work.then(undefined, () => undefined);
   }
 
-  /** Whether an async change at \`absPath\` is decided here (the ledger's __nimbusDecidedHere). */
-  function _decidedHere(absPath) {
-    return typeof __nimbusDecidedHere === "function" && __nimbusDecidedHere(absPath);
+  /** Whether an async change at \`absPath\` of \`bytes\` is decided here (the ledger's __nimbusDecidedHere). */
+  function _decidedHere(absPath, bytes = 0) {
+    return typeof __nimbusDecidedHere === "function" && __nimbusDecidedHere(absPath, bytes);
   }
 
   // A rename lives at two names. Its mutation is queued under the source;
@@ -3384,14 +3384,14 @@ const __fsMod = (() => {
     // destination is: parked and written back like any other write, and
     // refused (and the parked bytes dropped) if the authority refuses it.
     _parkWholeWrite(p, data, !!supervisor);
-    if (supervisor && _decidedHere(absPath)) {
+    if (supervisor && _decidedHere(absPath, data.byteLength ?? data.length ?? 0)) {
       // Decided here: its sync view already has it; the write goes with the log's waves.
-      _detachStructuralMutation(__nimbusFlushVfsWrite(
+      _detachStructuralMutation(__nimbusDecided(__nimbusFlushVfsWrite(
         absPath,
         (content, snapshot) => __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
         false,
         true,
-      ), "write", p);
+      ), data.byteLength ?? data.length ?? 0), "write", p);
       return;
     }
     if (supervisor) {
@@ -3433,14 +3433,15 @@ const __fsMod = (() => {
     appendFileSync(p, data, opts);
     const supervisor = _supervisor();
     if (!supervisor) return;
-    if (_decidedHere(absPath)) {
+    const appended = typeof data === "string" ? data.length : (data.byteLength ?? 0);
+    if (_decidedHere(absPath, appended)) {
       // Decided here: the append goes with the log's waves.
-      _detachStructuralMutation(__nimbusFlushVfsWrite(
+      _detachStructuralMutation(__nimbusDecided(__nimbusFlushVfsWrite(
         absPath,
         (content, snapshot) => __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
         false,
         true,
-      ), "write", p);
+      ), appended), "write", p);
       return;
     }
     await _announceLocalDirs(absPath, supervisor);
@@ -3464,7 +3465,7 @@ const __fsMod = (() => {
   async function _structuralAsync(queue, syscall, p) {
     const decided = _decidedHere(_resolve(p));
     const queued = queue();
-    if (decided) _detachStructuralMutation(queued, syscall, p);
+    if (decided) _detachStructuralMutation(__nimbusDecided(queued), syscall, p);
     else await queued;
   }
   async function _mkdirAsync(p, opts) { await _structuralAsync(() => _mkdirQueued(p, opts), "mkdir", p); }
