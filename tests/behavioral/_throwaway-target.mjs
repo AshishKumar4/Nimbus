@@ -48,7 +48,9 @@
 // COMMANDS
 //   up      [--name <n>] [--no-build | --bundle <dir>] [--ttl-ms <ms>] [--rotate-secrets]
 //           [--var KEY:VALUE ...]  override a config var for this deploy —
-//           how one build is stood up twice to compare two settings of it
+//           how one build is stood up twice to compare two settings of it.
+//           Every throwaway is deployed with the suite's target vars
+//           (_deploy-target.mjs PROBE_TARGET_VARS), as staging is
 //   token   [--name <n>] [--ttl-ms <ms>] [--json]   → the token, or JSON {base, token}
 //   session [--name <n>] [--ttl-ms <ms>]   → JSON {base, sessionId, token}
 //   down    [--name <n>] | --all
@@ -79,6 +81,7 @@ import { mintProbeToken } from './_mint-probe-token.mjs';
 import { assertDeployIsolated, loadConfig } from '../../scripts/deploy-isolation.mjs';
 import { assertDistMatchesSource } from '../../scripts/dist-integrity.mjs';
 import {
+  PROBE_TARGET_VARS,
   ROOT,
   WRANGLER,
   apiToken,
@@ -120,8 +123,12 @@ const HOSTNAME_SETTLE_MS = 60_000;
 
 const [command, ...rest] = process.argv.slice(2);
 const flags = parseFlags(rest);
-/** `--var KEY:VALUE`, repeatable — forwarded to wrangler verbatim. */
-const varOverrides = rest.flatMap((arg, i) => (arg === '--var' && rest[i + 1] ? ['--var', rest[i + 1]] : []));
+/**
+ * The suite's target vars (PROBE_TARGET_VARS), then each `--var KEY:VALUE`
+ * given here, forwarded to wrangler verbatim: a later --var for the same
+ * key wins.
+ */
+const varOverrides = [...PROBE_TARGET_VARS, ...rest.flatMap((arg, i) => (arg === '--var' && rest[i + 1] ? ['--var', rest[i + 1]] : []))];
 
 const COMMANDS = { up, token, session, down, list };
 const run = COMMANDS[command];
