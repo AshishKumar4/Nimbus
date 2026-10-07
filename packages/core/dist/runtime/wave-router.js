@@ -74,7 +74,7 @@ export function namespaceWaveRouter(namespace, credential) {
             const ns = view(cred, guard);
             // Removing its own slot after a failure is the record's own, unguarded.
             const cleanup = view(cred);
-            return applyRecord(ns, cleanup, record, pinOf(ns, parentOf(record.path)));
+            return applyRecord(ns, cleanup, record, pinOf(ns, parentOf(record.type === 'call' ? record.call.path : record.path)));
         },
     };
 }
@@ -143,6 +143,36 @@ async function applyRecord(ns, cleanup, record, pinned) {
             await pinned();
             await ns.writeFile(record.path, record.bytes, { mode: record.mode });
             return statOf(await ns.stat(record.path));
+        case 'call': {
+            // The call itself, as the namespace makes it: its own refusals (EEXIST, ENOTEMPTY, …).
+            const call = record.call;
+            await pinned();
+            if (call.call === 'mkdir')
+                await ns.mkdir(call.path, { mode: call.mode });
+            else if (call.call === 'unlink')
+                await ns.unlink(call.path);
+            else if (call.call === 'rmdir')
+                await ns.rmdir(call.path);
+            else
+                await ns.symlink(call.target, call.path);
+            return null;
+        }
+        case 'data-call': {
+            // A writeFile or appendFile: the namespace's call with the whole bytes.
+            await pinned();
+            if (record.call === 'appendFile') {
+                const prior = await ns.stat(record.path);
+                await pinned();
+                if (prior === null)
+                    await ns.writeFile(record.path, record.bytes, { mode: record.mode });
+                else
+                    await ns.writeRange(record.path, prior.size, record.bytes);
+            }
+            else {
+                await ns.writeFile(record.path, record.bytes, { mode: record.mode });
+            }
+            return statOf(await ns.stat(record.path));
+        }
     }
 }
 function statOf(stat) {
