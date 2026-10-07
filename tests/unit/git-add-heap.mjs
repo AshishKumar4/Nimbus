@@ -9,8 +9,10 @@
 // Measured where it peaks: the heap is collected and read as the index's
 // checksum is taken (the moment the whole new index exists, and whatever
 // staging and encoding hold is still alive), and on every 512th filesystem
-// call. Two sizes, every file new (no index, as after `git init` in a full
-// directory) and then every file changed; the growth between them, less the
+// call. Two sizes, 2,000 and 20,000 files (far enough apart that the noise
+// of a peak, a few hundred KiB, is a few bytes a file), every file new (no
+// index, as after `git init` in a full directory) and then every file
+// changed; the growth between them, less the
 // two indexes' own growth (the one read, the one written), is what each file
 // costs. It may be 256 bytes; the staged result agrees with real git's. And
 // at the small size the peak beyond the indexes may be 8 MiB: what does not
@@ -31,7 +33,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 
-const SIZES = [2_000, Number(process.env.NIMBUS_GIT_ADD_HEAP_LARGE) || 10_000];
+const SIZES = [2_000, Number(process.env.NIMBUS_GIT_ADD_HEAP_LARGE) || 20_000];
 const PER_FILE = 256;
 const FIXED = 8 * 1024 * 1024;
 
