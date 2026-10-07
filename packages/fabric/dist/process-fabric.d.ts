@@ -77,6 +77,7 @@ import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network
 import type { SupervisorBindingProps } from './supervisor-props.js';
 import { z } from 'zod/v4';
 import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import type { ServiceStub } from './vendor/types.js';
 /**
  * The class every generated resident runner exports. One name for every
@@ -272,6 +273,16 @@ export interface ProcessHostParams {
      * the storage limit.
      */
     storageBytes?: number;
+    /**
+     * The process logs its changes in its facet's store (process-fs-journal.ts):
+     * the session is told the facet's name when it opens (`opened`), and
+     * `drain` is handed the store's journal when the process is released,
+     * before the store goes. A drain that throws keeps the store and its name.
+     */
+    journal?: {
+        opened(facet: string): void;
+        drain(journal: ProcessFsJournalSource): Promise<void>;
+    };
 }
 /**
  * One resident process, as its coordinator sees it. Identical in meaning on
@@ -562,7 +573,15 @@ export interface ResidentProcessSpawn {
 }
 export declare class ProcessFabric {
     private readonly host;
-    constructor(host: ProcessHost);
+    private readonly options;
+    /**
+     * `journalFor`: the write-log hooks of a resident process's facet
+     * (ProcessHostParams.journal), when its coordinator keeps them: every
+     * resident it starts logs its changes in its facet's store.
+     */
+    constructor(host: ProcessHost, options?: {
+        journalFor?: (pid: number) => ProcessHostParams['journal'];
+    });
     /**
      * Boot a resident process on this deployment's substrate and return its
      * handle. Resolves once the process is up and its runner has been started;

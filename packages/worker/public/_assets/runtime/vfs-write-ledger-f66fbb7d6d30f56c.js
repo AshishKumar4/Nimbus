@@ -30,6 +30,7 @@ var __nimbusProcessFsModule = (() => {
     PROCESS_FS_SYNC_CAP_BYTES: () => PROCESS_FS_SYNC_CAP_BYTES,
     drainProcessFsJournal: () => drainProcessFsJournal,
     failuresError: () => failuresError,
+    journalSource: () => journalSource,
     memoryJournal: () => memoryJournal,
     processFsClient: () => processFsClient,
     sqlJournal: () => sqlJournal
@@ -1026,6 +1027,17 @@ var __nimbusProcessFsModule = (() => {
       entries() {
         return [...sql.exec("SELECT jid, op, data FROM nimbus_fs_journal ORDER BY jid")].map((row) => ({ jid: Number(row.jid), op: opOf(String(row.op), row.data) }));
       },
+      readAfter(after, maxBytes) {
+        const out = [];
+        let taken = 0;
+        for (const row of sql.exec("SELECT jid, op, data FROM nimbus_fs_journal WHERE jid > ? ORDER BY jid", after)) {
+          const size = row.data === null || row.data === void 0 ? 0 : row.data.byteLength;
+          if (out.length > 0 && taken + size > maxBytes) break;
+          out.push({ jid: Number(row.jid), op: opOf(String(row.op), row.data) });
+          taken += size;
+        }
+        return out;
+      },
       dropThrough(jid) {
         const freed = [...sql.exec("SELECT COALESCE(SUM(LENGTH(data)), 0) AS bytes FROM nimbus_fs_journal WHERE jid <= ?", jid)][0];
         bytes -= Number(freed?.bytes ?? 0);
@@ -1074,6 +1086,18 @@ var __nimbusProcessFsModule = (() => {
       entries() {
         return [...held].map(([jid, op]) => ({ jid, op }));
       },
+      readAfter(after, maxBytes) {
+        const out = [];
+        let taken = 0;
+        for (const [jid, op] of held) {
+          if (jid <= after) continue;
+          const size = dataOf(op)?.byteLength ?? 0;
+          if (out.length > 0 && taken + size > maxBytes) break;
+          out.push({ jid, op });
+          taken += size;
+        }
+        return out;
+      },
       dropThrough(jid) {
         for (const [at, op] of held) {
           if (at > jid) break;
@@ -1091,6 +1115,18 @@ var __nimbusProcessFsModule = (() => {
       },
       get bytes() {
         return bytes;
+      }
+    };
+  }
+  function journalSource(journal) {
+    return {
+      numberings: async () => journal.numberings(),
+      number: async (numbering) => {
+        journal.number(numbering);
+      },
+      readAfter: async (after, maxBytes) => journal.readAfter(after, maxBytes),
+      dropThrough: async (jid) => {
+        journal.dropThrough(jid);
       }
     };
   }
@@ -1693,16 +1729,17 @@ var __nimbusProcessFsModule = (() => {
 ` + failures.map((failure) => `  ${failure.op} ${failure.path}: ${failure.errno}: ${failure.message}`).join("\n")
     ), { code: "EIO", failures });
   }
+  var DRAIN_WINDOW_BYTES = WAVE_BYTES;
   async function drainProcessFsJournal(options) {
     const { journal, session } = options;
     const drained = { landed: 0, failures: [] };
-    let held = journal.entries();
+    let held = await journal.readAfter(0, DRAIN_WINDOW_BYTES);
     if (held.length === 0) return drained;
-    const numberings = journal.numberings();
+    const numberings = await journal.numberings();
     if (numberings.length === 0 || numberings[0].jid > held[0].jid) {
       const writer = await session.openWriter(false);
       const numbering = { writer, seq: 1, jid: held[0].jid };
-      journal.number(numbering);
+      await journal.number(numbering);
       numberings.unshift(numbering);
     }
     const numberingOf = (jid) => {
@@ -1763,8 +1800,9 @@ var __nimbusProcessFsModule = (() => {
       if (through === 0) {
         throw new Error(`the session applied none of a drained write: ${result.ok ? "no error" : result.error.message}`);
       }
-      journal.dropThrough(through);
+      await journal.dropThrough(through);
       held = held.filter((entry) => entry.jid > through);
+      if (held.length === 0) held = await journal.readAfter(through, DRAIN_WINDOW_BYTES);
     }
     return drained;
   }
@@ -1881,10 +1919,10 @@ function __nimbusProcessFs() {
     // Home directories themselves are never held: the shell and the editor live there.
     isHomeRoot: (key) => (key.startsWith("home/") && key.length > 5 && !key.includes("/", 5)) || key === "root",
     timers: { setTimeout: __nimbusRawTimer, clearTimeout: __nimbusRawClearTimer },
-    // The process's own SQLite, where it has one (a process facet): every
-    // change is there before the program is told it succeeded, and what the
-    // process holds when it dies the session drains from it.
-    ...(globalThis.__nimbusFsJournal ? { journal: globalThis.__nimbusFsJournal } : {}),
+    // The process's own SQLite, where it has one (a resident's facet:
+    // __nimbusFsJournalSql): every change is there before the program is told
+    // it succeeded, and what it holds when it dies the session drains from it.
+    ...(globalThis.__nimbusFsJournalSql ? { journal: __nimbusProcessFsModule.sqlJournal(globalThis.__nimbusFsJournalSql) } : {}),
   });
   globalThis.__nimbusProcessFs = __nimbusProcessFsInstance;
   return __nimbusProcessFsInstance;

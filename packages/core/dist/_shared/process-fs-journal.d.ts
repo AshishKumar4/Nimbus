@@ -40,6 +40,11 @@ export interface ProcessFsJournal {
         jid: number;
         op: ProcessFsOp;
     }[];
+    /** The entries after `after`, in order: at least one when any is held, and no more than about `maxBytes` of data. */
+    readAfter(after: number, maxBytes: number): {
+        jid: number;
+        op: ProcessFsOp;
+    }[];
     /** Forget every entry up to `jid` (answered: committed, refused, or failed). */
     dropThrough(jid: number): void;
     /** From the entry `jid` on, entries are numbered under `writer` from `seq`. */
@@ -62,4 +67,19 @@ export interface JournalSql {
 export declare function sqlJournal(sql: JournalSql): ProcessFsJournal;
 /** The journal in the process's heap: for a process with no storage of its own, it dies with it. */
 export declare function memoryJournal(): ProcessFsJournal;
+/**
+ * A journal read from elsewhere (a dead process's facet, through its reader:
+ * process-fs-journal-reader.ts), as a drain reads it.
+ */
+export interface ProcessFsJournalSource {
+    numberings(): Promise<ProcessFsNumbering[]>;
+    number(numbering: ProcessFsNumbering): Promise<void>;
+    readAfter(after: number, maxBytes: number): Promise<{
+        jid: number;
+        op: ProcessFsOp;
+    }[]>;
+    dropThrough(jid: number): Promise<void>;
+}
+/** `journal` as a drain's source. */
+export declare function journalSource(journal: ProcessFsJournal): ProcessFsJournalSource;
 //# sourceMappingURL=process-fs-journal.d.ts.map

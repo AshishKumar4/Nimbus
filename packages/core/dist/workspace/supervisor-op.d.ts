@@ -1,4 +1,6 @@
-import { type SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { type SqliteVFS, type WaveSequence } from '../vfs/sqlite-vfs.js';
+import type { ProcessFsSession } from '../_shared/process-fs-client.js';
+import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 import { SUPERVISOR_OPS, type SupervisorOpName } from './supervisor-ops.js';
 import { type VfsCred } from '../runtime/os-contracts.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge, RuntimeVfsStat } from '../runtime/os-contracts.js';
@@ -246,6 +248,21 @@ declare const NATIVE_OPS: {
     stdout: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => void | Promise<void> | undefined;
     stderr: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => void | Promise<void> | undefined;
 };
+/**
+ * A sequenced wave's numbering, under the key its process's writer is kept
+ * by: `${pid}:${writer}`. A sequenced writer is its process's epoch: its
+ * cursor answers a re-sent op, never applies it twice, and a drain of the
+ * process's log after it is gone (journalDrainSession) numbers against the
+ * same cursor its own waves moved.
+ */
+export declare function processWaveSequence(pid: number, fence: Pick<WaveFence, 'writer' | 'seq' | 'ack'>): WaveSequence | undefined;
+/**
+ * The session a gone process's write log (process-fs-journal.ts) is drained
+ * into, in the session itself: `fs` is its credential's bridge, and with no
+ * transport between there is no fence; each wave is numbered under the
+ * writer the process gave it.
+ */
+export declare function journalDrainSession(fs: RuntimeFsBridge, pid: number): ProcessFsSession;
 /** The ops {@link NATIVE_OPS} defines — the route table covers the rest. */
 export type NativeOpName = keyof typeof NATIVE_OPS;
 export declare const SUPERVISOR_NATIVE_OPS: ReadonlySet<string>;

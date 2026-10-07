@@ -1191,6 +1191,11 @@ async function __ocBootStore() {
 }
 
 export class NimbusProcess extends __NimbusDurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    // Its write log is kept in its own store (process-fs-journal.ts).
+    globalThis.__nimbusFsJournalSql = ctx.storage.sql;
+  }
   async startProcess() {
     __supervisor = this.env && this.env.SUPERVISOR ? globalThis.__nimbusAnsweringSupervisor(this.env.SUPERVISOR) : null;
     const __bootFailure = await __ocBootStore();

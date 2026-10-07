@@ -45,7 +45,7 @@ import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, sendWaveAttempts, waveAttempts
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { SYSCALL_VERDICTS } from '../vfs/vfs-error.js';
 import { memoryJournal } from './process-fs-journal.js';
-export { memoryJournal, sqlJournal } from './process-fs-journal.js';
+export { journalSource, memoryJournal, sqlJournal } from './process-fs-journal.js';
 /**
  * A synchronous loop's bytes held unanswered at once, at most
  * (ProcessFsClientOptions.syncCapBytes): in a journal that outlives the
@@ -792,27 +792,30 @@ export function failuresError(failures) {
     return Object.assign(new Error(`${failures.length} filesystem change${failures.length === 1 ? '' : 's'} this process made did not reach the session:\n`
         + failures.map((failure) => `  ${failure.op} ${failure.path}: ${failure.errno}: ${failure.message}`).join('\n')), { code: 'EIO', failures });
 }
+/** Data bytes a drain reads from a journal at once: a wave's worth. */
+const DRAIN_WINDOW_BYTES = WAVE_BYTES;
 /**
  * Send what a process's journal still holds, as the process would have:
- * each entry under the writer and number it was given (journal.numberings),
- * so the session's cursor answers what already landed and applies the rest
- * once; entries never numbered under a fresh writer. The journal is empty
- * when it resolves. A refusal is the change's answer, reported in what it
- * resolves with; a session that cannot be reached rejects, and the journal
- * keeps what it holds for the next drain.
+ * each entry under the writer and number it was given (its numberings), so
+ * the session's cursor answers what already landed and applies the rest
+ * once; entries never numbered under a fresh writer. Read a window at a
+ * time, each forgotten once answered: the journal is empty when it
+ * resolves. A refusal is the change's answer, reported in what it resolves
+ * with; a session that cannot be reached rejects, and the journal keeps what
+ * it holds for the next drain.
  */
 export async function drainProcessFsJournal(options) {
     const { journal, session } = options;
     const drained = { landed: 0, failures: [] };
-    let held = journal.entries();
+    let held = await journal.readAfter(0, DRAIN_WINDOW_BYTES);
     if (held.length === 0)
         return drained;
     // Entries no numbering covers (the process died before its first wave): a fresh writer numbers them.
-    const numberings = journal.numberings();
+    const numberings = await journal.numberings();
     if (numberings.length === 0 || numberings[0].jid > held[0].jid) {
         const writer = await session.openWriter(false);
         const numbering = { writer, seq: 1, jid: held[0].jid };
-        journal.number(numbering);
+        await journal.number(numbering);
         numberings.unshift(numbering);
     }
     const numberingOf = (jid) => {
@@ -888,8 +891,10 @@ export async function drainProcessFsJournal(options) {
         if (through === 0) {
             throw new Error(`the session applied none of a drained write: ${result.ok ? 'no error' : result.error.message}`);
         }
-        journal.dropThrough(through);
+        await journal.dropThrough(through);
         held = held.filter((entry) => entry.jid > through);
+        if (held.length === 0)
+            held = await journal.readAfter(through, DRAIN_WINDOW_BYTES);
     }
     return drained;
 }

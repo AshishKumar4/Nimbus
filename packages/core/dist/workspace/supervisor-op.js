@@ -317,8 +317,7 @@ const NATIVE_OPS = {
             admit = admission.check;
             mountReach = admission.reach;
         }
-        // A sequenced writer is its process's epoch: its cursor answers a re-sent op, never applies it twice.
-        const sequence = fence?.seq === undefined ? undefined : { writer: `${e.pid}:${fence.writer}`, first: fence.seq, ack: fence.ack ?? 0 };
+        const sequence = fence === undefined || e.pid === undefined ? undefined : processWaveSequence(e.pid, fence);
         return fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit, mountReach, sequence });
     },
     // A write-wave epoch for the live process that asks, on this instance:
@@ -336,6 +335,31 @@ const NATIVE_OPS = {
     stdout: (e, t) => t.output?.('stdout', e.pid ?? 0, stringArg(e, 0)),
     stderr: (e, t) => t.output?.('stderr', e.pid ?? 0, stringArg(e, 0)),
 };
+/**
+ * A sequenced wave's numbering, under the key its process's writer is kept
+ * by: `${pid}:${writer}`. A sequenced writer is its process's epoch: its
+ * cursor answers a re-sent op, never applies it twice, and a drain of the
+ * process's log after it is gone (journalDrainSession) numbers against the
+ * same cursor its own waves moved.
+ */
+export function processWaveSequence(pid, fence) {
+    return fence.seq === undefined ? undefined : { writer: `${pid}:${fence.writer}`, first: fence.seq, ack: fence.ack ?? 0 };
+}
+/**
+ * The session a gone process's write log (process-fs-journal.ts) is drained
+ * into, in the session itself: `fs` is its credential's bridge, and with no
+ * transport between there is no fence; each wave is numbered under the
+ * writer the process gave it.
+ */
+export function journalDrainSession(fs, pid) {
+    return {
+        openWriter: async () => crypto.randomUUID(),
+        writeBatchStream: (stream, fence) => {
+            const sequence = fence === undefined ? undefined : processWaveSequence(pid, fence);
+            return fs.writeStream(stream, sequence === undefined ? {} : { sequence });
+        },
+    };
+}
 export const SUPERVISOR_NATIVE_OPS = new Set(Object.keys(NATIVE_OPS));
 /** The same two tables, keyed by the raw op string an envelope carries. */
 const NATIVE_BY_OP = NATIVE_OPS;

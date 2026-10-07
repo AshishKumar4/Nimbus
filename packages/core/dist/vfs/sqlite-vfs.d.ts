@@ -2082,9 +2082,9 @@ export declare class SqliteVFS {
     private writeStream;
     /**
      * A sequenced writer's state as its wave starts: its cursor, and the
-     * refusal it has not had answered (dropped once `ack` reaches it). A
-     * writer untouched for a wave epoch's lifetime is forgotten: its epoch
-     * admits nothing more. A wave that starts past the op after the cursor
+     * refusal it has not had answered (dropped once `ack` reaches it). Kept
+     * until its process is over and its log drained (forgetSequences). A
+     * wave that starts past the op after the cursor
      * names ops the session never had: refused, ESTALE (they are lost).
      */
     private openSequence;
@@ -2102,6 +2102,12 @@ export declare class SqliteVFS {
      * its number (a rename by another process under an open description).
      */
     private describedFile;
+    /**
+     * Process `pid` is over and its write log drained: its writers' cursors
+     * (`${pid}:${writer}`, processWaveSequence) go. They live exactly that long, so
+     * a drain after a restart still finds them, and nothing else keeps them.
+     */
+    forgetSequences(pid: number): void;
     /** The op numbered `seq` committed: in its own transaction, the writer's cursor moves to it. */
     private advanceSequence;
     /** The op numbered `seq` was refused: the cursor passes it, and the refusal is kept until the writer has had it answered. */

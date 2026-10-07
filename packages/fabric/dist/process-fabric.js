@@ -378,8 +378,15 @@ function heldUntilKilled() {
 }
 export class ProcessFabric {
     host;
-    constructor(host) {
+    options;
+    /**
+     * `journalFor`: the write-log hooks of a resident process's facet
+     * (ProcessHostParams.journal), when its coordinator keeps them: every
+     * resident it starts logs its changes in its facet's store.
+     */
+    constructor(host, options = {}) {
         this.host = host;
+        this.options = options;
     }
     /**
      * Boot a resident process on this deployment's substrate and return its
@@ -396,6 +403,7 @@ export class ProcessFabric {
         // after the host is released; a later incarnation must use a fresh one.
         const writerId = crypto.randomUUID();
         spawn.onWriterActivated(writerId);
+        const journal = this.options.journalFor?.(spawn.pid);
         let hosted;
         try {
             hosted = await this.host.open({
@@ -406,6 +414,7 @@ export class ProcessFabric {
                 startArgs: spawn.startArgs,
                 ...(spawn.facet !== undefined ? { facet: spawn.facet } : {}),
                 ...(spawn.storageBytes !== undefined ? { storageBytes: spawn.storageBytes } : {}),
+                ...(journal !== undefined ? { journal } : {}),
             });
         }
         catch (error) {

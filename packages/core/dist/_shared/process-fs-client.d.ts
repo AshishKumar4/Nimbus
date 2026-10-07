@@ -44,8 +44,8 @@ import { type W7Attrs, type W7Call } from '@nimbus-sh/platform/w7-frame.js';
 import type { ExclusiveMutationGrant, RecallKind } from '../runtime/os-contracts.js';
 import { type WaveFence, type WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import type { WriteStreamReceipt } from '../vfs/sqlite-vfs.js';
-import { type ProcessFsJournal } from './process-fs-journal.js';
-export { memoryJournal, sqlJournal, type ProcessFsJournal, type JournalSql } from './process-fs-journal.js';
+import { type ProcessFsJournal, type ProcessFsJournalSource } from './process-fs-journal.js';
+export { journalSource, memoryJournal, sqlJournal, type JournalSql, type ProcessFsJournal, type ProcessFsJournalSource } from './process-fs-journal.js';
 /** One mutation, as the session applies it: a call, or a rename, truncate or attribute change. */
 export type ProcessFsOp = {
     type: 'call';
@@ -275,15 +275,16 @@ export interface ProcessFsDrain {
 }
 /**
  * Send what a process's journal still holds, as the process would have:
- * each entry under the writer and number it was given (journal.numberings),
- * so the session's cursor answers what already landed and applies the rest
- * once; entries never numbered under a fresh writer. The journal is empty
- * when it resolves. A refusal is the change's answer, reported in what it
- * resolves with; a session that cannot be reached rejects, and the journal
- * keeps what it holds for the next drain.
+ * each entry under the writer and number it was given (its numberings), so
+ * the session's cursor answers what already landed and applies the rest
+ * once; entries never numbered under a fresh writer. Read a window at a
+ * time, each forgotten once answered: the journal is empty when it
+ * resolves. A refusal is the change's answer, reported in what it resolves
+ * with; a session that cannot be reached rejects, and the journal keeps what
+ * it holds for the next drain.
  */
 export declare function drainProcessFsJournal(options: {
-    journal: ProcessFsJournal;
+    journal: ProcessFsJournalSource;
     session: ProcessFsSession;
     retry?: {
         backoffMs: readonly number[];
