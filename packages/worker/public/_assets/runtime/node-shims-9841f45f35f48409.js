@@ -7849,7 +7849,15 @@ function __nimbusNodeInspect() {
   function proxyDetails(proxy, showProxy) {
     if (stripAnsi(rendering(proxy, plain)) === "<Revoked Proxy>") return null;
     if (!showProxy) {
-      return slot((depth, options) => entryText(rendering(proxy, { ...slotOptions(depth, options), showProxy: false, depth }), 0));
+      // The target, at the proxy's place. workerd marks each proxy it looks
+      // through, Proxy(<target>) (styled "special", cyan); Node prints the target.
+      return slot((depth, options) => {
+        let text = entryText(rendering(proxy, { ...slotOptions(depth, options), showProxy: false, depth }), 0);
+        const open = options.colors ? "\u001b[36mProxy(\u001b[39m" : "Proxy(";
+        const close = options.colors ? "\u001b[36m)\u001b[39m" : ")";
+        while (text.startsWith(open) && text.endsWith(close)) text = text.slice(open.length, text.length - close.length);
+        return text;
+      });
     }
     const part = (i) => slot((depth, options) => slotEntries(rendering(proxy, { ...slotOptions(depth, options), showProxy: true }), "[")[i] ?? "");
     return [part(0), part(1)];
@@ -14120,6 +14128,12 @@ const __NIMBUS_TERM_ENVS = {
 const __NIMBUS_CI_ENVS = [["APPVEYOR", 8], ["BUILDKITE", 8], ["CIRCLECI", 24], ["DRONE", 8], ["GITEA_ACTIONS", 24], ["GITHUB_ACTIONS", 24], ["GITLAB_CI", 8], ["TRAVIS", 8]];
 const __NIMBUS_TERM_ENVS_REG_EXP = [/ansi/, /color/, /linux/, /direct/, /^con[0-9]*x[0-9]/, /^rxvt/, /^screen/, /^xterm/, /^vt100/, /^vt220/];
 let __nimbusColorWarned = false;
+// The warnings Node's console and colour policy emit (process.emitWarning),
+// where the process has one: this process does not yet, and prints none.
+function __nimbusEmitWarning(...args) {
+  const emitWarning = globalThis.process?.emitWarning;
+  if (typeof emitWarning === "function") Reflect.apply(emitWarning, globalThis.process, args);
+}
 function __nimbusWarnOnDeactivatedColors(env) {
   if (__nimbusColorWarned) return;
   let name = "";
@@ -14129,7 +14143,7 @@ function __nimbusWarnOnDeactivatedColors(env) {
     name += "NO_COLOR";
   }
   if (name !== "") {
-    globalThis.process.emitWarning("The '" + name + "' env is ignored due to the 'FORCE_COLOR' env being set.", "Warning");
+    __nimbusEmitWarning("The '" + name + "' env is ignored due to the 'FORCE_COLOR' env being set.", "Warning");
     __nimbusColorWarned = true;
   }
 }
@@ -14354,7 +14368,7 @@ class __NimbusConsole {
   countReset(label = "default") {
     label = String(label);
     if (!this.#counts.has(label)) {
-      globalThis.process.emitWarning("Count for '" + label + "' does not exist");
+      __nimbusEmitWarning("Count for '" + label + "' does not exist");
       return;
     }
     this.#counts.delete(label);
@@ -14370,7 +14384,7 @@ class __NimbusConsole {
   time(label = "default") {
     label = String(label);
     if (this.#timers.has(label)) {
-      globalThis.process.emitWarning("Label '" + label + "' already exists for console.time()");
+      __nimbusEmitWarning("Label '" + label + "' already exists for console.time()");
       return;
     }
     this.#timers.set(label, performance.now());
@@ -14385,7 +14399,7 @@ class __NimbusConsole {
   #timeLog(name, label, data) {
     const start = this.#timers.get(label);
     if (start === undefined) {
-      globalThis.process.emitWarning("No such label '" + label + "' for console." + name + "()");
+      __nimbusEmitWarning("No such label '" + label + "' for console." + name + "()");
       return false;
     }
     Reflect.apply(this.log, this, ["%s: %s", label, __nimbusFormatTime(performance.now() - start), ...data]);

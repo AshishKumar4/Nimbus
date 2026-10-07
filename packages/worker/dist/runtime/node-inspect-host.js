@@ -312,7 +312,15 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw `function createNodeInspect(p
   function proxyDetails(proxy, showProxy) {
     if (stripAnsi(rendering(proxy, plain)) === "<Revoked Proxy>") return null;
     if (!showProxy) {
-      return slot((depth, options) => entryText(rendering(proxy, { ...slotOptions(depth, options), showProxy: false, depth }), 0));
+      // The target, at the proxy's place. workerd marks each proxy it looks
+      // through, Proxy(<target>) (styled "special", cyan); Node prints the target.
+      return slot((depth, options) => {
+        let text = entryText(rendering(proxy, { ...slotOptions(depth, options), showProxy: false, depth }), 0);
+        const open = options.colors ? "\u001b[36mProxy(\u001b[39m" : "Proxy(";
+        const close = options.colors ? "\u001b[36m)\u001b[39m" : ")";
+        while (text.startsWith(open) && text.endsWith(close)) text = text.slice(open.length, text.length - close.length);
+        return text;
+      });
     }
     const part = (i) => slot((depth, options) => slotEntries(rendering(proxy, { ...slotOptions(depth, options), showProxy: true }), "[")[i] ?? "");
     return [part(0), part(1)];
