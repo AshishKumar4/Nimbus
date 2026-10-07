@@ -368,7 +368,7 @@ export function buildRuntimeHandler(
     const textOutput = { stdout: textSink(data => ctx.stdout.write(data)), stderr: textSink(data => ctx.stderr.write(data)) };
     const programStdin: Pick<RuntimeRunOpts, 'stdin' | 'stdinFile' | 'output' | 'stdinPid'> = {
       ...(nimbusCtx.__nimbusBinSpawn?.liveInput ? { stdinPid: nimbusCtx.__nimbusBinSpawn.callerPid } : {}),
-      output: binSpawn?.liveInput ? undefined : (stream, bytes) => {
+      output: nimbusCtx.__nimbusBinSpawn?.liveInput ? undefined : (stream, bytes) => {
         const sink = stream === 'stdout' ? ctx.stdout : ctx.stderr;
         return sink.writeBytes ? sink.writeBytes(bytes) : textOutput[stream](bytes);
       },

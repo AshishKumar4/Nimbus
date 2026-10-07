@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "9d71b972138024b4bafaa17c00da5e69caf2579506d13cd7a5cc0127116d0e44",
+  "fingerprint": "2760523a45b7f33336500abc61204fa64b4a9b5e8bf206db16329917bde8ba30",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -554,7 +554,7 @@
     "packages/core/dist/runtime/wasm-memory.js": "fe48c7c240cda1e95356472bfa06b7d3b184a3d6bab764c1277156b9c37ba815",
     "packages/core/dist/runtime/wasm-runner.d.ts": "911a1e96932e0af28404815fc5b10eaf71553ff464cd323738b9f4f9cc600e38",
     "packages/core/dist/runtime/wasm-runner.d.ts.map": "b7718617c43cef6c66fcfd4438a86dba6519324c8d931ed40f953a0dd8aea8cc",
-    "packages/core/dist/runtime/wasm-runner.js": "80b9a252a2a81cfb6b63461712fbb8eaa66727dd62ceed2cd78145a0fd224b0e",
+    "packages/core/dist/runtime/wasm-runner.js": "8318932d820e07e751e285c3a7a711489501901cebcf9eb6e65d6eaf8223c8ec",
     "packages/core/dist/shell/elevation-commands.d.ts": "5faafb1c8ebbb0e38b4c0a7a543d3ab1dff581d597b82b38f75654278be80e72",
     "packages/core/dist/shell/elevation-commands.d.ts.map": "b1400f5502e461b1b403edf60af8db677cfe2e8aeded4a73dde631baab690d1a",
     "packages/core/dist/shell/elevation-commands.js": "fcf1e7ea8e29e7974ec0a177fb7ff0c52ae45efeb361d877549fd6d9e03e0d9d",
@@ -1251,7 +1251,7 @@
     "packages/core/src/runtime/wasi/types.ts": "83671896c577b4d4c1c9a31112a9c8b2a0ab5a5b8c6afea3d5d5ba68257c10b8",
     "packages/core/src/runtime/wasm-binary.ts": "bac8aaefc91eb0472a67325ce633c8db6cd786cd102e1900f2f0ef9c817ebd1c",
     "packages/core/src/runtime/wasm-memory.ts": "419a1c9dfbb10eaf906487ffa820453190efb6a983f801bebc73dc0ee9269f88",
-    "packages/core/src/runtime/wasm-runner.ts": "5e85c89abaaba30130890876b58215f9b782034ff0247d176c0c8cc3d9b36e3e",
+    "packages/core/src/runtime/wasm-runner.ts": "76938fb87a390e02056ca504f6a5dba339016eccc8912a7361e9c5d9483c5614",
     "packages/core/src/shell/elevation-commands.ts": "9e14a3560a23ee540f4fe258d4bac2a3e6495229e0d62912c5b8227ee76f928e",
     "packages/core/src/shell/exec-dispatch.ts": "e939ea137c65ec8fc4b430d50607fd7f7816497856f44dbfcbeb29f8b9738b71",
     "packages/core/src/shell/features.ts": "d8c124b466f22348da844b64c7e9db8537c1714956a79243b8390fd32d097fd7",

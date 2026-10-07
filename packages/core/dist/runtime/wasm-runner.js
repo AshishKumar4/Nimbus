@@ -601,7 +601,8 @@ export function makeWasmRunner(deps) {
         finally {
             facet?.dispose();
             inputPump?.stop();
-            deps.processes.closeInput(pid);
+            if (owned)
+                deps.processes.closeInput(pid);
             releaseOutput?.();
             if (releaseOutput)
                 deps.processes.setForeground(pid, false);
