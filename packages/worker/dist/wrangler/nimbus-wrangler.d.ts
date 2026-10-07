@@ -157,14 +157,5 @@ export declare class NimbusWrangler {
     };
     /** @internal — test seam: parse the wrangler config and store it. Returns true on success. */
     _readConfigForTest(): boolean;
-    /** @internal — test seam: invoke buildInnerEnv() without a probe-load pass. */
-    _buildInnerEnvForTest(): Record<string, any>;
-    /** @internal — test seam: install the VFS file-watch listener and the
-     * mock-rebuild path (esbuild.build() is called, but the real
-     * buildAndLoad() pipeline is bypassed in favour of just calling
-     * esbuild). Used for hot-reload latency + nimbus-paths-not-watched
-     * probes. Production calls start() which installs the watcher AND the
-     * full rebuild pipeline. */
-    _installWatchersForTest(): void;
 }
 //# sourceMappingURL=nimbus-wrangler.d.ts.map

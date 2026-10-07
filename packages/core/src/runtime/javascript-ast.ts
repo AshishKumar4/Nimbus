@@ -1,13 +1,21 @@
-import { parse, tokenizer, tokTypes, type AnyNode, type Program, type Token, type TokenType } from 'acorn';
+import { Parser, parse, tokenizer, tokTypes, type AnyNode, type Options, type Program, type Token, type TokenType } from 'acorn';
 
 export type AstNode = AnyNode & Record<string, unknown>;
 
+/** How an ES module is parsed. */
+export const MODULE_PARSE_OPTIONS: Options = { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true };
+
+/** How a program Node would run is parsed (as a module, else as a CommonJS script): what either allows. */
+export const PROGRAM_PARSE_OPTIONS = {
+  ecmaVersion: 'latest',
+  allowHashBang: true,
+  allowReturnOutsideFunction: true,
+  allowAwaitOutsideFunction: true,
+  allowImportExportEverywhere: true,
+} as const;
+
 export function parseJavaScriptModule(source: string): AstNode {
-  const program = parse(source, {
-    ecmaVersion: 'latest',
-    sourceType: 'module',
-    allowHashBang: true,
-  });
+  const program = parse(source, MODULE_PARSE_OPTIONS);
   // Program declares no index signature; the guard gives it AstNode's keyed view.
   if (!isAstNode(program)) throw new TypeError(`acorn parsed a ${program.type}, not a node`);
   return program;
@@ -18,22 +26,87 @@ export function parseJavaScriptModule(source: string): AstNode {
  * top level may `return`); null when it is neither.
  */
 export function parseJavaScriptProgram(source: string): Program | null {
-  const options = {
-    ecmaVersion: 'latest',
-    allowHashBang: true,
-    allowReturnOutsideFunction: true,
-    allowAwaitOutsideFunction: true,
-    allowImportExportEverywhere: true,
-  } as const;
   try {
-    return parse(source, { ...options, sourceType: 'module' });
+    return parse(source, { ...PROGRAM_PARSE_OPTIONS, sourceType: 'module' });
   } catch {
     try {
-      return parse(source, { ...options, sourceType: 'script' });
+      return parse(source, { ...PROGRAM_PARSE_OPTIONS, sourceType: 'script' });
     } catch {
       return null;
     }
   }
+}
+
+/** What {@link parseStatements} hands over as it parses. */
+export interface StatementHooks {
+  /** A top-level statement, once parsed; it is not kept. */
+  readonly onStatement?: (statement: AstNode) => void;
+  /**
+   * A node, once finished: its children before it. A function's body is
+   * dropped after the function's own call, so what a hook keeps of one is
+   * what it took then.
+   */
+  readonly onNode?: (node: AstNode) => void;
+}
+
+/** The parts of acorn's Parser a plugin uses (acorn's plugin API, which its declarations leave out). */
+interface AcornParser {
+  type: unknown;
+  inModule: boolean;
+  undefinedExports: Record<string, { start: number }>;
+  parse(): Program;
+  parseStatement(context: null, topLevel: boolean, exports: object): unknown;
+  finishNode<T>(node: T, type: string): T;
+  raiseRecoverable(pos: number, message: string): void;
+  next(): void;
+}
+const AcornParserClass = Parser as unknown as new (options: Options, input: string) => AcornParser;
+
+const FUNCTION_TYPES = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
+
+/** acorn, keeping no tree of the whole program (parseStatements). */
+class StatementParser extends AcornParserClass {
+  hooks: StatementHooks = {};
+
+  parseTopLevel(node: Program): Program {
+    const exports = Object.create(null);
+    while (this.type !== tokTypes.eof) {
+      const statement = this.parseStatement(null, true, exports);
+      if (isAstNode(statement)) this.hooks.onStatement?.(statement);
+    }
+    if (this.inModule) {
+      for (const name of Object.keys(this.undefinedExports)) this.raiseRecoverable(this.undefinedExports[name].start, `Export '${name}' is not defined`);
+    }
+    this.next();
+    return this.finishNode(node, 'Program');
+  }
+
+  finishNode<T>(node: T, type: string): T {
+    const finished = super.finishNode(node, type);
+    if (isAstNode(finished)) {
+      this.hooks.onNode?.(finished);
+      if (FUNCTION_TYPES.has(type)) {
+        const body = finished.body;
+        if (isAstNode(body) && body.type === 'BlockStatement') Reflect.set(body, 'body', []);
+      }
+    }
+    return finished;
+  }
+}
+
+/**
+ * acorn's parse of `source` with no tree of the whole program held: each
+ * top-level statement goes to the hooks as it is parsed and is not kept,
+ * and each function's body is dropped once the function is finished (its
+ * parameters stay, which acorn checks after). What is held at once is the
+ * chain of functions being parsed and their code outside functions, so a
+ * multi-MiB bundle parses in bounded memory (acorn's whole tree is 17 to 24
+ * times its source). Throws acorn's SyntaxError, as `parse` does.
+ */
+export function parseStatements(source: string, options: Options, hooks: StatementHooks): void {
+  const parser = new StatementParser(options, source);
+  parser.hooks = hooks;
+  parser.parse();
 }
 
 /** Parentheses, `(0, f)`, `await` and `?.` do not change what is called. */

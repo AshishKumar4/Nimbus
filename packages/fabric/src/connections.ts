@@ -34,6 +34,7 @@
 
 import { z } from 'zod/v4';
 import { WS_ATTACHMENT_LIMIT_BYTES } from '@nimbus-sh/platform/limits.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 
 const WS_OPEN = 1;
 
@@ -133,8 +134,4 @@ function jsonLength(value: unknown): number {
   } catch {
     return 0;
   }
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

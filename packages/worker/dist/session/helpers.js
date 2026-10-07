@@ -5,6 +5,7 @@
  * import. NimbusSession re-exports the public helpers that callers need.
  */
 import { exists, readText } from '@nimbus-sh/core/vfs/vfs.js';
+import { parseWranglerJsonc } from '../wrangler/wrangler-config.js';
 /**
  * Render a polished "no dev server" placeholder HTML page for the /preview/
  * route. Matches the Nimbus shell MOTD aesthetic (near-black background,
@@ -266,9 +267,9 @@ export const WRANGLER_UNSUPPORTED_CONFIG_FIELDS = [
  * namespace) and return any field names from
  * WRANGLER_UNSUPPORTED_CONFIG_FIELDS that are present and non-empty.
  *
- * Best-effort: tolerates JSONC comments and syntax errors (returns [] on
- * parse failure). The caller decides whether to warn or block — we only
- * report; nimbus-wrangler itself still runs.
+ * Best-effort: a config wrangler cannot parse reports nothing (nimbus-wrangler
+ * says why it cannot read it). The caller decides whether to warn or block —
+ * we only report; nimbus-wrangler itself still runs.
  */
 export async function detectUnsupportedWranglerConfig(vfs, root) {
     const candidates = [root + '/wrangler.jsonc', root + '/wrangler.json'];
@@ -284,57 +285,16 @@ export async function detectUnsupportedWranglerConfig(vfs, root) {
     }
     if (text == null)
         return [];
-    // Strip JSONC comments for JSON.parse. Same logic as NimbusWrangler.readConfig
-    // — kept local (and simple) so we don't couple detection to that class.
-    let cleaned = '';
-    let inString = false;
-    for (let i = 0; i < text.length;) {
-        const ch = text[i];
-        if (inString) {
-            if (ch === '\\') {
-                cleaned += ch + (text[i + 1] || '');
-                i += 2;
-                continue;
-            }
-            if (ch === '"')
-                inString = false;
-            cleaned += ch;
-            i++;
-        }
-        else {
-            if (ch === '"') {
-                inString = true;
-                cleaned += ch;
-                i++;
-            }
-            else if (ch === '/' && text[i + 1] === '/') {
-                while (i < text.length && text[i] !== '\n')
-                    i++;
-            }
-            else if (ch === '/' && text[i + 1] === '*') {
-                i += 2;
-                while (i < text.length - 1 && !(text[i] === '*' && text[i + 1] === '/'))
-                    i++;
-                i += 2;
-            }
-            else {
-                cleaned += ch;
-                i++;
-            }
-        }
-    }
     let cfg;
     try {
-        cfg = JSON.parse(cleaned);
+        cfg = new Map(Object.entries(parseWranglerJsonc(text)));
     }
     catch {
         return [];
     }
-    if (!cfg || typeof cfg !== 'object')
-        return [];
     const found = [];
     for (const field of WRANGLER_UNSUPPORTED_CONFIG_FIELDS) {
-        const v = cfg[field];
+        const v = cfg.get(field);
         if (v == null)
             continue;
         if (Array.isArray(v) && v.length === 0)

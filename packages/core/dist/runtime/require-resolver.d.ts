@@ -112,15 +112,31 @@ export interface RequiredModuleRoot {
      */
     config?: boolean;
 }
-/** Resolve the complete dependency graph starting from entry code. */
-export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot>): Promise<PrefetchOutcome>;
-export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile: string | undefined, maxBundleBytes: number | undefined, progress: WalkProgress | undefined, policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot>): Promise<DependencyClosureOutcome>;
+/**
+ * A module the command line preloads (`node -r`, `--import`), as it named
+ * it: resolved from the working directory as the process resolves it there
+ * (a require, or an import()), and walked as a required root before the
+ * entry runs it.
+ */
+export interface PreloadModuleRoot {
+    preload: 'require' | 'import';
+    specifier: string;
+}
+/**
+ * Resolve the complete dependency graph starting from entry code.
+ * `conditions`: the program's own (`node --conditions`), beside Node's, for
+ * `require` and `import` alike, as the process resolves under them.
+ */
+export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>, conditions?: readonly string[]): Promise<PrefetchOutcome>;
+export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile: string | undefined, maxBundleBytes: number | undefined, progress: WalkProgress | undefined, policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>, conditions?: readonly string[]): Promise<DependencyClosureOutcome>;
 /**
  * The file a deferral a dependency closure reported (PrefetchResult.deferred)
  * loads, or null; resolved as the walk resolves its own, staging nothing:
  * the closure that admits the file stages the package.json files it needs.
  */
-export declare function resolveDeferredImport(vfs: RequireFs, deferral: DeferredImport, progress?: WalkProgress): Promise<string | null>;
+export declare function resolveDeferredImport(vfs: RequireFs, deferral: DeferredImport, progress?: WalkProgress, 
+/** The program's own conditions, as its closure was walked under. */
+conditions?: readonly string[]): Promise<string | null>;
 /**
  * The package names a config spells as a string or a property key
  * (`plugins: { tailwindcss: {} }`, `plugins: ['prettier-plugin-x']`), less

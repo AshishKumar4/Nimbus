@@ -234,15 +234,32 @@ export interface RequiredModuleRoot {
   optional?: boolean;
 }
 
-/** Resolve the complete dependency graph starting from entry code. */
+/**
+ * A module the command line preloads (`node -r`, `--import`), as it named
+ * it: resolved from the working directory as the process resolves it there
+ * (a require, or an import()), and walked as a required root before the
+ * entry runs it.
+ */
+export interface PreloadModuleRoot {
+  preload: 'require' | 'import';
+  specifier: string;
+}
+
+/**
+ * Resolve the complete dependency graph starting from entry code.
+ * `conditions`: the program's own (`node --conditions`), beside Node's, for
+ * `require` and `import` alike, as the process resolves under them.
+ */
 export function prefetchForRequire(
   vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string,
-  maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot>,
+  maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>,
+  conditions?: readonly string[],
 ): Promise<PrefetchOutcome>;
 export function prefetchForRequire(
   vfs: RequireFs, entryCode: string, cwd: string, entryFile: string | undefined,
   maxBundleBytes: number | undefined, progress: WalkProgress | undefined,
-  policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot>,
+  policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>,
+  conditions?: readonly string[],
 ): Promise<DependencyClosureOutcome>;
 export async function prefetchForRequire(
   vfs: RequireFs,
@@ -252,7 +269,8 @@ export async function prefetchForRequire(
   maxBundleBytes: number = VFS_BUNDLE_MAX_BYTES,
   progress?: WalkProgress,
   policy?: DependencyClosurePolicy,
-  requiredRoots?: Iterable<RequiredModuleRoot>,
+  requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>,
+  conditions: readonly string[] = [],
 ): Promise<DependencyClosureOutcome> {
   const report = progress;
   if (report) progress = async work => {
@@ -372,7 +390,7 @@ export async function prefetchForRequire(
     const resolved: string[] = [];
     for (const name of names) {
       // The package.json files this reads are staged: the process repeats it from them.
-      const r = await resolveRequireEx(vfs, name, fromDir, addPkgJson, progress);
+      const r = await resolveRequireEx(vfs, name, fromDir, addPkgJson, progress, conditions);
       if (r) resolved.push(r.resolved);
     }
     for (const target of resolved) defer({ specifier: target, fromDir, alternatives: resolved.length, path: target });
@@ -551,14 +569,14 @@ export async function prefetchForRequire(
   // loader resolves it the same way, core/_shared/esm-resolver.ts): the
   // "import" conditions, no extension probing. The package.json files it
   // reads are staged too, since the loader reads the same ones.
-  const esm = walkEsmResolver(vfs, progress, async (path) => await addPkgJson(stripLeadingSlashes(path)));
+  const esm = walkEsmResolver(vfs, progress, async (path) => await addPkgJson(stripLeadingSlashes(path)), conditions);
   async function resolveStaticDependency(specifier: string, fromDir: string): Promise<ResolveSubpathResult | null> {
     // Vite's generated config names dependencies by absolute file URL.
     if (specifier.startsWith('file:')) {
       const resolved = await resolveDynamicImport(specifier, fromDir);
       return resolved === null ? null : { resolved };
     }
-    return resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress);
+    return resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress, conditions);
   }
 
   /** The file a dynamic import from `fromDir` loads, or null (a builtin, a data: URL, or an error the loader reports). */
@@ -609,6 +627,17 @@ export async function prefetchForRequire(
     // this same visited set and byte budget before any optional enrichment.
     // A tool config is not one (RequiredModuleRoot.config): phase 2's first.
     for (const root of requiredRoots ?? []) {
+      if ('preload' in root) {
+        if (isFacetProvided(root.specifier)) continue;
+        const resolved = root.preload === 'require'
+          ? (await resolveStaticDependency(root.specifier, cwdStripped))?.resolved
+          : await resolveDynamicImport(root.specifier, cwdStripped);
+        // Run before the entry, it is as much an entry: its own import()s are required too.
+        // One that does not resolve fails in the process, as Node's does.
+        if (resolved) await addFile(resolved, policy === undefined);
+        if (closureExceeded || declined) break;
+        continue;
+      }
       const path = stripLeadingSlashes(root.path);
       if ((root.config || root.optional) && root.text === undefined) {
         if (root.config) configRoots.add(path);
@@ -692,7 +721,9 @@ function isFacetProvided(id: string): boolean {
  * conditions, no extension probing. The walk sees paths as the module map
  * holds them; `readText` answers the package.json files it reads.
  */
-function walkEsmResolver(vfs: RequireFs, progress: WalkProgress | undefined, readText: (path: string) => Promise<string | null>) {
+function walkEsmResolver(
+  vfs: RequireFs, progress: WalkProgress | undefined, readText: (path: string) => Promise<string | null>, conditions: readonly string[],
+) {
   return createEsmResolver({
     async kind(path) {
       const key = stripLeadingSlashes(path);
@@ -704,7 +735,7 @@ function walkEsmResolver(vfs: RequireFs, progress: WalkProgress | undefined, rea
     readText,
     isBuiltin: (specifier) => isFacetProvided(specifier),
     cjsResolve: () => null,
-  });
+  }, { conditions });
 }
 
 async function resolveImportWith(esm: ReturnType<typeof walkEsmResolver>, specifier: string, fromDir: string): Promise<string | null> {
@@ -723,14 +754,18 @@ async function resolveImportWith(esm: ReturnType<typeof walkEsmResolver>, specif
  * loads, or null; resolved as the walk resolves its own, staging nothing:
  * the closure that admits the file stages the package.json files it needs.
  */
-export async function resolveDeferredImport(vfs: RequireFs, deferral: DeferredImport, progress?: WalkProgress): Promise<string | null> {
+export async function resolveDeferredImport(
+  vfs: RequireFs, deferral: DeferredImport, progress?: WalkProgress,
+  /** The program's own conditions, as its closure was walked under. */
+  conditions: readonly string[] = [],
+): Promise<string | null> {
   // A failed turn is the caller's failure, never an unresolved specifier.
   const paced = progress && (async (work: number) => {
     try { await progress(work); } catch (cause) { throw new WalkControlFailure('Dependency walk interrupted', { cause }); }
   });
   const esm = walkEsmResolver(vfs, paced, async (path) => {
     try { return await vfs.readFileString(stripLeadingSlashes(path)); } catch { return null; }
-  });
+  }, conditions);
   try { return await resolveImportWith(esm, deferral.specifier, deferral.fromDir); }
   catch (error) {
     if (error instanceof WalkControlFailure) throw error.cause;

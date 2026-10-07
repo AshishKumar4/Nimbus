@@ -16,7 +16,8 @@
  */
 
 import { isPendingChunkError, listPageBudget } from '../vfs/sqlite-vfs.js';
-import type { SqliteVFS, VfsExportChunk, VfsExportPage, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import type { SqliteVFS, VfsExportChunk, VfsExportPage, WriteBatchStreamResult, WriteStreamOptions } from '../vfs/sqlite-vfs.js';
+import { namespaceWaveRouter } from './wave-router.js';
 import { Hydrator, type HydratorOptions } from './hydration.js';
 import type { VfsEvent } from '../vfs/events.js';
 import type { BatchWritePayload } from '@nimbus-sh/platform/w7-frame.js';
@@ -226,10 +227,15 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     this.guard(); this.ownPid(pid);
     return this.target.acknowledgeAppend(pid, writerId, moduleId, operationId);
   }
-  writeBatch(payload: BatchWritePayload): { inodes: number; chunks: number } { this.guard(); return this.target.writeBatch(payload); }
+  writeBatch(payload: BatchWritePayload, options?: { signal?: AbortSignal }): Promise<{ inodes: number; chunks: number }> {
+    this.guard();
+    // As writeStream: closing the scope cancels the commit.
+    const linked = linkedSignal([options?.signal, this.signal, this.scope.abort.signal]);
+    return Promise.resolve(this.target.writeBatch(payload, { signal: linked.signal })).finally(linked.dispose);
+  }
   writeStream(
     stream: ReadableStream<Uint8Array>,
-    options?: { signal?: AbortSignal; mutationOwner?: string; decodeDrainStartedAt?: number },
+    options?: WriteStreamOptions,
   ): Promise<WriteBatchStreamResult> {
     this.guard();
     // Closing the scope cancels the commit, so a released process cannot keep
@@ -277,6 +283,11 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
     this.vfs.mount('/proc', this.proc);
     this.vfs.mount('/dev', new DevVFS());
+    // Every wave's records, whoever streams it (a process's binding, or a
+    // command holding the engine), are placed by this namespace's mutation
+    // lookup, and those it places on a mount are applied there by its own
+    // operations (wave-router.ts).
+    engine.setWaveRouter(namespaceWaveRouter(this.vfs, immutableCredential));
   }
 
   /**
@@ -595,10 +606,10 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void {
     return this.bridge.acknowledgeAppend(pid, writerId, moduleId, operationId);
   }
-  writeBatch(payload: BatchWritePayload): { inodes: number; chunks: number } { return this.bridge.writeBatch(payload); }
+  writeBatch(payload: BatchWritePayload, options?: { signal?: AbortSignal }) { return this.bridge.writeBatch(payload, options); }
   writeStream(
     stream: ReadableStream<Uint8Array>,
-    options?: { signal?: AbortSignal; mutationOwner?: string; decodeDrainStartedAt?: number },
+    options?: WriteStreamOptions,
   ): Promise<WriteBatchStreamResult> { return this.bridge.writeStream(stream, options); }
   acquireExclusiveMutation(path: RuntimeFsPath, options?: { includeMissingAncestors?: boolean }): { root: string; owner: string } {
     return this.bridge.acquireExclusiveMutation(path, options);

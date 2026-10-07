@@ -35,6 +35,7 @@
  */
 
 import type { FacetPackageSpec } from './install-facet.js';
+import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '@nimbus-sh/core/_shared/tarball-integrity.js';
 
@@ -120,10 +121,7 @@ export interface InstallBatchResult {
    * Folded into the DO-side cache-stats singleton by installer.ts via
    * recordCacheStatEvents — same pattern as recordR2RaceCounters.
    */
-  cacheStatEvents: Array<
-    | { kind: 'hit'; tier: 'L2' | 'L3' | 'L4'; cacheKind: 'tarball'; bytes: number }
-    | { kind: 'miss'; tier: 'L2' | 'L3' | 'L4'; cacheKind: 'tarball' }
-  >;
+  cacheStatEvents: Array<CacheStatEvent & { cacheKind: 'tarball' }>;
 }
 
 // ── Facet function ──────────────────────────────────────────────────────

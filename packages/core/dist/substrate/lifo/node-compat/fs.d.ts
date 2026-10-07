@@ -1,6 +1,7 @@
 import type { NodeFilesystem as VFS } from './filesystem.js';
 import { Readable, Writable } from './stream.js';
 import { EventEmitter } from './events.js';
+import { type FsError } from '../../../vfs/vfs-error.js';
 interface Dirent {
     name: string;
     path: string;
@@ -39,12 +40,7 @@ interface NodeStat {
     isFIFO: () => boolean;
     isSocket: () => boolean;
 }
-interface NodeError extends Error {
-    code: string;
-    errno: number;
-    syscall: string;
-    path: string;
-}
+type NodeError = FsError;
 type Callback<T> = (err: NodeError | null, result?: T) => void;
 /**
  * `stdin` reads fd 0 to its end, blocking until it ends, as a synchronous

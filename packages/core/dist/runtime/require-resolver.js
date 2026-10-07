@@ -123,7 +123,7 @@ export class ClosureBoundExceededError extends Error {
         this.name = 'ClosureBoundExceededError';
     }
 }
-export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, progress, policy, requiredRoots) {
+export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, progress, policy, requiredRoots, conditions = []) {
     const report = progress;
     if (report)
         progress = async (work) => {
@@ -273,7 +273,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         const resolved = [];
         for (const name of names) {
             // The package.json files this reads are staged: the process repeats it from them.
-            const r = await resolveRequireEx(vfs, name, fromDir, addPkgJson, progress);
+            const r = await resolveRequireEx(vfs, name, fromDir, addPkgJson, progress, conditions);
             if (r)
                 resolved.push(r.resolved);
         }
@@ -470,14 +470,14 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     // loader resolves it the same way, core/_shared/esm-resolver.ts): the
     // "import" conditions, no extension probing. The package.json files it
     // reads are staged too, since the loader reads the same ones.
-    const esm = walkEsmResolver(vfs, progress, async (path) => await addPkgJson(stripLeadingSlashes(path)));
+    const esm = walkEsmResolver(vfs, progress, async (path) => await addPkgJson(stripLeadingSlashes(path)), conditions);
     async function resolveStaticDependency(specifier, fromDir) {
         // Vite's generated config names dependencies by absolute file URL.
         if (specifier.startsWith('file:')) {
             const resolved = await resolveDynamicImport(specifier, fromDir);
             return resolved === null ? null : { resolved };
         }
-        return resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress);
+        return resolveRequireEx(vfs, specifier, fromDir, addPkgJson, progress, conditions);
     }
     /** The file a dynamic import from `fromDir` loads, or null (a builtin, a data: URL, or an error the loader reports). */
     async function resolveDynamicImport(specifier, fromDir) {
@@ -526,6 +526,20 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         // this same visited set and byte budget before any optional enrichment.
         // A tool config is not one (RequiredModuleRoot.config): phase 2's first.
         for (const root of requiredRoots ?? []) {
+            if ('preload' in root) {
+                if (isFacetProvided(root.specifier))
+                    continue;
+                const resolved = root.preload === 'require'
+                    ? (await resolveStaticDependency(root.specifier, cwdStripped))?.resolved
+                    : await resolveDynamicImport(root.specifier, cwdStripped);
+                // Run before the entry, it is as much an entry: its own import()s are required too.
+                // One that does not resolve fails in the process, as Node's does.
+                if (resolved)
+                    await addFile(resolved, policy === undefined);
+                if (closureExceeded || declined)
+                    break;
+                continue;
+            }
             const path = stripLeadingSlashes(root.path);
             if (root.config && root.text === undefined) {
                 configRoots.add(path);
@@ -603,7 +617,7 @@ function isFacetProvided(id) {
  * conditions, no extension probing. The walk sees paths as the module map
  * holds them; `readText` answers the package.json files it reads.
  */
-function walkEsmResolver(vfs, progress, readText) {
+function walkEsmResolver(vfs, progress, readText, conditions) {
     return createEsmResolver({
         async kind(path) {
             const key = stripLeadingSlashes(path);
@@ -617,7 +631,7 @@ function walkEsmResolver(vfs, progress, readText) {
         readText,
         isBuiltin: (specifier) => isFacetProvided(specifier),
         cjsResolve: () => null,
-    });
+    }, { conditions });
 }
 async function resolveImportWith(esm, specifier, fromDir) {
     const parentUrl = 'file:///' + (fromDir ? fromDir + '/' : '') + '[import]';
@@ -636,7 +650,9 @@ async function resolveImportWith(esm, specifier, fromDir) {
  * loads, or null; resolved as the walk resolves its own, staging nothing:
  * the closure that admits the file stages the package.json files it needs.
  */
-export async function resolveDeferredImport(vfs, deferral, progress) {
+export async function resolveDeferredImport(vfs, deferral, progress, 
+/** The program's own conditions, as its closure was walked under. */
+conditions = []) {
     // A failed turn is the caller's failure, never an unresolved specifier.
     const paced = progress && (async (work) => {
         try {
@@ -653,7 +669,7 @@ export async function resolveDeferredImport(vfs, deferral, progress) {
         catch {
             return null;
         }
-    });
+    }, conditions);
     try {
         return await resolveImportWith(esm, deferral.specifier, deferral.fromDir);
     }

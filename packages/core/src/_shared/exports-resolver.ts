@@ -31,7 +31,13 @@ import { z } from 'zod/v4';
  *
  * Caller-controlled `conditions` lets the same impl serve:
  *   - install/ESM/browser  →  ['import', 'module', 'browser', 'default']
- *   - runtime CJS          →  ['require', 'node', 'default']
+ *   - runtime CJS          →  ['require', 'node', 'default'], and the
+ *     program's own (`node --conditions`), as Node adds them
+ *
+ * `conditions` is the set of active conditions, not an order: a condition
+ * map's own key order decides, the first key that is active (or
+ * `default`) whose target resolves wins, as Node's PACKAGE_TARGET_RESOLVE
+ * (and every bundler's) takes it.
  */
 
 /** Default conditions for ESM/install/browser resolution. */
@@ -107,7 +113,7 @@ export function parseResolvablePackageJson(text: string): ResolvablePackageJson 
  *
  * @param exportsField  Raw value from package.json#exports or #imports
  * @param subpath       '.' for root, './foo' for subpath, '#name' for imports
- * @param conditions    Active conditions, in priority order
+ * @param conditions    The active conditions (the map's key order decides among them)
  * @returns             Relative path target string, or null if not found / forbidden
  */
 export function resolveExports(
@@ -184,8 +190,9 @@ export function resolveExports(
 
 /**
  * Resolve a condition target. Recurses through nested condition objects
- * and array fallbacks. Honours `default` even if not in the conditions
- * array (Node spec).
+ * and array fallbacks. A condition map is taken in its own key order: the
+ * first key that is an active condition or `default` and whose target
+ * resolves wins (Node's PACKAGE_TARGET_RESOLVE).
  */
 function resolveConditionValue(
   target: ExportsField | undefined,
@@ -204,19 +211,11 @@ function resolveConditionValue(
 
   if (typeof target !== 'object') return null;
 
-  // Try each requested condition in priority order
-  for (const cond of conditions) {
-    if (cond in target) {
-      const r = resolveConditionValue(target[cond], conditions);
-      if (r) return r;
-    }
+  for (const key of Object.keys(target)) {
+    if (key !== 'default' && !conditions.includes(key)) continue;
+    const r = resolveConditionValue(target[key], conditions);
+    if (r) return r;
   }
-
-  // Spec: `default` is always a valid fallback
-  if (!conditions.includes('default') && 'default' in target) {
-    return resolveConditionValue(target.default, conditions);
-  }
-
   return null;
 }
 

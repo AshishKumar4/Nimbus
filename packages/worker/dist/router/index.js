@@ -36,7 +36,9 @@ import { doUnavailableError } from './do-errors.js';
 import { buildPreviewHost, isPreviewHostSafeSid, parsePreviewHost, readPreviewHostSuffix, } from '../_shared/preview-host.js';
 import { ISOLATED_SHELL_HEADERS, isIsolatedShellUrl } from '../_shared/preview-isolation.js';
 import { parseSessionRoute, forwardToSession, renderInvalidSessionHtml, SESSION_ROUTE_PREFIX, LEGACY_PUBLIC_DO_SEGMENT, PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, } from '../_shared/session-router.js';
-import { issueNimbusToken, verifyNimbusToken, verifyRequestToken, requireScopes, requireSessionPin, authErrorResponse, setNimbusTokenCookie, NIMBUS_TOKEN_QUERY, NimbusAuthError, NimbusBootstrapConsumedError, NimbusTokenClaimsError, DEFAULT_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, } from '../auth/index.js';
+import { issueNimbusToken, verifyNimbusToken, requireScopes, requireSessionPin, authErrorResponse, setNimbusTokenCookie, NIMBUS_TOKEN_QUERY, NimbusAuthError, NimbusBootstrapConsumedError, NimbusTokenClaimsError, DEFAULT_TOKEN_TTL_MS, ATTACH_BOOTSTRAP_TTL_MS, } from '../auth/index.js';
+import { authorizeRequest } from '../auth/middleware.js';
+import { hasJwtSecret } from '../auth/token.js';
 import { adoptCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { handleNimbusRemoteApi, remoteApiEnabled, } from './remote-api.js';
 import { parseAgentOAuthStateParam } from '../session/agent.js';
@@ -263,13 +265,10 @@ export function createNimbusHandler(options = {}) {
             // session cookie on first visit (see the attach exchange below).
             let location = `${SESSION_ROUTE_PREFIX}/${sessionId}/`;
             if (auth.verified) {
-                const bootstrap = await issueNimbusToken(env, {
-                    tn: auth.verified.claims.tn,
-                    ...(auth.verified.claims.sub !== undefined && { sub: auth.verified.claims.sub }),
-                    scopes: ['session:bootstrap'],
-                    sid: sessionId,
-                    jti: crypto.randomUUID(),
-                }, { ttlMs: ATTACH_BOOTSTRAP_TTL_MS });
+                const bootstrap = await issueSessionToken(env, auth.verified, sessionId, 'session:bootstrap', {
+                    ttlMs: ATTACH_BOOTSTRAP_TTL_MS,
+                    singleUse: true,
+                });
                 location += `?${new URLSearchParams({ [NIMBUS_TOKEN_QUERY]: bootstrap })}`;
             }
             return new Response(null, {
@@ -338,13 +337,10 @@ export function createNimbusHandler(options = {}) {
                     // exchange alone. A preview URL is a link — it lands in history,
                     // referrers and chat logs — so it must not be replayable, and it
                     // must not authenticate anything but this one exchange.
-                    const token = await issueNimbusToken(env, {
-                        tn: auth.verified.claims.tn,
-                        ...(auth.verified.claims.sub !== undefined && { sub: auth.verified.claims.sub }),
-                        scopes: ['session:preview'],
-                        sid: route.sessionId,
-                        jti: crypto.randomUUID(),
-                    }, { ttlMs: ATTACH_BOOTSTRAP_TTL_MS });
+                    const token = await issueSessionToken(env, auth.verified, route.sessionId, 'session:preview', {
+                        ttlMs: ATTACH_BOOTSTRAP_TTL_MS,
+                        singleUse: true,
+                    });
                     previewUrl += `?${new URLSearchParams({ [NIMBUS_TOKEN_QUERY]: token })}`;
                 }
                 return Response.json({ url: previewUrl }, { headers: { 'Cache-Control': 'no-store' } });
@@ -471,11 +467,9 @@ function isLegacyRootPath(pathname) {
  *  `'auto'` heuristic (JWT_SECRET present + legacy flag unset → enforce). */
 function resolveAuthMode(env, explicitMode) {
     const envLegacyFlag = (env?.NIMBUS_LEGACY_PUBLIC === '1' || env?.NIMBUS_LEGACY_PUBLIC === true);
-    const hasSecret = typeof env?.JWT_SECRET === 'string' && env.JWT_SECRET.length > 0;
-    return explicitMode ?? (hasSecret && !envLegacyFlag ? 'enforce' : 'legacy');
+    return explicitMode ?? (hasJwtSecret(env) && !envLegacyFlag ? 'enforce' : 'legacy');
 }
-async function resolveNimbusRouteAuth(request, env, explicitMode, options = {}) {
-    const hasSecret = typeof env?.JWT_SECRET === 'string' && env.JWT_SECRET.length > 0;
+async function resolveNimbusRouteAuth(request, env, explicitMode, options) {
     const mode = resolveAuthMode(env, explicitMode);
     if (mode === 'legacy') {
         return {
@@ -483,19 +477,16 @@ async function resolveNimbusRouteAuth(request, env, explicitMode, options = {}) 
             verified: null,
         };
     }
-    if (!hasSecret) {
+    if (!hasJwtSecret(env)) {
         // Enforce mode but no secret — config error. 500, no info leak.
         console.error('[nimbus] auth.mode="enforce" but JWT_SECRET is missing');
         return new Response(JSON.stringify({ error: 'Server auth misconfigured', code: 'E_AUTH_CONFIG_MISSING' }), { status: 500, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
     }
     try {
-        const verified = await verifyRequestToken(request, env);
-        if (options.requiredScopes?.length) {
-            requireScopes(verified, options.requiredScopes);
-        }
-        if (options.sessionId) {
-            requireSessionPin(verified, options.sessionId);
-        }
+        const verified = await authorizeRequest(request, env, {
+            scopes: options.requiredScopes,
+            sessionId: options.sessionId,
+        });
         return {
             tenantSegment: verified.doInstanceName,
             verified,
@@ -555,12 +546,10 @@ async function handleAttachExchange(url, sessionId, env, options) {
             requireScopes(verified, [options.reusableScope]);
             cookieTtlMs = Math.max(1000, verified.claims.exp * 1000 - Date.now());
         }
-        const cookieToken = await issueNimbusToken(env, {
-            tn: verified.claims.tn,
-            ...(verified.claims.sub !== undefined && { sub: verified.claims.sub }),
-            scopes: ['session:attach'],
-            sid: sessionId,
-        }, { ttlMs: cookieTtlMs });
+        const cookieToken = await issueSessionToken(env, verified, sessionId, 'session:attach', {
+            ttlMs: cookieTtlMs,
+            singleUse: false,
+        });
         const cookieExpSec = Math.floor(Date.now() / 1000) + Math.floor(cookieTtlMs / 1000);
         const clean = new URL(url);
         clean.searchParams.delete(NIMBUS_TOKEN_QUERY);
@@ -580,6 +569,21 @@ async function handleAttachExchange(url, sessionId, env, options) {
         }
         return authErrorResponse(e);
     }
+}
+/**
+ * A token for one session, minted for `caller`: its tenant and subject,
+ * `scope` alone, pinned to `sessionId`. A
+ * single-use token carries a `jti` the attach exchange consumes once; the
+ * attach cookie's token carries none and lives as long as `ttlMs` says.
+ */
+function issueSessionToken(env, caller, sessionId, scope, options) {
+    return issueNimbusToken(env, {
+        tn: caller.claims.tn,
+        ...(caller.claims.sub !== undefined && { sub: caller.claims.sub }),
+        scopes: [scope],
+        sid: sessionId,
+        ...(options.singleUse && { jti: crypto.randomUUID() }),
+    }, { ttlMs: options.ttlMs });
 }
 /** Consume a bootstrap `jti` in the session DO — set-if-absent. False = replay. */
 function consumeAttachBootstrap(env, tenantSegment, sessionId, jti) {

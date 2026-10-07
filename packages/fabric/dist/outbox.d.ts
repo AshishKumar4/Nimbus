@@ -175,17 +175,10 @@ export declare class Outbox<M, C = void> {
     private readonly table;
     private schemaReady;
     private draining;
-    /** Largest id ever seen, so a replacement instance mints above it. */
-    private lastId;
-    private seq;
+    /** Ids order the drain, so they must grow. */
+    private readonly ids;
     constructor(ctx: OutboxSqlContext, name: string, policy: OutboxPolicy<M, C>, scheduling: OutboxScheduling);
     private ensureSchema;
-    /**
-     * Ids order the drain, so they must grow: time-prefixed, tie-broken by a
-     * per-instance counter, and forced above the largest stored id so a
-     * replacement instance with a lagging clock cannot mint into the past.
-     */
-    private mintId;
     /**
      * Write the intent ahead of any send. Returns `admitted: false` with the
      * existing id when the dedupe key is already queued, sent, or dead-lettered
