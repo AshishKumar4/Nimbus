@@ -293,6 +293,14 @@ interface FacetVfsState {
     lazyModules?: readonly string[];
     /** Each lazy module's lazy importers (PrefetchResult.edges, reversed, within lazyModules). */
     lazyImporters?: Readonly<Record<string, readonly string[]>>;
+    /**
+     * The modules the snapshot's bound evicted that name a synchronous call
+     * (evictedReaders): modules the program may still load late, as runtime
+     * code through an \`import()\`. The data plan puts what each reads in the
+     * lazy-read table under its own path, for that import()'s closure walk to
+     * fetch.
+     */
+    evictedReaders?: readonly string[];
     /** Telemetry: served from the prefetch-bundle cache (no VFS walk). */
     cacheHit?: boolean;
     /**
@@ -756,6 +764,13 @@ export declare function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: 
  *
  */
 export declare function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOptions): Promise<FacetVfsState>;
+/**
+ * The evicted JavaScript modules whose text names a synchronous call: the
+ * ones the data plan reads (static-fs-refs.ts, from the VFS as written).
+ * Most of what a bound evicts is data or declarations (Astro's 575 shiki
+ * grammars and .d.ts files), which this costs a substring search.
+ */
+export declare function evictedReaders(cells: Readonly<Record<string, string | Uint8Array>>): string[];
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
  * FacetManager stays unaware of the session / log-store types.

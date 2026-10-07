@@ -16865,6 +16865,7 @@ function __nimbusImportStager(quota) {
         for (const path of found) if (path !== null && !visited.has(path)) next.add(path);
         frontier = [...next];
       }
+      return visited;
     },
   };
 }
@@ -16875,13 +16876,21 @@ async function __nimbusStageImport(specifier, parentUrl) {
   const resolution = await __nimbusHydrated(() => __esmResolver.resolveSync(specifier, parentUrl), quota);
   // A module this process has loaded already brought what it requests.
   if (resolution.path && !__esmNamespaces.has(resolution.url)) {
-    await stager.closure(resolution.path);
+    const walked = await stager.closure(resolution.path);
     // What the modules it evaluates read synchronously, which the launch
-    // did not stage because only this import() reaches them (the planner's
-    // lazyReadsByTarget): read here, under the quota, so a miss is fetched.
-    const lazyReads = globalThis.__nimbusLazyReads instanceof Map
-      ? globalThis.__nimbusLazyReads.get(String(resolution.path).replace(/^\/+/, "")) : undefined;
-    if (lazyReads && lazyReads.length > 0) {
+    // did not stage because only this import() reaches them: the target's
+    // entry (the planner's lazyReadsByTarget), and the entry of each module
+    // the walk read because the map lacks it (an evicted one's,
+    // evictedModuleReads). Read here, under the quota, so a miss is fetched.
+    const table = globalThis.__nimbusLazyReads instanceof Map ? globalThis.__nimbusLazyReads : null;
+    const lazyReads = [];
+    if (table !== null) {
+      for (const k of [String(resolution.path).replace(/^\/+/, ""), ...(walked || [])]) {
+        const reads = table.get(k);
+        if (reads) for (const read of reads) lazyReads.push(read);
+      }
+    }
+    if (lazyReads.length > 0) {
       await __nimbusHydrated(() => {
         for (const k of lazyReads) {
           if (k in __vfsBundle || (__vfsWrites && k in __vfsWrites)) continue;
