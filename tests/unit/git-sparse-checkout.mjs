@@ -142,10 +142,11 @@ try {
     // From a subdirectory: an absolute path inside the repository is its directory; one outside is refused.
     const p = new Pair('absolute', seed('absolute'));
     await p.run(['sparse-checkout', 'set', 'a', 'b']);
-    await p.run(['sparse-checkout', 'set', '{root}/c/e'], { sub: 'b' });
+    // Each cone keeps b/, the directory they run in.
+    await p.run(['sparse-checkout', 'set', '{root}/b/d'], { sub: 'b' });
     p.same('set of an absolute path inside, from b/');
     sameFiles(p, 'set of an absolute path inside, from b/');
-    await p.run(['sparse-checkout', 'set', '--skip-checks', '{root}/b/d'], { sub: 'b' });
+    await p.run(['sparse-checkout', 'set', '--skip-checks', '{root}/b'], { sub: 'b' });
     p.same('set --skip-checks of an absolute path inside, from b/');
     sameFiles(p, 'set --skip-checks of an absolute path inside, from b/');
     for (const outside of ['/', '{root}/../elsewhere', '{root}x/a']) {
