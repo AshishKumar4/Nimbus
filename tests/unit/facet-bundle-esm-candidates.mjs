@@ -108,7 +108,8 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
     [`${root}/package.json`]: JSON.stringify({ name: 'large-esm', type: 'module' }),
     [entry]: 'import "./large.js";\nimport "./unsupported.js";\nimport "./small.js";\nimport "./broken.js";\n',
     [large]: `const payload = "${'x'.repeat(600_000)}";\nexport{payload};\n`,
-    [unsupported]: `export function payload() { return "${'x'.repeat(600_000)}"; }\n`,
+    // Top-level await: a large module the session leaves to the host (its body is synchronous).
+    [unsupported]: `export const payload = await Promise.resolve("${'x'.repeat(600_000)}");\n`,
     [small]: 'export const small = 1;\n',
     [broken]: 'export const BROKEN = ;\n',
   };

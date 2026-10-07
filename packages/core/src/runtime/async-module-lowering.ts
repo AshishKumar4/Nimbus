@@ -3,9 +3,10 @@
  * Nimbus lowering shares, and its two module readers.
  *
  * A module's imports and exports are read into records (readEsmRecords, by
- * acorn's module parse; the bounded bundle rewrite builds its own from the
- * declarations it found, esbuild-service.ts), and emitCommonJs writes the
- * CommonJS for them, as esbuild's and TypeScript's CommonJS output behave:
+ * acorn's module parse, a statement at a time: no tree of the whole module
+ * is held, so a multi-MiB bundle reads in bounded memory), and emitCommonJs
+ * writes the CommonJS for them, as esbuild's and TypeScript's CommonJS
+ * output behave:
  *   - every module the source requests is required in source order, before
  *     the body; an import's bindings are read off its module at each use, so
  *     they are live as Node's are (an `export let` its module reassigns later
@@ -37,23 +38,20 @@
  * Runs in the transform facet (installed by oxc-facet/preamble.ts), in
  * esbuild-service.ts, and in the shell's `node` command.
  */
-import { Parser, type Pattern } from 'acorn';
+import { Parser, tokTypes, type ModuleDeclaration, type Options, type Pattern, type Program, type Statement } from 'acorn';
 import { applySourceEdits, type SourceEdit } from './javascript-ast.js';
-import { bindingScope, list, namesBinding, scoped, stringOf, type EsNode, type Scope } from './javascript-scope.js';
+import { bindingScope, isNode, list, namesBinding, scoped, stringOf, type EsNode, type Scope } from './javascript-scope.js';
 
 /**
  * One name an import binds: the module's namespace, or one of its exports
  * by name (`default` included, which `import d from` binds too). A string
  * name is any string, `"*"` included: only `namespace` is the namespace.
  *
- * A named binding's `references` are where the module uses it. Null where
- * the reader saw no scopes (the bounded bundle rewrite, which must not build
- * a multi-MiB bundle's tree): the binding is then read once, when its module
- * is required, as Node binds a builtin's or a CommonJS module's names.
+ * A named binding's `references` are where the module uses it.
  */
 export type EsmImportBinding =
   | { readonly kind: 'namespace'; readonly local: string }
-  | { readonly kind: 'named'; readonly local: string; readonly imported: string; readonly references: readonly EsmReference[] | null };
+  | { readonly kind: 'named'; readonly local: string; readonly imported: string; readonly references: readonly EsmReference[] };
 
 /**
  * A use of an imported binding: a read, a call (`this` stays undefined), a
@@ -128,19 +126,161 @@ export function lowerAsyncModule(esm: string): string {
   return emitCommonJs(esm, readEsmRecords(esm), { body: 'async' });
 }
 
-/** The import and export declarations of ES module `source`, in source order. Throws on a syntax error. */
+/**
+ * The parts of acorn's Parser a plugin uses (acorn's plugin API, which its
+ * declarations leave out).
+ */
+interface AcornParser {
+  type: unknown;
+  inModule: boolean;
+  undefinedExports: Record<string, { start: number }>;
+  parse(): Program;
+  parseStatement(context: null, topLevel: boolean, exports: object): Statement | ModuleDeclaration;
+  finishNode<T>(node: T, type: string): T;
+  raiseRecoverable(pos: number, message: string): void;
+  next(): void;
+}
+const AcornParserClass = Parser as unknown as new (options: Options, input: string) => AcornParser;
+
+const FUNCTION_TYPES = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
+
+/**
+ * Acorn's module parse with no tree of the whole module: each top-level
+ * statement goes to `onStatement` as it is parsed and is not kept, and each
+ * function goes to `onFunction` as it is finished, after which its body is
+ * dropped (its parameters stay, which acorn checks after). What is held at
+ * once is the chain of functions being parsed and their code outside
+ * functions: a bundle's 3.5 MB statement of nested functions included.
+ */
+class StatementParser extends AcornParserClass {
+  onStatement: (statement: Statement | ModuleDeclaration) => void = () => {};
+  onFunction: (fn: EsNode) => void = () => {};
+  onIdentifier: (identifier: EsNode) => void = () => {};
+
+  parseTopLevel(node: Program): Program {
+    const exports = Object.create(null);
+    while (this.type !== tokTypes.eof) this.onStatement(this.parseStatement(null, true, exports));
+    if (this.inModule) {
+      for (const name of Object.keys(this.undefinedExports)) this.raiseRecoverable(this.undefinedExports[name].start, `Export '${name}' is not defined`);
+    }
+    this.next();
+    return this.finishNode(node, 'Program');
+  }
+
+  finishNode<T>(node: T, type: string): T {
+    const finished = super.finishNode(node, type);
+    if (type === 'Identifier' && isNode(finished)) this.onIdentifier(finished);
+    if (FUNCTION_TYPES.has(type) && isNode(finished)) {
+      this.onFunction(finished);
+      const body = finished.body;
+      if (isNode(body) && body.type === 'BlockStatement') Reflect.set(body, 'body', []);
+    }
+    return finished;
+  }
+}
+
+/** A use of a name an import may bind, before the module's imports are all known. */
+interface NamedUse extends EsmReference {
+  readonly name: string;
+}
+
+/**
+ * The import and export declarations of ES module `source`, in source order,
+ * each named import binding with where the module uses it (EsmReference).
+ * Throws on a syntax error.
+ *
+ * A use is an identifier no scope inside the module binds again: not a
+ * member's, a key's or a label's name, or a declaration's own (an import
+ * name cannot be redeclared at the top level). Each function is analyzed as
+ * the parse finishes it, its uses of the names imported so far kept (those
+ * its own scopes leave free) and its body dropped; a top-level statement's
+ * uses are resolved the same way, through its functions' free uses. Imports
+ * come first in nearly every module, so one parse does; a module importing
+ * a name after code that may use it is parsed again, every name known.
+ */
 export function readEsmRecords(source: string): EsmRecord[] {
-  const program = Parser.parse(source, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true });
+  const first = readModule(source, null);
+  return first.importsAfterCode ? readModule(source, first.imported).records : first.records;
+}
+
+function readModule(source: string, known: ReadonlySet<string> | null): {
+  records: EsmRecord[];
+  imported: Set<string>;
+  importsAfterCode: boolean;
+} {
   // ModuleExportName: an identifier, or a string such as `export { a as "b-c" }`.
   const nameOf = (node: { type: string; name?: string; value?: unknown }) =>
     node.type === 'Identifier' ? String(node.name) : String(node.value);
+  const imported = new Set<string>(known ?? []);
   const records: EsmRecord[] = [];
-  const references = importReferences(program, program.body.flatMap((node) => node.type !== 'ImportDeclaration' ? [] : node.specifiers
-    .filter((specifier) => specifier.type !== 'ImportNamespaceSpecifier')
-    .map((specifier) => specifier.local.name)));
-  for (const node of program.body) {
+  const uses = new Map<string, EsmReference[]>();
+  let code = false;
+  let importsAfterCode = false;
+
+  const outside: Scope = { names: new Set(), parent: null };
+  // Where an identifier spelled as an imported name starts, in order: code
+  // with none in it uses no import, and is not walked.
+  const mentions: number[] = [];
+  const mentioned = (start: number, end: number): boolean => {
+    let low = 0;
+    let high = mentions.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (mentions[middle]! < start) low = middle + 1;
+      else high = middle;
+    }
+    return low < mentions.length && mentions[low]! < end;
+  };
+  // Each function's uses its own scopes leave free.
+  const freeIn = new WeakMap<EsNode, readonly NamedUse[]>();
+  const freeUses = (root: EsNode): readonly NamedUse[] => {
+    const own = freeIn.get(root);
+    if (own) return own;
+    const free: NamedUse[] = [];
+    if (!mentioned(root.start, root.end)) return free;
+    // A pattern's properties, as the walk reaches them: a value there is written.
+    const patternProperties = new Set<EsNode>();
+    for (const [node, scope, parent, key] of scoped(root, outside, false, false, null, '', (n) => n !== root && freeIn.has(n))) {
+      const inner = node === root ? undefined : freeIn.get(node);
+      if (inner) {
+        for (const use of inner) if (bindingScope(scope, use.name) === null) free.push(use);
+        continue;
+      }
+      if (node.type === 'ObjectPattern') for (const property of list(node, 'properties')) patternProperties.add(property);
+      const name = node.type === 'Identifier' ? stringOf(node, 'name') : null;
+      if (name === null || !imported.has(name) || parent === null || !namesBinding(parent, key)) continue;
+      if (bindingScope(scope, name) !== null) continue;
+      free.push({ name, start: node.start, end: node.end, use: useOf(parent, key, patternProperties) });
+    }
+    return free;
+  };
+
+  const parser = new StatementParser({ ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true }, source);
+  parser.onFunction = (fn) => { freeIn.set(fn, freeUses(fn)); };
+  parser.onIdentifier = (identifier) => {
+    const name = stringOf(identifier, 'name');
+    if (name === null || !imported.has(name)) return;
+    // Identifiers finish in source order; one out of it is put in its place.
+    let at = mentions.length;
+    while (at > 0 && mentions[at - 1]! > identifier.start) at--;
+    mentions.splice(at, 0, identifier.start);
+  };
+  parser.onStatement = (node) => {
+    if (node.type !== 'ImportDeclaration') {
+      // A top-level statement's free uses are its imports' (none redeclares one).
+      for (const { name, start, end, use } of freeUses(node as unknown as EsNode)) {
+        const found = uses.get(name) ?? [];
+        uses.set(name, found);
+        found.push({ start, end, use });
+      }
+    }
     switch (node.type) {
-      case 'ImportDeclaration':
+      case 'ImportDeclaration': {
+        for (const specifier of node.specifiers) {
+          if (specifier.type === 'ImportNamespaceSpecifier') continue;
+          if (code && !imported.has(specifier.local.name)) importsAfterCode = true;
+          imported.add(specifier.local.name);
+        }
         records.push({
           kind: 'import', start: node.start, end: node.end, source: String(node.source.value),
           bindings: node.specifiers.map((specifier): EsmImportBinding => (
@@ -150,11 +290,13 @@ export function readEsmRecords(source: string): EsmRecord[] {
                 kind: 'named',
                 local: specifier.local.name,
                 imported: specifier.type === 'ImportDefaultSpecifier' ? 'default' : nameOf(specifier.imported),
-                references: references.get(specifier.local.name) ?? [],
+                // Filled in below, once every statement has been read.
+                references: [],
               }
           )),
         });
-        break;
+        return;
+      }
       case 'ExportNamedDeclaration':
         if (node.declaration) {
           records.push({
@@ -196,32 +338,14 @@ export function readEsmRecords(source: string): EsmRecord[] {
       default:
         break;
     }
-  }
-  return records;
-}
-
-/**
- * Where `program` uses each binding its imports name (not a namespace): the
- * identifiers its own scope resolves to that binding. Not a member's, a
- * key's or a label's name, an import or export declaration's own names, or a
- * name a nested scope binds again.
- */
-function importReferences(program: unknown, names: readonly string[]): Map<string, EsmReference[]> {
-  const references = new Map(names.map((name): [string, EsmReference[]] => [name, []]));
-  if (references.size === 0) return references;
-  const outside: Scope = { names: new Set(), parent: null };
-  // A pattern's properties, as its walk reaches them: a value there is written.
-  const patternProperties = new Set<EsNode>();
-  for (const [node, scope, parent, key] of scoped(program, outside, false)) {
-    if (node.type === 'ObjectPattern') for (const property of list(node, 'properties')) patternProperties.add(property);
-    const name = node.type === 'Identifier' ? stringOf(node, 'name') : null;
-    const found = name === null ? undefined : references.get(name);
-    if (!found || name === null || parent === null || !namesBinding(parent, key)) continue;
-    // The program's own scope is the one directly inside `outside`.
-    if (bindingScope(scope, name)?.parent !== outside) continue;
-    found.push({ start: node.start, end: node.end, use: useOf(parent, key, patternProperties) });
-  }
-  return references;
+    code = true;
+  };
+  parser.parse();
+  const withUses = records.map((record): EsmRecord => record.kind !== 'import' ? record : {
+    ...record,
+    bindings: record.bindings.map((binding): EsmImportBinding => binding.kind === 'namespace' ? binding : { ...binding, references: uses.get(binding.local) ?? [] }),
+  });
+  return { records: withUses, imported, importsAfterCode };
 }
 
 /** How an identifier under `parent` by `key` uses the binding it names. */
@@ -287,7 +411,7 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
       if (binding.kind === 'namespace') continue;
       const read = binding.imported === 'default' ? `${interop}.default` : `${mod}${key(binding.imported)}`;
       reads.set(binding.local, read);
-      for (const { start, end, use } of binding.references ?? []) {
+      for (const { start, end, use } of binding.references) {
         if (use === 'write') continue;
         uses.push({ start, end, text: use === 'call' ? `(0, ${read})` : use === 'shorthand' ? `${binding.local}: ${read}` : read });
       }
@@ -297,9 +421,9 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
 
   // In the body's scope, before it: a getter per export name in name order;
   // then, in source order, each requested module; then the bindings an
-  // import declares (a namespace; a binding read once, where the reader saw
-  // no scopes; a const a write to the import throws on, as the language's
-  // assignment to an import does); then each `export *`'s names.
+  // import declares (a namespace; a const a write to the import throws on,
+  // as the language's assignment to an import does); then each `export *`'s
+  // names.
   const requires: string[] = [];
   const imported: string[] = [];
   const getters: [string, string][] = [];
@@ -325,7 +449,6 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
         for (const binding of record.bindings) {
           const { local } = binding;
           if (binding.kind === 'namespace') imported.push(`const ${local} = ${namespace(mod)};`);
-          else if (binding.references === null) imported.push(`const ${local} = ${reads.get(local)};`);
           else if (binding.references.some(({ use }) => use === 'write')) imported.push(`const ${local} = void 0;`);
         }
         break;
