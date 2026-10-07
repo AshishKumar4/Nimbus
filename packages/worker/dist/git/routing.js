@@ -125,6 +125,7 @@ const COMMAND_FAMILIES = Object.freeze({
     rebase: 'rebase',
     stash: 'stash',
     'sparse-checkout': 'sparse',
+    'ls-remote': 'transport',
     fetch: 'transport',
     pull: 'transport',
     push: 'transport',
