@@ -15,7 +15,9 @@
 //   group     ending a process realm ends every process it started, and its
 //             end does not wait for one that left its group;
 //   async     a call whose answer waits for a later call of the guest's own
-//             is answered (the guest does not block on the first).
+//             is answered (the guest does not block on the first);
+//   signal    a process guest a signal ends ends with 128 + the signal's
+//             number, as a shell reports it (signals.ts, every signal).
 //
 // Each case runs in a process of its own (CASE=<name>), so one that hangs or
 // leaves processes behind fails alone.
@@ -28,7 +30,7 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const underBun = typeof process.versions.bun === 'string';
-const CASES = ['frames', 'env', 'spawn', 'orphan', 'group', 'async'];
+const CASES = ['frames', 'env', 'spawn', 'orphan', 'group', 'async', 'signal'];
 
 if (process.env.CASE === undefined) {
   const failed = [];
@@ -130,6 +132,15 @@ case 'env': {
     await within(realm.ended, 5_000, 'its end');
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+  break;
+}
+
+case 'signal': {
+  for (const [signal, code] of [['SIGTERM', 143], ['SIGQUIT', 131], ['SIGUSR1', 138], ['SIGALRM', 142]]) {
+    const { realm } = await start(guest('signal'), 'process', { payload: signal });
+    const end = await within(realm.ended, 5_000, `a guest ending by ${signal}`);
+    assert.equal(end.code, code, `${signal}: 128 + its number`);
   }
   break;
 }
