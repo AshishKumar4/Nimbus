@@ -103,7 +103,6 @@ export interface Reference {
 }
 /** Whether a function body opens with a "use strict" directive. */
 export declare function hasUseStrict(body: readonly (Statement | ModuleDeclaration)[]): boolean;
-/** The names a binding pattern declares, with the pattern identifiers. */
 export declare function patternIdentifiers(pattern: Pattern, out?: SafeList<Identifier>): SafeList<Identifier>;
 /** The child nodes of `node`, in a new array. */
 export declare function childNodes(node: AnyNode): AnyNode[];
