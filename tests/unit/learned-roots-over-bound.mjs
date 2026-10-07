@@ -11,8 +11,9 @@
 // first run, without them, had got further.
 //
 // When the learned roots are what takes the required closure past the bound,
-// the launch walks them again as optional roots, phase 2's first tier: staged
-// as far as the bound allows, evictable, and never the launch's failure. A
+// the launch walks them again as optional roots, phase 2's first tier: each
+// one's closure staged whole within the bound or not at all (never a module
+// without what it imports), evictable, and never the launch's failure. A
 // closure past the bound by itself still fails by name.
 
 import assert from 'node:assert/strict';
@@ -60,6 +61,10 @@ const learned = [{ path: `${NM}/one/index.js` }, { path: `${NM}/two/index.js` }]
   assert.equal(typeof state.bundle[`${APP}/small.js`], 'string', 'and its closure');
   const staged = [`${NM}/one/index.js`, `${NM}/two/index.js`].filter((path) => typeof state.bundle[path] === 'string');
   assert.equal(staged.length, 1, `as many learned roots as fit (${staged})`);
+  for (const pkg of ['one', 'two']) {
+    const parts = [`${NM}/${pkg}/index.js`, `${NM}/${pkg}/part.js`].map((path) => typeof state.bundle[path] === 'string');
+    assert.equal(parts[0], parts[1], `${pkg} is staged whole or not at all`);
+  }
 }
 
 // A closure past the bound by itself still fails, by name.
