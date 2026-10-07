@@ -34,6 +34,25 @@ export const PROBE_TARGET_SKIPS = [
   // serves path-form previews only. The promotion runs it on production, and
   // coi-isolated-preview covers the same isolation in the path form here.
   'preview/new/coi-host-preview-live',
+  // The docs' live terminal and the /try terminal in a browser: the probe
+  // target serves neither. Run against every hosted demo (HOSTED_DEMO_CHECKS).
+  'docs/new/hosted-docs-terminal',
+  'auth/new/hosted-demo-try-terminal',
 ];
+
+/**
+ * The checks a hosted demo gets as a visitor reaches it, anonymously:
+ * release.mjs runs them against staging's demo, and promote.mjs against
+ * production (remote-probes --target hosted:<origin>). The OAuth probes need
+ * an interactive login and are not among them.
+ */
+export const HOSTED_DEMO_CHECKS = [
+  'auth/new/hosted-demo-anon-launch',
+  'auth/new/hosted-demo-try-terminal',
+  'docs/new/hosted-docs-terminal',
+];
+
+/** What production alone can serve (host-form previews need its zone route): promote.mjs adds these. */
+export const PRODUCTION_ONLY_CHECKS = ['preview/new/coi-host-preview-live'];
 
 if (import.meta.main) process.stdout.write(PROBE_TARGET_SKIPS.join(','));

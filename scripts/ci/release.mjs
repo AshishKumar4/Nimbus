@@ -13,9 +13,11 @@
 //   2. This machine uploads it, as built, to nimbus-probe-staging and
 //      nimbus-staging (tests/behavioral/_staging-target.mjs up --release),
 //      after deploy-isolation's preflight, and verifies each version id.
-//   3. The staging matrix, from containers (scripts/ci/remote-probes.mjs
-//      --target staging): the whole suite with Chromium, and the
-//      write-heavy probes whose failure is intermittent repeated beside it.
+//   3. The staging matrix, from containers (scripts/ci/remote-probes.mjs):
+//      the whole suite with Chromium against nimbus-probe-staging, the
+//      write-heavy probes whose failure is intermittent repeated beside it,
+//      then the hosted-demo checks against nimbus-staging as a visitor
+//      reaches it (HOSTED_DEMO_CHECKS: /try, the docs terminal).
 // The release, the versions staging serves and the matrix's verdict are
 // recorded in the release's staged.json; promote.mjs promotes only a
 // release whose matrix was green.
@@ -24,6 +26,7 @@
 import { spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { HOSTED_DEMO_CHECKS } from '../../tests/behavioral/_probe-target-skips.mjs';
 import { fetchRelease } from './lib/release.mjs';
 
 /** Write-heavy probes repeated beside the suite: their failure mode is intermittent. */
@@ -82,15 +85,24 @@ for (const line of status.stdout.trim().split('\n')) {
 }
 console.log(`release: staging serves ${Object.entries(staged.versions).map(([name, { version }]) => `${name} ${version}`).join(', ')}`);
 
+/** remote-probes with `args`, its report passed through; resolves to its exit code and verdict. */
+function probes(args) {
+  const run = spawnSync('bun', ['scripts/ci/remote-probes.mjs', ...args, sha], {
+    cwd: repo, stdio: ['ignore', 'pipe', 'inherit'], encoding: 'utf8', maxBuffer: 1 << 30,
+  });
+  process.stdout.write(run.stdout);
+  return { exitCode: run.status ?? 2, verdict: /verdict (\S+\.json)/.exec(run.stdout)?.[1] ?? null };
+}
+
 let exit = 0;
 if (!flags['no-matrix']) {
   const repeat = flags.repeat ?? REPEATED.join(',');
-  const matrix = spawnSync('bun', ['scripts/ci/remote-probes.mjs', '--target', 'staging', sha, ...(repeat ? ['--repeat', repeat, '--times', flags.times ?? '5'] : [])], {
-    cwd: repo, stdio: ['ignore', 'pipe', 'inherit'], encoding: 'utf8', maxBuffer: 1 << 30,
-  });
-  process.stdout.write(matrix.stdout);
-  staged.matrix = { exitCode: matrix.status, verdict: /verdict (\S+\.json)/.exec(matrix.stdout)?.[1] ?? null };
-  exit = matrix.status ?? 2;
+  const suite = probes(['--target', 'staging', ...(repeat ? ['--repeat', repeat, '--times', flags.times ?? '5'] : [])]);
+  const demo = staged.versions['nimbus-staging']?.base;
+  const hosted = demo ? probes(['--target', `hosted:${new URL(demo).origin}`, '--only', HOSTED_DEMO_CHECKS.join(','), '--parts', '1', '--jobs', String(HOSTED_DEMO_CHECKS.length)])
+    : { exitCode: 2, verdict: null };
+  staged.matrix = { exitCode: Math.max(suite.exitCode, hosted.exitCode), suite, hosted };
+  exit = staged.matrix.exitCode;
 }
 writeFileSync(join(dir, 'staged.json'), `${JSON.stringify(staged, null, 2)}\n`);
 console.log(`release: ${sha.slice(0, 12)} staged${staged.matrix ? `, matrix ${staged.matrix.exitCode === 0 ? 'green' : 'RED'}` : ', matrix not run'}; ${join(dir, 'staged.json')}`);

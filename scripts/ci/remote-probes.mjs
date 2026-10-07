@@ -6,6 +6,11 @@
 //   bun scripts/ci/remote-probes.mjs --target staging|throwaway:<name> [<commit>]
 //       [--only a,b] [--skip c,d] [--parts N] [--jobs J] [--repeat a,b --times T]
 //   bun scripts/ci/remote-probes.mjs --deploy <name> [<commit>] [--only a,b] [--skip c,d] [--parts N] [--jobs J]
+//   bun scripts/ci/remote-probes.mjs --target hosted:<https origin> [<commit>] --only a,b
+//
+// --target hosted:<origin> runs the named hosted-demo checks against a
+// deployed demo (staging's, or production's at promotion) as a visitor
+// reaches it: no token, no probe-target skips.
 //
 // Run it in the lane's worktree. The probes are <commit>'s (default HEAD),
 // so commit first. The token is minted here, by the target's own `token
@@ -57,8 +62,10 @@ for (let i = 0; i < argv.length; i++) {
   else if (!argv[i].startsWith('--')) positional.push(argv[i]);
   else usage(`unexpected ${argv[i]}`);
 }
-const target = /^(staging|throwaway:(.+))$/.exec(flags.target ?? '');
-if (!target === !flags.deploy || positional.length > 1) usage('one of --target staging, --target throwaway:<name> and --deploy <name> is required');
+const target = /^(staging|throwaway:(.+)|hosted:(https:\/\/[^/]+))$/.exec(flags.target ?? '');
+if (!target === !flags.deploy || positional.length > 1) usage('one of --target staging, throwaway:<name> or hosted:<https origin>, and --deploy <name>, is required');
+const hosted = target?.[3];
+if (hosted && !flags.only) usage('--target hosted:<origin> runs the hosted-demo checks it is given (--only)');
 const count = (name, fallback) => {
   const value = flags[name] === undefined ? fallback : Number(flags[name]);
   if (!Number.isInteger(value) || value < 1) usage(`--${name} must be a positive integer`);
@@ -96,7 +103,9 @@ if (flags.deploy) {
   }
 }
 
-const skip = flags.skip ?? PROBE_TARGET_SKIPS.join(',');
+// A hosted demo is probed as its visitors use it, anonymously: no token, and
+// no probe-target skips.
+const skip = flags.skip ?? (hosted ? '' : PROBE_TARGET_SKIPS.join(','));
 const throwaway = flags.deploy ?? target[2];
 const minter = throwaway === undefined
   ? ['tests/behavioral/_staging-target.mjs', 'token']
@@ -104,13 +113,13 @@ const minter = throwaway === undefined
 // The latest a task may start and still end within its limit before the token
 // expires; one that starts later (a slow queue, a long preparation) is not graded.
 const startBy = Date.now() + TOKEN_TTL_MS - TASK_TIMEOUT_S * 1000;
-const minted = spawnSync('bun', [...minter, '--json', '--ttl-ms', String(TOKEN_TTL_MS)], { cwd: repo, encoding: 'utf8' });
-if (minted.status !== 0) {
+const minted = hosted ? null : spawnSync('bun', [...minter, '--json', '--ttl-ms', String(TOKEN_TTL_MS)], { cwd: repo, encoding: 'utf8' });
+if (minted && minted.status !== 0) {
   console.error(`remote-probes: NOT GRADED — could not mint a token for ${throwaway ?? 'staging'}:\n${minted.stderr}`);
   process.exit(2);
 }
-const { base, token } = JSON.parse(minted.stdout);
-const scrub = (text) => text.replaceAll(token, '[NIMBUS_PROBE_TOKEN]');
+const { base, token } = minted ? JSON.parse(minted.stdout) : { base: hosted, token: null };
+const scrub = (text) => (token ? text.replaceAll(token, '[NIMBUS_PROBE_TOKEN]') : text);
 const items = [
   ...Array.from({ length: parts }, (_, i) => ({ task: `part ${i + 1}/${parts}`, part: `${i + 1}/${parts}`, only: flags.only ?? '', jobs })),
   ...(flags.repeat ?? '').split(',').filter(Boolean).flatMap((probe) => Array.from({ length: times }, (_, i) => ({
@@ -135,8 +144,9 @@ let mapped;
 try {
   mapped = await mapOnArmada({
     repo, sha, files: ['scripts/ci/probes.mjs', 'tests/behavioral/run-all.mjs'], setup: 'scripts/ci/recipe/chromium.sh',
-    items, env: { NIMBUS_PROBE_TOKEN: token }, label: `remote-probes ${sha.slice(0, 12)} ${throwaway ?? 'staging'}`, timeout: TASK_TIMEOUT_S,
-    command: ['bun', 'scripts/ci/probes.mjs', '--out', '{out}', '--base', base, '--only', '{only}', '--skip', skip, '--part', '{part}', '--jobs', '{jobs}', '--start-by', String(startBy)],
+    items, env: token ? { NIMBUS_PROBE_TOKEN: token } : {}, label: `remote-probes ${sha.slice(0, 12)} ${throwaway ?? hosted ?? 'staging'}`, timeout: TASK_TIMEOUT_S,
+    command: ['bun', 'scripts/ci/probes.mjs', '--out', '{out}', '--base', base, '--only', '{only}', '--skip', skip, '--part', '{part}', '--jobs', '{jobs}',
+      ...(token ? ['--start-by', String(startBy)] : ['--anonymous'])],
   });
 } catch (error) {
   console.error(`remote-probes: NOT GRADED — ${scrub(error.message)}`);
@@ -165,7 +175,7 @@ const state = join(homedir(), '.local', 'state', 'nimbus', 'remote-probes');
 try {
   mkdirSync(state, { recursive: true });
   const report = join(state, `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}-${sha.slice(0, 12)}-${mapped.jobId}.json`);
-  writeFileSync(report, `${scrub(JSON.stringify({ commit: sha, target: throwaway ? `throwaway:${throwaway}` : 'staging', base, job: mapped.jobId, tasks }, null, 2))}\n`);
+  writeFileSync(report, `${scrub(JSON.stringify({ commit: sha, target: throwaway ? `throwaway:${throwaway}` : hosted ? `hosted:${hosted}` : 'staging', base, job: mapped.jobId, tasks }, null, 2))}\n`);
   console.log(`remote-probes: ${status === 0 ? 'every row green' : status === 1 ? 'red rows above' : 'not every task was graded'}; verdict ${report} (job ${mapped.jobId})`);
   process.exit(status);
 } catch (error) {
