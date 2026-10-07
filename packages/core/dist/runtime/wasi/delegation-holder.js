@@ -65,8 +65,11 @@ export function delegationHolder(options) {
     const drain = () => {
         for (const file of [...dirty]) {
             dirty.delete(file);
-            // A copy: the file's buffer keeps changing as the process writes.
-            client.submit({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, data: file.bytes.slice(0, file.length) } }, { acknowledged: true });
+            // A copy: the file's buffer keeps changing as the process writes. A
+            // file made here makes its name with this write, with its number.
+            const ino = file.made;
+            delete file.made;
+            client.submit({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, ...(ino === undefined ? {} : { ino }), data: file.bytes.slice(0, file.length) } }, { acknowledged: true });
         }
     };
     /** Forget what was decided under `root`: sent, so the store (after its barrier) answers. */
@@ -225,10 +228,12 @@ export function delegationHolder(options) {
                 };
                 decided.set(key, entry);
                 note(parentKey(key), nameOf(key), 'file');
-                file = { key, bytes: new Uint8Array(0), length: 0, mode: asked };
+                file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, made: ino };
                 files.set(ino, file);
-                // Made here: the name exists from now on, empty, in the log's order.
-                log({ type: 'call', call: { call: 'writeFile', path: key, mode: asked, ino, data: new Uint8Array(0) } });
+                // Made here: the name exists from now on, in the log's order. Logged
+                // with its bytes, before the next decision (drain), as one call.
+                drain();
+                written(file);
             }
             else {
                 // An existing file emptied: decided here, its number the session's.
@@ -353,6 +358,9 @@ export function delegationHolder(options) {
                 files.delete(current.ino);
                 // Its bytes go with it: nothing of them is logged.
                 dirty.delete(local);
+                // Made here and never logged: the session never had the name.
+                if (local.made !== undefined)
+                    return true;
             }
             log({ type: 'call', call: { call: 'unlink', path: key } });
             return true;
