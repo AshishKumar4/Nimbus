@@ -6957,7 +6957,8 @@ export class SqliteVFS {
       gcQueued: one('SELECT COUNT(*) AS n FROM vfs_gc_queue'),
       snapshots: one('SELECT COUNT(*) AS n FROM vfs_snapshots'),
       jobs: one('SELECT COUNT(*) AS n FROM vfs_jobs'),
-      databaseBytes: one('SELECT page_count * page_size AS n FROM pragma_page_count(), pragma_page_size()'),
+      // As admission reads it: workerd's databaseSize (its SQLite refuses page_count).
+      databaseBytes: databaseBytesOf(this.sql),
       ledger: this.ledger.view(),
     };
   }
