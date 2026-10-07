@@ -75,8 +75,12 @@ if (line1Ok) {
     await t.waitFor((b) => />>>\s*$/.test(b.trimEnd()), 15_000, '>>> after block');
 
     // Call foo() — should print 42.
-    const r = await t.run('foo()', 15_000);
-    const out = stripAnsi(r.output);
+    // This command belongs to Python, not the shell whose prompt t.run waits
+    // for. Require its exact fresh primary prompt after the result line.
+    t.reset();
+    t.cmd('foo()');
+    await t.waitFor((b) => /(?:^|\n)>>>[ \t]*$/.test(b), 15_000, '>>> after foo()');
+    const out = stripAnsi(t.buf);
     a.check('foo() → "42"',
       /\b42\b/.test(out),
       `output=${JSON.stringify(tail(out, 200))}`);
