@@ -541,57 +541,9 @@ function agentChatStream(
             appendTextPart(parts, 'reasoning', chunk.text);
             emit({ type: 'reasoning-delta', delta: chunk.text });
             await scheduleTextFlush(chunk.text);
-          } else if (chunk.type === 'tool-call') {
-            upsertToolPart(parts, {
-              toolCallId: chunk.toolCallId,
-              toolName: chunk.toolName,
-              input: chunk.input,
-              status: 'running',
-              startedAt: Date.now(),
-            });
-            emit({
-              type: 'tool-call',
-              toolCallId: chunk.toolCallId,
-              toolName: chunk.toolName,
-              input: chunk.input,
-            });
-            await flushStreamingTurn();
-          } else if (chunk.type === 'tool-result') {
-            const output = compactStreamValue(chunk.output);
-            const status = isToolOutputFailure(output) ? 'error' : 'done';
-            upsertToolPart(parts, {
-              toolCallId: chunk.toolCallId,
-              toolName: chunk.toolName,
-              input: chunk.input,
-              output,
-              status,
-            });
-            emit({
-              type: 'tool-result',
-              toolCallId: chunk.toolCallId,
-              toolName: chunk.toolName,
-              input: chunk.input,
-              output,
-              status,
-            });
-            await flushStreamingTurn();
-          } else if (chunk.type === 'tool-error') {
-            const error = stringifyError(chunk.error);
-            upsertToolPart(parts, {
-              toolCallId: chunk.toolCallId,
-              toolName: chunk.toolName,
-              input: chunk.input,
-              output: { error },
-              error,
-              status: 'error',
-            });
-            emit({
-              type: 'tool-error',
-              toolCallId: chunk.toolCallId,
-              toolName: chunk.toolName,
-              input: chunk.input,
-              error,
-            });
+          } else if (chunk.type === 'tool-call' || chunk.type === 'tool-result' || chunk.type === 'tool-error') {
+            // A call is seen as it starts here, so it settles with a duration.
+            emit(recordToolEvent(parts, chunk, chunk.type === 'tool-call' ? Date.now() : undefined));
             await flushStreamingTurn();
           } else if (chunk.type === 'finish-step') {
             emit({
@@ -803,37 +755,56 @@ function collectTurnParts(result: { text?: string; steps?: Array<{ content?: any
         appendTextPart(parts, 'text', String(part.text || ''));
       } else if (part?.type === 'reasoning') {
         appendTextPart(parts, 'reasoning', String(part.text || ''));
-      } else if (part?.type === 'tool-call') {
-        upsertToolPart(parts, {
+      } else if (part?.type === 'tool-call' || part?.type === 'tool-result' || part?.type === 'tool-error') {
+        recordToolEvent(parts, {
+          type: part.type,
           toolCallId: String(part.toolCallId || crypto.randomUUID()),
           toolName: String(part.toolName || 'tool'),
           input: part.input,
-          status: 'running',
-        });
-      } else if (part?.type === 'tool-result') {
-        const output = compactStreamValue(part.output);
-        upsertToolPart(parts, {
-          toolCallId: String(part.toolCallId || crypto.randomUUID()),
-          toolName: String(part.toolName || 'tool'),
-          input: part.input,
-          output,
-          status: isToolOutputFailure(output) ? 'error' : 'done',
-        });
-      } else if (part?.type === 'tool-error') {
-        const error = stringifyError(part.error);
-        upsertToolPart(parts, {
-          toolCallId: String(part.toolCallId || crypto.randomUUID()),
-          toolName: String(part.toolName || 'tool'),
-          input: part.input,
-          output: { error },
-          error,
-          status: 'error',
+          output: part.output,
+          error: part.error,
         });
       }
     }
   }
   if (parts.length === 0 && result.text) appendTextPart(parts, 'text', String(result.text));
   return parts;
+}
+
+/** A tool's call, result or error, from the model stream or a finished step's content. */
+interface ToolEvent {
+  type: 'tool-call' | 'tool-result' | 'tool-error';
+  toolCallId: string;
+  toolName: string;
+  input: unknown;
+  output?: unknown;
+  error?: unknown;
+}
+
+/**
+ * Record a tool event in `parts`, as a streamed turn and a finished one both
+ * record it, and answer the stream event it is. A call recorded with
+ * `startedAt` gets a duration when it settles.
+ */
+function recordToolEvent(
+  parts: StoredTurnPart[],
+  event: ToolEvent,
+  startedAt?: number,
+): Extract<AgentStreamEvent, { type: 'tool-call' | 'tool-result' | 'tool-error' }> {
+  const { toolCallId, toolName, input } = event;
+  if (event.type === 'tool-call') {
+    upsertToolPart(parts, { toolCallId, toolName, input, status: 'running', ...(startedAt !== undefined && { startedAt }) });
+    return { type: 'tool-call', toolCallId, toolName, input };
+  }
+  if (event.type === 'tool-result') {
+    const output = compactStreamValue(event.output);
+    const status = isToolOutputFailure(output) ? 'error' : 'done';
+    upsertToolPart(parts, { toolCallId, toolName, input, output, status });
+    return { type: 'tool-result', toolCallId, toolName, input, output, status };
+  }
+  const error = stringifyError(event.error);
+  upsertToolPart(parts, { toolCallId, toolName, input, output: { error }, error, status: 'error' });
+  return { type: 'tool-error', toolCallId, toolName, input, error };
 }
 
 function appendAssistantModelMessages(modelMessages: ModelMessage[], message: StoredMessage): void {
