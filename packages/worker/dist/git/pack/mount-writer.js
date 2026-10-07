@@ -185,7 +185,8 @@ export async function writeLockedIndex(api, at, bytes) {
  * limit is streamed through `api` too.
  */
 export function mountWriter(writer, api, dir, onReceipts) {
-    const root = dir.replace(/\/+$/, '');
+    // Absolute, as git names the files it says it could not write.
+    const root = '/' + dir.replace(/^\/+|\/+$/g, '');
     const streamed = writer.fileChunks;
     return {
         ...(streamed === undefined ? {} : {
