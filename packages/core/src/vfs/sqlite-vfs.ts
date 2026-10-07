@@ -8817,8 +8817,8 @@ export class SqliteVFS {
   /**
    * A W7 `close`: what the session kept of the description goes, and the
    * description. A close that reports what storing its writes failed with
-   * has closed all the same: its refusal forgets the row too
-   * (refuseInSequence), as this transaction is rolled back.
+   * has closed all the same: its refusal, whatever its errno, forgets the
+   * row too (refuseInSequence), as this transaction is rolled back.
    */
   private closeDescribed(by: DescribedBy, id: string): void {
     if (by.pid !== null) this.forgetDescription(by.pid, id);
@@ -9932,11 +9932,16 @@ export class SqliteVFS {
         try { flushCalls(); } catch (refusal) { error = refusal; }
       }
       const errno = errnoOf(error);
+      // A close its binding carried out, whatever it then reported (lastClose:
+      // what storing its writes failed with, an errno or none): its answer is
+      // final, kept with the forgetting of its description, so no path
+      // leaves a closed description to adopt again.
+      const closeOf = applying === null ? undefined : closing.get(applying);
+      const closed = closeOf !== undefined && described.descriptions?.node(closeOf) === undefined ? closeOf : undefined;
       // The op being applied was refused: its answer, kept for a re-send; nothing after it applies.
-      if (sequence !== null && applying !== null && errno !== undefined && SYSCALL_VERDICTS.has(errno as VfsErrorCode)) {
-        const refused = { seq: applying, errno, message: this.errorMessage(error) };
+      if (sequence !== null && applying !== null && (closed !== undefined || (errno !== undefined && SYSCALL_VERDICTS.has(errno as VfsErrorCode)))) {
+        const refused = { seq: applying, errno: errno ?? 'EIO', message: this.errorMessage(error) };
         try {
-          const closed = closing.get(refused.seq);
           this.refuseInSequence(sequence.spec.writer, refused, closed === undefined || described.pid === null ? undefined : { pid: described.pid, id: closed });
           progress.sequence = { cursor: refused.seq, refused };
         } catch {

@@ -240,13 +240,14 @@ async function cut(ops, keep) {
 
 // ── Review D (2351449d9 recheck): a close that reports a refusal has closed its description ──
 // Its binding's close took the description, then reported what storing its
-// writes failed with (lastClose: ENOSPC). The close is refused with it, and
-// the description is gone all the same: a later call naming it is EBADF,
-// never adopted again from what the session kept, and a re-sent open of it
-// is answered with nothing. Red before: the refusal rolled back the
-// forgetting of the kept row, and the next write through the closed id was
-// adopted and landed.
-{
+// writes failed with (lastClose): a verdict (ENOSPC), EIO, or an error with
+// no errno. The close's answer is that refusal (EIO when it has none), kept,
+// and the description is gone all the same: a later call naming it is
+// EBADF, never adopted again from what the session kept, and a re-sent open
+// of it is answered with nothing. Red before: the refusal rolled back the
+// forgetting of the kept row (and an EIO or no-errno close was not kept at
+// all), and the next write through the closed id was adopted and landed.
+for (const reported of ['ENOSPC', 'EIO', undefined]) {
   const s = session();
   s.kernel.writeFile('home/user/c.txt', enc.encode(''));
   s.kernel.chown('home/user/c.txt', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
@@ -266,7 +267,10 @@ async function cut(ops, keep) {
       if (node === undefined) return;
       nodes.delete(id);
       node.close();
-      if (failClose) { failClose = false; throw Object.assign(new Error('ENOSPC: its buffered writes are lost'), { code: 'ENOSPC' }); }
+      if (failClose) {
+        failClose = false;
+        throw Object.assign(new Error('close: its buffered writes are lost'), reported === undefined ? {} : { code: reported });
+      }
     },
   };
   const wave = (first, ops, ack) => s.user.writeStream(
@@ -274,18 +278,19 @@ async function cut(ops, keep) {
     { sequence: { writer: '9:w', first, ack, pid: 9 }, descriptions },
   );
   const kept = () => [...s.sql.exec('SELECT id FROM vfs_wave_descriptions WHERE pid = ?', 9)].length;
+  const label = reported ?? 'no errno';
   const open = call({ call: 'open', path: 'home/user/c.txt', mode: 0o644, description: 'c1' });
   let answer = await wave(1, [open], 0);
   assert.equal(answer.ok, true);
   assert.equal(kept(), 1);
   answer = await wave(2, [call({ call: 'close', path: 'home/user/c.txt', description: 'c1' })], 1);
-  assert.equal(answer.sequence?.refused?.errno, 'ENOSPC', 'the close did not answer what its description reported');
-  assert.equal(kept(), 0, 'a close that reported a refusal left its description kept');
+  assert.equal(answer.sequence?.refused?.errno, reported ?? 'EIO', `${label}: the close did not answer what its description reported`);
+  assert.equal(kept(), 0, `${label}: a close that reported a refusal left its description kept`);
   answer = await wave(3, [call({ call: 'write', path: 'home/user/c.txt', description: 'c1', offset: 0, data: enc.encode('late') })], 2);
-  assert.equal(answer.sequence?.refused?.errno, 'EBADF', 'a write through a closed description was adopted again');
+  assert.equal(answer.sequence?.refused?.errno, 'EBADF', `${label}: a write through a closed description was adopted again`);
   assert.equal(s.text('home/user/c.txt'), '');
   answer = await wave(1, [open], 3);
-  assert.deepEqual(answer.receipts, [], 'a re-sent open of a closed description was answered with one');
+  assert.deepEqual(answer.receipts, [], `${label}: a re-sent open of a closed description was answered with one`);
 }
 
 console.log('w7-sequence: ok');

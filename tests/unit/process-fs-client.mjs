@@ -175,6 +175,64 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   await assert.rejects(async () => s.op({ op: 'fsRead', args: [handle, 0, 6], pid: PID }), (error) => error.code === 'EBADF', 'the close left its descriptor open');
 }
 
+// ── Review D (c784ab8e4 recheck): a close that reports EIO has closed its description, through the client ──
+// The binding's close took the description and then failed with EIO (or no
+// errno): the client is answered with that refusal for the close (it is not
+// taken for a lost epoch, its close dropped), and a later write through the
+// closed id is EBADF. Red before: the session kept no answer for an EIO
+// close, the client gave its epoch up and dropped the close, and the kept
+// description was adopted again by the next write.
+for (const reported of ['EIO', undefined]) {
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = engine.as(CRED_KERNEL);
+  kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
+  kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  kernel.writeFile('home/user/e.txt', enc.encode(''));
+  kernel.chown('home/user/e.txt', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const nodes = new Map();
+  let failClose = true;
+  // The binding's descriptions, its close failing as lastClose's flush can.
+  const descriptions = {
+    adopt: (id, ino, rights, path, cred) => {
+      const node = engine.describeInode(ino, path, cred, rights);
+      if (node === null) return null;
+      nodes.set(id, node);
+      return 1;
+    },
+    node: (id) => nodes.get(id),
+    handle: (id) => (nodes.has(id) ? 1 : undefined),
+    close: (id) => {
+      const node = nodes.get(id);
+      if (node === undefined) return;
+      nodes.delete(id);
+      node.close();
+      if (failClose) {
+        failClose = false;
+        throw Object.assign(new Error('close: its buffered writes are lost'), reported === undefined ? {} : { code: reported });
+      }
+    },
+  };
+  let epochs = 0;
+  const user = engine.as(CRED_SESSION_USER);
+  const c = processFsClient({
+    session: {
+      openWriter: async () => `w${++epochs}`,
+      writeBatchStream: (stream, fence) => user.writeStream(stream, { sequence: { writer: `${PID}:${fence.writer}`, first: fence.seq, ack: fence.ack ?? 0, pid: PID }, descriptions }),
+    },
+    retry: RETRY,
+  });
+  const label = reported ?? 'no errno';
+  const kept = () => [...harness.sql.exec('SELECT id FROM vfs_wave_descriptions WHERE pid = ?', PID)].length;
+  await c.submit({ type: 'call', call: { call: 'open', path: 'home/user/e.txt', mode: 0o644, description: 'e1' } });
+  assert.equal(kept(), 1);
+  await assert.rejects(c.submit({ type: 'call', call: { call: 'close', path: 'home/user/e.txt', description: 'e1' } }), (error) => error.code === 'EIO', `${label}: the close was not answered with its refusal`);
+  assert.equal(epochs, 1, `${label}: the close's answer was taken for a lost epoch`);
+  assert.equal(kept(), 0, `${label}: a close that failed left its description kept`);
+  await assert.rejects(c.submit({ type: 'call', call: { call: 'write', path: 'home/user/e.txt', description: 'e1', offset: 0, data: enc.encode('late') } }), (error) => error.code === 'EBADF', `${label}: a write through a closed description was adopted again`);
+  assert.equal(dec.decode(kernel.readFile('home/user/e.txt')), '');
+}
+
 // ── A refusal answers its op; the log goes on; an acknowledged one is reported ──
 {
   const s = session();
