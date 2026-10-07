@@ -31,12 +31,12 @@
 // node takes the flag (a repro pins it against Node: COND=true), so the
 // relaunched CLI takes its dev path.
 //
-// Boundary (documented, not faked): the dev path loads vite.config.ts, and
-// its Tailwind plugin loads @tailwindcss/oxide, a native binding with no
-// build Workers can run, which Nimbus says when the load fails ("has no
-// Workers-compatible build"). The probe pins that stop in the relaunched
-// CLI's output (ContinuedMackerel's: a staged oxide binding is next); once
-// dev serves, it requires the dev page.
+// Boundary (documented, not faked): the relaunched CLI exits 1. Its dev path
+// loads vite.config.ts, whose Tailwind plugin loads @tailwindcss/oxide, a
+// native binding with no build Workers can run (ContinuedMackerel's: a staged
+// oxide binding is next); the relaunched CLI's own output, which would say
+// so, does not reach the terminal yet (RealFlea's). Once dev serves, the
+// probe requires the dev page.
 
 import { Terminal, mintSession, sleep, stripAnsi, makeAsserter, deleteSession, BASE } from '../_driver.mjs';
 import { launchFrameworkDev } from '../_framework-dev.mjs';
@@ -127,12 +127,16 @@ try {
     dev.process.signal('SIGKILL');
     dev.process.ws.close();
   } else {
-    // The documented boundary, exactly: the relaunch takes its dev path, and
-    // vite's config, which loads now, reaches Tailwind's native binding,
-    // which has no build Workers can run.
-    a.check("boundary: react-router dev's relaunch stops at @tailwindcss/oxide, which has no Workers-compatible build",
-      !/has already been restarted/.test(dev.output) && /@tailwindcss\/oxide\S* has no Workers-compatible build/.test(stripAnsi(dev.output)),
-      JSON.stringify({ last: dev.last, dev: stripAnsi(dev.output).slice(-2500) }));
+    // The documented boundary, as it stands: the CLI relaunches itself once
+    // with --conditions=development and the relaunched CLI exits 1. Its own
+    // output does not reach the terminal (a child's stdio under 'inherit',
+    // RealFlea's); run directly, its config load reaches @tailwindcss/oxide,
+    // which has no Workers-compatible build (ContinuedMackerel's).
+    const devOut = stripAnsi(dev.output);
+    a.check('boundary: react-router dev relaunches once with --conditions=development, and the relaunched CLI exits 1',
+      /\[restart\] Relaunching with --conditions=development/.test(devOut) && !/has already been restarted/.test(devOut)
+        && /\(react-router dev [^)]*\) exited with code 1/.test(devOut),
+      JSON.stringify({ last: dev.last, dev: devOut.slice(-2500) }));
   }
 } finally {
   await t.close();
