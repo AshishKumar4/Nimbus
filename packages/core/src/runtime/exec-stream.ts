@@ -15,7 +15,6 @@
 
 import { z } from 'zod/v4';
 import { enc } from '../_shared/bytes.js';
-import { afterTurn } from '../_shared/after-turn.js';
 
 export type ExecStreamName = 'stdout' | 'stderr';
 
@@ -73,9 +72,10 @@ export function createExecStream(onCancel: (reason: unknown) => void): ExecStrea
   let pending: Uint8Array[] = [];
   let pendingBytes = 0;
   let pendingStream: ExecStreamName = 'stdout';
-  let flushScheduled = false;
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
   const flush = () => {
-    flushScheduled = false;
+    if (flushTimer !== null) clearTimeout(flushTimer);
+    flushTimer = null;
     if (settled || pendingBytes === 0) return;
     let data = pending[0];
     if (pending.length > 1) {
@@ -92,7 +92,8 @@ export function createExecStream(onCancel: (reason: unknown) => void): ExecStrea
   };
   const settle = () => {
     settled = true;
-    flushScheduled = false;
+    if (flushTimer !== null) clearTimeout(flushTimer);
+    flushTimer = null;
     pending = [];
     pendingBytes = 0;
     openRoom();
@@ -123,10 +124,10 @@ export function createExecStream(onCancel: (reason: unknown) => void): ExecStrea
       pending.push(data);
       pendingBytes += data.byteLength;
       if (pendingBytes >= COALESCE_BYTES) flush();
-      else if (!flushScheduled) {
-        flushScheduled = true;
-        afterTurn(() => { if (flushScheduled) flush(); });
-      }
+      // This is an intentional transport batching window, not a deferred
+      // bookkeeping decision. A microtask fence between awaited writes
+      // turned seq's two million numbers into two million network frames.
+      else flushTimer ??= setTimeout(flush, 0);
       if ((controller.desiredSize ?? 0) > 0) return;
       room ??= new Promise<void>((resolve) => { release = resolve; });
       await room;
