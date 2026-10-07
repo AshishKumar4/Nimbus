@@ -6,6 +6,10 @@
 //   - its leading directories (nested/a of nested/a/repo): kept;
 //   - a destination that existed, empty: kept, empty.
 // The cleanup runs in the DO in slices (40 entries each), and its record goes.
+// A destination that is not empty (a file and an empty .git) is refused as
+// host git refuses it, before the clone writes its record: none is written,
+// and nothing there goes. A record that cannot be written refuses the clone
+// and releases its lease: the next clone there runs.
 // A partial clone whose checkout fails once its objects are in keeps the
 // repository, with git's warning (JUNK_LEAVE_REPO), host git against the
 // same refusing server the oracle.
@@ -87,6 +91,38 @@ try {
       if (dest === 'nested/a/repo') assert.equal(session.kernel.exists('home/user/nested/a'), true, 'its leading directories are kept');
       console.log(`  ok  ${dest}: as git leaves it`);
     }
+
+    // A destination that is not empty: refused before any record is written.
+    mkdirSync(join(host, 'busy/.git'), { recursive: true });
+    writeFileSync(join(host, 'busy/notes.txt'), 'mine\n');
+    const hostBusy = spawnSync('git', ['clone', 'http://127.0.0.1:1/none.git', 'busy'], { cwd: host, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+    assert.equal(hostBusy.status, 128, hostBusy.stderr);
+    session.kernel.mkdir('home/user/busy/.git', { recursive: true, mode: 0o755 });
+    session.kernel.chown('home/user/busy', 1000, 1000);
+    session.kernel.chown('home/user/busy/.git', 1000, 1000);
+    session.kernel.writeFile('home/user/busy/notes.txt', 'mine\n');
+    const storage = session.doCtx.storage;
+    const put = storage.put;
+    const puts = [];
+    storage.put = async (key, value) => { puts.push(key); return await put.call(storage, key, value); };
+    const busy = await session.git('/home/user', ['clone', server.url + '/repo.git', 'busy']);
+    storage.put = put;
+    assert.equal(busy.code, 128, busy.stderr);
+    assert.equal(busy.stderr, hostBusy.stderr, 'host git\'s refusal');
+    assert.deepEqual(puts, [], 'no record was written');
+    assert.ok(session.kernel.exists('home/user/busy/.git') && session.kernel.readFileString('home/user/busy/notes.txt') === 'mine\n', 'nothing there went');
+    console.log('  ok  a destination that is not empty: host git\'s refusal, before any record; nothing there touched');
+
+    // A record that cannot be written: the clone refuses, and its lease goes with it.
+    storage.put = async () => { throw new Error('storage unavailable'); };
+    const unrecorded = await session.git('/home/user', ['clone', '--depth', '1', server.url + '/repo.git', 'unrecorded']);
+    storage.put = put;
+    assert.equal(unrecorded.code, 128, unrecorded.stderr);
+    assert.equal(unrecorded.stderr, 'fatal: could not record the clone: storage unavailable\n');
+    const again = await session.git('/home/user', ['clone', '--depth', '1', server.url + '/repo.git', 'unrecorded']);
+    assert.equal(again.code, 0, `the next clone there runs: ${again.stderr}`);
+    assert.ok(session.kernel.exists('home/user/unrecorded/dir0/f0.txt'), 'and checks out');
+    console.log('  ok  a record that cannot be written: refused, the lease released; the next clone there runs');
   } finally {
     globalThis.fetch = realFetch;
     server.stop();

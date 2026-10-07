@@ -10,10 +10,13 @@
 //     goes; one with no marker (nothing written yet, or a cleanup that got
 //     past it): only its empty .git and root go;
 //   - a cleanup cut short between slices (the session reset) leaves its
-//     record, and the next generation's start finishes it
-//     (finishInterruptedClones); a record of this generation (a clone still
-//     running) is left alone, as is one whose destination another holds
-//     the lease on;
+//     record, and the next generation finishes it: the records of earlier
+//     generations listed (listInterruptedClones; one of this generation, a
+//     clone still running, is not), each destination reserved before the
+//     first write (a write there is refused until its cleanup is done, then
+//     lands and stays), one another lease holds left for later;
+//   - slices of one entry over targets that are partly gone: absent ones
+//     cost nothing, done ones are not walked again, and it ends;
 //   - as the record's credential: what it may not remove refuses, and the
 //     record stays.
 
@@ -21,7 +24,7 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { cleanUpClone, finishInterruptedClones, listCloneJobs, writeCloneJob } from '../../packages/worker/src/git/clone-job.ts';
+import { cleanUpClone, finishReservedClones, listCloneJobs, listInterruptedClones, reserveInterruptedClones, writeCloneJob } from '../../packages/worker/src/git/clone-job.ts';
 import { memoryStorage } from './lib/do-storage.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
@@ -52,7 +55,7 @@ function cloneTree(user, dir, jobId, { files = 30 } = {}) {
 }
 
 const record = (dir, jobId, extra = {}) => ({
-  version: 1, jobId, dir, cred: CRED_SESSION_USER, rootExisted: false, phase: 'transport', startedAt: 1000, ...extra,
+  version: 1, jobId, dir, cred: CRED_SESSION_USER, rootExisted: false, phase: 'transport', generation: 1, startedAt: 1000, ...extra,
 });
 const list = (user, dir) => user.readdir(dir).map(({ name }) => name).sort();
 
@@ -126,25 +129,62 @@ const list = (user, dir) => user.readdir(dir).map(({ name }) => name).sort();
 {
   const { vfs, user, storage } = session();
   cloneTree(user, 'home/user/repo', 'job-7');
-  const job = record('home/user/repo', 'job-7', { startedAt: 1000 });
+  const job = record('home/user/repo', 'job-7', { generation: 1 });
   await writeCloneJob(storage, job);
   await assert.rejects(cleanUpClone(user, storage, job, { sliceEntries: 4, yieldBetween: async () => { throw new Error('reset'); } }), /reset/);
   assert.ok(user.exists('home/user/repo/.git/nimbus-clone-job'), 'the marker outlives a cleanup cut short');
   assert.equal((await listCloneJobs(storage)).length, 1, 'and so does the record');
-  // A clone of this generation (started after it began) is running: left alone.
+  // A clone of this generation (2) is running: not listed.
   cloneTree(user, 'home/user/live', 'job-8');
-  await writeCloneJob(storage, record('home/user/live', 'job-8', { startedAt: 5000 }));
+  await writeCloneJob(storage, record('home/user/live', 'job-8', { generation: 2 }));
+  // A record written before records carried a generation is an earlier one's.
+  cloneTree(user, 'home/user/old', 'job-11');
+  const { generation: _generation, ...unnumbered } = record('home/user/old', 'job-11');
+  await writeCloneJob(storage, unnumbered);
   // A destination whose lease another holds is left for the next generation.
   cloneTree(user, 'home/user/held', 'job-9');
-  await writeCloneJob(storage, record('home/user/held', 'job-9', { startedAt: 1000 }));
+  await writeCloneJob(storage, record('home/user/held', 'job-9', { generation: 1 }));
   const held = user.acquireExclusiveMutation('home/user/held', { includeMissingAncestors: true });
-  const outcomes = await finishInterruptedClones(vfs, storage, 4000);
-  assert.deepEqual(outcomes.map((o) => o.outcome), ['removed']);
+  const interrupted = await listInterruptedClones(storage, 2);
+  assert.deepEqual(interrupted.map((r) => r.jobId).sort(), ['job-11', 'job-7', 'job-9'], 'earlier generations\' records');
+  const reserved = reserveInterruptedClones(vfs, interrupted);
+  assert.deepEqual(reserved.map(({ record: r }) => r.jobId).sort(), ['job-11', 'job-7'], 'the leased destination is not reserved');
+  // The first write after the reset: refused while the cleanup holds the destination.
+  assert.throws(() => user.writeFile('home/user/repo/first.txt', 'first'), (error) => error?.code === 'EBUSY', 'a write into a reserved destination');
+  let slices = 0;
+  const outcomes = await finishReservedClones(vfs, storage, reserved, { sliceEntries: 4, yieldBetween: async () => { slices++; } });
+  assert.deepEqual(outcomes.map((o) => o.outcome), ['removed', 'removed']);
+  assert.ok(slices > 2, `in slices (${slices})`);
   assert.equal(user.exists('home/user/repo'), false, 'the next generation finished it');
+  user.mkdir('home/user/repo');
+  user.writeFile('home/user/repo/first.txt', 'first');
+  assert.equal(user.readFileString('home/user/repo/first.txt'), 'first', 'then the write lands, and stays');
   assert.ok(user.exists('home/user/live/.git/nimbus-clone-job') && user.exists('home/user/held/.git/nimbus-clone-job'));
   assert.deepEqual((await listCloneJobs(storage)).map((r) => r.jobId).sort(), ['job-8', 'job-9']);
   vfs.releaseExclusiveMutation(held.owner);
-  console.log('  ok  a cleanup cut short: finished at the next generation\'s start; a running clone and a leased destination left');
+  console.log('  ok  a cleanup cut short: reserved and finished by the next generation, the first write refused until then; a running clone and a leased destination left');
+}
+
+// ── slices of one entry over targets partly gone ──
+{
+  const { user, storage } = session();
+  cloneTree(user, 'home/user/repo', 'job-12', { files: 3 });
+  // Staging already gone (an earlier cleanup got past it); five temporary packs left.
+  for (const name of ['batch-0', 'index-gitlinks']) user.unlink('home/user/repo/.git/nimbus-clone/' + name);
+  user.rmdir('home/user/repo/.git/nimbus-clone');
+  for (let i = 0; i < 4; i++) user.writeFile(`home/user/repo/.git/objects/pack/tmp_pack_job-12_x${i}.pack`, 't');
+  const job = record('home/user/repo', 'job-12', { phase: 'checkout' });
+  await writeCloneJob(storage, job);
+  let yields = 0;
+  const done = await cleanUpClone(user, storage, job, {
+    sliceEntries: 1,
+    // Bounded: a cleanup that spends its slices on what is gone never ends.
+    yieldBetween: async () => { if (++yields > 20) throw new Error('the cleanup does not end'); },
+  });
+  assert.equal(done.outcome, 'kept-repo');
+  assert.equal(done.slices, 5, `one slice per removal (${JSON.stringify(done)})`);
+  assert.deepEqual(list(user, 'home/user/repo/.git/objects/pack'), ['pack-1.idx', 'pack-1.pack'], 'every temporary pack went');
+  console.log(`  ok  slices of one entry over targets partly gone: ${done.slices} slices, absent ones free`);
 }
 
 // ── as the record's credential ──

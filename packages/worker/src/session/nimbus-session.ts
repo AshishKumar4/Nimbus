@@ -135,7 +135,7 @@ import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 // S10: heap probe + W5 OOM-ring persistence extracted.
 import * as _diag from './diag.js';
 import { ServedReads } from '../facets/read-profile.js';
-import { finishInterruptedClones } from '../git/clone-job.js';
+import { finishReservedClones, listInterruptedClones, reserveInterruptedClones, type CloneJobRecord } from '../git/clone-job.js';
 
 /** The ops whose non-null answer is a file's content served to a process. */
 const SERVED_READ_OPS: ReadonlySet<string> = new Set(['readFile', 'readFileBytes', 'fsReadRange', 'fsReadRangeUncached']);
@@ -550,6 +550,13 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         this._w1SessionDestroyed =
           (await ctx.storage.get(SESSION_DESTROYED_KEY)) !== undefined;
       } catch { /* storage unavailable — treat as live */ }
+      // Clones an earlier generation ran were cut short: their destinations
+      // are reserved before the filesystem serves a write (ensureSqliteFs).
+      try {
+        this.interruptedClones = await listInterruptedClones(ctx.storage, generation(ctx));
+      } catch (e: any) {
+        console.warn('[git] interrupted clones could not be listed:', e?.message);
+      }
     });
     // W1: the log-janitor alarm is armed on log ACTIVITY (see
     // hibernation.ts ensureLogJanitor), NOT here. Arming it in the
@@ -1170,17 +1177,22 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
       this._w5RehydrateRingFromStorage().catch((e: any) => {
         console.warn('[nimbus/W5] ring rehydrate failed:', e?.message);
       });
-      // Clones a previous generation of this session left running were cut
-      // short: finish their cleanup (git/clone-job.ts), a slice at a time.
-      this.ctx.waitUntil(finishInterruptedClones(this.sqliteFs, this.ctx.storage, this.generationStartedAt).catch((e: any) => {
-        console.warn('[git] interrupted clone cleanup failed:', e?.message);
-      }));
+      // Clones an earlier generation left were cut short: their destinations
+      // are reserved before anything can write there, and cleaned up
+      // (git/clone-job.ts) in the background, a slice at a time.
+      const reserved = reserveInterruptedClones(this.sqliteFs, this.interruptedClones);
+      this.interruptedClones = [];
+      if (reserved.length > 0) {
+        this.ctx.waitUntil(finishReservedClones(this.sqliteFs, this.ctx.storage, reserved).catch((e: any) => {
+          console.warn('[git] interrupted clone cleanup failed:', e?.message);
+        }));
+      }
     }
     return this.sqliteFs;
   }
 
-  /** When this generation of the session began: clone records older than it are a previous generation's. */
-  private readonly generationStartedAt = Date.now();
+  /** The records of clones an earlier generation ran, listed as this one began: reserved when the filesystem comes up. */
+  private interruptedClones: CloneJobRecord[] = [];
 
   // ── W5 Lever 5: ring buffer persistence on DO storage ─────────────────
   // Storage key W5_RING_STORAGE_KEY lives in ./keys.ts (S5).
