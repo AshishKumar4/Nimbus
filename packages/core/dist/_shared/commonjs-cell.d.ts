@@ -138,6 +138,19 @@ export declare function runtimeFunctionModule(kind: RuntimeFunctionKind, params:
  * the error the interpreter answers it with in the first launch.
  */
 export declare function runtimeExpressionModule(code: string): string;
+/**
+ * Whether runtime code is staged as a `gen/` module for the next launch to
+ * compile natively: all of it except a constructor's or a vm script's code
+ * that calls import(). Node resolves such an import() against the module
+ * that called the constructor (and refuses it in vm's code, which has no
+ * importer), and that module is known only to the launch that builds the
+ * function: compiled natively, workerd would resolve it against the shared
+ * `gen/` module instead. So that code runs in the interpreter in every
+ * launch, which takes the importer from the constructor call. A file
+ * written at runtime is lowered with its own path as its imports' parent,
+ * and code V8 refuses is staged as the SyntaxError it throws.
+ */
+export declare function runtimeCodeCompilesNatively(entry: RuntimeCodeEntry): boolean;
 /** The main module's imports the runtime below reads through. */
 export declare const COMMONJS_CELL_IMPORTS: string;
 /**

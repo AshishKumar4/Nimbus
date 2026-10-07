@@ -97,7 +97,11 @@
  * changes every run (an edit, then the module runner's transform of it) is
  * interpreted each time. Code the interpreter refuses (TypeScript or JSX
  * text, `using` declarations) still throws EvalError code
- * ERR_NIMBUS_CODE_NEXT_LAUNCH, and runs from the next launch on.
+ * ERR_NIMBUS_CODE_NEXT_LAUNCH, and runs from the next launch on. A
+ * constructor's code that calls import() is the exception: it is never
+ * compiled natively, and runs in the interpreter in every launch, its
+ * import() resolving against the module that called the constructor
+ * (runtimeCodeCompilesNatively).
  *
  * A process started with NIMBUS_RUNTIME_CODE=interpret interprets even code
  * an earlier launch staged: the same launch, natively or not, which is how
@@ -431,6 +435,41 @@ export function runtimeExpressionModule(code) {
         return `throw new Error(${JSON.stringify(VM_SCRIPT_UNSUPPORTED)});`;
     return runtimeFunctionModule('function', [], expressionFunctionBody(code.slice(0, at.prologueEnd), code.slice(at.start, at.end)));
 }
+/**
+ * Whether runtime code is staged as a `gen/` module for the next launch to
+ * compile natively: all of it except a constructor's or a vm script's code
+ * that calls import(). Node resolves such an import() against the module
+ * that called the constructor (and refuses it in vm's code, which has no
+ * importer), and that module is known only to the launch that builds the
+ * function: compiled natively, workerd would resolve it against the shared
+ * `gen/` module instead. So that code runs in the interpreter in every
+ * launch, which takes the importer from the constructor call. A file
+ * written at runtime is lowered with its own path as its imports' parent,
+ * and code V8 refuses is staged as the SyntaxError it throws.
+ */
+export function runtimeCodeCompilesNatively(entry) {
+    if (entry.kind === 'module')
+        return true;
+    const text = entry.kind === 'expression' ? entry.code : `(${runtimeFunctionSource(entry.kind, entry.params, entry.body)})`;
+    let program;
+    try {
+        program = parse(text, REALM.scriptOptions);
+    }
+    catch {
+        return true;
+    }
+    const pending = [program];
+    while (pending.length > 0) {
+        const node = pending.pop();
+        if (typeof node !== 'object' || node === null)
+            continue;
+        if (Reflect.get(node, 'type') === 'ImportExpression')
+            return false;
+        for (const child of Object.values(node))
+            pending.push(child);
+    }
+    return true;
+}
 /** Why a vm script that is not one expression does not run in a Worker. */
 const VM_SCRIPT_UNSUPPORTED = 'vm.runInThisContext: a Worker runs code compiled after its launch only as one expression, whose value is the result';
 /** The main module's imports the runtime below reads through. */
@@ -576,16 +615,20 @@ function __nimbusRuntimeInterpreter() {
   if (__nimbusInterpreter === null) {
     const { createInterpreter } = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}");
     __nimbusInterpreter = createInterpreter(__nimbusRegistryRequire("./${RUNTIME_INTERPRETER_OPS_MODULE}"), {
-      dynamicImport: (parentUrl, specifier, options) => globalThis.__nimbusDynamicImport(parentUrl, specifier, options),
+      // Code with no importer is vm's, whose import() Node refuses so.
+      dynamicImport: (parentUrl, specifier, options) => parentUrl === undefined
+        ? Promise.reject(Object.assign(new TypeError("A dynamic import callback was not specified."), { code: "ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING" }))
+        : globalThis.__nimbusDynamicImport(parentUrl, specifier, options),
       primordials: __nimbusLaunchPrimordials,
     });
   }
   return __nimbusInterpreter;
 }
 // The compiled code: this launch's module for it when an earlier launch
-// staged it; otherwise recorded for the next launch and interpreted. A
+// staged it; otherwise recorded for the next launch and interpreted, its
+// import() resolving against importer (runtimeCodeCompilesNatively). A
 // SyntaxError is what compiling it natively throws too.
-function __nimbusRuntimeCodeCompile(entry, describe) {
+function __nimbusRuntimeCodeCompile(entry, describe, importer) {
   const __id = __nimbusRuntimeCodeKey(entry);
   const __staged = __nimbusRuntimeCodeStaged(__id.key);
   if (__staged !== undefined) return __staged;
@@ -594,10 +637,10 @@ function __nimbusRuntimeCodeCompile(entry, describe) {
   try {
     if (entry.kind === "module") return __interpreter.compileModule(entry.path, entry.text);
     if (entry.kind === "expression") return __interpreter.compileExpression(entry.code);
-    return __interpreter.compileFunction(entry.kind, entry.params, entry.body);
+    return __interpreter.compileFunction(entry.kind, entry.params, entry.body, importer);
   } catch (e) {
     if (!e || e.code !== "${INTERPRETER_UNSUPPORTED}") throw e;
-    const __err = new EvalError(describe + " was produced after this launch started, and a Worker compiles code only from the module map it was launched with; it is staged, and the next launch of this command compiles it. (" + e.message + ")");
+    const __err = new EvalError(describe + " was produced after this launch started, and a Worker compiles code only from the module map it was launched with; it is staged, and the next launch of this command compiles it unless it calls import(). (" + e.message + ")");
     __err.code = "ERR_NIMBUS_CODE_NEXT_LAUNCH";
     __err.key = __id.key;
     throw __err;
@@ -608,9 +651,10 @@ function __nimbusRuntimeModule(path, text) {
   return __nimbusRuntimeCodeCompile({ kind: "module", path, text: String(text) }, "Module '/" + path + "'");
 }
 globalThis.__nimbusRuntimeCode = Object.freeze({
-  compileFunction(kind, params, body) {
+  // importer: the module that called the constructor, for its import(); absent for vm's code.
+  compileFunction(kind, params, body, importer) {
     if (!${JSON.stringify(Object.keys(RUNTIME_FUNCTION_HEADS))}.includes(kind)) throw new TypeError("compileFunction: unknown kind " + String(kind));
-    return __nimbusRuntimeCodeCompile({ kind, params: Array.from(params, String), body: String(body) }, "Code handed to the " + kind + " constructor");
+    return __nimbusRuntimeCodeCompile({ kind, params: Array.from(params, String), body: String(body) }, "Code handed to the " + kind + " constructor", importer);
   },
   // vm.runInThisContext's code (node-shims): a function returning its value,
   // which node-shims calls with the global object as \`this\`, a script's own.

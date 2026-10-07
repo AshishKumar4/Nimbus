@@ -6,7 +6,7 @@ export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
 export type { ModuleCell } from './modules.js';
 export interface InterpreterHost {
-    /** `import(specifier, options)` from code whose module URL is `parentUrl`. */
+    /** `import(specifier, options)` from code whose module URL is `parentUrl`; undefined for code with no importer. */
     dynamicImport(parentUrl: string | undefined, specifier: unknown, options: unknown): Promise<unknown>;
     /**
      * LAUNCH_PRIMORDIALS of the primordials module the launch loaded at its
@@ -16,8 +16,12 @@ export interface InterpreterHost {
     readonly primordials: object;
 }
 export interface Interpreter {
-    /** The function `new <kind>Function(...params, body)` builds. */
-    compileFunction(kind: RuntimeFunctionKind, params: readonly string[], body: string): NativeFunction;
+    /**
+     * The function `new <kind>Function(...params, body)` builds. Its import()
+     * resolves against `importer`, the module that called the constructor, as
+     * Node resolves it; without one the code has no importer, as vm's has not.
+     */
+    compileFunction(kind: RuntimeFunctionKind, params: readonly string[], body: string, importer?: string): NativeFunction;
     /**
      * The module cell for a file's text: Node's wrapper function of
      * (exports, require, module, __filename, __dirname). CommonJS text runs as

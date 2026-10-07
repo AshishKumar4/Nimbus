@@ -118,7 +118,7 @@ export function createInterpreter(hostOps, host) {
         installed = hostOps;
     }
     const interpreter = {
-        compileFunction(kind, params, body) {
+        compileFunction(kind, params, body, importer) {
             // A trailing source map is parsed only when the shortened body fails.
             const short = withoutTrailingLineComments(body);
             let parsed;
@@ -134,7 +134,7 @@ export function createInterpreter(hostOps, host) {
             const node = ownFunctionExpression(parsed.node);
             const analysis = analyzeFunction(node);
             const root = analysis.functionScopeOf(node);
-            const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);
+            const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(importer, specifier, options) }, null);
             const fi = new Compiler(analysis, unit, text, 0, root).rootFunction(node, 'anonymous', runtimeFunctionSource(kind, params, body));
             releaseScopes(root);
             return makeFunction(fi, ROOT_ENV, undefined);

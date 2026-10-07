@@ -8140,6 +8140,43 @@ const __nimbusDecodeStringLiteral = function decodeJavaScriptStringLiteral(sourc
     }
     return found;
   };
+  // The module import() in a constructor's code resolves against, as Node
+  // resolves it: the module that called the constructor, which is the first
+  // of the program's own modules on the stack, a cell (file:///bundle/vfs/
+  // <path>) or the entry (file:///bundle/entry/<path>), whose names
+  // percent-encode the path (commonjs-cell.ts moduleNameUnder). `-e` and
+  // stdin code is <cwd>/[eval] and <cwd>/[stdin], as the entry's own
+  // imports are. A frame of code the interpreter runs is its own, so a
+  // constructor called from interpreted code takes the program module that
+  // called into it. Read with V8's own stack format, whatever the program set.
+  const importerOfCaller = () => {
+    const prepare = Error.prepareStackTrace;
+    const limit = Error.stackTraceLimit;
+    let stack;
+    try {
+      Error.prepareStackTrace = undefined;
+      Error.stackTraceLimit = 64;
+      stack = String(new Error().stack);
+    } finally {
+      Error.prepareStackTrace = prepare;
+      Error.stackTraceLimit = limit;
+    }
+    for (const line of stack.split("\n")) {
+      const at = line.indexOf("file:///bundle/");
+      if (at < 0) continue;
+      let url = line.slice(at);
+      if (url.endsWith(")") && line.lastIndexOf("(", at) >= 0) url = url.slice(0, -1);
+      const own = /^file:\/\/\/bundle\/(vfs|entry)\/(.+?):\d+:\d+$/.exec(url);
+      if (own === null) continue;
+      let path;
+      try { path = decodeURIComponent(own[2]); } catch { continue; }
+      if (own[1] === "entry" && (path === "[eval]" || path === "[stdin]")) {
+        path = String(globalThis.process.cwd()).replace(/\/+$/, "") + "/" + path;
+      }
+      return "file:///" + path.replace(/^\/+/, "");
+    }
+    return undefined;
+  };
   for (const [kind, Native] of kinds) {
     if (Native.__nimbusNative) continue;
     const routed = function (...args) {
@@ -8151,7 +8188,7 @@ const __nimbusDecodeStringLiteral = function decodeJavaScriptStringLiteral(sourc
         const params = args.slice(0, -1).map(String);
         const body = args.length > 0 ? String(args[args.length - 1]) : "";
         try {
-          const fn = service.compileFunction(kind, params, body);
+          const fn = service.compileFunction(kind, params, body, importerOfCaller());
           // A subclass's `new` (`class F extends Function`) makes an instance of the subclass.
           if (new.target !== undefined && new.target !== routed) {
             const proto = new.target.prototype;
