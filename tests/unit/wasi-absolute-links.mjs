@@ -106,7 +106,10 @@ if (hasHost('python3')) {
       args: ['-c', 'import os; print("ran in", os.getcwd())'], cwd, env: {}, stdin: '', stdout: { write() {} }, stderr: { write() {} },
     };
     assert.equal(await run(ctx), 0);
-    return spawnSync('python3', ['-c', submitted[0].userCode], { encoding: 'utf8', cwd: '/' });
+    const args = submitted[0];
+    // Match the reactor's two compilation units: setup must enter cwd before
+    // user code, without adding setup's line offset to the user compilation.
+    return spawnSync('python3', ['-c', `${args.bootstrapCode}\nexec(compile(${JSON.stringify(args.userCode)}, "<string>", "exec"))`], { encoding: 'utf8', cwd: '/' });
   };
   const refused = await guest(missing);
   assert.equal(refused.status, 1);
@@ -158,6 +161,7 @@ if (hasHost('ruby')) {
     writeFileSync(join(dir, 'ruby+stdlib.wasm'), new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
     writeFileSync(join(dir, 'worker.mjs'), buildRubySocketProcessWorker([
       'function __wasiAdoptSupervisor() {}',
+      'globalThis.__nimbusRubyDrainOutput = async () => {};',
       'globalThis.__nimbusRubyStep = async () => ({ resumed: false, alive: false, wakeAfter: null });',
       'globalThis.__rubyRun = async (args) => { globalThis.__residentArgs = args; return { exitCode: 0, stdout: "", stderr: "" }; };',
     ].join('\n')));
