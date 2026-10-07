@@ -222,6 +222,25 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   });
   assert.notEqual((await rowFor(ctx, c.pid)).owner, owner1, 'a different cwd is a different identity');
   assert.equal(processes.get(a2.pid)?.state, 'running');
+  // Node's options are the launch's too (`node -C development server.js`),
+  // though not the program's argv: each set its own durable identity, live
+  // beside the plain one, with the table listing what was typed.
+  const launch = (conditions) => ({ execArgv: ['-C', conditions], conditions: [conditions], require: [], import: [], print: false });
+  const d = await fm.spawnNode(SERVER, {
+    command: 'node -C development server.js', node: launch('development'), argv: ['/home/user/example-app/server.js'], cwd: '/home/user/example-app',
+  });
+  const dRow = await rowFor(ctx, d.pid);
+  assert.ok(dRow, 'the launch under -C development is journalled beside the plain one');
+  assert.equal(dRow.owner, await deriveResidentOwner('/home/user/example-app', ['-C', 'development', '/home/user/example-app/server.js']),
+    'its identity is derived from its options and its argv');
+  assert.deepEqual(processes.get(d.pid)?.argv, ['-C', 'development', '/home/user/example-app/server.js'], 'the table lists its options');
+  assert.equal((await fm.residentIdentity(d.pid)).ephemeral, false);
+  const e = await fm.spawnNode(SERVER, {
+    command: 'node -C production server.js', node: launch('production'), argv: ['/home/user/example-app/server.js'], cwd: '/home/user/example-app',
+  });
+  const eRow = await rowFor(ctx, e.pid);
+  assert.ok(eRow, 'and under -C production, a third');
+  assert.equal(new Set([owner1, dRow.owner, eRow.owner]).size, 3, 'three identities');
 }
 
 // ── 3. a concurrent duplicate is ephemeral ──────────────────────────────────

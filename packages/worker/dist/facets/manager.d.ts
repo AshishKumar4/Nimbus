@@ -24,7 +24,8 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type PortVisibility } from '../session/port-capability.js';
-import { type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
+import { type PreloadModuleRoot, type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
+import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
 import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -199,6 +200,8 @@ export declare function facetWasmImports(named: readonly {
 }[], closure: readonly WasmImageRecord[]): FacetWasmImport[];
 export declare function generateLongRunningNodeCode(userCode: string, vfsState: FacetVfsState, opts: {
     argv?: string[];
+    /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
+    node?: NodeLaunch;
     env?: Record<string, string>;
     cwd?: string;
     filename?: string;
@@ -462,6 +465,7 @@ export declare function greedyAddMainEntries(vfs: LaunchFs, cwd: string, bundle:
 }, requiredPaths?: ReadonlySet<string>, options?: {
     maxBundleBytes?: number;
     pacer?: TurnBudget;
+    conditions?: readonly string[];
 }): Promise<{
     added: number;
     groups: OptionalModuleGroup[];
@@ -700,6 +704,10 @@ export interface PrefetchBundleOptions {
     executedModules?: readonly RequiredModuleRoot[];
     /** Where the launch's transform results are kept by content. */
     transformStore?: BundleCellResultStore;
+    /** The program's own conditions (`node --conditions`), as the process resolves under them. */
+    conditions?: readonly string[];
+    /** What the command line preloads (`node -r`, `--import`): required roots, walked first, as they run first. */
+    preloads?: readonly PreloadModuleRoot[];
 }
 /**
  * The working dir's config files of the tool a launch runs. The tool
@@ -894,6 +902,8 @@ export interface SpawnedWorker {
 /** What `spawnNode` needs to build and boot one resident Node process. */
 export interface ResidentSpawnOptions {
     argv?: string[];
+    /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
+    node?: NodeLaunch;
     env?: Record<string, string>;
     cwd?: string;
     filename?: string;
@@ -1464,6 +1474,8 @@ export declare class FacetManager {
             offset: number;
             syncRead: boolean;
         };
+        /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
+        node?: NodeLaunch;
     }): Promise<FacetExecResult>;
     /**
      * A process stopped at a synchronous read of stdin that needs input not
