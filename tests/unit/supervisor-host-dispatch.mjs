@@ -6,7 +6,7 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { dec } from '../../packages/core/src/_shared/bytes.ts';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
@@ -76,6 +76,7 @@ const uid = CRED_SESSION_USER.uid, gid = CRED_SESSION_USER.gid;
 const mask = 0o077, rOk = 0o4, xOk = 0o1, seekTo = 2;
 const options = { followSymlinks: false }, epoch = 'epoch', cursor = 9, after = 'after', limit = 32;
 const url = 'https://remote.test/', protocols = ['protocol'], id = 7, waitMs = 25, text = 'text';
+const wsHeaders = [['Authorization', 'Bearer t']];
 const code = 0, reason = 'closed', offset = 0, length = 3;
 const requests = [{ path, offset, length }], moduleId = 'module', operationId = 'operation';
 const payload = { inodes: [], chunks: [] }, stream = encodeWriteBatchStream({ inodes: [], chunks: [] });
@@ -114,7 +115,7 @@ const INPUTS = {
   fsRevision: [path],
   fsList: [after, limit],
   fsStorageGrant: ['proc-slot-0', 4096, 8192],
-  wsOpen: [url, protocols],
+  wsOpen: [url, protocols, wsHeaders, true],
   wsPoll: [id, waitMs],
   wsSend: [id, text, bytes],
   wsClose: [id, code, reason],

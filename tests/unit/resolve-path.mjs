@@ -11,6 +11,7 @@
 // different `tool`, which must never be what runs; and /custom/bin holds
 // commands only a PATH naming it finds.
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -25,7 +26,7 @@ import { searchPath } from '../../packages/core/src/shell/exec-dispatch.ts';
 import { resolveContext } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { installRubyGems } from '../../packages/core/src/runtime/ruby-gems.ts';
 import { syscallError } from '../../packages/core/src/vfs/vfs-error.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 /** A workspace as the session builds one: shell entrypoints, then the npm bin fallback. */
@@ -174,7 +175,7 @@ assert.deepEqual(await run(main, 'PATH=/custom/bin command -v tool'), ['/custom/
     globalThis.fetch = async (url) => responses.get(String(url)) ?? new Response(null, { status: 404 });
     try {
       const view = main.filesystem.view({ pid: 900, cred: CRED_KERNEL });
-      await installRubyGems(view, [{ name: 'rackup', requirements: [] }], { gemHome: '/home/main/.gem' });
+      await installRubyGems(view, [{ name: 'rackup', requirements: [] }], { gemHome: '/home/main/.gem', network: ISOLATE_NETWORK });
     } finally {
       globalThis.fetch = realFetch;
     }
@@ -190,6 +191,11 @@ assert.deepEqual(await run(main, 'PATH=/custom/bin command -v tool'), ['/custom/
   assert.deepEqual(await report('rackup'), at('rackup', '/home/main/.gem/bin/rackup'), 'a gem\'s bin');
   assert.deepEqual(await run(main, 'command -v clang >/dev/null && echo "clang installed" || echo "clang missing"'), ['clang installed\n', '', 0]);
   assert.deepEqual(await run(main, 'command -v echo; command -V echo; type echo'), ['echo\necho is a shell builtin\necho is a shell builtin\n', '', 0]);
+  // A builtin the shell runs itself, which no registry entry names: bash 5's answers.
+  assert.deepEqual(await run(main, 'command -v cd; command -V cd; type cd export'), ['cd\ncd is a shell builtin\ncd is a shell builtin\nexport is a shell builtin\n', '', 0]);
+  // One of bash's builtins this shell does not run is no builtin here: it is not found, as running it is.
+  assert.deepEqual(await run(main, 'command -v bind; echo v=$?; type bind; echo t=$?; bind; echo r=$?'),
+    ['v=1\nt=1\nr=127\n', 'type: bind: not found\nbind: command not found\n', 0]);
 }
 
 // ── A shell builtin is the builtin whatever PATH holds of its name ───────

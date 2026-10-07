@@ -21,6 +21,7 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
+import { ISOLATE_NETWORK, workspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { enc, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
 import { isBrokenPipe } from '@nimbus-sh/core/substrate/lifo/utils/bytes-io.js';
 import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
@@ -412,10 +413,10 @@ const FsListArgsSchema = z.object({
  * session/ws-relay.ts for why mediating the transport is not enough.
  *
  * The URL is untrusted input, so it is parsed rather than pattern-matched and
- * only the two WebSocket schemes are accepted. Nothing else about the request
- * comes from the facet — no facet-supplied header is forwarded, so the
- * supervisor cannot be induced to attach its own ambient credentials to a
- * destination the facet chose.
+ * only the two WebSocket schemes are accepted. The facet's request headers
+ * are bounded here and filtered by the relay (ws-relay.ts open): the
+ * supervisor sends what the program could have sent itself, and nothing of
+ * its own.
  */
 const WsOpenArgsSchema = z.object({
     url: z.string().max(2048).refine((value) => {
@@ -429,10 +430,12 @@ const WsOpenArgsSchema = z.object({
         return parsed.protocol === 'ws:' || parsed.protocol === 'wss:';
     }, { message: 'a relayed socket needs a ws: or wss: URL' }),
     protocols: z.array(z.string().max(64)).max(8),
+    headers: z.array(z.tuple([z.string().min(1).max(256), z.string().max(8192)])).max(64),
+    refusalBody: z.boolean(),
 });
-export async function _rpcWsOpen(self, url, protocols, pid) {
-    const args = WsOpenArgsSchema.parse({ url, protocols: protocols ?? [] });
-    return self._ensureWebSocketRelay().open(processPid(pid), args.url, args.protocols);
+export async function _rpcWsOpen(self, url, protocols, headers, refusalBody, pid) {
+    const args = WsOpenArgsSchema.parse({ url, protocols: protocols ?? [], headers: headers ?? [], refusalBody: refusalBody ?? false });
+    return self._ensureWebSocketRelay().open(processPid(pid), args.url, args.protocols, args.headers, args.refusalBody);
 }
 export async function _rpcWsPoll(self, id, waitMs, pid) {
     return self._ensureWebSocketRelay().poll(processPid(pid), Number(id), Number(waitMs) || 0);
@@ -1494,6 +1497,7 @@ export async function _rpcFanoutExecute(self, fnSource, args, poolOpts = {}) {
         supervisorDoIdOverride: poolOpts.coordinatorDoId,
         supervisorRoute: poolOpts.coordinatorRoute,
         supervisorPid: poolOpts.supervisorPid,
+        network: poolOpts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(poolOpts.network.egress, poolOpts.network.id),
     });
     try {
         // mapSource accepts the pre-serialized fnSource forwarded by the
@@ -1541,6 +1545,12 @@ const HostProcessOptsSchema = z.object({
     writerId: z.string().uuid(),
     /** The coordinator instance's delivery incarnation, for the process's SUPERVISOR binding. */
     hostIncarnation: z.string().uuid().optional(),
+    /** The coordinator workspace's egress (a stub, crossed by RPC) and its id: the process's network. */
+    network: z.object({
+        egress: z.custom((value) => value !== null && (typeof value === 'object' || typeof value === 'function')
+            && typeof value.fetch === 'function' && typeof value.connect === 'function'),
+        id: z.string().min(1),
+    }).optional(),
     /** Keyed dynamic-worker identity on THIS peer's loader. */
     workerKey: z.string().min(1),
     /** Unforgeable capability for the fetch-semantic WebSocket hop. */
@@ -1676,7 +1686,10 @@ export async function _rpcHostProcess(self, boot, opts) {
     const spec = ResidentBootSpecSchema.parse(boot);
     const { workerKey } = hostOpts;
     const supervisor = {
-        ...supervisorBindingProps(self.ctx, hostOpts.pid, { writerId: hostOpts.writerId, doId: hostOpts.coordinatorDoId, route: hostOpts.route }),
+        ...supervisorBindingProps(self.ctx, hostOpts.pid, {
+            writerId: hostOpts.writerId, doId: hostOpts.coordinatorDoId, route: hostOpts.route,
+            network: hostOpts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(hostOpts.network.egress, hostOpts.network.id),
+        }),
         ...(hostOpts.hostIncarnation === undefined ? {} : { hostIncarnation: hostOpts.hostIncarnation }),
     };
     let cancel = () => { };

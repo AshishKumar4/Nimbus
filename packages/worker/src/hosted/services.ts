@@ -1,4 +1,5 @@
 import { staticStdinReader } from "@nimbus-sh/core/shell/stdin-adapter.js";
+import { loaderOutbound, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { composeFacetManager, type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
 import { FacetProcessManager, textBytes, type ChildOrigin, type OutputHooks } from "../facets/process.js";
 import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
@@ -71,6 +72,8 @@ export interface RuntimeServiceContext {
   armResidentKeepalive: () => void;
   /** The host's own authority: a session has exactly one, and this is it. */
   filesystem: () => NimbusFilesystemAuthority;
+  /** The workspace's network (`workspace.network`): its egress, when the host supplied one. */
+  network: () => WorkspaceNetwork;
 }
 
 const CpFacetDirectPayloadSchema = z.object({
@@ -122,6 +125,7 @@ export function ensureFacetManager(self: RuntimeServiceHost, runtimeContext: Run
         portRegistry: self.portRegistry,
         vfs: filesystem.engine,
         filesystem,
+        network: runtimeContext.network,
         ...(self.esbuildService ? { esbuild: self.esbuildService } : {}),
         hooks: {
           onExternalExit: (pid, code, reason) => self._reportExternalExit(pid, code, reason),
@@ -166,7 +170,7 @@ export function ensureFacetManager(self: RuntimeServiceHost, runtimeContext: Run
   }
 
 export function _ensureWebSocketRelay(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): WebSocketRelay {
-    if (!self.webSocketRelay) self.webSocketRelay = new WebSocketRelay();
+    if (!self.webSocketRelay) self.webSocketRelay = new WebSocketRelay(runtimeContext.network);
     return self.webSocketRelay;
   }
 
@@ -513,6 +517,8 @@ export function ensureFetchProxy(self: RuntimeServiceHost, runtimeContext: Runti
         compatibilityFlags: [...GUEST_COMPAT_FLAGS],
         mainModule: 'fetch-proxy.js',
         modules: { 'fetch-proxy.js': proxyCode },
+        // The registry is reached through the workspace's egress, when it has one.
+        ...loaderOutbound(runtimeContext.network()),
       });
       self.fetchProxyEntrypoint = worker.getEntrypoint();
       log?.('Fetch proxy worker created (singleton)');
@@ -578,6 +584,7 @@ export async function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContex
         env: runtimeContext.env,
         onProgress,
         fetchFn,
+        network: runtimeContext.network(),
       },
     );
     return self.npmInstaller;

@@ -27,8 +27,14 @@
  * the session capability as calls to this side: each supervisor method, and
  * each of its synchronous view's, is answered here from the facet's
  * filesystem.
+ *
+ * A facet's network is the workspace's. A realm cannot be handed a Fetcher,
+ * so under an egress its `fetch` crosses to this side, which sends it out
+ * through the egress (realm-egress.ts, as the inline `node` does); a
+ * WebSocket, which cannot cross, is refused by name.
  */
 import type { FacetHost } from './facet-host.js';
+import { type WorkspaceNetwork } from '../_shared/workspace-network.js';
 import { type RealmOutcome } from './realm.js';
 import type { WasiParking } from './wasi/types.js';
 /** Which of the facet's capabilities a call reaches: the supervisor, or its synchronous view. */
@@ -44,6 +50,8 @@ export interface FacetPayload {
         readonly methods: readonly string[];
         readonly synchronous: readonly string[] | null;
     };
+    /** The workspace's network goes through an egress: the facet's fetch crosses to the host (realm-egress.ts). */
+    readonly egress: boolean;
 }
 /** A submitted call, host to guest. */
 export interface FacetSubmit {
@@ -89,7 +97,11 @@ export declare function wasmCompiler(): WasmCompiler;
  * {@link FacetSubmitOptions.timeoutMs} and `signal` are honoured: either ends
  * the facet, as a substrate with isolates of its own does. A facet waiting for
  * no call holds no part of this process: it does not keep it alive.
+ *
+ * `network` is the workspace's (`workspace.network`, or
+ * `workspaceNetwork(egress)` for the egress the workspace is created with,
+ * `ISOLATE_NETWORK` without one): every facet goes out through it.
  */
-export declare function localFacetHost(): FacetHost;
+export declare function localFacetHost(network: WorkspaceNetwork): FacetHost;
 export {};
 //# sourceMappingURL=local-facet-host.d.ts.map

@@ -22,6 +22,7 @@
  *  - stdout/stderr accumulate per pump slice and stream back to the
  *    CommandContext; VFS writes come back as a WasiFsDiff on exit.
  */
+import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
 import type { RuntimeManifest } from './runtime-manifest.js';
 import { withHostView, type ProcessView } from './process-files.js';
 import type { Facet, FacetHost } from './facet-host.js';
@@ -406,7 +407,7 @@ export function makeBashRunnerFactory(deps: {
         }
       } catch (e: unknown) {
         // Killed: the program ends as an interrupted one does.
-        if (stdio.signal.aborted) return exitCode = 130;
+        if (stdio.signal.aborted) return exitCode = exitCodeForAbortSignal(stdio.signal);
         ctx.stderr.write(`${binName}: dispatch failed: ${errorMessage(e)}\n`);
         return 1;
       } finally {

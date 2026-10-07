@@ -1,6 +1,7 @@
 import type { NodeFilesystem } from './filesystem.js';
 import type { CommandOutputStream } from '../commands/types.js';
 import type { LoopbackRouter, VirtualRequestHandler } from '../kernel/index.js';
+import type { DNSResolver } from '../kernel/dns-resolver.js';
 export interface NodeContext {
     filesystem: () => NodeFilesystem;
     cwd: string;
@@ -16,6 +17,8 @@ export interface NodeContext {
     stdin?: () => Uint8Array;
     portRegistry?: Map<number, VirtualRequestHandler>;
     routeLoopback?: LoopbackRouter;
+    /** The kernel's resolver, which dns.lookup answers from as curl and wget do. */
+    dns?: DNSResolver;
 }
 export declare function createModuleMap(ctx: NodeContext): Record<string, () => unknown>;
 export { ProcessExitError } from './process.js';

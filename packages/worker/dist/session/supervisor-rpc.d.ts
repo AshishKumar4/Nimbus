@@ -43,6 +43,7 @@
  * Appends are re-sent under the append ledger's identity. Everything else is
  * sent once and a drop surfaces.
  */
+import type { WsRelayHeaders, WsRelayOpened } from './ws-relay.js';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { WriteFileStatAnswer } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
@@ -144,6 +145,13 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     private _call;
     private _cacheRead;
     private _infrastructureCache;
+    /**
+     * The network this binding's process reaches out through: its workspace's
+     * egress when its host supplied one (SupervisorBindingProps.egress), else
+     * this isolate's own. Every request the binding makes for the process —
+     * its fetch, its sockets, its packument reads — goes through it.
+     */
+    private _network;
     private _pid;
     /** The run of the process this binding was minted for, when it has one. */
     private _runId;
@@ -235,10 +243,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * it a third party wakes the facet at a time of its own choosing and the
      * facet's next synchronous read serves bytes the authority has replaced.
      */
-    wsOpen(url: string, protocols: string[]): Promise<{
-        id: number;
-        protocol: string;
-    }>;
+    wsOpen(url: string, protocols: string[], headers?: WsRelayHeaders, refusalBody?: boolean): Promise<WsRelayOpened>;
     wsPoll(id: number, waitMs: number): Promise<unknown[]>;
     wsSend(id: number, text: string | null, bytes: Uint8Array | null): Promise<void>;
     wsClose(id: number, code?: number, reason?: string): Promise<void>;

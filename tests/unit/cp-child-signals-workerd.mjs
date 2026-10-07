@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 25 s wall, 13 s CPU, 1.0 GiB peak (6 runs, 2026-10-06)
 // A child_process child ended by a signal looks, to its parent, as it does
 // under Node: 'exit' and 'close' carry (null, signal), `exitCode` is null,
 // `signalCode` names the signal and `killed` is true; spawnSync's result has

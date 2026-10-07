@@ -27,6 +27,11 @@
  * the session capability as calls to this side: each supervisor method, and
  * each of its synchronous view's, is answered here from the facet's
  * filesystem.
+ *
+ * A facet's network is the workspace's. A realm cannot be handed a Fetcher,
+ * so under an egress its `fetch` crosses to this side, which sends it out
+ * through the egress (realm-egress.ts, as the inline `node` does); a
+ * WebSocket, which cannot cross, is refused by name.
  */
 
 import type {
@@ -36,7 +41,9 @@ import type {
   FacetSpec,
   FacetSubmitOptions,
 } from './facet-host.js';
+import { requireNetwork, type WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { RuntimeFsBridge } from './os-contracts.js';
+import { isEgressGuestEvent, RealmEgress } from './realm-egress.js';
 import { fromRealmError, isRealmAnswer, startRealm, type Realm, type RealmOutcome } from './realm.js';
 import { FILESYSTEM_RPC_METHODS, vfsSupervisor } from './vfs-supervisor.js';
 import type { WasiParking } from './wasi/types.js';
@@ -54,6 +61,8 @@ export interface FacetPayload {
   readonly preamble?: string;
   /** The supervisor's method names, and its synchronous view's when it has one; absent without syscalls. */
   readonly supervisor?: { readonly methods: readonly string[]; readonly synchronous: readonly string[] | null };
+  /** The workspace's network goes through an egress: the facet's fetch crosses to the host (realm-egress.ts). */
+  readonly egress: boolean;
 }
 
 /** A submitted call, host to guest. */
@@ -81,6 +90,7 @@ const strings = (value: unknown): value is readonly string[] => Array.isArray(va
 export function isFacetPayload(value: unknown): value is FacetPayload {
   if (!record(value) || typeof value.tag !== 'string' || (value.parking !== 'jspi' && value.parking !== 'none')) return false;
   if (value.preamble !== undefined && typeof value.preamble !== 'string') return false;
+  if (typeof value.egress !== 'boolean') return false;
   const supervisor = value.supervisor;
   return supervisor === undefined
     || (record(supervisor) && strings(supervisor.methods) && (supervisor.synchronous === null || strings(supervisor.synchronous)));
@@ -173,13 +183,18 @@ function facetIsolation(): 'thread' | 'process' {
  * {@link FacetSubmitOptions.timeoutMs} and `signal` are honoured: either ends
  * the facet, as a substrate with isolates of its own does. A facet waiting for
  * no call holds no part of this process: it does not keep it alive.
+ *
+ * `network` is the workspace's (`workspace.network`, or
+ * `workspaceNetwork(egress)` for the egress the workspace is created with,
+ * `ISOLATE_NETWORK` without one): every facet goes out through it.
  */
-export function localFacetHost(): FacetHost {
+export function localFacetHost(network: WorkspaceNetwork): FacetHost {
+  requireNetwork(network, 'localFacetHost');
   return {
     parking: engineParks(),
     // A worker of a Bun or Node process, not a Worker isolate.
     memoryBudgetBytes: 1024 * 1024 * 1024,
-    open: (spec) => new RealmFacet(spec),
+    open: (spec) => new RealmFacet(spec, network),
   };
 }
 
@@ -205,7 +220,7 @@ class RealmFacet implements Facet {
   private readonly synchronous: RuntimeFsBridge['synchronous'];
   private readonly isolation = facetIsolation();
 
-  constructor(private readonly spec: FacetSpec) {
+  constructor(private readonly spec: FacetSpec, private readonly network: WorkspaceNetwork) {
     this.supervisor = spec.syscalls ? vfsSupervisor(spec.syscalls.vfs) : null;
     this.supervisorMethods = SUPERVISOR_METHODS;
     const processes = spec.syscalls?.processes;
@@ -242,13 +257,20 @@ class RealmFacet implements Facet {
       parking: engineParks(),
       preamble: this.spec.preamble,
       supervisor: this.supervisor ? { methods: this.supervisorMethods, synchronous: this.synchronous ? SYNCHRONOUS_METHODS : null } : undefined,
+      egress: this.network.egress !== undefined,
     };
+    let post: (event: unknown) => boolean = () => false;
+    const egress = this.network.egress === undefined ? null : new RealmEgress(this.network, (event) => { post(event); });
     const realm = await startRealm({
       entry: new URL('./facet-guest.js', import.meta.url),
       isolation: this.isolation,
       payload,
       serve: (call) => this.serve(call),
       onEvent: (event) => {
+        if (isEgressGuestEvent(event)) {
+          egress?.handle(event);
+          return;
+        }
         if (!isFacetDone(event)) return;
         const settle = this.waiting.get(event.id);
         this.waiting.delete(event.id);
@@ -256,8 +278,10 @@ class RealmFacet implements Facet {
       },
     });
     if ('unavailable' in realm) throw ended(this.spec.tag, `has no realm: ${realm.unavailable}`);
+    post = (event) => realm.post(event);
     realm.hold(false);
     void realm.ended.then((end) => {
+      egress?.close();
       this.over = ended(this.spec.tag, end.terminated ? 'was ended' : `ended (${end.failure?.message ?? `exit ${end.code}`})`);
       for (const settle of this.waiting.values()) settle(this.over);
       this.waiting.clear();

@@ -43,6 +43,7 @@
  * Appends are re-sent under the append ledger's identity. Everything else is
  * sent once and a drop surfaces.
  */
+import { EGRESS_TLS_REFUSAL, ISOLATE_NETWORK, workspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { traced } from '@nimbus-sh/platform/tracing.js';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
@@ -276,6 +277,16 @@ export class SupervisorRPC extends WorkerEntrypoint {
         const caller = this._caller({ op, args });
         return this.ctx.props?.bindingKind === 'infrastructure' && caller.run === undefined;
     }
+    /**
+     * The network this binding's process reaches out through: its workspace's
+     * egress when its host supplied one (SupervisorBindingProps.egress), else
+     * this isolate's own. Every request the binding makes for the process —
+     * its fetch, its sockets, its packument reads — goes through it.
+     */
+    _network() {
+        const props = this.ctx.props;
+        return props?.egress === undefined ? ISOLATE_NETWORK : workspaceNetwork(props.egress, props.networkId);
+    }
     _pid() {
         const pid = this.ctx.props?.pid;
         if (!Number.isInteger(pid) || typeof pid !== 'number' || pid <= 0) {
@@ -434,8 +445,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * it a third party wakes the facet at a time of its own choosing and the
      * facet's next synchronous read serves bytes the authority has replaced.
      */
-    async wsOpen(url, protocols) {
-        return this._call(this._fsOp('wsOpen', [url, protocols]));
+    async wsOpen(url, protocols, headers, refusalBody) {
+        return this._call(this._fsOp('wsOpen', [url, protocols, headers ?? [], refusalBody === true]));
     }
     async wsPoll(id, waitMs) {
         return this._call(this._fsOp('wsPoll', [id, waitMs]));
@@ -762,7 +773,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async getPackument(name, options) {
         const plan = this._infrastructureCache('getPackument', [name, options]) ? { readOnly: false }
             : await this._call(this._op('getPackument', [name, options]));
-        return this._cacheRead(plan, async (client) => ({ ...await client.readThroughPackument(name, options), events: client._cacheEvents }));
+        return this._cacheRead(plan, async (client) => ({ ...await client.readThroughPackument(name, options, this._network()), events: client._cacheEvents }));
     }
     // ── Process I/O ───────────────────────────────────────────────────────
     //
@@ -867,6 +878,9 @@ export class SupervisorRPC extends WorkerEntrypoint {
     }
     async stdinPrepared() { return this._call(this._op('stdinPrepared')); }
     async netTls(action, token, payload) {
+        // The TLS session would be made here, off the workspace's egress: refused by name instead.
+        if (this._network().egress !== undefined)
+            throw new Error(EGRESS_TLS_REFUSAL);
         return this._call(this._op('netTls', [action, token, payload], { pid: this._pid() }));
     }
     /**
@@ -879,14 +893,16 @@ export class SupervisorRPC extends WorkerEntrypoint {
         // A run the session no longer records (it did something outside itself
         // and cannot be run again): its network goes straight out.
         const run = this._runId();
+        // Out through the workspace's egress, when it has one: the record above is unchanged, only the last hop.
+        const network = this._network();
         if (run !== undefined && UNRECORDED_RUNS.has(run))
-            return fetch(request);
+            return network.fetch(request);
         const outbound = (action, payload) => this._call(this._op('outbound', [action, payload], { pid: this._pid() }));
         if ((method !== 'GET' && method !== 'HEAD') || request.headers.has('upgrade')) {
             const answer = await outbound('effect', { what: `${method} ${request.url}` });
             if (run !== undefined && typeof answer === 'object' && answer.unrecorded)
                 unrecorded(run);
-            return fetch(request);
+            return network.fetch(request);
         }
         const headers = [...request.headers].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
         const key = `${method} ${request.url} ${JSON.stringify(headers)}`;
@@ -896,7 +912,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         if ('unrecorded' in plan) {
             if (run !== undefined)
                 unrecorded(run);
-            return fetch(request);
+            return network.fetch(request);
         }
         if ('replay' in plan) {
             const r = plan.replay;
@@ -929,7 +945,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         const ticket = plan.live;
         let response;
         try {
-            response = await fetch(request);
+            response = await network.fetch(request);
         }
         catch (error) {
             await outbound('fetched', { ticket, result: { error: error instanceof Error ? error.message : String(error) } });
@@ -1010,12 +1026,21 @@ export class SupervisorRPC extends WorkerEntrypoint {
             return;
         const address = info.localAddress ?? '';
         const named = /^([0-9a-f]{32})\.nimbus-net\.invalid:\d+$/.exec(address);
+        const egress = this._network().egress;
+        if (named && egress !== undefined) {
+            // A TLS socket under an egress (netTls refused it already): nothing goes out.
+            await socket.close().catch(() => { });
+            return;
+        }
         if (!named) {
             const answer = await outbound('connect', { token: address });
             const run = this._runId();
             if (run !== undefined && answer && answer.unrecorded)
                 unrecorded(run);
-            const upstream = connectSocket(address, { allowHalfOpen: true });
+            // Through the workspace's egress (its connect carries plain TCP), when it has one.
+            const upstream = egress !== undefined
+                ? egress.connect(address, { allowHalfOpen: true })
+                : connectSocket(address, { allowHalfOpen: true });
             await Promise.all([socket.readable.pipeTo(upstream.writable), upstream.readable.pipeTo(socket.writable)]).catch(() => { });
             return;
         }

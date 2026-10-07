@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 38 s wall, 18 s CPU, 0.6 GiB peak (6 runs, 2026-10-06)
 // A facet of the local facet host is a realm of its own (Kinu ask 17,
 // local-facet-host.ts:183).
 //
@@ -73,8 +74,9 @@ const core = underBun ? '../../packages/core/src' : '../../packages/core/dist';
 const ext = underBun ? 'ts' : 'js';
 const { NimbusWorkspace } = await import(`${core}/workspace/nimbus-workspace.${ext}`);
 const { localFacetHost } = await import(`${core}/runtime/local-facet-host.${ext}`);
+const { ISOLATE_NETWORK } = await import(`${core}/_shared/workspace-network.${ext}`);
 
-const host = localFacetHost();
+const host = localFacetHost(ISOLATE_NETWORK);
 /** `promise`, or a rejection after `ms`; the timer goes with it, so it holds nothing (4). */
 const within = (promise, ms, what) => {
   let timer;

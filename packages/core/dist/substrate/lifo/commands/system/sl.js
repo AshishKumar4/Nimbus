@@ -1,15 +1,6 @@
+import { CLEAR, HOME, HIDE_CURSOR, SHOW_CURSOR, ALT_SCREEN_ON, ALT_SCREEN_OFF, moveTo } from '../term-screen.js';
 // Steam Locomotive - based on sl by Toyoda Masashi (mtoyoda/sl)
 // https://github.com/mtoyoda/sl
-const CSI = '\x1b[';
-const HIDE_CURSOR = `${CSI}?25l`;
-const SHOW_CURSOR = `${CSI}?25h`;
-const ALT_SCREEN_ON = `${CSI}?1049h`;
-const ALT_SCREEN_OFF = `${CSI}?1049l`;
-const CLEAR = `${CSI}2J`;
-const HOME = `${CSI}H`;
-function moveTo(row, col) {
-    return `${CSI}${row + 1};${col + 1}H`;
-}
 // ─── D51 locomotive body (static part) ───
 const D51BODY = [
     '      ====        ________                ___________ ',

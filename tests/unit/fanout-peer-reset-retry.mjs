@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import { Fanout } from '../../packages/fabric/src/fanout.ts';
 import { beginLoaderFetch, DO_DYNAMIC_WORKER_LIMIT } from '../../packages/fabric/src/budgets.ts';
 import { describeError, isDoOverloaded, isTransientDoReset } from '../../packages/platform/src/oom-classify.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 // ── Classifier: transient resets are retryable, resource resets are not ──
 assert.equal(isTransientDoReset(new Error('Durable Object reset because its code was updated.')), true);
@@ -75,7 +76,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
       return { results: args }; // echo — peer would run fn; plumbing is what we test
     },
   }));
-  const pool = new Fanout(env, ctx, { tag: 'reset-retry-test', omitSupervisor: true });
+  const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'reset-retry-test', omitSupervisor: true });
   const results = await pool.submitMany(TASKS, (x) => x);
   assert.deepEqual(results, TASKS.map((t) => t.args), 'all tasks resolved in order after retry');
   for (const [name, n] of calls) assert.equal(n, 2, `shard ${name} retried exactly once`);
@@ -91,7 +92,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
       throw new Error('Internal error while starting up Durable Object storage caused object to be reset; reference = x');
     },
   }));
-  const pool = new Fanout(env, ctx, { tag: 'reset-exhaust-test', omitSupervisor: true });
+  const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'reset-exhaust-test', omitSupervisor: true });
   await assert.rejects(
     pool.submitMany(TASKS, (x) => x),
     /starting up Durable Object storage/,
@@ -111,7 +112,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
       throw new Error('genuine task failure — not a reset');
     },
   }));
-  const pool = new Fanout(env, ctx, { tag: 'nonretry-test', omitSupervisor: true });
+  const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'nonretry-test', omitSupervisor: true });
   await assert.rejects(pool.submitMany(TASKS, (x) => x), /genuine task failure/);
   // However the 8 tasks split across dispatch phases, each one that runs
   // throws exactly once and no shard is retried; a phase that aborts the
@@ -131,7 +132,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
       return { results: args };
     },
   }));
-  const pool = new Fanout(env, ctx, { tag: 'overload-retry-test', omitSupervisor: true });
+  const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'overload-retry-test', omitSupervisor: true });
   const results = await pool.submitMany(TASKS, (x) => x);
   assert.deepEqual(results, TASKS.map((t) => t.args), 'all tasks resolved in order after the shed');
   for (const [name, n] of calls) assert.equal(n, 2, `shard ${name} retried exactly once`);
@@ -147,7 +148,7 @@ const TASKS = Array.from({ length: 8 }, (_, i) => ({ key: `pkg-${i}`, args: i })
   const env = makeEnv(() => ({
     async fanoutExecute() { throw new Error('internal error'); },
   }));
-  const pool = new Fanout(env, ctx, { tag: 'opaque-test', omitSupervisor: true });
+  const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'opaque-test', omitSupervisor: true });
   const err = await pool.submitMany(TASKS, (x) => x).then(
     () => { throw new Error('expected submitMany to reject'); },
     (e) => e,
@@ -175,7 +176,7 @@ for (const make of [
       return { results: args };
     },
   }));
-  const pool = new Fanout(env, ctx, { tag: 'retryable-test', omitSupervisor: true });
+  const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'retryable-test', omitSupervisor: true });
   assert.deepEqual(await pool.submitMany(TASKS, (x) => x), TASKS.map((t) => t.args));
   for (const [name, n] of calls) assert.equal(n, 2, `shard ${name} retried exactly once after ${make().message}`);
 }

@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { runScript } from './lib/bash-preamble.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processFiles } from './lib/process-bridge.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const SCRIPTS = [
   ['head -c 200000 /dev/zero | wc -c', '200000\n'],

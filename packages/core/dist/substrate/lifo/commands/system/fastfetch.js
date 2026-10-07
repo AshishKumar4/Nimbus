@@ -1,3 +1,5 @@
+import { DEFAULT_HOSTNAME } from '../../../../constants.js';
+import { formatBinarySize, readHeapMemory, uptimeSeconds } from '../../utils/system-info.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
 import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 // ─── ANSI helpers ───
@@ -100,9 +102,9 @@ async function loadConfig(vfs) {
     return DEFAULT_CONFIG;
 }
 // ─── System info gathering ───
-function formatUptime() {
-    const ms = performance.now();
-    const totalSeconds = Math.floor(ms / 1000);
+/** fastfetch's uptime: `2 days, 3 hours, 4 mins`. */
+function formatFastfetchUptime() {
+    const totalSeconds = uptimeSeconds();
     const days = Math.floor(totalSeconds / 86400);
     const hours = Math.floor((totalSeconds % 86400) / 3600);
     const mins = Math.floor((totalSeconds % 3600) / 60);
@@ -114,24 +116,11 @@ function formatUptime() {
     parts.push(`${mins} min${mins !== 1 ? 's' : ''}`);
     return parts.join(', ');
 }
-function humanSize(bytes) {
-    if (bytes < 1024)
-        return bytes + ' B';
-    if (bytes < 1024 * 1024)
-        return (bytes / 1024).toFixed(1) + ' KiB';
-    if (bytes < 1024 * 1024 * 1024)
-        return (bytes / (1024 * 1024)).toFixed(1) + ' MiB';
-    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GiB';
-}
 function getMemoryInfo() {
-    const perf = performance;
-    if (perf.memory) {
-        const used = perf.memory.usedJSHeapSize;
-        const total = perf.memory.jsHeapSizeLimit;
-        const pct = Math.round((used / total) * 100);
-        return `${humanSize(used)} / ${humanSize(total)} (${pct}%)`;
-    }
-    return 'N/A';
+    const memory = readHeapMemory();
+    if (memory === null)
+        return 'N/A';
+    return `${formatBinarySize(memory.used)} / ${formatBinarySize(memory.total)} (${Math.round((memory.used / memory.total) * 100)}%)`;
 }
 async function getDiskInfo(vfs) {
     let totalBytes = 0;
@@ -153,7 +142,7 @@ async function getDiskInfo(vfs) {
     }
     (await walk('/'));
     const totalSpace = 256 * 1024 * 1024;
-    return `${humanSize(totalBytes)} / ${humanSize(totalSpace)} (${totalFiles} files)`;
+    return `${formatBinarySize(totalBytes)} / ${formatBinarySize(totalSpace)} (${totalFiles} files)`;
 }
 function getBrowser() {
     if (typeof navigator === 'undefined')
@@ -246,7 +235,7 @@ async function resolveModule(mod, ctx, labelColor, separator) {
         case 'kernel':
             return `${lbl('Kernel', W)}Lifo vfs+shell 1.0.0`;
         case 'uptime':
-            return `${lbl('Uptime', W)}${formatUptime()}`;
+            return `${lbl('Uptime', W)}${formatFastfetchUptime()}`;
         case 'packages':
             return `${lbl('Packages', W)}${(await getBinCount(ctx.vfs))} (builtins + commands)`;
         case 'shell':
@@ -347,7 +336,7 @@ const command = async (ctx) => {
     }
     // Build info lines
     const user = ctx.env.USER || 'user';
-    const hostname = ctx.env.HOSTNAME || 'lifo';
+    const hostname = DEFAULT_HOSTNAME;
     const cols = parseInt(ctx.env['COLUMNS'] || '80', 10);
     const rows = parseInt(ctx.env['LINES'] || '24', 10);
     const modCtx = { user, hostname, cols, rows, vfs: ctx.vfs };

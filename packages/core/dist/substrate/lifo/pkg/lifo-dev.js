@@ -5,7 +5,7 @@
  * to local VFS paths.  `lifo link` adds entries, `lifo unlink` removes them.
  */
 import { join } from '../utils/path.js';
-import { createLifoCommand, readLifoManifest } from './lifo-runtime.js';
+import { readLifoManifest, registerLifoManifestCommands } from './lifo-runtime.js';
 const DEV_LINKS_PATH = '/etc/lifo/dev-links.json';
 // ─── Persistence ───
 export async function readDevLinks(vfs) {
@@ -52,14 +52,7 @@ export async function linkPackage(vfs, registry, pkgDir) {
         commands: manifest.commands,
     };
     (await writeDevLinks(vfs, links));
-    // Register commands
-    const registered = [];
-    for (const [cmdName, entryRelPath] of Object.entries(manifest.commands)) {
-        const entryPath = join(pkgDir, entryRelPath);
-        registry.register(cmdName, createLifoCommand(entryPath, vfs));
-        registered.push(cmdName);
-    }
-    return registered;
+    return await registerLifoManifestCommands(vfs, registry, pkgDir, manifest, { requireEntry: false });
 }
 /**
  * Unlink a previously dev-linked package.
@@ -88,11 +81,6 @@ export async function loadDevLinks(vfs, registry) {
         const manifest = (await readLifoManifest(vfs, link.path));
         if (!manifest)
             continue;
-        for (const [cmdName, entryRelPath] of Object.entries(manifest.commands)) {
-            const entryPath = join(link.path, entryRelPath);
-            if ((await vfs.exists(entryPath))) {
-                registry.register(cmdName, createLifoCommand(entryPath, vfs));
-            }
-        }
+        await registerLifoManifestCommands(vfs, registry, link.path, manifest, { requireEntry: true });
     }
 }

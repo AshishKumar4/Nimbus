@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../../lean/fixtures/quiesce.json', import.meta.url), 'utf8'));
 const enc = new TextEncoder();

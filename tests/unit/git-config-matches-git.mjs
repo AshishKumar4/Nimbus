@@ -9,6 +9,7 @@
 // in git, and a read-only command never stages it. A repository that kept
 // cf-git's old `filemode = false` ignores the exec bit, as git does.
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
@@ -26,7 +27,7 @@ import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { assembleGitNetworkFacetSource, execGitNetwork } from '../../packages/worker/src/git/network-facet.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { stagedAssets } from './lib/staged-assets.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 // The facet's git module is the staged asset the Worker fetches (runtime/git-bundle-artifact.ts).
 const GIT_BUNDLE_CODE = readFileSync(new URL(`../../packages/worker/public${GIT_BUNDLE_ENTRY}`, import.meta.url), 'utf8');
@@ -214,7 +215,7 @@ try {
     jobs++;
     const result = await execGitNetwork({ id: { toString: () => 'config-do' } }, doEnv, {
       op: 'clone', pid: 1, dir, url, ref, depth: 1, exclusiveDestination: true,
-    });
+    }, ISOLATE_NETWORK);
     assert.equal(result.success, true, `clone ${url} ${ref ?? ''}: ${result.error}`);
   }
 

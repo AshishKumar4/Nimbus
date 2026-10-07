@@ -29,7 +29,7 @@ export function createHttpPlatform() {
       // and application listening handlers run with ordinary guest scheduling.
       for (const listener of this.rawListeners('listening')) {
         if (listener.name !== 'setupConnectionsTracking') continue;
-        this.removeListener('listening', listener);
+        this.removeListener('listening', /** @type {(...args: any[]) => void} */ (listener));
         this.on('listening', (...values) => withHostTimers(() => Reflect.apply(listener, this, values)));
       }
       // Bun arms a keep-alive timer on the socket after each response through
@@ -39,7 +39,8 @@ export function createHttpPlatform() {
       this.keepAliveTimeout = 0;
     }
     listen(...args) {
-      const [opts, callback] = net._normalizeArgs(args);
+      // node's own listen() argument parsing (internal, so untyped).
+      const [opts, callback] = /** @type {any} */ (net)._normalizeArgs(args);
       const port = Number(opts.port ?? 0);
       if (listeners.has(port)) throw Object.assign(new Error('address in use'), { code: 'EADDRINUSE' });
       listeners.set(port, this);
@@ -54,6 +55,8 @@ export function createHttpPlatform() {
       return this;
     }
     address() { return this.logicalAddress ?? null; }
+    // node declares `listening` as a field; workerd's is the logical listen state.
+    // @ts-expect-error TS2611: an accessor over a base-class property.
     get listening() { return this.logicalAddress != null; }
     set listening(value) { this.nativeListening = value; }
     close(callback) {

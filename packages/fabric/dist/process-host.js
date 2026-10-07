@@ -63,6 +63,7 @@
  * {@link HOSTED_WEBSOCKET_KEY_HEADER} — and a per-process capability makes
  * that pair unforgeable by anything that did not open the process.
  */
+import { networkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { classifyDoCall, isRetryableDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import { PEER_RETRY_BACKOFF_MS, PEER_TRANSIENT_RESET_RETRIES } from './fanout.js';
@@ -80,15 +81,18 @@ import { supervisorBindingProps } from './supervisor-props.js';
  * `disk` is the coordinator's own filesystem reader; the peer host does not
  * take it, because a peer reads the same disk through the supervisor instead.
  */
-export function createProcessHost(mode, ctx, env, disk) {
+export function createProcessHost(mode, ctx, env, disk, 
+/** The workspace's network: every process's binding carries it, and with it its egress. */
+network) {
     return mode === 'peer'
-        ? new PeerProcessHost(ctx, env)
-        : new FacetProcessHost(ctx, env, disk);
+        ? new PeerProcessHost(ctx, env, network)
+        : new FacetProcessHost(ctx, env, disk, network);
 }
 // ── facet: the process is a child of the user's own session DO ──────────────
 class FacetProcessHost {
     ctx;
     disk;
+    network;
     /**
      * The process shares its session's Durable Object, so the session's own
      * store is reachable by copy-on-write — and its storage budget is the same
@@ -102,17 +106,18 @@ class FacetProcessHost {
     };
     env;
     coordDoId;
-    constructor(ctx, env, disk) {
+    constructor(ctx, env, disk, network) {
         this.ctx = ctx;
         this.disk = disk;
+        this.network = network;
         this.env = (env ?? {});
         this.coordDoId = ctx.id.toString();
     }
     runOnce(params, consume) {
-        return processes(this.ctx, this.env).run(supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId }), params, consume);
+        return processes(this.ctx, this.env).run(supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() }), params, consume);
     }
     async open(params) {
-        const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId });
+        const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
         const { name, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
         return {
             ...facet,
@@ -223,6 +228,7 @@ function processPeerStub(value, peerName) {
 }
 class PeerProcessHost {
     ctx;
+    network;
     /**
      * A peer buys independent CPU and its own storage budget, and pays for both
      * with the image path: nothing crosses a Durable Object boundary by
@@ -238,8 +244,9 @@ class PeerProcessHost {
     coordDoId;
     /** pid → the isolate token of the peer currently hosting that process. */
     tokensInUse = new Map();
-    constructor(ctx, env) {
+    constructor(ctx, env, network) {
         this.ctx = ctx;
+        this.network = network;
         if (env === null || (typeof env !== 'object' && typeof env !== 'function')) {
             throw new BindingError('ProcessFabric: a peer host requires environment bindings');
         }
@@ -256,7 +263,7 @@ class PeerProcessHost {
      * worker of the coordinator here exactly as it does on `facet`.
      */
     runOnce(params, consume) {
-        return processes(this.ctx, this.env).run(supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId }), params, consume);
+        return processes(this.ctx, this.env).run(supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() }), params, consume);
     }
     async open(params) {
         if (params.facet) {
@@ -277,13 +284,15 @@ class PeerProcessHost {
         // the peer dies under either.
         // The peer mints the process's binding from these, for THIS object: the
         // coordinator's doId, route and delivery instance.
-        const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId });
+        const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
         const hostLeg = placement.stub._rpcHostProcess(params.boot, {
             coordinatorDoId: supervisor.doId,
             route: supervisor.route,
             pid: supervisor.pid,
             writerId: params.writerId,
             hostIncarnation: supervisor.hostIncarnation,
+            // The workspace's egress crosses to the peer, which mints the process's binding with it.
+            network: networkRef(this.network()),
             workerKey: params.workerKey,
             webSocketCapability,
             startArgs: params.startArgs,

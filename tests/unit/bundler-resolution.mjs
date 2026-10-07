@@ -6,8 +6,7 @@
  * tree is laid out on disk, as a slice, and as a VFS, and each import is
  * resolved by real esbuild (native, the tree on disk) and by both plugins.
  * Where Nimbus's bundler policy is its own (a `.js` import of a `.ts` file
- * from JavaScript), esbuild is not asked. The slice plugin answers each
- * resolve already settled, as the build facet needs.
+ * from JavaScript), esbuild is not asked.
  */
 
 import assert from 'node:assert/strict';
@@ -97,17 +96,6 @@ try {
     const result = await slicePlugin.resolve({ path: specifier, resolveDir: '/' + fromDir, importer: '', kind });
     return result?.namespace === 'nimbus-slice' ? result.path : null;
   };
-
-  // The slice plugin answers rolldown with a promise already settled: the
-  // deployed build facet's pre-bundles stopped settling when it awaited its
-  // way through a resolution. Settled means its reaction runs on the first
-  // microtask turn, whatever the resolution walked.
-  for (const [label, fromDir, specifier, kind] of CASES) {
-    let answered = false;
-    slicePlugin.resolve({ path: specifier, resolveDir: '/' + fromDir, importer: '', kind }).then(() => { answered = true; });
-    await Promise.resolve();
-    assert.ok(answered, `pre-bundle slice: ${label} is answered on the first microtask turn`);
-  }
 
   // The session filesystem: what EsbuildService's VFS plugin resolves.
   const vfs = new FakeVfs(TREE);

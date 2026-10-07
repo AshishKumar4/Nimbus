@@ -108,8 +108,9 @@ export class HistoryManager {
     return this.entries[index];
   }
 
-  getAll(): string[] {
-    return [...this.entries];
+  /** Every entry, oldest first; the store's own array, for reading. */
+  getAll(): readonly string[] {
+    return this.entries;
   }
 
   get length(): number {

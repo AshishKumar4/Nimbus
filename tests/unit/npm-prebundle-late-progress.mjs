@@ -14,7 +14,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { kernelInstaller } from './npm-fanout-test-env.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
 const vfs = new SqliteVFS(harness.sql, harness.ctx);

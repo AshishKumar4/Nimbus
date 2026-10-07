@@ -43,12 +43,15 @@ export declare class Module {
     static _cache: Record<string, unknown>;
 }
 /**
- * Create the full module shim object with createRequire bound to a module map.
+ * The `module` built-in over a module map: its builtinModules are the map's
+ * names, and createRequire is `createRequire` (the CommonJS loader's, which
+ * resolves files and packages too) or, for a bare map, one that serves the
+ * map's built-ins alone.
  */
-export declare function createModuleShim(moduleMap: Record<string, () => unknown>): {
+export declare function createModuleShim(moduleMap: Record<string, () => unknown>, createRequire?: (filename: string | URL) => RequireFunction): {
     Module: typeof Module;
     builtinModules: string[];
-    isBuiltin: typeof isBuiltin;
+    isBuiltin: (specifier: string) => boolean;
     createRequire: (filename: string | URL) => RequireFunction;
     default: typeof Module;
 };

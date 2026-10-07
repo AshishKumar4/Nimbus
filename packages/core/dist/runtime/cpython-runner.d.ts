@@ -40,6 +40,7 @@
  * pair for the same reason. The drain in the `finally` is the other half: a
  * program that wrote a file and then raised still wrote the file.
  */
+import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { FacetHost } from './facet-host.js';
 import type { RuntimeManifest } from './runtime-manifest.js';

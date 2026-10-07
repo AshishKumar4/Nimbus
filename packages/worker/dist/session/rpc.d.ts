@@ -21,6 +21,7 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
+import { type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { InnerDoFetchAnswer } from '@nimbus-sh/fabric/bindings.js';
 import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { HostRoute } from '@nimbus-sh/platform/composition.js';
@@ -30,6 +31,7 @@ import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsLi
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';
 import type { NimbusSession } from './nimbus-session.js';
+import type { WsRelayHeaders, WsRelayOpened } from './ws-relay.js';
 import type { HmrEvent } from '../facets/real-vite-hmr.js';
 type RpcHost = any;
 export declare function _rpcGetCachedTarball(_self: RpcHost, _integrity: string, _pid?: number, _run?: string): Promise<{
@@ -174,10 +176,7 @@ declare const FsAcquireArgsSchema: z.ZodObject<{
         }, z.core.$strict>>;
     }, z.core.$strict>>;
 }, z.core.$strip>;
-export declare function _rpcWsOpen(self: RpcHost, url: string, protocols: string[], pid?: number): Promise<{
-    id: number;
-    protocol: string;
-}>;
+export declare function _rpcWsOpen(self: RpcHost, url: string, protocols: string[], headers?: WsRelayHeaders | null, refusalBody?: boolean | null, pid?: number): Promise<WsRelayOpened>;
 export declare function _rpcWsPoll(self: RpcHost, id: number, waitMs: number, pid?: number): Promise<unknown[]>;
 export declare function _rpcWsSend(self: RpcHost, id: number, text: string | null, bytes: Uint8Array | null, pid?: number): Promise<void>;
 export declare function _rpcWsClose(self: RpcHost, id: number, code?: number, reason?: string, pid?: number): Promise<void>;
@@ -543,6 +542,8 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
      * credential (see IsolatePoolOptions.supervisorPid).
      */
     supervisorPid?: number;
+    /** The coordinator workspace's egress (FanoutOptions.network): the peer's facets go out through it. */
+    network?: WorkspaceNetworkRef;
 }): Promise<{
     results: unknown[];
 }>;

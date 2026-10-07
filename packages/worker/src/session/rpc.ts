@@ -22,6 +22,7 @@
  * is acceptable per plan §IX recommendation 1.
  */
 
+import { ISOLATE_NETWORK, workspaceNetwork, type WorkspaceEgress, type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { enc, dec, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
 import { isBrokenPipe } from '@nimbus-sh/core/substrate/lifo/utils/bytes-io.js';
 import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
@@ -95,6 +96,7 @@ import { registerServingPort } from './serving-port.js';
 import { normalizeVfsPath, parentVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { z } from 'zod/v4';
 import type { NimbusSession } from './nimbus-session.js';
+import type { WsRelayHeaders, WsRelayOpened } from './ws-relay.js';
 import type { HmrEvent } from '../facets/real-vite-hmr.js';
 
 // `RpcHost` is intentionally `any`-shaped: extracting an exact subset
@@ -545,10 +547,10 @@ const FsListArgsSchema = z.object({
  * session/ws-relay.ts for why mediating the transport is not enough.
  *
  * The URL is untrusted input, so it is parsed rather than pattern-matched and
- * only the two WebSocket schemes are accepted. Nothing else about the request
- * comes from the facet — no facet-supplied header is forwarded, so the
- * supervisor cannot be induced to attach its own ambient credentials to a
- * destination the facet chose.
+ * only the two WebSocket schemes are accepted. The facet's request headers
+ * are bounded here and filtered by the relay (ws-relay.ts open): the
+ * supervisor sends what the program could have sent itself, and nothing of
+ * its own.
  */
 const WsOpenArgsSchema = z.object({
   url: z.string().max(2048).refine(
@@ -560,16 +562,20 @@ const WsOpenArgsSchema = z.object({
     { message: 'a relayed socket needs a ws: or wss: URL' },
   ),
   protocols: z.array(z.string().max(64)).max(8),
+  headers: z.array(z.tuple([z.string().min(1).max(256), z.string().max(8192)])).max(64),
+  refusalBody: z.boolean(),
 });
 
 export async function _rpcWsOpen(
   self: RpcHost,
   url: string,
   protocols: string[],
+  headers?: WsRelayHeaders | null,
+  refusalBody?: boolean | null,
   pid?: number,
-): Promise<{ id: number; protocol: string }> {
-  const args = WsOpenArgsSchema.parse({ url, protocols: protocols ?? [] });
-  return self._ensureWebSocketRelay().open(processPid(pid), args.url, args.protocols);
+): Promise<WsRelayOpened> {
+  const args = WsOpenArgsSchema.parse({ url, protocols: protocols ?? [], headers: headers ?? [], refusalBody: refusalBody ?? false });
+  return self._ensureWebSocketRelay().open(processPid(pid), args.url, args.protocols, args.headers, args.refusalBody);
 }
 
 export async function _rpcWsPoll(
@@ -1745,6 +1751,8 @@ export async function _rpcFanoutExecute(
      * credential (see IsolatePoolOptions.supervisorPid).
      */
     supervisorPid?: number;
+    /** The coordinator workspace's egress (FanoutOptions.network): the peer's facets go out through it. */
+    network?: WorkspaceNetworkRef;
   } = {},
 ): Promise<{ results: unknown[] }> {
   if (!Array.isArray(args)) {
@@ -1771,6 +1779,7 @@ export async function _rpcFanoutExecute(
     supervisorDoIdOverride: poolOpts.coordinatorDoId,
     supervisorRoute: poolOpts.coordinatorRoute,
     supervisorPid: poolOpts.supervisorPid,
+    network: poolOpts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(poolOpts.network.egress, poolOpts.network.id),
   });
   try {
     // mapSource accepts the pre-serialized fnSource forwarded by the
@@ -1817,6 +1826,12 @@ const HostProcessOptsSchema = z.object({
   writerId: z.string().uuid(),
   /** The coordinator instance's delivery incarnation, for the process's SUPERVISOR binding. */
   hostIncarnation: z.string().uuid().optional(),
+  /** The coordinator workspace's egress (a stub, crossed by RPC) and its id: the process's network. */
+  network: z.object({
+    egress: z.custom<WorkspaceEgress>((value) => value !== null && (typeof value === 'object' || typeof value === 'function')
+      && typeof (value as { fetch?: unknown }).fetch === 'function' && typeof (value as { connect?: unknown }).connect === 'function'),
+    id: z.string().min(1),
+  }).optional(),
   /** Keyed dynamic-worker identity on THIS peer's loader. */
   workerKey: z.string().min(1),
   /** Unforgeable capability for the fetch-semantic WebSocket hop. */
@@ -1983,7 +1998,10 @@ export async function _rpcHostProcess(
   const spec = ResidentBootSpecSchema.parse(boot);
   const { workerKey } = hostOpts;
   const supervisor: ResidentSupervisorProps = {
-    ...supervisorBindingProps(self.ctx, hostOpts.pid, { writerId: hostOpts.writerId, doId: hostOpts.coordinatorDoId, route: hostOpts.route }),
+    ...supervisorBindingProps(self.ctx, hostOpts.pid, {
+      writerId: hostOpts.writerId, doId: hostOpts.coordinatorDoId, route: hostOpts.route,
+      network: hostOpts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(hostOpts.network.egress, hostOpts.network.id),
+    }),
     ...(hostOpts.hostIncarnation === undefined ? {} : { hostIncarnation: hostOpts.hostIncarnation }),
   };
 

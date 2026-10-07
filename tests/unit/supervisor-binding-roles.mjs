@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { mock } from 'bun:test';
@@ -6,9 +7,9 @@ import { supervisorBindingProps, mintProcessSupervisor } from '../../packages/fa
 mock.module('cloudflare:workers', () => ({ WorkerEntrypoint: class { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } }));
 const { SupervisorRPC } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
 const state = { id: { toString: () => 'session' } };
-assert.throws(() => supervisorBindingProps(state, 7, {}), /requires a run/);
-assert.throws(() => supervisorBindingProps(state, 7, { writerId: '' }), /requires a run/);
-const props = supervisorBindingProps(state, 7, { writerId: 'one-run' });
+assert.throws(() => supervisorBindingProps(state, 7, { network: ISOLATE_NETWORK }), /requires a run/);
+assert.throws(() => supervisorBindingProps(state, 7, { writerId: '', network: ISOLATE_NETWORK }), /requires a run/);
+const props = supervisorBindingProps(state, 7, { writerId: 'one-run', network: ISOLATE_NETWORK });
 assert.equal(props.bindingKind, 'process');
 assert.equal(props.writerId, 'one-run');
 const sent = [];

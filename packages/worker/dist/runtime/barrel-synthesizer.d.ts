@@ -109,8 +109,21 @@ export interface ProjectImports {
  * (parsedImportView). The lexer reads ~77 MB/s where Oxc's transform,
  * in-process, reads ~26 MB/s and costs a transform-facet hop besides, so
  * the parser is the exception, not the path.
+ *
+ * With a `budget`, the walk reads at most what it allows, checked with a
+ * stat before each read: a file past the per-file or the remaining total
+ * bytes is skipped, and the walk ends after `files` candidate files.
  */
-export declare function scanProjectImports(vfs: CredentialedVfs, projDir: string, parse: SourceParser): Promise<ProjectImports>;
+export declare function scanProjectImports(vfs: CredentialedVfs, projDir: string, parse: SourceParser, budget?: ScanBudget): Promise<ProjectImports>;
+/** What a source scan may read, at most. */
+export interface ScanBudget {
+    /** Files considered (each stat'd, then read or skipped). */
+    readonly files: number;
+    /** One file's bytes: a bigger file is skipped unread. */
+    readonly fileBytes: number;
+    /** Every file's bytes together: a file past what is left is skipped unread. */
+    readonly totalBytes: number;
+}
 /**
  * A source file as plain JavaScript (its TypeScript and JSX lowered, module
  * syntax kept), for a file the import lexer cannot decide: the session's

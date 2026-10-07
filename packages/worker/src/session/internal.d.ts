@@ -156,6 +156,7 @@ export interface SessionInternal {
 
   // ── Methods siblings call back into ─────────────────────────────────
   ensureSqliteFs(): SqliteVFS;
+  egressForWorkspace(): import('@nimbus-sh/core/_shared/workspace-network.js').WorkspaceEgress | undefined;
   getFilesystemAuthority(): import('@nimbus-sh/core/runtime/process-files.js').ProcessFiles
   ensureFacetManager(): ComposedFacetManager;
   ensureBundlePool(): PrebundlePool;

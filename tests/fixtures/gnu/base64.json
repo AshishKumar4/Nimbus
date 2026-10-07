@@ -1,0 +1,67 @@
+{
+ "tool": "base64",
+ "inputs": {
+  "bin": "//5hAAECgA==",
+  "txt": "aGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQK",
+  "enc": "Ly81aEFBRUNnQT09Cg==",
+  "bad": "Ly81aCEhCg=="
+ },
+ "cases": [
+  {
+   "args": "bin",
+   "stdout": "//5hAAECgA==\n",
+   "exit": 0
+  },
+  {
+   "args": "txt",
+   "stdout": "aGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29y\nbGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8g\nd29ybGQK\n",
+   "exit": 0
+  },
+  {
+   "args": "cat bin | %T",
+   "stdout": "//5hAAECgA==\n",
+   "exit": 0
+  },
+  {
+   "args": "%T < bin",
+   "stdout": "//5hAAECgA==\n",
+   "exit": 0
+  },
+  {
+   "args": "-w 4 bin",
+   "stdout": "//5h\nAAEC\ngA==\n",
+   "exit": 0
+  },
+  {
+   "args": "-w0 txt",
+   "stdout": "aGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQKaGVsbG8gd29ybGQK",
+   "exit": 0
+  },
+  {
+   "args": "-d enc",
+   "stdout": "ÿþa\u0000\u0001\u0002",
+   "exit": 0
+  },
+  {
+   "args": "cat enc | %T -d",
+   "stdout": "ÿþa\u0000\u0001\u0002",
+   "exit": 0
+  },
+  {
+   "args": "-d bad",
+   "stdout": "ÿþa",
+   "exit": 1
+  },
+  {
+   "args": "nope",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "-w 0 bin",
+   "stdout": "//5hAAECgA==",
+   "exit": 0
+  }
+ ],
+ "recorded": "base64 (GNU coreutils) 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)"
+}

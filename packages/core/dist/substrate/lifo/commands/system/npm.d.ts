@@ -1,5 +1,6 @@
 import type { Command, CommandContext } from '../types.js';
 import { type CommandRegistry } from '../registry.js';
+import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
 import { type NpmLogEmitter } from './npm-log.js';
 /** The registry an install reads from when its env names none. */
@@ -62,6 +63,14 @@ export interface NpmCommandDeps {
  */
 export declare function npmRegistryOrigin(configured: string | undefined): string;
 /** A package's bins, name -> target inside the package, as npm installs them (npmBinMap). */
+/**
+ * The packages in a node_modules directory, by name (`pkg` or `@scope/pkg`):
+ * each entry that is a directory or a link (an `npm link`ed or workspace
+ * package), a scope's entries in its place. Names starting with `.` (`.bin`,
+ * `.package-lock.json`) are npm's own files, not packages; a directory that
+ * cannot be read holds none.
+ */
+export declare function packagesIn(vfs: VFS, modulesDir: string): AsyncGenerator<string>;
 export declare function getBinEntries(pkg: PackageJson): Record<string, string>;
 export declare function registerBinCommand(registry: CommandRegistry, binName: string, scriptPath: string, kernel?: Kernel): void;
 export declare function createNpmCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, kernel?: Kernel, deps?: NpmCommandDeps): Command;

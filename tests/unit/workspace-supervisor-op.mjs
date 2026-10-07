@@ -7,7 +7,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { getCtxExports, supervisorEntrypoint, hostNamespace, hostDispatchMethod } from '../../packages/platform/src/composition.ts';
 import { getCtxExports as fabricExports } from '../../packages/fabric/src/composition.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const processes = new SessionProcessSupervisor();

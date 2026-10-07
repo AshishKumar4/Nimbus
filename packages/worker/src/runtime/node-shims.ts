@@ -46,6 +46,7 @@ import { CHILD_NEWS_SOURCE } from '@nimbus-sh/core/runtime/child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE } from '../loaders/generated-workers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
+import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { LOOPBACK_HOSTNAMES } from '@nimbus-sh/core/_shared/loopback.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
@@ -62,6 +63,7 @@ import {
 } from '@nimbus-sh/core/constants.js';
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
+import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
 
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
@@ -377,6 +379,33 @@ function __nimbusWasmDigest(bytes) {
 })();
 
 // ═══════════════════════════════════════════════════════════════════════
+// ──  RequestInit.cache, as Node takes it ─────────────────────────────
+// Node's fetch keeps no HTTP cache, so the modes it accepts all go to the
+// network. workerd accepts only "no-store" and "no-cache" (measured:
+// "default", "reload" and "force-cache" throw "Unsupported cache mode"), and
+// axios's fetch adapter passes cache: "default" on every request. A Request
+// or fetch drops those three: the request goes to the network, as Node's
+// would. What Node refuses ("only-if-cached" outside same-origin mode, an
+// unknown mode) workerd refuses too, and is left to it.
+const __nodeCacheInit = (init) => {
+  if (!init || typeof init !== "object") return init;
+  const mode = init.cache;
+  if (mode !== "default" && mode !== "reload" && mode !== "force-cache") return init;
+  const { cache, ...rest } = init;
+  return rest;
+};
+if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestInstalled) {
+  globalThis.__nimbusNodeRequestInstalled = true;
+  // A Proxy, not a subclass: every Request stays the platform's, so
+  // instanceof holds for the ones the runtime itself makes.
+  globalThis.Request = new Proxy(globalThis.Request, {
+    construct(target, args, newTarget) {
+      return Reflect.construct(target, [args[0], __nodeCacheInit(args[1])], newTarget);
+    },
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // ──  fetch default User-Agent ───────────────────────────────────────
 // workerd's global fetch sends no User-Agent by default, but Node's
 // undici fetch adds \`User-Agent: node\`. Servers that require a UA
@@ -552,7 +581,7 @@ function __nimbusWasmDigest(bytes) {
     return response;
   };
   globalThis.fetch = function fetch(input, init) {
-    return __nimbusTrackOp(__barriered(input, init));
+    return __nimbusTrackOp(__barriered(input, __nodeCacheInit(init)));
   };
   // A fetch settles once the headers arrive; reading the body is a SECOND
   // in-flight operation on the same connection, and \`const r = await
@@ -5531,10 +5560,91 @@ const __fsMod = (() => {
 // purpose: it dispatches plain event-shaped objects, which is what a
 // relayed frame can carry across RPC, and it keeps \`onmessage\` and
 // \`addEventListener\` served by one path instead of two.
+//
+// The second argument is Node's: subprotocols, or a WebSocketInit
+// \`{ protocols, headers }\` (undici's), whose headers the supervisor sends
+// with the upgrade. What the handshake answered (the upgrade's response
+// headers, or a refusal: __nimbusRefusal) is kept on the socket under
+// __NIMBUS_WS_HANDSHAKE, for the \`ws\` package's upgrade path
+// (runtime/node-ws-upgrade.ts), which asks for a refusal's body with
+// __NIMBUS_WS_REFUSAL_BODY in the init.
+const __NIMBUS_WS_HANDSHAKE = Symbol.for("nimbus.websocket.handshake");
+const __NIMBUS_WS_REFUSAL_BODY = Symbol.for("nimbus.websocket.refusal-body");
+
+// A refused upgrade, as the relay answered it (session/ws-relay.ts): its
+// head at once, and its body (when asked for) read from the relay as it
+// comes, for the one consumer that reads it, until it ends or is cancelled.
+// An open body holds the process, as a response's socket does in Node.
+function __nimbusRefusal(supervisor, refused) {
+  const pending = [];
+  let ended = refused.body === null ? true : null;
+  let consumer = null;
+  let cancelled = false;
+  const hold = refused.body === null ? null : __nimbusHoldSocket();
+  const finish = (complete) => {
+    if (ended !== null) return;
+    ended = complete;
+    if (hold) hold(false);
+    if (consumer) consumer.end(complete);
+  };
+  if (refused.body !== null) {
+    (async () => {
+      while (ended === null && !cancelled) {
+        let events;
+        try {
+          events = await __nimbusUseRpcResultUnref(supervisor.wsPoll(refused.body, 5000), (result) => result);
+        } catch { finish(false); return; }
+        if (!Array.isArray(events)) continue;
+        for (const event of events) {
+          if (cancelled) return;
+          // Its bytes are an inbound delivery, as a frame is.
+          await __nimbusInboundBarrier();
+          if (event.kind === "message" && event.bytes) {
+            if (consumer) consumer.chunk(event.bytes);
+            else pending.push(event.bytes);
+          } else if (event.kind === "close") {
+            finish(event.code === 1000);
+            return;
+          }
+        }
+      }
+    })();
+  }
+  return {
+    status: refused.status,
+    statusText: refused.statusText,
+    headers: refused.headers,
+    /** Its body to \`onChunk\`, then \`onEnd(complete)\`: whether it arrived whole. */
+    read(onChunk, onEnd) {
+      consumer = { chunk: onChunk, end: onEnd };
+      for (const chunk of pending.splice(0)) onChunk(chunk);
+      if (ended !== null) onEnd(ended);
+    },
+    /** The body is not wanted: the relay stops reading it. */
+    cancel() {
+      if (cancelled || ended !== null) return;
+      cancelled = true;
+      if (hold) hold(false);
+      __nimbusUseRpcResultUnref(supervisor.wsClose(refused.body), () => undefined).catch(() => {});
+    },
+  };
+}
 const __NimbusRelayedWebSocket = (() => {
   const CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3;
+  /** A header list as the relay takes it: [name, value] pairs. */
+  const headerPairs = (headers) => {
+    if (headers === undefined || headers === null) return [];
+    if (typeof headers.forEach === "function" && !Array.isArray(headers)) {
+      const pairs = [];
+      headers.forEach((value, name) => { pairs.push([String(name), String(value)]); });
+      return pairs;
+    }
+    if (Array.isArray(headers)) return headers.map(([name, value]) => [String(name), String(value)]);
+    return Object.entries(headers).flatMap(([name, value]) =>
+      value === undefined ? [] : (Array.isArray(value) ? value : [value]).map((one) => [name, String(one)]));
+  };
   class NimbusWebSocket {
-    constructor(url, protocols) {
+    constructor(url, protocolsOrInit) {
       const supervisor = _nimbusSupervisor();
       if (!supervisor || typeof supervisor.wsOpen !== "function") {
         // Not a fallback to the platform socket, deliberately. An
@@ -5559,21 +5669,40 @@ const __NimbusRelayedWebSocket = (() => {
       this._id = null;
       this._done = false;
       this._sends = Promise.resolve();
+      const init = protocolsOrInit !== null && typeof protocolsOrInit === "object" && !Array.isArray(protocolsOrInit)
+        ? protocolsOrInit : { protocols: protocolsOrInit };
+      const protocols = init.protocols;
       const requested = protocols === undefined ? []
         : (Array.isArray(protocols) ? protocols.map(String) : [String(protocols)]);
+      const headers = headerPairs(init.headers);
+      const refusalBody = init[__NIMBUS_WS_REFUSAL_BODY] === true;
+      this[__NIMBUS_WS_HANDSHAKE] = null;
       // Open, or opening, until its close: a handle, as Node's WebSocket is.
       // Taken only once the socket exists, past every throw in this
       // constructor: a caught constructor failure holds nothing.
       this._hold = __nimbusHoldSocket();
-      this._ready = this._connect(supervisor, requested);
+      this._ready = this._connect(supervisor, requested, headers, refusalBody);
     }
 
-    async _connect(supervisor, protocols) {
+    async _connect(supervisor, protocols, headers, refusalBody) {
       try {
         const opened = await __nimbusUseRpcResultUnref(
-          supervisor.wsOpen(this.url, protocols),
+          supervisor.wsOpen(this.url, protocols, headers, refusalBody),
           (result) => result,
         );
+        if (opened.refused) {
+          if (this.readyState !== CONNECTING) {
+            // Closed while it handshook (an aborted request): its body is not
+            // wanted, and nothing of it may hold the process; close() reports the close.
+            if (opened.refused.body !== null) {
+              __nimbusUseRpcResultUnref(supervisor.wsClose(opened.refused.body), () => undefined).catch(() => {});
+            }
+            return;
+          }
+          this[__NIMBUS_WS_HANDSHAKE] = __nimbusRefusal(supervisor, opened.refused);
+          throw new Error("websocket relay: " + this.url + " did not upgrade (HTTP " + opened.refused.status + ")");
+        }
+        this[__NIMBUS_WS_HANDSHAKE] = { status: 101, statusText: "Switching Protocols", headers: opened.headers || [] };
         this._id = opened.id;
         this.protocol = opened.protocol || "";
         this._pump(supervisor);
@@ -6827,6 +6956,17 @@ const __tlsMod = (() => {
     return socket;
   };
   const connect = (...args) => {
+    // Under a workspace egress a TLS socket cannot be made: the egress's
+    // connect carries plain TCP only, and making the session here would go
+    // around it. The refusal names the limit; HTTPS by fetch is unaffected.
+    if (globalThis.__nimbusEgress === true) {
+      const refused = realNet ? new realNet.Socket() : null;
+      const error = new Error(${JSON.stringify(EGRESS_TLS_REFUSAL)});
+      error.code = 'ERR_NIMBUS_EGRESS_TLS';
+      if (!refused) throw error;
+      queueMicrotask(() => refused.destroy(error));
+      return refused;
+    }
     const proxied = !!(__nimbusReplay && __nimbusReplay.outbound);
     if (!proxied) __nimbusReplay?.effect("tls.connect " + describe(args));
     const socket = proxied ? proxiedConnect(...args) : real.connect(...args);
@@ -6868,6 +7008,11 @@ const __tlsMod = (() => {
         counted.set(p, new Proxy(value, {
           apply(target, self, args) { __nimbusReplay?.effect('tls.' + p); return Reflect.apply(target, self, args); },
           construct(target, args, newTarget) {
+            if (globalThis.__nimbusEgress === true) {
+              const error = new Error(${JSON.stringify(EGRESS_TLS_REFUSAL)});
+              error.code = 'ERR_NIMBUS_EGRESS_TLS';
+              throw error;
+            }
             if (__nimbusReplay && __nimbusReplay.outbound) {
               throw notImplemented('tls.' + p, 'a TLS socket the program builds itself is not made in a program whose network goes through Nimbus (one started with its stdin open); use tls.connect');
             }
@@ -8817,6 +8962,11 @@ const __processMod = {
     throw err;
   },
 };
+// Node's process reads as one: Object.prototype.toString gives "[object
+// process]", which axios (utils.kindOf) and others test to pick their Node
+// paths (axios: its http adapter rather than its fetch one). As Node defines
+// it: an own property, writable, not enumerable, not configurable.
+Object.defineProperty(__processMod, Symbol.toStringTag, { value: "process", writable: true, enumerable: false, configurable: false });
 
 function __nimbusRuntimeErrorTrace(error) {
   if (error && typeof error === "object") {
@@ -8906,6 +9056,7 @@ builtins.child_process = __childProcessMod;
 builtins.process = __processMod;
 builtins.console = __consoleMod;
 ${NATIVE_HTTP_SOURCE}
+${NODE_WS_UPGRADE_SOURCE}
 // W3 — net.Socket honest-error mode.
 //
 // Pre-W3 behaviour: \`new net.Socket().connect(443, 'example.com')\`

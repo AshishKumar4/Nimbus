@@ -14,7 +14,7 @@ import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { durableObject, freshFacetClass, instances, releaseFacetHarness, resetInstances } from './lib/oxc-facet-harness.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const root = 'home/user/app';
 const components = Array.from({ length: 12 }, (_, i) => `Panel${i}`);

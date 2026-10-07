@@ -104,7 +104,7 @@ export function makeRubyRunnerFactory(deps) {
                 return 1;
             }
             const home = ctx.env?.HOME || deps.getHome();
-            const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, vfs, ctx);
+            const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, vfs, ctx, deps.network);
             if (packageCommand.handled) {
                 if (packageCommand.exitCode === 0)
                     (await registerGemBins(vfs, home));
@@ -241,7 +241,7 @@ export function makeRubyRunnerFactory(deps) {
         return rubyBinHandler;
     };
 }
-async function maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, vfs, ctx) {
+async function maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, vfs, ctx, network) {
     const tool = rubyPackageTool(binKind, binName);
     if (tool === 'gem' && argv[0] === 'install') {
         const parsed = parseGemInstallArgs(argv.slice(1));
@@ -250,7 +250,7 @@ async function maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, 
             return { handled: true, exitCode: 2 };
         }
         try {
-            const report = await installRubyGems(vfs, parsed.requests, { gemHome: gemHomeFor(home), includeDependencies: true });
+            const report = await installRubyGems(vfs, parsed.requests, { gemHome: gemHomeFor(home), includeDependencies: true, network });
             const processed = writeInstallReport(ctx, report);
             ctx.stdout.write(`${processed} gem(s) processed\n`);
             return { handled: true, exitCode: 0 };
@@ -262,7 +262,7 @@ async function maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, 
     }
     if (tool === 'bundle' && argv[0] === 'install') {
         try {
-            const { requests, report, lockfilePath } = await installRubyBundle(vfs, cwd, { gemHome: gemHomeFor(home) });
+            const { requests, report, lockfilePath } = await installRubyBundle(vfs, cwd, { gemHome: gemHomeFor(home), network });
             const processed = writeInstallReport(ctx, report);
             ctx.stdout.write(`Bundle complete! ${requests.length} Gemfile dependency(s), ${processed} gem(s) now installed.\n`);
             ctx.stdout.write(`Bundled lockfile written to /${lockfilePath}\n`);

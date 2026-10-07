@@ -17,9 +17,7 @@ const CLASSES = {
     cntrl: '\\p{Cc}', xdigit: '0-9A-Fa-f',
 };
 /** A character as a literal in a JavaScript `u` pattern; `-` is escaped only in a class. */
-/** A character as a literal in a `u` pattern. */
-export function literalChar(ch) { return literal(ch); }
-function literal(ch, inClass = false) {
+export function literal(ch, inClass = false) {
     if (ch === '-')
         return inClass ? '\\-' : '-';
     return /[\\^$.*+?()[\]{}|/]/.test(ch) ? `\\${ch}` : ch;

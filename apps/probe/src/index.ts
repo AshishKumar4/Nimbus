@@ -12,7 +12,7 @@
  * the DO/RPC classes from the main module — see apps/hosted-demo.
  */
 import {
-  NimbusSession,
+  NimbusSession as SdkNimbusSession,
   NimbusPublicDirectory,
   SupervisorRPC,
   NimbusAssetsRPC,
@@ -33,8 +33,140 @@ import {
   NimbusAuthError,
 } from '@nimbus-sh/worker/auth';
 
+import { WorkerEntrypoint } from 'cloudflare:workers';
+import { CANARY_PROJECT, CANARY_WHEEL, canaryPypiJson, canaryWheel } from './egress-canary.js';
+
+/**
+ * The host the test egress answers itself: unresolvable anywhere else, so a
+ * request that reaches it went through the egress.
+ */
+const EGRESS_TEST_HOST = 'egress-test.invalid';
+
+/** What the egress answers a plain-HTTP request to EGRESS_TEST_HOST with, over TCP: the canary wheel, or its request line. */
+function egressTcpHttpResponse(requestLine: string): Uint8Array {
+  const [method = '', path = ''] = requestLine.split(' ');
+  const wheel = method === 'GET' && path === `/${CANARY_WHEEL}`;
+  const body = wheel ? canaryWheel() : new TextEncoder().encode(`via-egress-tcp ${method} ${path}`);
+  const head = new TextEncoder().encode(
+    `HTTP/1.1 200 OK\r\ncontent-type: ${wheel ? 'application/octet-stream' : 'text/plain'}\r\n`
+    + `content-length: ${body.byteLength}\r\nconnection: close\r\n\r\n`,
+  );
+  const response = new Uint8Array(head.byteLength + body.byteLength);
+  response.set(head);
+  response.set(body, head.byteLength);
+  return response;
+}
+
+/** The request line of the HTTP request at the head of `readable` (read to its blank line). */
+async function readRequestLine(readable: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = readable.getReader();
+  let text = '';
+  while (!text.includes('\r\n\r\n')) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += new TextDecoder().decode(value);
+  }
+  reader.releaseLock();
+  return text.split('\r\n', 1)[0] ?? '';
+}
+
+/**
+ * A recording egress for tests (NIMBUS_TEST_EGRESS=1): it answers
+ * EGRESS_TEST_HOST itself (HTTP, encoded bodies at /encoded-<gzip|br|deflate>,
+ * WebSocket upgrades and an echo server at /ws-echo, a refused upgrade at
+ * /ws-refused (and held open at /ws-refused-open, /ws-refused-64k, and after
+ * 2 s at /ws-refused-slow), an
+ * echo answered after 2 s at /ws-slow, plain TCP on port 7, plain
+ * HTTP over TCP on port 80) and PyPI's metadata for its canary project
+ * (egress-canary.ts), and sends everything else on to the network, so a
+ * session under it can still install packages. What an embedder supplies is
+ * the same shape: a Fetcher, minted per session with its identity in props.
+ */
+export class TestEgress extends WorkerEntrypoint {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.hostname === 'pypi.org' && (url.pathname === `/pypi/${CANARY_PROJECT}/json` || url.pathname === `/pypi/${CANARY_PROJECT}/1.0/json`)) {
+      return Response.json(canaryPypiJson(`http://${EGRESS_TEST_HOST}/${CANARY_WHEEL}`));
+    }
+    if (url.hostname !== EGRESS_TEST_HOST) return fetch(request);
+    const encoding = /^\/encoded-(gzip|br|deflate)$/.exec(url.pathname)?.[1];
+    if (encoding !== undefined) {
+      // As a server compresses: the body encoded, sent as it is (encodeBody 'manual').
+      const zlib = await import('node:zlib');
+      const json = JSON.stringify({ encoding, accepted: request.headers.get('accept-encoding') });
+      const body = encoding === 'gzip' ? zlib.gzipSync(json) : encoding === 'br' ? zlib.brotliCompressSync(json) : zlib.deflateSync(json);
+      return new Response(body, { headers: { 'content-type': 'application/json', 'content-encoding': encoding }, encodeBody: 'manual' });
+    }
+    if (url.pathname === '/ws-refused') {
+      return Response.json({ error: 'unauthorized' }, { status: 401, headers: { 'www-authenticate': 'Bearer' } });
+    }
+    // A refusal whose body is sent and then held open: a short one, or exactly 64 KiB, or a short one after 2 s.
+    if (url.pathname === '/ws-refused-slow') await new Promise((resolve) => setTimeout(resolve, 2000));
+    if (url.pathname === '/ws-refused-open' || url.pathname === '/ws-refused-64k' || url.pathname === '/ws-refused-slow') {
+      const body = url.pathname === '/ws-refused-64k' ? new Uint8Array(65536).fill(97) : new TextEncoder().encode('partial');
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(body); } }),
+        { status: 401, statusText: 'Unauthorized', headers: { 'content-type': 'text/plain' } });
+    }
+    // An upgrade answered after 2 s.
+    if (url.pathname === '/ws-slow') await new Promise((resolve) => setTimeout(resolve, 2000));
+    if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+      const pair = new WebSocketPair();
+      pair[1].accept();
+      pair[1].binaryType = 'arraybuffer';
+      if (url.pathname === '/ws-echo' || url.pathname === '/ws-slow') {
+        // An echo server, as a test's host-side twin answers: a message back
+        // as it came; 'headers' answers with the upgrade's Authorization and
+        // Origin; 'close' closes 4001 'bye'; the first subprotocol offered.
+        pair[1].addEventListener('message', (event) => {
+          if (event.data === 'headers') pair[1].send(JSON.stringify({ authorization: request.headers.get('authorization'), origin: request.headers.get('origin') }));
+          else if (event.data === 'close') pair[1].close(4001, 'bye');
+          else pair[1].send(event.data);
+        });
+        const protocol = request.headers.get('sec-websocket-protocol')?.split(',')[0]?.trim();
+        return new Response(null, { status: 101, webSocket: pair[0], headers: protocol ? { 'sec-websocket-protocol': protocol } : {} });
+      }
+      pair[1].addEventListener('message', (event) => pair[1].send(`via-egress:${String(event.data)}`));
+      return new Response(null, { status: 101, webSocket: pair[0] });
+    }
+    return new Response(`via-egress ${request.method} ${url.pathname}`, { headers: { 'x-nimbus-test-egress': 'yes' } });
+  }
+
+  async connect(socket: Socket): Promise<void> {
+    const { localAddress } = await socket.opened as { localAddress?: string };
+    if (localAddress === `${EGRESS_TEST_HOST}:80`) {
+      const response = egressTcpHttpResponse(await readRequestLine(socket.readable));
+      const writer = socket.writable.getWriter();
+      await writer.write(response);
+      await writer.close();
+      return;
+    }
+    if (localAddress?.startsWith(`${EGRESS_TEST_HOST}:`)) {
+      const writer = socket.writable.getWriter();
+      await writer.write(new TextEncoder().encode('via-egress-tcp\n'));
+      await writer.close();
+      return;
+    }
+    // Loaded here, not at the top: a module that imports this app (a test's) need not provide sockets.
+    const { connect } = await import('cloudflare:sockets');
+    const upstream = connect(localAddress!, { allowHalfOpen: true });
+    await Promise.all([socket.readable.pipeTo(upstream.writable), upstream.readable.pipeTo(socket.writable)]).catch(() => {});
+  }
+}
+
+/**
+ * The SDK's session, its workspace under the test egress when the probe runs
+ * with NIMBUS_TEST_EGRESS=1, as an embedder that names each session to its
+ * egress would write it.
+ */
+export class NimbusSession extends SdkNimbusSession {
+  protected override workspaceEgress() {
+    if ((this.env as { NIMBUS_TEST_EGRESS?: string }).NIMBUS_TEST_EGRESS !== '1') return super.workspaceEgress();
+    return (this.ctx as unknown as { exports: { TestEgress(options: { props: object }): Fetcher } })
+      .exports.TestEgress({ props: { session: this.ctx.id.toString() } });
+  }
+}
+
 export {
-  NimbusSession,
   NimbusPublicDirectory,
   SupervisorRPC,
   NimbusAssetsRPC,

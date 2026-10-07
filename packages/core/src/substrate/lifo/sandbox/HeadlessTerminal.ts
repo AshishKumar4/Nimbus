@@ -1,8 +1,10 @@
 import type { ITerminal } from '../terminal/ITerminal.js';
 
 /**
- * A Terminal-shaped class that captures output without xterm.js.
- * Used for headless/programmatic Sandbox usage (AI agents, tests, etc.)
+ * A terminal with no screen, for a shell nobody watches (programmatic and
+ * agent sessions, tests): what the shell writes to it is dropped, by
+ * contract (a command's output reaches its caller through Shell.execute's
+ * capture, not the terminal), and sendData types into the shell.
  */
 export class HeadlessTerminal implements ITerminal {
   private dataCallback: ((data: string) => void | Promise<void>) | null = null;

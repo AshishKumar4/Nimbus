@@ -6,7 +6,7 @@ import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts'
 import { ProcessFiles, ProcessView } from '../../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
-import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 export const SESSION_USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
 
@@ -44,6 +44,9 @@ export function installedRuntime(files = {}) {
  * One command invocation in /home/user as `cred`: its view of `filesystem`
  * (or `vfs`, when the test stands one in), and `output()` for what it wrote.
  * Any `extra` fields (setUmask, runAs) reach the context as given.
+ *
+ * @param {any} filesystem
+ * @param {{ args?: string[], env?: Record<string, string>, pid?: number, cred?: object, vfs?: object, [extra: string]: unknown }} [options]
  */
 export function runtimeContext(filesystem, { args = [], env = {}, pid = 41, cred = SESSION_USER, vfs, ...extra } = {}) {
   let stdout = '';

@@ -6,6 +6,11 @@ import type { ChildExit, CommandContext, CommandRunAsHost } from '../commands/ty
 import { isVfsCred, type NimbusFilesystemAuthority, type VfsCred } from '../../../runtime/os-contracts.js';
 import type { TerminalInputStream } from '../commands/types.js';
 import { resolve } from '../utils/path.js';
+import { echoOutput } from '../utils/backslash-escapes.js';
+import { singleQuote } from '../../../_shared/shell-quote.js';
+import { isDecimalInteger, isShellIdentifier } from './names.js';
+import { assignArray, assignVariable, cloneArrays, type VariableStore } from './variables.js';
+import { DEFAULT_HOME } from '../../../constants.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
 
 import {
@@ -18,7 +23,6 @@ import {
   type ProgramSpec,
   type ShellOptions,
   type TerminalFdState,
-  assignScalar,
 } from './interpreter.js';
 import { continuationState, lex } from './lexer.js';
 import { TokenKind } from './types.js';
@@ -41,7 +45,7 @@ function shellPromptParts(env: Record<string, string>, cwd: string): {
   user: string;
   host: string;
 } {
-  const home = env['HOME'] ?? '/home/user';
+  const home = env['HOME'] ?? DEFAULT_HOME;
   let displayPath = cwd;
   if (cwd === home) {
     displayPath = '~';
@@ -127,8 +131,7 @@ export class Shell {
   cursorPos: number = 0;
   screenCursorRow: number = 0; // tracks the actual terminal row (relative to prompt start)
 
-  // History (legacy array kept for backward compat with tests)
-  history: string[] = [];
+  /** Where Up/Down stands in the history: -1 is the line being typed. */
   historyIndex: number = -1;
   private savedLine: string = '';
 
@@ -196,7 +199,7 @@ export class Shell {
   ) {
     this.terminal = terminal;
     this.registry = registry;
-    this.cwd = env['HOME'] ?? '/home/user';
+    this.cwd = env['HOME'] ?? DEFAULT_HOME;
     this.env = { ...env };
     this.env.PWD = this.cwd;
     if (!this.env['0']) this.env['0'] = 'nimbus-sh';
@@ -218,13 +221,13 @@ export class Shell {
     }
 
     // Initialize job table (legacy - still used for backward compat)
-    this.jobTable = new JobTable();
+    this.jobTable = new JobTable(processRegistry);
 
     // Use shared process registry from Kernel
     this.processRegistry = processRegistry;
 
     // Initialize history manager
-    this.historyManager = new HistoryManager(() => this.vfs, () => this.env.HOME ?? '/home/user');
+    this.historyManager = new HistoryManager(() => this.vfs, () => this.env.HOME ?? DEFAULT_HOME);
 
     // Initialize interpreter
     this.interpreterConfig = {
@@ -272,6 +275,20 @@ export class Shell {
     view.registerBuiltins();
     this.forkViews.set(state, view);
     return view;
+  }
+
+  /**
+   * The command history, oldest first: the one store (HistoryManager, kept
+   * in ~/.bash_history) that Up/Down, reverse search, Alt+. and the history
+   * builtin all read, each line as it ran (after `!` expansion).
+   */
+  get history(): readonly string[] {
+    return this.historyManager.getAll();
+  }
+
+  /** The names this shell runs itself, as help and completion list them. */
+  builtinNames(): string[] {
+    return [...this.builtins.keys()];
   }
 
   private registerBuiltins(): void {
@@ -554,12 +571,15 @@ export class Shell {
 
     this.terminal.onData(async (data) => (await this.handleInput(data)));
 
+    // The saved history, so Up recalls the last session's commands, as bash's does.
+    await this.historyManager.load();
+
     // Source rc files on startup (like bash/zsh)
     const sourced = this.sourceRcFiles();
     // The bash launch is deliberately not part of the returned promise: an
     // interactive bash runs until the user exits it.
     return sourced.then(async () => {
-      const home = this.env['HOME'] ?? '/home/user';
+      const home = this.env['HOME'] ?? DEFAULT_HOME;
       if ((await readDefaultShell(this.vfs, home)) === 'bash') {
         void this.executeLine('bash -i').catch(error => {
           this.writeToTerminal(`${error instanceof Error ? error.message : String(error)}\n`);
@@ -572,7 +592,7 @@ export class Shell {
   }
 
   private async sourceRcFiles(): Promise<void> {
-    const home = this.env['HOME'] ?? '/home/user';
+    const home = this.env['HOME'] ?? DEFAULT_HOME;
 
     // Source system-wide profile first
     await this.sourceFile('/etc/profile');
@@ -598,15 +618,11 @@ export class Shell {
       return;
     }
 
-    // Report finished background jobs from JobTable (legacy)
-    const doneJobs = this.jobTable.collectDone();
-    for (const job of doneJobs) {
+    // Report the jobs that finished, then reap their processes (and any other zombie).
+    for (const job of this.jobTable.collectDone()) {
       this.writeToTerminal(`[${job.id}] Done    ${job.command}\n`);
     }
-
-    // Collect and reap zombie processes from ProcessRegistry
     this.processRegistry.collectZombies();
-    // Zombies are already logged by JobTable above, so no need to log again
 
     this.terminal.write(formatShellPrompt(this.env, this.cwd));
   }
@@ -789,7 +805,7 @@ export class Shell {
       env: this.env,
       vfs: this.vfs,
       registry: this.registry,
-      builtinNames: [...this.builtins.keys()],
+      builtinNames: this.builtinNames(),
     };
 
     const result = (await complete(completionCtx));
@@ -1110,7 +1126,6 @@ export class Shell {
     }
 
     this.pendingLine = null;
-    this.history.push(command);
     (await this.executeLine(command));
   }
 
@@ -1155,13 +1170,13 @@ export class Shell {
   // ─── Builtins (now with stdout/stderr params for pipe support) ───
 
   private async builtinCd(args: string[], stderr: CommandOutputStream): Promise<number> {
-    const target = args[0] ?? this.env['HOME'] ?? '/home/user';
+    const target = args[0] ?? this.env['HOME'] ?? DEFAULT_HOME;
     let newPath: string;
 
     if (target === '-') {
       newPath = this.env['OLDPWD'] ?? this.cwd;
     } else if (target === '~' || target.startsWith('~/')) {
-      const home = this.env['HOME'] ?? '/home/user';
+      const home = this.env['HOME'] ?? DEFAULT_HOME;
       newPath = target === '~' ? home : resolve(home, target.slice(2));
     } else {
       newPath = resolve(this.cwd, target);
@@ -1191,46 +1206,7 @@ export class Shell {
   }
 
   private async builtinEcho(args: string[], stdout: CommandOutputStream): Promise<number> {
-    let interpretEscapes = false;
-    let suppressNewline = false;
-    let i = 0;
-
-    while (i < args.length) {
-      const arg = args[i];
-      if (arg === '--') {
-        i++;
-        break;
-      }
-      if (arg === '-n') {
-        suppressNewline = true;
-        i++;
-        continue;
-      }
-      if (arg === '-e') {
-        interpretEscapes = true;
-        i++;
-        continue;
-      }
-      if (arg === '-E') {
-        interpretEscapes = false;
-        i++;
-        continue;
-      }
-      if (isEchoFlagCluster(arg)) {
-        for (const ch of arg.slice(1)) {
-          if (ch === 'n') suppressNewline = true;
-          else if (ch === 'e') interpretEscapes = true;
-          else if (ch === 'E') interpretEscapes = false;
-        }
-        i++;
-        continue;
-      }
-      break;
-    }
-
-    const body = args.slice(i).join(' ');
-    const output = interpretEscapes ? decodeEchoEscapes(body) : body;
-    (await stdout.write(suppressNewline ? output : `${output}\n`));
+    (await stdout.write(echoOutput(args)));
     return 0;
   }
 
@@ -1444,7 +1420,7 @@ export class Shell {
       return;
     }
     for (const key of Object.keys(this.env)) {
-      if (key === '@' || key === '#' || isPositionalKey(key)) delete this.env[key];
+      if (key === '@' || key === '#' || isDecimalInteger(key)) delete this.env[key];
     }
     this.env['#'] = String(args.length);
     this.env['@'] = args.join(' ');
@@ -1694,21 +1670,19 @@ export class Shell {
       for (const token of lex(text.slice(1, -1))) {
         if (token.kind === TokenKind.Word) elements.push(unquoteWord(token));
       }
-      delete this.env[name];
-      this.arrays.set(name, elements);
-      return true;
+      return assignArray(this.variableStore(), name, elements);
     }
-    assignScalar(this.env, this.arrays, name, text);
-    return true;
+    return assignVariable(this.variableStore(), name, text);
   }
 
   private async assignEnv(name: string, value: string, stderr: CommandOutputStream): Promise<boolean> {
-    if (this.readonlyNames.has(name)) {
-      (await stderr.write(`${name}: readonly variable\n`));
-      return false;
-    }
-    assignScalar(this.env, this.arrays, name, value);
-    return true;
+    if (assignVariable(this.variableStore(), name, value)) return true;
+    (await stderr.write(`${name}: readonly variable\n`));
+    return false;
+  }
+
+  private variableStore(): VariableStore {
+    return { env: this.env, arrays: this.arrays, readonlyNames: this.readonlyNames };
   }
 
   private snapshotShellState(): ShellStateFrame {
@@ -1756,11 +1730,6 @@ export class Shell {
 
   private async builtinJobs(args: string[], stdout: CommandOutputStream, stderr: CommandOutputStream): Promise<number> {
     const jobs = this.jobTable.list();
-    for (const job of jobs) {
-      const proc = job.pid === undefined ? undefined : this.processRegistry.get(job.pid);
-      if (proc?.status === 'stopped') job.status = 'stopped';
-      else if (job.status === 'stopped' && proc?.status === 'running') job.status = 'running';
-    }
     let format = '';
     let filter = '';
     let index = 0;
@@ -1813,7 +1782,7 @@ export class Shell {
       return 1;
     }
     await stdout.write(`${job.command}\n`);
-    if (job.pid !== undefined && this.processRegistry.get(job.pid)?.status === 'stopped') this.processRegistry.kill(job.pid, 'CONT');
+    if (this.processRegistry.get(job.pid)?.status === 'stopped') this.processRegistry.kill(job.pid, 'CONT');
     const exitCode = await job.promise;
     this.jobTable.reap(job);
     return exitCode;
@@ -1829,8 +1798,7 @@ export class Shell {
       await stderr.write(`bg: ${spec}: ${job === 'ambiguous' ? 'ambiguous job spec' : 'no such job'}\n`);
       return 1;
     }
-    if (job.pid !== undefined) this.processRegistry.kill(job.pid, 'CONT');
-    job.status = 'running';
+    this.processRegistry.kill(job.pid, 'CONT');
     await stdout.write(`[${job.id}]+ ${job.command} &\n`);
     return 0;
   }
@@ -1928,87 +1896,6 @@ export class Shell {
 
 }
 
-function isEchoFlagCluster(arg: string): boolean {
-  if (arg.length < 2 || arg[0] !== '-') return false;
-  for (const ch of arg.slice(1)) {
-    if (ch !== 'n' && ch !== 'e' && ch !== 'E') return false;
-  }
-  return true;
-}
-
-function decodeEchoEscapes(input: string): string {
-  let output = '';
-  for (let i = 0; i < input.length; i++) {
-    const ch = input[i];
-    if (ch !== '\\' || i + 1 >= input.length) {
-      output += ch;
-      continue;
-    }
-
-    const next = input[++i];
-    switch (next) {
-      case '\\': output += '\\'; break;
-      case 'n': output += '\n'; break;
-      case 't': output += '\t'; break;
-      case 'r': output += '\r'; break;
-      case 'b': output += '\b'; break;
-      case 'f': output += '\f'; break;
-      case 'v': output += '\v'; break;
-      case 'a': output += '\x07'; break;
-      case 'x': {
-        const parsed = readHexEscape(input, i + 1);
-        if (parsed) {
-          output += String.fromCharCode(parsed.value);
-          i = parsed.end - 1;
-        } else {
-          output += 'x';
-        }
-        break;
-      }
-      case '0': {
-        const parsed = readOctalEscape(input, i + 1);
-        output += String.fromCharCode(parsed.value);
-        i = parsed.end - 1;
-        break;
-      }
-      default:
-        output += next;
-        break;
-    }
-  }
-  return output;
-}
-
-function readHexEscape(input: string, pos: number): { value: number; end: number } | null {
-  let value = 0;
-  let end = pos;
-  while (end < input.length && end - pos < 2) {
-    const digit = hexValue(input.charCodeAt(end));
-    if (digit === null) break;
-    value = value * 16 + digit;
-    end++;
-  }
-  return end === pos ? null : { value, end };
-}
-
-function readOctalEscape(input: string, pos: number): { value: number; end: number } {
-  let value = 0;
-  let end = pos;
-  while (end < input.length && end - pos < 3) {
-    const code = input.charCodeAt(end);
-    if (code < 48 || code > 55) break;
-    value = value * 8 + (code - 48);
-    end++;
-  }
-  return { value, end };
-}
-
-function hexValue(code: number): number | null {
-  if (code >= 48 && code <= 57) return code - 48;
-  if (code >= 65 && code <= 70) return code - 55;
-  if (code >= 97 && code <= 102) return code - 87;
-  return null;
-}
 
 type ReadArgs =
   | { ok: true; names: string[]; prompt?: string }
@@ -2121,20 +2008,6 @@ function unquoteWord(token: { value: string; parts?: Array<{ text: string }> }):
   return token.parts === undefined ? token.value : token.parts.map((p) => p.text).join('');
 }
 
-function isShellIdentifier(value: string): boolean {
-  if (value.length === 0) return false;
-  const first = value.charCodeAt(0);
-  if (!isIdentifierStart(first)) return false;
-  for (let i = 1; i < value.length; i++) {
-    if (!isIdentifierPart(value.charCodeAt(i))) return false;
-  }
-  return true;
-}
-
-function isPositionalKey(key: string): boolean {
-  return isDecimalInteger(key);
-}
-
 function isSetOptionCluster(arg: string): boolean {
   if (arg.length < 2) return false;
   if (arg[0] !== '-' && arg[0] !== '+') return false;
@@ -2150,9 +2023,7 @@ function normalizeTrapSignal(raw: string): string | null {
 }
 
 function quoteSetValue(value: string): string {
-  if (value.length === 0) return "''";
-  if (isPlainSetValue(value)) return value;
-  return `'${value.replace(/'/g, "'\\''")}'`;
+  return value.length > 0 && isPlainSetValue(value) ? value : singleQuote(value);
 }
 
 function isPlainSetValue(value: string): boolean {
@@ -2168,23 +2039,6 @@ function isPlainSetValue(value: string): boolean {
       code === 47 ||
       code === 58;
     if (!ok) return false;
-  }
-  return true;
-}
-
-function isIdentifierStart(code: number): boolean {
-  return code === 95 || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
-}
-
-function isIdentifierPart(code: number): boolean {
-  return isIdentifierStart(code) || (code >= 48 && code <= 57);
-}
-
-function isDecimalInteger(value: string): boolean {
-  if (value.length === 0) return false;
-  for (let i = 0; i < value.length; i++) {
-    const code = value.charCodeAt(i);
-    if (code < 48 || code > 57) return false;
   }
   return true;
 }
@@ -2237,13 +2091,6 @@ function restoreShellOptions(target: ShellOptions, source: ShellOptions): void {
 }
 
 /** Arrays are mutated in place, so a snapshot has to copy each one. */
-function cloneArrays(
-  arrays: Map<string, (string | undefined)[]>,
-): Map<string, (string | undefined)[]> {
-  const copy = new Map<string, (string | undefined)[]>();
-  for (const [name, elements] of arrays) copy.set(name, [...elements]);
-  return copy;
-}
 
 function replaceMap<K, V>(target: Map<K, V>, source: Map<K, V>): void {
   target.clear();

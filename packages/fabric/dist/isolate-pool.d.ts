@@ -10,8 +10,9 @@
  *      concurrency=N keeps at most N warm isolates rather than one per job.
  *   2. **Nimbus defaults**: compatibilityDate = CF_COMPAT_DATE (matches
  *      the supervisor worker), compatibilityFlags = GUEST_COMPAT_FLAGS,
- *      globalOutbound = undefined (inherit parent network so the facet can
- *      reach https://registry.npmjs.org without a proxy binding).
+ *      globalOutbound = the egress of the pool's `network` when it has
+ *      one, else absent (`ISOLATE_NETWORK`: the parent's network, which
+ *      reaches https://registry.npmjs.org without a proxy binding).
  *   3. **Supervisor autoinjection**. The pool grabs the embedder's
  *      registered supervisor entrypoint stub (see `supervisorEntrypoint` in
  *      composition.ts) and forwards it as `env.SUPERVISOR` to every facet,
@@ -23,6 +24,7 @@
  * The vendored directory contains only the upstream serialization, error,
  * and binding types used by this implementation.
  */
+import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type HostRoute } from './composition.js';
 import { type SupervisorBindingProps } from './supervisor-props.js';
 import { type DynamicWorkerClaim } from './budgets.js';
@@ -88,6 +90,16 @@ export interface IsolatePoolOptions {
      * not receive a Supervisor binding and do not retain user state.
      */
     cacheScope?: 'session' | 'global';
+    /**
+     * The network the pool's facets use. For a pool that runs work on behalf
+     * of a workspace (its registry fetches, a program's requests), the
+     * workspace's (`workspace.network`), whose egress becomes each facet's
+     * globalOutbound and whose id is baked into the loader id, so a warm
+     * isolate made under one egress never serves another. Nimbus's own work
+     * states `ISOLATE_NETWORK`: the facets keep the parent's network. Required,
+     * so each pool's network is chosen where it is made.
+     */
+    network: WorkspaceNetwork;
     /**
      * Baked into the loader id. Two pools sharing tag, preamble, wasm and
      * supervisor but differing in `scope` never reuse each other's warm
@@ -253,6 +265,7 @@ export declare function assembleLoaderWorkerModuleSource(options: LoaderWorkerMo
  *   const pool = new IsolatePool(env, ctx, {
  *     concurrency: 2,
  *     tag: 'npm-install',
+ *     network: workspace.network,
  *   });
  *   const results = await pool.map(
  *     async (pkg, env) => env.SUPERVISOR.writeBatch(buildPayload(pkg)),
@@ -319,7 +332,9 @@ export declare class IsolatePool {
     private readonly supervisorKey;
     /** Extra loader-id segment from options.scope — see IsolatePoolOptions. */
     private readonly scope;
-    constructor(env: unknown, ctx: DurableObjectState, opts?: IsolatePoolOptions);
+    /** IsolatePoolOptions.network: each facet's outbound, and a loader-id segment. */
+    private readonly network;
+    constructor(env: unknown, ctx: DurableObjectState, opts: IsolatePoolOptions);
     /** Effective concurrency used when no per-call override is supplied. */
     get defaultConcurrency(): number;
     /**

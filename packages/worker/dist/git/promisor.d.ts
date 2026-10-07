@@ -10,6 +10,7 @@
  * idx are durable, so a read that follows finds the objects.
  */
 import { type GitNetworkResult } from './network-facet.js';
+import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 export interface FetchMissingObjectsRequest {
     pid: number;
     /** The repository's worktree top (or git directory) as an engine path: where the facet writes. */
@@ -35,5 +36,7 @@ export declare class PromisorFetchError extends Error {
     constructor(remote: string, result: GitNetworkResult);
 }
 /** One request to the promisor remote for `oids`; resolves when their pack is durable. */
-export declare function fetchMissingObjects(ctx: DurableObjectState, env: unknown, request: FetchMissingObjectsRequest): Promise<FetchMissingObjectsResult>;
+export declare function fetchMissingObjects(ctx: DurableObjectState, env: unknown, request: FetchMissingObjectsRequest, 
+/** The workspace's network: the promisor is reached through its egress (execGitNetwork). */
+workspaceNetwork: WorkspaceNetwork): Promise<FetchMissingObjectsResult>;
 //# sourceMappingURL=promisor.d.ts.map

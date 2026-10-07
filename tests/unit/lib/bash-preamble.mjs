@@ -19,7 +19,7 @@ import { FILESYSTEM_RPC_METHODS, vfsSupervisor } from '../../../packages/core/sr
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSupervisorBridgeStore, createSupervisorOpHandler } from '../../../packages/core/src/workspace/supervisor-op.ts';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { acrossRpc } from './rpc-error.mjs';
 
 const wasmDir = fileURLToPath(new URL('../../../packages/worker/wasm/bash/', import.meta.url));
@@ -59,6 +59,13 @@ function wasmTable() {
  * @param {Record<string,WebAssembly.Module>} [opts.extraWasm]  extra `__NIMBUS_WASM`
  *   entries; a `cu_<name>.wasm` key becomes a command at /bin/<name>.
  * @param {boolean} [opts.remote]
+ * @param {string} [opts.preambleSource]  the runner preamble to evaluate (default BASH_RUNNER_PREAMBLE)
+ * @param {Record<string, object>} [opts.mounts]  mount point → backend
+ * @param {Record<string, object>} [opts.mountOptions]  mount point → its mount options
+ * @param {string[]} [opts.dirs]  extra directories to create
+ * @param {Record<string, string | Uint8Array>} [opts.files]  path → contents
+ * @param {Record<string, number | string>} [opts.modes]  path → owner permission bits (rwx as 0-7)
+ * @param {string} [opts.parking]  how a blocking call parks (default 'jspi' when remote, else 'none')
  */
 export function loadPreamble(opts = {}) {
   const { table, applets } = wasmTable();

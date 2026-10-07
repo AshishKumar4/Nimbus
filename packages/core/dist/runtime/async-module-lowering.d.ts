@@ -3,6 +3,11 @@ import { type SourceEdit } from './javascript-ast.js';
  * One name an import binds: the module's namespace, or one of its exports
  * by name (`default` included, which `import d from` binds too). A string
  * name is any string, `"*"` included: only `namespace` is the namespace.
+ *
+ * A named binding's `references` are where the module uses it. Null where
+ * the reader saw no scopes (the bounded bundle rewrite, which must not build
+ * a multi-MiB bundle's tree): the binding is then read once, when its module
+ * is required, as Node binds a builtin's or a CommonJS module's names.
  */
 export type EsmImportBinding = {
     readonly kind: 'namespace';
@@ -11,7 +16,18 @@ export type EsmImportBinding = {
     readonly kind: 'named';
     readonly local: string;
     readonly imported: string;
+    readonly references: readonly EsmReference[] | null;
 };
+/**
+ * A use of an imported binding: a read, a call (`this` stays undefined), a
+ * shorthand property (`{ n }`), or a write, which throws as the language's
+ * assignment to an import does.
+ */
+export interface EsmReference {
+    readonly start: number;
+    readonly end: number;
+    readonly use: 'read' | 'call' | 'shorthand' | 'write';
+}
 /**
  * A name a module exports: one of its own bindings, or, re-exported from
  * the record's source, one of that module's exports by name or its
@@ -58,9 +74,22 @@ export type EsmRecord = {
         readonly end: number;
     };
 };
+/**
+ * Names for code generated around `source`: a prefix its text does not hold
+ * anywhere, then a number, so no binding of the source is one of them.
+ */
+export declare function generatedNames(source: string): () => string;
 export interface CommonJsEmitOptions {
     /** `async`: the module in an async IIFE (top-level await); `sync`: at the wrapper's top level. */
     readonly body: 'sync' | 'async';
+    /**
+     * Where the emitter's own names come from: generatedNames over the source,
+     * by default. A caller that generates names of its own around the module
+     * (a wrapper's parameters, rewritten expressions) passes the allocator it
+     * drew them from, generatedNames over its original source, so the two never
+     * meet.
+     */
+    readonly names?: () => string;
     /** The CommonJS exports object, as an expression. Default `module.exports`. */
     readonly exportsObject?: string;
     /** The CommonJS require function, as an expression. Default `require`. */

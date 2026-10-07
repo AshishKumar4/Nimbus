@@ -40,6 +40,7 @@
  * pair for the same reason. The drain in the `finally` is the other half: a
  * program that wrote a file and then raised still wrote the file.
  */
+import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CPYTHON_PREAMBLE_TAIL } from './cpython-preamble.js';
@@ -205,6 +206,7 @@ export function makeCPythonRunnerFactory(deps) {
             }
             const pipRuntimeContext = {
                 home,
+                network: deps.network,
                 // No Pyodide lockfile: there is no curated wheel index behind this
                 // interpreter, so pip resolves against PyPI like anywhere else.
                 pyodideLockfileText: null,

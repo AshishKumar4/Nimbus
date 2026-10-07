@@ -40,6 +40,7 @@
  *     wakes every pending waiter, so cpWait/cpReadOutput don't hang and
  *     nothing the child held outlives it.
  */
+import { singleQuote } from '@nimbus-sh/core/_shared/shell-quote.js';
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { parseShellInvocation } from '@nimbus-sh/core/shell/shell-invocation.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
@@ -126,26 +127,9 @@ function parseShellCommandArgs(command, args) {
         return null;
     return { kind: 'stdin', args: parsed.invocation.args };
 }
+/** A spawn's word on its command line: bare when every character is plainly safe, else single-quoted. */
 function quoteShellToken(value) {
-    const text = String(value);
-    if (text.length === 0)
-        return "''";
-    let simple = true;
-    for (let i = 0; i < text.length; i++) {
-        const code = text.charCodeAt(i);
-        const ch = text[i];
-        const ok = (code >= 48 && code <= 57) ||
-            (code >= 65 && code <= 90) ||
-            (code >= 97 && code <= 122) ||
-            ch === '_' || ch === '-' || ch === '.' || ch === '/' || ch === ':' || ch === '=';
-        if (!ok) {
-            simple = false;
-            break;
-        }
-    }
-    if (simple)
-        return text;
-    return "'" + text.split("'").join("'\\''") + "'";
+    return /^[A-Za-z0-9_\-./:=]+$/.test(value) ? value : singleQuote(value);
 }
 function shellLineFromSpawn(command, args) {
     return [command, ...(Array.isArray(args) ? args : [])].map((part) => quoteShellToken(String(part))).join(' ');

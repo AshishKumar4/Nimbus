@@ -161,7 +161,7 @@ class RubyReplAdapter {
         // drifted (it lacked the language-prelude const __rubyRun requires, so
         // every REPL eval died on boot) — compose it in exactly one place.
         const preamble = buildRubyPreamble();
-        const { env, ctx } = getFacetManagerLoaderHost(facetMgr);
+        const { env, ctx, network } = getFacetManagerLoaderHost(facetMgr);
         // The caller's filesystem, under the caller's credential: the prompt
         // starts in the shell's working directory and reads and writes there.
         this.pool = new IsolatePool(env, ctx, {
@@ -170,6 +170,8 @@ class RubyReplAdapter {
             supervisorPid: this.deps.pid,
             processSupervisor: supervisorBindingProps(ctx, this.deps.pid, { writerId: crypto.randomUUID() }),
             preamble,
+            // The workspace's, as every facet a manager's runtimes open (facetHostForManager).
+            network,
         });
     }
     async submitFacetFn(userCode) {

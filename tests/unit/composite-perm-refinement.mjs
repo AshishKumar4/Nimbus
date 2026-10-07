@@ -15,7 +15,7 @@ import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 import { isVfsError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { modelessBackend } from './lib/composite-backends.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../../lean/fixtures/composite-perm.json', import.meta.url), 'utf8'));

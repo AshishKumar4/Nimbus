@@ -25,6 +25,7 @@
  * in the PR that introduced this file.
  */
 
+import { loaderOutbound, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
@@ -902,7 +903,12 @@ async function writeCloneProgressLine(supervisor: GitSupervisorStub, line: strin
 export async function execGitNetwork(
   ctx: DurableObjectState,
   env: any,
-  opts: GitNetworkOpts,
+  opts: GitNetworkOpts,  /**
+   * The workspace's network (`workspace.network`): every facet this operation
+   * loads goes out through its egress, when its host supplied one (prepare,
+   * every batch and history piece, a fence's reload, fetch/pull/push).
+   */
+  network: WorkspaceNetwork,
 ): Promise<GitNetworkResult> {
   const start = Date.now();
   const timeoutMs = opts.timeout ?? (opts.op === 'clone'
@@ -930,7 +936,7 @@ export async function execGitNetwork(
     // One run for every binding this operation mints, a fence's included.
     const writerId = crypto.randomUUID();
     const bindingFor = (owner: string | undefined) => ctxExports!.SupervisorRPC!<GitSupervisorStub>({
-      props: { ...supervisorBindingProps(ctx, opts.pid, { writerId }), mutationOwner: owner },
+      props: { ...supervisorBindingProps(ctx, opts.pid, { writerId, network }), mutationOwner: owner },
     });
     const supervisorBinding = ctxExports?.SupervisorRPC ? bindingFor(mutationOwner) : undefined;
 
@@ -975,6 +981,8 @@ export async function execGitNetwork(
           'git-bundle.js': gitBundleSource,
         },
         env: { SUPERVISOR: binding },
+        // The git server is reached through the workspace's egress, when it has one.
+        ...loaderOutbound(network),
       });
       const loadedWorker: GitFacetWorker = env.LOADER.load(facetCode(supervisorBinding));
       worker = loadedWorker;

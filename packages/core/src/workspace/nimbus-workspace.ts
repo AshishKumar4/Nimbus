@@ -30,9 +30,11 @@ import type { Command, CommandRunAsHost } from '../substrate/lifo/commands/types
 import { createNodeCommand } from '../substrate/lifo/commands/system/node.js';
 import { createCurlCommand } from '../substrate/lifo/commands/net/curl.js';
 import { createWgetCommand } from '../substrate/lifo/commands/net/wget.js';
-import { runCommand } from '../substrate/lifo/sandbox/SandboxCommands.js';
+import { createDigCommand } from '../substrate/lifo/commands/net/dig.js';
+import { createPingCommand } from '../substrate/lifo/commands/net/ping.js';
+import { workspaceNetwork, type WorkspaceEgress, type WorkspaceNetwork } from '../_shared/workspace-network.js';
+import { runCommand, type CommandResult, type RunOptions } from '../substrate/lifo/sandbox/run-command.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
-import type { CommandResult, RunOptions } from '../substrate/lifo/sandbox/types.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import {
@@ -151,9 +153,11 @@ export interface NimbusWorkspaceOptions {
    * and `wasm-runner` joins them, which is what makes a `\0asm` file on the
    * PATH executable (see shell/exec-dispatch.ts).
    *
-   * A plain process passes `localFacetHost()`. A Durable Object passes nothing
-   * here and registers its own runners instead, because the ones it needs
-   * carry REPLs and a resident-process substrate this cannot reach.
+   * A plain process passes `localFacetHost(network)`, its network the
+   * workspace's: `workspaceNetwork(egress)` beside `egress`, else
+   * `ISOLATE_NETWORK`. A Durable Object passes nothing here and registers its
+   * own runners instead, because the ones it needs carry REPLs and a
+   * resident-process substrate this cannot reach.
    */
   readonly facets?: FacetHost;
   /**
@@ -192,6 +196,41 @@ export interface NimbusWorkspaceOptions {
    *  install stubs can resolve against. Supplied packages win same-name
    *  lookups. */
   readonly runtimeSource?: RuntimeSource;
+  /**
+   * The workspace's egress: every network request made on behalf of the
+   * workspace's commands and programs goes through it. A Fetcher's `fetch`
+   * and `connect` (`WorkspaceEgress`): `fetch` sees HTTP and WebSocket
+   * upgrades, `connect` plain TCP sockets. Typically a service binding or a
+   * `ctx.exports` entrypoint minted with the workspace's identity in its
+   * props, which may record, rewrite or refuse each request.
+   *
+   * Covered: git's clone, fetch, pull and push (every Dynamic Worker they
+   * load) and its on-demand object fetches; npm's registry and tarball
+   * requests (the install facets, in this Durable Object and in peers);
+   * curl, wget, dig and ping; pip's and gem's index requests and downloads;
+   * a process's fetch, http/https, WebSocket and plain TCP
+   * sockets; the one-shot runtimes and REPLs, whose facets go out through it
+   * (with `facets`, bind them to this network: `loaderFacetHost(env, ctx,
+   * workspaceNetwork(egress))`, `localFacetHost(workspaceNetwork(egress))`),
+   * TLS CPython makes itself included; an inline
+   * `node` program's fetch and http/https, streamed and redirected as Node's
+   * fetch does; a worker or dev server a command starts.
+   *
+   * Refused: a process's TLS socket (`tls.connect`), because a Fetcher's
+   * `connect()` carries plain TCP only and the TLS session could only be
+   * made off the egress (HTTPS by fetch or `https` is not affected); the
+   * WebSocket of an inline `node` program or a `localFacetHost` facet, which
+   * cannot cross its realm.
+   *
+   * Not covered: responses from Nimbus's shared npm packument cache are not
+   * used under an egress, so the egress sees every registry read, but
+   * integrity-checked tarballs may still come from the shared tarball cache;
+   * Nimbus's own infrastructure traffic (R2, the runtime catalog, OAuth, AI
+   * inference, static assets, its own Durable Objects).
+   *
+   * Absent, the workspace uses the isolate's own network, as before.
+   */
+  readonly egress?: WorkspaceEgress;
 }
 
 /**
@@ -220,6 +259,13 @@ export class NimbusWorkspace {
   /** The raw durable filesystem, for hosts that need uid-aware operations. */
   readonly vfs: SqliteVFS;
   readonly kernel: Kernel;
+  /**
+   * The network the workspace's commands and programs use: its egress when
+   * the host supplied one ({@link NimbusWorkspaceOptions.egress}), else the
+   * isolate's. Everything that loads a Dynamic Worker for the workspace
+   * gives it `loaderOutbound(workspace.network)`.
+   */
+  get network(): WorkspaceNetwork { return this.kernel.network; }
   readonly shell: Shell;
   /** What the shell resolves a command name against. A host adds its own. */
   readonly registry: CommandRegistry;
@@ -290,6 +336,7 @@ export class NimbusWorkspace {
     const filesystem = options.filesystem ?? new ProcessFiles(vfs);
     if (filesystem.engine !== vfs) throw new Error('The workspace filesystem must be over the workspace SqliteVFS');
     const kernel = new Kernel();
+    kernel.network = workspaceNetwork(options.egress);
     const registry = createDefaultRegistry();
     // The durable coreutils replace ~25 lifo builtins. They are the ones that
     // carry credentials and read this filesystem's uid/gid, so they must win.
@@ -339,6 +386,8 @@ export class NimbusWorkspace {
     registry.register('node', createNodeCommand(kernel));
     registry.register('curl', createCurlCommand(kernel));
     registry.register('wget', createWgetCommand(kernel));
+    registry.register('dig', createDigCommand(kernel));
+    registry.register('ping', createPingCommand(kernel));
     // kill signals this workspace's own processes and jobs (bash's builtin).
     registry.register('kill', createKillCommand(kernel.processRegistry));
 
@@ -374,6 +423,7 @@ export class NimbusWorkspace {
           processes,
           runtimes,
           getHome,
+          network: kernel.network,
         });
         // With a facet host the workspace owns the runner table, and it is
         // complete here: a supplied package naming a runner outside it would
@@ -751,6 +801,7 @@ function registerWasmRuntimes(deps: {
   processes: SessionProcessSupervisor;
   runtimes: RuntimeManager;
   getHome(): string;
+  network: WorkspaceNetwork;
 }): void {
   // wasm-runner allocates pids for what it runs, off the SAME supervisor the
   // shell identity uses — the host's own when it supplied one.
@@ -789,9 +840,9 @@ function registerWasmRuntimes(deps: {
     // run as a one-shot that dies with it. Same for ruby, where a script is
     // the shape that may bind a port.
     'cpython-runner': lazy(async () => (await import('../runtime/cpython-runner.js'))
-      .makeCPythonRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes })),
+      .makeCPythonRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, network: deps.network })),
     'ruby-runner': lazy(async () => (await import('../runtime/ruby-runner.js'))
-      .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, registry: deps.registry, getHome: deps.getHome })),
+      .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, registry: deps.registry, getHome: deps.getHome, network: deps.network })),
     'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))
       .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes })),
   };

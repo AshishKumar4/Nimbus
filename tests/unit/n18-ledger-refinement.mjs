@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { StorageLedger } from '../../packages/core/src/runtime/storage-ledger.ts';
 import { isVfsError } from '../../packages/core/src/vfs/vfs-error.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../../lean/fixtures/n18-ledger.json', import.meta.url), 'utf8'));
 

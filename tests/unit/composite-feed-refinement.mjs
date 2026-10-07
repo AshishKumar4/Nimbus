@@ -14,7 +14,7 @@ import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../../lean/fixtures/composite-feed.json', import.meta.url), 'utf8'));
 const enc = new TextEncoder();

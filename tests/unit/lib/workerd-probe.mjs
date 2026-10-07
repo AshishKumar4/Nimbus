@@ -38,7 +38,7 @@ async function freePort() {
     const server = createServer();
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
+      const { port } = /** @type {import('node:net').AddressInfo} */ (server.address());
       server.close(() => resolvePort(port));
     });
   });
@@ -111,7 +111,7 @@ async function putObjects(puts, persist, work) {
 /**
  * Boot apps/probe on workerd with `runtimes` installable, and `vars` over
  * its config vars (`wrangler dev --var`).
- * @returns {Promise<{ base: string, token: string, stop: () => Promise<void> }>}
+ * @returns {Promise<{ base: string, token: string, stop: () => Promise<void>, log: () => string, pid: number }>}
  */
 export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180_000, vars = {}, inspector = false } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'workerd-probe-'));
@@ -263,14 +263,21 @@ export function terminalCommandRunner(terminal) {
     }
   };
   let serial = 0;
+  /**
+   * @param {string} command
+   * @param {number} [timeoutMs]
+   * @param {{ progress?: () => Promise<unknown>, stalledMs?: number }} [options]
+   */
   const run = async (command, timeoutMs = 120_000, { progress, stalledMs = 120_000 } = {}) => {
     const mark = `__NIMBUS_DONE_${++serial}__`;
     const line = `${command}; echo "${mark}$?"`;
-    // The echoed line carries the marker too, followed by `$?`, never by digits.
-    const done = new RegExp(`${mark}\\d+[\\s\\S]*[$#>]\\s*$`);
+    // The echoed line carries the marker too, followed by `$?`, never by
+    // digits. The prompt after the marker's line is the shell's; it need not
+    // end the buffer, where a background job's banner may follow it.
+    const done = new RegExp(`${mark}\\d+\\s*\\n[\\s\\S]*?[$#>](\\s|$)`);
     terminal.reset();
     terminal.cmd(line);
-    await wait(line, (b) => done.test(b.trimEnd()), timeoutMs, progress, stalledMs);
+    await wait(line, (b) => done.test(b), timeoutMs, progress, stalledMs);
     const text = strip(terminal.buf);
     const end = text.lastIndexOf(mark);
     if (end < 0) throw new Error(`${command}: no completion marker within ${timeoutMs} ms:\n${text.slice(-800)}`);
@@ -299,6 +306,8 @@ export async function localTerminal(probe, { install = ['bash'] } = {}) {
   }
   return {
     run,
+    /** The session's id, and its terminal as the driver holds it (raw input, waitFor). */
+    sid,
     terminal,
     /** Write `content` to `path` in the session (base64 through node, no quoting hazards). */
     writeFile: async (path, content) => {
