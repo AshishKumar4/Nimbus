@@ -34,6 +34,7 @@
  * removes only what the clone made.
  */
 
+import type { RuntimeSynchronousFs } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { VfsCred } from '@nimbus-sh/core/vfs/vfs.js';
 
 /** What a clone's job record says. */
@@ -205,13 +206,8 @@ export interface SessionCleanupFs {
   namespace?(cred: VfsCred, owner: string): { fs: CleanupFs; dispose(): Promise<void> };
 }
 
-/** A process bridge's calls (RuntimeFsBridge's), as the namespace's cleanup takes them. */
-export interface CleanupBridge {
-  readFile(path: string): Uint8Array | null;
-  readdir(path: string): { name: string; type: string }[];
-  unlink(path: string, options: { mutationOwner: string }): void;
-  rmdir(path: string, options: { mutationOwner: string }): void;
-}
+/** A host bridge's synchronous calls (RuntimeFsBridge.synchronous), as the namespace's cleanup takes them. */
+export type CleanupBridge = Pick<RuntimeSynchronousFs, 'readFile' | 'readdir' | 'unlink' | 'rmdir'>;
 
 /** A cleanup's filesystem over the namespace (a host bridge), `owner`'s lease presented by each removal. */
 export function bridgeCleanupFs(bridge: CleanupBridge, owner: string): CleanupFs {

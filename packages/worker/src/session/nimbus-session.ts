@@ -1186,7 +1186,9 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         // A clone on a mount, through the namespace (a host bridge presenting its lease).
         namespace: (cred, owner) => {
           const host = this.getFilesystemAuthority().openHost(cred);
-          return { fs: bridgeCleanupFs(host.fs, owner), dispose: () => host.dispose() };
+          const bridge = host.fs.synchronous;
+          if (bridge === undefined) throw new Error('the host bridge has no synchronous face');
+          return { fs: bridgeCleanupFs(bridge, owner), dispose: () => host.dispose() };
         },
       }, (task) => this.ctx.waitUntil(task));
     }

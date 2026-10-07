@@ -255,7 +255,7 @@ const list = (user, dir) => user.readdir(dir).map(({ name }) => name).sort();
     releaseExclusiveMutation: (owner) => vfs.releaseExclusiveMutation(owner),
     namespace: (cred, owner) => {
       const host = files.openHost(cred);
-      return { fs: bridgeCleanupFs(host.fs, owner), dispose: () => host.dispose() };
+      return { fs: bridgeCleanupFs(host.fs.synchronous, owner), dispose: () => host.dispose() };
     },
   };
   const reserved = reserveInterruptedClones(recovery, await listInterruptedClones(storage, 2));

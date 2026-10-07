@@ -2535,7 +2535,7 @@ export async function runGitCommand(
   /** The workspace's network (`workspace.network`): clone, fetch, pull, push and promisor fetches go out through it. */
   network: WorkspaceNetwork = ISOLATE_NETWORK,
   /** The session's filesystem authority: a host bridge on the namespace, for the cleanup of a clone on a mount. */
-  filesystem?: { openHost(cred: VfsCred): { fs: CleanupBridge; dispose(): Promise<void> } },
+  filesystem?: { openHost(cred: VfsCred): { fs: { synchronous?: CleanupBridge }; dispose(): Promise<void> } },
 ): Promise<number> {
   let globals: ParsedGitGlobals;
   try {
@@ -2776,8 +2776,9 @@ export async function runGitCommand(
             // On a mount, through the namespace (a host bridge presenting the lease).
             const host = place.mount ? filesystem?.openHost(ctx.cred) : undefined;
             try {
-              if (place.mount && host === undefined) throw new Error('no namespace to clean it up through');
-              const cleaned = await cleanUpClone(host ? bridgeCleanupFs(host.fs, mutationOwner) : vfs.as(ctx.cred, { mutationOwner }), doCtx.storage, job, {
+              const bridge = host?.fs.synchronous;
+              if (place.mount && bridge === undefined) throw new Error('no namespace to clean it up through');
+              const cleaned = await cleanUpClone(bridge ? bridgeCleanupFs(bridge, mutationOwner) : vfs.as(ctx.cred, { mutationOwner }), doCtx.storage, job, {
                 sliceEntries: Number(ctx.env.NIMBUS_GIT_CLONE_CLEANUP_SLICE) || undefined,
               });
               if (cleaned.outcome === 'kept-repo') ctx.stderr.write(JUNK_LEAVE_REPO_WARNING);

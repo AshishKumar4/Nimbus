@@ -6,7 +6,9 @@
 // 4 MiB mount limit included. A clone there that fails is removed, through
 // the namespace. Then fetch, pull and push in the mounted repository, host
 // git doing the same in its clone: the same refs, objects, worktree and
-// index, and the server's branch where ours pushed it.
+// index, and the server's branch where ours pushed it. A mount whose
+// backend cannot rename fails the clone with ENOTSUP naming rename, and the
+// destination is removed.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -17,6 +19,10 @@ import { join } from 'node:path';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+
+/** A mount whose backend cannot rename in place. */
+class NoRename extends MemoryVFS { rename = undefined; }
 import { startGitHttpServer } from './lib/git-http-server.mjs';
 import { createFacetSession, hostGit as hostGitIn } from './lib/facet-session.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -73,7 +79,11 @@ try {
   // The session user's own directory on the mount.
   mountEngine.as(CRED_KERNEL).mkdir('work', { mode: 0o755 });
   mountEngine.as(CRED_KERNEL).chown('work', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
-  const session = await createFacetSession(work, { realGit: true, mounts: { '/mnt/data': new SqliteFiles(mountEngine, mountEngine.as(CRED_KERNEL)) } });
+  const noRename = new NoRename({ uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid });
+  const session = await createFacetSession(work, { realGit: true, mounts: {
+    '/mnt/data': new SqliteFiles(mountEngine, mountEngine.as(CRED_KERNEL)),
+    '/mnt/norename': noRename,
+  } });
   try {
     // Host git's clone is the whole history without --depth: ours takes --no-shallow for it.
     for (const [name, args, hostArgs] of [['shallow', ['--depth', '1'], ['--depth', '1']], ['history', ['--no-shallow'], []]]) {
@@ -154,6 +164,15 @@ try {
     assert.equal(hostGit(join(served, 'repo.git'), ['rev-parse', 'main']), hostGit(afterPush, ['rev-parse', 'HEAD']), 'push: the server\'s main is ours');
     assert.equal(spawnSync('git', ['fsck', '--full', '--no-dangling'], { cwd: join(served, 'repo.git'), env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }).status, 0, 'push: the server fsck clean');
     console.log('  ok  push from a mounted repository: the server\'s main is our commit; fsck clean');
+
+    // A backend that cannot rename: the clone fails, naming the operation, and leaves nothing.
+    const refused = await session.git('/home/user', ['clone', '--depth', '1', server.url + '/repo.git', '/mnt/norename/repo']);
+    assert.notEqual(refused.code, 0, 'a clone onto a mount that cannot rename fails');
+    assert.match(refused.stderr, /ENOTSUP/, refused.stderr.slice(-400));
+    assert.match(refused.stderr, /rename/, refused.stderr.slice(-400));
+    assert.doesNotMatch(refused.stderr, /could not remove the failed clone/, refused.stderr.slice(-400));
+    assert.deepEqual(noRename.readdir('/').map(({ name }) => name), [], 'and its destination is removed');
+    console.log('  ok  a mount that cannot rename: the clone fails with ENOTSUP naming rename; nothing left');
   } finally {
     server.stop();
   }
