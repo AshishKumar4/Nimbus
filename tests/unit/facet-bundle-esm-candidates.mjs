@@ -79,13 +79,15 @@ assert.ok(transformed.has(`${TS}/lib/tsc.js`));
 assert.ok(transformed.has(`${TS}/lib/getExePath.js`));
 
 // No import statement may survive in any module: each one is a SyntaxError
-// when the registry compiles the cell. The files stay as they are on disk.
+// when the registry compiles the cell. A file is staged as it is on disk,
+// unless only its module is carried (code-only: these run, and nothing reads them).
 for (const path of Object.keys(state.bundle)) {
   const code = moduleOf(state, path);
   if (typeof code !== 'string' || path.endsWith('/LICENSE')) continue;
   assert.doesNotMatch(code, /^\s*import\s/m, `${path} still carries ESM import syntax`);
-  assert.equal(state.bundle[path], files[path], `${path} is staged as the file it is`);
+  assert.equal(state.bundle[path], state.codeOnly?.has(path) ? code : files[path], `${path} is staged as the file it is`);
 }
+assert.ok(state.codeOnly?.has(`${TS}/lib/tsc.js`), 'an installed ES module staged only to run is code-only');
 
 // Non-JS content stays byte-identical: the pass parses before it rewrites.
 assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
