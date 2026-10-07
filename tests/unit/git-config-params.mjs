@@ -115,6 +115,13 @@ try {
   realGit(work, ['init', '-q', bare]);
   await nimbusGit('/home/user', ['init', '-q', '/home/user/bare']);
   assert.equal(new TextDecoder().decode(user.readFile('home/user/bare/.git/HEAD')), 'ref: refs/heads/master\n');
+  // A commit on master in each, so a push's refspec matches and what is refused is the remote.
+  writeFileSync(join(bare, 'a.txt'), 'a\n');
+  user.writeFile('home/user/bare/a.txt', 'a\n');
+  for (const args of [['add', 'a.txt'], ['-c', 'user.name=a', '-c', 'user.email=a@b', 'commit', '-q', '-m', 'one']]) {
+    assert.equal(realGit(bare, args).code, 0);
+    assert.equal((await nimbusGit('/home/user/bare', args)).code, 0);
+  }
   for (const args of [['fetch', 'nosuch'], ['push', 'nosuch', 'master']]) {
     const h = realGit(bare, args);
     const o = await nimbusGit('/home/user/bare', args);
