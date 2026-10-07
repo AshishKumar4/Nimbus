@@ -137,7 +137,9 @@ case 'env': {
 }
 
 case 'signal': {
-  for (const [signal, code] of [['SIGTERM', 143], ['SIGQUIT', 131], ['SIGUSR1', 138], ['SIGALRM', 142]]) {
+  // Signals whose default action is to end the process and nothing more
+  // (SIGQUIT dumps core, slowly; Node keeps SIGUSR1 for its inspector).
+  for (const [signal, code] of [['SIGTERM', 143], ['SIGHUP', 129], ['SIGUSR2', 140], ['SIGALRM', 142]]) {
     const { realm } = await start(guest('signal'), 'process', { payload: signal });
     const end = await within(realm.ended, 5_000, `a guest ending by ${signal}`);
     assert.equal(end.code, code, `${signal}: 128 + its number`);
