@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a process whose file store was at its storage budget could be
+  refused files it read many at once, though the session granted all the room
+  they asked for: each grant served one fill of the batch, and a fill gave up
+  after eight. Waiting fills now get room in the order they asked, and one ask
+  covers them all (`astro dev`: "import() prefetch: could not fetch
+  …/zod/v4/locales/…; its fetches did not land").
 - Fixed: a file a process faulted in could stay unreadable for good when its
   fetch completed without its bytes landing (a barrier spoiled the fill, or
   the store refused it): the path counted as asked. It is now asked for again
