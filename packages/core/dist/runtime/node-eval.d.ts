@@ -16,9 +16,11 @@
  * past a `break` or `continue` the statements before it count again; and a
  * `finally` keeps the value it was entered with unless it breaks.
  *
- * Code with module syntax is not a script: Node runs it as a module and
- * refuses to print it (ERR_EVAL_ESM_CANNOT_PRINT), which the code becomes.
- * Nor is code with a `return` at its top, which Node refuses to compile.
+ * Code Node runs as a module (`--input-type=module`, or its syntax: the
+ * caller's `module`, module-format.ts isEsModuleInput) is not a script:
+ * Node refuses to print it (ERR_EVAL_ESM_CANNOT_PRINT), which the code
+ * becomes. Nor is code with a `return` at its top, which Node refuses to
+ * compile.
  */
 /** The code an eval runs, and when Node refuses it. */
 export interface NodeEvalProgram {
@@ -38,7 +40,7 @@ export interface NodeEvalProgram {
  * wrapping code that names it (eval_string.js: the same test, the same
  * wrappers).
  */
-export declare function nodeEvalProgram(code: string, print: boolean): NodeEvalProgram;
+export declare function nodeEvalProgram(code: string, print: boolean, module?: boolean): NodeEvalProgram;
 /** The entry code for `node -p` reading its code from stdin (eval_stdin.js: no `crypto` wrapper). */
-export declare function nodeStdinPrintProgram(source: string): NodeEvalProgram;
+export declare function nodeStdinPrintProgram(source: string, module?: boolean): NodeEvalProgram;
 //# sourceMappingURL=node-eval.d.ts.map

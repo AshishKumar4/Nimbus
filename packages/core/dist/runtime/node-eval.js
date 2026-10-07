@@ -16,9 +16,11 @@
  * past a `break` or `continue` the statements before it count again; and a
  * `finally` keeps the value it was entered with unless it breaks.
  *
- * Code with module syntax is not a script: Node runs it as a module and
- * refuses to print it (ERR_EVAL_ESM_CANNOT_PRINT), which the code becomes.
- * Nor is code with a `return` at its top, which Node refuses to compile.
+ * Code Node runs as a module (`--input-type=module`, or its syntax: the
+ * caller's `module`, module-format.ts isEsModuleInput) is not a script:
+ * Node refuses to print it (ERR_EVAL_ESM_CANNOT_PRINT), which the code
+ * becomes. Nor is code with a `return` at its top, which Node refuses to
+ * compile.
  */
 import { parse } from 'acorn';
 import { full } from 'acorn-walk';
@@ -30,18 +32,25 @@ import { applySourceEdits } from './javascript-ast.js';
  * wrapping code that names it (eval_string.js: the same test, the same
  * wrappers).
  */
-export function nodeEvalProgram(code, print) {
+export function nodeEvalProgram(code, print, module = false) {
     const namesCrypto = /\bcrypto\b/.test(code);
     if (!print)
         return { code: namesCrypto ? `(crypto=>{{${code}}})(require('node:crypto'))` : code, refusedBeforeImports: false };
+    if (module)
+        return ESM_CANNOT_PRINT;
     return printedProgram(namesCrypto ? `let crypto=require("node:crypto");{${code}}` : code);
 }
 /** The entry code for `node -p` reading its code from stdin (eval_stdin.js: no `crypto` wrapper). */
-export function nodeStdinPrintProgram(source) {
-    return printedProgram(source);
+export function nodeStdinPrintProgram(source, module = false) {
+    return module ? ESM_CANNOT_PRINT : printedProgram(source);
 }
+/** Thrown as the program's first act, after its -r preloads, as Node throws it; its stack leads with the code, as a Node error's does. */
+const ESM_CANNOT_PRINT = {
+    code: 'const e = new Error("--print cannot be used with ESM input"); e.code = "ERR_EVAL_ESM_CANNOT_PRINT";'
+        + ' e.name = "Error [ERR_EVAL_ESM_CANNOT_PRINT]"; e.stack; delete e.name; throw e;',
+    refusedBeforeImports: true,
+};
 const SCRIPT = { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true };
-const MODULE = { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true };
 function parsed(source, options) {
     try {
         return parse(source, options);
@@ -53,15 +62,6 @@ function parsed(source, options) {
 function printedProgram(source) {
     const program = parsed(source, SCRIPT);
     if (program === null) {
-        // Thrown as the program's first act, after its -r preloads, as Node
-        // throws it; its stack leads with the code, as a Node error's does.
-        if (parsed(source, MODULE) !== null) {
-            return {
-                code: 'const e = new Error("--print cannot be used with ESM input"); e.code = "ERR_EVAL_ESM_CANNOT_PRINT";'
-                    + ' e.name = "Error [ERR_EVAL_ESM_CANNOT_PRINT]"; e.stack; delete e.name; throw e;',
-                refusedBeforeImports: true,
-            };
-        }
         // A return at the top compiles in the entry's function, not in Node's script.
         if (parsed(source, { ...SCRIPT, allowReturnOutsideFunction: true }) !== null) {
             return { code: 'throw new SyntaxError("Illegal return statement");', refusedBeforeImports: true };

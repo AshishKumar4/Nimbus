@@ -43,6 +43,7 @@ import { type FacetBundleProfile } from './bundle-profile.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { type ModuleScope } from './module-format.js';
+import { type NodeLaunch } from './node-cli.js';
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
  * the existing RunFreshResult / RunBunResult shapes — kept narrow so
@@ -63,14 +64,6 @@ export interface RuntimeRunOpts {
     filename: string;
     dirname: string;
     command: string;
-    /**
-     * The program is an ES module the handler lowered (module-format.ts): its
-     * own require is its static imports, and what escapes its evaluation is
-     * explained as Node's loader explains it.
-     */
-    esModule?: boolean;
-    /** Whose scope its ES modules run in (RuntimeSpec.moduleScope): absent, Node's. */
-    moduleScope?: ModuleScope;
     /** Primitive #1/G4 hooks. node-runner consumes these; other
      *  runtimes ignore them safely. */
     skipSpawn?: boolean;
@@ -98,6 +91,20 @@ export interface RuntimeRunOpts {
     invokerPid?: number;
     /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */
     signal?: AbortSignal;
+    /**
+     * A Node program's command line (RuntimeSpec.nodeCommandLine): its options
+     * (`process.execArgv`), its conditions, what it preloads, and its `-e`
+     * code; with `print`, the program's code returns the value to print.
+     */
+    node?: NodeLaunch;
+    /**
+     * The program is an ES module the handler lowered (module-format.ts): its
+     * own require is its static imports, and what escapes its evaluation is
+     * explained as Node's loader explains it.
+     */
+    esModule?: boolean;
+    /** Whose scope its ES modules run in (RuntimeSpec.moduleScope): absent, Node's. */
+    moduleScope?: ModuleScope;
     /**
      * The pipe or redirect the program's stdin is (`echo hi | node x.js`,
      * `node x.js < in.txt`); absent when stdin is the terminal. A runner
@@ -129,14 +136,6 @@ export interface ScriptResolutionFs {
     isFile(path: string): boolean | Promise<boolean>;
     readFileString(path: string): string | Promise<string>;
 }
-/**
- * Resolve a runtime target — `./cli.ts`, `sub/x`, `.`, or a bare name — to a
- * canonical VFS key, or null when nothing runnable sits there.
- *
- * A directory never resolves to itself: it falls through to the index
- * candidates, so `bun ./tools` finds `tools/index.js` the way real bun does
- * rather than trying to read the directory as source.
- */
 export declare function resolveRuntimeScriptPath(fs: ScriptResolutionFs, cwd: string, target: string, opts?: {
     preferModuleField?: boolean;
 }): Promise<string | null>;
@@ -188,6 +187,17 @@ export interface RuntimeSpec {
      */
     supportsBinSpawn?: boolean;
     /**
+     * The command line is Node's (node-cli.ts): its options take their values
+     * as Node's table says, NODE_OPTIONS is read (and refused as Node refuses
+     * it), and the program's conditions and execArgv go to the run.
+     */
+    nodeCommandLine?: boolean;
+    /**
+     * Whose scope the runtime runs an ES module in (module-format.ts
+     * ModuleScope), the entry's and every module it loads: absent, Node's.
+     */
+    moduleScope?: ModuleScope;
+    /**
      * The runner routes a program that starts a server to a resident process
      * (node-runner.ts runFresh), so the handler reports whether it does
      * (RuntimeRunOpts.launchesServer).
@@ -199,11 +209,6 @@ export interface RuntimeSpec {
      * script and stdin not a terminal, the program is stdin (`echo code | node`).
      */
     repl?: string;
-    /**
-     * Whose scope the runtime runs an ES module in (module-format.ts
-     * ModuleScope), the entry's and every module it loads: absent, Node's.
-     */
-    moduleScope?: ModuleScope;
 }
 /**
  * Minimal registry shape we depend on. Avoids importing the full vendored

@@ -42,6 +42,7 @@
 import type { FacetManager } from '../facets/manager.js';
 import type { FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import type { ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
+import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
 /**
  * Argv long-running detection. Signals we honour:
  *   --watch       (node --watch / bun --watch)
@@ -104,6 +105,8 @@ export interface RunFreshOpts {
     esModule?: boolean;
     /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
     moduleScope?: ModuleScope;
+    /** A node program's command line (RuntimeRunOpts.node). */
+    node?: NodeLaunch;
 }
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
 export declare function runFresh(facetMgr: FacetManager, code: string, opts: RunFreshOpts): Promise<RunFreshResult>;

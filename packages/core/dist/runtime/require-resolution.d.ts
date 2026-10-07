@@ -10,6 +10,7 @@
  * (worker facets/data-plan.ts, which only names files).
  */
 import type { Awaitable, RuntimeFsBridge, RuntimeVfsStat } from './os-contracts.js';
+import { type ResolvablePackageJson } from '../_shared/exports-resolver.js';
 import { type PackageType } from './module-format.js';
 /**
  * The filesystem questions resolution needs; held-cell reuse can additionally
@@ -38,6 +39,14 @@ export interface BridgeRequireFs extends RequireFs {
     lstat(path: string): Promise<RuntimeVfsStat | null>;
     readBytes(path: string): Promise<Uint8Array | null>;
 }
+/**
+ * The entry `require` takes of `pkg` for `subpath`, under the program's
+ * conditions: its `exports` under require's conditions, else (a map with an
+ * entry only under `import`) under import's, else its legacy `main` for the
+ * root. The one reading of a package's entry: the runtime's resolution and
+ * the launch's speculative root selection both take it.
+ */
+export declare function requirePackageEntry(pkg: ResolvablePackageJson, subpath: string, conditions: readonly string[]): string | null;
 export declare function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs;
 /**
  * Sink for package.json files consulted during LOAD_AS_DIRECTORY
@@ -82,7 +91,9 @@ export interface ResolveSubpathResult {
     resolved: string;
 }
 /** The require resolver `prefetchForRequire` walks with. */
-export declare function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null>;
+export declare function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress, 
+/** The program's own conditions (`node --conditions`), beside require's. */
+conditions?: readonly string[]): Promise<ResolveSubpathResult | null>;
 /**
  * Whether a package.json is at `path` for a package scope walk. One the
  * user may not look up is none, as Node's lookup reads it: a device mount
