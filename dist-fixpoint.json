@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "7a6c1e5cfe98ddf9c191d46ead0ecb141b6aad53f71ae0aaebf6f813212917dc",
+  "fingerprint": "f9d28205e1f0ec2fff31bd5f7e1bc369a0621197f0f48cbe0bc419a95d1238b5",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1905,8 +1905,8 @@
     "packages/worker/dist/git/remote-helper.d.ts.map": "1ca3c31e18c8e2ccb68f4ba41fe35832395e323fc73641b63c92a62dce81a701",
     "packages/worker/dist/git/remote-helper.js": "e1bcdcabb7aaf988a9661bd001bbcfa4bf02e96d0d6490d3e99b951d3580275a",
     "packages/worker/dist/git/routing.d.ts": "defe439ec595d44f083a5d50e6d29836b91f8c1ae4a0cbba553df5296bf14229",
-    "packages/worker/dist/git/routing.d.ts.map": "d2a6a649ab65f7818dac8a5ce8b6372b03b5faa554451abc1c380741abe5823e",
-    "packages/worker/dist/git/routing.js": "e515923ae1941f09fdddfe610be72b8499c98cc2f83d85f1608cd74990c5b4a3",
+    "packages/worker/dist/git/routing.d.ts.map": "25cc85e386c5272f361a990f5ad97184307dd6615b1770f4b42d61b0848cbfe8",
+    "packages/worker/dist/git/routing.js": "b80a201e4e732a6a724927fe07c7b1900d307fb957aee064ed46372d6182e7f4",
     "packages/worker/dist/git/unified-diff.d.ts": "1b076e6c073e00ccfa239d238c753c608d3d30ee375a3deba365148a674044be",
     "packages/worker/dist/git/unified-diff.d.ts.map": "37bdf28ce1f7a5253cae4a197baa7afd11ba32e3f4d26da13d32570fd4f672a6",
     "packages/worker/dist/git/unified-diff.js": "f7de2e96c26eeba82d294bf813cdcfcc6d485e87e4a2b0e963e100cf99d5e982",
@@ -2502,7 +2502,7 @@
     "packages/worker/src/git/pack/upload-pack.ts": "82deccd1815dc825553bee7db848ee9c5350c032a6e3f2c86082c967eb79ea28",
     "packages/worker/src/git/promisor.ts": "9a09de70bae901debd7e172a2623045212c2026b4c2c853ebefa7cbebf284029",
     "packages/worker/src/git/remote-helper.ts": "7fa1393538d77599bd67ebb9b1e02988508ed9195d4afa7646a4d7687efd47c3",
-    "packages/worker/src/git/routing.ts": "5844031eb8870114a2a832be9e65dec0d0306fd6ac5cf4af762dfa3fb4737626",
+    "packages/worker/src/git/routing.ts": "a4048aa4df55a13d0fac253d36d7dcc4e76e932ac52306f3f0bad19c4978f6ee",
     "packages/worker/src/git/unified-diff.ts": "14b4be79ac63cf630284072bfa80a621bacc4c85f238aaf91bb1927b02a02b70",
     "packages/worker/src/git/wave-bench.ts": "d3284da036e27716491613b01578da25cfa0cd90abf25b6d04202544a4743be3",
     "packages/worker/src/git/worktree/cachetree.ts": "e7055d3914be54838cd62c0cee8db663f16b55e2efe39856e48ee81e93f70a5d",
