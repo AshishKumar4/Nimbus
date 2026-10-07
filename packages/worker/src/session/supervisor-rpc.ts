@@ -81,27 +81,10 @@ import { fsReadBatchRequestBytes, type FsAcquireArgs, type FsAcquiredAnswer, typ
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
 import { LOST_CALL_HEDGE_AFTER_MS, WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
-// cache metrics support: per-tier hit/miss counters.
-//
-// CRITICAL — SupervisorRPC is a WorkerEntrypoint (loopback service
-// binding). It runs in a SEPARATE isolate from the DO it services, so
-// bumping a module-scoped singleton here does NOT update the DO's
-// /api/_diag/cache surface. We accumulate per-RPC and forward the
-// batch back to the DO via _rpcRecordCacheStats at the end of each
-// handler. Same pattern as recordR2RaceCounters / install-batch-facet.
-import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
-
-/**
- * Per-call cache-stat event surfaced from supervisor R2CacheClient to
- * the calling facet. Discriminated union so the facet can fold each
- * event into a structured-clone-safe wire format.
- *
- * cache-obs-2: lifted out of supervisor-rpc.ts and now part of the
- * RPC return shape (was drained-and-discarded in v1).
- */
-export type SupervisorCacheStatEvent =
-  | { kind: 'hit'; tier: CacheTier; cacheKind: CacheKind; bytes: number }
-  | { kind: 'miss'; tier: CacheTier; cacheKind: CacheKind };
+// Cache hits and misses here would bump this isolate's counters, not the
+// DO's: each RPC returns its events with its result (CacheStatEvent), and
+// the caller folds them where /api/_diag/cache reads them.
+import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
 
 /**
  * W5 Lever 5: estimate the byte-cost of a writeBatch payload so the
@@ -860,7 +843,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    */
   async getCachedTarball(
     integrity: string,
-  ): Promise<{ bytes: Uint8Array | null; events: SupervisorCacheStatEvent[] }> {
+  ): Promise<{ bytes: Uint8Array | null; events: CacheStatEvent[] }> {
     const plan = this._infrastructureCache('getCachedTarball', [integrity]) ? { readOnly: false }
       : await this._call(this._op<{ ticket?: string; readOnly: boolean }>('getCachedTarball', [integrity]));
     return this._cacheRead(plan, async (client) => {
@@ -905,7 +888,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
   async getPackument(
     name: string,
     options?: { retries?: number; timeoutMs?: number; registry?: string },
-  ): Promise<PackumentReadThrough & { events: SupervisorCacheStatEvent[] }> {
+  ): Promise<PackumentReadThrough & { events: CacheStatEvent[] }> {
     const plan = this._infrastructureCache('getPackument', [name, options]) ? { readOnly: false }
       : await this._call(this._op<{ ticket?: string; readOnly: boolean }>('getPackument', [name, options]));
     return this._cacheRead(plan, async (client) => ({ ...await client.readThroughPackument(name, options, this._network()), events: client._cacheEvents }));

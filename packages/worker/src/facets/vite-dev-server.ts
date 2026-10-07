@@ -480,7 +480,7 @@ function moduleExportNames(vfs: CredentialedVfs, entry: string): Set<string> {
   const seen = new Set<string>();
   const resolveRelative = (from: string, specifier: string): string | null => {
     const dir = from.slice(0, from.lastIndexOf('/'));
-    const base = normalizePath(dir + '/' + specifier);
+    const base = normalizeVfsPath(dir + '/' + specifier);
     for (const suffix of ['', '.js', '.mjs', '.cjs', '/index.js', '/index.mjs']) {
       try {
         if (vfs.exists(base + suffix) && !vfs.isDirectory(base + suffix)) return base + suffix;
@@ -554,8 +554,6 @@ const RESERVED_ES_KEYWORDS = new Set([
  * basePath must be the dev server's mount point without trailing slash
  * (e.g. "/preview"). If basePath is "/" or empty, output is origin-rooted.
  */
-const normalizePath = normalizeVfsPath;
-
 function resolveAliasSpecifier(specifier: string, aliases: Record<string, string>, basePath: string): string | null {
   // Sort by alias length descending for longest-match-first
   const sorted = Object.entries(aliases).sort((a, b) => b[0].length - a[0].length);
@@ -563,7 +561,7 @@ function resolveAliasSpecifier(specifier: string, aliases: Record<string, string
     // Match exact alias or alias followed by /
     if (specifier === alias || specifier.startsWith(alias + '/')) {
       const rest = specifier.slice(alias.length); // e.g. "/components/Foo" or ""
-      const resolvedTarget = normalizePath(target);
+      const resolvedTarget = normalizeVfsPath(target);
       // Normalize basePath: strip trailing slash so we always emit exactly one
       // slash between base and target. Handle root ("/" or "") specially.
       const base = basePath === '/' || basePath === '' ? '' : basePath.replace(/\/+$/, '');
@@ -1463,7 +1461,7 @@ export class ViteDevServer {
 
   constructor(opts: ViteDevServerOptions) {
     this.vfs = opts.vfs.as(opts.cred);
-    this.configDir = opts.configDir ? opts.configDir.replace(/^\/+|\/+$/g, '') : null;
+    this.configDir = opts.configDir ? normalizeVfsPath(opts.configDir) : null;
     this.onConfigChange = opts.onConfigChange ?? null;
     this.viteEsbuild = opts.viteEsbuild ?? viteEsbuildSettings(null);
     this.vfsEvents = opts.vfs.events;
@@ -1471,13 +1469,7 @@ export class ViteDevServer {
     this.injectBasename = opts.injectBasename !== false;
     this.logPid = (opts.pid != null) ? opts.pid : null;
     this.logSink = opts.processes || null;
-    // Normalize root: resolve ./, collapse //, strip leading/trailing slashes
-    this.root = opts.root
-      .replace(/\/\.\//g, '/')     // /./ → /
-      .replace(/\/\.$/,  '')       // trailing /.
-      .replace(/\/+/g,   '/')      // collapse //
-      .replace(/^\/+/,   '')       // leading /
-      .replace(/\/+$/,   '');      // trailing /
+    this.root = normalizeVfsPath(opts.root);
     this.onHmrMessage = opts.onHmrMessage;
     this.port = opts.port || 5173;
     this.basePath = (opts.basePath || '/preview').replace(/\/+$/, '');
@@ -2023,23 +2015,31 @@ export class ViteDevServer {
       });
     }
 
-    let html = this.vfs.readFileString(htmlPath);
+    const html = this.vfs.readFileString(htmlPath);
 
     // Detect importmap
     this.hasImportmap = html.includes('"importmap"') || html.includes("'importmap'");
 
-    // Build head injections
-    let headInjections = '';
+    // A <base> tag for SPA router support, on the root page only. A
+    // root-mounted request (base '', e.g. a `<port>--<sid>` host) needs none —
+    // assets already resolve against the origin root; injecting `<base
+    // href="/preview/">` there is exactly what 404'd every asset before this
+    // became per-request.
+    return new Response(this.withDevHead(html, base, base ? `<base href="${base}/">\n` : ''), {
+      headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  }
 
-    // 1. <base> tag for SPA router support. A root-mounted request (base '',
-    //    e.g. a `<port>--<sid>` host) needs no <base> — assets already resolve
-    //    against the origin root; injecting `<base href="/preview/">` there is
-    //    exactly what 404'd every asset before this became per-request.
-    if (base) {
-      headInjections += `<base href="${base}/">\n`;
-    }
+  /**
+   * An HTML page as the dev server serves it: `rootHead` (the root page's
+   * <base>), the Tailwind Play bundle for a Tailwind project, and the error
+   * overlay and HMR client, before </head> (else before <body, else first),
+   * with absolute paths under the mount base.
+   */
+  private withDevHead(html: string, base: string, rootHead: string): string {
+    let headInjections = rootHead;
 
-    // 2. Tailwind: serve the vendored Play CDN bundle from our edge.
+    // Tailwind: serve the vendored Play CDN bundle from our edge.
     //    Was previously `<script src="https://cdn.tailwindcss.com/...">`
     //    — that violated the 100% edge contract by making the browser
     //    fetch a third-party CDN on every preview load. The bundle is
@@ -2052,12 +2052,11 @@ export class ViteDevServer {
       const twUrl = base + '/__nimbus_assets/tailwind-play.js';
       headInjections += `<script src="${twUrl}"></script>\n`;
       if (this.tailwindConfigJs) {
-        // Inject tailwind config
         headInjections += `<script>\ntailwind.config = ${this.tailwindConfigJs}\n</script>\n`;
       }
     }
 
-    // 3. HMR client + runtime error overlay.
+    // HMR client + runtime error overlay.
     // Overlay is injected alongside HMR because both need to attach global
     // window listeners before any user modules start loading. The overlay
     // catches uncaught runtime errors (including "does not provide an export"
@@ -2067,24 +2066,35 @@ export class ViteDevServer {
     headInjections += ERROR_OVERLAY_CLIENT + '\n';
     headInjections += HMR_CLIENT + '\n';
 
-    // Inject before </head>
+    // A replacer function, so a `$` in the injected code is never a replacement pattern.
+    let page: string;
     if (html.includes('</head>')) {
-      html = html.replace('</head>', headInjections + '</head>');
+      page = html.replace('</head>', () => headInjections + '</head>');
     } else if (html.includes('<body')) {
-      html = html.replace('<body', headInjections + '<body');
+      page = html.replace('<body', () => headInjections + '<body');
     } else {
-      html = headInjections + html;
+      page = headInjections + html;
     }
 
     // Rewrite absolute paths to include the mount-base prefix
-    html = this.rewriteHtmlPaths(html, base);
-
-    return new Response(html, {
-      headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' },
-    });
+    return this.rewriteHtmlPaths(page, base);
   }
 
   // ── Module serving (/@modules/<pkg>) ──────────────────────────────────
+
+  /**
+   * A pre-bundle as the browser loads it under the mount `base`, from
+   * esbuild's base-independent output. `__require("external")` calls (CJS
+   * source with esbuild externals) become ESM `import * as` + dispatch, so
+   * externalized packages (react, scheduler) work. Bare imports esbuild
+   * marked external carry the base: without it `import X from "scheduler"`
+   * 404s. A CJS-only package's __commonJS wrapper emits only `export
+   * default`, so its named exports are synthesized from a static scan, or
+   * `import { createRoot } from "react-dom/client"` would fail.
+   */
+  private servablePrebundle(bundled: string, base: string): string {
+    return synthesizeCjsNamedExports(rewriteAllImports(rewriteExternalRequires(bundled, base), this.aliases, base));
+  }
 
   private async getBarrelModuleCacheInfo(specifier: string): Promise<BarrelModuleCacheInfo | null> {
     const pkgName = packageNameFromSpecifier(specifier);
@@ -2164,14 +2174,9 @@ export class ViteDevServer {
         esmBundle.sources.every((path) => this.mayRead(path)) &&
         (await this.bundleKeys(specifier, esmBundle.sources)).includes(esmBundle.bundleHash)
       ) {
-        let code = esmBundle.esmCode;
         // The persisted bundle is base-independent raw esbuild output; the
         // base-dependent rewrites (module URLs) are applied here, per request.
-        // Rewrite __require("external") calls to ESM imports so externalized
-        // packages (react, scheduler) actually work in the browser.
-        code = rewriteExternalRequires(code, base);
-        code = rewriteAllImports(code, this.aliases, base);
-        code = synthesizeCjsNamedExports(code);
+        const code = this.servablePrebundle(esmBundle.esmCode, base);
         this.cacheModule(generation, cacheKey, { code, timestamp: Date.now(), inputHash: esmBundle.inputHash });
         return new Response(code, {
           headers: { ...headers, 'Content-Type': JS_CT },
@@ -2516,19 +2521,7 @@ export class ViteDevServer {
             } catch { /* non-fatal */ }
           }
 
-          // Convert `__require("external")` calls (from CJS source with esbuild
-          // externals) into ESM `import * as` + dispatch, and rewrite any bare
-          // imports esbuild marked external so they carry the mount base.
-          // Without the base prefix, `import X from "scheduler"` 404s.
-          let code = rewriteExternalRequires(bundled, base);
-          code = rewriteAllImports(code, this.aliases, base);
-          // For CJS-only packages (react, react-dom), esbuild's __commonJS
-          // wrapper only emits `export default` — named imports like
-          // `import { createRoot } from "react-dom/client"` would fail. Statically
-          // scan the bundled source for CJS export patterns and synthesize
-          // named exports.
-          code = synthesizeCjsNamedExports(code);
-
+          const code = this.servablePrebundle(bundled, base);
           this.cacheModule(generation, cacheKey, { code, timestamp: Date.now(), inputHash: barrelInfo?.inputHash ?? '' });
           return new Response(code, {
             headers: { ...headers, 'Content-Type': JS_CT },
@@ -2670,7 +2663,7 @@ export class ViteDevServer {
         const entry = resolvePackageEntry(pkg, subpath ? './' + subpath : '.');
         if (entry) {
           // Normalize to collapse any ../ segments from relative entry paths.
-          const resolved = this.tryResolveFile(normalizePath(nmDir + '/' + entry.replace(/^\.\//, '')));
+          const resolved = this.tryResolveFile(normalizeVfsPath(nmDir + '/' + entry.replace(/^\.\//, '')));
           if (resolved) return resolved;
         }
       }
@@ -2690,7 +2683,7 @@ export class ViteDevServer {
       //    `dist/es2015/constants.js` before VFS lookup.
       if (subpath) {
         // (a) + (b) combined — tryResolveFile handles both
-        const direct = this.tryResolveFile(normalizePath(nmDir + '/' + subpath));
+        const direct = this.tryResolveFile(normalizeVfsPath(nmDir + '/' + subpath));
         if (direct) return direct;
 
         // (c) nested package.json
@@ -2703,7 +2696,7 @@ export class ViteDevServer {
             // package.json redirects to a sibling directory (common pattern
             // for legacy packages shipping both es5 and es2015 builds).
             const resolved = this.tryResolveFile(
-              normalizePath(nmDir + '/' + subpath + '/' + entry.replace(/^\.\//, ''))
+              normalizeVfsPath(nmDir + '/' + subpath + '/' + entry.replace(/^\.\//, ''))
             );
             if (resolved) return resolved;
           } catch { /* malformed */ }
@@ -2714,7 +2707,7 @@ export class ViteDevServer {
       if (!subpath && pkg) {
         const entry = pkg.module || pkg.main;
         if (entry) {
-          const resolved = this.tryResolveFile(normalizePath(nmDir + '/' + entry.replace(/^\.\//, '')));
+          const resolved = this.tryResolveFile(normalizeVfsPath(nmDir + '/' + entry.replace(/^\.\//, '')));
           if (resolved) return resolved;
         }
       }
@@ -2730,7 +2723,7 @@ export class ViteDevServer {
     // Defense in depth: normalize input even if callers already did. The VFS
     // treats `..` as a literal path component (no traversal resolution at
     // lookup time), so any un-normalized `../` in the path will miss.
-    const norm = normalizePath(base);
+    const norm = normalizeVfsPath(base);
     // Covers .cjs and .mts/.cts too — legacy packages use .cjs,
     // some modern packages use .mts for their ESM build.
     const exts = ['', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.mts', '.cts', '.json'];
@@ -2909,8 +2902,9 @@ export class ViteDevServer {
     // If the exact path doesn't exist, try Vite-style extension resolution.
     // This is essential for ES module imports like `import X from "./foo"` —
     // the browser fetches /preview/src/foo with no extension, and we need to
-    // try .tsx/.ts/.jsx/.js/.mjs/.cjs/.json and directory index files.
-    if (!this.vfs.exists(vfsPath) || (this.vfs.isDirectory(vfsPath) && !pathname.endsWith('/'))) {
+    // try .tsx/.ts/.jsx/.js/.mjs/.cjs/.json and directory index files. A
+    // directory always resolves here: sanitizePath leaves no trailing slash.
+    if (!this.vfs.exists(vfsPath) || this.vfs.isDirectory(vfsPath)) {
       const resolved = this.resolveFileCandidate(pathname);
       if (resolved) {
         vfsPath = resolved.vfsPath;
@@ -2928,23 +2922,6 @@ export class ViteDevServer {
       }
     }
 
-    if (this.vfs.isDirectory(vfsPath)) {
-      const indexPath = vfsPath + '/index.html';
-      if (this.vfs.exists(indexPath)) {
-        let html = this.vfs.readFileString(indexPath);
-        if (html.includes('</head>')) {
-          html = html.replace('</head>', ERROR_OVERLAY_CLIENT + '\n' + HMR_CLIENT + '\n</head>');
-        }
-        html = this.rewriteHtmlPaths(html, base);
-        return new Response(html, {
-          headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' },
-        });
-      }
-      return new Response('403 Directory listing not supported', {
-        status: 403, headers,
-      });
-    }
-
     // Extract extension using slash-aware dot detection. Naive `split('.').pop()`
     // returns garbage for paths with dotted directories like `/src/v1.0/App`
     // (would produce `ext = '.0/app'`). We only accept a dot that occurs AFTER
@@ -2955,6 +2932,14 @@ export class ViteDevServer {
       ? pathname.substring(pExtLastDot).toLowerCase()
       : '';
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+    // Every HTML page gets the dev head, as Vite's transformIndexHtml gives
+    // every page of a multi-page app; only the root index.html takes a <base>.
+    if (ext === '.html') {
+      return new Response(this.withDevHead(this.vfs.readFileString(vfsPath), base, ''), {
+        headers: { ...headers, 'Content-Type': contentType },
+      });
+    }
 
     // Transform TS/TSX/JSX/MTS/CTS files
     if (ext === '.ts' || ext === '.tsx' || ext === '.jsx' || ext === '.mts' || ext === '.cts') {

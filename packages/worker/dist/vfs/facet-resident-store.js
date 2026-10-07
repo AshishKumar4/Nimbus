@@ -332,13 +332,51 @@ function __residentNamespaceOverlayDelta(bytes) {
 }
 
 /**
+ * Room promised to fills in flight. A fault-in asks for its file's room
+ * before the bytes arrive (__residentReserve), and the room is its own until
+ * the put that lands them spends it (__residentPut) or the fill gives it up
+ * (__residentRelease). Every other fit counts it as taken: a grant measured
+ * against the database alone went to whichever of a batch of fills landed
+ * first, and the rest were refused.
+ */
+const __residentReservations = new Map();
+let __residentReservedBytes = 0;
+
+/** Reserve room for a fill of \`path\` before its bytes arrive: true once it is held for it. */
+async function __residentReserve(path, bytes) {
+  __residentRelease(path);
+  if (__residentCap === null) return true;
+  for (let asks = 0; ; asks++) {
+    if (__residentDbBytes() + __residentReservedBytes + bytes <= __residentCap) {
+      __residentReservations.set(path, bytes);
+      __residentReservedBytes += bytes;
+      return true;
+    }
+    // Each ask is for what is short now, and others may reserve while it is
+    // out; only an ask after which there is no more room than before ends it.
+    if (asks === 8) return false;
+    const cap = __residentCap;
+    await __residentAskGrant(bytes);
+    if (__residentCap === cap) return false;
+  }
+}
+
+/** Give up the room reserved for \`path\`, if any. */
+function __residentRelease(path) {
+  const bytes = __residentReservations.get(path);
+  if (bytes === undefined) return;
+  __residentReservations.delete(path);
+  __residentReservedBytes -= bytes;
+}
+
+/**
  * Whether the store may grow by \`bytes\` now; when not, and \`ask\`, more room
  * is asked for. A copy of an own write never asks: the session's copy is the
  * one that must have the room, and the cache must not take it first.
  */
 function __residentFits(bytes, ask = true) {
   if (__residentCap === null) return true;
-  if (__residentDbBytes() + bytes <= __residentCap) return true;
+  if (__residentDbBytes() + __residentReservedBytes + bytes <= __residentCap) return true;
   if (ask) void __residentAskGrant(bytes);
   return false;
 }
@@ -353,8 +391,13 @@ function __residentAskGrant(bytes) {
   if (__residentCap === null) return Promise.resolve(true);
   // A store with no ledger row (a one-shot's heap) has a fixed budget: no one to ask.
   if (__residentFacet === null || !supervisor || typeof supervisor.fsStorageGrant !== "function") return Promise.resolve(false);
-  if (__residentGrantAsk) return __residentGrantAsk.then(() => __residentDbBytes() + bytes <= __residentCap);
-  const want = Math.max(0, __residentDbBytes() + bytes - __residentCap);
+  // Another ask is out: wait for it, and ask for this one's room after it if
+  // that grant did not cover it too. Giving up there left all but the first
+  // of a batch of fills at the cap refused.
+  if (__residentGrantAsk) {
+    return __residentGrantAsk.then(() => __residentDbBytes() + __residentReservedBytes + bytes <= __residentCap || __residentAskGrant(bytes));
+  }
+  const want = Math.max(0, __residentDbBytes() + __residentReservedBytes + bytes - __residentCap);
   __residentGrantAsk = (async () => {
     try {
       const answer = await supervisor.fsStorageGrant(__residentFacet, want, __residentDbBytes());
@@ -363,13 +406,23 @@ function __residentAskGrant(bytes) {
       if (answer && typeof answer.cap === "number") __residentCap = Math.max(__residentCap, answer.cap);
     } catch {}
   })().finally(() => { __residentGrantAsk = null; });
-  return __residentGrantAsk.then(() => __residentDbBytes() + bytes <= __residentCap);
+  return __residentGrantAsk.then(() => __residentDbBytes() + __residentReservedBytes + bytes <= __residentCap);
 }
 
 /** Room for \`bytes\` before an asynchronous fill writes them: true when they fit. */
 async function __residentEnsureRoom(bytes) {
-  if (__residentCap === null || __residentDbBytes() + bytes <= __residentCap) return true;
+  if (__residentCap === null || __residentDbBytes() + __residentReservedBytes + bytes <= __residentCap) return true;
   return __residentAskGrant(bytes);
+}
+
+/**
+ * At most what holding a file of \`size\` bytes costs, read as bytes or as
+ * text (__residentCellCost, with text's smaller chunks): what a fill whose
+ * bytes have not arrived yet asks room for.
+ */
+function __residentFileCost(size) {
+  const chunks = Math.max(1, Math.ceil(size / Math.floor(__RESIDENT_CHUNK_BYTES / 3)));
+  return Math.ceil(size * 1.01) + (chunks + 1) * __RESIDENT_ROW_BYTES + 4096;
 }
 
 /**
@@ -1198,6 +1251,8 @@ function __residentBytes(value) {
 function __residentPut(t, path, cell, rev, ckey) {
   // Whatever this puts supersedes a held cell, held or not.
   __residentForgetHeld(path);
+  // The room reserved for its fill is what it spends.
+  __residentRelease(path);
   t.chunkDelete(path);
   const stamp = typeof rev === "number" ? rev : __RK_OWN_WRITE;
   if (cell && typeof cell === "object" && cell.error) {
@@ -1229,6 +1284,7 @@ function __residentPut(t, path, cell, rev, ckey) {
 
 /** One chunk row, written as it arrives. The streaming filler's primitive. */
 function __residentPutChunk(t, path, part, bytes) {
+  if (part === 0) __residentRelease(path);
   if (!__residentFits(Math.ceil(bytes.byteLength * 1.01) + __RESIDENT_ROW_BYTES + 4096)) return false;
   t.chunkSetBin(path, part, bytes);
   return true;

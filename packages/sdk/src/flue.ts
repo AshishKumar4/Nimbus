@@ -6,6 +6,7 @@
  * without making `@flue/runtime` a hard dependency of the core SDK.
  */
 
+import { fsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import type { NimbusExecResult, NimbusFileStat, NimbusSandbox } from './sandbox.js';
 
 export interface NimbusFlueFileStat {
@@ -88,13 +89,13 @@ export class NimbusFlueApi implements NimbusFlueSandboxApi {
 
   async readFile(path: string): Promise<string> {
     const content = await this.sandbox.files.read(path);
-    if (content == null) throw enoent('open', path);
+    if (content == null) throw fsError('ENOENT', 'open', path);
     return content;
   }
 
   async readFileBuffer(path: string): Promise<Uint8Array> {
     const content = await this.sandbox.files.readBytes(path);
-    if (content == null) throw enoent('open', path);
+    if (content == null) throw fsError('ENOENT', 'open', path);
     return content;
   }
 
@@ -104,7 +105,7 @@ export class NimbusFlueApi implements NimbusFlueSandboxApi {
 
   async stat(path: string): Promise<NimbusFlueFileStat> {
     const stat = await this.sandbox.files.stat(path);
-    if (!stat) throw enoent('stat', path);
+    if (!stat) throw fsError('ENOENT', 'stat', path);
     return toFlueStat(stat);
   }
 
@@ -174,11 +175,6 @@ function toShellResult(result: NimbusExecResult): NimbusFlueShellResult {
 function secondsToMilliseconds(timeout: number | undefined): number | undefined {
   if (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout <= 0) return undefined;
   return Math.max(1, Math.round(timeout * 1000));
-}
-
-/** Node's error for `syscall` finding nothing at `path`: `ENOENT: no such file or directory, open 'x'`. */
-function enoent(syscall: string, path: string): Error {
-  return Object.assign(new Error(`ENOENT: no such file or directory, ${syscall} '${path}'`), { code: 'ENOENT', errno: -2, syscall, path });
 }
 
 function abortError(signal: AbortSignal): Error {

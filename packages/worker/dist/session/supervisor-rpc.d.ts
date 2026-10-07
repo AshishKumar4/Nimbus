@@ -53,25 +53,7 @@ import { type SupervisorAnswer, type SupervisorAnsweredMethod } from '@nimbus-sh
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { type FsAcquireArgs, type FsAcquiredAnswer, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
-import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
-/**
- * Per-call cache-stat event surfaced from supervisor R2CacheClient to
- * the calling facet. Discriminated union so the facet can fold each
- * event into a structured-clone-safe wire format.
- *
- * cache-obs-2: lifted out of supervisor-rpc.ts and now part of the
- * RPC return shape (was drained-and-discarded in v1).
- */
-export type SupervisorCacheStatEvent = {
-    kind: 'hit';
-    tier: CacheTier;
-    cacheKind: CacheKind;
-    bytes: number;
-} | {
-    kind: 'miss';
-    tier: CacheTier;
-    cacheKind: CacheKind;
-};
+import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
 export declare class SupervisorRPC extends WorkerEntrypoint {
     /**
      * A fresh stub for the host, by the route the binding carries, per call.
@@ -398,7 +380,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      */
     getCachedTarball(integrity: string): Promise<{
         bytes: Uint8Array | null;
-        events: SupervisorCacheStatEvent[];
+        events: CacheStatEvent[];
     }>;
     /**
      * Store a tarball in the R2 cross-tenant cache under its content
@@ -426,7 +408,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         timeoutMs?: number;
         registry?: string;
     }): Promise<PackumentReadThrough & {
-        events: SupervisorCacheStatEvent[];
+        events: CacheStatEvent[];
     }>;
     stdout(data: Uint8Array, at?: number, run?: number): Promise<void>;
     stderr(data: Uint8Array, at?: number, run?: number): Promise<void>;

@@ -15,11 +15,9 @@
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { getCtxExports, stagedBootAssembler, supervisorEntrypoint, supervisorEntrypointName, } from './composition.js';
-import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, facetNameCount, facetNameCountDurable, recordFacetNameMinted, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
+import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, facetNameCount, facetNameCountDurable, chargeFacetSlot, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
 import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
 import { supervisorLoaderKey, mintProcessSupervisor } from './supervisor-props.js';
-import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
-import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/process-fs-journal-reader-source.generated.js';
 export function getNimbusCtxExports() {
     const ctxExports = getCtxExports();
     if (!ctxExports || typeof ctxExports !== 'object') {
@@ -157,7 +155,8 @@ function slotBook(ctx) {
 /**
  * Take a slot for `pid`, reusing a returned one before minting a new name.
  * `minted` names may still hold storage a previous incarnation of this actor
- * left there, so the caller deletes it before the first get.
+ * left there, so the caller deletes it before the first get. The caller
+ * charges the slot (chargeFacetSlot) before its facet is created.
  */
 function acquireSlot(ctx, pid) {
     const book = slotBook(ctx);
@@ -165,28 +164,9 @@ function acquireSlot(ctx, pid) {
     if (existing !== undefined)
         return { slot: existing, minted: false };
     const reused = book.free.length > 0;
-    // A name whose store still holds an undrained write log is never minted
-    // (minting deletes what a name stored): the session drains it first.
-    const reserved = reservedFacetNames(ctx);
-    while (!reused && reserved.has(residentFacetName(book.next)))
-        book.next++;
     const slot = reused ? book.free.shift() : book.next++;
     book.held.set(pid, slot);
-    // A fresh name is a permanently consumed facet ID; the durable count lives
-    // in the budgets ledger (see budgets.ts).
-    if (!reused)
-        recordFacetNameMinted(ctx, book.next);
     return { slot, minted: !reused };
-}
-const reservedNames = new WeakMap();
-/** The facet names this actor's session keeps for an undrained write log (process-fs-journal.ts). */
-export function reservedFacetNames(ctx) {
-    let names = reservedNames.get(ctx);
-    if (!names) {
-        names = new Set();
-        reservedNames.set(ctx, names);
-    }
-    return names;
 }
 /** Return `pid`'s slot to the free list. */
 function releaseSlot(ctx, pid) {
@@ -292,6 +272,12 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         }
         catch { /* nothing stored under this name */ }
     }
+    // A slot's name is a lifetime facet ID the first time it is created, so it
+    // is charged, durably, before the first call creates the facet. Charged on
+    // every use: a slot whose charge failed is reused uncharged otherwise, and
+    // one already counted costs nothing. An explicit name was charged when it
+    // was allocated (acquireDurableFacetSlot).
+    const charged = slot === undefined ? Promise.resolve() : chargeFacetSlot(ctx, slot);
     // The start callback is the ONLY way this facet is ever created, and it
     // fires AT MOST ONCE. Every later use goes through the stub below, so the
     // callback running a second time means the facet was released or died —
@@ -335,8 +321,6 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     }
     if (explicit)
         book.live.add(name);
-    // A journaling process: the session holds its facet's name until its log is drained.
-    params.journal?.opened(name);
     // The facet's worker is one Dynamic Worker in flight for as long as the
     // process is resident, not only while a call is open: its WebSockets and
     // streamed responses outlive the calls the ledger could bracket, and a
@@ -358,19 +342,6 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         catch { /* already gone */ }
         if (explicit)
             book.live.delete(name);
-        // What the process logged and the session never answered is in its
-        // facet's store: drained before the store goes, and before the release
-        // settles (its exit is reported after). A drain that fails keeps the
-        // store and the slot, for the session's next drain of that name.
-        if (params.journal) {
-            try {
-                await params.journal.drain(facetJournal(ctx, env, name));
-            }
-            catch (error) {
-                console.error(`[nimbus] the write log of pid ${params.pid} (facet '${name}') was not drained: ${error instanceof Error ? error.message : String(error)}`);
-                return;
-            }
-        }
         // The two release classes: an ephemeral facet's SQLite is slot-reuse
         // hygiene — the name is handed out again, so the store must not be — and
         // a durable one's is the application itself: abort ends the process, the
@@ -393,7 +364,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         const startArgs = ledger !== null && params.storageBytes !== undefined && params.startArgs !== null && typeof params.startArgs === 'object'
             ? { ...params.startArgs, storage: { facet: name, grant: params.storageBytes } }
             : params.startArgs;
-        started = facet.startProcess(startArgs);
+        started = charged.then(() => facet.startProcess(startArgs));
     }
     catch (error) {
         void release();
@@ -415,27 +386,21 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             ledger.reportSize(name, row);
         return payload;
     }, async (error) => {
-        throw withFacetBudgetNamed(await facetNameCountDurable(ctx), error);
+        // The count is read only to name the budget: a count storage cannot answer names nothing.
+        const consumed = await facetNameCountDurable(ctx).catch(() => null);
+        throw consumed === null ? error : withFacetBudgetNamed(consumed, error);
     });
     // A caller reads whichever of `started` and the lifecycle it needs, so keep
     // the runtime from reporting the other as an unhandled rejection.
     started.catch(() => { });
-    // A facet's isolate dies on its own (out of memory, out of CPU) and this
-    // object goes on (measured: the journal probe, 2026-10-07). A journaling
-    // resident's class holds held() open while its isolate lives: its
-    // rejection, unless this release ended it, is the process lost. Any
-    // other class's death is not seen here.
-    const lost = params.journal ? started.then(() => facet.held()).then(() => { throw new Error(`Nimbus: resident process ${params.pid}'s held() returned`); }, (error) => {
-        if (released)
-            return new Promise(() => { });
-        throw new Error(`Nimbus: resident process ${params.pid} died: ${error instanceof Error ? error.message : String(error)}`);
-    }) : new Promise(() => { });
-    lost.catch(() => { });
     return {
         started,
-        lost,
-        handleHttpRequest: (request) => facet.handleHttpRequest(request),
-        handleWebSocketRequest: (request) => facet.fetch(request),
+        // A facet cannot die without taking its Durable Object — and this object —
+        // with it, so there is no independent death to report.
+        lost: new Promise(() => { }),
+        // A request can arrive before the boot call; it creates the facet as that call would.
+        handleHttpRequest: (request) => charged.then(() => facet.handleHttpRequest(request)),
+        handleWebSocketRequest: (request) => charged.then(() => facet.fetch(request)),
         release,
         name,
         slot,
@@ -544,40 +509,6 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
         disposeRpcResource(worker);
         disposeRpcResource(supervisorBinding);
     }
-}
-/**
- * The write log a process left in its facet's store (process-fs-journal.ts),
- * read through the journal reader class the facet is opened with now, over
- * the same SQLite. The name is aborted first: a get with a new class of a
- * facet still running (a previous incarnation's) would reset this object.
- */
-export function facetJournal(ctx, env, name) {
-    const loader = env.LOADER;
-    if (!loader)
-        throw new Error('Nimbus: env.LOADER is missing: a process\'s write log cannot be read');
-    const facets = facetContainer(ctx);
-    let reader;
-    const open = () => {
-        if (reader)
-            return reader;
-        try {
-            facets.abort(name, new Error('Nimbus: its write log is drained'));
-        }
-        catch { /* not running */ }
-        const worker = loader.load({
-            compatibilityDate: CF_COMPAT_DATE,
-            mainModule: 'reader.js',
-            modules: { 'reader.js': PROCESS_FS_JOURNAL_READER_SOURCE },
-        });
-        reader = facets.get(name, async () => ({ class: worker.getDurableObjectClass('NimbusFsJournalReader') }));
-        return reader;
-    };
-    return {
-        numberings: () => open().numberings(),
-        number: (numbering) => open().number(numbering),
-        readAfter: (after, maxBytes) => open().readAfter(after, maxBytes),
-        dropThrough: (jid) => open().dropThrough(jid),
-    };
 }
 /**
  * The WorkerCode the loader callback returns for one resident boot: the

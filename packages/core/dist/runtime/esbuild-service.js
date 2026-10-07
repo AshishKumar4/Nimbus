@@ -17,9 +17,8 @@ import { tokenizer, tokTypes } from 'acorn';
 import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { packageNameFromSpecifier } from './barrel-detect.js';
 import { bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
-import { emitCommonJs, lowerAsyncModule } from './async-module-lowering.js';
-import { withRecall } from '../vfs/recall.js';
-import { applySourceEdits, literalStringValue, nodeList, nodeName, nodeProp, parseJavaScriptModule, walkTopLevelModuleTokens, } from './javascript-ast.js';
+import { emitCommonJs, lowerAsyncModule, readEsmRecords } from './async-module-lowering.js';
+import { applySourceEdits, nodeList, nodeName, nodeProp, parseJavaScriptModule, walkTopLevelModuleTokens, } from './javascript-ast.js';
 import { VITE_ASSET_QUERY_SUFFIXES, splitImportQuery, viteAssetLoader, } from './vite-assets.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
@@ -273,96 +272,6 @@ function hasUnscopedAwait(source) {
         return true;
     }
 }
-/**
- * The records (async-module-lowering.ts) of a bundle's top-level module
- * declarations, each `declarations[i]`'s range in `source`; null for a
- * declaration this bounded rewrite leaves to the full transform (an
- * exported declaration, a re-export, `export *`, `export default` of a
- * function or class). It reads no scopes, so an import's named bindings are
- * read once (EsmImportBinding's null `references`).
- */
-function bundledModuleRecords(source, declarations) {
-    const records = [];
-    for (const { start, end } of declarations) {
-        const snippet = source.slice(start, end);
-        // `export { a, b as c }` names bindings acorn would want declared in the
-        // snippet, so a plain list is read by its shape.
-        const bindingList = snippet.match(/^[ \t]*export\s*\{([\s\S]*)\}\s*;?\s*$/);
-        if (bindingList && !/\}\s*from\b/.test(snippet)) {
-            const names = [];
-            for (const binding of bindingList[1].split(',')) {
-                const match = binding.trim().match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/);
-                if (!match)
-                    return null;
-                names.push({ kind: 'named', exported: match[2] || match[1], local: match[1] });
-            }
-            records.push({ kind: 'export', start, end, source: null, names });
-            continue;
-        }
-        let ast;
-        try {
-            ast = parseJavaScriptModule(snippet);
-        }
-        catch {
-            return null;
-        }
-        const body = nodeList(ast, 'body');
-        if (body.length !== 1)
-            return null;
-        const declaration = body[0];
-        if (declaration.type === 'ImportDeclaration') {
-            const from = literalStringValue(nodeProp(declaration, 'source'));
-            if (!from)
-                return null;
-            const bindings = [];
-            for (const specifier of nodeList(declaration, 'specifiers')) {
-                const local = nodeName(nodeProp(specifier, 'local'));
-                if (!local)
-                    return null;
-                if (specifier.type === 'ImportDefaultSpecifier')
-                    bindings.push({ kind: 'named', local, imported: 'default', references: null });
-                else if (specifier.type === 'ImportNamespaceSpecifier')
-                    bindings.push({ kind: 'namespace', local });
-                else if (specifier.type === 'ImportSpecifier') {
-                    const imported = nodeName(nodeProp(specifier, 'imported'));
-                    if (!imported)
-                        return null;
-                    bindings.push({ kind: 'named', local, imported, references: null });
-                }
-                else {
-                    return null;
-                }
-            }
-            records.push({ kind: 'import', start, end, source: from, bindings });
-            continue;
-        }
-        if (declaration.type === 'ExportNamedDeclaration') {
-            if (nodeProp(declaration, 'source') || nodeProp(declaration, 'declaration'))
-                return null;
-            const names = [];
-            for (const specifier of nodeList(declaration, 'specifiers')) {
-                const local = nodeName(nodeProp(specifier, 'local'));
-                const exported = nodeName(nodeProp(specifier, 'exported'));
-                if (!local || !exported)
-                    return null;
-                names.push({ kind: 'named', exported, local });
-            }
-            records.push({ kind: 'export', start, end, source: null, names });
-            continue;
-        }
-        if (declaration.type === 'ExportDefaultDeclaration') {
-            const value = nodeProp(declaration, 'declaration');
-            if (!value || typeof value.start !== 'number' || typeof value.end !== 'number')
-                return null;
-            if (value.type === 'FunctionDeclaration' || value.type === 'ClassDeclaration')
-                return null;
-            records.push({ kind: 'export-default', start, end, expression: { start: start + value.start, end: start + value.end } });
-            continue;
-        }
-        return null;
-    }
-    return records;
-}
 function importMetaEdits(source, absoluteUrl, moduleFactory) {
     // A module factory's import.meta is the module's metadata object, bound by
     // the facet's rewrite of every MetaProperty (dynamic-import-rewrite.ts), so
@@ -416,11 +325,6 @@ function importMetaEdits(source, absoluteUrl, moduleFactory) {
         return null;
     }
 }
-/**
- * Converts bundler-emitted ESM without constructing an AST or loading
- * esbuild-wasm. Returns null for module declarations that are not the compact,
- * semicolon-terminated shapes emitted by current JS bundlers.
- */
 /** Bind canonical esbuild/Bun CommonJS records to the runtime's provided packages. */
 export function rewriteProvidedCommonJsModules(source) {
     const helpers = new Set(['__commonJS']);
@@ -514,26 +418,40 @@ export function rewriteProvidedCommonJsModules(source) {
     }
     return edits.length === 0 ? source : applySourceEdits(source, edits);
 }
+/**
+ * A large ES module (bundle-cell-transform.ts BUNDLED_ESM_REWRITE_MIN_BYTES)
+ * lowered to CommonJS in the session, without the transform host: read a
+ * statement at a time (readEsmRecords, bounded memory, imports live) and
+ * emitted by the one emitter. Null for what it leaves to the host: top-level
+ * await (its body is synchronous), an import.meta member it does not bind, a
+ * module acorn cannot parse, and a source with no module syntax.
+ */
 export function rewriteBundledEsmToCjs(source, absoluteUrl, moduleFactory = false) {
     if (hasUnscopedAwait(source))
         return null;
-    const declarations = topLevelModuleDeclarationRanges(source);
-    if (!declarations || declarations.length === 0)
+    // Read a statement at a time (readEsmRecords), so a multi-MiB bundle reads
+    // in bounded memory, imports live. What acorn cannot parse is left to the
+    // transform host, which has the last word on syntax.
+    let records;
+    try {
+        records = readEsmRecords(source);
+    }
+    catch {
         return null;
-    const records = bundledModuleRecords(source, declarations);
-    if (!records)
+    }
+    if (records.length === 0)
         return null;
     const metaEdits = importMetaEdits(source, absoluteUrl, moduleFactory);
     if (!metaEdits)
         return null;
     // Only generated references use wrapper arguments. Source declarations
     // named module/require/exports retain their own meanings. An import.meta
-    // is one token run, so it is inside a declaration or outside every one.
+    // is one token run, so it is inside a record's range or outside every one.
     const code = emitCommonJs(source, records, {
         body: 'sync',
         exportsObject: moduleFactory ? 'arguments[2].exports' : 'module.exports',
         requireFunction: moduleFactory ? 'arguments[1]' : 'module.require',
-        edits: metaEdits.filter((edit) => !declarations.some(({ start, end }) => edit.start >= start && edit.end <= end)),
+        edits: metaEdits.filter((edit) => !records.some(({ start, end }) => edit.start >= start && edit.end <= end)),
     });
     return { code: (moduleFactory ? '"use strict";\n' : '') + code, map: '', warnings: [] };
 }
@@ -1052,16 +970,7 @@ export class EsbuildService {
      * and — with `viteAssets` — Vite's asset/`?suffix` import semantics.
      */
     makeVfsPlugin(opts) {
-        const project = opts?.fs ?? this.requireVfs();
-        // A build reads a project a process may be writing: each read waits for a
-        // delegation it meets to be recalled (withRecall), so a held file is read
-        // as its holder decided it, never taken for one that is not there.
-        const vfs = {
-            exists: (path) => withRecall(() => project.exists(path)),
-            isDirectory: (path) => withRecall(() => project.isDirectory(path)),
-            readFile: (path) => withRecall(() => project.readFile(path)),
-            readFileString: (path) => withRecall(() => project.readFileString(path)),
-        };
+        const vfs = opts?.fs ?? this.requireVfs();
         const resolver = createBundlerResolver({
             isFile: async (path) => await vfs.exists(stripLeadingSlashes(path)) && !await vfs.isDirectory(stripLeadingSlashes(path)),
             isDirectory: async (path) => await vfs.exists(stripLeadingSlashes(path)) && await vfs.isDirectory(stripLeadingSlashes(path)),

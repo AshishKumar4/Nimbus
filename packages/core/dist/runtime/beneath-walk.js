@@ -5,29 +5,25 @@
  * from its own copy of the namespace (wasi/resident-filesystem.ts) walks with
  * exactly the code the authority walks with (sqlite-runtime-fs-bridge.ts).
  */
-import { errnoDescription } from '../vfs/vfs-error.js';
-import { posixAccess } from '../vfs/posix-access.js';
+import { fsError as nodeFsError } from '../vfs/vfs-error.js';
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 export const MAX_LINK_HOPS = 40;
-/**
- * Node's error for `syscall` failing on `path`: `ENOENT: no such file or
- * directory, open 'x'`, and `rename 'a' -> 'b'` for a call naming `dest` too.
- */
+/** vfs-error.ts's fsError for a call on a runtime path, named by its path. */
 export function fsError(code, syscall, path, dest, options = {}) {
     const name = typeof path === 'string' ? path : path.path;
     const second = dest === undefined ? undefined : typeof dest === 'string' ? dest : dest.path;
-    const words = options.detail ?? errnoDescription(code);
-    const message = `${code}: ${words === undefined ? '' : `${words}, `}${syscall} '${name}'${second === undefined ? '' : ` -> '${second}'`}`;
-    const error = new Error(message, options.cause === undefined ? undefined : { cause: options.cause });
-    return Object.assign(error, {
-        code, syscall, path: name, ...(second === undefined ? {} : { dest: second }), ...(options.detail === undefined ? {} : { detail: options.detail }),
-    });
+    return nodeFsError(code, syscall, name, second, options);
 }
-/** POSIX rwx for `cred` on a stat (posixAccess); a stat without a mode allows. An absent owner or group is no one's. */
+/** POSIX rwx for `cred` on a stat: root reads and writes anything and executes what anyone may. */
 export function modeAllows(stat, want, cred) {
-    if (stat.mode === undefined)
+    const requested = want & 7;
+    if (requested === 0 || stat.mode === undefined)
         return true;
-    return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1 }, want, cred);
+    const perms = stat.mode & 0o777;
+    if (cred.uid === 0)
+        return (requested & 1) === 0 || (perms & 0o111) !== 0;
+    const shift = cred.uid === stat.uid ? 6 : cred.gid === stat.gid || cred.groups.includes(stat.gid ?? -1) ? 3 : 0;
+    return ((perms >> shift) & requested) === requested;
 }
 /**
  * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the

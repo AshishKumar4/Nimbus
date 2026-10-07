@@ -139,6 +139,7 @@ const SYNTH_RUNTIME_STAT: RuntimeVfsStat = {
  * SQLite revision.
  */
 export function runtimeStatOf(stat: VfsStat): RuntimeVfsStat {
+  // Format bits the backend's mode leaves out are its coarse type's (dirent-type.ts).
   const typeBits = DIRENT_TYPES[stat.type].format;
   const mode = stat.mode === undefined ? typeBits | (stat.type === 'directory' ? 0o755 : 0o644) : (stat.mode & S_IFMT ? stat.mode : typeBits | stat.mode);
   return {

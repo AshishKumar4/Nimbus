@@ -64,7 +64,7 @@ export class VfsError extends Error {
    * `EXDEV: cross-device link not permitted, rename 'a' -> 'b'`.
    */
   constructor(readonly code: VfsErrorCode, message: string, readonly path?: string, options?: VfsErrorOptions) {
-    super(`${code}: ${message}${path !== undefined ? ` '${path}'` : ''}${options?.dest !== undefined ? ` -> '${options.dest}'` : ''}`, options);
+    super(systemErrorMessage(code, message, path, options?.dest), options);
     this.name = 'VfsError';
     this.errno = VFS_ERRNO[code];
     if (options?.syscall !== undefined) this.syscall = options.syscall;
@@ -221,4 +221,68 @@ export const ERRNO_DESCRIPTION: Readonly<Record<string, string>> = {
 /** {@link ERRNO_DESCRIPTION} of `code`, undefined for a code libuv does not name. */
 export function errnoDescription(code: string): string | undefined {
   return Object.prototype.hasOwnProperty.call(ERRNO_DESCRIPTION, code) ? ERRNO_DESCRIPTION[code] : undefined;
+}
+
+/** Linux errno numbers of the codes {@link ERRNO_DESCRIPTION} names besides the VFS's, negative as libuv reports them. */
+const OTHER_ERRNO: Readonly<Record<string, number>> = {
+  EFBIG: -27, ENODATA: -61, ENOSYS: -38, EMFILE: -24, ENFILE: -23, ENOMEM: -12, ETXTBSY: -26, EMLINK: -31,
+  ENODEV: -19, ESPIPE: -29, EPIPE: -32, EINTR: -4, ERANGE: -34, EOVERFLOW: -75, ETIMEDOUT: -110, ECANCELED: -125,
+  EFAULT: -14,
+};
+
+/** `code`'s errno, negative as libuv reports it; undefined for a code this table does not name. */
+export function errnoOf(code: string): number | undefined {
+  if (isVfsErrorCode(code)) return VFS_ERRNO[code];
+  return Object.prototype.hasOwnProperty.call(OTHER_ERRNO, code) ? OTHER_ERRNO[code] : undefined;
+}
+
+/**
+ * Node's message for a failed system call, as its uvException words it: the
+ * code, what was said of it (`no such file or directory, open`), then the
+ * path quoted and a second path after an arrow. The one template: VfsError
+ * and {@link fsError} both print it.
+ */
+export function systemErrorMessage(code: string, said: string, path?: string, dest?: string): string {
+  return `${code}: ${said}${path !== undefined ? ` '${path}'` : ''}${dest !== undefined ? ` -> '${dest}'` : ''}`;
+}
+
+/** An error carrying the fields Node's `fs` puts on a failed syscall. */
+export interface FsError extends Error {
+  code: string;
+  errno?: number;
+  syscall: string;
+  path?: string;
+  /** The second path of a call that names two (rename, symlink's link). */
+  dest?: string;
+}
+
+/**
+ * Node's error for `syscall` failing on `path` with any code, as a plain
+ * Error, as Node's fs throws it (where VfsError, for the VFS's own codes, is
+ * a class callers test for): `ENOENT: no such file or directory, open 'x'`,
+ * `rename 'a' -> 'b'` for a call naming `dest` too, no path for a call on a
+ * descriptor (`EBADF: bad file descriptor, read`). Its errno is the code's.
+ * `detail` stands in the description where Nimbus knows the reason.
+ */
+export function fsError(
+  code: string,
+  syscall: string,
+  path?: string,
+  dest?: string,
+  options: { detail?: string; cause?: unknown } = {},
+): FsError {
+  const words = options.detail ?? errnoDescription(code);
+  const error = new Error(
+    systemErrorMessage(code, words === undefined ? syscall : `${words}, ${syscall}`, path, dest),
+    options.cause === undefined ? undefined : { cause: options.cause },
+  );
+  const errno = errnoOf(code);
+  return Object.assign(error, {
+    code,
+    ...(errno === undefined ? {} : { errno }),
+    syscall,
+    ...(path === undefined ? {} : { path }),
+    ...(dest === undefined ? {} : { dest }),
+    ...(options.detail === undefined ? {} : { detail: options.detail }),
+  });
 }
