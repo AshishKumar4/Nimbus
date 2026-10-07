@@ -61,6 +61,10 @@ function session({ fenced = true } = {}) {
         calls.epochs++;
         return fenced ? deliveries.openWaveWriter(PID, 60_000) : null;
       },
+      retireWriter: async (writer) => {
+        calls.retired = [...(calls.retired ?? []), writer];
+        await op({ op: 'retireWaveWriter', args: [writer], pid: PID });
+      },
       writeBatchStream: async (stream, fence, owner) => {
         calls.waves++;
         const deliver = () => op({
@@ -396,6 +400,89 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   await c.settle();
   assert.ok(c.stats().renewed >= 1, `never renewed: ${JSON.stringify(c.stats())}`);
   assert.equal(s.text('home/user/r/f59'), '59');
+}
+
+// ── Review 1: a recall freezes the grant before it sends, so its prefix is everything decided before it ──
+// Red before: the flush took its watermark while the grant still decided
+// locally; a write decided during the flush landed after the reader was let in.
+{
+  const s = session();
+  s.kernel.mkdir('home/user/q', { mode: 0o755 });
+  s.kernel.chown('home/user/q', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const c = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 50 });
+  assert.equal(c.holder('home/user/q/a'), undefined);
+  const grant = await until(() => c.holder('home/user/q/a'), 'the grant');
+  c.submit({ type: 'call', call: { call: 'writeFile', path: 'home/user/q/a', mode: 0o644, ino: c.number(grant), data: enc.encode('a') } }, { acknowledged: true });
+  // The recall's flush is held in the session: while it is, the process asks to decide another.
+  let open;
+  const held = new Promise((resolve) => { open = resolve; });
+  s.fault = async (deliver) => { await held; return deliver(); };
+  const reading = withRecall(() => s.kernel.readFileString('home/user/q/a'));
+  await until(() => c.stats().recalls === 1, 'the recall');
+  assert.equal(c.holder('home/user/q/b'), undefined, 'the grant still decided writes while its recall was being answered');
+  s.fault = null;
+  open();
+  assert.equal(await reading, 'a');
+  await c.settle();
+}
+
+// ── Review 3: an epoch given up is retired before the next one sends ──
+// Red before: the timed-out wave's epoch stayed open, and its late attempt
+// landed after (and over) what the new epoch wrote.
+{
+  const s = session();
+  const late = [];
+  // The first wave's attempt reaches the session only later; the writer gives it up.
+  s.fault = (deliver, fence) => {
+    if (fence?.wave === 1 && late.length === 0) {
+      late.push(deliver);
+      return new Promise(() => {});
+    }
+    return deliver();
+  };
+  const c = processFsClient({ session: s.port, retry: { backoffMs: [], stallMs: 30, answerDeadlineMs: 30 } });
+  await assert.rejects(c.submit(writeFile('home/user/race', 'old')), (error) => error.code === 'EIO');
+  await c.submit(writeFile('home/user/race', 'new'));
+  assert.equal(s.text('home/user/race'), 'new');
+  assert.equal(s.calls.retired?.length, 1, 'the given-up epoch was never retired');
+  // The old attempt arrives now: refused, and the newer write stands.
+  const answer = await late[0]().catch((error) => ({ ok: false, error }));
+  assert.equal(answer.ok, false, 'a late attempt of a retired epoch was applied');
+  assert.equal(s.text('home/user/race'), 'new');
+}
+
+// ── Review 11: what cannot be sent is refused, never left waiting ──
+// Red before: a link target past what a wave carries made the encoder throw
+// inside send, outside its catch, and the op's promise never settled; so did
+// a journal that failed while the wave was numbered.
+{
+  const s = session();
+  const c = client(s);
+  const outcome = (promise) => Promise.race([promise.then(() => 'ok', (error) => error.code), new Promise((resolve) => setTimeout(() => resolve('pending'), 2_000))]);
+  let refused;
+  try { refused = c.submit({ type: 'call', call: { call: 'symlink', path: 'home/user/l', target: 'x'.repeat(70_000) } }); }
+  catch (error) { refused = Promise.reject(error); }
+  assert.equal(await outcome(refused), 'ENAMETOOLONG');
+  await c.submit(writeFile('home/user/after', 'a'));
+  assert.equal(s.text('home/user/after'), 'a');
+}
+{
+  const s = session();
+  const { memoryJournal } = await import('../../packages/core/src/_shared/process-fs-journal.ts');
+  const inner = memoryJournal();
+  let failNumbering = true;
+  const journal = new Proxy(inner, {
+    get(target, name, receiver) {
+      if (name === 'number') return (numbering) => { if (failNumbering) { failNumbering = false; throw new Error('the journal could not be written'); } return target.number(numbering); };
+      const value = Reflect.get(target, name, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const c = processFsClient({ session: s.port, retry: RETRY, journal });
+  const outcome = (promise) => Promise.race([promise.then(() => 'ok', (error) => error.code), new Promise((resolve) => setTimeout(() => resolve('pending'), 2_000))]);
+  assert.equal(await outcome(c.submit(writeFile('home/user/j1', '1'))), 'EIO', 'an op whose numbering failed was left waiting');
+  await c.submit(writeFile('home/user/j2', '2'));
+  assert.equal(s.text('home/user/j2'), '2');
 }
 
 console.log('process-fs-client: ok');

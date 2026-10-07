@@ -216,4 +216,38 @@ async function create(fs, path, text) {
   assert.equal(dec.decode(s.kernel.readFile('home/user/proj/logged/f19.txt')), 'file 19\n');
 }
 
+// ── Review 6: O_CREAT without O_TRUNC keeps an existing file's bytes ──
+// Red before: the holder emptied it, as if O_TRUNC had been asked.
+{
+  const s = session();
+  await s.fs.mkdir('/home/user/proj/keep', { mode: 0o755 });
+  await create(s.fs, '/home/user/proj/keep/f', 'abc');
+  const handle = await s.fs.open('/home/user/proj/keep/f', { write: true, create: true, mode: 0o644 });
+  await s.fs.write(handle.id, 0, enc.encode('X'));
+  await s.fs.close(handle.id);
+  await s.fs.settle();
+  assert.equal(dec.decode(s.kernel.readFile('home/user/proj/keep/f')), 'Xbc');
+}
+
+// ── Review 7: an unlinked file's open descriptions keep its bytes; no name is written with them ──
+// Red before: a write through a descriptor of an unlinked file wrote its name again.
+{
+  const s = session();
+  await s.fs.mkdir('/home/user/proj/gone', { mode: 0o755 });
+  const old = await s.fs.open('/home/user/proj/gone/f', { read: true, write: true, create: true, truncate: true, mode: 0o644 });
+  await s.fs.write(old.id, null, enc.encode('1'));
+  await s.fs.unlink('/home/user/proj/gone/f');
+  await s.fs.write(old.id, null, enc.encode('2'));
+  // Still readable through the description, as POSIX has it.
+  assert.equal(dec.decode(await s.fs.read(old.id, 0, 10)), '12');
+  await s.fs.flush();
+  assert.equal(s.kernel.exists('home/user/proj/gone/f'), false, 'a write through a description of an unlinked file made its name again');
+  // A new file of that name is not the old description's.
+  await create(s.fs, '/home/user/proj/gone/f', 'new');
+  await s.fs.write(old.id, null, enc.encode('zz'));
+  await s.fs.close(old.id);
+  await s.fs.settle();
+  assert.equal(dec.decode(s.kernel.readFile('home/user/proj/gone/f')), 'new');
+}
+
 console.log('wasi delegation holder: ok');
