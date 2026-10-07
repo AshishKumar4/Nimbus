@@ -17,10 +17,11 @@
  *     runs, keeping a value it has; a top-level function is assigned there
  *     too, as a script's are, as a function expression under its name, so
  *     the line has no binding of its own to shadow the global; a function
- *     in a block is the block's, initialized as the block is entered, and
- *     assigns its global where it is declared, as Annex B's does; but as a
- *     `let` of the block, so the line has no function-wide binding of the
- *     name (Annex B's own var) for a later assignment to miss the global;
+ *     in a block (a switch's cases, an `if` branch) stays declared where it
+ *     is, in its block's scope and hoisted within it, and assigns its global
+ *     where it is declared, as Annex B's does; a `let` of its name around
+ *     the block keeps Annex B from also giving the line a binding of its own
+ *     (its var) for a later assignment to miss the global;
  *   - a declaration's initializers assign those globals where it stands,
  *     and `let`, `const` and `class` at the top level assign a global of
  *     their name the same way (a `const` stays assignable);
@@ -59,12 +60,8 @@ interface Line {
   /** Names that are globals before the line runs (var-bound and top-level functions), in order, once each. */
   readonly globals: SafeList<string>;
   readonly declared: SafeSet<string>;
-  /**
-   * Function declarations that move: a top-level one (`at` null) to the
-   * prologue, assigned to its global; one in a block to a `let` at `at`,
-   * where the block is entered.
-   */
-  readonly functions: SafeList<{ readonly node: FunctionDeclaration; readonly at: number | null }>;
+  /** Top-level function declarations, assigned to their globals before the line runs. */
+  readonly functions: SafeList<FunctionDeclaration>;
   /** A "use strict" line: a function in a block is the block's alone (no Annex B). */
   readonly strict: boolean;
 }
@@ -97,7 +94,7 @@ export function replLineBody(text: string): string | null {
     source, edits: newSafeList(), globals: newSafeList(), declared: new SafeSet(), functions: newSafeList(), strict: isStrict(program.body),
   };
   const body = program.body;
-  for (let i = 0; i < body.length; i++) statement(body[i], true, line, 0);
+  for (let i = 0; i < body.length; i++) statement(body[i], true, line);
   routeImports(program, line.edits);
   const last = lastStatement(body);
   if (last !== null && last.type === 'ExpressionStatement') {
@@ -107,37 +104,22 @@ export function replLineBody(text: string): string | null {
     append(line.edits, { start: last.expression.start, end: last.expression.start, text: '{ value: (' });
     append(line.edits, { start: last.expression.end, end: last.expression.end, text: ') }' });
   }
-  // Each function that moves leaves its place, with the edits inside it
-  // (its import() calls). Under its name and without it: the anonymous
-  // function takes the name of what it is assigned to, and its body sees
-  // that binding, not one of its own. A block's `let` of a name it declares
-  // twice (sloppy code may) is the last declaration's.
+  // Each top-level function leaves its place for the prologue, with the
+  // edits inside it (its import() calls). Under its name and without it: the
+  // anonymous function takes the name it is assigned to, and its body sees
+  // the global, not a binding of its own.
   let assigned = '';
-  const lets = new SafeSet<string>();
-  for (let i = line.functions.length - 1; i >= 0; i--) {
-    const { node, at } = line.functions[i];
-    const name = node.id.name;
+  for (let i = 0; i < line.functions.length; i++) {
+    const node = line.functions[i];
     const inner = newSafeList<Edit>();
     const rest = newSafeList<Edit>();
-    // Strictly inside: what is inserted at either end (an if branch's braces) stays.
     for (let j = 0; j < line.edits.length; j++) {
       const edit = line.edits[j];
-      append(edit.start > node.start && edit.end < node.end ? inner : rest, edit);
+      append(edit.start >= node.start && edit.end <= node.end ? inner : rest, edit);
     }
     append(inner, { start: node.id.start, end: node.id.end, text: '' });
-    const fn = applyEdits(source, inner, node.start, node.end);
-    if (at === null) {
-      assigned = `${name} = ${fn}; ${assigned}`;
-      append(rest, { start: node.start, end: node.end, text: '' });
-    } else {
-      // Where it was declared, its global takes the block's binding (Annex B).
-      append(rest, { start: node.start, end: node.end, text: `this.${name} = ${name};` });
-      const key = `${at}:${name}`;
-      if (!lets.has(key)) {
-        lets.add(key);
-        append(rest, { start: at, end: at, text: `let ${name} = ${fn}; ` });
-      }
-    }
+    assigned += `${node.id.name} = ${applyEdits(source, inner, node.start, node.end)}; `;
+    append(rest, { start: node.start, end: node.end, text: '' });
     line.edits.length = 0;
     for (let j = 0; j < rest.length; j++) append(line.edits, rest[j]);
   }
@@ -161,20 +143,21 @@ function declareGlobal(line: Line, name: string): void {
   append(line.globals, name);
 }
 
-/**
- * Rewrite the declarations of one statement, outside any function; `top`
- * when it is the line's own, `at` where a function it declares in a block
- * is initialized (just inside the block's brace).
- */
-function statement(node: Statement | ModuleDeclaration, top: boolean, line: Line, at: number): void {
+/** Rewrite the declarations of one statement, outside any function; `top` when it is the line's own. */
+function statement(node: Statement | ModuleDeclaration, top: boolean, line: Line): void {
   switch (node.type) {
     case 'VariableDeclaration':
       if (node.kind === 'var' || top) declaration(node, line, null);
       return;
     case 'FunctionDeclaration':
-      if (!top && line.strict) return;
-      declareGlobal(line, node.id.name);
-      append(line.functions, { node, at: top ? null : at });
+      if (top) {
+        declareGlobal(line, node.id.name);
+        append(line.functions, node);
+      } else if (!line.strict) {
+        // Where it is declared, its global takes the block's binding (Annex B).
+        declareGlobal(line, node.id.name);
+        append(line.edits, { start: node.start, end: node.start, text: `this.${node.id.name} = ${node.id.name}; ` });
+      }
       return;
     case 'ClassDeclaration':
       if (top) {
@@ -182,50 +165,55 @@ function statement(node: Statement | ModuleDeclaration, top: boolean, line: Line
         append(line.edits, { start: node.end, end: node.end, text: ';' });
       }
       return;
-    case 'BlockStatement':
-      for (let i = 0; i < node.body.length; i++) statement(node.body[i], false, line, node.start + 1);
+    case 'BlockStatement': {
+      // Its statements in a block of their own inside it, beside a `let` of
+      // each function they declare (blockLets): the functions keep their
+      // scope, and the `let` keeps Annex B from giving the line a var.
+      const lets = blockLets(node.body, line);
+      if (lets) append(line.edits, { start: node.start + 1, end: node.start + 1, text: `${lets}{` });
+      for (let i = 0; i < node.body.length; i++) statement(node.body[i], false, line);
+      if (lets) append(line.edits, { start: node.end - 1, end: node.end - 1, text: '}' });
       return;
+    }
     case 'IfStatement':
-      branch(node.consequent, line, at);
-      if (node.alternate) branch(node.alternate, line, at);
+      branch(node.consequent, line);
+      if (node.alternate) branch(node.alternate, line);
       return;
     // A label is part of the statement it labels: the same scope.
     case 'LabeledStatement':
-      statement(node.body, top, line, at);
+      statement(node.body, top, line);
       return;
     case 'WhileStatement':
     case 'DoWhileStatement':
     case 'WithStatement':
-      statement(node.body, false, line, at);
+      statement(node.body, false, line);
       return;
     case 'ForStatement':
       if (node.init && node.init.type === 'VariableDeclaration' && node.init.kind === 'var') declaration(node.init, line, 'init');
-      statement(node.body, false, line, at);
+      statement(node.body, false, line);
       return;
     case 'ForInStatement':
     case 'ForOfStatement':
       if (node.left.type === 'VariableDeclaration' && node.left.kind === 'var') declaration(node.left, line, 'each');
-      statement(node.body, false, line, at);
+      statement(node.body, false, line);
       return;
     case 'TryStatement':
-      statement(node.block, false, line, at);
-      if (node.handler) statement(node.handler.body, false, line, at);
-      if (node.finalizer) statement(node.finalizer, false, line, at);
+      statement(node.block, false, line);
+      if (node.handler) statement(node.handler.body, false, line);
+      if (node.finalizer) statement(node.finalizer, false, line);
       return;
     case 'SwitchStatement': {
-      // Its cases are one scope, with no brace of their own to start at:
-      // the switch goes in a block, and their functions just inside it.
-      let declares = false;
-      for (let i = 0; i < node.cases.length && !declares; i++) declares = declaresFunction(node.cases[i].consequent);
-      const casesAt = declares ? node.start : at;
-      if (declares) {
-        append(line.edits, { start: node.start, end: node.start, text: '{' });
-        append(line.edits, { start: node.end, end: node.end, text: '}' });
-      }
+      // Its cases are one scope with no braces of their own: the `let` goes
+      // in a block around the switch.
+      const statements = newSafeList<Statement>();
       for (let i = 0; i < node.cases.length; i++) {
         const consequent = node.cases[i].consequent;
-        for (let j = 0; j < consequent.length; j++) statement(consequent[j], false, line, casesAt);
+        for (let j = 0; j < consequent.length; j++) append(statements, consequent[j]);
       }
+      const lets = blockLets(statements, line);
+      if (lets) append(line.edits, { start: node.start, end: node.start, text: `{${lets}` });
+      for (let i = 0; i < statements.length; i++) statement(statements[i], false, line);
+      if (lets) append(line.edits, { start: node.end, end: node.end, text: '}' });
       return;
     }
     default:
@@ -235,26 +223,37 @@ function statement(node: Statement | ModuleDeclaration, top: boolean, line: Line
 
 /**
  * A branch of an `if`: a function declared as one directly (sloppy code may,
- * Annex B) is in a block of its own, which the rewrite makes explicit.
+ * Annex B) is in a block of its own, which the rewrite makes explicit, inside
+ * one holding its `let` (blockLets).
  */
-function branch(node: Statement, line: Line, at: number): void {
-  if (node.type !== 'FunctionDeclaration') {
-    statement(node, false, line, at);
+function branch(node: Statement, line: Line): void {
+  if (node.type !== 'FunctionDeclaration' || line.strict) {
+    statement(node, false, line);
     return;
   }
-  append(line.edits, { start: node.start, end: node.start, text: '{' });
-  append(line.edits, { start: node.end, end: node.end, text: '}' });
-  statement(node, false, line, node.start);
+  append(line.edits, { start: node.start, end: node.start, text: `{let ${node.id.name};{` });
+  statement(node, false, line);
+  append(line.edits, { start: node.end, end: node.end, text: '}}' });
 }
 
-/** Whether `statements` declare a function, directly or under a label. */
-function declaresFunction(statements: readonly Statement[]): boolean {
+/**
+ * `let a, b;` for the functions `statements` declare (directly or under a
+ * label), each name once; '' when they declare none, or the line is strict
+ * (no Annex B). Placed in a block around theirs, the `let` makes Annex B's
+ * var for each an early error, so the line gets none.
+ */
+function blockLets(statements: readonly Statement[], line: Line): string {
+  if (line.strict) return '';
+  const names = new SafeSet<string>();
+  let lets = '';
   for (let i = 0; i < statements.length; i++) {
     let node: Statement = statements[i];
     while (node.type === 'LabeledStatement') node = node.body;
-    if (node.type === 'FunctionDeclaration') return true;
+    if (node.type !== 'FunctionDeclaration' || names.has(node.id.name)) continue;
+    names.add(node.id.name);
+    lets += lets === '' ? `let ${node.id.name}` : `, ${node.id.name}`;
   }
-  return false;
+  return lets === '' ? '' : `${lets};`;
 }
 
 /**

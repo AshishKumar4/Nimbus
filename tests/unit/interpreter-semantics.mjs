@@ -354,6 +354,26 @@ async function runCases(interpreterFile, opsFile) {
     gen.return();
     check('return() of a generator suspended in for-of closes its iterator', closed, ['return']);
   }
+  // As V8 runs it in sloppy code (`node -e`; this module is strict, so the
+  // program cannot be compiled here as the other comparisons are).
+  check('Annex B block functions: a var only where no lexical declaration around claims the name', F(`
+    const out = [];
+    // A lexical declaration around a block function: no var of its name
+    // (B.3.3), so the name is still the global's.
+    globalThis.annexShadow = 'global';
+    { let annexShadow; { function annexShadow() { return 1 } } }
+    out.push(annexShadow);
+    // Nor across a switch, or a for's let head.
+    { let g; switch (1) { case 1: function g() {} } }
+    for (let h of [1]) { { function h() {} } }
+    out.push(typeof g, typeof h);
+    // With none, the var is the function, which keeps its block's scope.
+    switch (1) { case 1: let local = 7; function k() { return local } }
+    out.push(k());
+    if (true) { let local = 8; function m() { return local } }
+    out.push(m());
+    return out;
+  `)(), ['global', 'undefined', 'undefined', 7, 8]);
   check('a function declaration as an if clause (Annex B.3.4)',
     F('if (true) function f() { return 1 } if (false) ; else function g() { return 2 } if (false) function h() {} return [f(), g(), typeof h]')(), [1, 2, 'undefined']);
   {

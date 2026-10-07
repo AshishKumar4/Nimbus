@@ -72,6 +72,13 @@ const LINES = [
   'sf()',
   '{ function twice() { return 1 } function twice() { return 2 } }; 0',
   'twice()',
+  // ... in its block's scope, closing over the block's own bindings.
+  'switch(1){case 1: let switchLocal=7; function sfl(){return switchLocal}} sfl()',
+  'sfl()',
+  'switch (2) { case 1: function skipped() { return 1 } case 2: typeof skipped }; typeof skipped',
+  'if (true) { let ifLocal = 8; function fi() { return ifLocal } } fi()',
+  'lab: { let labLocal = 9; function fl() { return labLocal } } fl()',
+  'try { let tryLocal = 10; function ft() { return tryLocal } } finally {} ft()',
   // In strict code a function in a block is the block's alone.
   '"use strict"; { function strictBlock() {} } typeof strictBlock',
   "class C { m() { return 'm' } }",
