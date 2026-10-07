@@ -437,6 +437,8 @@ export function makeWasmRunner(deps) {
                     exitCode: r.exitCode,
                     exports: Object.keys(inst.exports),
                     error: r.error,
+                    // Its filesystem calls and who answered them (ResidentFilesystemStats).
+                    fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
                 };
             }
             // ── Direct mode ──
@@ -593,6 +595,8 @@ export function makeWasmRunner(deps) {
                     `wasm-runner: wasi trap: ${outcome.error}\n`;
             }
             exitCode = outcome.exitCode ?? (outcome.ok ? 0 : 1);
+            if (opts.env?.NIMBUS_WASI_FS_STATS === '1')
+                stderr += `[wasi-fs] wasm ${JSON.stringify(outcome.fsStats ?? null)}\n`;
         }
         else if (!outcome.ok) {
             // Direct-mode failure or pre-instantiate dispatch failure — shell

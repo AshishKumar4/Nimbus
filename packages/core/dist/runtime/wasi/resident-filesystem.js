@@ -488,6 +488,7 @@ export function residentFilesystem(session, resident, delegation) {
         delegated: { ...counts.delegated },
         pins: pins.size,
         pinnedBytes: [...pins.values()].reduce((total, pin) => total + pin.bytes.byteLength, 0),
+        ...(holder === null ? {} : { client: holder.client.stats() }),
     });
     fs.stat = (path, options = {}) => answer('stat', () => {
         const follow = options.followSymlinks !== false;

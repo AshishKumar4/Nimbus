@@ -35,7 +35,7 @@
  *     absent: the adapter lists the directory and walks again.
  */
 import type { RuntimeFsBridge, RuntimeFsPath, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
-import type { ProcessFsJournal, ProcessFsSession } from '../../_shared/process-fs-client.js';
+import type { ProcessFsJournal, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
     type: 'file' | 'directory' | 'symlink';
@@ -156,6 +156,8 @@ export interface ResidentFilesystemStats {
     /** File bytes pinned for descriptors now, and how many buffers hold them. */
     pinnedBytes: number;
     pins: number;
+    /** Its filesystem client's waves, grants and recalls, when it holds delegations. */
+    client?: ProcessFsStats;
 }
 /**
  * What makes the process a delegation's holder (delegation-holder.ts): the
