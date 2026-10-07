@@ -5,6 +5,19 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: an install's background pre-bundle stops when its session is
+  destroyed. A client that destroys the session while pre-bundles are still
+  queued deletes the storage under them. Each remaining pre-bundle then walked
+  a store with no tables: its walk skipped every file it could not read, so it
+  either threw "no such table: vfs_inodes" or sent the bundler an empty slice,
+  which rolldown reported as 'Entry module "…" cannot be external'. On
+  2026-10-06 that was 470 logged failures (clsx, tailwind-merge, hono/* and
+  others), every one after its session had closed. The phase now checks
+  before each pre-bundle that node_modules can still be listed, stops with one
+  line saying how many were not pre-bundled, and counts them as stopped. The
+  slice walk passes over only a file removed under it (ENOENT); any other
+  read failure fails that pre-bundle with its error. A slice without its entry
+  fails, naming the entry, before the bundler runs.
 - Fixed: a build facet no longer fills with the builds it has run until its
   isolate is reset. rolldown (1.2.11 and 1.2.12, native and wasm alike) never
   frees a build whose plugin has an output hook or `buildStart`: for those

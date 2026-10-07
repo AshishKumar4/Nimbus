@@ -28,6 +28,17 @@ export type { PrebundleResult, PrebundleSpec, SlicedDir, SlicedFile, SliceEntry 
 
 // ── Supervisor-side: build the slice for one specifier ──────────────────
 
+/**
+ * A file or directory removed (or replaced) between the walk listing it and
+ * reading it: the one read failure a walk passes over. Any other (the store
+ * unreadable, the session's storage gone) fails the walk, so a slice is never
+ * silently missing a file it lists, its entry least of all.
+ */
+function vanished(error: unknown): boolean {
+  const code: unknown = Reflect.get(Object(error), 'code');
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
 
 
 
@@ -60,7 +71,10 @@ export function buildSliceForSpecifierWithCap(
       if (totalBytes > capBytes) return false; // caller bails
       slice.push({ path: '/' + path.replace(/^\/+/, ''), bytes, isDir: false });
       return true;
-    } catch { return true; /* skip unreadable */ }
+    } catch (error) {
+      if (vanished(error)) return true;
+      throw error;
+    }
   };
 
   /**
@@ -73,7 +87,10 @@ export function buildSliceForSpecifierWithCap(
   const walkDir = (dir: string, depth: number): boolean => {
     if (depth > 12) return true;
     let entries: { name: string; type: string }[];
-    try { entries = vfs.readdir(dir); } catch { return true; }
+    try { entries = vfs.readdir(dir); } catch (error) {
+      if (vanished(error)) return true;
+      throw error;
+    }
     for (const entry of entries) {
       if (entry.name === 'node_modules') continue; // handled by dep recursion
       const child = dir + '/' + entry.name;
@@ -124,7 +141,12 @@ export function buildSliceForSpecifierWithCap(
     let pkgJson: any = null;
     const pkgJsonPath = pkgDir + '/package.json';
     if (vfs.exists(pkgJsonPath)) {
-      try { pkgJson = JSON.parse(vfs.readFileString(pkgJsonPath)); } catch {}
+      let text: string | null = null;
+      try { text = vfs.readFileString(pkgJsonPath); } catch (error) {
+        if (!vanished(error)) throw error;
+      }
+      // A manifest that is not JSON names no dependencies.
+      try { pkgJson = text === null ? null : JSON.parse(text); } catch {}
     }
     const deps = pkgJson?.dependencies ? Object.keys(pkgJson.dependencies) : [];
     for (const dep of deps) {

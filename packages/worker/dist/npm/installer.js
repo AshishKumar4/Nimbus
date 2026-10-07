@@ -2020,11 +2020,37 @@ export class NpmInstaller {
         // others when investigating supervisor crashes. Bounded by
         // pending.length.
         const errorsByModule = {};
+        // The pre-bundles not attempted because node_modules went away under
+        // the phase: its session destroyed (its storage deleted) or the
+        // directory removed. Each would only fail on a store that is gone.
+        let abandoned = 0;
+        const nodeModulesGone = () => {
+            // Listed, not looked up: a lookup can be answered from the VFS's
+            // cache of the store, a listing reads the store.
+            try {
+                fs.readdir(nmDir);
+                return false;
+            }
+            catch {
+                return true;
+            }
+        };
+        const abandonRest = (current) => {
+            if (abandoned > 0)
+                return;
+            abandoned = current + queue.length;
+            queue.length = 0;
+            safeProgress(`  pre-bundle stopped: ${nmDir} is gone (the session destroyed, or node_modules removed); ${abandoned} not pre-bundled`);
+        };
         const runSlot = async (slotIndex) => {
             while (true) {
                 const next = queue.shift();
                 if (!next)
                     return;
+                if (nodeModulesGone()) {
+                    abandonRest(1);
+                    return;
+                }
                 // Hold the slice's worst-case supervisor footprint until its facet
                 // RPC and cache write settle. FIFO byte credit prevents VFS reads,
                 // streamed install writes, or cirrus boot from independently claiming
@@ -2080,6 +2106,11 @@ export class NpmInstaller {
                         }
                     }
                     catch (e) {
+                        if (nodeModulesGone()) {
+                            attempted--;
+                            abandonRest(1);
+                            return;
+                        }
                         const msg = e?.message || String(e);
                         safeProgress(`  pre-bundle slice walk threw for ${next.specifier}: ${msg}`);
                         errorCount++;
@@ -2141,6 +2172,11 @@ export class NpmInstaller {
                     }
                     if (!result || !result.ok) {
                         const why = result?.errorText || 'pool returned null';
+                        if (nodeModulesGone()) {
+                            attempted--;
+                            abandonRest(1);
+                            return;
+                        }
                         if (result) {
                             safeProgress(`  pre-bundle failed for ${next.specifier}: ${why}`);
                             errorCount++;
@@ -2158,6 +2194,11 @@ export class NpmInstaller {
                     // stored under the manifests the slice read (the next install, or
                     // the dev server on demand, bundles what is there now).
                     if (!stillCurrent(request.manifests, read)) {
+                        if (nodeModulesGone()) {
+                            attempted--;
+                            abandonRest(1);
+                            return;
+                        }
                         safeProgress(`  pre-bundle of ${next.specifier} not cached: its package changed while it was bundled`);
                         result = null;
                         continue;
@@ -2182,6 +2223,11 @@ export class NpmInstaller {
                         okCount++;
                     }
                     catch (e) {
+                        if (nodeModulesGone()) {
+                            attempted--;
+                            abandonRest(1);
+                            return;
+                        }
                         const msg = e?.message || String(e);
                         safeProgress(`  pre-bundle cache-write failed for ${next.specifier}: ${msg}`);
                         errorCount++;
@@ -2240,7 +2286,7 @@ export class NpmInstaller {
             try {
                 const memAfter = this._estimateSupervisorHeapMiB();
                 const delta = memAfter - memBefore;
-                safeProgress(`Pre-bundle complete: ${okCount}/${attempted} succeeded. (supervisor heap ${memAfter.toFixed(1)} MiB, Δ${delta >= 0 ? '+' : ''}${delta.toFixed(1)} MiB)`);
+                safeProgress(`Pre-bundle complete: ${okCount}/${attempted} succeeded${abandoned > 0 ? `, ${abandoned} stopped` : ''}. (supervisor heap ${memAfter.toFixed(1)} MiB, Δ${delta >= 0 ? '+' : ''}${delta.toFixed(1)} MiB)`);
             }
             catch (e) {
                 try {
