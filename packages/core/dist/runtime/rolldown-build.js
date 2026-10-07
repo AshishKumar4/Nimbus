@@ -636,36 +636,19 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         unresolved.push({ importer, source, kind, text, pluginName });
         return { id: source, external: true };
     };
-    // Per entry chunk, its CSS modules in the order its JavaScript evaluates
-    // them: rolldown renders an empty module into no chunk, so the graph says.
-    const cssOrder = new Map();
+    // The module graph, as each module was parsed: its imports in source order.
+    // Read from moduleParsed, never an output hook or buildStart: rolldown
+    // (1.2.11) caches a build's options in the context it gives those hooks,
+    // and the options' invalidateJsSideCache callback holds that context, so
+    // across the binding neither is ever freed, nor anything this plugin
+    // reaches (every module's source, the caller's plugin, a pre-bundle's
+    // whole slice), and a build facet's isolate fills build by build.
+    const graph = new Map();
     const vfs = {
         name: plugin.name,
-        generateBundle(_options, bundle) {
-            for (const id of inputBytes.keys()) {
-                const info = this.getModuleInfo(id);
-                importOrder.set(id, [...(info?.importedIds ?? []), ...(info?.dynamicallyImportedIds ?? [])]);
-            }
-            for (const out of Object.values(bundle)) {
-                if (out.type !== 'chunk' || !out.facadeModuleId)
-                    continue;
-                const order = [];
-                const seen = new Set();
-                const visit = (id) => {
-                    if (seen.has(id))
-                        return;
-                    seen.add(id);
-                    const info = this.getModuleInfo(id);
-                    for (const child of info?.importedIds ?? [])
-                        visit(child);
-                    if (css.has(id))
-                        order.push(id);
-                    for (const child of info?.dynamicallyImportedIds ?? [])
-                        visit(child);
-                };
-                visit(out.facadeModuleId);
-                cssOrder.set(out.fileName, order);
-            }
+        moduleParsed(info) {
+            graph.set(info.id, { importedIds: [...info.importedIds], dynamicallyImportedIds: [...info.dynamicallyImportedIds] });
+            importOrder.set(info.id, [...info.importedIds, ...info.dynamicallyImportedIds]);
         },
         async resolveId(source, importer, extra) {
             if (source.startsWith('\0'))
@@ -795,6 +778,29 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         // Placed by buildWithRolldown once this bundle is closed.
         if (unresolved.length)
             throw new UnresolvedImports();
+        // Per entry chunk, its CSS modules in the order its JavaScript evaluates
+        // them: rolldown renders an empty module into no chunk, so the graph says.
+        const cssOrder = new Map();
+        for (const out of output) {
+            if (out.type !== 'chunk' || !out.facadeModuleId)
+                continue;
+            const order = [];
+            const seen = new Set();
+            const visit = (id) => {
+                if (seen.has(id))
+                    return;
+                seen.add(id);
+                const info = graph.get(id);
+                for (const child of info?.importedIds ?? [])
+                    visit(child);
+                if (css.has(id))
+                    order.push(id);
+                for (const child of info?.dynamicallyImportedIds ?? [])
+                    visit(child);
+            };
+            visit(out.facadeModuleId);
+            cssOrder.set(out.fileName, order);
+        }
         const outdir = options.outfile ? options.outfile.slice(0, options.outfile.lastIndexOf('/')) || '/' : (options.outdir ?? '/dist');
         const at = (fileName) => `${outdir.replace(/\/+$/, '')}/${fileName}`;
         const encoder = new TextEncoder();

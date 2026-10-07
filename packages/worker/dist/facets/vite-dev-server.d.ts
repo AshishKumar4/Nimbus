@@ -165,6 +165,14 @@ export declare function rewriteExternalRequires(code: string, basePath: string):
  */
 export declare function synthesizeCjsNamedExports(code: string): string;
 /**
+ * A module that fails in the page with `diag`. It declares `names` (each
+ * undefined) beside its default, so an importer of any of them links, and
+ * throws `diag` as it evaluates: the preview's overlay shows that, where a
+ * module lacking a name the importer asks for would fail to link with "does
+ * not provide an export named ..." and never run.
+ */
+export declare function failingModule(diag: string, names: Iterable<string>): string;
+/**
  * The package scope of an importing file, read once: the first package.json
  * up from it (Node's rule: the first one wins, `imports` or not) and its
  * `imports`. A `#X` specifier resolves against this snapshot alone, so what

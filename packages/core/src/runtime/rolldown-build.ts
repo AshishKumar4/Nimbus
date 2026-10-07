@@ -629,7 +629,7 @@ async function build(
   // as a diagnostic names it, with its byte count and the imports it made.
   // Its imports are listed in the order its source makes them, as esbuild's
   // are: rolldown resolves them concurrently, so they are ordered by the
-  // module graph's importedIds once the bundle is generated.
+  // module graph's importedIds (moduleParsed, below).
   type ImportRecord = esbuild.Metafile['inputs'][string]['imports'][number];
   const inputBytes = new Map<string, number>();
   const importsOf = new Map<string, Array<{ id: string; record: ImportRecord }>>();
@@ -696,32 +696,19 @@ async function build(
     return { id: source, external: true };
   };
 
-  // Per entry chunk, its CSS modules in the order its JavaScript evaluates
-  // them: rolldown renders an empty module into no chunk, so the graph says.
-  const cssOrder = new Map<string, string[]>();
-  type ModuleInfo = { importedIds: readonly string[]; dynamicallyImportedIds: readonly string[] } | null;
+  // The module graph, as each module was parsed: its imports in source order.
+  // Read from moduleParsed, never an output hook or buildStart: rolldown
+  // (1.2.11) caches a build's options in the context it gives those hooks,
+  // and the options' invalidateJsSideCache callback holds that context, so
+  // across the binding neither is ever freed, nor anything this plugin
+  // reaches (every module's source, the caller's plugin, a pre-bundle's
+  // whole slice), and a build facet's isolate fills build by build.
+  const graph = new Map<string, { importedIds: readonly string[]; dynamicallyImportedIds: readonly string[] }>();
   const vfs = {
     name: plugin.name,
-    generateBundle(this: { getModuleInfo(id: string): ModuleInfo }, _options: unknown, bundle: Record<string, RolldownOutput>) {
-      for (const id of inputBytes.keys()) {
-        const info = this.getModuleInfo(id);
-        importOrder.set(id, [...(info?.importedIds ?? []), ...(info?.dynamicallyImportedIds ?? [])]);
-      }
-      for (const out of Object.values(bundle)) {
-        if (out.type !== 'chunk' || !out.facadeModuleId) continue;
-        const order: string[] = [];
-        const seen = new Set<string>();
-        const visit = (id: string) => {
-          if (seen.has(id)) return;
-          seen.add(id);
-          const info = this.getModuleInfo(id);
-          for (const child of info?.importedIds ?? []) visit(child);
-          if (css.has(id)) order.push(id);
-          for (const child of info?.dynamicallyImportedIds ?? []) visit(child);
-        };
-        visit(out.facadeModuleId);
-        cssOrder.set(out.fileName, order);
-      }
+    moduleParsed(info: { id: string; importedIds: readonly string[]; dynamicallyImportedIds: readonly string[] }) {
+      graph.set(info.id, { importedIds: [...info.importedIds], dynamicallyImportedIds: [...info.dynamicallyImportedIds] });
+      importOrder.set(info.id, [...info.importedIds, ...info.dynamicallyImportedIds]);
     },
     async resolveId(source: string, importer: string | undefined, extra: { kind?: string; isEntry?: boolean; attributes?: Record<string, string> }) {
       if (source.startsWith('\0')) return null;
@@ -833,6 +820,24 @@ async function build(
     });
     // Placed by buildWithRolldown once this bundle is closed.
     if (unresolved.length) throw new UnresolvedImports();
+    // Per entry chunk, its CSS modules in the order its JavaScript evaluates
+    // them: rolldown renders an empty module into no chunk, so the graph says.
+    const cssOrder = new Map<string, string[]>();
+    for (const out of output) {
+      if (out.type !== 'chunk' || !out.facadeModuleId) continue;
+      const order: string[] = [];
+      const seen = new Set<string>();
+      const visit = (id: string) => {
+        if (seen.has(id)) return;
+        seen.add(id);
+        const info = graph.get(id);
+        for (const child of info?.importedIds ?? []) visit(child);
+        if (css.has(id)) order.push(id);
+        for (const child of info?.dynamicallyImportedIds ?? []) visit(child);
+      };
+      visit(out.facadeModuleId);
+      cssOrder.set(out.fileName, order);
+    }
     const outdir = options.outfile ? options.outfile.slice(0, options.outfile.lastIndexOf('/')) || '/' : (options.outdir ?? '/dist');
     const at = (fileName: string) => `${outdir.replace(/\/+$/, '')}/${fileName}`;
     const encoder = new TextEncoder();
