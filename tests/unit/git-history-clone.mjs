@@ -9,6 +9,8 @@
 // invocations and resumed from its stored pack.
 //
 //   - the same objects as host git's clone, and git fsck --full clean;
+//   - its commit-graph, a chain of one layer, host git's for its clone byte
+//     for byte, and git commit-graph verify clean;
 //   - not shallow; HEAD, config, index and worktree as git's;
 //   - every pack's idx equal to git index-pack's for it;
 //   - one blobs request broken off mid-pack and one trees piece that never
@@ -24,6 +26,7 @@ import { join } from 'node:path';
 
 import { startGitHttpServer } from './lib/git-http-server.mjs';
 import { createFacetSession, hostGit as hostGitIn, hostObjects as hostObjectsIn } from './lib/facet-session.mjs';
+import { diffGraphs, referenceGraph } from './lib/commit-graph-reference.mjs';
 
 const work = mkdtempSync(join(tmpdir(), 'nimbus-history-'));
 const hostGit = (cwd, args) => hostGitIn(work, cwd, args);
@@ -128,6 +131,12 @@ try {
     const out = session.materialize('home/user/repo', join(work, 'out'));
     assert.deepEqual(hostObjects(out), hostObjects(host), 'the objects git clone holds');
     hostGit(out, ['fsck', '--full', '--no-dangling']);
+    // The commit-graph, as one layer of a chain: host git's graph for its own clone, byte for byte.
+    const chain = readFileSync(join(out, '.git/objects/info/commit-graphs/commit-graph-chain'), 'utf8');
+    assert.match(chain, /^[0-9a-f]{40}\n$/, 'a chain of one layer');
+    const layer = new Uint8Array(readFileSync(join(out, `.git/objects/info/commit-graphs/graph-${chain.trim()}.graph`)));
+    assert.equal(diffGraphs(referenceGraph(host, { changedPaths: false }), layer), null, 'the commit-graph is host git\'s');
+    hostGit(out, ['commit-graph', 'verify']);
     assert.equal(statSync(join(out, '.git/shallow'), { throwIfNoEntry: false }), undefined, 'not shallow');
     assert.ok(!readdirSync(join(out, '.git')).includes('nimbus-clone'), 'staging removed');
     assert.equal(hostGit(out, ['rev-parse', 'HEAD', 'origin/main']), hostGit(host, ['rev-parse', 'HEAD', 'origin/main']));

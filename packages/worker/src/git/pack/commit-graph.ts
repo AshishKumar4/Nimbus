@@ -134,6 +134,18 @@ function hex(bytes: Uint8Array): string {
   return out;
 }
 
+/** The records of a staged list (commitRecord's, back to back), as views of its bytes. */
+export function* commitRecords(bytes: Uint8Array): Generator<Uint8Array> {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let at = 0; at < bytes.byteLength;) {
+    if (at + 2 * OID_BYTES + 10 > bytes.byteLength) throw new PackFormatError('a commit record runs past its list');
+    const length = 2 * OID_BYTES + 10 + view.getUint16(at + 2 * OID_BYTES + 8) * OID_BYTES;
+    if (at + length > bytes.byteLength) throw new PackFormatError('a commit record runs past its list');
+    yield bytes.subarray(at, at + length);
+    at += length;
+  }
+}
+
 /** The commits of a graph, held as columns, in graph (id) order. */
 export interface GraphCommits {
   count: number;

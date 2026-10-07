@@ -82,7 +82,7 @@ try {
   assert.equal(dateOf(tree + 'author A <a> 5 +0000\ncommitter C <c> -1 +0000\n\nm\n'), (1n << 64n) - 1n, 'a negative date wraps, as strtoumax does');
   assert.equal(dateOf(tree + 'author A <a> 5 +0000\ncommitter C <c> 99999999999999999999999 +0000\n\nm\n'), (1n << 64n) - 1n, 'past 2^64: saturated');
   assert.throws(() => commitRecord(oid, new TextEncoder().encode('tree xyz\n')), /bogus commit object/);
-  assert.throws(() => graphCommits([commitRecord(hexBytes('01'.repeat(20)), new TextEncoder().encode(tree + 'parent ' + 'cd'.repeat(20) + '\n'))]), /missing parent/);
+  assert.throws(() => graphCommits([commitRecord(hexBytes('01'.repeat(20)), new TextEncoder().encode(tree + 'parent ' + 'cd'.repeat(20) + '\nauthor A <a> 5 +0000\n'))]), /missing parent/);
   console.log('  ok  commit dates as git parses them; a bogus commit and a missing parent refused');
 } finally {
   rmSync(root, { recursive: true, force: true });

@@ -783,14 +783,18 @@ async function runCloneBatches(
  */
 const CLONE_HISTORY_CONCURRENCY = 1;
 
-/** A full clone's history (git/pack/history.ts): commits, then trees, then blobs. */
+/**
+ * A full clone's history (git/pack/history.ts): commits, then trees, then
+ * blobs. Returns the commits' records for the commit-graph, or null when
+ * one did not parse (no graph).
+ */
 async function runCloneHistory(
   facetOpts: Omit<GitNetworkOpts, 'mutationOwner'>,
   identity: { jobId: string; optionsHash: string },
   fast: ClonePrepared,
   run: CloneBatchRun,
   tagsFound: Set<string>,
-): Promise<void> {
+): Promise<StagedFile[] | null> {
   const base = { ...facetOpts, ...identity, capabilities: fast.capabilities };
   let pieces = 0;
   let packBytes = 0;
@@ -803,14 +807,21 @@ async function runCloneHistory(
   /** A piece, and its continuations while its decoding runs past a budget. */
   // The commits piece meets every commit and annotated tag of the history: it watches for the tags'.
   const tagInterest = [...new Set(fast.tags.flatMap((tag) => [tag.oid, tag.peeled]))];
+  let graph: StagedFile[] | null = [];
   const piece = async (kind: HistoryKind, name: string, request: Record<string, unknown>): Promise<StagedFile[]> => {
     const watch = kind === 'commits' && tagInterest.length > 0 ? { tagInterest } : {};
+    const recorded = (step: HistoryStepResult) => {
+      if (step.graphLists === null || graph === null) graph = null;
+      else graph.push(...step.graphLists ?? []);
+    };
     let { step, elapsed } = await invoke({ step: 'piece', kind, piece: name, ...request, ...watch });
     const lists = [...step.lists];
+    recorded(step);
     for (const oid of step.tagsFound ?? []) tagsFound.add(oid);
     for (let part = 1; step.pending !== null; part++) {
       ({ step, elapsed } = await invoke({ step: 'resume', kind, piece: name, part, pending: step.pending, ...watch }));
       lists.push(...step.lists);
+      recorded(step);
       for (const oid of step.tagsFound ?? []) tagsFound.add(oid);
     }
     pieces++;
@@ -841,6 +852,7 @@ async function runCloneHistory(
     await writeCloneProgressLine(run.progress,
       `\n[git] clone-history complete (${pieces} requests, ${(packBytes / 1048576).toFixed(1)}MB)\n`);
   }
+  return graph;
 }
 
 /**
@@ -875,7 +887,7 @@ async function runCloneSnapshot(
   return planned;
 }
 
-/** The index from the shares; a full clone's shallow file goes; then the marker. */
+/** The index from the shares; a full clone's shallow file goes, and its commit-graph is written; then the marker. */
 async function runCloneFinish(
   facetOpts: Omit<GitNetworkOpts, 'mutationOwner'>,
   identity: { jobId: string; optionsHash: string },
@@ -883,9 +895,11 @@ async function runCloneFinish(
   full: boolean,
   cacheTreeBytes: number,
   tags: readonly CloneTag[],
+  /** A full clone's commit records (runCloneHistory), for its commit-graph. */
+  graph: StagedFile[] | null,
   run: CloneBatchRun,
 ): Promise<void> {
-  const finish = await invokeClonePhase('clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes, tags }, run);
+  const finish = await invokeClonePhase('clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes, tags, graph }, run);
   if (run.progress) await writeClonePhaseProgress(run.progress, finish.diagnostic);
 }
 
@@ -1071,11 +1085,12 @@ export async function execGitNetwork(
           if (fast === undefined) throw new GitClonePhaseError('clone-prepare', 'clone-prepare returned no plan', prepare.diagnostic);
           const shares = await runCloneBatches(facetOpts, identity, fast, run, prepared.stream !== undefined);
           const full = facetOpts.depth === undefined;
+          let graph: StagedFile[] | null = null;
           if (full && prepared.fast !== undefined && fast.commit !== null) {
-            await runCloneHistory(facetOpts, identity, fast, run, tagsFound);
+            graph = await runCloneHistory(facetOpts, identity, fast, run, tagsFound);
           }
           const tags = tagsHeld(prepared.fast?.tags ?? prepared.stream?.tags ?? [], tagsFound);
-          await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, run);
+          await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, graph, run);
           return {
             success: true,
             elapsed: Date.now() - start,
@@ -2359,6 +2374,7 @@ export default {
           full: opts.full === true,
           cacheTreeBytes: opts.cacheTreeBytes,
           tags: opts.tags,
+          graph: opts.graph,
         });
         // The marker goes last: until it does, a failure leaves the clone abortable.
         const writer = context.writer();
