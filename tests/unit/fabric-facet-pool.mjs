@@ -18,17 +18,21 @@ import {
 
 /** The platform seam: a ctx.facets that records which verb touched which
  *  facet, and models the storage consequence of each. */
-function createHost({ failDelete = false, namesMinted } = {}) {
+function createHost({ failDelete = false, namesMinted, kv = new Map(), failPut = () => false } = {}) {
   const verbs = [];
   const storage = new Map(); // name -> 'live' | 'kept' | 'wiped'
-  const kv = new Map(namesMinted === undefined ? [] : [[FACET_NAME_HIGH_WATER_KEY, namesMinted]]);
+  if (namesMinted !== undefined) kv.set(FACET_NAME_HIGH_WATER_KEY, namesMinted);
   return {
     verbs,
     facetStorage: storage,
+    kv,
     ctx: {
       storage: {
         async get(key) { return kv.get(key); },
-        async put(key, value) { kv.set(key, value); },
+        async put(key, value) {
+          if (failPut(key)) throw new Error(`storage write of ${key} failed`);
+          kv.set(key, value);
+        },
       },
       facets: {
         get(name, start) {
@@ -135,6 +139,24 @@ const start = async () => ({ class: {} });
   // A name this object already minted costs nothing and still works.
   const reused = await pool.acquire('head-1', start);
   await reused.retire();
+}
+
+// ── 7. A write the ledger lost never leaves a name uncounted ─────────────────
+// The count write fails as a lease's first use is charged. After a reset over
+// the same storage, the name must still count: charged again if need be,
+// never adopted as minted with no count behind it.
+
+{
+  const kv = new Map();
+  let failCount = true;
+  const first = createHost({ kv, failPut: (key) => failCount && key === FACET_NAME_HIGH_WATER_KEY });
+  const lease = await facetPool(first.ctx).acquire('head-1', start);
+  lease.detach();
+  await lease.retire();
+  failCount = false;
+  const second = createHost({ kv });
+  await facetPool(second.ctx).acquire('head-1', start).then((reused) => reused.detach());
+  assert.equal(facetNameCount(second.ctx), 1, 'head-1 is one lifetime id after the reset');
 }
 
 console.log('ok - fabric-facet-pool (retire reclaims, throw-safe, detach keeps, loud leak, id budget)');
