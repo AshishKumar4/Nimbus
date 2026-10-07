@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "ad602d73d4d9959cf1fa45a69222dd1b994aef3bd453d2e92ca76047e4decb04",
+  "fingerprint": "6822148e9fbfb1fe12799d3af6f5495bb99781463404593ece1e3a6375cf9757",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1422,7 +1422,7 @@
     "packages/fabric/README.md": "aeff80b3ceb08bb3a973a1f4dc272ce230aa0a5087e3463ed00b747c5f8ed838",
     "packages/fabric/dist/bindings.d.ts": "948ff135394de38c1b5b07b9877edb647cdd683dc37cda1d2b11249bcd0bdfca",
     "packages/fabric/dist/bindings.d.ts.map": "7a4a9afca23b4ae266337b94a145110d992f6e2db01d5c8b020682099fc1caee",
-    "packages/fabric/dist/bindings.js": "a7d5332cb6164000c79d7433b348584d04922bec59c77a523f66f92bde939059",
+    "packages/fabric/dist/bindings.js": "9d696573aa43fc63353b638b153b57e042defddf3ee3d7799d45db67f93c6d3a",
     "packages/fabric/dist/budgets.d.ts": "ff1bfedcafe3b975aa96c44e263e870d3d39eac0de6289e95a6019c859914e3c",
     "packages/fabric/dist/budgets.d.ts.map": "ccef920e719921e82c961d6b9b8967020e7a527a0dddd0c28a7c35c7a2fde9d4",
     "packages/fabric/dist/budgets.js": "230d306b0b286913b9a6cf13667fa5b977d235a40b7a14b1c580891d19330300",
@@ -1515,7 +1515,7 @@
     "packages/fabric/dist/ws-hibernation-config.js": "0f6d330d5581a10c888f38100de2650f9c3fde59948bc5977db12998e02fbfc0",
     "packages/fabric/examples/agent-core-adapter.ts": "29e9f6fb6d5b05adf0c5e18a4ef78bc97c4fe18fc70e3736a1915b9d2968d875",
     "packages/fabric/package.json": "bd968ddcdf1e82b01e15287f8ded8825d484e3d3fd5b39dc19346df761665903",
-    "packages/fabric/src/bindings.ts": "e7eeb9db8fbd2d0be7399685069b3874b13f4ce2d34f1738561abd4c2c17722f",
+    "packages/fabric/src/bindings.ts": "9f8170eec46fc7fd6ba7f01e9775bd51caac708be14950b495b3b2a3b54b24f4",
     "packages/fabric/src/budgets.ts": "e97471466c74d9dae3eb768b44fc1c7d74e0d2d071cf85d2236ad3f84eff8fdf",
     "packages/fabric/src/composition.ts": "40216ae69e283b72d9e562a9b06d1c6ae608c99e433612203de743e06de9db2e",
     "packages/fabric/src/connections.ts": "c3a9c8d5ef3b76dbbd6b9de331ab1399135c3cb445fe06196ff5f0285ce9709d",

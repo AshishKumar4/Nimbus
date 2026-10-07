@@ -499,7 +499,7 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
         const outer = await outerStub;
         if (!outer)
             throw new Error('Nimbus: loaded worker code missing');
-        return await outer.getEntrypoint(props.name, { limits: facetLimits(props.stage ? 'process' : 'worker') });
+        return await outer.getEntrypoint(props.name ?? undefined, { limits: facetLimits(props.stage ? 'process' : 'worker') });
     }
     /**
      * Relay the inner entrypoint's Response to the caller with a LIVE body.
