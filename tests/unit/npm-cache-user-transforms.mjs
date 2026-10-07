@@ -10,16 +10,10 @@
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
-
-class FakeSql {
-  constructor(db) { this.db = db; }
-  exec(query, ...params) {
-    return this.db.query(query).all(...params);
-  }
-}
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const db = new Database(':memory:');
-const sql = new FakeSql(db);
+const sql = createSqliteVfsTestHarness(db).sql;
 const cache = new NpmCache(sql);
 /** Rows in the transform cache's own table, read beside the cache rather than through it. */
 const transformRows = () => db.query('SELECT COUNT(*) AS n FROM user_module_transforms').get().n;
