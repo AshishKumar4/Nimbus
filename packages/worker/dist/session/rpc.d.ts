@@ -601,7 +601,11 @@ export declare const HOSTING_WATCH_MS = 5000;
  * one the platform reset this object under (a new incarnation remembers
  * nothing of the processes it held, and the held leg that would have said so
  * may stay open, measured 2026-10-07): the session is told at once, and the
- * row dropped. Answers when to look again, or null when nothing is hosted.
+ * row is dropped once the session has answered, whatever it answered. A row
+ * the session did not hear about is kept, and so is the watch: the next
+ * alarm tells it again. A failure to read or drop the rows is retried the
+ * same way, since the dispatcher forgets a reason whose handler throws.
+ * Answers when to look again, or null when nothing is left to watch.
  */
 export declare function hostingWatchFired(self: RpcHost): Promise<number | null>;
 /**

@@ -1725,7 +1725,9 @@ export async function _rpcHostProcess(self, boot, opts) {
         cancel,
     });
     // What this host's next incarnation needs to tell the session it lost the
-    // process: kept while it hosts, with the alarm that will look (hostingWatchFired).
+    // process: kept while it hosts, with the alarm that will look
+    // (hostingWatchFired). Both are in place before the process exists; a host
+    // that cannot keep them does not host it.
     const hostingKey = `${HOSTING_KEY_PREFIX}${workerKey}`;
     const hosting = {
         coordinatorDoId: hostOpts.coordinatorDoId,
@@ -1733,10 +1735,10 @@ export async function _rpcHostProcess(self, boot, opts) {
         workerKey,
         capability: hostOpts.webSocketCapability,
     };
-    void self.ctx.storage.put(hostingKey, hosting);
-    void timers(self, self.ctx).schedule(HOSTING_WATCH_REASON, Date.now() + HOSTING_WATCH_MS);
     let facet;
     try {
+        await self.ctx.storage.put(hostingKey, hosting);
+        await armHostingWatch(self);
         facet = processes(self.ctx, self.env).spawn(() => peerDiskReader(supervisor), supervisor, {
             pid: hostOpts.pid,
             workerKey,
@@ -1777,36 +1779,63 @@ export const HOSTING_WATCH_REASON = 'hosting-watch';
  * keep-alive's cadence, so the session learns of it within one cadence.
  */
 export const HOSTING_WATCH_MS = RESIDENT_KEEPALIVE_MS;
+/** How many times a host tries to arm its watch before it refuses the process. */
+const HOSTING_WATCH_ARM_ATTEMPTS = 3;
+/**
+ * Arm the hosting alarm. Timers.schedule answers false when the timer map or
+ * the alarm could not be written, which is retried; still unarmed after
+ * HOSTING_WATCH_ARM_ATTEMPTS, the host refuses the process rather than hold
+ * one nothing would report the loss of.
+ */
+async function armHostingWatch(self) {
+    for (let attempt = 0; attempt < HOSTING_WATCH_ARM_ATTEMPTS; attempt++) {
+        if (await timers(self, self.ctx).schedule(HOSTING_WATCH_REASON, Date.now() + HOSTING_WATCH_MS))
+            return;
+    }
+    throw new Error(`Nimbus: this host could not arm the alarm that reports its own reset (${HOSTING_WATCH_ARM_ATTEMPTS} attempts), so it does not host the process`);
+}
 /**
  * The hosting alarm. A row whose process this incarnation does not hold is
  * one the platform reset this object under (a new incarnation remembers
  * nothing of the processes it held, and the held leg that would have said so
  * may stay open, measured 2026-10-07): the session is told at once, and the
- * row dropped. Answers when to look again, or null when nothing is hosted.
+ * row is dropped once the session has answered, whatever it answered. A row
+ * the session did not hear about is kept, and so is the watch: the next
+ * alarm tells it again. A failure to read or drop the rows is retried the
+ * same way, since the dispatcher forgets a reason whose handler throws.
+ * Answers when to look again, or null when nothing is left to watch.
  */
 export async function hostingWatchFired(self) {
-    const rows = await self.ctx.storage.list({ prefix: HOSTING_KEY_PREFIX });
-    const records = self._hostedProcesses;
-    let hosting = false;
-    for (const [key, row] of rows) {
-        if (records.has(row.workerKey)) {
-            hosting = true;
-            continue;
+    const again = Date.now() + HOSTING_WATCH_MS;
+    try {
+        const rows = await self.ctx.storage.list({ prefix: HOSTING_KEY_PREFIX });
+        const records = self._hostedProcesses;
+        let watching = false;
+        for (const [key, row] of rows) {
+            if (records.has(row.workerKey)) {
+                watching = true;
+                continue;
+            }
+            try {
+                const ns = hostNamespaceBinding(self.env, 'ProcessFabric host', row.route);
+                await hostOpDispatch(ns.get(ns.idFromString(row.coordinatorDoId)), 'ProcessFabric host', row.route)({
+                    op: 'hostLost',
+                    args: [row.workerKey, row.capability],
+                });
+            }
+            catch (error) {
+                console.warn(`[process-host] could not tell session ${row.coordinatorDoId.slice(-12)} that its process ${row.workerKey} was lost; trying again:`, errorText(error));
+                watching = true;
+                continue;
+            }
+            await self.ctx.storage.delete(key);
         }
-        try {
-            const ns = hostNamespaceBinding(self.env, 'ProcessFabric host', row.route);
-            await hostOpDispatch(ns.get(ns.idFromString(row.coordinatorDoId)), 'ProcessFabric host', row.route)({
-                op: 'hostLost',
-                args: [row.workerKey, row.capability],
-            });
-        }
-        catch (error) {
-            // Whatever the session cannot hear now it learns at its next call to this host.
-            console.warn(`[process-host] could not tell session ${row.coordinatorDoId.slice(-12)} that its process ${row.workerKey} was lost:`, errorText(error));
-        }
-        await self.ctx.storage.delete(key);
+        return watching ? again : null;
     }
-    return hosting ? Date.now() + HOSTING_WATCH_MS : null;
+    catch (error) {
+        console.warn('[process-host] the hosting watch could not read or drop its records; trying again:', errorText(error));
+        return again;
+    }
 }
 /**
  * RPC: the actor that hosted `workerKey` for this session reports, from a new
@@ -1815,7 +1844,15 @@ export async function hostingWatchFired(self) {
  * ended.
  */
 export function _rpcHostLost(self, workerKey, capability) {
-    return self.facetManager?.hostLost(workerKey, capability) ?? false;
+    // An answer either way: the host keeps asking until it gets one, so a
+    // session that cannot act on the report still answers it.
+    try {
+        return self.facetManager?.hostLost(workerKey, capability) ?? false;
+    }
+    catch (error) {
+        console.warn(`[process-host] a report that process ${workerKey} lost its host could not be applied:`, errorText(error));
+        return false;
+    }
 }
 /**
  * RPC: settle once the process is OPEN on this peer, or reject with whatever
