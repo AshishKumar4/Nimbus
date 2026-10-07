@@ -2924,7 +2924,10 @@ network = ISOLATE_NETWORK) {
                                 dir: target,
                                 pieceCommits: Number(ctx.env.NIMBUS_GIT_GRAPH_FILTER_PIECE_COMMITS) || undefined,
                                 pieceBudgetMs: Number(ctx.env.NIMBUS_GIT_GRAPH_FILTER_PIECE_BUDGET_MS) || undefined,
-                            }, network).catch(() => null));
+                            }, network).catch((error) => {
+                                // Nothing waits for it: the reason goes to the session's log.
+                                console.warn('[git] commit-graph after clone', JSON.stringify({ dir: target, error: String(error?.message ?? error) }));
+                            }));
                         }
                     }
                 };

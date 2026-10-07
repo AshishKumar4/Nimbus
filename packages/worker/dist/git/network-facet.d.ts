@@ -49,6 +49,9 @@ export type GraphFiltersStep = {
         name: string;
         bytes: number;
     }[];
+} | {
+    step: 'discard';
+    layer: string;
 };
 export interface GitNetworkOpts {
     op: GitNetworkOp;

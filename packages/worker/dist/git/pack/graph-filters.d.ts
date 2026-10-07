@@ -50,6 +50,10 @@ export declare function graphFiltersPiece(context: CloneContext, request: {
     trees: number;
     treeBytes: number;
 }>;
+/** A pass that did not finish: its pieces' files go, and the layer stays as it is. */
+export declare function graphFiltersDiscard(context: CloneContext, request: {
+    layer: string;
+}): Promise<null>;
 /**
  * The layer, with every commit's filter, as a new layer the chain names;
  * null when the chain no longer names the old one alone (the pieces' files

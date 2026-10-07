@@ -631,18 +631,25 @@ export async function runGraphFilters(ctx, env, opts, network) {
     const files = [];
     const size = positiveSafeInteger(opts.pieceCommits, GRAPH_FILTERS_PIECE_COMMITS, 'graph filter piece commits');
     const budgetMs = positiveSafeInteger(opts.pieceBudgetMs, GRAPH_FILTERS_PIECE_BUDGET_MS, 'graph filter piece budget');
-    for (let from = 0; from < plan.commits;) {
-        const piece = await step({
-            step: 'piece', layer: plan.layer, from, to: Math.min(from + size, plan.commits), budgetMs,
-        });
-        if (piece.next <= from)
-            throw new Error('graph-filters piece made no progress at ' + from);
-        if (piece.file !== null)
-            files.push(piece.file);
-        outcome.pieces++;
-        outcome.trees += piece.trees;
-        outcome.treeBytes += piece.treeBytes;
-        from = piece.next;
+    try {
+        for (let from = 0; from < plan.commits;) {
+            const piece = await step({
+                step: 'piece', layer: plan.layer, from, to: Math.min(from + size, plan.commits), budgetMs,
+            });
+            if (piece.next <= from)
+                throw new Error('graph-filters piece made no progress at ' + from);
+            if (piece.file !== null)
+                files.push(piece.file);
+            outcome.pieces++;
+            outcome.trees += piece.trees;
+            outcome.treeBytes += piece.treeBytes;
+            from = piece.next;
+        }
+    }
+    catch (error) {
+        // The base layer stays, without filters, as git leaves one it was not asked to filter.
+        await step({ step: 'discard', layer: plan.layer }).catch(() => null);
+        throw error;
     }
     const assembled = await step({ step: 'assemble', layer: plan.layer, files });
     return { ...outcome, layer: assembled.layer, elapsed: Date.now() - started };
@@ -2249,7 +2256,9 @@ export default {
           ? await __nimbusGitPack.graphFiltersPlan(context)
           : step.step === 'piece'
             ? await __nimbusGitPack.graphFiltersPiece(context, step)
-            : await __nimbusGitPack.graphFiltersAssemble(context, step);
+            : step.step === 'discard'
+              ? await __nimbusGitPack.graphFiltersDiscard(context, step)
+              : await __nimbusGitPack.graphFiltersAssemble(context, step);
         return respond(true, { graphFilters, metadataOverlay: overlayStats() });
       } else if (opts.op === 'fetch-objects') {
         // A partial clone's missing objects (git/promisor.ts): one request,

@@ -189,6 +189,18 @@ export async function graphFiltersPiece(context, request) {
     await writer.flush();
     return { next, file: { name, bytes: size }, trees, treeBytes };
 }
+/** A pass that did not finish: its pieces' files go, and the layer stays as it is. */
+export async function graphFiltersDiscard(context, request) {
+    const writer = context.writer();
+    const dir = filtersDir(request.layer);
+    const names = await context.supervisor.readdir(join(context.dir, dir));
+    for (const name of names)
+        await writer.remove(dir + '/' + name);
+    if (names.length > 0)
+        await writer.remove(dir, true);
+    await writer.flush();
+    return null;
+}
 /**
  * The layer, with every commit's filter, as a new layer the chain names;
  * null when the chain no longer names the old one alone (the pieces' files
@@ -219,9 +231,11 @@ export async function graphFiltersAssemble(context, request) {
         await writer.file(COMMIT_GRAPH_CHAIN, 0o444, encoder.encode(written + '\n'));
         await writer.remove(COMMIT_GRAPHS_DIR + '/graph-' + request.layer + '.graph');
     }
-    for (const name of await context.supervisor.readdir(join(context.dir, dir)))
+    const names = await context.supervisor.readdir(join(context.dir, dir));
+    for (const name of names)
         await writer.remove(dir + '/' + name);
-    await writer.remove(dir, true);
+    if (names.length > 0)
+        await writer.remove(dir, true);
     await writer.flush();
     return { layer: written };
 }

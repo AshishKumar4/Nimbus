@@ -13,6 +13,6 @@ export { CheckoutPlan, encodeBatch, decodeBatch, parseTree } from './plan.js';
 export { oidToHex, oidFromHex, PackFormatError } from './format.js';
 export { cloneDiscover, cloneFast, cloneBatch, cloneFinish, clonePlanFromStore, fetchObjects } from './clone.js';
 export { historyStep, historyResume, historyPlan, treeSlices } from './history.js';
-export { graphFiltersPlan, graphFiltersPiece, graphFiltersAssemble } from './graph-filters.js';
+export { graphFiltersPlan, graphFiltersPiece, graphFiltersAssemble, graphFiltersDiscard } from './graph-filters.js';
 export { facetPacks } from './facet-packs.js';
 export { retryingGitHttp } from './transport.js';
