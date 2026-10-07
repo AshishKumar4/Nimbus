@@ -14603,6 +14603,7 @@ function scopeOf(node, scope, sloppy, functionBody) {
     case "ArrowFunctionExpression":
       return within([
         ...node.type === "FunctionExpression" ? patternNames(child(node, "id")) : [],
+        ...node.type === "ArrowFunctionExpression" ? [] : ["arguments"],
         ...list(node, "params").flatMap((parameter) => [...patternNames(parameter)])
       ]);
     case "BlockStatement":

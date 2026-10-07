@@ -18,6 +18,7 @@
  *   - RESOLVE_VERSION(versions, range) → string | null
  *   - IS_SEMVER_RANGE(range)    → boolean
  *   - PICK_VERSION(versions, distTags, range) → string | null
+ *   - PARSE_REGISTRY_REQUEST(name, range) → { installName, registryName, range, alias }
  *
  * The package-ABI policy block is GENERATED at supervisor module-load
  * time: `PACKAGE_ABI_POLICY` is embedded as JSON and the `policy*`

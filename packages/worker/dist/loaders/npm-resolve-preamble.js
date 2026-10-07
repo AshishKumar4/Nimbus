@@ -18,6 +18,7 @@
  *   - RESOLVE_VERSION(versions, range) → string | null
  *   - IS_SEMVER_RANGE(range)    → boolean
  *   - PICK_VERSION(versions, distTags, range) → string | null
+ *   - PARSE_REGISTRY_REQUEST(name, range) → { installName, registryName, range, alias }
  *
  * The package-ABI policy block is GENERATED at supervisor module-load
  * time: `PACKAGE_ABI_POLICY` is embedded as JSON and the `policy*`
@@ -79,15 +80,15 @@ function STAGED_ARTIFACT_APPLY(pkg, entry) {
 
 // ── Versions and specs (bundled from @nimbus-sh/core npm-semver.ts, npm-spec.ts) ──
 // Generated — do not edit here; tests/unit/npm-semver.mjs asserts the bundle
-// answers exactly as the modules do. The facet body references the bare
-// parseRegistryRequest binding.
+// answers exactly as the modules do, and that the module these declarations
+// make with the facet reads nothing a facet lacks.
 ${NPM_RESOLVE_SRC}
-const { parseRegistryRequest } = __nimbusNpmResolve;
 function PARSE_SEMVER(v) { return __nimbusNpmResolve.parseSemver(v); }
 function COMPARE_SEMVER(a, b) { return __nimbusNpmResolve.compareSemver(a, b); }
 function SATISFIES_RANGE(version, range) { return __nimbusNpmResolve.satisfiesRange(version, range); }
 function RESOLVE_VERSION(versions, range) { return __nimbusNpmResolve.resolveVersion(versions, range); }
 function IS_SEMVER_RANGE(range) { return __nimbusNpmResolve.isSemverRange(range); }
 function PICK_VERSION(versions, distTags, range) { return __nimbusNpmResolve.pickPackumentVersion(versions, distTags, range); }
+function PARSE_REGISTRY_REQUEST(name, range) { return __nimbusNpmResolve.parseRegistryRequest(name, range); }
 // ── end npm-resolve preamble ────────────────────────────────────────────
 `;
