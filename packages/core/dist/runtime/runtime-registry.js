@@ -41,6 +41,7 @@ import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { errorText } from '../_shared/error-text.js';
+import { textSink } from '../_shared/bytes.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
 /**
  * The nearest directory at or above `dir` that holds a package.json, or null.
@@ -170,11 +171,12 @@ export function buildRuntimeHandler(spec, ctx0) {
         // synchronous read that needs more than has arrived waits for it in the
         // runner, which stops the run and runs it again once the input is there
         // (worker runtime/stop-replay.ts).
+        const textOutput = { stdout: textSink(data => ctx.stdout.write(data)), stderr: textSink(data => ctx.stderr.write(data)) };
         const programStdin = {
             ...(nimbusCtx.__nimbusBinSpawn?.liveInput ? { stdinPid: nimbusCtx.__nimbusBinSpawn.callerPid } : {}),
             output: binSpawn?.liveInput ? undefined : (stream, bytes) => {
                 const sink = stream === 'stdout' ? ctx.stdout : ctx.stderr;
-                return sink.writeBytes ? sink.writeBytes(bytes) : sink.write(new TextDecoder().decode(bytes));
+                return sink.writeBytes ? sink.writeBytes(bytes) : textOutput[stream](bytes);
             },
             ...(pipedStdin === undefined ? (spec.bypassesScriptRead && ctx.stdin ? { stdin: ctx.stdin } : {})
                 : pipedStdin.file

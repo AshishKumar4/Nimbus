@@ -335,8 +335,8 @@ const NATIVE_OPS = {
         t.bridge(e.pid, e.cred);
         return { writer: t.deliveries.openWaveWriter(e.pid, WAVE_EPOCH_TTL_MS), hostIncarnation: t.deliveries.incarnation };
     },
-    stdout: (e, t) => t.output?.('stdout', e.pid ?? 0, stringArg(e, 0)),
-    stderr: (e, t) => t.output?.('stderr', e.pid ?? 0, stringArg(e, 0)),
+    stdout: (e, t) => t.output?.('stdout', e.pid ?? 0, bytesArg(e, 0)),
+    stderr: (e, t) => t.output?.('stderr', e.pid ?? 0, bytesArg(e, 0)),
 };
 export const SUPERVISOR_NATIVE_OPS = new Set(Object.keys(NATIVE_OPS));
 /** The same two tables, keyed by the raw op string an envelope carries. */

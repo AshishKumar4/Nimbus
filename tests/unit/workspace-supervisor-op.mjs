@@ -59,7 +59,7 @@ try {
   await op('stdout', rawOutput);
   await op('stderr', new TextEncoder().encode('warning'));
   assert.deepEqual(output, [['stdout', proc.pid, rawOutput], ['stderr', proc.pid, new TextEncoder().encode('warning')]]);
-  assert.throws(() => op('stdout', 'progress'), /must be bytes/, 'the workspace rejects text at the byte authority edge');
+  await assert.rejects(Promise.resolve().then(() => op('stdout', 'progress')), /must be bytes/, 'the workspace rejects text at the byte authority edge');
   assert.equal(await op('status'), 'healthy');
   for (const name of ['missing', 'constructor', 'toString', '__proto__']) {
     await assert.rejects(op(name), /not served/);

@@ -69,7 +69,7 @@ export interface SupervisorOpDeps {
     readonly filesystem?: NimbusFilesystemAuthority;
     /** Absent a process table, operations use the unprivileged session user. */
     readonly processes?: SessionProcessSupervisor;
-    readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
+    readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: Uint8Array) => void | Promise<void>;
     /**
      * The host's `_rpc*` surface for ops beyond the native set — an in-process
      * workspace's dispatch record, or the session itself for
@@ -157,7 +157,7 @@ export interface SupervisorOpTools {
     readonly bridge: (pid?: number, cred?: VfsCred) => RuntimeFsBridge;
     readonly vfs: SqliteVFS;
     readonly cred: (pid?: number, cred?: VfsCred) => VfsCred;
-    readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
+    readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: Uint8Array) => void | Promise<void>;
     readonly readLease: NonNullable<SupervisorOpDeps['readLease']>;
     /** N17: resolves once `path`'s bytes are hydrated out of a lazy import. */
     readonly hydrated: (path: string) => Promise<void>;

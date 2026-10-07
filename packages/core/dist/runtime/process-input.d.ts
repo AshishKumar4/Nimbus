@@ -27,6 +27,8 @@ export declare class ProcessInputStore {
         done: Promise<void>;
     };
     open(pid: number): void;
+    /** Queued bytes stay readable; after them, every read reports the failure. */
+    fail(pid: number, cause: unknown): void;
     /** dup/inherit fd 0: one consuming channel, including queued bytes and future EOF. */
     inherit(pid: number, parentPid: number): void;
     has(pid: number): boolean;

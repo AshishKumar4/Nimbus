@@ -33,8 +33,8 @@ export class ProcessInputStore {
                     return;
             }
         })();
-        done.catch(() => { if (!stopped)
-            this.close(pid); });
+        done.catch(error => { if (!stopped)
+            this.fail(pid, error); });
         return { done, stop: () => { stopped = true; if (opened)
                 this.close(pid); } };
     }
@@ -44,6 +44,21 @@ export class ProcessInputStore {
         const state = this.createState();
         state.owners.add(pid);
         this.pids.set(pid, state);
+    }
+    /** Queued bytes stay readable; after them, every read reports the failure. */
+    fail(pid, cause) {
+        const state = this.pids.get(pid);
+        if (!state || state.failure)
+            return;
+        const reason = cause instanceof Error ? cause.message : String(cause);
+        state.failure = Object.assign(new Error(`EIO: stdin read failed: ${reason}`), { code: 'EIO' });
+        state.closed = true;
+        for (const waiter of state.waiters.splice(0)) {
+            clearTimeout(waiter.timer);
+            waiter.reject(state.failure);
+        }
+        for (const wake of state.drained.splice(0))
+            wake();
     }
     /** dup/inherit fd 0: one consuming channel, including queued bytes and future EOF. */
     inherit(pid, parentPid) {
@@ -283,11 +298,14 @@ export class ProcessInputStore {
                 wake();
             return next;
         }
+        if (state.failure)
+            throw state.failure;
         if (state.closed)
             return { data: '', ended: true };
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
             const waiter = {
                 pid,
+                reject,
                 resolve: packet => {
                     if (maxBytes === undefined || !packet.data.length) {
                         resolve(packet);

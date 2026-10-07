@@ -145,7 +145,7 @@ export interface NimbusWorkspaceOptions {
     readonly ctxExports?: CtxExports;
     /** The process table that allocated supervisor-binding pids. */
     readonly processes?: SessionProcessSupervisor;
-    readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
+    readonly processOutput?: (stream: 'stdout' | 'stderr', pid: number, data: Uint8Array) => void | Promise<void>;
     readonly filesystemNamespace?: string;
     /**
      * The namespace and process bindings, when the host made them before the

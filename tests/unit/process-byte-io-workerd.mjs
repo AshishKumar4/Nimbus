@@ -48,8 +48,21 @@ try {
  };
  await write('byte-echo.wasm', wasm);
  await write('inherit-echo.wasm',inheritedWasm);
+ const large=wabt.parseWat('byte-large.wat',`(module
+  (import "wasi_snapshot_preview1" "fd_write" (func $write (param i32 i32 i32 i32)(result i32)))
+  (import "wasi_snapshot_preview1" "fd_read" (func $read (param i32 i32 i32 i32)(result i32)))
+  (memory (export "memory") 2)
+  (func (export "_start")
+    (memory.fill (i32.const 0)(i32.const 255)(i32.const 98304))
+    (i32.store (i32.const 110000)(i32.const 0))
+    (i32.store (i32.const 110004)(i32.const 98304))
+    (drop (call $write (i32.const 1)(i32.const 110000)(i32.const 1)(i32.const 110020)))
+    (i32.store (i32.const 110000)(i32.const 110030))
+    (i32.store (i32.const 110004)(i32.const 1))
+    (drop (call $read (i32.const 0)(i32.const 110000)(i32.const 1)(i32.const 110020)))))`);
+ await write('byte-large.wasm',Buffer.from(large.toBinary({}).buffer));
  await write('byte-script.sh', '#!/bin/sh\ncat\n');
- await terminal.run('chmod 755 /home/user/byte-script.sh /home/user/byte-echo.wasm /home/user/inherit-echo.wasm');
+ await terminal.run('chmod 755 /home/user/byte-script.sh /home/user/byte-echo.wasm /home/user/inherit-echo.wasm /home/user/byte-large.wasm');
  const binEntry = { name: 'byte-tool', packageName: 'byte-tool', packageVersion: '1.0.0', packagePath: 'home/user/node_modules/byte-tool', targetPath: 'home/user/node_modules/byte-tool/cli.js' };
  await terminal.run('mkdir -p /home/user/node_modules/byte-tool /home/user/node_modules/.bin');
  await write('node_modules/byte-tool/package.json', JSON.stringify({ name: 'byte-tool', version: '1.0.0', bin: { 'byte-tool': 'cli.js' } }));
@@ -76,6 +89,11 @@ try {
  assert.equal(actual.status, 0, actual.stdout);
  const rows = [...actual.stdout.matchAll(/^BYTES (.+)$/gm)].map(m => JSON.parse(m[1]));
  assert.deepEqual(rows, ['registry','shebang','node','npm-bin','wasi','inherited-wasi'].map(name => ({name,hex:'fffe0080c328f09f',code:0,signal:null,first:true})), 'all child kinds, including inherited WASI fd0, answer before EOF and close after their final bytes');
+ await write('byte-large-parent.js',`const {spawn}=require('child_process');const c=spawn('/home/user/byte-large.wasm',[]);let count=0,binary=true,live=false;c.stdout.on('data',b=>{binary=binary&&Buffer.isBuffer(b)&&b.every(x=>x===255);count+=b.length;if(count===98304){live=true;c.stdin.end(Buffer.from([1]));}});c.stderr.on('data',b=>process.stderr.write(b));c.on('error',e=>{console.error(e);process.exit(1)});c.on('close',code=>{console.log('LARGE '+JSON.stringify({count,binary,live,code}));});`);
+ const largeResult=await terminal.run('node /home/user/byte-large-parent.js',180_000);
+ assert.equal(largeResult.status,0,largeResult.stdout);
+ const largeRow=JSON.parse(/^LARGE (\{.*\})$/m.exec(largeResult.stdout)?.[1]??'null');
+ assert.deepEqual(largeRow,{count:98304,binary:true,live:true,code:0},'a slash-addressed compiled child delivers binary output beyond the log tail before it can exit');
  const wasi = await terminal.run(`node -e "process.stdout.write(Buffer.from([255,254,0,128]))" | /home/user/byte-echo.wasm | xxd -p`);
  assert.match(wasi.stdout, /^fffe0080\s*$/m, 'a foreground WASI fd 0 and fd 1 are byte-exact');
 } finally { if (terminal) await terminal.close(); await probe.stop(); }
