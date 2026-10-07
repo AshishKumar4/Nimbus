@@ -28,6 +28,7 @@ import {
   RUNTIME_INTERPRETER_OPS_MODULE,
   RUNTIME_INTERPRETER_PRIMORDIALS_MODULE,
   runtimeCodeModuleName,
+  runtimeCodeCompilesNatively,
   runtimeExpressionModule,
   runtimeFunctionModule,
   wrapCommonJsCell,
@@ -5741,6 +5742,8 @@ export class FacetManager {
   private async _stagedRuntimeCode(learning: LaunchLearning, pacer: TurnBudget): Promise<Map<string, string> | undefined> {
     const modules = new Map<string, string>();
     for (const [codeKey, entry] of learning.code) {
+      // Its import() needs the module that built it, which only its own launch knows: interpreted there.
+      if (!runtimeCodeCompilesNatively(entry)) continue;
       if (entry.kind === 'expression') {
         modules.set(codeKey, runtimeExpressionModule(entry.code));
         continue;

@@ -45,7 +45,7 @@ export { replLineBody } from './repl-line.js';
 export type { ModuleCell } from './modules.js';
 
 export interface InterpreterHost {
-  /** `import(specifier, options)` from code whose module URL is `parentUrl`. */
+  /** `import(specifier, options)` from code whose module URL is `parentUrl`; undefined for code with no importer. */
   dynamicImport(parentUrl: string | undefined, specifier: unknown, options: unknown): Promise<unknown>;
   /**
    * LAUNCH_PRIMORDIALS of the primordials module the launch loaded at its
@@ -56,8 +56,12 @@ export interface InterpreterHost {
 }
 
 export interface Interpreter {
-  /** The function `new <kind>Function(...params, body)` builds. */
-  compileFunction(kind: RuntimeFunctionKind, params: readonly string[], body: string): NativeFunction;
+  /**
+   * The function `new <kind>Function(...params, body)` builds. Its import()
+   * resolves against `importer`, the module that called the constructor, as
+   * Node resolves it; without one the code has no importer, as vm's has not.
+   */
+  compileFunction(kind: RuntimeFunctionKind, params: readonly string[], body: string, importer?: string): NativeFunction;
   /**
    * The module cell for a file's text: Node's wrapper function of
    * (exports, require, module, __filename, __dirname). CommonJS text runs as
@@ -166,7 +170,7 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
     installed = hostOps;
   }
   const interpreter: Interpreter = {
-    compileFunction(kind, params, body) {
+    compileFunction(kind, params, body, importer) {
       // A trailing source map is parsed only when the shortened body fails.
       const short = withoutTrailingLineComments(body);
       let parsed: { readonly node: FunctionExpression; readonly text: string };
@@ -180,7 +184,7 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       const node = ownFunctionExpression(parsed.node);
       const analysis = analyzeFunction(node);
       const root = analysis.functionScopeOf(node);
-      const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);
+      const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(importer, specifier, options) }, null);
       const fi = new Compiler(analysis, unit, text, 0, root).rootFunction(node, 'anonymous', runtimeFunctionSource(kind, params, body));
       releaseScopes(root);
       return makeFunction(fi, ROOT_ENV, undefined);
