@@ -386,9 +386,11 @@ export interface WaveRouter {
      * Apply `record` on the namespace as `cred`; `guard` runs right before
      * each call to the backend (the wave's admission and cancellation). A
      * refusal throws its errno. Answers the published name's stat, for its
-     * receipt (null for a removal).
+     * receipt (null for a removal). `owner`, the wave's exclusive-mutation
+     * lease, is presented to the namespace's lease check, as a group commit
+     * presents it here.
      */
-    apply(record: RoutedWaveRecord, cred: VfsCred, guard: () => void): Promise<RoutedStat | null>;
+    apply(record: RoutedWaveRecord, cred: VfsCred, guard: () => void, owner?: string): Promise<RoutedStat | null>;
 }
 /**
  * How far an earlier attempt of the same fenced wave may have reached into
@@ -1168,7 +1170,8 @@ export declare class SqliteVFS {
      * mutations are refused with; a namespace that lays other filesystems over
      * this one asks it before it mutates one of them (CompositeVFS.guardMutations).
      */
-    mutationRefusal(path: string, cred: VfsCred): MutationRefusal | null;
+    mutationRefusal(path: string, cred: VfsCred, owner?: string): MutationRefusal | null;
+    /** `owner`: the lease the mutation presents (null for none), passed by the caller, never read from ambient state. */
     private refusalAt;
     private assertMutationsAllowed;
     private mkdir;

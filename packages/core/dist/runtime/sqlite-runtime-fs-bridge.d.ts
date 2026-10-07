@@ -109,7 +109,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     chown(path: RuntimeFsPath, uid: number, gid: number, options?: {
         followSymlinks?: boolean;
     }): VfsMutationReceipt;
-    open(path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeFileHandle;
+    /** `options.mutationOwner`: the exclusive-mutation lease an open for writing presents (a read-only open presents none). */
+    open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeFileHandle;
     read(handleId: number, offset: number | null, length: number): Uint8Array;
     write(handleId: number, offset: number | null, bytes: Uint8Array): number;
     close(handleId: number): void;
@@ -120,8 +121,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         recursive?: boolean;
         mode?: number;
     }): void;
-    unlink(path: RuntimeFsPath): void;
-    rmdir(path: RuntimeFsPath): void;
+    unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): void;
+    rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner): void;
     rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner): void;
     readlink(path: RuntimeFsPath): string | null;
     symlink(target: string, path: RuntimeFsPath): void;

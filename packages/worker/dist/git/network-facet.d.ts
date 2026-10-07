@@ -81,6 +81,8 @@ export interface GitNetworkOpts {
     onCloneCheckoutPhase?: () => Promise<void>;
     /** Clone-only: normalized root covered by the exclusive mutation lease. */
     exclusiveMutationRoot?: string;
+    /** clone: the destination is on a mounted filesystem (its namespace path), where a wave's files are bounded (pack/mount-writer.ts). */
+    onMount?: boolean;
     /** Trusted supervisor-only lease owner; never sent to the dynamic worker. */
     mutationOwner?: string;
     /**
@@ -126,6 +128,8 @@ export interface GitSupervisorRpcCounters {
     symlink: number;
     legacySymlinkSubtree: number;
     stdout: number;
+    /** On a mount, a file past a wave's limit (pack/mount-writer.ts): its open, each write, its stat and close. */
+    fileApi: number;
 }
 export interface GitMetadataOverlayStats {
     entries: number;

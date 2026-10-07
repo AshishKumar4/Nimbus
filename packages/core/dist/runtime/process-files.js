@@ -153,14 +153,14 @@ class GuardedProcessBridge {
         this.guard();
         return this.target.chown(path, uid, gid, options);
     }
-    open(path, flags) { this.guard(); return this.target.open(path, flags); }
+    open(path, flags, options) { this.guard(); return this.target.open(path, flags, options); }
     read(handleId, offset, length) { this.guard(); return this.reading(() => this.target.read(handleId, offset, length)); }
     write(handleId, offset, bytes) { this.guard(); return this.target.write(handleId, offset, bytes); }
     close(handleId) { return this.target.close(handleId); }
     readdir(path, options) { this.guard(); return this.target.readdir(path, options); }
     mkdir(path, options) { this.guard(); return this.target.mkdir(path, options); }
-    unlink(path) { this.guard(); return this.target.unlink(path); }
-    rmdir(path) { this.guard(); return this.target.rmdir(path); }
+    unlink(path, options) { this.guard(); return this.target.unlink(path, options); }
+    rmdir(path, options) { this.guard(); return this.target.rmdir(path, options); }
     rename(from, to, options) { this.guard(); return this.target.rename(from, to, options); }
     readlink(path) { this.guard(); return this.target.readlink(path); }
     linkLeadsTo(path, link) { this.guard(); return this.target.linkLeadsTo(path, link); }
@@ -251,7 +251,7 @@ export class ProcessFiles {
         // An exclusive-mutation lease holds wherever a process's mutation lands,
         // on a mount as on SQLite: checked by the namespace on the route it
         // resolved, right before the backend is called.
-        this.vfs.guardMutations((cred, path) => engine.mutationRefusal(path, cred));
+        this.vfs.guardMutations((cred, path, owner) => engine.mutationRefusal(path, cred, owner));
         this.proc = standardProc();
         this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
         this.vfs.mount('/proc', this.proc);
@@ -809,11 +809,15 @@ class AwaitingProcessBridge {
     mkdir(path, options) {
         return this.either([path], () => this.bridge.mkdir(path, options), async () => this.namespace.mkdir((await this.path(path)), options));
     }
-    unlink(path) {
-        return this.either([path], () => this.bridge.unlink(path), async () => this.namespace.unlink((await this.path(path, false))));
+    /** The namespace presenting `options`' exclusive-mutation lease to its guard, for a mutation that carries one. */
+    owned(options) {
+        return options?.mutationOwner === undefined ? this.namespace : this.namespace.scoped(() => { }, options.mutationOwner);
     }
-    rmdir(path) {
-        return this.either([path], () => this.bridge.rmdir(path), async () => this.namespace.rmdir((await this.path(path, false))));
+    unlink(path, options) {
+        return this.either([path], () => this.bridge.unlink(path, options), async () => this.owned(options).unlink((await this.path(path, false))));
+    }
+    rmdir(path, options) {
+        return this.either([path], () => this.bridge.rmdir(path, options), async () => this.owned(options).rmdir((await this.path(path, false))));
     }
     rename(from, to, options) {
         return this.either([from, to], () => this.bridge.rename(from, to, options), async () => this.namespace.rename((await this.path(from, false)), (await this.path(to, false))));
@@ -867,8 +871,8 @@ class AwaitingProcessBridge {
         this.awaited.set(id, description);
         return { id, path: description.path, flags: { ...description.flags }, position: description.position, closed: false };
     }
-    open(path, flags) {
-        return this.either([path], () => this.bridge.open(path, flags), async () => {
+    open(path, flags, options) {
+        return this.either([path], () => this.bridge.open(path, flags, options), async () => {
             const follow = flags.followSymlinks !== false;
             const p = await this.path(path, follow);
             const stat = await this.namespace.stat(p, { follow });
@@ -886,7 +890,7 @@ class AwaitingProcessBridge {
             if (flags.directory && stat !== null && stat.type !== 'directory')
                 throw syscallError('ENOTDIR', 'open', p);
             if (stat === null || flags.truncate)
-                await this.namespace.writeFile(p, new Uint8Array(0), flags.mode === undefined ? undefined : { mode: flags.mode });
+                await this.owned(flags.write || flags.create || flags.truncate || flags.append ? options : undefined).writeFile(p, new Uint8Array(0), flags.mode === undefined ? undefined : { mode: flags.mode });
             return this.issue({
                 // The file it opened, by the name the namespace resolved for it: a
                 // link on the way repointed later does not move the descriptor.

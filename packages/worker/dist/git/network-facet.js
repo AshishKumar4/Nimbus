@@ -78,6 +78,7 @@ const EMPTY_SUPERVISOR_RPC_COUNTERS = {
     symlink: 0,
     legacySymlinkSubtree: 0,
     stdout: 0,
+    fileApi: 0,
 };
 const EMPTY_METADATA_OVERLAY_STATS = {
     entries: 0,
@@ -117,6 +118,7 @@ function parseSupervisorRpcCounters(value) {
         symlink: nonNegativeCounter(counters.symlink),
         legacySymlinkSubtree: nonNegativeCounter(counters.legacySymlinkSubtree),
         stdout: nonNegativeCounter(counters.stdout),
+        fileApi: nonNegativeCounter(counters.fileApi),
     };
 }
 function parseMetadataOverlayStats(value) {
@@ -1095,7 +1097,7 @@ function createSupervisorRpcCounters() {
   return {
     stat: 0, lstat: 0, readdir: 0, readFile: 0,
     fsReadRange: 0, fsWriteRange: 0, rename: 0, writeBatchStream: 0, readlink: 0, symlink: 0,
-    legacySymlinkSubtree: 0, stdout: 0,
+    legacySymlinkSubtree: 0, stdout: 0, fileApi: 0,
   };
 }
 
@@ -1191,7 +1193,7 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
       },
     },
     writer(onReceipts) {
-      return __nimbusWaveWriter.createWaveWriter({
+      const waves = __nimbusWaveWriter.createWaveWriter({
         supervisor: {
           // The writer's fence for this attempt goes with it: the session refuses a late original.
           writeBatchStream(stream, fence) {
@@ -1212,6 +1214,19 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
           stats.bytesWritten += report.bytes;
           if (onReceipts) onReceipts(report.receipts);
         },
+      });
+      if (opts.onMount !== true) return waves;
+      // On a mount a file past a wave's limit is written through the session's file API (pack/mount-writer.ts).
+      return __nimbusGitPack.mountWriter(waves, {
+        fsOpen: (path, flags) => mutation('fileApi', () => supervisor.fsOpen(path, flags)),
+        fsWrite: (id, offset, bytes) => mutation('fileApi', () => supervisor.fsWrite(id, offset, bytes)),
+        fsFstat: (id) => counted('fileApi', () => supervisor.fsFstat(id)),
+        fsClose: (id) => counted('fileApi', () => supervisor.fsClose(id)),
+        rename: (from, to) => mutation('rename', () => supervisor.rename(from, to)),
+      }, dir, (receipts) => {
+        stats.filesWritten += receipts.length;
+        for (const receipt of receipts) stats.bytesWritten += receipt.size;
+        if (onReceipts) onReceipts(receipts);
       });
     },
     dir,

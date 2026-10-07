@@ -95,12 +95,6 @@ export declare function parseCloneArgs(args: string[]): ParsedCloneArgs;
  * restored path. Each restored path costs lookups, not a pass over the index.
  */
 export declare function replacedIndexEntries(dc: DirCache, restored: ReadonlySet<string>): Set<number>;
-/**
- * The `git` command handler. Split out from registration so it can be
- * lazy-loaded (`await import('./commands.js')`) on first `git` use, keeping
- * this module and its ~106 KB network-facet dependency out of the cold
- * script-eval graph.
- */
 export declare function runGitCommand(ctx: Ctx, vfs: SqliteVFS, doCtx?: DurableObjectState, doEnv?: any, 
 /** The workspace's network (`workspace.network`): clone, fetch, pull, push and promisor fetches go out through it. */
 network?: WorkspaceNetwork): Promise<number>;

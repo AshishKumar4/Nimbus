@@ -2827,14 +2827,15 @@ export class SqliteVFS {
      * mutations are refused with; a namespace that lays other filesystems over
      * this one asks it before it mutates one of them (CompositeVFS.guardMutations).
      */
-    mutationRefusal(path, cred) {
-        return this.refusalAt(this.storageKey(path, cred));
+    mutationRefusal(path, cred, owner) {
+        return this.refusalAt(this.storageKey(path, cred), owner ?? this.activeMutationOwner);
     }
-    refusalAt(key) {
+    /** `owner`: the lease the mutation presents (null for none), passed by the caller, never read from ambient state. */
+    refusalAt(key, owner = this.activeMutationOwner) {
         const normalized = normalizeVfsPath(key);
         // Another owner's lease first (EBUSY), whoever asks; then a lease
         // holder's own root (EPERM), which bounds where its work may land.
-        if (this.activeMutationOwner === null &&
+        if (owner === null &&
             normalized === LEGACY_SYMLINK_REGISTRY_PATH &&
             this.exclusiveMutationLeases.size > 0) {
             // A session-wide hold that says why says it here too.
@@ -2842,13 +2843,13 @@ export class SqliteVFS {
             const reason = global === undefined ? undefined : this.exclusiveMutationReasons.get(global[0]);
             return { code: 'EBUSY', detail: reason ?? 'locked while an exclusive mutation is active' };
         }
-        for (const [owner, root] of this.exclusiveMutationLeases) {
-            if (!pathsOverlap(normalized, root) || owner === this.activeMutationOwner)
+        for (const [holder, root] of this.exclusiveMutationLeases) {
+            if (!pathsOverlap(normalized, root) || holder === owner)
                 continue;
-            return { code: 'EBUSY', detail: this.exclusiveMutationReasons.get(owner) ?? `locked by an exclusive mutation at /${root}` };
+            return { code: 'EBUSY', detail: this.exclusiveMutationReasons.get(holder) ?? `locked by an exclusive mutation at /${root}` };
         }
-        if (this.activeMutationOwner !== null) {
-            const ownedRoot = this.exclusiveMutationLeases.get(this.activeMutationOwner);
+        if (owner !== null) {
+            const ownedRoot = this.exclusiveMutationLeases.get(owner);
             if (ownedRoot === undefined || (ownedRoot !== '' && normalized !== ownedRoot && !normalized.startsWith(`${ownedRoot}/`))) {
                 return { code: 'EPERM', detail: `outside the exclusive mutation root /${ownedRoot ?? ''}` };
             }
@@ -7475,7 +7476,7 @@ export class SqliteVFS {
                 at.setPhase('publish');
                 at.settleBefore();
                 reached();
-                await router.apply({ type: 'delete', path: placed }, cred, at.guard);
+                await router.apply({ type: 'delete', path: placed }, cred, at.guard, at.owner);
                 at.committed(null);
                 return true;
             }
@@ -7487,7 +7488,7 @@ export class SqliteVFS {
                 at.settleBefore();
                 reached();
                 // A directory has no receipt, here as in a group.
-                await router.apply({ type: 'directory', path: placed, mode: record.inode.mode }, cred, at.guard);
+                await router.apply({ type: 'directory', path: placed, mode: record.inode.mode }, cred, at.guard, at.owner);
                 at.committed(null);
                 return true;
             }
@@ -7552,7 +7553,7 @@ export class SqliteVFS {
                     const bytes = concatBytes(file.held.map((chunk) => chunk.data));
                     const stat = await router.apply(file.link
                         ? { type: 'symlink', path: file.placed, target: new TextDecoder().decode(bytes), slot: `${at.waveId}-${file.index}` }
-                        : { type: 'file', path: file.placed, mode: file.mode, bytes }, cred, at.guard);
+                        : { type: 'file', path: file.placed, mode: file.mode, bytes }, cred, at.guard, at.owner);
                     at.committed(stat === null ? null : { path: file.named, ...stat });
                 }
                 finally {
@@ -8067,6 +8068,7 @@ export class SqliteVFS {
                     },
                     reserve: (bytes) => (bytes === 0 ? Promise.resolve(null) : acquireCredit(bytes, options.signal)),
                     setPhase: (next) => { phase = next; },
+                    owner: options.mutationOwner,
                     committed: (receipt) => {
                         progress.committedGroupSequence++;
                         progress.committedPathCount++;
