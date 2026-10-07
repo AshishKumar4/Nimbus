@@ -226,7 +226,8 @@ type StreamingWriter = CloneWriter & {
  * limit is streamed through `api` too.
  */
 export function mountWriter<W extends StreamingWriter>(writer: W, api: FileApi, dir: string, onReceipts?: (receipts: CloneReceipt[]) => void): W {
-  const root = dir.replace(/\/+$/, '');
+  // Absolute, as git names the files it says it could not write.
+  const root = '/' + dir.replace(/^\/+|\/+$/g, '');
   const streamed = writer.fileChunks;
   return {
     ...(streamed === undefined ? {} : {
