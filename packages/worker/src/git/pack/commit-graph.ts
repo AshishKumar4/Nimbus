@@ -146,6 +146,22 @@ export function* commitRecords(bytes: Uint8Array): Generator<Uint8Array> {
   }
 }
 
+/**
+ * The graph a clone writes from its staged record lists, or null when it
+ * writes none: a parent not recorded, or anything else that fails to
+ * build. A graph is the clone's to offer, never its to fail on.
+ */
+export function cloneGraph(lists: readonly Uint8Array[]): { file: Uint8Array; commits: number } | null {
+  try {
+    const records: Uint8Array[] = [];
+    // One at a time: a history's records are too many to spread as arguments.
+    for (const list of lists) for (const record of commitRecords(list)) records.push(record);
+    return { file: writeCommitGraph(graphCommits(records)), commits: records.length };
+  } catch {
+    return null;
+  }
+}
+
 /** The commits of a graph, held as columns, in graph (id) order. */
 export interface GraphCommits {
   count: number;

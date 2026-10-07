@@ -21,7 +21,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { buildFixture, diffGraphs, referenceGraph } from './lib/commit-graph-reference.mjs';
-import { bloomFilter, changedPaths, commitRecord, graphCommits, graphName, murmur3, writeCommitGraph } from '../../packages/worker/src/git/pack/commit-graph.ts';
+import { bloomFilter, changedPaths, cloneGraph, commitRecord, graphCommits, graphName, murmur3, writeCommitGraph } from '../../packages/worker/src/git/pack/commit-graph.ts';
 
 const root = mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'commit-graph-write-'));
 const git = (cwd, args, input) => execFileSync('git', args, {
@@ -96,6 +96,31 @@ try {
   assert.equal(bloomFilter([]).byteLength, 1, 'no changes: one zero byte');
   assert.deepEqual([...bloomFilter(null)], [0xff], 'too many: one 0xff byte');
   assert.equal(bloomFilter([new TextEncoder().encode('a/b/c')]).byteLength, 4, 'a/b/c, a/b and a: 30 bits');
+
+  // A history as long as vscode's (and longer), from its staged lists: a
+  // graph, not a stack overflow (a clone of vscode lost its finish to one).
+  {
+    const N = 200_000;
+    const list = new Uint8Array(N * 70);
+    const view = new DataView(list.buffer);
+    const oidOf = (i, at) => { view.setUint32(at, i * 2654435761 >>> 0); view.setUint32(at + 4, i); };
+    for (let i = 0; i < N; i++) {
+      const at = i * 70;
+      oidOf(i, at);
+      view.setBigUint64(at + 40, BigInt(1_000_000_000 + i));
+      view.setUint16(at + 48, 1);
+      if (i > 0) oidOf(i - 1, at + 50);
+    }
+    // The root's record has no parent: a list of its own, 50 bytes.
+    const root = new Uint8Array(50);
+    root.set(list.subarray(0, 40));
+    new DataView(root.buffer).setBigUint64(40, 1_000_000_000n);
+    const built = cloneGraph([root, list.subarray(70)]);
+    assert.ok(built !== null, 'a 200,000-commit history makes a graph');
+    assert.equal(built.commits, N);
+    assert.equal(cloneGraph([list.subarray(70)]), null, 'a parent not recorded: no graph, and no throw');
+    console.log(`  ok  a ${N}-commit history: a graph of ${built.file.byteLength} bytes; a missing parent: none`);
+  }
 
   // git's parse_commit_date, at its edges.
   const oid = new Uint8Array(20);

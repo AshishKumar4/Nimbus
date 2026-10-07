@@ -20,7 +20,7 @@ import { decodeBatch, encodeBatch, parseTree, CheckoutPlan, MODE_GITLINK, MODE_S
 import { ENTRY_BYTES, entryOffset } from './idx.js';
 import { installPack, RangedPackFile, readRange, resumeInstall, type PackFiles, type PackSummary } from './install.js';
 import { ByteLru } from './byte-lru.js';
-import { COMMIT_GRAPHS_DIR, COMMIT_GRAPH_CHAIN, commitRecords, graphCommits, graphName, writeCommitGraph } from './commit-graph.js';
+import { COMMIT_GRAPHS_DIR, COMMIT_GRAPH_CHAIN, cloneGraph, graphName } from './commit-graph.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';
 import { encodeIndexEntry, encodeIndexFile, splitIndexEntries, type EntryStat } from '../worktree/dircache.js';
 import { encodeNode, type BuiltSubtree } from '../worktree/cachetree.js';
@@ -1027,22 +1027,16 @@ async function writeCloneGraph(context: CloneContext, writer: CloneWriter, lists
   let total = 0;
   for (const list of lists) total += list.bytes;
   if (total > GRAPH_RECORD_BYTES_MAX) return 0;
-  const records: Uint8Array[] = [];
-  for (const list of lists) {
-    records.push(...commitRecords(await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/' + list.name), 0, list.bytes)));
-  }
-  let graph: Uint8Array;
-  try {
-    graph = writeCommitGraph(graphCommits(records));
-  } catch (error) {
-    if (error instanceof PackFormatError) return 0;
-    throw error;
-  }
+  const bytes: Uint8Array[] = [];
+  for (const list of lists) bytes.push(await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/' + list.name), 0, list.bytes));
+  const built = cloneGraph(bytes);
+  if (built === null) return 0;
+  const graph = built.file;
   const name = graphName(graph);
   await writer.directory(COMMIT_GRAPHS_DIR);
   await writer.file(COMMIT_GRAPHS_DIR + '/graph-' + name + '.graph', 0o444, graph);
   await writer.file(COMMIT_GRAPH_CHAIN, 0o444, encoder.encode(name + '\n'));
-  return records.length;
+  return built.commits;
 }
 
 export { oidFromHex };
