@@ -3022,12 +3022,12 @@ export async function runGitCommand(
         const rest = fetchArgs.filter((arg, i) => !FETCH_DEPTH_FLAGS.includes(arg.split('=')[0]) &&
           !(i > 0 && ['--depth', '--deepen'].includes(fetchArgs[i - 1])));
         const remote = rest[0] || 'origin';
+        const fetchUrl = await remoteUrl(git, fs, dir, remote);
+        if (fetchUrl === undefined) { await ctx.stderr.write(noSuchRemote(remote)); return 128; }
         if (!doCtx || !doEnv) {
           ctx.stderr.write('[git] fetch requires DO ctx + env (internal configuration error)\n');
           return 1;
         }
-        const fetchUrl = await remoteUrl(git, fs, dir, remote);
-        if (fetchUrl === undefined) { await ctx.stderr.write(noSuchRemote(remote)); return 128; }
         if (!quiet) ctx.stdout.write(`Fetching from ${remote}...\n`);
         const result = await execGitNetwork(doCtx, doEnv, {
           op: 'fetch',
@@ -3057,15 +3057,16 @@ export async function runGitCommand(
         const { quiet, rest } = takeQuiet(subArgs);
         const remote = rest[0] || 'origin';
         const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
+        // Its fetch, git's child, fails (128); pull says 1.
+        const pullUrl = await remoteUrl(git, fs, dir, remote);
+        if (pullUrl === undefined) { await ctx.stderr.write(noSuchRemote(remote)); return 1; }
         if (!doCtx || !doEnv) {
           ctx.stderr.write('[git] pull requires DO ctx + env (internal configuration error)\n');
           return 1;
         }
         const pullIdents = await commitIdents(ctx, git, fs, dir);
         if ('error' in pullIdents) { await ctx.stderr.write(pullIdents.error); return 128; }
-        // Its fetch, git's child, fails (128); pull says 1.
-        const pullUrl = await remoteUrl(git, fs, dir, remote);
-        if (pullUrl === undefined) { await ctx.stderr.write(noSuchRemote(remote)); return 1; }
+
         if (!quiet) ctx.stdout.write(`Pulling from ${remote}/${branch}...\n`);
         const started = Date.now();
         const result = await execGitNetwork(doCtx, doEnv, {
@@ -3096,12 +3097,13 @@ export async function runGitCommand(
         const { quiet, rest } = takeQuiet(subArgs);
         const remote = rest[0] || 'origin';
         const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
+        const pushUrl = await remoteUrl(git, fs, dir, remote);
+        if (pushUrl === undefined) { await ctx.stderr.write(noSuchRemote(remote)); return 128; }
         if (!doCtx || !doEnv) {
           ctx.stderr.write('[git] push requires DO ctx + env (internal configuration error)\n');
           return 1;
         }
-        const pushUrl = await remoteUrl(git, fs, dir, remote);
-        if (pushUrl === undefined) { await ctx.stderr.write(noSuchRemote(remote)); return 128; }
+
         if (!quiet) ctx.stdout.write(`Pushing to ${remote}/${branch}...\n`);
         const result = await execGitNetwork(doCtx, doEnv, {
           op: 'push',
