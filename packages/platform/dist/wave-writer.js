@@ -626,41 +626,20 @@ export class WaveWriter {
         this.counters.wholeWaves++;
         return { open: piecesOf(whole, SEND_SLICE_BYTES), streamed: false };
     }
-    /**
-     * Send one wave, again while its transport is lost (see the module's
-     * comment), and answer with what the session answered.
-     */
-    async sendAttempts(open, streamed, wave) {
-        const { backoffMs, stallMs, answerDeadlineMs } = this.options.retry
-            ?? { backoffMs: LOST_CALL_RESEND_BACKOFF_MS, stallMs: LOST_STREAM_STALL_MS, answerDeadlineMs: LOST_STREAM_ANSWER_MS };
-        for (let attempt = 0;; attempt++) {
-            const writer = await this.currentEpoch();
-            const attemptStream = abortable(open(), stallMs, answerDeadlineMs);
-            const fence = writer === null ? undefined : { writer, wave, attempt: attempt + 1 };
-            const answer = this.options.supervisor.writeBatchStream(attemptStream.stream, fence);
-            try {
-                return await Promise.race([answer, attemptStream.lost]);
-            }
-            catch (error) {
-                const lost = error instanceof WaveLost || isLostFencedCall(error);
-                if (!lost || streamed || attempt >= backoffMs.length)
-                    throw error;
-                // The abandoned attempt can read nothing more, and its late answer is dropped.
-                attemptStream.abort(error);
-                answer.then(disposeRpcResource, () => { });
+    /** Send one wave (sendWaveAttempts) under this writer's epoch. */
+    sendAttempts(open, streamed, wave) {
+        return sendWaveAttempts({
+            supervisor: this.options.supervisor,
+            writer: () => this.currentEpoch(),
+            open,
+            streamed,
+            wave,
+            ...(this.options.retry === undefined ? {} : { retry: this.options.retry }),
+            resent: (lost) => {
                 this.counters.retries++;
-                this.options.onResend?.(lostCallAttributes({
-                    operation: 'writeBatchStream',
-                    attempt: attempt + 1,
-                    of: backoffMs.length,
-                    reason: error instanceof Error ? error.message : String(error),
-                }));
-                await new Promise((resolve) => setTimeout(resolve, retryDelayMs(backoffMs, attempt)));
-            }
-            finally {
-                attemptStream.settle();
-            }
-        }
+                this.options.onResend?.(lost);
+            },
+        });
     }
     /**
      * The epoch this writer's waves are fenced under: opened before its first
@@ -720,7 +699,54 @@ export class WaveWriter {
         this.buffer(pin.path, { kind: 'file', mode: 0o644, bytes: pin.bytes.slice(), meta: undefined });
     }
 }
-/** An attempt the session never read or never answered: its call did not arrive, or its answer was lost. */
+const GLOBAL_TIMERS = {
+    setTimeout: (callback, ms) => setTimeout(callback, ms),
+    clearTimeout: (timer) => clearTimeout(timer),
+};
+/**
+ * Send one wave, again while its transport is lost (see the module's
+ * comment), and answer with what the session answered. The one way every
+ * W7 producer sends: the wave writer, and a process's filesystem client.
+ */
+export async function sendWaveAttempts(options) {
+    const { backoffMs, stallMs, answerDeadlineMs } = options.retry
+        ?? { backoffMs: LOST_CALL_RESEND_BACKOFF_MS, stallMs: LOST_STREAM_STALL_MS, answerDeadlineMs: LOST_STREAM_ANSWER_MS };
+    const timers = options.timers ?? GLOBAL_TIMERS;
+    for (let attempt = 0;; attempt++) {
+        const writer = await options.writer();
+        const attemptStream = abortable(options.open(), stallMs, answerDeadlineMs, timers);
+        const fence = writer === null ? undefined : { writer, wave: options.wave, attempt: attempt + 1, ...options.sequence };
+        // Called as a method of the supervisor, never through .call/.apply: on an RPC stub those are remote method names too.
+        const answer = options.owner === undefined
+            ? options.supervisor.writeBatchStream(attemptStream.stream, fence)
+            : options.supervisor.writeBatchStream(attemptStream.stream, fence, options.owner);
+        try {
+            return await Promise.race([answer, attemptStream.lost]);
+        }
+        catch (error) {
+            const lost = error instanceof WaveLost || isLostFencedCall(error);
+            if (!lost || options.streamed || attempt >= backoffMs.length)
+                throw error;
+            // The abandoned attempt can read nothing more, and its late answer is dropped.
+            attemptStream.abort(error);
+            answer.then(disposeRpcResource, () => { });
+            options.resent?.(lostCallAttributes({
+                operation: 'writeBatchStream',
+                attempt: attempt + 1,
+                of: backoffMs.length,
+                reason: error instanceof Error ? error.message : String(error),
+            }));
+            await new Promise((resolve) => { timers.setTimeout(resolve, retryDelayMs(backoffMs, attempt)); });
+        }
+        finally {
+            attemptStream.settle();
+        }
+    }
+}
+/** A wave's encoded bytes as each attempt's stream (in SEND_SLICE_BYTES pieces, each a copy). */
+export function waveAttemptsOf(bytes) {
+    return piecesOf(bytes, SEND_SLICE_BYTES);
+}
 class WaveLost extends Error {
     constructor(message) {
         super(message);
@@ -761,7 +787,7 @@ function slices(bytes, size) {
  * nothing more. Reading is the bytes drained from the stream's queue: a
  * reader taking a large piece in small reads drains it without a pull.
  */
-function abortable(stream, stallMs, answerDeadlineMs) {
+function abortable(stream, stallMs, answerDeadlineMs, timers) {
     const reader = stream.getReader();
     let target = null;
     let timer = null;
@@ -770,17 +796,17 @@ function abortable(stream, stallMs, answerDeadlineMs) {
     lost.catch(() => { });
     const watch = (ms, message) => {
         if (timer !== null)
-            clearTimeout(timer);
-        timer = setTimeout(() => declareLost(new WaveLost(message)), ms);
+            timers.clearTimeout(timer);
+        timer = timers.setTimeout(() => declareLost(new WaveLost(message)), ms);
     };
     /** Bytes enqueued and not yet read (the queue's total, as desiredSize below a mark of 0). */
     const queued = () => Math.max(0, -(target?.desiredSize ?? 0));
     // Lost when a stall period passes with nothing drained from the queue.
     const watchReads = () => {
         if (timer !== null)
-            clearTimeout(timer);
+            timers.clearTimeout(timer);
         const unread = queued();
-        timer = setTimeout(() => {
+        timer = timers.setTimeout(() => {
             if (queued() < unread)
                 watchReads();
             else
@@ -827,7 +853,7 @@ function abortable(stream, stallMs, answerDeadlineMs) {
         },
         settle() {
             if (timer !== null)
-                clearTimeout(timer);
+                timers.clearTimeout(timer);
             timer = null;
         },
     };
