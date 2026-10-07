@@ -143,6 +143,9 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     let additionalBytes = 0;
     let additionalFiles = 0;
     const encoder = new TextEncoder();
+    // The phase-2 unit staged whole or not at all (an optional learned root):
+    // what it staged, and whether the bound cut its closure.
+    let unit = null;
     function fits(path, bytes) {
         if (!policy || policy.held[path] !== undefined)
             return true;
@@ -186,6 +189,8 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             if (counted && bytesSeen + size > maxBundleBytes) {
                 if (!lazy)
                     closureExceeded = { kind: 'closure-exceeds-bound', entry: entryFile ?? 'entry code', bytesSeen, bound: maxBundleBytes, lastPath: path };
+                if (unit)
+                    unit.cut = true;
                 return null;
             }
         }
@@ -214,6 +219,8 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         bundle[path] = content;
         if (lazy)
             speculative.add(path);
+        if (unit)
+            unit.staged.push([path, counted ? size : 0]);
         if (progress)
             await progress(content.length);
         return content;
@@ -282,6 +289,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     }
     /** Tool configs found for the launch; phase 2 stages them first. */
     const configRoots = new Set();
+    const optionalRoots = new Set();
     let lazy = false;
     // `entry`: the entry file itself, whose own `import()` is a deferral of its
     // main module, not an optional feature, and is followed as required.
@@ -541,11 +549,17 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                 continue;
             }
             const path = stripLeadingSlashes(root.path);
-            if (root.config && root.text === undefined) {
-                configRoots.add(path);
+            if ((root.config || root.optional) && root.text === undefined) {
+                if (root.config)
+                    configRoots.add(path);
+                if (root.optional)
+                    optionalRoots.add(path);
                 defer({ specifier: path, fromDir: path.slice(0, path.lastIndexOf('/')), alternatives: 0, path });
                 continue;
             }
+            // Its text is staged as runtime code (manager.ts _stagedRuntimeCode); only a required root walks it.
+            if (root.optional)
+                continue;
             if (root.text === undefined)
                 await addFile(path);
             else
@@ -577,7 +591,23 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             if (!resolved)
                 continue;
             edge(next.from, resolved);
-            await addFile(resolved);
+            // An optional learned root is staged whole or not at all: a module in
+            // the map without what it imports fails where the module's late load
+            // would have worked.
+            unit = optionalRoots.has(resolved) ? { staged: [], cut: false } : null;
+            try {
+                await addFile(resolved);
+            }
+            finally {
+                if (unit?.cut) {
+                    for (const [path, size] of unit.staged) {
+                        delete bundle[path];
+                        speculative.delete(path);
+                        bytesSeen -= size;
+                    }
+                }
+                unit = null;
+            }
             if (configRoots.has(resolved) && typeof bundle[resolved] === 'string')
                 await deferConfigNames(resolved);
         }

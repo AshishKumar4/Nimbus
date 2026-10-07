@@ -111,6 +111,14 @@ export interface RequiredModuleRoot {
      * loads by name, follow it.
      */
     config?: boolean;
+    /**
+     * A module an earlier run executed that the required closure could not
+     * hold with the rest (buildPrefetchBundle walks the learned roots again so
+     * when they take it past the bound): phase 2's first tier, its closure
+     * staged whole within the bound or not at all, evictable, never the
+     * launch's failure.
+     */
+    optional?: boolean;
 }
 /**
  * A module the command line preloads (`node -r`, `--import`), as it named
