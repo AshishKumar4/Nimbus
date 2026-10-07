@@ -99,6 +99,48 @@ const learned = [{ path: `${NM}/one/index.js` }, { path: `${NM}/two/index.js` }]
   }
 }
 
+// A root cut by the bound takes back everything it staged, its traversal
+// included: two learned roots share S, the first stages S and overflows, and
+// the second, which fits, is staged with S rather than published without it.
+{
+  const shared = {
+    ...files,
+    [`${NM}/a/index.js`]: 'require("../shared/s.js");\nrequire("./big.js");\nmodule.exports = "a";\n',
+    [`${NM}/a/big.js`]: `module.exports = "${'a'.repeat(40_000)}";\n`,
+    [`${NM}/b/index.js`]: 'require("../shared/s.js");\nmodule.exports = "b";\n',
+    [`${NM}/shared/s.js`]: `module.exports = "${'s'.repeat(10_000)}";\n`,
+  };
+  const state = await buildPrefetchBundle(launchFs(shared).fs, {
+    scriptPath: `${APP}/entry.js`, cwd: '/' + APP, entryCode: shared[`${APP}/entry.js`], esbuild: identityEsbuild,
+    executedModules: [{ path: `${NM}/a/index.js` }, { path: `${NM}/b/index.js` }], maxBundleBytes: 30_000,
+  });
+  assert.equal(state.bundle[`${NM}/a/index.js`], undefined, 'the root that cannot fit is not staged');
+  assert.equal(state.bundle[`${NM}/a/big.js`], undefined);
+  assert.equal(typeof state.bundle[`${NM}/b/index.js`], 'string', 'the root that fits is');
+  assert.equal(typeof state.bundle[`${NM}/shared/s.js`], 'string', 'with the dependency it shares with the root that was cut');
+}
+
+// A learned root's closure is one group through the map's own admission too:
+// a dependency larger than its root, which the walk admitted, is not evicted
+// alone when the emits take the map past its bound.
+{
+  const lowering = new EsbuildService(undefined, {
+    transformHost: async (requests) => requests.map(({ code }) => ({ code: code + '\n//' + '~'.repeat(code.length >> 1), map: '', warnings: [] })),
+  });
+  const grouped = {
+    ...files,
+    [`${NM}/r/index.ts`]: 'import "./dep.ts";\nexport const r: number = 1;\n',
+    [`${NM}/r/dep.ts`]: `export const dep: string = "${'d'.repeat(40_000)}";\n`,
+  };
+  const state = await buildPrefetchBundle(launchFs(grouped).fs, {
+    scriptPath: `${APP}/entry.js`, cwd: '/' + APP, entryCode: grouped[`${APP}/entry.js`], esbuild: lowering,
+    executedModules: [{ path: `${NM}/r/index.ts` }], maxBundleBytes: 70_000,
+  });
+  assert.equal(typeof state.bundle[`${APP}/small.js`], 'string', 'the launch starts with its own closure');
+  const kept = [`${NM}/r/index.ts`, `${NM}/r/dep.ts`].map((path) => typeof state.bundle[path] === 'string');
+  assert.equal(kept[0], kept[1], `the learned root and its dependency are kept or evicted together (root ${kept[0]}, dependency ${kept[1]})`);
+}
+
 // A closure past the bound by itself still fails, by name.
 await assert.rejects(build([], 10), (error) => error instanceof ClosureBoundExceededError);
 

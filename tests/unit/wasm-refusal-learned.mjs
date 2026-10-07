@@ -64,6 +64,9 @@ export const flush = __nimbusFlushRuntimeCode;`,
   assert.deepEqual(new Uint8Array(Buffer.from(entry.bytes, 'base64')), image, 'its bytes, as base64');
   assert.deepEqual(parseRuntimeCodeEntry(entry), entry, 'the supervisor accepts it');
   assert.equal(parseRuntimeCodeEntry({ kind: 'wasm', bytes: 'not base64!' }), null, 'and refuses bytes that are not base64');
+  // The receiver holds the guest's limits itself, before anything is learned, kept or staged.
+  assert.equal(parseRuntimeCodeEntry({ kind: 'wasm', bytes: Buffer.from(invalid).toString('base64') }), null, 'a module that does not validate is refused');
+  assert.equal(parseRuntimeCodeEntry({ kind: 'wasm', bytes: Buffer.from(oversized).toString('base64') }), null, `a module over ${RUNTIME_WASM_MAX_BYTES} bytes is refused`);
   assert.ok(runtimeCodeCharge(entry) >= entry.bytes.length, 'charged at least its bytes');
   assert.match(runtimeCodeKey(entry), /^[0-9a-f]{64}$/);
 

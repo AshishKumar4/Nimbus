@@ -42,7 +42,10 @@ const files = {
   [`${NM}/eager/eager.dat`]: 'eager',
   // Reached only through the import(): its reads are the import()'s.
   [`${NM}/lazycss/package.json`]: JSON.stringify({ name: 'lazycss', type: 'module', exports: { '.': { node: { import: './wasm-node.mjs' } } } }),
-  [`${NM}/lazycss/wasm-node.mjs`]: 'import { helper } from "./helper.mjs";\nexport const ready = helper;\n',
+  [`${NM}/lazycss/wasm-node.mjs`]: 'import { helper } from "./helper.mjs";\nexport const ready = helper;\nexport const later = () => import("./later.mjs");\n',
+  // What a lazy module only defers is not evaluated with it: its reads are its own import()'s.
+  [`${NM}/lazycss/later.mjs`]: 'import fs from "node:fs";\nexport const later = fs.readFileSync(new URL("later.dat", import.meta.url));\n',
+  [`${NM}/lazycss/later.dat`]: 'later',
   [`${NM}/lazycss/helper.mjs`]: [
     'import fs from "node:fs";',
     'const bytes = fs.readFileSync(new URL("image.wasm", import.meta.url));',
@@ -60,6 +63,8 @@ assert.ok(lazy.has(`${NM}/lazycss/helper.mjs`), 'and what it imports');
 assert.ok(!lazy.has(`${NM}/eager/index.mjs`), 'a statically reached module is not');
 assert.ok(!lazy.has(`${NM}/tool/index.mjs`));
 assert.deepEqual(snapshot.lazyImporters?.[`${NM}/lazycss/helper.mjs`], [`${NM}/lazycss/wasm-node.mjs`]);
+assert.equal(snapshot.lazyImporters?.[`${NM}/lazycss/later.mjs`], undefined,
+  'a module a lazy module only defers (import()) is not its static descendant: importing the one does not prefetch the other');
 
 // The table: the reader's read under every lazy module that evaluates it.
 const table = lazyReadsByTarget(
