@@ -304,6 +304,8 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
       bufferedWriteBytes?: number;
       /** Told of a delegation's holder revoked for not answering a recall in time: the host stops it. */
       delegationRevoked?: (event: DelegationRevoked) => void;
+      /** Told of a delegation's holder that ended still holding it (Delegations' orphaned): what it had not sent there is lost. */
+      delegationOrphaned?: (event: { readonly pid: number; readonly root: string }) => void;
       delegationRecallTimeoutMs?: number;
     } = {},
   ) {
@@ -311,6 +313,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     this.delegations = new Delegations({
       release: (owner) => engine.releaseExclusiveMutation(owner),
       revoked: options.delegationRevoked,
+      ...(options.delegationOrphaned === undefined ? {} : { orphaned: options.delegationOrphaned }),
       recallTimeoutMs: options.delegationRecallTimeoutMs,
     });
     this.bufferedWriteBytes = options.bufferedWriteBytes;

@@ -31,11 +31,16 @@ function session({ recallTimeoutMs = 2_000 } = {}) {
   kernel.chown('home/user/repo', 1000, 1000);
   kernel.writeFile('home/user/repo/a', 'stored');
   const revoked = [];
-  const filesystem = new ProcessFiles(engine, { delegationRecallTimeoutMs: recallTimeoutMs, delegationRevoked: (event) => revoked.push(event) });
+  const orphaned = [];
+  const filesystem = new ProcessFiles(engine, {
+    delegationRecallTimeoutMs: recallTimeoutMs,
+    delegationRevoked: (event) => revoked.push(event),
+    delegationOrphaned: (event) => orphaned.push(event),
+  });
   const pid = 4242;
   const lease = filesystem.bind({ pid, cred: user });
   const op = createSupervisorOpHandler({ vfs: engine, filesystem });
-  return { engine, kernel, filesystem, op, pid, lease, revoked };
+  return { engine, kernel, filesystem, op, pid, lease, revoked, orphaned };
 }
 
 /**
@@ -118,9 +123,21 @@ async function holder({ op, pid }, root, { answers = true } = {}) {
   await h.stop();
   s.filesystem.killProcess(s.pid);
   assert.equal(s.filesystem.delegations.size, 0);
+  // Said, naming the subtree: the process ended holding it.
+  assert.deepEqual(s.orphaned, [{ pid: s.pid, root: 'home/user/repo' }]);
   s.kernel.writeFile('home/user/repo/a', 'free');
   assert.equal(dec.decode(s.kernel.readFile('home/user/repo/a')), 'free');
   assert.equal(s.kernel.exists('home/user/repo/b'), false);
+}
+
+// ── A holder that gives its delegation back before it ends is not reported ──
+{
+  const s = session();
+  const h = await holder(s, '/home/user/repo');
+  await s.op({ op: 'fsReleaseExclusiveMutation', args: [h.grant.owner], pid: s.pid });
+  await h.stop();
+  await s.filesystem.releaseProcess(s.pid);
+  assert.deepEqual(s.orphaned, []);
 }
 
 // ── The holder's own calls into its delegation (not sent in a wave) go
