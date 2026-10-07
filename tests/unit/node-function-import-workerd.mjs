@@ -18,7 +18,11 @@
 //   SOURCE   a function's source text is what it was built from, in every
 //            launch, though its import() calls run through the origin;
 //   HYGIENE  code that names the runtime's own capture still imports;
+//   FNDELETE code that deletes its free Function (node deletes the global;
+//            here the module's own Function stays, in every launch);
 //   FNWRITE  code that assigns its free Function reads what it assigned.
+// FNDELETE and FNWRITE change node's global Function, so they build their
+// code with F, the module's Function taken as it loads, and run last.
 // STAGED says where the code ran: the first launch interprets it, and the
 // next runs it natively from the module the first staged, resolving against
 // the same importer.
@@ -46,6 +50,7 @@ const FILES = {
   'other/lib/cli.mjs': 'export const where = "other/lib/cli.mjs";\n',
   'pkg/bin/tool.cjs': [
     'const fs = require("fs");',
+    'const F = Function;',
     'const path = require("path");',
     'const dynamicImport = new Function("module", "return import(module)");',
     'const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;',
@@ -69,10 +74,10 @@ const FILES = {
     '  .then(() => console.log("SOURCE " + JSON.stringify(Function.prototype.toString.call(dynamicImport))))',
     '  .then(() => new Function("nimbusImport", "_nimbusImport", "return import(\\"../lib/cli.mjs\\")")(() => 42, () => 43))',
     '  .then((m) => console.log("HYGIENE " + (m && m.where)))',
-    '  .then(() => console.log("FNWRITE " + new Function("Function = 123; return typeof Function")()))',
     // A module's Function is its own binding, as a parameter of the module's
     // scope is: delete leaves it, as in every launch.
-    '  .then(() => console.log("FNDELETE " + new Function("return [delete Function, typeof Function, typeof globalThis.Function].join()")()));',
+    '  .then(() => console.log("FNDELETE " + new F("return [delete Function, typeof Function, typeof globalThis.Function].join()")()))',
+    '  .then(() => console.log("FNWRITE " + new F("Function = 123; return typeof Function")()));',
   ].join('\n'),
   'pkg/bin/hooked.cjs': [
     'Object.defineProperty(Error, "prepareStackTrace", {',
@@ -110,8 +115,8 @@ assert.equal(expected, [
   'STAGED lib/cli.mjs interpreted',
   'SOURCE "function anonymous(module\\n) {\\nreturn import(module)\\n}"',
   'HYGIENE lib/cli.mjs',
+  'FNDELETE true,undefined,undefined',
   'FNWRITE number',
-  'FNDELETE true,function,undefined',
   'HOOKED lib/cli.mjs',
   '',
 ].join('\n'), 'the host node this test compares with');
@@ -135,7 +140,7 @@ try {
       }
       assert.ok(run.stdout.includes('ASYNC ERR_NIMBUS_IMPORT_NO_IMPORTER'), `${launch} launch refuses the prototype's constructor by name:\n${run.stdout}`);
       assert.ok(run.stdout.includes(`STAGED lib/cli.mjs ${where}`), `${launch} launch runs the code ${where}:\n${run.stdout}`);
-      // Node deletes the global (true, then undefined); a module's own
+      // Node deletes the global (true, then undefined twice); a module's own
       // Function is a binding no delete removes, in either launch.
       assert.ok(run.stdout.includes('FNDELETE false,function,function'), `${launch} launch keeps the module's Function:\n${run.stdout}`);
     }
