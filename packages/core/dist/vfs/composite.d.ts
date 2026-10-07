@@ -178,6 +178,8 @@ interface WriteWatches {
 }
 interface Table {
     mounts: Map<string, Mount>;
+    /** Bumped by every mount and unmount: a placement made under an older table may be stale (mountGeneration). */
+    generation: number;
     /** observeWrites: who is told, and the mounts whose backends report their own writes, subscribed. */
     writes?: WriteWatches;
     /** Directory → names of mount points (or their missing ancestors) directly in it. */
@@ -263,6 +265,8 @@ export declare class CompositeVFS implements VFS {
     /** CompositeFeed.walk. */
     private walkUnfed;
     mount(point: string, source: VfsSource, options?: MountOptions): void;
+    /** The mount table's generation: it moves with every mount and unmount, in every view of this namespace. */
+    mountGeneration(): number;
     unmount(point: string): void;
     /**
      * Every mutation that lands in this namespace, on any mount, reported

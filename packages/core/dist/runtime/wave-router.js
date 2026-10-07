@@ -37,6 +37,7 @@ export function namespaceWaveRouter(namespace, credential) {
         return guard === undefined ? as : as.scoped(guard);
     };
     return {
+        mounts: () => namespace.mountGeneration(),
         resolveDirectory(path, cred, signal) {
             const ns = view(cred);
             const join = (resolved, missing) => (missing === '' ? resolved : `${resolved === '/' ? '' : resolved}/${missing}`);
