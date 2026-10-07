@@ -335,29 +335,13 @@ async function printHelp(ctx: CommandContext): Promise<void> { await ctx.stdout.
 	await ctx.stdout.write('  search <term>              search the npm registry\n');
 	await ctx.stdout.write('  -v, --version              print npm version\n'); }
 
+/**
+ * `npm init`, `npm create` and `npm innit` (npm-init.ts). npm's own
+ * libraries there (hosted-git-info, npm-package-arg, semver, the SPDX list)
+ * are evaluated the first time a session runs one, not when it starts.
+ */
 async function npmInit(ctx: CommandContext): Promise<number> {
-	const pkgPath = join(ctx.cwd, 'package.json');
-	if ((await ctx.vfs.exists(pkgPath))) {
-		await ctx.stderr.write('package.json already exists\n');
-		return 1;
-	}
-
-	const dirName = ctx.cwd.split('/').pop() || 'project';
-	const pkg: PackageJson = {
-		name: dirName,
-		version: '1.0.0',
-		description: '',
-		main: 'index.js',
-		scripts: {
-			test: 'echo "Error: no test specified" && exit 1',
-		},
-		license: 'ISC',
-	};
-
-	(await writeProjectPackageJson(ctx.vfs, ctx.cwd, pkg));
-	await ctx.stdout.write(`Wrote to ${pkgPath}:\n\n`);
-	await ctx.stdout.write(JSON.stringify(pkg, null, 2) + '\n');
-	return 0;
+	return (await import('./npm-init.js')).npmInitCommand(ctx);
 }
 
 async function npmInstall(
@@ -838,6 +822,8 @@ export function createNpmCommand(
 
 		switch (subcommand) {
 			case 'init':
+			case 'create':
+			case 'innit':
 				return (await npmInit(ctx));
 			case 'install':
 			case 'i':
