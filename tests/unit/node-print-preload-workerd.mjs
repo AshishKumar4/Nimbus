@@ -76,6 +76,8 @@ const COMMANDS = [
 const REFUSED = [
   [`node -p 'import fs from "fs"; 1'`, 1, 'Error [ERR_EVAL_ESM_CANNOT_PRINT]: --print cannot be used with ESM input'],
   [`node -p 'return 1'`, 1, 'SyntaxError: Illegal return statement'],
+  // Refused as it compiles: after -r's modules, before --import's load.
+  [`node -r ./pre.cjs --import ./missing.mjs -p 'export default 1'`, 1, 'Error [ERR_EVAL_ESM_CANNOT_PRINT]: --print cannot be used with ESM input'],
   ['node -r ./nope.cjs main.cjs', 1, "Error: Cannot find module './nope.cjs'"],
 ];
 

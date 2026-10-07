@@ -13,7 +13,9 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
-import { nodeEvalCode, nodeStdinPrintCode } from '../../packages/core/src/runtime/node-eval.ts';
+import { nodeEvalProgram, nodeStdinPrintProgram } from '../../packages/core/src/runtime/node-eval.ts';
+
+const nodeEvalCode = (code, print) => nodeEvalProgram(code, print).code;
 
 const SAMPLES = [
   '1+1', '"use strict"', '"use strict"; var x = 1', '"a"; "b"; var x', 'var x = 5', 'let y = 1; y', 'const z = 2',
@@ -36,6 +38,13 @@ const SAMPLES = [
   '0; { }', '1; ;', 'debugger; 2', 'var r = 1; r += 1', '[1, 2].map((n) => n * 2)', 'x = 3\nx\n++x',
   'crypto.createHash("md5").update("").digest("hex")', 'typeof crypto.subtle', 'crypto === require("node:crypto")',
   'const __nimbus_print_result = 4; __nimbus_print_result + 1',
+  // The review of 7fc36348b: a saved value per finally block; an abrupt
+  // finally with no value of its own; a name written with escapes.
+  'for (;;) { try { 1 } finally { try { 2 } finally { 3 } } break; }',
+  'l: try { 1 } finally { break l; }',
+  'const \\u005f\\u005fnimbus_print_result = 4; __nimbus_print_result + 1',
+  'for (;;) { try { 1 } finally { try { 2 } finally { 3; break } } }',
+  'x: { try { 1 } finally { 2; break x } }',
 ];
 // Node refuses these: the line its stderr names, which the code throws too.
 const REFUSED = [
@@ -89,14 +98,19 @@ REFUSED.forEach(([sample, line], i) => {
 });
 console.log(`  ok  ${REFUSED.length} refused as Node refuses them`);
 
-// A syntax error is left to fail as it does in Node.
+// A syntax error is left to fail as it does in Node. What Node refuses as it
+// compiles it, it refuses before loading --import's modules.
 assert.equal(nodeEvalCode('1 +', true), '1 +');
+for (const sample of ['1 +', ...REFUSED.map(([sample]) => sample)]) {
+  assert.equal(nodeEvalProgram(sample, true).refusedBeforeImports, true, `${JSON.stringify(sample)}: refused before --import`);
+}
+assert.equal(nodeEvalProgram('1', true).refusedBeforeImports, false);
 // -e: code that names crypto has node:crypto, as Node's eval does.
 const EVALS = ['console.log(typeof crypto.createHash, crypto === require("node:crypto"))', 'console.log(typeof globalThis.crypto.subtle, 1)'];
 const evaluated = runAll(EVALS.map((sample) => nodeEvalCode(sample, false)));
 EVALS.forEach((sample, i) => assert.equal(evaluated[i].logged, host(['-e', sample]).stdout, `node -e ${JSON.stringify(sample)}`));
 // From stdin: Node's eval_stdin, with no crypto wrapper.
-const [fromStdin] = runAll([nodeStdinPrintCode('2 * 21')]);
+const [fromStdin] = runAll([nodeStdinPrintProgram('2 * 21').code]);
 assert.equal(fromStdin.printed, host(['-p'], '2 * 21').stdout);
 console.log('  ok  -e keeps crypto node:crypto; -p from stdin');
 

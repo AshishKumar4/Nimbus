@@ -49,7 +49,7 @@ import { errorText } from '../_shared/error-text.js';
 import { exists } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerLaunchHost } from './server-launch.js';
 import { parseNodeCommandLine, type NodeCommandLine, type NodeLaunch } from './node-cli.js';
-import { nodeEvalCode, nodeStdinPrintCode } from './node-eval.js';
+import { nodeEvalProgram, nodeStdinPrintProgram } from './node-eval.js';
 
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
@@ -448,6 +448,8 @@ export function buildRuntimeHandler(
       launchesServer?: boolean;
       /** The code returns the value `node -p` prints (node-eval.ts): Node prints only an eval's, not a file's. */
       print?: boolean;
+      /** Node refuses the code before it loads `--import`'s modules (NodeEvalProgram.refusedBeforeImports): none load. */
+      refusedBeforeImports?: boolean;
     }): Promise<number> => {
       const result = await spec.run(code, {
         cred: ctx.cred,
@@ -459,7 +461,9 @@ export function buildRuntimeHandler(
         filename: program.filename,
         dirname: program.dirname,
         command: program.command,
-        ...(spec.nodeCommandLine ? { node: { ...launch, print: program.print === true } } : {}),
+        ...(spec.nodeCommandLine
+          ? { node: { ...launch, print: program.print === true, ...(program.refusedBeforeImports ? { import: [] } : {}) } }
+          : {}),
         ...program.stdin,
         ...(program.reserved === false ? {} : reservedProcess),
         ...(captureOutput ? { captureOutput: true } : {}),
@@ -488,10 +492,11 @@ export function buildRuntimeHandler(
     // Node's eval code as Node prepares it (node-eval.ts); `-p`'s returns
     // the value the process prints when it exits.
     if (line.eval !== undefined) {
-      const code = spec.nodeCommandLine ? nodeEvalCode(line.eval, print) : line.eval;
+      const { code, refusedBeforeImports } = spec.nodeCommandLine ? nodeEvalProgram(line.eval, print) : { code: line.eval, refusedBeforeImports: false };
       const programArgs = args.slice(flagSpan);
       return runProgram(code, {
         print,
+        refusedBeforeImports,
         argv: programArgs,
         filename: '<eval>',
         dirname: ctx.cwd || '/home/user',
@@ -540,9 +545,10 @@ export function buildRuntimeHandler(
     if (scriptPath === '-') {
       const input = ctx.stdin ? (await ctx.stdin.readAll()) : '';
       // `-p` prints the value of the code it read (eval_stdin.js).
-      const code = spec.nodeCommandLine && print ? nodeStdinPrintCode(input) : input;
+      const { code, refusedBeforeImports } = spec.nodeCommandLine && print ? nodeStdinPrintProgram(input) : { code: input, refusedBeforeImports: false };
       return runProgram(code, {
         print,
+        refusedBeforeImports,
         argv: [...leadingFlags, '-', ...args.slice(scriptIdx + 1)],
         filename: '[stdin]',
         dirname: ctx.cwd || '/home/user',
