@@ -146,8 +146,43 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     // The phase-2 unit staged whole or not at all (an optional learned root):
     // what it staged, and whether the bound cut its closure.
     let unit = null;
-    /** The optional learned roots that landed, each with what it staged (PrefetchResult.units). */
+    /** The optional learned roots that landed, each with its closure (PrefetchResult.units). */
     const units = [];
+    /**
+     * A landed root's whole static closure among the optional cells: what it
+     * staged, and what it reached that another root had staged before it (the
+     * static edges say, a visited path's edges having been recorded when it
+     * was walked), with the manifests its packages were resolved through. A
+     * shared dependency is then in every group that needs it, and pruning one
+     * group leaves it to the others. The required closure is not a member: it
+     * is never pruned.
+     */
+    function unitClosure(root, staged) {
+        const members = new Set(staged);
+        const optional = (path) => speculative.has(path) && bundle[path] !== undefined;
+        const queue = optional(root) ? [root] : [];
+        if (queue.length > 0)
+            members.add(root);
+        while (queue.length > 0) {
+            const at = queue.pop();
+            for (const to of edges.get(at) ?? []) {
+                if (members.has(to) || !optional(to))
+                    continue;
+                members.add(to);
+                queue.push(to);
+            }
+        }
+        for (const path of [...members]) {
+            for (let dir = path.slice(0, path.lastIndexOf('/')); dir !== ''; dir = dir.slice(0, Math.max(0, dir.lastIndexOf('/')))) {
+                const manifest = dir + '/package.json';
+                if (optional(manifest))
+                    members.add(manifest);
+                if (PACKAGE_ROOT.test(dir) || !dir.includes('/'))
+                    break;
+            }
+        }
+        return [...members];
+    }
     function fits(path, bytes) {
         if (!policy || policy.held[path] !== undefined)
             return true;
@@ -619,8 +654,10 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                     for (const [alternatives, queue] of deferredDynamic)
                         queue.length = queuedBefore.get(alternatives) ?? 0;
                 }
-                else if (unit !== null && unit.staged.length > 0) {
-                    units.push({ root: resolved, members: unit.staged.map(([path]) => path) });
+                else if (unit !== null) {
+                    const members = unitClosure(resolved, unit.staged.map(([path]) => path));
+                    if (members.length > 0)
+                        units.push({ root: resolved, members });
                 }
                 unit = null;
             }
@@ -726,6 +763,8 @@ conditions = []) {
     }
 }
 /** An npm package name: `name` or `@scope/name` (lowercase, URL-safe). */
+/** A package's root directory under node_modules (`node_modules/name`, `node_modules/@scope/name`). */
+const PACKAGE_ROOT = /(?:^|\/)node_modules\/(?:@[^/]+\/)?[^/]+$/;
 const PACKAGE_NAME = /^(?:@[a-z0-9][\w.~-]*\/)?[a-z0-9][\w.~-]*$/;
 /**
  * The package names a config spells as a string or a property key
