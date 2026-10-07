@@ -146,6 +146,13 @@ export interface DelegationHolder {
   send(): Promise<void>;
   /** A refusal the session has made of what this process logged, thrown now (with its errno), not waiting for anything: what a close reports. */
   reportRecorded(): void;
+  /**
+   * The process is about to change a name or an access at or above `keys`
+   * (anywhere, when absent) by a route not decided here (a call of the
+   * session's, or a change by name the client logs): each file it holds
+   * open there writes through from now on, its descriptions opened first.
+   */
+  changing(keys?: readonly string[]): void;
   /** Whether `handleId` writes through: its reads are the session's (readThrough). */
   through(handleId: number): boolean;
   /** A write-through description's session descriptor (its open answered), or undefined (a mount's file keeps none). */
@@ -226,8 +233,18 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   /** Whether anything was logged since the store was last told the session changed (sent). */
   let unsent = false;
 
-  /** `file` stops being decided here (its grant is shared, recalled or gone): what it holds was logged, and it writes through from now on. */
-  const goThrough = (file: LocalFile, ino: number): void => {
+  /**
+   * `file` stops being decided here (its grant is shared, recalled or gone,
+   * or the process is about to change a name or an access above it): what
+   * it holds was logged, and it writes through from now on. Each open
+   * description of it is opened at the session, in the log's order, with
+   * the access it was opened with. `made`: the file is not made at the
+   * session yet, and its mode refuses what its descriptions do (creat(2) of
+   * 0444): its first description's open makes it (create, exclusive, its
+   * number), which keeps that access as creat(2) does, and its bytes are
+   * written through that description.
+   */
+  const goThrough = (file: LocalFile, ino: number, made?: number): void => {
     if (file.through !== undefined) return;
     const entry = decided.get(file.key) ?? store.entry(file.key);
     file.through = {
@@ -237,16 +254,58 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         mode: 0o100000 | file.mode, uid: store.cred.uid, gid: store.cred.gid, revision: 0, target: null,
       },
     };
+    const bytes = file.bytes.subarray(0, file.length);
     file.bytes = new Uint8Array(0);
     dirty.delete(file);
-    // Each open description of it is the session's from here: opened there,
-    // in the log's order, with the access it was opened with.
+    let making = made;
     for (const handle of new Set(handles.values())) {
       if (handle.file !== file || handle.description !== undefined) continue;
       handle.description = descriptionId();
-      const answer = client.submit({ type: 'call', call: { call: 'open', path: file.key, mode: file.mode, ...(handle.readable ? { read: true as const } : {}), description: handle.description } }, { acknowledged: true });
+      const creating = making === undefined ? {} : {
+        create: true as const, exclusive: true as const, ino: making, ...(file.umask === undefined ? {} : { umask: file.umask }),
+      };
+      const answer = client.submit({ type: 'call', call: { call: 'open', path: file.key, mode: file.mode, ...creating, ...(handle.readable ? { read: true as const } : {}), description: handle.description } }, { acknowledged: true });
       handle.session = answer.then((answered) => answered.receipt?.handle, () => undefined);
+      if (making !== undefined && bytes.byteLength > 0) {
+        client.submit({ type: 'call', call: { call: 'write', path: file.key, ino, description: handle.description, offset: 0, data: bytes.slice() } }, { acknowledged: true });
+      }
+      making = undefined;
     }
+  };
+
+  /** Whether a description of `file` is open here. */
+  const isOpen = (file: LocalFile): boolean => {
+    for (const handle of handles.values()) if (handle.file === file) return true;
+    return false;
+  };
+
+  /** Whether `file`'s mode, as decided here, refuses one of its open descriptions what it was opened to do: only its creating open could have. */
+  const refusedByMode = (file: LocalFile): boolean => {
+    const entry = decided.get(file.key);
+    if (entry === undefined || entry === null) return false;
+    for (const handle of handles.values()) {
+      if (handle.file === file && !modeAllows(entry, handle.readable ? 6 : 2, store.cred)) return true;
+    }
+    return false;
+  };
+
+  /**
+   * The process is about to change a name or an access at or above `keys`
+   * (anywhere, when absent): each file it holds open there goes through
+   * first. With the grant exclusive, the session's state under it changes
+   * only by what this process does; so switching before each such change
+   * keeps the local open's view exact: the open sent now is decided against
+   * the state the local open saw, never re-authorized against a later one.
+   */
+  const throughAt = (keys?: readonly string[]): void => {
+    const open: [number, LocalFile][] = [];
+    for (const [ino, file] of files) {
+      if (file.through !== undefined || file.detached !== undefined || !isOpen(file)) continue;
+      if (keys === undefined || keys.some((key) => within(file.key, key))) open.push([ino, file]);
+    }
+    if (open.length === 0) return;
+    drain();
+    for (const [ino, file] of open) goThrough(file, ino);
   };
 
   /** Log each file's latest bytes, in the order last written, under the name it has now. */
@@ -258,6 +317,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // file made here makes its name with this write, with its number.
       const ino = file.made;
       delete file.made;
+      // Its mode refuses its creating open what it writes: made by that open, and written through it.
+      if (ino !== undefined && refusedByMode(file)) { goThrough(file, ino, ino); continue; }
       client.submit({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, ...(ino === undefined ? {} : { ino }), ...(file.umask === undefined ? {} : { umask: file.umask }), data: file.bytes.slice(0, file.length) } }, { acknowledged: true });
     }
   };
@@ -720,6 +781,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // Only the owner (or root) changes a mode or times here; anything else is the session's to refuse.
       if (store.cred.uid !== 0 && store.cred.uid !== current.uid) return false;
       if ('uid' in attrs) return false;
+      if ('mode' in attrs) throughAt([key]);
       const next: ResidentEntry = 'mode' in attrs
         ? { ...current, mode: (current.mode & ~0o7777) | (attrs.mode & 0o7777), ctime: now() }
         : { ...current, atime: attrs.atime, mtime: attrs.mtime, ctime: now() };
@@ -742,6 +804,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       sentSome();
     },
     reportRecorded: () => failed(),
+
+    changing: (keys) => throughAt(keys),
     settle: async () => {
       drain();
       await client.settle();

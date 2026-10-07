@@ -470,6 +470,43 @@ async function until(ready, what) {
   assert.deepEqual(tail(stored), tail(big));
 }
 
+// ── Review D (41b-3): a held description keeps the access its open had when it goes through ──
+// Red before: going through opened each description anew by its name after
+// the process's own chmod 000 (or a mode its creating open never needed),
+// so the open was refused (EACCES), and the description's later writes and
+// reads had nothing at the session.
+{
+  const s = session();
+  await s.fs.mkdir('/home/user/proj/acc', { mode: 0o755 });
+  const revoke = (name) => withRecall(() => s.kernel.writeFile(`home/user/proj/acc/${name}`, enc.encode('p')));
+  for (const how of ['fchmod', 'chmod']) {
+    const path = `/home/user/proj/acc/${how}`;
+    const fd = await s.fs.open(path, { read: true, write: true, create: true, truncate: true, mode: 0o644 });
+    await s.fs.write(fd.id, null, enc.encode('held'));
+    if (how === 'fchmod') await s.fs.fchmod(fd.id, 0o000);
+    else await s.fs.chmod(path, 0o000);
+    await revoke(`peer-${how}`);
+    await s.fs.write(fd.id, null, enc.encode('+more'));
+    await s.fs.fsync(fd.id);
+    assert.equal(dec.decode(await s.fs.read(fd.id, 0, 20)), 'held+more', `after a ${how} 000 and a revoke, its read`);
+    await s.fs.close(fd.id);
+    await s.fs.settle();
+    assert.equal(dec.decode(await withRecall(() => s.kernel.readFile(`home/user/proj/acc/${how}`))), 'held+more', `after a ${how} 000 and a revoke, its writes`);
+  }
+  // creat(2) of 0444: its creating descriptor writes it, held or through.
+  const ro = await s.fs.open('/home/user/proj/acc/ro', { read: true, write: true, create: true, exclusive: true, mode: 0o444 });
+  await s.fs.write(ro.id, null, enc.encode('mine'));
+  await revoke('peer-ro');
+  await s.fs.write(ro.id, null, enc.encode('+too'));
+  await s.fs.fsync(ro.id);
+  assert.equal(dec.decode(await s.fs.read(ro.id, 0, 20)), 'mine+too', 'a creating descriptor of 0444 lost its access');
+  await s.fs.close(ro.id);
+  await s.fs.settle();
+  const made = s.kernel.stat('home/user/proj/acc/ro');
+  assert.equal(made.mode & 0o777, 0o444);
+  assert.equal(dec.decode(s.kernel.readFile('home/user/proj/acc/ro')), 'mine+too');
+}
+
 // ── Review D8 (race): what a description writes while its grant's recall is sent goes through ──
 // Red before: the description went on deciding while the recall's flush
 // waited, and the drain after it replayed the whole file over the peer's write.
