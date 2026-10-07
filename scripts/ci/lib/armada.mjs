@@ -12,16 +12,13 @@ import { fileURLToPath } from 'node:url';
 
 const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
-// The armada client, pinned: exactly ARMADA_CLIENT, a clean checkout of it
-// at ARMADA_DIR (a detached worktree of PreparedSkunk's armada clone, its
-// node_modules from `bun install --frozen-lockfile --production`), or the
-// run is refused. Upstream (/mnt/local/armada, eeef535) packs a commit
-// without the trees the environment's ancestors share with it, which no
-// environment holds ("fatal: unable to read tree"); 17db0d5 fixes it, and
-// ARMADA_CLIENT is the latest commit proven on top of it. Only the client
-// differs: it talks to the same deployed armada.
+// The armada client, pinned: exactly ARMADA_CLIENT of
+// https://github.com/AshishKumar4/armada, a clean checkout of it at
+// ARMADA_DIR with its node_modules from `bun install --frozen-lockfile
+// --production`, or the run is refused. The pin is the client the deployed
+// Worker is proven with: move both together.
 const ARMADA_DIR = '/mnt/local/nimbus/armada-client';
-export const ARMADA_CLIENT = '1a91f1bf5897cc4fb47cc04437973f73ef2e7195';
+export const ARMADA_CLIENT = '5601a06f2a70cae0c2697107bced2466087f57fc';
 
 /**
  * A file laid over a commit's tree: a path whose bytes and executable bit
@@ -105,7 +102,7 @@ export function armadaClient() {
   const dirty = spawnSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' });
   if (head.status !== 0 || head.stdout.trim() !== ARMADA_CLIENT || dirty.status !== 0 || dirty.stdout !== '') {
     throw new Error(`the armada client must be a clean checkout of ${ARMADA_CLIENT} at ${dir}; it is ${head.status === 0 ? head.stdout.trim() : 'not a checkout'}${dirty.stdout ? ', with local changes' : ''}. `
-      + `Make one: git -C <an armada clone> worktree add --detach ${dir} ${ARMADA_CLIENT}, then bun install --frozen-lockfile --production in it`);
+      + `Make one: git clone https://github.com/AshishKumar4/armada ${dir}, git -C ${dir} checkout --detach ${ARMADA_CLIENT}, then bun install --frozen-lockfile --production in it`);
   }
   return dir;
 }

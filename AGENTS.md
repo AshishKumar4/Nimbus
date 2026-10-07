@@ -386,11 +386,13 @@ again.
   --frozen-lockfile`. The environment is `.armada.json` and
   `scripts/ci/recipe/`; the probe environment adds Chromium.
   `scripts/ci/lib/armada.mjs` is the only file that knows armada.
-- The armada client is pinned to one commit (`ARMADA_CLIENT` in
+- The armada client is pinned to one commit of
+  github.com/AshishKumar4/armada (`ARMADA_CLIENT` in
   `scripts/ci/lib/armada.mjs`): a clean checkout at
   `/mnt/local/nimbus/armada-client`, or at `ARMADA_DIR`. A run on any other
-  client is refused, with the command that makes one. The connection is
-  `~/.config/armada/connection.json`, or `ARMADA_URL` and `ARMADA_TOKEN`.
+  client is refused, with the commands that make one. The connection is
+  `~/.config/armada/connection.json`, or `ARMADA_URL` and `ARMADA_TOKEN`
+  (the GitHub unit job reads both from repo secrets).
 
 **Tiers.** A file's leading comment block may carry one marker:
 
