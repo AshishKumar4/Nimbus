@@ -7659,11 +7659,19 @@ export class SqliteVFS {
             throw vfsError('EBADF', path, `no open description '${id}'`);
         return node;
     }
-    /** A W7 `close`: the description goes, and what the session kept of it. */
+    /**
+     * A W7 `close`: what the session kept of the description goes, and the
+     * description. A close that reports what storing its writes failed with
+     * has closed all the same: its refusal forgets the row too
+     * (refuseInSequence), as this transaction is rolled back.
+     */
     closeDescribed(by, id) {
-        by.descriptions?.close(id);
         if (by.pid !== null)
-            this.sql.exec('DELETE FROM vfs_wave_descriptions WHERE pid = ? AND id = ?', by.pid, id);
+            this.forgetDescription(by.pid, id);
+        by.descriptions?.close(id);
+    }
+    forgetDescription(pid, id) {
+        this.sql.exec('DELETE FROM vfs_wave_descriptions WHERE pid = ? AND id = ?', pid, id);
     }
     /**
      * A re-sent `open` the writer's cursor passed: its answer again, as a
@@ -7711,10 +7719,16 @@ export class SqliteVFS {
     advanceSequence(writer, seq) {
         this.sql.exec('UPDATE vfs_wave_cursors SET seq = ?, touched_at = ? WHERE writer = ?', seq, Date.now(), writer);
     }
-    /** The op numbered `seq` was refused: the cursor passes it, and the refusal is kept until the writer has had it answered. */
-    refuseInSequence(writer, refused) {
+    /**
+     * The op numbered `seq` was refused: the cursor passes it, and the refusal
+     * is kept until the writer has had it answered. `closed`: it was a close,
+     * whose description is gone whatever it answered (closeDescribed).
+     */
+    refuseInSequence(writer, refused, closed) {
         this.transactionSync(() => {
             this.sql.exec('UPDATE vfs_wave_cursors SET seq = ?, refused_seq = ?, refused_errno = ?, refused_message = ?, touched_at = ? WHERE writer = ?', refused.seq, refused.seq, refused.errno, refused.message, Date.now(), writer);
+            if (closed !== undefined)
+                this.forgetDescription(closed.pid, closed.id);
         });
     }
     /** `run` as a call made by the delegations `holds` (its lookups recall none of them), in this turn only. */
@@ -7822,6 +7836,8 @@ export class SqliteVFS {
         };
         // The descriptions its calls name: its binding's, and what the session kept of its process's.
         const described = { descriptions: options.descriptions, pid: options.sequence?.pid ?? null };
+        /** The wave's close calls, by number: a refused one forgets its description as an applied one does. */
+        const closing = new Map();
         /**
          * A record that lands on this filesystem, decided without an await: a
          * file (not a link) or directory placed here by placeSync, a chunk or end
@@ -8692,6 +8708,8 @@ export class SqliteVFS {
                             // A call observes everything the stream wrote before it.
                             phase = 'publish';
                             const call = record.call;
+                            if (call.call === 'close' && applying !== null)
+                                closing.set(applying, call.description);
                             // A mkdir commits with the calls beside it; any other may change
                             // where later names resolve, and commits now.
                             queueCall(call.path, () => {
@@ -8787,7 +8805,8 @@ export class SqliteVFS {
             if (sequence !== null && applying !== null && errno !== undefined && SYSCALL_VERDICTS.has(errno)) {
                 const refused = { seq: applying, errno, message: this.errorMessage(error) };
                 try {
-                    this.refuseInSequence(sequence.spec.writer, refused);
+                    const closed = closing.get(refused.seq);
+                    this.refuseInSequence(sequence.spec.writer, refused, closed === undefined || described.pid === null ? undefined : { pid: described.pid, id: closed });
                     progress.sequence = { cursor: refused.seq, refused };
                 }
                 catch {

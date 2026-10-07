@@ -2189,8 +2189,14 @@ export declare class SqliteVFS {
     private isDescribed;
     /** The open description a process's call names (described): EBADF when none is open under it; null when its file is gone. */
     private describedBy;
-    /** A W7 `close`: the description goes, and what the session kept of it. */
+    /**
+     * A W7 `close`: what the session kept of the description goes, and the
+     * description. A close that reports what storing its writes failed with
+     * has closed all the same: its refusal forgets the row too
+     * (refuseInSequence), as this transaction is rolled back.
+     */
     private closeDescribed;
+    private forgetDescription;
     /**
      * A re-sent `open` the writer's cursor passed: its answer again, as a
      * receipt (the description's descriptor and its file's stat), adopted
@@ -2214,7 +2220,11 @@ export declare class SqliteVFS {
     forgetSequences(pid: number): void;
     /** The op numbered `seq` committed: in its own transaction, the writer's cursor moves to it. */
     private advanceSequence;
-    /** The op numbered `seq` was refused: the cursor passes it, and the refusal is kept until the writer has had it answered. */
+    /**
+     * The op numbered `seq` was refused: the cursor passes it, and the refusal
+     * is kept until the writer has had it answered. `closed`: it was a close,
+     * whose description is gone whatever it answered (closeDescribed).
+     */
     private refuseInSequence;
     /** `run` as a call made by the delegations `holds` (its lookups recall none of them), in this turn only. */
     private withHolds;
