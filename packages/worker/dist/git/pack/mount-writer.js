@@ -114,6 +114,34 @@ export async function replaceFile(api, at, mode, bytes) {
     return await writeWhole(api, handle.id, bytes);
 }
 /**
+ * A file at `at` replaced as replaceFile replaces one, its bytes streamed
+ * from `chunks` as they come (a commit-graph layer is never held whole).
+ */
+async function replaceStreamed(api, at, mode, chunks) {
+    await api.mkdir(at.slice(0, at.lastIndexOf('/')), { recursive: true });
+    try {
+        await api.unlink(at);
+    }
+    catch (error) {
+        if (errnoCode(error) !== 'ENOENT')
+            throw error;
+    }
+    const handle = await api.fsOpen(at, { write: true, create: true, exclusive: true, mode });
+    try {
+        let offset = 0;
+        for await (const chunk of chunks) {
+            for (let at = 0; at < chunk.byteLength; at += WRITE_PIECE_BYTES) {
+                const piece = chunk.subarray(at, Math.min(chunk.byteLength, at + WRITE_PIECE_BYTES));
+                await api.fsWrite(handle.id, offset, piece);
+                offset += piece.byteLength;
+            }
+        }
+    }
+    finally {
+        await api.fsClose(handle.id);
+    }
+}
+/**
  * lockfile.c's write of the index at `at`: index.lock created exclusively
  * (one there already is git's "Unable to create"), written whole, closed,
  * renamed over the index; our own lock removed if any of that fails.
@@ -153,11 +181,21 @@ export async function writeLockedIndex(api, at, bytes) {
 /**
  * `writer` (rooted at `dir`, a namespace path on a mount), with each file
  * over a wave's mount limit, and the index of any size, written through
- * `api` instead, its receipt to `onReceipts`.
+ * `api` instead, its receipt to `onReceipts`; a streamed file over the
+ * limit is streamed through `api` too.
  */
 export function mountWriter(writer, api, dir, onReceipts) {
     const root = dir.replace(/\/+$/, '');
+    const streamed = writer.fileChunks;
     return {
+        ...(streamed === undefined ? {} : {
+            async fileChunks(path, mode, size, chunks) {
+                if (size <= MOUNT_WAVE_FILE_MAX)
+                    return await streamed.call(writer, path, mode, size, chunks);
+                await writer.flush();
+                await replaceStreamed(api, root + '/' + path, mode, chunks);
+            },
+        }),
         async file(path, mode, bytes) {
             const index = path === '.git/index';
             if (!index && bytes.byteLength <= MOUNT_WAVE_FILE_MAX)

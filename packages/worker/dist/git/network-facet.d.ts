@@ -247,6 +247,7 @@ export declare function runGraphFilters(ctx: DurableObjectState, env: any, opts:
     dir: string;
     pieceBudgetMs?: number;
     pieceCommits?: number;
+    onMount?: boolean;
 }, network: WorkspaceNetwork): Promise<GraphFiltersOutcome>;
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.

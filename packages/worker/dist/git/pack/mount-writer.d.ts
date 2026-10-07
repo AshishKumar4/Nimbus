@@ -83,10 +83,16 @@ export declare function replaceFile(api: FileApi, at: string, mode: number, byte
  * Answers the index's stat.
  */
 export declare function writeLockedIndex(api: FileApi, at: string, bytes: Uint8Array): Promise<FileStat>;
+/** A writer that also streams a file it never holds whole (the wave writer's fileChunks). */
+type StreamingWriter = CloneWriter & {
+    fileChunks?(path: string, mode: number, size: number, chunks: AsyncIterable<Uint8Array>): Promise<void>;
+};
 /**
  * `writer` (rooted at `dir`, a namespace path on a mount), with each file
  * over a wave's mount limit, and the index of any size, written through
- * `api` instead, its receipt to `onReceipts`.
+ * `api` instead, its receipt to `onReceipts`; a streamed file over the
+ * limit is streamed through `api` too.
  */
-export declare function mountWriter(writer: CloneWriter, api: FileApi, dir: string, onReceipts?: (receipts: CloneReceipt[]) => void): CloneWriter;
+export declare function mountWriter<W extends StreamingWriter>(writer: W, api: FileApi, dir: string, onReceipts?: (receipts: CloneReceipt[]) => void): W;
+export {};
 //# sourceMappingURL=mount-writer.d.ts.map
