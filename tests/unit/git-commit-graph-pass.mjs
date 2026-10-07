@@ -10,11 +10,13 @@
  *     assembly reads no more than a window at a time;
  *   - the chain is replaced as git replaces it: another writer's
  *     commit-graph-chain.lock (read-only, as git's is) leaves the chain, the
- *     lock and the layers as they are, and the pass says 'locked' (it was
- *     refused EACCES, or replaced the lock: both wrong); a chain that moved
- *     under the pass is left as it is ('moved');
- *   - what a pass cut short left is recovered: its temporary layer, its
- *     pieces, and a read-only layer of the name the pass makes, replaced.
+ *     lock and every layer as they are, and the pass says 'locked'; two
+ *     writers of the same content-addressed layer: the one refused the lock
+ *     never removes it, so the other's chain names a layer that is there
+ *     (before and after the base layer); a chain that moved under the pass
+ *     is left as it is ('moved');
+ *   - after a pass, layers the chain does not name are collected under the
+ *     lock, and a read-only layer of the name the pass makes is replaced.
  */
 
 import assert from 'node:assert/strict';
@@ -98,11 +100,11 @@ try {
     if ('skipped' in plan) return plan;
     const files = [];
     for (let from = 0; from < plan.commits;) {
-      const piece = await graphFiltersPiece(context, { layer: plan.layer, from, to: Math.min(from + pieceCommits, plan.commits), budgetMs: 60_000 });
+      const piece = await graphFiltersPiece(context, { layer: plan.layer, pass: plan.pass, from, to: Math.min(from + pieceCommits, plan.commits), budgetMs: 60_000 });
       if (piece.file) files.push(piece.file);
       from = piece.next;
     }
-    return { plan, ...(await graphFiltersAssemble(context, { layer: plan.layer, files, windowBytes })) };
+    return { plan, ...(await graphFiltersAssemble(context, { layer: plan.layer, pass: plan.pass, files, windowBytes })) };
   }
 
   const listing = (user) => user.readdir(GRAPHS).map(({ name }) => name).sort();
@@ -125,75 +127,85 @@ try {
     console.log(`  ok  the pass: host git's graph, byte for byte (${records.length} commits); nothing else left in commit-graphs/`);
   }
 
-  // ── Another writer's lock: the chain, the lock and the layers stay ──
+  // ── Two writers, one layer: another writer's lock, and the same layer ──
+  // A git process (B) writing the same filtered layer holds the lock, its
+  // layer placed and its chain not yet committed. The pass (A) is refused
+  // the lock and leaves B's layer, which B's chain is about to name.
   {
     const { user, context } = session();
-    // The base layer first, as a pass that got as far as its pieces.
     const plan = await graphFiltersPlan(context);
     assert.ok(!('skipped' in plan), JSON.stringify(plan));
     assert.equal(diffGraphs(unfiltered, layerOf(user, plan.layer)), null, 'the base layer is host git\'s graph without filters');
-    // A git process holds the lock (git creates it 0444).
-    user.writeFile(GRAPHS + '/commit-graph-chain.lock', 'held\n', { mode: 0o444 });
     const files = [];
     for (let from = 0; from < plan.commits;) {
-      const piece = await graphFiltersPiece(context, { layer: plan.layer, from, to: plan.commits, budgetMs: 60_000 });
+      const piece = await graphFiltersPiece(context, { layer: plan.layer, pass: plan.pass, from, to: plan.commits, budgetMs: 60_000 });
       files.push(piece.file);
       from = piece.next;
     }
-    const assembled = await graphFiltersAssemble(context, { layer: plan.layer, files, windowBytes: 64 });
+    const same = nameOf(reference);
+    user.writeFile(GRAPHS + '/graph-' + same + '.graph', reference, { mode: 0o444 });
+    user.writeFile(GRAPHS + '/commit-graph-chain.lock', same + '\n', { mode: 0o444 });
+    const assembled = await graphFiltersAssemble(context, { layer: plan.layer, pass: plan.pass, files, windowBytes: 64 });
     assert.deepEqual(assembled, { layer: null, skipped: 'locked' });
     assert.equal(chainOf(user), plan.layer + '\n', 'the chain still names the base layer');
-    assert.equal(new TextDecoder().decode(user.readFile(GRAPHS + '/commit-graph-chain.lock')), 'held\n', 'the other writer\'s lock is untouched');
-    assert.deepEqual(listing(user), ['commit-graph-chain', 'commit-graph-chain.lock', 'graph-' + plan.layer + '.graph'], 'the filtered layer and the pieces went');
-    // Its lock gone, a later pass completes.
-    user.unlink(GRAPHS + '/commit-graph-chain.lock');
-    const later = await pass(context);
-    assert.equal(diffGraphs(reference, layerOf(user, later.layer)), null);
-    console.log('  ok  another writer\'s lock: the chain, its lock and the base layer stay ("locked"); a later pass completes');
+    assert.equal(new TextDecoder().decode(user.readFile(GRAPHS + '/commit-graph-chain.lock')), same + '\n', 'B\'s lock is untouched');
+    assert.deepEqual(listing(user), ['commit-graph-chain', 'commit-graph-chain.lock', 'graph-' + plan.layer + '.graph', 'graph-' + same + '.graph'],
+      'A\'s temporary and pieces went; B\'s layer stays');
+    // B commits: its chain names a layer that is there.
+    user.rename(GRAPHS + '/commit-graph-chain.lock', GRAPHS + '/commit-graph-chain');
+    assert.equal(diffGraphs(reference, layerOf(user, chainOf(user).trim())), null, 'the chain B committed names its layer, whole');
+    console.log('  ok  two writers, the same layer: A refused the lock ("locked") leaves B\'s layer, which B\'s chain then names');
   }
 
-  // ── No chain yet and a lock held: no base layer installed ──
+  // ── The same before the base layer: no chain, and another writer's base ──
   {
     const { user, context } = session();
+    const base = nameOf(unfiltered);
     user.mkdir(GRAPHS, { recursive: true });
-    user.writeFile(GRAPHS + '/commit-graph-chain.lock', 'held\n', { mode: 0o444 });
+    user.writeFile(GRAPHS + '/graph-' + base + '.graph', unfiltered, { mode: 0o444 });
+    user.writeFile(GRAPHS + '/commit-graph-chain.lock', base + '\n', { mode: 0o444 });
     const plan = await graphFiltersPlan(context);
     assert.deepEqual(plan, { skipped: 'locked' });
-    assert.deepEqual(listing(user), ['commit-graph-chain.lock'], 'no chain, no layer, no records');
-    console.log('  ok  a lock held before the base layer: none installed ("locked")');
+    assert.deepEqual(listing(user), ['commit-graph-chain.lock', 'graph-' + base + '.graph'], 'B\'s lock and layer stay; A\'s temporary and the records went');
+    assert.equal(diffGraphs(unfiltered, layerOf(user, base)), null);
+    console.log('  ok  a lock held before the base layer: A installs none ("locked") and leaves B\'s layer of the same name');
   }
 
   // ── The chain moved under the pass: left as it is ──
   {
     const { user, context } = session();
     const plan = await graphFiltersPlan(context);
-    const piece = await graphFiltersPiece(context, { layer: plan.layer, from: 0, to: plan.commits, budgetMs: 60_000 });
+    const piece = await graphFiltersPiece(context, { layer: plan.layer, pass: plan.pass, from: 0, to: plan.commits, budgetMs: 60_000 });
     // A fetch layered on (git writes a second line).
     user.chmod(GRAPHS + '/commit-graph-chain', 0o644);
     user.writeFile(GRAPHS + '/commit-graph-chain', plan.layer + '\n' + 'ab'.repeat(20) + '\n');
-    const assembled = await graphFiltersAssemble(context, { layer: plan.layer, files: [piece.file], windowBytes: 64 });
+    const assembled = await graphFiltersAssemble(context, { layer: plan.layer, pass: plan.pass, files: [piece.file], windowBytes: 64 });
     assert.deepEqual(assembled, { layer: null, skipped: 'moved' });
     assert.equal(chainOf(user), plan.layer + '\n' + 'ab'.repeat(20) + '\n');
-    assert.deepEqual(listing(user), ['commit-graph-chain', 'graph-' + plan.layer + '.graph'], 'its layer, pieces and lock went');
+    assert.deepEqual(listing(user), ['commit-graph-chain', 'graph-' + plan.layer + '.graph'], 'its temporary, pieces and lock went');
     console.log('  ok  a chain that moved under the pass is left as it is ("moved")');
   }
 
-  // ── A pass cut short: its leavings recovered ──
+  // ── Layers the chain does not name: collected after a pass, under the lock ──
   {
     const { user, context } = session();
     const plan = await graphFiltersPlan(context);
-    // It had written a temporary layer, pieces, and its filtered layer under
-    // its own name (read-only), but never moved the chain.
-    user.writeFile(GRAPHS + '/tmp_nimbus_graph_0123', 'partial', { mode: 0o444 });
-    user.mkdir(GRAPHS + '/tmp_filters_' + plan.layer, { recursive: true });
-    user.writeFile(GRAPHS + '/tmp_filters_' + plan.layer + '/piece-0-3', 'old');
+    // A read-only layer of the name the pass makes (a writer stopped between
+    // placing it and committing), and one no chain names.
     const filteredName = nameOf(reference);
     user.writeFile(GRAPHS + '/graph-' + filteredName + '.graph', 'stale', { mode: 0o444 });
-    const outcome = await pass(context);
+    user.writeFile(GRAPHS + '/graph-' + 'cd'.repeat(20) + '.graph', 'orphan', { mode: 0o444 });
+    const files = [];
+    for (let from = 0; from < plan.commits;) {
+      const piece = await graphFiltersPiece(context, { layer: plan.layer, pass: plan.pass, from, to: plan.commits, budgetMs: 60_000 });
+      files.push(piece.file);
+      from = piece.next;
+    }
+    const outcome = await graphFiltersAssemble(context, { layer: plan.layer, pass: plan.pass, files, windowBytes: 64 });
     assert.equal(outcome.layer, filteredName);
-    assert.equal(diffGraphs(reference, layerOf(user, filteredName)), null, 'the stale read-only layer of its name was replaced');
-    assert.deepEqual(listing(user), ['commit-graph-chain', 'graph-' + filteredName + '.graph']);
-    console.log('  ok  a pass cut short: its temporary layer and pieces go, a read-only layer of its name is replaced');
+    assert.equal(diffGraphs(reference, layerOf(user, filteredName)), null, 'the stale layer of its name was replaced');
+    assert.deepEqual(listing(user), ['commit-graph-chain', 'graph-' + filteredName + '.graph'], 'the base layer and the orphan were collected; the lock went');
+    console.log('  ok  after the pass: a stale layer of its name replaced, layers the chain does not name collected');
   }
 } finally {
   rmSync(work, { recursive: true, force: true });

@@ -53,9 +53,9 @@ export const GIT_CLONE_JOB_MARKER = 'nimbus-clone-job';
 /** One step of a clone's changed-path filters pass (git/pack/graph-filters.ts). */
 export type GraphFiltersStep =
   | { step: 'plan' }
-  | { step: 'piece'; layer: string; from: number; to: number; budgetMs: number }
-  | { step: 'assemble'; layer: string; files: { name: string; bytes: number }[] }
-  | { step: 'discard'; layer: string };
+  | { step: 'piece'; layer: string; pass: string; from: number; to: number; budgetMs: number }
+  | { step: 'assemble'; layer: string; pass: string; files: { name: string; bytes: number }[] }
+  | { step: 'discard'; layer: string; pass: string };
 
 export interface GitNetworkOpts {
   op: GitNetworkOp;
@@ -984,7 +984,7 @@ async function driveGraphFilters(
   const started = Date.now();
   const step = async <T>(graphFilters: GraphFiltersStep): Promise<T> => await call(graphFilters) as T;
   const outcome: GraphFiltersOutcome = { layer: null, commits: 0, pieces: 0, trees: 0, treeBytes: 0, elapsed: 0 };
-  const plan = await step<{ layer: string; commits: number } | { skipped: NonNullable<GraphFiltersOutcome['skipped']> }>({ step: 'plan' });
+  const plan = await step<{ layer: string; commits: number; pass: string } | { skipped: NonNullable<GraphFiltersOutcome['skipped']> }>({ step: 'plan' });
   if ('skipped' in plan) return { ...outcome, skipped: plan.skipped, elapsed: Date.now() - started };
   outcome.commits = plan.commits;
   const files: { name: string; bytes: number }[] = [];
@@ -993,7 +993,7 @@ async function driveGraphFilters(
   try {
     for (let from = 0; from < plan.commits;) {
       const piece = await step<{ next: number; file: { name: string; bytes: number } | null; trees: number; treeBytes: number }>({
-        step: 'piece', layer: plan.layer, from, to: Math.min(from + size, plan.commits), budgetMs,
+        step: 'piece', layer: plan.layer, pass: plan.pass, from, to: Math.min(from + size, plan.commits), budgetMs,
       });
       if (piece.next <= from) throw new Error('graph-filters piece made no progress at ' + from);
       if (piece.file !== null) files.push(piece.file);
@@ -1004,10 +1004,10 @@ async function driveGraphFilters(
     }
   } catch (error) {
     // The base layer stays, without filters, as git leaves one it was not asked to filter.
-    await step({ step: 'discard', layer: plan.layer }).catch(() => null);
+    await step({ step: 'discard', layer: plan.layer, pass: plan.pass }).catch(() => null);
     throw error;
   }
-  const assembled = await step<{ layer: string | null; skipped?: GraphFiltersOutcome['skipped'] }>({ step: 'assemble', layer: plan.layer, files });
+  const assembled = await step<{ layer: string | null; skipped?: GraphFiltersOutcome['skipped'] }>({ step: 'assemble', layer: plan.layer, pass: plan.pass, files });
   return { ...outcome, layer: assembled.layer, ...(assembled.skipped ? { skipped: assembled.skipped } : {}), elapsed: Date.now() - started };
 }
 

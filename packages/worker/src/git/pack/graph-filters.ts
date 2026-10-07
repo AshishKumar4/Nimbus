@@ -5,11 +5,10 @@
  * in pieces and added to it, as `git commit-graph write --changed-paths`
  * would have written them.
  *
- *   plan      what a pass that did not finish left (its temporary layers and
- *             pieces) goes; then the base layer from the commit records the
- *             clone's history left (GRAPH_RECORDS_DIR), as the chain's one
- *             layer; its name and commits, unless the chain is anything
- *             else (filtered already, split, or not there)
+ *   plan      the base layer from the commit records the clone's history
+ *             left (GRAPH_RECORDS_DIR), as the chain's one layer; its name,
+ *             its commits and the pass's own name, unless the chain is
+ *             anything else (filtered already, split, or not there)
  *   piece     commits [from, to) of the layer in date order, newest first (a
  *             commit's first parent is most often the next one, and they
  *             share most of their trees): each one's first-parent tree diff,
@@ -19,15 +18,20 @@
  *             length), then the filters
  *   assemble  the layer with every commit's filter, streamed a window of
  *             positions at a time (the filters are never held whole), as a
- *             new layer; the chain moved to it; the old layer and the
- *             pieces go
+ *             new layer; the chain moved to it; the pieces go, and layers
+ *             the chain no longer names
  *
- * A layer is written under a temporary name and renamed to its own (a pass
- * cut short leaves a read-only file another can replace), and the chain is
- * replaced as git replaces it (commit-graph.c): commit-graph-chain.lock
- * created exclusively, the chain checked under it, the lock renamed over the
- * chain. A lock this pass did not create is never removed: the pass leaves
- * the chain as it is and says why, as git does.
+ * The chain is replaced as git replaces it (commit-graph.c
+ * write_commit_graph_file): commit-graph-chain.lock created exclusively, the
+ * chain checked under it, the layer's temporary file (a name of this pass's
+ * own) renamed to its content's name under it, the lock renamed over the
+ * chain. Another writer's lock, or a chain that moved, leaves everything as
+ * it is but the pass's own temporary, and the pass says why, as git does: a
+ * content-addressed layer is never removed on a skip (another writer may be
+ * publishing the same one). Layers the chain does not name are removed
+ * after a pass succeeds, under the lock, as git's expire_commit_graphs
+ * removes them after it writes. What a pass cut short left (its temporary,
+ * its pieces) stays: another pass cannot tell it from a live one's.
  *
  * Nothing holds a layer whole: a piece reads its CDAT chunk (36 bytes a
  * commit, and 12 for its date order), and holds a cache of trees, the pack
@@ -95,8 +99,8 @@ const join = (dir: string, path: string) => (dir.endsWith('/') ? dir + path : di
 const LOCK = COMMIT_GRAPH_CHAIN + '.lock';
 /** A layer being written, before it has its name. */
 const TMP_LAYER_PREFIX = 'tmp_nimbus_graph_';
-const TMP_FILTERS_PREFIX = 'tmp_filters_';
-const filtersDir = (layer: string) => COMMIT_GRAPHS_DIR + '/' + TMP_FILTERS_PREFIX + layer;
+/** A pass's pieces, by the pass's own name. */
+const filtersDir = (pass: string) => COMMIT_GRAPHS_DIR + '/tmp_filters_' + pass;
 const layerPath = (name: string) => COMMIT_GRAPHS_DIR + '/graph-' + name + '.graph';
 
 /** The chain's layer names, oldest first; null when there is no chain. */
@@ -144,53 +148,78 @@ async function* chunkParts(context: GraphContext, toc: LayerToc, place: ChunkPla
 /** Why a pass leaves the chain as it is (network-facet.ts GraphFiltersOutcome). */
 export type GraphSkip = 'no-graph' | 'not-a-base' | 'locked' | 'moved';
 
-/**
- * The chain made `layer` alone, as git commits it: the lock created
- * exclusively (another's means another writer: the chain is left as it is),
- * the chain checked under it against `expected` (null: no chain), the lock
- * renamed over it. The lock, when it was this call's and is not the chain
- * now, goes.
- */
-async function swapChain(context: GraphContext, expected: string | null, layer: string): Promise<GraphSkip | null> {
-  const lock = join(context.dir, LOCK);
-  let handle: number;
+/** The lock, created exclusively (O_EXCL); null when another writer holds it. */
+async function takeLock(context: GraphContext): Promise<number | null> {
   try {
     // 0644 while it is written: the session refuses writes to a 0444 file, even through its creator's descriptor.
-    handle = (await context.supervisor.fsOpen(lock, { write: true, create: true, exclusive: true, mode: 0o644 })).id;
+    return (await context.supervisor.fsOpen(join(context.dir, LOCK), { write: true, create: true, exclusive: true, mode: 0o644 })).id;
   } catch (error) {
-    if ((error as { code?: unknown })?.code === 'EEXIST') return 'locked';
+    if ((error as { code?: unknown })?.code === 'EEXIST') return null;
     throw error;
-  }
-  let committed = false;
-  try {
-    try {
-      await context.supervisor.fsWrite(handle, 0, encoder.encode(layer + '\n'));
-    } finally {
-      await context.supervisor.fsClose(handle);
-    }
-    await context.supervisor.chmod(lock, 0o444);
-    const chain = await readChain(context);
-    const unchanged = expected === null ? chain === null : chain !== null && chain.length === 1 && chain[0] === expected;
-    if (!unchanged) return 'moved';
-    await context.supervisor.rename(lock, join(context.dir, COMMIT_GRAPH_CHAIN));
-    committed = true;
-    return null;
-  } finally {
-    if (!committed) await context.supervisor.unlink(lock).catch(() => undefined);
   }
 }
 
 /**
- * `write` makes the layer under a temporary name; it is then renamed to its
- * own, replacing whatever stands there (a pass cut short leaves a read-only
- * file of that name). Returns the name.
+ * The chain made `layer` alone, as git commits it (commit-graph.c
+ * write_commit_graph_file): the lock created exclusively, the chain checked
+ * under it against `expected` (null: no chain), the layer's temporary file
+ * `tmp` renamed to its name under the lock, the lock renamed over the
+ * chain. Skipped (another writer's lock, or a chain that moved), nothing
+ * content-addressed is touched: the temporary, this pass's own, goes.
  */
-async function installLayer(context: GraphContext, write: (path: string) => Promise<string>): Promise<string> {
-  const tmp = COMMIT_GRAPHS_DIR + '/' + TMP_LAYER_PREFIX + crypto.randomUUID();
-  const name = await write(tmp);
-  await context.supervisor.rename(join(context.dir, tmp), join(context.dir, layerPath(name)));
-  return name;
+async function swapChain(context: GraphContext, expected: string | null, layer: string, tmp: string): Promise<GraphSkip | null> {
+  const lock = join(context.dir, LOCK);
+  let placed = false;
+  let committed = false;
+  try {
+    const handle = await takeLock(context);
+    if (handle === null) return 'locked';
+    try {
+      try {
+        await context.supervisor.fsWrite(handle, 0, encoder.encode(layer + '\n'));
+      } finally {
+        await context.supervisor.fsClose(handle);
+      }
+      await context.supervisor.chmod(lock, 0o444);
+      const chain = await readChain(context);
+      const unchanged = expected === null ? chain === null : chain !== null && chain.length === 1 && chain[0] === expected;
+      if (!unchanged) return 'moved';
+      await context.supervisor.rename(join(context.dir, tmp), join(context.dir, layerPath(layer)));
+      placed = true;
+      await context.supervisor.rename(lock, join(context.dir, COMMIT_GRAPH_CHAIN));
+      committed = true;
+      return null;
+    } finally {
+      if (!committed) await context.supervisor.unlink(lock).catch(() => undefined);
+    }
+  } finally {
+    if (!placed) await context.supervisor.unlink(join(context.dir, tmp)).catch(() => undefined);
+  }
 }
+
+/**
+ * Layers the chain does not name, removed as git's expire_commit_graphs
+ * removes them, but under the lock: the chain read while no writer can be
+ * placing a layer or moving the chain. Nothing when another writer holds the
+ * lock (a later pass collects them).
+ */
+async function collectLayers(context: GraphContext): Promise<void> {
+  const handle = await takeLock(context);
+  if (handle === null) return;
+  try {
+    await context.supervisor.fsClose(handle);
+    const named = new Set(await readChain(context) ?? []);
+    for (const name of await context.supervisor.readdir(join(context.dir, COMMIT_GRAPHS_DIR))) {
+      const layer = /^graph-([0-9a-f]{40})\.graph$/.exec(name)?.[1];
+      if (layer !== undefined && !named.has(layer)) await context.supervisor.unlink(join(context.dir, COMMIT_GRAPHS_DIR + '/' + name));
+    }
+  } finally {
+    await context.supervisor.unlink(join(context.dir, LOCK)).catch(() => undefined);
+  }
+}
+
+/** A temporary layer name of this pass's own. */
+const tmpLayer = () => COMMIT_GRAPHS_DIR + '/' + TMP_LAYER_PREFIX + crypto.randomUUID();
 
 /** A file whole, its length unknown: ranged reads until one comes back short. */
 async function readWhole(context: GraphContext, path: string): Promise<Uint8Array> {
@@ -222,18 +251,6 @@ async function removeDirectory(context: GraphContext, writer: CloneWriter, dir: 
 }
 
 /**
- * What a pass that did not finish left: its temporary layers and its
- * pieces. Only a full clone starts a pass, one per repository, so what these
- * names hold is a pass's that is over.
- */
-async function removeAbandoned(context: GraphContext, writer: CloneWriter): Promise<void> {
-  for (const name of await context.supervisor.readdir(join(context.dir, COMMIT_GRAPHS_DIR))) {
-    if (name.startsWith(TMP_LAYER_PREFIX)) await writer.remove(COMMIT_GRAPHS_DIR + '/' + name);
-    else if (name.startsWith(TMP_FILTERS_PREFIX)) await removeDirectory(context, writer, COMMIT_GRAPHS_DIR + '/' + name);
-  }
-}
-
-/**
  * A full clone's base layer, from the commit records its history left
  * (GRAPH_RECORDS_DIR), as the chain's one layer, if there is no chain; the
  * records go. Why it was not made the chain, when it was not.
@@ -249,13 +266,10 @@ async function writeBaseLayer(context: GraphContext, writer: CloneWriter): Promi
     lists.length = 0;
     if (built !== null) {
       await writer.directory(COMMIT_GRAPHS_DIR);
-      const name = await installLayer(context, async (tmp) => {
-        await writer.file(tmp, 0o444, built.file);
-        await writer.flush();
-        return graphName(built.file);
-      });
-      skipped = await swapChain(context, null, name);
-      if (skipped !== null && !(await readChain(context))?.includes(name)) await writer.remove(layerPath(name));
+      const tmp = tmpLayer();
+      await writer.file(tmp, 0o444, built.file);
+      await writer.flush();
+      skipped = await swapChain(context, null, graphName(built.file), tmp);
     }
   }
   await removeDirectory(context, writer, GRAPH_RECORDS_DIR);
@@ -268,17 +282,15 @@ async function writeBaseLayer(context: GraphContext, writer: CloneWriter): Promi
  * from its records, or the chain's one layer if it has no filters yet; or
  * why there is none.
  */
-export async function graphFiltersPlan(context: GraphContext): Promise<{ layer: string; commits: number } | { skipped: GraphSkip }> {
-  const writer = context.writer();
-  await removeAbandoned(context, writer);
-  await writer.flush();
-  const skipped = await writeBaseLayer(context, writer);
+export async function graphFiltersPlan(context: GraphContext): Promise<{ layer: string; commits: number; pass: string } | { skipped: GraphSkip }> {
+  const skipped = await writeBaseLayer(context, context.writer());
   if (skipped !== null) return { skipped };
   const layer = await soleLayer(context);
   if (layer === null) return { skipped: (await readChain(context)) === null ? 'no-graph' : 'not-a-base' };
   const toc = await layerToc(context, layer);
   if (!isUnfilteredBase(toc.chunks)) return { skipped: 'not-a-base' };
-  return { layer, commits: toc.chunks.find(({ id }) => id === 'CDAT')!.size / (OID_BYTES + 16) };
+  // The pass's own name: its pieces' directory is its alone.
+  return { layer, commits: toc.chunks.find(({ id }) => id === 'CDAT')!.size / (OID_BYTES + 16), pass: crypto.randomUUID() };
 }
 
 /** The layer's commits in date order, newest first, ties in graph order. */
@@ -296,7 +308,7 @@ function dateOrder(commits: LayerCommits): Uint32Array {
  */
 export async function graphFiltersPiece(
   context: GraphContext,
-  request: { layer: string; from: number; to: number; budgetMs: number },
+  request: { layer: string; pass: string; from: number; to: number; budgetMs: number },
 ): Promise<{ next: number; file: FilterFile | null; trees: number; treeBytes: number }> {
   const started = Date.now();
   const commits = layerCommits(await readChunk(context, await layerToc(context, request.layer), 'CDAT'));
@@ -344,16 +356,16 @@ export async function graphFiltersPiece(
   });
   const name = 'piece-' + request.from + '-' + next;
   const writer = context.writer();
-  await writer.directory(filtersDir(request.layer));
-  await writer.file(filtersDir(request.layer) + '/' + name, 0o644, bytes);
+  await writer.directory(filtersDir(request.pass));
+  await writer.file(filtersDir(request.pass) + '/' + name, 0o644, bytes);
   await writer.flush();
   return { next, file: { name, bytes: size }, trees, treeBytes };
 }
 
 /** A pass that did not finish: its pieces go, and the layer stays as it is. */
-export async function graphFiltersDiscard(context: GraphContext, request: { layer: string }): Promise<null> {
+export async function graphFiltersDiscard(context: GraphContext, request: { layer: string; pass: string }): Promise<null> {
   const writer = context.writer();
-  await removeDirectory(context, writer, filtersDir(request.layer));
+  await removeDirectory(context, writer, filtersDir(request.pass));
   await writer.flush();
   return null;
 }
@@ -384,7 +396,7 @@ function lowerBound(positions: Uint32Array, position: number): number {
  */
 export async function graphFiltersAssemble(
   context: GraphContext,
-  request: { layer: string; files: readonly FilterFile[]; windowBytes?: number },
+  request: { layer: string; pass: string; files: readonly FilterFile[]; windowBytes?: number },
 ): Promise<{ layer: string | null; skipped?: GraphSkip }> {
   const writer = context.writer();
   try {
@@ -397,7 +409,7 @@ export async function graphFiltersAssemble(
     const lengths = new Int32Array(count).fill(-1);
     const pieces: PieceIndex[] = [];
     for (const file of request.files) {
-      const path = join(context.dir, filtersDir(request.layer) + '/' + file.name);
+      const path = join(context.dir, filtersDir(request.pass) + '/' + file.name);
       const n = new DataView((await readRange(context.supervisor, path, 0, 4)).buffer).getUint32(0);
       const header = await readRange(context.supervisor, path, 4, n * 6);
       const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
@@ -455,23 +467,18 @@ export async function graphFiltersAssemble(
       { id: 'BIDX', size: index.byteLength, parts: [index] },
       { id: 'BDAT', size: 12 + total, parts: (async function* () { yield bloomDataHeader(); yield* filterData(); })() },
     ];
-    const name = await installLayer(context, async (tmp) => {
-      let named = '';
-      await writer.fileChunks(tmp, 0o444, chunkFileSize(streamed), chunkFileStream(streamed, (name) => { named = name; }));
-      await writer.flush();
-      return named;
-    });
-    // The new layer whole, then the chain moved to it, then the old one
-    // goes: the chain never names a layer that is not all there.
-    const skipped = await swapChain(context, request.layer, name);
-    if (skipped !== null) {
-      if (!(await readChain(context))?.includes(name)) await writer.remove(layerPath(name));
-      return { layer: null, skipped };
-    }
-    await writer.remove(layerPath(request.layer));
+    const tmp = tmpLayer();
+    let name = '';
+    await writer.fileChunks(tmp, 0o444, chunkFileSize(streamed), chunkFileStream(streamed, (named) => { name = named; }));
+    await writer.flush();
+    // The new layer whole, then the chain moved to it under the lock; the
+    // old one goes as the chain no longer names it, collected under the lock.
+    const skipped = await swapChain(context, request.layer, name, tmp);
+    if (skipped !== null) return { layer: null, skipped };
+    await collectLayers(context);
     return { layer: name };
   } finally {
-    await removeDirectory(context, writer, filtersDir(request.layer));
+    await removeDirectory(context, writer, filtersDir(request.pass));
     await writer.flush();
   }
 }
