@@ -8106,7 +8106,7 @@ function __nimbusWarnOnDeactivatedColors(env) {
     __nimbusColorWarned = true;
   }
 }
-function __nimbusColorDepth(env = globalThis.process.env) {
+function __nimbusColorDepth(env = __processMod.env) {
   const hasOwn = (name) => Object.prototype.hasOwnProperty.call(env, name);
   if (env.FORCE_COLOR !== undefined) {
     switch (env.FORCE_COLOR) {
