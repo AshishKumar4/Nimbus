@@ -129,7 +129,10 @@ export type BundleCell = {
   readonly path: string;
   /** A TypeScript source: its emit becomes the module cell, and the source keeps its bytes. */
   readonly typescript: boolean;
-  /** Lowered from ESM, so its module's block scope applies (commonjs-cell.ts THE WRAPPER). */
+  /**
+   * Lowered from ESM or compiled from TypeScript, so its module's block scope
+   * applies (commonjs-cell.ts THE WRAPPER); a CommonJS cell is only rewritten.
+   */
   readonly lowered: boolean;
   readonly absUrl: string;
 } & (
@@ -185,7 +188,7 @@ export function prepareBundleCell(path: string, source: string): BundleCell {
   }
   // CommonJS already: only its dynamic import() calls change.
   const rewriteOnly = path.endsWith('.cjs') || (!typescript && !looksLikeEsm(path, src));
-  const cell = { path, typescript, lowered: !rewriteOnly && !typescript, absUrl };
+  const cell = { path, typescript, lowered: !rewriteOnly, absUrl };
   if (!rewriteOnly && !typescript && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
     let rewritten: EsbuildTransformOutcome | null;
     try {

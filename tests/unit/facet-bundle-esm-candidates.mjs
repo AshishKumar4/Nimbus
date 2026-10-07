@@ -60,10 +60,10 @@ const state = await buildPrefetchBundle(
   vfs, { scriptPath: `${TS}/bin/tsc`, cwd: 'home/user', entryCode: files[`${TS}/bin/tsc`], esbuild: cjsEsbuild },
 );
 
+// What a path runs: its emit when a transform changed it, or else the file.
+const moduleOf = (state, path) => state.emits?.get(path) ?? state.bundle[path];
 const transformed = new Set(
-  Object.entries(state.bundle)
-    .filter(([, cell]) => typeof cell === 'string' && cell.startsWith('/* cjs */'))
-    .map(([path]) => path),
+  Object.keys(state.bundle).filter((path) => moduleOf(state, path)?.startsWith?.('/* cjs */')),
 );
 
 // The imports-field target is statically reachable from the extensionless
@@ -78,11 +78,13 @@ assert.ok(transformed.has(`${TS}/bin/tsc`), 'extensionless ESM bin must be rewri
 assert.ok(transformed.has(`${TS}/lib/tsc.js`));
 assert.ok(transformed.has(`${TS}/lib/getExePath.js`));
 
-// No import statement may survive anywhere in the bundle: each one is a
-// `new Function` SyntaxError at facet startup.
-for (const [path, cell] of Object.entries(state.bundle)) {
-  if (typeof cell !== 'string') continue;
-  assert.doesNotMatch(cell, /^\s*import\s/m, `${path} still carries ESM import syntax`);
+// No import statement may survive in any module: each one is a SyntaxError
+// when the registry compiles the cell. The files stay as they are on disk.
+for (const path of Object.keys(state.bundle)) {
+  const code = moduleOf(state, path);
+  if (typeof code !== 'string' || path.endsWith('/LICENSE')) continue;
+  assert.doesNotMatch(code, /^\s*import\s/m, `${path} still carries ESM import syntax`);
+  assert.equal(state.bundle[path], files[path], `${path} is staged as the file it is`);
 }
 
 // Non-JS content stays byte-identical: the pass parses before it rewrites.
@@ -136,10 +138,10 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
   assert.ok(calls.some((slice) => slice.length === 1 && slice[0].length > TRANSFORM_SLICE_SOURCE_BYTES),
     'the unsupported large cell travels alone');
   const compiled = { exports: {} };
-  new Function('exports', 'require', 'module', state.bundle[large])(compiled.exports, null, compiled);
+  new Function('exports', 'require', 'module', moduleOf(state, large))(compiled.exports, null, compiled);
   assert.equal(compiled.exports.payload, 'x'.repeat(600_000), 'the bounded module exports its original value');
-  for (const cell of [entry, unsupported, small]) assert.equal(state.bundle[cell], '/* hosted-cjs */\n', cell);
-  assert.throws(() => new Function(state.bundle[broken])(), /esbuild transform failed for .*broken\.js: Unexpected ";"/,
+  for (const cell of [entry, unsupported, small]) assert.equal(moduleOf(state, cell), '/* hosted-cjs */\n', cell);
+  assert.throws(() => new Function(moduleOf(state, broken))(), /esbuild transform failed for .*broken\.js: Unexpected ";"/,
     'a rejected module throws its reason when required, and costs the others nothing');
 
 
@@ -166,9 +168,9 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
     launchFs(prepassFiles).fs, { scriptPath: `/${root}/cli.js`, cwd: 'home/user', entryCode: prepassFiles[`${root}/cli.js`], esbuild: host },
   );
   for (const cell of [`${root}/cli.js`, `${root}/dep.js`]) {
-    assert.equal(state.bundle[cell], '/* hosted-cjs */\n', `${cell} is transformed despite its unreadable sibling`);
+    assert.equal(moduleOf(state, cell), '/* hosted-cjs */\n', `${cell} is transformed despite its unreadable sibling`);
   }
-  assert.throws(() => new Function(state.bundle[`${root}/unreadable.js`])(),
+  assert.throws(() => new Function(moduleOf(state, `${root}/unreadable.js`))(),
     /esbuild transform failed for .*unreadable\.js: Unexpected token/,
     'the unreadable cell throws its own reason when required');
   assert.ok(!sent.some((code) => code.includes('and otherwise')), 'the unreadable cell never reaches the host');
