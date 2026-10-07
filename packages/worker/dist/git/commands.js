@@ -2691,6 +2691,13 @@ async function remoteUrl(git, fs, dir, remote) {
     const value = await git.getConfig({ fs, dir, path: `remote.${remote}.url` });
     return typeof value === 'string' ? value : undefined;
 }
+/** What git says of a remote that names neither a configured remote nor a repository (transport.c, connect.c). */
+function noSuchRemote(remote) {
+    return `fatal: '${remote}' does not appear to be a git repository\n`
+        + 'fatal: Could not read from remote repository.\n\n'
+        + 'Please make sure you have the correct access rights\n'
+        + 'and the repository exists.\n';
+}
 /**
  * A network command that failed. When the git server could not be reached,
  * or refused (pack/remote-failure.ts), git's message about the repository
@@ -3135,6 +3142,11 @@ network = ISOLATE_NETWORK) {
                     ctx.stderr.write('[git] fetch requires DO ctx + env (internal configuration error)\n');
                     return 1;
                 }
+                const fetchUrl = await remoteUrl(git, fs, dir, remote);
+                if (fetchUrl === undefined) {
+                    await ctx.stderr.write(noSuchRemote(remote));
+                    return 128;
+                }
                 if (!quiet)
                     ctx.stdout.write(`Fetching from ${remote}...\n`);
                 const result = await execGitNetwork(doCtx, doEnv, {
@@ -3155,7 +3167,7 @@ network = ISOLATE_NETWORK) {
                         ctx.stdout.write(`\n[git] fetch complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
                     return 0;
                 }
-                return await networkFailure(ctx, 'fetch', result, await remoteUrl(git, fs, dir, remote));
+                return await networkFailure(ctx, 'fetch', result, fetchUrl);
             }
             case 'pull': {
                 // git pull is a fetch of the branch, then a merge of it: the merge through the session's one
@@ -3175,6 +3187,12 @@ network = ISOLATE_NETWORK) {
                     await ctx.stderr.write(pullIdents.error);
                     return 128;
                 }
+                // Its fetch, git's child, fails (128); pull says 1.
+                const pullUrl = await remoteUrl(git, fs, dir, remote);
+                if (pullUrl === undefined) {
+                    await ctx.stderr.write(noSuchRemote(remote));
+                    return 1;
+                }
                 if (!quiet)
                     ctx.stdout.write(`Pulling from ${remote}/${branch}...\n`);
                 const started = Date.now();
@@ -3192,7 +3210,7 @@ network = ISOLATE_NETWORK) {
                 }, network);
                 if (!result.success) {
                     // git's pull runs its fetch as a child: its message, and pull's own 1.
-                    await networkFailure(ctx, 'pull', result, await remoteUrl(git, fs, dir, remote));
+                    await networkFailure(ctx, 'pull', result, pullUrl);
                     return 1;
                 }
                 const merged = await mergeCommand(ctx, git, fs, repoVfs, dir, `${remote}/${branch}`, true, partial);
@@ -3210,6 +3228,11 @@ network = ISOLATE_NETWORK) {
                 if (!doCtx || !doEnv) {
                     ctx.stderr.write('[git] push requires DO ctx + env (internal configuration error)\n');
                     return 1;
+                }
+                const pushUrl = await remoteUrl(git, fs, dir, remote);
+                if (pushUrl === undefined) {
+                    await ctx.stderr.write(noSuchRemote(remote));
+                    return 128;
                 }
                 if (!quiet)
                     ctx.stdout.write(`Pushing to ${remote}/${branch}...\n`);
@@ -3230,7 +3253,7 @@ network = ISOLATE_NETWORK) {
                         ctx.stdout.write(`\n[git] push complete (${(result.elapsed / 1000).toFixed(1)}s)\n`);
                     return 0;
                 }
-                return await networkFailure(ctx, 'push', result, await remoteUrl(git, fs, dir, remote));
+                return await networkFailure(ctx, 'push', result, pushUrl);
             }
             case 'merge': {
                 const theirs = subArgs.find(a => !a.startsWith('-'));
