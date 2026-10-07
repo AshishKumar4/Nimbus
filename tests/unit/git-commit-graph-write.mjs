@@ -21,7 +21,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { buildFixture, diffGraphs, referenceGraph } from './lib/commit-graph-reference.mjs';
-import { commitRecord, graphCommits, graphName, writeCommitGraph } from '../../packages/worker/src/git/pack/commit-graph.ts';
+import { bloomFilter, changedPaths, commitRecord, graphCommits, graphName, murmur3, writeCommitGraph } from '../../packages/worker/src/git/pack/commit-graph.ts';
 
 const root = mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'commit-graph-write-'));
 const git = (cwd, args, input) => execFileSync('git', args, {
@@ -30,10 +30,10 @@ const git = (cwd, args, input) => execFileSync('git', args, {
 });
 const hexBytes = (hex) => Uint8Array.from(hex.match(/../g), (pair) => parseInt(pair, 16));
 
-/** Every commit object of `repo`: its id and bytes, in pack order (as a commits piece meets them). */
-function commitObjects(repo) {
+/** Every `kind` object of `repo`: its id and bytes, in pack order (as a commits piece meets them). */
+function objectsOf(repo, kind = 'commit') {
   const listed = git(repo, ['cat-file', '--batch-all-objects', '--batch-check=%(objectname) %(objecttype)', '--unordered']).toString().trim().split('\n');
-  const ids = listed.map((line) => line.split(' ')).filter(([, type]) => type === 'commit').map(([id]) => id);
+  const ids = listed.map((line) => line.split(' ')).filter(([, type]) => type === kind).map(([id]) => id);
   const batch = git(repo, ['cat-file', '--batch'], ids.join('\n') + '\n');
   const objects = [];
   let at = 0;
@@ -49,7 +49,7 @@ function commitObjects(repo) {
 
 try {
   const repo = buildFixture(path.join(root, 'repo'));
-  const objects = commitObjects(repo);
+  const objects = objectsOf(repo);
   const graph = writeCommitGraph(graphCommits(objects.map(({ oid, data }) => commitRecord(oid, data))));
   const reference = referenceGraph(repo, { changedPaths: false });
   assert.equal(diffGraphs(reference, graph), null, 'the graph is host git\'s, byte for byte');
@@ -69,6 +69,33 @@ try {
   const logged = git(repo, ['-c', 'core.commitGraph=true', 'log', '--oneline', '--all']).toString().trim().split('\n');
   assert.equal(logged.length, objects.length);
   console.log('  ok  git commit-graph verify passes on the chain; git log reads through it');
+
+  // Changed-path filters, from each commit's first-parent diff of its trees:
+  // host git's --changed-paths graph (version 2), byte for byte, the
+  // "too large" filter of the six-hundred-file commit included.
+  const trees = new Map(objectsOf(repo, 'tree').map(({ oid, data }) => [Buffer.from(oid).toString('hex'), data]));
+  const read = async (oid) => {
+    const tree = trees.get(Buffer.from(oid).toString('hex'));
+    if (tree === undefined) throw new Error('no tree ' + Buffer.from(oid).toString('hex'));
+    return tree;
+  };
+  const commits = graphCommits(objects.map(({ oid, data }) => commitRecord(oid, data)));
+  const treeOf = (c) => commits.trees.subarray(c * 20, (c + 1) * 20);
+  const filters = [];
+  for (let c = 0; c < commits.count; c++) {
+    const first = commits.parentStart[c] < commits.parentStart[c + 1] ? commits.parents[commits.parentStart[c]] : -1;
+    filters.push(bloomFilter(await changedPaths(read, first < 0 ? null : treeOf(first), treeOf(c))));
+  }
+  const filtered = writeCommitGraph(commits, filters);
+  assert.equal(diffGraphs(referenceGraph(repo), filtered), null, 'with changed-path filters, host git\'s graph, byte for byte');
+  console.log(`  ok  changed-path filters for ${commits.count} commits: host git's --changed-paths graph, byte for byte`);
+
+  // murmur3 v2 on bytes past 0x7f (v1's signed-char bug), and the paths' prefixes.
+  assert.equal(murmur3(0, new Uint8Array(0)), 0);
+  assert.equal(murmur3(0x293ae76f, new TextEncoder().encode('\u00e9t\u00e9')), murmur3(0x293ae76f, Uint8Array.of(0xc3, 0xa9, 0x74, 0xc3, 0xa9)));
+  assert.equal(bloomFilter([]).byteLength, 1, 'no changes: one zero byte');
+  assert.deepEqual([...bloomFilter(null)], [0xff], 'too many: one 0xff byte');
+  assert.equal(bloomFilter([new TextEncoder().encode('a/b/c')]).byteLength, 4, 'a/b/c, a/b and a: 30 bits');
 
   // git's parse_commit_date, at its edges.
   const oid = new Uint8Array(20);
