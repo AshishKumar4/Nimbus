@@ -236,11 +236,13 @@ export class FencedWork<R extends FencedWorkRecord> {
    * Re-drive one journal row — the awaited sibling of recovery's un-awaited
    * re-drives, for a caller that must know whether the launch actually came
    * back. Single-flight per row: a request-driven drive and recovery's own
-   * never boot the same launch twice. Resolves true only when the re-drive
-   * itself FAILED and the failure was reported; a settled drive supersedes
-   * the row the same way recovery's does.
+   * never boot the same launch twice. `lostToReset` marks a row a previous
+   * instance left (not a crash this instance restarts), whose drive is
+   * announced through onRedrive, once, by the call that starts it. Resolves
+   * true only when the re-drive itself FAILED and the failure was reported;
+   * a settled drive supersedes the row the same way recovery's does.
    */
-  drive(key: string, record: R): Promise<boolean> {
+  drive(key: string, record: R, { lostToReset }: { lostToReset: boolean }): Promise<boolean> {
     let inflight = this.drives.get(key);
     if (inflight === undefined) {
       inflight = (async (): Promise<boolean> => {
@@ -250,6 +252,7 @@ export class FencedWork<R extends FencedWorkRecord> {
           await this.supersede(key);
           return true;
         }
+        if (lostToReset) this.host.onRedrive?.(record);
         let failed = false;
         try {
           await this.host.redrive(record, spent + 1);
@@ -322,14 +325,13 @@ export class FencedWork<R extends FencedWorkRecord> {
     if (abandoned.length > 0 || redriven.length > 0) await this.storage.sync();
     for (const [, record] of abandoned) this.host.onAbandoned?.(record);
     for (const [key, record] of redriven) {
-      this.host.onRedrive?.(record);
       // Not awaited: this call is running inside the alarm that granted the
       // turn, and the launch it starts asks for turns of its own through that
       // same alarm — awaiting it here would be waiting on an alarm that cannot
       // be scheduled until this one returns. `drive` single-flights it: a
       // request that arrives mid-launch waits on this same drive rather than
       // booting a second process.
-      this.host.waitUntil(this.drive(key, record));
+      this.host.waitUntil(this.drive(key, record, { lostToReset: true }));
     }
   }
 
