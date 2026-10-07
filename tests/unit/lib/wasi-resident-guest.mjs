@@ -180,10 +180,12 @@ export async function residentGuest({ refuse = () => false, preopen = '' } = {})
     async dispose() { await bridge.dispose(); await authority.releaseProcess(pid); harness.db.close(); },
   };
   // The store boots on the first call; wait until it answers.
-  await guest.open('home/user', { directory: true }).then((fd) => guest.close(fd));
+  // home/user, or the preopen re-stated, which names the preopen itself.
+  const home = preopen || 'home/user';
+  await guest.open(home, { directory: true }).then((fd) => guest.close(fd));
   for (let i = 0; i < 50 && !(P.__wasiFsStats()?.local > 0); i++) {
     await new Promise((resolve) => setTimeout(resolve, 5));
-    const n = putPath('home/user');
+    const n = putPath(home);
     await wasiImport.path_filestat_get(PREOPEN_FD, 1, PATH, n, OUT);
   }
   return guest;
