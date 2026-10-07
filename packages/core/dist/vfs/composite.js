@@ -795,9 +795,10 @@ export class CompositeVFS {
      * point it is on ('/' for the root), and whether that mount is read-only.
      * The lookup is the mutations' own (onMutation's), so a writer that asks
      * before it writes lands where the operation would. Rejects as that
-     * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO.
+     * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO. Synchronous while
+     * the lookup stays on synchronous backends.
      */
-    async mutationRoute(path, options) {
+    mutationRoute(path, options) {
         return reported({ syscall: 'route', path }, () => then(this.resolve(path, options?.follow === true, false), (at) => {
             this.present(at);
             const { mount } = this.locate(at);

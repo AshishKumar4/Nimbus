@@ -923,6 +923,10 @@ export const SEED_FILES = [
 export function shouldSeedProject(vfs) {
     const view = vfs.as(CRED_KERNEL);
     try {
+        // The session's own filesystem only: a mount over the home is not
+        // seeded, and its names are not read from beneath it.
+        if (!vfs.placesHere([SEED_SENTINEL_PATH, SEED_PROJECT_DIR]))
+            return false;
         if (view.exists(SEED_SENTINEL_PATH))
             return false;
         if (view.exists(SEED_PROJECT_DIR))
@@ -1030,7 +1034,10 @@ export function seedProject(vfs, opts) {
     }
     let fileCount = 0;
     try {
-        // Phase 1: all project files + directories in ONE transactionSync
+        // Phase 1: all project files + directories in ONE transactionSync, in
+        // the turn their placement on the session's filesystem was checked.
+        if (!vfs.placesHere([SEED_PROJECT_DIR, SEED_SENTINEL_PATH]))
+            return { seeded: false, files: 0, reason: 'not-on-the-session-filesystem' };
         const result = view.writeBatch({ inodes, chunks });
         fileCount = SEED_FILES.length;
         log?.(`[seed] wrote ${SEED_FILES.length} files + ${dirSet.size} dirs (${result.inodes} inodes, ${result.chunks} chunks)`);
@@ -1041,6 +1048,8 @@ export function seedProject(vfs, opts) {
         const sentinelData = enc.encode(`# Nimbus seed sentinel — delete this file AND ${SEED_PROJECT_TILDE} to re-seed.\n` +
             `# Seeded at: ${new Date(mtime).toISOString()}\n` +
             `# Files: ${SEED_FILES.length}\n`);
+        if (!vfs.placesHere([SEED_SENTINEL_PATH]))
+            return { seeded: false, files: fileCount, reason: 'not-on-the-session-filesystem' };
         view.writeBatch({
             inodes: [{
                     path: SEED_SENTINEL_PATH,

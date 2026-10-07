@@ -239,7 +239,9 @@ export interface CredentialedVfs {
      * as a wave, each applied where it lands, in order, refused as a whole
      * call is (its error) at the first refusal.
      */
-    writeBatchPlaced(payload: BatchWritePayload): Promise<{
+    writeBatchPlaced(payload: BatchWritePayload, options?: {
+        signal?: AbortSignal;
+    }): Promise<{
         inodes: number;
         chunks: number;
     }>;
@@ -307,6 +309,8 @@ export interface WriteStreamReceipt {
     gid: number;
     dev: number;
 }
+/** The longest target a routed symbolic link takes, in bytes: PATH_MAX, as symlink(2) bounds it. */
+export declare const ROUTED_LINK_TARGET_MAX = 4096;
 /** One chunk of a routed file's bytes, held by the wave's credit until `release`. */
 export interface RoutedChunk {
     readonly data: Uint8Array;
@@ -314,9 +318,9 @@ export interface RoutedChunk {
 }
 /**
  * A wave's record that the namespace places on a mount (WaveRouter.apply).
- * Paths are the namespace's, '/'-rooted, as the wave named them. A file's
- * bytes arrive as the wave delivers them, each chunk held by the wave's
- * credit until the router releases it.
+ * Paths are where the namespace's lookup placed them ('/'-rooted, the
+ * directory's links resolved). A file's bytes arrive as the wave delivers
+ * them, each chunk held by the wave's credit until the router releases it.
  */
 export type RoutedWaveRecord = {
     readonly type: 'delete';
@@ -358,9 +362,10 @@ export interface WaveRouter {
      * The namespace path ('/'-rooted) directory `path` resolves to by the
      * mutations' lookup (CompositeVFS.mutationRoute, links followed). A tail
      * that does not exist yet is kept as named, after the nearest ancestor
-     * that resolves.
+     * that resolves. Synchronous while the lookup stays on synchronous
+     * backends, so a commit can recheck a placement in its own turn.
      */
-    resolveDirectory(path: string, cred: VfsCred, signal?: AbortSignal): Promise<string>;
+    resolveDirectory(path: string, cred: VfsCred, signal?: AbortSignal): string | Promise<string>;
     /** The mount a mutation at resolved namespace path `path` lands on, or null when it is this filesystem's alone. */
     placement(path: string): string | null;
     /**
@@ -1847,6 +1852,23 @@ export declare class SqliteVFS {
     private waveRouter;
     /** The namespace that places every wave's records (ProcessFiles installs its CompositeVFS). */
     setWaveRouter(router: WaveRouter | null): void;
+    /**
+     * Whether the namespace places every one of `names` (as `cred` names
+     * them) on this filesystem, by lookups made in this turn: false when one
+     * lands on a mount or under a directory the namespace composes, when a
+     * lookup leaves the synchronous backends, or when it fails. A caller that
+     * writes in this same turn writes where the namespace would.
+     */
+    placesHere(names: readonly string[], cred?: VfsCred): boolean;
+    private placedHere;
+    /**
+     * writeBatch where the namespace places it. When every record is placed on
+     * this filesystem by lookups made in this turn, the batch commits here,
+     * atomic as before, in that same turn; otherwise (a record on a mount, or
+     * a lookup that left the synchronous backends) it goes as a wave, each
+     * record applied where it lands and rechecked at its commit. `signal`
+     * cancels it before anything commits.
+     */
     private writeBatchPlaced;
     /**
      * Route `record` through `router` when the namespace places it on a mount,
