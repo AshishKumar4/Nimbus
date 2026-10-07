@@ -86,6 +86,33 @@ const FILES = {
   'node_modules/late-tpl/package.json': JSON.stringify({ name: 'late-tpl', main: 'index.js' }),
   'node_modules/late-tpl/index.js': 'module.exports = "tpl";\n',
   'mixed.mjs': 'const mod = await import(["late", "mixed"].join("-"));\nconsole.log("MIXED " + mod.default);\n',
+  // A dual package: its import branch and its require branch differ, and a
+  // static import in a module the loader evaluates late resolves as the
+  // loader evaluates it (review of 1840bc205).
+  'node_modules/late-dual/package.json': JSON.stringify({ name: 'late-dual', exports: { '.': { import: './esm.mjs', require: './cjs.cjs' } } }),
+  'node_modules/late-dual/esm.mjs': 'export default "dual-esm";\n',
+  'node_modules/late-dual/cjs.cjs': 'module.exports = "dual-cjs";\n',
+  'node_modules/late-dualuser/package.json': JSON.stringify({ name: 'late-dualuser', type: 'module', exports: './index.js' }),
+  'node_modules/late-dualuser/index.js': 'import dual from "late-dual";\nexport default dual;\n',
+  'dual.mjs': 'const mod = await import(["late", "dualuser"].join("-"));\nconsole.log("DUAL " + mod.default);\n',
+  // The program's own miss, made before the prefetch reads the same file:
+  // the prefetch's read never answers it (review of 1840bc205).
+  'node_modules/late-kept/package.json': JSON.stringify({ name: 'late-kept', type: 'module', exports: './index.js' }),
+  'node_modules/late-kept/index.js': 'export const kept = "kept";\n',
+  'kept.mjs': [
+    'import fs from "node:fs";',
+    'const name = ["late", "kept"].join("-");',
+    'let read = "read";',
+    'try { fs.readFileSync("node_modules/" + name + "/package.json", "utf8"); } catch (e) { read = e.code; }',
+    'const mod = await import(name);',
+    'console.log("KEPT " + read + " " + mod.kept);',
+  ].join('\n'),
+  // A package a late require reaches through a link (review of 1840bc205).
+  'packages/linkedcjs/package.json': JSON.stringify({ name: 'late-linkedcjs', main: 'main.js' }),
+  'packages/linkedcjs/main.js': 'module.exports = "linked-cjs";\n',
+  'node_modules/late-cjsuser/package.json': JSON.stringify({ name: 'late-cjsuser', main: 'index.js' }),
+  'node_modules/late-cjsuser/index.js': 'module.exports = require("late-linkedcjs");\n',
+  'linkedcjs.mjs': 'const mod = await import(["late", "cjsuser"].join("-"));\nconsole.log("LINKEDCJS " + mod.default);\n',
   // A floating import: nothing awaits it, and the process stays until it has loaded.
   'node_modules/late-float/package.json': JSON.stringify({ name: 'late-float', type: 'module', exports: './index.js' }),
   'node_modules/late-float/index.js': 'import { part } from "./part.js";\nexport const value = "float:" + part;\n',
@@ -109,7 +136,7 @@ try {
     );
     assert.equal(setup.status, 0, setup.stdout);
     assert.match(setup.stdout, /^SETUP$/m);
-    const link = await terminal.run(`ln -s ../packages/linked ${W}/node_modules/late-linked && echo LINKED`);
+    const link = await terminal.run(`ln -s ../packages/linked ${W}/node_modules/late-linked && ln -s ../packages/linkedcjs ${W}/node_modules/late-linkedcjs && echo LINKED`);
     assert.match(link.stdout, /^LINKED$/m, link.stdout);
 
     const config = await terminal.run(`cd ${W} && node config.mjs`);
@@ -125,12 +152,22 @@ try {
       ['linked.mjs', /^LINKED linked$/m, 'a package reached through a link resolves with its manifest behind the link'],
       ['mixed.mjs', /^MIXED cmt\+esc\+tpl$/m, 'requests after a comment, with escapes and in a template are fetched'],
       ['floating.mjs', /^FLOAT float:part$/m, 'a floating import() keeps the process until it has loaded'],
+      ['dual.mjs', /^DUAL dual-(?:cjs|esm)$/m, "a late module's static import of a dual package loads the branch its evaluation resolves"],
+      ['linkedcjs.mjs', /^LINKEDCJS linked-cjs$/m, 'a late require of a package installed as a link loads'],
     ];
     for (const [entry, expected, what] of cases) {
       const run = await terminal.run(`cd ${W} && node ${entry}`);
       assert.match(run.stdout, expected, `${what}, on the first run:\n${run.stdout}`);
       assert.equal(run.status, 0, `${entry}: ${run.stdout}`);
     }
+
+    // The program missed late-kept's package.json itself, and carried on; the
+    // prefetch's own later read of it does not answer that miss, so the exit
+    // report still names it, as it names any read the program was refused.
+    const kept = await terminal.run(`cd ${W} && node kept.mjs`);
+    assert.match(kept.stdout, /^KEPT EAGAIN kept$/m, kept.stdout);
+    assert.match(kept.stdout, /read synchronously but their content was never staged[\s\S]*late-kept\/package\.json/, `the program's own miss stays in its exit report:\n${kept.stdout}`);
+    assert.notEqual(kept.status, 0, kept.stdout);
   } finally {
     await terminal.close();
   }
