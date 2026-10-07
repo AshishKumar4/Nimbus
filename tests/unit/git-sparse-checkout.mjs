@@ -122,6 +122,8 @@ try {
     for (const args of [
       ['sparse-checkout', 'set', '/a'], ['sparse-checkout', 'set', 'a*'], ['sparse-checkout', 'set', '!a'], ['sparse-checkout', 'set', 'top.txt'],
       ['sparse-checkout', 'add', 'b/y.txt'], ['sparse-checkout', 'frob'], ['sparse-checkout'], ['sparse-checkout', 'list', '--frob'],
+      ['sparse-checkout', 'set', '--frob'], ['sparse-checkout', 'add', '--frob'], ['sparse-checkout', 'reapply', '--frob'],
+      ['sparse-checkout', 'init', '--frob'], ['sparse-checkout', 'disable', '--frob'],
     ]) await p.run(args);
     p.same('refusals');
     await p.run(['sparse-checkout', 'set', '--skip-checks', 'top.txt']);
