@@ -16,7 +16,9 @@ export function wasiOutputRelay(target) {
                 if (room === 0)
                     return chain.then(admit);
                 const size = Math.min(room, bytes.byteLength - at);
-                const part = at === 0 && size === bytes.byteLength ? bytes : bytes.subarray(at, at + size);
+                // A queued write outlives fd_write's view of the guest's memory.
+                // Copy on admission, before another guest call reuses that memory.
+                const part = bytes.slice(at, at + size);
                 at += size;
                 inFlight += size;
                 const write = () => fd === 1 ? target.stdout(part) : target.stderr(part);
