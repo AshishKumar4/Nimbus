@@ -1318,8 +1318,24 @@ const __fsMod = (() => {
   const _residencyMisses = globalThis.__nimbusVfsResidencyMisses
     || (globalThis.__nimbusVfsResidencyMisses = new Set());
 
+  /**
+   * A speculative read: the import() prefetch (__nimbusHydrated) reads ahead
+   * of the program, as its loader will, so that what it reads is held when
+   * the program needs it. While it runs, globalThis.__nimbusVfsSpeculation is
+   * set: a miss is faulted in like any other, but it is the prefetch's, kept
+   * in the speculation's own set, and the program's ledger is neither added
+   * to nor answered: the exit report and the next launch's learning see only
+   * the program's own accesses.
+   */
+  function _speculation() {
+    return globalThis.__nimbusVfsSpeculation || null;
+  }
+
   function _recordMiss(k) {
-    if (k === "" || _residencyMisses.has(k)) return;
+    if (k === "") return;
+    const speculation = _speculation();
+    if (speculation) { speculation.misses.add(k); return; }
+    if (_residencyMisses.has(k)) return;
     _residencyMisses.add(k);
     if (typeof __nimbusNotifyRuntimeCode === "function") __nimbusNotifyRuntimeCode();
     _stats.misses++;
@@ -1371,7 +1387,7 @@ const __fsMod = (() => {
   }
 
   function _residencySatisfied(absPath) {
-    if (_residencyMisses.size === 0) return;
+    if (_residencyMisses.size === 0 || _speculation()) return;
     const k = _strip(absPath);
     _residencyMisses.delete(k);
     // A descriptor opened through a link misses under the file it names.
@@ -1396,13 +1412,25 @@ const __fsMod = (() => {
    * to want: an isolate torn down mid-fetch leaves the repair undone, and the
    * cost of not doing so is one read the program was going to need anyway.
    */
+  const _repairOf = new Map();
   function _faultIn(k) {
-    if (!_supervisor() || !_faultOnce("content", k)) return;
+    if (!_supervisor()) return;
+    const speculation = _speculation();
+    if (!_faultOnce("content", k)) {
+      // Asked for already: a speculation waits on that same fill.
+      const pending = _repairOf.get(k);
+      if (speculation && pending) speculation.repairs.push(pending);
+      return;
+    }
     // Swallowed here rather than at the settle: a repair nobody asked for
     // must not surface as an unhandled rejection, and a failed one is simply
     // a path that stays unanswered and stays in the ledger.
-    try { _repairs.push(_observeThenFill(k).catch(() => {})); }
-    catch { /* the fill is speculative */ }
+    try {
+      const repair = _observeThenFill(k).catch(() => {}).finally(() => _repairOf.delete(k));
+      _repairs.push(repair);
+      _repairOf.set(k, repair);
+      if (speculation) speculation.repairs.push(repair);
+    } catch { /* the fill is speculative */ }
   }
 
   /**
@@ -11212,47 +11240,73 @@ function __esmLoad(resolution) {
 // store holds its closure and its data plan; anything else on disk is named
 // by the namespace but not held, and the synchronous load that import()
 // ends in (__esmLoad, __loadModule, resolution's package.json reads) cannot
-// fetch it. import() is asynchronous, so it fetches first: the files its
-// resolution reads, then the target and every module it requests that the
-// launch's map does not carry, breadth first, each round one batch. Vite's
-// runtime-bundled config (node_modules/.vite-temp, a fresh name each run)
-// and its SSR runner's externalised imports reach installed packages this
-// way. Bounded: past the bound, the load goes on and a file still missing
-// fails as it did.
+// fetch it. import() is asynchronous, so it reads ahead first, as the load
+// will read: the files its resolution reads, then the target and every
+// module it requests, breadth first, each read that misses faulted in and
+// made again. Vite's runtime-bundled config (node_modules/.vite-temp, a
+// fresh name each run) and its SSR runner's externalised imports reach
+// installed packages this way. Bounded: past the bound the import() fails,
+// naming it, rather than load on a closure it only half fetched.
 const __IMPORT_STAGE_FILES = 4096;
 const __IMPORT_STAGE_BYTES = 64 * 1024 * 1024;
-// Rounds of fault-in one resolution step may take before it stands as it is.
+// Rounds of fault-in one step may take; each round is a level of a path's
+// links or listings the namespace did not hold.
 const __IMPORT_HYDRATE_ROUNDS = 32;
 
-// Run a synchronous step (resolutions) until it stops missing. Its reads of
-// files that exist but are not held are faulted in (the residency ledger,
-// fs above); once the fills land it runs again and finds them. So the files
-// fetched are exactly the ones the canonical resolvers read, through links:
-// the package.json of a bare name's package, of a relative or file: URL
-// target's scope (its module type), nothing guessed. Those misses are the
-// prefetch's own, never the program's: whatever of them is still in the
-// ledger afterwards is dropped, so none stands in the exit report.
-async function __nimbusHydrated(step) {
-  const settle = globalThis.__nimbusVfsResidencySettle;
-  const ours = new Set();
-  try {
-    for (let round = 1; ; round++) {
-      const before = new Set(globalThis.__nimbusVfsResidencyMisses || []);
-      let value;
-      let error;
-      let threw = false;
-      try { value = step(); } catch (e) { error = e; threw = true; }
-      let missed = false;
-      for (const k of globalThis.__nimbusVfsResidencyMisses || []) if (!before.has(k)) { ours.add(k); missed = true; }
-      if (!missed || round >= __IMPORT_HYDRATE_ROUNDS || typeof settle !== "function") {
-        if (threw) throw error;
-        return value;
-      }
-      await settle();
+// What one import() may fetch ahead, every fill counted: a module's text
+// and the package.json or listing a resolution needed alike.
+function __nimbusPrefetchBudget(specifier) {
+  let files = 0;
+  let bytes = 0;
+  const exceeded = (what) => {
+    const error = new Error("import() of '" + specifier + "' would fetch more than " + what
+      + " ahead (the bound on one import()'s prefetch); it is not loaded on a closure fetched in part");
+    error.code = "ERR_NIMBUS_PREFETCH_BOUND";
+    return error;
+  };
+  return {
+    files(count) {
+      files += count;
+      if (files > __IMPORT_STAGE_FILES) throw exceeded(__IMPORT_STAGE_FILES + " files");
+    },
+    bytes(count) {
+      bytes += count;
+      if (bytes > __IMPORT_STAGE_BYTES) throw exceeded((__IMPORT_STAGE_BYTES >> 20) + " MiB");
+    },
+  };
+}
+
+// Run a synchronous step (resolutions, reads) until it stops missing. Its
+// reads of files that exist but are not held are faulted in: under a
+// speculation (the fs's __nimbusVfsSpeculation), so they are the prefetch's
+// own and never the program's ledger, and the step waits for exactly the
+// fills it caused, then runs again. Every fill counts against the budget;
+// \`fetched\`, if given, collects the paths the step had fetched.
+// A step that misses only what its fills could not bring stands as it is.
+async function __nimbusHydrated(step, budget, fetched) {
+  let missed = null;
+  for (let round = 1; ; round++) {
+    const speculation = { misses: new Set(), repairs: [] };
+    const outer = globalThis.__nimbusVfsSpeculation;
+    globalThis.__nimbusVfsSpeculation = speculation;
+    let value;
+    let error;
+    let threw = false;
+    try { value = step(); } catch (e) { error = e; threw = true; } finally { globalThis.__nimbusVfsSpeculation = outer; }
+    const fresh = [...speculation.misses].filter((k) => missed === null || !missed.has(k));
+    if (fresh.length === 0 || speculation.repairs.length === 0) {
+      if (threw) throw error;
+      return value;
     }
-  } finally {
-    const ledger = globalThis.__nimbusVfsResidencyMisses;
-    if (ledger) for (const k of ours) ledger.delete(k);
+    budget.files(fresh.length);
+    if (round >= __IMPORT_HYDRATE_ROUNDS) {
+      const bound = new Error("import() prefetch: a resolution still misses after " + __IMPORT_HYDRATE_ROUNDS + " rounds of fetching (" + fresh.slice(0, 3).join(", ") + ")");
+      bound.code = "ERR_NIMBUS_PREFETCH_BOUND";
+      throw bound;
+    }
+    missed = new Set([...(missed || []), ...speculation.misses]);
+    if (fetched) for (const k of speculation.misses) fetched.add(k);
+    await Promise.allSettled(speculation.repairs);
   }
 }
 
@@ -11266,74 +11320,55 @@ function __nimbusModuleRequests(path, text) {
   catch { return []; }
 }
 
-function __nimbusImportStager() {
-  if (typeof __residentFetchFiles !== "function" || typeof __residentCursor !== "function" || typeof __nsRowAt !== "function") return null;
+// Where a request from the module at importer leads, by the loader's own
+// rule, the one place it is decided: import() resolves under import's
+// conditions (__nimbusDynamicImport); a static import or export-from is
+// evaluated through the module's scoped require (core/interpreter
+// modules.ts, and esbuild's lowering of a cell), so it resolves as require
+// does, under require's conditions (__requireFrom), as require() itself.
+function __nimbusRequestTarget(kind, specifier, importer) {
+  if (kind === "dynamic") {
+    const resolution = __esmResolver.resolveSync(specifier, builtins.url.pathToFileURL("/" + importer).href);
+    return resolution && resolution.path ? resolution.path : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(builtins, specifier) || (specifier.startsWith("node:") && Object.prototype.hasOwnProperty.call(builtins, specifier.slice(5)))) return null;
+  if (__stagedBinding(specifier)) return null;
+  return __resolveFrom(specifier, importer.includes("/") ? importer.slice(0, importer.lastIndexOf("/")) : "");
+}
+
+function __nimbusImportStager(budget) {
+  // The fill a synchronous read's miss starts (the fs's residency fault-in),
+  // which only a process with a supervisor has.
   const supervisor = typeof __supervisor !== "undefined" ? __supervisor : null;
-  if (!supervisor || typeof __vfsBundle === "undefined" || !__vfsBundle) return null;
-  let files = 0;
-  let bytes = 0;
+  if (!supervisor) return null;
   const strip = (path) => String(path).replace(/^\\/+/, "");
-  const held = (k) => k in __vfsBundle || (__vfsWrites && k in __vfsWrites);
-  const mapped = (k) => typeof __nimbusCodeCells !== "undefined" && __nimbusCodeCells.has(k);
-  // The file the namespace names at k, following links: its key and stat, or null.
-  const named = (k) => {
-    for (let hops = 0; hops < 16; hops++) {
-      let row;
-      try { row = __nsRowAt(__residentRequire(), k); } catch { return null; }
-      if (row === undefined || row === null) return null;
-      if (Number(row.kind) === __NS_LINK && row.target != null) { k = strip(__nsJoinTarget(k, row.target)); continue; }
-      return Number(row.kind) === __NS_FILE ? { k, size: Number(row.size), rev: Number(row.rev) } : null;
-    }
-    return null;
-  };
-  // Fetch every key not held that names a file, in one batch, within the bound.
-  const fetch = async (keys) => {
-    const cursor = __residentCursor();
-    if (cursor === null) return;
-    const want = [];
-    const seen = new Set();
-    for (const key of keys) {
-      const file = named(strip(key));
-      if (file === null || seen.has(file.k) || held(file.k)) continue;
-      if (files + 1 > __IMPORT_STAGE_FILES || bytes + file.size > __IMPORT_STAGE_BYTES) break;
-      seen.add(file.k);
-      files++;
-      bytes += file.size;
-      want.push({ path: file.k, size: file.size, rev: file.rev, epoch: cursor.epoch, ckey: null });
-    }
-    if (want.length > 0) {
-      try { await __residentFetchFiles(supervisor, want); } catch {}
-    }
-  };
-  // Where a request from importer leads, as the loader resolves it: Node's
-  // ESM resolver for an import, its CommonJS one for a require.
-  const resolve = (request, importer) => {
+  const target = (request, importer) => {
     try {
-      if (request.kind === "import") {
-        const r = __esmResolver.resolveSync(request.specifier, builtins.url.pathToFileURL("/" + importer).href);
-        return r && r.path ? strip(r.path) : null;
-      }
-      const r = __resolveFrom(request.specifier, importer.includes("/") ? importer.slice(0, importer.lastIndexOf("/")) : "");
-      return r ? strip(r) : null;
+      const found = __nimbusRequestTarget(request.kind, request.specifier, importer);
+      return found ? strip(found) : null;
     } catch { return null; }
   };
   return {
-    // The target and what it requests, as far as the launch's map does not reach.
+    // The target and what it requests, and theirs, each read as the load
+    // will read it, through the fs: its lookup follows links component by
+    // component, and a miss is faulted in (ranged, any size) and read again.
     async closure(root) {
       const visited = new Set();
       let frontier = [strip(root)];
-      while (frontier.length > 0 && files < __IMPORT_STAGE_FILES) {
-        const round = frontier.filter((k) => !visited.has(k) && !mapped(k));
+      while (frontier.length > 0) {
+        const round = frontier.filter((k) => !visited.has(k) && !(typeof __nimbusCodeCells !== "undefined" && __nimbusCodeCells.has(k)));
         for (const k of round) visited.add(k);
-        await fetch(round);
+        const fetched = new Set();
+        const texts = await __nimbusHydrated(() => round.map((k) => __readFileOr(k, null)), budget, fetched);
         const wanted = [];
-        for (const k of round) {
-          if (!/\\.[cm]?js$/.test(k) || !held(k)) continue;
-          const text = __readFileOr(k, null);
+        for (let i = 0; i < round.length; i++) {
+          const text = texts[i];
           if (typeof text !== "string") continue;
-          for (const request of __nimbusModuleRequests(k, text)) wanted.push([request, k]);
+          if (fetched.has(round[i])) budget.bytes(text.length);
+          if (!/\\.[cm]?js$/.test(round[i])) continue;
+          for (const request of __nimbusModuleRequests(round[i], text)) wanted.push([request, round[i]]);
         }
-        const found = await __nimbusHydrated(() => wanted.map(([request, k]) => resolve(request, k)));
+        const found = await __nimbusHydrated(() => wanted.map(([request, k]) => target(request, k)), budget);
         const next = new Set();
         for (const path of found) if (path !== null && !visited.has(path)) next.add(path);
         frontier = [...next];
@@ -11342,9 +11377,10 @@ function __nimbusImportStager() {
   };
 }
 async function __nimbusStageImport(specifier, parentUrl) {
-  const stager = __nimbusImportStager();
+  const budget = __nimbusPrefetchBudget(specifier);
+  const stager = __nimbusImportStager(budget);
   if (stager === null) return __esmResolver.resolveSync(specifier, parentUrl);
-  const resolution = await __nimbusHydrated(() => __esmResolver.resolveSync(specifier, parentUrl));
+  const resolution = await __nimbusHydrated(() => __esmResolver.resolveSync(specifier, parentUrl), budget);
   // A module this process has loaded already brought what it requests.
   if (resolution.path && !__esmNamespaces.has(resolution.url)) await stager.closure(resolution.path);
   return resolution;

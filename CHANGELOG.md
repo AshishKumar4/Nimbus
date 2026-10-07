@@ -30,9 +30,14 @@ published independently in the `@nimbus-sh` npm scope.
   store's own fill: exactly the files Node's resolvers read for it (a bare
   name's `package.json`, a file URL's package scope, through links), then
   every module the target requests, as the runtime-code interpreter's parser
-  reads requests, outside the launch's map, breadth first and bounded at 4096
-  files and 64 MiB. A floating `import(...).then(...)` keeps the process while
-  it fetches, and an `import()` of a module already loaded fetches nothing.
+  reads requests and each resolved as the loader will evaluate it (a static
+  import under `require`'s conditions, `import()` under `import`'s), outside
+  the launch's map, breadth first. Past 4096 files or 64 MiB fetched, the
+  `import()` fails with `ERR_NIMBUS_PREFETCH_BOUND` rather than load on part
+  of its closure. Its reads are its own: a file the program itself failed to
+  read stays in the program's exit report. A floating `import(...).then(...)`
+  keeps the process while it fetches, and an `import()` of a module already
+  loaded fetches nothing.
 - Fixed: `node` and `bun` with no script opened a REPL that evaluated
   nothing ("workerd CSP: cannot evaluate JS at request time"). The REPL is
   now a program the runtime runs, as Node's is, and each line compiles

@@ -137,10 +137,16 @@ function leadingSlashes(path: string): number {
   return i;
 }
 
-/** One module a module's text asks for: by `import` (static, export-from or import()) or by `require`. */
+/**
+ * One module a module's text asks for, and how: `static` (an import or
+ * export-from declaration), `dynamic` (import()) or `require`. The kind
+ * decides the resolution, as the loader makes it: a static import is
+ * evaluated through the module's scoped require (modules.ts), so it resolves
+ * under require's conditions; import() resolves under import's.
+ */
 export interface ModuleRequest {
   readonly specifier: string;
-  readonly kind: 'import' | 'require';
+  readonly kind: 'static' | 'dynamic' | 'require';
 }
 
 /** A string literal, or a template with no substitutions: the specifier a request spells. */
@@ -196,8 +202,10 @@ export function moduleRequests(path: string, text: string): ModuleRequest[] {
     }
     const type = reflectGet(node, 'type');
     if (typeof type !== 'string') continue;
-    if (type === 'ImportDeclaration' || type === 'ExportAllDeclaration' || type === 'ExportNamedDeclaration' || type === 'ImportExpression') {
-      add(spelledString(reflectGet(node, 'source')), 'import');
+    if (type === 'ImportDeclaration' || type === 'ExportAllDeclaration' || type === 'ExportNamedDeclaration') {
+      add(spelledString(reflectGet(node, 'source')), 'static');
+    } else if (type === 'ImportExpression') {
+      add(spelledString(reflectGet(node, 'source')), 'dynamic');
     } else if (type === 'CallExpression') {
       const callee = reflectGet(node, 'callee');
       const args = reflectGet(node, 'arguments');
