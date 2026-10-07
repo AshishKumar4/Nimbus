@@ -373,10 +373,8 @@ export function buildRuntimeHandler(
       ...(pipedStdin === undefined ? (spec.bypassesScriptRead && ctx.stdin ? { stdin: ctx.stdin } : {})
       : pipedStdin.file
         ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
-<<<<<<< HEAD
         : { stdin: pipedStdin }),
-=======
-        : { stdin: pipedStdin };
+    };
     /**
      * Run `code` as this invocation's program, whichever way the arguments
      * named it (-e, the REPL, stdin, a file): what the program is (its argv,
@@ -389,7 +387,7 @@ export function buildRuntimeHandler(
       filename: string;
       dirname: string;
       command: string;
-      stdin?: Pick<RuntimeRunOpts, 'stdin' | 'stdinFile'>;
+      stdin?: Pick<RuntimeRunOpts, 'stdin' | 'stdinFile' | 'output' | 'stdinPid'>;
       reserved?: boolean;
       launchesServer?: boolean;
     }): Promise<number> => {
@@ -403,6 +401,7 @@ export function buildRuntimeHandler(
         filename: program.filename,
         dirname: program.dirname,
         command: program.command,
+        output: programStdin.output,
         ...program.stdin,
         ...(program.reserved === false ? {} : reservedProcess),
         ...(captureOutput ? { captureOutput: true } : {}),
@@ -412,7 +411,6 @@ export function buildRuntimeHandler(
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
       return result.exitCode;
->>>>>>> fe4b9ecae
     };
 
     // ── Flag-span computation (primitive #1) ──
@@ -510,15 +508,8 @@ export function buildRuntimeHandler(
         filename: '[stdin]',
         dirname: ctx.cwd || '/home/user',
         command: binSpawn?.command || `${name} -`,
-<<<<<<< HEAD
-        output: programStdin.output,
-        ...reservedProcess,
-        ...(captureOutput ? { captureOutput: true } : {}),
-        ...(bundleProfile ? { bundleProfile } : {}),
-        ...(launchesServer ? { launchesServer: true } : {}),
-=======
+        stdin: { output: programStdin.output },
         launchesServer: await launches(code, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]),
->>>>>>> fe4b9ecae
       });
     }
 
@@ -540,13 +531,8 @@ export function buildRuntimeHandler(
         filename,
         dirname,
         command: `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
-<<<<<<< HEAD
-        ...programStdin,
-        ...(captureOutput ? { captureOutput: true } : {}),
-        ...(bundleProfile ? { bundleProfile } : {}),
-=======
+        stdin: programStdin,
         reserved: false,
->>>>>>> fe4b9ecae
       });
     }
 

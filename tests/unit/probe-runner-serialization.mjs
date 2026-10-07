@@ -26,16 +26,20 @@ const RUNNER = join(ROOT, 'tests', 'behavioral', 'run-all.mjs');
 const SCRATCH = mkdtempSync(join(tmpdir(), 'runner-serialization-'));
 const LOCK = join(SCRATCH, 'nimbus-behavioral-run.lock');
 
-/** Run the runner over an empty probe selection: the lock is the subject. */
+/**
+ * Run the runner over no probe: one probe selected, in the empty second
+ * part of two (a name that matches no probe is refused). The lock is the
+ * subject.
+ */
 function runRunner(args = []) {
-  const r = spawnSync('bun', [RUNNER, ...args], {
+  const r = spawnSync('bun', [RUNNER, '--part', '2/2', ...args], {
     cwd: ROOT,
     encoding: 'utf8',
     env: {
       ...process.env,
       TMPDIR: SCRATCH,
       BASE: 'https://nimbus-tw-serialization-fixture.example.workers.dev',
-      NIMBUS_PROBE_ONLY: '__no_such_probe__',
+      NIMBUS_PROBE_ONLY: 'git-local',
     },
   });
   return { status: r.status, out: `${r.stdout}${r.stderr}` };

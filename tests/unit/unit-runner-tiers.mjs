@@ -1,13 +1,14 @@
 #!/usr/bin/env bun
-// run-all's tiers, shards and report. A copy of the runner runs against
+// run-all's tiers and report, and the CI plan's parts. A copy of the runner runs against
 // fixture files in a scratch tree:
 //   - `// @tier slow|quiet-cpu — <reason>` in the leading comment block
 //     decides `--tier fast|slow|all`; a marker below it is a comment;
 //   - an unknown tier, a marker without a reason, or two markers stop the
 //     runner with exit 2 naming the file, whatever was selected;
 //   - quiet-cpu files run after the pool, one at a time;
-//   - `--shard I/N` parts are disjoint, cover the selection, are the same
-//     on every call, and balance the expected time from `--timings`;
+//   - the CI plan's parts (tests/unit/lib/partition.mjs) are disjoint,
+//     cover the selection, are the same on every call, and balance the
+//     expected time from the timings;
 //   - `--json` records every file's tier, verdict, wall time and the CPU of
 //     its whole process tree where the isolation can read it, and a failing
 //     file's whole output;
@@ -16,11 +17,13 @@
 //     with a nested runner inside leaves no group behind, and a file that
 //     could not be started is reported as never started.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runBoundedProcess } from '../../scripts/lib/bounded-process.mjs';
+import { expectedCosts, partition } from './lib/partition.mjs';
 
 const repo = fileURLToPath(new URL('../..', import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), 'unit-tiers-'));
@@ -28,9 +31,9 @@ const scratch = mkdtempSync(join(tmpdir(), 'unit-tiers-'));
 /** A scratch repository holding the runner and the given test files. */
 function tree(label, files) {
   const root = join(scratch, label);
-  mkdirSync(join(root, 'tests/unit'), { recursive: true });
+  mkdirSync(join(root, 'tests/unit/lib'), { recursive: true });
   mkdirSync(join(root, 'scripts/lib'), { recursive: true });
-  copyFileSync(join(repo, 'tests/unit/run-all.mjs'), join(root, 'tests/unit/run-all.mjs'));
+  for (const file of ['run-all.mjs', 'lib/partition.mjs']) copyFileSync(join(repo, 'tests/unit', file), join(root, 'tests/unit', file));
   for (const lib of ['bounded-process.mjs', 'subprocess-entry.mjs']) copyFileSync(join(repo, 'scripts/lib', lib), join(root, 'scripts/lib', lib));
   for (const [name, source] of Object.entries(files)) writeFileSync(join(root, 'tests/unit', name), source);
   return root;
@@ -91,7 +94,7 @@ try {
   // The CPU fixture burns 300 ms of CPU in a child process: the case's CPU
   // is its whole tree's, not only the test file's own process. It counts its
   // own CPU rather than the clock: on a loaded machine 300 ms of wall time
-  // can hold much less CPU (it did on a 4-vCPU CI shard, 2 runs in 5).
+  // can hold much less CPU (it did in a 4-vCPU CI container, 2 runs in 5).
   const burn = `for (let i = 0; ; i++) if (i % 100000 === 0 && process.cpuUsage().user + process.cpuUsage().system >= 300000) break;`;
   const ran = tree('ran', {
     'a-pooled.mjs': note('a', 300),
@@ -133,54 +136,36 @@ try {
     assert.ok(cpu >= 250 && cpu < 5_000, `${json.isolation}: the case's tree used ~300 ms of CPU, read ${cpu}`);
   }
 
-  // ── Shards ──────────────────────────────────────────────────────────
+  // ── Parts (tests/unit/lib/partition.mjs, which scripts/ci/unit.mjs plans with) ─
   const files = {};
   const wallMs = {};
   for (let i = 0; i < 40; i++) {
     const name = `f${String(i).padStart(2, '0')}.mjs`;
-    files[name] = i % 9 === 0 ? `// @tier quiet-cpu — timed\n${pass}` : pass;
+    files[name] = i % 9 === 0 ? 'quiet-cpu' : 'pool';
     wallMs[name] = { wallMs: 1000 * (1 + ((i * 7) % 13)) };
   }
   delete wallMs['f05.mjs']; // Unmeasured: expected at the median.
-  const sharded = tree('sharded', files);
-  const timings = join(scratch, 'timings.json');
-  writeFileSync(timings, JSON.stringify({ files: wallMs }));
-  const parts = [];
-  for (let i = 1; i <= 3; i++) {
-    const part = listed(await runner(sharded, ['--list', '--shard', `${i}/3`, '--timings', timings])).map(([name]) => name);
-    assert.deepEqual(listed(await runner(sharded, ['--list', '--shard', `${i}/3`, '--timings', timings])).map(([name]) => name), part, 'a shard is the same on every call');
-    parts.push(part);
-  }
-  const union = parts.flat().sort();
-  assert.deepEqual(union, Object.keys(files).sort(), 'the parts cover the selection exactly once');
+  const names = Object.keys(files);
+  const alone = (name) => files[name] === 'quiet-cpu';
+  const expectedMs = expectedCosts(names, wallMs, alone);
+  const parts = partition(names, 3, { expectedMs, runsAlone: alone, jobs: 2 }).map((part) => part.names);
+  assert.deepEqual(partition(names, 3, { expectedMs, runsAlone: alone, jobs: 2 }).map((part) => part.names), parts, 'the same inputs give the same parts');
+  assert.deepEqual(parts.flat().sort(), [...names].sort(), 'the parts cover the selection exactly once');
   // Balanced: with 2 jobs, no part expects much more than an even share.
   const expected = (name) => wallMs[name]?.wallMs ?? 7000;
   const costs = parts.map((part) => {
-    const alone = part.filter((name) => files[name].includes('quiet-cpu'));
-    const pooled = part.filter((name) => !alone.includes(name));
-    return Math.max(pooled.reduce((s, n) => s + expected(n), 0) / 2, ...pooled.map(expected)) + alone.reduce((s, n) => s + expected(n), 0);
+    const serial = part.filter(alone);
+    const pooled = part.filter((name) => !alone(name));
+    return Math.max(pooled.reduce((sum, n) => sum + expected(n), 0) / 2, ...pooled.map(expected)) + serial.reduce((sum, n) => sum + expected(n), 0);
   });
   assert.ok(Math.max(...costs) - Math.min(...costs) <= 13_000, `unbalanced parts: ${costs}`);
-
-  const header = await runner(sharded, ['--shard', '2/3', '--timings', timings, '--json', report]);
-  assert.equal(header.code, 0, header.stdout);
-  assert.match(header.stdout, /tier all, shard 2\/3 of 40/);
-  const shardJson = JSON.parse(readFileSync(report, 'utf8'));
-  assert.deepEqual(shardJson.shard.universe, Object.keys(files).sort());
-  assert.deepEqual(shardJson.files.map((f) => f.name).sort(), [...parts[1]].sort());
-
   // A file's cost is the larger of its wall and CPU time: one using four
   // CPUs for 10 s weighs 40 s, and gets a part to itself.
-  const threaded = tree('threaded', { 'busy.mjs': pass, 'a.mjs': pass, 'b.mjs': pass, 'c.mjs': pass });
-  writeFileSync(timings, JSON.stringify({ files: { 'busy.mjs': { wallMs: 10_000, cpuMs: 40_000 }, 'a.mjs': { wallMs: 9_000, cpuMs: 9_000 }, 'b.mjs': { wallMs: 9_000, cpuMs: 9_000 }, 'c.mjs': { wallMs: 9_000, cpuMs: 9_000 } } }));
-  const alone = listed(await runner(threaded, ['--list', '--shard', '1/2', '--timings', timings])).map(([name]) => name);
-  assert.deepEqual(alone, ['busy.mjs'], `the threaded file shares its part: ${alone}`);
+  const threadedTimings = { 'busy.mjs': { wallMs: 10_000, cpuMs: 40_000 }, 'a.mjs': { wallMs: 9_000, cpuMs: 9_000 }, 'b.mjs': { wallMs: 9_000, cpuMs: 9_000 }, 'c.mjs': { wallMs: 9_000, cpuMs: 9_000 } };
+  const threaded = Object.keys(threadedTimings);
+  const [first] = partition(threaded, 2, { expectedMs: expectedCosts(threaded, threadedTimings, () => false), runsAlone: () => false, jobs: 2 });
+  assert.deepEqual(first.names, ['busy.mjs'], `the threaded file shares its part: ${first.names}`);
 
-  for (const bad of ['0/3', '4/3', '1/0', 'two']) {
-    const refused = await runner(sharded, ['--list', '--shard', bad]);
-    assert.equal(refused.code, 2, bad);
-    assert.match(refused.stderr, /--shard must be I\/N/);
-  }
   // ── Environment, in whatever isolation this suite runs under ────────
   // Names a shell would drop or env(1) would take for an option still
   // reach the target, as do empty values.
@@ -193,7 +178,7 @@ try {
 
   // ── The CI containers' isolation: one cgroup per case ───────────────
   // Needs a cgroup this process may create groups in, as run-bounded's unit
-  // and a CI shard's case group are; elsewhere it is skipped, and says so.
+  // and a CI task's case group are; elsewhere it is skipped, and says so.
   const own = `/sys/fs/cgroup${readFileSync('/proc/self/cgroup', 'utf8').match(/^0::(\/.*)$/m)?.[1] ?? '/'}`;
   const groups = join(own, `unit-tiers-${process.pid}`);
   let delegated = false;
@@ -201,6 +186,16 @@ try {
     console.log(`  skipped: cgroup isolation (cannot create a group under ${own}: ${error.code})`);
   }
   if (delegated) {
+    // The runner copy starts here directly: launched through runBoundedProcess
+    // from a process that is itself in a case group (armada's task, a CI
+    // case), it would be handed a nested group of its own in place of the
+    // NIMBUS_TEST_CGROUP this block names.
+    const direct = (root, args, env) => {
+      const r = spawnSync(process.execPath, [join(root, 'tests/unit/run-all.mjs'), ...args], {
+        cwd: root, encoding: 'utf8', timeout: 60_000, env: { ...inherited, NIMBUS_UNIT_JOBS: '2', ...env },
+      });
+      return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+    };
     try {
       const cgroupEnv = { NIMBUS_TEST_PID_ISOLATION: '', NIMBUS_TEST_CGROUP: groups, ...odd };
       const sawEnv = join(scratch, 'saw-env.json');
@@ -209,7 +204,7 @@ try {
         'env.mjs': `require('node:fs').writeFileSync(${JSON.stringify(sawEnv)}, JSON.stringify(Object.fromEntries(${JSON.stringify(Object.keys(odd))}.map((k) => [k, process.env[k]]))));\n`,
       });
       const cgReport = join(scratch, 'cgroup.json');
-      const cgRun = await runner(cg, ['--json', cgReport], cgroupEnv);
+      const cgRun = direct(cg, ['--json', cgReport], cgroupEnv);
       assert.equal(cgRun.code, 0, cgRun.stdout);
       const cgJson = JSON.parse(readFileSync(cgReport, 'utf8'));
       assert.equal(cgJson.isolation, 'cgroup');
@@ -223,14 +218,14 @@ try {
       const nested = tree('nested', {
         'outer.mjs': `require('node:child_process').spawnSync(process.execPath, [${JSON.stringify(join(inner, 'tests/unit/run-all.mjs'))}], { stdio: 'inherit' });\n`,
       });
-      const killed = await runner(nested, ['--timeout', '3000'], cgroupEnv);
+      const killed = direct(nested, ['--timeout', '3000'], cgroupEnv);
       assert.equal(killed.code, 1, killed.stdout);
       assert.match(killed.stdout, /outer\.mjs: file exceeded --timeout 3000ms/);
       assert.deepEqual(readdirSync(groups, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name), [], 'no case group outlives its run');
 
       // No group to create cases in: the file never started, and the
       // report says so apart from a test that failed.
-      const unstartable = await runner(tree('unstartable', { 'any.mjs': pass }), ['--json', cgReport], { ...cgroupEnv, NIMBUS_TEST_CGROUP: join(groups, 'missing') });
+      const unstartable = direct(tree('unstartable', { 'any.mjs': pass }), ['--json', cgReport], { ...cgroupEnv, NIMBUS_TEST_CGROUP: join(groups, 'missing') });
       assert.equal(unstartable.code, 1);
       const refused = JSON.parse(readFileSync(cgReport, 'utf8')).files[0];
       assert.match(refused.launchError, /cgroup isolation unavailable/);
@@ -244,7 +239,7 @@ try {
       remove(groups);
     }
   }
-  console.log('unit-runner-tiers: markers, tier selection, quiet-cpu ordering, shard partition, JSON report, environment and cgroup isolation');
+  console.log('unit-runner-tiers: markers, tier selection, quiet-cpu ordering, CI parts, JSON report, environment and cgroup isolation');
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
