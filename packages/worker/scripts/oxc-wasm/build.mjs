@@ -5,8 +5,8 @@
  *   bun packages/worker/scripts/oxc-wasm/build.mjs --work <dir> --out <dir>
  *
  * Cargo may run in its own bounded cgroup (keep this Bun orchestrator small):
- * NIMBUS_CARGO_RUNNER names a command that runs its arguments bounded
- * (`<runner> cargo build …`), and NIMBUS_CARGO_JOBS sets Cargo's jobs.
+ *   NIMBUS_CARGO_RUNNER=/mnt/scratch/nimbus/run-bounded NIMBUS_CARGO_JOBS=4 \
+ *   NIMBUS_TEST_MEMORY_MAX=2G NIMBUS_TEST_TIMEOUT=3600 run-bounded bun .../build.mjs ...
  *
  * Every input is pinned and every check fails loudly:
  *   1. The crate (Cargo.toml, Cargo.lock, rust-toolchain.toml, src/) is copied
