@@ -10744,7 +10744,8 @@ __require.resolve = (id) => {
   return "/" + r;
 };
 __require.cache = __moduleCache;
-__require.main = null;
+// Node's process.mainModule: none until the entry runs, so a \`-r\` module's is undefined.
+__require.main = undefined;
 
 // ═══════════════════════════════════════════════════════════════════════
 // ── END OF GENERATED SHIMS — closing marker ─────────────────────────
