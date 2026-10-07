@@ -702,7 +702,13 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.fstat = (handleId) => {
-    if (holder?.owns(handleId)) { counts.local++; return statOf(holder.fstat(handleId)); }
+    if (holder?.owns(handleId)) {
+      // Written through: the session's live stat of its file, once what it
+      // wrote is there; a name that no longer leads to its file is gone (nlink 0).
+      if (holder.through(handleId)) return liveThrough(handleId);
+      counts.local++;
+      return statOf(holder.fstat(handleId));
+    }
     delegated('fstat');
     return after(authority.fstat(handleId), (stat) => {
       // A directory opened read-only is listed here while its name still leads to it.
@@ -713,6 +719,15 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       }
       return stat;
     });
+  };
+
+  /** A write-through description's stat: the session's, by its file's name while that leads to it. */
+  const liveThrough = async (handleId: number): Promise<RuntimeVfsStat> => {
+    const own = holder!.fstat(handleId);
+    await holder!.send();
+    delegated('stat');
+    const live = await authority.stat('/' + holder!.keyOf(handleId), { followSymlinks: false });
+    return live !== null && live.ino === own.ino ? live : statOf({ ...own, nlink: 0 });
   };
 
   /** The session's bytes of `key` for write-through description `handleId`, by its own read-only descriptor of the file. */
