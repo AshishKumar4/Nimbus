@@ -28,6 +28,7 @@ assert.deepEqual(result, {
   ok: false,
   committedGroupSequence: 0,
   committedPathCount: 0,
+  committedOps: 0,
   inodes: 0,
   chunks: 0,
   // The committed prefix's receipts: none, since nothing committed.

@@ -46,7 +46,11 @@ function oneByOne(user, calls) {
           else user.writeRange(call.path, prior.byteLength, call.data);
           break;
         }
-        case 'mkdir': user.mkdir(call.path, { mode: call.mode }); break;
+        case 'mkdir':
+          // mkdir(2): a name that is there is EEXIST (the engine's API keeps an existing directory).
+          if ((() => { try { return user.lstat(call.path); } catch { return null; } })() !== null) throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' });
+          user.mkdir(call.path, { mode: call.mode });
+          break;
         case 'unlink': user.unlink(call.path); break;
         case 'rmdir': user.rmdir(call.path); break;
         case 'symlink': user.symlink(call.target, call.path); break;

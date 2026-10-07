@@ -9257,7 +9257,14 @@ export class SqliteVFS {
               options.admit?.();
               const call = record.call;
               asCaller(() => {
-                if (call.call === 'mkdir') this.mkdir(call.path, { mode: call.mode }, cred);
+                if (call.call === 'mkdir') {
+                  // mkdir(2): a name that is there, whatever it is, is EEXIST
+                  // (the engine's mkdir keeps an existing directory as made).
+                  if (this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode !== undefined) {
+                    throw vfsError('EEXIST', call.path);
+                  }
+                  this.mkdir(call.path, { mode: call.mode }, cred);
+                }
                 else if (call.call === 'unlink') this.unlink(call.path, cred);
                 else if (call.call === 'rmdir') this.rmdir(call.path, cred);
                 else this.symlink(call.target, call.path, cred);
