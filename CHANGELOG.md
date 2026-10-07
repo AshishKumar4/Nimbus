@@ -5,6 +5,35 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a write wave ignored mounts. A W7 wave (`writeBatchStream`, which
+  `git clone`, `git checkout` and `npm install` use) wrote every record to
+  the session's SQLite store, even under a mount. A file under a mount
+  point was written to SQLite, where the mount hid it, or failed with
+  ENOENT when its directory existed only on the mount. Now each record
+  goes where the namespace places it, as the matching single call would:
+  a file is one `writeFile`, a directory one `mkdir`, a removal one
+  `rm -r`, and a link one `symlink`. Removing a directory above a mount
+  point fails with EBUSY, and a file there with EISDIR, before anything is
+  written. If the namespace changes under a wave (a link repointed, a
+  mount made), the wave fails with ESTALE instead of writing where the
+  name no longer leads. Records that stay in SQLite cost what they did
+  before routing.
+  Limits:
+  - A wave writes a file to a mount in one call, up to 4 MiB
+    (`ROUTED_FILE_MAX`). A larger file fails with ENOTSUP before anything
+    is written. Write it to the mount directly.
+  - A link's target on a mount is at most 4,096 bytes
+    (`ROUTED_LINK_TARGET_MAX`); a longer one fails with ENAMETOOLONG.
+  - A mounted record cannot be applied twice. If a resent wave reaches a
+    mounted record that an earlier attempt may already have applied, the
+    wave stops there with EIO ("outcome unknown"). Check that path on the
+    mount before you write it again.
+  - A link on a mount is made under a temporary name first, then renamed
+    over its name. The temporary name is `.<name>.nimbus-wave-<wave>-<record>`,
+    in the link's directory. If the session crashes between the two steps,
+    that temporary link stays, at most one per link being written. Nimbus
+    does not remove it; delete it by that pattern.
+
 - Fixed: `npx create-react-router` stopped while copying its template with
   "TypeError: dest.write is not a function". `stream.pipeline` turned every
   stream without a `pipe` of its own into a Readable, its destination
