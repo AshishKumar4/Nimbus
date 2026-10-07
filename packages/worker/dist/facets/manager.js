@@ -974,20 +974,29 @@ export function facetWasmImports(named, closure) {
     return [...byPath.values()].map((image, index) => ({ ...image, moduleName: facetWasmModuleName(index) }));
 }
 /**
- * The static imports that compile a launch's wasm images at module eval and
- * park them by VFS path for the node-shims WebAssembly seam.
+ * A launch's wasm images, parked by VFS path and by digest for the
+ * node-shims WebAssembly seam, each as the compile of its map member: the
+ * seam runs it when the program first compiles those bytes. A static import
+ * compiled every image at load, used or not (lightningcss's 15.8 MB on every
+ * Vite 8 dev launch). Under new_module_registry a member compiles on first
+ * evaluation, and the registry's require() may evaluate it at request time,
+ * where a compile from bytes is refused.
  */
-function facetWasmImportsSource(wasmImports) {
+export function facetWasmImportsSource(wasmImports) {
     if (wasmImports.length === 0)
         return '';
-    const lines = wasmImports.map((entry, index) => `import __nimbusWasm${index} from ${JSON.stringify(entry.moduleName)};`);
+    const compiles = wasmImports.map((entry, index) => `const __nimbusWasm${index} = __nimbusWasmCompile(${JSON.stringify('./' + entry.moduleName)});`);
     const entries = wasmImports.map((entry, index) => `[${JSON.stringify(stripLeadingSlashes(entry.vfsPath))}, __nimbusWasm${index}]`);
     const byDigest = wasmImports
         .map((entry, index) => (entry.digest === undefined
         ? null
         : `[${JSON.stringify(entry.digest)}, __nimbusWasm${index}]`))
         .filter((line) => line !== null);
-    return `${lines.join('\n')}\nglobalThis.__nimbusPrecompiledWasm = new Map([${entries.join(', ')}]);`
+    return 'import { createRequire as __nimbusWasmCreateRequire } from "node:module";'
+        + '\nconst __nimbusWasmRequire = __nimbusWasmCreateRequire(import.meta.url);'
+        + '\nconst __nimbusWasmCompile = (member) => { let compiled; return () => compiled ??= __nimbusWasmRequire(member); };'
+        + `\n${compiles.join('\n')}`
+        + `\nglobalThis.__nimbusPrecompiledWasm = new Map([${entries.join(', ')}]);`
         + `\nglobalThis.__nimbusPrecompiledWasmByDigest = new Map([${byDigest.join(', ')}]);`;
 }
 export async function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, sources, pacer) {

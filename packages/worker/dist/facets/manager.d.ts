@@ -197,6 +197,16 @@ export declare function facetWasmImports(named: readonly {
     vfsPath: string;
     digest: string | undefined;
 }[], closure: readonly WasmImageRecord[]): FacetWasmImport[];
+/**
+ * A launch's wasm images, parked by VFS path and by digest for the
+ * node-shims WebAssembly seam, each as the compile of its map member: the
+ * seam runs it when the program first compiles those bytes. A static import
+ * compiled every image at load, used or not (lightningcss's 15.8 MB on every
+ * Vite 8 dev launch). Under new_module_registry a member compiles on first
+ * evaluation, and the registry's require() may evaluate it at request time,
+ * where a compile from bytes is refused.
+ */
+export declare function facetWasmImportsSource(wasmImports: readonly FacetWasmImport[]): string;
 export declare function generateLongRunningNodeCode(userCode: string, vfsState: FacetVfsState, opts: {
     argv?: string[];
     env?: Record<string, string>;
