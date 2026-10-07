@@ -135,6 +135,7 @@ import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 // S10: heap probe + W5 OOM-ring persistence extracted.
 import * as _diag from './diag.js';
 import { ServedReads } from '../facets/read-profile.js';
+import { finishInterruptedClones } from '../git/clone-job.js';
 
 /** The ops whose non-null answer is a file's content served to a process. */
 const SERVED_READ_OPS: ReadonlySet<string> = new Set(['readFile', 'readFileBytes', 'fsReadRange', 'fsReadRangeUncached']);
@@ -1169,9 +1170,17 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
       this._w5RehydrateRingFromStorage().catch((e: any) => {
         console.warn('[nimbus/W5] ring rehydrate failed:', e?.message);
       });
+      // Clones a previous generation of this session left running were cut
+      // short: finish their cleanup (git/clone-job.ts), a slice at a time.
+      this.ctx.waitUntil(finishInterruptedClones(this.sqliteFs, this.ctx.storage, this.generationStartedAt).catch((e: any) => {
+        console.warn('[git] interrupted clone cleanup failed:', e?.message);
+      }));
     }
     return this.sqliteFs;
   }
+
+  /** When this generation of the session began: clone records older than it are a previous generation's. */
+  private readonly generationStartedAt = Date.now();
 
   // ── W5 Lever 5: ring buffer persistence on DO storage ─────────────────
   // Storage key W5_RING_STORAGE_KEY lives in ./keys.ts (S5).

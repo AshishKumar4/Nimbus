@@ -14,7 +14,8 @@ import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
-import { execGitNetwork, GIT_CLONE_JOB_MARKER } from './network-facet.js';
+import { execGitNetwork, GIT_CLONE_JOB_MARKER, type GitNetworkResult } from './network-facet.js';
+import { cleanUpClone, deleteCloneJob, setCloneJobPhase, writeCloneJob, type CloneJobRecord } from './clone-job.js';
 import { packsSeam, type GitPacksSeam, type PromisorFetch } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -2329,6 +2330,9 @@ async function mergeCommand(
   return 0;
 }
 
+/** What git's remove_junk says of a clone whose checkout failed after its objects were in (builtin/clone.c junk_leave_repo_msg). */
+const JUNK_LEAVE_REPO_WARNING = "warning: Clone succeeded, but checkout failed.\nYou can inspect what was checked out with 'git status'\nand retry with 'git restore --source=HEAD :/'\n\n";
+
 /** die_resolve_conflict: what git says when unmerged entries stop a commit or a merge. */
 function unmergedRefusal(action: 'Committing' | 'Merging'): string {
   return `error: ${action} is not possible because you have unmerged files.\n`
@@ -2675,14 +2679,27 @@ export async function runGitCommand(
         // A piece of the clone that hung may still write: the facet runner
         // hands the lease to a new owner before it runs the piece again.
         let mutationOwner = mutationLease.owner;
-        // Under the lease: whether a failed clone's cleanup keeps the destination (git's remove_junk).
-        const cloneRootExisted = vfs.as(ctx.cred).exists(target);
+        // The clone's durable record (git/clone-job.ts), under the lease and
+        // before it writes anything: what its cleanup removes, and as whom,
+        // if it fails, or the session restarts before it is done.
+        const job: CloneJobRecord = {
+          version: 1,
+          jobId: crypto.randomUUID(),
+          dir: target,
+          cred: ctx.cred,
+          rootExisted: vfs.as(ctx.cred).exists(target),
+          phase: 'transport',
+          startedAt: Date.now(),
+        };
+        await writeCloneJob(doCtx.storage, job);
 
         // Delegate to git-network-facet: heavy packfile processing runs in
         // a dynamic worker with its own CPU budget, not the supervisor DO.
         const doClone = async (): Promise<boolean> => {
           try {
-            const result = await execGitNetwork(doCtx, doEnv, {
+            let result: GitNetworkResult;
+            try {
+              result = await execGitNetwork(doCtx, doEnv, {
               op: 'clone',
               pid: ctx.pid,
               dir: target,
@@ -2693,8 +2710,8 @@ export async function runGitCommand(
               quiet,
               exclusiveDestination: true,
               exclusiveMutationRoot: mutationLease.root,
-              cloneRootExisted,
-              cloneAbortPieceEntries: Number(ctx.env.NIMBUS_GIT_CLONE_ABORT_PIECE_ENTRIES) || undefined,
+              cloneJobId: job.jobId,
+              onCloneCheckoutPhase: () => setCloneJobPhase(doCtx.storage, job, 'checkout'),
               mutationOwner,
               rotateMutationOwner: () => (mutationOwner = vfs.rotateExclusiveMutation(mutationOwner)),
               // Verification/tuning knobs: smaller pieces make ordinary repos
@@ -2710,18 +2727,36 @@ export async function runGitCommand(
                 username: ctx.env.GIT_USERNAME || '',
                 password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
               },
-            }, network);
+              }, network);
+            } catch (error) {
+              // What it wrote before it threw is cleaned up as a failure's.
+              result = { success: false, error: String((error as Error)?.message ?? error), cleanup: true, elapsed: 0, filesWritten: 0, bytesWritten: 0 } as GitNetworkResult;
+            }
             if (result.success) {
+              await deleteCloneJob(doCtx.storage, job.dir);
               progress.write(
                 `\n[git] clone complete (${result.filesWritten} files, ` +
                 `${(result.bytesWritten / 1024).toFixed(1)}KB in ${(result.elapsed / 1000).toFixed(1)}s)\n`,
               );
-            } else {
-              ctx.stderr.write(`\n[git] clone failed: ${result.error}\n`);
-              // What the failed clone wrote could not all be removed: say so, and where.
-              if (result.cleanupError) ctx.stderr.write(`[git] could not remove the failed clone at '${dest}': ${result.cleanupError}\n`);
+              return true;
             }
-            return result.success;
+            ctx.stderr.write(`\n[git] clone failed: ${result.error}\n`);
+            if (result.cleanup !== true) {
+              await deleteCloneJob(doCtx.storage, job.dir);
+              return false;
+            }
+            // As git's remove_junk: in the DO, under the clone's lease (its
+            // current owner: the facets were fenced), as the clone's credential.
+            try {
+              const cleaned = await cleanUpClone(vfs.as(ctx.cred, { mutationOwner }), doCtx.storage, job, {
+                sliceEntries: Number(ctx.env.NIMBUS_GIT_CLONE_CLEANUP_SLICE) || undefined,
+              });
+              if (cleaned.outcome === 'kept-repo') ctx.stderr.write(JUNK_LEAVE_REPO_WARNING);
+            } catch (error) {
+              // The record stays: the session finishes the cleanup when it next starts.
+              ctx.stderr.write(`[git] could not remove the failed clone at '${dest}': ${String((error as Error)?.message ?? error)}\n`);
+            }
+            return false;
           } finally {
             vfs.releaseExclusiveMutation(mutationOwner);
           }

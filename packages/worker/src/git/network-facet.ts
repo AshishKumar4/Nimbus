@@ -76,15 +76,13 @@ export interface GitNetworkOpts {
   /** Clone-only: caller holds an exclusive mutation lease for dir. */
   exclusiveDestination?: boolean;
   /**
-   * Clone-only: the destination existed (empty) before the clone. A failed
-   * clone's abort then empties it and keeps it; otherwise it removes it, as
-   * git's remove_junk does (builtin/clone.c).
+   * Clone-only, the DO's: the job's id (its record's, git/clone-job.ts, and
+   * the marker's the clone writes first), and what the clone tells the
+   * record when every object it fetches is in (its phase becomes
+   * 'checkout': a failure after leaves the repository, as git's does).
    */
-  cloneRootExisted?: boolean;
-  /** Clone-abort: one invocation's time budget before it answers `more` (the driver's CLONE_ABORT_PIECE_MS). */
-  cloneAbortPieceMs?: number;
-  /** Clone-only verification knob: the entries one abort invocation removes before it answers `more` (else its time budget alone). */
-  cloneAbortPieceEntries?: number;
+  cloneJobId?: string;
+  onCloneCheckoutPhase?: () => Promise<void>;
   /** Clone-only: normalized root covered by the exclusive mutation lease. */
   exclusiveMutationRoot?: string;
   /** Trusted supervisor-only lease owner; never sent to the dynamic worker. */
@@ -146,8 +144,7 @@ export type GitCloneInvocationPhase =
   | 'clone-prepare'
   | 'clone-batch'
   | 'clone-history'
-  | 'clone-finish'
-  | 'clone-abort';
+  | 'clone-finish';
 
 export interface GitNetworkPhaseDiagnostic {
   phase: GitCloneInvocationPhase | 'operation';
@@ -198,7 +195,8 @@ export interface GitNetworkResult {
   errorPhase?: GitCloneInvocationPhase | 'operation';
   errorCode?: GitNetworkErrorCode;
   budget?: GitCloneBudgetDiagnostic;
-  cleanupError?: string;
+  /** A clone that failed after it wrote: its caller cleans up (git/clone-job.ts). */
+  cleanup?: boolean;
   /** fetch-objects: objects the promisor pack holds. */
   fetchedObjects?: number;
 }
@@ -225,8 +223,6 @@ interface FacetInvocationResult {
   refused?: unknown;
   errorCode?: unknown;
   fetched?: unknown;
-  /** clone-abort: what is left is the next invocation's. */
-  more?: unknown;
 }
 
 interface GitFacetEntrypoint {
@@ -238,11 +234,6 @@ interface GitFacetWorker {
 }
 
 const CLONE_PHASE_TIMEOUT_MS = 240_000;
-const CLONE_ABORT_TIMEOUT_MS = 30_000;
-/** An abort invocation stops here and answers `more` (a 33,980-file worktree is removed file by file). */
-const CLONE_ABORT_PIECE_MS = 20_000;
-/** Abort invocations a failed clone's cleanup may take. */
-const CLONE_ABORT_PIECES_MAX = 30;
 const DEFAULT_CLONE_BUDGET_MS = 30 * 60_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 300_000;
 
@@ -352,7 +343,6 @@ function parsePhaseDiagnostic(
       diagnostic.phase === 'clone-batch' ||
       diagnostic.phase === 'clone-history' ||
       diagnostic.phase === 'clone-finish' ||
-      diagnostic.phase === 'clone-abort' ||
       diagnostic.phase === 'operation'
     ? diagnostic.phase
     : fallback.phase;
@@ -947,7 +937,7 @@ export async function execGitNetwork(
       };
     }
 
-    const { mutationOwner, rotateMutationOwner, ...facetOpts } = opts;
+    const { mutationOwner, rotateMutationOwner, onCloneCheckoutPhase, ...facetOpts } = opts;
     const ctxExports = getCtxExports();
     // One run for every binding this operation mints, a fence's included.
     const writerId = crypto.randomUUID();
@@ -1004,7 +994,7 @@ export async function execGitNetwork(
       worker = loadedWorker;
       entrypoint = loadedWorker.getEntrypoint();
       if (opts.op === 'clone') {
-        const jobId = crypto.randomUUID();
+        const jobId = opts.cloneJobId ?? crypto.randomUUID();
         const optionsHash = await hashCloneOptions(opts);
         const phases: GitNetworkPhaseDiagnostic[] = [];
         const supervisorRpc = { ...EMPTY_SUPERVISOR_RPC_COUNTERS };
@@ -1068,6 +1058,9 @@ export async function execGitNetwork(
           if (!opts.quiet) await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic);
 
           const prepared = prepare.result.prepared as { fast?: ClonePrepared; stream?: CloneStreamed['stream'] };
+          // A partial clone's objects are in once its filtered pack is: its
+          // batches are git's lazy fetch of what the checkout writes.
+          if (facetOpts.filter !== undefined && prepared.fast !== undefined) await onCloneCheckoutPhase?.();
           const run: CloneBatchRun = {
             facets,
             outerDeadline,
@@ -1083,6 +1076,8 @@ export async function execGitNetwork(
           if (prepared.stream !== undefined) {
             // A server without wants by id sent one pack: finish decoding it, then plan the checkout from it.
             fast = await runCloneSnapshot(facetOpts, identity, prepared.stream, run, tagsFound);
+            // The one pack is stored: what comes next only checks it out.
+            await onCloneCheckoutPhase?.();
           }
           if (fast === undefined) throw new GitClonePhaseError('clone-prepare', 'clone-prepare returned no plan', prepare.diagnostic);
           const shares = await runCloneBatches(facetOpts, identity, fast, run, prepared.stream !== undefined);
@@ -1090,6 +1085,8 @@ export async function execGitNetwork(
           if (full && prepared.fast !== undefined && fast.commit !== null) {
             await runCloneHistory(facetOpts, identity, fast, run, tagsFound);
           }
+          // A clone that is not partial has every object once its batches (and history) are in.
+          if (prepared.fast !== undefined && facetOpts.filter === undefined) await onCloneCheckoutPhase?.();
           const tags = tagsHeld(prepared.fast?.tags ?? prepared.stream?.tags ?? [], tagsFound);
           await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, run);
           return {
@@ -1122,46 +1119,10 @@ export async function execGitNetwork(
           if (!phases.some(phase => phase.invocationId === phaseError.diagnostic.invocationId)) {
             phases.push(phaseError.diagnostic);
           }
-          let cleanupError: string | undefined;
-          const preMutationPrepareFailure = phaseError.phase === 'clone-prepare' &&
-            phaseError.mutated === false;
-          if (!preMutationPrepareFailure) {
-            try {
-              // A piece of this clone may still be running: its writes lose
-              // their authority before the abort removes what it wrote.
-              facets.fence?.();
-              // A piece at a time: a large worktree takes several.
-              for (let piece = 0; ; piece++) {
-                const abort = await invokeFacet(
-                  facets.entrypoint,
-                  'clone-abort',
-                  crypto.randomUUID(),
-                  { ...facetOpts, jobId, optionsHash, cloneAbortPieceMs: CLONE_ABORT_PIECE_MS },
-                  Date.now() + CLONE_ABORT_TIMEOUT_MS,
-                  CLONE_ABORT_TIMEOUT_MS,
-                );
-                phases.push(abort.diagnostic);
-                accountResult(abort.result);
-                if (!opts.quiet) await writeClonePhaseProgress(supervisorBinding, abort.diagnostic);
-                if (abort.result.success !== true) {
-                  cleanupError = typeof abort.result.error === 'string'
-                    ? abort.result.error
-                    : 'clone-abort failed';
-                  break;
-                }
-                if (abort.result.more !== true) break;
-                if (piece + 1 >= CLONE_ABORT_PIECES_MAX) {
-                  cleanupError = 'clone-abort did not finish in ' + CLONE_ABORT_PIECES_MAX + ' invocations';
-                  break;
-                }
-              }
-            } catch (abortError) {
-              if (abortError instanceof GitClonePhaseError) {
-                phases.push(abortError.diagnostic);
-              }
-              cleanupError = phaseErrorMessage(abortError);
-            }
-          }
+          // What the clone wrote is its caller's to clean up (git/clone-job.ts),
+          // once no piece of it can write: a prepare that failed before it wrote leaves nothing.
+          const cleanup = !(phaseError.phase === 'clone-prepare' && phaseError.mutated === false);
+          if (cleanup) facets.fence?.();
 
           return {
             success: false,
@@ -1173,7 +1134,7 @@ export async function execGitNetwork(
             budget: phaseError instanceof GitCloneBudgetExceededError
               ? phaseError.budget
               : undefined,
-            cleanupError,
+            cleanup,
             elapsed: Date.now() - start,
             filesWritten,
             bytesWritten,
@@ -1331,24 +1292,9 @@ function cloneJobMarkerPath(dir) {
   return normalizePath(dir) + '/.git/' + CLONE_JOB_MARKER;
 }
 
-/** The marker a clone's phases write first: it names the job that owns .git. */
+/** The marker a clone's phases write first: it names the job that owns .git (git/clone-job.ts reads it). */
 function cloneJobMarker(opts) {
   return JSON.stringify({ version: 1, jobId: opts.jobId, optionsHash: opts.optionsHash });
-}
-
-/** Whether .git carries this job's marker (an abort deletes only its own clone). */
-async function ownsCloneJob(fs, opts) {
-  let raw;
-  try {
-    raw = await fs.promises.readFile(cloneJobMarkerPath(opts.dir), { encoding: 'utf8' });
-  } catch (error) {
-    if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return false;
-    throw error;
-  }
-  let marker;
-  try { marker = JSON.parse(raw); }
-  catch { return false; }
-  return !!marker && marker.jobId === opts.jobId && marker.optionsHash === opts.optionsHash;
 }
 
 function disposeRpcResult(value) {
@@ -2211,8 +2157,7 @@ export default {
     const phase = opts.phase === 'clone-prepare' ||
         opts.phase === 'clone-batch' ||
         opts.phase === 'clone-history' ||
-        opts.phase === 'clone-finish' ||
-        opts.phase === 'clone-abort'
+        opts.phase === 'clone-finish'
       ? opts.phase
       : 'operation';
     const invocationId = typeof opts.invocationId === 'string'
@@ -2454,9 +2399,6 @@ export default {
           }
         }
         if (opts.exclusiveDestination === true) authoritativeRoot = exclusiveRoot;
-      } else if (phase === 'clone-abort') {
-        requireProtocolString(opts.jobId, 'job id', 128);
-        requireProtocolString(opts.optionsHash, 'options hash', 128);
       } else if (opts.op === 'clone') {
         throw protocolError('clone requires its phases (prepare, batch, history, finish)');
       }
@@ -2516,68 +2458,6 @@ export default {
         }, advertisement);
         prepared = started.stream ? { stream: started.stream } : { fast: started };
         return respond(true, { prepared, metadataOverlay: overlayStats() });
-      } else if (phase === 'clone-abort') {
-        if (!await ownsCloneJob(fs, opts)) {
-          return respond(true, {
-            refused: 'not-owner',
-            metadataOverlay: overlayStats(),
-          });
-        }
-        mutated = true;
-        // What git's remove_junk (builtin/clone.c) removes: the work tree and
-        // its .git, and the destination itself unless it existed before the
-        // clone (then it stays, empty); never the leading directories the
-        // clone made. File by file, then the directories, deepest first, the
-        // job's marker last (until then a later invocation still owns it):
-        // one recursive delete of a full clone's .git (vscode: ~300 packs)
-        // or worktree (next.js: 33,980 files) passes a write group's row
-        // limit, and the clone would stay marked. Past its budget the
-        // invocation answers \`more\`, and the next one goes on.
-        const root = normalizePath(opts.dir);
-        const gitdir = root + '/.git';
-        const markerPath = cloneJobMarkerPath(opts.dir);
-        const stopAt = Date.now() + (Number(opts.cloneAbortPieceMs) || 20000);
-        const entries = Number(opts.cloneAbortPieceEntries) || Infinity;
-        let removed = 0;
-        let more = false;
-        const spent = () => removed > 0 && (Date.now() >= stopAt || removed >= entries);
-        // Every directory below the destination, parents before children.
-        const directories = [];
-        const walk = async (dir) => {
-          stats.supervisorRpc.readdir++;
-          const entries = await useRpcResult(supervisor.readdir(dir), (result) => result);
-          for (const entry of Array.isArray(entries) ? entries : []) {
-            if (spent()) { more = true; return; }
-            const name = typeof entry === 'string' ? entry : entry.name;
-            const path = dir + '/' + name;
-            const type = typeof entry === 'string'
-              ? ((await fs.promises.lstat(path)).isDirectory() ? 'directory' : 'file')
-              : entry.type;
-            if (type === 'directory' || type === 'dir') {
-              directories.push(path);
-              await walk(path);
-              if (more) return;
-            } else if (path !== markerPath) {
-              await fs.promises.unlink(path);
-              removed++;
-            }
-          }
-        };
-        await walk(root);
-        await flushWave();
-        if (!more) {
-          // The worktree's directories, deepest first, then .git's, the marker with it.
-          const inGit = (dir) => dir === gitdir || dir.startsWith(gitdir + '/');
-          const ordered = [...directories.filter((dir) => !inGit(dir)).reverse(), ...directories.filter(inGit).reverse()];
-          for (const dir of ordered) {
-            if (spent()) { more = true; break; }
-            await fs.promises.rmdir(dir, { recursive: inGit(dir) });
-            removed++;
-          }
-          if (!more && opts.cloneRootExisted !== true) await fs.promises.rmdir(root);
-          await flushWave();
-        }
-        return respond(true, { more, metadataOverlay: overlayStats() });
       } else if (opts.op === 'fetch-objects') {
         // A partial clone's missing objects (git/promisor.ts): one request,
         // stored as a promisor pack. Writes land below the repository only.

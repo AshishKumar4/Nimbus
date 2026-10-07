@@ -121,7 +121,15 @@ export async function createFacetSession(work, { realGit = false } = {}) {
   writeFileSync(join(tempDir, 'git-network-worker.mjs'), assembleGitNetworkFacetSource());
   writeFileSync(join(tempDir, 'git-bundle.js'), realGit ? stagedGitBundle() : 'export const git = {}; export const gitHttp = {};');
   const facet = await import(pathToFileURL(join(tempDir, 'git-network-worker.mjs')).href);
-  const doCtx = { id: { toString: () => 'facet-session-do' } };
+  // The DO's storage, as a clone's job records use it (git/clone-job.ts).
+  const stored = new Map();
+  const storage = {
+    async get(key) { return structuredClone(stored.get(key)); },
+    async put(key, value) { stored.set(key, structuredClone(value)); },
+    async delete(key) { return stored.delete(key); },
+    async list({ prefix }) { return new Map([...stored].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key, structuredClone(value)])); },
+  };
+  const doCtx = { id: { toString: () => 'facet-session-do' }, storage };
   const doEnv = {
     ASSETS: stagedAssets,
     LOADER: {

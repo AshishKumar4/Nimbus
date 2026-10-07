@@ -10,8 +10,6 @@ let supervisorDisposeCount = 0;
 let prepareDurable = false;
 let loadCount = 0;
 let entrypointCount = 0;
-let committedFailurePrefix = false;
-let abortObservedPrefix = false;
 const terminalLines = [];
 /** What a prepare plans: two batches (one for a clone that fails, so it fails once). */
 const plan = (batches) => ({
@@ -74,17 +72,6 @@ const entrypoint = {
       });
     }
 
-    if (body.phase === 'clone-abort') {
-      abortObservedPrefix = committedFailurePrefix;
-      return Response.json({
-        success: true,
-        filesWritten: 0,
-        bytesWritten: 0,
-        supervisorRpc: { writeBatchStream: 1 },
-        metadataOverlay: { entries: 1, accountedBytes: 128 },
-      });
-    }
-
     assert.equal(prepareDurable, true, body.phase + ' started before prepare became durable');
     if (body.phase === 'clone-finish') {
       assert.deepEqual(body.shares.map((share) => share.name).sort(), ['index-0', 'index-1', 'index-gitlinks']);
@@ -99,7 +86,6 @@ const entrypoint = {
     }
     assert.equal(body.phase, 'clone-batch');
     if (body.dir === '/failure') {
-      committedFailurePrefix = true;
       return Response.json({
         success: false,
         error: 'checkout exploded',
@@ -194,13 +180,11 @@ const failureCalls = calls.slice(callsBeforeFailure);
 assert.equal(failed.success, false, 'failed checkout must not report clone complete');
 assert.equal(failed.error, 'checkout exploded', 'abort must not mask the primary phase error');
 assert.equal(failed.errorPhase, 'clone-batch');
-assert.equal(failed.cleanupError, undefined);
+assert.equal(failed.cleanup, true, 'a clone that failed after it wrote is its caller\'s to clean up (git/clone-job.ts)');
 assert.deepEqual(failureCalls.map(({ body }) => body.phase), [
   'clone-prepare',
   'clone-batch',
-  'clone-abort',
-], 'a batch failure that is not a lost transport is not retried');
-assert.equal(abortObservedPrefix, true, 'abort did not leave the committed worktree prefix inspectable');
+], 'a batch failure that is not a lost transport is not retried, and no facet cleans up');
 assert.equal(failed.filesWritten, 5, 'partial checkout writes were not reported');
 
 const callsBeforeExisting = calls.length;
@@ -220,11 +204,8 @@ const existing = await execGitNetwork(
 );
 assert.equal(existing.success, false);
 assert.match(existing.error, /already exists and is not an empty directory/);
-assert.deepEqual(
-  calls.slice(callsBeforeExisting).map(({ body }) => body.phase),
-  ['clone-prepare'],
-  'pre-mutation prepare failure must not invoke clone-abort',
-);
+assert.equal(existing.cleanup, false, 'a prepare that failed before it wrote leaves nothing to clean up');
+assert.deepEqual(calls.slice(callsBeforeExisting).map(({ body }) => body.phase), ['clone-prepare']);
 
 let lateResponseDisposed = 0;
 const lateEntrypoint = {
