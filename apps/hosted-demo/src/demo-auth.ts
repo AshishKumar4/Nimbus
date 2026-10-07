@@ -3,8 +3,10 @@ import {
   fetchNimbusCloudflareUserInfo,
   pkceChallenge,
   randomBase64Url,
+  readNimbusCookie,
   requestNimbusCloudflareOAuthToken,
   sealJson,
+  serializeNimbusCookie,
   sha256Base64Url,
   unsealJson,
 } from '@nimbus-sh/sdk/worker';
@@ -82,9 +84,10 @@ export async function startDemoLogin(request: Request, env: any): Promise<Respon
     Location: authUrl.toString(),
     'Cache-Control': 'no-store',
   });
-  appendCookie(headers, serializeCookie(DEMO_STATE_COOKIE, await sealJson(state, config.cookieSecret, {
+  headers.append('Set-Cookie', serializeNimbusCookie(DEMO_STATE_COOKIE, await sealJson(state, config.cookieSecret, {
     purpose: DEMO_STATE_COOKIE_PURPOSE,
   }), {
+    path: '/',
     maxAge: Math.ceil(OAUTH_STATE_TTL_MS / 1000),
   }));
   return new Response(null, { status: 302, headers });
@@ -95,7 +98,7 @@ export async function completeDemoLogin(request: Request, env: any): Promise<Res
   const config = readDemoAuthConfig(env, url.origin);
   const clearState = clearCookie(DEMO_STATE_COOKIE);
   const headers = new Headers({ 'Cache-Control': 'no-store' });
-  appendCookie(headers, clearState);
+  headers.append('Set-Cookie', clearState);
   // Every exit below that is not a successful login renders the same page,
   // and each must still retire the state cookie it consumed.
   const failed = (message: string) => renderOAuthFailure(message, [clearState]);
@@ -138,9 +141,10 @@ export async function completeDemoLogin(request: Request, env: any): Promise<Res
       displayName: auth.displayName,
       now,
     });
-    appendCookie(headers, serializeCookie(DEMO_AUTH_COOKIE, await sealJson(auth, config.cookieSecret, {
+    headers.append('Set-Cookie', serializeNimbusCookie(DEMO_AUTH_COOKIE, await sealJson(auth, config.cookieSecret, {
       purpose: DEMO_AUTH_COOKIE_PURPOSE,
     }), {
+      path: '/',
       maxAge: Math.ceil(config.authCookieTtlMs / 1000),
     }));
     headers.set('Location', sanitizeReturnTo(stored.returnTo) || '/new');
@@ -156,8 +160,8 @@ export async function logoutDemo(request: Request): Promise<Response> {
     Location: '/',
     'Cache-Control': 'no-store',
   });
-  appendCookie(headers, clearCookie(DEMO_AUTH_COOKIE));
-  appendCookie(headers, clearCookie(DEMO_STATE_COOKIE));
+  headers.append('Set-Cookie', clearCookie(DEMO_AUTH_COOKIE));
+  headers.append('Set-Cookie', clearCookie(DEMO_STATE_COOKIE));
   if (url.searchParams.get('return_to')) {
     headers.set('Location', sanitizeReturnTo(url.searchParams.get('return_to')) || '/');
   }
@@ -165,7 +169,7 @@ export async function logoutDemo(request: Request): Promise<Response> {
 }
 
 export async function loadDemoAuth(request: Request, env: any): Promise<DemoAuth | null> {
-  const value = readCookie(request, DEMO_AUTH_COOKIE);
+  const value = readNimbusCookie(request, DEMO_AUTH_COOKIE);
   if (!value) return null;
   const config = readDemoAuthConfig(env, new URL(request.url).origin);
   const auth = await unsealJson<DemoAuth>(value, config.cookieSecret, {
@@ -186,7 +190,7 @@ export async function shouldHandleDemoOAuthCallback(request: Request, env: any):
 }
 
 async function loadDemoState(request: Request, cookieSecret: string): Promise<DemoOAuthState | null> {
-  const value = readCookie(request, DEMO_STATE_COOKIE);
+  const value = readNimbusCookie(request, DEMO_STATE_COOKIE);
   if (!value) return null;
   const state = await unsealJson<DemoOAuthState>(value, cookieSecret, {
     purpose: DEMO_STATE_COOKIE_PURPOSE,
@@ -229,32 +233,7 @@ function displayName(userInfo: any): string | null {
   return typeof value === 'string' && value.trim() ? value.trim().slice(0, 200) : null;
 }
 
-function serializeCookie(name: string, value: string, opts: { maxAge: number }): string {
-  return [
-    `${name}=${value}`,
-    'Path=/',
-    `Max-Age=${Math.max(0, Math.floor(opts.maxAge))}`,
-    'HttpOnly',
-    'Secure',
-    'SameSite=Lax',
-  ].join('; ');
-}
-
 function clearCookie(name: string): string {
-  return serializeCookie(name, '', { maxAge: 0 });
-}
-
-function appendCookie(headers: Headers, cookie: string): void {
-  headers.append('Set-Cookie', cookie);
-}
-
-function readCookie(request: Request, name: string): string | null {
-  const header = request.headers.get('Cookie') || request.headers.get('cookie') || '';
-  const target = name + '=';
-  for (const part of header.split(';')) {
-    const item = part.trim();
-    if (item.startsWith(target)) return item.slice(target.length);
-  }
-  return null;
+  return serializeNimbusCookie(name, '', { path: '/', maxAge: 0 });
 }
 

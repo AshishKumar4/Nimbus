@@ -5912,6 +5912,40 @@ error: the Oxc transform crashed (${reason})`);
     return Parser.tokenizer(input, options);
   }
 
+  var MODULE_PARSE_OPTIONS = { ecmaVersion: "latest", sourceType: "module", allowHashBang: true };
+  var AcornParserClass = Parser;
+  var FUNCTION_TYPES =   new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
+  var StatementParser = class extends AcornParserClass {
+    hooks = {};
+    parseTopLevel(node) {
+      const exports =   Object.create(null);
+      while (this.type !== types$1.eof) {
+        const statement = this.parseStatement(null, true, exports);
+        if (isAstNode(statement)) this.hooks.onStatement?.(statement);
+      }
+      if (this.inModule) {
+        for (const name of Object.keys(this.undefinedExports)) this.raiseRecoverable(this.undefinedExports[name].start, `Export '${name}' is not defined`);
+      }
+      this.next();
+      return this.finishNode(node, "Program");
+    }
+    finishNode(node, type) {
+      const finished = super.finishNode(node, type);
+      if (isAstNode(finished)) {
+        this.hooks.onNode?.(finished);
+        if (FUNCTION_TYPES.has(type)) {
+          const body = finished.body;
+          if (isAstNode(body) && body.type === "BlockStatement") Reflect.set(body, "body", []);
+        }
+      }
+      return finished;
+    }
+  };
+  function parseStatements(source, options, hooks) {
+    const parser = new StatementParser(options, source);
+    parser.hooks = hooks;
+    parser.parse();
+  }
   function applySourceEdits(source, edits) {
     const ordered = [...edits].sort((a, b) => a.start - b.start || a.end - b.end);
     const parts = [];
@@ -9003,18 +9037,19 @@ const ${binding} = arguments[2];
       if (node?.type === "ImportDeclaration") for (const specifier of list(node, "specifiers")) yield* patternNames(child(specifier, "local"));
     }
   }
-  function* varNames(value, sloppy, top = true) {
+  function varNames(value, sloppy, top = true, names = []) {
     if (Array.isArray(value)) {
-      for (const item of value) yield* varNames(item, sloppy, top);
-      return;
+      for (const item of value) varNames(item, sloppy, top, names);
+      return names;
     }
-    if (!isNode(value)) return;
-    if (value.type === "FunctionDeclaration" && sloppy && !top) yield* patternNames(child(value, "id"));
-    if (FUNCTIONS.has(value.type) || value.type === "StaticBlock") return;
+    if (!isNode(value)) return names;
+    if (value.type === "FunctionDeclaration" && sloppy && !top) names.push(...patternNames(child(value, "id")));
+    if (FUNCTIONS.has(value.type) || value.type === "StaticBlock") return names;
     if (value.type === "VariableDeclaration" && value.kind === "var") {
-      for (const declarator of list(value, "declarations")) yield* patternNames(child(declarator, "id"));
+      for (const declarator of list(value, "declarations")) names.push(...patternNames(child(declarator, "id")));
     }
-    for (const [key, item] of Object.entries(value)) if (key !== "parent") yield* varNames(item, sloppy, false);
+    for (const key in value) if (key !== "parent") varNames(value[key], sloppy, false, names);
+    return names;
   }
   function scopeOf(node, scope, sloppy, functionBody) {
     const within = (names) => ({ names: new Set(names), parent: scope });
@@ -9048,17 +9083,26 @@ const ${binding} = arguments[2];
         return scope;
     }
   }
-  function* scoped(value, scope, sloppy, functionBody = false, parent = null, key = "") {
-    if (Array.isArray(value)) {
-      for (const item of value) yield* scoped(item, scope, sloppy, false, parent, key);
-      return;
-    }
-    if (!isNode(value)) return;
-    yield [value, scope, parent, key];
-    const inner = scopeOf(value, scope, sloppy, functionBody);
-    const isFunction = FUNCTIONS.has(value.type);
-    for (const [field, item] of Object.entries(value)) {
-      if (field !== "parent") yield* scoped(item, inner, sloppy, isFunction && field === "body", value, field);
+  function* scoped(value, scope, sloppy, functionBody = false, parent = null, key = "", opaque) {
+    const stack = [[value, scope, functionBody, parent, key]];
+    while (stack.length > 0) {
+      const [item, at2, inBody, under, field] = stack.pop();
+      if (Array.isArray(item)) {
+        for (let i = item.length - 1; i >= 0; i--) stack.push([item[i], at2, false, under, field]);
+        continue;
+      }
+      if (!isNode(item)) continue;
+      yield [item, at2, under, field];
+      if (opaque?.(item)) continue;
+      const inner = scopeOf(item, at2, sloppy, inBody);
+      const isFunction = FUNCTIONS.has(item.type);
+      const fields = Object.keys(item);
+      for (let i = fields.length - 1; i >= 0; i--) {
+        const name = fields[i];
+        if (name === "parent") continue;
+        const fieldScope = item.type === "SwitchStatement" && name === "discriminant" ? at2 : inner;
+        stack.push([item[name], fieldScope, isFunction && name === "body", item, name]);
+      }
     }
   }
   function bindingScope(scope, name) {
@@ -9100,13 +9144,71 @@ const ${binding} = arguments[2];
     return emitCommonJs(esm, readEsmRecords(esm), { body: "async" });
   }
   function readEsmRecords(source) {
-    const program = Parser.parse(source, { ecmaVersion: "latest", sourceType: "module", allowHashBang: true });
+    const first = readModule(source, null);
+    return first.importsAfterCode ? readModule(source, first.imported).records : first.records;
+  }
+  function readModule(source, known) {
     const nameOf = (node) => node.type === "Identifier" ? String(node.name) : String(node.value);
+    const imported = new Set(known ?? []);
     const records = [];
-    const references = importReferences(program, program.body.flatMap((node) => node.type !== "ImportDeclaration" ? [] : node.specifiers.filter((specifier) => specifier.type !== "ImportNamespaceSpecifier").map((specifier) => specifier.local.name)));
-    for (const node of program.body) {
+    const uses =   new Map();
+    let code = false;
+    let importsAfterCode = false;
+    const outside = { names:   new Set(), parent: null };
+    const mentions = [];
+    const mentioned = (start, end) => {
+      let low = 0;
+      let high = mentions.length;
+      while (low < high) {
+        const middle = low + high >>> 1;
+        if (mentions[middle] < start) low = middle + 1;
+        else high = middle;
+      }
+      return low < mentions.length && mentions[low] < end;
+    };
+    const freeIn =   new WeakMap();
+    const freeUses = (root) => {
+      const own = freeIn.get(root);
+      if (own) return own;
+      const free = [];
+      if (!mentioned(root.start, root.end)) return free;
+      const patternProperties =   new Set();
+      for (const [node, scope, parent, key] of scoped(root, outside, false, false, null, "", (n) => n !== root && freeIn.has(n))) {
+        const inner = node === root ? void 0 : freeIn.get(node);
+        if (inner) {
+          for (const use of inner) if (bindingScope(scope, use.name) === null) free.push(use);
+          continue;
+        }
+        if (node.type === "ObjectPattern") for (const property of list(node, "properties")) patternProperties.add(property);
+        const name = node.type === "Identifier" ? stringOf(node, "name") : null;
+        if (name === null || !imported.has(name) || parent === null || !namesBinding(parent, key)) continue;
+        if (bindingScope(scope, name) !== null) continue;
+        free.push({ name, start: node.start, end: node.end, use: useOf(parent, key, patternProperties) });
+      }
+      return free;
+    };
+    const onIdentifier = (identifier) => {
+      const name = stringOf(identifier, "name");
+      if (name === null || !imported.has(name)) return;
+      let at2 = mentions.length;
+      while (at2 > 0 && mentions[at2 - 1] > identifier.start) at2--;
+      mentions.splice(at2, 0, identifier.start);
+    };
+    const onStatement = (node) => {
+      if (node.type !== "ImportDeclaration") {
+        for (const { name, start, end, use } of freeUses(node)) {
+          const found = uses.get(name) ?? [];
+          uses.set(name, found);
+          found.push({ start, end, use });
+        }
+      }
       switch (node.type) {
-        case "ImportDeclaration":
+        case "ImportDeclaration": {
+          for (const specifier of node.specifiers) {
+            if (specifier.type === "ImportNamespaceSpecifier") continue;
+            if (code && !imported.has(specifier.local.name)) importsAfterCode = true;
+            imported.add(specifier.local.name);
+          }
           records.push({
             kind: "import",
             start: node.start,
@@ -9116,10 +9218,11 @@ const ${binding} = arguments[2];
               kind: "named",
               local: specifier.local.name,
               imported: specifier.type === "ImportDefaultSpecifier" ? "default" : nameOf(specifier.imported),
-              references: references.get(specifier.local.name) ?? []
+              references: []
             })
           });
-          break;
+          return;
+        }
         case "ExportNamedDeclaration":
           if (node.declaration) {
             records.push({
@@ -9175,23 +9278,20 @@ const ${binding} = arguments[2];
         default:
           break;
       }
-    }
-    return records;
-  }
-  function importReferences(program, names) {
-    const references = new Map(names.map((name) => [name, []]));
-    if (references.size === 0) return references;
-    const outside = { names:   new Set(), parent: null };
-    const patternProperties =   new Set();
-    for (const [node, scope, parent, key] of scoped(program, outside, false)) {
-      if (node.type === "ObjectPattern") for (const property of list(node, "properties")) patternProperties.add(property);
-      const name = node.type === "Identifier" ? stringOf(node, "name") : null;
-      const found = name === null ? void 0 : references.get(name);
-      if (!found || name === null || parent === null || !namesBinding(parent, key)) continue;
-      if (bindingScope(scope, name)?.parent !== outside) continue;
-      found.push({ start: node.start, end: node.end, use: useOf(parent, key, patternProperties) });
-    }
-    return references;
+      code = true;
+    };
+    parseStatements(source, MODULE_PARSE_OPTIONS, {
+      onStatement: (statement) => onStatement(statement),
+      onNode: (node) => {
+        if (node.type === "Identifier") onIdentifier(node);
+        else if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") freeIn.set(node, freeUses(node));
+      }
+    });
+    const withUses = records.map((record) => record.kind !== "import" ? record : {
+      ...record,
+      bindings: record.bindings.map((binding) => binding.kind === "namespace" ? binding : { ...binding, references: uses.get(binding.local) ?? [] })
+    });
+    return { records: withUses, imported, importsAfterCode };
   }
   function useOf(parent, key, patternProperties) {
     switch (parent.type) {
@@ -9242,7 +9342,7 @@ const ${binding} = arguments[2];
         if (binding.kind === "namespace") continue;
         const read = binding.imported === "default" ? `${interop}.default` : `${mod}${key(binding.imported)}`;
         reads.set(binding.local, read);
-        for (const { start, end, use } of binding.references ?? []) {
+        for (const { start, end, use } of binding.references) {
           if (use === "write") continue;
           uses.push({ start, end, text: use === "call" ? `(0, ${read})` : use === "shorthand" ? `${binding.local}: ${read}` : read });
         }
@@ -9271,7 +9371,6 @@ const ${binding} = arguments[2];
           for (const binding of record.bindings) {
             const { local } = binding;
             if (binding.kind === "namespace") imported.push(`const ${local} = ${namespace(mod)};`);
-            else if (binding.references === null) imported.push(`const ${local} = ${reads.get(local)};`);
             else if (binding.references.some(({ use }) => use === "write")) imported.push(`const ${local} = void 0;`);
           }
           break;

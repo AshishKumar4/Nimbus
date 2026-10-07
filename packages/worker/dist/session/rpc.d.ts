@@ -648,17 +648,5 @@ export declare function routeHostedWebSocket(self: RpcHost, workerKey: string, c
 export declare function _rpcCancelHostProcess(self: RpcHost, workerKey: string): Promise<{
     cancelled: boolean;
 }>;
-import { type CacheTier, type CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
-export type CacheStatEvent = {
-    kind: 'hit';
-    tier: CacheTier;
-    cacheKind: CacheKind;
-    bytes: number;
-} | {
-    kind: 'miss';
-    tier: CacheTier;
-    cacheKind: CacheKind;
-};
-export declare function _rpcRecordCacheStats(_self: RpcHost, events: CacheStatEvent[]): Promise<void>;
 export {};
 //# sourceMappingURL=rpc.d.ts.map

@@ -50,6 +50,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseWranglerJsonc } from '../packages/worker/src/wrangler/wrangler-config.ts';
 
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -276,41 +277,13 @@ export function missingCapabilities(block) {
     .map((r) => `${r.binding} is absent — breaks ${r.breaks}`);
 }
 
+/** A wrangler config as `nimbus wrangler dev` and wrangler read it (parseWranglerJsonc). */
 export function loadConfig(relPath, root = REPO_ROOT) {
-  // Bun parses JSONC natively; the repo's tooling is Bun throughout.
-  return JSON.parse(stripJsonc(readFileSync(join(root, relPath), 'utf8')));
-}
-
-/** Minimal JSONC → JSON so this module also runs under plain node. */
-function stripJsonc(text) {
-  let out = '';
-  let inString = false;
-  let inLine = false;
-  let inBlock = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    const next = text[i + 1];
-    if (inLine) {
-      if (c === '\n') { inLine = false; out += c; }
-      continue;
-    }
-    if (inBlock) {
-      if (c === '*' && next === '/') { inBlock = false; i++; }
-      continue;
-    }
-    if (inString) {
-      out += c;
-      if (c === '\\') { out += next ?? ''; i++; continue; }
-      if (c === '"') inString = false;
-      continue;
-    }
-    if (c === '"') { inString = true; out += c; continue; }
-    if (c === '/' && next === '/') { inLine = true; i++; continue; }
-    if (c === '/' && next === '*') { inBlock = true; i++; continue; }
-    out += c;
+  try {
+    return parseWranglerJsonc(readFileSync(join(root, relPath), 'utf8'));
+  } catch (error) {
+    throw new SyntaxError(`${relPath}: ${error.message}`, { cause: error });
   }
-  // Trailing commas are legal in JSONC, not in JSON.
-  return out.replace(/,(\s*[}\]])/g, '$1');
 }
 
 /**

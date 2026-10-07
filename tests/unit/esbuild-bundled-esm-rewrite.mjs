@@ -65,11 +65,15 @@ new Function('exports', 'require', 'module', '__filename', '__dirname', defaultM
 );
 assert.equal(defaultRecord.exports.default.length, 600_000);
 
-assert.equal(
-  rewriteBundledEsmToCjs('import x from "x"\nconst y = x; export { y };', absoluteUrl),
-  null,
-  'semicolon-free imports cannot absorb and reorder the next statement',
-);
+{
+  // A declaration without its semicolon ends where the parse says, not at
+  // the next `;`: the statement after it stays in place.
+  const out = rewriteBundledEsmToCjs('import x from "x"\nconst y = x; export { y };', absoluteUrl);
+  assert.ok(out, 'a semicolon-free import takes the bounded path');
+  const record = { exports: {}, require: (name) => { assert.equal(name, 'x'); return { __esModule: true, default: 'x-default' }; } };
+  new Function('exports', 'require', 'module', '__filename', '__dirname', out.code)(record.exports, undefined, record, '/chunk.js', '/');
+  assert.equal(record.exports.y, 'x-default');
+}
 assert.equal(
   rewriteBundledEsmToCjs('const dir = import.meta.dirname; export { dir };', absoluteUrl),
   null,

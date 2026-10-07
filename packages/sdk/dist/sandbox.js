@@ -1,10 +1,11 @@
 /**
  * @nimbus-sh/sdk/sandbox - programmatic Nimbus sandbox handle.
  */
-import { buildPreviewHost, buildPublicPreviewHost, isPreviewHostSafeSid, readPreviewHostSuffix, } from '@nimbus-sh/worker/preview-host';
+import { isPreviewHostSafeSid, previewHostUrl, readPreviewHostSuffix, } from '@nimbus-sh/worker/preview-host';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream, } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { z } from 'zod/v4';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
+import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
 /** The trailing wire argument a credentialed file op carries, or nothing. */
 function fileWireOptions(cred) {
     return cred === undefined ? [] : [{ cred }];
@@ -312,7 +313,7 @@ export class NimbusSandbox {
         return `${this.tenantSegment}:${this.id}`;
     }
     get root() {
-        return this.options.root ?? this.profile.root ?? '/home/user';
+        return this.options.root ?? this.profile.root ?? DEFAULT_HOME;
     }
     stub() {
         if (this.target.kind === 'remote')
@@ -808,15 +809,7 @@ export class NimbusSandbox {
     portUrl(port, options = {}) {
         const hostSuffix = this.config.previewHostSuffix;
         if (hostSuffix && !this.profile.preview?.pathStyle && isPreviewHostSafeSid(this.id)) {
-            // The name stands where the port stands when the app has one. The
-            // public form names its bearer in the label: a public port with a
-            // capability builds the unauthenticated host, anything else keeps the
-            // session-attached one.
-            const label = options.name ?? port;
-            if (options.visibility === 'public' && options.capability !== undefined) {
-                return `https://${buildPublicPreviewHost(this.id, label, options.capability, hostSuffix)}/`;
-            }
-            return `https://${buildPreviewHost(this.id, label, hostSuffix)}/`;
+            return previewHostUrl(this.id, { port, ...options }, hostSuffix);
         }
         const door = options.name !== undefined ? `/app/${options.name}/` : `/port/${port}/`;
         const explicit = this.profile.preview?.baseUrl;

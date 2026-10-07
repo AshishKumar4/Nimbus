@@ -29,6 +29,13 @@ import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 /** Constant JWT header. Serialized at module load; we just splice the cached b64. */
 const HEADER_JSON = '{"alg":"HS256","typ":"JWT"}';
 const HEADER_B64 = base64Url(enc.encode(HEADER_JSON));
+/** Whether `env` carries a signing secret: a non-empty `JWT_SECRET`. */
+export function hasJwtSecret(env) {
+    if (typeof env !== 'object' || env === null)
+        return false;
+    const secret = Reflect.get(env, 'JWT_SECRET');
+    return typeof secret === 'string' && secret.length > 0;
+}
 /**
  * Mint a Nimbus JWT.
  *
@@ -58,7 +65,7 @@ const HEADER_B64 = base64Url(enc.encode(HEADER_JSON));
  * @throws {NimbusTokenTtlError} when `opts.ttlMs` > {@link MAX_TOKEN_TTL_MS}.
  */
 export async function issueNimbusToken(env, input, opts = {}) {
-    if (!env || typeof env.JWT_SECRET !== 'string' || env.JWT_SECRET.length === 0) {
+    if (!hasJwtSecret(env)) {
         throw new NimbusAuthConfigError('JWT_SECRET is not configured (set via `wrangler secret put JWT_SECRET`)');
     }
     checkIdComponents(input);
@@ -108,7 +115,7 @@ export async function issueNimbusToken(env, input, opts = {}) {
  * @throws {NimbusTokenExpiredError} when `exp` < `now`.
  */
 export async function verifyNimbusToken(env, token) {
-    if (!env || typeof env.JWT_SECRET !== 'string' || env.JWT_SECRET.length === 0) {
+    if (!hasJwtSecret(env)) {
         throw new NimbusAuthConfigError('JWT_SECRET is not configured (set via `wrangler secret put JWT_SECRET`)');
     }
     if (typeof token !== 'string' || token.length === 0) {

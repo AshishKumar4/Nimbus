@@ -14579,18 +14579,19 @@ function* lexicalNames(statements) {
     if (node?.type === "ImportDeclaration") for (const specifier of list(node, "specifiers")) yield* patternNames(child(specifier, "local"));
   }
 }
-function* varNames(value, sloppy, top = true) {
+function varNames(value, sloppy, top = true, names = []) {
   if (Array.isArray(value)) {
-    for (const item of value) yield* varNames(item, sloppy, top);
-    return;
+    for (const item of value) varNames(item, sloppy, top, names);
+    return names;
   }
-  if (!isNode(value)) return;
-  if (value.type === "FunctionDeclaration" && sloppy && !top) yield* patternNames(child(value, "id"));
-  if (FUNCTIONS.has(value.type) || value.type === "StaticBlock") return;
+  if (!isNode(value)) return names;
+  if (value.type === "FunctionDeclaration" && sloppy && !top) names.push(...patternNames(child(value, "id")));
+  if (FUNCTIONS.has(value.type) || value.type === "StaticBlock") return names;
   if (value.type === "VariableDeclaration" && value.kind === "var") {
-    for (const declarator of list(value, "declarations")) yield* patternNames(child(declarator, "id"));
+    for (const declarator of list(value, "declarations")) names.push(...patternNames(child(declarator, "id")));
   }
-  for (const [key, item] of Object.entries(value)) if (key !== "parent") yield* varNames(item, sloppy, false);
+  for (const key in value) if (key !== "parent") varNames(value[key], sloppy, false, names);
+  return names;
 }
 function scopeOf(node, scope, sloppy, functionBody) {
   const within = (names) => ({ names: new Set(names), parent: scope });
@@ -14625,17 +14626,26 @@ function scopeOf(node, scope, sloppy, functionBody) {
       return scope;
   }
 }
-function* scoped(value, scope, sloppy, functionBody = false, parent = null, key = "") {
-  if (Array.isArray(value)) {
-    for (const item of value) yield* scoped(item, scope, sloppy, false, parent, key);
-    return;
-  }
-  if (!isNode(value)) return;
-  yield [value, scope, parent, key];
-  const inner = scopeOf(value, scope, sloppy, functionBody);
-  const isFunction = FUNCTIONS.has(value.type);
-  for (const [field, item] of Object.entries(value)) {
-    if (field !== "parent") yield* scoped(item, inner, sloppy, isFunction && field === "body", value, field);
+function* scoped(value, scope, sloppy, functionBody = false, parent = null, key = "", opaque) {
+  const stack = [[value, scope, functionBody, parent, key]];
+  while (stack.length > 0) {
+    const [item, at, inBody, under, field] = stack.pop();
+    if (Array.isArray(item)) {
+      for (let i2 = item.length - 1; i2 >= 0; i2--) stack.push([item[i2], at, false, under, field]);
+      continue;
+    }
+    if (!isNode(item)) continue;
+    yield [item, at, under, field];
+    if (opaque?.(item)) continue;
+    const inner = scopeOf(item, at, sloppy, inBody);
+    const isFunction = FUNCTIONS.has(item.type);
+    const fields = Object.keys(item);
+    for (let i2 = fields.length - 1; i2 >= 0; i2--) {
+      const name50 = fields[i2];
+      if (name50 === "parent") continue;
+      const fieldScope = item.type === "SwitchStatement" && name50 === "discriminant" ? at : inner;
+      stack.push([item[name50], fieldScope, isFunction && name50 === "body", item, name50]);
+    }
   }
 }
 function bindingScope(scope, name50) {
@@ -15904,14 +15914,10 @@ function resolveConditionValue(target, conditions) {
     return null;
   }
   if (typeof target !== "object") return null;
-  for (const cond of conditions) {
-    if (cond in target) {
-      const r3 = resolveConditionValue(target[cond], conditions);
-      if (r3) return r3;
-    }
-  }
-  if (!conditions.includes("default") && "default" in target) {
-    return resolveConditionValue(target.default, conditions);
+  for (const key of Object.keys(target)) {
+    if (key !== "default" && !conditions.includes(key)) continue;
+    const r3 = resolveConditionValue(target[key], conditions);
+    if (r3) return r3;
   }
   return null;
 }
