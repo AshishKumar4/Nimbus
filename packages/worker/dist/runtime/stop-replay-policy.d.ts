@@ -103,6 +103,7 @@ export declare const REPLAY_OPERATION_POLICY: {
     fsStorageGrant: {
         kind: "observation";
         args: (a: readonly unknown[]) => unknown[];
+        answer: (value: unknown) => unknown;
     };
     wsOpen: {
         readonly kind: "effect";

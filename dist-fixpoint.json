@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "81bb33685fe545376c3efb024e512c164f927bc658aa25cb23d3628390842a17",
+  "fingerprint": "73d7eeae8d9a30e247598a07269121e2ddf9dc11d2c93cf3689750cb471b2315",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2207,9 +2207,9 @@
     "packages/worker/dist/runtime/stop-replay-journal.d.ts": "0ace37785d4f20fcb0702c0f273ce431cffa9e563e0a66f186d043d07fa7a179",
     "packages/worker/dist/runtime/stop-replay-journal.d.ts.map": "809c9d37b5e4b5add6ea374b55c908855f76246a235823e400eb8cff68651bd6",
     "packages/worker/dist/runtime/stop-replay-journal.js": "a5700003a293d60cafbf99311d3394c81b430a9a1f56cdbeb1c5a1617ca001f1",
-    "packages/worker/dist/runtime/stop-replay-policy.d.ts": "a59459a8cd52618debc218f93cf5ef69e7a30ee5154562529e315d9c538ef201",
-    "packages/worker/dist/runtime/stop-replay-policy.d.ts.map": "d2de890df20275139faa4d2e6d73917fe3749377d0abc334e8bb863470e884a6",
-    "packages/worker/dist/runtime/stop-replay-policy.js": "99f5f4357b1feeff75a6f4eeead863d2374114e86d27e52b54126c1cab402ced",
+    "packages/worker/dist/runtime/stop-replay-policy.d.ts": "b6debf22e49513bfd5d790c6343e04decea757780a6162659fed47e16f54d807",
+    "packages/worker/dist/runtime/stop-replay-policy.d.ts.map": "38d68a1633b9ce2a7b5822f959ba4c2288e43e8346056876f61d9c5932f1a914",
+    "packages/worker/dist/runtime/stop-replay-policy.js": "7bce404d359fcb4aec985d00ddde758e27fe5309294f3a0db6a300428e204911",
     "packages/worker/dist/runtime/stop-replay.d.ts": "cde1426b4f273d934573324634d584ebb415d3b07b1978b70456466de95ad63d",
     "packages/worker/dist/runtime/stop-replay.d.ts.map": "2787c378d063c8fc92203e716b46a2bb1eabc2aa189e19ffcf04e46f4ca19d64",
     "packages/worker/dist/runtime/stop-replay.js": "ee38129d34056393aa4ae6e36fd136415594fc54fd0a159ea4b327ae291c8c9f",
@@ -2639,7 +2639,7 @@
     "packages/worker/src/runtime/stop-replay-contracts.ts": "321aaabdc46696ad1dbe2704a1061ea727ad12c8d5bd8d6e0d412cab5e053d10",
     "packages/worker/src/runtime/stop-replay-host.ts": "ef00c50f06fb610e36aa549b8fcfbd9a5f3371d5e7f86cd3c8b443e602d15dd9",
     "packages/worker/src/runtime/stop-replay-journal.ts": "5ad72f6a830fa003a35c71e1ebf9a3290b5b85213612b52d537530181b044aac",
-    "packages/worker/src/runtime/stop-replay-policy.ts": "17976233ce51d624d8108dbfa98d5d78d85bcbb44ed3ec8c71abba7797aed000",
+    "packages/worker/src/runtime/stop-replay-policy.ts": "a962c272d62b11fdb77f2676c9071b63aee1e422fa3c19cbabdd3db3c2c4df39",
     "packages/worker/src/runtime/stop-replay.ts": "9596cbb0c693fd237f15c7273794b357c44d450bc1a9769e5bc10843e39b73f6",
     "packages/worker/src/runtime/wasi/preamble.ts": "abed159ac32216007503976fc991de5fab2f4047546f48021451a3094010f6b1",
     "packages/worker/src/session/agent-contract.ts": "784edd579c22d2f7d3c0d43feec4fbd31926212292b9acb23aa4ce55a594994e",
