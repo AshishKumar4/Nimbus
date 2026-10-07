@@ -43,6 +43,7 @@ export function namespaceWaveRouter(namespace: CompositeVFS, credential: (cred: 
     return guard === undefined ? as : as.scoped(guard);
   };
   return {
+    mounts: () => namespace.mountGeneration(),
     resolveDirectory(path, cred, signal) {
       const ns = view(cred);
       const join = (resolved: string, missing: string): string => (missing === '' ? resolved : `${resolved === '/' ? '' : resolved}/${missing}`);

@@ -638,6 +638,8 @@ export interface WaveRouter {
   resolveDirectory(path: string, cred: VfsCred, signal?: AbortSignal): string | Promise<string>;
   /** The mount a mutation at resolved namespace path `path` lands on, or null when it is this filesystem's alone. */
   placement(path: string): string | null;
+  /** The namespace's mount-table generation (CompositeVFS.mountGeneration): a placement made under another may be stale. */
+  mounts(): number;
   /**
    * Whether resolved namespace path `path` is a directory the namespace
    * composes (one above a mount point): a removal of it is EBUSY and a file
@@ -2759,6 +2761,8 @@ export class SqliteVFS {
     epoch: number; tableEpoch: number; cred: VfsCred; name: string; key: string; inode: INode; leafIsLink: boolean;
   } | null = null;
   private resolutionEpoch = 0;
+  /** A wave's watch for its own commit's publication (consumeStream's ownFiles): called once, at it. */
+  private publishWatch: ((revision: number, reshaped: boolean) => void) | null = null;
   private readonly sharedDirectories = new Map<string, { ino: number; gid: number; acl: number; mode: number }>();
 
   /** Host-only, engine-local delegation; roots themselves retain ordinary POSIX semantics. */
@@ -8701,9 +8705,10 @@ export class SqliteVFS {
      * one is resolved again: without this, each commit of the wave's own
      * files sent every later record back through the namespace's lookup.
      */
-    const view = { revision: this._revision, epoch: 0 };
+    const view = { revision: this._revision, mounts: router?.mounts() ?? 0, epoch: 0 };
     const viewEpoch = (): number => {
-      if (this._revision !== view.revision) { view.revision = this._revision; view.epoch++; }
+      const mounts = router?.mounts() ?? 0;
+      if (this._revision !== view.revision || mounts !== view.mounts) { view.revision = this._revision; view.mounts = mounts; view.epoch++; }
       return view.epoch;
     };
     /**
@@ -8757,12 +8762,25 @@ export class SqliteVFS {
           return false;
       }
     };
-    /** Around a commit of the wave's own files: when nothing else committed and none is a link, the view holds. */
-    const ownFiles = <T>(links: boolean, commit: () => T): T => {
+    /**
+     * Around a commit of the wave's own files: the view holds across it when
+     * nothing else had committed since the view was taken, and the commit's
+     * own publication reshaped nothing a name resolves through (no directory
+     * or link made, replaced or removed). The revision taken is the one that
+     * publication made, at the publication itself (publishWatch), so a write
+     * anything else makes in the same turn still starts a new view.
+     */
+    const ownFiles = <T>(commit: () => T): T => {
       const before = this._revision;
-      const result = commit();
-      if (!links && before === view.revision) view.revision = this._revision;
-      return result;
+      let published: { revision: number; reshaped: boolean } | null = null;
+      this.publishWatch = (revision, reshaped) => { published = { revision, reshaped }; this.publishWatch = null; };
+      try {
+        return commit();
+      } finally {
+        this.publishWatch = null;
+        const own = published as { revision: number; reshaped: boolean } | null;
+        if (own !== null && !own.reshaped && before === view.revision) view.revision = own.revision;
+      }
     };
     /** This wave's own name: the slots its routed links are staged at. */
     const waveId = crypto.randomUUID().slice(0, 8);
@@ -8884,7 +8902,7 @@ export class SqliteVFS {
           // the staged chunks of a file still in flight, and the bytes stay
           // charged to it until its publication commits.
           this.assertTransactionFits(plan.metrics);
-          ownFiles(false, () => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }));
+          ownFiles(() => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }));
           this._stagedStreamBytes += plan.metrics.blobBytes;
           this._peakStagedStreamBytes = Math.max(this._peakStagedStreamBytes, this._stagedStreamBytes);
           if (activeFile) activeFile.stagedBytes += plan.metrics.blobBytes;
@@ -8894,7 +8912,7 @@ export class SqliteVFS {
         // Re-check the mutation guard here rather than only where each file
         // was accepted: a group commits after the records that follow it, so
         // this is the check that is contemporaneous with the write.
-        const result = ownFiles(plan.inodes.some((entry) => entry.kind === 'symlink'), () => asCaller(() => {
+        const result = ownFiles(() => asCaller(() => {
           this.assertMutationsAllowed(inodes);
           return this._writeBatchOnce(
             { plan, deletedInodes: [] },
@@ -11286,6 +11304,15 @@ export class SqliteVFS {
     if (inodeCount > 0 || plan.deletes.length > 0) {
       // One clock tick for the whole batch; stamp every touched path.
       this.bumpRevision([...plan.affectedPaths], structural);
+      // A wave watching for its own publication (consumeStream's ownFiles):
+      // whether it reshaped anything a name resolves through, a directory or
+      // link made, replaced or removed.
+      const watch = this.publishWatch;
+      if (watch !== null) {
+        const reshaped = structural.size > 0 || plan.deletes.length > 0
+          || plan.inodes.some((entry, index) => entry.isDir || entry.kind === 'symlink' || priors[index]?.isDir === true || priors[index]?.kind === 'symlink');
+        watch(this._revision, reshaped);
+      }
     }
 
     // 5. Events observe the already-published metadata and revision.

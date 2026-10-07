@@ -264,6 +264,8 @@ interface WriteSpec<T> {
 
 interface Table {
   mounts: Map<string, Mount>;
+  /** Bumped by every mount and unmount: a placement made under an older table may be stale (mountGeneration). */
+  generation: number;
   /** observeWrites: who is told, and the mounts whose backends report their own writes, subscribed. */
   writes?: WriteWatches;
   /** Directory → names of mount points (or their missing ancestors) directly in it. */
@@ -478,7 +480,7 @@ export class CompositeVFS implements VFS {
       this.viewer = shared.principal;
       this.views = shared.views;
     } else {
-      this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, source: root, options, dev: null, inos: new Map() }]]), synthesized: new Map() };
+      this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, source: root, options, dev: null, inos: new Map() }]]), generation: 0, synthesized: new Map() };
       this.viewer = { cred: null };
       const refs = new Map<string, WeakRef<CompositeVFS>>();
       this.views = { refs, gone: new FinalizationRegistry((key: string) => {
@@ -750,8 +752,14 @@ export class CompositeVFS implements VFS {
     if (this.table.mounts.has(at)) throw syscallError('EBUSY', 'mount', point, { detail: 'something is already mounted there' });
     const mount: Mount = { point: at, source, options, dev: ANONYMOUS_DEV + ++this.nextDev, inos: new Map() };
     this.table.mounts.set(at, mount);
+    this.table.generation++;
     this.resynthesize();
     if (this.table.writes !== undefined) this.subscribeWrites(mount);
+  }
+
+  /** The mount table's generation: it moves with every mount and unmount, in every view of this namespace. */
+  mountGeneration(): number {
+    return this.table.generation;
   }
 
   unmount(point: string): void {
@@ -759,6 +767,7 @@ export class CompositeVFS implements VFS {
     const mount = this.table.mounts.get(at);
     if (at === ROOT_POINT || mount === undefined) throw syscallError('EINVAL', 'umount', point, { detail: 'nothing is mounted there' });
     this.table.mounts.delete(at);
+    this.table.generation++;
     this.table.writes?.subscribed.get(mount)?.();
     this.table.writes?.subscribed.delete(mount);
     this.resynthesize();
