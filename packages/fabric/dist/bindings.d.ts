@@ -25,6 +25,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import type { HostRoute } from './composition.js';
+import { type FacetResourceLimits } from './facet-limits.js';
 import type { WorkerCode } from './vendor/types.js';
 /**
  * A dynamic worker's entrypoint, as hop 3 relays to it. `fetch` is the
@@ -37,8 +38,12 @@ interface LoadedEntrypoint {
 }
 /** A stub for one dynamically-loaded worker, as the shims hop across it. */
 interface LoadedWorker {
-    getEntrypoint(name?: string): LoadedEntrypoint;
-    getDurableObjectClass(name: string): DurableObjectClass;
+    getEntrypoint(name?: string, options?: {
+        limits: FacetResourceLimits;
+    }): LoadedEntrypoint;
+    getDurableObjectClass(name: string, options?: {
+        limits: FacetResourceLimits;
+    }): DurableObjectClass;
 }
 /**
  * The OUTER `env.LOADER` these shims forward to. `load` is the unkeyed arm the

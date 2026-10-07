@@ -26,6 +26,7 @@
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type HostRoute } from './composition.js';
+import { type FacetKind } from './facet-limits.js';
 import { type DynamicWorkerClaim } from './budgets.js';
 import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { WorkerLoader } from './vendor/types.js';
@@ -47,6 +48,8 @@ export interface IsolatePoolEnv {
 }
 /** Options handed to IsolatePool's constructor. */
 export interface IsolatePoolOptions {
+    /** Policy for this pool's loaded workers; generic submitted code is an isolate. */
+    facetKind?: FacetKind;
     /**
      * Maximum concurrent in-flight facets, each a distinct Dynamic Worker
      * spent from the hosting DO's `DO_DYNAMIC_WORKER_LIMIT`. Default 1; a
@@ -59,7 +62,7 @@ export interface IsolatePoolOptions {
      * it, and a refused one waits for a slot of the claim.
      */
     claim?: DynamicWorkerClaim;
-    /** Per-task timeout in ms. Default 60_000. */
+    /** Per-task wall timeout in ms. Defaults to this facet kind's policy. */
     timeoutMs?: number;
     /**
      * Per-task retry attempts AFTER the initial failure. Default 0.
@@ -277,7 +280,8 @@ export declare class IsolatePool {
     /** The width this pool's dispatches are held inside (IsolatePoolOptions.claim). */
     private readonly claim;
     private readonly concurrency;
-    private readonly defaultTimeoutMs;
+    readonly defaultTimeoutMs: number;
+    private readonly facetKind;
     private readonly defaultRetries;
     private readonly tag;
     private readonly slotGenerations;

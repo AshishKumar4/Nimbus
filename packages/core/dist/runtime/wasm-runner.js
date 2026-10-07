@@ -554,10 +554,10 @@ export function makeWasmRunner(deps) {
                 : { mode: 'direct', exportName: exportName, intArgs: parsedArgs };
             outcome = (await facet.submit(facetFn, submitArgs, {
                 wasmModules: { 'user.wasm': buf },
-                // 30s ceiling for compute. Most wasm calls return in
-                // microseconds; runaway loops hit this and a host that can
-                // abandon the facet surfaces a timeout as exitCode 1 + stderr.
-                timeoutMs: 30_000,
+                // The hosting facet's task policy accounts for awaited WASI I/O,
+                // separately from the platform's CPU budget. Other hosts retain
+                // their own default when this contract is not present.
+                timeoutMs: facet.defaultTimeoutMs,
                 // A kill or Ctrl-C ends the facet too, where the host can.
                 signal: opts.signal,
             }));

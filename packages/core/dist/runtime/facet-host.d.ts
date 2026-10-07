@@ -118,6 +118,8 @@ export interface FacetSubmitOptions {
  * would hand the second call a shell that had never run.
  */
 export interface Facet {
+    /** Host task wall-clock default, distinct from any platform CPU limit. */
+    readonly defaultTimeoutMs?: number;
     submit<A, R>(fn: FacetFn<A, R>, args: A, options?: FacetSubmitOptions): Promise<Awaited<R>>;
     /**
      * The same call dispatched as a fetch Request through the host's fetch

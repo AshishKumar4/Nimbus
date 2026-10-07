@@ -165,6 +165,7 @@ export class Fanout {
         // One slot — one Dynamic Worker — per task; submitMany has claimed
         // that width on the ledger, and the pool's dispatches are held inside it.
         const pool = new IsolatePool(this.env, this.ctx, {
+            facetKind: 'fanout',
             concurrency: tasks.length,
             claim,
             timeoutMs: this.opts.timeoutMs,

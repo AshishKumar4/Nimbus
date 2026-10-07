@@ -29,7 +29,7 @@ import { supervisorEntrypoint, supervisorEntrypointName, stagedBootAssembler } f
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
 import { innerDoIdFromName } from './inner-do-env.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
-import { applyFacetLimits } from './facet-limits.js';
+import { applyFacetLimits, facetLimits } from './facet-limits.js';
 /**
  * `ctx.exports` — workerd's loopback bag, which the installed
  * @cloudflare/workers-types does not put on `ExecutionContext`. Probed rather
@@ -443,7 +443,7 @@ export class NimbusLoadedWorker extends WorkerEntrypoint {
         const outer = _resolveStubInCurrentContext(outerLoader, props.key);
         if (!outer)
             throw new Error('Nimbus: loaded worker code missing (key=' + props.key + ')');
-        return outer.getDurableObjectClass(name);
+        return outer.getDurableObjectClass(name, { limits: facetLimits('worker') });
     }
 }
 /** Hop 3: a named-or-default entrypoint. Exposes .fetch(). */
@@ -499,7 +499,7 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
         const outer = await outerStub;
         if (!outer)
             throw new Error('Nimbus: loaded worker code missing');
-        return await (props.name ? outer.getEntrypoint(props.name) : outer.getEntrypoint());
+        return await outer.getEntrypoint(props.name, { limits: facetLimits(props.stage ? 'process' : 'worker') });
     }
     /**
      * Relay the inner entrypoint's Response to the caller with a LIVE body.

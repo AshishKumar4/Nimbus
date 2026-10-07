@@ -28,7 +28,7 @@ import { loaderOutbound, requireNetwork } from '@nimbus-sh/core/_shared/workspac
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { supervisorEntrypoint, hostRoute } from './composition.js';
 import { supervisorLoaderKey } from './supervisor-props.js';
-import { applyFacetLimits } from './facet-limits.js';
+import { applyFacetLimits, facetLimits, FACET_LIMITS } from './facet-limits.js';
 import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
@@ -139,6 +139,7 @@ export class IsolatePool {
     claim;
     concurrency;
     defaultTimeoutMs;
+    facetKind;
     defaultRetries;
     tag;
     slotGenerations = new Map();
@@ -204,7 +205,8 @@ export class IsolatePool {
         this.ctx = ctx;
         this.claim = opts.claim;
         this.concurrency = Math.max(1, opts.concurrency ?? 1);
-        this.defaultTimeoutMs = opts.timeoutMs ?? 60_000;
+        this.facetKind = opts.facetKind ?? 'isolate';
+        this.defaultTimeoutMs = opts.timeoutMs ?? FACET_LIMITS[this.facetKind].taskTimeoutMs;
         this.defaultRetries = Math.max(0, opts.retries ?? 0);
         this.tag = opts.tag ?? 'facet';
         this.preamble = opts.preamble;
@@ -511,7 +513,7 @@ export class IsolatePool {
         // identity so a wake of that same session can never reuse a warm
         // worker whose SUPERVISOR binding still names the dead generation's
         // pid. See the supervisorKey field comment for the failure mode.
-        const buildId = (generation) => `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:${perCallWasmHash}:${this.supervisorKey}:slot-${slotIndex}:g${generation}${this.scope ? `:${this.scope}` : ''}${this.network?.id ? `:${this.network.id}` : ''}`;
+        const buildId = (generation) => `nfp:${this.facetKind}:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:${perCallWasmHash}:${this.supervisorKey}:slot-${slotIndex}:g${generation}${this.scope ? `:${this.scope}` : ''}${this.network?.id ? `:${this.network.id}` : ''}`;
         let id = buildId(this.slotGenerations.get(slotIndex) ?? 0);
         const code = this.#buildCode(fnSource, perCallWasmEntries);
         // W5 Lever 5: record the dispatch so /api/_diag/memory shows the
@@ -557,8 +559,8 @@ export class IsolatePool {
             const endFetch = admitted ?? (this.claim ? undefined : claimAdmission(this.ctx)) ?? beginLoaderFetch(this.ctx, id, this.claim);
             admitted = undefined;
             try {
-                const stub = this.loader.get(id, async () => applyFacetLimits('isolate', code));
-                const entrypoint = stub.getEntrypoint();
+                const stub = this.loader.get(id, async () => applyFacetLimits(this.facetKind, code));
+                const entrypoint = stub.getEntrypoint(undefined, { limits: facetLimits(this.facetKind) });
                 // Direct property call, awaited by this frame — bracketed, never
                 // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
                 return await invoke(entrypoint, attempt);

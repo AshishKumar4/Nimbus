@@ -1,39 +1,43 @@
 export declare const FACET_LIMITS: Readonly<{
     process: Readonly<{
         cpuMs: 300000;
-        subRequests: 1000000;
+        subRequests: 1000000000;
+        taskTimeoutMs: 300000;
     }>;
     build: Readonly<{
         cpuMs: 300000;
         subRequests: 100000;
+        taskTimeoutMs: 300000;
     }>;
     esbuild: Readonly<{
         cpuMs: 300000;
         subRequests: 100000;
+        taskTimeoutMs: 300000;
     }>;
     transform: Readonly<{
         cpuMs: 300000;
         subRequests: 100000;
+        taskTimeoutMs: 300000;
     }>;
     git: Readonly<{
         cpuMs: 300000;
         subRequests: 1000000;
+        taskTimeoutMs: 300000;
     }>;
     isolate: Readonly<{
         cpuMs: 300000;
         subRequests: 100000;
+        taskTimeoutMs: 300000;
     }>;
     fanout: Readonly<{
         cpuMs: 300000;
         subRequests: 100000;
+        taskTimeoutMs: 300000;
     }>;
     worker: Readonly<{
         cpuMs: 300000;
-        subRequests: 1000000;
-    }>;
-    vfs: Readonly<{
-        cpuMs: 300000;
         subRequests: 100000;
+        taskTimeoutMs: 300000;
     }>;
 }>;
 export type FacetKind = keyof typeof FACET_LIMITS;
