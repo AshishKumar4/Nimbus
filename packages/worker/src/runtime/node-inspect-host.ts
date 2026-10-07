@@ -163,7 +163,7 @@ export function createNodeInspect(platform: NodeInspectPlatform): NodeInspectExp
       }
       return str;
     },
-    removeColors: (str: string) => String.prototype.replace.call(str, colorRegExp, ''),
+    removeColors: (str: string) => str.replace(colorRegExp, ''),
   };
 
   // The util binding. getProxyDetails answers, for a value only V8's
