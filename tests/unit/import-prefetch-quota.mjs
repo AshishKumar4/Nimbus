@@ -142,6 +142,28 @@ const rejection = async (promise) => {
   assert.equal(io.inFlight, 0);
 }
 
+// ── many files growing at once: each range is charged before it is issued ──
+// (DustyPanther, fifth recheck: the first range was charged as it arrived, so
+// files admitted small that grew could each overshoot by a range.)
+{
+  const files = {};
+  for (let i = 0; i < 10; i++) files[`home/user/app/node_modules/swell/f${i}.js`] = 'x'.repeat(1024);
+  const grown = new Set();
+  const { hydrated, read, quota, io } = world(files, {
+    afterStat: (statted, write) => {
+      if (grown.has(statted) || !statted.includes('/swell/')) return;
+      grown.add(statted);
+      write('y'.repeat(64 * 1024));
+    },
+  });
+  const names = Object.keys(files);
+  const QUOTA = 40 * 1024;
+  const error = await rejection(hydrated(() => names.map((k) => read(k, null)), quota('swell', { bytes: QUOTA })));
+  assert.equal(error?.code, 'ERR_NIMBUS_PREFETCH_BOUND', `ten files grown to 64 KiB exceed a 40 KiB quota: ${error}`);
+  assert.ok(io.bytes <= QUOTA, `no more than the quota was read (${io.bytes} bytes)`);
+  assert.equal(io.inFlight, 0);
+}
+
 // ── a manifest is charged like a module ──
 {
   const manifestText = JSON.stringify({ name: 'late-pkg', main: 'main.js', description: 'x'.repeat(200) });
