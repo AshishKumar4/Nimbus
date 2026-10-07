@@ -37,6 +37,8 @@ const UINT64_MAX = (1n << 64n) - 1n;
 /** Where a clone writes its graph: the chain file names its layers, oldest first. */
 export const COMMIT_GRAPHS_DIR = '.git/objects/info/commit-graphs';
 export const COMMIT_GRAPH_CHAIN = COMMIT_GRAPHS_DIR + '/commit-graph-chain';
+/** A full clone's commit records, from its history until its graph is written (graph-filters.ts). */
+export const GRAPH_RECORDS_DIR = COMMIT_GRAPHS_DIR + '/tmp_records';
 const latin1 = new TextDecoder('latin1');
 /**
  * A commit's record, from its id and its object's bytes: id, root tree,

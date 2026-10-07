@@ -21,7 +21,7 @@
  * on react (2026-10-05, against GitHub): 137.66 MB in 12 requests, where git
  * clone fetches 137.16 MB in 3.
  */
-import { commitRecord } from './commit-graph.js';
+import { GRAPH_RECORDS_DIR, commitRecord } from './commit-graph.js';
 import { decodeBatch, parseTree, MODE_GITLINK, MODE_TREE } from './plan.js';
 import { OID_BYTES, oidToHex, PackFormatError } from './format.js';
 import { STAGE_DIR, commitTree, concat, join, readRange, resumePack, settledBefore, TagWatch, storePackResumable, } from './clone.js';
@@ -45,10 +45,15 @@ function transport(context) {
 }
 /** Collects one invocation's list records and writes them as one staged file. */
 class ListWriter {
+    dir;
     /** A record could not be made (a commit that does not parse): the list is not written. */
     refused = false;
     parts = [];
     size = 0;
+    /** `dir`: where its file goes, relative to the clone (the staging directory, unless the list outlives it). */
+    constructor(dir = STAGE_DIR) {
+        this.dir = dir;
+    }
     add(bytes) {
         this.parts.push(bytes);
         this.size += bytes.byteLength;
@@ -57,7 +62,9 @@ class ListWriter {
         if (this.size === 0 || this.refused)
             return [];
         const bytes = this.size;
-        await writer.file(STAGE_DIR + '/' + name, 0o644, concat(this.parts));
+        if (this.dir !== STAGE_DIR)
+            await writer.directory(this.dir);
+        await writer.file(this.dir + '/' + name, 0o644, concat(this.parts));
         return [{ name, bytes }];
     }
 }
@@ -153,7 +160,8 @@ export async function historyStep(context, request) {
     if (response.pack === null)
         throw new PackFormatError('the server sent no pack for history piece ' + request.piece);
     const list = new ListWriter();
-    const graph = new ListWriter();
+    // Kept past the clone, for its commit-graph (graph-filters.ts).
+    const graph = new ListWriter(GRAPH_RECORDS_DIR);
     const watch = new TagWatch(request.tagInterest ?? []);
     const stored = await storePackResumable(context, writer, response.pack, 'tmp_pack_' + request.jobId + '_' + request.piece, {
         cacheBytes: HISTORY_CACHE_BYTES,
@@ -176,7 +184,7 @@ export async function historyResume(context, request) {
     const writer = context.writer();
     writer.setPin(context.marker.path, context.marker.text, true);
     const list = new ListWriter();
-    const graph = new ListWriter();
+    const graph = new ListWriter(GRAPH_RECORDS_DIR);
     const watch = new TagWatch(request.tagInterest ?? []);
     const listName = 'list-' + request.piece + '-' + request.part;
     let lists = [];

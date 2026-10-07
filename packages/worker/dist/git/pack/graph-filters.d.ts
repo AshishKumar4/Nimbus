@@ -1,10 +1,13 @@
 /**
- * git/pack/graph-filters.ts — a full clone's changed-path filters, computed
- * after the clone has answered, in pieces, and added to its commit-graph
- * layer (commit-graph.ts), as `git commit-graph write --changed-paths`
+ * git/pack/graph-filters.ts — a full clone's commit-graph (commit-graph.ts),
+ * written after the clone has answered, so nothing of it is on the way to
+ * the prompt: its base layer first, then its changed-path filters, computed
+ * in pieces and added to it, as `git commit-graph write --changed-paths`
  * would have written them.
  *
- *   plan      the chain's one layer, by name, and its commits
+ *   plan      the base layer from the commit records the clone's history left
+ *             (GRAPH_RECORDS_DIR), as the chain's one layer; its name and
+ *             commits
  *   piece     commits [from, to) of the layer in date order, newest first (a
  *             commit's first parent is most often the next one, and they
  *             share most of their trees): each one's first-parent tree diff,
@@ -23,7 +26,10 @@ export interface FilterFile {
     name: string;
     bytes: number;
 }
-/** The layer to add filters to, if the chain is a clone's one layer without them. */
+/**
+ * The layer to add filters to: a full clone's base layer, written first
+ * from its records; or the chain's one layer, if it has no filters yet.
+ */
 export declare function graphFiltersPlan(context: CloneContext): Promise<{
     layer: string;
     commits: number;

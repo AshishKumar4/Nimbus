@@ -28,6 +28,8 @@
 /** Where a clone writes its graph: the chain file names its layers, oldest first. */
 export declare const COMMIT_GRAPHS_DIR = ".git/objects/info/commit-graphs";
 export declare const COMMIT_GRAPH_CHAIN: string;
+/** A full clone's commit records, from its history until its graph is written (graph-filters.ts). */
+export declare const GRAPH_RECORDS_DIR: string;
 /**
  * A commit's record, from its id and its object's bytes: id, root tree,
  * committer date (u64), parent count (u16), parents. A commit git would
