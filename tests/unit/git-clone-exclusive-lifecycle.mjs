@@ -20,6 +20,8 @@ function registerCloneHarness() {
   const vfs = {
     deviceId: 1,
     as: () => ({
+      // The destinations here do not exist before their clones.
+      exists: () => false,
       acquireExclusiveMutation(path, options) {
         const owner = `owner-${acquiredRoots.length + 1}`;
         acquiredRoots.push(path);
