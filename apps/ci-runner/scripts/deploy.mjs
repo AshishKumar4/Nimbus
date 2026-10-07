@@ -59,7 +59,7 @@ for (const path of manifests) {
 }
 writeFileSync(join(context, 'lean-toolchain'), git('show', `${depsRef}:lean/lean-toolchain`));
 // This checkout's runner, laid over a commit that predates sharding (image/ci/shard.mjs).
-for (const file of ['tests/unit/run-all.mjs', 'scripts/lib/bounded-process.mjs', 'scripts/lib/subprocess-entry.mjs']) {
+for (const file of ['tests/unit/run-all.mjs', 'tests/unit/lib/partition.mjs', 'scripts/lib/bounded-process.mjs', 'scripts/lib/subprocess-entry.mjs']) {
   mkdirSync(dirname(join(context, 'ci/runner', file)), { recursive: true });
   cpSync(join(repo, file), join(context, 'ci/runner', file));
 }

@@ -73,6 +73,7 @@
 //   Output is capped at 1 MiB per file; exceeding it fails and kills the tree.
 
 import { runBoundedProcess, DEFAULT_TEST_TIMEOUT_MS } from '../../scripts/lib/bounded-process.mjs';
+import { expectedCosts, partition } from './lib/partition.mjs';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { availableParallelism, tmpdir } from 'node:os';
 import { join, basename, dirname } from 'node:path';
@@ -207,34 +208,6 @@ const tiered = selected.filter((name) => TIER === 'all'
 const SHARD = flagValue('--shard', 'NIMBUS_UNIT_SHARD') || undefined;
 const TIMINGS = flagValue('--timings', 'NIMBUS_UNIT_TIMINGS') || undefined;
 
-/**
- * The I-th of N parts of `names`, longest first: each file joins the part
- * whose expected finish it moves least. A part's expected time is its pool
- * (the larger of total/jobs and its longest file) plus its serial files
- * one after another. Ties go to the lower part and names break ties in
- * order, so every shard computes the same partition from the same inputs.
- */
-function shardOf(names, index, count, expectedMs) {
-  const parts = Array.from({ length: count }, () => ({ pool: 0, longest: 0, serial: 0, names: [] }));
-  const finish = (p) => Math.max(p.pool / JOBS, p.longest) + p.serial;
-  const order = [...names].sort((a, b) => expectedMs(b) - expectedMs(a) || a.localeCompare(b));
-  for (const name of order) {
-    const ms = expectedMs(name);
-    const alone = runsAlone(name);
-    let best = 0;
-    let bestFinish = Infinity;
-    for (let i = 0; i < count; i++) {
-      const p = parts[i];
-      const after = alone ? finish(p) + ms : Math.max((p.pool + ms) / JOBS, p.longest, ms) + p.serial;
-      if (after < bestFinish) { best = i; bestFinish = after; }
-    }
-    const p = parts[best];
-    if (alone) p.serial += ms; else { p.pool += ms; p.longest = Math.max(p.longest, ms); }
-    p.names.push(name);
-  }
-  return { names: new Set(parts[index].names), expectedMs: Math.round(finish(parts[index])) };
-}
-
 let known = null;
 if (TIMINGS !== undefined) {
   try { known = JSON.parse(readFileSync(TIMINGS, 'utf8')).files ?? {}; } catch (error) {
@@ -242,17 +215,8 @@ if (TIMINGS !== undefined) {
     process.exit(2);
   }
 }
-/**
- * Expected cost from --timings: max(wall, CPU) in the pool, wall alone in
- * the serial phase, where a file has every CPU. A file it lacks costs the
- * median.
- */
-const expectedOf = known && (() => {
-  const cost = (name) => (runsAlone(name) ? known[name]?.wallMs || 0 : Math.max(known[name]?.wallMs || 0, known[name]?.cpuMs || 0));
-  const measured = tiered.map(cost).filter((ms) => Number.isFinite(ms) && ms > 0).sort((a, b) => a - b);
-  const median = measured.length > 0 ? measured[Math.floor(measured.length / 2)] : 1000;
-  return (name) => (Number.isFinite(cost(name)) && cost(name) > 0 ? cost(name) : median);
-})();
+/** Expected cost from --timings (tests/unit/lib/partition.mjs). */
+const expectedOf = known && expectedCosts(tiered, known, runsAlone);
 
 let shard = null;
 let targets = tiered;
@@ -263,8 +227,8 @@ if (SHARD !== undefined) {
     console.error(`FATAL: --shard must be I/N with 1 <= I <= N, got ${JSON.stringify(SHARD)}`);
     process.exit(2);
   }
-  const part = shardOf(tiered, index - 1, count, expectedOf ?? (() => 1000));
-  targets = tiered.filter((name) => part.names.has(name));
+  const part = partition(tiered, count, { expectedMs: expectedOf ?? (() => 1000), runsAlone, jobs: JOBS })[index - 1];
+  targets = tiered.filter((name) => part.names.includes(name));
   shard = { index, count, expectedMs: part.expectedMs, universe: tiered };
 }
 
