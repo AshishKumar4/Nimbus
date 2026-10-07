@@ -6,14 +6,13 @@ import { isValidSessionId } from '../_shared/session-id.js';
 import { z } from 'zod/v4';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import {
-  requireScopes,
-  requireSessionPin,
-  verifyRequestToken,
   NimbusAuthError,
   isNimbusIdComponent,
   type NimbusAuthEnv,
   type VerifiedNimbusToken,
 } from '../auth/index.js';
+import { authorizeRequest } from '../auth/middleware.js';
+import { hasJwtSecret } from '../auth/token.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
@@ -297,6 +296,13 @@ function matchRemoteRpc(pathname: string, basePath: string): { sandboxId: string
   }
 }
 
+/**
+ * The remote API's tenant for a request. It authorizes as the session router
+ * does (authorizeRequest), with two differences on purpose: it is legacy only
+ * when no JWT_SECRET exists and the embedder set `allowLegacy`
+ * (NIMBUS_LEGACY_PUBLIC does not open it), and it answers in the remote
+ * envelope.
+ */
 async function resolveRemoteAuth(
   request: Request,
   env: NimbusRemoteEnv,
@@ -318,11 +324,9 @@ async function resolveRemoteAuth(
   }
 
   try {
-    const verified = await verifyRequestToken(request, env);
-    requireScopes(verified!, remote.requiredScopes);
-    requireSessionPin(verified!, sandboxId);
+    const verified = await authorizeRequest(request, env, { scopes: remote.requiredScopes, sessionId: sandboxId });
     return {
-      tenantSegment: verified!.doInstanceName,
+      tenantSegment: verified.doInstanceName,
       verified,
     };
   } catch (e) {
@@ -651,10 +655,6 @@ function remoteError(value: unknown): ApiError {
 
 function errorMessage(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
-}
-
-function hasJwtSecret(env: NimbusRemoteEnv): env is NimbusRemoteEnv & NimbusAuthEnv {
-  return typeof env.JWT_SECRET === 'string' && env.JWT_SECRET.length > 0;
 }
 
 function normalizeBasePath(path: string): string {
