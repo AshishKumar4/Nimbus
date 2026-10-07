@@ -180,7 +180,7 @@
  * \`__residentSynchronizeFromSupervisor\`.
  */
 import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
-import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
+import { FACET_OWN_WRITE_MEMORY_BYTES, RESIDENT_PAGE_BYTES, RESIDENT_PAGE_CACHE_BYTES, RESIDENT_PAGE_CACHE_FREE_SHARE, } from '@nimbus-sh/platform/limits.js';
 import { RESIDENT_CHUNK_BYTES } from './facet-resident-limits.js';
 /**
  * Rows written before the materialiser yields.
@@ -277,7 +277,7 @@ const __RESIDENT_MAX_LIST_PAGES = 4096;
  * and the kind is stored rather than inferred so a text file whose bytes happen
  * to be valid UTF-8 does not change shape between a write and a read.
  */
-const __RESIDENT_SCHEMA = "3";
+const __RESIDENT_SCHEMA = "4";
 
 // N18: the session's storage ledger admits this facet's database growth
 // before it happens. The supervisor grants an allowance (the ledger records
@@ -360,10 +360,83 @@ function __residentAskGrant(bytes) {
       const answer = await supervisor.fsStorageGrant(__residentFacet, want, __residentDbBytes());
       const granted = Number(answer && answer.granted) || 0;
       __residentCap += granted;
+      if (answer && typeof answer.available === "number") __residentAvailable = answer.available;
       if (answer && typeof answer.cap === "number") __residentCap = Math.max(__residentCap, answer.cap);
     } catch {}
   })().finally(() => { __residentGrantAsk = null; });
   return __residentGrantAsk.then(() => __residentDbBytes() + bytes <= __residentCap);
+}
+
+/**
+ * Pages of a file too big to hold whole, each held at the revision it was
+ * read at, so a rewritten file's pages are never another revision's. Bound
+ * by RESIDENT_PAGE_CACHE_BYTES, and by half a heap's budget or a share of
+ * the session's free storage (RESIDENT_PAGE_CACHE_FREE_SHARE), least
+ * recently used out first; what does not fit is read through the session.
+ */
+const __RESIDENT_PAGE_BYTES = ${RESIDENT_PAGE_BYTES};
+const __RESIDENT_PAGE_CACHE_BYTES = ${RESIDENT_PAGE_CACHE_BYTES};
+const __RESIDENT_PAGE_CACHE_FREE_SHARE = ${RESIDENT_PAGE_CACHE_FREE_SHARE};
+let __residentPageClock = null;
+let __residentPageTotal = null;
+/** What the session's ledger said a user may still write, at its last answer (N18); null before one. */
+let __residentAvailable = null;
+
+function __residentPageBound() {
+  // A one-shot's heap has a fixed budget, which the pages may have half of.
+  // A facet's SQLite grows by grants as it needs, and its pages are held to
+  // a share of what the ledger has left instead.
+  const half = __residentInHeap && __residentCap !== null ? Math.floor(__residentCap / 2) : Infinity;
+  const share = __residentAvailable === null ? Infinity
+    : Math.floor(__RESIDENT_PAGE_CACHE_FREE_SHARE * (__residentPageHeld() + __residentAvailable));
+  return Math.min(__RESIDENT_PAGE_CACHE_BYTES, half, share);
+}
+
+/** The bytes of the pages held, summed once per binding. */
+function __residentPageHeld() {
+  if (__residentPageTotal === null) __residentPageTotal = Number(__residentT.pageBytes()) || 0;
+  return __residentPageTotal;
+}
+
+function __residentPageTick() {
+  if (__residentPageClock === null) __residentPageClock = Number(__residentT.pageMaxUsed()) || 0;
+  return ++__residentPageClock;
+}
+
+/** Forget what the page counters knew: the tables were cleared or rebound. */
+function __residentPagesReset() {
+  __residentPageClock = null;
+  __residentPageTotal = null;
+}
+
+/** Page \`part\` of \`path\` at revision \`rev\`, its use recorded; undefined when not held. */
+function __residentPageGet(path, rev, part) {
+  const t = __residentRequire();
+  const bin = t.pageGet(path, rev, part);
+  if (bin === undefined) return undefined;
+  t.pageUse(path, rev, part, __residentPageTick());
+  return __residentBytes(bin);
+}
+
+/** Hold a page, the least recently used out first to stay in bounds. False when it cannot be held. */
+function __residentPagePut(path, rev, part, bytes) {
+  const t = __residentRequire();
+  const size = bytes.byteLength;
+  const bound = __residentPageBound();
+  if (size > bound) return false;
+  while (__residentPageHeld() + size > bound) {
+    const oldest = t.pageOldest(16);
+    if (oldest.length === 0) break;
+    for (const row of oldest) {
+      t.pageDelete(row.path, row.rev, row.part);
+      __residentPageTotal -= Number(row.size);
+      if (__residentPageTotal + size <= bound) break;
+    }
+  }
+  if (!__residentFits(size + __RESIDENT_ROW_BYTES, false)) return false;
+  const replaced = t.pagePut(path, rev, part, bytes, __residentPageTick());
+  __residentPageTotal = __residentPageHeld() + size - Number(replaced);
+  return true;
 }
 
 /** Room for \`bytes\` before an asynchronous fill writes them: true when they fit. */
@@ -413,12 +486,16 @@ async function __residentRoomForPushed(result) {
 async function __residentReportSize() {
   const supervisor = __residentSupervisor;
   if (__residentCap === null || __residentFacet === null || !supervisor || typeof supervisor.fsStorageGrant !== "function") return;
-  try { await supervisor.fsStorageGrant(__residentFacet, 0, __residentDbBytes()); } catch {}
+  try {
+    const answer = await supervisor.fsStorageGrant(__residentFacet, 0, __residentDbBytes());
+    if (answer && typeof answer.available === "number") __residentAvailable = answer.available;
+  } catch {}
 }
 
 /** The allowance this launch was admitted for (the fabric's startArgs.storage). */
 function __residentSetStorage(storage, supervisor) {
   __residentSupervisor = supervisor || null;
+  __residentAvailable = storage && typeof storage.available === "number" ? storage.available : null;
   if (!storage || typeof storage.facet !== "string" || typeof storage.grant !== "number") return;
   __residentFacet = storage.facet;
   __residentCap = __residentDbBytes() + storage.grant;
@@ -521,7 +598,7 @@ function __residentTablesOnSql(sql) {
   for (const row of sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")) schema = "";
   if (schema !== null) for (const row of sql.exec("SELECT v FROM meta WHERE k = 'schema'")) schema = String(row.v);
   if (schema !== __RESIDENT_SCHEMA) {
-    for (const table of ["chunk", "file", "ns", "meta"]) sql.exec("DROP TABLE IF EXISTS " + table);
+    for (const table of ["chunk", "file", "ns", "meta", "page"]) sql.exec("DROP TABLE IF EXISTS " + table);
   }
   // 'ckey' is the authority's content identity for the bytes (equal keys,
   // equal bytes), when it said so; null for bytes it did not describe.
@@ -538,6 +615,15 @@ function __residentTablesOnSql(sql) {
       "PRIMARY KEY (path, part)" +
     ")"
   );
+  // Pages of files too big to hold whole, each at the revision it was read
+  // at; 'used' orders them for eviction (__residentPagePut).
+  sql.exec(
+    "CREATE TABLE IF NOT EXISTS page (" +
+      "path TEXT NOT NULL, rev INTEGER NOT NULL, part INTEGER NOT NULL, bin BLOB NOT NULL, used INTEGER NOT NULL, " +
+      "PRIMARY KEY (path, rev, part)" +
+    ") WITHOUT ROWID"
+  );
+  sql.exec("CREATE INDEX IF NOT EXISTS page_used ON page (used)");
   // The store's own cursor, in the same storage as the rows it describes, so
   // the two cannot be separated by an isolate restart.
   sql.exec("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
@@ -619,8 +705,22 @@ function __residentTablesOnSql(sql) {
       sql.exec("DELETE FROM chunk");
       sql.exec("DELETE FROM file");
       sql.exec("DELETE FROM ns");
-      sql.exec("DELETE FROM meta");
+      // The schema stamp is the tables', not their rows': without it the next
+      // binding would take the store for another schema's and drop it.
+      sql.exec("DELETE FROM meta WHERE k <> 'schema'");
+      sql.exec("DELETE FROM page");
     },
+    pageGet(path, rev, part) { const row = first(sql.exec("SELECT bin FROM page WHERE path = ? AND rev = ? AND part = ?", path, rev, part)); return row === undefined ? undefined : row.bin; },
+    pageUse(path, rev, part, used) { sql.exec("UPDATE page SET used = ? WHERE path = ? AND rev = ? AND part = ?", used, path, rev, part); },
+    pagePut(path, rev, part, bin, used) {
+      const had = first(sql.exec("SELECT length(bin) AS n FROM page WHERE path = ? AND rev = ? AND part = ?", path, rev, part));
+      sql.exec("INSERT OR REPLACE INTO page (path, rev, part, bin, used) VALUES (?, ?, ?, ?, ?)", path, rev, part, bin, used);
+      return had === undefined ? 0 : Number(had.n);
+    },
+    pageDelete(path, rev, part) { sql.exec("DELETE FROM page WHERE path = ? AND rev = ? AND part = ?", path, rev, part); },
+    pageOldest(limit) { return [...sql.exec("SELECT path, rev, part, length(bin) AS size FROM page ORDER BY used, path, rev, part LIMIT ?", limit)]; },
+    pageBytes() { const row = first(sql.exec("SELECT coalesce(sum(length(bin)), 0) AS n FROM page")); return row === undefined ? 0 : Number(row.n); },
+    pageMaxUsed() { const row = first(sql.exec("SELECT coalesce(max(used), 0) AS n FROM page")); return row === undefined ? 0 : Number(row.n); },
     nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) {
       sql.exec(
         "INSERT OR REPLACE INTO ns (parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) " +
@@ -676,6 +776,9 @@ function __residentTablesInMemory() {
   const meta = new Map();
   const ns = new Map();
   const byKey = new Map();
+  // Pages by "path\0rev\0part": { path, rev, part, bin, used }.
+  const pages = new Map();
+  const pageKey = (path, rev, part) => path + "\u0000" + Number(rev) + "\u0000" + Number(part);
   let sorted = null;
   let used = 0;
   let names = 0;
@@ -833,9 +936,34 @@ function __residentTablesInMemory() {
       dropWhere((row) => row.rev === __RK_OWN_WRITE, (path) => !dated.has(path));
     },
     clear() {
-      files.clear(); chunks.clear(); meta.clear(); ns.clear(); byKey.clear();
+      files.clear(); chunks.clear(); meta.clear(); ns.clear(); byKey.clear(); pages.clear();
       sorted = null; used = 0; names = 0; namespaceBytes = 0;
     },
+    pageGet(path, rev, part) { const row = pages.get(pageKey(path, rev, part)); return row === undefined ? undefined : row.bin.slice(); },
+    pageUse(path, rev, part, stamp) { const row = pages.get(pageKey(path, rev, part)); if (row !== undefined) row.used = Number(stamp); },
+    pagePut(path, rev, part, bin, stamp) {
+      const key = pageKey(path, rev, part);
+      const had = pages.get(key);
+      const bytes = __residentBytes(bin).slice();
+      if (had !== undefined) used -= __RESIDENT_ROW_BYTES + had.bin.byteLength;
+      pages.set(key, { path, rev: Number(rev), part: Number(part), bin: bytes, used: Number(stamp) });
+      used += __RESIDENT_ROW_BYTES + bytes.byteLength;
+      return had === undefined ? 0 : had.bin.byteLength;
+    },
+    pageDelete(path, rev, part) {
+      const key = pageKey(path, rev, part);
+      const had = pages.get(key);
+      if (had === undefined) return;
+      pages.delete(key);
+      used -= __RESIDENT_ROW_BYTES + had.bin.byteLength;
+    },
+    pageOldest(limit) {
+      // SQLite's ORDER BY used, path, rev, part.
+      const rows = [...pages.values()].sort((a, b) => a.used - b.used || cmp(a.path, b.path) || a.rev - b.rev || a.part - b.part);
+      return rows.slice(0, Number(limit)).map((row) => ({ path: row.path, rev: row.rev, part: row.part, size: row.bin.byteLength }));
+    },
+    pageBytes() { let n = 0; for (const row of pages.values()) n += row.bin.byteLength; return n; },
+    pageMaxUsed() { let n = 0; for (const row of pages.values()) n = Math.max(n, row.used); return n; },
     nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) {
       let dir = ns.get(parent);
       const previous = dir?.get(name);
@@ -937,6 +1065,7 @@ function __residentBindTables(t) {
   t.dropOwn();
   __residentT = t;
   __residentReady = true;
+  __residentPagesReset();
   __nsLoadLinks(t);
   __nsOk = t.metaGet("ns") === "1";
   return t;
@@ -2071,6 +2200,7 @@ function __nsBeginLazy(t, cursor) {
   __nsLazy = true;
   __nsListed.clear();
   t.clear();
+  __residentPagesReset();
   __nsLinks = new Set();
   __nsUnlisted = new Map();
   for (const path of [...__residentHeld.keys()]) __residentForgetHeld(path);
@@ -2107,6 +2237,48 @@ async function __residentBootLazy(supervisor) {
   if (!__residentReady) throw new Error("Nimbus: __residentBootLazy before __residentBind");
   // Sealed until now, and this is what unseals it: nothing is held to date.
   __nsBeginLazy(__residentT, { epoch: answer.epoch, rev: answer.rev });
+  return true;
+}
+
+/** Whose names a store holds: rows another credential walked are not this one's. */
+function __residentCredStamp(cred) {
+  if (!cred) return "";
+  const groups = (cred.groups || []).map(Number).sort((a, b) => a - b).join(",");
+  return Number(cred.uid) + ":" + Number(cred.gid) + ":" + groups;
+}
+
+/**
+ * Boot a lazily listed namespace over a store an earlier process left (a
+ * named one-shot's SQLite), so what it read is not read again: the delta from
+ * the store's own cursor drops every file row a change since then reached and
+ * keeps the rest, and the pages stay (a read takes one only at the revision
+ * its file still has). Names are learned again on demand, as a lazy boot's
+ * are: a delta admitted to a sealed store does not rewrite them. A store with
+ * no cursor, another credential's, another epoch's, or one its delta cannot
+ * bring forward (a poison) starts again from nothing (__residentBootLazy).
+ */
+async function __residentResumeLazy(supervisor, cred) {
+  if (!__residentReady) throw new Error("Nimbus: __residentResumeLazy before __residentBind");
+  const t = __residentT;
+  const who = __residentCredStamp(cred);
+  const fresh = async () => {
+    const booted = await __residentBootLazy(supervisor);
+    if (booted) t.metaSet("cred", who);
+    return booted;
+  };
+  const cursor = __residentCursor();
+  if (cursor === null || t.metaGet("cred") !== who || !supervisor || typeof supervisor.fsAcquire !== "function") return fresh();
+  let answer = null;
+  try { answer = await supervisor.fsAcquire(cursor.epoch, cursor.rev, { namespace: true }); }
+  catch { answer = null; }
+  if (!answer || answer.poison || answer.epoch !== cursor.epoch || typeof answer.rev !== "number") return fresh();
+  __residentAdmit(answer);
+  __nsLazy = true;
+  __nsListed.clear();
+  t.nsClear();
+  __nsLinks = new Set();
+  __nsUnlisted = new Map();
+  __nsMarkReady(t, true);
   return true;
 }
 
@@ -2186,11 +2358,54 @@ function __residentNamespaceView(supervisor, device, cred) {
       const bytes = view.content(k);
       return bytes === undefined ? null : bytes;
     },
+    pages: (k, rev, size, first, last) => __residentPages(supervisor, k, rev, size, first, last),
     barrier: () => __residentLazyBarrier(supervisor),
     reserve: (bytes) => __residentPin(bytes),
     release: (bytes) => __residentUnpin(bytes),
   };
   return view;
+}
+
+/**
+ * Pages \`first\`..\`last\` of the file at \`k\` as of revision \`rev\` (\`size\`
+ * bytes): those held, and the rest read in batches pinned to that revision
+ * and held for the next reader; with how many were read. Null when the
+ * session's file is no longer at \`rev\`, or a read fails: the caller reads
+ * through its descriptor.
+ */
+async function __residentPages(supervisor, k, rev, size, first, last) {
+  const cursor = __residentCursor();
+  if (cursor === null || !supervisor || typeof supervisor.fsReadBatch !== "function") return null;
+  const out = new Array(last - first + 1);
+  const missing = [];
+  for (let part = first; part <= last; part++) {
+    const held = __residentPageGet(k, rev, part);
+    if (held !== undefined) out[part - first] = held;
+    else missing.push(part);
+  }
+  const perBatch = Math.max(1, Math.min(__RESIDENT_BATCH_PATHS, Math.floor(__RESIDENT_BATCH_BYTES / __RESIDENT_PAGE_BYTES)));
+  for (let at = 0; at < missing.length; at += perBatch) {
+    const batch = missing.slice(at, at + perBatch);
+    const ranges = batch.map((part) => {
+      const offset = part * __RESIDENT_PAGE_BYTES;
+      return { path: "/" + k, offset, length: Math.min(__RESIDENT_PAGE_BYTES, Math.max(0, size - offset)), expectedEpoch: cursor.epoch, expectedRevision: rev };
+    });
+    // N18: room asked for first; a page the ledger will not admit is still read, only not held.
+    await __residentEnsureRoom(ranges.reduce((n, r) => n + r.length + __RESIDENT_ROW_BYTES, 0));
+    let results;
+    try { results = await supervisor.fsReadBatch(ranges); }
+    catch { return null; }
+    if (!Array.isArray(results) || results.length !== ranges.length) return null;
+    for (let i = 0; i < batch.length; i++) {
+      const entry = results[i];
+      if (!entry || entry.error || entry.bytes == null) return null;
+      const bytes = __residentBytes(entry.bytes);
+      if (bytes.byteLength !== ranges[i].length) return null;
+      out[batch[i] - first] = bytes;
+      __residentPagePut(k, rev, batch[i], bytes);
+    }
+  }
+  return { pages: out, fetched: missing.length };
 }
 
 /** The most a lookup reads of the file it ends at, so the open that follows a stat costs no trip of its own. */

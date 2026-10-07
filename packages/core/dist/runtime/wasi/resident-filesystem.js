@@ -36,6 +36,7 @@
  */
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
+import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 /** A held write goes to the session in pieces of this size: each fits one call. */
 const WRITE_PIECE_BYTES = 1024 * 1024;
 /** Listings one call may take before it gives the question to the authority. */
@@ -85,7 +86,7 @@ function statOf(entry) {
 }
 const identity = (dev, ino) => `${dev}:${ino}`;
 export function residentFilesystem(session, resident) {
-    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, barriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0 };
+    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, barriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0, pagedReads: 0, pagesFetched: 0 };
     // Every wait on the session is timed where it leaves: the authority's calls
     // and the store's listings, fills and barriers. A facet's clock moves only
     // across I/O, so this is the part of a run's wall time the filesystem cost.
@@ -114,6 +115,7 @@ export function residentFilesystem(session, resident) {
         listTree: (key) => timed(resident.listTree(key)),
         content: (key) => resident.content(key),
         fill: (key, entry) => timed(resident.fill(key, entry)),
+        pages: (key, revision, size, first, last) => timed(resident.pages(key, revision, size, first, last)),
         barrier: () => timed(resident.barrier()),
         reserve: (bytes) => resident.reserve(bytes),
         release: (bytes) => resident.release(bytes),
@@ -127,9 +129,18 @@ export function residentFilesystem(session, resident) {
     const unsettled = new Map();
     /** The session's descriptors this process opened read-only: closing one changes nothing, so it owes no barrier. */
     const readers = new Set();
-    /** Of those, the directories, and where their listing is, once their fstat named them. */
+    /** Of those, where each was opened, until its fstat says what it is: a directory, or a file too big to hold whole. */
     const pendingDirectories = new Map();
     const directories = new Map();
+    /**
+     * The session's read-only descriptors of files too big to hold whole (a
+     * pack, a deep history's .idx), by the name and file (dev, ino) each
+     * opened: a positional read of one is answered from the store's pages of
+     * that file at the revision the name says it has, read a batch at a time
+     * and kept for the next reader. Once the name leads elsewhere, or a read
+     * cannot be answered, the descriptor reads through the session.
+     */
+    const paged = new Map();
     /** The identity of every session descriptor this process has fstat'd: a sync through it reports the file's refusals. */
     const identities = new Map();
     /** Bytes pinned for the codec's own descriptors (pinContent). */
@@ -610,11 +621,49 @@ export function residentFilesystem(session, resident) {
                 pendingDirectories.delete(handleId);
                 if (stat.type === 'directory' && stat.dev === store.device)
                     directories.set(handleId, { key, dev: stat.dev, ino: stat.ino });
+                if (stat.type === 'file' && stat.dev === store.device && stat.size > WASI_RESIDENT_FILE_CAP_BYTES) {
+                    paged.set(handleId, { key, dev: stat.dev, ino: stat.ino });
+                }
             }
             return stat;
         });
     };
     fs.read = (handleId, offset, length) => {
+        const file = paged.get(handleId);
+        // Positional reads only: a read at the descriptor's offset is the descriptor's to advance.
+        if (file !== undefined && offset !== null && length > 0) {
+            return answer('read', () => after(resolve('/' + file.key, false), (resolved) => {
+                // The file as this process has learned of it (a barrier forgets a
+                // name it changed, and the walk learns it again). Once the name leads
+                // to another file, the pages are not this descriptor's bytes.
+                const now = resolved === DELEGATE ? undefined : entryAt(file.key);
+                if (now === undefined || now === null || now.type !== 'file' || now.dev !== file.dev || now.ino !== file.ino) {
+                    paged.delete(handleId);
+                    return DELEGATE;
+                }
+                if (offset >= now.size)
+                    return new Uint8Array(0);
+                const end = Math.min(now.size, offset + length);
+                const first = Math.floor(offset / RESIDENT_PAGE_BYTES);
+                const last = Math.floor((end - 1) / RESIDENT_PAGE_BYTES);
+                return after(store.pages(file.key, now.revision, now.size, first, last), (found) => {
+                    if (found === null) {
+                        paged.delete(handleId);
+                        return DELEGATE;
+                    }
+                    counts.pagedReads++;
+                    counts.pagesFetched += found.fetched;
+                    const out = new Uint8Array(end - offset);
+                    found.pages.forEach((page, i) => {
+                        const start = (first + i) * RESIDENT_PAGE_BYTES;
+                        const from = Math.max(offset, start);
+                        const to = Math.min(end, start + page.byteLength);
+                        out.set(page.subarray(from - start, to - start), from - offset);
+                    });
+                    return out;
+                });
+            }), () => authority.read(handleId, offset, length));
+        }
         const held = writes.get(handleId);
         if (held === undefined) {
             delegated('read');
@@ -694,6 +743,7 @@ export function residentFilesystem(session, resident) {
         if (readers.delete(handleId)) {
             pendingDirectories.delete(handleId);
             directories.delete(handleId);
+            paged.delete(handleId);
             delegated('close');
             return authority.close(handleId);
         }

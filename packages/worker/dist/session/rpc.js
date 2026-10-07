@@ -507,15 +507,18 @@ export async function _rpcFsStorageGrant(self, facet, bytes, databaseSize, pid) 
     const recorded = ledger.view().facets[args.facet] ?? 0;
     if (args.databaseSize > recorded)
         ledger.report(args.facet, args.databaseSize);
+    // What a user may still write, as df reports it: a store sizes what it
+    // only caches (its pages) by it.
+    const available = () => { const view = ledger.view(); return Math.max(0, view.limit - ledger.kernelReserve - view.used); };
     if (args.bytes === 0)
-        return { granted: 0 };
+        return { granted: 0, available: available() };
     try {
         ledger.fill(args.facet, args.bytes);
-        return { granted: args.bytes };
+        return { granted: args.bytes, available: available() };
     }
     catch (error) {
         if (isVfsError(error, 'ENOSPC'))
-            return { granted: 0 };
+            return { granted: 0, available: available() };
         throw error;
     }
 }

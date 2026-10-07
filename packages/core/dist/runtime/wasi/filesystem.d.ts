@@ -1,5 +1,5 @@
 import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeVfsStat } from '../os-contracts.js';
-import type { Errno, WasiImports } from './types.js';
+import type { Errno, NimbusFsImports, WasiImports } from './types.js';
 /** WASI encoding only. Paths, permissions, inode identity and storage belong to fs. */
 export interface AuthorityFd {
     kind: 'authority';
@@ -99,7 +99,19 @@ export interface AuthorityFilesystemOptions {
         revision: number;
         bytes: Uint8Array;
     }>;
+    /**
+     * The Nimbus filesystem extension's table (NimbusFsImports), filled for
+     * the descriptors and paths this codec answers. A call on any other
+     * descriptor goes to what the table held.
+     */
+    extension?: Partial<NimbusFsImports>;
 }
+/**
+ * st_mode of a stat: its type's format bits, and its permission bits, or
+ * Node's defaults (0755 for a directory, 0644 otherwise) where the backend
+ * keeps none, as a node process's fs.stat reports them.
+ */
+export declare function statMode(st: Pick<RuntimeVfsStat, 'mode' | 'type'>): number;
 /** Installs the same filesystem codec in the generic WASI and Bash fd domains. */
 export declare function installAuthorityFilesystem(imports: Partial<FilesystemImports>, options: AuthorityFilesystemOptions): asserts imports is FilesystemImports;
 //# sourceMappingURL=filesystem.d.ts.map

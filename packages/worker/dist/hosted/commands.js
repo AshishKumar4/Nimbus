@@ -3,7 +3,7 @@ import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/syste
 import { installSummary } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import { exitCodeForSignal, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
-import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -117,6 +117,23 @@ export async function registerHostedCommands(self, workspace) {
     // 2. Register the `nimbus` shell verb (install/uninstall/list/available).
     // 3. Rehydrate any previously-installed runtimes from VFS so their
     //    bins reappear in the registry after DO eviction or WS reconnect.
+    // Real git (git.wasm), one WASI process per invocation: core runtime/git-runner.ts.
+    // Image caching and fsmonitor token provenance live for this workspace
+    // incarnation, not for one command (and not across hibernation).
+    let gitFactory = null;
+    workspace.runtimes.registerRunner(GIT_RUNNER, (manifest, installRoot, binName, binKind) => {
+        let handler = null;
+        return async (ctx) => {
+            gitFactory ??= (async () => {
+                const { makeGitRunnerFactory } = await import('@nimbus-sh/core/runtime/git-runner.js');
+                const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+                return makeGitRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem });
+            })().catch((error) => { gitFactory = null; throw error; });
+            handler ??= gitFactory.then((factory) => factory(manifest, installRoot, binName, binKind))
+                .catch((error) => { handler = null; throw error; });
+            return (await handler)(ctx);
+        };
+    });
     workspace.runtimes.registerRunner('clang-runner', (manifest, installRoot, binName, binKind) => async (ctx) => {
         const { makeClangRunnerFactory } = await import('@nimbus-sh/core/runtime/clang-runner.js');
         const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
@@ -132,7 +149,7 @@ export async function registerHostedCommands(self, workspace) {
     // no flags that would consume args) drops into an interactive
     // REPL. The wrap is purely additive — args-bearing invocations
     // pass through to the existing handler unchanged.
-    workspace.runtimes.registerRunner('cpython-runner', (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx) {
+    const cpythonRunner = (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx) {
         const argv = ctx.args || [];
         // No args at all → REPL session. Hand off to runPythonRepl
         // which builds its own IsolatePool (separate from the
@@ -166,7 +183,10 @@ export async function registerHostedCommands(self, workspace) {
             startResident: cpythonResidentStart(facetMgr),
             network: workspace.network,
         })(manifest, installRoot, binName, binKind)(ctx);
-    });
+    };
+    // The stock build, and the one importing the Nimbus extensions (CPYTHON_RUNNER): one runner.
+    workspace.runtimes.registerRunner('cpython-runner', cpythonRunner);
+    workspace.runtimes.registerRunner(CPYTHON_RUNNER, cpythonRunner);
     // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
     // as python-runner: ruby+stdlib.wasm rides via LOADER modules-map,
     // bootstrap runs at child-facet module-init time, per-call
