@@ -65,7 +65,7 @@ import { FACET_IMAGE_WRITE_SLICE_BYTES, ImageStore, } from '@nimbus-sh/fabric/im
 import { fetchStagedBindingAsset, NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_LOADER_MODULE, STAGED_BINDING_TRAMPOLINE_MODULE, stagedBinding, stagedBindingsFacetImport, stagedBindingsRequiredBy, } from '../runtime/staged-bindings.js';
 import { encodeCommonJsPack, ProcessFabric, } from '@nimbus-sh/fabric/process-fabric.js';
 import { createLoadedWorkerEntrypoint, getNimbusCtxExports, deleteFacetStorage, facetJournal, reservedFacetNames, } from '@nimbus-sh/fabric/workerd-facet-host.js';
-import { drainProcessFsJournal } from '@nimbus-sh/core/_shared/process-fs-client.js';
+import { drainProcessFsJournal, UNSETTLED_END_NOTE } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { journalDrainSession } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { ProcessJournals } from '../session/process-journals.js';
 import { acquireDurableFacetSlot, freeDurableFacetSlot, } from './durable-slots.js';
@@ -741,7 +741,11 @@ ${sources.residentStore}
       const __chunk = __nimbusStopReplay.write(method, bytes);
       if (__chunk === null) return;
       __rpcWriteCount++;
+      // Released at the filesystem client's gate, taken now: once every
+      // change logged ahead of it is answered (ProcessFsClient.effect).
+      const __gate = __nimbusOutputGate();
       const __task = __rpcWriteChain
+        .then(() => __gate)
         .then(() => __supervisor[method](__chunk.b, __chunk.at, __chunk.run))
         .then(() => __nimbusStopReplay.acked(__chunk))
         .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
@@ -1223,7 +1227,11 @@ ${VFS_CURSOR_SEED_SOURCE}
       const __chunk = __nimbusStopReplay.write(method, bytes);
       if (__chunk === null) return;
       __rpcWriteCount++;
+      // Released at the filesystem client's gate, taken now: once every
+      // change logged ahead of it is answered (ProcessFsClient.effect).
+      const __gate = __nimbusOutputGate();
       const __task = __rpcWriteChain
+        .then(() => __gate)
         .then(() => __supervisor[method](__chunk.b, __chunk.at, __chunk.run))
         .then(() => __nimbusStopReplay.acked(__chunk))
         .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
@@ -1462,6 +1470,11 @@ export class NimbusProcess extends DurableObject {
     super(ctx, env);
     // Its write log is kept in its own store (process-fs-journal.ts).
     globalThis.__nimbusFsJournalSql = ctx.storage.sql;
+  }
+  // Pending while this isolate lives: the coordinator learns of its death
+  // (out of memory, out of CPU) by this call's rejection.
+  held() {
+    return new Promise(() => {});
   }
   async startProcess(startArgs) {
     // Held so an HTTP-first entry (a restart re-entered by a routed request)
@@ -5464,9 +5477,14 @@ export class FacetManager {
             // shell's Ctrl+C or `kill <pid>`. The process was not a crash and the
             // abort text is not its stderr: mark it killed and hand back 130 (the
             // shell's signalled status) with nothing for the terminal to print.
+            // A one-shot that sent changes may have held more it never sent:
+            // said, with the bound, however it ended (ProcessFsClient.effect).
+            const unsettled = openSupervisorDeliveries(this.ctx).wroteWaves(entry.pid) ? `${UNSETTLED_END_NOTE}\n` : '';
             if (abortController.signal.aborted) {
                 this.processes.kill(entry.pid);
-                return { exitCode: 130, stdout: '', stderr: '' };
+                if (unsettled && !opts.captureOutput)
+                    await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(unsettled));
+                return { exitCode: 130, stdout: '', stderr: opts.captureOutput ? unsettled : '' };
             }
             // The ledger refused to start it (EAGAIN): it never ran. That is its
             // spawn failing, for whoever spawned it to report: a child_process
@@ -5485,7 +5503,7 @@ export class FacetManager {
                 this.hooks.onExternalExit?.(entry.pid, exitCode, reason);
             }
             catch { }
-            return { exitCode, stdout: '', stderr: errorMessage(err) };
+            return { exitCode, stdout: '', stderr: `${errorMessage(err)}${unsettled ? `\n${unsettled}` : ''}` };
         }
         finally {
             opts.signal?.removeEventListener('abort', onShellAbort);
@@ -6290,6 +6308,7 @@ export class FacetManager {
             const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
             handle = await this.processFabric.startResidentProcess({
                 startContract: 'lifetime',
+                journaled: true,
                 pid,
                 workerKey,
                 boot: { kind: 'staged', stage: stageSpec },
@@ -6427,6 +6446,7 @@ export class FacetManager {
             // the artifact sources exist only while this facet is loading.
             handle = await this.processFabric.startResidentProcess({
                 startContract: 'lifetime',
+                journaled: true,
                 pid,
                 workerKey,
                 boot: { kind: 'staged', stage: stageSpec },
@@ -6550,7 +6570,34 @@ export class FacetManager {
             ...process,
         });
         this._noteProcessPlacement(pid, handle);
+        // A booted resident that dies on its own (out of memory, out of CPU) ends
+        // its lifecycle with the death: its log is drained as it is released, and
+        // only then is its exit told. A lifetime resident's caller watches its
+        // lifecycle itself.
+        if (spec.startContract === 'boot' && spec.journaled) {
+            this.ctx.waitUntil(handle.done.catch((error) => this._residentDied(pid, error)));
+        }
         return handle;
+    }
+    /** A booted resident died without anyone ending it: it exits 1, its reason on its stderr. */
+    _residentDied(pid, error) {
+        if (this.processes.get(pid)?.state !== 'running')
+            return;
+        const reason = `resident process died: ${errorMessage(error)}`;
+        this.processes.appendOutput(pid, 'stderr', `[nimbus] ${reason}\n`);
+        try {
+            this.processes.exit(pid, 1);
+        }
+        catch { }
+        try {
+            this._w5RecordTermination(pid, 1, 'facet', reason);
+        }
+        catch { }
+        try {
+            this.hooks.onExternalExit?.(pid, 1, reason);
+        }
+        catch { }
+        this.releaseProcessRpcResources(pid);
     }
     _activateProcessVfsWriter(pid, writerId) {
         // The run this writer is reads the process's stdin, and no run before it,
@@ -7111,6 +7158,7 @@ export class FacetManager {
                             // The attached-TTY runner holds startProcess open for the process's
                             // life; the server/watch runner returns once it is up.
                             startContract: opts.attachedTty ? 'lifetime' : 'boot',
+                            journaled: true,
                             startArgs: {
                                 pid: entry.pid, vfsCursor, dataPlan,
                                 ...(profileOffer !== undefined && profileOffer.staged.length > 0 ? { profileStaged: profileOffer.staged.map((e) => e.path) } : {}),
@@ -7453,6 +7501,9 @@ export class FacetManager {
                 // These runners answer startProcess with a boot payload (listening
                 // port, or a completed non-server run) and stay resident after it.
                 startContract: 'boot',
+                // A python or ruby resident logs its changes in its store; an
+                // application's own class keeps its store to itself.
+                journaled: opts.resident !== undefined,
                 startArgs: opts.resident && opts.startArgs && typeof opts.startArgs === 'object'
                     ? { ...opts.startArgs, supervisorPid: entry.pid,
                         ...(launchEnv ? { userEnv: { ...z.record(z.string(), z.unknown()).parse(Reflect.get(opts.startArgs, 'userEnv') ?? {}), ...launchEnv } } : {}) }

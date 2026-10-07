@@ -331,6 +331,8 @@ export declare class IsolatePool {
     private readonly scope;
     /** IsolatePoolOptions.network: each facet's outbound, and a loader-id segment. */
     private readonly network;
+    /** The process the pool's facets write as, when they are bound to one (supervisorPid). */
+    private readonly writerPid;
     constructor(env: unknown, ctx: DurableObjectState, opts: IsolatePoolOptions);
     /** Effective concurrency used when no per-call override is supplied. */
     get defaultConcurrency(): number;

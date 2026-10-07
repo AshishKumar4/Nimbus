@@ -65,6 +65,25 @@ export const PROCESS_FS_HEAP_WINDOW_BYTES = 2 * WAVE_BYTES;
  */
 export const DECIDED_BACKLOG_OPS = 2 * WAVE_PATHS;
 export const DECIDED_BACKLOG_BYTES = 2 * WAVE_BYTES;
+/**
+ * What a one-shot process (no store of its own) that ended before its
+ * changes were all answered (it died, or was killed) says in its output:
+ * every change ahead of an output it released is in the session
+ * (ProcessFsClient.effect), and what it logged after its last one may not
+ * be, at most the decided backlog.
+ */
+export const UNSETTLED_END_NOTE = `[nimbus] the process ended before its changes were all in the session: `
+    + `any it made after its last output may be lost (at most ${DECIDED_BACKLOG_OPS} changes, ${DECIDED_BACKLOG_BYTES / (1024 * 1024)} MiB)`;
+/** `error`, said with UNSETTLED_END_NOTE: a one-shot's run that ended with changes it may have lost. */
+export function unsettledEnd(error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
+    return Object.assign(new Error(`${message}\n${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...(code === undefined ? {} : { code }) });
+}
+/** The note an ended run's error carries (unsettledEnd), as a line, or ''. */
+export function unsettledNoteOf(error) {
+    return typeof error === 'object' && error !== null && Reflect.get(error, 'unsettled') === true ? `${UNSETTLED_END_NOTE}\n` : '';
+}
 /** A data call's bytes per op: a larger one is sent as its first piece, then writes at offsets. */
 const DATA_PIECE_BYTES = WAVE_BYTES;
 /** The most subtrees one process holds at once; past it, two are widened to their common ancestor. */
@@ -744,6 +763,12 @@ export function processFsClient(options) {
             const flushed = new Promise((resolve) => { marks.push({ mark, resolve }); });
             schedule();
             return flushed;
+        },
+        effect() {
+            if (journal.durable)
+                return null;
+            options.drain?.();
+            return answered >= logged ? null : client.flush();
         },
         async settle() {
             settling = true;

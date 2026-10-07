@@ -403,7 +403,7 @@ export class ProcessFabric {
         // after the host is released; a later incarnation must use a fresh one.
         const writerId = crypto.randomUUID();
         spawn.onWriterActivated(writerId);
-        const journal = this.options.journalFor?.(spawn.pid);
+        const journal = spawn.journaled ? this.options.journalFor?.(spawn.pid) : undefined;
         let hosted;
         try {
             hosted = await this.host.open({

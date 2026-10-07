@@ -411,6 +411,14 @@ export class SupervisorDeliveries {
             bytes += scope.bytes;
         return bytes;
     }
+    /** Whether process `pid` opened a write-wave epoch: it has sent changes, and may hold more it never sent. */
+    wroteWaves(pid) {
+        const prefix = `${pid}:`;
+        for (const key of this.waveEpochs.keys())
+            if (key.startsWith(prefix))
+                return true;
+        return false;
+    }
     /** A process ended: its receipts answer nothing more, their ids stay refused, and its wave epochs close. */
     forget(pid) {
         const prefix = `${pid}:`;

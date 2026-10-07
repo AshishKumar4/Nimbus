@@ -1661,6 +1661,8 @@ export declare class FacetManager {
      * decides anything about where a program runs.
      */
     private _startResidentProcess;
+    /** A booted resident died without anyone ending it: it exits 1, its reason on its stderr. */
+    private _residentDied;
     private _activateProcessVfsWriter;
     /**
      * Grant every suspended launch a chunk of this turn — the session's alarm

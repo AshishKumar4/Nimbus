@@ -53,6 +53,7 @@ import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
 import { RUBY_GREEN_THREADS } from './ruby-green-threads.js';
 import { gemHomeFor, installRubyBundle, installRubyGems, installedGemBins, installedGemLibRoots, parseRubyGemRequirements, } from './ruby-gems.js';
 import { errorText } from '../_shared/error-text.js';
+import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 const RUBY_RUNTIME_BIN_NAMES = new Set(['ruby', 'ruby3', 'gem', 'bundle', 'bundler']);
 const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
 /**
@@ -595,8 +596,9 @@ async function dispatchRubyFacet(facets, vfs, args, image, pid, signal) {
     }
     catch (e) {
         // Killed: the program ends as an interrupted one does.
+        // What it may have lost is said however it ended (unsettledEnd).
         if (signal.aborted)
-            return { exitCode: 130, stdout: '', stderr: '' };
+            return { exitCode: 130, stdout: '', stderr: unsettledNoteOf(e) };
         return {
             exitCode: 1,
             stdout: '',

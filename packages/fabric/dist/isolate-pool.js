@@ -28,7 +28,8 @@ import { loaderOutbound, requireNetwork } from '@nimbus-sh/core/_shared/workspac
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { supervisorEntrypoint, hostRoute } from './composition.js';
 import { supervisorLoaderKey } from './supervisor-props.js';
-import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
+import { openSupervisorDeliveries, supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
+import { unsettledEnd } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
 import { beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, withDynamicWorkerCapNamed, } from './budgets.js';
@@ -191,6 +192,8 @@ export class IsolatePool {
     scope;
     /** IsolatePoolOptions.network: each facet's outbound, and a loader-id segment. */
     network;
+    /** The process the pool's facets write as, when they are bound to one (supervisorPid). */
+    writerPid;
     constructor(env, ctx, opts) {
         // A host hands its whole env over; the binding is claimed here and the
         // claim is checked on the next line.
@@ -206,6 +209,7 @@ export class IsolatePool {
         this.defaultTimeoutMs = opts.timeoutMs ?? 60_000;
         this.defaultRetries = Math.max(0, opts.retries ?? 0);
         this.tag = opts.tag ?? 'facet';
+        this.writerPid = opts.omitSupervisor || opts.supervisorPid === undefined ? undefined : opts.supervisorPid;
         this.preamble = opts.preamble;
         // Include preamble in the cache-bucket key so changes to bundled helpers
         // invalidate warm slots. Empty preamble → '0' suffix (stable).
@@ -719,7 +723,23 @@ export class IsolatePool {
     async submit(fn, arg, opts) {
         const { fnSource, fnHash } = this.#prepare(fn);
         const resilience = this.#resolve(opts);
-        return (await this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.execute(arg), resilience, opts?.wasmModules));
+        try {
+            return (await this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.execute(arg), resilience, opts?.wasmModules));
+        }
+        catch (error) {
+            throw this.#ended(error);
+        }
+    }
+    /**
+     * A run that failed (its facet died, was killed or timed out) is a
+     * one-shot process ended before its changes were all answered, when the
+     * process it writes as had sent any (SupervisorDeliveries.wroteWaves): its
+     * error says what may be lost (unsettledEnd).
+     */
+    #ended(error) {
+        if (this.writerPid === undefined || !openSupervisorDeliveries(this.ctx).wroteWaves(this.writerPid))
+            return error;
+        return unsettledEnd(error);
     }
     /**
      * Dispatch `fn` through the fetch transport — the pool's only
@@ -740,7 +760,12 @@ export class IsolatePool {
         // Every attempt fetches a clone: a Request's body is consumed once,
         // so the caller's original stays unspent and retries get a fresh
         // body that follows the same signal.
-        return this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.fetch(request.clone()), resilience, opts?.wasmModules, request.signal);
+        try {
+            return await this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.fetch(request.clone()), resilience, opts?.wasmModules, request.signal);
+        }
+        catch (error) {
+            throw this.#ended(error);
+        }
     }
     /**
      * Run `fn` on every item in `items`, at most `concurrency` at a time,

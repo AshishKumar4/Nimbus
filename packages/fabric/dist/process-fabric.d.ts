@@ -278,6 +278,8 @@ export interface ProcessHostParams {
      * the session is told the facet's name when it opens (`opened`), and
      * `drain` is handed the store's journal when the process is released,
      * before the store goes. A drain that throws keeps the store and its name.
+     * Its class holds `held()` open while its isolate lives, so a death after
+     * its boot (out of memory, CPU) is the process's `lost`.
      */
     journal?: {
         opened(facet: string): void;
@@ -563,6 +565,13 @@ export interface ResidentProcessSpawn {
     };
     /** See {@link ProcessHostParams.storageBytes}. */
     storageBytes?: number;
+    /**
+     * A Nimbus runtime's process (node, python, ruby, opencode), whose class
+     * logs its changes in its facet's store and holds `held()` open while its
+     * isolate lives (ProcessHostParams.journal). Never an application's own
+     * class, whose store is its own.
+     */
+    journaled?: boolean;
     /**
      * Called before any concrete host capability can expose this writer.
      * A spawn must not proceed unless the supervisor accepts the authority.

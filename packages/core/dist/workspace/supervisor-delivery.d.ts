@@ -206,6 +206,8 @@ export declare class SupervisorDeliveries {
     /** Settled receipts kept by active journaled runs, for lifecycle/bound checks. */
     get readReceipts(): number;
     get readReceiptBytes(): number;
+    /** Whether process `pid` opened a write-wave epoch: it has sent changes, and may hold more it never sent. */
+    wroteWaves(pid: number): boolean;
     /** A process ended: its receipts answer nothing more, their ids stay refused, and its wave epochs close. */
     forget(pid: number): void;
     private record;

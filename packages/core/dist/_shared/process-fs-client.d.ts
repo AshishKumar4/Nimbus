@@ -183,6 +183,17 @@ export interface ProcessFsClient {
     }): Promise<ProcessFsAnswer>;
     /** Resolves once every op logged so far is answered (not those logged after: a writing process is never idle). */
     flush(): Promise<void>;
+    /**
+     * The gate an effect leaving the process (its output, its exit, a message
+     * out) is released at, taken when the effect is made. A process whose log
+     * is durable (its facet's store: a resident) loses nothing it logged, so
+     * its effects wait for nothing: null. Any other (a one-shot) releases an
+     * effect only once every op logged ahead of it is answered (flush), so a
+     * crash loses at most what it logged after its last released effect
+     * (DECIDED_BACKLOG_OPS), and no effect is ever seen ahead of a change that
+     * was lost.
+     */
+    effect(): Promise<void> | null;
     /** The end of the run: everything answered; throws naming every failure not yet taken. */
     settle(): Promise<void>;
     /** The failures not yet reported, taken (the next effect reports them). */
@@ -253,6 +264,20 @@ export declare const PROCESS_FS_HEAP_WINDOW_BYTES: number;
  */
 export declare const DECIDED_BACKLOG_OPS: number;
 export declare const DECIDED_BACKLOG_BYTES: number;
+/**
+ * What a one-shot process (no store of its own) that ended before its
+ * changes were all answered (it died, or was killed) says in its output:
+ * every change ahead of an output it released is in the session
+ * (ProcessFsClient.effect), and what it logged after its last one may not
+ * be, at most the decided backlog.
+ */
+export declare const UNSETTLED_END_NOTE: string;
+/** `error`, said with UNSETTLED_END_NOTE: a one-shot's run that ended with changes it may have lost. */
+export declare function unsettledEnd(error: unknown): Error & {
+    unsettled: true;
+};
+/** The note an ended run's error carries (unsettledEnd), as a line, or ''. */
+export declare function unsettledNoteOf(error: unknown): string;
 /** The most subtrees one process holds at once; past it, two are widened to their common ancestor. */
 export declare const MAX_DELEGATIONS_PER_PROCESS = 8;
 /** Mutations in a subtree before the client takes it. */

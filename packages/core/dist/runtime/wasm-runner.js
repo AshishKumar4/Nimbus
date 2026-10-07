@@ -53,6 +53,7 @@ import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
 import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
 import { wasmInterface } from './wasm-binary.js';
 import { errorText } from '../_shared/error-text.js';
+import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 export const WASM_RUNNER_VERSION = '0.3.0';
 export const WASM_RUNNER_HELP = 'Usage: wasm-runner [options] <file.wasm> [exportName] [int args...]\n' +
     '       wasm-runner --version\n' +
@@ -564,8 +565,9 @@ export function makeWasmRunner(deps) {
         }
         catch (e) {
             // Killed: the program ends as an interrupted one does, with no error of its own.
+            // What it may have lost is said however it ended (unsettledEnd).
             outcome = opts.signal?.aborted
-                ? { ok: false, mode: 'wasi', exitCode: 130, stdout: '', stderr: '' }
+                ? { ok: false, mode: 'wasi', exitCode: 130, stdout: '', stderr: unsettledNoteOf(e) }
                 : { ok: false, error: `dispatch failed: ${errorText(e)}` };
         }
         finally {
