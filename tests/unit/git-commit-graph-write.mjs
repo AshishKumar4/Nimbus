@@ -118,6 +118,16 @@ try {
     const built = cloneGraph([root, list.subarray(70)]);
     assert.ok(built !== null, 'a 200,000-commit history makes a graph');
     assert.equal(built.commits, N);
+    // In V8, as workerd runs it (bun's engine takes more arguments than V8's stack does): the built module under host Node.
+    const dist = new URL('../../packages/worker/dist/git/pack/commit-graph.js', import.meta.url).href;
+    const v8 = execFileSync('node', ['--input-type=module', '-e', `
+      import { cloneGraph } from ${JSON.stringify(dist)};
+      import { readFileSync } from 'node:fs';
+      const lists = JSON.parse(readFileSync(0, 'utf8')).map((b64) => new Uint8Array(Buffer.from(b64, 'base64')));
+      const built = cloneGraph(lists);
+      console.log(built === null ? 'null' : built.commits);
+    `], { input: JSON.stringify([Buffer.from(root).toString('base64'), Buffer.from(list.subarray(70)).toString('base64')]), maxBuffer: 1 << 26 }).toString().trim();
+    assert.equal(v8, String(N), 'under V8 too: a graph, not a stack overflow');
     assert.equal(cloneGraph([list.subarray(70)]), null, 'a parent not recorded: no graph, and no throw');
     console.log(`  ok  a ${N}-commit history: a graph of ${built.file.byteLength} bytes; a missing parent: none`);
   }
