@@ -180,6 +180,8 @@ function genericCommandLine(name: string, args: readonly string[]): NodeCommandL
     execArgv: [],
     programIndex: span,
     conditions: [],
+    require: [],
+    import: [],
     ...(evalCode !== undefined ? { eval: evalCode } : {}),
     print: false,
     version: flags.includes('-v') || flags.includes('--version'),

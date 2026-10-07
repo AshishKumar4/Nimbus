@@ -6,39 +6,48 @@
  * Node's internal/options and `node --v8-options`), and NODE_OPTIONS beside
  * them, split as Node splits it.
  *
- * As Node takes them:
+ * As Node takes them, in its order:
  *   - `--name=value` only for long options (`-C=x` is an option named
  *     `-C=x`), `_` read as `-` in a long option's name;
+ *   - `--no-<name>` read as `<name>`, negated, before aliases expand, and
+ *     refused unless the option is a boolean (or V8's);
  *   - aliases expanded (`-C` is `--conditions`, `-pe` is `--print --eval`,
- *     `-p <code>` is `--print --eval <code>`);
+ *     `-p <code>` is `--print --eval <code>`, `--experimental-permission` is
+ *     `--permission`);
  *   - a value taken from `=`, else from the next argument, which may not
  *     start with `-` (a leading `\-` escapes one, and is dropped); an empty
  *     `--name=` is refused;
- *   - `--no-<name>` only for a boolean option;
  *   - an option Node does not know goes to V8, which refuses one it does not
- *     know either ("bad option");
+ *     know either ("bad option"), once Node's own options are read;
  *   - `--` ends the options, and is kept out of execArgv;
  *   - in NODE_OPTIONS, `--` and every option Node does not allow there are
  *     refused, and a bare word ends the options it is read for.
- * A refusal is Node's: its message and exit code 9.
+ * A refusal is Node's: its message (naming the option as it was typed) and
+ * exit code 9.
  */
 
-import {
-  NODE_BOOLEAN_OPTIONS, NODE_ENV_OPTIONS, NODE_KNOWN_OPTIONS, NODE_OPTION_ALIASES, NODE_V8_FLAGS, NODE_VALUE_OPTIONS,
-} from './node-cli-options.generated.js';
+import { NODE_OPTION_ALIASES, NODE_OPTIONS_TABLE, NODE_V8_FLAGS } from './node-cli-options.generated.js';
 
-/** What node's command line says, for the program it runs. */
-export interface NodeCommandLine {
+/** What a node program's run takes of its command line: its runner, its launch's walk and its process read it. */
+export interface NodeLaunch {
   /** The options before the program, as `process.execArgv` holds them (the command line's; not NODE_OPTIONS'). */
   execArgv: string[];
-  /** Where the program's own arguments start: its script (or `-`), or, for `-e`, its arguments; their end when there are none. */
-  programIndex: number;
   /** The program's own conditions: NODE_OPTIONS' first, then the command line's. */
   conditions: string[];
+  /** `-r`/`--require`'s modules, NODE_OPTIONS' first: required from the working directory, in order, before the program. */
+  require: string[];
+  /** `--import`'s modules, NODE_OPTIONS' first: imported from the working directory, in order, after those and before the program. */
+  import: string[];
   /** `-e`/`--eval`'s code (`process._eval`), when the program is one. */
   eval?: string;
-  /** `-p`/`--print`: the eval's result is printed. */
+  /** `-p`/`--print`: the eval's completion value is printed when the process exits. */
   print: boolean;
+}
+
+/** What node's command line says, for the program it runs. */
+export interface NodeCommandLine extends NodeLaunch {
+  /** Where the program's own arguments start: its script (or `-`), or, for `-e`, its arguments; their end when there are none. */
+  programIndex: number;
   version: boolean;
   help: boolean;
 }
@@ -50,11 +59,6 @@ export interface NodeCommandLineError {
 }
 
 const refuse = (message: string): NodeCommandLineError => ({ error: `node: ${message}\n`, exitCode: 9 });
-
-/** Whether NODE_OPTIONS may carry the option named `name` (a long one's `=value` aside), a `--no-` prefix aside. */
-function allowedInNodeOptions(name: string): boolean {
-  return NODE_ENV_OPTIONS.has(name) || (name.startsWith('--no-') && NODE_ENV_OPTIONS.has('--' + name.slice(5)));
-}
 
 /** NODE_OPTIONS split as Node splits it (ParseNodeOptionsEnvVar): spaces part, double quotes group, `\` escapes inside them. */
 export function splitNodeOptions(text: string): string[] | NodeCommandLineError {
@@ -96,82 +100,87 @@ function v8Takes(option: string): boolean {
 /** What the options of `tokens` (one command line, or NODE_OPTIONS' words) set. */
 interface ReadOptions {
   conditions: string[];
+  require: string[];
+  import: string[];
   eval?: string;
-  print: boolean;
+  /** A boolean the last of its options set (`--print`, or `--no-print`). */
+  print?: boolean;
   version: boolean;
   help: boolean;
   /** Where they end in `tokens` (past a `--`). */
   end: number;
 }
 
-/** The options at the head of `tokens`, as Node's OptionsParser reads them; `env` for NODE_OPTIONS'. */
+/** The options at the head of `tokens`, as Node's OptionsParser::Parse reads them; `env` for NODE_OPTIONS'. */
 function readOptions(tokens: readonly string[], env: boolean): ReadOptions | NodeCommandLineError {
-  const read: ReadOptions = { conditions: [], print: false, version: false, help: false, end: 0 };
+  const read: ReadOptions = { conditions: [], require: [], import: [], version: false, help: false, end: 0 };
   // An alias's expansion past its first option, read before the next argument.
-  const pending: string[] = [];
+  const synthetic: string[] = [];
   let i = 0;
-  const hasNext = () => pending.length > 0 || i < tokens.length;
-  const peek = () => (pending.length > 0 ? pending[0] : tokens[i]);
-  const take = () => (pending.length > 0 ? pending.shift()! : tokens[i++]);
-  while (hasNext()) {
-    const fromLine = pending.length === 0;
-    const arg = peek();
-    if (fromLine && (arg.length <= 1 || arg[0] !== '-')) break;
-    take();
+  const empty = () => synthetic.length === 0 && i >= tokens.length;
+  const first = () => (synthetic.length > 0 ? synthetic[0] : tokens[i]);
+  const popFirst = () => (synthetic.length > 0 ? synthetic.shift()! : tokens[i++]);
+  // An option neither Node nor V8 knows: V8 refuses it once Node's own are read.
+  let unknown: string | undefined;
+  while (!empty()) {
+    if (first().length <= 1 || first()[0] !== '-') break;
+    const arg = popFirst();
     if (arg === '--') {
       if (env) return refuse('-- is not allowed in NODE_OPTIONS');
       break;
     }
-    let name = arg;
-    let value: string | undefined;
-    let hasEquals = false;
-    // Only a long option takes `=value`, and its name reads `_` as `-`.
-    if (arg.startsWith('--')) {
-      const equals = arg.indexOf('=');
-      if (equals !== -1) {
-        name = arg.slice(0, equals);
-        value = arg.slice(equals + 1);
-        hasEquals = true;
-      }
-      name = '--' + name.slice(2).replaceAll('_', '-');
-    }
-    if (env && !allowedInNodeOptions(name)) return refuse(`${hasEquals ? `${name}=` : name} is not allowed in NODE_OPTIONS`);
-    const typed = name;
+    // Only a long option takes `=value`.
+    const equals = arg.startsWith('--') ? arg.indexOf('=') : -1;
+    let name = equals === -1 ? arg : arg.slice(0, equals);
+    // The option as it was typed, for Node's messages: no alias expanded, its `=` kept.
+    const typed = equals === -1 ? name : name + '=';
+    name = name.slice(0, 2) + name.slice(2).replaceAll('_', '-');
+    const negation = name.startsWith('--no-');
+    if (negation) name = '--' + name.slice(5);
     for (;;) {
-      let expansion = NODE_OPTION_ALIASES.get(name);
-      if (expansion === undefined && hasEquals) expansion = NODE_OPTION_ALIASES.get(`${name}=`);
-      if (expansion === undefined && hasNext() && !peek().startsWith('-')) expansion = NODE_OPTION_ALIASES.get(`${name} <arg>`);
+      const expansion = NODE_OPTION_ALIASES.get(name)
+        ?? (equals !== -1 ? NODE_OPTION_ALIASES.get(name + '=') : undefined)
+        ?? (!empty() && first() !== '' && first()[0] !== '-' ? NODE_OPTION_ALIASES.get(name + ' <arg>') : undefined);
       if (expansion === undefined) break;
+      const previous = name;
       name = expansion[0];
-      pending.unshift(...expansion.slice(1));
+      synthetic.unshift(...expansion.slice(1));
+      // `--prof-process` stands for itself and a `--`.
+      if (name === previous) break;
     }
-    if (!NODE_KNOWN_OPTIONS.has(name)) {
-      const negated = name.startsWith('--no-') ? '--' + name.slice(5) : null;
-      if (negated !== null && NODE_KNOWN_OPTIONS.has(negated)) {
-        if (!NODE_BOOLEAN_OPTIONS.has(negated)) return refuse(`${arg} is an invalid negation because it is not a boolean option`);
-        continue;
-      }
-      // Not Node's: V8's (one argument; its value only after `=`), or a bad option.
-      if (!v8Takes(arg)) return refuse(`bad option: ${arg}`);
+    const option = NODE_OPTIONS_TABLE.get(name);
+    if (env && option?.env !== true) return refuse(`${typed} is not allowed in NODE_OPTIONS`);
+    if (option === undefined) {
+      // V8's (one argument; its value only after `=`), or a bad option.
+      if (unknown === undefined && !v8Takes(arg)) unknown = arg;
       continue;
     }
-    if (NODE_VALUE_OPTIONS.has(name)) {
-      if (hasEquals) {
-        if (value === '') return refuse(`${typed}= requires an argument`);
+    if (negation && option.kind !== 'boolean' && option.kind !== 'v8') {
+      return refuse(`${arg} is an invalid negation because it is not a boolean option`);
+    }
+    let value = '';
+    if (option.kind === 'value') {
+      if (equals !== -1) {
+        value = arg.slice(equals + 1);
+        if (value === '') return refuse(`${typed} requires an argument`);
       } else {
-        if (!hasNext() || peek().startsWith('-')) return refuse(`${typed} requires an argument`);
-        value = take();
+        if (empty()) return refuse(`${typed} requires an argument`);
+        value = popFirst();
+        if (value.startsWith('-')) return refuse(`${typed} requires an argument`);
         if (value.startsWith('\\-')) value = value.slice(1);
       }
     }
     switch (name) {
-      case '--conditions': read.conditions.push(value!); break;
+      case '--conditions': read.conditions.push(value); break;
+      case '--require': read.require.push(value); break;
+      case '--import': read.import.push(value); break;
       case '--eval': read.eval = value; break;
-      case '--print': read.print = true; break;
-      case '--version': read.version = true; break;
-      case '--help': read.help = true; break;
+      case '--print': read.print = !negation; break;
+      case '--version': read.version = !negation; break;
+      case '--help': read.help = !negation; break;
     }
   }
+  if (unknown !== undefined) return refuse(`bad option: ${unknown}`);
   read.end = i;
   return read;
 }
@@ -190,8 +199,10 @@ export function parseNodeCommandLine(args: readonly string[], nodeOptions = ''):
     execArgv: options.at(-1) === '--' ? options.slice(0, -1) : options,
     programIndex: fromArgs.end,
     conditions: [...fromEnv.conditions, ...fromArgs.conditions],
+    require: [...fromEnv.require, ...fromArgs.require],
+    import: [...fromEnv.import, ...fromArgs.import],
     ...(fromArgs.eval !== undefined ? { eval: fromArgs.eval } : {}),
-    print: fromArgs.print || fromEnv.print,
+    print: fromArgs.print ?? fromEnv.print ?? false,
     version: fromArgs.version,
     help: fromArgs.help,
   };
