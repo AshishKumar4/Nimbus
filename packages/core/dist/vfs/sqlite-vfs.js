@@ -1422,9 +1422,12 @@ export class SqliteVFS {
      * wherever they run: `principal` (else the calling view's, else `cred`'s)
      * is the one its write events name and its held appends are written as.
      */
-    openDescription(path, cred, rights, principal) {
+    openDescription(path, cred, rights, principal, 
+    /** The exclusive-mutation lease the open presented: its writes and truncates present it too, as the right was checked at open. */
+    mutationOwner) {
         const origin = principal ?? this.activeOrigin ?? Object.freeze({ cred });
         const asOpener = (call) => (...args) => this.asOrigin(origin, () => call(...args));
+        const owned = (call) => asOpener((...args) => this.withMutationOwner(mutationOwner, () => call(...args)));
         const resolved = this.checkAccess(path, (rights.read ? 4 : 0) | (rights.write ? 2 : 0), cred);
         if (!resolved.inode)
             throw vfsKeyError('ENOENT', path);
@@ -1482,7 +1485,7 @@ export class SqliteVFS {
                 const run = this.appendRuns.get(node.ino);
                 return run === undefined ? node.size : run.base + run.bytes;
             },
-            write: asOpener((offset, bytes) => {
+            write: owned((offset, bytes) => {
                 if (!rights.write)
                     throw vfsKeyError('EBADF', path);
                 if (live().isDir)
@@ -1506,7 +1509,7 @@ export class SqliteVFS {
                 if (rights.write)
                     this.raiseAppendFailure(opened);
             },
-            truncate: asOpener((size) => {
+            truncate: owned((size) => {
                 if (!rights.write)
                     throw vfsKeyError('EBADF', path);
                 const node = writable();

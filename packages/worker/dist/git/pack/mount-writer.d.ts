@@ -45,6 +45,13 @@ export interface FileApi {
     rename(from: string, to: string): Promise<void>;
 }
 /**
+ * A file written at `at` as a program writes one: its directory made
+ * (`mkdir -p`), then opened, written in pieces and closed, at `written` (a
+ * name beside it, renamed over it after, as git's lock files are) or at
+ * `at` itself. Answers its stat.
+ */
+export declare function writeInPlace(api: FileApi, at: string, mode: number, bytes: Uint8Array, written?: string): Promise<FileStat>;
+/**
  * `writer` (rooted at `dir`, a namespace path on a mount), with each file
  * over a wave's mount limit written through `api` instead, its receipt to
  * `onReceipts`.

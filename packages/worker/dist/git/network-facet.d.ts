@@ -81,7 +81,7 @@ export interface GitNetworkOpts {
     onCloneCheckoutPhase?: () => Promise<void>;
     /** Clone-only: normalized root covered by the exclusive mutation lease. */
     exclusiveMutationRoot?: string;
-    /** clone: the destination is on a mounted filesystem (its namespace path), where a wave's files are bounded (pack/mount-writer.ts). */
+    /** The repository (a clone's destination) is on a mounted filesystem (`dir` its namespace path), where a wave's files are bounded (pack/mount-writer.ts). */
     onMount?: boolean;
     /** Trusted supervisor-only lease owner; never sent to the dynamic worker. */
     mutationOwner?: string;

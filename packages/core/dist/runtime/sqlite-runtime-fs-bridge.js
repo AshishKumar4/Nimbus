@@ -492,7 +492,7 @@ export class SqliteRuntimeFsBridge {
                 this.owned(owner).truncate(p, 0);
             }
             const stat = this.vfs.stat(p);
-            const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal);
+            const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, owner);
             const handle = {
                 id: this.scope.nextId++,
                 path: p,

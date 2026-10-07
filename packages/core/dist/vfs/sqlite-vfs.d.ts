@@ -775,7 +775,9 @@ export declare class SqliteVFS {
         read: boolean;
         write: boolean;
         sync?: boolean;
-    }, principal?: Principal): VfsOpenDescription;
+    }, principal?: Principal, 
+    /** The exclusive-mutation lease the open presented: its writes and truncates present it too, as the right was checked at open. */
+    mutationOwner?: string): VfsOpenDescription;
     /**
      * Hold `bytes`, written through `opened` at `offset`, in its file's
      * AppendRun when they extend the file (an O_APPEND write is at `end()`): a

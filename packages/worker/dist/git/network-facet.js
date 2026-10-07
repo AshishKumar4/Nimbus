@@ -1217,14 +1217,7 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
       });
       if (opts.onMount !== true) return waves;
       // On a mount a file past a wave's limit is written through the session's file API (pack/mount-writer.ts).
-      return __nimbusGitPack.mountWriter(waves, {
-        mkdir: (path, options) => mutation('fileApi', () => supervisor.mkdir(path, options)),
-        fsOpen: (path, flags) => mutation('fileApi', () => supervisor.fsOpen(path, flags)),
-        fsWrite: (id, offset, bytes) => mutation('fileApi', () => supervisor.fsWrite(id, offset, bytes)),
-        fsFstat: (id) => counted('fileApi', () => supervisor.fsFstat(id)),
-        fsClose: (id) => counted('fileApi', () => supervisor.fsClose(id)),
-        rename: (from, to) => mutation('rename', () => supervisor.rename(from, to)),
-      }, dir, (receipts) => {
+      return __nimbusGitPack.mountWriter(waves, facetFileApi(supervisor, stats, deadline), dir, (receipts) => {
         stats.filesWritten += receipts.length;
         for (const receipt of receipts) stats.bytesWritten += receipt.size;
         if (onReceipts) onReceipts(receipts);
@@ -1235,6 +1228,27 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
     auth: opts.auth,
     marker: { path: '.git/' + CLONE_JOB_MARKER, text: cloneJobMarker(opts) },
     onProgress: (line) => log('remote: ' + line + '\\n'),
+  };
+}
+
+/**
+ * The session's file API through the facet's binding (pack/mount-writer.ts
+ * FileApi), its lease presented by the binding, each call counted; no write
+ * starts past the phase's deadline.
+ */
+function facetFileApi(supervisor, stats, deadline = null) {
+  const call = (counter, fn) => {
+    if (deadline !== null && Date.now() >= deadline) return Promise.reject(new Error('git passed its phase deadline'));
+    stats.supervisorRpc[counter]++;
+    return useRpcResult(fn(), (result) => result);
+  };
+  return {
+    mkdir: (path, options) => call('fileApi', () => supervisor.mkdir(path, options)),
+    fsOpen: (path, flags) => call('fileApi', () => supervisor.fsOpen(path, flags)),
+    fsWrite: (id, offset, bytes) => call('fileApi', () => supervisor.fsWrite(id, offset, bytes)),
+    fsFstat: (id) => call('fileApi', () => supervisor.fsFstat(id)),
+    fsClose: (id) => call('fileApi', () => supervisor.fsClose(id)),
+    rename: (from, to) => call('rename', () => supervisor.rename(from, to)),
   };
 }
 
@@ -1262,7 +1276,10 @@ function createBufferedFs(
   authoritativeRootMetadata,
   phaseDeadline = null,
   worktreeRoot = null,
+  onMount = false,
 ) {
+  // On a mount, a file past a wave's limit is written in place (pack/mount-writer.ts).
+  const fileApi = onMount ? facetFileApi(supervisor, stats, phaseDeadline) : null;
   const metadata = new Map();
   const children = new Map();
   const textEncoder = new TextEncoder();
@@ -1635,6 +1652,15 @@ function createBufferedFs(
             mtimeMs: now, ctimeMs: now, atimeMs: now,
           };
           setMetadata(p, fileMetadata);
+          if (fileApi !== null && buf.length > __nimbusGitPack.MOUNT_WAVE_FILE_MAX) {
+            // What the waves hold before it lands first; then the file, as a program writes it.
+            await writer.flush();
+            const stat = await __nimbusGitPack.writeInPlace(fileApi, '/' + p, mode, buf);
+            stampEntry(fileMetadata, stat.mtimeMs);
+            stats.filesWritten++;
+            stats.bytesWritten += buf.length;
+            return;
+          }
           await writer.file(p, mode, buf, fileMetadata);
         });
       },
@@ -2096,6 +2122,7 @@ export default {
         phaseDeadline,
         // fetch, pull and push work in a repository that already exists.
         phase === 'operation' ? normalizePath(opts.dir) : null,
+        opts.onMount === true,
       );
       const fs = bufferedFs.fs;
       // cf-git reads packed objects by range and stores a fetched pack as it arrives (git/pack/facet-packs.ts).

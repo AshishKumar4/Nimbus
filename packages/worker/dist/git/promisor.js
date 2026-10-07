@@ -33,6 +33,7 @@ workspaceNetwork) {
         oids: [...request.oids],
         quiet: true,
         auth: request.auth,
+        ...(request.onMount === true ? { onMount: true } : {}),
     }, workspaceNetwork);
     if (!network.success)
         throw new PromisorFetchError(request.remote, network);
