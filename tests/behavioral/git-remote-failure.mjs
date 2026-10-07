@@ -53,6 +53,8 @@ try {
   a.check('pull exits 1 with "unable to access"', pulled.code === 1 && pulled.out.includes("fatal: unable to access 'https://example.invalid/r.git/': "), pulled.out.slice(-400));
   const pushed = await step('push to it', 'git push origin main');
   a.check('push exits 128 with "unable to access"', pushed.code === 128 && pushed.out.includes("fatal: unable to access 'https://example.invalid/r.git/': "), pushed.out.slice(-400));
+  const config = await step('the repository\'s config', 'cat .git/config; git config --get remote.nosuch.url');
+  console.log(config.out.slice(-600));
   const nosuch = await step('fetch of a remote not configured', 'git fetch nosuch');
   a.check('exits 128 with "does not appear to be a git repository"', nosuch.code === 128 && nosuch.out.includes("fatal: 'nosuch' does not appear to be a git repository"), nosuch.out.slice(-400));
 } finally {
