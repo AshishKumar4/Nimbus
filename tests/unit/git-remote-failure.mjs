@@ -32,15 +32,20 @@ const work = mkdtempSync(join(tmpdir(), 'nimbus-remote-failure-'));
 // ── the lines on their own ──
 assert.equal(anonymizeUrl('https://u:p@host:8080/a/b.git'), 'https://host:8080/a/b.git');
 assert.equal(anonymizeUrl('https://host/a@b.git'), 'https://host/a@b.git', 'an @ in the path is not a user');
-assert.equal(remoteFailureText('https://u:p@h/r.git', { kind: 'transport', detail: 'Could not resolve host: h' }, true),
+const none = { username: '', password: false };
+assert.equal(remoteFailureText('https://u:p@h/r.git', { kind: 'transport', detail: 'Could not resolve host: h' }, { username: 'u', password: true }),
   "fatal: unable to access 'https://h/r.git/': Could not resolve host: h\n");
-assert.equal(remoteFailureText('https://h/r.git/', { kind: 'status', status: 404, message: 'Repository not found.\n' }, false),
+assert.equal(remoteFailureText('https://h/r.git/', { kind: 'status', status: 404, message: 'Repository not found.\n' }, none),
   "remote: Repository not found.\nfatal: repository 'https://h/r.git/' not found\n");
-assert.equal(remoteFailureText('https://h:1/r', { kind: 'status', status: 401 }, false),
+assert.equal(remoteFailureText('https://h:1/r', { kind: 'status', status: 401 }, none),
   "fatal: could not read Username for 'https://h:1': terminal prompts disabled\n");
-assert.equal(remoteFailureText('https://h/r', { kind: 'status', status: 401 }, true), "fatal: Authentication failed for 'https://h/r/'\n");
-assert.equal(remoteFailureText('https://h/r', { kind: 'status', status: 503 }, false),
+assert.equal(remoteFailureText('https://h:1/r', { kind: 'status', status: 401 }, { username: 'a b', password: false }),
+  "fatal: could not read Password for 'https://a%20b@h:1': terminal prompts disabled\n", 'a user name with no password: its prompt for the password');
+assert.equal(remoteFailureText('https://h/r', { kind: 'status', status: 401 }, { username: 'u', password: true }), "fatal: Authentication failed for 'https://h/r/'\n");
+assert.equal(remoteFailureText('https://h/r', { kind: 'status', status: 503 }, none),
   "fatal: unable to access 'https://h/r/': The requested URL returned error: 503\n");
+assert.equal(remoteFailureText('https://h/r', { kind: 'status', status: 403, message: 'use https://x:hunter2@h/r or TOKEN-9\n' }, { username: '', password: true }, ['TOKEN-9']),
+  "remote: use https://h/r or <redacted>\nfatal: unable to access 'https://h/r/': The requested URL returned error: 403\n", 'credentials a server echoes are not printed');
 console.log('  ok  remoteFailureText: each kind in git\'s words');
 
 /** A server answering each repository's discovery with a failure. */
@@ -52,6 +57,10 @@ const server = createServer((req, res) => {
   } else if (name === 'forbidden.git') {
     res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
     res.end('Forbidden: this token cannot read it\nAsk its owner\n');
+  } else if (name === 'echo.git') {
+    // A server that echoes the credentials it was sent.
+    res.writeHead(403, { 'content-type': 'text/plain' });
+    res.end(`denied for ${req.headers.authorization ?? ''}; clone https://u:hunter2@127.0.0.1/r.git with TOKEN-9\n`);
   } else if (name === 'broken.git') {
     res.writeHead(500, { 'content-type': 'text/html' });
     res.end('<h1>oops</h1>');
@@ -96,6 +105,7 @@ const cases = [
   { name: '500', url: `${base}/broken.git` },
   { name: '401', url: `${base}/auth.git` },
   { name: '401 with credentials', url: `http://u:p@127.0.0.1:${server.address().port}/auth.git`, ours: `${base}/auth.git`, env: { GIT_USERNAME: 'u', GIT_PASSWORD: 'p' } },
+  { name: '401 with a user name only', url: `http://u@127.0.0.1:${server.address().port}/auth.git`, ours: `${base}/auth.git`, env: { GIT_USERNAME: 'u' } },
 ];
 let n = 0;
 try {
@@ -138,6 +148,16 @@ try {
         [h.code, h.stderr.trim()], `${args[0]} of a remote not configured (git's: ${h.stderr}; ours: ${o.stderr})`);
     }
     console.log('  ok  a remote not configured: git\'s "does not appear to be a git repository", exit as git');
+  }
+
+  // A server that echoes credentials: git prints its text as it is, ours with them taken out.
+  {
+    const echoed = await session.git('/home/user', ['clone', `${base}/echo.git`, '/home/user/echoed'], { GIT_TOKEN: 'TOKEN-9' });
+    assert.equal(echoed.code, 128, echoed.stderr);
+    assert.match(echoed.stderr, /^remote: denied for Basic <redacted>; /m, echoed.stderr);
+    assert.doesNotMatch(echoed.stderr, /TOKEN-9|hunter2/, `no credential printed: ${echoed.stderr}`);
+    assert.match(echoed.stderr, /clone https:\/\/127\.0\.0\.1\/r\.git with <redacted>/);
+    console.log('  ok  credentials a server echoes in its message are not printed');
   }
 
   // The same, in a repository made as a shell makes one: `git init`, `git config`, a commit, `git remote add`.
