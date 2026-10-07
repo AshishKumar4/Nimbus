@@ -129,6 +129,11 @@ export interface DelegationHolder {
    * file's stat; the description it returns writes through (LocalFile.through).
    */
   openThrough(key: string, path: string, flags: { read?: boolean; append?: boolean; create?: boolean; truncate?: boolean; exclusive?: boolean; followSymlinks?: boolean; mode?: number }): Promise<RuntimeFileHandle>;
+  /**
+   * Everything logged so far answered, what the session refused kept for the
+   * next sync (flush) to report: what goes before a call to the session.
+   */
+  send(): Promise<void>;
   /** Whether `handleId` writes through: its reads are the session's (readThrough). */
   through(handleId: number): boolean;
   /** The size this process gave file `ino` through a description of it still open, or undefined: what a stat of it by name reports here. */
@@ -680,6 +685,10 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       await client.flush();
       sentSome();
       failed();
+    },
+    send: async () => {
+      await client.flush();
+      sentSome();
     },
     settle: async () => {
       drain();
