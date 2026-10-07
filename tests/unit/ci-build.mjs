@@ -97,6 +97,7 @@ try {
     assert.equal(verdict.status, 0, verdict.stderr);
     assert.deepEqual(rows(verdict), { 'dist-fixpoint': 0, typecheck: 0 });
     assert.equal(verdict.patch, null);
+    assert.deepEqual(verdict.blobs, {});
     assert.equal(verdict.head, git(dir, 'rev-parse', 'HEAD'));
     console.log('  ok  a commit whose dist is the fixpoint: both rows green, no patch, exit 0');
   }
@@ -111,6 +112,10 @@ try {
     assert.equal(readFileSync(join(clone, 'pkg/dist/a.txt'), 'utf8'), 'TWO');
     assert.equal(readFileSync(join(clone, 'record.json'), 'utf8'), 'fixpoint of TWO', 'the patch carries the record the second run wrote');
     assert.equal(build(clone).status, 0, 'the patched commit is clean');
+    assert.deepEqual(Object.keys(verdict.blobs).sort(), ['pkg/dist/a.bin', 'pkg/dist/a.txt', 'record.json'], 'the blobs name what the patch touches');
+    for (const [path, entry] of Object.entries(verdict.blobs)) {
+      assert.deepEqual(entry, { mode: '100644', blob: git(dir, 'hash-object', path) }, `${path}: the mode and blob the build left`);
+    }
     console.log('  ok  a stale dist: the patch, applied to the commit, is the rebuilt tree and its record, and that tree builds clean');
   }
   {

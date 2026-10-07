@@ -27,10 +27,13 @@ try {
   mkdirSync(join(root, 'scripts', 'ci'), { recursive: true });
   for (const file of ['run-all.mjs', '_probe-browser.mjs', '_ledger.mjs']) copyFileSync(join(REPO, 'tests', 'behavioral', file), join(behavioral, file));
   copyFileSync(join(REPO, 'scripts', 'ci', 'probes.mjs'), join(root, 'scripts', 'ci', 'probes.mjs'));
-  // Sorted, they are a, b, c: --part 1/2 is a and c, --part 2/2 is b.
+  // Sorted, they are a, b, c, d: --part 1/2 is a and c, --part 2/2 is b and d.
   writeFileSync(join(behavioral, 'a.mjs'), "console.log('a sees ' + process.env.NIMBUS_PROBE_TOKEN + ' at ' + process.env.BASE);\n");
   writeFileSync(join(behavioral, 'b.mjs'), "console.error('b fails holding ' + process.env.NIMBUS_PROBE_TOKEN); process.exit(3);\n");
   writeFileSync(join(behavioral, 'c.mjs'), "console.log('c passes');\n");
+  // A long line thick with the token: wherever a pipe read splits it, some
+  // token is split across two reads.
+  writeFileSync(join(behavioral, 'd.mjs'), "console.error(('x'.repeat(7) + process.env.NIMBUS_PROBE_TOKEN).repeat(6000)); process.exit(1);\n");
 
   // Spawned, not spawnSync: the target is this process's server, which must keep answering.
   const probes = async (args, env = {}) => {
@@ -59,9 +62,10 @@ try {
   {
     const verdict = await probes(['--base', base, '--part', '2/2']);
     assert.equal(verdict.status, 1);
-    assert.deepEqual(rows(verdict), [['tests/behavioral/b.mjs', 3], ['session-ledger', 0]]);
-    assert.match(verdict.rows[0].output, /b fails holding \[NIMBUS_PROBE_TOKEN\]/, 'a failing probe\'s stderr is in its row, scrubbed');
-    console.log('  ok  part 2/2 is the rest: a failing probe is a red row with its exit code and output, and the run exits 1');
+    assert.deepEqual(rows(verdict).sort(), [['session-ledger', 0], ['tests/behavioral/b.mjs', 3], ['tests/behavioral/d.mjs', 1]]);
+    assert.match(verdict.rows.find((row) => row.name === 'tests/behavioral/b.mjs').output, /b fails holding \[NIMBUS_PROBE_TOKEN\]/, 'a failing probe\'s stderr is in its row, scrubbed');
+    assert.match(verdict.log, /(x{7}\[NIMBUS_PROBE_TOKEN\]){100}/, 'the long line passed through the log, every token in it scrubbed');
+    console.log('  ok  part 2/2 is the rest: failing probes are red rows with their exit codes and output, the run exits 1, and a token split across reads is scrubbed');
   }
   {
     const verdict = await probes(['--base', base, '--only', 'c', '--skip', '']);
@@ -76,7 +80,11 @@ try {
     const unreachable = await probes(['--base', 'http://127.0.0.1:9']);
     assert.equal(unreachable.status, 2);
     assert.match(unreachable.rows[0].output, /is unreachable/);
-    console.log('  ok  no token, or a target that does not answer, is not graded (2), with a row saying why');
+    const late = await probes(['--base', base, '--start-by', String(Date.now() - 1000)]);
+    assert.equal(late.status, 2);
+    assert.deepEqual(rows(late), [['probes', 2]]);
+    assert.match(late.rows[0].output, /the token could expire before its limit/);
+    console.log('  ok  no token, a target that does not answer, or a task that starts too late for its token is not graded (2), with a row saying why');
   }
 } finally {
   server.close();

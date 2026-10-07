@@ -23,6 +23,12 @@ const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'
 const ARMADA_DIR = '/mnt/local/nimbus/armada-client';
 const ARMADA_CLIENT = '1a91f1bf5897cc4fb47cc04437973f73ef2e7195';
 
+/**
+ * A file laid over a commit's tree: a path whose bytes and executable bit
+ * are taken from this checkout, or the bytes given for a path.
+ * @typedef {string | { path: string, bytes: string | Uint8Array }} OverlayFile
+ */
+
 /** The armada recipe every task needs, whatever the lane's commit has. */
 export const RECIPE = ['.armada.json', 'scripts/armada/setup.sh', 'scripts/armada/install.sh'];
 
@@ -39,6 +45,11 @@ const git = (cwd, args, options = {}) => {
  * parent is `sha`. Each call makes a new one (its date is now): armada keeps
  * the pack it was sent for a commit, so a commit reused across runs would
  * reuse a pack that was wrong once.
+ *
+ * @param {string} repo
+ * @param {string} sha
+ * @param {OverlayFile[]} files
+ * @param {string} [from]
  */
 export function overlayCommit(repo, sha, files, from = SELF_ROOT) {
   const scratch = mkdtempSync(join(tmpdir(), 'armada-overlay-index-'));
@@ -94,6 +105,7 @@ export async function mapOnArmada({ repo, sha, files, setup, items, command, env
   }
   const { connect } = await import(join(armadaDir, 'src', 'sdk.ts'));
   const { onCommit } = await import(join(armadaDir, 'src', 'ci.ts'));
+  /** @type {OverlayFile[]} */
   const overlay = [...RECIPE, ...files];
   if (setup) {
     // The commit's .armada.json names the environment armada packs for: one

@@ -5,7 +5,11 @@
 // same way; scripts/ci/remote-probes.mjs runs it on armada.
 //
 //   NIMBUS_PROBE_TOKEN=<jwt> bun scripts/ci/probes.mjs --out <file> --base <url>
-//       [--only a,b] [--skip c,d] [--part K/N] [--jobs J]
+//       [--only a,b] [--skip c,d] [--part K/N] [--jobs J] [--start-by <epoch ms>]
+//
+// --start-by is the latest a task may start and still finish within its
+// limit before the token expires; a task that starts later is not graded,
+// never red with the target's 401s.
 //
 // The token is the target's, minted for this run with a lifetime bounded by
 // it: it is read from the environment, never argv, and every output this
@@ -24,7 +28,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const argv = process.argv.slice(2);
-const FLAGS = ['--out', '--base', '--only', '--skip', '--part', '--jobs'];
+const FLAGS = ['--out', '--base', '--only', '--skip', '--part', '--jobs', '--start-by'];
 const flags = {};
 for (let i = 0; i < argv.length; i += 2) {
   if (!FLAGS.includes(argv[i]) || argv[i + 1] === undefined) usage(`unexpected ${JSON.stringify(argv[i])}`);
@@ -45,19 +49,49 @@ const notGraded = (why) => {
   process.exit(2);
 };
 
-/** Run a command here, its output passed through scrubbed; resolves to its exit code and output. */
+/**
+ * A stream's text, scrubbed as it passes: the token can be split across two
+ * reads, so the last token-length-minus-one characters wait for the next
+ * read (or the end) before they go out.
+ */
+function scrubbing(write) {
+  let held = '';
+  const keep = Math.max(0, token.length - 1);
+  return {
+    push(text) {
+      const whole = scrub(held + text);
+      held = whole.slice(whole.length - Math.min(keep, whole.length));
+      write(whole.slice(0, whole.length - held.length));
+    },
+    end() {
+      write(scrub(held));
+      held = '';
+    },
+  };
+}
+
+/** Run a command here, its output passed through scrubbed; resolves to its exit code. */
 function run(command, args, env) {
   return new Promise((resolve) => {
-    let stdout = '';
-    let stderr = '';
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
-    child.stdout.on('data', (chunk) => { stdout += chunk; process.stdout.write(scrub(chunk.toString())); });
-    child.stderr.on('data', (chunk) => { stderr += chunk; process.stderr.write(scrub(chunk.toString())); });
-    child.on('error', (error) => { stderr += `\n${command} could not start: ${error.message}`; });
-    child.on('close', (code) => resolve({ code: code ?? 1, stdout, stderr }));
+    const out = scrubbing((text) => process.stdout.write(text));
+    const err = scrubbing((text) => process.stderr.write(text));
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (text) => out.push(text));
+    child.stderr.on('data', (text) => err.push(text));
+    child.on('error', (error) => err.push(`\n${command} could not start: ${error.message}\n`));
+    child.on('close', (code) => {
+      out.end();
+      err.end();
+      resolve({ code: code ?? 1 });
+    });
   });
 }
 
+if (flags['start-by'] !== undefined && Date.now() > Number(flags['start-by'])) {
+  notGraded(`this task started at ${new Date().toISOString()}, after ${new Date(Number(flags['start-by'])).toISOString()}: the token could expire before its limit`);
+}
 if (!token) notGraded('NIMBUS_PROBE_TOKEN is not set: mint one for the target and this run');
 try {
   await fetch(flags.base, { signal: AbortSignal.timeout(30_000) });

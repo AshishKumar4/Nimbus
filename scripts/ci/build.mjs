@@ -18,6 +18,9 @@
 //     which is the tree the patch makes.
 //   patch: what the build changed under its outputs, as `git diff --binary`
 //     against head, or null when it changed nothing.
+//   blobs: each path the patch touches, with the git mode and blob id the
+//     build left it with ({ mode, blob }), or null where it removed it: what
+//     a lane's applied patch is checked against, apart from the patch.
 // Exit: 0, both rows green and no patch; 1, otherwise; 2, not graded (no
 // clean git checkout here).
 import { spawn, spawnSync } from 'node:child_process';
@@ -41,8 +44,8 @@ const cache = argv.includes('--no-cache') ? ['--no-cache'] : [];
 const git = (args, options = {}) => spawnSync('git', args, { encoding: 'utf8', maxBuffer: 1 << 30, ...options });
 
 /** Write the verdict and exit with its status. */
-function finish(head, rows, patch, status) {
-  writeFileSync(out, `${JSON.stringify({ head, rows, patch })}\n`);
+function finish(head, rows, patch, status, blobs = {}) {
+  writeFileSync(out, `${JSON.stringify({ head, rows, patch, blobs })}\n`);
   for (const row of rows) console.error(`build: ${row.name} exit ${row.exitCode} in ${row.seconds.toFixed(1)} s`);
   process.exit(status);
 }
@@ -104,6 +107,8 @@ if (stray.length > 0) {
 // The patch, through a scratch index so the checkout's own is untouched.
 const scratch = mkdtempSync(join(tmpdir(), 'ci-build-index-'));
 let patch = null;
+/** @type {Record<string, { mode: string, blob: string } | null>} */
+const blobs = {};
 try {
   const env = { ...process.env, GIT_INDEX_FILE: join(scratch, 'index') };
   for (const args of [['read-tree', 'HEAD'], ['add', '--all', '--', ...outputs]]) {
@@ -113,6 +118,14 @@ try {
   const diff = git(['diff', '--cached', '--binary', 'HEAD', '--', ...outputs], { cwd: root, env });
   if (diff.status !== 0) throw new Error(`git diff failed: ${diff.stderr}`);
   patch = diff.stdout || null;
+  // `:<old mode> <new mode> <old blob> <new blob> <status>\0<path>\0` per path.
+  const raw = git(['diff', '--cached', '--raw', '-z', '--no-renames', '--no-abbrev', 'HEAD', '--', ...outputs], { cwd: root, env });
+  if (raw.status !== 0) throw new Error(`git diff --raw failed: ${raw.stderr}`);
+  const fields = raw.stdout.split('\0');
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    const [, mode, , blob, status] = fields[i].slice(1).split(' ');
+    blobs[fields[i + 1]] = status === 'D' ? null : { mode, blob };
+  }
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
@@ -120,4 +133,4 @@ if (patch !== null && fixpoint.exitCode === 0) fixpoint.exitCode = 1;
 
 const typecheck = await step('typecheck', root, 'bun', ['run', 'typecheck']);
 const rows = [fixpoint, typecheck];
-finish(head, rows, patch, rows.every((row) => row.exitCode === 0) && patch === null ? 0 : 1);
+finish(head, rows, patch, rows.every((row) => row.exitCode === 0) && patch === null ? 0 : 1, blobs);

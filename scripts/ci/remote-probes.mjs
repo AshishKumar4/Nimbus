@@ -43,7 +43,7 @@ import { mapOnArmada } from './lib/armada.mjs';
 
 /** A task's limit on armada, and so the job's: every part runs at once. */
 const TASK_TIMEOUT_S = 30 * 60;
-/** How long a new environment may take to prepare before the first task starts. */
+/** How long a task may wait to start (a new environment preparing, a queue): past it, not graded. */
 const PREPARE_S = 15 * 60;
 const TOKEN_TTL_MS = (PREPARE_S + TASK_TIMEOUT_S) * 1000;
 
@@ -100,6 +100,9 @@ const throwaway = flags.deploy ?? target[2];
 const minter = throwaway === undefined
   ? ['tests/behavioral/_staging-target.mjs', 'token']
   : ['tests/behavioral/_throwaway-target.mjs', 'token', '--name', throwaway];
+// The latest a task may start and still end within its limit before the token
+// expires; one that starts later (a slow queue, a long preparation) is not graded.
+const startBy = Date.now() + TOKEN_TTL_MS - TASK_TIMEOUT_S * 1000;
 const minted = spawnSync('bun', [...minter, '--json', '--ttl-ms', String(TOKEN_TTL_MS)], { cwd: repo, encoding: 'utf8' });
 if (minted.status !== 0) {
   console.error(`remote-probes: NOT GRADED — could not mint a token for ${throwaway ?? 'staging'}:\n${minted.stderr}`);
@@ -148,7 +151,7 @@ try {
   mapped = await mapOnArmada({
     repo, sha, files: ['scripts/ci/probes.mjs', 'tests/behavioral/run-all.mjs'], setup: 'scripts/armada/chromium.sh',
     items, env: { NIMBUS_PROBE_TOKEN: token }, label: `remote-probes ${sha.slice(0, 12)} ${throwaway ?? 'staging'}`, timeout: TASK_TIMEOUT_S,
-    command: ['bun', 'scripts/ci/probes.mjs', '--out', '{out}', '--base', base, '--only', '{only}', '--skip', skip, '--part', '{part}', '--jobs', '{jobs}'],
+    command: ['bun', 'scripts/ci/probes.mjs', '--out', '{out}', '--base', base, '--only', '{only}', '--skip', skip, '--part', '{part}', '--jobs', '{jobs}', '--start-by', String(startBy)],
   });
 } catch (error) {
   console.error(`remote-probes: NOT GRADED — ${scrub(error.message)}`);

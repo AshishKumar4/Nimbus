@@ -66,6 +66,7 @@ try {
   const verdict = JSON.parse(mapped.outputs[0]);
   // The verdict is for the commit this run made, and nothing else.
   if (verdict.head !== mapped.commit) throw new Error(`the verdict is for ${verdict.head}, not ${mapped.commit} (job ${mapped.jobId})`);
+  if (typeof verdict.blobs !== 'object' || verdict.blobs === null) throw new Error(`the verdict names no blobs to check a patch against (job ${mapped.jobId})`);
   built = { jobId: mapped.jobId, verdict };
 } catch (error) {
   notGraded(error);
@@ -86,7 +87,7 @@ try {
   if (verdict.rows.some((row) => row.name === 'checkout')) status = 2;
   if (verdict.patch !== null) {
     writeFileSync(`${stem}.patch`, verdict.patch);
-    console.log(applyPatch(repo, sha, `${stem}.patch`));
+    console.log(applyPatch(repo, sha, `${stem}.patch`, verdict.blobs));
   }
   console.log(`remote-build: ${status === 0 ? 'dist is the fixpoint of src and the typecheck is clean' : 'see above'}; verdict ${stem}.json (job ${jobId})`);
   process.exit(status);
@@ -96,30 +97,43 @@ try {
 
 /**
  * Apply the build's patch to the worktree only if the result is exactly the
- * build's: the patch applied to <sha> in a scratch index is the tree the
- * build made, every file it touches must be as HEAD (= <sha>) has it, and
- * once applied those files must hash to that tree. Otherwise nothing is
- * applied, and the patch is left for you. Returns what happened.
+ * build's: the patch applied to <sha> in a scratch index must give every
+ * path the mode and blob the container reported it left (`blobs`, apart
+ * from the patch), every file it touches must be as HEAD (= <sha>) has it,
+ * and once applied those files must hash the same again. git's whitespace
+ * repair is off throughout, so no side is rewritten to agree. Otherwise
+ * nothing is applied, and the patch is left for you. Returns what happened.
  */
-function applyPatch(repo, sha, patch) {
+function applyPatch(repo, sha, patch, blobs) {
   const scratch = mkdtempSync(join(tmpdir(), 'remote-build-apply-'));
   try {
     const indexed = (name) => ({ ...process.env, GIT_INDEX_FILE: join(scratch, name) });
     git(repo, ['read-tree', sha], { env: indexed('built') });
-    git(repo, ['apply', '--cached', patch], { env: indexed('built') });
+    git(repo, ['apply', '--cached', '--whitespace=nowarn', patch], { env: indexed('built') });
     const tree = git(repo, ['write-tree'], { env: indexed('built') });
     const touched = git(repo, ['diff', '--name-only', '-z', sha, tree]).split('\0').filter(Boolean);
+    const expected = Object.keys(blobs).sort();
+    if (JSON.stringify([...touched].sort()) !== JSON.stringify(expected)) {
+      throw new Error(`the patch touches ${touched.length} paths, and the build reported ${expected.length}`);
+    }
+    const mismatch = (ofTree) => {
+      const listed = new Map(git(repo, ['ls-tree', '-r', '-z', ofTree, '--', ...touched]).split('\0').filter(Boolean)
+        .map((line) => { const [meta, path] = line.split('\t'); const [mode, , blob] = meta.split(' '); return [path, { mode, blob }]; }));
+      return touched.filter((path) => JSON.stringify(listed.get(path) ?? null) !== JSON.stringify(blobs[path]));
+    };
+    const unlike = mismatch(tree);
+    if (unlike.length > 0) throw new Error(`the patch does not make what the build left: ${unlike.join(', ')}`);
     const leave = (why) => `remote-build: the dist patch (${touched.length} files) is ${patch}; ${why}, so nothing was applied. Apply it on ${sha.slice(0, 12)} with \`git apply ${patch}\`, then commit it.`;
     if (git(repo, ['rev-parse', 'HEAD']) !== sha) return leave(`${sha.slice(0, 12)} is not this worktree's HEAD`);
     const local = git(repo, ['status', '--porcelain', '--untracked-files=all', '--', ...touched]);
     if (local) return leave(`files it touches have local changes:\n${local}\n`);
-    git(repo, ['apply', patch]);
+    git(repo, ['apply', '--whitespace=nowarn', patch]);
     git(repo, ['read-tree', 'HEAD'], { env: indexed('applied') });
     git(repo, ['add', '--all', '--', ...touched], { env: indexed('applied') });
     const applied = git(repo, ['write-tree'], { env: indexed('applied') });
-    const differ = git(repo, ['diff', '--name-only', tree, applied, '--', ...touched]);
-    if (differ) throw new Error(`the applied files differ from the build's: ${differ.split('\n').join(', ')}`);
-    return `remote-build: applied the dist patch (${touched.length} files) to ${repo}, verified against the build's tree. Review it and commit it, then run ci-run on that commit.`;
+    const differ = mismatch(applied);
+    if (differ.length > 0) throw new Error(`the applied files differ from what the build left: ${differ.join(', ')}`);
+    return `remote-build: applied the dist patch (${touched.length} files) to ${repo}, each file the blob the build left. Review it and commit it, then run ci-run on that commit.`;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
