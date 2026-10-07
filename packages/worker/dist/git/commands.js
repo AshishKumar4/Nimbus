@@ -11,7 +11,7 @@
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs } from '../runtime/project-fs.js';
-import { execGitNetwork, GIT_CLONE_JOB_MARKER } from './network-facet.js';
+import { execGitNetwork, GIT_CLONE_JOB_MARKER, runGraphFilters } from './network-facet.js';
 import { packsSeam } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -2874,6 +2874,7 @@ network = ISOLATE_NETWORK) {
                 // Delegate to git-network-facet: heavy packfile processing runs in
                 // a dynamic worker with its own CPU budget, not the supervisor DO.
                 const doClone = async () => {
+                    let cloned = false;
                     try {
                         const result = await execGitNetwork(doCtx, doEnv, {
                             op: 'clone',
@@ -2909,10 +2910,29 @@ network = ISOLATE_NETWORK) {
                         else {
                             ctx.stderr.write(`\n[git] clone failed: ${result.error}\n`);
                         }
+                        cloned = result.success;
                         return result.success;
                     }
                     finally {
                         vfs.releaseExclusiveMutation(mutationOwner);
+                        // A full clone's changed-path filters, once it has answered
+                        // (git/pack/graph-filters.ts): in the background, never the
+                        // clone's to wait for or to fail on.
+                        if (cloned && depth === undefined) {
+                            doCtx.waitUntil(runGraphFilters(doCtx, doEnv, {
+                                pid: ctx.pid,
+                                dir: target,
+                                pieceCommits: Number(ctx.env.NIMBUS_GIT_GRAPH_FILTER_PIECE_COMMITS) || undefined,
+                                pieceBudgetMs: Number(ctx.env.NIMBUS_GIT_GRAPH_FILTER_PIECE_BUDGET_MS) || undefined,
+                            }, network).then((outcome) => {
+                                // Nothing waits for it: why it left the chain as it is goes to the session's log.
+                                if (outcome.skipped === 'locked' || outcome.skipped === 'moved') {
+                                    console.warn('[git] commit-graph after clone', JSON.stringify({ dir: target, skipped: outcome.skipped }));
+                                }
+                            }, (error) => {
+                                console.warn('[git] commit-graph after clone', JSON.stringify({ dir: target, error: String(error?.message ?? error) }));
+                            }));
+                        }
                     }
                 };
                 if (isBg) {

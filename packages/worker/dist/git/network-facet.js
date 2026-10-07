@@ -74,6 +74,7 @@ const EMPTY_SUPERVISOR_RPC_COUNTERS = {
     fsReadRange: 0,
     fsWriteRange: 0,
     rename: 0,
+    lock: 0,
     writeBatchStream: 0,
     readlink: 0,
     symlink: 0,
@@ -113,6 +114,7 @@ function parseSupervisorRpcCounters(value) {
         fsReadRange: nonNegativeCounter(counters.fsReadRange),
         fsWriteRange: nonNegativeCounter(counters.fsWriteRange),
         rename: nonNegativeCounter(counters.rename),
+        lock: nonNegativeCounter(counters.lock),
         writeBatchStream: nonNegativeCounter(counters.writeBatchStream),
         readlink: nonNegativeCounter(counters.readlink),
         symlink: nonNegativeCounter(counters.symlink),
@@ -494,7 +496,11 @@ local = false) {
  * stored bytes (~30 MB), and facets count against the session's memory.
  */
 const CLONE_HISTORY_CONCURRENCY = 1;
-/** A full clone's history (git/pack/history.ts): commits, then trees, then blobs. */
+/**
+ * A full clone's history (git/pack/history.ts): commits, then trees, then
+ * blobs. Returns the commits' records for the commit-graph, or null when
+ * one did not parse (no graph).
+ */
 async function runCloneHistory(facetOpts, identity, fast, run, tagsFound) {
     const base = { ...facetOpts, ...identity, capabilities: fast.capabilities };
     let pieces = 0;
@@ -509,15 +515,24 @@ async function runCloneHistory(facetOpts, identity, fast, run, tagsFound) {
     /** A piece, and its continuations while its decoding runs past a budget. */
     // The commits piece meets every commit and annotated tag of the history: it watches for the tags'.
     const tagInterest = [...new Set(fast.tags.flatMap((tag) => [tag.oid, tag.peeled]))];
+    let graph = [];
     const piece = async (kind, name, request) => {
         const watch = kind === 'commits' && tagInterest.length > 0 ? { tagInterest } : {};
+        const recorded = (step) => {
+            if (step.graphLists === null || graph === null)
+                graph = null;
+            else
+                graph.push(...step.graphLists ?? []);
+        };
         let { step, elapsed } = await invoke({ step: 'piece', kind, piece: name, ...request, ...watch });
         const lists = [...step.lists];
+        recorded(step);
         for (const oid of step.tagsFound ?? [])
             tagsFound.add(oid);
         for (let part = 1; step.pending !== null; part++) {
             ({ step, elapsed } = await invoke({ step: 'resume', kind, piece: name, part, pending: step.pending, ...watch }));
             lists.push(...step.lists);
+            recorded(step);
             for (const oid of step.tagsFound ?? [])
                 tagsFound.add(oid);
         }
@@ -547,6 +562,7 @@ async function runCloneHistory(facetOpts, identity, fast, run, tagsFound) {
     if (run.progress) {
         await writeCloneProgressLine(run.progress, `\n[git] clone-history complete (${pieces} requests, ${(packBytes / 1048576).toFixed(1)}MB)\n`);
     }
+    return graph;
 }
 /**
  * A streamed clone after prepare: its pack's decoding continued from the
@@ -576,9 +592,11 @@ async function runCloneSnapshot(facetOpts, identity, stream, run, tagsFound) {
         throw new GitClonePhaseError('clone-history', 'checkout-plan returned nothing', plan.diagnostic);
     return planned;
 }
-/** The index from the shares; a full clone's shallow file goes; then the marker. */
-async function runCloneFinish(facetOpts, identity, shares, full, cacheTreeBytes, tags, run) {
-    const finish = await invokeClonePhase('clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes, tags }, run);
+/** The index from the shares; a full clone's shallow file goes, and its commit-graph is written; then the marker. */
+async function runCloneFinish(facetOpts, identity, shares, full, cacheTreeBytes, tags, 
+/** A full clone's commit records (runCloneHistory), for its commit-graph. */
+graph, run) {
+    const finish = await invokeClonePhase('clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes, tags, graph }, run);
     if (run.progress)
         await writeClonePhaseProgress(run.progress, finish.diagnostic);
 }
@@ -589,6 +607,65 @@ async function writeCloneProgressLine(supervisor, line) {
     catch {
         // Terminal progress is best-effort; the batch result remains authoritative.
     }
+}
+/** A piece's wall-time budget: within a facet invocation's limits, with room to write its file. */
+const GRAPH_FILTERS_PIECE_BUDGET_MS = 20_000;
+/** One step's limit: a piece stops at its budget, an assemble writes a layer. */
+const GRAPH_FILTERS_STEP_TIMEOUT_MS = 120_000;
+/** The whole pass's limit. */
+const GRAPH_FILTERS_TIMEOUT_MS = 60 * 60_000;
+/** Commits a piece is asked for; it stops earlier at its budget. */
+const GRAPH_FILTERS_PIECE_COMMITS = 20_000;
+/**
+ * A full clone's commit-graph (git/pack/graph-filters.ts), after the clone
+ * has answered: one facet loaded for the whole pass and invoked once a step,
+ * as a clone invokes its phases (a facet loaded a step deepened each step's
+ * subrequests until "Subrequest depth limit exceeded", measured on vscode's
+ * fourteenth). Each piece holds a tree cache and the pack store's.
+ */
+export async function runGraphFilters(ctx, env, opts, network) {
+    const result = await execGitNetwork(ctx, env, {
+        op: 'graph-filters', pid: opts.pid, dir: opts.dir, quiet: true, timeout: GRAPH_FILTERS_TIMEOUT_MS,
+        graphFilterPieceCommits: opts.pieceCommits, graphFilterPieceBudgetMs: opts.pieceBudgetMs,
+    }, network);
+    if (!result.success)
+        throw new Error('graph-filters: ' + (result.error ?? 'failed'));
+    return result.graphFilters;
+}
+/** The pass's steps, each one invocation of the facet `call` reaches. */
+async function driveGraphFilters(call, opts) {
+    const started = Date.now();
+    const step = async (graphFilters) => await call(graphFilters);
+    const outcome = { layer: null, commits: 0, pieces: 0, trees: 0, treeBytes: 0, elapsed: 0 };
+    const plan = await step({ step: 'plan' });
+    if ('skipped' in plan)
+        return { ...outcome, skipped: plan.skipped, elapsed: Date.now() - started };
+    outcome.commits = plan.commits;
+    const files = [];
+    const size = positiveSafeInteger(opts.pieceCommits, GRAPH_FILTERS_PIECE_COMMITS, 'graph filter piece commits');
+    const budgetMs = positiveSafeInteger(opts.pieceBudgetMs, GRAPH_FILTERS_PIECE_BUDGET_MS, 'graph filter piece budget');
+    try {
+        for (let from = 0; from < plan.commits;) {
+            const piece = await step({
+                step: 'piece', layer: plan.layer, pass: plan.pass, from, to: Math.min(from + size, plan.commits), budgetMs,
+            });
+            if (piece.next <= from)
+                throw new Error('graph-filters piece made no progress at ' + from);
+            if (piece.file !== null)
+                files.push(piece.file);
+            outcome.pieces++;
+            outcome.trees += piece.trees;
+            outcome.treeBytes += piece.treeBytes;
+            from = piece.next;
+        }
+    }
+    catch (error) {
+        // The base layer stays, without filters, as git leaves one it was not asked to filter.
+        await step({ step: 'discard', layer: plan.layer, pass: plan.pass }).catch(() => null);
+        throw error;
+    }
+    const assembled = await step({ step: 'assemble', layer: plan.layer, pass: plan.pass, files });
+    return { ...outcome, layer: assembled.layer, ...(assembled.skipped ? { skipped: assembled.skipped } : {}), elapsed: Date.now() - started };
 }
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.
@@ -743,11 +820,12 @@ export async function execGitNetwork(ctx, env, opts, /**
                         throw new GitClonePhaseError('clone-prepare', 'clone-prepare returned no plan', prepare.diagnostic);
                     const shares = await runCloneBatches(facetOpts, identity, fast, run, prepared.stream !== undefined);
                     const full = facetOpts.depth === undefined;
+                    let graph = null;
                     if (full && prepared.fast !== undefined && fast.commit !== null) {
-                        await runCloneHistory(facetOpts, identity, fast, run, tagsFound);
+                        graph = await runCloneHistory(facetOpts, identity, fast, run, tagsFound);
                     }
                     const tags = tagsHeld(prepared.fast?.tags ?? prepared.stream?.tags ?? [], tagsFound);
-                    await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, run);
+                    await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, graph, run);
                     return {
                         success: true,
                         elapsed: Date.now() - start,
@@ -821,6 +899,50 @@ export async function execGitNetwork(ctx, env, opts, /**
                     };
                 }
             }
+            if (opts.op === 'graph-filters') {
+                // The whole pass in this one facet, a step an invocation.
+                const facet = entrypoint;
+                const graphFilters = await driveGraphFilters(async (step) => {
+                    const remaining = Math.min(GRAPH_FILTERS_STEP_TIMEOUT_MS, outerDeadline - Date.now());
+                    if (remaining <= 0)
+                        throw new Error(`git graph-filters timed out after ${timeoutMs / 1000}s`);
+                    let timeoutHandle;
+                    const timeout = new Promise((_, reject) => {
+                        timeoutHandle = setTimeout(() => reject(new Error(`git graph-filters ${step.step} timed out after ${remaining / 1000}s`)), remaining);
+                    });
+                    const call = facet.fetch(new Request('http://git/op', {
+                        method: 'POST',
+                        body: JSON.stringify({ ...facetOpts, graphFilters: step, invocationId: crypto.randomUUID() }),
+                    })).then(async (response) => {
+                        try {
+                            return await response.json();
+                        }
+                        finally {
+                            disposeRpcResource(response);
+                        }
+                    });
+                    let result;
+                    try {
+                        result = await Promise.race([call, timeout]);
+                    }
+                    finally {
+                        if (timeoutHandle !== undefined)
+                            clearTimeout(timeoutHandle);
+                    }
+                    if (result.success !== true)
+                        throw new Error(`graph-filters ${step.step}: ${typeof result.error === 'string' ? result.error : 'failed'}`);
+                    return result.graphFilters;
+                }, { pieceCommits: opts.graphFilterPieceCommits, pieceBudgetMs: opts.graphFilterPieceBudgetMs });
+                return {
+                    success: true,
+                    elapsed: Date.now() - start,
+                    filesWritten: 0,
+                    bytesWritten: 0,
+                    supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+                    metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
+                    graphFilters,
+                };
+            }
             const invocationId = crypto.randomUUID();
             const startedAt = Date.now();
             const remaining = outerDeadline - startedAt;
@@ -873,6 +995,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                 fetchedObjects: result.fetched && typeof result.fetched === 'object' && 'fetched' in result.fetched
                     ? nonNegativeCounter(result.fetched.fetched)
                     : undefined,
+                ...(result.graphFilters !== undefined ? { graphFilters: result.graphFilters } : {}),
             };
         }
         finally {
@@ -1117,7 +1240,7 @@ function metadataFromSupervisorStat(st) {
 function createSupervisorRpcCounters() {
   return {
     stat: 0, lstat: 0, readdir: 0, readFile: 0,
-    fsReadRange: 0, fsWriteRange: 0, rename: 0, writeBatchStream: 0, readlink: 0, symlink: 0,
+    fsReadRange: 0, fsWriteRange: 0, rename: 0, lock: 0, writeBatchStream: 0, readlink: 0, symlink: 0,
     legacySymlinkSubtree: 0, stdout: 0,
   };
 }
@@ -1203,6 +1326,12 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
       fsTruncate: (path, size) => mutation('fsWriteRange', () => supervisor.fsTruncate(path, size)),
       fsReadRange: (path, offset, length) => counted('fsReadRange', () => supervisor.fsReadRangeUncached(path, offset, length)),
       rename: (from, to) => mutation('rename', () => supervisor.rename(from, to)),
+      // A commit-graph chain's lock (graph-filters.ts): created exclusively, written, made read-only, removed.
+      fsOpen: (path, flags) => mutation('lock', () => supervisor.fsOpen(path, flags)),
+      fsWrite: (handle, offset, bytes) => mutation('lock', () => supervisor.fsWrite(handle, offset, bytes)),
+      fsClose: (handle) => counted('lock', () => supervisor.fsClose(handle)),
+      chmod: (path, mode) => mutation('lock', () => supervisor.chmod(path, mode)),
+      unlink: (path) => mutation('lock', () => supervisor.unlink(path)),
       async readdir(path) {
         stats.supervisorRpc.readdir++;
         try {
@@ -2021,6 +2150,7 @@ export default {
           full: opts.full === true,
           cacheTreeBytes: opts.cacheTreeBytes,
           tags: opts.tags,
+          graph: opts.graph,
         });
         // The marker goes last: until it does, a failure leaves the clone abortable.
         const writer = context.writer();
@@ -2179,6 +2309,20 @@ export default {
         await flushWave();
         for (const dir of directories.reverse()) await fs.promises.rmdir(dir, { recursive: true });
         await flushWave();
+      } else if (opts.op === 'graph-filters') {
+        // A full clone's changed-path filters (git/pack/graph-filters.ts):
+        // reads the repository's packs, writes its commit-graph only.
+        const root = normalizePath(opts.dir);
+        const context = gitPackContext(supervisor, stats, opts, null, null, log, root);
+        const step = opts.graphFilters || {};
+        const graphFilters = step.step === 'plan'
+          ? await __nimbusGitPack.graphFiltersPlan(context)
+          : step.step === 'piece'
+            ? await __nimbusGitPack.graphFiltersPiece(context, step)
+            : step.step === 'discard'
+              ? await __nimbusGitPack.graphFiltersDiscard(context, step)
+              : await __nimbusGitPack.graphFiltersAssemble(context, step);
+        return respond(true, { graphFilters, metadataOverlay: overlayStats() });
       } else if (opts.op === 'fetch-objects') {
         // A partial clone's missing objects (git/promisor.ts): one request,
         // stored as a promisor pack. Writes land below the repository only.

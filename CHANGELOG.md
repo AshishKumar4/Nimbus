@@ -152,6 +152,17 @@ published independently in the `@nimbus-sh` npm scope.
   read stays in the program's exit report. A floating `import(...).then(...)`
   keeps the process while it fetches, and an `import()` of a module already
   loaded fetches nothing.
+- A full clone (`git clone --no-shallow`) leaves a commit-graph with
+  changed-path filters, as `git commit-graph write --reachable
+  --changed-paths` writes it (generation data v2, filters version 2), byte
+  for byte. It is written after the clone answers, so the clone takes no
+  longer: on vscode (167,136 commits) the clone's finish took 1.1 s as
+  before, and the graph was complete about five minutes later. It is one
+  layer of a commit-graph chain, so the layers a later `git fetch` writes
+  stack on it as git's do. A history that does not parse as git parses it
+  gets no graph rather than a failed clone.
+- Reading objects from a repository with many packs (a full clone has
+  scores) searches the pack the last object came from first, as git does.
 - Fixed: `node` and `bun` with no script opened a REPL that evaluated
   nothing ("workerd CSP: cannot evaluate JS at request time"). The REPL is
   now a program the runtime runs, as Node's is, and each line compiles

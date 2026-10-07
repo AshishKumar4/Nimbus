@@ -4,7 +4,8 @@
  *
  *   commits  every commit, no trees or blobs (filter tree:0); their root
  *            trees listed in pack order (newest first: neighbours share
- *            most of their trees)
+ *            most of their trees), and each recorded for the clone's
+ *            commit-graph (commit-graph.ts commitRecord)
  *   trees    the root trees of a run of commits with everything below them
  *            but blobs (filter blob:none), in runs of COMMITS_PER_CHUNK;
  *            each blob met is listed with its basename
@@ -43,6 +44,12 @@ export interface HistoryStepResult {
     pending: PendingPack | null;
     /** Lists written (STAGE_DIR files): root trees for commits, blobs for trees. */
     lists: StagedFile[];
+    /**
+     * commits: the commits' records for the commit-graph (GRAPH_RECORDS_DIR
+     * files; commit-graph.ts commitRecord); null when one did not parse, which
+     * no graph is written for, as git writes none.
+     */
+    graphLists?: StagedFile[] | null;
     /** Ids of the clone's tag interest this step's pack held (clone.ts TagWatch). */
     tagsFound?: string[];
 }

@@ -19,6 +19,7 @@ import { decodeBatch, encodeBatch, parseTree, CheckoutPlan, MODE_GITLINK, MODE_S
 import { ENTRY_BYTES, entryOffset } from './idx.js';
 import { installPack, RangedPackFile, readRange, resumeInstall } from './install.js';
 import { ByteLru } from './byte-lru.js';
+import { GRAPH_RECORDS_DIR } from './commit-graph.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';
 import { encodeIndexEntry, encodeIndexFile, splitIndexEntries } from '../worktree/dircache.js';
 import { encodeNode } from '../worktree/cachetree.js';
@@ -768,7 +769,11 @@ export async function cloneBatch(context, request) {
     await writer.flush();
     return { index: request.index, blobs: resolved, files, indexBytes, pack: summary };
 }
-/** The index, from the batches' shares; then the staging directory goes. */
+/**
+ * The index, from the batches' shares; then the staging directory goes. A
+ * full clone's commit records stay for its commit-graph, written after the
+ * clone answers (graph-filters.ts), unless one did not parse.
+ */
 export async function cloneFinish(context, request) {
     const entries = [];
     for (const share of request.shares) {
@@ -800,6 +805,13 @@ export async function cloneFinish(context, request) {
     for (const tag of request.tags ?? [])
         await writer.file('.git/' + tag.name, 0o644, encoder.encode(tag.oid + '\n'));
     const tags = request.tags?.length ?? 0;
+    if (request.graph === null) {
+        const records = await context.supervisor.readdir(join(context.dir, GRAPH_RECORDS_DIR));
+        for (const name of records)
+            await writer.remove(GRAPH_RECORDS_DIR + '/' + name);
+        if (records.length > 0)
+            await writer.remove(GRAPH_RECORDS_DIR, true);
+    }
     // The staged files one record each: a write group holds a bounded number
     // of rows, and one recursive delete of a full clone's staging (vscode:
     // ~200 files) passes it ("logicalRows limit: 326 > 256").
