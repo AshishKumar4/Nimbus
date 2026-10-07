@@ -789,7 +789,10 @@ async function runCloneBatches(
  */
 const CLONE_HISTORY_CONCURRENCY = 1;
 
-/** A full clone's history (git/pack/history.ts): commits, then trees, then blobs. */
+/**
+ * A clone's history (git/pack/history.ts): commits, then trees, then blobs;
+ * all of it, or (`facetOpts.depth`) a shallow clone's commits.
+ */
 async function runCloneHistory(
   facetOpts: Omit<GitNetworkOpts, 'mutationOwner'>,
   identity: { jobId: string; optionsHash: string },
@@ -828,7 +831,7 @@ async function runCloneHistory(
     }
     return lists;
   };
-  const roots = await piece('commits', 'commits', { head: fast.commit });
+  const roots = await piece('commits', 'commits', { head: fast.commit, ...(facetOpts.depth !== undefined ? { depth: facetOpts.depth } : {}) });
   const blobLists: StagedFile[] = [];
   const commitsPerChunk = positiveSafeInteger(facetOpts.historyCommitsPerChunk, COMMITS_PER_CHUNK, 'history commits per chunk');
   const concurrency = positiveSafeInteger(facetOpts.historyConcurrency, CLONE_HISTORY_CONCURRENCY, 'history concurrency');
@@ -1082,7 +1085,10 @@ export async function execGitNetwork(
           if (fast === undefined) throw new GitClonePhaseError('clone-prepare', 'clone-prepare returned no plan', prepare.diagnostic);
           const shares = await runCloneBatches(facetOpts, identity, fast, run, prepared.stream !== undefined);
           const full = facetOpts.depth === undefined;
-          if (full && prepared.fast !== undefined && fast.commit !== null) {
+          // Commits past the worktree's have blobs it did not fetch: a full
+          // clone's history, and a --depth N clone's (N > 1) unless partial.
+          const older = full || (facetOpts.depth! > 1 && facetOpts.filter === undefined);
+          if (older && prepared.fast !== undefined && fast.commit !== null) {
             await runCloneHistory(facetOpts, identity, fast, run, tagsFound);
           }
           // A clone that is not partial has every object once its batches (and history) are in.
