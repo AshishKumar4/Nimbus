@@ -113,11 +113,11 @@ if (import.meta.main) {
     // The verdict is for the commit this run made, and nothing else.
     if (verdict.head !== mapped.commit) throw new Error(`the verdict is for ${verdict.head}, not ${mapped.commit} (job ${mapped.jobId})`);
     if (typeof verdict.blobs !== 'object' || verdict.blobs === null) throw new Error(`the verdict names no blobs to check a patch against (job ${mapped.jobId})`);
-    built = { jobId: mapped.jobId, verdict };
+    built = { jobId: mapped.jobId, verdict, exitCode: outcome.exitCode };
   } catch (error) {
     notGraded(error);
   }
-  const { jobId, verdict } = built;
+  const { jobId, verdict, exitCode } = built;
 
   try {
     const state = join(homedir(), '.local', 'state', 'nimbus', 'remote-builds');
@@ -130,7 +130,8 @@ if (import.meta.main) {
       if (row.exitCode !== 0) console.log(`${lastLines(row.output.trimEnd(), 120)}\n`);
     }
     let status = verdict.rows.every((row) => row.exitCode === 0) && verdict.patch === null ? 0 : 1;
-    if (verdict.rows.some((row) => row.name === 'checkout')) status = 2;
+    // build.mjs's own status: 2 is not graded (no clean checkout, no patch to trust).
+    if (exitCode === 2) status = 2;
     if (verdict.patch !== null) {
       writeFileSync(`${stem}.patch`, verdict.patch);
       console.log(applyPatch(repo, sha, `${stem}.patch`, verdict.blobs));

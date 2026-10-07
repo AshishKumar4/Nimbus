@@ -24,7 +24,7 @@
 // Exit: 0, both rows green and no patch; 1, otherwise; 2, not graded (no
 // clean git checkout here).
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -111,7 +111,9 @@ let patch = null;
 const blobs = {};
 try {
   const env = { ...process.env, GIT_INDEX_FILE: join(scratch, 'index') };
-  for (const args of [['read-tree', 'HEAD'], ['add', '--all', '--', ...outputs]]) {
+  // An output neither on disk nor at HEAD (a record never written) is no pathspec git can add.
+  const present = outputs.filter((path) => existsSync(join(root, path)) || git(['cat-file', '-e', `HEAD:${path}`], { cwd: root }).status === 0);
+  for (const args of [['read-tree', 'HEAD'], ['add', '--all', '--', ...present]]) {
     const done = git(args, { cwd: root, env });
     if (done.status !== 0) throw new Error(`git ${args[0]} failed: ${done.stderr}`);
   }
@@ -126,6 +128,9 @@ try {
     const [, mode, , blob, status] = fields[i].slice(1).split(' ');
     blobs[fields[i + 1]] = status === 'D' ? null : { mode, blob };
   }
+} catch (error) {
+  // No patch can be trusted: not graded, with what failed.
+  finish(head, [fixpoint, { name: 'patch', exitCode: 2, seconds: 0, output: error.message }], null, 2);
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
