@@ -17,9 +17,11 @@
 // The formatter is Node's own inspect.js (node-inspect-matches-node). The
 // V8 slots user land cannot read (a promise's state and result, a proxy's
 // target and handler, an iterator's and a weak collection's entries) are
-// read by workerd's inspect, the binding (node-inspect-host.ts), and spliced
-// in: each kind is printed here through console.log, util.inspect with
-// showProxy and showHidden, and console.dir (customInspect false). workerd's
+// read as values through workerd's inspect, the binding
+// (node-inspect-host.ts), and formatted by inspect.js: each kind is printed
+// here through console.log, util.inspect with showProxy and showHidden, and
+// console.dir (customInspect false), with proxies among them, and code that
+// runs while they are read, which inspects and throws. workerd's
 // inspect alone printed a symbol key bare (`{ Symbol(k): 3 }` where Node
 // brackets it), and a wide string's table column narrow.
 import assert from 'node:assert/strict';
@@ -91,6 +93,65 @@ for (const value of slots) {
   console.dir(value);
   console.dir(value, { showHidden: true, showProxy: true, depth: 1 });
 }
+// The slots are values inspect.js formats (THE BINDING): a regular expression
+// whose source closes a brace, strings that quote and escape, an iterator's
+// own property (not an entry), a promise's getter read once under getters,
+// and legacy arguments under defaultOptions.customInspect false.
+console.log(util.inspect(new Set([/}/, 'a}b', "q'u\"o" + String.fromCharCode(96) + "te\n\u0001"]).values()), util.inspect(new Set([/}/]).values(), { compact: 1 }));
+const withExtra = new Set([1, { two: 2 }]).values();
+withExtra.extra = 9;
+console.log(withExtra, util.inspect(withExtra, { showHidden: true }));
+let reads = 0;
+const counted = Promise.resolve(1);
+Object.defineProperty(counted, 'g', { get() { reads += 1; return reads; }, enumerable: true });
+console.log(util.inspect(counted, { getters: true }), reads);
+util.inspect.defaultOptions.customInspect = false;
+console.log(util.inspect(Promise.resolve(42), false, 2), util.inspect({ [util.inspect.custom]() { return 'custom'; }, p: Promise.resolve([42]) }, false, 2));
+util.inspect.defaultOptions.customInspect = true;
+const failed = new Error('e');
+failed.stack = 'Error: e\n    at x (/x.js:1:1)';
+console.log(new Map([[Symbol('k'), -0], [10n, Object.create(null)], ['s', failed], [null, [undefined, true, 1.5e300]]]).entries());
+// Proxies in slots, nested and revoked: each read as values, a stand-in over them.
+const target = { t: 1 };
+const handler = { h: 1 };
+const { proxy: gone, revoke: revokeGone } = Proxy.revocable({}, {});
+revokeGone();
+for (const value of [new Set([new Proxy(target, handler), new Proxy(new Proxy([1], {}), handler)]).values(), Promise.resolve(new Proxy(target, handler)),
+  new Proxy(new Proxy(target, handler), new Proxy(handler, {})), new Proxy(gone, {}), new WeakSet([new Proxy({}, {})])]) {
+  for (const print of [() => util.inspect(value, { showHidden: true }), () => util.inspect(value, { showProxy: true, showHidden: true }), () => util.format('%s', value)]) {
+    try {
+      console.log(print());
+    } catch (e) {
+      // A revoked proxy's target, read as a program's object, throws in node too.
+      console.log('threw', e.name, e.message);
+    }
+  }
+}
+// A slot's value's code (a toStringTag getter) runs as often as in node, and
+// can throw; the holder's own, which runs while its slot is read too, sees
+// the built-ins as they are and can inspect; so can a stylize option.
+const includes = Array.prototype.includes;
+const describe = Object.getOwnPropertyDescriptor;
+const seenInGetter = new Set();
+class Peek {
+  get [Symbol.toStringTag]() {
+    seenInGetter.add((Array.prototype.includes === includes && Object.getOwnPropertyDescriptor === describe) + ' ' + util.inspect(new Set([2]).values()));
+    return 'Peek';
+  }
+}
+console.log(util.inspect(new Set([new Peek()]).values()), [...seenInGetter]);
+class Boom { get [Symbol.toStringTag]() { throw new Error('tag'); } }
+try { util.inspect(new Set([new Boom()]).values()); } catch (e) { console.log('threw', e.message, e.code, Array.prototype.includes === includes); }
+class Peeking extends Promise {
+  get [Symbol.toStringTag]() {
+    seenInGetter.add((Array.prototype.includes === includes) + ' ' + util.inspect(new Map([[1, new Set([2])]]).entries()));
+    return 'Peeking';
+  }
+}
+seenInGetter.clear();
+console.log(util.inspect(Peeking.resolve(new Set([3]).values())), [...seenInGetter]);
+const styled = new Set();
+console.log(util.inspect(Promise.resolve([1]), { stylize(text) { styled.add(util.inspect(new Map([[text, 1]]).entries())); return text; } }), [...styled]);
 console.log(util.inspect({ a: { b: { c: { d: 1 } } } }, { depth: 0, sorted: true, compact: false, breakLength: 20 }), util.inspect('x'.repeat(30), { maxStringLength: 4 }));
 console.error({ to: 'stderr' }, 'and', ['text']);
 console.warn('%s warned', 'it');

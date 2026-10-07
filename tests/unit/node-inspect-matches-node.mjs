@@ -5,14 +5,11 @@
 // import (node-inspect-host.ts).
 //
 // Here the shims' composition runs in real node, with node's own util as the
-// platform, beside node's util.inspect, over values and options of every kind
-// inspect.js formats; the two must print the same bytes. The one difference
-// the host names is not compared: with customInspect false, a value only
-// V8's internals read (a promise's state, an iterator's entries) is
-// formatted with none of them. Here the platform is node, whose own inspect
-// is Node's; console-format-matches-node-workerd runs the same code in
-// workerd, the platform the shims ship on, whose inspect the host defers to
-// for those values.
+// platform and node's util binding as its V8 slot readers (THE BINDING),
+// beside node's util.inspect, over values and options of every kind
+// inspect.js formats; the two must print the same bytes.
+// console-format-matches-node-workerd runs the same code in workerd, the
+// platform the shims ship on, whose slot readers are createWorkerdSlots.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -34,9 +31,10 @@ assert.equal(sha256(NODE_PRIMORDIALS_SOURCE), NODE_PRIMORDIALS_SHA256);
 
 const PROGRAM = String.raw`
 const util = require('util');
+const { internalBinding } = require('internal/test/binding');
 const wide = __WIDE__.split(',').flatMap((range) => { const [a, b = a] = range.split('-'); return [parseInt(a, 16), parseInt(b, 16)]; });
 const port = (__HOST__)({
-  util, Buffer, url: require('url'), process, builtinModules: require('module').builtinModules, builtinObjects: __BUILTINS__,
+  util, slots: internalBinding('util'), Buffer, url: require('url'), process, builtinModules: require('module').builtinModules, builtinObjects: __BUILTINS__,
   eastAsianWide(code) {
     for (let i = 0; i < wide.length; i += 2) if (code >= wide[i] && code <= wide[i + 1]) return true;
     return false;
@@ -88,16 +86,9 @@ const optionSets = [
   { maxStringLength: 4 }, { numericSeparator: true }, { customInspect: false }, { showProxy: true },
   { showProxy: true, customInspect: false }, { showHidden: true, customInspect: false },
 ];
-// A V8 slot (a promise's result, an iterator's entries) is rendered by the
-// platform's inspect and spliced in (node-inspect-host.ts THE BINDING): the
-// one layout it cannot follow is compact 1 and 2's, which break a slot's
-// container by how deep its content nested.
-const slotted = (value) => util.types.isPromise(value) || util.types.isMapIterator(value) || util.types.isSetIterator(value)
-  || util.types.isWeakMap(value) || util.types.isWeakSet(value);
 const differences = [];
 values.forEach((value, i) => {
   for (const options of optionSets) {
-    if (slotted(value) && (options.compact === 1 || options.compact === 2)) continue;
     const node = util.inspect(value, options);
     const ported = port.inspect(value, options);
     if (node !== ported) differences.push({ value: i, options, node, ported });
@@ -133,7 +124,7 @@ try {
     .replace('__INSPECT__', () => JSON.stringify(NODE_INSPECT_SOURCE));
   writeFileSync(join(dir, 'compare.cjs'), program);
   const { NO_COLOR, FORCE_COLOR, NODE_DISABLE_COLORS, ...env } = process.env;
-  const node = spawnSync('node', ['compare.cjs'], { cwd: dir, env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const node = spawnSync('node', ['--expose-internals', '--no-warnings', 'compare.cjs'], { cwd: dir, env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   assert.equal(node.status, 0, node.stderr);
   differences = JSON.parse(node.stdout.trim().split('\n').at(-1));
 } finally {

@@ -66,7 +66,7 @@ import {
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
 import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
-import { NODE_INSPECT_HOST_SOURCE } from './node-inspect-host.js';
+import { NODE_INSPECT_HOST_SOURCE, WORKERD_SLOTS_SOURCE } from './node-inspect-host.js';
 import { EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_INSPECT_SOURCE, NODE_PRIMORDIALS_SOURCE } from './node-inspect-source.js';
 
 const STREAMS_CODE = generateStreamsCode();
@@ -6049,9 +6049,9 @@ ${UNDICI_SHIM_CODE}
 // place of Node's internals: what a program prints of a value, through util
 // or console, is what Node prints (node-inspect-matches-node,
 // console-format-matches-node-workerd). workerd's own node:util gives
-// util.types, and formats what only V8's internals read (a promise's state,
-// a proxy's target). consola's FancyReporter calls formatWithOptions
-// directly (nuxi init).
+// util.types, and reads what only V8's internals hold (a promise's state,
+// a proxy's target) as values, through its inspect. consola's FancyReporter
+// calls formatWithOptions directly (nuxi init).
 const __realUtil = typeof __real_util !== "undefined"
   ? (__real_util.default ?? __real_util) : globalThis.process.getBuiltinModule("util");
 let __nimbusNodeInspectExports = null;
@@ -6064,6 +6064,8 @@ function __nimbusNodeInspect() {
   });
   __nimbusNodeInspectExports = (${NODE_INSPECT_HOST_SOURCE})({
     util: __realUtil,
+    // V8's slots, as workerd's inspect reaches them (node-inspect-host.ts THE BINDING).
+    slots: (${WORKERD_SLOTS_SOURCE})(__realUtil),
     Buffer: __BufferMod,
     url: { pathToFileURL: __urlMod.pathToFileURL, URL: __urlMod.URL },
     process: __processMod,
