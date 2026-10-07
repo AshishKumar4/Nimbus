@@ -142,7 +142,10 @@ export function processFsClient(options) {
     let ack = 0;
     let wave = 0;
     const failures = [];
-    let idle = null;
+    /** Entries logged, the last one answered (every one before it is), and the flushes waiting for a place in the log. */
+    let logged = 0;
+    let answered = 0;
+    const marks = [];
     const counters = {
         ops: 0, waves: 0, resends: 0, epochs: 0, refused: 0, lost: 0, maxWaveOps: 0,
         grants: 0, grantsRefused: 0, recalls: 0, released: 0, widened: 0,
@@ -166,6 +169,11 @@ export function processFsClient(options) {
         pendingBytes -= entry.bytes;
         if (entry.acknowledged)
             pendingSyncBytes -= entry.bytes;
+        answered = Math.max(answered, entry.order);
+        for (let at = marks.length - 1; at >= 0; at--) {
+            if (marks[at].mark <= answered)
+                marks.splice(at, 1)[0].resolve();
+        }
     };
     const fail = (entry, errno, message) => {
         settled(entry);
@@ -192,8 +200,13 @@ export function processFsClient(options) {
         wave = 0;
         return writer;
     };
-    /** The ops of the next wave: in log order, up to W7's bounds, at least one. */
+    /**
+     * The ops of the next wave: in log order, up to W7's bounds, at least one,
+     * and none logged after a flush that waits (its wave carries only what it
+     * waits for, so it is answered in the time that takes).
+     */
     const cut = () => {
+        const limit = marks.reduce((least, waiting) => Math.min(least, waiting.mark), Infinity);
         const taken = [];
         const owned = new Set();
         let pathBytes = 0;
@@ -208,7 +221,7 @@ export function processFsClient(options) {
             }
             const fresh = next.paths.filter((path) => !owned.has(path));
             const freshBytes = fresh.reduce((sum, path) => sum + utf8Length(path), 0);
-            if (taken.length > 0 && (owned.size + fresh.length > WAVE_PATHS || pathBytes + freshBytes > WAVE_PATH_BYTES || bytes + next.bytes > WAVE_BYTES))
+            if (taken.length > 0 && (next.order > limit || owned.size + fresh.length > WAVE_PATHS || pathBytes + freshBytes > WAVE_PATH_BYTES || bytes + next.bytes > WAVE_BYTES))
                 break;
             for (const path of fresh)
                 owned.add(path);
@@ -287,7 +300,8 @@ export function processFsClient(options) {
             : answer.sequence?.refused ?? null;
         let receipt = 0;
         const back = [];
-        for (const entry of entries) {
+        const mutations = new Map((answer.mutations ?? []).map((mutation) => [mutation.index, mutation]));
+        for (const [index, entry] of entries.entries()) {
             if (refused !== null && entry.seq === refused.seq) {
                 counters.refused++;
                 fail(entry, refused.errno, refused.message);
@@ -305,6 +319,9 @@ export function processFsClient(options) {
                     const { path: _path, ...stat } = published;
                     answered = { receipt: stat };
                 }
+                const mutation = mutations.get(index);
+                if (mutation !== undefined)
+                    answered.mutation = { before: mutation.before, after: mutation.after };
                 entry.resolve(answered);
                 continue;
             }
@@ -337,11 +354,8 @@ export function processFsClient(options) {
         scheduled = false;
         if (inFlight !== null || paused)
             return;
-        if (queue.length === 0) {
-            idle?.resolve();
-            idle = null;
+        if (queue.length === 0)
             return;
-        }
         const entries = cut();
         inFlight = entries;
         sending = send(entries).finally(() => {
@@ -574,15 +588,23 @@ export function processFsClient(options) {
             }
             const answers = parts.map((part) => new Promise((resolve, reject) => {
                 const partBytes = part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0;
-                queue.push({ op: part, seq: 0, bytes: partBytes, paths: pathsOf(part), acknowledged, resolve, reject });
+                queue.push({ op: part, seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, resolve, reject });
                 pendingBytes += partBytes;
                 if (acknowledged)
                     pendingSyncBytes += partBytes;
                 counters.ops++;
             }));
             schedule();
-            // A piece refused rejects the call; its first piece's receipt answers it.
-            const answer = Promise.all(answers).then((all) => all[all.length - 1] ?? {});
+            // A piece refused rejects the call; its last piece's receipt answers it,
+            // and its mutation spans them all.
+            const answer = Promise.all(answers).then((all) => {
+                const first = all[0]?.mutation;
+                const last = all[all.length - 1];
+                if (last === undefined)
+                    return {};
+                const { mutation: _mutation, ...rest } = last;
+                return first !== undefined && last.mutation !== undefined ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
+            });
             if (acknowledged)
                 answer.catch(() => { });
             return answer;
@@ -590,7 +612,7 @@ export function processFsClient(options) {
         call(name, path, run, callOptions) {
             const acknowledged = callOptions?.acknowledged === true;
             const answer = new Promise((resolve, reject) => {
-                queue.push({ op: { type: 'run', name, path, run }, seq: 0, bytes: 0, paths: [path], acknowledged, resolve, reject });
+                queue.push({ op: { type: 'run', name, path, run }, seq: 0, order: ++logged, bytes: 0, paths: [path], acknowledged, resolve, reject });
                 counters.ops++;
             });
             schedule();
@@ -600,22 +622,21 @@ export function processFsClient(options) {
         },
         flush() {
             options.drain?.();
-            if (queue.length === 0 && inFlight === null)
+            const mark = logged;
+            if (answered >= mark)
                 return Promise.resolve();
-            if (idle === null) {
-                let resolve;
-                const promise = new Promise((done) => { resolve = done; });
-                idle = { promise, resolve };
-            }
+            const flushed = new Promise((resolve) => { marks.push({ mark, resolve }); });
             schedule();
-            return idle.promise;
+            return flushed;
         },
         async settle() {
             settling = true;
             if (claiming !== null)
                 await claiming;
             try {
-                await client.flush();
+                // Until nothing more is logged (a flush's drain may log more).
+                while (answered < logged)
+                    await client.flush();
             }
             finally {
                 if (idleTimer !== null) {

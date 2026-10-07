@@ -327,8 +327,9 @@ const NATIVE_OPS = {
     // the only writer identity a fenced writeBatchStream is admitted under.
     // Repeating it is harmless: an unused epoch admits nothing and expires.
     openWaveWriter: (e, t) => {
+        // A host that delivers in process fences nothing: no epoch (null), and waves go unfenced.
         if (t.deliveries === undefined)
-            throw new Error("supervisor op: 'openWaveWriter' is not served by this host");
+            return { writer: null };
         if (e.pid === undefined)
             throw new Error('supervisor op: openWaveWriter names no process');
         t.bridge(e.pid, e.cred);

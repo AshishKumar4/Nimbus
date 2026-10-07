@@ -355,6 +355,20 @@ export interface WriteBatchStreamProgress {
     receipts: WriteStreamReceipt[];
     /** A sequenced wave's answer (WriteStreamOptions.sequence). */
     sequence?: WaveSequenceAnswer;
+    /** Each call, rename, truncate and attribute change the wave committed here (not on a mount): what its maker dates its own copy by. */
+    mutations?: WaveMutation[];
+}
+/**
+ * One op a wave committed (`index`, its place among the wave's ops, from 0):
+ * its path's revision right before it and the session's right after, read
+ * in the turn it committed, as a single call's receipt has them
+ * (VfsMutationReceipt): a copy dated at or above `before` was current, and
+ * with this op on it is current at `after`.
+ */
+export interface WaveMutation {
+    index: number;
+    before: number;
+    after: number;
 }
 /**
  * A sequenced writer's wave (a process's filesystem client): its ops are

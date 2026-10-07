@@ -94,6 +94,11 @@ export type ProcessFsReceipt = Omit<WriteStreamReceipt, 'path'>;
 /** An op committed: the stat of the file its data call published, when it published one. */
 export interface ProcessFsAnswer {
     receipt?: ProcessFsReceipt;
+    /** The op's path's revision right before it and the session's right after (WaveMutation), when it committed on the session's own filesystem. */
+    mutation?: {
+        before: number;
+        after: number;
+    };
     /** What a session call of its own (ProcessFsClient.call) answered. */
     value?: unknown;
 }
@@ -169,7 +174,7 @@ export interface ProcessFsClient {
     call<T>(name: string, path: string, run: () => Promise<T>, options?: {
         acknowledged?: boolean;
     }): Promise<T>;
-    /** Resolves once every op logged so far is answered. */
+    /** Resolves once every op logged so far is answered (not those logged after: a writing process is never idle). */
     flush(): Promise<void>;
     /** The end of the run: everything answered; throws naming every failure not yet taken. */
     settle(): Promise<void>;

@@ -237,6 +237,9 @@ declare const NATIVE_OPS: {
     fsWriteRange: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsMutationReceipt>;
     writeBatchStream: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<import("../vfs/sqlite-vfs.js").WriteBatchStreamResult>;
     openWaveWriter: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => {
+        writer: null;
+        hostIncarnation?: undefined;
+    } | {
         writer: string;
         hostIncarnation: string;
     };

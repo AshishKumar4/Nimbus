@@ -1030,7 +1030,9 @@ var __nimbusProcessFsModule = (() => {
     let ack = 0;
     let wave = 0;
     const failures = [];
-    let idle = null;
+    let logged = 0;
+    let answered = 0;
+    const marks = [];
     const counters = {
       ops: 0,
       waves: 0,
@@ -1060,6 +1062,10 @@ var __nimbusProcessFsModule = (() => {
     const settled = (entry) => {
       pendingBytes -= entry.bytes;
       if (entry.acknowledged) pendingSyncBytes -= entry.bytes;
+      answered = Math.max(answered, entry.order);
+      for (let at = marks.length - 1; at >= 0; at--) {
+        if (marks[at].mark <= answered) marks.splice(at, 1)[0].resolve();
+      }
     };
     const fail = (entry, errno, message) => {
       settled(entry);
@@ -1084,6 +1090,7 @@ var __nimbusProcessFsModule = (() => {
       return writer;
     };
     const cut = () => {
+      const limit = marks.reduce((least, waiting) => Math.min(least, waiting.mark), Infinity);
       const taken = [];
       const owned2 =   new Set();
       let pathBytes = 0;
@@ -1096,7 +1103,7 @@ var __nimbusProcessFsModule = (() => {
         }
         const fresh = next.paths.filter((path) => !owned2.has(path));
         const freshBytes = fresh.reduce((sum, path) => sum + utf8Length2(path), 0);
-        if (taken.length > 0 && (owned2.size + fresh.length > WAVE_PATHS || pathBytes + freshBytes > WAVE_PATH_BYTES || bytes + next.bytes > WAVE_BYTES)) break;
+        if (taken.length > 0 && (next.order > limit || owned2.size + fresh.length > WAVE_PATHS || pathBytes + freshBytes > WAVE_PATH_BYTES || bytes + next.bytes > WAVE_BYTES)) break;
         for (const path of fresh) owned2.add(path);
         pathBytes += freshBytes;
         bytes += next.bytes;
@@ -1164,7 +1171,8 @@ var __nimbusProcessFsModule = (() => {
       const refused = writer === null ? error?.errno !== void 0 && SYSCALL_VERDICTS.has(error.errno) ? { seq: cursor + 1, errno: error.errno, message: error.message } : null : answer.sequence?.refused ?? null;
       let receipt = 0;
       const back = [];
-      for (const entry of entries) {
+      const mutations2 = new Map((answer.mutations ?? []).map((mutation) => [mutation.index, mutation]));
+      for (const [index, entry] of entries.entries()) {
         if (refused !== null && entry.seq === refused.seq) {
           counters.refused++;
           fail(entry, refused.errno, refused.message);
@@ -1173,15 +1181,17 @@ var __nimbusProcessFsModule = (() => {
         }
         if (entry.seq <= cursor) {
           settled(entry);
-          let answered = {};
+          let answered2 = {};
           const path = entry.op.type === "call" && "data" in entry.op.call ? entry.op.call.path : null;
           const published = answer.receipts[receipt];
           if (path !== null && published?.path === path) {
             receipt++;
             const { path: _path, ...stat } = published;
-            answered = { receipt: stat };
+            answered2 = { receipt: stat };
           }
-          entry.resolve(answered);
+          const mutation = mutations2.get(index);
+          if (mutation !== void 0) answered2.mutation = { before: mutation.before, after: mutation.after };
+          entry.resolve(answered2);
           continue;
         }
         back.push(entry);
@@ -1204,11 +1214,7 @@ var __nimbusProcessFsModule = (() => {
     const pump = () => {
       scheduled = false;
       if (inFlight !== null || paused) return;
-      if (queue.length === 0) {
-        idle?.resolve();
-        idle = null;
-        return;
-      }
+      if (queue.length === 0) return;
       const entries = cut();
       inFlight = entries;
       sending = send(entries).finally(() => {
@@ -1281,13 +1287,13 @@ var __nimbusProcessFsModule = (() => {
       if (idleTimer !== null || live().length === 0) return;
       idleTimer = timers.setTimeout(() => {
         idleTimer = null;
-        const idle2 = live().filter((grant) => now() - grant.lastUsed >= grantIdleMs);
-        if (idle2.length === 0 || settling) {
+        const idle = live().filter((grant) => now() - grant.lastUsed >= grantIdleMs);
+        if (idle.length === 0 || settling) {
           armIdle();
           return;
         }
         void client.flush().then(async () => {
-          for (const grant of idle2) if (now() - grant.lastUsed >= grantIdleMs) await end(grant);
+          for (const grant of idle) if (now() - grant.lastUsed >= grantIdleMs) await end(grant);
           armIdle();
         });
       }, grantIdleMs);
@@ -1397,13 +1403,19 @@ var __nimbusProcessFsModule = (() => {
         }
         const answers = parts.map((part) => new Promise((resolve, reject) => {
           const partBytes = part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0;
-          queue.push({ op: part, seq: 0, bytes: partBytes, paths: pathsOf(part), acknowledged, resolve, reject });
+          queue.push({ op: part, seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, resolve, reject });
           pendingBytes += partBytes;
           if (acknowledged) pendingSyncBytes += partBytes;
           counters.ops++;
         }));
         schedule();
-        const answer = Promise.all(answers).then((all) => all[all.length - 1] ?? {});
+        const answer = Promise.all(answers).then((all) => {
+          const first = all[0]?.mutation;
+          const last = all[all.length - 1];
+          if (last === void 0) return {};
+          const { mutation: _mutation, ...rest } = last;
+          return first !== void 0 && last.mutation !== void 0 ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
+        });
         if (acknowledged) answer.catch(() => {
         });
         return answer;
@@ -1411,32 +1423,29 @@ var __nimbusProcessFsModule = (() => {
       call(name, path, run, callOptions) {
         const acknowledged = callOptions?.acknowledged === true;
         const answer = new Promise((resolve, reject) => {
-          queue.push({ op: { type: "run", name, path, run }, seq: 0, bytes: 0, paths: [path], acknowledged, resolve, reject });
+          queue.push({ op: { type: "run", name, path, run }, seq: 0, order: ++logged, bytes: 0, paths: [path], acknowledged, resolve, reject });
           counters.ops++;
         });
         schedule();
         if (acknowledged) answer.catch(() => {
         });
-        return answer.then((answered) => answered.value);
+        return answer.then((answered2) => answered2.value);
       },
       flush() {
         options.drain?.();
-        if (queue.length === 0 && inFlight === null) return Promise.resolve();
-        if (idle === null) {
-          let resolve;
-          const promise = new Promise((done) => {
-            resolve = done;
-          });
-          idle = { promise, resolve };
-        }
+        const mark = logged;
+        if (answered >= mark) return Promise.resolve();
+        const flushed = new Promise((resolve) => {
+          marks.push({ mark, resolve });
+        });
         schedule();
-        return idle.promise;
+        return flushed;
       },
       async settle() {
         settling = true;
         if (claiming !== null) await claiming;
         try {
-          await client.flush();
+          while (answered < logged) await client.flush();
         } finally {
           if (idleTimer !== null) {
             timers.clearTimeout(idleTimer);
@@ -1581,6 +1590,9 @@ function __nimbusProcessFs() {
  */
 function __nimbusSubmitVfs(op, acknowledged = false) {
   if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendingOps = 0;
+  // The program's own change, named as it made it: what a run that waits for
+  // stdin cannot do twice (the runner's stop-replay, where it has one).
+  if (typeof __nimbusStopReplay !== "undefined") __nimbusStopReplay.effect(op.type === "call" ? op.call.call : op.type);
   const answer = __nimbusProcessFs().submit(op, { acknowledged });
   globalThis.__nimbusPendingOps++;
   const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
@@ -1591,6 +1603,7 @@ function __nimbusSubmitVfs(op, acknowledged = false) {
 /** A mutation no call record carries, made by `run` in its place in the client's log (ProcessFsClient.call). */
 function __nimbusVfsCall(name, path, run) {
   if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendingOps = 0;
+  if (typeof __nimbusStopReplay !== "undefined") __nimbusStopReplay.effect(name);
   const answer = __nimbusProcessFs().call(name, __nimbusVfsPathKey(path), run);
   globalThis.__nimbusPendingOps++;
   const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
