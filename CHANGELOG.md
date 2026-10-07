@@ -170,6 +170,25 @@ published independently in the `@nimbus-sh` npm scope.
   literal as a named export (for example `color-name`'s `red`), checked
   against Vite 7.3.6.
 
+### Breaking changes for embedders
+
+These need a minor version of fabric and of platform at the next publish.
+
+- fabric: `recordFacetNameMinted` is removed. Its callers set a facet-name
+  count of their own, and three such counters drifted apart, so the
+  lifetime facet-ID count could miss names. Charge a name with
+  `chargeFacetName(ctx, name, { refuseAtWall })`. It counts a name's
+  first use once, in this incarnation or any later one. The slot book
+  charges its own names.
+- fabric: a `FacetPoolContext`'s `storage.put` takes one object of
+  entries, Durable Object storage's atomic multi-key form, in place of
+  `put(key, value)`. The facet-name ledger writes a charge's counts and
+  its name's mark in that one put. A `DurableObjectState` already
+  provides it.
+- platform: `SQLITE_MAX_BOUND_PARAMETERS` is removed. It was a second name
+  for the same measured bound as `SQL_MAX_BOUND_PARAMETERS`, which every
+  caller uses. Use `SQL_MAX_BOUND_PARAMETERS`.
+
 ## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
 core 0.15.1, fabric 0.10.1, worker 0.13.3 and loom 0.2.3 had not been
