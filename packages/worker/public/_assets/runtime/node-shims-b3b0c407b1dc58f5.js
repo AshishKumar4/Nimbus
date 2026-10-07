@@ -12793,7 +12793,7 @@ const __nimbusAbiAdvisories = new Map([["sharp","Native libvips bindings; not po
 // throws for a name bound nowhere, from the module's own frame. `typeof` of
 // one is lowered to 'undefined', as V8's is.
 const __nimbusCommonJSGlobalLike = ["exports","require","module","__filename","__dirname"];
-Object.defineProperty(globalThis, "__nimbusEsmScope", { value: Object.freeze(Object.create(null, Object.fromEntries(
+Object.defineProperty(globalThis, "__nimbusEsmScope", { configurable: true, value: Object.freeze(Object.create(null, Object.fromEntries(
   __nimbusCommonJSGlobalLike.map((name) => {
     const unbound = function () {
       const error = new ReferenceError(name + " is not defined");
