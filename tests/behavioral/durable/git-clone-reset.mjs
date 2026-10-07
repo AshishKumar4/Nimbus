@@ -5,6 +5,10 @@
 // target.
 //
 // WHAT IT PROVES
+//   Twice: onto the session's own filesystem, and onto apps/probe's mount at
+//   /mnt/data (a MemoryVFS in the DO's heap: not durable, so the reset
+//   empties it, and the record's cleanup finds nothing there to remove; its
+//   reservation still holds the destination until then, and lets it go).
 //   A clone records itself (git/clone-job.ts) before it writes, and marks
 //   its .git (nimbus-clone-job) while it runs. `POST /api/_diag/abort`
 //   resets the DO isolate mid-clone with its storage intact. The next
@@ -30,8 +34,6 @@ import { afterReset } from './_reset-window.mjs';
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
 const REPO = 'https://github.com/expressjs/express';
-const DEST = '/home/user/cut';
-const MARKER = `${DEST}/.git/nimbus-clone-job`;
 
 const a = makeAsserter('durable/git-clone-reset');
 console.log(`durable/git-clone-reset — BASE=${BASE}`);
@@ -54,15 +56,22 @@ async function poll(check, budgetMs, everyMs = 300) {
   }
 }
 
-try {
+/**
+ * A clone onto `dest` cut short by a reset, then the next generation's
+ * cleanup, the user's first write there, and a clone onto `fresh` in the new
+ * generation. `durable`: whether what was written there outlives a reset.
+ */
+async function cutShort(dest, fresh, durable) {
+  console.log(`── a clone onto ${dest}, cut short`);
   // ── 1. a clone, running: its marker is there ──
+  const marker = `${dest}/.git/nimbus-clone-job`;
   const t = new Terminal(sid);
   await t.connect();
   await t.waitForPrompt(30_000);
   await t.run('export NIMBUS_GIT_BLOBS_PER_BATCH=5 NIMBUS_GIT_BATCH_CONCURRENCY=1', 15_000);
-  const started = await t.run(`git clone --bg --depth 1 ${REPO} ${DEST}`, 60_000);
+  const started = await t.run(`git clone --bg --depth 1 ${REPO} ${dest}`, 60_000);
   a.check('the background clone starts', /clone running in background/.test(started.output), started.output.slice(-300));
-  const marked = await poll(async () => (await box.files.exists(MARKER)) || null, 60_000);
+  const marked = await poll(async () => (await box.files.exists(marker)) || null, 60_000);
   a.check('the clone marks its .git while it runs', marked.ok, JSON.stringify(marked.last));
 
   // ── 2. a real isolate reset, mid-clone ──
@@ -78,8 +87,8 @@ try {
     try {
       // The destination may be gone by now, cleaned up whole: it is made again, as `mkdir -p` would.
       await afterReset(async () => {
-        if (!(await box.files.exists(DEST))) await box.files.mkdir(DEST);
-        await box.files.write(`${DEST}/first.txt`, 'first\n');
+        if (!(await box.files.exists(dest))) await box.files.mkdir(dest);
+        await box.files.write(`${dest}/first.txt`, 'first\n');
       });
       return true;
     } catch (error) {
@@ -95,30 +104,38 @@ try {
 
   // ── 4. the cleanup, through files ──
   const cleaned = await poll(async () => {
-    if (await box.files.exists(MARKER)) return null;
-    if (await box.files.exists(`${DEST}/.git/nimbus-clone`)) return null;
-    const packs = (await box.files.exists(`${DEST}/.git/objects/pack`)) ? await box.files.list(`${DEST}/.git/objects/pack`) : [];
+    if (await box.files.exists(marker)) return null;
+    if (await box.files.exists(`${dest}/.git/nimbus-clone`)) return null;
+    const packs = (await box.files.exists(`${dest}/.git/objects/pack`)) ? await box.files.list(`${dest}/.git/objects/pack`) : [];
     if (packs.some(({ name }) => name.startsWith('tmp_pack_'))) return null;
-    return { entries: (await box.files.exists(DEST)) ? (await box.files.list(DEST)).map(({ name }) => name).sort() : [] };
+    return { entries: (await box.files.exists(dest)) ? (await box.files.list(dest)).map(({ name }) => name).sort() : [] };
   }, 120_000, 500);
   a.check('the next generation cleaned the clone up: marker, staging and temporary packs gone', cleaned.ok, JSON.stringify(cleaned.last));
-  if (cleaned.ok && !cleaned.last.entries.includes('.git')) {
+  // A mount that is not durable (apps/probe's /mnt/data, in the DO's heap) comes back empty:
+  // the clone is gone with the reset, and its record's cleanup finds nothing to remove.
+  if (cleaned.ok && (!durable || !cleaned.last.entries.includes('.git'))) {
     a.check('cut short while it fetched: nothing of the clone is left but the user\'s write',
       JSON.stringify(cleaned.last.entries) === JSON.stringify(['first.txt']), JSON.stringify(cleaned.last.entries));
   }
   // A while longer: nothing comes back for the user's file.
   await sleep(3_000);
-  a.check('the user\'s first write is still there after the cleanup', (await box.files.read(`${DEST}/first.txt`)) === 'first\n');
+  a.check('the user\'s first write is still there after the cleanup', (await box.files.read(`${dest}/first.txt`)) === 'first\n');
 
   // ── 5. a clone in the new generation runs to the end ──
   const t2 = new Terminal(sid);
   await t2.connect();
   await t2.waitForPrompt(30_000);
-  const fresh = await t2.run(`git clone --depth 1 ${REPO} /home/user/fresh; echo CLONE_RC=$?`, 300_000);
-  a.check('a clone in the new generation succeeds', /CLONE_RC=0/.test(fresh.output), fresh.output.slice(-400));
-  a.check('and checks out', await box.files.exists('/home/user/fresh/package.json'));
-  a.check('and leaves no marker', !(await box.files.exists('/home/user/fresh/.git/nimbus-clone-job')));
+  const again = await t2.run(`git clone --depth 1 ${REPO} ${fresh}; echo CLONE_RC=$?`, 300_000);
+  a.check('a clone in the new generation succeeds', /CLONE_RC=0/.test(again.output), again.output.slice(-400));
+  a.check('and checks out', await box.files.exists(`${fresh}/package.json`));
+  a.check('and leaves no marker', !(await box.files.exists(`${fresh}/.git/nimbus-clone-job`)));
   await t2.close().catch(() => {});
+}
+
+try {
+  await cutShort('/home/user/cut', '/home/user/fresh', true);
+  // A mount: the clone writes through the namespace, its record names the mount's path.
+  await cutShort('/mnt/data/cut', '/mnt/data/fresh', false);
 } finally {
   await deleteSession(sid, 'durable-git-clone-reset').catch(() => {});
 }
