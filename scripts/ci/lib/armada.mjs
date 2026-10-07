@@ -63,9 +63,11 @@ export function overlayCommit(repo, sha, files, from = SELF_ROOT) {
 
 /**
  * Map `command` over `items` on `sha` (run from its repo), with `files`
- * laid over its tree. `setup`, a script path here, replaces the recipe's
- * setup (it runs that one itself, then adds what only its tasks need): an
- * environment of its own, keyed on both scripts, so the others stay lean.
+ * laid over its tree. `setup`, a script path here, is appended to the
+ * recipe's setup script for this job: an environment of its own (its key
+ * is the setup text), so what only some tasks need is not in every
+ * container. armada runs setup before it checks the commit out, so the
+ * script cannot be run from the checkout; it is joined here.
  * `env` joins the recipe's for this job only: armada
  * keeps a job's spec while the job lives, so a credential put here must be
  * one minted for this run and short-lived. Interrupting the process cancels
@@ -83,10 +85,14 @@ export async function mapOnArmada({ repo, sha, files, setup, items, command, env
   const { onCommit } = await import(join(armadaDir, 'src', 'ci.ts'));
   const overlay = [...RECIPE, ...files];
   if (setup) {
-    // The commit's .armada.json names the environment armada packs for.
+    // The commit's .armada.json names the environment armada packs for: one
+    // whose setup is the recipe's with `setup` after it.
     const config = JSON.parse(readFileSync(join(SELF_ROOT, '.armada.json'), 'utf8'));
-    const environment = { ...config.environment, setup, key: [...config.environment.key, config.environment.setup] };
-    overlay.splice(0, 1, { path: '.armada.json', bytes: `${JSON.stringify({ ...config, environment }, null, 2)}\n` }, setup);
+    const joined = `${config.environment.setup.replace(/\.sh$/, '')}+${setup.split('/').at(-1)}`;
+    const text = `${readFileSync(join(SELF_ROOT, config.environment.setup), 'utf8')}\n${readFileSync(join(SELF_ROOT, setup), 'utf8')}`;
+    overlay.splice(0, 1,
+      { path: '.armada.json', bytes: `${JSON.stringify({ ...config, environment: { ...config.environment, setup: joined } }, null, 2)}\n` },
+      { path: joined, bytes: text });
   }
   const commit = overlayCommit(repo, sha, overlay);
   log(`armada: ${sha.slice(0, 12)} as ${commit.slice(0, 12)} (its tree plus ${overlay.map((file) => (typeof file === 'string' ? file : file.path)).join(', ')})`);

@@ -88,7 +88,7 @@ console.error(`remote-probes: ${items.length} tasks against ${base}, probes of $
 let mapped;
 try {
   mapped = await mapOnArmada({
-    repo, sha, files: ['scripts/ci/probes.mjs', 'tests/behavioral/run-all.mjs'], setup: 'scripts/armada/probes-setup.sh',
+    repo, sha, files: ['scripts/ci/probes.mjs', 'tests/behavioral/run-all.mjs'], setup: 'scripts/armada/chromium.sh',
     items, env: { NIMBUS_PROBE_TOKEN: token }, label: `remote-probes ${sha.slice(0, 12)} ${flags.target}`,
     command: ['bun', 'scripts/ci/probes.mjs', '--out', '{out}', '--base', base, '--only', '{only}', '--skip', skip, '--part', '{part}', '--jobs', '{jobs}'],
   });
