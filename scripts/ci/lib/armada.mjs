@@ -6,7 +6,7 @@
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,7 +20,24 @@ const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'
 // pin is the client the deployed Worker is proven with: move both together.
 const ARMADA_DIR = '/mnt/local/nimbus/armada-client';
 export const ARMADA_REPO = 'https://github.com/AshishKumar4/armada';
-export const ARMADA_CLIENT = 'ce3213991dbd786ac901dbf0d5f972c2476b1f3a';
+export const ARMADA_CLIENT = 'f46fb8c74c893854f1e8c46993048bdc33d6a8a0';
+
+// Nimbus's own armada deployment (`nimbus-armada`, its own Worker, bucket
+// and fleet cap): every Nimbus script reaches it, and only it, through here.
+// ARMADA_URL and ARMADA_TOKEN override it (the GitHub unit job has them as
+// secrets); otherwise ARMADA_CONNECTION, defaulting to its connection file.
+// The token is in that file and is never printed.
+export const ARMADA_CONNECTION = join(homedir(), '.config', 'armada', 'nimbus-armada.json');
+
+/**
+ * The environment an armada client (the SDK here, or the CLI a script
+ * spawns) connects with: Nimbus's armada, unless ARMADA_URL and
+ * ARMADA_TOKEN name another.
+ */
+export function armadaEnv(env = process.env) {
+  if (env.ARMADA_URL && env.ARMADA_TOKEN) return env;
+  return { ...env, ARMADA_CONNECTION: env.ARMADA_CONNECTION || ARMADA_CONNECTION };
+}
 
 /**
  * A file laid over a commit's tree: a path whose bytes and executable bit
@@ -119,8 +136,10 @@ export function armadaClient({ dir = process.env.ARMADA_DIR || ARMADA_DIR, repo 
  */
 export async function mapOnArmada({ repo, sha, files, setup, items, command, env = {}, label, pool = items.length, timeout = 3600, log = (line) => console.error(line) }) {
   const armadaDir = armadaClient();
+  Object.assign(process.env, armadaEnv());
   const { connect } = await import(join(armadaDir, 'src', 'sdk.ts'));
-  const { onCommit } = await import(join(armadaDir, 'src', 'ci.ts'));
+  const { argvOf, cancelOnInterrupt, onCommit } = await import(join(armadaDir, 'src', 'ci.ts'));
+  const { cmd } = await import(join(armadaDir, 'src', 'task.ts'));
   /** @type {OverlayFile[]} */
   const overlay = [...RECIPE, ...files];
   if (setup) {
@@ -141,29 +160,34 @@ export async function mapOnArmada({ repo, sha, files, setup, items, command, env
   process.once('exit', dropRef);
   try {
     log(`armada: ${sha.slice(0, 12)} as ${commit.slice(0, 12)} (its tree plus ${overlay.map((file) => (typeof file === 'string' ? file : file.path)).join(', ')})`);
-    return { commit, ...await runJob({ armada: connect(), onCommit, repo, commit, items, command, env, label, pool, timeout, log }) };
+    return { commit, ...await runJob({ armada: connect(), client: { argvOf, cancelOnInterrupt, cmd, onCommit }, repo, commit, items, command, env, label, pool, timeout, log }) };
   } finally {
     process.off('exit', dropRef);
     dropRef();
   }
 }
 
-/** The job itself: started, followed, cancelled with this process, and read back. */
-async function runJob({ armada, onCommit, repo, commit, items, command, env, label, pool, timeout, log }) {
+/**
+ * The job itself, through armada's typed command task: started, followed,
+ * cancelled with this process (SIGINT, SIGTERM), and read back. Each
+ * outcome keeps the shape callers read ({ index, kind: 'exited' | 'failed',
+ * exitCode, seconds, tail }), and each task's {out} is read whatever its
+ * exit: a build that exits 1 still hands back its verdict.
+ */
+async function runJob({ armada, client, repo, commit, items, command, env, label, pool, timeout, log }) {
   // armada resolves the commit in the working directory's repository.
   const cwd = process.cwd();
   process.chdir(repo);
   let where;
   try {
-    where = await onCommit(armada, commit);
+    where = await client.onCommit(armada, commit);
   } finally {
     process.chdir(cwd);
   }
-  const job = await armada.map({ ...where, env: { ...where.env, ...env }, items, run: { command }, output: true, pool, timeout, label });
-  log(`armada: job ${job.id}`);
-  const cancel = () => { job.cancel().finally(() => process.exit(130)); };
-  process.once('SIGINT', cancel);
-  process.once('SIGTERM', cancel);
+  const task = client.cmd(where.recipe, client.argvOf(command, where.recipe), { output: 'text', timeout });
+  const job = task.map(items, { armada, pool, label, env: { ...where.env, ...env }, tmpfs: where.tmpfs });
+  const id = await job.id;
+  log(`armada: job ${id}`);
   let phase = '';
   const watcher = setInterval(() => {
     job.status().then((status) => {
@@ -172,15 +196,26 @@ async function runJob({ armada, onCommit, repo, commit, items, command, env, lab
       log(`armada: ${phase === 'preparing' ? `preparing environment ${status.key.slice(0, 12)} (minutes, once per recipe and lockfile)` : phase}`);
     }, () => {});
   }, 5_000);
-  const outcomes = [];
+  const results = [];
   try {
-    for await (const outcome of job.outcomes()) outcomes.push(outcome);
+    await client.cancelOnInterrupt(job, id, async () => {
+      for await (const result of job) results.push(result);
+    });
   } finally {
     clearInterval(watcher);
-    process.off('SIGINT', cancel);
-    process.off('SIGTERM', cancel);
   }
-  outcomes.sort((a, b) => a.index - b.index);
-  const outputs = await Promise.all(outcomes.map((outcome) => job.output(outcome.index)));
-  return { jobId: job.id, outcomes, outputs };
+  results.sort((a, b) => a.index - b.index);
+  const outcomes = results.map((result) => ({
+    index: result.index,
+    kind: result.kind === 'lost' || result.kind === 'cancelled' ? 'failed' : 'exited',
+    exitCode: result.kind === 'timeout' ? 124 : result.meta.exitCode,
+    seconds: result.meta.seconds,
+    tail: result.kind === 'lost' || result.kind === 'cancelled' ? `${result.reason}\n${result.meta.tail}` : result.meta.tail,
+  }));
+  const decoder = new TextDecoder();
+  const outputs = await Promise.all(results.map(async (result) => {
+    const bytes = await job.output(result.index);
+    return bytes === null ? null : decoder.decode(bytes);
+  }));
+  return { jobId: id, outcomes, outputs };
 }
