@@ -22,6 +22,7 @@ import {
   type NpmInstallInvocation,
 } from './npm-install-args.js';
 import { installSummary, npmLogEnabled, type NpmLogEmitter } from './npm-log.js';
+import { npmInitPackage } from './npm-init.js';
 import { exists } from '../../../../vfs/vfs.js';
 import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 
@@ -335,28 +336,17 @@ async function printHelp(ctx: CommandContext): Promise<void> { await ctx.stdout.
 	await ctx.stdout.write('  search <term>              search the npm registry\n');
 	await ctx.stdout.write('  -v, --version              print npm version\n'); }
 
+/** `npm init` and `npm init -y`: the package.json npm writes (npm-init.ts), and its message. */
 async function npmInit(ctx: CommandContext): Promise<number> {
-	const pkgPath = join(ctx.cwd, 'package.json');
-	if ((await ctx.vfs.exists(pkgPath))) {
-		await ctx.stderr.write('package.json already exists\n');
+	let init: Awaited<ReturnType<typeof npmInitPackage>>;
+	try {
+		init = await npmInitPackage(ctx.vfs, ctx.cwd);
+	} catch (error) {
+		await ctx.stderr.write(`npm error ${error instanceof Error ? error.message : String(error)}\n`);
 		return 1;
 	}
-
-	const dirName = ctx.cwd.split('/').pop() || 'project';
-	const pkg: PackageJson = {
-		name: dirName,
-		version: '1.0.0',
-		description: '',
-		main: 'index.js',
-		scripts: {
-			test: 'echo "Error: no test specified" && exit 1',
-		},
-		license: 'ISC',
-	};
-
-	(await writeProjectPackageJson(ctx.vfs, ctx.cwd, pkg));
-	await ctx.stdout.write(`Wrote to ${pkgPath}:\n\n`);
-	await ctx.stdout.write(JSON.stringify(pkg, null, 2) + '\n');
+	await ctx.vfs.writeFile(init.path, init.text);
+	await ctx.stdout.write(init.message);
 	return 0;
 }
 
