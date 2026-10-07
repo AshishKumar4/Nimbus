@@ -342,24 +342,7 @@ export function writeCommitGraph(graph: GraphCommits, filters?: readonly Uint8Ar
     edges.forEach((value, i) => view.setUint32(i * 4, value));
     chunks.push(['EDGE', edge]);
   }
-  if (filters !== undefined) {
-    if (filters.length !== count) throw new PackFormatError(`${filters.length} changed-path filters for ${count} commits`);
-    const index = new Uint8Array(count * 4);
-    const indexView = new DataView(index.buffer);
-    let size = 0;
-    filters.forEach((filter, i) => indexView.setUint32(i * 4, (size += filter.byteLength)));
-    const bloom = new Uint8Array(BLOOM_HEADER_BYTES + size);
-    const bloomView = new DataView(bloom.buffer);
-    bloomView.setUint32(0, BLOOM_HASH_VERSION);
-    bloomView.setUint32(4, BLOOM_HASHES);
-    bloomView.setUint32(8, BLOOM_BITS_PER_ENTRY);
-    let at = BLOOM_HEADER_BYTES;
-    for (const filter of filters) {
-      bloom.set(filter, at);
-      at += filter.byteLength;
-    }
-    chunks.push(['BIDX', index], ['BDAT', bloom]);
-  }
+  if (filters !== undefined) chunks.push(...filterChunks(filters, count));
   return chunkFile(chunks);
 }
 
@@ -536,6 +519,78 @@ export async function changedPaths(read: TreeReader, from: Uint8Array | null, to
 function equalOid(a: Uint8Array, b: Uint8Array): boolean {
   for (let i = 0; i < OID_BYTES; i++) if (a[i] !== b[i]) return false;
   return true;
+}
+
+/** A graph file's chunks, in its own order. */
+export function graphChunks(file: Uint8Array): [string, Uint8Array][] {
+  const view = new DataView(file.buffer, file.byteOffset, file.byteLength);
+  if (file.byteLength < 8 + 12 + OID_BYTES || view.getUint32(0) !== 0x43475048 /* CGPH */) throw new PackFormatError('not a commit-graph');
+  const count = file[6];
+  const chunks: [string, Uint8Array][] = [];
+  for (let i = 0; i < count; i++) {
+    const at = 8 + i * 12;
+    const id = String.fromCharCode(file[at], file[at + 1], file[at + 2], file[at + 3]);
+    const start = Number(view.getBigUint64(at + 4));
+    const end = Number(view.getBigUint64(at + 16));
+    if (start > end || end > file.byteLength - OID_BYTES) throw new PackFormatError('a commit-graph chunk runs past the file');
+    chunks.push([id, file.subarray(start, end)]);
+  }
+  return chunks;
+}
+
+/** One layer's commits as the filters pass reads them: each one's root tree, first parent and date. */
+export interface LayerCommits {
+  count: number;
+  tree(position: number): Uint8Array;
+  /** Its first parent's position, or -1 for a root. */
+  firstParent(position: number): number;
+  date(position: number): bigint;
+}
+
+/** A base layer's commits (no BASE chunk: every parent is in it). */
+export function layerCommits(file: Uint8Array): LayerCommits {
+  const chunks = new Map(graphChunks(file));
+  const data = chunks.get('CDAT');
+  const oids = chunks.get('OIDL');
+  if (data === undefined || oids === undefined || chunks.has('BASE')) throw new PackFormatError('not a base commit-graph layer');
+  const stride = OID_BYTES + 16;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  return {
+    count: oids.byteLength / OID_BYTES,
+    tree: (c) => data.subarray(c * stride, c * stride + OID_BYTES),
+    firstParent: (c) => {
+      const parent = view.getUint32(c * stride + OID_BYTES);
+      return parent === GRAPH_PARENT_NONE ? -1 : parent;
+    },
+    date: (c) => (BigInt(view.getUint32(c * stride + OID_BYTES + 8) & 3) << 32n) | BigInt(view.getUint32(c * stride + OID_BYTES + 12)),
+  };
+}
+
+/** `file`, a graph without changed-path chunks, with `filters` (one per commit, in graph order) added. */
+export function withFilters(file: Uint8Array, filters: readonly Uint8Array[]): Uint8Array {
+  const chunks = graphChunks(file);
+  if (chunks.some(([id]) => id === 'BIDX' || id === 'BDAT' || id === 'BASE')) throw new PackFormatError('the layer is not a base without filters');
+  return chunkFile([...chunks, ...filterChunks(filters, chunks.find(([id]) => id === 'OIDL')![1].byteLength / OID_BYTES)]);
+}
+
+/** BIDX and BDAT for `filters`, one per commit. */
+function filterChunks(filters: readonly Uint8Array[], count: number): [string, Uint8Array][] {
+  if (filters.length !== count) throw new PackFormatError(`${filters.length} changed-path filters for ${count} commits`);
+  const index = new Uint8Array(count * 4);
+  const indexView = new DataView(index.buffer);
+  let size = 0;
+  filters.forEach((filter, i) => indexView.setUint32(i * 4, (size += filter.byteLength)));
+  const bloom = new Uint8Array(BLOOM_HEADER_BYTES + size);
+  const bloomView = new DataView(bloom.buffer);
+  bloomView.setUint32(0, BLOOM_HASH_VERSION);
+  bloomView.setUint32(4, BLOOM_HASHES);
+  bloomView.setUint32(8, BLOOM_BITS_PER_ENTRY);
+  let at = BLOOM_HEADER_BYTES;
+  for (const filter of filters) {
+    bloom.set(filter, at);
+    at += filter.byteLength;
+  }
+  return [['BIDX', index], ['BDAT', bloom]];
 }
 
 /** git's chunk-format.c: header, table of contents, chunks, SHA-1 trailer. */

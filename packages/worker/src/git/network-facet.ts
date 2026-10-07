@@ -41,7 +41,7 @@ import { tagsHeld, type CloneBatchResult, type ClonePrepared, type CloneStreamed
 import { COMMITS_PER_CHUNK, treeSlices, type HistoryKind, type HistoryStepResult, type StagedFile } from './pack/history.js';
 import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js';
 
-export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects';
+export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters';
 
 /**
  * The clone's job marker, in its git directory from prepare until the clone
@@ -50,8 +50,16 @@ export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects';
  */
 export const GIT_CLONE_JOB_MARKER = 'nimbus-clone-job';
 
+/** One step of a clone's changed-path filters pass (git/pack/graph-filters.ts). */
+export type GraphFiltersStep =
+  | { step: 'plan' }
+  | { step: 'piece'; layer: string; from: number; to: number; budgetMs: number }
+  | { step: 'assemble'; layer: string; files: { name: string; bytes: number }[] };
+
 export interface GitNetworkOpts {
   op: GitNetworkOp;
+  /** For graph-filters: its step. */
+  graphFilters?: GraphFiltersStep;
   /** Invoking process identity used to bind every supervisor filesystem RPC. */
   pid: number;
   /** Absolute working tree directory (e.g. "/home/user/project") */
@@ -191,6 +199,8 @@ export interface GitNetworkResult {
   cleanupError?: string;
   /** fetch-objects: objects the promisor pack holds. */
   fetchedObjects?: number;
+  /** For graph-filters: the step's answer. */
+  graphFilters?: unknown;
 }
 
 export interface GitCloneBudgetDiagnostic {
@@ -215,6 +225,7 @@ interface FacetInvocationResult {
   refused?: unknown;
   errorCode?: unknown;
   fetched?: unknown;
+  graphFilters?: unknown;
 }
 
 interface GitFacetEntrypoint {
@@ -911,6 +922,62 @@ async function writeCloneProgressLine(supervisor: GitSupervisorStub, line: strin
   }
 }
 
+/** A piece's wall-time budget: within a facet invocation's limits, with room to write its file. */
+const GRAPH_FILTERS_PIECE_BUDGET_MS = 20_000;
+/** Commits a piece is asked for; it stops earlier at its budget. */
+const GRAPH_FILTERS_PIECE_COMMITS = 20_000;
+
+/** How a clone's changed-path filters pass went. */
+export interface GraphFiltersOutcome {
+  /** The new layer's name, or null when there was nothing to do or the chain moved on. */
+  layer: string | null;
+  commits: number;
+  pieces: number;
+  /** Trees read from the packs, and their bytes. */
+  trees: number;
+  treeBytes: number;
+  elapsed: number;
+}
+
+/**
+ * A full clone's changed-path filters (git/pack/graph-filters.ts), after the
+ * clone has answered: plan, the pieces one at a time (each holds a tree
+ * cache and the pack store's), then the layer with the filters.
+ */
+export async function runGraphFilters(
+  ctx: DurableObjectState,
+  env: any,
+  opts: { pid: number; dir: string; pieceBudgetMs?: number; pieceCommits?: number },
+  network: WorkspaceNetwork,
+): Promise<GraphFiltersOutcome> {
+  const started = Date.now();
+  const step = async <T>(graphFilters: GraphFiltersStep): Promise<T> => {
+    const result = await execGitNetwork(ctx, env, { op: 'graph-filters', pid: opts.pid, dir: opts.dir, graphFilters, quiet: true }, network);
+    if (!result.success) throw new Error('graph-filters ' + graphFilters.step + ': ' + (result.error ?? 'failed'));
+    return result.graphFilters as T;
+  };
+  const outcome: GraphFiltersOutcome = { layer: null, commits: 0, pieces: 0, trees: 0, treeBytes: 0, elapsed: 0 };
+  const plan = await step<{ layer: string; commits: number } | null>({ step: 'plan' });
+  if (plan === null) return { ...outcome, elapsed: Date.now() - started };
+  outcome.commits = plan.commits;
+  const files: { name: string; bytes: number }[] = [];
+  const size = positiveSafeInteger(opts.pieceCommits, GRAPH_FILTERS_PIECE_COMMITS, 'graph filter piece commits');
+  const budgetMs = positiveSafeInteger(opts.pieceBudgetMs, GRAPH_FILTERS_PIECE_BUDGET_MS, 'graph filter piece budget');
+  for (let from = 0; from < plan.commits;) {
+    const piece = await step<{ next: number; file: { name: string; bytes: number } | null; trees: number; treeBytes: number }>({
+      step: 'piece', layer: plan.layer, from, to: Math.min(from + size, plan.commits), budgetMs,
+    });
+    if (piece.next <= from) throw new Error('graph-filters piece made no progress at ' + from);
+    if (piece.file !== null) files.push(piece.file);
+    outcome.pieces++;
+    outcome.trees += piece.trees;
+    outcome.treeBytes += piece.treeBytes;
+    from = piece.next;
+  }
+  const assembled = await step<{ layer: string | null }>({ step: 'assemble', layer: plan.layer, files });
+  return { ...outcome, layer: assembled.layer, elapsed: Date.now() - started };
+}
+
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.
  */
@@ -1226,6 +1293,7 @@ export async function execGitNetwork(
         fetchedObjects: result.fetched && typeof result.fetched === 'object' && 'fetched' in result.fetched
           ? nonNegativeCounter(result.fetched.fetched)
           : undefined,
+        ...(result.graphFilters !== undefined ? { graphFilters: result.graphFilters } : {}),
       };
     } finally {
       // Tear down the facet's RPC stubs regardless of success / timeout.
@@ -2533,6 +2601,18 @@ export default {
         await flushWave();
         for (const dir of directories.reverse()) await fs.promises.rmdir(dir, { recursive: true });
         await flushWave();
+      } else if (opts.op === 'graph-filters') {
+        // A full clone's changed-path filters (git/pack/graph-filters.ts):
+        // reads the repository's packs, writes its commit-graph only.
+        const root = normalizePath(opts.dir);
+        const context = gitPackContext(supervisor, stats, opts, null, null, log, root);
+        const step = opts.graphFilters || {};
+        const graphFilters = step.step === 'plan'
+          ? await __nimbusGitPack.graphFiltersPlan(context)
+          : step.step === 'piece'
+            ? await __nimbusGitPack.graphFiltersPiece(context, step)
+            : await __nimbusGitPack.graphFiltersAssemble(context, step);
+        return respond(true, { graphFilters, metadataOverlay: overlayStats() });
       } else if (opts.op === 'fetch-objects') {
         // A partial clone's missing objects (git/promisor.ts): one request,
         // stored as a promisor pack. Writes land below the repository only.
