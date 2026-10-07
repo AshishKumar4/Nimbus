@@ -34,7 +34,7 @@ import type { WasiCred } from './wasi/types.js';
 import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
-import { makeGitFsmonitor } from './git-fsmonitor.js';
+import { makeGitFsmonitor, type GitFsmonitorState } from './git-fsmonitor.js';
 
 /** Where the installed runtime keeps the image and the system configuration. */
 const GIT_WASM = 'share/git/git.wasm';
@@ -50,8 +50,9 @@ const PASSED_ENV = /^(GIT_|HOME$|USER$|LOGNAME$|TZ$|LANG$|LC_|EMAIL$|NO_COLOR$)/
 export function makeGitRunnerFactory(deps: {
   facets: FacetHost;
   filesystem: NimbusFilesystemAuthority;
+  fsmonitorState?: GitFsmonitorState;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command {
-  const fsmonitor = makeGitFsmonitor();
+  const fsmonitor = makeGitFsmonitor(deps.fsmonitorState);
   return function gitRunnerFactory(manifest, installRoot, binName, binKind) {
     if (binKind === 'fsmonitor') return async (ctx) => {
       if (ctx.args.length !== 2 || ctx.args[0] !== '2') {
@@ -59,7 +60,11 @@ export function makeGitRunnerFactory(deps: {
         return 2;
       }
       try {
-        const bytes = await fsmonitor.query({ fs: ctx.vfs.process, cwd: ctx.cwd, cred: ctx.cred, token: ctx.args[1] });
+        const mounts = deps.filesystem.mounts?.(ctx.cred);
+        const bytes = await fsmonitor.query({
+          fs: ctx.vfs.process, cwd: ctx.cwd, cred: ctx.cred, token: ctx.args[1],
+          mounts: mounts ? mounts.filter((mount) => mount.mountPoint !== '/' || mount.type !== 'nimbus-sqlite').map((mount) => mount.mountPoint) : null,
+        });
         await writeOut(ctx.stdout, bytes);
         return 0;
       } catch (error) {

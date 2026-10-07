@@ -1,33 +1,104 @@
-/** Git's fsmonitor hook protocol v2, over the existing VFS coherence read API.
- * Tokens are global revisions. Their epoch/provenance is held only in this
- * incarnation, bounded by the same LRU primitive as other runtime caches.
- * An unknown/expired token, restore, or new host always invalidates all. */
+/** Git's fsmonitor v2 over the existing credential-bound coherence barrier.
+ * Tokens are durable VFS revisions; an optional state port preserves issued
+ * token provenance across hibernation, not a second mutation journal. */
 import { LruMap } from '../_shared/lru-map.js';
 import { normalizeVfsPath } from '../vfs/path.js';
-import type { RuntimeFsBridge, VfsCred } from './os-contracts.js';
+import type { Awaitable, RuntimeFsBridge, SqlDatabase, VfsCred } from './os-contracts.js';
 
 const REPOSITORIES = 128;
 const TOKENS_PER_REPOSITORY = 32;
 const MAX_REPLY_BYTES = 64 * 1024;
+const MAX_MOUNT_BYTES = 4096;
 const encoder = new TextEncoder();
+type Mounts = string[] | null;
+interface IssuedToken { epoch: string; mounts: Mounts }
 interface TokenHistory {
   epoch: string;
   untrustedThrough: number;
   highWater: number;
-  tokens: LruMap<number, string>;
+  tokens: LruMap<number, IssuedToken>;
 }
 
-export function makeGitFsmonitor(): {
-  query(args: { fs: Pick<RuntimeFsBridge, 'acquire' | 'revision'>; cwd: string; cred: VfsCred; token: string }): Promise<Uint8Array>;
+/** Host-private issued-token metadata, never VFS files or mutation history. */
+export interface GitFsmonitorState {
+  load(key: string): Awaitable<string | null>;
+  save(key: string, value: string): Awaitable<void>;
+}
+
+/** Bounded host metadata in its existing SQL port; no change to VFS tables. */
+export function sqliteGitFsmonitorState(sql: SqlDatabase, namespace: string): GitFsmonitorState {
+  let ready = false;
+  const init = (): void => {
+    if (ready) return;
+    sql.exec('CREATE TABLE IF NOT EXISTS nimbus_git_fsmonitor (key TEXT PRIMARY KEY, value TEXT NOT NULL, used INTEGER NOT NULL)');
+    ready = true;
+  };
+  const keyFor = (key: string): string => JSON.stringify([namespace, key]);
+  return {
+    load(key) {
+      init();
+      const row = [...sql.exec('SELECT value FROM nimbus_git_fsmonitor WHERE key = ?', keyFor(key))][0];
+      return row === undefined ? null : String(row.value);
+    },
+    save(key, value) {
+      init();
+      sql.exec('INSERT OR REPLACE INTO nimbus_git_fsmonitor (key, value, used) VALUES (?, ?, (SELECT COALESCE(MAX(used), 0) + 1 FROM nimbus_git_fsmonitor))', keyFor(key), value);
+      sql.exec('DELETE FROM nimbus_git_fsmonitor WHERE key NOT IN (SELECT key FROM nimbus_git_fsmonitor ORDER BY used DESC, key LIMIT ?)', REPOSITORIES);
+    },
+  };
+}
+
+const revision = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+function restore(value: string | null): TokenHistory | undefined {
+  if (value === null) return undefined;
+  try {
+    const row = JSON.parse(value);
+    if (typeof row.epoch !== 'string' || !revision(row.highWater) || !Number.isSafeInteger(row.untrustedThrough)
+      || row.untrustedThrough < -1 || !Array.isArray(row.tokens) || row.tokens.length > TOKENS_PER_REPOSITORY) return undefined;
+    const tokens = new LruMap<number, IssuedToken>(TOKENS_PER_REPOSITORY);
+    for (const token of row.tokens) {
+      if (!revision(token.rev) || token.rev > row.highWater || token.rev <= row.untrustedThrough
+        || !(token.mounts === null || (Array.isArray(token.mounts) && token.mounts.every((p: unknown) => typeof p === 'string')))) return undefined;
+      const mounts = boundedMounts(token.mounts);
+      tokens.set(token.rev, { epoch: row.epoch, mounts });
+    }
+    return { epoch: row.epoch, highWater: row.highWater, untrustedThrough: row.untrustedThrough, tokens };
+  } catch { return undefined; }
+}
+
+function serialize(history: TokenHistory): string {
+  const tokens = [...history.tokens.keys()].map((rev) => ({ rev, mounts: history.tokens.get(rev)!.mounts }));
+  return JSON.stringify({ epoch: history.epoch, highWater: history.highWater, untrustedThrough: history.untrustedThrough, tokens });
+}
+
+/** Unknown/oversized mount metadata is full invalidation, never omission. */
+function boundedMounts(mounts: readonly string[] | null): Mounts {
+  if (mounts === null) return null;
+  const unique = [...new Set(mounts)].sort();
+  return unique.reduce((bytes, path) => bytes + encoder.encode(path).byteLength + 1, 0) > MAX_MOUNT_BYTES ? null : unique;
+}
+const mergeMounts = (before: Mounts, after: Mounts): Mounts => before === null || after === null ? null : boundedMounts([...before, ...after]);
+
+export function makeGitFsmonitor(state?: GitFsmonitorState): {
+  query(args: { fs: Pick<RuntimeFsBridge, 'acquire' | 'revision'>; cwd: string; cred: VfsCred; token: string; mounts?: readonly string[] | null }): Promise<Uint8Array>;
 } {
   const trusted = new LruMap<string, TokenHistory>(REPOSITORIES);
+  const pending = new Map<string, Promise<unknown>>();
   return {
-    async query({ fs, cwd, cred, token }) {
+    async query({ fs, cwd, cred, token, mounts = [] }) {
       const root = normalizeVfsPath(cwd);
       const key = JSON.stringify([root, cred.uid, cred.gid, [...cred.groups].sort((a, b) => a - b)]);
+      // Serialize only this repository/principal: two helper children may
+      // query concurrently, but neither may overwrite the other's tokens.
+      const prior = pending.get(key);
+      const work = (async () => {
+      if (prior) await prior.catch(() => {});
       const cursor = /^(0|[1-9]\d*)$/.test(token) && Number.isSafeInteger(Number(token)) ? Number(token) : -1;
-      let history = trusted.get(key);
-      const epoch = cursor >= 0 ? history?.tokens.get(cursor) ?? null : null;
+      let history = trusted.get(key) ?? (state ? restore(await state.load(key)) : undefined);
+      if (history) trusted.set(key, history);
+      const before = history ? serialize(history) : null;
+      const issued = cursor >= 0 ? history?.tokens.get(cursor) : undefined;
+      const epoch = issued?.epoch ?? null;
       const delta = await fs.acquire(epoch, Math.max(0, cursor), { namespace: true });
       if (!Number.isSafeInteger(delta.rev) || delta.rev < 0) throw new Error('fsmonitor: invalid VFS revision');
       if (!history) {
@@ -41,7 +112,23 @@ export function makeGitFsmonitor(): {
         history.tokens.clear();
       }
       history.highWater = Math.max(history.highWater, delta.rev);
-      if (delta.rev > history.untrustedThrough) history.tokens.set(delta.rev, delta.epoch);
+      // Every mounted backend is uncertain: its external writes have no
+      // journal. Keep each issued revision's mount footprint, so unmounting
+      // between queries also invalidates the old prefix. Reissuing the same
+      // number unions footprints instead of falsely making an older token clean.
+      const currentMounts = mounts === null ? null : boundedMounts(mounts.map(normalizeVfsPath).filter((point) => {
+        if (point === root || root.startsWith(point + '/') || point === '') return true;
+        if (!point.startsWith(root === '' ? '' : root + '/')) return false;
+        const relative = point.slice(root === '' ? 0 : root.length + 1);
+        return relative !== '.git' && !relative.startsWith('.git/');
+      }));
+      const dirtyMounts = mergeMounts(issued ? issued.mounts : [], currentMounts);
+      if (delta.rev > history.untrustedThrough) {
+        const old = history.tokens.get(delta.rev);
+        history.tokens.set(delta.rev, { epoch: delta.epoch, mounts: mergeMounts(old ? old.mounts : [], currentMounts) });
+      }
+      const saved = serialize(history);
+      if (state && saved !== before) await state.save(key, saved);
       const reply = (paths: string[]) => encoder.encode(`${delta.rev}\0${paths.map((path) => `${path}\0`).join('')}`);
       if (epoch === null || delta.poison || cursor > delta.rev) return reply(['/']);
 
@@ -49,6 +136,16 @@ export function makeGitFsmonitor(): {
       const prefix = root === '' ? '' : `${root}/`;
       let sawRoot = false;
       let size = String(delta.rev).length + 1;
+      if (dirtyMounts === null) return reply(['/']);
+      for (const point of dirtyMounts) {
+        if (point === root || root.startsWith(point + '/') || point === '') return reply(['/']);
+        const name = point.slice(prefix.length) + '/';
+        size += encoder.encode(name).byteLength + 1;
+        paths.add(name);
+      }
+      // Even this fast path is after acquisition: restore/epoch changes
+      // and a pruned journal must be observed before answering clean.
+      if (delta.paths.length === 0 && await fs.revision(root) <= cursor) return reply([...paths].sort());
       for (const entry of delta.paths) {
         const path = normalizeVfsPath(entry.path);
         // A structural/subtree change at an ancestor covers this worktree.
@@ -73,6 +170,10 @@ export function makeGitFsmonitor(): {
       // when a changed tree cannot be located among the visible log names.
       if (!sawRoot && await fs.revision(root) > cursor) return reply(['/']);
       return reply([...paths].sort());
+      })();
+      pending.set(key, work);
+      try { return await work; }
+      finally { if (pending.get(key) === work) pending.delete(key); }
     },
   };
 }
