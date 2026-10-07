@@ -2192,8 +2192,8 @@ export declare class SqliteVFS {
     /**
      * A W7 `close`: what the session kept of the description goes, and the
      * description. A close that reports what storing its writes failed with
-     * has closed all the same: its refusal forgets the row too
-     * (refuseInSequence), as this transaction is rolled back.
+     * has closed all the same: its refusal, whatever its errno, forgets the
+     * row too (refuseInSequence), as this transaction is rolled back.
      */
     private closeDescribed;
     private forgetDescription;
