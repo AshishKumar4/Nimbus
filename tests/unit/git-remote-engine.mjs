@@ -8,7 +8,9 @@
 //     and .git/shallow (its pack with .idx and .rev); then, the ref git
 //     would write in place, an incremental fetch that sends only what is
 //     new (haves); --filter=blob:none: a promisor pack, host git's
-//     objects; include-tag on and off;
+//     objects; include-tag on and off; --shallow-since, --shallow-exclude
+//     and --deepen (deepen-since, deepen-not, deepen-relative): host git's
+//     objects and .git/shallow;
 //   - pushPack: a new commit's pack streamed through (receive-pack applies
 //     it: the served ref moves); a stale old value refused (ng); a
 //     deletion with no pack; an atomic push with one bad command: neither
@@ -50,6 +52,19 @@ try {
   hostGit(source, ['tag', '-a', '-m', 'v1', 'v1', c2]);
   const c3 = commit('c3');
   hostGit(source, ['branch', 'side', c2]);
+  // A branch of commits years apart, for the deepen-since cut, and a tag on its first for deepen-not.
+  hostGit(source, ['checkout', '-q', '--orphan', 'dated']);
+  const dated = ['2001-01-01', '2004-01-01', '2008-01-01'].map((day, i) => {
+    writeFileSync(join(source, 'top.txt'), 'dated ' + i + '\n');
+    hostGit(source, ['add', '-A']);
+    const date = day + 'T00:00:00Z';
+    execFileSync('git', ['commit', '-q', '-m', 'd' + i], {
+      cwd: source, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b', GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+    });
+    return hostGit(source, ['rev-parse', 'HEAD']).trim();
+  });
+  hostGit(source, ['tag', 'd-first', dated[0]]);
+  hostGit(source, ['checkout', '-q', 'main']);
   const served = join(work, 'served');
   mkdirSync(served);
   const bare = join(served, 'repo.git');
@@ -130,6 +145,30 @@ try {
       assert.equal(session.sessionObjects('home/user/' + name).objects.some((line) => line.startsWith(tag)), includeTag, `include-tag ${includeTag}: the tag object`);
     }
     console.log('  ok  fetchPack: a filtered fetch is a promisor pack with host git\'s objects; include-tag on and off');
+
+    // ── fetchPack: deepen-since, deepen-not, deepen-relative ──
+    const deepens = [
+      { name: 'since', ours: { deepenSince: Date.parse('2006-01-01T00:00:00Z') / 1000 }, host: [['--shallow-since=2006-01-01T00:00:00Z']] },
+      { name: 'not', ours: { deepenNot: ['refs/tags/d-first'] }, host: [['--shallow-exclude=d-first']] },
+      { name: 'relative', first: { depth: 1 }, ours: { depth: 1, deepenRelative: true }, host: [['--depth', '1'], ['--deepen', '1']] },
+    ];
+    for (const { name, first, ours, host: steps } of deepens) {
+      const repo = 'deepen-' + name;
+      assert.equal((await session.git('/home/user', ['init', '-q', repo])).code, 0);
+      const hostRepo = join(work, 'host-' + repo);
+      hostGit(work, ['init', '-q', '-b', 'main', hostRepo]);
+      for (const step of steps) hostGit(hostRepo, ['fetch', '-q', '--no-tags', ...step, 'file://' + bare, 'dated']);
+      if (first) {
+        await engine.fetchPack({ url, gitDir: `/home/user/${repo}/.git`, wants: [dated[2]], ...first, includeTag: false, updateShallow: false });
+        session.kernel.mkdir(`home/user/${repo}/.git/refs/remotes/origin`, { recursive: true });
+        session.kernel.writeFile(`home/user/${repo}/.git/refs/remotes/origin/dated`, dated[2] + '\n');
+      }
+      const result = await engine.fetchPack({ url, gitDir: `/home/user/${repo}/.git`, wants: [dated[2]], ...ours, includeTag: false, updateShallow: false });
+      assert.ok(result.shallow, `deepen-${name}: .git/shallow written: ${JSON.stringify(result)}`);
+      assert.deepEqual(session.sessionObjects('home/user/' + repo).objects, hostObjects(hostRepo), `deepen-${name}: host git's objects`);
+      assert.equal(session.kernel.readFileString(`home/user/${repo}/.git/shallow`), readFileSync(join(hostRepo, '.git/shallow'), 'utf8'), `deepen-${name}: host git's .git/shallow`);
+    }
+    console.log('  ok  fetchPack: deepen-since, deepen-not and deepen-relative: host git\'s objects and .git/shallow');
 
     // ── pushPack ──
     const pusher = join(work, 'pusher');

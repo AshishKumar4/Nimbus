@@ -1208,6 +1208,7 @@ export async function execGitNetwork(
       }
 
       const startedAt = Date.now();
+      const facet = entrypoint;
       /** One invocation of the facet, within what is left of the operation's time. */
       const invoke = async (body: BodyInit, framed: boolean): Promise<FacetInvocationResult> => {
         const remaining = outerDeadline - Date.now();
@@ -1221,7 +1222,7 @@ export async function execGitNetwork(
             remaining,
           );
         });
-        const call = entrypoint.fetch(new Request('http://git/op', {
+        const call = facet.fetch(new Request('http://git/op', {
           method: 'POST',
           body,
           ...(framed ? { headers: { 'x-nimbus-git-framed': '1' }, duplex: 'half' } : {}),
