@@ -350,7 +350,13 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * sent unfenced. Minting is harmless to repeat, so a lost call is hedged
      * like a read (lost-call.ts).
      */
-    openWaveWriter(): Promise<string | null>;
+    /**
+     * `first`: the process's first epoch, asked once per run by its writer
+     * (process-fs-client): the one minted with this binding answers it, with
+     * no round trip, while it is young (a quarter of its life). Any later one
+     * is minted anew: a writer that numbers afresh never reuses an epoch.
+     */
+    openWaveWriter(first?: boolean): Promise<string | null>;
     /**
      * A write wave, sent once: its stream is consumed by the attempt that
      * carries it, so the writer that minted it re-sends a lost wave itself,

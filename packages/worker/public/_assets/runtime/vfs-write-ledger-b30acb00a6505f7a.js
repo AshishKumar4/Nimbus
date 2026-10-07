@@ -1103,7 +1103,7 @@ var __nimbusProcessFsModule = (() => {
       if (epoch !== null && (epoch.writer === null || now() - epoch.openedAt < WAVE_EPOCH_TTL_MS / 2)) return epoch.writer;
       charge("openWaveWriter");
       const openedAt = now();
-      const writer = await session.openWriter();
+      const writer = await session.openWriter(counters.epochs === 0);
       epoch = { writer, openedAt };
       counters.epochs++;
       nextSeq = 1;
@@ -1611,9 +1611,9 @@ function __nimbusProcessFs() {
   __nimbusProcessFsInstance = __nimbusProcessFsModule.processFsClient({
     session: {
       // Called as methods of the stub, never through .call/.apply: on an RPC stub those are remote method names too.
-      openWriter: () => {
+      openWriter: (first) => {
         const bound = supervisor();
-        return typeof bound.openWaveWriter === "function" ? bound.openWaveWriter() : Promise.resolve(null);
+        return typeof bound.openWaveWriter === "function" ? bound.openWaveWriter(first) : Promise.resolve(null);
       },
       writeBatchStream: (stream, fence, owner) => (owner === undefined
         ? supervisor().writeBatchStream(stream, fence)

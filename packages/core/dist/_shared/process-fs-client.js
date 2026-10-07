@@ -217,7 +217,7 @@ export function processFsClient(options) {
             return epoch.writer;
         charge('openWaveWriter');
         const openedAt = now();
-        const writer = await session.openWriter();
+        const writer = await session.openWriter(counters.epochs === 0);
         epoch = { writer, openedAt };
         counters.epochs++;
         nextSeq = 1;

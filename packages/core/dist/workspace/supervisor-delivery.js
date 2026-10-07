@@ -28,6 +28,7 @@
  */
 import { VFS_DELIVERY_RECEIPT_RETENTION_MS, VFS_DELIVERY_TOMBSTONE_LIMIT, VFS_DELIVERY_TOMBSTONE_RETENTION_MS, } from '../constants.js';
 import { SUPERVISOR_DELIVERED_OPS, SUPERVISOR_JOINED_READ_OPS, } from './supervisor-ops.js';
+import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 const DELIVERED_OP_NAMES = new Map(SUPERVISOR_DELIVERED_OPS.map((op) => [op, op]));
 /**
  * The delivered mutation `op` names, as this module's own string — a receipt
@@ -485,9 +486,16 @@ export function openSupervisorDeliveries(ctx) {
  * What to spread into the props of a SUPERVISOR binding minted for a process
  * of the instance whose state `ctx` is: its `hostIncarnation`, or nothing
  * when that host applies nothing once — and then the binding sends each
- * mutation once.
+ * mutation once. For process `pid`, a write-wave epoch minted with it
+ * (`waveWriter`, at `waveWriterMintedAt`): the process's first wave needs no
+ * round trip for one (SupervisorRPC.openWaveWriter).
  */
-export function supervisorDeliveryProps(ctx) {
+export function supervisorDeliveryProps(ctx, pid = 0) {
     const deliveries = hosts.get(ctx);
-    return deliveries === undefined ? {} : { hostIncarnation: deliveries.incarnation };
+    if (deliveries === undefined)
+        return {};
+    return {
+        hostIncarnation: deliveries.incarnation,
+        ...(pid > 0 ? { waveWriter: deliveries.openWaveWriter(pid, WAVE_EPOCH_TTL_MS), waveWriterMintedAt: Date.now() } : {}),
+    };
 }

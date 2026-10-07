@@ -223,9 +223,13 @@ export declare function openSupervisorDeliveries(ctx: object): SupervisorDeliver
  * What to spread into the props of a SUPERVISOR binding minted for a process
  * of the instance whose state `ctx` is: its `hostIncarnation`, or nothing
  * when that host applies nothing once — and then the binding sends each
- * mutation once.
+ * mutation once. For process `pid`, a write-wave epoch minted with it
+ * (`waveWriter`, at `waveWriterMintedAt`): the process's first wave needs no
+ * round trip for one (SupervisorRPC.openWaveWriter).
  */
-export declare function supervisorDeliveryProps(ctx: object): {
+export declare function supervisorDeliveryProps(ctx: object, pid?: number): {
     hostIncarnation?: string;
+    waveWriter?: string;
+    waveWriterMintedAt?: number;
 };
 //# sourceMappingURL=supervisor-delivery.d.ts.map

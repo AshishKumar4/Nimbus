@@ -24,6 +24,9 @@ export interface SupervisorBindingProps {
     route?: HostRoute;
     /** The host instance that applies this binding's mutations once, when there is one. */
     hostIncarnation?: string;
+    /** A write-wave epoch that host minted with the binding, and when (supervisorDeliveryProps). */
+    waveWriter?: string;
+    waveWriterMintedAt?: number;
     bindingKind: 'process';
     writerId: string;
     /**
