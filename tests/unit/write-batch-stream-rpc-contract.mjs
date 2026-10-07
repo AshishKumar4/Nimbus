@@ -44,6 +44,7 @@ let forwardedOwner;
 let forwardedCred;
 const ownerResult = await _rpcWriteBatchStream(attachSupervisorOps({
   sqliteFs: {
+    setWaveRouter() {},
     as(cred) {
       return {
         async writeStream(_stream, options) {

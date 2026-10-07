@@ -1,6 +1,10 @@
 {
   "version": 1,
+<<<<<<< HEAD
   "fingerprint": "dbe020cef7471cd22d8c11125c91a5af965d73e8162e646b5e38199641b16f2a",
+=======
+  "fingerprint": "1ba2a395236c30e59c7c31f9743a565f42e0a0c72d3e43a847d5d6efe7a6717e",
+>>>>>>> work/w7-mount-routing
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -363,8 +367,13 @@
     "packages/core/dist/runtime/opentui-wasm-backend.d.ts": "b0077844138a358588592c4f7b2ff2a448cf4da2a72e45a2c3f27988dcdd2bcd",
     "packages/core/dist/runtime/opentui-wasm-backend.d.ts.map": "c082e3787bbb5be321d10aa13a920428f47e9c2b82c9c37a8c8166b9d7abdb08",
     "packages/core/dist/runtime/opentui-wasm-backend.js": "9be01caa82f04ac5dc1432ca7fae06c37a500edae5af812f808138c38e2aa683",
+<<<<<<< HEAD
     "packages/core/dist/runtime/os-contracts.d.ts": "f98f44fffee9916807249136411a07fa8d11badf06654feb6bb2c84d63b765cb",
     "packages/core/dist/runtime/os-contracts.d.ts.map": "62f40d2acfd0c9cfb9268baa766dcc822880ae6942f844284f89167cfc7d369f",
+=======
+    "packages/core/dist/runtime/os-contracts.d.ts": "2aad190527944da94ba5ac53b6747308809cbedce21a53cd89d4d302bf686c44",
+    "packages/core/dist/runtime/os-contracts.d.ts.map": "1083a9c6756a2c4a26c6d19f6a7b8ee263f56bfb11f73b37d348edaf85b2a4dd",
+>>>>>>> work/w7-mount-routing
     "packages/core/dist/runtime/os-contracts.js": "c1e305ac66b94b8c0ee31bae48e3701bae3b9194b14ebf4e6e65545287718057",
     "packages/core/dist/runtime/oxc-facet/preamble.d.ts": "bff255dec687ae26313c6097e53514331ae97a91b4b32c44000111407cc6338b",
     "packages/core/dist/runtime/oxc-facet/preamble.d.ts.map": "68bfb92249f93817fa67ae5889f4e7b32a1541bd5413c71afbb83fb6be8d2634",
@@ -378,9 +387,15 @@
     "packages/core/dist/runtime/prebundle-slice.d.ts": "a087a3c3a9bcd3420634b8dc9be2c6ca67e0298285bdd65643ceb67d3f3f2e77",
     "packages/core/dist/runtime/prebundle-slice.d.ts.map": "cc98344bea07e1a399c42a81a77f5aa30baa50925259c5aa0df8b8c3ae8ac4d8",
     "packages/core/dist/runtime/prebundle-slice.js": "5457cd8698da19f7081b535c6aca1794b21189cb98f6b911ff5d88e85ccbdced",
+<<<<<<< HEAD
     "packages/core/dist/runtime/process-files.d.ts": "b8a7bb919cf6f3f99205d6f5914b0dcfc19ca8cea0e6eb5729a7bb9d90e64d54",
     "packages/core/dist/runtime/process-files.d.ts.map": "ab50560155bbed42b0c7d80459765f39dbbdeeb33d4ae859ae59bdafb14708b6",
     "packages/core/dist/runtime/process-files.js": "e1a3a9afa73b0f132cad32e087c1d79a6ae14f608d9d2e70fde045911dbc358e",
+=======
+    "packages/core/dist/runtime/process-files.d.ts": "f5c3b636865215b901dba9fb417ada731abea992c2331ea55691c0d80685a58b",
+    "packages/core/dist/runtime/process-files.d.ts.map": "d578ad6a45106fd071198b54886c09aa6d09a8f582d5b11936b5f0d17268949f",
+    "packages/core/dist/runtime/process-files.js": "7e0171ce0cf35c827c59cd4b1dc4151b9a3456b5e231bd256c752a6889e83f2c",
+>>>>>>> work/w7-mount-routing
     "packages/core/dist/runtime/process-input-routing.d.ts": "907df5f7eb7fc180bb78c1984fdaa6265bdb8411d9dadc8f79c191d7971f2f24",
     "packages/core/dist/runtime/process-input-routing.d.ts.map": "ef2d1104c98e0921b1c5f02a996f27da7b34b44ea5cd9919472f6abc640f9bb6",
     "packages/core/dist/runtime/process-input-routing.js": "4c38bf38518ea0e42c3205ea19ce372756b15f881f6e093c34c4cfc95a9aa9f1",
@@ -465,9 +480,15 @@
     "packages/core/dist/runtime/session-process-supervisor.d.ts": "73e86cf9dab444bf3c082c281d7cfe5369ba593916bc8ded503381afdac57448",
     "packages/core/dist/runtime/session-process-supervisor.d.ts.map": "dc5d74e61d4b3624e718ad5040c3c286e149c96605611be1440bd05479d1690f",
     "packages/core/dist/runtime/session-process-supervisor.js": "3284c7c1b046baa50beefb0df13a764069ea4d2445a53749d5147236beda02e7",
+<<<<<<< HEAD
     "packages/core/dist/runtime/sqlite-runtime-fs-bridge.d.ts": "f2c3b01180fcd9786cc0b2117356431da7161bb7753b4fe19f7ba992184ded52",
     "packages/core/dist/runtime/sqlite-runtime-fs-bridge.d.ts.map": "a70890db32937ae50729b218b18063eff36200573a9c58406d329e9326228378",
     "packages/core/dist/runtime/sqlite-runtime-fs-bridge.js": "9e2d976ecb126757002c04ea71dc0ec2439a2954ac0b9fa95bd04b35460951fc",
+=======
+    "packages/core/dist/runtime/sqlite-runtime-fs-bridge.d.ts": "e6736f1414d2c752528e87182dbc8793aaaa10cb26e0563d0e8aaca090a1fb89",
+    "packages/core/dist/runtime/sqlite-runtime-fs-bridge.d.ts.map": "f74d9d91045d337eb778217082578e9173488e563cf3f621c9e24d0ce28a0acb",
+    "packages/core/dist/runtime/sqlite-runtime-fs-bridge.js": "3fffe2d1deac19c48375f4fb7601d1de26afcf349bf74acb163a93633d11e150",
+>>>>>>> work/w7-mount-routing
     "packages/core/dist/runtime/static-fs-refs.d.ts": "a8ba5668aa9b61e3f04acedf198a8ed76363f43e1c380cf2b6e3888174f2bfe4",
     "packages/core/dist/runtime/static-fs-refs.d.ts.map": "564392bf060e0f3fb5376361c4839ea853873c106ef2078c03b10e372b46395d",
     "packages/core/dist/runtime/static-fs-refs.js": "dfb56c27b0514ff7ca553dff494af1da794d335ca12f70177e5c9626f1201c43",
@@ -543,6 +564,9 @@
     "packages/core/dist/runtime/wasm-runner.d.ts": "911a1e96932e0af28404815fc5b10eaf71553ff464cd323738b9f4f9cc600e38",
     "packages/core/dist/runtime/wasm-runner.d.ts.map": "3faf8b0233b5db916a6ad2fb80d2984e66d8e3607725a0c7132f5e2b035d6d5d",
     "packages/core/dist/runtime/wasm-runner.js": "5e562a6dbbaf85f792161ad01d92cea33b78214038c29188db214e83a21302dc",
+    "packages/core/dist/runtime/wave-router.d.ts": "d80e80c923e08f90c98a0995e26d194c761fd9a42206bb5bcff4d42ef692d872",
+    "packages/core/dist/runtime/wave-router.d.ts.map": "343838f241d69959ece5e5c68c8e95ebd6adea82642418e2a896110c1e3142e6",
+    "packages/core/dist/runtime/wave-router.js": "dc063243794ec9e5b14ac58572adc668c122d60dd261a58928aec62dc78cd348",
     "packages/core/dist/shell/elevation-commands.d.ts": "5faafb1c8ebbb0e38b4c0a7a543d3ab1dff581d597b82b38f75654278be80e72",
     "packages/core/dist/shell/elevation-commands.d.ts.map": "b1400f5502e461b1b403edf60af8db677cfe2e8aeded4a73dde631baab690d1a",
     "packages/core/dist/shell/elevation-commands.js": "fcf1e7ea8e29e7974ec0a177fb7ff0c52ae45efeb361d877549fd6d9e03e0d9d",
@@ -1011,9 +1035,15 @@
     "packages/core/dist/vfs/chunk-codec.d.ts": "db097c74035da06d99a64f4d06d1f1dcf909f200be74b7ac48ce47bbcbe3bf82",
     "packages/core/dist/vfs/chunk-codec.d.ts.map": "a28ba5a2e63037b3111a22355d9157bc7fbd8f005d443cda476b53d41cc45b67",
     "packages/core/dist/vfs/chunk-codec.js": "bf60ed375449aa5d4318ebd8aeb9bf41609f084fef9405707a51057528c3ac8f",
+<<<<<<< HEAD
     "packages/core/dist/vfs/composite.d.ts": "1e8fb5837dab79c9ac5dd6a280b48b9fd701c2a44b608e36651334cdf2d7f20d",
     "packages/core/dist/vfs/composite.d.ts.map": "341dbe83e9fc8c43c2d2124d9d4916c2fb317da5f21498add6909e8747b8f17f",
     "packages/core/dist/vfs/composite.js": "0aa0e0a37abc46e276307df5292ee7a1c6b7c76395feda77585bfc4bf3ec07f6",
+=======
+    "packages/core/dist/vfs/composite.d.ts": "7220538ce45c4734225e15f3f8c8139a61fe50a59e7d98e8ff704345dae627d7",
+    "packages/core/dist/vfs/composite.d.ts.map": "a2e8b24b892fa60e55b41604fedce83e7ce7d56c33f13692d3428f8a62f96144",
+    "packages/core/dist/vfs/composite.js": "3539c30927fd4765a6e8514a3b42b4863615813a968f07a780668d2a83f7dfc3",
+>>>>>>> work/w7-mount-routing
     "packages/core/dist/vfs/content-chunking.d.ts": "ab7d97839621cd850eca630ab05598ed0de71747e28ad047cab7daccbc0066a8",
     "packages/core/dist/vfs/content-chunking.d.ts.map": "88536b4287f6bf75688693a634d7cf1a0f286588c1452ee835f233637d884d3b",
     "packages/core/dist/vfs/content-chunking.js": "0a261d37ecbece8432375d0e2b49ae3b42806ddc8b707436757a55f88fc5e5b2",
@@ -1053,9 +1083,15 @@
     "packages/core/dist/vfs/sqlite-files.d.ts": "445e06ed62957a048c39dd6731b3d84c3368b9316e66d04f2affd9a61f81a5ea",
     "packages/core/dist/vfs/sqlite-files.d.ts.map": "497c497bb1548367ab859d8fa8dccf15dcb1641622356222a2e00e4f6907b27a",
     "packages/core/dist/vfs/sqlite-files.js": "78eefd2528b9f4c71f0540006b6c5293f98d54ef7362aa95cb80e8f26847a539",
+<<<<<<< HEAD
     "packages/core/dist/vfs/sqlite-vfs.d.ts": "abbfbea14942ed5481749d961049c0a4d07efb7826cdfc2e71f637e103748400",
     "packages/core/dist/vfs/sqlite-vfs.d.ts.map": "fe469bb13099230669357b265879fc55e079be424f884396ecc46121bbd323cb",
     "packages/core/dist/vfs/sqlite-vfs.js": "e703d16771c5f39c3c3a1c2f32f4c9aaf31112bb2055efb43214a2d929ed2c79",
+=======
+    "packages/core/dist/vfs/sqlite-vfs.d.ts": "d87bf2ab390e79d8ea0ba0d86890594e2eb5476d473498f52772cd95e5863cb3",
+    "packages/core/dist/vfs/sqlite-vfs.d.ts.map": "452205333808343ab26f15a30a3158222fa900d74dce0988e015dc720682e7ba",
+    "packages/core/dist/vfs/sqlite-vfs.js": "fd3c1eb0ce7778f09f3bcfecdfb90c3ee4bae4514cf08332c84591378e3bfad3",
+>>>>>>> work/w7-mount-routing
     "packages/core/dist/vfs/symlink-registry.d.ts": "2f070895b41608e49772066ace71fa2415b5500e655bbd6a204944057a4f0803",
     "packages/core/dist/vfs/symlink-registry.d.ts.map": "cb3c101363d49acdd12258f9e2e4941ddc026d6bf0092758080e922f9ecf1e96",
     "packages/core/dist/vfs/symlink-registry.js": "aeff373a644847fa6b5edcba0b3df01b1d81253f308adc859924c6fba0fbed1a",
@@ -1071,6 +1107,7 @@
     "packages/core/dist/workspace/nimbus-workspace.d.ts": "cd105d2f169024d7fe94beac057419bc64c62fa24e657c7dc5e3291e168c52a1",
     "packages/core/dist/workspace/nimbus-workspace.d.ts.map": "268444ac5cf144a800db9402cb4d54eeb9de1e34589d881ef680ffc785169bf6",
     "packages/core/dist/workspace/nimbus-workspace.js": "95760fd932af58f5e51351c4e66022400693dd7f75110c5ed43a1f4ac69ab6af",
+<<<<<<< HEAD
     "packages/core/dist/workspace/supervisor-delivery.d.ts": "884f12c52f85fb3ba6082ad968351816eabba1b2512c2497d3969229b140d7c4",
     "packages/core/dist/workspace/supervisor-delivery.d.ts.map": "308f51d8005748c8e7a04eda3f15b6801cee2083d5aa27d8f2ec7c2127fb991c",
     "packages/core/dist/workspace/supervisor-delivery.js": "c7de6fe1f489b516e332c1da9e1f00835def2b38f97044c715489d936b3fb707",
@@ -1080,6 +1117,14 @@
     "packages/core/dist/workspace/supervisor-ops.d.ts": "80603a8cabb8be628d371df2fb2c4c1673a52ea95db0e2f73d9e6134904034e5",
     "packages/core/dist/workspace/supervisor-ops.d.ts.map": "df3e1d7bfe5ad457932778c4d01b2309ab4282f42f5429fd4a2f1fe34d2d1c94",
     "packages/core/dist/workspace/supervisor-ops.js": "b5c5b8c7a5638053cea1a497748352be41b4f68bda6812da86d1a29d8158b568",
+=======
+    "packages/core/dist/workspace/supervisor-delivery.d.ts": "1b2b3600089b856504a888966542ba272e0c53a80f317d43cd8c9ef1e2be9a03",
+    "packages/core/dist/workspace/supervisor-delivery.d.ts.map": "ed85dfcaa80c62751526c22dc8112d3d23c5fe9c7f729576deede2cb1dde6049",
+    "packages/core/dist/workspace/supervisor-delivery.js": "b2814baeb56503732fb7022435a1b6df7f59416946d628777f635b1af34c6536",
+    "packages/core/dist/workspace/supervisor-op.d.ts": "0c3e1f5fb1f2ed91ab696c079d167c09aacb811bdc290f12e6ee1e06a8ac0f80",
+    "packages/core/dist/workspace/supervisor-op.d.ts.map": "48132c280ba26bb0264c292b7d67e1513c5632f7e98efa4cdfe29581e13b8312",
+    "packages/core/dist/workspace/supervisor-op.js": "acd691033fac1dbd13c798bd2b1f29ebf251e590ec09a173dcc71f71677afd48",
+>>>>>>> work/w7-mount-routing
     "packages/core/dist/workspace/workspace-fs.d.ts": "79e1fba69fe3a25cd1f776eb97f40a7e5cf2ca43239c5e7d95d6c59224727771",
     "packages/core/dist/workspace/workspace-fs.d.ts.map": "cfbcba275e0f25d36b9ee69b34c1fdfd3dbaf10c81a39cb76717eebe7e4c345a",
     "packages/core/dist/workspace/workspace-fs.js": "3b89fbd6bb943efed162344fe7a3c50353c45858491967621c0bf0a7d5848f44",
@@ -1185,12 +1230,20 @@
     "packages/core/src/runtime/nimbus-command.ts": "cc6f8ab7703800678749937e82686938417fd503cfc48cdc2f5a8c5cb6f537de",
     "packages/core/src/runtime/npm-bin-map.ts": "eae5a15bdcbd9009ec38823d7d08d4591a6c3a1bae8f94d0651b43c0a17e7d2c",
     "packages/core/src/runtime/opentui-wasm-backend.ts": "aecca126a34033d81f5487c720260ad53c57ef6051e9a3d47e8f88756e2d9f51",
+<<<<<<< HEAD
     "packages/core/src/runtime/os-contracts.ts": "569fa8e2a08fe29d8ddb93588e1776e3b69f8827327f17a2ac7425517dfc5440",
+=======
+    "packages/core/src/runtime/os-contracts.ts": "cfa1963fd4ed10e6b3b36f077c624fce7f1fd6d1c8486b1630fa4953a7607fa4",
+>>>>>>> work/w7-mount-routing
     "packages/core/src/runtime/oxc-facet/preamble.ts": "100ed0e0702962369eff7f95cfbbe8c875ca0f3b77c511b934229fc8ab75b5c0",
     "packages/core/src/runtime/oxc-transform.ts": "7df20e068b4debe867b2d3936d030373e830c8f6368e08f911cf44beca2c76e1",
     "packages/core/src/runtime/port-registry.ts": "e94215146ed8f02b69befd7a81b95a00573fc206006e437e9345a26f364a3bfd",
     "packages/core/src/runtime/prebundle-slice.ts": "b482b3b3ddb36ba7c1b9587b3d4bc2d887f4af1343c54588b07458b6b95e7f08",
+<<<<<<< HEAD
     "packages/core/src/runtime/process-files.ts": "20d75e82d81ffd3f5ce25c44b42be11d6dd106271a6bff1997ba7b98b68f92a6",
+=======
+    "packages/core/src/runtime/process-files.ts": "b152867e891760f629790f3008f397412d70007a30ff56ac3fe9b7df1175552b",
+>>>>>>> work/w7-mount-routing
     "packages/core/src/runtime/process-input-routing.ts": "96ef539c05d1294945fd6988addadeba99b3748abfe13a76280ea0cfabc93830",
     "packages/core/src/runtime/process-input.ts": "dc73fa0f1a5ae83eb1ab9c4901c5f9da6da6d9afcad2790254f79da725b82f78",
     "packages/core/src/runtime/process-io-protocol.ts": "29dceff8de177b9c8186832ba36c67a8ffd616676b32424bbd21f9d5ba1dd62d",
@@ -1219,7 +1272,11 @@
     "packages/core/src/runtime/runtime-registry.ts": "5668bc993e80480a1f0ce83a2dc12e514eb1c0b5bfac3aef343bef83fb176d27",
     "packages/core/src/runtime/server-launch.ts": "8c355b6a686eb7a8c9240c49fc59a0e6f7409efa202388a37b97ebc0455aad18",
     "packages/core/src/runtime/session-process-supervisor.ts": "2fa93219928f79e98bffc33680c3173e6d001dae64fbed2d338ceb9f7ad32767",
+<<<<<<< HEAD
     "packages/core/src/runtime/sqlite-runtime-fs-bridge.ts": "9319fba72580fdf1a230991e1885329b05b08a15e14d711834aa58788d99281e",
+=======
+    "packages/core/src/runtime/sqlite-runtime-fs-bridge.ts": "1b9987b5178576c7aa921dd6903833ea2e9be99cb7840778c2c9605daf2c8320",
+>>>>>>> work/w7-mount-routing
     "packages/core/src/runtime/static-fs-refs.ts": "cd2da6c308315050ee73a6fec20f66c0dc947abfa8bdb05a2edccd19220ff5ac",
     "packages/core/src/runtime/stdin-read.ts": "29480af64286e90de11b59e15f8a057ab599caa6e893903282c33bb2b6f17de2",
     "packages/core/src/runtime/storage-ledger.ts": "7c51bc60a324d0a6a44735dc76458b23c0727a65e07eeef762fca9640fe655a5",
@@ -1245,6 +1302,7 @@
     "packages/core/src/runtime/wasm-binary.ts": "bac8aaefc91eb0472a67325ce633c8db6cd786cd102e1900f2f0ef9c817ebd1c",
     "packages/core/src/runtime/wasm-memory.ts": "419a1c9dfbb10eaf906487ffa820453190efb6a983f801bebc73dc0ee9269f88",
     "packages/core/src/runtime/wasm-runner.ts": "7bd990c11ca3b74689d6030717d15b63963a0dfab58fd1955f0096f8eba8d0c5",
+    "packages/core/src/runtime/wave-router.ts": "9f83ec9b276262f0c0d5480080842fb25e750787c7485bbf78806cdc45395a5a",
     "packages/core/src/shell/elevation-commands.ts": "9e14a3560a23ee540f4fe258d4bac2a3e6495229e0d62912c5b8227ee76f928e",
     "packages/core/src/shell/exec-dispatch.ts": "e939ea137c65ec8fc4b430d50607fd7f7816497856f44dbfcbeb29f8b9738b71",
     "packages/core/src/shell/features.ts": "d8c124b466f22348da844b64c7e9db8537c1714956a79243b8390fd32d097fd7",
@@ -1407,7 +1465,11 @@
     "packages/core/src/types/node-worker-threads.d.ts": "2de129c5f0817a2d903d7be0d6cbefb2e28141c70b66e6f576a971d794ae29b4",
     "packages/core/src/types/node-zlib.d.ts": "6a2d801eb505f60eb0a67103a5e698ae11fcebf4b30fb268b7bf9ed836ba867f",
     "packages/core/src/vfs/chunk-codec.ts": "5813343d3d7ea72567a1b13e3b13e6045f4aaca0dc2be7ebf691b6874e9150b9",
+<<<<<<< HEAD
     "packages/core/src/vfs/composite.ts": "abe5efef799d830f4dcdc93b1e805b878ce3123a6670d83af946308c2c469a2c",
+=======
+    "packages/core/src/vfs/composite.ts": "ce1ca04f0986366dda411959b665d6bf722c4947b11617667434bbb23f5d1b5d",
+>>>>>>> work/w7-mount-routing
     "packages/core/src/vfs/content-chunking.ts": "233171797daf4525018f5b2f57c7f79afaf244810fac502a843ec5ca1476df0c",
     "packages/core/src/vfs/dev-vfs.ts": "e6d6f4ed7a13daa5f7d7f951e2620a86aa6d268b76bef85bdb5087bcd2efba7a",
     "packages/core/src/vfs/dirent-type.ts": "f22395b71aab1211b5f55eded1f996c0719d05c1b838025fc3651ba61e253185",
@@ -1421,15 +1483,24 @@
     "packages/core/src/vfs/recall.ts": "2cab5fcd66884e7046d3587455193f6474f299d03003d5ed5ac67cc7ddb074ab",
     "packages/core/src/vfs/seed-project.ts": "4482e062310d067536f75945dfd7ec6dc89c3d03d33cae1afd7ebd9dcae6f23a",
     "packages/core/src/vfs/sqlite-files.ts": "79c50039a2005526534e576fc893ec98fd116514e370917b9a67aa01ae3215fc",
+<<<<<<< HEAD
     "packages/core/src/vfs/sqlite-vfs.ts": "1d3659f17660559295e751c14b6a471344e429b56900a5e1fa7cafdf8fe3c2aa",
+=======
+    "packages/core/src/vfs/sqlite-vfs.ts": "c44ad0b895dc7ede2ce045b3507f92027ba8c26502fe2c28185b5ac05b2486b0",
+>>>>>>> work/w7-mount-routing
     "packages/core/src/vfs/symlink-registry.ts": "02e7663e91b0ce2e6cb96732722767eef3669808e12693af66c65d695af7c98c",
     "packages/core/src/vfs/vfs-error.ts": "5b12d6d2ebad6bf463deda581ebe4b7bc64715aba6bbfc80d2e0314fdc0205c9",
     "packages/core/src/vfs/vfs.ts": "9e8f3f185461ea9e6493896389bfdf7f74b960881c53adf02e0ed65ec35a7516",
     "packages/core/src/workspace/named-shells.ts": "57f16b3f502d629ecd6f661c807e26a912ecc27c9d1cf165091e916bf765e0bc",
     "packages/core/src/workspace/nimbus-workspace.ts": "8ca65a92496fa0b652b6a8d9c69e95e5ae9e6a49dc7b3e36203f7518a3e1fe3f",
+<<<<<<< HEAD
     "packages/core/src/workspace/supervisor-delivery.ts": "7031405104c1dba8bf8ff669c4abd44fb7f7d22c1cc1029173912cba637becd0",
     "packages/core/src/workspace/supervisor-op.ts": "3a0e68414fbffb09ba777179e19ab851d64e5d4b812147a0833e2d72e47fec8a",
     "packages/core/src/workspace/supervisor-ops.ts": "25d87428aeeee1fe857fb4630d71407ddaaf9708ac1b5d777b5fac19727eaef6",
+=======
+    "packages/core/src/workspace/supervisor-delivery.ts": "4ea43f6ca3d4778c8aebc4509203ac7a6d1308b9def526ad2ea5d75717c5be09",
+    "packages/core/src/workspace/supervisor-op.ts": "20044166ff3cb9ae25864542b8e30dd440aa716821280e5325018d85e43d2973",
+>>>>>>> work/w7-mount-routing
     "packages/core/src/workspace/workspace-fs.ts": "c540fc01f7eea3f6507a2ace5e2e279f55100d5915682dbdd85a7cb9460eb5da",
     "packages/core/tsconfig.json": "6dc680d90729597ee71dcaf78368fceb9f44638d4e301811dd4cff58bdb9b62f",
     "packages/fabric/LICENSE": "9abf902a70f15256b6d108767fc510341854ec2297e3874c5bc6df496a895617",
@@ -2237,11 +2308,19 @@
     "packages/worker/dist/session/replica-routes.d.ts.map": "a977e3f930be7f53e40e969b9c35a115db5f195159a82da60d22108cf1fb5390",
     "packages/worker/dist/session/replica-routes.js": "c153f5dd54dad966986d33dc019011e21180da764f9ef6d34476d667fd2a7ab3",
     "packages/worker/dist/session/routes.d.ts": "ac5a05b27f7992452f95ead5c0cc26a2de5c6a48e656a5ae90ead7f662a2d2d2",
+<<<<<<< HEAD
     "packages/worker/dist/session/routes.d.ts.map": "6689912efd0cde66d42f33386c24a4297a4b9171452cc761138b293756dec1e3",
     "packages/worker/dist/session/routes.js": "4c118ae7d14ccda3322ad7bef73b0d73a1220f5ac748af142a84875e86766d0a",
     "packages/worker/dist/session/rpc.d.ts": "39e185fdd3bbc2d0320d2e604bb1ff9d7a2123cd667a20ed10af46b64d0a2a5c",
     "packages/worker/dist/session/rpc.d.ts.map": "ae143939424e829acc880d972821d967ae86e1ca1f5b8a8b9ec02130378542ea",
     "packages/worker/dist/session/rpc.js": "1a9b99f18aac447239905f85aa0bd1ada68a9ee70e58bb360ee436988401e7d3",
+=======
+    "packages/worker/dist/session/routes.d.ts.map": "c96fb80dbca7d357d2caf4f7da9d23a24eceb71309cbf4ba426a577bd16209a3",
+    "packages/worker/dist/session/routes.js": "dae9b8d97d257a23a446caec70bc35fa2474bba2f64fd5e4998a627229779418",
+    "packages/worker/dist/session/rpc.d.ts": "88b4ffd8cee6b811c7bc47640e73382c4d4d6354109719c72d238415255d6580",
+    "packages/worker/dist/session/rpc.d.ts.map": "d4e5b5d8387be44e508dda57ec3d6d5a74058df70ed6c3dd4a80edc9c1b1c00d",
+    "packages/worker/dist/session/rpc.js": "29a5c6b069cb652815df02c30a15499a93400b7859344330c9d063d4eefa2bb4",
+>>>>>>> work/w7-mount-routing
     "packages/worker/dist/session/serving-port.d.ts": "ec9d9c2602f15453ff5868d6a7b2c5b87a5341a72202ed9e08a34a5c98cc0312",
     "packages/worker/dist/session/serving-port.d.ts.map": "247068cf1b20d4476b0fd231216bc75b20b82903d31cfeb7731a3961e090ec02",
     "packages/worker/dist/session/serving-port.js": "6061b804f3f35e8c1fcb72f19b0ee86e5446b457e8e6d3fcbc1275a6b20da5b7",
@@ -2617,8 +2696,13 @@
     "packages/worker/src/session/port-capability.ts": "f2d71bc0347875d2865a70f87f4a85e015f525e80c0439fdb9250b896ac33816",
     "packages/worker/src/session/programmatic.ts": "93d6e6117254f888524dcfe1d7413fb47bd2ddc25b22ca3a8f501548dc73af76",
     "packages/worker/src/session/replica-routes.ts": "9be0b56024d18714064f3e9efc9c0972853b0f3a277548b21743a3cbe8576ee7",
+<<<<<<< HEAD
     "packages/worker/src/session/routes.ts": "f3c6b742a84b300d2e82a6d9ae951169e1d4f2045f97874dfbc4dd0301cf868f",
     "packages/worker/src/session/rpc.ts": "54acc338adf3ee3932bc5503afd5a9c3f1c1cbb466849d060df0c4968e9b9504",
+=======
+    "packages/worker/src/session/routes.ts": "d97409c82b6613603f52424f3e95484406915f898d042bf807cbffd6c64ab6d4",
+    "packages/worker/src/session/rpc.ts": "1b138150a1e497d4a06ede9342664cb92718ac764f04f366a495ada589117c67",
+>>>>>>> work/w7-mount-routing
     "packages/worker/src/session/serving-port.ts": "e232266119cbf85e8d60a73e0eeb1acfa929a195d865f4d6699ef7c597ba2f12",
     "packages/worker/src/session/shell-socket.ts": "72eac5d4c71842938ddb1e25264135a401c12222e273d5755ab692061b65e6aa",
     "packages/worker/src/session/start-real-vite.ts": "5203c81c0bf326bda10cd3fb56fa48f4dbaf1461c918d2ee80837bd15fd02e83",

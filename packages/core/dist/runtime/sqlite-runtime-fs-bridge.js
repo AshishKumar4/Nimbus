@@ -805,8 +805,9 @@ export class SqliteRuntimeFsBridge {
             return this.vfs.copyTreeAsync(source.path, target.path, options);
         }).catch((error) => { throw failure(error, call); });
     }
+    /** Where the namespace places it: atomic on SQLite, a routed wave when a record lands on a mount. */
     writeBatch(payload) {
-        return this.vfs.writeBatch(payload);
+        return this.vfs.writeBatchPlaced(payload);
     }
     writeStream(stream, options) {
         return this.vfs.writeStream(stream, options);

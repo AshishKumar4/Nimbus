@@ -39,6 +39,7 @@ import {
   type SupervisorDeliveredOpName,
   type SupervisorJoinedReadOpName,
 } from './supervisor-ops.js';
+import type { WaveMountReach } from '../vfs/sqlite-vfs.js';
 
 export type { SupervisorDeliveredOpName, SupervisorJoinedReadOpName };
 
@@ -72,6 +73,8 @@ interface WaveAttempt {
 /** An open write-wave epoch: the newest attempt admitted under it, and when it closes. */
 interface WaveEpoch extends WaveAttempt {
   readonly expiresAt: number;
+  /** The highest record index any attempt of `wave` began to apply on a mount (-1: none). */
+  mountReach: number;
 }
 
 /** Whether `a` came after `b` from the same writer. */
@@ -459,7 +462,7 @@ export class SupervisorDeliveries {
     const now = Date.now();
     for (const [key, epoch] of this.waveEpochs) if (epoch.expiresAt <= now) this.waveEpochs.delete(key);
     const writer = crypto.randomUUID();
-    this.waveEpochs.set(`${pid}:${writer}`, { wave: 0, attempt: 0, expiresAt: now + ttlMs });
+    this.waveEpochs.set(`${pid}:${writer}`, { wave: 0, attempt: 0, expiresAt: now + ttlMs, mountReach: -1 });
     return writer;
   }
 
@@ -474,7 +477,11 @@ export class SupervisorDeliveries {
    * again before each of the attempt's commits, which is what stops an
    * attempt overtaken, or outlived by its epoch, while it runs.
    */
-  admitWave(pid: number, writer: string, wave: number, attempt: number): { check(): void } {
+  /**
+   * `reach`: how far an earlier attempt of this wave may have reached into
+   * mounted records, and where this one notes its own (WaveMountReach).
+   */
+  admitWave(pid: number, writer: string, wave: number, attempt: number): { check(): void; reach: WaveMountReach } {
     const key = `${pid}:${writer}`;
     const mine: WaveAttempt = { wave, attempt };
     const check = (): WaveEpoch => {
@@ -494,8 +501,19 @@ export class SupervisorDeliveries {
       return epoch;
     };
     const epoch = check();
-    this.waveEpochs.set(key, { wave, attempt, expiresAt: epoch.expiresAt });
-    return { check: () => { check(); } };
+    // Only an earlier attempt of the same wave can have applied its records.
+    const prior = epoch.wave === wave ? epoch.mountReach : -1;
+    this.waveEpochs.set(key, { wave, attempt, expiresAt: epoch.expiresAt, mountReach: prior });
+    return {
+      check: () => { check(); },
+      reach: {
+        prior,
+        note: (index) => {
+          const now = this.waveEpochs.get(key);
+          if (now !== undefined && now.wave === wave) now.mountReach = Math.max(now.mountReach, index);
+        },
+      },
+    };
   }
 
   /** Reads being served, which repeats of them would join. */

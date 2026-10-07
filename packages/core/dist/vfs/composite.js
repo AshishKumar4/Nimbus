@@ -800,6 +800,21 @@ export class CompositeVFS {
         }));
     }
     /**
+     * Where a mutation of `path` lands: the namespace path its lookup resolves
+     * (links on the way followed, the last only with `follow`), the mount
+     * point it is on ('/' for the root), and whether that mount is read-only.
+     * The lookup is the mutations' own (onMutation's), so a writer that asks
+     * before it writes lands where the operation would. Rejects as that
+     * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO.
+     */
+    async mutationRoute(path, options) {
+        return reported({ syscall: 'route', path }, () => then(this.resolve(path, options?.follow === true, false), (at) => {
+            this.present(at);
+            const { mount } = this.locate(at);
+            return { path: at, point: mount.point, readOnly: mount.options.readOnly === true };
+        }));
+    }
+    /**
      * Whether the namespace answers `path` itself rather than the root
      * backend alone: a path on another mount, a directory above a mount point
      * (whose listing includes the mount's name), or a path under such a

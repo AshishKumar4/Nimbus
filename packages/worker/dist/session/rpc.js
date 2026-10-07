@@ -755,7 +755,7 @@ export async function _rpcWriteBatch(self, payload, pid) {
         chunkId: c.chunkId,
         data: normalizeWriteBatchChunkData(c.data),
     }));
-    return self.sqliteFs.as(callerCred(self, pid)).writeBatch({
+    return self.sqliteFs.as(callerCred(self, pid)).writeBatchPlaced({
         inodes,
         chunks,
         deletePaths,

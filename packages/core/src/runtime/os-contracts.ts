@@ -293,9 +293,10 @@ export function launchNamedPaths(cwd: string, program: string | null, argv: read
 
 /** A live view sharing namespace, credentials and descriptor state. */
 export type RuntimeSynchronousFs = {
-  // copyTree yields between slices, so it has no synchronous form; awaitRecall
-  // is a long poll, waited for by the holder's own loop.
-  [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch' | 'awaitRecall'>]:
+  // copyTree yields between slices, so it has no synchronous form; nor has
+  // writeBatch, whose records may land on a mount only an awaited call
+  // reaches; awaitRecall is a long poll, waited for by the holder's own loop.
+  [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeBatch' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch' | 'awaitRecall'>]:
     RuntimeFsBridge[K] extends (...args: infer A) => infer R
       ? (...args: A) => Awaited<R> : never;
 };
@@ -444,7 +445,7 @@ export interface RuntimeFsBridge {
    * later one; it throws to refuse them (a fenced write wave its writer has
    * since re-sent: SupervisorDeliveries.admitWave).
    */
-  writeStream(stream: ReadableStream<Uint8Array>, options?: { signal?: AbortSignal; mutationOwner?: string; decodeDrainStartedAt?: number; admit?: () => void }): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
+  writeStream(stream: ReadableStream<Uint8Array>, options?: import('../vfs/sqlite-vfs.js').WriteStreamOptions): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
   /**
    * An exclusive-mutation lease on the subtree at `path`. With `delegate`,
    * a delegation: the process decides the subtree's operations itself and

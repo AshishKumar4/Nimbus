@@ -15,6 +15,7 @@
  * which every consumer (supervisor RPC, facets, runners) already speaks.
  */
 import { isPendingChunkError, listPageBudget } from '../vfs/sqlite-vfs.js';
+import { namespaceWaveRouter } from './wave-router.js';
 import { Hydrator } from './hydration.js';
 import { Delegations } from './delegations.js';
 import { withRecall } from '../vfs/recall.js';
@@ -286,6 +287,11 @@ export class ProcessFiles {
         this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
         this.vfs.mount('/proc', this.proc);
         this.vfs.mount('/dev', new DevVFS());
+        // Every wave's records, whoever streams it (a process's binding, or a
+        // command holding the engine), are placed by this namespace's mutation
+        // lookup, and those it places on a mount are applied there by its own
+        // operations (wave-router.ts).
+        engine.setWaveRouter(namespaceWaveRouter(this.vfs, immutableCredential));
     }
     /**
      * An import page (N16); with `lazy` (N17) the chunks it lacks stay pending

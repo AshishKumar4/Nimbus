@@ -37,7 +37,11 @@ import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { acquireSupervisorAllocation, tryAcquireSupervisorAllocation, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { enc, dec } from '../_shared/bytes.js';
+<<<<<<< HEAD
 import { decodeWriteBatchStream, w7ChunkCount, w7Chunks, } from '@nimbus-sh/platform/w7-frame.js';
+=======
+import { decodeWriteBatchStream, encodeWriteBatchStream, } from '@nimbus-sh/platform/w7-frame.js';
+>>>>>>> work/w7-mount-routing
 import { WeightedCreditPool, } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
@@ -2059,6 +2063,7 @@ export class SqliteVFS {
                 return this.spanning(() => this.copyTreeInSlices(job, owner, origin), owner);
             },
             writeBatch: (payload) => this.writeBatch(payload, bound),
+            writeBatchPlaced: (payload) => this.writeBatchPlaced(payload, bound, origin),
             writeStream: (stream, options) => this.writeStream(stream, mutationOwner === undefined ? options : { ...options, mutationOwner }, bound, origin),
             mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
             revision: (path) => this.revision(path, bound),
@@ -2074,7 +2079,38 @@ export class SqliteVFS {
             // Live: a view outlives rotateIncarnation.
             get epoch() { return engine._epoch; },
         };
+<<<<<<< HEAD
         return this.callerView(view, { origin, privileged: bound.uid === 0, mutationOwner, holds: options?.holds, landed: options?.landed === true });
+=======
+        if (mutationOwner !== undefined) {
+            // Only synchronous mutations enter an ambient scope; spanning work carries the owner per slice.
+            const mutations = {
+                mkdir: (path, options) => this.withMutationOwner(mutationOwner, () => this.mkdir(path, options, bound)),
+                writeFile: (path, content, options) => this.withMutationOwner(mutationOwner, () => this.writeFile(path, content, options, bound)),
+                symlink: (target, path) => this.withMutationOwner(mutationOwner, () => this.symlink(target, path, bound)),
+                writeRange: (path, offset, bytes) => this.withMutationOwner(mutationOwner, () => this.writeRange(path, offset, bytes, bound)),
+                appendOnce: (path, pid, writerId, moduleId, operationId, digest, bytes) => this.withMutationOwner(mutationOwner, () => this.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes, bound)),
+                acknowledgeAppend: (pid, writerId, moduleId, operationId) => this.withMutationOwner(mutationOwner, () => this.acknowledgeAppend(pid, writerId, moduleId, operationId)),
+                truncate: (path, size) => this.withMutationOwner(mutationOwner, () => this.truncate(path, size, bound)),
+                utimes: (path, atimeMs, mtimeMs, options) => this.withMutationOwner(mutationOwner, () => this.utimes(path, atimeMs, mtimeMs, bound, options?.followSymlinks !== false)),
+                chmod: (path, mode) => this.withMutationOwner(mutationOwner, () => this.chmod(path, mode, bound)),
+                setDefaultAcl: (path, perms) => this.withMutationOwner(mutationOwner, () => this.setDefaultAcl(path, perms, bound)),
+                chown: (path, uid, gid, options) => this.withMutationOwner(mutationOwner, () => this.chown(path, uid, gid, bound, options?.followSymlinks !== false)),
+                unlink: (path) => this.withMutationOwner(mutationOwner, () => this.unlink(path, bound)),
+                rmdir: (path) => this.withMutationOwner(mutationOwner, () => this.rmdir(path, bound)),
+                removeRecursive: (path) => this.withMutationOwner(mutationOwner, () => this.removeRecursive(path, bound)),
+                rename: (from, to) => this.withMutationOwner(mutationOwner, () => this.rename(from, to, bound)),
+                copyFile: (from, to) => this.withMutationOwner(mutationOwner, () => this.copyFile(from, to, bound)),
+                copyTree: (from, to, options) => this.withMutationOwner(mutationOwner, () => this.copyTreeNow(this.planCopyTree(from, to, bound, options))),
+                writeBatch: (payload) => this.withMutationOwner(mutationOwner, () => this.writeBatch(payload, bound)),
+                writeBatchPlaced: (payload) => this.writeBatchPlaced(payload, bound, origin, mutationOwner),
+                mkdirBatch: (paths) => this.withMutationOwner(mutationOwner, () => this.mkdirBatch(paths, bound)),
+            };
+            Object.assign(view, mutations);
+        }
+        const settling = this.settlingView(view, origin);
+        return bound.uid === 0 ? this.privilegedView(settling) : settling;
+>>>>>>> work/w7-mount-routing
     }
     /** `run` as `origin`'s call: the principal its write events name. */
     asOrigin(origin, run) {
@@ -5690,6 +5726,7 @@ export class SqliteVFS {
             copyTree: readOnly,
             copyTreeAsync: readOnly,
             writeBatch: readOnly,
+            writeBatchPlaced: async () => readOnly(),
             writeStream: readOnly,
             writeFileFrom: readOnly,
             mkdirBatch: readOnly,
@@ -7459,6 +7496,153 @@ export class SqliteVFS {
      * (ContentCutter holds at most one chunk of carry), so a streamed file is
      * stored exactly as the same bytes written any other way.
      */
+    waveRouter = null;
+    /** The namespace that places every wave's records (ProcessFiles installs its CompositeVFS). */
+    setWaveRouter(router) {
+        this.waveRouter = router;
+    }
+    async writeBatchPlaced(payload, cred, origin, mutationOwner) {
+        const router = this.waveRouter;
+        if (router !== null) {
+            const names = [...payload.inodes.map((inode) => inode.path), ...(payload.deletePaths ?? [])];
+            const routes = new Map();
+            for (const named of names) {
+                const key = this.storageKey(named, cred);
+                const parent = this.parentPath(key);
+                let resolved = routes.get(parent);
+                if (resolved === undefined) {
+                    resolved = parent === '' ? '' : await router.resolveDirectory('/' + parent, cred);
+                    routes.set(parent, resolved);
+                }
+                if (router.placement(`${resolved === '/' ? '' : resolved}/${key.slice(key.lastIndexOf('/') + 1)}`) !== null) {
+                    const result = await this.writeStream(encodeWriteBatchStream(payload), { mutationOwner }, cred, origin);
+                    if (!result.ok)
+                        throw Object.assign(new Error(result.error.message), result.error.errno === undefined ? {} : { code: result.error.errno });
+                    return { inodes: result.committedPathCount, chunks: result.chunks };
+                }
+            }
+        }
+        return this.asOrigin(origin, () => this.withMutationOwner(mutationOwner, () => this.writeBatch(payload, cred)));
+    }
+    /**
+     * Route `record` through `router` when the namespace places it on a mount,
+     * in its place in the wave: what the wave wrote here before it commits
+     * first (`at.settleBefore`), then the namespace's own operation, with its
+     * refusals (EROFS on a read-only mount, EACCES, ENOENT). A file's chunks
+     * are handed to the router as they arrive, each held by the wave's credit
+     * until the router has written it. True when the record was routed.
+     */
+    async routeRecord(record, router, cred, at) {
+        /** The mount `named` lands on, or null: its directory resolved once per wave (until a link or removal). */
+        const mountOf = async (named) => {
+            const parent = this.parentPath(named);
+            let resolved = at.routes.get(parent);
+            if (resolved === undefined) {
+                resolved = parent === '' ? '' : await router.resolveDirectory('/' + parent, cred, at.signal);
+                at.routes.set(parent, resolved);
+            }
+            return router.placement(`${resolved === '/' ? '' : resolved}/${named.slice(named.lastIndexOf('/') + 1)}`);
+        };
+        /** Refuse a record an earlier attempt may have applied; note this one. */
+        const reached = () => {
+            if (at.reach === undefined)
+                return;
+            if (at.index <= at.reach.prior) {
+                throw vfsError('EIO', `record ${at.index}`, 'outcome unknown: an earlier attempt of this wave may have applied this mounted record, which cannot be applied twice');
+            }
+            at.reach.note(at.index);
+        };
+        const receiptOf = (named, stat) => (stat === null ? null : { path: named, ...stat });
+        switch (record.type) {
+            case 'delete': {
+                // A removal may change where later names resolve.
+                at.routes.clear();
+                if (await mountOf(record.path) === null)
+                    return false;
+                at.setPhase('publish');
+                at.settleBefore();
+                reached();
+                await router.apply({ type: 'delete', path: '/' + record.path }, cred, at.guard);
+                at.committed(null);
+                return true;
+            }
+            case 'directory': {
+                if (await mountOf(record.inode.path) === null)
+                    return false;
+                at.setPhase('publish');
+                at.settleBefore();
+                reached();
+                // A directory has no receipt, here as in a group.
+                await router.apply({ type: 'directory', path: '/' + record.inode.path, mode: record.inode.mode }, cred, at.guard);
+                at.committed(null);
+                return true;
+            }
+            case 'file-begin': {
+                if (await mountOf(record.inode.path) === null)
+                    return false;
+                if (record.inode.kind === 'symlink')
+                    at.routes.clear();
+                at.setPhase('validation');
+                this.validateInodeContentShape(record.inode);
+                at.setPhase('publish');
+                at.settleBefore();
+                reached();
+                const queue = new ChunkQueue();
+                const named = record.inode.path;
+                const path = '/' + named;
+                const published = record.inode.kind === 'symlink'
+                    ? (async () => {
+                        const parts = [];
+                        for await (const chunk of queue) {
+                            parts.push(chunk.data.slice());
+                            chunk.release();
+                        }
+                        return router.apply({ type: 'symlink', path, target: new TextDecoder().decode(concatBytes(parts)) }, cred, at.guard);
+                    })()
+                    : router.apply({ type: 'file', path, mode: record.inode.mode, size: record.inode.size, chunks: queue }, cred, at.guard);
+                // Its failure is the file's, met at its end (or the wave's).
+                published.catch(() => { });
+                at.file = { streamContentId: record.streamContentId, named, size: record.inode.size, received: 0, nextChunk: 0, queue, published };
+                return true;
+            }
+            case 'file-chunk': {
+                const file = at.file;
+                if (file === null)
+                    return false;
+                at.setPhase('validation');
+                if (record.streamContentId !== file.streamContentId || record.path !== file.named) {
+                    throw vfsError('EINVAL', `streamed chunk ownership mismatch: ${record.path}`);
+                }
+                if (record.chunkId !== file.nextChunk || file.received + record.data.byteLength > file.size) {
+                    throw vfsError('EINVAL', record.path, `chunk ${record.chunkId} out of order or past size`);
+                }
+                file.nextChunk++;
+                file.received += record.data.byteLength;
+                // The router releases its credit once it has written it.
+                file.queue.push({ data: record.data, release: () => record.retention.release() });
+                return true;
+            }
+            case 'file-end': {
+                const file = at.file;
+                if (file === null)
+                    return false;
+                at.setPhase('validation');
+                if (record.streamContentId !== file.streamContentId) {
+                    throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
+                }
+                if (file.received !== file.size) {
+                    throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.size} bytes`);
+                }
+                at.file = null;
+                at.setPhase('publish');
+                file.queue.end();
+                at.committed(receiptOf(file.named, await file.published));
+                return true;
+            }
+            default:
+                return false;
+        }
+    }
     writeStream(stream, options = {}, cred, origin = null) {
         // The delegations its caller holds, read now, in the caller's turn: its records apply as them.
         const holds = options.mutationOwner !== undefined ? new Set([options.mutationOwner, ...(this.activeHolds ?? [])]) : this.activeHolds;
@@ -7500,6 +7684,13 @@ export class SqliteVFS {
             receipts: [],
         };
         let phase = 'decode';
+        const router = this.waveRouter;
+        /** A file the namespace places on a mount, its chunks handed to the router as they arrive. */
+        const routed = { file: null };
+        /** Each directory's resolved namespace path, while the wave changes no link and removes nothing. */
+        const routes = new Map();
+        /** The index of the record being applied, as committedOps counts them. */
+        let recordIndex = -1;
         // The pending publish group. Everything reset by a flush lives here.
         let group = this.newPlan();
         let groupLeases = [];
@@ -7775,6 +7966,7 @@ export class SqliteVFS {
                     throw new Error('w7-frame: stream ended without batch-end');
                 }
                 const record = next.value;
+<<<<<<< HEAD
                 // A record that lands in another holder's delegation waits for it to
                 // be given up first, here between records, where the stream may wait:
                 // its group's commit would otherwise be refused.
@@ -7828,6 +8020,57 @@ export class SqliteVFS {
                             // Authorising a file reads its parent from the committed inode
                             // tree, so pending directories become visible first.
                             endLeading();
+=======
+                if (record.type === 'delete' || record.type === 'directory' || record.type === 'file-begin')
+                    recordIndex++;
+                if (router !== null && await this.routeRecord(record, router, cred, {
+                    get file() { return routed.file; },
+                    set file(file) { routed.file = file; },
+                    index: recordIndex,
+                    routes,
+                    signal: options.signal,
+                    reach: options.mountReach,
+                    // Right before each call to the backend: the wave is still admitted, and not cancelled.
+                    guard: () => {
+                        options.signal?.throwIfAborted();
+                        options.admit?.();
+                    },
+                    // Whatever the wave wrote here before the record commits first.
+                    settleBefore: () => {
+                        endLeading();
+                        flushDirectories();
+                        flushGroup();
+                        options.admit?.();
+                    },
+                    setPhase: (next) => { phase = next; },
+                    committed: (receipt) => {
+                        progress.committedGroupSequence++;
+                        progress.committedPathCount++;
+                        if (receipt !== null)
+                            progress.receipts.push(receipt);
+                    },
+                }))
+                    continue;
+                switch (record.type) {
+                    case 'delete': {
+                        phase = 'publish';
+                        if (leading)
+                            leadingDeletes.push(record.path);
+                        else
+                            commitDelete(record.path);
+                        break;
+                    }
+                    case 'directory': {
+                        phase = 'validation';
+                        this.validateFileChunks(record.inode, []);
+                        phase = 'publish';
+                        // Directory inodes carry no payload: rows are the only bound in
+                        // reach, priced by the plan's own accounting (each row, the
+                        // parent it dates, and a snapshot's before-images of both), so
+                        // the strict batch the flush commits always fits. The leading
+                        // ones are bounded as they commit (endLeading).
+                        if (!leading && this.newPlan().wouldExceedInodes(pendingDirectories.length + 1) !== null)
+>>>>>>> work/w7-mount-routing
                             flushDirectories();
                             phase = 'validation';
                             // The file lands where its name resolves (links followed, as a
@@ -8010,6 +8253,7 @@ export class SqliteVFS {
                     code: 'ERR_WRITE_BATCH_STREAM',
                     phase,
                     message: this.errorMessage(error),
+                    ...(errnoOf(error) === undefined ? {} : { errno: errnoOf(error) }),
                 },
             };
         }
@@ -8020,6 +8264,12 @@ export class SqliteVFS {
             for (const lease of activeFile?.heldLeases ?? [])
                 lease.release();
             groupLeases = [];
+            // A routed file the wave did not finish: its writer stops, and what it had not taken is released.
+            if (routed.file !== null) {
+                const file = routed.file;
+                file.queue.fail(vfsError('EIO', '/' + file.named, 'the wave ended before the file did'));
+                await file.published.catch(() => { });
+            }
             if (!recordIteratorFinished && recordIterator?.return) {
                 try {
                     await recordIterator.return();
@@ -9926,6 +10176,7 @@ function batchMutationPaths(payload) {
 function subtreeRange(root) {
     return root === '' ? { lower: '', upper: null } : { lower: `${root}/`, upper: `${root}0` };
 }
+<<<<<<< HEAD
 /** `items`, then `last`. */
 function* followedBy(items, last) {
     yield* items;
@@ -9949,6 +10200,12 @@ function subtreeWhere(root, options = {}) {
         ? { sql: `${column} > ?`, params: [after] }
         : { sql: `${column} > ? AND ${column} < ?`, params: [after, below] };
     return options.withRoot ? { sql: `(${column} = ? OR (${under.sql}))`, params: [root, ...under.params] } : under;
+=======
+/** An error's errno (an `E…` code), if it carries one. */
+function errnoOf(error) {
+    const code = typeof error === 'object' && error !== null ? error.code : undefined;
+    return typeof code === 'string' && /^E[A-Z0-9]+$/.test(code) ? code : undefined;
+>>>>>>> work/w7-mount-routing
 }
 /**
  * The engine's refusal, `${code}: ${what}`, with its reason (`detail`), which
@@ -10097,6 +10354,63 @@ class GcQueue {
     }
     rows() {
         return this.values;
+    }
+}
+/**
+ * A routed file's chunks, from the wave's record loop to the router: pushed
+ * as they are decoded, taken as the router writes them. Each chunk holds the
+ * wave's credit until its taker releases it, so a router slower than the
+ * wave slows the wave instead of buffering it. A failed wave fails the taker
+ * and releases what it had not taken.
+ */
+class ChunkQueue {
+    queued = [];
+    ended = false;
+    failure = null;
+    waiting = null;
+    push(chunk) {
+        if (this.waiting !== null) {
+            const waiting = this.waiting;
+            this.waiting = null;
+            waiting.resolve({ value: chunk, done: false });
+        }
+        else {
+            this.queued.push(chunk);
+        }
+    }
+    end() {
+        this.ended = true;
+        if (this.waiting !== null && this.queued.length === 0) {
+            const waiting = this.waiting;
+            this.waiting = null;
+            waiting.resolve({ value: undefined, done: true });
+        }
+    }
+    fail(error) {
+        if (this.ended && this.queued.length === 0)
+            return;
+        this.failure = error;
+        for (const chunk of this.queued.splice(0))
+            chunk.release();
+        if (this.waiting !== null) {
+            const waiting = this.waiting;
+            this.waiting = null;
+            waiting.reject(error);
+        }
+    }
+    [Symbol.asyncIterator]() {
+        return {
+            next: () => {
+                if (this.failure !== null)
+                    return Promise.reject(this.failure);
+                const chunk = this.queued.shift();
+                if (chunk !== undefined)
+                    return Promise.resolve({ value: chunk, done: false });
+                if (this.ended)
+                    return Promise.resolve({ value: undefined, done: true });
+                return new Promise((resolve, reject) => { this.waiting = { resolve, reject }; });
+            },
+        };
     }
 }
 function concatBytes(parts) {
