@@ -137,6 +137,7 @@ function commandContext(args) {
   const branchVfs = {
     deviceId: 1,
     as: () => ({
+      exists: () => false,
       acquireExclusiveMutation(path) {
         return { root: path.replace(/^\/+/, ''), owner: 'owner-branch' };
       },
