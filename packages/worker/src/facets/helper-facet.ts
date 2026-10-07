@@ -5,6 +5,7 @@
  * object's own isolate never instantiates it.
  */
 
+import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import type { StagedSourceEnv } from '../runtime/staged-source.js';
 
@@ -23,7 +24,7 @@ export interface HelperFacetSpec {
  * named `spec.id`. Needs `env.LOADER`, `env.ASSETS` and `ctx.facets`, and
  * nothing of any host.
  */
-export async function loadHelperFacet<T>(
+export async function loadHelperFacet<T extends DurableObject>(
   ctx: DurableObjectState,
   env: unknown,
   spec: HelperFacetSpec,
@@ -42,7 +43,7 @@ export async function loadHelperFacet<T>(
  * loading the facet waits on that load. A load or call that failed drops the
  * entry; the next caller loads a fresh stub.
  */
-export class SharedHelperFacet<T> {
+export class SharedHelperFacet<T extends DurableObject> {
   readonly #stubs = new WeakMap<DurableObjectState, Promise<Fetcher<T>>>();
 
   constructor(private readonly spec: HelperFacetSpec) {}
