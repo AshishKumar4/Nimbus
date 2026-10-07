@@ -1,7 +1,7 @@
 /**
  * wrangler-config.ts — a project's wrangler.json or wrangler.jsonc, as
- * `nimbus wrangler dev` reads it and as its unsupported-binding warning
- * reads it.
+ * `nimbus wrangler dev`, its unsupported-binding warning and the repo's
+ * deploy-isolation gate read it.
  */
 
 import { parse, printParseErrorCode, type ParseError } from 'jsonc-parser';
@@ -33,10 +33,10 @@ export interface WranglerConfig {
   /** Inline env-vars (strings) delivered to the inner worker as env.<KEY>. */
   vars?: Record<string, string>;
   /**
-   * Service bindings. In the outer session the `service` field names
-   * another deployed Worker; here we honor it only if the outer env
-   * happens to have a field by the same name (i.e. wrangler dev --local
-   * with a companion worker). Otherwise we warn and leave undefined.
+   * Service bindings: not supported in `nimbus wrangler dev`, which warns
+   * and leaves each undefined. No outer binding is ever forwarded by name:
+   * that once handed a sandbox NIMBUS_SESSION and JWT_SECRET
+   * (NimbusWrangler.buildInnerEnv).
    */
   services?: { binding: string; service: string; entrypoint?: string }[];
   /** Static assets directory + binding name. */

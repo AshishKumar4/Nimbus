@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parse, printParseErrorCode } from 'jsonc-parser';
+import { parseWranglerJsonc } from '../../packages/worker/src/wrangler/wrangler-config.ts';
 import { scaffold } from '../../packages/cli/src/commands/scaffold.ts';
 import { buildNimbusWranglerConfig } from '../../packages/config/src/index.ts';
 
@@ -28,10 +28,7 @@ try {
   }
   assert.equal(code, 0);
 
-  // wrangler reads its config with jsonc-parser, trailing commas allowed.
-  const errors = [];
-  const config = parse(readFileSync(join(target, 'wrangler.jsonc'), 'utf8'), errors, { allowTrailingComma: true });
-  assert.deepEqual(errors.map((e) => printParseErrorCode(e.error)), []);
+  const config = parseWranglerJsonc(readFileSync(join(target, 'wrangler.jsonc'), 'utf8'));
   assert.deepEqual(config, buildNimbusWranglerConfig({
     name: 'my-worker',
     nimbusPublicDirectory: true,
