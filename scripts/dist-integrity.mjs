@@ -74,14 +74,40 @@
  *   - every published package's prepublishOnly, as
  *     `bun ../../scripts/dist-integrity.mjs --publish`, which also refuses
  *     a package directory that differs from HEAD
+ *
+ * A FAILED BUILD IS NOT DRIFT
+ *   A package build starts by deleting its dist (clean-dist.mjs), so a step
+ *   that fails leaves the tree without it. Reported as drift, or committed
+ *   by whoever commits what the gate rebuilt, that deletion reached a
+ *   release branch twice (a worktree with no node_modules, whose global tsc
+ *   rejected --noCheck). So a build runs as a transaction: when a step
+ *   fails, every file under the output roots is put back as it was before
+ *   the build, and the gate throws BuildFailure (exit 2 on the CLI), never
+ *   a drift report (exit 1). And in a bun workspace it refuses to build at
+ *   all with any toolchain but the workspace's own: node_modules installed,
+ *   and the tsc each package resolves being the lockfile's.
+ *
+ * ONE GATE PER CHECKOUT AT A TIME
+ *   Two gates on one checkout would read each other's half-built tree: B
+ *   snapshots while A has cleaned dist, and B's rollback then deletes A's
+ *   rebuilt output as "added". Every entry point (the gate, rebuildDrift,
+ *   runBuildFixpoint, the generated-source guard) takes the checkout lock
+ *   (scripts/lib/checkout-lock.mjs: flock(2) on a file in the checkout's
+ *   git dir) before its first snapshot and holds it through build,
+ *   rollback and verification. A second gate waits for the first; the
+ *   kernel releases the lock when its process ends, however it ends.
  */
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { delimiter, dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { checkoutLockFd, holdsCheckoutLock, withCheckoutLock } from './lib/checkout-lock.mjs';
 import { filesUnder, trackedFileDigests } from './lib/fs-walk.mjs';
+import { BuildFailure, diffSnapshots, transaction } from './lib/output-transaction.mjs';
+
+export { BuildFailure, diffSnapshots, withCheckoutLock };
 
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -312,20 +338,6 @@ export function snapshotBuildOutputs({ root = REPO_ROOT, roots = OUTPUT_ROOTS } 
   return trackedFileDigests(root, roots);
 }
 
-/** What the build did to the tree, as three sorted path lists. */
-export function diffSnapshots(before, after) {
-  const changed = [];
-  const added = [];
-  const removed = [];
-  for (const [path, digest] of after) {
-    const prior = before.get(path);
-    if (prior === undefined) added.push(path);
-    else if (prior !== digest) changed.push(path);
-  }
-  for (const path of before.keys()) if (!after.has(path)) removed.push(path);
-  return { changed: changed.sort(), added: added.sort(), removed: removed.sort() };
-}
-
 /**
  * Run the build and report what it moved. The whole invariant in one
  * call, and the only thing three different callers need from it: the
@@ -337,26 +349,151 @@ export function diffSnapshots(before, after) {
 export function rebuildDrift({
   root = REPO_ROOT, roots = OUTPUT_ROOTS, steps = BUILD_FIXPOINT, log = silent,
 } = {}) {
-  const before = snapshotBuildOutputs({ root, roots });
-  log(`digested ${before.size} build outputs under ${roots.join(', ')}`);
-  runBuildFixpoint({ root, steps, log });
-  return diffSnapshots(before, snapshotBuildOutputs({ root, roots }));
+  return withCheckoutLock(root, () => {
+    const before = snapshotBuildOutputs({ root, roots });
+    log(`digested ${before.size} build outputs under ${roots.join(', ')}`);
+    runBuildFixpoint({ root, steps, log, roots, before });
+    return diffSnapshots(before, snapshotBuildOutputs({ root, roots }));
+  }, { log });
 }
 
-export function runBuildFixpoint({ root = REPO_ROOT, steps = BUILD_FIXPOINT, log = silent } = {}) {
-  for (const step of steps) {
-    log(`${step.cwd} → ${step.script} (${step.why})`);
-    const result = spawnSync('bun', ['run', '--cwd', step.cwd, step.script], {
-      cwd: root,
-      encoding: 'utf8',
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
-      process.stderr.write(result.stdout || '');
-      process.stderr.write(result.stderr || '');
-      throw new Error(`build step \`bun run --cwd ${step.cwd} ${step.script}\` exited ${result.status}`);
+/**
+ * Run `steps` in order, as one transaction over `roots`
+ * (scripts/lib/output-transaction.mjs): if a step fails, every file under
+ * `roots` is put back as `before` (the snapshot taken when the build began)
+ * had it, and BuildFailure is thrown.
+ *
+ * `roots` must cover everything `steps` can write. A `before` snapshot
+ * must have been taken under the same checkout lock (withCheckoutLock).
+ *
+ * @param {{ root?: string, steps?: Array<{ cwd: string, script: string, why: string }>, log?: (line: string) => void,
+ *   roots?: string[], before?: Map<string, string> }} [options]
+ */
+export function runBuildFixpoint({
+  root = REPO_ROOT, steps = BUILD_FIXPOINT, log = silent, roots = OUTPUT_ROOTS, before,
+} = {}) {
+  if (before !== undefined && !holdsCheckoutLock(root)) {
+    throw new Error('runBuildFixpoint: a `before` snapshot must be taken under withCheckoutLock, or another gate can move the tree between it and the build');
+  }
+  return withCheckoutLock(root, () => {
+    assertWorkspaceToolchain({ root, steps });
+    runSteps({ root, steps, log, roots, before: before ?? snapshotBuildOutputs({ root, roots }) });
+  }, { log });
+}
+
+/** bubblewrap, which bounds a build step's processes (stepSandbox). */
+const BWRAP = '/usr/bin/bwrap';
+
+/**
+ * Each build step runs as PID 1's child in a PID namespace of its own that
+ * dies with this process (bwrap --unshare-pid --die-with-parent, as
+ * run-bounded runs a test): when the gate dies, however it dies, the
+ * namespace's init is killed and the kernel kills every process in it. So
+ * nothing a step started (esbuild's service, which Node spawns with fds 0-2
+ * only, among them) writes on after the checkout lock is released; the
+ * lock's descriptor need only cover what cannot outlive it. The rest of
+ * the system is the step's as before: the whole filesystem, the same user.
+ */
+function stepSandbox() {
+  return [
+    '--unshare-user', '--uid', String(process.getuid?.() ?? 0), '--gid', String(process.getgid?.() ?? 0), '--unshare-pid', '--die-with-parent',
+    '--bind', '/', '/', '--proc', '/proc', '--dev-bind', '/dev', '/dev',
+  ];
+}
+
+function runSteps({ root, steps, log, roots, before }) {
+  if (!existsSync(BWRAP)) {
+    throw new BuildFailure(`refusing to build — ${BWRAP} is not installed, and without it a build step could outlive the gate and write after its lock is released`);
+  }
+  transaction({ root, roots, before }, () => {
+    for (const step of steps) {
+      log(`${step.cwd} → ${step.script} (${step.why})`);
+      const result = spawnSync(BWRAP, [...stepSandbox(), '--', 'bun', 'run', '--cwd', step.cwd, step.script], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: workspacePath(root, step.cwd) },
+        // The checkout lock, held by the step too (scripts/lib/checkout-lock.mjs).
+        stdio: ['ignore', 'pipe', 'pipe', checkoutLockFd(root)],
+      });
+      if (result.error || result.status !== 0) {
+        process.stderr.write(result.stdout || '');
+        process.stderr.write(result.stderr || '');
+        const how = result.error ? `could not start (${result.error.message})`
+          : result.status === null ? `was killed by ${result.signal}` : `exited ${result.status}`;
+        return `\`bun run --cwd ${step.cwd} ${step.script}\` ${how}`;
+      }
+    }
+    return null;
+  });
+}
+
+/**
+ * PATH for a step: the package's and the workspace's node_modules/.bin
+ * ahead of everything else, as `bun run` orders them, so no other tsc on
+ * the machine can stand in for the workspace's.
+ */
+function workspacePath(root, cwd) {
+  const bins = [join(root, cwd, 'node_modules', '.bin'), join(root, 'node_modules', '.bin')];
+  return [...bins, process.env.PATH ?? ''].join(delimiter);
+}
+
+/**
+ * In a bun workspace, refuse to build with anything but its own toolchain:
+ * node_modules must be installed, and every step's package that compiles
+ * with TypeScript must resolve a tsc inside the workspace that is the
+ * version bun.lock pins. A global tsc (one without --noCheck, say) or an
+ * install older than the lockfile otherwise fails mid-build, or builds
+ * different bytes. A tree that is not a workspace (a unit fixture) has
+ * nothing to check.
+ *
+ * @param {{ root?: string, steps?: Array<{ cwd: string }> }} [options]
+ */
+export function assertWorkspaceToolchain({ root = REPO_ROOT, steps = BUILD_FIXPOINT } = {}) {
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  } catch {
+    return;
+  }
+  if (!manifest?.workspaces) return;
+  const install = 'run `bun install --frozen-lockfile` at the repo root, then build again';
+  if (!existsSync(join(root, 'node_modules'))) {
+    throw new BuildFailure(`refusing to build — ${root} has no node_modules, so its build would run whatever tsc is on PATH; ${install}`);
+  }
+  let pinned = null;
+  for (const cwd of new Set(steps.map((step) => step.cwd))) {
+    let pkg;
+    try {
+      pkg = JSON.parse(readFileSync(join(root, cwd, 'package.json'), 'utf8'));
+    } catch {
+      continue;
+    }
+    if (!pkg?.devDependencies?.typescript && !pkg?.dependencies?.typescript) continue;
+    pinned ??= lockedTypescript(root);
+    const bin = [join(root, cwd, 'node_modules', '.bin', 'tsc'), join(root, 'node_modules', '.bin', 'tsc')].find((p) => existsSync(p));
+    if (!bin) throw new BuildFailure(`refusing to build — ${cwd} compiles with tsc, and no tsc is installed in the workspace for it; ${install}`);
+    const binary = realpathSync(bin);
+    const inside = relative(realpathSync(root), binary);
+    const installed = JSON.parse(readFileSync(join(dirname(binary), '..', 'package.json'), 'utf8')).version;
+    if (inside.startsWith('..') || installed !== pinned) {
+      throw new BuildFailure(
+        `refusing to build — ${cwd}'s tsc is ${binary} (typescript ${installed}), but bun.lock pins typescript ${pinned}; ${install}`,
+      );
     }
   }
+}
+
+/** The typescript version bun.lock resolves for the workspace. */
+function lockedTypescript(root) {
+  let lock = '';
+  try {
+    lock = readFileSync(join(root, 'bun.lock'), 'utf8');
+  } catch {
+    // Reported below.
+  }
+  const match = /^ {4}"typescript": \["typescript@([^"]+)"/m.exec(lock);
+  if (!match) throw new BuildFailure(`refusing to build — ${join(root, 'bun.lock')} pins no typescript, so the workspace's tsc cannot be told from any other`);
+  return match[1];
 }
 
 // ── Staged assets ────────────────────────────────────────────────────
@@ -512,10 +649,16 @@ export async function checkStagedAssets({ root = REPO_ROOT } = {}) {
  * as before. Unit fixtures pass custom roots/steps and bypass the record
  * entirely — they verify a different tree.
  */
-export async function assertDistMatchesSource({
+export function assertDistMatchesSource({
   root = REPO_ROOT, roots = OUTPUT_ROOTS, steps = BUILD_FIXPOINT, log = silent, useCache = true,
 } = {}) {
+  // Held from before the first read of the tree through the last.
+  return withCheckoutLock(root, () => verifyUnderLock({ root, roots, steps, log, useCache }), { log });
+}
+
+async function verifyUnderLock({ root, roots, steps, log, useCache }) {
   const defaultScope = roots === OUTPUT_ROOTS && steps === BUILD_FIXPOINT;
+  assertWorkspaceToolchain({ root, steps });
   // An output whose source is gone would ship, and load. The record cannot
   // vouch for a file no build writes, so the cached path checks first; a
   // rebuild clears every dist (its removals are drift) and checks after.
@@ -676,20 +819,22 @@ if (import.meta.main) {
   // that directory as it stands, so beyond the fixpoint it must hold exactly
   // what HEAD holds: a consistent but uncommitted src+dist edit would
   // otherwise ship bytes git never saw.
-  if (process.argv.includes('--publish')) {
-    const dirty = spawnSync('git', ['status', '--porcelain', '--untracked-files=all', '--', '.'], {
-      encoding: 'utf8',
-    });
-    if (dirty.status !== 0 || dirty.stdout.trim()) {
-      console.error(
-        `\nrefusing to publish — ${process.cwd()} differs from HEAD:\n${dirty.stdout}${dirty.stderr}`
-        + 'Commit or discard these, then publish again.\n',
-      );
-      process.exit(1);
-    }
-  }
   try {
-    const { assets, cached } = await assertDistMatchesSource({ log, useCache });
+    const { assets, cached } = await withCheckoutLock(REPO_ROOT, async () => {
+      if (process.argv.includes('--publish')) {
+        const dirty = spawnSync('git', ['status', '--porcelain', '--untracked-files=all', '--', '.'], {
+          encoding: 'utf8',
+        });
+        if (dirty.status !== 0 || dirty.stdout.trim()) {
+          console.error(
+            `\nrefusing to publish — ${process.cwd()} differs from HEAD:\n${dirty.stdout}${dirty.stderr}`
+            + 'Commit or discard these, then publish again.\n',
+          );
+          process.exit(1);
+        }
+      }
+      return assertDistMatchesSource({ log, useCache });
+    }, { log });
     console.log(
       'dist-integrity OK: the build output is the fixpoint of src; ' +
       `${assets.verified.length} staged assets match what dist points at` +
@@ -697,6 +842,8 @@ if (import.meta.main) {
     );
   } catch (error) {
     console.error(`\n${error.message}\n`);
-    process.exit(1);
+    // 2: the build did not run or did not finish (nothing to commit);
+    // 1: it ran, and the tree is not its fixpoint.
+    process.exit(error instanceof BuildFailure ? 2 : 1);
   }
 }
