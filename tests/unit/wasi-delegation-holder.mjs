@@ -320,7 +320,7 @@ async function create(fs, path, text) {
   for (let i = 0; i < 5; i++) {
     await s.fs.write(log.id, null, enc.encode(`p${i};`));
     // A shell >> between the process's appends.
-    await withRecall(() => s.kernel.appendFile('home/user/shared.log', enc.encode(`s${i};`)));
+    await withRecall(() => s.kernel.writeRange('home/user/shared.log', s.kernel.stat('home/user/shared.log').size, enc.encode(`s${i};`)));
     await s.fs.fsync(log.id);
   }
   await s.fs.close(log.id);
