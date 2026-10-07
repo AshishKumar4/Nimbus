@@ -10,6 +10,8 @@ export class TerminalStdin {
     closed = false;
     resolvers = [];
     _rawMode = false;
+    /** termios ISIG (TerminalInputStream.signalKeys). */
+    signalKeys = true;
     decoder = new TextDecoder('utf-8');
     /** True when a command has called read() and is waiting for input. */
     get isWaiting() {

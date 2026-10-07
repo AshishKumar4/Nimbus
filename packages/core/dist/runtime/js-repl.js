@@ -13,11 +13,21 @@
  * line's declarations are there for the next.
  *
  * What it prints follows Node's REPL with a stream that is not a terminal:
- * `> ` and `... ` prompts (the terminal echoes what is typed), each line's
- * value through the runtime's util.inspect (`undefined` for a statement),
- * and a thrown value as `Uncaught <name>: <message>`. `.exit`, `.break` (`.clear`) and
- * `.help` are its commands; Ctrl-D ends it.
+ *   - `> ` and `... ` prompts (the terminal echoes what is typed);
+ *   - each line's value through the runtime's util.inspect (`undefined` for
+ *     a statement), kept as `_`; a thrown value as `Uncaught <error>`, kept
+ *     as `_error`, and so are a rejection no one handles and an exception
+ *     a timer throws, after which the prompt comes back;
+ *   - `.break`, `.clear`, `.exit` and `.help`, which act even while a block
+ *     is pending; `.editor`, `.load` and `.save` are not supported;
+ *   - `import()` resolves as from a module named `repl` in the working
+ *     directory;
+ *   - Ctrl-C, which the terminal delivers as input here (its signal keys
+ *     are off while the REPL runs): it abandons a line still running or a
+ *     pending block, and a second in a row on an empty prompt exits, as
+ *     Ctrl-D does.
  */
+import { REPL_IMPORT } from './js-repl-names.js';
 /** The REPL program, opening with `banner`. */
 export function jsReplProgram(banner) {
     return `"use strict";
@@ -25,6 +35,10 @@ const __replUtil = require("node:util");
 const __replService = globalThis.__nimbusRuntimeCode;
 // Node's REPL has the require of its working directory as a global.
 globalThis.require = require;
+const __replParent = require("node:url").pathToFileURL(require("node:path").join(process.cwd(), "repl")).href;
+Object.defineProperty(globalThis, ${JSON.stringify(REPL_IMPORT)}, {
+  value: (specifier, options) => globalThis.__nimbusDynamicImport(__replParent, specifier, options),
+});
 const __replHelp = ".break    Sometimes you get stuck, this gets you out\\n"
   + ".clear    Alias for .break\\n"
   + ".exit     Exit the REPL\\n"
@@ -33,23 +47,62 @@ const __replHelp = ".break    Sometimes you get stuck, this gets you out\\n"
 let __replPending = "";
 let __replInput = "";
 let __replQueue = Promise.resolve();
+// The line now running: its interrupt, or null.
+let __replRunning = null;
+let __replSawInterrupt = false;
 const __replOut = (text) => process.stdout.write(text);
 const __replPrompt = () => __replOut(__replPending === "" ? "> " : "... ");
-const __replUncaught = (error) => "Uncaught " + (error instanceof Error
-  ? (error.name || "Error") + ": " + error.message
-  : __replUtil.inspect(error)) + "\\n";
+// _ and _error, as Node's REPL keeps them: assigning one stops the REPL's own updates.
+let __replLast;
+let __replLastError;
+let __replOwnLast = true;
+let __replOwnLastError = true;
+Object.defineProperty(globalThis, "_", {
+  configurable: true,
+  get: () => __replLast,
+  set: (value) => {
+    __replLast = value;
+    if (__replOwnLast) { __replOwnLast = false; __replOut("Expression assignment to _ now disabled.\\n"); }
+  },
+});
+Object.defineProperty(globalThis, "_error", {
+  configurable: true,
+  get: () => __replLastError,
+  set: (value) => {
+    __replLastError = value;
+    if (__replOwnLastError) { __replOwnLastError = false; __replOut("Expression assignment to _error now disabled.\\n"); }
+  },
+});
+const __replDescribe = (error) => {
+  if (!(error instanceof Error)) return String(__replUtil.inspect(error));
+  const head = typeof error.stack === "string" ? error.stack.split("\\n")[0] : "";
+  return head !== "" ? head : (error.name || "Error") + ": " + error.message;
+};
+const __replUncaught = (error) => {
+  if (__replOwnLastError) __replLastError = error;
+  __replOut("Uncaught " + __replDescribe(error) + "\\n");
+};
+// What no line awaits: reported, and the REPL goes on.
+process.on("unhandledRejection", (reason) => { __replUncaught(reason); __replPrompt(); });
+process.on("uncaughtException", (error) => { __replUncaught(error); __replPrompt(); });
 // A line Node reads as a command: a dot, then not a dot and not a number.
 const __replCommand = (line) => {
   const text = line.trim();
   return text.charAt(0) === "." && text.charAt(1) !== "." && Number.isNaN(Number.parseFloat(text)) ? text.slice(1).split(/\\s+/)[0] : null;
 };
 async function __replLine(line) {
-  const command = __replPending === "" ? __replCommand(line) : null;
-  if (command !== null) {
-    if (command === "exit") process.exit(0);
+  __replSawInterrupt = false;
+  const command = __replCommand(line);
+  if (command === "exit") process.exit(0);
+  if (command === "break" || command === "clear" || command === "help") {
     if (command === "help") __replOut(__replHelp);
-    else if (command !== "break" && command !== "clear") __replOut("Invalid REPL keyword\\n");
-    __replPending = "";
+    else __replPending = "";
+    __replPrompt();
+    return;
+  }
+  // An unknown command is an error only where it cannot be code: on a fresh line.
+  if (command !== null && __replPending === "") {
+    __replOut("Invalid REPL keyword\\n");
     __replPrompt();
     return;
   }
@@ -63,7 +116,7 @@ async function __replLine(line) {
     run = __replService.compileReplLine(code);
   } catch (error) {
     __replPending = "";
-    __replOut(__replUncaught(error));
+    __replUncaught(error);
     __replPrompt();
     return;
   }
@@ -73,23 +126,62 @@ async function __replLine(line) {
     return;
   }
   __replPending = "";
+  const running = Reflect.apply(run, globalThis, []);
+  const interrupted = new Promise((_resolve, reject) => {
+    __replRunning = () => {
+      // The line goes on unawaited: what it ends with is no one's now.
+      running.catch(() => {});
+      const error = new Error("Script execution was interrupted by \`SIGINT\`");
+      error.code = "ERR_SCRIPT_EXECUTION_INTERRUPTED";
+      error.stack = "Error [ERR_SCRIPT_EXECUTION_INTERRUPTED]: " + error.message;
+      reject(error);
+    };
+  });
   try {
-    const result = await Reflect.apply(run, globalThis, []);
-    __replOut(String(__replUtil.inspect(result === undefined ? undefined : result.value)) + "\\n");
+    const result = await Promise.race([running, interrupted]);
+    const value = result === undefined ? undefined : result.value;
+    if (__replOwnLast) __replLast = value;
+    __replOut(String(__replUtil.inspect(value)) + "\\n");
   } catch (error) {
-    __replOut(__replUncaught(error));
+    __replUncaught(error);
+  } finally {
+    __replRunning = null;
   }
   __replPrompt();
+}
+// Ctrl-C: the line running, else the pending block, else a first warning.
+function __replInterrupt() {
+  __replInput = "";
+  if (__replRunning !== null) {
+    __replRunning();
+    return;
+  }
+  if (__replPending !== "") {
+    __replPending = "";
+    __replPrompt();
+    return;
+  }
+  if (__replSawInterrupt) process.exit(0);
+  __replSawInterrupt = true;
+  __replOut("(To exit, press Ctrl+C again or Ctrl+D or type .exit)\\n");
+  __replPrompt();
+}
+function __replTake(text) {
+  __replInput += text;
+  for (let at = __replInput.indexOf("\\n"); at >= 0; at = __replInput.indexOf("\\n")) {
+    const line = __replInput.slice(0, at).replace(/\\r$/, "");
+    __replInput = __replInput.slice(at + 1);
+    __replQueue = __replQueue.then(() => __replLine(line));
+  }
 }
 __replOut(${JSON.stringify(banner)});
 __replPrompt();
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
-  __replInput += chunk;
-  for (let at = __replInput.indexOf("\\n"); at >= 0; at = __replInput.indexOf("\\n")) {
-    const line = __replInput.slice(0, at).replace(/\\r$/, "");
-    __replInput = __replInput.slice(at + 1);
-    __replQueue = __replQueue.then(() => __replLine(line));
+  const parts = String(chunk).split("\\x03");
+  for (let i = 0; i < parts.length; i++) {
+    if (i > 0) __replInterrupt();
+    __replTake(parts[i]);
   }
 });
 process.stdin.on("end", () => {

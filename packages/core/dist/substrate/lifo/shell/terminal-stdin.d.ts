@@ -10,6 +10,8 @@ export declare class TerminalStdin implements TerminalInputStream {
     private closed;
     private resolvers;
     private _rawMode;
+    /** termios ISIG (TerminalInputStream.signalKeys). */
+    signalKeys: boolean;
     private decoder;
     /** True when a command has called read() and is waiting for input. */
     get isWaiting(): boolean;
