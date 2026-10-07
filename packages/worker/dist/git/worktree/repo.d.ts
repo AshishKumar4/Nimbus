@@ -13,6 +13,7 @@
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { ProjectFs } from '../../runtime/project-fs.js';
 import type { GitPacksSeam } from '../pack/store.js';
+import { type SparseMatcher } from '../pack/sparse.js';
 import { DirCache, type IndexEdit } from './dircache.js';
 import { Excludes } from './excludes.js';
 import { type ObjectStore } from './tree.js';
@@ -104,6 +105,14 @@ export declare class WorktreeRepo {
     objectWriter(): Promise<ObjectWriter>;
     private waveSink;
     config(path: string): Promise<unknown>;
+    /**
+     * The sparse checkout this worktree holds, or null for none: core.sparseCheckout
+     * (in config.worktree when extensions.worktreeConfig is set, as git clone
+     * --sparse and sparse-checkout write it; else in config), in cone mode, its
+     * directories read from info/sparse-checkout. A sparse checkout that is not
+     * cone mode is refused: its patterns are not read here.
+     */
+    sparseMatcher(): Promise<SparseMatcher | null>;
     /** The worktree with the settings its comparisons take. */
     worktree(): Promise<Worktree>;
     readIndex(): Promise<DirCache>;

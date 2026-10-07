@@ -14,6 +14,7 @@ import { deflateSync } from 'node:zlib';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
+import { coneMatcher, configBoolean, parseConeSparseCheckout } from '../pack/sparse.js';
 import { DirCache, compareBytes, objectId } from './dircache.js';
 import { Excludes, parsePatternList } from './excludes.js';
 import { EMPTY_TREE, treeOf } from './tree.js';
@@ -231,6 +232,36 @@ export class WorktreeRepo {
         catch {
             return undefined;
         }
+    }
+    /**
+     * The sparse checkout this worktree holds, or null for none: core.sparseCheckout
+     * (in config.worktree when extensions.worktreeConfig is set, as git clone
+     * --sparse and sparse-checkout write it; else in config), in cone mode, its
+     * directories read from info/sparse-checkout. A sparse checkout that is not
+     * cone mode is refused: its patterns are not read here.
+     */
+    async sparseMatcher() {
+        const text = async (path) => {
+            try {
+                return new TextDecoder().decode(await this.vfs.readFile(path));
+            }
+            catch (error) {
+                if (isAbsent(error))
+                    return null;
+                throw error;
+            }
+        };
+        const worktreeConfig = configBool(await this.config('extensions.worktreeConfig')) === true
+            ? await text(`${this.gitdir}/config.worktree`)
+            : null;
+        const setting = async (key) => (worktreeConfig === null ? undefined : configBoolean(worktreeConfig, 'core', key)) ?? configBool(await this.config(`core.${key}`));
+        if (await setting('sparseCheckout') !== true)
+            return null;
+        const patterns = await text(`${this.gitdir}/info/sparse-checkout`) ?? '';
+        const dirs = await setting('sparseCheckoutCone') === true ? parseConeSparseCheckout(patterns) : null;
+        if (dirs === null)
+            throw new Error('fatal: a sparse checkout without cone mode is not supported');
+        return coneMatcher(dirs);
     }
     /** The worktree with the settings its comparisons take. */
     async worktree() {

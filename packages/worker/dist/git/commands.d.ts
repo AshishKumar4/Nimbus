@@ -54,8 +54,10 @@ export interface ParsedCloneArgs {
     quiet: boolean;
     /** `--filter=<spec>`, as git stores it in remote.<name>.partialclonefilter. */
     filter: string | undefined;
+    /** `--sparse`: a cone-mode sparse checkout of the top's files only. */
+    sparse: boolean;
 }
-export declare const CLONE_USAGE = "usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--branch <name> | -b <name>] [--bg] <url> [dir]";
+export declare const CLONE_USAGE = "usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--sparse] [--branch <name> | -b <name>] [--bg] <url> [dir]";
 /**
  * `git fetch --depth <n> | --deepen <n> | --unshallow`, as cf-git's fetch
  * takes them: a depth from the remote's tips, or (relative) from the

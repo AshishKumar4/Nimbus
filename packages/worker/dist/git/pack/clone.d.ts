@@ -69,6 +69,8 @@ export interface CloneRequest {
     history?: boolean;
     /** A streamed clone's decoding budget per invocation (processor.ts WORK_BUDGET_UNITS by default). */
     budgetUnits?: number;
+    /** `git clone --sparse`: a cone-mode sparse checkout of the top's files only. */
+    sparse?: boolean;
 }
 export interface CloneBatchPlan {
     index: number;
@@ -221,6 +223,7 @@ export declare function cloneFast(context: CloneContext, request: CloneRequest, 
 export declare function clonePlanFromStore(context: CloneContext, request: {
     commit: string;
     blobsPerBatch?: number;
+    sparse?: boolean;
 }): Promise<ClonePrepared>;
 export declare function concat(parts: Uint8Array[]): Uint8Array;
 /** One batch: its blobs fetched by id, written at their paths as they resolve. */
