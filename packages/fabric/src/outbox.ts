@@ -46,6 +46,7 @@
  * never send and every sent key would deliver a second time.
  */
 
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { z } from 'zod/v4';
 import { timers, type TimerContext, type TimerHandlerResult, type TimerHost, type TimerStorage } from './timers.js';
 import type { TurnBudget } from './turn-budget.js';
@@ -513,8 +514,4 @@ export class Outbox<M, C = void> {
       return next === null ? undefined : { rearmAt: next };
     };
   }
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

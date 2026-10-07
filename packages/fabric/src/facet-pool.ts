@@ -42,6 +42,7 @@
  * and the facet-id ledger here counts only the names this pool minted.
  */
 
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
@@ -155,8 +156,4 @@ export class FacetPool {
       [Symbol.asyncDispose]: retire,
     };
   }
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
