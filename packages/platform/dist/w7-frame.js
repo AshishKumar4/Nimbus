@@ -8,7 +8,9 @@
  * one operation per path, deletes then directories then files) is still
  * decoded for the one release that rolls v4 out: delete it with W7_MAGIC_V3.
  * Fields added to v4 since (each deploys with both ends, so the magic stays):
- * a create call's `umask`, and the `open` call (a write description's open).
+ * a create call's `umask`; the `open` and `close` calls (a write
+ * description's), and a description's `description` on its write, append
+ * and ftruncate calls.
  */
 import { crc32 } from './crc32.js';
 import { CHUNK_SIZE } from './limits.js';
@@ -370,7 +372,7 @@ v3) {
                         throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
                     summary.pathCount++;
                     summary.opCount++;
-                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'create', 'truncate', 'exclusive', 'nofollow']);
+                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'read', 'create', 'truncate', 'exclusive', 'nofollow', 'description']);
                     yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
                     break;
                 }
@@ -506,6 +508,7 @@ async function* encodeFile(file, state) {
         ...(file.inode.call === undefined ? {} : { call: file.inode.call }),
         ...(file.inode.offset === undefined ? {} : { offset: file.inode.offset }),
         ...(file.inode.umask === undefined ? {} : { umask: file.inode.umask }),
+        ...(file.inode.description === undefined ? {} : { description: file.inode.description }),
     }, state);
     let fileCheck = 0;
     let chunkId = 0;
@@ -702,6 +705,8 @@ function prepareOps(payload, batchId) {
                         inode.offset = safeInteger(call.offset, 'write offset');
                     if ('umask' in call && call.umask !== undefined)
                         inode.umask = umaskOf(call.umask, `${call.call} umask`);
+                    if ('description' in call && call.description !== undefined)
+                        inode.description = descriptionId(call.description, `${call.call} description`);
                     const chunks = w7Chunks(path, call.data);
                     return { kind: 'file', file: { inode, contentId: `${batchId}:${fileIndex++}`, chunks, source: null } };
                 }
@@ -744,7 +749,7 @@ function parseDirectory(bytes, v3) {
     return { ...parseInodeMetadata(value, 'directory'), kind: 'directory' };
 }
 function parseFileBegin(bytes, v3) {
-    const value = parseObject(bytes, 'file-begin', ['path', 'kind', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'], v3 ? inodeOptional(v3) : [...inodeOptional(v3), 'call', 'offset', 'umask']);
+    const value = parseObject(bytes, 'file-begin', ['path', 'kind', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'], v3 ? inodeOptional(v3) : [...inodeOptional(v3), 'call', 'offset', 'umask', 'description']);
     const base = parseInodeMetadata(value, 'file-begin');
     if (value.kind !== 'file' && value.kind !== 'symlink') {
         throw new Error(`w7-frame: unsupported file-begin kind ${String(value.kind)}`);
@@ -768,14 +773,17 @@ function parseFileBegin(bytes, v3) {
     // An offset is a write's, and only a description's writes name an inode.
     if ((call === 'write') !== (value.offset !== undefined))
         throw new Error(`w7-frame: ${base.path}: a write, and only a write, has an offset`);
-    // A umask is a call's that makes a name with a mode.
+    // A umask is a call's that makes a name with a mode; a description, a description's write's.
     if (value.umask !== undefined && call !== 'writeFile' && call !== 'appendFile')
         throw new Error(`w7-frame: ${base.path}: only a writeFile or appendFile has a umask`);
+    if (value.description !== undefined && call !== 'write' && call !== 'append')
+        throw new Error(`w7-frame: ${base.path}: only a write or append names a description`);
     return {
         ...base, kind: value.kind, contentId, size, chunkCount,
         ...(call === undefined ? {} : { call }),
         ...(value.offset === undefined ? {} : { offset: safeInteger(value.offset, 'write offset') }),
         ...(value.umask === undefined ? {} : { umask: umaskOf(value.umask, 'file-begin umask') }),
+        ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'file-begin description') }),
     };
 }
 /** A path call's fields, exactly: its paths made canonical (and claimed) by `path`. */
@@ -808,12 +816,17 @@ function parsePathCall(value, path) {
                 ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'symlink ino') }),
             };
         case 'ftruncate':
-            if (keys !== 'call,ino,path,size' && keys !== 'call,path,size')
+            if (keys.replace(',description', '').replace(',ino', '') !== 'call,path,size')
                 break;
             return {
                 call: 'ftruncate', path: path(value.path, 'ftruncate path'), size: safeInteger(value.size, 'ftruncate size'),
                 ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'ftruncate ino') }),
+                ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'ftruncate description') }),
             };
+        case 'close':
+            if (keys !== 'call,description,path')
+                break;
+            return { call: 'close', path: path(value.path, 'close path'), description: descriptionId(value.description, 'close description') };
         case 'rm': {
             if (keys.replace(',force', '').replace(',recursive', '') !== 'call,path')
                 break;
@@ -832,9 +845,9 @@ function parsePathCall(value, path) {
                 break;
             return { call: 'lchown', path: path(value.path, 'lchown path'), uid: u32(value.uid, 'lchown uid'), gid: u32(value.gid, 'lchown gid') };
         case 'open': {
-            const flags = ['create', 'exclusive', 'nofollow', 'truncate'];
+            const flags = ['create', 'exclusive', 'nofollow', 'read', 'truncate'];
             let required = keys;
-            for (const flag of [...flags, 'umask'])
+            for (const flag of ['create', 'description', 'exclusive', 'nofollow', 'read', 'truncate', 'umask'])
                 required = required.replace(`,${flag}`, '');
             if (required !== 'call,mode,path')
                 break;
@@ -849,6 +862,8 @@ function parsePathCall(value, path) {
                 ...(value.truncate === true ? { truncate: true } : {}),
                 ...(value.exclusive === true ? { exclusive: true } : {}),
                 ...(value.nofollow === true ? { nofollow: true } : {}),
+                ...(value.read === true ? { read: true } : {}),
+                ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'open description') }),
             };
         }
         case 'lutimes':
@@ -898,6 +913,13 @@ function parseInodeMetadata(value, label) {
         mode: u32(value.mode, `${label} mode`),
         ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, `${label} ino`) }),
     };
+}
+/** An open description's id, as a process chose it: up to 64 characters of [A-Za-z0-9_-]. */
+function descriptionId(value, label) {
+    const id = boundedString(value, label, 64);
+    if (!/^[A-Za-z0-9_-]+$/.test(id))
+        throw new Error(`w7-frame: ${label} is not a description id`);
+    return id;
 }
 /** A umask: permission bits, 0 to 0o777. */
 function umaskOf(value, label) {
@@ -1017,6 +1039,7 @@ function fileInode(metadata) {
         ...(metadata.call === undefined ? {} : { call: metadata.call }),
         ...(metadata.offset === undefined ? {} : { offset: metadata.offset }),
         ...(metadata.umask === undefined ? {} : { umask: metadata.umask }),
+        ...(metadata.description === undefined ? {} : { description: metadata.description }),
     };
 }
 function inodeMetadata(inode) {

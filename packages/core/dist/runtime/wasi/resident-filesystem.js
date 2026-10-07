@@ -593,17 +593,32 @@ export function residentFilesystem(session, resident, delegation) {
             return stat;
         });
     };
-    /** A write-through description's stat: the session's, by its file's name while that leads to it. */
+    /**
+     * A write-through description's stat: the session's, of its description's
+     * own file (renamed, unlinked or replaced, it is still that file), once
+     * what the process logged before it is answered. A mount's file keeps no
+     * description: its stat is its name's.
+     */
     const liveThrough = async (handleId) => {
-        const own = holder.fstat(handleId);
         await holder.send();
+        const session = await holder.sessionOf(handleId);
+        if (session !== undefined) {
+            delegated('fstat');
+            return authority.fstat(session);
+        }
         delegated('stat');
+        const own = holder.fstat(handleId);
         const live = await authority.stat('/' + holder.keyOf(handleId), { followSymlinks: false });
         return live !== null && live.ino === own.ino ? live : statOf({ ...own, nlink: 0 });
     };
-    /** The session's bytes of `key` for write-through description `handleId`, by its own read-only descriptor of the file. */
+    /**
+     * The session's bytes for write-through description `handleId`: through
+     * its description's own descriptor (its file, wherever it is named, with
+     * the access it was opened with). A mount's file, which keeps none, is
+     * read by a read-only descriptor of its name.
+     */
     const readThrough = (handleId) => async (key, at, length) => {
-        let reader = throughReaders.get(handleId);
+        let reader = await holder.sessionOf(handleId) ?? throughReaders.get(handleId);
         if (reader === undefined) {
             delegated('open');
             reader = (await authority.open('/' + key, { read: true })).id;
@@ -682,6 +697,18 @@ export function residentFilesystem(session, resident, delegation) {
         };
         return synced();
     };
+    // O_APPEND of one of the holder's descriptors is its writes' to keep (an append call or a write call).
+    const bySessionStatus = Reflect.get(fs, 'setStatus');
+    if (typeof bySessionStatus === 'function') {
+        Reflect.set(fs, 'setStatus', (handleId, status) => {
+            if (holder?.owns(handleId)) {
+                counts.local++;
+                holder.setStatus(handleId, status);
+                return;
+            }
+            return Reflect.apply(bySessionStatus, fs, [handleId, status]);
+        });
+    }
     for (const name of ['fchmod', 'fchown', 'futimes', 'dup']) {
         const passed = Reflect.get(fs, name);
         if (typeof passed !== 'function')

@@ -10,6 +10,8 @@ interface OpenDescription {
 export interface SqliteDescriptorScope {
     nextId: number;
     handles: Map<number, OpenDescription>;
+    /** The process's open descriptions its waves name (W7Call description), by the id it chose: descriptors of its own. */
+    waveDescriptions: Map<string, number>;
     closed: boolean;
     /** Aborted when the scope closes; cancels in-flight stream commits. */
     abort: AbortController;
@@ -151,6 +153,13 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         chunks: number;
     }>;
     writeStream(stream: ReadableStream<Uint8Array>, options?: Parameters<CredentialedVfs['writeStream']>[1]): Promise<import("../vfs/sqlite-vfs.js").WriteBatchStreamResult>;
+    /**
+     * The open descriptions a process's waves name (WaveDescriptions): each one
+     * this binding's descriptor, so the process reads, stats and closes it as
+     * any of its own; its access decided at its open, and its file alive until
+     * its close.
+     */
+    private readonly waveDescriptions;
     /**
      * A lease, or with `terms` a delegation (made by the process that holds
      * it: ProcessFiles' bridge, which answers its recalls). This bridge serves

@@ -243,7 +243,8 @@ var __nimbusProcessFsModule = (() => {
       chunkCount: file.inode.chunkCount,
       ...file.inode.call === void 0 ? {} : { call: file.inode.call },
       ...file.inode.offset === void 0 ? {} : { offset: file.inode.offset },
-      ...file.inode.umask === void 0 ? {} : { umask: file.inode.umask }
+      ...file.inode.umask === void 0 ? {} : { umask: file.inode.umask },
+      ...file.inode.description === void 0 ? {} : { description: file.inode.description }
     }, state);
     let fileCheck = 0;
     let chunkId = 0;
@@ -432,6 +433,8 @@ var __nimbusProcessFsModule = (() => {
               inode.offset = safeInteger(call.offset, "write offset");
             if ("umask" in call && call.umask !== void 0)
               inode.umask = umaskOf(call.umask, `${call.call} umask`);
+            if ("description" in call && call.description !== void 0)
+              inode.description = descriptionId(call.description, `${call.call} description`);
             const chunks = w7Chunks(path, call.data);
             return { kind: "file", file: { inode, contentId: `${batchId}:${fileIndex++}`, chunks, source: null } };
           }
@@ -483,14 +486,19 @@ var __nimbusProcessFsModule = (() => {
           ...value.ino === void 0 ? {} : { ino: inodeNumber(value.ino, "symlink ino") }
         };
       case "ftruncate":
-        if (keys !== "call,ino,path,size" && keys !== "call,path,size")
+        if (keys.replace(",description", "").replace(",ino", "") !== "call,path,size")
           break;
         return {
           call: "ftruncate",
           path: path(value.path, "ftruncate path"),
           size: safeInteger(value.size, "ftruncate size"),
-          ...value.ino === void 0 ? {} : { ino: inodeNumber(value.ino, "ftruncate ino") }
+          ...value.ino === void 0 ? {} : { ino: inodeNumber(value.ino, "ftruncate ino") },
+          ...value.description === void 0 ? {} : { description: descriptionId(value.description, "ftruncate description") }
         };
+      case "close":
+        if (keys !== "call,description,path")
+          break;
+        return { call: "close", path: path(value.path, "close path"), description: descriptionId(value.description, "close description") };
       case "rm": {
         if (keys.replace(",force", "").replace(",recursive", "") !== "call,path")
           break;
@@ -510,9 +518,9 @@ var __nimbusProcessFsModule = (() => {
           break;
         return { call: "lchown", path: path(value.path, "lchown path"), uid: u32(value.uid, "lchown uid"), gid: u32(value.gid, "lchown gid") };
       case "open": {
-        const flags = ["create", "exclusive", "nofollow", "truncate"];
+        const flags = ["create", "exclusive", "nofollow", "read", "truncate"];
         let required = keys;
-        for (const flag of [...flags, "umask"])
+        for (const flag of ["create", "description", "exclusive", "nofollow", "read", "truncate", "umask"])
           required = required.replace(`,${flag}`, "");
         if (required !== "call,mode,path")
           break;
@@ -528,7 +536,9 @@ var __nimbusProcessFsModule = (() => {
           ...value.create === true ? { create: true } : {},
           ...value.truncate === true ? { truncate: true } : {},
           ...value.exclusive === true ? { exclusive: true } : {},
-          ...value.nofollow === true ? { nofollow: true } : {}
+          ...value.nofollow === true ? { nofollow: true } : {},
+          ...value.read === true ? { read: true } : {},
+          ...value.description === void 0 ? {} : { description: descriptionId(value.description, "open description") }
         };
       }
       case "lutimes":
@@ -544,6 +554,12 @@ var __nimbusProcessFsModule = (() => {
         throw new Error(`w7-frame: unknown call ${String(value.call)}`);
     }
     throw new Error(`w7-frame: ${String(value.call)} takes other fields: got ${keys}`);
+  }
+  function descriptionId(value, label) {
+    const id = boundedString(value, label, 64);
+    if (!/^[A-Za-z0-9_-]+$/.test(id))
+      throw new Error(`w7-frame: ${label} is not a description id`);
+    return id;
   }
   function umaskOf(value, label) {
     const mask = u32(value, label);
@@ -1527,6 +1543,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     const allowedRoot = (root) => root !== "" && !(options.isHomeRoot?.(root) ?? false);
     const close = async (grant) => {
       grant.closing = true;
+      options.freezing?.(grant.root);
       await client.flush();
       await end(grant);
     };
@@ -1561,6 +1578,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         counters.recalls++;
         const wasClosing = grant.closing;
         grant.closing = true;
+        options.freezing?.(grant.root);
         await client.flush();
         if (kind === "share") {
           grant.shared = true;

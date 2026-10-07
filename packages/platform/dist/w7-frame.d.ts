@@ -8,7 +8,9 @@
  * one operation per path, deletes then directories then files) is still
  * decoded for the one release that rolls v4 out: delete it with W7_MAGIC_V3.
  * Fields added to v4 since (each deploys with both ends, so the magic stays):
- * a create call's `umask`, and the `open` call (a write description's open).
+ * a create call's `umask`; the `open` and `close` calls (a write
+ * description's), and a description's `description` on its write, append
+ * and ftruncate calls.
  */
 export type VfsInodeKind = 'file' | 'directory' | 'symlink';
 /** Entry for bulk inode creation via writeBatch(). */
@@ -109,15 +111,18 @@ export type W7Call =
     data: Uint8Array;
 }
 /**
- * A write through an open description (pwrite(2)) at `offset`: of the
- * file whose inode is `ino` when the process knows it (wherever that file
- * is named now, and nowhere once no name has it), else of the file at
+ * A write through an open description (pwrite(2)) at `offset`: through
+ * the session's description `description` when given (opened by an `open`
+ * call: its access was decided then, and no later chmod, chown, rename or
+ * unlink changes it), else of the file whose inode is `ino` (wherever that
+ * file is named now, and nowhere once no name has it), else of the file at
  * `path`. Past its end, the gap reads as zeros.
  */
  | {
     call: 'write';
     path: string;
     ino?: number;
+    description?: string;
     offset: number;
     data: Uint8Array;
 }
@@ -126,13 +131,15 @@ export type W7Call =
     call: 'append';
     path: string;
     ino?: number;
+    description?: string;
     data: Uint8Array;
 }
-/** ftruncate(2) through an open description: the file `ino` names when given, else the one at `path`. */
+/** ftruncate(2) through an open description: `description`'s file, else the file `ino` names, else the one at `path`. */
  | {
     call: 'ftruncate';
     path: string;
     ino?: number;
+    description?: string;
     size: number;
 }
 /** `existing: 'ok'`: a directory already there answers success, as `mkdir -p` takes it (anything else there is still EEXIST). */
@@ -181,22 +188,33 @@ export type W7Call =
     mtime: number;
 }
 /**
- * open(2) of a file to write it, as the session's own open decides it: a
- * name made (`create`, `mode` less `umask`) or refused (EEXIST when
- * `exclusive`, ENOENT without `create`, EISDIR, EACCES), emptied when
- * `truncate`, a link at the name followed unless `nofollow` (ELOOP). Its
- * answer is the file's stat; the description writes it by its number
- * (write, append and ftruncate calls with `ino`).
+ * open(2) of a file to write it (and to read it when `read`), as the
+ * session's own open decides it: a name made (`create`, `mode` less
+ * `umask`) or refused (EEXIST when `exclusive`, ENOENT without `create`,
+ * EISDIR, EACCES for any access asked that the file's mode refuses),
+ * emptied when `truncate`, a link at the name followed unless `nofollow`
+ * (ELOOP). Its answer is the file's stat. With `description` (an id the
+ * process chose), the session keeps the open description under it, its
+ * access fixed now; the description's write, append and ftruncate calls
+ * name it, and its `close` ends it.
  */
  | {
     call: 'open';
     path: string;
     mode: number;
     umask?: number;
+    read?: true;
     create?: true;
     truncate?: true;
     exclusive?: true;
     nofollow?: true;
+    description?: string;
+}
+/** close(2) of the session's open description `description` (an `open` call's). */
+ | {
+    call: 'close';
+    path: string;
+    description: string;
 };
 /** A call whose bytes travel as a file's chunks. */
 export type W7DataCall = Extract<W7Call, {
@@ -285,6 +303,7 @@ type W7ContentInode = BatchInodeEntry & {
     call?: W7DataCall;
     offset?: number;
     umask?: number;
+    description?: string;
 };
 export type W7DecodedRecord = {
     type: 'delete';

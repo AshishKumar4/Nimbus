@@ -397,6 +397,8 @@ export interface WaveSequenceAnswer {
 /** A streamed file's stat as published: what a producer's git index entry records. */
 export interface WriteStreamReceipt {
     path: string;
+    /** An `open` call's: the session's descriptor of the description it opened (WaveDescriptions.open). */
+    handle?: number;
     ino: number;
     mode: number;
     size: number;
@@ -545,6 +547,26 @@ export interface WriteStreamOptions {
     admit?: () => void;
     mountReach?: WaveMountReach;
     sequence?: WaveSequence;
+    /** The writing process's open descriptions, for its `open`, `close` and description calls (W7Call description). */
+    descriptions?: WaveDescriptions;
+}
+/**
+ * A process's open descriptions as its waves name them (W7Call
+ * `description`): kept by the binding that serves the process, as its
+ * descriptors are (SqliteRuntimeFsBridge), so the process reads, stats and
+ * closes them as its own. Each one's access was decided at its open: a later
+ * chmod, chown, rename or unlink never changes what it can do, and its file
+ * lives until its last close.
+ */
+export interface WaveDescriptions {
+    /** Open the file at `path` under `id`, its access checked now; the session's descriptor of it. */
+    open(path: string, rights: {
+        read: boolean;
+        write: boolean;
+    }, id: string, cred: VfsCred): number;
+    /** The description `id` names, or undefined (never opened, or closed). */
+    node(id: string): VfsOpenDescription | undefined;
+    close(id: string): void;
 }
 export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
 export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
@@ -2132,6 +2154,8 @@ export declare class SqliteVFS {
      * an existing file emptied when `truncate`. Its answer is the file's stat.
      */
     private openToWrite;
+    /** The open description a process's call names (W7Call description): EBADF when none is open under it. */
+    private describedBy;
     /**
      * The file an open description writes: the one inode `ino` names, wherever
      * it is named now, or null once no name has it; without `ino`, the file at

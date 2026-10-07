@@ -102,6 +102,12 @@ export interface DelegationHolder {
     send(): Promise<void>;
     /** Whether `handleId` writes through: its reads are the session's (readThrough). */
     through(handleId: number): boolean;
+    /** A write-through description's session descriptor (its open answered), or undefined (a mount's file keeps none). */
+    sessionOf(handleId: number): Promise<number | undefined>;
+    /** fcntl(F_SETFL) of one of the holder's descriptors: O_APPEND is its writes' to keep. */
+    setStatus(handleId: number, status: {
+        append?: boolean;
+    }): void;
     /** The size this process gave file `ino` through a description of it still open, or undefined: what a stat of it by name reports here. */
     writing(ino: number): number | undefined;
     /**

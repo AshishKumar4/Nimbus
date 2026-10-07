@@ -174,6 +174,13 @@ export interface ProcessFsClientOptions {
      */
     readonly drain?: () => void;
     /**
+     * A grant of `root` starts closing (recalled, given back idle or for a
+     * renewal): called before the flush that sends what was decided under it,
+     * so the runtime stops deciding there first (its files' descriptions go
+     * through the session) and that flush covers all it accepted until now.
+     */
+    readonly freezing?: (root: string) => void;
+    /**
      * The process's umask now: stamped on each call that makes a name with a
      * mode (writeFile, appendFile, mkdir) as it is logged, unless the call
      * names one, so the session applies the umask the process had when it

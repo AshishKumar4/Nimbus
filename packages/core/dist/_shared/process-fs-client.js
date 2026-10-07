@@ -518,6 +518,7 @@ export function processFsClient(options) {
      */
     const close = async (grant) => {
         grant.closing = true;
+        options.freezing?.(grant.root);
         await client.flush();
         await end(grant);
     };
@@ -565,6 +566,7 @@ export function processFsClient(options) {
             // process does there from now on goes to the session as anyone's.
             const wasClosing = grant.closing;
             grant.closing = true;
+            options.freezing?.(grant.root);
             await client.flush();
             if (kind === 'share') {
                 grant.shared = true;
