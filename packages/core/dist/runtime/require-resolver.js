@@ -146,6 +146,8 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     // The phase-2 unit staged whole or not at all (an optional learned root):
     // what it staged, and whether the bound cut its closure.
     let unit = null;
+    /** The optional learned roots that landed, each with what it staged (PrefetchResult.units). */
+    const units = [];
     function fits(path, bytes) {
         if (!policy || policy.held[path] !== undefined)
             return true;
@@ -233,11 +235,11 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     // loads the few its input names. Walking a table first spent the bound on
     // grammars the program never loads, and cut the deferral it does.
     const deferredDynamic = new Map();
-    function defer({ specifier, fromDir, alternatives, path, from }) {
+    function defer({ specifier, fromDir, alternatives, path }) {
         let queue = deferredDynamic.get(alternatives);
         if (queue === undefined)
             deferredDynamic.set(alternatives, queue = []);
-        queue.push({ specifier, fromDir, ...(path !== undefined ? { path } : {}), ...(from !== undefined ? { from } : {}) });
+        queue.push({ specifier, fromDir, ...(path !== undefined ? { path } : {}) });
     }
     function nextDeferred() {
         let fewest = Infinity;
@@ -466,13 +468,11 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             const resolved = (await resolveDynamicImport(specifier, fromDir));
             if (closureExceeded)
                 break;
-            if (resolved) {
-                edge(fromFile, resolved);
+            if (resolved)
                 await addFile(resolved);
-            }
         }
         for (const specifier of deferrals)
-            defer({ specifier, fromDir, alternatives: deferrals.size, ...(fromFile !== undefined ? { from: fromFile } : {}) });
+            defer({ specifier, fromDir, alternatives: deferrals.size });
     }
     // A dynamic `import()` loads what Node's ESM resolver names (the process's
     // loader resolves it the same way, core/_shared/esm-resolver.ts): the
@@ -590,11 +590,15 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             const resolved = next.path ?? await resolveDynamicImport(next.specifier, next.fromDir);
             if (!resolved)
                 continue;
-            edge(next.from, resolved);
             // An optional learned root is staged whole or not at all: a module in
             // the map without what it imports fails where the module's late load
             // would have worked.
+            // What it cut is taken back with its traversal: the paths it visited
+            // and the deferrals it queued, so a root after it that shares a
+            // dependency walks that dependency again rather than skipping it.
             unit = optionalRoots.has(resolved) ? { staged: [], cut: false } : null;
+            const visitedBefore = visited.size;
+            const queuedBefore = new Map([...deferredDynamic].map(([alternatives, queue]) => [alternatives, queue.length]));
             try {
                 await addFile(resolved);
             }
@@ -605,13 +609,25 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                         speculative.delete(path);
                         bytesSeen -= size;
                     }
+                    let at = 0;
+                    const walked = [];
+                    for (const path of visited)
+                        if (at++ >= visitedBefore)
+                            walked.push(path);
+                    for (const path of walked)
+                        visited.delete(path);
+                    for (const [alternatives, queue] of deferredDynamic)
+                        queue.length = queuedBefore.get(alternatives) ?? 0;
+                }
+                else if (unit !== null && unit.staged.length > 0) {
+                    units.push({ root: resolved, members: unit.staged.map(([path]) => path) });
                 }
                 unit = null;
             }
             if (configRoots.has(resolved) && typeof bundle[resolved] === 'string')
                 await deferConfigNames(resolved);
         }
-        return { bundle, speculative, entryPaths, edges };
+        return { bundle, speculative, entryPaths, edges, ...(units.length > 0 ? { units } : {}) };
     }
     try {
         return await walk();
