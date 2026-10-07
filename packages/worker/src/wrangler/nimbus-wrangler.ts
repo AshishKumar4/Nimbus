@@ -896,9 +896,9 @@ export class NimbusWrangler {
 
   // ── Test seams (W10 probes) ───────────────────────────────────────────
   //
-  // These exist so probes can drive specific code paths (config parse,
-  // env synthesis, watcher installation) without running the full
-  // start() pipeline (which requires a real esbuild + LOADER + ctx).
+  // These exist so probes can drive specific code paths without running
+  // the full start() pipeline (which requires a real esbuild + LOADER +
+  // ctx).
   //
   // Production code does NOT use these; they're stable contracts only
   // for the test probes. Naming convention: leading underscore + ForTest
@@ -908,45 +908,5 @@ export class NimbusWrangler {
   _readConfigForTest(): boolean {
     this.config = this.readConfig();
     return this.config != null;
-  }
-
-  /** @internal — test seam: invoke buildInnerEnv() without a probe-load pass. */
-  _buildInnerEnvForTest(): Record<string, any> {
-    return this.buildInnerEnv();
-  }
-
-  /** @internal — test seam: install the VFS file-watch listener and the
-   * mock-rebuild path (esbuild.build() is called, but the real
-   * buildAndLoad() pipeline is bypassed in favour of just calling
-   * esbuild). Used for hot-reload latency + nimbus-paths-not-watched
-   * probes. Production calls start() which installs the watcher AND the
-   * full rebuild pipeline. */
-  _installWatchersForTest(): void {
-    this.running = true;
-    this.unsubVfs = this.vfsEvents.on(async (events: VfsEvent[]) => {
-      let needsRebuild = false;
-      for (const event of events) {
-        if (event.type !== 'change' && event.type !== 'add' && event.type !== 'unlink') continue;
-        if (event.path.startsWith(this.root) &&
-            !event.path.includes('node_modules/') &&
-            !event.path.includes('/.nimbus/')) {
-          needsRebuild = true;
-          break;
-        }
-      }
-      if (!needsRebuild) return;
-      if (this.rebuildTimer) clearTimeout(this.rebuildTimer);
-      this.rebuildTimer = setTimeout(async () => {
-        this.rebuildTimer = null;
-        try {
-          // Same canonicalization as the initial build — see
-          // resolveEntryPath().
-          await this.esbuild.build([this.resolveEntryPath()], {
-            bundle: true, format: 'esm', target: 'esnext', platform: 'neutral',
-          } as any);
-          this.onHmrMessage({ type: 'nimbus-hmr', event: 'full-reload' });
-        } catch {}
-      }, 250);
-    });
   }
 }
