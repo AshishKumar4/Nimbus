@@ -10,15 +10,20 @@ const source = generateOpencodeRunnerCode({
   vfsBundle: '{}', mode: 'oneshot',
 });
 const captureStart = source.indexOf('const __ocTailCap =');
-const captureEnd = source.indexOf('// process state seeding', captureStart);
+const captureEnd = source.indexOf('const __ocFmt =', captureStart);
 assert.ok(captureStart >= 0 && captureEnd > captureStart, 'the generated runner contains its bounded result capture');
 const createCapture = new Function(`
   let stdout = '', stderr = '', exitCode = 0;
+  const process = { stdout: {}, stderr: {}, env: {}, chdir() {} };
+  const argv = [], env = {}, cwd = '/home/user', __ocMode = 'oneshot', __ocResident = false;
+  let __ocExited = false;
   const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
   const __nimbusOutText = (which, bytes) => decoders[which].decode(bytes, { stream: true });
+  const __nimbusOutBytes = value => value instanceof Uint8Array ? value : new TextEncoder().encode(value);
   ${source.slice(captureStart, captureEnd)}
-  return { write: __ocCapture, diagnostic: __ocAppendDiagnostic,
-    result: () => ({ stdout, stderr, exitCode, error: __ocCaptureError }), cap: __ocCaptureCap };
+  return { write: (which, bytes) => process[which].write(bytes),
+    diagnostic: text => __ocAppendDiagnostic(text),
+    result: () => ({ stdout, stderr, exitCode, error: typeof __ocCaptureError === 'undefined' ? null : __ocCaptureError }), cap: 1024 * 1024 };
 `);
 const split = createCapture();
 split.write('stdout', new Uint8Array([0xc3]));
@@ -53,6 +58,7 @@ for (const code of [
   const run = new Function('__nimbusWriteLiveOutput', '__queueRpcWrite', `
     let stdout = '', stderr = '';
     const __supervisor = {}, captureOutput = false, __nimbusProgramStopped = false;
+    const __nimbusOutEnc = new TextEncoder();
     const __consoleMod = {}, __processMod = { stdout: {}, stderr: {} };
     const __utilMod = { format: (...a) => a.join(' ') };
     ${code.slice(start, end)}
