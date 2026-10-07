@@ -114,8 +114,8 @@ export async function createFacetSession(work, { realGit = false, mounts = {} } 
         if (requests.loseRename?.(from, to)) requests.withhold.add(from.slice(from.lastIndexOf('/') + 1));
         return result;
       },
-      // unlink carries no lease: the session's supervisor op has none for it either (supervisor-op.ts).
-      async unlink(path) { return refused(async () => bridge.unlink(path)); },
+      // unlink presents the lease, as the session's supervisor op does (supervisor-op.ts).
+      async unlink(path) { return refused(async () => bridge.unlink(path, lease)); },
       async writeBatchStream(stream) {
         if (++requests.waves === requests.failWaveAt) {
           await stream.cancel();

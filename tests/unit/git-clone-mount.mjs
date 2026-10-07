@@ -8,11 +8,15 @@
 // git doing the same in its clone: the same refs, objects, worktree and
 // index, and the server's branch where ours pushed it. A mount whose
 // backend cannot rename fails the clone with the namespace's refusal (EXDEV,
-// naming the rename), and the destination is removed.
+// naming the rename), and the destination is removed. A clone onto an
+// asynchronous mount (no synchronous face) matches host git too. A write
+// that fails (the backend's file size limit; host git's ulimit -f) is
+// git's "error: unable to write file", the clone's checkout failing as
+// git's does; an index.lock already there is git's "Unable to create".
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -23,6 +27,49 @@ import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 
 /** A mount whose backend cannot rename in place. */
 class NoRename extends MemoryVFS { rename = undefined; }
+
+/** The most a file on the limited mount may hold, as host git's `ulimit -f 5120`. */
+const FILE_LIMIT = 5 * 1024 * 1024;
+const tooLarge = (path) => Object.assign(new Error(`EFBIG: ${path}`), { code: 'EFBIG' });
+/** A mount whose files cannot grow past FILE_LIMIT (EFBIG). */
+class Limited extends MemoryVFS {
+  writeRange(path, offset, bytes, options) {
+    if (offset + bytes.byteLength > FILE_LIMIT) throw tooLarge(path);
+    return super.writeRange(path, offset, bytes, options);
+  }
+  writeFile(path, data, options) {
+    if (data.byteLength > FILE_LIMIT) throw tooLarge(path);
+    return super.writeFile(path, data, options);
+  }
+}
+
+/** A mount on which another writer takes the repository's index lock while the clone fetches. */
+class Locking extends MemoryVFS {
+  lockFor(path) {
+    const at = path.indexOf('/.git/objects/');
+    if (at >= 0 && !this.locked) {
+      this.locked = true;
+      super.writeFile(path.slice(0, at) + '/.git/index.lock', new Uint8Array(0));
+    }
+  }
+  writeFile(path, data, options) { this.lockFor(path); return super.writeFile(path, data, options); }
+  writeRange(path, offset, bytes, options) { this.lockFor(path); return super.writeRange(path, offset, bytes, options); }
+}
+
+/** A MemoryVFS with no synchronous face: every call answers a promise. */
+const asyncOnly = (vfs) => new Proxy(vfs, {
+  get(target, key) {
+    if (key === 'sync') return undefined;
+    const value = target[key];
+    if (typeof value !== 'function') return value;
+    if (key === 'as') return (...args) => asyncOnly(value.apply(target, args));
+    return async (...args) => value.apply(target, args);
+  },
+  has: (target, key) => key !== 'sync' && key in target,
+});
+
+/** git's lines a failure says (error:, fatal:, warning: and the hints after them), as a list. */
+const gitLines = (stderr) => stderr.split('\n').filter((line) => /^(error|fatal|warning): |^You can inspect|^and retry|^Another git|^an editor|^are terminated|^may have crashed|^remove the file/.test(line));
 import { startGitHttpServer } from './lib/git-http-server.mjs';
 import { createFacetSession, hostGit as hostGitIn } from './lib/facet-session.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -72,6 +119,14 @@ try {
   hostGit(join(served, 'repo.git'), ['config', 'uploadpack.allowFilter', 'true']);
   hostGit(join(served, 'repo.git'), ['config', 'uploadpack.allowAnySHA1InWant', 'true']);
   hostGit(join(served, 'repo.git'), ['config', 'http.receivepack', 'true']);
+  // A file past the limited mount's size, compressed small in its pack.
+  const compressible = join(work, 'compressible');
+  hostGit(work, ['init', '-q', '-b', 'main', compressible]);
+  writeFileSync(join(compressible, 'small.txt'), 'small\n');
+  writeFileSync(join(compressible, 'big.txt'), 'the same line, again and again\n'.repeat(200_000));
+  hostGit(compressible, ['add', '-A']);
+  hostGit(compressible, ['commit', '-q', '-m', 'one']);
+  hostGit(work, ['clone', '-q', '--bare', compressible, join(served, 'compressible.git')]);
   const server = startGitHttpServer(served);
 
   const mountHarness = createSqliteVfsTestHarness();
@@ -80,10 +135,17 @@ try {
   // The session user's own directory on the mount.
   mountEngine.as(CRED_KERNEL).mkdir('work', { mode: 0o755 });
   mountEngine.as(CRED_KERNEL).chown('work', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
-  const noRename = new NoRename({ uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid });
+  const user = { uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
+  const noRename = new NoRename(user);
+  const limited = new Limited(user);
+  const locking = new Locking(user);
+  const awaited = new MemoryVFS(user);
   const session = await createFacetSession(work, { realGit: true, mounts: {
     '/mnt/data': new SqliteFiles(mountEngine, mountEngine.as(CRED_KERNEL)),
     '/mnt/norename': noRename,
+    '/mnt/limited': limited,
+    '/mnt/locking': locking,
+    '/mnt/async': asyncOnly(awaited),
   } });
   try {
     // Host git's clone is the whole history without --depth: ours takes --no-shallow for it.
@@ -174,6 +236,44 @@ try {
     assert.doesNotMatch(refused.stderr, /could not remove the failed clone/, refused.stderr.slice(-400));
     assert.deepEqual(noRename.readdir('/').map(({ name }) => name), [], 'and its destination is removed');
     console.log('  ok  a mount that cannot rename: the clone fails with EXDEV naming the rename; nothing left');
+
+    // An asynchronous mount: the clone's own writes there present its lease, and it matches host git.
+    {
+      const host = join(work, 'host-shallow');
+      const cloned = await session.git('/home/user', ['clone', '--depth', '1', server.url + '/repo.git', '/mnt/async/repo']);
+      assert.equal(cloned.code, 0, `async: ${cloned.stderr}`);
+      const ours = await session.materializeAt('/mnt/async/repo', join(work, 'ours-async'));
+      assert.deepEqual(worktreeOf(ours), worktreeOf(host), 'async: the worktree');
+      assert.equal(hostGit(ours, ['ls-files', '-s']), hostGit(host, ['ls-files', '-s']), 'async: the index');
+      assert.equal(hostGit(ours, ['status', '--porcelain']), '', 'async: clean');
+      console.log('  ok  clone onto an asynchronous mount: host git\'s worktree and index, a 6 MiB file included');
+    }
+
+    // A write that fails: host git under a file size limit, ours on a mount with the same limit.
+    {
+      const hostDest = join(work, 'host-limited');
+      const host = spawnSync('bash', ['-c', `trap '' XFSZ; ulimit -f ${FILE_LIMIT / 1024}; exec git clone file://${join(served, 'compressible.git')} ${hostDest}`], {
+        encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C' },
+      });
+      const ours = await session.git('/home/user', ['clone', '--depth', '1', server.url + '/compressible.git', '/mnt/limited/repo']);
+      assert.deepEqual([ours.code, gitLines(ours.stderr)], [host.status, gitLines(host.stderr)], `a failed write: ours ${ours.stderr}; git's ${host.stderr}`);
+      assert.ok(limited.stat('/repo/.git/HEAD') !== null, 'the repository is kept, as git keeps it');
+      console.log('  ok  a write that fails: git\'s "unable to write file", the checkout failing as git\'s does');
+    }
+
+    // An index.lock already there: git's "Unable to create", as host git says it for its own lock.
+    {
+      const hostLocked = join(realpathSync(work), 'host-locked');
+      hostGit(work, ['clone', '-q', 'file://' + join(served, 'repo.git'), hostLocked]);
+      writeFileSync(join(hostLocked, '.git/index.lock'), '');
+      const host = spawnSync('git', ['reset', '-q'], { cwd: hostLocked, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C' } });
+      const ours = await session.git('/home/user', ['clone', '--depth', '1', server.url + '/repo.git', '/mnt/locking/repo']);
+      assert.equal(ours.code, 128, ours.stderr);
+      const lockLines = gitLines(host.stderr.replaceAll(join(hostLocked, '.git'), '/mnt/locking/repo/.git'));
+      assert.deepEqual(gitLines(ours.stderr).slice(0, lockLines.length), lockLines, `an index.lock there: ours ${ours.stderr}; git's ${host.stderr}`);
+      assert.ok(locking.stat('/repo/.git/index.lock') !== null, 'another\'s lock is left alone');
+      console.log('  ok  an index.lock already there: git\'s "Unable to create \'….lock\': File exists."');
+    }
   } finally {
     server.stop();
   }

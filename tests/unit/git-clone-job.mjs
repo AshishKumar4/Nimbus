@@ -270,6 +270,53 @@ const list = (user, dir) => user.readdir(dir).map(({ name }) => name).sort();
   console.log('  ok  a clone on a mount: reserved at its recorded root, cleaned up through the namespace, nothing else touched');
 }
 
+// ── a recovery whose namespace fails: its lease released, its record kept, the rest done ──
+// (Red before: a namespace that could not be made threw before the protected
+// block, and a disposal that failed threw before the release: either left
+// the destination reserved, and the records after it undone.)
+{
+  const { vfs, storage } = session();
+  const files = new ProcessFiles(vfs);
+  const mount = new MemoryVFS({ uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid });
+  files.vfs.mount('/mnt/data', mount);
+  const ns = files.view({ pid: 10, cred: CRED_SESSION_USER });
+  for (const name of ['unmade', 'undisposed', 'fine']) {
+    await ns.mkdir(`/mnt/data/${name}/.git`, { recursive: true });
+    await ns.writeFile(`/mnt/data/${name}/.git/nimbus-clone-job`, JSON.stringify({ version: 1, jobId: name, optionsHash: 'h' }));
+    await ns.writeFile(`/mnt/data/${name}/f`, 'x');
+    await writeCloneJob(storage, record(`/mnt/data/${name}`, name, { generation: 1, root: `/mnt/data/${name}`, mount: true }));
+  }
+  const recovery = {
+    as: (cred, options) => vfs.as(cred, options),
+    releaseExclusiveMutation: (owner) => vfs.releaseExclusiveMutation(owner),
+    namespace: (cred, owner) => {
+      // Asked in record order: the first cannot be made, the second's disposal fails.
+      const asked = ++recovery.asked;
+      if (asked === 1) throw new Error('no host bridge');
+      const host = files.openHost(cred);
+      return {
+        fs: bridgeCleanupFs(host.fs.synchronous, owner),
+        dispose: async () => { await host.dispose(); if (asked === 2) throw new Error('dispose failed'); },
+      };
+    },
+    asked: 0,
+  };
+  const records = (await listInterruptedClones(storage, 2)).sort((a, b) => ['unmade', 'undisposed', 'fine'].indexOf(a.jobId) - ['unmade', 'undisposed', 'fine'].indexOf(b.jobId));
+  const reserved = reserveInterruptedClones(recovery, records);
+  assert.equal(reserved.length, 3);
+  await assert.rejects(finishReservedClones(recovery, storage, reserved, { yieldBetween: async () => {} }), /no host bridge/, 'the first failure is reported');
+  // Every lease released: a write in each destination goes through.
+  for (const name of ['unmade', 'undisposed', 'fine']) {
+    await ns.mkdir(`/mnt/data/${name}`, { recursive: true });
+    await ns.writeFile(`/mnt/data/${name}/after.txt`, 'x');
+  }
+  assert.equal(await ns.stat('/mnt/data/fine/f'), null, 'the record after the failures was cleaned up');
+  assert.equal(await ns.stat('/mnt/data/undisposed/f'), null, 'and the one whose disposal failed');
+  assert.notEqual(await ns.stat('/mnt/data/unmade/.git/nimbus-clone-job'), null, 'the one whose namespace was not made is as it was');
+  assert.deepEqual((await listCloneJobs(storage)).map((r) => r.jobId).sort(), ['unmade'], 'its record stays; the disposed one\'s cleanup was done');
+  console.log('  ok  a recovery whose namespace cannot be made, or whose disposal fails: every lease released, the rest cleaned up');
+}
+
 // ── as the record's credential ──
 {
   const { vfs, user, storage } = session();

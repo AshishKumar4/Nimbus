@@ -199,6 +199,8 @@ export interface GitNetworkResult {
   phases?: GitNetworkPhaseDiagnostic[];
   errorPhase?: GitCloneInvocationPhase | 'operation';
   errorCode?: GitNetworkErrorCode;
+  /** A write git would have failed: git's own lines for it (pack/mount-writer.ts GitWriteFailure). */
+  gitFailure?: string;
   budget?: GitCloneBudgetDiagnostic;
   /** A clone that failed after it wrote: its caller cleans up (git/clone-job.ts). */
   cleanup?: boolean;
@@ -228,6 +230,7 @@ interface FacetInvocationResult {
   refused?: unknown;
   errorCode?: unknown;
   fetched?: unknown;
+  gitFailure?: unknown;
 }
 
 interface GitFacetEntrypoint {
@@ -391,12 +394,15 @@ class GitClonePhaseError extends Error {
   readonly diagnostic: GitNetworkPhaseDiagnostic;
   readonly mutated: boolean | undefined;
   readonly errorCode: GitNetworkErrorCode | undefined;
+  /** A write git would have failed: git's lines (GitNetworkResult.gitFailure). */
+  readonly gitFailure: string | undefined;
 
   constructor(
     phase: GitCloneInvocationPhase,
     message: string,
     diagnostic: GitNetworkPhaseDiagnostic,
     errorCode?: GitNetworkErrorCode,
+    gitFailure?: string,
   ) {
     super(message);
     this.name = 'GitClonePhaseError';
@@ -404,6 +410,7 @@ class GitClonePhaseError extends Error {
     this.diagnostic = diagnostic;
     this.mutated = diagnostic.mutated;
     this.errorCode = errorCode;
+    this.gitFailure = gitFailure;
   }
 }
 
@@ -747,6 +754,8 @@ async function invokeClonePhase(
       phase,
       typeof invocation.result.error === 'string' ? invocation.result.error : phase + ' failed',
       invocation.diagnostic,
+      undefined,
+      typeof invocation.result.gitFailure === 'string' ? invocation.result.gitFailure : undefined,
     );
   }
   return invocation;
@@ -1059,6 +1068,8 @@ export async function execGitNetwork(
                 ? prepare.result.error
                 : 'clone-prepare returned an invalid result',
               prepare.diagnostic,
+              undefined,
+              typeof prepare.result.gitFailure === 'string' ? prepare.result.gitFailure : undefined,
             );
           }
           if (!opts.quiet) await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic);
@@ -1140,6 +1151,7 @@ export async function execGitNetwork(
             errorCode: phaseError instanceof GitCloneBudgetExceededError
               ? phaseError.code
               : phaseError.errorCode,
+            gitFailure: phaseError.gitFailure,
             budget: phaseError instanceof GitCloneBudgetExceededError
               ? phaseError.budget
               : undefined,
@@ -1572,23 +1584,24 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
 
 /**
  * The session's file API through the facet's binding (pack/mount-writer.ts
- * FileApi), its lease presented by the binding, each call counted; no write
- * starts past the phase's deadline.
+ * FileApi), its lease presented by the binding, each call counted; within
+ * the phase's deadline as withinDeadline admits calls (a close or an
+ * unlink, cleaning up, past it too).
  */
 function facetFileApi(supervisor, stats, deadline = null) {
   const call = (counter, fn) => {
-    if (deadline !== null && Date.now() >= deadline) return Promise.reject(new Error('git passed its phase deadline'));
     stats.supervisorRpc[counter]++;
     return useRpcResult(fn(), (result) => result);
   };
-  return {
+  return __nimbusGitPack.withinDeadline({
     mkdir: (path, options) => call('fileApi', () => supervisor.mkdir(path, options)),
+    unlink: (path) => call('fileApi', () => supervisor.unlink(path)),
     fsOpen: (path, flags) => call('fileApi', () => supervisor.fsOpen(path, flags)),
     fsWrite: (id, offset, bytes) => call('fileApi', () => supervisor.fsWrite(id, offset, bytes)),
     fsFstat: (id) => call('fileApi', () => supervisor.fsFstat(id)),
     fsClose: (id) => call('fileApi', () => supervisor.fsClose(id)),
     rename: (from, to) => call('rename', () => supervisor.rename(from, to)),
-  };
+  }, deadline);
 }
 
 /**
@@ -1994,7 +2007,7 @@ function createBufferedFs(
           if (fileApi !== null && buf.length > __nimbusGitPack.MOUNT_WAVE_FILE_MAX) {
             // What the waves hold before it lands first; then the file, as a program writes it.
             await writer.flush();
-            const stat = await __nimbusGitPack.writeInPlace(fileApi, '/' + p, mode, buf);
+            const stat = await __nimbusGitPack.replaceFile(fileApi, '/' + p, mode, buf);
             stampEntry(fileMetadata, stat.mtimeMs);
             stats.filesWritten++;
             stats.bytesWritten += buf.length;
@@ -2551,6 +2564,8 @@ export default {
       return respond(false, {
         error: (e && e.message) || String(e),
         errorCode: e && typeof e.code === 'string' ? e.code : undefined,
+        // A write git would have failed: git's own lines (pack/mount-writer.ts).
+        gitFailure: e instanceof __nimbusGitPack.GitWriteFailure ? e.lines : undefined,
         metadataOverlay: overlayStats(),
       });
     }

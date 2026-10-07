@@ -575,6 +575,8 @@ interface AwaitedDescription {
   readonly path: string;
   readonly flags: RuntimeFileHandle['flags'];
   position: number;
+  /** The exclusive-mutation lease the open presented: the descriptor's mutations present it too. */
+  readonly owner?: string;
 }
 
 interface AwaitedDescriptors {
@@ -794,7 +796,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   }
   writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: { createParents?: boolean; expectedRevision?: number } & RuntimeMutationOwner) {
     return this.either([path], () => this.bridge.writeRange(path, offset, bytes, options), async () => {
-      await this.namespace.writeRange(await this.path(path), offset, bytes, { parents: options?.createParents === true });
+      await this.owned(options).writeRange(await this.path(path), offset, bytes, { parents: options?.createParents === true });
       return this.receipt();
     });
   }
@@ -813,7 +815,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   }
   truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean } & RuntimeMutationOwner) {
     return this.either([path], () => this.bridge.truncate(path, size, options), async () => {
-      await this.namespace.truncate((await this.path(path)), size);
+      await this.owned(options).truncate((await this.path(path)), size);
       return this.receipt();
     });
   }
@@ -867,7 +869,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return this.either([path], () => this.bridge.rmdir(path, options), async () => this.owned(options).rmdir((await this.path(path, false))));
   }
   rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner) {
-    return this.either([from, to], () => this.bridge.rename(from, to, options), async () => this.namespace.rename((await this.path(from, false)), (await this.path(to, false))));
+    return this.either([from, to], () => this.bridge.rename(from, to, options), async () => this.owned(options).rename((await this.path(from, false)), (await this.path(to, false))));
   }
   realpath(path: RuntimeFsPath) {
     return this.either([path], () => this.bridge.realpath(path), async () => this.namespace.realpathAsync(await this.path(path)));
@@ -930,8 +932,10 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       if (stat === null && !flags.create) throw syscallError('ENOENT', 'open', p);
       if (stat !== null && stat.type === 'directory' && (flags.write || flags.truncate || flags.append)) throw syscallError('EISDIR', 'open', p);
       if (flags.directory && stat !== null && stat.type !== 'directory') throw syscallError('ENOTDIR', 'open', p);
-      if (stat === null || flags.truncate) await this.owned(flags.write || flags.create || flags.truncate || flags.append ? options : undefined).writeFile(p, new Uint8Array(0), flags.mode === undefined ? undefined : { mode: flags.mode });
+      const mutates = !!(flags.write || flags.create || flags.truncate || flags.append);
+      if (stat === null || flags.truncate) await this.owned(mutates ? options : undefined).writeFile(p, new Uint8Array(0), flags.mode === undefined ? undefined : { mode: flags.mode });
       return this.issue({
+        ...(mutates && options?.mutationOwner !== undefined ? { owner: options.mutationOwner } : {}),
         // The file it opened, by the name the namespace resolved for it: a
         // link on the way repointed later does not move the descriptor.
         path: await this.namespace.realpathAsync(p),
@@ -975,14 +979,14 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       const start = d.flags.append ? ((await this.namespace.stat(d.path))?.size ?? 0) : offset ?? d.position;
       this.live();
       try {
-        await this.namespace.writeRange(d.path, start, bytes);
+        await this.owned({ mutationOwner: d.owner }).writeRange(d.path, start, bytes);
       } catch (error) {
         if (!(error instanceof VfsError && error.code === 'ENOTSUP')) throw error;
         const file = await this.namespace.readFile(d.path);
         const next = new Uint8Array(Math.max(file.byteLength, start + bytes.byteLength));
         next.set(file);
         next.set(bytes, start);
-        await this.namespace.writeFile(d.path, next);
+        await this.owned({ mutationOwner: d.owner }).writeFile(d.path, next);
       }
       if (offset === null || d.flags.append) d.position = start + bytes.byteLength;
       return bytes.byteLength;
@@ -1032,20 +1036,20 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   ftruncate(handleId: number, size: number) {
     return this.on(handleId, () => this.bridge.ftruncate(handleId, size), async (d) => {
       if (!d.flags.write) throw fsError('EINVAL', 'ftruncate', d.path);
-      await this.namespace.truncate(d.path, size);
+      await this.owned({ mutationOwner: d.owner }).truncate(d.path, size);
     });
   }
 
   fchmod(handleId: number, mode: number) {
-    return this.on(handleId, () => this.bridge.fchmod(handleId, mode), async (d) => { await this.namespace.chmod(d.path, mode); });
+    return this.on(handleId, () => this.bridge.fchmod(handleId, mode), async (d) => { await this.owned({ mutationOwner: d.owner }).chmod(d.path, mode); });
   }
 
   fchown(handleId: number, uid: number, gid: number) {
-    return this.on(handleId, () => this.bridge.fchown(handleId, uid, gid), async (d) => { await this.namespace.chown(d.path, uid, gid); });
+    return this.on(handleId, () => this.bridge.fchown(handleId, uid, gid), async (d) => { await this.owned({ mutationOwner: d.owner }).chown(d.path, uid, gid); });
   }
 
   futimes(handleId: number, atimeMs: number, mtimeMs: number) {
-    return this.on(handleId, () => this.bridge.futimes(handleId, atimeMs, mtimeMs), async (d) => { await this.namespace.utimes(d.path, atimeMs, mtimeMs); });
+    return this.on(handleId, () => this.bridge.futimes(handleId, atimeMs, mtimeMs), async (d) => { await this.owned({ mutationOwner: d.owner }).utimes(d.path, atimeMs, mtimeMs); });
   }
 }
 

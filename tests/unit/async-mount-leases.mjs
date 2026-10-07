@@ -476,4 +476,73 @@ assert.deepEqual([cat.exitCode, cat.stdout, cat.stderr], [0, 'through a director
   ws.filesystem.vfs.unmount('/b');
 }
 
+// ── A lease holder on an asynchronous mount: its own mutations land, its scope still checked ──
+// mkdir, an open for writing and the descriptor's write, truncate, chmod,
+// chown and utimes, rename, unlink and rmdir, each presenting the lease,
+// land inside it; without the lease each is EBUSY. (Red before: the
+// descriptor's mutations presented none, and so were EBUSY under the lease
+// that opened it; the rename presented none.) And a leased mutation whose
+// lookup is still awaited when its scope is revoked does not land: the
+// lease does not stand in for the scope. (Red before: a leased view dropped
+// the scope's check.)
+{
+  const owned = new MemoryVFS(USER);
+  let gate = null;
+  const gating = (vfs) => new Proxy(vfs, {
+    get(target, key) {
+      if (key === 'sync') return undefined;
+      const value = target[key];
+      if (typeof value !== 'function') return value;
+      if (key === 'as') return (...args) => gating(value.apply(target, args));
+      return async (...args) => {
+        if (key === 'stat' && gate !== null && args[0] === gate.path) { const open = gate; gate = null; open.reached(); await open.released; }
+        return value.apply(target, args);
+      };
+    },
+    has: (target, key) => key !== 'sync' && key in target,
+  });
+  ws.filesystem.vfs.mount('/o', gating(owned));
+  await owned.mkdir('/held', { recursive: true });
+  const files = box.files;
+  const cred = { ...USER, groups: [1000], umask: 0o022 };
+  const held = engine.acquireExclusiveMutation('o/held');
+  const mutationOwner = held.owner;
+  const host = files.openHost(cred);
+  const fs = host.fs;
+  await fs.mkdir('/o/held/d', { mutationOwner });
+  const fd = await fs.open('/o/held/f.txt', { write: true, create: true, mode: 0o644 }, { mutationOwner });
+  await fs.write(fd.id, 0, enc.encode('written'));
+  await fs.ftruncate(fd.id, 4);
+  await fs.fchmod(fd.id, 0o600);
+  await fs.futimes(fd.id, 1000, 2000);
+  await fs.close(fd.id);
+  assert.equal(new TextDecoder().decode(await owned.readFile('/held/f.txt')), 'writ', 'the descriptor wrote and truncated under the lease');
+  assert.equal((await owned.stat('/held/f.txt')).mode & 0o777, 0o600, 'and changed its mode');
+  await fs.rename('/o/held/f.txt', '/o/held/g.txt', { mutationOwner });
+  assert.equal(await code(() => fs.mkdir('/o/held/e')), 'EBUSY', 'a mkdir without the lease');
+  assert.equal(await code(() => fs.open('/o/held/h.txt', { write: true, create: true })), 'EBUSY', 'an open for writing without it');
+  assert.equal(await code(() => fs.rename('/o/held/g.txt', '/o/held/i.txt')), 'EBUSY', 'a rename without it');
+  await fs.unlink('/o/held/g.txt', { mutationOwner });
+  await fs.rmdir('/o/held/d', { mutationOwner });
+  assert.deepEqual((await owned.readdir('/held')).map((entry) => entry.name), [], 'unlinked and removed under the lease');
+
+  /** Run `write` until the mount is asked for `path`, `revoke` there, then let it go on. */
+  const revokedDuring = async (path, write, revoke) => {
+    let reached; let release;
+    const isReached = new Promise((resolve) => { reached = resolve; });
+    gate = { path, reached, released: new Promise((resolve) => { release = resolve; }) };
+    const outcome = Promise.resolve().then(write).then(() => 'ok', (error) => (typeof error.code === 'string' ? error.code : error.name));
+    await isReached;
+    await revoke();
+    release();
+    return outcome;
+  };
+  assert.equal(await revokedDuring('/held/late', () => fs.mkdir('/o/held/late', { mutationOwner }), () => host.dispose()), 'EBADF', 'a leased mkdir of a disposed host lease');
+  const killed = files.bind({ pid: 701, cred });
+  assert.equal(await revokedDuring('/held/late.txt', () => killed.open('/o/held/late.txt', { write: true, create: true }, { mutationOwner }), () => files.killProcess(701)), 'EBADF', 'a leased open of a killed process');
+  assert.deepEqual((await owned.readdir('/held')).map((entry) => entry.name), [], 'nothing landed');
+  engine.releaseExclusiveMutation(mutationOwner);
+  ws.filesystem.vfs.unmount('/o');
+}
+
 console.log(`async-mount-leases: ${mutations.length} awaited mutations are checked where they land`);
