@@ -1111,26 +1111,11 @@ export async function registerHostedCommands(self, workspace) {
             }
             return 0;
         }
-        // npm init / npm init -y
-        if (sub === 'init') {
-            const cwd = cwdKey;
-            const pkgPath = cwd + '/package.json';
-            if (await ctx.vfs.exists(`/${pkgPath}`) && !args.includes('-y') && !args.includes('--yes')) {
-                ctx.stderr.write('package.json already exists. Use -y to overwrite.\n');
-                return 1;
-            }
-            const name = cwd.split('/').pop() || 'project';
-            const pkg = {
-                name, version: '1.0.0', description: '', main: 'index.js',
-                type: 'module',
-                scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview', test: 'echo "no test"' },
-                keywords: [], author: '', license: 'MIT', dependencies: {}, devDependencies: {},
-            };
+        // npm init / npm init -y: core npm's (npm-init.ts), npm's own package.json.
+        if (sub === 'init' && !(args.length >= 2 && !args[1].startsWith('-'))) {
             // Releases before 0.13.2 wrote package.json as root.
-            await handKernelArtifact(workspace.filesystem, ctx.vfs, requireVfsCred(ctx.cred, 'npm'), `/${pkgPath}`);
-            await ctx.vfs.writeFile(`/${pkgPath}`, JSON.stringify(pkg, null, 2) + '\n');
-            ctx.stdout.write('Wrote to ' + pkgPath + '\n');
-            return 0;
+            await handKernelArtifact(workspace.filesystem, ctx.vfs, requireVfsCred(ctx.cred, 'npm'), `/${cwdKey}/package.json`);
+            return coreNpmCmd(ctx);
         }
         // npm uninstall <pkg>
         if (sub === 'uninstall' || sub === 'un' || sub === 'remove' || sub === 'rm') {
