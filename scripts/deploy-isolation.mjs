@@ -50,7 +50,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parse, printParseErrorCode } from 'jsonc-parser';
+import { parseWranglerJsonc } from '../packages/worker/src/wrangler/wrangler-config.ts';
 
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -277,14 +277,13 @@ export function missingCapabilities(block) {
     .map((r) => `${r.binding} is absent — breaks ${r.breaks}`);
 }
 
-/** A wrangler config as wrangler reads it: jsonc-parser, trailing commas allowed, refused at its first error. */
+/** A wrangler config as `nimbus wrangler dev` and wrangler read it (parseWranglerJsonc). */
 export function loadConfig(relPath, root = REPO_ROOT) {
-  const errors = [];
-  const config = parse(readFileSync(join(root, relPath), 'utf8'), errors, { allowTrailingComma: true });
-  if (errors.length > 0) {
-    throw new SyntaxError(`${relPath}: ${printParseErrorCode(errors[0].error)} at offset ${errors[0].offset}`);
+  try {
+    return parseWranglerJsonc(readFileSync(join(root, relPath), 'utf8'));
+  } catch (error) {
+    throw new SyntaxError(`${relPath}: ${error.message}`, { cause: error });
   }
-  return config;
 }
 
 /**
