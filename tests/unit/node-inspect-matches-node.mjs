@@ -9,8 +9,10 @@
 // inspect.js formats; the two must print the same bytes. The one difference
 // the host names is not compared: with customInspect false, a value only
 // V8's internals read (a promise's state, an iterator's entries) is
-// formatted with none of them. console-format-matches-node-workerd runs the
-// same code in workerd, the platform the shims ship on.
+// formatted with none of them. Here the platform is node, whose own inspect
+// is Node's; console-format-matches-node-workerd runs the same code in
+// workerd, the platform the shims ship on, whose inspect the host defers to
+// for those values.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -22,7 +24,7 @@ import { join } from 'node:path';
 import {
   EAST_ASIAN_WIDE_RANGES, NODE_INSPECT_SHA256, NODE_INSPECT_SOURCE, NODE_PRIMORDIALS_SHA256, NODE_PRIMORDIALS_SOURCE,
 } from '../../packages/worker/src/runtime/node-inspect-source.ts';
-import { createNodeInspect } from '../../packages/worker/src/runtime/node-inspect-host.ts';
+import { NODE_INSPECT_HOST_SOURCE } from '../../packages/worker/src/runtime/node-inspect-host.ts';
 
 const sha256 = (text) => createHash('sha256').update(text).digest('hex');
 assert.equal(sha256(NODE_INSPECT_SOURCE), '2f2f01d7077800f8565d1be2bd1e6800f8ac02759482dc080eb6bc6005d67dd1', 'inspect.js is v22.22.3\'s, byte for byte');
@@ -67,7 +69,7 @@ const values = [
   Symbol.iterator, Symbol('desc'), Symbol(), 10n, getters, { f() {}, g: function () {}, h: async () => {} },
   { s: '日本語のテキスト', e: '😀👍🏽', mixed: 'ab日本' }, ['日本', '語', 'テキスト', 'abc', 'de', 'f', 'g', 'h'],
   Promise.resolve({ a: 1 }), rejected, new Promise(() => {}), new Map([[1, 2]]).entries(), new Set([1]).values(), [1, 2][Symbol.iterator](),
-  new Proxy({ a: 1 }, {}), new Proxy([1, 2], {}), process.env.__NONE__, null, undefined, true,
+  new Proxy({ a: 1 }, {}), new Proxy([1, 2], {}), new Proxy(new Proxy({ b: 2 }, {}), {}), process.env.__NONE__, null, undefined, true,
   new URL('http://user:pw@host:8080/p/a/t/h?query=string#hash'), new URLSearchParams('a=1&b=2'),
   { [util.inspect.custom]: (depth, options, inspect) => 'custom:' + depth + ':' + inspect({ n: 1 }, options) },
   { nested: { [util.inspect.custom]() { return { replaced: true }; } } },
@@ -112,7 +114,7 @@ let differences;
 try {
   const program = PROGRAM
     .replace('__WIDE__', JSON.stringify(EAST_ASIAN_WIDE_RANGES))
-    .replace('__HOST__', () => createNodeInspect.toString())
+    .replace('__HOST__', () => NODE_INSPECT_HOST_SOURCE)
     .replace('__PRIMORDIALS__', () => JSON.stringify(NODE_PRIMORDIALS_SOURCE))
     .replace('__INSPECT__', () => JSON.stringify(NODE_INSPECT_SOURCE));
   writeFileSync(join(dir, 'compare.cjs'), program);
