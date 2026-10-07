@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "1dee5fef7e7dcbd3f9917fc24da1ef5b5a3b86eb64d7f252273a10e96f3320ca",
+  "fingerprint": "984cbbe613f28fa052fdeaf60fccee51abe65b077473dded784d3c480f2f18c2",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1815,8 +1815,8 @@
     "packages/worker/dist/facets/launch-learning-store.d.ts.map": "03f0435b9c6bfcd09415824066ec4c09cde49837c041956f19f149bbda4be8ba",
     "packages/worker/dist/facets/launch-learning-store.js": "f3f3eb5b8d842939155efbdf4b8ba62e698796baf22365866954029e7d9ccd1a",
     "packages/worker/dist/facets/manager.d.ts": "9fe33977085ff9c68016996e0fc58c3990cb53b45e36b3c13d271056357086d8",
-    "packages/worker/dist/facets/manager.d.ts.map": "c8529ca34159c6d63820aef0be73d7bdc86439f15a3b63928ad1bbfd8c0af42d",
-    "packages/worker/dist/facets/manager.js": "b497d1acaac13537aa0dc5b0386ceaa968eeb6678ee7a534bda3d8e847480727",
+    "packages/worker/dist/facets/manager.d.ts.map": "02cae2d6c5a999fac3fcdf3485e3fbd07947a9de41faec86c27a74ccda9e5e5c",
+    "packages/worker/dist/facets/manager.js": "578f897cbe7d7737523deb82312fa10b58a30a72669db6c73b27e7f98adf8f96",
     "packages/worker/dist/facets/opencode-staging.d.ts": "91adb325e06e8ca0748860340218a0e31b5cb40b4f579059c66c32a56eb0e309",
     "packages/worker/dist/facets/opencode-staging.d.ts.map": "45b3a79952c6fd48d58d2ddd885d4b2c7b3d8cb841be8cc2974731df7077e699",
     "packages/worker/dist/facets/opencode-staging.js": "313adb74d695d5bed4b1462ba19ecea0bc21615b9e6e0404ae2ddf52eb63b7cf",
@@ -2484,7 +2484,7 @@
     "packages/worker/src/facets/exec-telemetry.ts": "8b680499e6b0ef582a456d2aa4d0873138dc6765d843b81e76910026d984d852",
     "packages/worker/src/facets/helper-facet.ts": "cb05bb59bb51e8e62988e00bad9ef23caebe2d8c8bf14b4b6be4fa5a48f3b333",
     "packages/worker/src/facets/launch-learning-store.ts": "0ba1ebe8b6e30ff694f70db7de5e06c0b536beed882c3f9e3db3068ec49851d8",
-    "packages/worker/src/facets/manager.ts": "6b5f26c9bb8bccd66accfbf0f2ae30f6af8a81f8b76981fbcc67c97bfba0cca8",
+    "packages/worker/src/facets/manager.ts": "3ab7f76e7185fd1b7aafcea267347a3f88dda773daaf961f6462933636c8831e",
     "packages/worker/src/facets/opencode-staging.ts": "3697f24a4228d79d93501215a616a9cbbacc0f2552ec371817905037b0ba3b34",
     "packages/worker/src/facets/oxc-transform.ts": "15642932c32be02f89e4271fbfacc9c47f0a338d65a36a544122b78615d7df52",
     "packages/worker/src/facets/prebundle-pool.ts": "543fd016de8fe51e6c60eec26154a5079ce1a1a6e891e681fe2f95185faf7286",
