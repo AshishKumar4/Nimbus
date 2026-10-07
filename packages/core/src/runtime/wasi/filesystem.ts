@@ -1,6 +1,7 @@
 import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs, RuntimeVfsStat } from '../os-contracts.js';
 import type { SyscallResult, Errno, WasiImports } from './types.js';
 import type { PinnedContent } from './resident-filesystem.js';
+import type { VfsErrorCode } from '../../vfs/vfs-error.js';
 
 /** WASI encoding only. Paths, permissions, inode identity and storage belong to fs. */
 export interface AuthorityFd {
@@ -94,18 +95,27 @@ const S_IFMT = 0o170000, S_IFREG = 0o100000;
 const socketPathPrefixes: readonly string[] = [WASI_TCP_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_ACCEPTED_PATH_PREFIX];
 type Fs = RuntimeFsBridge | RuntimeSynchronousFs;
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true });
-const errno: Record<string, Errno> = {
-  EACCES: 2, EAGAIN: 6, EBADF: 8, EBUSY: 10, EEXIST: 20, EFAULT: 21,
-  EFBIG: 22, EINTR: 27, EINVAL: 28, EIO: 29, EISDIR: 31, ELOOP: 32,
-  EMFILE: 33, ENAMETOOLONG: 37, ENFILE: 41, ENOENT: 44, ENOMEM: 48,
-  ENOSPC: 51, ENOSYS: 52, ENOTDIR: 54, ENOTEMPTY: 55, ENOTSUP: 58,
-  EPERM: 63, EPIPE: 64, EROFS: 69, ESPIPE: 70, ESTALE: 72, EXDEV: 75,
-  ENOTCAPABLE: 76,
+/** Every code a VFS backend throws (vfs-error.ts), as its preview1 errno. */
+const VFS_ERRNO: Readonly<Record<VfsErrorCode, Errno>> = {
+  E2BIG: 1, EACCES: 2, EAGAIN: 6, EBADF: 8, EBUSY: 10, EEXIST: 20, EINVAL: 28, EIO: 29, EISDIR: 31,
+  ELOOP: 32, ENAMETOOLONG: 37, ENOENT: 44, ENOSPC: 51, ENOTDIR: 54, ENOTEMPTY: 55, ENOTSUP: 58,
+  ENXIO: 60, EPERM: 63, EROFS: 69, ESTALE: 72, EXDEV: 75,
+};
+const errno: Readonly<Record<string, Errno>> = {
+  ...VFS_ERRNO,
+  // The codec's own refusals, and the session's for a process it no longer holds.
+  EFAULT: 21, EFBIG: 22, EINTR: 27, EMFILE: 33, ENFILE: 41, ENOMEM: 48, ENOSYS: 52,
+  EPIPE: 64, ESPIPE: 70, ESRCH: 71, ENOTCAPABLE: 76,
 };
 export function filesystemErrno(error: unknown): Errno {
   if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string') return errno[error.code] ?? errno.EIO;
   if (error instanceof RangeError) return errno.EFAULT;
   return errno.EIO;
+}
+
+/** The session's refusal of a call for a process it no longer holds (process-table.ts noSuchProcess), or null. */
+function goneProcess(error: unknown): string | null {
+  return error instanceof Error && 'code' in error && error.code === 'ESRCH' ? error.message : null;
 }
 export function after<T, R>(value: Awaitable<T>, next: (value: T) => Awaitable<R>): Awaitable<R> {
   return value instanceof Promise ? value.then(next) : next(value);
@@ -131,6 +141,12 @@ export interface AuthorityFilesystemOptions {
   synchronous: boolean;
   /** The guest's live umask when its process can move it after boot (bash's `umask` builtin). */
   umask?(): number;
+  /**
+   * The session answered that it holds no such process: it restarted (or
+   * ended the process) while the guest ran. The call itself gets ESRCH; the
+   * runner names why when the run ends.
+   */
+  processGone?(refusal: string): void;
   /**
    * Largest regular file a read-only open answers from a resident copy. A
    * guest that reopens the same file for every module (CPython's zipimport,
@@ -279,14 +295,19 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     owns?: (args: A) => boolean,
   ): ((...args: A) => SyscallResult) => (...args) => {
     if (!options.fs() || (owns && !owns(args))) return previous ? previous(...args) : 52;
+    const refused = (error: unknown): Errno => {
+      const gone = goneProcess(error);
+      if (gone !== null) options.processGone?.(gone);
+      return filesystemErrno(error);
+    };
     try {
       const result = body(fs(), ...args);
       if (result instanceof Promise) {
         if (options.synchronous) throw new Error('Filesystem synchronous contract returned a Promise');
-        return result.catch(filesystemErrno);
+        return result.catch(refused);
       }
       return result;
-    } catch (error) { return filesystemErrno(error); }
+    } catch (error) { return refused(error); }
   };
   const owns = (args: readonly (number | bigint)[]) => {
     const e = fds.get(Number(args[0])); return e?.kind === 'authority' || e?.kind === 'resident' || e?.kind === 'preopen';

@@ -94,6 +94,16 @@ function immutableCred(cred: VfsCred): VfsCred {
  */
 export const PID_GEN_STRIDE = 1_000_000;
 
+/**
+ * A call made for a pid the table does not hold: the process ended, or the
+ * session restarted under it (pids carry the isolate generation, so a pid of
+ * an earlier generation is never reissued). Coded so a caller across RPC can
+ * tell it from a filesystem failure.
+ */
+function noSuchProcess(pid: number): Error {
+  return Object.assign(new Error(`process pid ${pid} does not exist`), { code: 'ESRCH' });
+}
+
 export class ProcessTable {
   private nextPid = 1;
   private base = 0;
@@ -147,7 +157,7 @@ export class ProcessTable {
 
   credOf(pid: number): VfsCred {
     const entry = this.processes.get(pid);
-    if (!entry) throw new Error(`process pid ${pid} does not exist`);
+    if (!entry) throw noSuchProcess(pid);
     return immutableCred(entry.cred);
   }
 
@@ -157,7 +167,7 @@ export class ProcessTable {
 
   setUmask(pid: number, umask: number): number {
     const entry = this.processes.get(pid);
-    if (!entry) throw new Error(`process pid ${pid} does not exist`);
+    if (!entry) throw noSuchProcess(pid);
     if (!Number.isInteger(umask) || umask < 0 || umask > 0o777) {
       throw new Error(`invalid umask ${umask}`);
     }

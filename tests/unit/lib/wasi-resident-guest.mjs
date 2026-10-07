@@ -32,14 +32,10 @@ const enc = new TextEncoder();
 /** Whether this engine can park a guest: without JSPI a guest answers from the session, and these tests have nothing to test. */
 export const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
 
-/**
- * `preopen` is the session directory the guest's "/" is (wasm-runner's is
- * the shell's cwd); the session root by default.
- * @param {{ refuse?: (path: string) => boolean, preopen?: string }} [options]
- */
-export async function residentGuest({ refuse = () => false, preopen = '' } = {}) {
+/** @param {{ refuse?: (path: string) => boolean }} [options] */
+export async function residentGuest({ refuse = () => false } = {}) {
   const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
-  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites };`);
+  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync };`);
   let P;
   try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
 
@@ -48,15 +44,11 @@ export async function residentGuest({ refuse = () => false, preopen = '' } = {})
   const kernel = raw.as(CRED_KERNEL);
   kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
   kernel.chown('home/user', USER.uid, USER.gid);
-  if (preopen) {
-    kernel.mkdir(preopen, { recursive: true, mode: 0o755 });
-    kernel.chown(preopen, USER.uid, USER.gid);
-  }
   const processes = new SessionProcessSupervisor();
   const { pid } = processes.spawn('guest', ['guest'], '/home/user', { cred: USER });
   const authority = new ProcessFiles(raw);
   const bridge = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
-  const dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge, host: {} });
+  let dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge, host: {} });
   const own = authority.bind({ pid, cred: USER });
   const refusedHandles = new Set();
   const supervisor = { synchronous: () => { throw new Error('rpc stubs have no synchronous view'); } };
@@ -88,7 +80,7 @@ export async function residentGuest({ refuse = () => false, preopen = '' } = {})
   };
 
   const memory = new WebAssembly.Memory({ initial: 16 });
-  P.__wasiInitFS({ root: preopen, preopens: [{ wasiPath: '/', vfsPath: preopen }], cred: USER });
+  P.__wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], cred: USER });
   P.__wasiAdoptSupervisor(supervisor);
   const { wasiImport } = makeImportsWithoutJSPI(P, {
     argv: ['guest'], env: {}, getMemory: () => memory, stdoutWrite: () => {}, stderrWrite: () => {},
@@ -101,6 +93,15 @@ export async function residentGuest({ refuse = () => false, preopen = '' } = {})
 
   const guest = {
     P, kernel, raw, stats: () => P.__wasiFsStats(),
+    /**
+     * The session's isolate is replaced under the running guest: its calls
+     * reach a fresh process table, of the next generation, that never held it.
+     */
+    restartSession() {
+      const next = new SessionProcessSupervisor();
+      next.setPidBase(1_000_000);
+      dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes: next, bridge, host: {} });
+    },
     /** path_open: the fd, or a thrown errno. `flags`: { create, truncate, exclusive, directory, write }. */
     async open(name, { create = false, truncate = false, exclusive = false, directory = false, write = false } = {}) {
       const n = putPath(name);
@@ -135,21 +136,6 @@ export async function residentGuest({ refuse = () => false, preopen = '' } = {})
       view().setUint32(IOV + 4, bytes.byteLength, true);
       return wasiImport.fd_write(fd, IOV, 1, OUT);
     },
-    /** The process's own view of the session's files, as the supervisor answers it. */
-    authority: own,
-    /** path_filestat_get: { filetype, size }, or a thrown errno. */
-    async stat(name) {
-      const n = putPath(name);
-      const errno = await wasiImport.path_filestat_get(PREOPEN_FD, 1, PATH, n, OUT);
-      if (errno !== 0) throw Object.assign(new Error(`stat ${name}: errno ${errno}`), { errno });
-      return { filetype: view().getUint8(OUT + 16), size: Number(view().getBigUint64(OUT + 32, true)) };
-    },
-    /** fd_filestat_get of the preopen itself: { filetype }, or a thrown errno. */
-    async statPreopen() {
-      const errno = await wasiImport.fd_filestat_get(PREOPEN_FD, OUT);
-      if (errno !== 0) throw Object.assign(new Error(`fd_filestat_get ${PREOPEN_FD}: errno ${errno}`), { errno });
-      return { filetype: view().getUint8(OUT + 16) };
-    },
     /** path_filestat_get: the size the guest sees, or a thrown errno. */
     async statSize(name) {
       const n = putPath(name);
@@ -180,12 +166,10 @@ export async function residentGuest({ refuse = () => false, preopen = '' } = {})
     async dispose() { await bridge.dispose(); await authority.releaseProcess(pid); harness.db.close(); },
   };
   // The store boots on the first call; wait until it answers.
-  // home/user, or the preopen re-stated, which names the preopen itself.
-  const home = preopen || 'home/user';
-  await guest.open(home, { directory: true }).then((fd) => guest.close(fd));
+  await guest.open('home/user', { directory: true }).then((fd) => guest.close(fd));
   for (let i = 0; i < 50 && !(P.__wasiFsStats()?.local > 0); i++) {
     await new Promise((resolve) => setTimeout(resolve, 5));
-    const n = putPath(home);
+    const n = putPath('home/user');
     await wasiImport.path_filestat_get(PREOPEN_FD, 1, PATH, n, OUT);
   }
   return guest;
