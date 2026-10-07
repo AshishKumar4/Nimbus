@@ -90,6 +90,10 @@ if (releaseDigest(release) !== sealed) notGraded(`the release manifest in ${dir}
 const module = release.bundles[target]?.sha256;
 if (!module || module !== release.bundles[`${PRODUCTION.app}:staging`]?.sha256) notGraded(`the release's ${target} module is not the one its staging upload used`);
 log(`release ${dir}: manifest ${sealed.slice(0, 16)}…, graded green on staging ${staged(dir).at}; ${target} sha256 ${module}`);
+// What the user agreed this release may ship with (tests/behavioral/_deferred.mjs).
+for (const entry of staged(dir).matrix.deferrals ?? []) {
+  console.log(`promote: ships with a DEFERRED probe, ${entry.probe}: ${entry.reason} (approved ${entry.approved}; owner ${entry.owner}; tracking ${entry.tracking}; red in ${entry.rows.length} staging row${entry.rows.length === 1 ? '' : 's'})`);
+}
 
 // 2. The preflight.
 const isolation = spawnSync('bun', ['scripts/deploy-isolation.mjs'], { cwd: repo, encoding: 'utf8' });

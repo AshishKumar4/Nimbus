@@ -13,7 +13,10 @@
 //   2. This machine uploads it, as built, to nimbus-probe-staging and
 //      nimbus-staging (tests/behavioral/_staging-target.mjs up --release),
 //      after deploy-isolation's preflight, and verifies each version id.
-//   3. The staging matrix, from containers (scripts/ci/remote-probes.mjs):
+//   3. The staging matrix, from containers (scripts/ci/remote-probes.mjs),
+//      graded row by row (scripts/ci/lib/matrix.mjs): green only if every
+//      red row is a probe the user deferred (tests/behavioral/_deferred.mjs)
+//      and every deferred probe ran and failed:
 //      the whole suite with Chromium against nimbus-probe-staging, the
 //      write-heavy probes whose failure is intermittent repeated beside it,
 //      then the hosted-demo checks against nimbus-staging as a visitor
@@ -29,7 +32,9 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { DEFERRED } from '../../tests/behavioral/_deferred.mjs';
 import { HOSTED_DEMO_CHECKS } from '../../tests/behavioral/_probe-target-skips.mjs';
+import { gradeMatrix } from './lib/matrix.mjs';
 import { assertInstalled } from './lib/installed.mjs';
 
 /** Write-heavy probes repeated beside the suite: their failure mode is intermittent. */
@@ -128,7 +133,16 @@ if (!flags['no-matrix']) {
   const demo = staged.versions['nimbus-staging']?.base;
   const hosted = demo ? probes(['--target', `hosted:${new URL(demo).origin}`, '--only', HOSTED_DEMO_CHECKS.join(','), '--parts', '1', '--jobs', String(HOSTED_DEMO_CHECKS.length)])
     : { exitCode: 2, verdict: null };
-  staged.matrix = { exitCode: Math.max(suite.exitCode, hosted.exitCode), suite, hosted };
+  // Graded row by row against the user's deferrals (lib/matrix.mjs): green
+  // only if every red row is a deferred probe's, and every deferred probe
+  // ran and failed. A deferred probe's rows, output included, are kept here.
+  const read = (path) => { try { return path ? JSON.parse(readFileSync(path, 'utf8')) : null; } catch { return null; } };
+  const graded = gradeMatrix([read(suite.verdict), read(hosted.verdict)], DEFERRED);
+  staged.matrix = { exitCode: graded.exitCode, suite, hosted, deferrals: graded.applied, problems: graded.problems };
+  for (const entry of graded.applied) {
+    console.log(`release: DEFERRED ${entry.probe} — red in ${entry.rows.length} row${entry.rows.length === 1 ? '' : 's'}, shipped by deferral: ${entry.reason} (approved ${entry.approved}; owner ${entry.owner}; tracking ${entry.tracking})`);
+  }
+  for (const problem of graded.problems) console.log(`release: ${problem}`);
   // The matrix graded this upload only if staging served it throughout.
   const moved = Object.entries(serving()).filter(([name, row]) => row.live !== staged.versions[name]?.version);
   if (moved.length > 0) {
@@ -139,5 +153,6 @@ if (!flags['no-matrix']) {
   exit = staged.matrix.exitCode;
 }
 writeFileSync(join(dir, 'staged.json'), `${JSON.stringify(staged, null, 2)}\n`);
-console.log(`release: ${sha.slice(0, 12)} staged${staged.matrix ? `, matrix ${staged.matrix.exitCode === 0 ? 'green' : staged.matrix.exitCode === 2 ? 'NOT GRADED' : 'RED'}` : ', matrix not run'}; ${join(dir, 'staged.json')}`);
+const deferrals = staged.matrix?.deferrals?.length ? ` with ${staged.matrix.deferrals.length} deferral${staged.matrix.deferrals.length === 1 ? '' : 's'} (${staged.matrix.deferrals.map((entry) => entry.probe).join(', ')})` : '';
+console.log(`release: ${sha.slice(0, 12)} staged${staged.matrix ? `, matrix ${staged.matrix.exitCode === 0 ? `green${deferrals}` : staged.matrix.exitCode === 2 ? 'NOT GRADED' : 'RED'}` : ', matrix not run'}; ${join(dir, 'staged.json')}`);
 process.exit(exit);

@@ -687,7 +687,17 @@ the upload's own receipt (the ids wrangler returned to that upload), and a
 run whose environment changed under it is not graded. `release.mjs` seals `staged.json` with the digest of the
 whole release manifest: the commit, every module, the docs, every asset.
 `promote.mjs` uploads only a release whose matrix was green and whose
-manifest still has that digest. It checks every file against the manifest
+manifest still has that digest.
+
+The matrix is graded row by row (`scripts/ci/lib/matrix.mjs`). It is green
+if and only if every red row is a probe in `tests/behavioral/_deferred.mjs`,
+the user's record of what a release may ship with. Each entry names the
+probe, the reason, the user's dated approval, the owner and the tracking
+item. A deferred probe still runs, and its output is kept in `staged.json`.
+If it passes, or does not run, the matrix is red, so a deferral ends when
+its fix lands. `promote.mjs` prints every deferral that graded the
+release. Nothing is added to that record without a new approval from the
+user. It checks every file against the manifest
 and runs deploy-isolation's preflight first. On a failed
 check it prints the rollback:
 `bun run --cwd apps/hosted-demo wrangler versions deploy --name nimbus <previous-version-id>@100% -e production`.
