@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict';
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -17,6 +18,35 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { startGitHttpServer } from './lib/git-http-server.mjs';
 import { createFacetSession, hostGit as hostGitIn } from './lib/facet-session.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+
+
+/** One case, in its own process: the clone, compared with host git's, measured (a JSON line). */
+async function runCase(where, url, host, base) {
+  const harness = createSqliteVfsTestHarness();
+  // Its own filesystem identity: a device the session's engine is not (engineKey tells them apart by it).
+  const engine = new SqliteVFS(harness.sql, harness.ctx, 'mounted-data');
+  engine.as(CRED_KERNEL).mkdir('work', { mode: 0o755 });
+  engine.as(CRED_KERNEL).chown('work', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const caseWork = mkdtempSync(join(base, where + '-'));
+  const session = await createFacetSession(caseWork, where === 'mount' ? { mounts: { '/mnt/data': new SqliteFiles(engine, engine.as(CRED_KERNEL)) } } : {});
+  const dest = where === 'mount' ? '/mnt/data/work/repo' : '/home/user/repo';
+  const started = performance.now();
+  const cloned = await session.git('/home/user', ['clone', '--depth', '1', url, dest]);
+  const wallMs = performance.now() - started;
+  assert.equal(cloned.code, 0, `${where}: ${cloned.stderr}`);
+  const ours = where === 'mount'
+    ? await session.materializeAt(dest, join(caseWork, 'ours'))
+    : session.materialize(dest.slice(1), join(caseWork, 'ours'));
+  assert.deepEqual(worktreeOf(ours), worktreeOf(host), `${where}: the worktree`);
+  assert.equal(hostGitIn(caseWork, ours, ['ls-files', '-s']), hostGitIn(caseWork, host, ['ls-files', '-s']), `${where}: the index`);
+  const { requests } = session;
+  console.log(JSON.stringify({ where, wallMs: Math.round(wallMs), waves: requests.waves, rangeWrites: requests.rangeWrites.length, fileApi: requests.fileApi, phases: requests.phases.length }));
+}
+
+if (process.env.SCALE_CASE) {
+  await runCase(process.env.SCALE_CASE, process.env.SCALE_URL, process.env.SCALE_HOST, process.env.SCALE_WORK);
+  process.exit(0);
+}
 
 const work = mkdtempSync(join(tmpdir(), 'nimbus-clone-mount-scale-'));
 const hostGit = (cwd, args) => hostGitIn(work, cwd, args);
@@ -66,26 +96,18 @@ try {
   const host = join(work, 'host');
   hostGit(work, ['clone', '-q', '--depth', '1', 'file://' + join(served, 'repo.git'), host]);
   try {
+    // One facet session per process (the harness's SupervisorRPC is the process's): each case in a child.
     const rows = [];
-    for (const where of ['mount', 'sqlite']) {
-      const harness = createSqliteVfsTestHarness();
-      // Its own filesystem identity: a device the session's engine is not (engineKey tells them apart by it).
-      const engine = new SqliteVFS(harness.sql, harness.ctx, 'mounted-data');
-      engine.as(CRED_KERNEL).mkdir('work', { mode: 0o755 });
-      engine.as(CRED_KERNEL).chown('work', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
-      const session = await createFacetSession(work, where === 'mount' ? { mounts: { '/mnt/data': new SqliteFiles(engine, engine.as(CRED_KERNEL)) } } : {});
-      const dest = where === 'mount' ? '/mnt/data/work/repo' : '/home/user/repo';
-      const started = performance.now();
-      const cloned = await session.git('/home/user', ['clone', '--depth', '1', server.url + '/repo.git', dest]);
-      const wallMs = performance.now() - started;
-      assert.equal(cloned.code, 0, `${where}: ${cloned.stderr}`);
-      const ours = where === 'mount'
-        ? await session.materializeAt(dest, join(work, 'ours-' + where))
-        : session.materialize(dest.slice(1), join(work, 'ours-' + where));
-      assert.deepEqual(worktreeOf(ours), worktreeOf(host), `${where}: the worktree`);
-      assert.equal(hostGit(ours, ['ls-files', '-s']), hostGit(host, ['ls-files', '-s']), `${where}: the index`);
-      const { requests } = session;
-      rows.push({ where, wallMs: Math.round(wallMs), waves: requests.waves, rangeWrites: requests.rangeWrites.length, fileApi: requests.fileApi ?? 0, phases: requests.phases.length });
+    for (const where of ['sqlite', 'mount']) {
+      const child = spawn(process.execPath, [new URL(import.meta.url).pathname], {
+        env: { ...process.env, SCALE_CASE: where, SCALE_URL: server.url + '/repo.git', SCALE_HOST: host, SCALE_WORK: work },
+        stdio: ['ignore', 'pipe', 'inherit'],
+      });
+      let out = '';
+      child.stdout.on('data', (chunk) => { out += chunk; });
+      const code = await new Promise((resolve) => child.on('close', resolve));
+      assert.equal(code, 0, `${where}: ${out}`);
+      rows.push(JSON.parse(out.trim().split('\n').pop()));
     }
     console.log(`  repository: 2,008 files, ${(bytes / 1048576).toFixed(1)} MiB, eight over 4 MiB`);
     for (const row of rows) console.log(`  ${row.where.padEnd(7)} wall ${String(row.wallMs).padStart(6)} ms  waves ${row.waves}  ranged writes ${row.rangeWrites}  file-API calls ${row.fileApi}  facet calls ${row.phases}`);

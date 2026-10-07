@@ -70,7 +70,7 @@ export async function createFacetSession(work, { realGit = false, mounts = {} } 
   // stallPhaseAt: the same, but the call runs on, its answer withheld: a late writer.
   // refusals: the facets' mutations the session refused, with why.
   const requests = {
-    fetchObjects: 0, phases: [], attempts: [], rangeReads: [], rangeWrites: [], waves: 0,
+    fetchObjects: 0, phases: [], attempts: [], rangeReads: [], rangeWrites: [], waves: 0, fileApi: 0,
     failWaveAt: 0, hangPhaseAt: null, stallPhaseAt: null, stalled: [], refusals: [], loads: 0,
     // calls: every facet call's phase, attempt and batch; withhold: resumed packs whose step's answer is lost.
     calls: [], withhold: new Set(),
@@ -104,8 +104,8 @@ export async function createFacetSession(work, { realGit = false, mounts = {} } 
       async fsTruncate(path, size) { return refused(async () => bridge.truncate(path, size, lease)); },
       // The session's file API: a mkdir and an open for writing present the lease (supervisor-op.ts).
       async mkdir(path, options) { return refused(async () => bridge.mkdir(path, { ...options, ...lease })); },
-      async fsOpen(path, flags) { return refused(async () => bridge.open(path, { ...flags, sync: true }, lease)); },
-      async fsWrite(id, offset, bytes) { return refused(async () => bridge.write(id, offset, bytes)); },
+      async fsOpen(path, flags) { requests.fileApi++; return refused(async () => bridge.open(path, { ...flags, sync: true }, lease)); },
+      async fsWrite(id, offset, bytes) { requests.fileApi++; return refused(async () => bridge.write(id, offset, bytes)); },
       async fsFstat(id) { return bridge.fstat(id); },
       async fsClose(id) { return bridge.close(id); },
       async rename(from, to) {
