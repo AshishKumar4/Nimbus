@@ -104,7 +104,7 @@ export interface SwitchContext {
 
 type Kind = 'blob' | 'tree' | 'commit' | null;
 type Op =
-  | { method: 'delete' | 'delete-index' | 'rmdir' | 'rmdir-index' | 'mkdir'; path: string }
+  | { method: 'delete' | 'delete-index' | 'rmdir' | 'rmdir-index' | 'rmdir-gitlink' | 'mkdir'; path: string }
   | { method: 'update-blob-to-tree'; path: string; present: boolean }
   | { method: 'create' | 'update' | 'update-dir-to-blob' | 'mkdir-index'; path: string; oid: string; mode: number }
   /** Indexed skip-worktree; a file the worktree holds there (`present`, up to date) goes. */
@@ -282,7 +282,8 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
       continue;
     }
     if (stageType === 'commit') {
-      ops.push({ method: 'rmdir-index', path });
+      // A gitlink that goes takes its directory with it when that is empty (git leaves a populated one).
+      ops.push({ method: workType === 'tree' ? 'rmdir-gitlink' : 'rmdir-index', path });
       continue;
     }
     if (stageType === 'tree') {
@@ -402,10 +403,12 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
     unindex(op.path);
   }
   // A directory goes after what is in it: deepest first.
-  const directories = ops.filter((op) => op.method === 'rmdir' || op.method === 'rmdir-index' || op.method === 'update-dir-to-blob');
+  const directories = ops.filter((op) => op.method === 'rmdir' || op.method === 'rmdir-index' || op.method === 'rmdir-gitlink' || op.method === 'update-dir-to-blob');
   directories.sort((a, b) => comparePaths(b.path, a.path));
   for (const op of directories) {
     try {
+      // The gitlink goes from the index whether or not its directory can.
+      if (op.method === 'rmdir-gitlink') unindex(op.path);
       if (op.method !== 'rmdir-index') await writer.rmdir(file(op.path));
       unindex(op.path);
     } catch (error) {
