@@ -10,13 +10,18 @@
 //
 // The same program runs under real node and as `node` in a session, its
 // output redirected to files (no terminal: no colours), and the bytes must
-// be equal. Under FORCE_COLOR, the colours are Node's too.
+// be equal. Under FORCE_COLOR, the colours are Node's too, and at the
+// terminal NO_COLOR, NODE_DISABLE_COLORS, TERM=dumb and FORCE_COLOR=0 turn
+// them off (lib/internal/tty.js), whose depth table the program prints.
 //
 // The formatter is Node's own inspect.js (node-inspect-matches-node). The
-// values only V8's internals read (a promise's state, a proxy's target, an
-// iterator's entries) workerd's inspect formats, and they are printed here
-// too. workerd's inspect alone printed a symbol key bare (`{ Symbol(k): 3 }`
-// where Node brackets it), and a wide string's table column narrow.
+// V8 slots user land cannot read (a promise's state and result, a proxy's
+// target and handler, an iterator's and a weak collection's entries) are
+// read by workerd's inspect, the binding (node-inspect-host.ts), and spliced
+// in: each kind is printed here through console.log, util.inspect with
+// showProxy and showHidden, and console.dir (customInspect false). workerd's
+// inspect alone printed a symbol key bare (`{ Symbol(k): 3 }` where Node
+// brackets it), and a wide string's table column narrow.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -60,6 +65,32 @@ console.log(many);
 console.log({ get value() { return 1; }, set value(v) {}, get only() { return 2; } }, { f() {}, async g() {}, *h() {} });
 console.log(Array.from({ length: 30 }, (_, i) => 'item' + i), ['日本', '語', 'テキスト', 'abc', 'de', 'f', 'g', 'h', 'i', 'j']);
 console.log(new URL('http://user:pw@host:8080/p?q=s#h'), Buffer.from('hello'), new Float64Array([0.5, -0]), new WeakMap());
+// V8's slots (node-inspect-host.ts THE BINDING): promise states, a null-prototype
+// promise and iterator, proxies (and showProxy), iterators, weak collections
+// with showHidden; through console.log, util.inspect and console.dir (customInspect false).
+const weakKey = { weak: 1 };
+const slots = [
+  Promise.resolve(42), Promise.resolve({ deep: { er: [1, 2, { x: 'y, z' }] } }), new Promise(() => {}), rejected,
+  Object.setPrototypeOf(Promise.resolve(7), null), Object.assign(Promise.resolve('f'), { field: [1] }),
+  new Proxy({ p: 1 }, {}), new Proxy([1, 2], { get: (t, k) => t[k] }), Proxy.revocable({}, {}),
+  new Map([[{ k: 1 }, new Set([1])], ['s', 'v']]).entries(), new Map([['a', 1]]).keys(), new Set([[1, 2], 'two']).values(),
+  Object.setPrototypeOf(new Map([[1, 2]]).entries(), null), new WeakMap([[weakKey, { v: 1 }]]), new WeakSet([weakKey]),
+];
+slots[8].revoke();
+slots[8] = slots[8].proxy;
+// Node's colour policy (lib/internal/tty.js): a terminal's depth for each environment.
+const tty = require('tty');
+for (const env of [{}, { FORCE_COLOR: '0' }, { FORCE_COLOR: '1', NO_COLOR: '1' }, { FORCE_COLOR: '2' }, { FORCE_COLOR: '3' }, { NO_COLOR: '' },
+  { NODE_DISABLE_COLORS: '1' }, { TERM: 'dumb' }, { TERM: 'xterm-256color' }, { TERM: 'xterm' }, { COLORTERM: 'truecolor' }, { TMUX: '1' },
+  { CI: '1', GITHUB_ACTIONS: '1' }, { CI: '1' }, { TERM_PROGRAM: 'iTerm.app', TERM_PROGRAM_VERSION: '3.4' }, { TERM: 'screen' }]) {
+  console.log('depth', JSON.stringify(env), tty.WriteStream.prototype.getColorDepth.call(null, env), tty.WriteStream.prototype.hasColors.call(null, 256, env));
+}
+for (const value of slots) {
+  console.log(value);
+  console.log(util.inspect(value, { showProxy: true }), util.inspect(value, { showHidden: true }), util.inspect(value, { depth: 0, colors: true }));
+  console.dir(value);
+  console.dir(value, { showHidden: true, showProxy: true, depth: 1 });
+}
 console.log(util.inspect({ a: { b: { c: { d: 1 } } } }, { depth: 0, sorted: true, compact: false, breakLength: 20 }), util.inspect('x'.repeat(30), { maxStringLength: 4 }));
 console.error({ to: 'stderr' }, 'and', ['text']);
 console.warn('%s warned', 'it');
@@ -152,6 +183,14 @@ try {
     assert.equal(actual.stderr, expected.stderr, 'stderr is node\'s, byte for byte');
     await t.run('cd /home/user/console && FORCE_COLOR=1 node coloured.js > cout.txt 2> cerr.txt; echo "STATUS=$?"', 120_000);
     assert.deepEqual({ stdout: await read('cout.txt'), stderr: await read('cerr.txt') }, colouredExpected, 'coloured as node colours');
+    // At the terminal: colours unless the environment turns them off, as node's policy says.
+    const ESC = '\u001b[';
+    for (const [env, coloured] of [['', true], ['NO_COLOR=1 ', false], ['NODE_DISABLE_COLORS=1 ', false], ['TERM=dumb ', false], ['FORCE_COLOR=0 ', false]]) {
+      const run = await t.run(`${env}node -e "console.log({ a: 1 })"`, 60_000);
+      const line = run.output.split('\n').find((l) => l.includes('a:'));
+      assert.ok(line, `${env}node printed the object: ${JSON.stringify(run.output.slice(-300))}`);
+      assert.equal(line.includes(ESC), coloured, `${env || 'no env: '}node at a terminal ${coloured ? 'colours' : 'does not colour'}: ${JSON.stringify(line)}`);
+    }
   } finally {
     await t.close();
     await deleteSession(sid).catch(() => {});

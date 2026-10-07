@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  EAST_ASIAN_WIDE_RANGES, NODE_INSPECT_SHA256, NODE_INSPECT_SOURCE, NODE_PRIMORDIALS_SHA256, NODE_PRIMORDIALS_SOURCE,
+  EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_INSPECT_SHA256, NODE_INSPECT_SOURCE, NODE_PRIMORDIALS_SHA256, NODE_PRIMORDIALS_SOURCE,
 } from '../../packages/worker/src/runtime/node-inspect-source.ts';
 import { NODE_INSPECT_HOST_SOURCE } from '../../packages/worker/src/runtime/node-inspect-host.ts';
 
@@ -36,7 +36,7 @@ const PROGRAM = String.raw`
 const util = require('util');
 const wide = __WIDE__.split(',').flatMap((range) => { const [a, b = a] = range.split('-'); return [parseInt(a, 16), parseInt(b, 16)]; });
 const port = (__HOST__)({
-  util, Buffer, url: require('url'), process, builtinModules: require('module').builtinModules,
+  util, Buffer, url: require('url'), process, builtinModules: require('module').builtinModules, builtinObjects: __BUILTINS__,
   eastAsianWide(code) {
     for (let i = 0; i < wide.length; i += 2) if (code >= wide[i] && code <= wide[i + 1]) return true;
     return false;
@@ -53,6 +53,9 @@ const error = new Error('outer', { cause }); error.stack = 'Error: outer\n    at
 const aggregate = new AggregateError([new Error('a'), new RangeError('b')], 'many'); aggregate.stack = 'AggregateError: many\n    at z (/z.js:3:3)';
 const getters = { get value() { return 1; }, set value(v) {}, get only() { return 2; } };
 const rejected = Promise.reject(new Error('no')); rejected.catch(() => {});
+const rejectedToo = Promise.reject(Object.assign(new RangeError('also'), { stack: 'RangeError: also\n    at r (/r.js:1:1)' })); rejectedToo.catch(() => {});
+const { proxy: revoked, revoke } = Proxy.revocable({}, {}); revoke();
+const weakKey = { weak: true };
 const values = [
   { a: 1, b: 'two', c: [1, 2, 3], d: { e: { f: { g: { h: 1 } } } } },
   [1, 'a', null, undefined, true, 10n, Symbol('s')], -0, 0, NaN, Infinity, 1e21, 123456789.123, 'str', "it's", 'a\nb', '',
@@ -69,7 +72,12 @@ const values = [
   Symbol.iterator, Symbol('desc'), Symbol(), 10n, getters, { f() {}, g: function () {}, h: async () => {} },
   { s: '日本語のテキスト', e: '😀👍🏽', mixed: 'ab日本' }, ['日本', '語', 'テキスト', 'abc', 'de', 'f', 'g', 'h'],
   Promise.resolve({ a: 1 }), rejected, new Promise(() => {}), new Map([[1, 2]]).entries(), new Set([1]).values(), [1, 2][Symbol.iterator](),
-  new Proxy({ a: 1 }, {}), new Proxy([1, 2], {}), new Proxy(new Proxy({ b: 2 }, {}), {}), process.env.__NONE__, null, undefined, true,
+  new Proxy({ a: 1 }, {}), new Proxy([1, 2], {}), new Proxy(new Proxy({ b: 2 }, {}), {}), revoked, process.env.__NONE__, null, undefined, true,
+  Object.setPrototypeOf(Promise.resolve(42), null), Object.setPrototypeOf(new Map([[1, { a: 1 }]]).entries(), null),
+  Object.setPrototypeOf(new Set(['s']).values(), null), Object.setPrototypeOf(rejectedToo, null), new WeakMap([[weakKey, { v: 1 }]]),
+  new WeakSet([weakKey]), Object.assign(Promise.resolve('fields'), { extra: [1] }), Promise.resolve(Promise.resolve(1)),
+  new Map([[{ k: 1 }, new Set([1])], ['s', 'v']]).entries(), new Map([['a', 1]]).keys(), new Set([[1, 2], { x: 'y, z' }]).entries(),
+  Promise.resolve('a string, with a comma'), Promise.resolve({ s: 'x' }), new Proxy(Promise.resolve(3), {}),
   new URL('http://user:pw@host:8080/p/a/t/h?query=string#hash'), new URLSearchParams('a=1&b=2'),
   { [util.inspect.custom]: (depth, options, inspect) => 'custom:' + depth + ':' + inspect({ n: 1 }, options) },
   { nested: { [util.inspect.custom]() { return { replaced: true }; } } },
@@ -77,14 +85,19 @@ const values = [
 const optionSets = [
   {}, { colors: true }, { depth: 0 }, { depth: null }, { showHidden: true }, { compact: false }, { compact: 1 },
   { breakLength: 40 }, { breakLength: Infinity }, { sorted: true }, { getters: true }, { maxArrayLength: 2 },
-  { maxStringLength: 4 }, { numericSeparator: true }, { customInspect: false },
+  { maxStringLength: 4 }, { numericSeparator: true }, { customInspect: false }, { showProxy: true },
+  { showProxy: true, customInspect: false }, { showHidden: true, customInspect: false },
 ];
-const internalsOnly = (value) => util.types.isPromise(value) || util.types.isMapIterator(value) || util.types.isSetIterator(value) || util.types.isProxy(value)
+// A V8 slot (a promise's result, an iterator's entries) is rendered by the
+// platform's inspect and spliced in (node-inspect-host.ts THE BINDING): the
+// one layout it cannot follow is compact 1 and 2's, which break a slot's
+// container by how deep its content nested.
+const slotted = (value) => util.types.isPromise(value) || util.types.isMapIterator(value) || util.types.isSetIterator(value)
   || util.types.isWeakMap(value) || util.types.isWeakSet(value);
 const differences = [];
 values.forEach((value, i) => {
   for (const options of optionSets) {
-    if (options.customInspect === false && internalsOnly(value)) continue;
+    if (slotted(value) && (options.compact === 1 || options.compact === 2)) continue;
     const node = util.inspect(value, options);
     const ported = port.inspect(value, options);
     if (node !== ported) differences.push({ value: i, options, node, ported });
@@ -114,6 +127,7 @@ let differences;
 try {
   const program = PROGRAM
     .replace('__WIDE__', JSON.stringify(EAST_ASIAN_WIDE_RANGES))
+    .replace('__BUILTINS__', JSON.stringify(NODE_BUILTIN_OBJECTS))
     .replace('__HOST__', () => NODE_INSPECT_HOST_SOURCE)
     .replace('__PRIMORDIALS__', () => JSON.stringify(NODE_PRIMORDIALS_SOURCE))
     .replace('__INSPECT__', () => JSON.stringify(NODE_INSPECT_SOURCE));
