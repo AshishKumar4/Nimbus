@@ -9,12 +9,12 @@ import { descriptorSupervisor } from './lib/descriptor-supervisor.mjs';
 // per-process capability introduces.
 
 import assert from 'node:assert';
-import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
 import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/ruby-resident.ts';
 import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadWasiPreamble } from './lib/wasi-authority.mjs';
 
 const RUBY_RUNNER_SRC = join(
   dirname(fileURLToPath(import.meta.url)), '..', '..',
@@ -24,9 +24,7 @@ const RUBY_RUNNER_SRC = join(
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const P = await new AsyncFunction(`${WASI_INSTANCE_PREAMBLE_SRC}
-return { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, fdTable };`)();
+const P = await loadWasiPreamble();
 
 function mockSupervisor(seed = {}) {
   const store = new Map();
