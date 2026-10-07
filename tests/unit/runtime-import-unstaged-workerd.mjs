@@ -16,6 +16,12 @@
 // Before, each failed with "Cannot load module '…': it was not in this
 // launch's module map; the next launch of the same command stages it", which
 // a temp file named afresh each run never reaches.
+//
+// What the fetch finds is what the loader's own resolvers and parser find
+// (review of 744835905): a file: URL's package scope (its module type) and a
+// package reached through a link, read as resolution reads them; requests
+// spelled in a template, with escapes, or after a comment; and a floating
+// import(...).then(...) keeps the process until it has loaded.
 import assert from 'node:assert/strict';
 
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
@@ -49,6 +55,42 @@ const FILES = {
     'const config = (await import(pathToFileURL(file).href)).default;',
     'console.log("CONFIG " + config.plugins.join(","));',
   ].join('\n'),
+  // An ES module by its file: URL, in a package whose type only its package.json says.
+  'node_modules/late-scope/package.json': JSON.stringify({ name: 'late-scope', type: 'module' }),
+  'node_modules/late-scope/lib/mod.js': 'export const scope = "esm-by-scope";\n',
+  'scope.mjs': [
+    'import path from "node:path";',
+    'import { pathToFileURL } from "node:url";',
+    'const file = path.resolve("node_modules", ["late", "scope"].join("-"), "lib/mod.js");',
+    'const mod = await import(pathToFileURL(file).href);',
+    'console.log("SCOPE " + mod.scope);',
+  ].join('\n'),
+  // A package installed as a link (a workspace's), its manifest only behind the link.
+  'packages/linked/package.json': JSON.stringify({ name: 'late-linked', type: 'module', exports: './main.js' }),
+  'packages/linked/main.js': 'export const linked = "linked";\n',
+  'linked.mjs': 'const mod = await import(["late", "linked"].join("-"));\nconsole.log("LINKED " + mod.linked);\n',
+  // Requests no pattern reads: after a comment, with escapes, in a template.
+  'node_modules/late-mixed/package.json': JSON.stringify({ name: 'late-mixed', type: 'module', exports: './index.js' }),
+  'node_modules/late-mixed/index.js': [
+    'import a from /* where it comes from */ "late-cmt";',
+    'import b from "\\u006cate-esc";',
+    'import { createRequire } from "node:module";',
+    'const require = createRequire(import.meta.url);',
+    'const c = require(`late-tpl`);',
+    'export default [a, b, c].join("+");',
+  ].join('\n'),
+  'node_modules/late-cmt/package.json': JSON.stringify({ name: 'late-cmt', main: 'index.js' }),
+  'node_modules/late-cmt/index.js': 'module.exports = "cmt";\n',
+  'node_modules/late-esc/package.json': JSON.stringify({ name: 'late-esc', main: 'index.js' }),
+  'node_modules/late-esc/index.js': 'module.exports = "esc";\n',
+  'node_modules/late-tpl/package.json': JSON.stringify({ name: 'late-tpl', main: 'index.js' }),
+  'node_modules/late-tpl/index.js': 'module.exports = "tpl";\n',
+  'mixed.mjs': 'const mod = await import(["late", "mixed"].join("-"));\nconsole.log("MIXED " + mod.default);\n',
+  // A floating import: nothing awaits it, and the process stays until it has loaded.
+  'node_modules/late-float/package.json': JSON.stringify({ name: 'late-float', type: 'module', exports: './index.js' }),
+  'node_modules/late-float/index.js': 'import { part } from "./part.js";\nexport const value = "float:" + part;\n',
+  'node_modules/late-float/part.js': 'export const part = "part";\n',
+  'floating.mjs': 'import(["late", "float"].join("-")).then((mod) => console.log("FLOAT " + mod.value));\n',
   // An SSR runner's externalised import: a package subpath by a computed specifier.
   'runner.mjs': [
     'const specifier = ["late", "plugin"].join("-") + "/v2";',
@@ -67,6 +109,8 @@ try {
     );
     assert.equal(setup.status, 0, setup.stdout);
     assert.match(setup.stdout, /^SETUP$/m);
+    const link = await terminal.run(`ln -s ../packages/linked ${W}/node_modules/late-linked && echo LINKED`);
+    assert.match(link.stdout, /^LINKED$/m, link.stdout);
 
     const config = await terminal.run(`cd ${W} && node config.mjs`);
     assert.match(config.stdout, /^CONFIG plugin:helper:late-dep$/m, `a runtime-written module's installed imports load on the first run:\n${config.stdout}`);
@@ -75,6 +119,18 @@ try {
     const runner = await terminal.run(`cd ${W} && node runner.mjs`);
     assert.match(runner.stdout, /^RUNNER v2-schema$/m, `a computed import() of an installed package subpath loads on the first run:\n${runner.stdout}`);
     assert.equal(runner.status, 0, runner.stdout);
+
+    const cases = [
+      ['scope.mjs', /^SCOPE esm-by-scope$/m, "a file: URL's package scope is read before the load decides its module type"],
+      ['linked.mjs', /^LINKED linked$/m, 'a package reached through a link resolves with its manifest behind the link'],
+      ['mixed.mjs', /^MIXED cmt\+esc\+tpl$/m, 'requests after a comment, with escapes and in a template are fetched'],
+      ['floating.mjs', /^FLOAT float:part$/m, 'a floating import() keeps the process until it has loaded'],
+    ];
+    for (const [entry, expected, what] of cases) {
+      const run = await terminal.run(`cd ${W} && node ${entry}`);
+      assert.match(run.stdout, expected, `${what}, on the first run:\n${run.stdout}`);
+      assert.equal(run.status, 0, `${entry}: ${run.stdout}`);
+    }
   } finally {
     await terminal.close();
   }

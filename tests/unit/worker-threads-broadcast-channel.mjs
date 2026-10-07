@@ -105,4 +105,24 @@ assert.equal(globalThis.BroadcastChannel, BroadcastChannel);
   numbered.close();
 }
 
+// ── a facet runs process after process in one global: the global is each one's own ──
+// (review of 480c94943: a one-shot worker is reused, and the global kept the
+// first process's constructor and registry.)
+{
+  const second = factory({}, {}, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/app.js', '/home/user');
+  assert.equal(globalThis.BroadcastChannel, second.BroadcastChannel, "the global is this process's worker_threads constructor");
+  const stale = new BroadcastChannel('shared');
+  stale.unref();
+  const staleGot = [];
+  stale.onmessage = (event) => staleGot.push(event.data);
+  const viaGlobal = new globalThis.BroadcastChannel('shared');
+  const viaModule = new second.BroadcastChannel('shared');
+  const got = new Promise((resolve) => { viaModule.onmessage = (event) => resolve(event.data); });
+  viaGlobal.postMessage('second');
+  assert.equal(await got, 'second', "a global channel and a worker_threads channel of one process talk");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(staleGot, [], "an earlier process's channel hears nothing of a later one's");
+  for (const channel of [stale, viaGlobal, viaModule]) channel.close();
+}
+
 console.log('worker-threads-broadcast-channel: ok');

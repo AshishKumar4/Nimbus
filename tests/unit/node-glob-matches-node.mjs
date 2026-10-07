@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
@@ -36,13 +36,43 @@ const FILES = [
   'README.md', '.env', '.config/x.json', 'docs/a.md', 'docs/b.MD',
 ];
 const DIRS = ['app/empty', 'src/lib/none'];
-const root = mkdtempSync(join(tmpdir(), 'nimbus-glob-'));
-try {
-  for (const file of FILES) {
-    mkdirSync(join(root, file, '..'), { recursive: true });
-    writeFileSync(join(root, file), file + '\n');
+// Node's order is its traversal over each directory's listing, so it is
+// defined where the listing's order is. The shim lists a directory in name
+// order; the oracle's filesystem lists in the order it keeps, which on a
+// tmpfs follows creation. So the tree is built where the oracle lists it in
+// name order (each directory's entries created in name order, or in reverse
+// where that is what the filesystem returns), and then the order is compared
+// too; elsewhere only the set is.
+function build(base, reverse) {
+  const root = mkdtempSync(join(base, 'nimbus-glob-'));
+  const entries = [...FILES.map((path) => ({ path, file: true })), ...DIRS.map((path) => ({ path, file: false }))]
+    .sort((a, b) => (a.path < b.path ? -1 : 1));
+  if (reverse) entries.reverse();
+  for (const { path, file } of entries) {
+    mkdirSync(file ? join(root, path, '..') : join(root, path), { recursive: true });
+    if (file) writeFileSync(join(root, path), path + '\n');
   }
-  for (const dir of DIRS) mkdirSync(join(root, dir), { recursive: true });
+  return root;
+}
+function listedInNameOrder(dir) {
+  const names = readdirSync(dir);
+  if (names.join('/') !== [...names].sort().join('/')) return false;
+  return names.every((name) => !statSync(join(dir, name)).isDirectory() || listedInNameOrder(join(dir, name)));
+}
+let root = null;
+let ORDERED = false;
+for (const base of existsSync('/dev/shm') ? ['/dev/shm', tmpdir()] : [tmpdir()]) {
+  for (const reverse of [false, true]) {
+    let candidate;
+    try { candidate = build(base, reverse); } catch { continue; }
+    if (listedInNameOrder(candidate)) { root = candidate; ORDERED = true; break; }
+    rmSync(candidate, { recursive: true, force: true });
+  }
+  if (root !== null) break;
+}
+if (root === null) root = build(tmpdir(), false);
+console.log(`node-glob-matches-node: comparing ${ORDERED ? 'order and members' : 'members only (no filesystem here lists in name order)'}`);
+try {
 
   // Each case: [pattern, options]. `exclude` names one of EXCLUDES; `cwd` is
   // under the root (`url:` makes it a file: URL); `abs:` patterns are under it.
@@ -86,7 +116,7 @@ try {
   const ERRORS = [[1], [['a', 2]], ['*', null], ['*', { exclude: 1 }], ['*', 'x']];
 
   // The runner both sides execute: `fs`, `pathToFileURL` and the root are given.
-  const RUNNER = `async (fs, pathToFileURL, root, CASES, ERRORS) => {
+  const RUNNER = `async (fs, pathToFileURL, root, CASES, ERRORS, ORDERED) => {
     const EXCLUDES = {
       names: (name) => name === 'api' || name === '_private',
       array: ['**/api/**', 'app/blog/**'],
@@ -103,7 +133,8 @@ try {
     };
     const pattern = (p) => typeof p === 'string' && p.startsWith('abs:') ? root + '/' + p.slice(4) : p;
     const shape = (list) => list.map((e) => typeof e === 'string' ? e
-      : { name: e.name, parentPath: e.parentPath, directory: e.isDirectory(), file: e.isFile() }).sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : 1);
+      : { name: e.name, parentPath: e.parentPath, directory: e.isDirectory(), file: e.isFile() })
+      .sort(ORDERED ? () => 0 : (a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : 1);
     const results = [];
     for (const [p, raw] of CASES) {
       const o = options(raw ?? {});
@@ -126,14 +157,14 @@ try {
     import { pathToFileURL } from 'node:url';
     process.chdir(${JSON.stringify(root)});
     const run = ${RUNNER};
-    console.log(JSON.stringify(await run(fs, pathToFileURL, ${JSON.stringify(root)}, ${JSON.stringify(CASES)}, ${JSON.stringify(ERRORS)})));
+    console.log(JSON.stringify(await run(fs, pathToFileURL, ${JSON.stringify(root)}, ${JSON.stringify(CASES)}, ${JSON.stringify(ERRORS)}, ${ORDERED})));
   `], { encoding: 'utf8' });
   assert.equal(oracle.status, 0, `node: ${oracle.stderr}`);
   const expected = JSON.parse(oracle.stdout);
 
   // The shim, over the same tree as the launch's namespace holds it.
   const bundle = {};
-  for (const file of FILES) bundle[join(root, file).slice(1)] = file + '\n';
+  for (const file of [...FILES].sort()) bundle[join(root, file).slice(1)] = file + '\n';
   const dirs = {};
   for (const dir of DIRS) dirs[join(root, dir).slice(1)] = true;
   const factory = new Function(
@@ -142,7 +173,7 @@ try {
   );
   const { fs, url } = factory(bundle, {}, dirs, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, root, [], {}, root + '/app.js', root);
   const run = (0, eval)(`(${RUNNER})`);
-  const actual = await run(fs, url.pathToFileURL, root, CASES, ERRORS);
+  const actual = await run(fs, url.pathToFileURL, root, CASES, ERRORS, ORDERED);
 
   assert.equal(actual.length, expected.length);
   for (let i = 0; i < expected.length; i++) {

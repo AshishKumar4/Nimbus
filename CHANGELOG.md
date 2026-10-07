@@ -27,9 +27,12 @@ published independently in the `@nimbus-sh` npm scope.
   server code, and so did Vite's own config loading on react-router's
   template: the config Vite bundles to `node_modules/.vite-temp` imports
   `@react-router/dev`. Before loading, `import()` now fetches through the
-  store's own fill: the `package.json` files resolution reads, then the
-  target's static import closure outside the launch's map, breadth first and
-  bounded at 4096 files and 64 MiB.
+  store's own fill: exactly the files Node's resolvers read for it (a bare
+  name's `package.json`, a file URL's package scope, through links), then
+  every module the target requests, as the runtime-code interpreter's parser
+  reads requests, outside the launch's map, breadth first and bounded at 4096
+  files and 64 MiB. A floating `import(...).then(...)` keeps the process while
+  it fetches, and an `import()` of a module already loaded fetches nothing.
 - Fixed: `node` and `bun` with no script opened a REPL that evaluated
   nothing ("workerd CSP: cannot evaluate JS at request time"). The REPL is
   now a program the runtime runs, as Node's is, and each line compiles
