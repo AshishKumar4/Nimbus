@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "277f96800097cb21ab9f12f185e8d184988ac1a5a36fe8ae28ff0c6dbb643537",
+  "fingerprint": "4117afc7a62d8ae921288f490222344d457d269720288de3ed0753c9839b900c",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1498,7 +1498,7 @@
     "packages/fabric/dist/process-fabric.js": "73ab12091b634ec1e3323f6a758c4f9e5dca08e98cc24c86014d246b76ee6b5b",
     "packages/fabric/dist/process-host.d.ts": "32fc5857fc3ed4e488b3151d1d8aa527281af38db9128bb50ba0a12b4e1f635b",
     "packages/fabric/dist/process-host.d.ts.map": "c5197c4ad8731f04978805a078240ab1ffa6574f925b8d31544d4d7dd7a78759",
-    "packages/fabric/dist/process-host.js": "f97ce3a10bf440880fd1eef06ef3796f836e37500448f6954cd895cabcf4333e",
+    "packages/fabric/dist/process-host.js": "2e163f68ca927fe1c2f4ba8340851c23ab18ea901da15cee83eb515270ade2e4",
     "packages/fabric/dist/sealed.d.ts": "b97f3724b76c089b497ad7c358bcad373baf6d3b7aec46dcc2ddb84035358435",
     "packages/fabric/dist/sealed.d.ts.map": "92e82db1b3afb75a32e8223b41873d716ba41bba132aab66e5742f654159547c",
     "packages/fabric/dist/sealed.js": "56e33233ceab8609e0caa4726185f9966ce46de809b57e1ed67fc430ef0f01bf",
@@ -1552,7 +1552,7 @@
     "packages/fabric/src/node-async-hooks.d.ts": "87f754955f48ebe7702aca02d071cc5afc7e96eda2b429ac2a64354cb064fe5e",
     "packages/fabric/src/outbox.ts": "ed27b5e5370a00e3a3ae6030bb97cf4cc02863ecd4c8410bbee6c436fb033fc6",
     "packages/fabric/src/process-fabric.ts": "c8942a0a742d888eddab47dd75cb53286231d3cbfc17cf7047ef647b5ac53394",
-    "packages/fabric/src/process-host.ts": "65e3beb34802377b77a1918541e2734e6300ff7aa22f9564f43439f23ca38043",
+    "packages/fabric/src/process-host.ts": "b244d591339a11e97239489defcaf60c19aaeb720d9ea6a30f32fa6d3b487df6",
     "packages/fabric/src/sealed.ts": "4a7c5b7b26979c136273dc6f29b8a4c8762462c4cdf7e989ba72cf54152a8154",
     "packages/fabric/src/supervisor-props.ts": "76a4c72ef5fed139ed88d1853fc14999dbb8d3e8d27e6ac15a8faa5785092b78",
     "packages/fabric/src/table-ids.ts": "b82aa0879cf050a251e0e92899a70b3337e1ad086868ed62370af53fbc7b8b03",
