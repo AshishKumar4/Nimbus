@@ -81,6 +81,31 @@ export interface DelegationHolder {
     /** Whether `handleId` is one of the holder's own descriptors. */
     owns(handleId: number): boolean;
     /**
+     * Open `key` to write it at the session, as a write description outside
+     * any subtree this process holds: one `open` call (W7Call open), ordered
+     * with everything the process logged before it and answered with the
+     * file's stat; the description it returns writes through (LocalFile.through).
+     */
+    openThrough(key: string, path: string, flags: {
+        read?: boolean;
+        append?: boolean;
+        create?: boolean;
+        truncate?: boolean;
+        exclusive?: boolean;
+        followSymlinks?: boolean;
+        mode?: number;
+    }): Promise<RuntimeFileHandle>;
+    /** Whether `handleId` writes through: its reads are the session's (readThrough). */
+    through(handleId: number): boolean;
+    /** The size this process gave file `ino` through a description of it still open, or undefined: what a stat of it by name reports here. */
+    writing(ino: number): number | undefined;
+    /**
+     * A read through a write-through description, at `offset` or its
+     * position: `read` reads the session's bytes of `key` (what this process
+     * sent before it is answered first).
+     */
+    readThrough(handleId: number, offset: number | null, length: number, read: (key: string, at: number, length: number) => Promise<Uint8Array>): Promise<Uint8Array>;
+    /**
      * Decide an open that creates or empties a file at `key` (resolved, its
      * parent known): a descriptor of the holder's, or undefined when the
      * session is to decide it.

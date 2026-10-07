@@ -7,6 +7,8 @@
  * producer and consumer deploys together. v3 (no rename, truncate or setattr,
  * one operation per path, deletes then directories then files) is still
  * decoded for the one release that rolls v4 out: delete it with W7_MAGIC_V3.
+ * Fields added to v4 since (each deploys with both ends, so the magic stays):
+ * a create call's `umask`, and the `open` call (a write description's open).
  */
 import { crc32 } from './crc32.js';
 import { CHUNK_SIZE } from './limits.js';
@@ -368,7 +370,7 @@ v3) {
                         throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
                     summary.pathCount++;
                     summary.opCount++;
-                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask']);
+                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'create', 'truncate', 'exclusive', 'nofollow']);
                     yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
                     break;
                 }
@@ -829,6 +831,26 @@ function parsePathCall(value, path) {
             if (keys !== 'call,gid,path,uid')
                 break;
             return { call: 'lchown', path: path(value.path, 'lchown path'), uid: u32(value.uid, 'lchown uid'), gid: u32(value.gid, 'lchown gid') };
+        case 'open': {
+            const flags = ['create', 'exclusive', 'nofollow', 'truncate'];
+            let required = keys;
+            for (const flag of [...flags, 'umask'])
+                required = required.replace(`,${flag}`, '');
+            if (required !== 'call,mode,path')
+                break;
+            for (const flag of flags) {
+                if (value[flag] !== undefined && value[flag] !== true)
+                    throw new Error(`w7-frame: open ${flag} is true or absent`);
+            }
+            return {
+                call: 'open', path: path(value.path, 'open path'), mode: u32(value.mode, 'open mode'),
+                ...(value.umask === undefined ? {} : { umask: umaskOf(value.umask, 'open umask') }),
+                ...(value.create === true ? { create: true } : {}),
+                ...(value.truncate === true ? { truncate: true } : {}),
+                ...(value.exclusive === true ? { exclusive: true } : {}),
+                ...(value.nofollow === true ? { nofollow: true } : {}),
+            };
+        }
         case 'lutimes':
             if (keys !== 'atime,call,mtime,path')
                 break;

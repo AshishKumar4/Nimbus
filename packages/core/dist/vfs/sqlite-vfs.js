@@ -7330,14 +7330,16 @@ export class SqliteVFS {
                 if (call.call !== 'mkdir')
                     at.routes.clear();
                 const placed = await mountOf(call.call === 'mkdir' ? 'directory'
-                    : call.call === 'symlink' || call.call === 'ftruncate' || call.call === 'lchown' || call.call === 'lutimes' ? 'file' : 'delete', call.path);
+                    : call.call === 'symlink' || call.call === 'ftruncate' || call.call === 'lchown' || call.call === 'lutimes' || call.call === 'open' ? 'file' : 'delete', call.path);
                 if (placed === null)
                     return false;
                 at.setPhase('publish');
                 at.settleBefore();
                 reached();
-                await router.apply({ type: 'call', call: { ...call, path: placed } }, cred, at.guard);
-                at.committed(null);
+                // Made under the umask the process made it with, as on this filesystem (W7Call umask).
+                const stat = await router.apply({ type: 'call', call: { ...call, path: placed } }, withUmask(cred, 'umask' in call ? call.umask : undefined), at.guard);
+                // An open's answer is the file's stat (its description writes it by number).
+                at.committed(call.call === 'open' && stat !== null ? { path: call.path, ...stat } : null);
                 return true;
             }
             case 'rename': {
@@ -7400,6 +7402,7 @@ export class SqliteVFS {
                     credit: { left: record.inode.size, lease },
                     ...(record.inode.call === undefined ? {} : { call: record.inode.call }),
                     ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
+                    ...(record.inode.umask === undefined ? {} : { umask: record.inode.umask }),
                 };
                 return true;
             }
@@ -7440,7 +7443,7 @@ export class SqliteVFS {
                         ? { type: 'data-call', call: file.call, path: file.placed, mode: file.mode, bytes, ...(file.offset === undefined ? {} : { offset: file.offset }) }
                         : file.link
                             ? { type: 'symlink', path: file.placed, target: new TextDecoder().decode(bytes), slot: `${at.waveId}-${file.index}` }
-                            : { type: 'file', path: file.placed, mode: file.mode, bytes }, cred, at.guard);
+                            : { type: 'file', path: file.placed, mode: file.mode, bytes }, withUmask(cred, file.umask), at.guard);
                     at.committed(stat === null ? null : { path: file.named, ...stat });
                 }
                 finally {
@@ -7527,6 +7530,38 @@ export class SqliteVFS {
                 return this.stat(at, cred, true);
             }
         }
+    }
+    /**
+     * A W7 `open` (a write description's open, W7Call open): what open(2) of a
+     * file to write decides, as the session's own open does
+     * (SqliteRuntimeFsBridge.open): EEXIST for an exclusive create of a name
+     * there (a link included, followed or not), ENOENT without `create`,
+     * ELOOP for a link when `nofollow`, EISDIR for a directory, EACCES without
+     * write permission; a name made empty with `mode` less the call's umask, or
+     * an existing file emptied when `truncate`. Its answer is the file's stat.
+     */
+    openToWrite(call, caller) {
+        const cred = withUmask(caller, call.umask);
+        const follow = call.nofollow !== true;
+        const name = this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode;
+        if (name !== undefined && call.create === true && call.exclusive === true)
+            throw vfsError('EEXIST', call.path);
+        if (!follow && name?.kind === 'symlink')
+            throw vfsError('ELOOP', call.path);
+        const there = follow ? this.checkAccess(call.path, 0, cred, { allowMissingLeaf: true }).inode : name;
+        if (there === undefined && call.create !== true)
+            throw vfsError('ENOENT', call.path);
+        if (there?.kind === 'directory')
+            throw vfsError('EISDIR', call.path);
+        if (there === undefined) {
+            this.writeFile(call.path, new Uint8Array(0), { mode: call.mode }, cred);
+        }
+        else {
+            this.checkAccess(call.path, 2, cred);
+            if (call.truncate === true)
+                this.truncate(call.path, 0, cred);
+        }
+        return this.stat(call.path, cred, true);
     }
     /**
      * The file an open description writes: the one inode `ino` names, wherever
@@ -7978,6 +8013,11 @@ export class SqliteVFS {
             }
             if (!group.empty)
                 flushGroup();
+            // Data calls gathered and not yet made hold their whole size: made now,
+            // they give it back (a wave waiting with them held could be what every
+            // other wave's wait needs).
+            if (pendingCalls.length > 0)
+                flushCalls();
         };
         // A stream waits for credit only once it holds none: a lease it kept
         // while waiting could be the one its wait needs (two streams over the
@@ -8557,9 +8597,11 @@ export class SqliteVFS {
                                     this.chown(call.path, call.uid, call.gid, cred, false);
                                 else if (call.call === 'lutimes')
                                     this.utimes(call.path, call.atime, call.mtime, cred, false);
+                                else if (call.call === 'open')
+                                    return this.openToWrite(call, cred);
                                 else
                                     this.symlink(call.target, call.path, cred, call.ino);
-                            }, { alone: call.call !== 'mkdir' });
+                            }, { alone: call.call !== 'mkdir', receipt: call.call === 'open' });
                             break;
                         }
                         case 'batch-end':

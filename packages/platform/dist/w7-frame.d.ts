@@ -7,6 +7,8 @@
  * producer and consumer deploys together. v3 (no rename, truncate or setattr,
  * one operation per path, deletes then directories then files) is still
  * decoded for the one release that rolls v4 out: delete it with W7_MAGIC_V3.
+ * Fields added to v4 since (each deploys with both ends, so the magic stays):
+ * a create call's `umask`, and the `open` call (a write description's open).
  */
 export type VfsInodeKind = 'file' | 'directory' | 'symlink';
 /** Entry for bulk inode creation via writeBatch(). */
@@ -177,6 +179,24 @@ export type W7Call =
     path: string;
     atime: number;
     mtime: number;
+}
+/**
+ * open(2) of a file to write it, as the session's own open decides it: a
+ * name made (`create`, `mode` less `umask`) or refused (EEXIST when
+ * `exclusive`, ENOENT without `create`, EISDIR, EACCES), emptied when
+ * `truncate`, a link at the name followed unless `nofollow` (ELOOP). Its
+ * answer is the file's stat; the description writes it by its number
+ * (write, append and ftruncate calls with `ino`).
+ */
+ | {
+    call: 'open';
+    path: string;
+    mode: number;
+    umask?: number;
+    create?: true;
+    truncate?: true;
+    exclusive?: true;
+    nofollow?: true;
 };
 /** A call whose bytes travel as a file's chunks. */
 export type W7DataCall = Extract<W7Call, {

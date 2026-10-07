@@ -2123,6 +2123,16 @@ export declare class SqliteVFS {
      */
     private applyDataCall;
     /**
+     * A W7 `open` (a write description's open, W7Call open): what open(2) of a
+     * file to write decides, as the session's own open does
+     * (SqliteRuntimeFsBridge.open): EEXIST for an exclusive create of a name
+     * there (a link included, followed or not), ENOENT without `create`,
+     * ELOOP for a link when `nofollow`, EISDIR for a directory, EACCES without
+     * write permission; a name made empty with `mode` less the call's umask, or
+     * an existing file emptied when `truncate`. Its answer is the file's stat.
+     */
+    private openToWrite;
+    /**
      * The file an open description writes: the one inode `ino` names, wherever
      * it is named now, or null once no name has it; without `ino`, the file at
      * `path`. Found by its name while that still names it; else by a scan for

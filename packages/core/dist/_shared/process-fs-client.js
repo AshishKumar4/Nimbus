@@ -437,7 +437,8 @@ export function processFsClient(options) {
                 settled(entry);
                 let answered = {};
                 const op = ops[index];
-                const path = op.type === 'call' && 'data' in op.call ? op.call.path : null;
+                // A data call's and an open's answer is the session's stat of its file.
+                const path = op.type === 'call' && ('data' in op.call || op.call.call === 'open') ? op.call.path : null;
                 const published = answer.receipts[receipt];
                 if (path !== null && published?.path === path) {
                     receipt++;

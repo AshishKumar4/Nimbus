@@ -509,6 +509,28 @@ var __nimbusProcessFsModule = (() => {
         if (keys !== "call,gid,path,uid")
           break;
         return { call: "lchown", path: path(value.path, "lchown path"), uid: u32(value.uid, "lchown uid"), gid: u32(value.gid, "lchown gid") };
+      case "open": {
+        const flags = ["create", "exclusive", "nofollow", "truncate"];
+        let required = keys;
+        for (const flag of [...flags, "umask"])
+          required = required.replace(`,${flag}`, "");
+        if (required !== "call,mode,path")
+          break;
+        for (const flag of flags) {
+          if (value[flag] !== void 0 && value[flag] !== true)
+            throw new Error(`w7-frame: open ${flag} is true or absent`);
+        }
+        return {
+          call: "open",
+          path: path(value.path, "open path"),
+          mode: u32(value.mode, "open mode"),
+          ...value.umask === void 0 ? {} : { umask: umaskOf(value.umask, "open umask") },
+          ...value.create === true ? { create: true } : {},
+          ...value.truncate === true ? { truncate: true } : {},
+          ...value.exclusive === true ? { exclusive: true } : {},
+          ...value.nofollow === true ? { nofollow: true } : {}
+        };
+      }
       case "lutimes":
         if (keys !== "atime,call,mtime,path")
           break;
@@ -1450,7 +1472,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           settled(entry);
           let answered2 = {};
           const op = ops[index];
-          const path = op.type === "call" && "data" in op.call ? op.call.path : null;
+          const path = op.type === "call" && ("data" in op.call || op.call.call === "open") ? op.call.path : null;
           const published = answer.receipts[receipt];
           if (path !== null && published?.path === path) {
             receipt++;

@@ -63,6 +63,21 @@ export function delegationHolder(options) {
     const dirty = new Set();
     /** Whether anything was logged since the store was last told the session changed (sent). */
     let unsent = false;
+    /** `file` stops being decided here (its grant is shared, recalled or gone): what it holds was logged, and it writes through from now on. */
+    const goThrough = (file, ino) => {
+        if (file.through !== undefined)
+            return;
+        const entry = decided.get(file.key) ?? store.entry(file.key);
+        file.through = {
+            ino,
+            entry: entry ?? {
+                type: 'file', dev: store.device, ino, nlink: 1, size: file.length, atime: now(), mtime: now(), ctime: now(),
+                mode: 0o100000 | file.mode, uid: store.cred.uid, gid: store.cred.gid, revision: 0, target: null,
+            },
+        };
+        file.bytes = new Uint8Array(0);
+        dirty.delete(file);
+    };
     /** Log each file's latest bytes, in the order last written, under the name it has now. */
     const drain = () => {
         if (dirty.size > 0)
@@ -76,9 +91,17 @@ export function delegationHolder(options) {
             client.submit({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, ...(ino === undefined ? {} : { ino }), ...(file.umask === undefined ? {} : { umask: file.umask }), data: file.bytes.slice(0, file.length) } }, { acknowledged: true });
         }
     };
-    /** Forget what was decided under `root`: sent, so the store (after its barrier) answers. */
+    /**
+     * Forget what was decided under `root`: sent, so the store (after its
+     * barrier) answers. Its files' open descriptions write through from now
+     * on: a peer may write the file, and a whole-file write of what this
+     * process held would overwrite what the peer wrote.
+     */
     const dropDecisions = (root) => {
         drain();
+        for (const [ino, file] of files)
+            if (within(file.key, root))
+                goThrough(file, ino);
         for (const key of [...decided.keys()])
             if (within(key, root))
                 decided.delete(key);
@@ -156,9 +179,9 @@ export function delegationHolder(options) {
         dirty.delete(file);
         dirty.add(file);
     };
-    /** `file` lost its name: what is written through its open descriptions stays theirs. */
-    const detach = (file) => {
-        file.detached = true;
+    /** `file` lost its name (it was `entry`): what is written through its open descriptions stays theirs. */
+    const detach = (file, entry) => {
+        file.detached = { ...entry, nlink: 0, size: file.length };
         dirty.delete(file);
     };
     const handleOf = (handleId) => {
@@ -270,7 +293,7 @@ export function delegationHolder(options) {
                 if (!modeAllows(current, 2, store.cred))
                     throw fsError('EACCES', 'open', path);
                 const local = files.get(current.ino);
-                if (local === undefined || local.key !== key)
+                if (local === undefined || local.key !== key || local.through !== undefined)
                     return undefined;
                 file = local;
             }
@@ -278,7 +301,9 @@ export function delegationHolder(options) {
                 // An existing file emptied: decided here, its number the session's.
                 if (!modeAllows(current, 2, store.cred))
                     throw fsError('EACCES', 'open', path);
-                file = files.get(current.ino) ?? { key, bytes: new Uint8Array(0), length: 0, mode: current.mode & 0o7777 };
+                // A description writing it through is the session's: decided here anew.
+                const known = files.get(current.ino);
+                file = known !== undefined && known.through === undefined ? known : { key, bytes: new Uint8Array(0), length: 0, mode: current.mode & 0o7777 };
                 file.length = 0;
                 files.set(current.ino, file);
                 decided.set(key, { ...current, size: 0, mtime: now(), ctime: now() });
@@ -287,6 +312,61 @@ export function delegationHolder(options) {
             const id = nextHandle--;
             handles.set(id, { file, readable: !!flags.read, writable: true, append: false, position: 0, path });
             return { id, path };
+        },
+        openThrough: async (key, path, flags) => {
+            const call = {
+                type: 'call',
+                call: {
+                    call: 'open', path: key, mode: (flags.mode ?? 0o666) & 0o7777,
+                    ...(flags.create ? { create: true } : {}),
+                    ...(flags.truncate ? { truncate: true } : {}),
+                    ...(flags.exclusive ? { exclusive: true } : {}),
+                    ...(flags.followSymlinks === false ? { nofollow: true } : {}),
+                },
+            };
+            // After what was decided before it, as every op is.
+            drain();
+            const answer = await client.submit(call);
+            const stat = answer.receipt;
+            if (stat === undefined)
+                throw fsError('EIO', 'open', path);
+            // A write through it has nothing of its own to be told: the session is current.
+            options.sent?.();
+            const entry = {
+                type: 'file', dev: stat.dev, ino: stat.ino, nlink: 1, size: stat.size, atime: stat.mtimeMs, mtime: stat.mtimeMs, ctime: stat.ctimeMs,
+                mode: stat.mode, uid: stat.uid, gid: stat.gid, revision: stat.revision ?? 0, target: null,
+            };
+            // One file per number: every description of it shares its size.
+            const known = files.get(stat.ino);
+            const file = known?.through !== undefined
+                ? Object.assign(known, { key, length: stat.size, through: { ino: stat.ino, entry } })
+                : { key, bytes: new Uint8Array(0), length: stat.size, mode: stat.mode & 0o7777, through: { ino: stat.ino, entry } };
+            files.set(stat.ino, file);
+            const id = nextHandle--;
+            handles.set(id, { file, readable: !!flags.read, writable: true, append: !!flags.append, position: 0, path });
+            return { id, path };
+        },
+        through: (handleId) => handles.get(handleId)?.file.through !== undefined,
+        writing: (ino) => {
+            const file = files.get(ino);
+            if (file?.through === undefined)
+                return undefined;
+            for (const handle of handles.values())
+                if (handle.file === file)
+                    return file.length;
+            return undefined;
+        },
+        readThrough: async (handleId, offset, length, read) => {
+            const handle = handleOf(handleId);
+            if (!handle.readable)
+                throw fsError('EBADF', 'read', handle.path);
+            // What this process wrote is the session's before it reads.
+            await client.flush();
+            const start = offset ?? handle.position;
+            const chunk = await read(handle.file.key, start, length);
+            if (offset === null)
+                handle.position = start + chunk.byteLength;
+            return chunk;
         },
         read: (handleId, offset, length) => {
             const handle = handleOf(handleId);
@@ -301,6 +381,25 @@ export function delegationHolder(options) {
         write: (handleId, offset, bytes) => {
             const handle = handleOf(handleId);
             const file = handle.file;
+            if (file.through !== undefined) {
+                // Through: by the file's number, ordered with everything else; an
+                // O_APPEND write lands at the file's end as the session has it then.
+                const { ino } = file.through;
+                if (handle.append) {
+                    client.submit({ type: 'call', call: { call: 'append', path: file.key, ino, data: bytes.slice() } }, { acknowledged: true });
+                    file.length += bytes.byteLength;
+                    handle.position = file.length;
+                }
+                else {
+                    const at = offset ?? handle.position;
+                    client.submit({ type: 'call', call: { call: 'write', path: file.key, ino, offset: at, data: bytes.slice() } }, { acknowledged: true });
+                    file.length = Math.max(file.length, at + bytes.byteLength);
+                    if (offset === null)
+                        handle.position = at + bytes.byteLength;
+                }
+                unsent = true;
+                return bytes.byteLength;
+            }
             const start = offset ?? handle.position;
             const end = start + bytes.byteLength;
             if (!room(file, end))
@@ -328,6 +427,12 @@ export function delegationHolder(options) {
         ftruncate: (handleId, size) => {
             const handle = handleOf(handleId);
             const file = handle.file;
+            if (file.through !== undefined) {
+                client.submit({ type: 'call', call: { call: 'ftruncate', path: file.key, ino: file.through.ino, size } }, { acknowledged: true });
+                file.length = size;
+                unsent = true;
+                return;
+            }
             if (!room(file, size))
                 throw fsError('ENOSPC', 'ftruncate', handle.path);
             if (size > file.length)
@@ -340,6 +445,12 @@ export function delegationHolder(options) {
         },
         fstat: (handleId) => {
             const handle = handleOf(handleId);
+            // Through: its stat at the open, with its size as this process made it.
+            if (handle.file.through !== undefined)
+                return { ...handle.file.through.entry, size: handle.file.length };
+            // Its name gone: the description's own file, as it was then.
+            if (handle.file.detached !== undefined)
+                return { ...handle.file.detached, size: handle.file.length };
             const entry = decided.get(handle.file.key) ?? store.entry(handle.file.key);
             if (!entry)
                 throw fsError('EBADF', 'fstat', handle.path);
@@ -397,7 +508,7 @@ export function delegationHolder(options) {
                 files.delete(current.ino);
                 // Its bytes go with it: nothing of them is logged, now or through a
                 // description still open on it.
-                detach(local);
+                detach(local, current);
                 // Made here and never logged: the session never had the name.
                 if (local.made !== undefined)
                     return true;
@@ -446,7 +557,7 @@ export function delegationHolder(options) {
                 const replaced = files.get(target.ino);
                 if (replaced !== undefined && replaced.key === to) {
                     files.delete(target.ino);
-                    detach(replaced);
+                    detach(replaced, target);
                 }
             }
             for (const file of files.values())
