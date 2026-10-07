@@ -589,6 +589,28 @@ export declare function _rpcProcessHostProbe(_self: RpcHost): {
 export declare function _rpcHostProcess(self: RpcHost, boot: unknown, opts: unknown): Promise<{
     ok: boolean;
 }>;
+/** The timer reason a hosting peer's alarm carries (session/hibernation.ts AlarmReason). */
+export declare const HOSTING_WATCH_REASON = "hosting-watch";
+/**
+ * How often a host holding a process looks for its own reset: the resident
+ * keep-alive's cadence, so the session learns of it within one cadence.
+ */
+export declare const HOSTING_WATCH_MS = 5000;
+/**
+ * The hosting alarm. A row whose process this incarnation does not hold is
+ * one the platform reset this object under (a new incarnation remembers
+ * nothing of the processes it held, and the held leg that would have said so
+ * may stay open, measured 2026-10-07): the session is told at once, and the
+ * row dropped. Answers when to look again, or null when nothing is hosted.
+ */
+export declare function hostingWatchFired(self: RpcHost): Promise<number | null>;
+/**
+ * RPC: the actor that hosted `workerKey` for this session reports, from a new
+ * incarnation, that the platform reset it under the process. The capability
+ * proves it hosted it. True when the process was this session's and is now
+ * ended.
+ */
+export declare function _rpcHostLost(self: RpcHost, workerKey: string, capability: string): boolean;
 /**
  * RPC: settle once the process is OPEN on this peer, or reject with whatever
  * stopped it from opening.

@@ -317,6 +317,9 @@ export declare const REPLAY_OPERATION_POLICY: {
     cancelHostProcess: {
         readonly kind: "effect";
     };
+    hostLost: {
+        readonly kind: "effect";
+    };
     hmrRelay: {
         readonly kind: "effect";
     };

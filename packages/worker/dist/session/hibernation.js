@@ -435,8 +435,11 @@ export function scheduleHibFlush(host, ctx) {
  *     and SQL; re-arm at the next retention deadline, if any.
  *   - `'resident-keepalive'` → no work; the fire IS the work. Re-arms
  *     while a resident process is running, so the object stays in memory.
+ *   - `'hosting-watch'` → hostingWatch (session/rpc.ts hostingWatchFired):
+ *     a host holding processes for other sessions tells them of its own
+ *     reset; re-arms while it holds one.
  */
-export function dispatchAlarm(host, ctx, pumpResidentLaunches, alarmInfo) {
+export function dispatchAlarm(host, ctx, pumpResidentLaunches, alarmInfo, hostingWatch) {
     return timers(host, ctx).dispatch({
         'w9-flush': () => {
             host.processes.flushLogs();
@@ -454,6 +457,11 @@ export function dispatchAlarm(host, ctx, pumpResidentLaunches, alarmInfo) {
         },
         'resident-keepalive': (now) => {
             const rearmAt = residentKeepaliveFired(host, ctx, now);
+            if (rearmAt !== null)
+                return { rearmAt };
+        },
+        'hosting-watch': async () => {
+            const rearmAt = await hostingWatch?.() ?? null;
             if (rearmAt !== null)
                 return { rearmAt };
         },

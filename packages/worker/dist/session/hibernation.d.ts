@@ -200,7 +200,7 @@ export declare function noteClientActivity(host: HibHost, ctx: any): void;
  * reasons so a rollback from a future deploy that added new reasons doesn't
  * leave the alarm stuck.
  */
-export type AlarmReason = 'w9-flush' | 'log-janitor' | 'resident-launch' | 'resident-keepalive';
+export type AlarmReason = 'w9-flush' | 'log-janitor' | 'resident-launch' | 'resident-keepalive' | 'hosting-watch';
 /**
  * W9: ensure the alarm is set for the next flush window. Cheap to
  * call repeatedly — we only schedule the in-isolate flush timer if
@@ -217,8 +217,11 @@ export declare function scheduleHibFlush(host: HibHost, ctx: any): void;
  *     and SQL; re-arm at the next retention deadline, if any.
  *   - `'resident-keepalive'` → no work; the fire IS the work. Re-arms
  *     while a resident process is running, so the object stays in memory.
+ *   - `'hosting-watch'` → hostingWatch (session/rpc.ts hostingWatchFired):
+ *     a host holding processes for other sessions tells them of its own
+ *     reset; re-arms while it holds one.
  */
-export declare function dispatchAlarm(host: HibHost, ctx: any, pumpResidentLaunches?: () => Promise<void>, alarmInfo?: AlarmInvocationInfo): Promise<void>;
+export declare function dispatchAlarm(host: HibHost, ctx: any, pumpResidentLaunches?: () => Promise<void>, alarmInfo?: AlarmInvocationInfo, hostingWatch?: () => Promise<number | null>): Promise<void>;
 /**
  * W9: synchronous flush of the process-log ring on session close.
  * Wraps `processes.flushLogs()` in a try/catch so a flush failure

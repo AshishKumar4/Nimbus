@@ -532,7 +532,7 @@ export class NimbusSession extends CloudflareDurableObject {
      * (retention sweep), 'resident-launch' and 'resident-keepalive'.
      */
     async alarm(alarmInfo) {
-        return _w9DoDispatchAlarm(this, this.ctx, () => this._pumpResidentLaunches(), alarmInfo);
+        return _w9DoDispatchAlarm(this, this.ctx, () => this._pumpResidentLaunches(), alarmInfo, () => _rpc.hostingWatchFired(this));
     }
     /**
      * Grant the fresh turn a suspended launch asked for.
@@ -843,6 +843,11 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     async _rpcRouteHostedHttp(workerKey, request) {
         return _rpc._rpcRouteHostedHttp(this, workerKey, request);
+    }
+    async _rpcHostLost(workerKey, capability) {
+        this.ensureSqliteFs();
+        this.ensureFacetManager();
+        return _rpc._rpcHostLost(this, workerKey, capability);
     }
     async _rpcCancelHostProcess(workerKey) {
         return _rpc._rpcCancelHostProcess(this, workerKey);

@@ -4282,6 +4282,15 @@ export class FacetManager {
         this._teardownPairedServeFacet(pid);
     }
     /**
+     * The actor hosting `workerKey` reports, from its own next incarnation,
+     * that the platform reset it under the process (session/rpc.ts
+     * hostingWatchFired). True when it was this session's open process, which
+     * is now lost (ProcessHost.hostLost).
+     */
+    hostLost(workerKey, capability) {
+        return this.processHost.hostLost?.(workerKey, capability) ?? false;
+    }
+    /**
      * The platform reset the host of a running process (ProcessHostLost): the
      * process is over, as if killed (137), and says why. Its ports answer with
      * the cause at once, and its restart policy decides what follows, as for

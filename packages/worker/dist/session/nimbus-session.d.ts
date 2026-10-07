@@ -454,6 +454,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         payload: unknown;
     }>;
     _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): Promise<HostedHttpResponse>;
+    _rpcHostLost(workerKey: string, capability: string): Promise<boolean>;
     _rpcCancelHostProcess(workerKey: string): Promise<{
         cancelled: boolean;
     }>;
