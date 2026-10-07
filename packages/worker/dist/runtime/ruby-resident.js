@@ -213,6 +213,9 @@ export function buildRubySocketProcessWorker(preamble) {
         '  const first = await Promise.race([listen, exit]);',
         '  const registrations = globalThis.__nimbusVirtualPortRegistrationPromises || [];',
         '  if (registrations.length > 0) await Promise.allSettled(registrations.splice(0));',
+        // The launch owns pending output RPCs. Returning at the first listen
+        // must not cancel their request context underneath the resume chain.
+        '  await globalThis.__nimbusRubyDrainOutput();',
         // Streamed already, so the answer carries none of it.
         '  if (first.state === "listening") return { state: "listening", port: first.port, stdout: "", stderr: "" };',
         '  return { state: "exited", result: first.result, stdout: "", stderr: "" };',

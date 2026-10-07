@@ -691,6 +691,10 @@ function __nimbusRubyBindOutput(args) {
 globalThis.__nimbusRubyWriteDiagnostic = function(text) {
   return __nimbusRubyOutput.stderrBytes(new TextEncoder().encode(text));
 };
+globalThis.__nimbusRubyDrainOutput = async function() {
+  const failed = __nimbusRubyOutput ? await __nimbusRubyOutput.drain() : null;
+  if (failed) throw new Error(failed);
+};
 
 // Whether this facet can suspend the VM mid-syscall, asked of the engine
 // rather than passed in: the answer is a property of where this scope was
