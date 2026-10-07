@@ -64,6 +64,15 @@ export declare const PEER_RETRY_BACKOFF_MS: number[];
  */
 export declare const PEER_OVERLOAD_BACKOFF_MS: number[];
 /**
+ * How long a call to a peer DO waits before attempt `attempt + 1` after it
+ * failed with `error`, or null to give up: a transient reset on the reset
+ * schedule, an overloaded peer on the overload schedule where the caller
+ * waits for one (`retryOverloaded`), anything else never.
+ */
+export declare function peerRetryDelay(error: unknown, attempt: number, policy: {
+    retryOverloaded: boolean;
+}): number | null;
+/**
  * Peer shards dispatched per phase. Each phase is a barrier that costs its
  * slowest member, so a wide fan-out pays ⌈shards / FANOUT_PHASE_SIZE⌉ serial
  * round-trips; the size trades that serialization against simultaneous cold
@@ -216,15 +225,12 @@ export declare class Fanout {
     private _dispatchPeerDo;
 }
 /**
- * Stable hash → shard. Uses a fresh djb2 over the key (NOT
- * hashSource) and modulos by peerCount.
+ * Stable hash → shard: the key's djb2 integer modulo peerCount.
  *
- * Why not reuse hashSource: hashSource returns a base-36 string,
- * NOT hex — its alphabet is `[0-9a-z]`. parseInt(str, 16) on a
- * base-36 string aborts at the first non-hex char (any of g-z),
- * which produces extremely poor distribution: keys with the same
- * leading-hex-prefix collide regardless of their suffix. (Seen in
- * the wild: `task-0 .. task-7` all collided onto shard 4.)
+ * The integer, never hashSource's base-36 text: parseInt(text, 16)
+ * stops at the first letter past f, so keys with one leading prefix
+ * collided (`task-0 .. task-7` all landed on shard 4). peerCount <=
+ * MAX_PEER_FANOUT (32) << 2^32, so the modulo distributes uniformly.
  *
  * Deterministic: same key + same peerCount → same shard, every run.
  * Tests use this to predict placement.

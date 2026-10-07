@@ -40,6 +40,17 @@ export declare function buildPreviewHost(sid: string, target: number | string, s
  * registry mints.
  */
 export declare function buildPublicPreviewHost(sid: string, target: number | string, capability: string, suffix: string): string;
+/**
+ * The preview origin of a session's application: its name where it has one,
+ * else its port, and the public bearer form only when the application is
+ * public and has a capability; anything else is the session-attached host.
+ */
+export declare function previewHostUrl(sid: string, app: {
+    port: number;
+    name?: string | null;
+    visibility?: string;
+    capability?: string | null;
+}, suffix: string): string;
 export declare function isPreviewHostSafeSid(sid: string): boolean;
 /**
  * Read the configured preview-host suffix out of a bindings env.

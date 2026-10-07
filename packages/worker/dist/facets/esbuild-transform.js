@@ -13,6 +13,7 @@ import { OXC_FACET_BUILD_ID } from '../oxc-facet-artifact.generated.js';
 import { fetchOxcFacetRuntime } from '../runtime/oxc-wasm-bytes.js';
 import { OXC_FACET_WORKER_ID, oxcTransformHost } from './oxc-transform.js';
 import { rolldownBuildHost } from './build-facet.js';
+import { SharedHelperFacet } from './helper-facet.js';
 /**
  * Everything of the facet's module but its staged parts: esbuild's JS adapter,
  * which the wasm version keys, the `esbuild` command's runner, which its
@@ -99,53 +100,25 @@ export function esbuildFacetWorkerCode(wasm, jsFnBody, cliRunner, transformRunti
     };
 }
 /**
- * A Durable Object's esbuild facet: one loader-backed child that owns the
- * esbuild wasm, so the object's own isolate never instantiates it. Needs
- * `env.LOADER`, `env.ASSETS` and `ctx.facets`, and nothing of any host.
+ * A Durable Object's esbuild facet: the child that owns the esbuild wasm.
+ * Its `esbuild` commands and the transforms too deep for Oxc share its one
+ * stub, so a caller that starts while another is still loading it (fetching
+ * and verifying its staged adapter and runner) waits on that load.
  */
-async function esbuildFacet(ctx, env) {
-    const loader = Reflect.get(Object(env), 'LOADER');
-    if (!loader || typeof loader.get !== 'function') {
-        throw new Error('Nimbus: env.LOADER unavailable for the esbuild facet');
-    }
-    const assets = Reflect.get(Object(env), 'ASSETS');
-    if (!assets || typeof assets.fetch !== 'function') {
-        throw new Error('Nimbus: env.ASSETS unavailable for the esbuild facet');
-    }
-    const worker = await loader.get(ESBUILD_FACET_WORKER_ID, async () => {
-        const assetsEnv = { ASSETS: assets };
+const esbuildFacet = new SharedHelperFacet({
+    id: ESBUILD_FACET_WORKER_ID,
+    className: 'EsbuildFacet',
+    what: 'the esbuild facet',
+    async code(assets) {
         const [wasm, jsFnBody, cliRunner, transformRuntime] = await Promise.all([
-            fetchEsbuildWasmBytes(assetsEnv),
-            fetchEsbuildJsFnBody(assetsEnv),
-            fetchEsbuildCliRunner(assetsEnv),
-            fetchOxcFacetRuntime(assetsEnv),
+            fetchEsbuildWasmBytes(assets),
+            fetchEsbuildJsFnBody(assets),
+            fetchEsbuildCliRunner(assets),
+            fetchOxcFacetRuntime(assets),
         ]);
         return esbuildFacetWorkerCode(wasm, jsFnBody, cliRunner, transformRuntime);
-    });
-    const facetClass = worker.getDurableObjectClass('EsbuildFacet');
-    return ctx.facets.get(ESBUILD_FACET_WORKER_ID, async () => ({ class: facetClass }));
-}
-/**
- * The one way to a Durable Object's esbuild facet: its `esbuild` commands and
- * the transforms too deep for Oxc share one stub, so a caller that starts
- * while another is still loading the facet (fetching and verifying its
- * staged adapter and runner) waits on that load instead of starting a second one. A load or call
- * that failed drops the entry; the next caller mints a fresh stub.
- */
-const sharedFacets = new WeakMap();
-function sharedEsbuildFacet(ctx, env) {
-    const current = sharedFacets.get(ctx);
-    if (current)
-        return current;
-    const minted = esbuildFacet(ctx, env);
-    sharedFacets.set(ctx, minted);
-    minted.catch(() => forgetEsbuildFacet(ctx, minted));
-    return minted;
-}
-function forgetEsbuildFacet(ctx, stub) {
-    if (sharedFacets.get(ctx) === stub)
-        sharedFacets.delete(ctx);
-}
+    },
+});
 /**
  * One call on the shared facet; a call that throws drops the stub it used.
  * The facet's worker is one Dynamic Worker in flight on the ledger for the
@@ -153,13 +126,13 @@ function forgetEsbuildFacet(ctx, stub) {
  * admitted as a helper's is (beginHelperFetch).
  */
 async function onEsbuildFacet(ctx, env, call) {
-    const stub = sharedEsbuildFacet(ctx, env);
+    const stub = esbuildFacet.stub(ctx, env);
     const endFetch = await beginHelperFetch(ctx, ESBUILD_FACET_WORKER_ID);
     try {
         return await call(await stub);
     }
     catch (error) {
-        forgetEsbuildFacet(ctx, stub);
+        esbuildFacet.forget(ctx, stub);
         throw error;
     }
     finally {

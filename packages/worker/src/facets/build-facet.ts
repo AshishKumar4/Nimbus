@@ -9,6 +9,7 @@ import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
+import { loadHelperFacet } from './helper-facet.js';
 import { ROLLDOWN_FACET_ASSET_PATH, ROLLDOWN_FACET_BUILD_ID, ROLLDOWN_FACET_SHA256 } from '../rolldown-facet-artifact.generated.js';
 import { fetchStagedText, stagedAsset, type StagedSourceEnv } from '../runtime/staged-source.js';
 import type { PrebundleResult, PrebundleSpec } from '@nimbus-sh/core/runtime/prebundle-slice.js';
@@ -228,16 +229,6 @@ interface SharedFacet {
   crashed: boolean;
 }
 
-async function buildFacet(ctx: DurableObjectState, env: unknown, id: string): Promise<Fetcher<BuildFacetRpc>> {
-  const loader = Reflect.get(Object(env), 'LOADER');
-  if (!loader || typeof loader.get !== 'function') throw new Error('Nimbus: env.LOADER unavailable for the build facet');
-  const assets = Reflect.get(Object(env), 'ASSETS');
-  if (!assets || typeof assets.fetch !== 'function') throw new Error('Nimbus: env.ASSETS unavailable for the build facet');
-  const worker = await loader.get(id, async () => buildFacetWorkerCode(await fetchBuildFacetParts({ ASSETS: assets })));
-  const facetClass = worker.getDurableObjectClass('BuildFacet');
-  return ctx.facets.get<BuildFacetRpc>(id, async () => ({ class: facetClass }));
-}
-
 /**
  * One stub per Durable Object: callers that overlap wait on one facet load.
  * A load or call that failed drops the entry; the next caller mints a fresh one.
@@ -250,7 +241,13 @@ function sharedBuildFacet(ctx: DurableObjectState, env: unknown): SharedFacet {
   const current = sharedFacets.get(ctx);
   if (current && current.generation === generation) return current;
   if (current) retireFacet(ctx, current);
-  const minted: SharedFacet = { generation, stub: buildFacet(ctx, env, generationId(generation)), calls: 0, retired: false, crashed: false };
+  const stub = loadHelperFacet<BuildFacetRpc>(ctx, env, {
+    id: generationId(generation),
+    className: 'BuildFacet',
+    what: 'the build facet',
+    code: async (assets) => buildFacetWorkerCode(await fetchBuildFacetParts(assets)),
+  });
+  const minted: SharedFacet = { generation, stub, calls: 0, retired: false, crashed: false };
   sharedFacets.set(ctx, minted);
   minted.stub.catch(() => forgetBuildFacet(ctx, minted));
   return minted;

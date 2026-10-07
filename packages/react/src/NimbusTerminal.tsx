@@ -24,6 +24,16 @@ import {
 } from './types.js';
 
 /**
+ * The URL the iframe attaches through: the session's shell, or `/new` for a
+ * fresh session, under the endpoint's own path, carrying the token for the
+ * attach exchange.
+ */
+export function nimbusAttachUrl(endpoint: string, token: string, sessionId: string | undefined): string {
+  const path = sessionId ? `/s/${encodeURIComponent(sessionId)}/` : '/new';
+  return `${endpoint.replace(/\/+$/, '')}${path}?nimbus_token=${encodeURIComponent(token)}`;
+}
+
+/**
  * The iframe's default `sandbox`, exported so an embedder that needs more can
  * extend it rather than restate it.
  *
@@ -52,12 +62,7 @@ export const NimbusTerminal = forwardRef<NimbusTerminalRef, NimbusTerminalProps>
     const [renderKey, setRenderKey] = useState(0);
     const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
-    const attachUrl = useMemo(() => {
-      const base = endpoint.replace(/\/+$/, '');
-      const path = sessionId ? `/s/${encodeURIComponent(sessionId)}/` : '/new';
-      const query = `?nimbus_token=${encodeURIComponent(token)}`;
-      return `${base}${path}${query}`;
-    }, [endpoint, token, sessionId]);
+    const attachUrl = useMemo(() => nimbusAttachUrl(endpoint, token, sessionId), [endpoint, token, sessionId]);
 
     useImperativeHandle(
       ref,
