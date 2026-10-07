@@ -17,7 +17,7 @@
  * `finally` keeps the value it was entered with unless it breaks.
  *
  * Code Node runs as a module (`--input-type=module`, or its syntax: the
- * caller's `module`, module-format.ts isEsModuleInput) is not a script:
+ * caller's mode, module-format.ts isEsModuleInput) is not a script:
  * Node refuses to print it (ERR_EVAL_ESM_CANNOT_PRINT), which the code
  * becomes. Nor is code with a `return` at its top, which Node refuses to
  * compile.
@@ -28,14 +28,23 @@ import { full } from 'acorn-walk';
 
 import { applySourceEdits, type SourceEdit } from './javascript-ast.js';
 
+/**
+ * How Node evaluates eval code (eval_string.js, eval_stdin.js): as a module
+ * (`--input-type=module`, or its syntax), as `--input-type=commonjs`'s
+ * script (evalScript: compiled as it runs, after `--import`'s modules load),
+ * or by default (evalTypeScript: compiled first, before they load).
+ */
+export type NodeEvalMode = 'module' | 'commonjs' | 'default';
+
 /** The code an eval runs, and when Node refuses it. */
 export interface NodeEvalProgram {
   code: string;
   /**
-   * Node refuses the code as it compiles it (a syntax error, or `-p` of
-   * module syntax): after `-r`'s modules have run, before `--import`'s load
-   * (eval_string.js compiles before run_main.js imports them). Known for
-   * `-p`'s code, which is parsed here; `-e`'s is not.
+   * Node refuses the code before `--import`'s modules load, after `-r`'s
+   * have run: `-p` of a module (evalModuleEntryPoint throws first), and, by
+   * default, a syntax error (evalTypeScript compiles before run_main.js
+   * imports them; `--input-type=commonjs` compiles after). Known for `-p`'s
+   * code, which is parsed here; `-e`'s is not.
    */
   refusedBeforeImports: boolean;
 }
@@ -47,16 +56,16 @@ export interface NodeEvalProgram {
  * wrapping code that names it (eval_string.js: the same test, the same
  * wrappers).
  */
-export function nodeEvalProgram(code: string, print: boolean, module = false): NodeEvalProgram {
+export function nodeEvalProgram(code: string, print: boolean, mode: NodeEvalMode): NodeEvalProgram {
   const namesCrypto = /\bcrypto\b/.test(code);
   if (!print) return { code: namesCrypto ? `(crypto=>{{${code}}})(require('node:crypto'))` : code, refusedBeforeImports: false };
-  if (module) return ESM_CANNOT_PRINT;
-  return printedProgram(namesCrypto ? `let crypto=require("node:crypto");{${code}}` : code);
+  if (mode === 'module') return ESM_CANNOT_PRINT;
+  return printedProgram(namesCrypto ? `let crypto=require("node:crypto");{${code}}` : code, mode);
 }
 
 /** The entry code for `node -p` reading its code from stdin (eval_stdin.js: no `crypto` wrapper). */
-export function nodeStdinPrintProgram(source: string, module = false): NodeEvalProgram {
-  return module ? ESM_CANNOT_PRINT : printedProgram(source);
+export function nodeStdinPrintProgram(source: string, mode: NodeEvalMode): NodeEvalProgram {
+  return mode === 'module' ? ESM_CANNOT_PRINT : printedProgram(source, mode);
 }
 
 /** Thrown as the program's first act, after its -r preloads, as Node throws it; its stack leads with the code, as a Node error's does. */
@@ -76,15 +85,16 @@ function parsed(source: string, options: Options): Program | null {
   }
 }
 
-function printedProgram(source: string): NodeEvalProgram {
+function printedProgram(source: string, mode: NodeEvalMode): NodeEvalProgram {
   const program = parsed(source, SCRIPT);
   if (program === null) {
+    const refusedBeforeImports = mode === 'default';
     // A return at the top compiles in the entry's function, not in Node's script.
     if (parsed(source, { ...SCRIPT, allowReturnOutsideFunction: true }) !== null) {
-      return { code: 'throw new SyntaxError("Illegal return statement");', refusedBeforeImports: true };
+      return { code: 'throw new SyntaxError("Illegal return statement");', refusedBeforeImports };
     }
     // Neither: it fails to compile in the process, as it does in Node.
-    return { code: source, refusedBeforeImports: true };
+    return { code: source, refusedBeforeImports };
   }
   const rewriter = new CompletionRewriter(source, freshNames(program));
   rewriter.process(program.body, 0);

@@ -46,12 +46,12 @@ import { parseFacetBundleProfile, type FacetBundleProfile } from './bundle-profi
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { errorText } from '../_shared/error-text.js';
-import { isEsModuleFile, isEsModuleInput, type ModuleScope } from './module-format.js';
+import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput, type ModuleScope } from './module-format.js';
 import { packageScopeType } from './require-resolution.js';
 import { exists, isDirectory } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerLaunchHost } from './server-launch.js';
 import { parseNodeCommandLine, type NodeCommandLine, type NodeLaunch } from './node-cli.js';
-import { nodeEvalProgram, nodeStdinPrintProgram } from './node-eval.js';
+import { nodeEvalProgram, nodeStdinPrintProgram, type NodeEvalMode } from './node-eval.js';
 
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
@@ -501,8 +501,10 @@ export function buildRuntimeHandler(
      * and routed to the process's ESM loader (dynamic-import-rewrite.ts), its
      * import.meta the module's own (url, resolve, dirname and filename, read
      * directly, as an object or destructured: the runner's __nimbusFileImportMeta;
-     * CommonJS output alone would make it {}). Null when the transform failed,
-     * which it has reported.
+     * CommonJS output alone would make it {}). An ES module that does not
+     * parse is code that throws its SyntaxError as Node's evaluation does
+     * (module-format.ts esModuleSyntaxError). Null when the transform failed
+     * otherwise, which it has reported.
      */
     async function lowerToCommonJs(code: string, loader: 'js' | 'jsx' | 'ts' | 'tsx', url: string, what: string, esm: boolean): Promise<string | null> {
       try {
@@ -512,6 +514,8 @@ export function buildRuntimeHandler(
           loader, format: 'cjs', dynamicImportParent: url, moduleMetadata: true, ...(esm && moduleScope === 'node' ? { esModuleScope: true } : {}),
         })).code;
       } catch (e) {
+        const syntaxError = esm && loader === 'js' ? esModuleSyntaxError(code, url) : null;
+        if (syntaxError !== null) return syntaxError;
         ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);
         return null;
       }
@@ -530,7 +534,8 @@ export function buildRuntimeHandler(
         return lowered === null ? null : { code: lowered, refusedBeforeImports: false, esModule: true };
       }
       if (!spec.nodeCommandLine) return { code: source, refusedBeforeImports: false, esModule: false };
-      const prepared = what === '[eval]' ? nodeEvalProgram(source, print, esModule) : print ? nodeStdinPrintProgram(source, esModule) : { code: source, refusedBeforeImports: false };
+      const mode: NodeEvalMode = esModule ? 'module' : inputType === 'commonjs' ? 'commonjs' : 'default';
+      const prepared = what === '[eval]' ? nodeEvalProgram(source, print, mode) : print ? nodeStdinPrintProgram(source, mode) : { code: source, refusedBeforeImports: false };
       return { ...prepared, esModule: false };
     }
 
