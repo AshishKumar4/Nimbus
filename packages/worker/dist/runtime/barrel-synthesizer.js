@@ -97,7 +97,9 @@ export function namedImportSignature(pkgName, names) {
  *
  * With a `budget`, the walk reads at most what it allows, checked with a
  * stat before each read: a file past the per-file or the remaining total
- * bytes is skipped, and the walk ends after `files` candidate files.
+ * bytes is skipped, and the walk ends at the first candidate file past
+ * `files`. What it left unread is reported (`unread`), never dropped
+ * silently.
  */
 export async function scanProjectImports(vfs, projDir, parse, budget) {
     const bare = new Set();
@@ -122,9 +124,12 @@ export async function scanProjectImports(vfs, projDir, parse, budget) {
     };
     // Files the lexer cannot decide, read with the parser once the walk is done.
     const undecided = [];
-    // What the budget has left.
+    // What the budget has left, and what it kept from being read.
     let filesLeft = budget?.files ?? Infinity;
     let bytesLeft = budget?.totalBytes ?? Infinity;
+    const tooLarge = [];
+    const pastTotal = [];
+    let stoppedAt = null;
     const scan = (code, ext) => {
         for (const specifier of importedSpecifiers(code)) {
             if (specifier.startsWith('.') || specifier.startsWith('/'))
@@ -158,7 +163,7 @@ export async function scanProjectImports(vfs, projDir, parse, budget) {
         }
     };
     const walk = (dir, depth) => {
-        if (depth > 6 || filesLeft <= 0)
+        if (depth > 6 || stoppedAt !== null)
             return;
         let entries;
         try {
@@ -185,8 +190,10 @@ export async function scanProjectImports(vfs, projDir, parse, budget) {
             if (!scanExts.has(ext))
                 continue;
             if (budget) {
-                if (filesLeft <= 0)
+                if (filesLeft <= 0) {
+                    stoppedAt = path;
                     return;
+                }
                 filesLeft--;
                 let size;
                 try {
@@ -195,8 +202,14 @@ export async function scanProjectImports(vfs, projDir, parse, budget) {
                 catch {
                     continue;
                 }
-                if (size > budget.fileBytes || size > bytesLeft)
+                if (size > budget.fileBytes) {
+                    tooLarge.push(path);
                     continue;
+                }
+                if (size > bytesLeft) {
+                    pastTotal.push(path);
+                    continue;
+                }
                 bytesLeft -= size;
             }
             let source;
@@ -216,7 +229,12 @@ export async function scanProjectImports(vfs, projDir, parse, budget) {
     walk(projDir, 0);
     for (const { source, path, ext } of undecided)
         scan(await parsedImportView(source, path, parse), ext);
-    return { bareSpecifiers: [...bare], namedImports };
+    const unread = [
+        tooLarge.length > 0 && budget ? `${tooLarge.length} file(s) over ${budget.fileBytes} bytes (${tooLarge.slice(0, 3).join(', ')}${tooLarge.length > 3 ? ', …' : ''})` : '',
+        pastTotal.length > 0 && budget ? `${pastTotal.length} file(s) past ${budget.totalBytes} bytes in all (${pastTotal.slice(0, 3).join(', ')}${pastTotal.length > 3 ? ', …' : ''})` : '',
+        stoppedAt !== null && budget ? `the files from ${stoppedAt} on, past ${budget.files} files` : '',
+    ].filter(Boolean).join('; ');
+    return { bareSpecifiers: [...bare], namedImports, unread: unread || null };
 }
 /** A SourceParser over a transform service: `.tsx`/`.ts` as TypeScript, anything else as JavaScript with JSX. */
 export function transformParser(service) {

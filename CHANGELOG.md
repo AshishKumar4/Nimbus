@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: the Vite dev server's scan of the project for the names it imports
+  from a barrel package (one of over 1500 files) is bounded. It ran on every
+  request for a barrel and read every source file whole. It now reads at most
+  2048 files, none over 1 MiB, and 16 MiB in all, checking each file's size
+  before reading it. A scan that left files unread may miss a name one of
+  them imports, so the server says what it left unread and bundles that
+  barrel whole, as it bundles any package, rather than from an entry
+  synthesized from the names it found. A bundle synthesized earlier from
+  other names is never served in its place: a cached bundle synthesized from
+  some names answers only a barrel request for exactly those names.
 - Fixed: an install's background pre-bundle stops when its session is
   destroyed. A client that destroys the session while pre-bundles are still
   queued deletes the storage under them. Each remaining pre-bundle then walked
