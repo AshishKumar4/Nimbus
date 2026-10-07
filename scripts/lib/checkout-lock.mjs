@@ -14,11 +14,11 @@
 // the lock then belongs to the description both share, and stays with this
 // process when flock exits. A lock that ended with this process would free
 // the checkout while a build step it started (an orphan, once this process
-// is killed) still writes. So every build step is handed the descriptor
-// too (checkoutLockFd, passed as the step's fd 3, which its own children
-// inherit): the lock lives until the last process that can write has
-// ended. Nothing else this process starts gets it (Node and Bun open files
-// close-on-exec).
+// is killed) still wrote. So a build step runs in a PID namespace that dies
+// with this process (dist-integrity.mjs, stepSandbox), and is handed the
+// descriptor as its fd 3 (checkoutLockFd): nothing that can write outlives
+// the lock. Nothing else this process starts gets it (Node and Bun open
+// files close-on-exec).
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { spawnSync } from 'node:child_process';
 import { closeSync, ftruncateSync, openSync, readFileSync, writeSync } from 'node:fs';

@@ -713,17 +713,25 @@ process.exit(1);
 // however it ends, the same in every PID namespace, and held by no process
 // the gate starts.
 
-/** A fixture whose one step marks that it runs, then waits (bounded) for `go` beside it. */
+/**
+ * A fixture whose one step marks that it runs, then waits (bounded) for `go`
+ * beside it. Meanwhile it, and a writer it starts as Node starts esbuild's
+ * service (fds 0-2 only), each write a heartbeat beside the fixture.
+ */
 async function blockingFixture() {
   const { root, pkg } = await fixtureAtFixpoint();
   const manifest = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'));
   manifest.scripts['blocking-build'] = 'node blocking-build.mjs';
   writeFileSync(join(pkg, 'package.json'), JSON.stringify(manifest));
+  const beat = (file) => `setInterval(() => require('node:fs').writeFileSync(${JSON.stringify(file)}, String(Date.now())), 20);`;
   writeFileSync(join(pkg, 'blocking-build.mjs'), `
+import { spawn } from 'node:child_process';
 import { existsSync, writeFileSync } from 'node:fs';
-writeFileSync('../../started', String(process.pid));
+spawn(process.execPath, ['-e', ${JSON.stringify(beat(join(root, 'beat-writer')))}], { stdio: ['ignore', 'inherit', 'inherit'] });
+setInterval(() => writeFileSync('../../beat-step', String(Date.now())), 20);
+writeFileSync('../../started', '');
 const until = Date.now() + 120_000;
-while (!existsSync('../../go') && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+const wait = setInterval(() => { if (existsSync('../../go') || Date.now() > until) process.exit(0); }, 20);
 `);
   git(root, 'add', '-A');
   git(root, 'commit', '-qm', 'a blocking build');
@@ -734,6 +742,13 @@ runBuildFixpoint({ root: process.argv[2], roots: ['packages/worker'], steps: [{ 
 console.log('RESULT ok');
 `);
   return { root, pkg };
+}
+
+/** Whether `file` (a heartbeat) went unwritten for `ms`. */
+async function stillFor(file, ms) {
+  const before = readFileSync(file, 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  return readFileSync(file, 'utf8') === before;
 }
 
 /** Resolve once `predicate` holds, polling; fail loudly after a minute. */
@@ -755,29 +770,32 @@ function lockRefusal(root, waitMs) {
   }
 }
 
-// ── [22] RED: a gate killed mid-build holds the lock until its build step ends ─
-// The step outlives the gate, as an orphan, and can still write: the lock is
-// the step's too (it inherits the descriptor), so no other gate snapshots a
-// half-built tree; once the step ends, the lock is free, with nothing to break.
-// The killed gate's held copies stay, as a dead gate's do, in this case's own tmpdir.
+// ── [22] RED: a gate killed mid-build leaves no writer, and no lock ──
+// Its build step, and what the step started as Node starts esbuild's service
+// (fds 0-2 only, so no lock descriptor), die with it: the step's PID
+// namespace dies with the gate. Only then is the lock free, with nothing to
+// break. The killed gate's held copies stay, as a dead gate's do, in this
+// case's own tmpdir.
 {
   await withPrivateTmp(async () => {
     const { root } = await blockingFixture();
     const gate = spawn(process.execPath, [join(root, 'gate.mjs'), root], { cwd: root, stdio: 'ignore' });
-    await until('the gate to start its step', () => existsSync(join(root, 'started')));
-    assert.match(lockRefusal(root, 500) ?? '', /has held the checkout lock .* for longer than/, 'the running gate holds the lock');
-    gate.kill('SIGKILL');
-    await new Promise((resolve) => gate.on('exit', resolve));
-    const orphan = Number(readFileSync(join(root, 'started'), 'utf8'));
     try {
-      assert.ok(existsSync(`/proc/${orphan}`), 'the killed gate\'s build step is still running');
-      assert.match(lockRefusal(root, 1_000) ?? '', /has held the checkout lock .* for longer than/, 'while the orphaned step can write, no other gate gets the lock');
+      await until('the gate to start its step and the writer', () => ['started', 'beat-step', 'beat-writer'].every((file) => existsSync(join(root, file))));
+      assert.match(lockRefusal(root, 500) ?? '', /has held the checkout lock .* for longer than/, 'the running gate holds the lock');
+      gate.kill('SIGKILL');
+      await new Promise((resolve) => gate.on('exit', resolve));
+      for (const file of ['beat-step', 'beat-writer']) {
+        let still = false;
+        for (const deadline = Date.now() + 10_000; !still && Date.now() < deadline;) still = await stillFor(join(root, file), 300);
+        assert.ok(still, `${file}: what the killed gate's step started stops writing`);
+      }
+      assert.equal(lockRefusal(root, 5_000), null, 'and the next gate takes the lock: nothing to break');
     } finally {
       writeFileSync(join(root, 'go'), '');
     }
-    assert.equal(lockRefusal(root, 30_000), null, 'once the step has ended, the next gate takes the lock: nothing to break');
   });
-  console.log('  ok  [22] a gate killed mid-build holds the lock through its orphaned build step, and releases it when that step ends');
+  console.log('  ok  [22] a gate killed mid-build takes its step and the writer the step started with it, then the lock is free');
 }
 
 // ── [23] RED: a gate in another PID namespace is waited for, not broken ─

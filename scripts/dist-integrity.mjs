@@ -381,16 +381,38 @@ export function runBuildFixpoint({
   }, { log });
 }
 
+/** bubblewrap, which bounds a build step's processes (stepSandbox). */
+const BWRAP = '/usr/bin/bwrap';
+
+/**
+ * Each build step runs as PID 1's child in a PID namespace of its own that
+ * dies with this process (bwrap --unshare-pid --die-with-parent, as
+ * run-bounded runs a test): when the gate dies, however it dies, the
+ * namespace's init is killed and the kernel kills every process in it. So
+ * nothing a step started (esbuild's service, which Node spawns with fds 0-2
+ * only, among them) writes on after the checkout lock is released; the
+ * lock's descriptor need only cover what cannot outlive it. The rest of
+ * the system is the step's as before: the whole filesystem, the same user.
+ */
+function stepSandbox() {
+  return [
+    '--unshare-user', '--uid', String(process.getuid?.() ?? 0), '--gid', String(process.getgid?.() ?? 0), '--unshare-pid', '--die-with-parent',
+    '--bind', '/', '/', '--proc', '/proc', '--dev-bind', '/dev', '/dev',
+  ];
+}
+
 function runSteps({ root, steps, log, roots, before }) {
+  if (!existsSync(BWRAP)) {
+    throw new BuildFailure(`refusing to build — ${BWRAP} is not installed, and without it a build step could outlive the gate and write after its lock is released`);
+  }
   transaction({ root, roots, before }, () => {
     for (const step of steps) {
       log(`${step.cwd} → ${step.script} (${step.why})`);
-      const result = spawnSync('bun', ['run', '--cwd', step.cwd, step.script], {
+      const result = spawnSync(BWRAP, [...stepSandbox(), '--', 'bun', 'run', '--cwd', step.cwd, step.script], {
         cwd: root,
         encoding: 'utf8',
         env: { ...process.env, PATH: workspacePath(root, step.cwd) },
-        // The checkout lock, held by the step too: a step left running by a
-        // gate that was killed still holds it (scripts/lib/checkout-lock.mjs).
+        // The checkout lock, held by the step too (scripts/lib/checkout-lock.mjs).
         stdio: ['ignore', 'pipe', 'pipe', checkoutLockFd(root)],
       });
       if (result.error || result.status !== 0) {
