@@ -59,8 +59,9 @@ export type GraphFiltersStep =
 
 export interface GitNetworkOpts {
   op: GitNetworkOp;
-  /** For graph-filters: its step. */
-  graphFilters?: GraphFiltersStep;
+  /** For graph-filters: commits a piece is asked for, and its wall-time budget (tuning). */
+  graphFilterPieceCommits?: number;
+  graphFilterPieceBudgetMs?: number;
   /** Invoking process identity used to bind every supervisor filesystem RPC. */
   pid: number;
   /** Absolute working tree directory (e.g. "/home/user/project") */
@@ -925,6 +926,10 @@ async function writeCloneProgressLine(supervisor: GitSupervisorStub, line: strin
 
 /** A piece's wall-time budget: within a facet invocation's limits, with room to write its file. */
 const GRAPH_FILTERS_PIECE_BUDGET_MS = 20_000;
+/** One step's limit: a piece stops at its budget, an assemble writes a layer. */
+const GRAPH_FILTERS_STEP_TIMEOUT_MS = 120_000;
+/** The whole pass's limit. */
+const GRAPH_FILTERS_TIMEOUT_MS = 60 * 60_000;
 /** Commits a piece is asked for; it stops earlier at its budget. */
 const GRAPH_FILTERS_PIECE_COMMITS = 20_000;
 
@@ -941,9 +946,11 @@ export interface GraphFiltersOutcome {
 }
 
 /**
- * A full clone's changed-path filters (git/pack/graph-filters.ts), after the
- * clone has answered: plan, the pieces one at a time (each holds a tree
- * cache and the pack store's), then the layer with the filters.
+ * A full clone's commit-graph (git/pack/graph-filters.ts), after the clone
+ * has answered: one facet loaded for the whole pass and invoked once a step,
+ * as a clone invokes its phases (a facet loaded a step deepened each step's
+ * subrequests until "Subrequest depth limit exceeded", measured on vscode's
+ * fourteenth). Each piece holds a tree cache and the pack store's.
  */
 export async function runGraphFilters(
   ctx: DurableObjectState,
@@ -951,12 +958,21 @@ export async function runGraphFilters(
   opts: { pid: number; dir: string; pieceBudgetMs?: number; pieceCommits?: number },
   network: WorkspaceNetwork,
 ): Promise<GraphFiltersOutcome> {
+  const result = await execGitNetwork(ctx, env, {
+    op: 'graph-filters', pid: opts.pid, dir: opts.dir, quiet: true, timeout: GRAPH_FILTERS_TIMEOUT_MS,
+    graphFilterPieceCommits: opts.pieceCommits, graphFilterPieceBudgetMs: opts.pieceBudgetMs,
+  }, network);
+  if (!result.success) throw new Error('graph-filters: ' + (result.error ?? 'failed'));
+  return result.graphFilters as GraphFiltersOutcome;
+}
+
+/** The pass's steps, each one invocation of the facet `call` reaches. */
+async function driveGraphFilters(
+  call: (step: GraphFiltersStep) => Promise<unknown>,
+  opts: { pieceBudgetMs?: number; pieceCommits?: number },
+): Promise<GraphFiltersOutcome> {
   const started = Date.now();
-  const step = async <T>(graphFilters: GraphFiltersStep): Promise<T> => {
-    const result = await execGitNetwork(ctx, env, { op: 'graph-filters', pid: opts.pid, dir: opts.dir, graphFilters, quiet: true }, network);
-    if (!result.success) throw new Error('graph-filters ' + graphFilters.step + ': ' + (result.error ?? 'failed'));
-    return result.graphFilters as T;
-  };
+  const step = async <T>(graphFilters: GraphFiltersStep): Promise<T> => await call(graphFilters) as T;
   const outcome: GraphFiltersOutcome = { layer: null, commits: 0, pieces: 0, trees: 0, treeBytes: 0, elapsed: 0 };
   const plan = await step<{ layer: string; commits: number } | null>({ step: 'plan' });
   if (plan === null) return { ...outcome, elapsed: Date.now() - started };
@@ -1246,6 +1262,46 @@ export async function execGitNetwork(
             phases,
           };
         }
+      }
+
+      if (opts.op === 'graph-filters') {
+        // The whole pass in this one facet, a step an invocation.
+        const facet = entrypoint;
+        const graphFilters = await driveGraphFilters(async (step) => {
+          const remaining = Math.min(GRAPH_FILTERS_STEP_TIMEOUT_MS, outerDeadline - Date.now());
+          if (remaining <= 0) throw new Error(`git graph-filters timed out after ${timeoutMs / 1000}s`);
+          let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+          const timeout = new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(() => reject(new Error(`git graph-filters ${step.step} timed out after ${remaining / 1000}s`)), remaining);
+          });
+          const call = facet.fetch(new Request('http://git/op', {
+            method: 'POST',
+            body: JSON.stringify({ ...facetOpts, graphFilters: step, invocationId: crypto.randomUUID() }),
+          })).then(async (response: Response) => {
+            try {
+              return await response.json() as FacetInvocationResult;
+            } finally {
+              disposeRpcResource(response);
+            }
+          });
+          let result: FacetInvocationResult;
+          try {
+            result = await Promise.race([call, timeout]);
+          } finally {
+            if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+          }
+          if (result.success !== true) throw new Error(`graph-filters ${step.step}: ${typeof result.error === 'string' ? result.error : 'failed'}`);
+          return result.graphFilters;
+        }, { pieceCommits: opts.graphFilterPieceCommits, pieceBudgetMs: opts.graphFilterPieceBudgetMs });
+        return {
+          success: true,
+          elapsed: Date.now() - start,
+          filesWritten: 0,
+          bytesWritten: 0,
+          supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+          metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
+          graphFilters,
+        };
       }
 
       const invocationId = crypto.randomUUID();

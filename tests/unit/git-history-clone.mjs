@@ -110,13 +110,17 @@ try {
   let readsAtFinish = null;
   // The changed-path filters the clone leaves running wait until the clone's own checks are done.
   let readsAtFilters = null;
+  let loadsAtFilters = null;
   let baseLayer = null;
   let releaseFilters;
   const filtersReleased = new Promise((resolve) => { releaseFilters = resolve; });
   session.requests.onPhase = async (body) => {
     if (body.phase === 'clone-finish') readsAtFinish = session.requests.rangeReads.length;
     if (body.op === 'graph-filters') {
-      readsAtFilters ??= session.requests.rangeReads.length;
+      if (readsAtFilters === null) {
+        readsAtFilters = session.requests.rangeReads.length;
+        loadsAtFilters = session.requests.loads;
+      }
       await filtersReleased;
       if (body.graphFilters?.step === 'piece' && baseLayer === null) {
         const info = session.materialize('home/user/repo/.git/objects/info', join(work, 'base-layer'));
@@ -172,6 +176,9 @@ try {
     hostGit(after, ['commit-graph', 'verify']);
     const pieces = session.requests.phases.filter((phase) => phase === 'graph-filters').length;
     assert.ok(pieces > 4, 'the filters ran in pieces: ' + pieces);
+    // One facet for the whole pass: a facet loaded a step deepened each
+    // step's subrequests until the runtime refused one (vscode's fourteenth).
+    assert.equal(session.requests.loads - loadsAtFilters, 0, 'no facet was loaded after the pass\'s first step');
     assert.equal(statSync(join(out, '.git/shallow'), { throwIfNoEntry: false }), undefined, 'not shallow');
     assert.ok(!readdirSync(join(out, '.git')).includes('nimbus-clone'), 'staging removed');
     assert.equal(hostGit(out, ['rev-parse', 'HEAD', 'origin/main']), hostGit(host, ['rev-parse', 'HEAD', 'origin/main']));
