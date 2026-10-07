@@ -49,7 +49,7 @@
 //   up      [--name <n>] [--no-build] [--ttl-ms <ms>] [--rotate-secrets]
 //           [--var KEY:VALUE ...]  override a config var for this deploy —
 //           how one build is stood up twice to compare two settings of it
-//   token   [--name <n>] [--ttl-ms <ms>]
+//   token   [--name <n>] [--ttl-ms <ms>] [--json]   → the token, or JSON {base, token}
 //   session [--name <n>] [--ttl-ms <ms>]   → JSON {base, sessionId, token}
 //   down    [--name <n>] | --all
 //   list    every Preview under the parent, and which ones this checkout holds
@@ -210,7 +210,8 @@ async function up() {
 
 async function token() {
   const state = requireState(resolveName());
-  process.stdout.write(await mintProbeToken(state.secret, ttlMs()));
+  const jwt = await mintProbeToken(state.secret, ttlMs());
+  process.stdout.write(flags.json ? `${JSON.stringify({ base: state.base, token: jwt })}\n` : jwt);
 }
 
 async function session() {

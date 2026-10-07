@@ -23,6 +23,11 @@
 //                  ledger is a temporary file, kept only when a session
 //                  leaked. Keep it next to the run's log: a session that
 //                  reset is looked up in Workers Logs by its session.
+//   --part K/N     Run only the K-th of N parts of the selection (1-based;
+//                  every N-th probe, from the K-th), so N runs together
+//                  cover it once (scripts/ci/probes.mjs).
+//   --json PATH    Also write the verdict as JSON at PATH: each probe's
+//                  exit code, seconds and output tail, and the sessions.
 //
 // Optional env:
 //   NIMBUS_PROBE_ONLY   — comma-separated probe names (e.g.
@@ -147,6 +152,17 @@ const JOBS = flagValue('--jobs', 'NIMBUS_PROBE_JOBS') !== undefined
 // Without --ledger it is a file of this run's own, named so no other run's
 // can be (RUN_ID is pid-derived, and runs in PID namespaces share pids).
 const KEEP_LEDGER = flagValue('--ledger', 'NIMBUS_PROBE_LEDGER_KEEP');
+const JSON_REPORT = flagValue('--json');
+const PART = (() => {
+  const raw = flagValue('--part');
+  if (raw === undefined) return null;
+  const [k, n] = raw.split('/').map(Number);
+  if (!(Number.isInteger(k) && Number.isInteger(n) && k >= 1 && k <= n)) {
+    console.error(`FATAL: --part must be K/N with 1 <= K <= N, got ${JSON.stringify(raw)}`);
+    process.exit(2);
+  }
+  return { k, n };
+})();
 const LEDGER_PATH = KEEP_LEDGER ? resolvePath(KEEP_LEDGER) : join(tmpdir(), `nimbus-probe-ledger-${RUN_ID}-${randomUUID()}.jsonl`);
 
 // ── Run lock ─────────────────────────────────────────────────────────
@@ -323,9 +339,9 @@ const targets = PROBES.filter((p) => {
   if (only.length > 0 && !matchAny(only, p)) return false;
   if (skip.size > 0 && matchAny(skip, p)) return false;
   return true;
-});
+}).filter((_, i) => PART === null || i % PART.n === PART.k - 1);
 
-console.log(`behavioral/run-all — ${targets.length} probe${targets.length === 1 ? '' : 's'} discovered (recursive) (jobs ${JOBS})`);
+console.log(`behavioral/run-all — ${targets.length} probe${targets.length === 1 ? '' : 's'} discovered (recursive) (jobs ${JOBS})${PART ? ` (part ${PART.k}/${PART.n})` : ''}`);
 console.log(`BASE=${process.env.BASE}${NO_RETRY ? '  [--no-retry]' : ''}`);
 console.log('');
 
@@ -453,8 +469,13 @@ function reportProbe(probe, r) {
       console.log('    stderr: ' + stderrLines.slice(-4).join(' | '));
     }
   }
-  return { probe, ok: r.ok, elapsed: Number(elapsedS), retried: r.retried };
+  // The JSON verdict keeps each probe's output tail, stdout then stderr.
+  const output = JSON_REPORT ? `${r.stdout.slice(-OUTPUT_TAIL)}${r.stderr ? `\n── stderr\n${r.stderr.slice(-OUTPUT_TAIL)}` : ''}` : undefined;
+  return { probe, ok: r.ok, code: r.code, elapsed: Number(elapsedS), retried: r.retried, output };
 }
+
+/** Bytes of each stream a JSON verdict keeps per probe. */
+const OUTPUT_TAIL = 64 * 1024;
 
 const results = [];
 const t0 = Date.now();
@@ -500,4 +521,12 @@ if (leaks.length > 0) {
   rmSync(LEDGER_PATH, { force: true });
 }
 if (KEEP_LEDGER) console.log(`session ledger: ${LEDGER_PATH}`);
+if (JSON_REPORT) {
+  writeFileSync(JSON_REPORT, `${JSON.stringify({
+    base: process.env.BASE,
+    part: PART ? `${PART.k}/${PART.n}` : null,
+    probes: results,
+    sessions: { minted: deleted + leaks.length + ttlReaped.length, deleted, leaks: leaks.map(([sid, s]) => ({ sid, probe: s.probe, last: s.last })) },
+  })}\n`);
+}
 process.exit(fail === 0 && leaks.length === 0 ? 0 : 1);

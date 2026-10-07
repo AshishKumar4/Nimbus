@@ -12,7 +12,7 @@
 // is the fixpoint (recording it when the record is stale), 1 when its
 // rebuild moved dist (recording nothing), 2 when the build failed.
 //
-// Then overlayCommit (scripts/ci/remote-build.mjs): the commit a container
+// Then overlayCommit (scripts/ci/lib/armada.mjs): the commit a container
 // gets is the lane's tree with the overlay files' bytes and modes, a new
 // commit each time.
 
@@ -22,7 +22,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { overlayCommit } from '../../scripts/ci/remote-build.mjs';
+import { overlayCommit } from '../../scripts/ci/lib/armada.mjs';
 
 const BUILD = join(import.meta.dirname, '..', '..', 'scripts', 'ci', 'build.mjs');
 
