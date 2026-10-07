@@ -11,10 +11,11 @@
 //   generation reserves the clone's destination before its filesystem
 //   takes a write, then cleans it up in slices: the marker, the clone's
 //   staging and temporary packs go (and, cut short while it fetched,
-//   everything it wrote). The user's first write into the destination
-//   after the reset is refused while the cleanup holds it, or lands after;
-//   either way it is still there once the cleanup is done. A clone in the
-//   new generation runs to the end.
+//   everything it wrote, the destination it made with it). The user's first
+//   write there after the reset (the directory made again, as `mkdir -p`
+//   would) is refused while the cleanup holds it, or lands after; either
+//   way it is still there once the cleanup is done. A clone in the new
+//   generation runs to the end.
 //
 // HOW IT'S DRIVEN
 //   A background clone (`git clone --bg`) of a small public repository in
@@ -75,10 +76,16 @@ try {
   let refusals = 0;
   const wrote = await poll(async () => {
     try {
-      await afterReset(() => box.files.write(`${DEST}/first.txt`, 'first\n'));
+      // The destination may be gone by now, cleaned up whole: it is made again, as `mkdir -p` would.
+      await afterReset(async () => {
+        if (!(await box.files.exists(DEST))) await box.files.mkdir(DEST);
+        await box.files.write(`${DEST}/first.txt`, 'first\n');
+      });
       return true;
     } catch (error) {
-      if (!/EBUSY|exclusive mutation|locked/i.test(String(error?.message ?? error))) throw error;
+      const message = String(error?.message ?? error);
+      if (/ENOENT|EEXIST/.test(message)) return null;
+      if (!/EBUSY|exclusive mutation|locked/i.test(message)) throw error;
       refusals++;
       return null;
     }
@@ -92,7 +99,7 @@ try {
     if (await box.files.exists(`${DEST}/.git/nimbus-clone`)) return null;
     const packs = (await box.files.exists(`${DEST}/.git/objects/pack`)) ? await box.files.list(`${DEST}/.git/objects/pack`) : [];
     if (packs.some(({ name }) => name.startsWith('tmp_pack_'))) return null;
-    return { entries: (await box.files.list(DEST)).map(({ name }) => name).sort() };
+    return { entries: (await box.files.exists(DEST)) ? (await box.files.list(DEST)).map(({ name }) => name).sort() : [] };
   }, 120_000, 500);
   a.check('the next generation cleaned the clone up: marker, staging and temporary packs gone', cleaned.ok, JSON.stringify(cleaned.last));
   if (cleaned.ok && !cleaned.last.entries.includes('.git')) {
