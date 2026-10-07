@@ -684,9 +684,16 @@ function __nimbusRubyBindOutput(args) {
     { key: 'exit', prefix: '__NIMBUS_RUBY_EXIT_', suffix: '\\n' },
   ]);
   __nimbusRubyOutput = globalThis.__wasiSupervisorOutput({
-    stdout: (bytes) => { const data = __nimbusRubyStdoutControl ? __nimbusRubyStdoutControl.feed(bytes) : bytes; if (data.length) return supervisor.stdout(data); },
-    stderr: (bytes) => { const data = __nimbusRubyStderrControl ? __nimbusRubyStderrControl.feed(bytes) : bytes; if (data.length) return supervisor.stderr(data); },
+    stdout: (bytes) => supervisor.stdout(bytes),
+    stderr: (bytes) => supervisor.stderr(bytes),
   });
+}
+function __nimbusRubyWriteOutput(stream, bytes) {
+  // Scheduling/control metadata is local to the VM, never queued behind
+  // ordinary log RPCs. Waiting for those RPCs shifted every Ruby deadline.
+  const control = stream === 'stdout' ? __nimbusRubyStdoutControl : __nimbusRubyStderrControl;
+  const data = control ? control.feed(bytes) : bytes;
+  if (data.length) return __nimbusRubyOutput[stream + 'Bytes'](data);
 }
 globalThis.__nimbusRubyWriteDiagnostic = function(text) {
   return __nimbusRubyOutput.stderrBytes(new TextEncoder().encode(text));
@@ -775,8 +782,8 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
     parking: __nimbusRubyParking,
     getMemory: () => memRef,
     // A resident process also streams what it writes; see ruby-resident.ts.
-    stdoutBytes: (bytes) => __nimbusRubyOutput.stdoutBytes(bytes),
-    stderrBytes: (bytes) => __nimbusRubyOutput.stderrBytes(bytes),
+    stdoutBytes: (bytes) => __nimbusRubyWriteOutput('stdout', bytes),
+    stderrBytes: (bytes) => __nimbusRubyWriteOutput('stderr', bytes),
   });
 
   // canonical_abi imports — 3 resource lifecycle fns. The Slab is
@@ -1062,7 +1069,6 @@ globalThis.__nimbusRubyResumeMain = async function __nimbusRubyResumeMain() {
       ' + "_" + ((defined?(Nimbus::Threading) && Nimbus::Threading.host_driven) ? "1" : "0")' +
       ' + "_" + ($__nimbus_wake_after ? $__nimbus_wake_after.to_s : "nil") + "\\n")',
   ].join("\\n"));
-  await __nimbusRubyOutput.drain();
   const marker = __nimbusRubyStderrControl.values.resumed?.split('_');
   const wake = marker && marker[3] !== 'nil' ? Number(marker[3]) : NaN;
   return {

@@ -246,7 +246,9 @@ export function buildRubySocketProcessWorker(preamble) {
         '    const hinted = Number(request.headers.get("X-Nimbus-Port") || 0);',
         '    const port = hinted || Array.from(globalThis.__nimbusVirtualSockets.listeners.keys())[0];',
         '    if (!port) return new Response("Nimbus Ruby process has no listening virtual socket", { status: 502 });',
-        '    return globalThis.__nimbusVirtualSockets.handleHttpRequest(port, request);',
+        '    const response = await globalThis.__nimbusVirtualSockets.handleHttpRequest(port, request);',
+        '    this.ctx.waitUntil?.(globalThis.__nimbusRubyDrainOutput());',
+        '    return response;',
         '  }',
         '}',
     ].join('\n');
