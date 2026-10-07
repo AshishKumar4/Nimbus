@@ -31,6 +31,22 @@ import { handleProcessesListRequest } from '../../packages/worker/src/runtime/pr
 import { RESIDENT_PROVEN_MS } from '../../packages/fabric/src/fenced-work.ts';
 import { launchManager, launchSession } from './lib/facet-launch-harness.mjs';
 
+// The proof a resident ran (fenced-work.ts RESIDENT_PROVEN_MS) is its own
+// instance's timer: captured here, and run when a test says the process has
+// been up that long. Every other timer runs as it would.
+const proofs = [];
+const realSetTimeout = globalThis.setTimeout;
+globalThis.setTimeout = (fn, ms, ...args) => {
+  if (ms !== RESIDENT_PROVEN_MS) return realSetTimeout(fn, ms, ...args);
+  proofs.push(() => fn(...args));
+  return proofs.length;
+};
+/** Every captured proof timer fires: each process it was set for has run RESIDENT_PROVEN_MS. */
+async function runFor(gen) {
+  for (const prove of proofs.splice(0)) prove();
+  await gen.ctx.storage.sync();
+}
+
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
   NimbusLoadedEntrypoint: () => ({
@@ -197,17 +213,11 @@ const settle = async (predicate, tries = 400) => {
   // measured live strike exactly there, seconds after settle. A row therefore
   // outlives the launch: an instance that replaces gen2 owes the user the
   // running process, with a fresh re-drive budget once it has run for
-  // RESIDENT_PROVEN_MS: then it proved itself, and this reset is not one it
-  // causes again in a loop.
-  const realNow = Date.now;
-  Date.now = () => realNow() + RESIDENT_PROVEN_MS;
-  let gen3;
-  try {
-    gen3 = createInstance(session, 3, { pumpWhile: () => true });
-    await gen3.manager.pumpResidentLaunches();
-  } finally {
-    Date.now = realNow;
-  }
+  // RESIDENT_PROVEN_MS in gen2: then it proved itself, and this reset is not
+  // one it causes again in a loop.
+  await runFor(gen2);
+  const gen3 = createInstance(session, 3, { pumpWhile: () => true });
+  await gen3.manager.pumpResidentLaunches();
   await settle(() => gen3.world.configs.size > 0);
   assert.equal(gen3.notices.length, 1, 'a running resident lost with its instance is reported');
   assert.match(
@@ -318,19 +328,67 @@ const settle = async (predicate, tries = 400) => {
   assert.equal(gen2.processes.get(gen2.spawns[0].pid)?.restartedFrom?.pid, started.pid);
   await gen2.ctx.storage.sync();
   gen2.ctx.storage.crash();
+  proofs.splice(0);
 
-  const gen3 = createInstance(session, 3, { pumpWhile: () => true });
-  await gen3.manager.pumpResidentLaunches();
+  // Time while the session is down is not time the process ran.
+  const realNow = Date.now;
+  Date.now = () => realNow() + 10 * RESIDENT_PROVEN_MS;
+  let gen3;
+  try {
+    gen3 = createInstance(session, 3, { pumpWhile: () => true });
+    await gen3.manager.pumpResidentLaunches();
+  } finally {
+    Date.now = realNow;
+  }
   await settle(() => gen3.notices.length > 0);
-  assert.deepEqual(gen3.spawns, [], 'the second restart within RESIDENT_PROVEN_MS is not re-driven');
+  assert.deepEqual(gen3.spawns, [], 'a second restart before it ran RESIDENT_PROVEN_MS is not re-driven, however long the session was down');
   assert.equal(gen3.notices.length, 1);
   assert.match(
     gen3.notices[0],
-    /the session restarted again \d+ s after restarting "node server\.js", so it is left stopped/,
+    new RegExp(`the session restarted again before "node server\\.js" had run ${RESIDENT_PROVEN_MS / 1000} s since its restart, so it is left stopped`),
     'the notice says the restart recurred, and that the process is stopped, not coming back',
   );
   assert.match(gen3.notices[0], /about a second of CPU/, 'and names the cause the platform gives no other sign of');
   assert.match(gen3.notices[0], /start it again with: node server\.js/, 'and how to start it again');
+}
+
+// ── 4. a reset storm, then a healthy run, then a storm again ────────────────
+//
+// The budget is the process's own: a restart it has proved itself after
+// (RESIDENT_PROVEN_MS of uptime in one instance) is not counted against the
+// next. A run that proves nothing spends it.
+{
+  const session = createSession('storm-then-healthy');
+  const gen1 = createInstance(session, 1, { pumpWhile: () => true, crashable: true });
+  await gen1.manager.spawnNode("require('dep');", {
+    filename: '/home/user/run.js', cwd: '/home/user', command: 'node server.js', attachedTty: true,
+  });
+  await settle(() => gen1.world.configs.size > 0);
+  await gen1.ctx.storage.sync();
+  gen1.ctx.storage.crash();
+  proofs.splice(0);
+
+  // Restarted, and this time it runs: it proves itself in gen2.
+  const gen2 = createInstance(session, 2, { pumpWhile: () => true, crashable: true });
+  await gen2.manager.pumpResidentLaunches();
+  await settle(() => gen2.world.configs.size > 0);
+  await runFor(gen2);
+  gen2.ctx.storage.crash();
+
+  const gen3 = createInstance(session, 3, { pumpWhile: () => true, crashable: true });
+  await gen3.manager.pumpResidentLaunches();
+  await settle(() => gen3.world.configs.size > 0);
+  assert.equal(gen3.spawns.length, 1, 'a restart after a run that proved itself is re-driven');
+  assert.match(gen3.notices[0], /restarting it/);
+  await gen3.ctx.storage.sync();
+  gen3.ctx.storage.crash();
+  proofs.splice(0);
+
+  const gen4 = createInstance(session, 4, { pumpWhile: () => true });
+  await gen4.manager.pumpResidentLaunches();
+  await settle(() => gen4.notices.length > 0);
+  assert.deepEqual(gen4.spawns, [], 'a restart after a run that proved nothing is not');
+  assert.match(gen4.notices[0], /left stopped/);
 }
 
 console.log('resident-launch-survives-instance-reset: OK');
