@@ -69,7 +69,10 @@ const FILES = {
     '  .then(() => console.log("SOURCE " + JSON.stringify(Function.prototype.toString.call(dynamicImport))))',
     '  .then(() => new Function("nimbusImport", "_nimbusImport", "return import(\\"../lib/cli.mjs\\")")(() => 42, () => 43))',
     '  .then((m) => console.log("HYGIENE " + (m && m.where)))',
-    '  .then(() => console.log("FNWRITE " + new Function("Function = 123; return typeof Function")()));',
+    '  .then(() => console.log("FNWRITE " + new Function("Function = 123; return typeof Function")()))',
+    // A module's Function is its own binding, as a parameter of the module's
+    // scope is: delete leaves it, as in every launch.
+    '  .then(() => console.log("FNDELETE " + new Function("return [delete Function, typeof Function, typeof globalThis.Function].join()")()));',
   ].join('\n'),
   'pkg/bin/hooked.cjs': [
     'Object.defineProperty(Error, "prepareStackTrace", {',
@@ -108,10 +111,11 @@ assert.equal(expected, [
   'SOURCE "function anonymous(module\\n) {\\nreturn import(module)\\n}"',
   'HYGIENE lib/cli.mjs',
   'FNWRITE number',
+  'FNDELETE true,function,undefined',
   'HOOKED lib/cli.mjs',
   '',
 ].join('\n'), 'the host node this test compares with');
-const asNode = expected.trim().split('\n').filter((line) => !/^(ASYNC|STAGED) /.test(line));
+const asNode = expected.trim().split('\n').filter((line) => !/^(ASYNC|STAGED|FNDELETE) /.test(line));
 
 console.log('node-function-import-workerd: starting local workerd');
 const probe = await startLocalProbe();
@@ -131,6 +135,9 @@ try {
       }
       assert.ok(run.stdout.includes('ASYNC ERR_NIMBUS_IMPORT_NO_IMPORTER'), `${launch} launch refuses the prototype's constructor by name:\n${run.stdout}`);
       assert.ok(run.stdout.includes(`STAGED lib/cli.mjs ${where}`), `${launch} launch runs the code ${where}:\n${run.stdout}`);
+      // Node deletes the global (true, then undefined); a module's own
+      // Function is a binding no delete removes, in either launch.
+      assert.ok(run.stdout.includes('FNDELETE false,function,function'), `${launch} launch keeps the module's Function:\n${run.stdout}`);
     }
   } finally {
     await terminal.close().catch(() => {});
