@@ -37,6 +37,8 @@ container sandbox ([where Nimbus fits](/docs/start/where-it-fits/)).
 |---|---|
 | One active terminal owner per session | sequential reconnect/share preserves state |
 | `node`/`bun` REPL declarations don't persist | workerd CSP; scripts unaffected; Python/Ruby REPLs fully stateful |
+| `util.inspect` and `console` output of what V8 alone can read | `util.inspect` and `console` run Node's own `inspect.js`. A promise's result, an iterator's or a WeakMap/WeakSet's entries, and a proxy's target are read through workerd's inspect, which prints a symbol key inside them bare (`Symbol(k): 1`, Node prints `[Symbol(k)]: 1`); with `compact: 1` or `2`, such a value's line breaks can differ |
+| `process.emitWarning` | `--disable-warning` and `--redirect-warnings` are not read; `NODE_NO_WARNINGS=1` and `--no-warnings` in `NODE_OPTIONS` are |
 | 75,000+-object clones | index-pack CPU headroom in progress |
 | git transport | HTTPS only, no SSH |
 | A native wasm binary's linear memory | 128 MiB. Past it `malloc` returns NULL and the program reports its own allocation failure, instead of the session dying without one |
