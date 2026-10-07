@@ -13,8 +13,10 @@
 // input stream. The paste case becomes equivalent to typing each
 // line individually.
 //
-// Probe shape: send `python\rexit(N)\r` as ONE WS frame. After REPL
-// exits, assert shell $? === N.
+// Probe shape: send `python\rexit(N)\r` as ONE WS frame, N in 0/7/42/255.
+// After REPL exits, assert shell $? === N, and that the facet never printed
+// the init-dispatch regression's signature ("init dispatch failed", a facet
+// fn that "references `this`"), which once hung exactly this paste.
 
 import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
 
@@ -51,6 +53,9 @@ async function pasteExit(code) {
     failed = true;
     lastTail = tail(stripAnsi(t.buf));
   }
+  // What the facet printed on the way: the signature of the init-dispatch
+  // regression (a facet fn that references `this`) must not be in it.
+  const printed = stripAnsi(t.buf).slice(-800);
   let exitVal = null;
   if (!failed) {
     const r = await t.run('echo "EXIT=$?"', 10_000);
@@ -58,14 +63,17 @@ async function pasteExit(code) {
     exitVal = m ? parseInt(m[1], 10) : null;
   }
   try { await t.close(); } catch {}
-  return { failed, exitVal, lastTail };
+  return { failed, exitVal, lastTail, printed };
 }
 
-for (const code of [7, 42, 255]) {
+for (const code of [0, 7, 42, 255]) {
   const r = await pasteExit(code);
   a.check(`paste python\\rexit(${code})\\r — REPL exits (no hang)`,
     !r.failed,
     `failed=${r.failed} tail=${JSON.stringify(r.lastTail)}`);
+  a.check(`paste python\\rexit(${code})\\r — no "init dispatch failed" / "references \`this\`"`,
+    !/init dispatch failed|references `this`/.test(r.printed),
+    `tail=${JSON.stringify(r.printed)}`);
   if (!r.failed) {
     a.check(`paste python\\rexit(${code})\\r — shell $? === ${code}`,
       r.exitVal === code,

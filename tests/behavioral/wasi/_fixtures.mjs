@@ -22,10 +22,3 @@ export const FIXTURES = {
   random: 'AGFzbQEAAAABEgNgAn9/AX9gBH9/f38Bf2AAAAJHAhZ3YXNpX3NuYXBzaG90X3ByZXZpZXcxCnJhbmRvbV9nZXQAABZ3YXNpX3NuYXBzaG90X3ByZXZpZXcxCGZkX3dyaXRlAAEDAgECBQMBAAEHEwIGbWVtb3J5AgAGX3N0YXJ0AAIKRAFCAQF/QQhBBBAAGkEILQAAQQpwIQBByAFBMCAAajoAAEHJAUEKOgAAQSBByAE2AgBBJEECNgIAQQFBIEEBQSgQARoL',
   clock:  'AGFzbQEAAAABEwNgA39+fwF/YAR/f39/AX9gAAACSwIWd2FzaV9zbmFwc2hvdF9wcmV2aWV3MQ5jbG9ja190aW1lX2dldAAAFndhc2lfc25hcHNob3RfcHJldmlldzEIZmRfd3JpdGUAAQMCAQIFAwEAAQcTAgZtZW1vcnkCAAZfc3RhcnQAAgo9ATsBAX9BAEIAQQgQACEAQcgBQTAgAGo6AABByQFBCjoAAEEgQcgBNgIAQSRBAjYCAEEBQSBBAUEoEAEaCw==',
 };
-
-/** Materialise a fixture in VFS via a one-liner heredoc-style write. */
-export function writeFixtureCmd(name, vfsPath) {
-  const b64 = FIXTURES[name];
-  if (!b64) throw new Error(`unknown fixture: ${name}`);
-  return `node -e "require('fs').writeFileSync('${vfsPath}', Buffer.from('${b64}','base64'))"`;
-}

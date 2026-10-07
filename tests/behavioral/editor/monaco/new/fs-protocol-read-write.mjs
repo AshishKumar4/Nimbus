@@ -51,7 +51,7 @@ async function waitFor(predicate, label, timeoutMs = 8_000) {
 const PAYLOAD = 'editor/monaco-probe-' + Date.now() + '\nline two';
 const writeId = sendFs({ type: 'fs-write', path: '/home/user/probe-monaco.txt', content: PAYLOAD });
 const writeRes = await waitFor(m => m.reqId === writeId && m.type === 'fs-write-result', 'fs-write-result');
-a.check('fs-write returns ok:true', writeRes.ok === true, `result=${JSON.stringify(writeRes)}`);
+a.check('fs-write returns ok:true, echoing the reqId', writeRes.ok === true && writeRes.reqId === writeId, `result=${JSON.stringify(writeRes)}`);
 
 // Probe 2: fs-read round-trips identical content.
 const readId = sendFs({ type: 'fs-read', path: '/home/user/probe-monaco.txt' });

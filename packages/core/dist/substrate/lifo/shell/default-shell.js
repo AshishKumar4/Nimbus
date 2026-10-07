@@ -1,5 +1,6 @@
+import { DEFAULT_HOME } from '../../../constants.js';
 export function defaultShellPath(home) {
-    const normalizedHome = (home || '/home/user').replace(/\/+$/, '');
+    const normalizedHome = (home || DEFAULT_HOME).replace(/\/+$/, '');
     return `${normalizedHome}/.config/nimbus/shell`;
 }
 export async function readDefaultShell(vfs, home) {
@@ -19,7 +20,7 @@ async function writeDefaultShell(vfs, home, shell) {
 }
 export function makeChshCommand(deps) {
     return async (ctx) => {
-        const home = ctx.env.HOME || '/home/user';
+        const home = ctx.env.HOME || DEFAULT_HOME;
         if (ctx.args.length === 0) {
             (await ctx.stdout.write(`${(await readDefaultShell(ctx.vfs, home))}\n`));
             return 0;

@@ -5,6 +5,171 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `node` and `bun` with no script opened a REPL that evaluated
+  nothing ("workerd CSP: cannot evaluate JS at request time"). The REPL is
+  now a program the runtime runs, as Node's is, and each line compiles
+  through the same runtime-code path as a program's `eval`: top-level
+  `let`/`const`/`class`/`function` persist across lines, top-level `await`
+  works, `_` and `_error` hold the last value and error, `import()`
+  resolves from the working directory, and an unhandled rejection or
+  timer error is printed without ending the session. Ctrl-C cancels a
+  pending block. `.editor`, `.load`, `.save`, completion and history are
+  not supported. `echo code | node` runs its input as a program, as Node
+  does.
+- A job started with `&` gets `/dev/null` as its default standard input
+  and does not own the terminal's modes, as in a shell without job
+  control; it can still open `/dev/tty` explicitly.
+- `git add -A` writes its objects in batches through the workspace's
+  write waves: at 96,000 files it took 18 s instead of 53 s, or 23 s
+  instead of 80 s with every file changed. A symlinked `.git/objects` is
+  written through, never replaced. `git init -b` refuses a name git
+  refuses, and short options can be grouped (`-qb main`).
+- A write wave never turns an existing symlink into a directory; a wave
+  that would is refused whole with ENOTDIR.
+- Faster installs and clones: a write wave whose files are all in memory is
+  encoded once and sent to the session in 1 MiB pieces, instead of being
+  pulled a few kilobytes at a time. Markflow's `npm install` went from about
+  65 s to 41-47 s (writes from about 1,000 to 1,600 files/s), and a vscode
+  clone from about 40 s to 28-30 s, with the session's memory unchanged. A
+  file larger than one wave still streams. Stall detection counts the bytes
+  a reader drains, so a slow reader is not taken for a lost call.
+- The VFS can read a chunk stored deflated. Nothing writes one yet; a later
+  release compacts cold chunks in the background. Shipping the reader first
+  means rolling back one release never meets data that release can't read.
+  An inflated chunk must match its SHA-256 before it is returned or cached,
+  or the read fails with EIO. `storeStats()` now reports the database size
+  through the same `databaseSize` the storage ledger charges.
+- Fixed: the Vite dev server's scan of the project for the names it imports
+  from a barrel package (one of over 1500 files) is bounded. It ran on every
+  request for a barrel and read every source file whole. It now reads at most
+  2048 files, none over 1 MiB, and 16 MiB in all, checking each file's size
+  before reading it. A scan that left files unread may miss a name one of them
+  imports, so the server says what it left unread and bundles that barrel
+  whole, as it bundles any package, rather than from an entry synthesized from
+  the names it found. A bundle synthesized earlier from other names is never
+  served in its place: a cached bundle synthesized from some names answers
+  only a barrel request for exactly those names. The installer scans the
+  project within the same budget and by the same rule, so for an unchanged
+  project both reach one decision and share one bundle row; before, an
+  over-budget project had the install write a synthesized row and the preview
+  a whole one, each rebuilding the barrel every time (install, serve, install,
+  serve: four bundles, now one).
+- Fixed: an install's background pre-bundle stops when its session is
+  destroyed. A client that destroys the session while pre-bundles are still
+  queued deletes the storage under them. Each remaining pre-bundle then walked
+  a store with no tables: its walk skipped every file it could not read, so it
+  either threw "no such table: vfs_inodes" or sent the bundler an empty slice,
+  which rolldown reported as 'Entry module "…" cannot be external'. On
+  2026-10-06 that was 470 logged failures (clsx, tailwind-merge, hono/* and
+  others), every one after its session had closed. The phase now stops, with
+  one line saying how many were not pre-bundled, once node_modules is
+  confirmed gone: not there (ENOENT) or its filesystem's store deleted
+  (SqliteVFS.storeDeleted). Any other failure to list it (a node_modules its
+  principal may search but not list) stops nothing. The slice walk passes over
+  only a file removed under it (ENOENT); any other read failure fails that
+  pre-bundle with its error. A slice without its entry fails, naming the
+  entry, before the bundler runs.
+- axios works in a node child, with its http adapter (its Node default)
+  and its fetch adapter: the child's `process` is tagged as Node's
+  (`[object process]`, the same `Symbol.toStringTag` descriptor), which is
+  how axios picks its Node path; `fetch`/`Request` drop the cache modes
+  Node accepts and workerd refuses (`default`, `reload`, `force-cache`);
+  the child's stream classes are callable as Node's are
+  (`Writable.call(this)`, as follow-redirects inherits); and
+  `stream.pipeline` takes an array of streams, as axios passes a
+  compressed response and its decompressor.
+- The `ws` package works in a node child, for ws:// and wss://, through the
+  workspace's egress when it has one: an `http(s).request` with
+  `Upgrade: websocket` is answered over the supervisor's relayed socket
+  (the one the global WebSocket uses), which now sends the request's own
+  headers (Authorization, Origin, Cookie; never the handshake's or
+  hop-by-hop ones) and answers a refused upgrade with its status, headers
+  and up to 64 KiB of its body. The global WebSocket takes Node's
+  `{ protocols, headers }` init. A WebSocket server inside the session is
+  not available (docs/sandbox-sdk.md).
+- A binary WebSocket frame reached a node child empty: the supervisor's
+  relayed socket read workerd's default Blob as bytes. It reads
+  ArrayBuffers now.
+- Fixed: a build facet no longer fills with the builds it has run until its
+  isolate is reset. rolldown (1.2.11 and 1.2.12, native and wasm alike) never
+  frees a build whose plugin has an output hook or `buildStart`: for those
+  hooks it caches the build's normalized options, a wrapper of a native
+  object, on the build's plugin context data, and something the native object
+  holds strongly reaches that data back, a cycle through the binding that no
+  collector frees. Nimbus's build plugin had one (`generateBundle`, for each
+  module's import order), so every pre-bundle's slice and every build's module
+  sources and plugin stayed in the facet's isolate. Measured on Markflow's
+  install: the facet's V8 heap and external memory grew from 18 to 415 MiB
+  over 136 pre-bundles, and on throwaways six concurrent Markflow sessions had
+  1 to 7 facet resets per 12 ("Durable Object's isolate exceeded its memory
+  limit and was reset"), each on a small pre-bundle after 20 to 40 others. The
+  import order now comes from `moduleParsed`; the same pre-bundles hold 65 to
+  76 MiB between calls, flat. Every facet ran in an isolate of its own, one
+  Durable Object each, one call at a time; the builds of different sessions
+  never met in one.
+- The build facet asks to be retired once its binding passes 40 MiB, not
+  64: a call peaks at the binding it starts on plus what it grows it by
+  (up to 41 MiB, measured) plus its slice and the isolate's JavaScript.
+- Fixed: a pre-bundle whose build facet is reset under it runs once more on
+  a fresh facet (logged), as it is pure; a second reset fails it with
+  `BuildFacetResetError`, naming the package and the reason.
+- Fixed: a Vite dev server that cannot bundle a package for the preview
+  serves a module that tells the page why. It served a stub whose only
+  export was a throwing default, so an importer of a named export failed to
+  link ("The requested module '.../@modules/tailwind-merge' does not
+  provide an export named 'twMerge'", Markflow on staging) and the real
+  cause never showed. The module served now declares every name the
+  package's entry exports (following its `export *`, or CommonJS's) and the
+  project imports from it, and throws the cause as it evaluates: a build
+  facet reset twice, a bundle error, or a slice past its cap. The barrel
+  paths that could not bundle serve the same form.
+
+- A workspace's network can go through its host's egress
+  (`NimbusWorkspaceOptions.egress`; for the session Durable Object a
+  `NIMBUS_EGRESS` service binding, or `workspaceEgress()` overridden to mint
+  one per session). Every request made for the workspace's commands and
+  programs goes through it: git (every facet it loads), npm (the install
+  facets here and in peers; the shared packument cache is bypassed), curl,
+  wget, dig, ping, `npm view`/`search`, pip (metadata and downloads), gem,
+  a program's fetch, `http`/`https` (node-fetch, undici) and WebSocket, the
+  one-shot runtimes and REPLs, a plain TCP socket (the egress's
+  `connect()`), and the workers and dev servers a command starts; an inline
+  `node` program's fetch streams through it and follows redirects as Node
+  does. A program's TLS socket (`tls.connect`) is refused by name under an
+  egress (`ERR_NIMBUS_EGRESS_TLS`): a Fetcher's `connect()` carries plain
+  TCP only (measured in workerd: `startTls()` on such a socket has no TLS
+  starter); so is an inline `node` program's WebSocket. Nimbus's own
+  traffic (R2, catalog, OAuth, AI, assets) is not routed. The egress is a
+  `Pick<Fetcher, 'fetch' | 'connect'>`. Process bindings carry the egress
+  (`supervisorBindingProps` now requires the workspace's network), and every
+  facet host, pool and fanout takes the network its facets go out through:
+  `loaderFacetHost(env, ctx, network)`, `localFacetHost(network)` (whose
+  facets' fetch crosses to the host and out through the egress),
+  `IsolatePoolOptions.network`, `FanoutOptions.network`; Nimbus's own work
+  states `ISOLATE_NETWORK`, exported with `workspaceNetwork` from
+  `@nimbus-sh/core`. See docs/sandbox-sdk.md.
+- npm: a malformed integrity value for a known algorithm (`sha512-` with an
+  empty, non-base64 or wrong-length digest) now refuses the tarball instead
+  of skipping the check. A packument whose body breaks mid-read is retried
+  with its fetch. `npx --package=p tool` runs only `tool`, and plain
+  `npx <pkg>` picks its bin by npm 10's rule. The shell's fallback npm reads
+  specs, picks versions and checks integrity as the worker's installer does,
+  and saves `npm:` aliases as written. One retry policy now serves npm, the
+  install facet and git's HTTP transport.
+- Shell: `diff` is a port of GNU diffutils 3.12's search, in linear memory
+  (two 10,000-line files no longer exhaust the session), with GNU's output
+  and exit status 2 for unreadable operands. `dirname`, `basename`, `seq`,
+  `printf %b`, `df -h`, `readlink` and `sort -R` match GNU; `grep` and `cut`
+  stream character devices; `type` and `command -v` report only builtins
+  that run. The simulated `ip`, `ifconfig`, `route` and `netstat`, which
+  were never registered, are deleted. 16 duplicate coreutils, two shell
+  histories and two job tables are merged into one each.
+- Node: `import()` of a CommonJS module or built-in returns one namespace
+  per module, with `default` and the named exports Node detects. The Vite
+  dev server again exposes every key of a CommonJS `module.exports = {...}`
+  literal as a named export (for example `color-name`'s `red`), checked
+  against Vite 7.3.6.
+
 ## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
 core 0.15.1, fabric 0.10.1, worker 0.13.3 and loom 0.2.3 had not been
@@ -12,6 +177,99 @@ published; they ship with this release and carry the 2026-10-05 entries
 too. platform, config and cli move because their sources changed since
 their last published versions; core, fabric and worker require platform
 ^0.7.2, and cli config ^0.2.4.
+
+- Fixed: `mkdir -p` through a directory that already exists no longer fails
+  with EBUSY when a process holds a lease on part of the tree. Making a
+  directory that is already there is not a mutation, so no lease refuses it.
+- Fixed: a named, default or re-exported import of a module lowered to
+  CommonJS is now a live binding, as in Node: `import { count }` sees a later
+  `count++` in the exporting module. Writing to an imported binding throws a
+  TypeError. In an import cycle, a hoisted `export function` is callable while
+  the other module evaluates.
+- The Markflow probes run in every release gate again; they had been skipped
+  since 2026-08-04. The unit suite runs sharded on Cloudflare Containers
+  (`bun scripts/ci-run.mjs <commit>`), and `bun run typecheck` also checks the
+  repo's JavaScript scripts and test helpers.
+- A pre-bundle's slice plugin resolves through the one bundler resolver the
+  VFS plugin uses, awaiting each answer, again; the synchronous driver added
+  as a workaround (`createSyncBundlerResolver`) is gone. Its stall (Markflow's
+  background pre-bundles waiting past 120 s once the resolver awaited) was the
+  lost pump wake-up fixed in the last release: a resolve hook that awaited
+  settled after a JSPI pump turn's poll loop returned but before its result
+  was handled, and the loader asked for no further turn while one was in
+  flight. On throwaways with the awaited resolver, Markflow failed its
+  navigation 2 of 2 times with the loader before that fix, and passed 3 of 3
+  with it (the one line apart); on this tree, two Markflow sessions at once
+  passed 6 of 6.
+- Added `CompositeVFS.route(path, { follow })` (Kinu's ask 23). It answers
+  `{ point, source, path, absentReason? }`: the mount an operation on that path
+  lands on, the backend view that operation uses, and the path inside the
+  mount. It is the same lookup every operation makes, root links and lexical
+  `..` included. An absent mount answers `source: null` with its reason.
+- Added `observeWrites(observer, { wants? })` on `CompositeVFS` and `SqliteVFS`
+  (Kinu's ask 24). It reports each landed mutation once, as
+  `{ type, path, oldPath?, before, after, principal }`, in commit order:
+  writes, creates, deletes, renames (both paths), truncates, copies and
+  attribute changes. `before` and `after` can be read until the observer's
+  callback settles. A refused or rolled-back write reports nothing. Writes on
+  backends that do not report their own take one turn per namespace while
+  someone observes; unobserved writes cost the same as before.
+- Fixed: the bundled React Fast Refresh plugin shipped react-refresh with
+  `$$typeof` rewritten to `$typeof`, so a `memo` or `forwardRef` component
+  lost its state on every edit. The plugin is now built from the lockfile's
+  pinned inputs inside `bun run bundle`, and checked like every other asset.
+- Fixed: `http://[::1]:<port>` from a node program now reaches the session's
+  own server, as `localhost` does.
+- Fixed: `os.constants` and `node:constants` now come from one errno, signal and
+  priority table, so the two agree with each other and with Node.
+- Fixed: ES module lowering treated a string export named `"*"` as the whole
+  namespace, and a pre-bundle could miss an import that followed JSX or a TSX
+  generic function type. Modules are now read by one JSX/TS-aware import lexer;
+  a file it cannot decide is parsed in full.
+- Fixed: two Durable Objects building at once could fail each other's builds
+  with "Cannot perform I/O on behalf of a different Durable Object", or leave
+  one waiting forever (Kinu's ask 22). Every object's build facet runs in one
+  isolate on one rolldown binding, and the binding ran its work where it was
+  last woken: its pump, started by one object's build, dispatched another
+  object's plugin hooks in the first object's context. The binding still
+  serves every object from one isolate (an isolate per object measured about
+  46 MiB more per workspace that builds), but each facet call now runs in a
+  lane of its own (napi-wasm-loader's `callLanes`): a threadsafe function
+  calls JavaScript in the lane of the call that created it, its release and
+  emnapi's other work (finalizers, a closing function's finalize) run in a
+  call's lane, and the pump runs in the lanes of the calls in flight and where
+  it last ran, so no hook runs in, or waits on, another object's context. A
+  lane ends with its call. An async work completes in the lane of the call
+  that created it and computes in whichever call gets to it first; works past
+  emnapi's pool of four wait in the loader, since emnapi lets a queued work in
+  from inside another work's step, where it then completed. The esbuild facet
+  needed nothing: each call runs its own esbuild, whose timers and callbacks
+  are that call's.
+- Fixed: a build whose Durable Object is reset under it no longer stays on the
+  shared binding for good. Workerd drops a reset object's continuations,
+  `finally` included, so its call never settles; each such build kept its
+  rolldown task, its share of the binding's memory and a call in the facet's
+  in-flight set until the isolate went (fifty resets of one object in workerd:
+  the binding grew from 6.3 to 34.3 MiB, with 50 calls in flight). The facet
+  now runs its calls through an instance of its Durable Object
+  (`callLanes().instance(id)`), of which there is one at a time, so the next
+  instance's first call takes over the lanes the last one left: the binding
+  refuses what it awaited there (the rejection handler it gave each promise's
+  `then` or `catch`), the task ends and its memory is reused. Fifty resets now
+  leave no lane or call behind, and the binding stays at 6.4 MiB. An object
+  that never builds again keeps its lanes until the isolate goes, as before.
+- Fixed: in workerd, emnapi stopped running finalizers once a garbage
+  collection first reached one. Workerd runs FinalizationRegistry callbacks in
+  its global scope, where setting a timer throws ("Disallowed operation called
+  within global scope", logged once per run), and emnapi had marked its
+  finalizer drain scheduled before the timer threw, so it scheduled none
+  again. The drain now runs in a call's lane, or the next call's.
+- Fixed a lost pump wake-up: a napi callback that woke a task while a JSPI
+  pump turn's result was still queued asked for no further turn, so the task
+  waited for some other event.
+- The staged napi-wasm loader is rebuilt through its recipe: it carries the
+  lanes, and the WASI filesystem codec as it stands in core now (the staged
+  one predated core's later filesystem changes).
 
 ### Git at scale
 

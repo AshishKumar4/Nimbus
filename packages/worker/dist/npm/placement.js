@@ -11,7 +11,7 @@ export function nestedPlacement(parent, name) {
     return parent ? `${parent}${NM}${name}` : name;
 }
 /** The containing placement, `''` at root. */
-export function parentPlacement(placement) {
+function parentPlacement(placement) {
     const i = placement.lastIndexOf(NM);
     return i < 0 ? '' : placement.slice(0, i);
 }

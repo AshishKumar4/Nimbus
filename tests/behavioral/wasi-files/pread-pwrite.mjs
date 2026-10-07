@@ -7,32 +7,17 @@
 //   - fd_pread 5 bytes @ offset 1 → should return "bcXYf".
 //   - Echo to stdout + '\n'. Expected: "bcXYf\n".
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
-import { writeFixtureCmd } from './_fixtures.mjs';
+import { openWasiProbe, tailLines } from '../wasi/_harness.mjs';
 
-const sid = await mintSession();
-console.log(`[wasi-files/pread-pwrite] sid=${sid} BASE=${BASE}`);
+const probe = await openWasiProbe('wasi-files/pread-pwrite', { dir: '/home/user/w2', fixture: 'pread-pwrite', as: 'pp.wasm' });
+const { t } = probe;
+try {
+  const r = await t.run('wasm-runner pp.wasm', 60_000);
+  const tail = tailLines(r.output, 6);
+  const ok = /\bbcXYf\b/.test(tail);
 
-const t = new Terminal(sid);
-await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(60_000);
-
-await t.run('mkdir -p /home/user/w2 && cd /home/user/w2', 10_000);
-await t.run(writeFixtureCmd('pread-pwrite', 'pp.wasm'), 30_000);
-
-const r = await t.run('wasm-runner pp.wasm', 60_000);
-const out = stripAnsi(r.output);
-const tail = out.split(/\r?\n/).slice(-6).join('\n');
-const ok = /\bbcXYf\b/.test(tail);
-
-await t.close();
-
-console.log(JSON.stringify({ probe: 'wasi-files/pread-pwrite', sid, base: BASE, tail, ok }, null, 2));
-
-const checks = [['fd_pwrite @3 + fd_pread @1 len 5 → "bcXYf"', ok]];
-let pass = 0;
-for (const [n, o] of checks) { console.log(`  ${o ? 'PASS' : 'FAIL'}  ${n}`); if (o) pass++; }
-const verdict = pass === checks.length ? 'passing' : 'failing';
-console.log(`[wasi-files/pread-pwrite] ${verdict} — ${pass}/${checks.length}`);
-process.exit(verdict === 'passing' ? 0 : 1);
+  probe.report([['fd_pwrite @3 + fd_pread @1 len 5 → "bcXYf"', ok]], { tail, ok });
+} finally {
+  await probe.close();
+}
+process.exit(probe.exitCode());

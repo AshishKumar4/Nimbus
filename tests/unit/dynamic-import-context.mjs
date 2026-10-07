@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
+import { runCell, withProcessImport } from './lib/process-import.mjs';
 
 const parent = 'file:///home/user/app/main.cjs';
 const cases = [
@@ -16,30 +17,23 @@ const cases = [
 ];
 const failures = [];
 for (const [label, source, metadata, expected] of cases) {
-  const calls = [];
-  globalThis.__nimbusDynamicImport = async (from, name) => {
-    calls.push([from, name]);
-    return { value: 7 };
-  };
   try {
-    const wrapped = new Function('exports', 'require', 'module', rewriteDynamicImports(source, parent, metadata));
-    assert.deepEqual(await wrapped({}, undefined, { __nimbusImportMeta: { url: parent } }), expected);
+    const { result, calls } = await withProcessImport(() => ({ value: 7 }),
+      () => runCell(rewriteDynamicImports(source, parent, metadata), { module: { __nimbusImportMeta: { url: parent } } }));
+    assert.deepEqual(result, expected);
     assert.deepEqual(calls, metadata ? [] : [[parent, './x.mjs']], 'imports resolve through the process, not the host loader');
   } catch (e) { failures.push(`${label}: ${e.message}`); }
-  finally { delete globalThis.__nimbusDynamicImport; }
 }
 assert.deepEqual(failures, []);
 // Tokenization can also succeed while hiding the import inside a false regex
 // token; detecting only thrown tokenizer errors would still miss this case.
-const seen = [];
-globalThis.__nimbusDynamicImport = async (from, name) => {
-  seen.push([from, name]);
-  return { valueOf() { return 2; } }; // an ESM namespace exporting valueOf
-};
-try {
+{
   const source = 'const api={if(){return 6}}; return api.if()/await import("virtual")/2;';
   const AsyncFunction = (async function () {}).constructor;
-  assert.equal(await new AsyncFunction(rewriteDynamicImports(source, parent))(), 1.5);
-  assert.deepEqual(seen, [[parent, 'virtual']]);
-} finally { delete globalThis.__nimbusDynamicImport; }
+  // An ESM namespace exporting valueOf.
+  const { result, calls } = await withProcessImport(() => ({ valueOf() { return 2; } }),
+    () => new AsyncFunction(rewriteDynamicImports(source, parent))());
+  assert.equal(result, 1.5);
+  assert.deepEqual(calls, [[parent, 'virtual']]);
+}
 console.log('dynamic-import-context: grammar-sensitive imports preserve process resolution');

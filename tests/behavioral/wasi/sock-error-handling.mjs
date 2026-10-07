@@ -18,40 +18,19 @@
 // runtime-policy-rejected with a different error path. ".invalid" is
 // the cleanest "user-side bad input" check.
 
-import { mintSession, deleteSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
-import { writeStreamBFixtureCmd } from './_fixtures-stream-b.mjs';
+import { openWasiProbe, tailLines, trimmedLines } from './_harness.mjs';
 
-const sid = await mintSession();
-console.log(`[wasi/sock-error-handling] sid=${sid} BASE=${BASE}`);
-
-const t = new Terminal(sid);
-let exitCode = 1;
+const probe = await openWasiProbe('wasi/sock-error-handling', { dir: '/home/user/sb', fixture: 'sock-error-handling', as: 'se.wasm' });
+const { t } = probe;
 try {
-  await t.connect();
-  await sleep(2_000);
-  await t.waitForPrompt(60_000);
-
-  await t.run('mkdir -p /home/user/sb && cd /home/user/sb', 10_000);
-  await t.run(writeStreamBFixtureCmd('sock-error-handling', 'se.wasm'), 30_000);
-
   // DNS resolution + connect timeout typically <30s; 60s budget.
   const r = await t.run('wasm-runner se.wasm', 60_000);
-  const out = stripAnsi(r.output);
-  const tail = out.split(/\r?\n/).slice(-8).join('\n');
-  const lines = tail.split(/\r?\n/).map(s => s.trim());
+  const tail = tailLines(r.output, 8);
+  const lines = trimmedLines(tail);
   const ok = lines.some(s => s === '1');
 
-  console.log(JSON.stringify({ probe: 'wasi/sock-error-handling', sid, base: BASE, tail, ok }, null, 2));
-
-  const checks = [['connect to .invalid TLD propagates errno (nonzero)', ok]];
-  let pass = 0;
-  for (const [n, o] of checks) { console.log(`  ${o ? 'PASS' : 'FAIL'}  ${n}`); if (o) pass++; }
-  const verdict = pass === checks.length ? 'passing' : 'failing';
-  console.log(`[wasi/sock-error-handling] ${verdict} — ${pass}/${checks.length}`);
-  exitCode = verdict === 'passing' ? 0 : 1;
+  probe.report([['connect to .invalid TLD propagates errno (nonzero)', ok]], { tail, ok });
 } finally {
-  await t.close().catch(() => {});
-  const del = await deleteSession(sid, 'wasi/sock-error-handling');
-  console.log(`deleteSession: ${del.status}`);
+  await probe.close();
 }
-process.exit(exitCode);
+process.exit(probe.exitCode());

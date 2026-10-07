@@ -18,6 +18,7 @@
  * dispatch.
  */
 
+import { networkRef, requireNetwork, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { serializeFunction } from './vendor/serialize.js';
 import { BindingError } from './vendor/errors.js';
 import { IsolatePool, type FacetTaskFn } from './isolate-pool.js';
@@ -142,6 +143,14 @@ export interface FanoutOptions {
    */
   extraBindings?: Record<string, unknown>;
   /**
+   * The network every task's facet uses, here and in peers
+   * (IsolatePoolOptions.network): for a fanout that works on a workspace's
+   * behalf (an npm install's registry and tarball requests) the workspace's,
+   * through its egress; for Nimbus's own work `ISOLATE_NETWORK`. Required, so
+   * each fanout's network is chosen where it is made.
+   */
+  network: WorkspaceNetwork;
+  /**
    * If set, skip the supervisor-RPC binding injection (mirrors
    * IsolatePool's omitSupervisor flag).
    */
@@ -208,6 +217,7 @@ export class Fanout {
     // IsolatePool also enforces this, but checking up front points the
     // diagnostic at the fanout construction site rather than the
     // deferred isolate-pool one.
+    requireNetwork(opts.network, 'Fanout');
     const env = (rawEnv as FanoutEnv | null | undefined) ?? {};
     if (!env.LOADER || typeof env.LOADER.get !== 'function') {
       throw new BindingError(
@@ -297,6 +307,7 @@ export class Fanout {
       extraBindings: this.opts.extraBindings,
       omitSupervisor: this.opts.omitSupervisor,
       supervisorPid: this.opts.supervisorPid,
+      network: this.opts.network,
     });
     try {
       const items = tasks.map((t) => t.args);
@@ -385,6 +396,8 @@ export class Fanout {
                   wasmModules: this.opts.wasmModules,
                   extraBindings: this.opts.extraBindings,
                   omitSupervisor: this.opts.omitSupervisor,
+                  // The workspace's egress: the peer's facets go out through it too.
+                  network: networkRef(this.opts.network),
                   // INSTALL-HONESTY: forward the COORDINATOR's full doId so
                   // the peer's IsolatePool can mint a SUPERVISOR
                   // binding that routes back HERE (the user's session DO),

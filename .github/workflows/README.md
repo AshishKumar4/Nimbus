@@ -8,6 +8,19 @@ needs them but still runs when one is red (`if: !cancelled()`), so a red
 fast gate can never silently decide whether the probes execute — each
 job's own status carries its signal.
 
+The `unit` job does not run the suite on the GitHub runner. It runs
+`bun scripts/ci-run.mjs "$GITHUB_SHA"`, the command every lane runs: the
+commit's `git archive` goes to `nimbus-ci-runner` (apps/ci-runner), which
+runs every `tests/unit` file on dedicated Cloudflare Containers, sharded,
+and the job prints the verdict. It needs the `NIMBUS_CI_TOKEN` repo secret
+(the token `apps/ci-runner/scripts/deploy.mjs` writes to
+`~/.config/nimbus/ci-token`; set it with
+`gh secret set NIMBUS_CI_TOKEN < ~/.config/nimbus/ci-token`). Exit 1 is a
+failing test; exit 2 means the run could not grade the commit. On one
+GitHub runner the suite did not fit the job's 15 minutes: of the 20 runs
+from 2026-10-03 to 2026-10-06 none passed; 19 were cancelled, most at that
+timeout, and one failed.
+
 The `behavioral` job deploys the commit under test to its own throwaway
 Worker and runs `tests/behavioral/run-all.mjs --jobs 4` against it.
 Probes are discovered recursively under `tests/behavioral/` and run in a

@@ -8,7 +8,7 @@ import { buildSessionSupervisorOps } from '../../packages/worker/src/session/sup
 import { SupervisorDeliveries, openSupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 mock.module('cloudflare:workers', () => ({ WorkerEntrypoint: class {
   constructor(ctx, env) { this.ctx = ctx; this.env = env; }
@@ -16,7 +16,11 @@ mock.module('cloudflare:workers', () => ({ WorkerEntrypoint: class {
 const { SupervisorRPC } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
 const which = process.env.NIMBUS_REPLAY_CASE;
 const cases = {};
-const journal = () => { const j = new ReplayJournal(() => {}, 80); j.start('a'); return j; };
+// The product's stall (REPLAY_STALL_MS, 15 s). An 80 ms stall raced the
+// cases' own 20 ms waits, which a loaded machine stretches past it: the
+// boundary case's held replay was then diverged and its boundary rejected
+// unhandled (CI, 1 in 3; here, 2 in 80 eight at a time on one CPU).
+const journal = () => { const j = new ReplayJournal(() => {}); j.start('a'); return j; };
 const ask = (j, op, value, run = 'a', args = []) => j.handle(op, args, run, async () => value);
 
 cases.pid = async () => {

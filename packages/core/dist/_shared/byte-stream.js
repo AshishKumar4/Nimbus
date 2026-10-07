@@ -35,10 +35,15 @@ export class SinkWriter {
     async write(bytes) {
         if (bytes.length === 0)
             return;
-        if (this.decoder)
-            await this.sink.write(this.decoder.decode(bytes, { stream: true }));
-        else
+        if (this.decoder) {
+            // A chunk that ends inside a multibyte character may decode to nothing yet.
+            const text = this.decoder.decode(bytes, { stream: true });
+            if (text)
+                await this.sink.write(text);
+        }
+        else {
             await this.sink.writeBytes(bytes);
+        }
         this.written += bytes.length;
     }
     async end() {

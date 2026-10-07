@@ -1,6 +1,7 @@
+import { DEFAULT_HOSTNAME } from '../../../../constants.js';
+/** The host's name, as uname's nodename: not $HOSTNAME, which a user may set to anything. */
 const command = async (ctx) => {
-    const hostname = ctx.env.HOSTNAME || 'lifo';
-    await ctx.stdout.write(hostname + '\n');
+    await ctx.stdout.write(`${DEFAULT_HOSTNAME}\n`);
     return 0;
 };
 export default command;

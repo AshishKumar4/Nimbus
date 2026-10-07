@@ -28,8 +28,8 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { attachSupervisorOps } from './session-supervisor-ops.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 
 const A = Object.freeze({ uid: 5001, gid: 5001, groups: Object.freeze([5001]), umask: 0o022 });
 const B = Object.freeze({ uid: 5002, gid: 5002, groups: Object.freeze([5002]), umask: 0o022 });

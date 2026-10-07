@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 76 s wall, 35 s CPU, 2.6 GiB peak (6 runs, 2026-10-06)
 // A synchronous read of stdin waits for its writer, as under Node, and only
 // when the program makes one.
 //

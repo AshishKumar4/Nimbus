@@ -23,6 +23,7 @@
  * Recorded against real Vite 7.3.6 (and 6.4.3 and 5.4.21 beside it) in
  * tests/fixtures/vite-esbuild-reference.json.
  */
+import { isJsonRecord } from './jsonc.js';
 /** The compiler options a tsconfig gives esbuild through Vite: what changes a module's output. */
 export const MEANINGFUL_TSCONFIG_FIELDS = [
     'alwaysStrict', 'experimentalDecorators', 'importsNotUsedAsValues', 'jsx', 'jsxFactory', 'jsxFragmentFactory',
@@ -37,9 +38,9 @@ const DEFAULT_EXCLUDE = /\.js$/;
 const JSX_EXTENSIONS = /\.(?:j|t)sx\b/;
 /** Whether `value` is ViteEsbuildSettings, as a session kept it across hibernation. */
 export function isViteEsbuildSettings(value) {
-    if (!isObject(value))
+    if (!isJsonRecord(value))
         return false;
-    return (value.esbuild === false || isObject(value.esbuild)) && typeof value.hasConfig === 'boolean'
+    return (value.esbuild === false || isJsonRecord(value.esbuild)) && typeof value.hasConfig === 'boolean'
         && Array.isArray(value.unread) && value.unread.every((item) => typeof item === 'string');
 }
 /** The plugins whose config hooks set `esbuild`, and what each sets from its options. */
@@ -67,7 +68,7 @@ function merge(base, override) {
         return base;
     if (Array.isArray(base) && Array.isArray(override))
         return [...base, ...override];
-    if (isObject(base) && isObject(override)) {
+    if (isJsonRecord(base) && isJsonRecord(override)) {
         const out = { ...base };
         for (const [key, value] of Object.entries(override))
             out[key] = merge(out[key], value);
@@ -75,7 +76,6 @@ function merge(base, override) {
     }
     return override;
 }
-const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 /**
  * `config.esbuild` as Vite 7's resolveConfig makes it for `vite` from a
  * vite.config read statically: its `esbuild`, then each known plugin's
@@ -117,7 +117,7 @@ export function viteEsbuildPluginOptions(esbuild) {
         minifyWhitespace: false,
         treeShaking: false,
         keepNames: false,
-        supported: { ...DEFAULT_ESBUILD_SUPPORTED, ...(isObject(rest.supported) ? rest.supported : {}) },
+        supported: { ...DEFAULT_ESBUILD_SUPPORTED, ...(isJsonRecord(rest.supported) ? rest.supported : {}) },
     };
 }
 /** Whether the esbuild plugin transforms `id` with its default include and exclude. */
@@ -151,8 +151,8 @@ export function viteTransformOptions(filename, options, tsconfigCompilerOptions)
                 if (field in tsconfigCompilerOptions)
                     fromFile[field] = tsconfigCompilerOptions[field];
         }
-        const raw = isObject(tsconfigRaw) ? tsconfigRaw : {};
-        const compilerOptions = { ...fromFile, ...(isObject(raw.compilerOptions) ? raw.compilerOptions : {}) };
+        const raw = isJsonRecord(tsconfigRaw) ? tsconfigRaw : {};
+        const compilerOptions = { ...fromFile, ...(isJsonRecord(raw.compilerOptions) ? raw.compilerOptions : {}) };
         if (compilerOptions.useDefineForClassFields === undefined && compilerOptions.target === undefined)
             compilerOptions.useDefineForClassFields = false;
         if (options.jsx)

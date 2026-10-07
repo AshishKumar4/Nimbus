@@ -26,7 +26,7 @@ try {
     return new Response('external-body', { status: 200 });
   };
 
-  box.kernel.networkStack.getDNS().addHost('app.local', '127.0.0.1');
+  box.kernel.dns.addHost('app.local', '127.0.0.1');
   for (const host of ['localhost', '127.0.0.1', '0.0.0.0', '[::1]', 'app.local']) {
     const result = await box.commands.run(`curl -s http://${host}:5000/path?q=1`);
     assert.equal(result.exitCode, 0, `${host}: exitCode`);
@@ -70,6 +70,14 @@ try {
   });
   assert.match(String(nodeCompatError), /ECONNREFUSED \[::1\]:5999/);
   assert.equal(fetched.length, 1, 'node-compatible loopback misses must not reach external fetch');
+
+  // node's dns.lookup answers from the same resolver curl does: the kernel's
+  // /etc/hosts and what was added to it; a literal is itself.
+  const lookups = await box.commands.run(`node -e "const dns = require('dns'); for (const h of ['app.local', 'localhost', 'ip6-localhost', '10.1.2.3']) dns.lookup(h, (e, a, f) => console.log(h, e ? e.code : a + '/' + f)); dns.promises.lookup('nowhere.test').catch((e) => console.log('nowhere.test', e.code))"`);
+  assert.equal(lookups.stderr, '');
+  assert.deepEqual(lookups.stdout.trim().split('\n').sort(), [
+    '10.1.2.3 10.1.2.3/4', 'app.local 127.0.0.1/4', 'ip6-localhost ::1/6', 'localhost 127.0.0.1/4', 'nowhere.test ENOTFOUND',
+  ]);
 } finally {
   globalThis.fetch = originalFetch;
   box.destroy();

@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { Database } from 'bun:sqlite';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { vfsSupervisor } from '../../packages/core/src/runtime/vfs-supervisor.ts';
 import { makeEsbuildCommand } from '../../packages/core/src/runtime/esbuild-cli.ts';

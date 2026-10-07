@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 35 s wall, 27 s CPU, 1.0 GiB peak (6 runs, 2026-10-06)
 // What a parent writes to a running child's stdin reaches it as written, as
 // under Node.
 //

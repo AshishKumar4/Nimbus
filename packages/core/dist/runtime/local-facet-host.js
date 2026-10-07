@@ -27,7 +27,14 @@
  * the session capability as calls to this side: each supervisor method, and
  * each of its synchronous view's, is answered here from the facet's
  * filesystem.
+ *
+ * A facet's network is the workspace's. A realm cannot be handed a Fetcher,
+ * so under an egress its `fetch` crosses to this side, which sends it out
+ * through the egress (realm-egress.ts, as the inline `node` does); a
+ * WebSocket, which cannot cross, is refused by name.
  */
+import { requireNetwork } from '../_shared/workspace-network.js';
+import { isEgressGuestEvent, RealmEgress } from './realm-egress.js';
 import { fromRealmError, isRealmAnswer, startRealm } from './realm.js';
 import { FILESYSTEM_RPC_METHODS, vfsSupervisor } from './vfs-supervisor.js';
 const record = (value) => typeof value === 'object' && value !== null;
@@ -36,6 +43,8 @@ export function isFacetPayload(value) {
     if (!record(value) || typeof value.tag !== 'string' || (value.parking !== 'jspi' && value.parking !== 'none'))
         return false;
     if (value.preamble !== undefined && typeof value.preamble !== 'string')
+        return false;
+    if (typeof value.egress !== 'boolean')
         return false;
     const supervisor = value.supervisor;
     return supervisor === undefined
@@ -109,19 +118,25 @@ function facetIsolation() {
  * {@link FacetSubmitOptions.timeoutMs} and `signal` are honoured: either ends
  * the facet, as a substrate with isolates of its own does. A facet waiting for
  * no call holds no part of this process: it does not keep it alive.
+ *
+ * `network` is the workspace's (`workspace.network`, or
+ * `workspaceNetwork(egress)` for the egress the workspace is created with,
+ * `ISOLATE_NETWORK` without one): every facet goes out through it.
  */
-export function localFacetHost() {
+export function localFacetHost(network) {
+    requireNetwork(network, 'localFacetHost');
     return {
         parking: engineParks(),
         // A worker of a Bun or Node process, not a Worker isolate.
         memoryBudgetBytes: 1024 * 1024 * 1024,
-        open: (spec) => new RealmFacet(spec),
+        open: (spec) => new RealmFacet(spec, network),
     };
 }
 /** Why a call ended without its answer. */
 const ended = (tag, why) => new Error(`Nimbus: facet '${tag}' ${why}`);
 class RealmFacet {
     spec;
+    network;
     /** The realm, started on the first call. */
     realm = null;
     /** The image each name is in the facet's table as: what a call need not send again. */
@@ -138,8 +153,9 @@ class RealmFacet {
     supervisor;
     synchronous;
     isolation = facetIsolation();
-    constructor(spec) {
+    constructor(spec, network) {
         this.spec = spec;
+        this.network = network;
         this.supervisor = spec.syscalls ? vfsSupervisor(spec.syscalls.vfs) : null;
         this.synchronous = spec.syscalls?.vfs.synchronous;
     }
@@ -159,13 +175,20 @@ class RealmFacet {
             parking: engineParks(),
             preamble: this.spec.preamble,
             supervisor: this.supervisor ? { methods: SUPERVISOR_METHODS, synchronous: this.synchronous ? SYNCHRONOUS_METHODS : null } : undefined,
+            egress: this.network.egress !== undefined,
         };
+        let post = () => false;
+        const egress = this.network.egress === undefined ? null : new RealmEgress(this.network, (event) => { post(event); });
         const realm = await startRealm({
             entry: new URL('./facet-guest.js', import.meta.url),
             isolation: this.isolation,
             payload,
             serve: (call) => this.serve(call),
             onEvent: (event) => {
+                if (isEgressGuestEvent(event)) {
+                    egress?.handle(event);
+                    return;
+                }
                 if (!isFacetDone(event))
                     return;
                 const settle = this.waiting.get(event.id);
@@ -175,8 +198,10 @@ class RealmFacet {
         });
         if ('unavailable' in realm)
             throw ended(this.spec.tag, `has no realm: ${realm.unavailable}`);
+        post = (event) => realm.post(event);
         realm.hold(false);
         void realm.ended.then((end) => {
+            egress?.close();
             this.over = ended(this.spec.tag, end.terminated ? 'was ended' : `ended (${end.failure?.message ?? `exit ${end.code}`})`);
             for (const settle of this.waiting.values())
                 settle(this.over);

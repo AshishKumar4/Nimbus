@@ -73,6 +73,7 @@
  * bytes, and the host reads them off the coordinator's own disk through the
  * `ResidentDiskReader` it was given.
  */
+import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SupervisorBindingProps } from './supervisor-props.js';
 import { z } from 'zod/v4';
 import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -485,7 +486,7 @@ export interface ProcessHost {
  * own selector (`processHostFor`) satisfies this type as it stands — the
  * workerd substrate is named, not wrapped.
  */
-export type ProcessHostFactory = (ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader) => ProcessHost;
+export type ProcessHostFactory = (ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader, network: () => WorkspaceNetwork) => ProcessHost;
 /**
  * Resource handle for one resident process — the whole surface the kernel
  * above this module sees: `booted()` for the boot payload, `done` for death,

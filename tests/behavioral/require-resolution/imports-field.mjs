@@ -39,10 +39,6 @@ await t.waitForPrompt(60_000);
 
 const A = makeAsserter('require-resolution/imports-field');
 
-async function writeFile(path, contents) {
-  await t.run(`cat > ${path} << 'NIMBUS_HEREDOC_EOF'\n${contents}\nNIMBUS_HEREDOC_EOF`, 10_000);
-}
-
 // ── Check 1: synthetic-exact ────────────────────────────────────────
 //
 // Package with imports:{"#x":"./x.js"}. Consumer requires the package
@@ -50,16 +46,16 @@ async function writeFile(path, contents) {
 // relative to the package root.
 
 await t.run('rm -rf /home/user/if-exact && mkdir -p /home/user/if-exact/node_modules/mypkg/lib', 5_000);
-await writeFile('/home/user/if-exact/node_modules/mypkg/package.json', JSON.stringify({
+await t.writeFile('/home/user/if-exact/node_modules/mypkg/package.json', JSON.stringify({
   name: 'mypkg', type: 'module', main: './lib/index.js',
   imports: { '#x': './lib/x.js' },
 }));
-await writeFile('/home/user/if-exact/node_modules/mypkg/lib/x.js', "module.exports = 'X_VAL';");
-await writeFile('/home/user/if-exact/node_modules/mypkg/lib/index.js', `
+await t.writeFile('/home/user/if-exact/node_modules/mypkg/lib/x.js', "module.exports = 'X_VAL';");
+await t.writeFile('/home/user/if-exact/node_modules/mypkg/lib/index.js', `
 const x = require('#x');
 module.exports = { kind: 'exact', x };
 `);
-await writeFile('/home/user/if-exact/consumer.js', `
+await t.writeFile('/home/user/if-exact/consumer.js', `
 const m = require('/home/user/if-exact/node_modules/mypkg/lib/index.js');
 console.log('RESULT=' + m.x + ' kind=' + m.kind);
 `);
@@ -77,17 +73,17 @@ A.check(
 // branch wins.
 
 await t.run('rm -rf /home/user/if-cond && mkdir -p /home/user/if-cond/node_modules/mypkg', 5_000);
-await writeFile('/home/user/if-cond/node_modules/mypkg/package.json', JSON.stringify({
+await t.writeFile('/home/user/if-cond/node_modules/mypkg/package.json', JSON.stringify({
   name: 'mypkg', type: 'module', main: './index.js',
   imports: { '#x': { node: './n.js', default: './d.js' } },
 }));
-await writeFile('/home/user/if-cond/node_modules/mypkg/n.js', "module.exports = 'NODE_VAR';");
-await writeFile('/home/user/if-cond/node_modules/mypkg/d.js', "module.exports = 'DEFAULT_VAR';");
-await writeFile('/home/user/if-cond/node_modules/mypkg/index.js', `
+await t.writeFile('/home/user/if-cond/node_modules/mypkg/n.js', "module.exports = 'NODE_VAR';");
+await t.writeFile('/home/user/if-cond/node_modules/mypkg/d.js', "module.exports = 'DEFAULT_VAR';");
+await t.writeFile('/home/user/if-cond/node_modules/mypkg/index.js', `
 const x = require('#x');
 module.exports = { x };
 `);
-await writeFile('/home/user/if-cond/consumer.js', `
+await t.writeFile('/home/user/if-cond/consumer.js', `
 const m = require('/home/user/if-cond/node_modules/mypkg/index.js');
 console.log('RESULT=' + m.x);
 `);
@@ -104,18 +100,18 @@ A.check(
 // per Node's pattern-match spec.
 
 await t.run('rm -rf /home/user/if-pat && mkdir -p /home/user/if-pat/node_modules/mypkg/src', 5_000);
-await writeFile('/home/user/if-pat/node_modules/mypkg/package.json', JSON.stringify({
+await t.writeFile('/home/user/if-pat/node_modules/mypkg/package.json', JSON.stringify({
   name: 'mypkg', type: 'module', main: './index.js',
   imports: { '#x/*': './src/*.js' },
 }));
-await writeFile('/home/user/if-pat/node_modules/mypkg/src/foo.js', "module.exports = 'FOO_VAL';");
-await writeFile('/home/user/if-pat/node_modules/mypkg/src/bar.js', "module.exports = 'BAR_VAL';");
-await writeFile('/home/user/if-pat/node_modules/mypkg/index.js', `
+await t.writeFile('/home/user/if-pat/node_modules/mypkg/src/foo.js', "module.exports = 'FOO_VAL';");
+await t.writeFile('/home/user/if-pat/node_modules/mypkg/src/bar.js', "module.exports = 'BAR_VAL';");
+await t.writeFile('/home/user/if-pat/node_modules/mypkg/index.js', `
 const foo = require('#x/foo');
 const bar = require('#x/bar');
 module.exports = { foo, bar };
 `);
-await writeFile('/home/user/if-pat/consumer.js', `
+await t.writeFile('/home/user/if-pat/consumer.js', `
 const m = require('/home/user/if-pat/node_modules/mypkg/index.js');
 console.log('RESULT=foo=' + m.foo + ' bar=' + m.bar);
 `);
@@ -132,12 +128,12 @@ A.check(
 // (not silent, not crashy — a Cannot-find-module).
 
 await t.run('rm -rf /home/user/if-miss && mkdir -p /home/user/if-miss/node_modules/mypkg', 5_000);
-await writeFile('/home/user/if-miss/node_modules/mypkg/package.json', JSON.stringify({
+await t.writeFile('/home/user/if-miss/node_modules/mypkg/package.json', JSON.stringify({
   name: 'mypkg', type: 'module', main: './index.js',
   imports: { '#x': './x.js' },
 }));
-await writeFile('/home/user/if-miss/node_modules/mypkg/x.js', "module.exports = 'X';");
-await writeFile('/home/user/if-miss/node_modules/mypkg/index.js', `
+await t.writeFile('/home/user/if-miss/node_modules/mypkg/x.js', "module.exports = 'X';");
+await t.writeFile('/home/user/if-miss/node_modules/mypkg/index.js', `
 try {
   require('#nonexistent');
   console.log('UNEXPECTED_LOAD');
@@ -146,7 +142,7 @@ try {
 }
 module.exports = {};
 `);
-await writeFile('/home/user/if-miss/consumer.js', `
+await t.writeFile('/home/user/if-miss/consumer.js', `
 require('/home/user/if-miss/node_modules/mypkg/index.js');
 `);
 const missR = await t.run('node /home/user/if-miss/consumer.js', 30_000);

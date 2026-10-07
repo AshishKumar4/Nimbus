@@ -17,27 +17,28 @@
 //   - a fetch's stats and listings fall through to the session below the
 //     repository, and its pending writes keep their modes.
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import {
   decodeWriteBatchStream,
   W7_MAX_OWNED_PATH_BYTES,
   W7_MAX_PATHS_PER_BATCH,
 } from '../../packages/platform/src/w7-frame.ts';
-import { assembleGitNetworkFacetSource, execGitNetwork } from '../../packages/worker/src/git/network-facet.ts';
+import { execGitNetwork } from '../../packages/worker/src/git/network-facet.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { startGitHttpServer } from './lib/git-http-server.mjs';
 import { hostGit as hostGitIn } from './lib/facet-session.mjs';
+import { importGitFacetWorker } from './lib/git-facet-worker.mjs';
 
 const tempDir = mkdtempSync(join(tmpdir(), 'nimbus-git-facet-closed-world-'));
 const hostGit = (cwd, args) => hostGitIn(tempDir, cwd, args);
@@ -104,8 +105,7 @@ try {
 
   // Clones run through the real facet; fetches through a stub git bundle that
   // checks what the buffered fs shows it.
-  writeFileSync(join(tempDir, 'git-network-worker.mjs'), assembleGitNetworkFacetSource());
-  writeFileSync(join(tempDir, 'git-bundle.js'), `
+  const facetWorker = await importGitFacetWorker(tempDir, `
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -126,7 +126,6 @@ export const git = {
   },
 };
 `);
-  const facetWorker = await import(pathToFileURL(join(tempDir, 'git-network-worker.mjs')).href);
 
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -173,7 +172,7 @@ export const git = {
           }),
         },
       },
-      { op: 'clone', pid: 1, dir, url, depth: 1, exclusiveDestination: true, ...extra },
+      { op: 'clone', pid: 1, dir, url, depth: 1, exclusiveDestination: true, ...extra }, ISOLATE_NETWORK,
     );
   }
 

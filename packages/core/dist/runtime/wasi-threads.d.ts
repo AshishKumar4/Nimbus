@@ -142,14 +142,13 @@ export interface WasmThreadsInfo {
     threadStart: boolean;
 }
 /**
- * Read the import and export sections of a wasm binary.
+ * What a module asks of the host for threads, from its import and export
+ * sections (wasm-binary.ts).
  *
  * The JS API exposes `WebAssembly.Module.imports()` but not the TYPE of an
  * imported memory, and the host has to create that memory with the exact
  * initial/maximum the module declares or instantiation fails. So the limits
  * are read from the binary, supervisor-side, where the bytes already are.
- * Only the two sections that matter are decoded; every other section is
- * skipped by its declared length.
  */
 export declare function inspectWasmThreads(bytes: Uint8Array): WasmThreadsInfo;
 /**

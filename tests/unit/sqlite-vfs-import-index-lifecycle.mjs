@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const source = createSqliteVfsTestHarness(), target = createSqliteVfsTestHarness(), abandoned = createSqliteVfsTestHarness();
 const names = (h) => h.sql.exec("SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('vfs_inodes_ino', 'vfs_history_ino') ORDER BY name").map(row => row.name);

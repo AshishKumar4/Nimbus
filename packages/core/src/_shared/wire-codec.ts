@@ -1,23 +1,9 @@
 import { z } from 'zod/v4';
+import { base64, base64Decode } from './crypto.js';
 
 type WireScalar = string | number | boolean | null | undefined;
 export type WireEncoded = WireScalar | WireEncoded[] | { [key: string]: WireEncoded };
 export type WireDecoded = WireScalar | Uint8Array | WireDecoded[] | { [key: string]: WireDecoded };
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-  }
-  return btoa(binary);
-}
-
-function base64ToBytes(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-  return bytes;
-}
 
 const scalar = z.union([z.string(), z.custom<number>((value) => typeof value === 'number'), z.boolean(), z.null(), z.undefined()]);
 type WireInput = WireScalar | ArrayBuffer | ArrayBufferView | WireInput[] | { [key: string]: WireInput };
@@ -32,10 +18,10 @@ const bytes = z.custom<{ __nimbusWireType: 'bytes'; base64: string }>((value) =>
 export const WireEncoder: z.ZodType<WireEncoded> = z.lazy(() => z.union([
   scalar,
   z.instanceof(ArrayBuffer).transform((value) => ({
-    __nimbusWireType: 'bytes', base64: bytesToBase64(new Uint8Array(value)),
+    __nimbusWireType: 'bytes', base64: base64(new Uint8Array(value)),
   })),
   z.custom<ArrayBufferView>(ArrayBuffer.isView).transform((value) => ({
-    __nimbusWireType: 'bytes', base64: bytesToBase64(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)),
+    __nimbusWireType: 'bytes', base64: base64(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)),
   })),
   z.array(WireEncoder),
   record.transform((value) => {
@@ -50,7 +36,7 @@ export const WireEncoder: z.ZodType<WireEncoded> = z.lazy(() => z.union([
 ]));
 
 export const WireDecoder: z.ZodType<WireDecoded> = z.lazy(() => z.union([
-  bytes.transform((value) => base64ToBytes(value.base64)),
+  bytes.transform((value) => base64Decode(value.base64)),
   scalar,
   z.array(WireDecoder),
   record.transform((value) => {

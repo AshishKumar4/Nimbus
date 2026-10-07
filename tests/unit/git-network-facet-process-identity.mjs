@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 
 import { execGitNetwork } from '../../packages/worker/src/git/network-facet.ts';
@@ -39,7 +40,7 @@ for (const pid of [undefined, 0, -1, 1.5]) {
     op: 'fetch',
     dir: '/home/user/repo',
     pid,
-  });
+  }, ISOLATE_NETWORK);
   assert.equal(result.success, false);
   assert.match(result.error, /positive process pid/);
 }
@@ -49,7 +50,7 @@ const result = await execGitNetwork(ctx, env, {
   op: 'fetch',
   dir: '/home/user/repo',
   pid: 42,
-});
+}, ISOLATE_NETWORK);
 assert.equal(result.success, true, result.error);
 // This harness adopts ctx.exports without composing, so the binding carries
 // no route and the answering entrypoint falls back to its isolate's

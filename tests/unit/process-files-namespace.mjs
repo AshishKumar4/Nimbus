@@ -6,7 +6,7 @@
 // mount goes to that mount, never to a same-named SQLite row under it.
 
 import assert from 'node:assert/strict';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { syscallError } from '../../packages/core/src/vfs/vfs-error.ts';

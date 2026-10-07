@@ -244,6 +244,23 @@ async function runCases(interpreterFile, opsFile) {
     function* g() { let x; [x = yield] = iterable; }
     const it = g(); it.next(); it.return();
     return closed`)(), 1);
+  {
+    // A default names an anonymous function after its identifier target, in a
+    // pattern that never suspends and in one that does, in every position.
+    const program = () => {
+      const { f = function () {}, g = () => {}, h = class {} } = {};
+      const [i = function () {}, , [j = () => {}] = []] = [];
+      let k; ({ k = function () {} } = {});
+      function* gen() {
+        const { [yield 'key']: x = function () {}, l = function () {} } = {};
+        const [m = function () {}, n = (yield 'n', function () {})] = [];
+        return [x.name, l.name, m.name, n.name];
+      }
+      const it = gen(); it.next(); it.next('x'); const suspended = it.next().value;
+      return [f.name, g.name, h.name, i.name, j.name, k.name, ...suspended];
+    };
+    check('a destructuring default names its function, suspending or not', F(`return (${program})()`)(), program());
+  }
   check('yield inside a destructuring target', F('function* g() { const o = {}; [o[yield "k"]] = [7]; return o } const it = g(); it.next(); return it.next("key").value')(), { key: 7 });
 
   // ── Async ──
@@ -337,6 +354,26 @@ async function runCases(interpreterFile, opsFile) {
     gen.return();
     check('return() of a generator suspended in for-of closes its iterator', closed, ['return']);
   }
+  // As V8 runs it in sloppy code (`node -e`; this module is strict, so the
+  // program cannot be compiled here as the other comparisons are).
+  check('Annex B block functions: a var only where no lexical declaration around claims the name', F(`
+    const out = [];
+    // A lexical declaration around a block function: no var of its name
+    // (B.3.3), so the name is still the global's.
+    globalThis.annexShadow = 'global';
+    { let annexShadow; { function annexShadow() { return 1 } } }
+    out.push(annexShadow);
+    // Nor across a switch, or a for's let head.
+    { let g; switch (1) { case 1: function g() {} } }
+    for (let h of [1]) { { function h() {} } }
+    out.push(typeof g, typeof h);
+    // With none, the var is the function, which keeps its block's scope.
+    switch (1) { case 1: let local = 7; function k() { return local } }
+    out.push(k());
+    if (true) { let local = 8; function m() { return local } }
+    out.push(m());
+    return out;
+  `)(), ['global', 'undefined', 'undefined', 7, 8]);
   check('a function declaration as an if clause (Annex B.3.4)',
     F('if (true) function f() { return 1 } if (false) ; else function g() { return 2 } if (false) function h() {} return [f(), g(), typeof h]')(), [1, 2, 'undefined']);
   {

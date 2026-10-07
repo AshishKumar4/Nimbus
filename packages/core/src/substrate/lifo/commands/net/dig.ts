@@ -1,4 +1,6 @@
 import type { Command } from '../types.js';
+import type { Kernel } from '../../kernel/index.js';
+import { ISOLATE_NETWORK, type WorkspaceNetwork } from '../../../../_shared/workspace-network.js';
 
 interface DnsAnswer {
   name: string;
@@ -23,7 +25,9 @@ const TYPE_MAP: Record<number, string> = {
   28: 'AAAA',
 };
 
-const command: Command = async (ctx) => {
+/** `dig` over `network`: its DNS-over-HTTPS query leaves the box like any other request. */
+function createDigImpl(network: () => WorkspaceNetwork): Command {
+  return async (ctx) => {
   let queryType = 'A';
   let domain: string | undefined;
 
@@ -46,7 +50,7 @@ const command: Command = async (ctx) => {
   const url = `https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=${queryType}`;
 
   try {
-    const response = await fetch(url, {
+    const response = await network().fetch(url, {
       headers: { Accept: 'application/dns-json' },
       signal: ctx.signal,
     });
@@ -94,6 +98,14 @@ const command: Command = async (ctx) => {
     }
     return 1;
   }
-};
+  };
+}
+
+/** A `dig` bound to one kernel: its query goes through that workspace's network. */
+export function createDigCommand(kernel: Kernel): Command {
+  return createDigImpl(() => kernel.network);
+}
+
+const command: Command = createDigImpl(() => ISOLATE_NETWORK);
 
 export default command;

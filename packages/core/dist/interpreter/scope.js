@@ -1,4 +1,4 @@
-import { Error, SafeMap, append, arrayIsArray, charCodeAt, newSafeList, objectHasOwn, objectKeys, reflectGet, someItem, } from './intrinsics.js';
+import { Error, SafeMap, SafeSet, append, arrayIsArray, charCodeAt, newSafeList, objectHasOwn, objectKeys, reflectGet, someItem, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 /**
  * Kinds that throw when read before their declaration runs: lexical
@@ -124,7 +124,32 @@ export function hasUseStrict(body) {
     }
     return false;
 }
-/** The names a binding pattern declares, with the pattern identifiers. */
+function chainNames(chain, name) {
+    for (let at = chain; at; at = at.parent)
+        if (at.names.has(name))
+            return true;
+    return false;
+}
+/** The names `statements` declare lexically in their block: let, const, class, and function. */
+function blockLexicalNames(statements) {
+    const names = new SafeSet();
+    for (let i = 0; i < statements.length; i++) {
+        let node = statements[i];
+        while (node.type === 'LabeledStatement')
+            node = node.body;
+        if (node.type === 'VariableDeclaration' && node.kind !== 'var') {
+            for (let j = 0; j < node.declarations.length; j++) {
+                const ids = patternIdentifiers(node.declarations[j].id);
+                for (let k = 0; k < ids.length; k++)
+                    names.add(ids[k].name);
+            }
+        }
+        else if ((node.type === 'FunctionDeclaration' || node.type === 'ClassDeclaration') && node.id) {
+            names.add(node.id.name);
+        }
+    }
+    return names;
+}
 export function patternIdentifiers(pattern, out = newSafeList()) {
     switch (pattern.type) {
         case 'Identifier':
@@ -161,33 +186,57 @@ export function childNodes(node) {
 }
 /**
  * Whether evaluating `node` awaits or yields in the function it sits in
- * (await and yield are valid only where that function suspends). The
- * compiler refuses a few such places (UnsupportedSyntax); the analysis of a
- * unit, which covers every function in it, refuses them before any of the
- * unit runs, as the compiler, compiling a function on its first call, could
- * not.
+ * (await and yield are valid only where that function suspends): an await or
+ * yield, a `for await`, or one in a child, where a nested function is a
+ * boundary and a class's heritage and computed keys are not (they are
+ * evaluated where the class sits; a static block is the class's own
+ * function). A compiler passes `memo` to answer each node once.
+ *
+ * The compiler lowers a node to a generator flavor where this holds and
+ * refuses a few such places (UnsupportedSyntax); the analysis of a unit,
+ * which covers every function in it, refuses them before any of the unit
+ * runs, as the compiler, compiling a function on its first call, could not.
  */
-function suspendsHere(node) {
-    if (node.type === 'AwaitExpression' || node.type === 'YieldExpression')
-        return true;
-    if (node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression' || node.type === 'FunctionDeclaration')
-        return false;
-    if (node.type === 'ClassExpression' || node.type === 'ClassDeclaration') {
-        if (node.superClass && suspendsHere(node.superClass))
-            return true;
-        const members = node.body.body;
-        for (let i = 0; i < members.length; i++) {
-            const m = members[i];
-            if (m.type !== 'StaticBlock' && m.computed && suspendsHere(m.key))
+export function suspendsInFunction(node, memo) {
+    if (memo === undefined)
+        return suspendsWalk(node, undefined);
+    const cached = memo.get(node);
+    if (cached !== undefined)
+        return cached;
+    const result = suspendsWalk(node, memo);
+    memo.set(node, result);
+    return result;
+}
+function suspendsWalk(node, memo) {
+    switch (node.type) {
+        case 'AwaitExpression':
+        case 'YieldExpression': return true;
+        case 'ForOfStatement':
+            return node.await || suspendsInFunction(node.left, memo) || suspendsInFunction(node.right, memo)
+                || suspendsInFunction(node.body, memo);
+        case 'FunctionExpression':
+        case 'FunctionDeclaration':
+        case 'ArrowFunctionExpression': return false;
+        case 'ClassExpression':
+        case 'ClassDeclaration': {
+            if (node.superClass && suspendsInFunction(node.superClass, memo))
                 return true;
+            const members = node.body.body;
+            for (let i = 0; i < members.length; i++) {
+                const m = members[i];
+                if (m.type !== 'StaticBlock' && m.computed && suspendsInFunction(m.key, memo))
+                    return true;
+            }
+            return false;
         }
-        return false;
+        default: {
+            const children = childNodes(node);
+            for (let i = 0; i < children.length; i++)
+                if (suspendsInFunction(children[i], memo))
+                    return true;
+            return false;
+        }
     }
-    const children = childNodes(node);
-    for (let i = 0; i < children.length; i++)
-        if (suspendsHere(children[i]))
-            return true;
-    return false;
 }
 /** Each child node of `node`. */
 export function forEachChildNode(node, visit) {
@@ -360,6 +409,32 @@ class Analyzer {
             else
                 target.declare(id.name, 'var', -1);
         };
+        // The lexical declarations of the blocks around the statements being
+        // visited, the function's top level aside (its bindings say those):
+        // a block function one of them names has no var (Annex B.3.3, as
+        // noteAnnexB decides for its assignment), since a var there would be
+        // an early error.
+        let between = null;
+        const inBlock = (statements, visitAll) => {
+            const outer = between;
+            between = { names: blockLexicalNames(statements), parent: outer };
+            try {
+                visitAll();
+            }
+            finally {
+                between = outer;
+            }
+        };
+        const visitList = (statements) => {
+            for (let i = 0; i < statements.length; i++)
+                visit(statements[i], false);
+        };
+        const visitClause = (clause) => {
+            if (clause.type === 'FunctionDeclaration')
+                inBlock([clause], () => visit(clause, false));
+            else
+                visit(clause, false);
+        };
         const visit = (node, top) => {
             switch (node.type) {
                 case 'VariableDeclaration':
@@ -377,9 +452,10 @@ class Analyzer {
                             target.declare(node.id.name, 'function', -1);
                     }
                     else if (!target.fn.strict && !script) {
-                        // Annex B.3.3: a sloppy block function is also a var of its function.
+                        // Annex B.3.3: a sloppy block function is also a var of its
+                        // function, unless a lexical declaration around it claims the name.
                         const lexical = target.bindings.get(node.id.name);
-                        if (!lexical || lexical.kind === 'var' || lexical.kind === 'function') {
+                        if ((!lexical || lexical.kind === 'var' || lexical.kind === 'function') && !chainNames(between?.parent ?? null, node.id.name)) {
                             const params = target.fn.bindings.get(node.id.name);
                             if (!params || params.kind !== 'param')
                                 target.declare(node.id.name, 'var', -1);
@@ -396,25 +472,36 @@ class Analyzer {
                     }
                     return;
                 case 'BlockStatement':
-                    for (let i = 0; i < node.body.length; i++) {
-                        const s = node.body[i];
-                        visit(s, false);
-                    }
+                    inBlock(node.body, () => visitList(node.body));
                     return;
+                // A function as an if clause is a block of its own (Annex B.3.4).
                 case 'IfStatement':
-                    visit(node.consequent, false);
+                    visitClause(node.consequent);
                     if (node.alternate)
-                        visit(node.alternate, false);
+                        visitClause(node.alternate);
                     return;
                 case 'ForStatement':
-                    if (node.init && node.init.type === 'VariableDeclaration')
+                    if (node.init && node.init.type === 'VariableDeclaration') {
                         visit(node.init, false);
+                        // A `let`/`const` head is a scope around the body.
+                        if (node.init.kind !== 'var') {
+                            const init = node.init;
+                            inBlock([init], () => visit(node.body, false));
+                            return;
+                        }
+                    }
                     visit(node.body, false);
                     return;
                 case 'ForInStatement':
                 case 'ForOfStatement':
-                    if (node.left.type === 'VariableDeclaration')
+                    if (node.left.type === 'VariableDeclaration') {
                         visit(node.left, false);
+                        if (node.left.kind !== 'var') {
+                            const left = node.left;
+                            inBlock([left], () => visit(node.body, false));
+                            return;
+                        }
+                    }
                     visit(node.body, false);
                     return;
                 case 'WhileStatement':
@@ -430,15 +517,16 @@ class Analyzer {
                     if (node.finalizer)
                         visit(node.finalizer, false);
                     return;
-                case 'SwitchStatement':
+                case 'SwitchStatement': {
+                    const statements = newSafeList();
                     for (let i = 0; i < node.cases.length; i++) {
                         const c = node.cases[i];
-                        for (let j = 0; j < c.consequent.length; j++) {
-                            const s = c.consequent[j];
-                            visit(s, false);
-                        }
+                        for (let j = 0; j < c.consequent.length; j++)
+                            append(statements, c.consequent[j]);
                     }
+                    inBlock(statements, () => visitList(statements));
                     return;
+                }
                 default:
                     return;
             }
@@ -1049,7 +1137,7 @@ class Analyzer {
                 this.visitExpression(node.right, scope);
                 return;
             case 'MemberExpression':
-                if (node.object.type === 'Super' && node.computed && suspendsHere(node.property)) {
+                if (node.object.type === 'Super' && node.computed && suspendsInFunction(node.property)) {
                     throw new UnsupportedSyntax('await or yield in the key of a super member');
                 }
                 if (node.object.type === 'Super')

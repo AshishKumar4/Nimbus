@@ -1083,6 +1083,21 @@
    "args": "'[a-]' -c w",
    "stdout": "9\n",
    "exit": 0
+  },
+  {
+   "args": "-qz '^$' /dev/zero",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-c -m 3 -z '' /dev/zero",
+   "stdout": "3\n",
+   "exit": 0
+  },
+  {
+   "args": "-qz x /dev/null",
+   "stdout": "",
+   "exit": 1
   }
  ]
 }

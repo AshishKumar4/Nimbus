@@ -33,7 +33,7 @@ import {
   _rpcFsReadRange,
 } from '../../packages/worker/src/session/rpc.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
 import { createSupervisorBridgeStore } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';

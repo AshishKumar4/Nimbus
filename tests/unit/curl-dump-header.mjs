@@ -8,6 +8,7 @@
 // shift silently swallowed it. -sI worked, proving headers were obtainable;
 // only the dump target was missing.
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 import { createCurlCommand } from '../../packages/core/src/substrate/lifo/commands/net/curl.ts';
 
@@ -329,7 +330,7 @@ const postedArgs = (extra = []) => [
   try {
     const { curl, ctx, files } = makeEnv(
       postedArgs(['-H', 'authorization: Bearer t', '-H', 'content-type: application/json']),
-      { kernel: {} },
+      { kernel: { network: ISOLATE_NETWORK } },
     );
     assert.equal(await curl(ctx), 0);
     assert.equal(mock.calls[0].method, 'POST');
@@ -349,7 +350,7 @@ const postedArgs = (extra = []) => [
     { status: 200, body: 'ok' },
   ]);
   try {
-    const { curl, ctx } = makeEnv(postedArgs(), { kernel: {} });
+    const { curl, ctx } = makeEnv(postedArgs(), { kernel: { network: ISOLATE_NETWORK } });
     assert.equal(await curl(ctx), 0);
     assert.equal(mock.calls[1].method, 'GET', '303 rewrites POST to GET');
     assert.equal(mock.calls[1].body, undefined, '303 drops the body');
@@ -363,7 +364,7 @@ const postedArgs = (extra = []) => [
     { status: 200, body: '' },
   ]);
   try {
-    const { curl, ctx } = makeEnv(['-sI', '-L', '-D', '/tmp/h', '-o', '/dev/null', START], { kernel: {} });
+    const { curl, ctx } = makeEnv(['-sI', '-L', '-D', '/tmp/h', '-o', '/dev/null', START], { kernel: { network: ISOLATE_NETWORK } });
     assert.equal(await curl(ctx), 0);
     assert.equal(mock.calls[0].method, 'HEAD');
     assert.equal(mock.calls[1].method, 'HEAD', '303 never rewrites HEAD');
@@ -379,7 +380,7 @@ const postedArgs = (extra = []) => [
   try {
     const { curl, ctx, files } = makeEnv(
       ['-s', '-L', '-D', '/tmp/h', '-X', 'PUT', '--data', 'a=1', '-H', 'content-type: text/plain', '-o', '/dev/null', START],
-      { kernel: {} },
+      { kernel: { network: ISOLATE_NETWORK } },
     );
     assert.equal(await curl(ctx), 0);
     assert.equal(mock.calls[1].method, 'PUT', '301 leaves non-POST methods alone');
@@ -398,7 +399,7 @@ const postedArgs = (extra = []) => [
     { status: 200, body: 'ok' },
   ]);
   try {
-    const { curl, ctx } = makeEnv(postedArgs(), { kernel: {} });
+    const { curl, ctx } = makeEnv(postedArgs(), { kernel: { network: ISOLATE_NETWORK } });
     assert.equal(await curl(ctx), 0);
     assert.equal(mock.calls[1].method, 'POST', '307 preserves the method');
     assert.equal(mock.calls[1].body, 'a=1', '307 preserves the body');
@@ -414,7 +415,7 @@ const postedArgs = (extra = []) => [
   try {
     const { curl, ctx } = makeEnv(
       postedArgs(['-H', 'authorization: Bearer t', '-H', 'cookie: k=v']),
-      { kernel: {} },
+      { kernel: { network: ISOLATE_NETWORK } },
     );
     assert.equal(await curl(ctx), 0);
     // Full stripping leaves no request headers, so the walk sends `undefined`
@@ -433,7 +434,7 @@ const postedArgs = (extra = []) => [
     Array.from({ length: 21 }, (_, i) => ({ status: 302, headers: { location: `/r${i}` } })),
   );
   try {
-    const { curl, ctx, out } = makeEnv(['-s', '-L', '-D', '-', '-o', '/dev/null', START], { kernel: {} });
+    const { curl, ctx, out } = makeEnv(['-s', '-L', '-D', '-', '-o', '/dev/null', START], { kernel: { network: ISOLATE_NETWORK } });
     assert.equal(await curl(ctx), 47);
     assert.equal(mock.calls.length, 21, 'the walk stops at the 20-follow cap');
     assert.match(
@@ -451,7 +452,7 @@ const postedArgs = (extra = []) => [
   try {
     const { curl, ctx, out } = makeEnv(
       ['-s', '-L', '-o', '/dev/null', '-w', '%{url_effective}', `${START}gone`],
-      { kernel: {} },
+      { kernel: { network: ISOLATE_NETWORK } },
     );
     assert.equal(await curl(ctx), 0);
     assert.equal(mock.calls[0].url, `${START}gone`);
@@ -467,7 +468,7 @@ const postedArgs = (extra = []) => [
   // Without response.url the effective URL falls back to what was requested.
   const mock = withMockFetch([{ status: 200, body: 'ok' }]);
   try {
-    const { curl, ctx, out } = makeEnv(['-s', '-o', '/dev/null', '-w', '%{url_effective}', START], { kernel: {} });
+    const { curl, ctx, out } = makeEnv(['-s', '-o', '/dev/null', '-w', '%{url_effective}', START], { kernel: { network: ISOLATE_NETWORK } });
     assert.equal(await curl(ctx), 0);
     assert.equal(
       out.filter(([ch]) => ch === 'out').map(([, s]) => s).join(''),

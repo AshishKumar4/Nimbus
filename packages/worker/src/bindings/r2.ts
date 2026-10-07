@@ -30,6 +30,7 @@
 
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { coerceBindingBody, ensureBindingDir } from './body.js';
+import { decodeJsonBase64Url, encodeJsonBase64Url, sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 
 // ── Public types ──────────────────────────────────────────────────────────
 
@@ -218,7 +219,7 @@ export class R2Emulator {
 
     const body = typeof Blob !== 'undefined' && value instanceof Blob
       ? new Uint8Array(await value.arrayBuffer()) : await coerceBindingBody(value);
-    const etag = await this._sha256Hex(body);
+    const etag = await sha256Hex(body);
 
     // Verify integrity hashes if supplied
     if (options?.md5 || options?.sha1 || options?.sha256 || options?.sha512) {
@@ -387,16 +388,6 @@ export class R2Emulator {
     return body.slice(off, Math.min(off + len, body.byteLength));
   }
 
-  private async _sha256Hex(body: Uint8Array): Promise<string> {
-    // Use SubtleCrypto when available (Workers/Bun), fallback to a tiny JS impl.
-    if (typeof crypto !== 'undefined' && (crypto as any).subtle && (crypto as any).subtle.digest) {
-      const hash = await (crypto as any).subtle.digest('SHA-256', body);
-      return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
-    }
-    // No crypto.subtle — extremely unlikely in workerd or Bun, but be safe.
-    return 'no-subtle-crypto';
-  }
-
   private _normalizeHash(input: string | ArrayBuffer): string {
     if (typeof input === 'string') return input.replace(/^"+|"+$/g, '').toLowerCase();
     const u = new Uint8Array(input);
@@ -404,14 +395,11 @@ export class R2Emulator {
   }
 
   private _encodeCursor(off: number): string {
-    const b64 = btoa(JSON.stringify({ off }));
-    return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return encodeJsonBase64Url({ off });
   }
   private _decodeCursor(c: string): number {
     try {
-      const b64 = String(c).replace(/-/g, '+').replace(/_/g, '/');
-      const j = JSON.parse(atob(b64));
-      return Number(j.off) || 0;
+      return Number(decodeJsonBase64Url<{ off?: unknown }>(String(c)).off) || 0;
     } catch { return 0; }
   }
 }

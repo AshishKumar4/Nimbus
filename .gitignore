@@ -1,10 +1,8 @@
 node_modules/
 .wrangler/
+# apps/ci-runner/scripts/deploy.mjs stages the container image here.
+apps/ci-runner/.image-context/
 .dev.vars
-
-# Build-time scratch directories.
-.cirrus-plugin-react-src/
-.cirrus-npm-cjs-src/
 
 # Internal workspace notes and generated research scratch.
 audit/

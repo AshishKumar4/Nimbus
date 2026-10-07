@@ -545,6 +545,7 @@ function varsBlocks(jsonc, tree) {
 async function pinNimbusConfigs(sha256) {
   // Only Nimbus's own tree pins its configs, so only it needs the editor.
   const jsonc = await import('jsonc-parser');
+  /** @type {Array<[URL, string]>} */
   const edits = [];
   for (const relative of CATALOG_PIN_CONFIGS) {
     const url = new URL(relative, import.meta.url);
@@ -819,12 +820,12 @@ npm install @nimbus-sh/core ${spec.npm.name}
 \`\`\`
 
 \`\`\`js
-import { NimbusWorkspace, localFacetHost } from '@nimbus-sh/core';
+import { ISOLATE_NETWORK, NimbusWorkspace, localFacetHost } from '@nimbus-sh/core';
 import ${RUNTIME} from '${spec.npm.name}';
 
 const workspace = await NimbusWorkspace.create({
   sql,                       // your SQLite, through the SqlDatabase port
-  facets: localFacetHost(),
+  facets: localFacetHost(ISOLATE_NETWORK),
   runtimes: [${RUNTIME}],
 });
 \`\`\`

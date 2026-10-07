@@ -7,8 +7,12 @@ import { NimbusWorkspace } from '../../../packages/core/src/workspace/nimbus-wor
 import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
+/**
+ * @param {{ harness?: ReturnType<typeof createSqliteVfsTestHarness>, vfs?: SqliteVFS, terminal?: object,
+ *   env?: Record<string, string>, cwd?: string, mounts?: Record<string, object> }} [options]
+ */
 export async function testBox({ harness = createSqliteVfsTestHarness(), vfs, terminal, env, cwd, mounts = {} } = {}) {
   const engine = vfs ?? new SqliteVFS(harness.sql, harness.ctx);
   const files = new ProcessFiles(engine);
@@ -29,6 +33,15 @@ export async function testBox({ harness = createSqliteVfsTestHarness(), vfs, ter
     /** Stops the workspace's processes; the store stays (a test may share it). */
     destroy: () => { void ws.close(); },
   };
+}
+
+/**
+ * A workspace over a fresh in-memory store: NimbusWorkspace.create's
+ * defaults, plus whatever `options` a test sets.
+ */
+export function openWorkspace(options = {}) {
+  const harness = createSqliteVfsTestHarness();
+  return NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, ...options });
 }
 
 /**

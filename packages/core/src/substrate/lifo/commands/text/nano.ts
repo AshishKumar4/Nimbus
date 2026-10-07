@@ -1,72 +1,8 @@
 import type { Command, CommandContext, CommandOutputStream } from '../types.js';
 import { resolve } from '../../utils/path.js';
+import { CLEAR, HOME, HIDE_CURSOR, SHOW_CURSOR, ERASE_LINE, INVERT, BOLD, RST, moveTo, parseKey, type KeyEvent } from '../term-screen.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 
-
-// ─── ANSI escape helpers ───
-
-const CSI = '\x1b[';
-const CLEAR = `${CSI}2J`;
-const HOME = `${CSI}H`;
-const HIDE_CURSOR = `${CSI}?25l`;
-const SHOW_CURSOR = `${CSI}?25h`;
-const ERASE_LINE = `${CSI}2K`;
-const INVERT = `${CSI}7m`;
-const BOLD = `${CSI}1m`;
-const RST = `${CSI}0m`;
-
-function moveTo(row: number, col: number): string {
-  return `${CSI}${row + 1};${col + 1}H`;
-}
-
-// ─── Key parsing ───
-
-type KeyType =
-  | 'char' | 'enter' | 'backspace' | 'delete' | 'tab'
-  | 'up' | 'down' | 'left' | 'right'
-  | 'home' | 'end' | 'pageup' | 'pagedown'
-  | 'ctrl-o' | 'ctrl-x' | 'ctrl-k' | 'ctrl-u' | 'ctrl-w'
-  | 'ctrl-c' | 'escape' | 'unknown';
-
-interface KeyEvent {
-  type: KeyType;
-  char?: string;
-}
-
-function parseKey(data: string): KeyEvent {
-  if (data === '\r') return { type: 'enter' };
-  if (data === '\x7f' || data === '\b') return { type: 'backspace' };
-  if (data === '\t') return { type: 'tab' };
-  if (data === '\x0f') return { type: 'ctrl-o' };
-  if (data === '\x18') return { type: 'ctrl-x' };
-  if (data === '\x0b') return { type: 'ctrl-k' };
-  if (data === '\x15') return { type: 'ctrl-u' };
-  if (data === '\x17') return { type: 'ctrl-w' };
-  if (data === '\x03') return { type: 'ctrl-c' };
-  if (data === '\x1b' && data.length === 1) return { type: 'escape' };
-
-  if (data.startsWith('\x1b[')) {
-    const seq = data.slice(2);
-    if (seq === 'A') return { type: 'up' };
-    if (seq === 'B') return { type: 'down' };
-    if (seq === 'C') return { type: 'right' };
-    if (seq === 'D') return { type: 'left' };
-    if (seq === 'H') return { type: 'home' };
-    if (seq === 'F') return { type: 'end' };
-    if (seq === '1~' || seq === '7~') return { type: 'home' };
-    if (seq === '4~' || seq === '8~') return { type: 'end' };
-    if (seq === '3~') return { type: 'delete' };
-    if (seq === '5~') return { type: 'pageup' };
-    if (seq === '6~') return { type: 'pagedown' };
-    return { type: 'unknown' };
-  }
-
-  if (data.length >= 1 && data.charCodeAt(0) >= 32) {
-    return { type: 'char', char: data };
-  }
-
-  return { type: 'unknown' };
-}
 
 // ─── Editor state ───
 

@@ -50,6 +50,7 @@
  *                                  ▼
  *                               facet loop  ──>  chokidar / ws shim
  */
+import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { HmrBridge } from './real-vite-hmr.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -65,6 +66,7 @@ export declare function shouldUseRealVite(opts: {
     viteConfig?: Pick<ParsedViteConfig, 'devServer' | 'importsVitePlugin'> | undefined;
 }): boolean;
 export declare class CirrusReal {
+    private readonly network;
     private env;
     private port;
     private root;
@@ -115,6 +117,8 @@ export declare class CirrusReal {
         vfsEvents?: VfsEventEmitter | null;
         userConfigBundle?: string | null;
         extraSyntheticFiles?: Record<string, string>;
+        /** The workspace's network: the dev server (the user's config included) goes out through its egress. */
+        network: WorkspaceNetwork;
     });
     get isRunning(): boolean;
     get stats(): Record<string, unknown>;

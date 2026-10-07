@@ -24,14 +24,14 @@
  */
 
 import { build } from 'esbuild';
-import { createHash } from 'node:crypto';
-import { writeFileSync, readFileSync, readdirSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
+import { writeFileSync, readFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 import { assertCfGitPatched } from './cf-git-patch.mjs';
 import { resolvePackageDir } from './resolve-package-dir.mjs';
+import { stageRuntimeAsset } from './stage-asset.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
@@ -128,16 +128,8 @@ async function main() {
     // (tests/behavioral/assets-fetch/new/worker-bundle-size.mjs). Same
     // mechanism as scripts/bundle-node-shims.mjs; src/runtime/git-bundle-artifact.ts
     // fetches it sha-verified.
-    const sha256 = createHash('sha256').update(code, 'utf8').digest('hex');
-    const buildId = sha256.slice(0, 16);
-    const assetName = `git-${buildId}.js`;
-    const assetDir = join(root, 'public', '_assets', 'runtime');
-    mkdirSync(assetDir, { recursive: true });
     // Exactly one staged copy: the entry constant pins which one a deploy serves.
-    for (const file of readdirSync(assetDir)) {
-      if (/^git-[0-9a-f]{16}\.js$/.test(file) && file !== assetName) unlinkSync(join(assetDir, file));
-    }
-    writeFileSync(join(assetDir, assetName), code);
+    const { assetName, assetPath, buildId, sha256 } = stageRuntimeAsset(root, 'git', code);
 
     const outPath = join(root, 'src', 'git-bundle.generated.ts');
     const tsWrapper = [
@@ -149,7 +141,7 @@ async function main() {
       " * facet imports as `git-bundle.js`. GIT_BUNDLE_SHA256 is verified at fetch time.",
       ' */',
       '',
-      `export const GIT_BUNDLE_ENTRY: string = ${JSON.stringify(`/_assets/runtime/${assetName}`)};`,
+      `export const GIT_BUNDLE_ENTRY: string = ${JSON.stringify(assetPath)};`,
       `export const GIT_BUNDLE_BUILD_ID: string = ${JSON.stringify(buildId)};`,
       `export const GIT_BUNDLE_SHA256: string = ${JSON.stringify(sha256)};`,
       '',

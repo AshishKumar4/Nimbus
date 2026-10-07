@@ -101,6 +101,46 @@
    "args": "-s '' nul",
    "stdout": "\nd\nb\nc\u0000a\u0000",
    "exit": 0
+  },
+  {
+   "args": "--be ct",
+   "stdout": "\nd\nc\r\n\n\na\tb\u0001éÃ©",
+   "exit": 0
+  },
+  {
+   "args": "--sep",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "--foo=bar ct",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "-x ct",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "-s",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "-- ct",
+   "stdout": "dc\r\n\n\n\na\tb\u0001éÃ©\n",
+   "exit": 0
+  },
+  {
+   "args": "--separator=, ct",
+   "stdout": "a\tb\u0001éÃ©\n\n\n\nc\r\nd",
+   "exit": 0
+  },
+  {
+   "args": "-bs, ct",
+   "stdout": "a\tb\u0001éÃ©\n\n\n\nc\r\nd",
+   "exit": 0
   }
  ]
 }

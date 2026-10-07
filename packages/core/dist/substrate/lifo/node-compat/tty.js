@@ -1,3 +1,4 @@
+import { clearLine, clearScreenDown, cursorTo, moveCursor } from './readline.js';
 import { Readable, Writable } from './stream.js';
 /**
  * Node.js `tty` module shim for Lifo.
@@ -17,46 +18,18 @@ export class WriteStream extends Writable {
     isTTY = true;
     columns = 80;
     rows = 24;
-    clearLine(_dir, _cb) {
-        const mode = _dir < 0 ? 1 : _dir > 0 ? 0 : 2;
-        this.write(`\x1b[${mode}K`);
-        _cb?.();
-        return true;
+    // As Node's tty.WriteStream: each cursor method is readline's, on this stream.
+    clearLine(dir, cb) {
+        return clearLine(this, dir, cb);
     }
-    clearScreenDown(_cb) {
-        this.write('\x1b[0J');
-        _cb?.();
-        return true;
+    clearScreenDown(cb) {
+        return clearScreenDown(this, cb);
     }
-    cursorTo(_x, _y, _cb) {
-        if (typeof _y === 'function') {
-            _cb = _y;
-            _y = undefined;
-        }
-        const col = Math.max(0, Math.floor(Number(_x) || 0)) + 1;
-        if (_y === undefined) {
-            this.write(`\x1b[${col}G`);
-        }
-        else {
-            const row = Math.max(0, Math.floor(Number(_y) || 0)) + 1;
-            this.write(`\x1b[${row};${col}H`);
-        }
-        _cb?.();
-        return true;
+    cursorTo(x, y, cb) {
+        return cursorTo(this, x, y, cb);
     }
-    moveCursor(_dx, _dy, _cb) {
-        const x = Math.trunc(Number(_dx) || 0);
-        const y = Math.trunc(Number(_dy) || 0);
-        if (x < 0)
-            this.write(`\x1b[${-x}D`);
-        else if (x > 0)
-            this.write(`\x1b[${x}C`);
-        if (y < 0)
-            this.write(`\x1b[${-y}A`);
-        else if (y > 0)
-            this.write(`\x1b[${y}B`);
-        _cb?.();
-        return true;
+    moveCursor(dx, dy, cb) {
+        return moveCursor(this, dx, dy, cb);
     }
     getColorDepth() {
         return 8; // 256 colours – reasonable default for a virtual terminal

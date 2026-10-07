@@ -63,20 +63,7 @@ export declare function runtimeAbiForManifest(manifest: RuntimeManifest): Runtim
  * here. Mechanically validated against `NIMBUS_RUNTIME_ABIS` by
  * tests/unit/runtime-command-aliases.mjs.
  */
-/**
- * A command a runtime provides beyond its manifest's entrypoints: run by
- * `runner`, or by whatever runner the manifest's `runnerOf` entrypoint
- * names, so a command that drives the interpreter (pip) runs on the runner
- * of the build installed, whichever that is.
- */
-export type ExtraEntrypoint = Omit<ManifestEntrypoint, 'runner'> & ({
-    runner: string;
-    runnerOf?: never;
-} | {
-    runnerOf: string;
-    runner?: never;
-});
-export declare const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly ExtraEntrypoint[]>>;
+export declare const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly ManifestEntrypoint[]>>;
 export declare function runtimeEntrypoints(manifest: RuntimeManifest): RuntimeManifest['entrypoints'];
 /** Compute the per-user install root for (name, version). Uses
  *  `process.env.HOME` if present; falls back to `/home/user`. */

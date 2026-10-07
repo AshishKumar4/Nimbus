@@ -29,7 +29,7 @@ export function createHttpPlatform() {
       // and application listening handlers run with ordinary guest scheduling.
       for (const listener of this.rawListeners('listening')) {
         if (listener.name !== 'setupConnectionsTracking') continue;
-        this.removeListener('listening', listener);
+        this.removeListener('listening', /** @type {(...args: any[]) => void} */ (listener));
         this.on('listening', (...values) => withHostTimers(() => Reflect.apply(listener, this, values)));
       }
       // Bun arms a keep-alive timer on the socket after each response through
@@ -39,7 +39,8 @@ export function createHttpPlatform() {
       this.keepAliveTimeout = 0;
     }
     listen(...args) {
-      const [opts, callback] = net._normalizeArgs(args);
+      // node's own listen() argument parsing (internal, so untyped).
+      const [opts, callback] = /** @type {any} */ (net)._normalizeArgs(args);
       const port = Number(opts.port ?? 0);
       if (listeners.has(port)) throw Object.assign(new Error('address in use'), { code: 'EADDRINUSE' });
       listeners.set(port, this);
@@ -54,6 +55,8 @@ export function createHttpPlatform() {
       return this;
     }
     address() { return this.logicalAddress ?? null; }
+    // node declares `listening` as a field; workerd's is the logical listen state.
+    // @ts-expect-error TS2611: an accessor over a base-class property.
     get listening() { return this.logicalAddress != null; }
     set listening(value) { this.nativeListening = value; }
     close(callback) {
@@ -98,4 +101,33 @@ export function adaptHttpImports(source) {
     .replace("import * as __real_http from 'node:http';", bindings())
     .replace("import * as __real_net from 'node:net';", '')
     .replace("import { handleAsNodeRequest as __nimbusHandleAsNodeRequest } from 'cloudflare:node';", '');
+}
+
+/**
+ * The node shims evaluated as one facet would load them, for driving its
+ * http module in-process: `http`, the shim's `Buffer`, the facet's port
+ * registry and its `serveHttp` dispatcher. Each facet isolate owns a fresh
+ * port registry, and globalThis is shared across these sandboxes in one
+ * process, so the previous one is dropped first.
+ */
+export function shimHttpFacet() {
+  delete globalThis.__portRegistry;
+  const supervisor = { registerPort: () => {}, unregisterPort: () => {} };
+  const factory = new Function(
+    '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+    '"use strict";' + generateShimsCode()
+      + '\n;return { http: builtins.http, Buffer: __BufferMod, portRegistry: globalThis.__portRegistry, serveHttp: globalThis.__nimbusServeHttp };',
+  );
+  return factory(
+    {}, {}, {}, supervisor,
+    { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+    '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
+  );
+}
+
+/** A request the session routes to the facet's `port` listener. */
+export function routedRequest(port, path, init = {}) {
+  const headers = new Headers(init.headers || {});
+  headers.set('X-Nimbus-Port', String(port));
+  return new Request(`http://127.0.0.1:${port}${path}`, { ...init, headers });
 }

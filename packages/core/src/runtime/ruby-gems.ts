@@ -1,6 +1,8 @@
 import type { ProcessView as CredentialedVfs } from './process-files.js';
+import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import { direntTypeIn } from '../vfs/dirent-type.js';
 import { extractTarball } from '../_shared/tarball.js';
+import { toArrayBuffer } from '../_shared/bytes.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { exists, isDirectory } from '../vfs/vfs.js';
 import { isVfsError } from '../vfs/vfs-error.js';
@@ -79,7 +81,8 @@ export async function installedGemBins(vfs: CredentialedVfs, gemHome: string): P
 export async function installRubyGems(
   vfs: CredentialedVfs,
   requests: RubyGemRequest[],
-  opts: { gemHome: string; includeDependencies?: boolean },
+  /** `network`: the workspace's; RubyGems is reached through its egress, when it has one. */
+  opts: { gemHome: string; includeDependencies?: boolean; network: WorkspaceNetwork },
 ): Promise<RubyGemInstallReport> {
   const gemHome = normalizeVfsPath(opts.gemHome);
   const includeDependencies = opts.includeDependencies !== false;
@@ -97,6 +100,7 @@ export async function installRubyGems(
       includeDependencies,
       report,
       visiting,
+      network: opts.network,
     });
   }
 
@@ -106,7 +110,7 @@ export async function installRubyGems(
 export async function installRubyBundle(
   vfs: CredentialedVfs,
   cwd: string,
-  opts: { gemHome: string },
+  opts: { gemHome: string; network: WorkspaceNetwork },
 ): Promise<{ requests: RubyGemRequest[]; report: RubyGemInstallReport; lockfilePath: string }> {
   const gemfilePath = resolveVfsPath('Gemfile', cwd);
   if (!(await vfs.exists(gemfilePath))) {
@@ -120,6 +124,7 @@ export async function installRubyBundle(
   const report = await installRubyGems(vfs, requests, {
     gemHome: opts.gemHome,
     includeDependencies: true,
+    network: opts.network,
   });
   const lockfilePath = resolveVfsPath('Gemfile.lock', cwd);
   const all = (await readInstalledGemRecords(vfs, normalizeVfsPath(opts.gemHome)));
@@ -365,6 +370,7 @@ async function installOneGem(
     includeDependencies: boolean;
     report: RubyGemInstallReport;
     visiting: Set<string>;
+    network: WorkspaceNetwork;
   },
 ): Promise<void> {
   const normalizedName = normalizeGemName(req.name);
@@ -372,7 +378,7 @@ async function installOneGem(
   if (ctx.visiting.has(visitKey)) return;
   ctx.visiting.add(visitKey);
 
-  const metadata = await resolveGemMetadata(normalizedName, req.requirements);
+  const metadata = await resolveGemMetadata(ctx.network, normalizedName, req.requirements);
   const installedKey = `${metadata.name}-${metadata.version}`;
   const gemRoot = `${ctx.gemHome}/gems/${installedKey}`;
   if ((await vfs.exists(`${gemRoot}/lib`)) || (await vfs.exists(`${ctx.gemHome}/specifications/${installedKey}.gemspec`))) {
@@ -393,7 +399,7 @@ async function installOneGem(
   if (!metadata.gem_uri) {
     throw new Error(`RubyGems metadata for ${metadata.name}-${metadata.version} did not include gem_uri`);
   }
-  const gemBytes = await fetchGemBytes(metadata.gem_uri);
+  const gemBytes = await fetchGemBytes(ctx.network, metadata.gem_uri);
   const dataFiles = await extractGemData(gemBytes);
   const nativePath = findNativeExtensionPath(Array.from(dataFiles.keys()));
   if (nativePath) {
@@ -431,10 +437,10 @@ async function installOneGem(
   ctx.visiting.delete(visitKey);
 }
 
-async function resolveGemMetadata(name: string, requirements: string[]): Promise<RubyGemsMetadata> {
+async function resolveGemMetadata(network: WorkspaceNetwork, name: string, requirements: string[]): Promise<RubyGemsMetadata> {
   const exact = exactVersionRequirement(requirements);
-  if (exact) return fetchGemMetadata(name, exact);
-  const versions = await fetchGemVersions(name);
+  if (exact) return fetchGemMetadata(network, name, exact);
+  const versions = await fetchGemVersions(network, name);
   const selected = versions
     .filter((v) => !v.prerelease)
     .filter((v) => !v.platform || v.platform === 'ruby')
@@ -443,26 +449,26 @@ async function resolveGemMetadata(name: string, requirements: string[]): Promise
   if (!selected?.number) {
     throw new Error(`no ruby platform version of ${name} satisfies ${requirements.join(', ') || '>= 0'}`);
   }
-  return fetchGemMetadata(name, selected.number);
+  return fetchGemMetadata(network, name, selected.number);
 }
 
-async function fetchGemMetadata(name: string, version?: string): Promise<RubyGemsMetadata> {
+async function fetchGemMetadata(network: WorkspaceNetwork, name: string, version?: string): Promise<RubyGemsMetadata> {
   const url = version
     ? `${RUBYGEMS_API}/api/v2/rubygems/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}.json`
     : `${RUBYGEMS_API}/api/v1/gems/${encodeURIComponent(name)}.json`;
-  const resp = await fetch(url);
+  const resp = await network.fetch(url);
   if (!resp.ok) throw new Error(`RubyGems metadata fetch failed for ${name}${version ? '-' + version : ''}: HTTP ${resp.status}`);
   return await resp.json() as RubyGemsMetadata;
 }
 
-async function fetchGemVersions(name: string): Promise<RubyGemsVersionEntry[]> {
-  const resp = await fetch(`${RUBYGEMS_API}/api/v1/versions/${encodeURIComponent(name)}.json`);
+async function fetchGemVersions(network: WorkspaceNetwork, name: string): Promise<RubyGemsVersionEntry[]> {
+  const resp = await network.fetch(`${RUBYGEMS_API}/api/v1/versions/${encodeURIComponent(name)}.json`);
   if (!resp.ok) throw new Error(`RubyGems versions fetch failed for ${name}: HTTP ${resp.status}`);
   return await resp.json() as RubyGemsVersionEntry[];
 }
 
-async function fetchGemBytes(url: string): Promise<Uint8Array> {
-  const resp = await fetch(url);
+async function fetchGemBytes(network: WorkspaceNetwork, url: string): Promise<Uint8Array> {
+  const resp = await network.fetch(url);
   if (!resp.ok) throw new Error(`RubyGems download failed: HTTP ${resp.status}`);
   return new Uint8Array(await resp.arrayBuffer());
 }
@@ -472,12 +478,6 @@ async function extractGemData(gemBytes: Uint8Array): Promise<Map<string, Uint8Ar
   const data = outer.get('data.tar.gz');
   if (!data) throw new Error('RubyGems archive missing data.tar.gz');
   return await extractTarball(toArrayBuffer(data));
-}
-
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  const out = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(out).set(bytes);
-  return out;
 }
 
 function findNativeExtensionPath(paths: string[]): string | null {
@@ -663,21 +663,8 @@ function splitVersion(version: string): Array<number | string> {
   return out;
 }
 
-function normalizeGemName(name: string): string {
-  const clean = name.trim();
-  if (!clean) throw new Error('empty gem name');
-  for (const ch of clean) {
-    const ok = ch === '-' || ch === '_' || ch === '.' ||
-      ch >= '0' && ch <= '9' ||
-      ch >= 'a' && ch <= 'z' ||
-      ch >= 'A' && ch <= 'Z';
-    if (!ok) throw new Error(`unsupported gem name '${name}'`);
-  }
-  return clean;
-}
-
-function isValidGemExecutableName(name: string): boolean {
-  if (!name || name === '.' || name === '..' || name.includes('/')) return false;
+/** Every character is one a gem or gem executable name may hold: `[-_.0-9A-Za-z]`. */
+function isGemNameCharset(name: string): boolean {
   for (const ch of name) {
     const ok = ch === '-' || ch === '_' || ch === '.' ||
       ch >= '0' && ch <= '9' ||
@@ -686,6 +673,18 @@ function isValidGemExecutableName(name: string): boolean {
     if (!ok) return false;
   }
   return true;
+}
+
+function normalizeGemName(name: string): string {
+  const clean = name.trim();
+  if (!clean) throw new Error('empty gem name');
+  if (!isGemNameCharset(clean)) throw new Error(`unsupported gem name '${name}'`);
+  return clean;
+}
+
+function isValidGemExecutableName(name: string): boolean {
+  if (!name || name === '.' || name === '..' || name.includes('/')) return false;
+  return isGemNameCharset(name);
 }
 
 async function ensureDir(vfs: CredentialedVfs, path: string): Promise<void> {

@@ -1,4 +1,6 @@
 import type { Command } from '../types.js';
+import { waitForAbortOrTimeout } from '../signal.js';
+import { exitCodeForAbortSignal } from '../../shell/signals.js';
 
 const command: Command = async (ctx) => {
   if (ctx.args.length === 0) {
@@ -14,23 +16,11 @@ const command: Command = async (ctx) => {
 
   const ms = Math.round(seconds * 1000);
 
-  if (ctx.signal.aborted) {
-    return 130;
+  // An abort ends the sleep with its signal's status: 130 for Ctrl-C, 143 for SIGTERM.
+  if (ctx.signal.aborted || (await waitForAbortOrTimeout(ctx.signal, ms)) === 'aborted') {
+    return exitCodeForAbortSignal(ctx.signal);
   }
-
-  await new Promise<void>((resolve) => {
-    let timer: ReturnType<typeof setTimeout>;
-    const finish = () => {
-      clearTimeout(timer);
-      ctx.signal.removeEventListener('abort', finish);
-      resolve();
-    };
-
-    timer = setTimeout(finish, ms);
-    ctx.signal.addEventListener('abort', finish, { once: true });
-  });
-
-  return ctx.signal.aborted ? 130 : 0;
+  return 0;
 };
 
 export default command;

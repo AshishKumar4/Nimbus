@@ -8,6 +8,7 @@ import {
   mintSession,
   stripAnsi,
   Terminal,
+  hasOutputLine,
 } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -69,10 +70,3 @@ try {
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);
 
-function hasOutputLine(output, expected) {
-  return output
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .map((line) => line.trim())
-    .includes(expected);
-}

@@ -7,11 +7,10 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { Database } from 'bun:sqlite';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { openWorkspace } from './lib/test-box.mjs';
 import { BASH_RUNNER, CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { localFacetHost } from '../../packages/core/src/runtime/local-facet-host.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 
 const encoder = new TextEncoder();
@@ -40,10 +39,6 @@ function fakePackage(contents, { name = 'toy', version = '1.0.0', runner = 'toy-
   };
 }
 
-const openWorkspace = (options = {}) => {
-  const harness = createSqliteVfsTestHarness(new Database(':memory:'));
-  return NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, ...options });
-};
 
 // ── On-demand: nothing lands before first use; first use installs and runs ─
 {
@@ -98,7 +93,7 @@ const openWorkspace = (options = {}) => {
 for (const runtimeInstall of ['eager', 'on-demand']) {
   const refused = await openWorkspace({
     runtimeInstall,
-    facets: localFacetHost(),
+    facets: localFacetHost(ISOLATE_NETWORK),
     runtimes: [fakePackage({ 'bin/toy': '# t\n' }, { version: '1.0.0-3', runner: 'retired-runner' })],
   }).then(
     async (ws) => {

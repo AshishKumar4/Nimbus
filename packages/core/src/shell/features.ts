@@ -8,7 +8,7 @@ interface ShellLike {
   drainPasteQueue(): void;
   redrawLine(): void;
   running: boolean;
-  history: string[];
+  readonly history: readonly string[];
   lineBuffer: string;
   cursorPos: number;
   screenCursorRow: number;
@@ -45,7 +45,24 @@ export function parseHeredoc(input: string): HeredocInfo | null {
     }
   }
 
-  return delimiters.length > 0 ? { command: input, delimiters } : null;
+  if (delimiters.length === 0 || heredocBodiesComplete(input, delimiters)) return null;
+  return { command: input, delimiters };
+}
+
+/**
+ * Whether `input` already holds every here-document's body and terminator,
+ * in order, after its first line: a command recalled from history, which
+ * runs as it stands rather than reading its bodies again.
+ */
+function heredocBodiesComplete(input: string, delimiters: HeredocInfo['delimiters']): boolean {
+  const lines = input.split('\n').slice(1);
+  let at = 0;
+  for (const { delimiter, stripTabs } of delimiters) {
+    while (at < lines.length && (stripTabs ? lines[at].replace(/^\t+/, '') : lines[at]) !== delimiter) at++;
+    if (at === lines.length) return false;
+    at++;
+  }
+  return true;
 }
 
 export class HeredocHandler {
@@ -60,7 +77,6 @@ export class HeredocHandler {
   private heredocInfo: HeredocInfo | null = null;
   private currentHeredocIndex = 0;
   private bodies: string[][] = [];
-  private historyLengthAtStart = 0;
 
   /** Safety limit to prevent unbounded memory growth */
   private static readonly MAX_HEREDOC_LINES = 50000;
@@ -86,10 +102,6 @@ export class HeredocHandler {
     this.heredocInfo = null;
     this.currentHeredocIndex = 0;
     this.bodies = [];
-    // Restore history to before the heredoc started (removes content lines)
-    if (this.shell.history) {
-      this.shell.history.length = this.historyLengthAtStart;
-    }
   }
 
   private _patch(): void {
@@ -125,9 +137,6 @@ export class HeredocHandler {
             if (i === parts.length - 1 && parts[i] === '') continue;
             this.shell.pasteQueue.push(parts[i]);
           }
-          if (currentLine.trim()) {
-            this.shell.history.push(currentLine.trim());
-          }
           const isDelim = this._processLine(currentLine);
           if (isDelim && this.heredocInfo !== null) {
             (await this._finishHeredoc());
@@ -146,9 +155,6 @@ export class HeredocHandler {
         this.shell.cursorPos = 0;
         this.shell.screenCursorRow = 0;
         this.shell.historyIndex = -1;
-        if (currentLine.trim()) {
-          this.shell.history.push(currentLine.trim());
-        }
         const isDelim = this._processLine(currentLine);
         if (isDelim && this.heredocInfo !== null) {
           (await this._finishHeredoc());
@@ -212,7 +218,6 @@ export class HeredocHandler {
     this.heredocInfo = info;
     this.currentHeredocIndex = 0;
     this.bodies = info.delimiters.map(() => []);
-    this.historyLengthAtStart = this.shell.history?.length ?? 0;
     this.terminal.write('> ');
     await this._drainPasteQueue();
   }
@@ -298,10 +303,6 @@ export class HeredocHandler {
     this.heredocInfo = null;
     this.currentHeredocIndex = 0;
     this.bodies = [];
-
-    if (this.shell.history) {
-      this.shell.history.length = this.historyLengthAtStart;
-    }
 
     try {
       await this._executeOriginalLine(script);
@@ -691,7 +692,7 @@ export class LineEditorExtender {
 
   private _yankLastArg(): boolean {
     const s = this.shell;
-    const history: string[] = s.history ?? [];
+    const history = s.history;
     if (history.length === 0) return true;
 
     // Advance the history index. First press → 0 (most-recent).
@@ -805,7 +806,7 @@ export class LineEditorExtender {
 
   /** Step the match index forward (older) and re-search from there. */
   private _rsearchAdvance(): void {
-    const history: string[] = this.shell.history ?? [];
+    const history = this.shell.history;
     let idx = this.rsearchMatchIndex < 0 ? 0 : this.rsearchMatchIndex + 1;
     for (; idx < history.length; idx++) {
       const line = history[history.length - 1 - idx];
@@ -823,7 +824,7 @@ export class LineEditorExtender {
       this.rsearchMatchIndex = -1;
       return;
     }
-    const history: string[] = this.shell.history ?? [];
+    const history = this.shell.history;
     for (let idx = 0; idx < history.length; idx++) {
       const line = history[history.length - 1 - idx];
       if (line && line.includes(this.rsearchQuery)) {
@@ -836,7 +837,7 @@ export class LineEditorExtender {
 
   private _rsearchCurrentMatch(): string | null {
     if (this.rsearchMatchIndex < 0) return null;
-    const history: string[] = this.shell.history ?? [];
+    const history = this.shell.history;
     return history[history.length - 1 - this.rsearchMatchIndex] ?? null;
   }
 

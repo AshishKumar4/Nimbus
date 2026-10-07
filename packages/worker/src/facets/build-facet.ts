@@ -10,7 +10,7 @@ import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import { ROLLDOWN_FACET_ASSET_PATH, ROLLDOWN_FACET_BUILD_ID, ROLLDOWN_FACET_SHA256 } from '../rolldown-facet-artifact.generated.js';
-import { fetchStagedText, type StagedSourceEnv } from '../runtime/staged-source.js';
+import { fetchStagedText, stagedAsset, type StagedSourceEnv } from '../runtime/staged-source.js';
 import type { PrebundleResult, PrebundleSpec } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import {
   NAPI_WASM_LOADER,
@@ -26,10 +26,15 @@ const ROLLDOWN = stagedBinding('rolldown');
  * a call. It starts at 5.4 MiB and grows to the largest graph built, and never
  * shrinks; pre-bundles measured 17.6 MiB after react-dom/client, 27.9 after
  * framer-motion, 53.8 after recharts and 60.5 after @mui/material (slices of
- * up to 23 MiB). A binding past this leaves the next call's slice too little
- * of the isolate's 128 MiB, so the next call starts a fresh isolate.
+ * up to 23 MiB). A call peaks at the binding it starts on, plus what it grows
+ * the binding by, plus its slice, plus the isolate's JavaScript: Markflow's
+ * install, deployed, grew the binding by up to 41 MiB in one pre-bundle
+ * (rehype-highlight, 27 -> 68 MiB; react-day-picker, 14 -> 51 MiB with a
+ * 17.6 MiB slice), and the facet's JavaScript holds 12-18 MiB between calls
+ * (V8, the staged runtime). A call starting at 64 MiB could pass the
+ * isolate's 128 MiB; at 40 MiB the worst measured is about 112 MiB.
  */
-const BUILD_BINDING_HIGH_WATER_BYTES = 64 * 1024 * 1024;
+const BUILD_BINDING_HIGH_WATER_BYTES = 40 * 1024 * 1024;
 
 /**
  * Everything of the build facet's module but its staged parts: the napi-rs
@@ -42,6 +47,18 @@ const BUILD_BINDING_HIGH_WATER_BYTES = 64 * 1024 * 1024;
  * caller's plugin, so the binding's WASI filesystem is the facet's own empty
  * node:fs.
  *
+ * The binding is the isolate's: every Durable Object whose build facet runs
+ * this code in this isolate (one loader id for all of them) calls the one
+ * binding, and each may do I/O only in its own context. So each call runs in
+ * a lane of its own (napi-wasm-loader's callLanes): the binding's calls into
+ * JavaScript (a plugin hook, through a threadsafe function) run in the lane
+ * of the call that made the function, and its pump in the lanes of the calls
+ * in flight, never in another object's. A call whose object is reset under
+ * it never settles, and neither does what the binding awaits for it: the
+ * first call of the object's next instance of this facet takes its lanes
+ * over, and the binding refuses those awaits, so the build ends and its
+ * state is freed.
+ *
  * A binding that dies (a trap, or the stack overflowing inside it: a module
  * nested too deeply) holds promises that never settle. The loader says so
  * (`onFatal`), and every build or pre-bundle on it, in flight or later, is
@@ -49,6 +66,7 @@ const BUILD_BINDING_HIGH_WATER_BYTES = 64 * 1024 * 1024;
  * imported, so only a fresh isolate (the host's next generation) builds again.
  */
 const BUILD_FACET_BODY = [
+  'const lanes = callLanes(AsyncLocalStorage);',
   // One load for every caller, overlapping ones included.
   'let runtime = null;',
   'let crashed = null;',
@@ -59,7 +77,7 @@ const BUILD_FACET_BODY = [
   `    memory = new WebAssembly.Memory({ initial: ${ROLLDOWN.memoryPages}, maximum: 65536 });`,
   '    globalThis.__nimbusRolldownBinding = createNapiWasmBinding({',
   '      fs, env: {}, writeStdout() {}, writeStderr() {},',
-  `      binding: rolldownWasm, trampoline: trampolineWasm, memoryPages: ${ROLLDOWN.memoryPages}, memory, name: "rolldown",`,
+  `      binding: rolldownWasm, trampoline: trampolineWasm, memoryPages: ${ROLLDOWN.memoryPages}, memory, name: "rolldown", contexts: lanes,`,
   '      onFatal(error) {',
   '        crashed = { stackExhausted: error instanceof RangeError, message: String((error && error.message) || error) };',
   '        for (const answer of inFlight) answer();',
@@ -76,9 +94,10 @@ const BUILD_FACET_BODY = [
   '    ? "Nimbus\'s bundler ran out of stack: a module nests too deeply for it (" + crashed.message + ")"',
   '    : "Nimbus\'s bundler crashed: " + crashed.message;',
   '}',
-  // One call on the binding, answered by `crashedAnswer()` if the binding is
-  // or becomes dead, and marked `retire` once the binding has outgrown its mark.
-  'async function onBinding(call, crashedAnswer) {',
+  // One call on the binding, in a lane of `calls`, answered by `crashedAnswer()`
+  // if the binding is or becomes dead, and marked `retire` once the binding has
+  // outgrown its mark. An abandoned call is answered by no one.
+  'async function onBinding(calls, call, crashedAnswer) {',
   '  if (crashed) return crashedAnswer();',
   '  const loaded = await rolldownRuntime();',
   '  if (crashed) return crashedAnswer();',
@@ -86,22 +105,30 @@ const BUILD_FACET_BODY = [
   '    const answer = () => resolve(crashedAnswer());',
   '    inFlight.add(answer);',
   `    const outgrown = (value) => (memory.buffer.byteLength > ${BUILD_BINDING_HIGH_WATER_BYTES} ? { ...value, retire: true } : value);`,
-  '    call(loaded).then((value) => resolve(outgrown(value)), reject).finally(() => inFlight.delete(answer));',
+  '    const done = () => inFlight.delete(answer);',
+  '    calls.run(() => call(loaded), done).then((value) => resolve(outgrown(value)), reject).finally(done);',
   '  });',
   '}',
   'export class BuildFacet extends DurableObject {',
+  // This facet's Durable Object has one instance at a time: a new one's
+  // first call takes over every call the last one left on the binding.
+  '  #calls;',
+  '  constructor(ctx, env) {',
+  '    super(ctx, env);',
+  '    this.#calls = lanes.instance(ctx.id ? String(ctx.id) : undefined);',
+  '  }',
   '  async warm() {',
   '    if (!crashed) await rolldownRuntime();',
   '  }',
   '  build(options, plugin) {',
-  '    return onBinding((loaded) => loaded.build(options, plugin), () => ({',
+  '    return onBinding(this.#calls, (loaded) => loaded.build(options, plugin), () => ({',
   '      outputFiles: [], warnings: [], failure: "Build failed with 1 error:\\nerror: " + crashText(),',
   '      errors: [{ id: "", pluginName: "", text: crashText(), location: null, notes: [], detail: undefined }],',
   '      crashed,',
   '    }));',
   '  }',
   '  prebundle(spec) {',
-  '    return onBinding((loaded) => loaded.prebundle(spec), () => ({',
+  '    return onBinding(this.#calls, (loaded) => loaded.prebundle(spec), () => ({',
   '      specifier: spec.specifier, ok: false, esmCode: "", errorText: crashText(), elapsed: 0, warnings: [], crashed,',
   '    }));',
   '  }',
@@ -143,18 +170,15 @@ export async function fetchBuildFacetParts(env: StagedSourceEnv): Promise<BuildF
     fetchStagedBindingAsset(env, NAPI_WASM_LOADER).then((bytes) => new TextDecoder().decode(bytes)),
     fetchStagedBindingAsset(env, NAPI_WASM_TRAMPOLINE),
     fetchStagedBindingAsset(env, ROLLDOWN.wasm),
-    fetchStagedText(env, {
+    fetchStagedText(env, stagedAsset({
+      label: 'build facet runtime',
       path: ROLLDOWN_FACET_ASSET_PATH,
       l2Key: `https://nimbus-cache.invalid${ROLLDOWN_FACET_ASSET_PATH}`,
       sha256: ROLLDOWN_FACET_SHA256,
       contentType: 'text/javascript; charset=utf-8',
-      poisonedCache: 'reject',
-      missingBinding: `Nimbus: the build facet requires an env.ASSETS binding (serves ${ROLLDOWN_FACET_ASSET_PATH})`,
-      fetchFailed: (res) => `build facet runtime asset fetch failed: ${res.status} ${res.statusText} for ${ROLLDOWN_FACET_ASSET_PATH} — deploy is missing the asset`,
-      integrityFailed: (digest, from) =>
-        `build facet runtime integrity check failed: expected ${ROLLDOWN_FACET_SHA256}, got ${digest} (${from}) for ` +
-        `${ROLLDOWN_FACET_ASSET_PATH} — the staged asset is corrupt or out of sync; rerun scripts/bundle-facet-workers.mjs and redeploy`,
-    }),
+      requiredBy: 'the build facet',
+      stagedBy: 'scripts/bundle-facet-workers.mjs',
+    })),
   ]);
   return { loader, trampoline, rolldown, runtime };
 }
@@ -164,7 +188,8 @@ export function buildFacetWorkerCode(parts: BuildFacetParts): WorkerCode {
   const source = [
     'import { DurableObject } from "cloudflare:workers";',
     'import * as fs from "node:fs";',
-    'import { createNapiWasmBinding } from "napi-wasm-loader.js";',
+    'import { AsyncLocalStorage } from "node:async_hooks";',
+    'import { callLanes, createNapiWasmBinding } from "napi-wasm-loader.js";',
     'import rolldownWasm from "rolldown.wasm";',
     'import trampolineWasm from "trampoline.wasm";',
     BUILD_FACET_BODY,
@@ -339,26 +364,48 @@ function retireGeneration(ctx: DurableObjectState, facet: SharedFacet): void {
   retireFacet(ctx, facet);
 }
 
+/** A pre-bundle whose build facet was reset under it twice: the call and its one retry. */
+export class BuildFacetResetError extends Error {
+  constructor(readonly specifier: string, readonly reason: string) {
+    super(`Nimbus's build facet was reset twice while pre-bundling ${specifier} (${reason})`);
+    this.name = 'BuildFacetResetError';
+  }
+}
+
+const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
 /**
  * Pre-bundles one npm specifier from its slice in the Durable Object's build
  * facet (core runtime/prebundle-slice.ts on rolldown): the slice crosses
  * once, with the call, and the bundle comes back. A failed pre-bundle is a
  * result (`ok: false`), as is one whose binding died under it, which also
- * retires that generation; a call that throws drops the stub, as a build's
- * does.
+ * retires that generation.
+ *
+ * A call that throws (the facet's isolate reset under it: past its memory,
+ * or its host gone) drops the stub, and the pre-bundle, which is pure, runs
+ * once more on a fresh facet, logged. A second throw is a
+ * BuildFacetResetError naming the package and why; a facet that never
+ * loaded is the load's own error, not retried.
  */
 export function buildFacetPrebundler(ctx: DurableObjectState, env: unknown): (spec: PrebundleSpec) => Promise<PrebundleResult> {
-  return async (spec) => {
+  /** One call: its answer, or what it threw (`reset`: the call itself, on a loaded facet). */
+  const once = async (spec: PrebundleSpec): Promise<PrebundleResult> => {
     const facet = sharedBuildFacet(ctx, env);
     const endCall = await beginCall(ctx, facet);
     let result: PrebundleResult & Crashed;
     try {
-      result = await (await facet.stub).prebundle(spec);
+      const stub = await facet.stub;
+      try {
+        result = await stub.prebundle(spec);
+      } catch (error) {
+        forgetBuildFacet(ctx, facet);
+        if (!facet.crashed) throw Object.assign(new Error(messageOf(error)), { reset: true });
+        const message = messageOf(error);
+        result = { specifier: spec.specifier, ok: false, esmCode: '', errorText: `Nimbus's bundler crashed: ${message}`, elapsed: 0, warnings: [], crashed: { stackExhausted: false, message } };
+      }
     } catch (error) {
       forgetBuildFacet(ctx, facet);
-      if (!facet.crashed) throw error;
-      const message = error instanceof Error ? error.message : String(error);
-      result = { specifier: spec.specifier, ok: false, esmCode: '', errorText: `Nimbus's bundler crashed: ${message}`, elapsed: 0, warnings: [], crashed: { stackExhausted: false, message } };
+      throw error;
     } finally {
       endCall();
     }
@@ -369,6 +416,22 @@ export function buildFacetPrebundler(ctx: DurableObjectState, env: unknown): (sp
       console.warn(`[build-facet] rolldown's binding died pre-bundling ${spec.specifier} (${crashed.message})`);
     }
     return answer;
+  };
+  const wasReset = (error: unknown) => Reflect.get(Object(error), 'reset') === true;
+  return async (spec) => {
+    try {
+      return await once(spec);
+    } catch (error) {
+      if (!wasReset(error)) throw error;
+      console.warn(`[build-facet] the build facet was reset pre-bundling ${spec.specifier} (${messageOf(error)}); pre-bundling it once more on a fresh one`);
+    }
+    try {
+      return await once(spec);
+    } catch (error) {
+      if (!wasReset(error)) throw error;
+      console.warn(`[build-facet] the build facet was reset again pre-bundling ${spec.specifier} (${messageOf(error)}); giving up`);
+      throw new BuildFacetResetError(spec.specifier, messageOf(error));
+    }
   };
 }
 

@@ -3,6 +3,7 @@
 
 import { CTRL_L, CTRL_BACKSLASH, CTRL_R, CTRL_C, CTRL_U } from './_keys.mjs';
 import { mintSession, deleteSession, Terminal, makeAsserter, stripAnsi, sleep } from '../_driver.mjs';
+import { awaitPromptAfter, execAndAwait } from './_recipe.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('keybindings/misc');
@@ -15,17 +16,8 @@ try {
   await t.connect();
   await t.waitForPrompt(60_000);
 
-  // Seed history for Ctrl+R.
-  async function execAndAwait(cmd) {
-    const tail0 = t.buf.length;
-    t.send(cmd + '\r');
-    await t.waitFor(
-      (b) => b.length > 0 && t.buf.length > tail0 && /[$#>]\s*$/.test(b.trimEnd().slice(-3)),
-      15_000, `prompt after ${cmd}`,
-    );
-  }
-  await execAndAwait('echo CARROT_MARKER');
-  await execAndAwait('echo BANANA_MARKER');
+  await execAndAwait(t, 'echo CARROT_MARKER');
+  await execAndAwait(t, 'echo BANANA_MARKER');
 
   // ────────────── Ctrl+L: clear screen, KEEP current line ──────────────
   // Real readline: emits `\x1b[H\x1b[2J` (or `\x1b[H\x1b[J`) and redraws
@@ -55,10 +47,7 @@ try {
     // Now press Enter — the line should actually execute as "echo CL_TEST".
     const tail0 = t.buf.length;
     t.send('\r');
-    await t.waitFor(
-      (b) => b.length > 0 && t.buf.length > tail0 && /[$#>]\s*$/.test(b.trimEnd().slice(-3)),
-      15_000, 'prompt after Ctrl+L Enter',
-    );
+    await awaitPromptAfter(t, tail0, 'prompt after Ctrl+L Enter');
     const out = stripAnsi(t.buf.slice(tail0));
     a.check('Ctrl+L preserved the line for execution', /CL_TEST/.test(out),
       /CL_TEST/.test(out) ? '' : JSON.stringify(out.slice(0, 200)));
@@ -124,10 +113,7 @@ try {
     }
     // Press Enter to execute the currently-matched history line.
     t.send('\r');
-    await t.waitFor(
-      (b) => b.length > 0 && t.buf.length > tail0 && /[$#>]\s*$/.test(b.trimEnd().slice(-3)),
-      20_000, 'prompt after Ctrl+R Enter',
-    );
+    await awaitPromptAfter(t, tail0, 'prompt after Ctrl+R Enter', 20_000);
     const out = stripAnsi(t.buf.slice(tail0));
     // Match the actual echo output (CARROT_MARKER printed). We also want
     // some evidence the (reverse-i-search) prompt appeared.

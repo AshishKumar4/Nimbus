@@ -12,7 +12,8 @@ let loaded = null;
 /** The engine, loaded and initialized once per process. */
 export function esbuildEngine() {
   loaded ??= (async () => {
-    globalThis.self ??= globalThis;
+    // esbuild's browser build reaches for `self`.
+    /** @type {any} */ (globalThis).self ??= globalThis;
     const esbuild = await import(fromCore.resolve('esbuild-wasm/esm/browser.js'));
     await esbuild.initialize({ wasmModule: await WebAssembly.compile(await readFile(fromCore.resolve('esbuild-wasm/esbuild.wasm'))), worker: false });
     return esbuild;

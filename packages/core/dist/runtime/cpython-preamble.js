@@ -63,13 +63,7 @@ async function __nimbusPyBoot(args) {
     stdoutWrite: (s) => { globalThis.__nimbusPyStdout.push(s); },
     stderrWrite: (s) => { globalThis.__nimbusPyStderr.push(s); },
   });
-  // nimbus_fs and nimbus_proc: a file's mode and owner, chmod, and this
-  // process's credential (wasm/nimbus-libc), which preview1 does not give.
-  instance = new WebAssembly.Instance(__nimbusPyModule(), {
-    wasi_snapshot_preview1: made.wasiImport,
-    nimbus_fs: made.fsImport,
-    nimbus_proc: made.procImport,
-  });
+  instance = new WebAssembly.Instance(__nimbusPyModule(), { wasi_snapshot_preview1: made.wasiImport });
 
   const exports = instance.exports;
   if (typeof exports.nimbus_py_init !== 'function' || typeof exports.nimbus_py_run !== 'function') {

@@ -30,9 +30,7 @@ import { runBunScript } from '../../packages/worker/src/runtime/bun-runner.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { oxcEngine } from './lib/oxc-engine.mjs';
 
-const esbuild = new EsbuildService();
-esbuild.ensureInit = async () => {};
-esbuild._esbuild = oxcEngine;
+const esbuild = new EsbuildService(undefined, { engine: async () => oxcEngine });
 
 function facetMgr() {
   const calls = { exec: 0, spawnNode: 0 };

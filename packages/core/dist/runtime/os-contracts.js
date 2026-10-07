@@ -20,33 +20,27 @@ export const CRED_SESSION_USER = Object.freeze({
     groups: Object.freeze([1000]),
     umask: 0o022,
 });
+/** A POSIX id (or mask): an unsigned integer. */
+function isCredId(value) {
+    return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+/** Whether `value` is a credential: unsigned integer uid, gid, umask and supplementary groups. The one shape check. */
+export function isVfsCred(value) {
+    if (typeof value !== 'object' || value === null)
+        return false;
+    const { uid, gid, groups, umask } = value;
+    return isCredId(uid) && isCredId(gid) && isCredId(umask) && Array.isArray(groups) && groups.every(isCredId);
+}
+/** `value` as a credential of its own (its groups copied), or the refusal `source` makes without one. */
 export function requireVfsCred(value, source) {
-    if (typeof value !== 'object' || value === null) {
+    if (!isVfsCred(value))
         throw new Error(`${source} requires process credentials`);
-    }
-    const uid = 'uid' in value ? value.uid : undefined;
-    const gid = 'gid' in value ? value.gid : undefined;
-    const groups = 'groups' in value ? value.groups : undefined;
-    const umask = 'umask' in value ? value.umask : undefined;
-    if (typeof uid !== 'number' || !Number.isInteger(uid)
-        || typeof gid !== 'number' || !Number.isInteger(gid)
-        || !Array.isArray(groups)
-        || typeof umask !== 'number' || !Number.isInteger(umask)) {
-        throw new Error(`${source} requires process credentials`);
-    }
-    const normalizedGroups = [];
-    for (const group of groups) {
-        if (typeof group !== 'number' || !Number.isInteger(group)) {
-            throw new Error(`${source} requires process credentials`);
-        }
-        normalizedGroups.push(group);
-    }
-    return {
-        uid,
-        gid,
-        groups: normalizedGroups,
-        umask,
-    };
+    return { uid: value.uid, gid: value.gid, groups: [...value.groups], umask: value.umask };
+}
+/** Whether two credentials are the same identity: the same ids, mask and groups, in order. */
+export function sameCred(a, b) {
+    return a.uid === b.uid && a.gid === b.gid && a.umask === b.umask
+        && a.groups.length === b.groups.length && a.groups.every((group, index) => group === b.groups[index]);
 }
 /**
  * N17: a launch that reads synchronously waits for the paths it names (its
@@ -128,31 +122,6 @@ export const NIMBUS_RUNTIME_ABIS = Object.freeze({
  * the build its preamble was written against.
  */
 export const BASH_RUNNER = 'bash-runner@3';
-/** Git's first runtime build imports the shared Nimbus filesystem/process extensions. */
-export const GIT_RUNNER = 'git-runner';
-/**
- * The import modules a wasm runtime built in this tree may import: WASI
- * preview1, and the Nimbus extensions this tree's WASI hosts provide —
- * nimbus_fs (a file's mode and owner, chmod: runtime/wasi/types.ts
- * NimbusFsImports) and nimbus_proc (the process's children, pipes and
- * credential: the shared WASI layer's runtime/wasi/processes.ts; bash's
- * runner provides its own table under the name, runtime/bash/preamble.ts,
- * bound by BASH_RUNNER). Each build's verify stage checks
- * its images against this list (packages/worker/wasm/python/build-python.sh,
- * packages/worker/wasm/git/build-git.sh). An image importing an extension
- * needs a host that provides it, so a runtime whose build first does takes a
- * new runner key ({@link CPYTHON_RUNNER}); git's first build already names
- * {@link GIT_RUNNER}. Unchanged preview0 toolchains keep their existing keys.
- */
-export const WASI_RUNTIME_IMPORT_MODULES = Object.freeze(['nimbus_fs', 'nimbus_proc', 'wasi_snapshot_preview1']);
-/**
- * The runner key a CPython manifest's entrypoints name. @2: the interpreter
- * imports the Nimbus extensions beside preview1 (WASI_RUNTIME_IMPORT_MODULES)
- * for file modes, owners, chmod and its credential (wasm/nimbus-libc), so a
- * deployment whose host predates them never binds it and keeps the stock
- * build, published under `cpython-runner`. This host runs both.
- */
-export const CPYTHON_RUNNER = 'cpython-runner@2';
 export const WASM32_WASI_NIMBUS_ABI = {
     os: NIMBUS_OS_NAME,
     target: NIMBUS_ABI_TARGET,

@@ -7,8 +7,9 @@
  * program runs, and its ports live only in this module's closure.
  *
  * The realm lives as a Node process does: while its event loop has work. Its
- * own timers hold it; so does `events` while a server it started listens and
- * while a request it made is unanswered (its synchronous calls need no loop). A
+ * own timers hold it; so does `events` while a server it started listens, while
+ * a request it made is unanswered and while it waits on a response body (its
+ * synchronous calls need no loop). A
  * rejection or exception nothing handles is printed and ends it with 1, an
  * ES module whose top-level await never settles with 13.
  */

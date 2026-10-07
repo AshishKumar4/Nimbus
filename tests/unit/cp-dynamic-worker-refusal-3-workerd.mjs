@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 27 s wall, 38 s CPU, 2.4 GiB peak (6 runs, 2026-10-06)
 // The Dynamic Worker ledger never refuses a wait while a shell line has a
 // step still to run (fabric budgets.ts, the interpreter's WorkThread), under
 // workerd. A parent and eight children, each waiting on a grandchild, fill
@@ -14,14 +15,15 @@
 // and `kill` not begun, its one unit of work was its await of pipe.cjs, the
 // whole family looked stuck for that instant, and the ledger refused the
 // newest grandchild (EAGAIN) on the synchronous path of `sleep`'s end. (The
-// rest of the ledger's refusals: cp-dynamic-worker-refusal-workerd, -2, -4.)
+// rest of the ledger's refusals: cp-dynamic-worker-refusal-workerd, -2, -4,
+// -5, -6, -7.)
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
 
 import assert from 'node:assert/strict';
 
-import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
+import { localTerminal, startLocalProbe, splitScenarioOutput } from './lib/workerd-probe.mjs';
 
 const SCENARIOS = {
   pipekill: `
@@ -78,37 +80,23 @@ const ticker = setInterval(() => {
 `,
 };
 
-/**
- * The scenario's lines with its timing lines set aside, and the session's
- * own banners (a facet's start, an npm script's), which go to the terminal.
- */
-function split(text) {
-  const lines = text.split('\n').map((l) => l.trimEnd())
-    .filter((l) => l.length > 0 && !l.startsWith('[facet started') && !l.startsWith('[shell started'));
-  const timings = {};
-  for (const line of lines) {
-    const m = /^T (\d+) (.+)$/.exec(line);
-    if (m) timings[m[2]] = Number(m[1]);
-  }
-  return { lines: lines.filter((l) => !/^T \d+ /.test(l)), timings };
-}
-
 console.log('cp-dynamic-worker-refusal-3-workerd: starting local workerd');
 const probe = await startLocalProbe({ runtimes: [] });
 try {
   const terminal = await localTerminal(probe, { install: [] });
   try {
-    for (const [name, source] of Object.entries(SCENARIOS)) {
-      const b64 = Buffer.from(source).toString('base64');
-      const w = await terminal.run(`node -e "require('fs').writeFileSync('/home/user/${name}.js', Buffer.from('${b64}', 'base64'))"`);
-      assert.equal(w.status, 0, w.stdout);
-    }
+    for (const [name, source] of Object.entries(SCENARIOS)) await terminal.writeFile(`/home/user/${name}.js`, source);
+    // A family here can take minutes on a loaded machine, one launch after
+    // another, and the session's own later turn (the ledger's refusal) came
+    // 1 to 23 s late under contention: what tells a hang from that is the
+    // session's Dynamic Worker ledger, which stops changing.
+    const ledger = async () => { const { loader } = await terminal.memory(); return [loader.holders, loader.waiters, loader.news]; };
     const run = async (name, { args = '' } = {}) => {
       // After the kill the grandchildren run as room frees, one launch after
       // another: 100 s on a loaded machine.
-      const r = await terminal.run(`node /home/user/${name}.js ${args}`, 240_000);
+      const r = await terminal.run(`node /home/user/${name}.js ${args}`, 280_000, { progress: ledger, stalledMs: 120_000 });
       assert.equal(r.status, 0, `${name}: ${r.stdout.slice(-800)}`);
-      return split(r.stdout);
+      return splitScenarioOutput(r.stdout);
     };
 
     // The family is stuck but for the pipeline's `kill`, its next step once

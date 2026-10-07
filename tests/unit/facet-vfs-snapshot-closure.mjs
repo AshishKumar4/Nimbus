@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — large; CI median 8 s wall, 9 s CPU, 1.4 GiB peak (6 runs, 2026-10-06)
 
 import assert from 'node:assert/strict';
 

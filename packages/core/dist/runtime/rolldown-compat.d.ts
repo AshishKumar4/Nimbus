@@ -16,7 +16,8 @@
  * the map; and one that moves whole lines of it (decorators into tsc's
  * order), moving the map's lines with them.
  *
- * Self-contained but for types: the build facet's runtime bundles it.
+ * Self-contained but for types and javascript-scope.ts: the build facet's
+ * runtime bundles it.
  */
 import type { TsSettings } from './tsconfig-raw.js';
 /** What this module calls of rolldown's binding (rolldown/experimental). */

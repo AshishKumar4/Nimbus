@@ -34,8 +34,8 @@ import {
   _rpcWriteFile,
 } from '../../packages/worker/src/session/rpc.ts';
 import { rpcDeleteFile } from '../../packages/worker/src/session/programmatic.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { attachSupervisorOps } from './session-supervisor-ops.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 
 const OWNER = Object.freeze({ uid: 1001, gid: 1001, groups: Object.freeze([1001]), umask: 0o022 });
 const STRANGER = Object.freeze({ uid: 1002, gid: 1002, groups: Object.freeze([1002]), umask: 0o022 });

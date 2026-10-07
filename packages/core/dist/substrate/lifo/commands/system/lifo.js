@@ -10,12 +10,11 @@
  *   link    <path>       dev-link a local package directory
  *   unlink  <name>       remove a dev link
  */
-import { npmInstallGlobal, getBinEntries, registerBinCommand } from './npm.js';
-import { RegistrySearchResponseSchema } from './registry-schemas.js';
+import { npmInstallGlobal, getBinEntries, packagesIn, registerBinCommand } from './npm.js';
+import { RegistrySearchResponseSchema, renderSearchTable } from './registry-schemas.js';
 import { resolve, join } from '../../utils/path.js';
 import { linkPackage, unlinkPackage, readDevLinks, loadDevLinks, } from '../../pkg/lifo-dev.js';
-import { readLifoManifest, createLifoCommand, } from '../../pkg/lifo-runtime.js';
-import { direntTypeIn } from '../../../../vfs/dirent-type.js';
+import { readLifoManifest, registerLifoManifestCommands, } from '../../pkg/lifo-runtime.js';
 const GLOBAL_MODULES = '/usr/lib/node_modules';
 // ─── Helpers ───
 async function printHelp(stdout) {
@@ -49,12 +48,8 @@ async function lifoInstall(ctx, registry, kernel) {
     const pkgDir = join(GLOBAL_MODULES, npmName);
     const manifest = (await readLifoManifest(ctx.vfs, pkgDir));
     if (manifest) {
-        for (const [cmdName, entryRelPath] of Object.entries(manifest.commands)) {
-            const entryPath = join(pkgDir, entryRelPath);
-            if ((await ctx.vfs.exists(entryPath))) {
-                registry.register(cmdName, createLifoCommand(entryPath, ctx.vfs));
-                await ctx.stdout.write(`  registered command: ${cmdName}\n`);
-            }
+        for (const cmdName of await registerLifoManifestCommands(ctx.vfs, registry, pkgDir, manifest, { requireEntry: true })) {
+            await ctx.stdout.write(`  registered command: ${cmdName}\n`);
         }
     }
     else {
@@ -93,51 +88,26 @@ async function lifoRemove(ctx, registry) {
     return 0;
 }
 // ─── list ───
-/** The directories in a scope's directory `dir`, each named `scope/name`. */
-async function directoriesIn(vfs, dir, scope) {
-    const names = [];
-    for (const child of await vfs.readdir(dir)) {
-        if ((await direntTypeIn(vfs, dir, child)) === 'directory')
-            names.push(join(scope, child.name));
-    }
-    return names;
-}
 async function lifoList(ctx) {
     const { vfs, stdout } = ctx;
     // 1. Installed lifo packages (global node_modules with lifo field)
     const installed = [];
-    if ((await vfs.exists(GLOBAL_MODULES))) {
-        for (const entry of (await vfs.readdir(GLOBAL_MODULES))) {
-            if ((await direntTypeIn(vfs, GLOBAL_MODULES, entry)) !== 'directory')
-                continue;
-            const dirs = entry.name.startsWith('@')
-                ? (await (async () => {
-                    try {
-                        return await directoriesIn(vfs, join(GLOBAL_MODULES, entry.name), entry.name);
-                    }
-                    catch {
-                        return [];
-                    }
-                })())
-                : [entry.name];
-            for (const dirName of dirs) {
-                const pkgDir = join(GLOBAL_MODULES, dirName);
-                const manifest = (await readLifoManifest(vfs, pkgDir));
-                if (!manifest)
-                    continue;
-                let version = '?';
-                try {
-                    const pkg = JSON.parse((await vfs.readFileString(join(pkgDir, 'package.json'))));
-                    version = pkg.version || '?';
-                }
-                catch { /* ignore */ }
-                installed.push({
-                    name: dirName,
-                    version,
-                    commands: Object.keys(manifest.commands),
-                });
-            }
+    for await (const dirName of packagesIn(vfs, GLOBAL_MODULES)) {
+        const pkgDir = join(GLOBAL_MODULES, dirName);
+        const manifest = (await readLifoManifest(vfs, pkgDir));
+        if (!manifest)
+            continue;
+        let version = '?';
+        try {
+            const pkg = JSON.parse((await vfs.readFileString(join(pkgDir, 'package.json'))));
+            version = pkg.version || '?';
         }
+        catch { /* ignore */ }
+        installed.push({
+            name: dirName,
+            version,
+            commands: Object.keys(manifest.commands),
+        });
     }
     // 2. Dev-linked packages
     const devLinks = (await readDevLinks(vfs));
@@ -185,15 +155,7 @@ async function lifoSearch(ctx) {
             await ctx.stdout.write('No lifo packages found\n');
             return 0;
         }
-        await ctx.stdout.write('NAME'.padEnd(30) + 'VERSION'.padEnd(12) + 'DESCRIPTION\n');
-        await ctx.stdout.write('-'.repeat(70) + '\n');
-        for (const r of lifoResults) {
-            const p = r.package;
-            const displayName = p.name.replace(/^lifo-pkg-/, '');
-            const name = displayName.length > 28 ? displayName.slice(0, 28) + '..' : displayName;
-            const desc = (p.description || '').slice(0, 40);
-            await ctx.stdout.write(`${name.padEnd(30)}${p.version.padEnd(12)}${desc}\n`);
-        }
+        await ctx.stdout.write(renderSearchTable(lifoResults.map((r) => ({ ...r.package, name: r.package.name.replace(/^lifo-pkg-/, '') }))));
     }
     catch (e) {
         await ctx.stderr.write(`lifo search: ${e instanceof Error ? e.message : String(e)}\n`);
@@ -397,44 +359,30 @@ export function createLifoPkgCommand(registry, _shellExecute, kernel) {
 export async function rehydrateGlobalPackages(vfs, registry) {
     // 1. Restore dev links
     (await loadDevLinks(vfs, registry));
-    if (!await vfs.exists(GLOBAL_MODULES))
-        return;
     // 2. Scan every package in /usr/lib/node_modules
-    for (const entry of await vfs.readdir(GLOBAL_MODULES)) {
-        if ((await direntTypeIn(vfs, GLOBAL_MODULES, entry)) !== 'directory')
+    for await (const dirName of packagesIn(vfs, GLOBAL_MODULES)) {
+        const pkgDir = join(GLOBAL_MODULES, dirName);
+        // lifo package: has a lifo manifest → use the lifo runtime
+        const manifest = (await readLifoManifest(vfs, pkgDir));
+        if (manifest) {
+            await registerLifoManifestCommands(vfs, registry, pkgDir, manifest, { requireEntry: true });
+            continue; // lifo manifest takes priority — skip npm bin check
+        }
+        // regular npm package: has "bin" in package.json → use node runner
+        const pkgJsonPath = join(pkgDir, 'package.json');
+        if (!await vfs.exists(pkgJsonPath))
             continue;
-        const dirs = entry.name.startsWith('@')
-            ? await directoriesIn(vfs, join(GLOBAL_MODULES, entry.name), entry.name)
-            : [entry.name];
-        for (const dirName of dirs) {
-            const pkgDir = join(GLOBAL_MODULES, dirName);
-            // lifo package: has a lifo manifest → use the lifo runtime
-            const manifest = (await readLifoManifest(vfs, pkgDir));
-            if (manifest) {
-                for (const [cmdName, entryRelPath] of Object.entries(manifest.commands)) {
-                    const entryPath = join(pkgDir, entryRelPath);
-                    if (await vfs.exists(entryPath)) {
-                        registry.register(cmdName, createLifoCommand(entryPath, vfs));
-                    }
-                }
-                continue; // lifo manifest takes priority — skip npm bin check
-            }
-            // regular npm package: has "bin" in package.json → use node runner
-            const pkgJsonPath = join(pkgDir, 'package.json');
-            if (!await vfs.exists(pkgJsonPath))
-                continue;
-            let pkg;
-            try {
-                pkg = JSON.parse(await vfs.readFileString(pkgJsonPath));
-            }
-            catch {
-                continue;
-            }
-            for (const [binName, binPath] of Object.entries(getBinEntries(pkg))) {
-                const scriptPath = resolve(pkgDir, binPath);
-                if (await vfs.exists(scriptPath)) {
-                    registerBinCommand(registry, binName, scriptPath);
-                }
+        let pkg;
+        try {
+            pkg = JSON.parse(await vfs.readFileString(pkgJsonPath));
+        }
+        catch {
+            continue;
+        }
+        for (const [binName, binPath] of Object.entries(getBinEntries(pkg))) {
+            const scriptPath = resolve(pkgDir, binPath);
+            if (await vfs.exists(scriptPath)) {
+                registerBinCommand(registry, binName, scriptPath);
             }
         }
     }

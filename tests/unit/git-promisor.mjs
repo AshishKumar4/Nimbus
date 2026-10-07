@@ -16,6 +16,7 @@
 //   - a repository with no promisor remote never fetches: a missing object
 //     is missing, as git reports it.
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -95,7 +96,7 @@ try {
     // fetchMissingObjects: exactly what was asked for.
     const lacking = hostGit(source, ['rev-parse', 'HEAD~2:src/f0.txt']).trim();
     const before = new Set(sessionObjects('home/user/repo').objects);
-    const fetched = await fetchMissingObjects(doCtx, doEnv, { pid: 7, dir: '/home/user/repo', remote: 'origin', url, oids: [lacking] });
+    const fetched = await fetchMissingObjects(doCtx, doEnv, { pid: 7, dir: '/home/user/repo', remote: 'origin', url, oids: [lacking] }, ISOLATE_NETWORK);
     assert.equal(fetched.fetched, 1);
     const added = sessionObjects('home/user/repo').objects.filter((line) => !before.has(line));
     assert.deepEqual(added, [lacking + ' blob']);

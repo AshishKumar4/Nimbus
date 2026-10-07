@@ -13,12 +13,10 @@
  */
 
 import {
-  fetchCatalog,
-  fetchManifest,
+  catalogCommandIndex,
   runtimeCatalogSource,
   type RuntimeCatalogEnv,
 } from './runtime-catalog.js';
-import { runtimeEntrypoints } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
@@ -115,29 +113,9 @@ export async function ensureRuntimesProgrammatic(deps: {
 export function createRuntimeCommandHintResolver(env: RuntimeCatalogEnv): (command: string) => Promise<RuntimeCommandHint | null> {
   let hintsPromise: Promise<Map<string, RuntimeCommandHint>> | null = null;
   const loadHints = async (): Promise<Map<string, RuntimeCommandHint>> => {
-    const catalog = await fetchCatalog(env);
     const hints = new Map<string, RuntimeCommandHint>();
-    const add = (command: string, runtimeName: string) => {
-      if (!command || command.includes('/')) return;
-      if (!hints.has(command)) {
-        hints.set(command, { command, runtimeName, installSpec: command });
-      }
-    };
-
-    for (const runtimeName of Object.keys(catalog.runtimes)) {
-      add(runtimeName, runtimeName);
-    }
-
-    for (const [runtimeName, entry] of Object.entries(catalog.runtimes)) {
-      const versionEntry = entry.versions[entry.default];
-      if (!versionEntry) continue;
-      try {
-        const manifest = await fetchManifest(env, versionEntry);
-        for (const ep of runtimeEntrypoints(manifest)) add(ep.binName, runtimeName);
-      } catch {
-        // Hints are best-effort UX. Install itself still surfaces the
-        // manifest/catalog error through the normal package-manager path.
-      }
+    for (const [command, runtimeName] of await catalogCommandIndex(env)) {
+      if (command && !command.includes('/')) hints.set(command, { command, runtimeName, installSpec: command });
     }
     return hints;
   };

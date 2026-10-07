@@ -214,6 +214,7 @@ import {
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { composeFabric } from '../../packages/fabric/src/composition.ts';
 import { openSupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
+import { missingAssets } from './lib/staged-assets.mjs';
 
 // The harness plays the embedder: its ctx.exports (createCtxExports below)
 // answer to the name the real worker registers for its supervisor class.
@@ -243,7 +244,7 @@ export function createProcessHost(mode, world, disk, {
   const stubs = [];
   const hostEnv = env ?? {
     LOADER: world.loader,
-    ASSETS: { async fetch() { return new Response('', { status: 404 }); } },
+    ASSETS: missingAssets,
   };
   const coordinator = createFacetCtx(world, coordDoId);
   const hostIncarnation = deliveries ? openSupervisorDeliveries(coordinator).incarnation : undefined;

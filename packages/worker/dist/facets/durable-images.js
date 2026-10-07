@@ -20,6 +20,7 @@
  * embedder-owned spawn is given them by its own bookkeeping instead.
  */
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 /** The directory every durable application's image blobs live under. */
 export const DURABLE_IMAGE_DIR = '.nimbus/images';
 const imagePath = (digest) => `${DURABLE_IMAGE_DIR}/${digest}`;
@@ -39,10 +40,6 @@ export function purgeDurableWorkerImages(vfs, owned, retained) {
         removed += 1;
     }
     return removed;
-}
-async function sha256Hex(text) {
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 /**
  * Persist a launch's image blobs, minting their digests, for a self-owned

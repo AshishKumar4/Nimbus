@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { classifyWsUpgrade } from '../../packages/worker/src/session/init-phases.ts';
 import { SHELL_OWNER_LIVENESS_MS } from '../../packages/worker/src/session/shell-socket.ts';
+import { ctxFor, socket } from './lib/shell-socket-double.mjs';
 
 const NOW = 1_700_000_000_000;
 
@@ -12,27 +13,6 @@ function makeSession(ctx) {
     terminal: {},
     kernel: {},
     ctx,
-  };
-}
-
-/**
- * A socket as the upgrade handler sees it: a readyState, an attachment
- * that survives hibernation, and whatever the runtime last auto-answered
- * on it. An absent `seenAt` models a socket an older deploy tagged.
- */
-function socket({ kind = 'shell', readyState = WebSocket.OPEN, seenAt, autoResponseAt } = {}) {
-  let attachment = seenAt === undefined ? { kind } : { kind, seenAt };
-  return {
-    readyState,
-    autoResponseAt: autoResponseAt ?? null,
-    deserializeAttachment: () => attachment,
-    serializeAttachment: (next) => { attachment = next; },
-  };
-}
-
-function ctxFor(sockets) {
-  return {
-    getWebSocketAutoResponseTimestamp: (ws) => sockets.find((s) => s === ws)?.autoResponseAt ?? null,
   };
 }
 

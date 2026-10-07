@@ -31,6 +31,20 @@ export function runtimeAbiForManifest(manifest) {
     }
     return NATIVE_UNSUPPORTED_ABI;
 }
+/**
+ * Commands a runtime provides beyond its manifest entrypoints. The
+ * python/ruby package-manager front-ends (pip, gem, bundler) ride the
+ * language runner rather than shipping as manifest files, and already-
+ * deployed R2 manifests cannot retroactively declare them.
+ *
+ * This is the ONE hand-maintained command table: install aliasing
+ * (`nimbus install pip` → python), command-not-found hints, and bin
+ * registration all derive from `runtimeEntrypoints`, which merges this
+ * with the catalog manifest. Catalog-declared aliases (python3, ruby3,
+ * wasm-ld, …) come from manifest entrypoints and must NOT be repeated
+ * here. Mechanically validated against `NIMBUS_RUNTIME_ABIS` by
+ * tests/unit/runtime-command-aliases.mjs.
+ */
 export const RUNTIME_EXTRA_ENTRYPOINTS = {
     bash: [
         { binName: '/bin/bash', runner: BASH_RUNNER, args: [] },
@@ -40,8 +54,8 @@ export const RUNTIME_EXTRA_ENTRYPOINTS = {
     // may claim it. The python row went with python-runner: Pyodide's manifest
     // still names that runner, so it could not serve pip even if it were listed.
     cpython: [
-        { binName: 'pip', runnerOf: 'python', kind: 'pip', args: [] },
-        { binName: 'pip3', runnerOf: 'python', kind: 'pip', args: [] },
+        { binName: 'pip', runner: 'cpython-runner', kind: 'pip', args: [] },
+        { binName: 'pip3', runner: 'cpython-runner', kind: 'pip', args: [] },
     ],
     ruby: [
         { binName: 'gem', runner: 'ruby-runner', kind: 'gem', args: [] },
@@ -55,12 +69,7 @@ export function runtimeEntrypoints(manifest) {
     for (const ep of RUNTIME_EXTRA_ENTRYPOINTS[manifest.name] ?? []) {
         if (seen.has(ep.binName))
             continue;
-        const { runnerOf, ...rest } = ep;
-        const runner = runnerOf === undefined ? ep.runner : manifest.entrypoints.find((m) => m.binName === runnerOf)?.runner;
-        // A manifest without the entrypoint it would run on provides no such command.
-        if (runner === undefined)
-            continue;
-        out.push({ ...rest, runner });
+        out.push({ ...ep });
         seen.add(ep.binName);
     }
     return out;

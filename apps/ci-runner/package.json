@@ -1,0 +1,13 @@
+{
+  "name": "@nimbus-sh/ci-runner",
+  "version": "0.1.0",
+  "description": "Runs the unit suite for a commit on Cloudflare Containers, sharded; see scripts/ci-run.mjs.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "bun scripts/deploy.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.143.0"
+  }
+}

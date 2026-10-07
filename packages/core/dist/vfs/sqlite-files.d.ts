@@ -10,7 +10,7 @@
  * code.
  */
 import { type CredentialedVfs, type SqliteVFS } from './sqlite-vfs.js';
-import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsRevision, VfsStat } from './vfs.js';
+import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsRevision, VfsStat, VfsWriteObserver } from './vfs.js';
 export declare class SqliteFiles implements VFS {
     private readonly engine;
     private readonly view;
@@ -20,7 +20,9 @@ export declare class SqliteFiles implements VFS {
     constructor(engine: SqliteVFS, view: CredentialedVfs);
     /** The engine's credentialed view this speaks for (for the engine's own callers). */
     get credentialed(): CredentialedVfs;
-    as(cred: VfsCred): SqliteFiles;
+    as(cred: VfsCred, actor?: string): SqliteFiles;
+    /** Every mutation that lands on the database, through any view (SqliteVFS.observeWrites); paths absolute. */
+    observeWrites(observer: VfsWriteObserver): () => void;
     /** `op`, its engine errors as Node's for `syscall` on `path` (and `dest`). */
     private run;
     stat(path: string, options?: {

@@ -59,6 +59,6 @@ export declare function findTsconfig(filename: string, fs: TsconfckFs): string |
  * cannot be read or what it extends cannot be resolved.
  */
 export declare function parseTsconfig(filename: string, fs: TsconfckFs): TsconfckResult;
-/** A tsconfig's text as JSON: BOM, comments and dangling commas stripped; `{}` where nothing is left. */
+/** A tsconfig's text as JSON, as tsconfck reads it (jsonc.ts); `{}` where nothing is left. */
 export declare function toJson(tsconfigJson: string): string;
 //# sourceMappingURL=tsconfck.d.ts.map

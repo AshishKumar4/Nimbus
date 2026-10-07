@@ -8,7 +8,7 @@
 import type { ProcessView as VFS } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import { join } from '../utils/path.js';
-import { createLifoCommand, readLifoManifest } from './lifo-runtime.js';
+import { readLifoManifest, registerLifoManifestCommands } from './lifo-runtime.js';
 import { exists } from '../../../vfs/vfs.js';
 
 const DEV_LINKS_PATH = '/etc/lifo/dev-links.json';
@@ -77,15 +77,7 @@ export async function linkPackage(
   };
   (await writeDevLinks(vfs, links));
 
-  // Register commands
-  const registered: string[] = [];
-  for (const [cmdName, entryRelPath] of Object.entries(manifest.commands)) {
-    const entryPath = join(pkgDir, entryRelPath);
-    registry.register(cmdName, createLifoCommand(entryPath, vfs));
-    registered.push(cmdName);
-  }
-
-  return registered;
+  return await registerLifoManifestCommands(vfs, registry, pkgDir, manifest, { requireEntry: false });
 }
 
 /**
@@ -121,11 +113,6 @@ export async function loadDevLinks(vfs: VFS, registry: CommandRegistry): Promise
     const manifest = (await readLifoManifest(vfs, link.path));
     if (!manifest) continue;
 
-    for (const [cmdName, entryRelPath] of Object.entries(manifest.commands)) {
-      const entryPath = join(link.path, entryRelPath);
-      if ((await vfs.exists(entryPath))) {
-        registry.register(cmdName, createLifoCommand(entryPath, vfs));
-      }
-    }
+    await registerLifoManifestCommands(vfs, registry, link.path, manifest, { requireEntry: true });
   }
 }

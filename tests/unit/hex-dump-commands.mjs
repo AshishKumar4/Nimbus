@@ -19,7 +19,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { testBox } from './lib/test-box.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { TerminalStdin } from '../../packages/core/src/substrate/lifo/shell/terminal-stdin.ts';
 import { staticStdinReader } from '../../packages/core/src/shell/stdin-adapter.ts';
 

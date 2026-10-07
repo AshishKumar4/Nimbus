@@ -1,4 +1,4 @@
-// A test262 worker (tests/unit/interpreter-test262.mjs): runs each test of a
+// A test262 worker (lib/test262.mjs): runs each test of a
 // list through the interpreter, in a fresh vm context that refuses string
 // code generation, with the realm's Function constructors routed to the
 // interpreter as node-shims routes them. A test the interpreter fails is run

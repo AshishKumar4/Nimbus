@@ -21,7 +21,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { installNpmBinFallbackResolver } from '../../packages/worker/src/shell/npm-bin-entrypoints.ts';
 import { createNpmBinShim, createNpmBinManifest, npmBinManifestPath } from '../../packages/worker/src/npm/bin-links.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const terminalEvents = [];
 const harness = createSqliteVfsTestHarness();

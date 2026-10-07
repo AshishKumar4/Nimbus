@@ -139,5 +139,11 @@ export declare function runtimeAbiForCatalogName(name: string): RuntimePackageAb
  * runtime — except a superseded one, which never answers for a bin.
  */
 export declare function runtimeCatalogSource(env: RuntimeCatalogEnv): RuntimeSource;
+/**
+ * Every command a bare `nimbus install <command>` resolves, mapped to the
+ * runtime it installs: the catalog's names first, then each runtime's
+ * commands, exactly as runtimeCatalogSource.resolve picks them.
+ */
+export declare function catalogCommandIndex(env: RuntimeCatalogEnv): Promise<Map<string, string>>;
 export {};
 //# sourceMappingURL=runtime-catalog.d.ts.map

@@ -130,6 +130,19 @@ Nimbus already has a real base:
   apart, the modules a run tried to execute that its map lacked (the next
   map's graph roots) and the files it read and did not have (staged as data,
   never walked as code, whatever their extension).
+- `node` and `bun` with no script at the terminal run their REPL as a
+  program of the runtime (`core/runtime/js-repl.ts`), and each line typed
+  there is runtime code the same way: compiled as an async function
+  (`interpreter/repl-line.ts`, Node's REPL await rules, declarations kept
+  as globals), interpreted in the launch that first runs it and staged for
+  the next. Prompts, values, `_` and `_error`, `Uncaught` errors (an
+  unhandled rejection or a timer's exception included), multi-line input,
+  top-level `await`, `import()` from the working directory, Ctrl-C and the
+  `.break`, `.clear`, `.exit` and `.help` commands follow Node's REPL.
+  `.editor`, `.load`, `.save`, tab completion, history and preview are not
+  supported; a `const` stays assignable, redeclaring a `let` does not
+  throw, and a line ending in a statement other than an expression prints
+  `undefined`, not the statement's completion value.
 - Real Request/Response preview routing through `PortRegistry` without JSON
   serialization. Some current runtime adapters still buffer internally; the
   final socket/preview adapters should stream end to end.
@@ -237,6 +250,12 @@ Nimbus is not yet a complete OS replacement:
   thread that never blocks.
 - No raw inbound TCP listener. HTTP preview ports are supported; raw local TCP
   servers need Nimbus virtual sockets or a runtime adapter.
+- No network-configuration commands: `ip`, `ifconfig`, `route`, `netstat`,
+  `host` and `tunnel` are not provided. A session has no interfaces, routes
+  or sockets of its own to show or change: its loopback is the port registry,
+  and everything else goes out through `fetch`. Names resolve from the
+  kernel's /etc/hosts (`localhost`, and what a host adds to its resolver), for
+  curl, wget and node's `dns.lookup` alike.
 
 ## Known User-Visible Gaps
 
@@ -618,7 +637,7 @@ retired only after the replacement path is routed and probed.
 | Registry-level no-op shell fallbacks for real builtins | Some commands remain as compatibility stubs after real shell builtins exist | Move real behavior into shell builtins/interpreter and keep registry entries only for command discovery when needed |
 | Node local HTTP `globalThis.__portRegistry` bridge | It is a separate request bridge from Python/Ruby virtual sockets | Move Node `net`/HTTP to the shared virtual socket kernel |
 | `substrate/lifo/node-compat/child_process.ts` throwing stubs | It conflicts with the real `node-shims.ts` child-process path if treated as product surface | Keep only if shell-internal and clearly isolated; otherwise remove or redirect to the real broker |
-| `substrate/lifo/kernel/network/*` | It is a separate virtual network concept from `PortRegistry` and `VirtualSocketKernel` | Quarantine as internal/experimental or retire after shared virtual socket kernel covers runtime networking |
+| `substrate/lifo/kernel/network/*` | Resolved: the simulated interfaces, routes, bridges, tunnels and sockets were deleted with the commands that alone used them; the kernel keeps its resolver (`kernel/dns-resolver.ts`) | Done |
 | Duplicated npm native policy in loader preamble | Resolved: one `PackageAbiPolicy` is serialized into the preamble and fully parity-checked against the supervisor policy | Done. Keep the parity gate green when the policy changes |
 | Hardcoded runtime aliases/defaults | Resolved in `package-manager.ts` (aliases derive from catalog manifests); the CLI `DEFAULT_RUNTIME_VERSIONS` table is still hand-maintained | Make the CLI runtime list catalog-driven or parity-checked |
 | Stale comments describing real implementations as stubs, old runtime sizes, old WebSocket hibernation posture, or old concurrency | They mislead future implementation and docs | Clean comments when touching affected modules; do not change behavior only for comment cleanup unless in-scope |

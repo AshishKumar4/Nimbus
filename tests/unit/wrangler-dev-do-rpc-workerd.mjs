@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 14 s wall, 13 s CPU, 1.3 GiB peak (6 runs, 2026-10-06)
 // A user Worker under Nimbus's `wrangler dev` calls a classic Durable Object
 // binding as on Cloudflare, checked as a differential: the same Workers
 // (tests/behavioral/wrangler/new/_do-rpc-worker.mjs) run on plain workerd,

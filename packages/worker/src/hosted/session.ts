@@ -19,7 +19,7 @@
  */
 
 import { RpcTarget } from 'cloudflare:workers';
-import { CRED_SESSION_USER, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_SESSION_USER, sameCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import * as rpc from '../session/rpc.js';
 import * as operations from '../session/programmatic.js';
@@ -40,11 +40,6 @@ type Visibility = { visibility?: 'scoped' | 'public'; name?: string };
 
 export interface HostedSessionOwner extends operations.ProgrammaticHost {
   noteClientActivity(): void;
-}
-
-function sameCred(a: VfsCred, b: VfsCred): boolean {
-  return a.uid === b.uid && a.gid === b.gid && a.umask === b.umask
-    && a.groups.length === b.groups.length && a.groups.every((group, index) => group === b.groups[index]);
 }
 
 export class HostedSession extends RpcTarget {

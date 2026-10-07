@@ -204,7 +204,7 @@ export function probeModule() {
   const parsed = wabt.parseWat('probe.wat', WAT, {});
   try {
     parsed.validate();
-    cached = new WebAssembly.Module(parsed.toBinary({}).buffer);
+    cached = new WebAssembly.Module(/** @type {Uint8Array<ArrayBuffer>} */ (parsed.toBinary({}).buffer));
   } finally {
     parsed.destroy();
   }

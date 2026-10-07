@@ -56,6 +56,7 @@
  */
 
 import {
+  encodeWriteBatch,
   encodeWriteBatchStream,
   W7_MAX_OWNED_PATH_BYTES,
   W7_MAX_PATHS_PER_BATCH,
@@ -81,6 +82,8 @@ export const WAVE_PATHS = W7_MAX_PATHS_PER_BATCH - 8;
 export const WAVE_PATH_BYTES = W7_MAX_OWNED_PATH_BYTES - 4 * 1024;
 /** Buffered content bytes that close a wave. */
 export const WAVE_BYTES = 4 * 1024 * 1024;
+/** The pieces a wave encoded whole crosses its transport in. */
+const SEND_SLICE_BYTES = 1024 * 1024;
 
 
 /**
@@ -180,6 +183,8 @@ export interface WaveStats {
   maxWaveBytes: number;
   /** Waves sent again after their transport was lost. */
   retries: number;
+  /** Waves encoded whole before they were sent (the rest streamed as encoded). */
+  wholeWaves: number;
 }
 
 type BufferedRecord<Meta> =
@@ -261,7 +266,8 @@ function parseReceipts(result: unknown): WaveFileReceipt[] {
  */
 function ownedBytes(bytes: Uint8Array): Uint8Array {
   if (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength) return bytes;
-  return bytes.slice();
+  // A copy: a Node Buffer's slice() is another view of the same memory.
+  return new Uint8Array(bytes);
 }
 
 export class WaveWriter<Meta = undefined> {
@@ -302,6 +308,7 @@ export class WaveWriter<Meta = undefined> {
     maxWavePaths: 0,
     maxWaveBytes: 0,
     retries: 0,
+    wholeWaves: 0,
   };
   /** The session's epoch for this writer, and when it was opened (null: unfenced). */
   private epoch: Promise<{ writer: string | null; openedAt: number }> | null = null;
@@ -322,15 +329,16 @@ export class WaveWriter<Meta = undefined> {
   }
 
   /**
-   * A regular file. The writer takes `bytes`; a view sharing its buffer is
-   * copied. `meta` rides with the record, back to the caller as it is cut.
+   * A regular file, with its permission bits as given (`mode & 0o7777`). The
+   * writer takes `bytes`; a view sharing its buffer is copied. `meta` rides
+   * with the record, back to the caller as it is cut.
    */
   file(path: string, mode: number, bytes: Uint8Array, meta?: Meta): Promise<void> {
     return this.exclusive(async () => {
       const key = this.key(path);
       this.assertOwnerHealthy(meta);
       await this.admit(key, bytes.byteLength, true);
-      this.buffer(key, { kind: 'file', mode: mode & 0o111 ? 0o755 : 0o644, bytes: ownedBytes(bytes), meta });
+      this.buffer(key, { kind: 'file', mode: mode & 0o7777, bytes: ownedBytes(bytes), meta });
       await this.cutIfFull();
     });
   }
@@ -364,7 +372,7 @@ export class WaveWriter<Meta = undefined> {
       const key = this.key(path);
       this.assertOwnerHealthy(meta);
       if (this.hasBuffered()) await this.cut();
-      this.buffer(key, { kind: 'stream', mode: mode & 0o111 ? 0o755 : 0o644, size, source: chunks, meta });
+      this.buffer(key, { kind: 'stream', mode: mode & 0o7777, size, source: chunks, meta });
       await this.cut();
       if (this.inFlight) await this.inFlight;
     });
@@ -697,7 +705,8 @@ export class WaveWriter<Meta = undefined> {
 
     this.inFlightSymlinks = symlinks;
     const sentAt = Date.now();
-    const published = this.send({ inodes, chunks, deletePaths, streams }, wave).then((result) => {
+    const opened = this.open({ inodes, chunks, deletePaths, streams }, waveBytes);
+    const published = opened.then(({ open, streamed }) => this.sendAttempts(open, streamed, wave)).then((result) => {
       try {
         const error = waveResultError(result);
         if (error) throw error;
@@ -730,28 +739,61 @@ export class WaveWriter<Meta = undefined> {
     }).finally(() => {
       if (this.inFlight === published) this.inFlight = null;
     });
-    // Its failure reaches whoever waits next; it is never unobserved.
+    // Its failure reaches whoever waits next; it is never unobserved. In
+    // flight from here, before its encode is awaited: its records are no
+    // longer buffered, so settled() must wait for it.
     published.catch(() => {});
     this.inFlight = published;
+    // The next wave buffers only once this one is encoded and its records
+    // let go, so a producer holds one wave's bytes beside the next, not two;
+    // its answer is still awaited only by the cut after it.
+    await opened.catch(() => {});
+  }
+
+  /**
+   * How a wave of `bytes` content crosses: an attempt's stream, made anew
+   * for each attempt.
+   *
+   * Across a transport (a supervisor that opens epochs), a wave held in
+   * memory is encoded whole before it is sent, and the transport takes it in
+   * SEND_SLICE_BYTES pieces, never waiting on the encoder. A re-send sends
+   * the same bytes, and the wave's records are let go once it is encoded.
+   * Measured, eight producers into one session, Markflow's file sizes: the
+   * encoder's stream, pulled through the watchdog as the transport read it,
+   * took 1,002 files/s; the wave encoded first, 1,374 (re-chunking that
+   * stream to 64 KiB or 1 MiB gained nothing). A wave with a streamed
+   * source is never held whole, nor is a lone file larger than a wave, and a
+   * session's own writer has no transport to wait on: they stream as the
+   * encoder makes them.
+   */
+  private async open(payload: BatchWritePayload, bytes: number): Promise<{ open: () => ReadableStream<Uint8Array>; streamed: boolean }> {
+    const streamed = (payload.streams?.length ?? 0) > 0;
+    // A file larger than a wave travels in a wave of its own: never copied whole.
+    if (streamed || bytes > WAVE_BYTES || this.options.supervisor.openWaveWriter === undefined) {
+      return { open: encoderOf(payload), streamed };
+    }
+    const whole = await encodeWriteBatch(payload);
+    this.counters.wholeWaves++;
+    return { open: piecesOf(whole, SEND_SLICE_BYTES), streamed: false };
   }
 
   /**
    * Send one wave, again while its transport is lost (see the module's
    * comment), and answer with what the session answered.
    */
-  private async send(payload: BatchWritePayload, wave: number): Promise<unknown> {
+  private async sendAttempts(open: () => ReadableStream<Uint8Array>, streamed: boolean, wave: number): Promise<unknown> {
     const { backoffMs, stallMs, answerDeadlineMs } = this.options.retry
       ?? { backoffMs: LOST_CALL_RESEND_BACKOFF_MS, stallMs: LOST_STREAM_STALL_MS, answerDeadlineMs: LOST_STREAM_ANSWER_MS };
     for (let attempt = 0; ; attempt++) {
       const writer = await this.currentEpoch();
-      const attemptStream = abortable(encodeWriteBatchStream(payload), stallMs, answerDeadlineMs);
+      const attemptStream = abortable(open(), stallMs, answerDeadlineMs);
       const fence: WaveFence | undefined = writer === null ? undefined : { writer, wave, attempt: attempt + 1 };
       const answer = this.options.supervisor.writeBatchStream(attemptStream.stream, fence);
       try {
         return await Promise.race([answer, attemptStream.lost]);
       } catch (error) {
         const lost = error instanceof WaveLost || isLostFencedCall(error);
-        if (!lost || (payload.streams?.length ?? 0) > 0 || attempt >= backoffMs.length) throw error;
+        if (!lost || streamed || attempt >= backoffMs.length) throw error;
         // The abandoned attempt can read nothing more, and its late answer is dropped.
         attemptStream.abort(error);
         answer.then(disposeRpcResource, () => {});
@@ -830,11 +872,42 @@ class WaveLost extends Error {
   }
 }
 
+/** An attempt's stream as the encoder makes it, read from `payload`. */
+function encoderOf(payload: BatchWritePayload): () => ReadableStream<Uint8Array> {
+  return () => encodeWriteBatchStream(payload);
+}
+
+/**
+ * An attempt's stream as `bytes` in `size`-byte pieces, each its own copy:
+ * the watched stream they pass through transfers what it enqueues, and the
+ * bytes stay whole for a re-send. (A function of its own, so the closure
+ * holds the bytes and nothing the encoder read them from.)
+ */
+function piecesOf(bytes: Uint8Array, size: number): () => ReadableStream<Uint8Array> {
+  return () => slices(bytes, size);
+}
+
+function slices(bytes: Uint8Array, size: number): ReadableStream<Uint8Array> {
+  let at = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (at >= bytes.byteLength) {
+        controller.close();
+        return;
+      }
+      const end = Math.min(bytes.byteLength, at + size);
+      controller.enqueue(bytes.slice(at, end));
+      at = end;
+    },
+  }, { highWaterMark: 0 });
+}
+
 /**
  * One attempt's stream, watched from the writer's side: `lost` rejects when
  * nothing has read it for `stallMs` before it ended, or no answer came
  * `answerDeadlineMs` after it ended; `abort` errors it so the attempt reads
- * nothing more.
+ * nothing more. Reading is the bytes drained from the stream's queue: a
+ * reader taking a large piece in small reads drains it without a pull.
  */
 function abortable(stream: ReadableStream<Uint8Array>, stallMs: number, answerDeadlineMs: number): {
   stream: ReadableStream<Uint8Array>;
@@ -852,21 +925,39 @@ function abortable(stream: ReadableStream<Uint8Array>, stallMs: number, answerDe
     if (timer !== null) clearTimeout(timer);
     timer = setTimeout(() => declareLost(new WaveLost(message)), ms);
   };
-  watch(stallMs, `writeBatchStream stalled: nothing read it for ${stallMs} ms`);
+  /** Bytes enqueued and not yet read (the queue's total, as desiredSize below a mark of 0). */
+  const queued = (): number => Math.max(0, -(target?.desiredSize ?? 0));
+  // Lost when a stall period passes with nothing drained from the queue.
+  const watchReads = (): void => {
+    if (timer !== null) clearTimeout(timer);
+    const unread = queued();
+    timer = setTimeout(() => {
+      if (queued() < unread) watchReads();
+      else declareLost(new WaveLost(`writeBatchStream stalled: nothing read it for ${stallMs} ms`));
+    }, stallMs);
+  };
+  watchReads();
+  let sourceDone = false;
   const source: UnderlyingByteSource = {
     type: 'bytes',
     start(controller) {
       target = controller;
     },
     async pull(controller) {
-      const next = await reader.read();
-      if (next.done) {
+      const next = sourceDone ? null : await reader.read();
+      if (next === null || next.done) {
+        sourceDone = true;
+        // The stream has ended once its reader asks for more with nothing
+        // queued; a pull may come while it still drains the last piece.
+        if (queued() > 0) return;
         watch(answerDeadlineMs, `writeBatchStream unanswered ${answerDeadlineMs} ms after its stream ended`);
         controller.close();
+        // A reader waiting with its own buffer is answered "done" only so.
+        controller.byobRequest?.respond(0);
         return;
       }
-      watch(stallMs, `writeBatchStream stalled: nothing read it for ${stallMs} ms`);
       controller.enqueue(next.value);
+      watchReads();
     },
     cancel(reason) {
       return reader.cancel(reason);

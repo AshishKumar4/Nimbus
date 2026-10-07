@@ -125,8 +125,9 @@ for (const row of ROWS) {
   console.log(`\n────── row: ${row.name} ──────`);
   console.log(`  ${row.description}`);
   if (row.skip) {
-    console.log(`  ↪ skipped: ${row.description}`);
-    a.check(`${row.name} (skipped — covered elsewhere)`, true, '');
+    // Not a pass: the row is covered by its own probe, so it is reported
+    // as skipped and kept out of this probe's count.
+    console.log(`  ↪ skipped (not counted): ${row.description}`);
     continue;
   }
   // Fresh dir per row.

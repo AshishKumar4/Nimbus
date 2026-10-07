@@ -1,4 +1,4 @@
-import { concatBytes, inputChunks, utf8SequenceLength, writeBytes } from '../../utils/bytes-io.js';
+import { concatBytes, readAllInput, utf8SequenceLength, writeBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
 // util-linux rev (2.41) in a UTF-8 locale: each line's characters reversed,
 // its newline kept (a last line without one gets none). A NUL is a
@@ -18,10 +18,7 @@ const command = async (ctx) => {
     for (const file of files.length > 0 ? files : ['-']) {
         let bytes;
         try {
-            const parts = [];
-            for await (const chunk of inputChunks(ctx, file))
-                parts.push(chunk);
-            bytes = concatBytes(parts);
+            bytes = await readAllInput(ctx, file);
         }
         catch (error) {
             await ctx.stderr.write(`rev: cannot open ${file}: ${strerror(error)}\n`);

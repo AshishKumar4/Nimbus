@@ -16,7 +16,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 

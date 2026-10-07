@@ -24,7 +24,7 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const scratch = mkdtempSync(join(tmpdir(), 'nimbus-git-status-'));
 process.on('exit', () => rmSync(scratch, { recursive: true, force: true }));

@@ -11,7 +11,7 @@ import { isVfsError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { exists, isDirectory, readText, statOrThrow } from '../../packages/core/src/vfs/vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const enc = new TextEncoder();

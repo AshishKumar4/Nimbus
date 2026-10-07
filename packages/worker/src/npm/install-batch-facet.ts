@@ -25,12 +25,23 @@
  *   - Preamble symbols (streamPackageEntries, streamTarEntries,
  *     readableStreamToAsyncIterable, MAX_FILE_BYTES) referenced via
  *     @ts-ignore; __nimbusWaveWriter declared below.
+ *   - The install preamble's functions (retryingRegistryFetch,
+ *     strongestSriEntry, sriDigestOf, sriDigestsEqual) are imported, never
+ *     declared as globals: the preamble embeds each by its own source, and
+ *     an import makes this function name it by the same identifier, whatever
+ *     the Worker's bundler calls it. A global of that name would make the
+ *     bundler rename the module's function away from it (`retryingRegistryFetch2`),
+ *     and the facet would call a name its preamble never defines.
  */
 
 import type { FacetPackageSpec } from './install-facet.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '@nimbus-sh/core/_shared/tarball-integrity.js';
 
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
+// The registry's retry policy and tarball integrity: in the facet, the
+// preamble's (loaders/npm-install-preamble.ts) by the same identifiers.
+import { retryingRegistryFetch, type RegistryNetwork } from './registry-retry.js';
 
 declare const __nimbusWaveWriter: typeof import('@nimbus-sh/platform/wave-writer.js');
 
@@ -239,6 +250,11 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       throw new Error('installPackagesInFacet: a batch has one install root and one mtime');
     }
   }
+  // The registry, through this Dynamic Worker's own fetch: its loader routes
+  // that through the workspace's network (core _shared/workspace-network.ts
+  // loaderOutbound), its egress included.
+  const network: RegistryNetwork = { fetch: (input, init) => fetch(input, init) };
+
   // Records carry their package (meta, its index in the batch): a wave the
   // session refused fails the packages it carried, the writer goes on for
   // the rest, and it answers whether each package's writes all published.
@@ -262,7 +278,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(
   //
   // Kept inline because cloudflare-parallel serializes this whole function
   // via fn.toString(); it cannot import a sibling module across the isolate
-  // boundary. Retry behavior matches resolve-one-facet and _shared/retry.
+  // boundary. Its retry policy and integrity check come from the preamble
+  // (loaders/npm-install-preamble.ts), shared with the supervisor.
   const installOne = async (
     spec: FacetPackageSpec,
     ownerId: number,
@@ -328,18 +345,18 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       hedgeTimer = setTimeout(() => {
         hedgeTimer = null;
         speculativeFetches++;
-        pendingNetwork = fetch(spec.tarballUrl, { signal: hedgeAbort.signal });
+        pendingNetwork = network.fetch(spec.tarballUrl, { signal: hedgeAbort.signal });
         // Rejections are re-awaited and rethrown in order by takeNetworkResponse;
         // this sink only stops a failure that lands while the R2 leg is still
         // outstanding from surfacing as an unhandled rejection.
         pendingNetwork.catch(() => { /* consumed by takeNetworkResponse or discarded */ });
       }, SPECULATIVE_FETCH_DELAY_MS);
     }
-    const takeNetworkResponse = async (): Promise<Response> => {
+    const takeNetworkResponse = async (fetchVia: RegistryNetwork['fetch']): Promise<Response> => {
       clearHedgeTimer();
       const pending = pendingNetwork;
       pendingNetwork = null;
-      return pending ? await pending : await fetch(spec.tarballUrl);
+      return pending ? await pending : await fetchVia(spec.tarballUrl);
     };
     const discardPendingNetwork = (): void => {
       clearHedgeTimer();
@@ -421,37 +438,16 @@ export const installPackagesInFacet = async function installPackagesInFacet(
 
       if (!r2HitBytes) {
         pipelinedTarballRaceLosses++;
-        // 1c. Fetch with retry on 5xx + network errors.
-        //     Budget: 3 retries, jittered backoff 500/1500/4500 ms ±25%.
-        const FACET_BACKOFF_MS = [500, 1500, 4500];
-        const FACET_RETRIES = 3;
+        // 1c. The registry's retry policy (npm/registry-retry.ts, carried
+        //     by the preamble): a 5xx or a request that never answered is
+        //     tried again, a 4xx is the answer.
         let lastErr: any;
-        for (let attempt = 0; attempt <= FACET_RETRIES; attempt++) {
-          try {
-            const r = await takeNetworkResponse();
-            if (r.ok || r.status < 500 || r.status > 599) {
-              resp = r;
-              lastErr = undefined;
-              break;
-            }
-            try { await r.body?.cancel(); } catch { /* best-effort */ }
-            lastErr = new Error(`HTTP ${r.status}`);
-            if (attempt === FACET_RETRIES) { resp = r; break; }
-            const base = FACET_BACKOFF_MS[Math.min(attempt, FACET_BACKOFF_MS.length - 1)];
-            const jitter = Math.round(base + (Math.random() * 2 - 1) * base * 0.25);
-            const delayMs = Math.max(0, jitter);
-            warnings.push(`retry ${attempt + 1}/${FACET_RETRIES} after ${delayMs}ms (HTTP ${r.status})`);
-            await new Promise<void>((rs) => setTimeout(rs, delayMs));
-          } catch (e: any) {
-            lastErr = e;
-            if (attempt === FACET_RETRIES) break;
-            const base = FACET_BACKOFF_MS[Math.min(attempt, FACET_BACKOFF_MS.length - 1)];
-            const jitter = Math.round(base + (Math.random() * 2 - 1) * base * 0.25);
-            const delayMs = Math.max(0, jitter);
-            const reason = e?.name === 'AbortError' ? 'timeout' : (e?.message || String(e));
-            warnings.push(`retry ${attempt + 1}/${FACET_RETRIES} after ${delayMs}ms (${reason})`);
-            await new Promise<void>((rs) => setTimeout(rs, delayMs));
-          }
+        try {
+          resp = await retryingRegistryFetch(network, (fetchVia) => takeNetworkResponse(fetchVia), {
+            onRetry: (retry, of, delayMs, reason) => warnings.push(`retry ${retry}/${of} after ${delayMs}ms (${reason})`),
+          });
+        } catch (e: any) {
+          lastErr = e;
         }
         if (!resp) {
           return {
@@ -497,55 +493,41 @@ export const installPackagesInFacet = async function installPackagesInFacet(
         });
 
         // 2. Integrity verify (if supplied) AND capture bytes for R2 write-back.
-        if (spec.integrity && spec.integrity.indexOf('-') !== -1) {
-          const dash = spec.integrity.indexOf('-');
-          const algo = spec.integrity.slice(0, dash).toLowerCase();
-          const expectedB64 = spec.integrity.slice(dash + 1);
-          const subtleAlgo =
-            algo === 'sha512' ? 'SHA-512'
-            : algo === 'sha384' ? 'SHA-384'
-            : algo === 'sha256' ? 'SHA-256'
-            : algo === 'sha1' ? 'SHA-1'
-            : '';
-          if (!subtleAlgo) {
-            warnings.push(`unknown integrity algo "${algo}"; skipped verification`);
-            bytesStream = body;
-          } else {
-            const [s1, s2] = body.tee();
-            bytesStream = s1;
-            integrityPromise = (async () => {
-              const chunks: Uint8Array[] = [];
-              const reader = s2.getReader();
-              let total = 0;
-              while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                if (value) { chunks.push(value); total += value.length; }
-              }
-              cumulativeBytesDecoded += total;
-              const flat = new Uint8Array(total);
-              let o = 0;
-              for (const c of chunks) { flat.set(c, o); o += c.length; }
-              const digest = await crypto.subtle.digest(subtleAlgo, flat);
-              const bytes = new Uint8Array(digest);
-              let bin = '';
-              for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-              const gotB64 = btoa(bin);
-              if (gotB64 !== expectedB64) {
-                throw new Error(
-                  `integrity mismatch for ${spec.name}@${spec.version}: expected ${algo}-${expectedB64}, got ${algo}-${gotB64}`,
-                );
-              }
-              // [W4] Capture for R2 write-back. Lifecycle: this assignment
-              // happens before integrityPromise resolves, which is awaited
-              // before flush() finishes. installOne then awaits the put
-              // before returning, so capturedTgzBytes is always populated
-              // by the time we reach the write-back code below.
-              capturedTgzBytes = flat;
-            })();
-          }
-        } else {
+        //    The entry checked is the strongest algorithm's, as npm's ssri
+        //    checks it (core _shared/tarball-integrity.ts, carried by the preamble).
+        const sri = spec.integrity ? strongestSriEntry(spec.integrity) : null;
+        if (sri === null) {
+          if (spec.integrity) warnings.push(`integrity "${spec.integrity}" names no algorithm npm checks; skipped verification`);
           bytesStream = body;
+        } else {
+          const [s1, s2] = body.tee();
+          bytesStream = s1;
+          integrityPromise = (async () => {
+            const chunks: Uint8Array[] = [];
+            const reader = s2.getReader();
+            let total = 0;
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              if (value) { chunks.push(value); total += value.length; }
+            }
+            cumulativeBytesDecoded += total;
+            const flat = new Uint8Array(total);
+            let o = 0;
+            for (const c of chunks) { flat.set(c, o); o += c.length; }
+            const got = await sriDigestOf(flat, sri.digestAlgo);
+            if (!sriDigestsEqual(got, sri.digest)) {
+              throw new Error(
+                `integrity mismatch for ${spec.name}@${spec.version}: expected ${sri.algo}-${sri.digest}, got ${sri.algo}-${got}`,
+              );
+            }
+            // [W4] Capture for R2 write-back. Lifecycle: this assignment
+            // happens before integrityPromise resolves, which is awaited
+            // before flush() finishes. installOne then awaits the put
+            // before returning, so capturedTgzBytes is always populated
+            // by the time we reach the write-back code below.
+            capturedTgzBytes = flat;
+          })();
         }
       } else {
         // Already have bytesStream from R2 hit; just suppress

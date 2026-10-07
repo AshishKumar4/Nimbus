@@ -28,7 +28,7 @@ import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const gnuVersion = execFileSync('find', ['--version'], { encoding: 'utf8' }).split('\n')[0];
 assert.match(gnuVersion, /^find \(GNU findutils\) 4\./, `the host's find must be GNU findutils 4.x, found: ${gnuVersion}`);

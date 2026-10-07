@@ -1,4 +1,4 @@
-import { type AnyNode, type Program } from 'acorn';
+import { type AnyNode, type Program, type Token } from 'acorn';
 export type AstNode = AnyNode & Record<string, unknown>;
 export declare function parseJavaScriptModule(source: string): AstNode;
 /**
@@ -6,7 +6,37 @@ export declare function parseJavaScriptModule(source: string): AstNode;
  * top level may `return`); null when it is neither.
  */
 export declare function parseJavaScriptProgram(source: string): Program | null;
+/** Parentheses, `(0, f)`, `await` and `?.` do not change what is called. */
+export declare function unwrapCallee(node: AnyNode): AnyNode;
+/** The name of the function a call reaches: `f`, `x.f`, `x['f']`, through {@link unwrapCallee}. */
+export declare function calleeName(callee: AnyNode): string | null;
+/** Whether `source` holds a top-level `import` or `export` declaration. */
 export declare function hasTopLevelModuleSyntax(source: string): boolean;
+/**
+ * Walk `source`'s tokens tracking brace, paren and bracket depth, without
+ * building an AST (a multi-MiB bundle chunk must fit a 48 MiB heap). `visit`
+ * sees each token with whether it sits at top level and, for a top-level
+ * `import` or `export` keyword, which declaration it opens: not `import(`,
+ * not `import.meta`, and not a member named so (after `.` or `?.`). The token
+ * after an `import` keyword is read to decide that and not visited. `visit`
+ * returns true to stop the walk.
+ *
+ * Returns true when `visit` stopped it, false at the end of the source, and
+ * null when the source does not tokenize.
+ */
+export declare function walkTopLevelModuleTokens(source: string, visit: (token: Token, declaration: 'import' | 'export' | null, topLevel: boolean) => boolean): boolean | null;
+/** A replacement of source text `[start, end)` by `text`. */
+export interface SourceEdit {
+    start: number;
+    end: number;
+    text: string;
+}
+/**
+ * `source` with `edits` applied, in source order. Edits may come in any
+ * order and may insert (start === end), but never overlap: an overlap is a
+ * rewrite that lost track of what it replaced, and throws.
+ */
+export declare function applySourceEdits(source: string, edits: readonly SourceEdit[]): string;
 export declare function nodeList(node: AstNode, key: string): AstNode[];
 export declare function nodeProp(node: AstNode | undefined, key: string): AstNode | undefined;
 export declare function nodeName(node: AstNode | undefined): string | undefined;

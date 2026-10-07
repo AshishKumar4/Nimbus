@@ -37,7 +37,7 @@ import { registerUnixCommands } from '../../packages/core/src/shell/unix-command
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 import { installPathExecResolver } from '../../packages/core/src/shell/exec-dispatch.ts';
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);

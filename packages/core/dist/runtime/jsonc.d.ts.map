@@ -1,0 +1,1 @@
+{"version":3,"file":"jsonc.d.ts","sourceRoot":"","sources":["../../src/runtime/jsonc.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;GAcG;AAEH,MAAM,MAAM,YAAY,GAAG,UAAU,GAAG,SAAS,CAAC;AAOlD,wEAAwE;AACxE,wBAAgB,WAAW,CAAC,IAAI,EAAE,MAAM,EAAE,OAAO,EAAE,YAAY,GAAG,MAAM,CAuCvE;AAED,6CAA6C;AAC7C,wBAAgB,YAAY,CAAC,KAAK,EAAE,OAAO,GAAG,KAAK,IAAI,MAAM,CAAC,MAAM,EAAE,OAAO,CAAC,CAE7E"}

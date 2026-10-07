@@ -6,7 +6,7 @@
 // forwards. Checked against dist — the bytes a publish would ship.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const CORE_DIST = new URL('../../packages/core/dist/', import.meta.url);
 
@@ -38,13 +38,24 @@ const MOVED_CONSTANTS = [
 
 // The type set @nimbus-sh/core@0.5.0 exports from vfs/sqlite-vfs.d.ts and
 // the split moved to @nimbus-sh/platform/w7-frame.js. Types are erased at
-// runtime, so the declaration file is the checkable artifact.
+// runtime, so a consumer's view is the compiler's: a module importing and
+// using each name from the published declarations type-checks.
 {
-  const dts = readFileSync(new URL('vfs/sqlite-vfs.d.ts', CORE_DIST), 'utf8');
-  for (const name of ['VfsInodeKind', 'BatchInodeEntry', 'BatchChunkEntry', 'BatchWritePayload']) {
-    assert.match(dts, new RegExp(`export.*\\b${name}\\b`),
-      `core/vfs/sqlite-vfs.d.ts still exports ${name}`);
-  }
+  const ts = (await import('typescript')).default;
+  const consumer = fileURLToPath(new URL('consumer.ts', CORE_DIST));
+  const source = [
+    "import type { VfsInodeKind, BatchInodeEntry, BatchChunkEntry, BatchWritePayload } from './vfs/sqlite-vfs.js';",
+    'export type Uses = [VfsInodeKind, BatchInodeEntry, BatchChunkEntry, BatchWritePayload];',
+  ].join('\n');
+  const options = { module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, noEmit: true, strict: true, skipLibCheck: true };
+  const host = ts.createCompilerHost(options);
+  const readFile = host.readFile.bind(host);
+  host.readFile = (file) => (file === consumer ? source : readFile(file));
+  const fileExists = host.fileExists.bind(host);
+  host.fileExists = (file) => file === consumer || fileExists(file);
+  const program = ts.createProgram([consumer], options, host);
+  const errors = ts.getPreEmitDiagnostics(program).map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'));
+  assert.deepEqual(errors, [], 'a consumer of core/vfs/sqlite-vfs.js still finds VfsInodeKind, BatchInodeEntry, BatchChunkEntry, BatchWritePayload');
 }
 
 console.log('ok - core-published-surface (0.5.0 exports stay reachable, forwarded from platform)');

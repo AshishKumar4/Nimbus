@@ -1,3 +1,4 @@
+import { DEFAULT_HOME } from '../../../constants.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import { resolve } from '../utils/path.js';
@@ -96,20 +97,8 @@ function determineContext(beforeCursor: string, word: string): CompletionType {
     return 'command';
   }
 
-  // After 'cd' -> directory only
-  const tokens = prefix.split(/\s+/).filter(Boolean);
-  if (tokens.length > 0 && tokens[tokens.length - 1] === 'cd') {
-    // Wait, we need to check if the first token after the operator is 'cd'
-    // Actually let's check if the command is 'cd'
-    const lastCmd = getLastCommandName(prefix);
-    if (lastCmd === 'cd') {
-      return 'directory';
-    }
-  }
-
-  // Check if after cd more generally
-  const lastCmd = getLastCommandName(prefix);
-  if (lastCmd === 'cd') {
+  // The words of a cd -> directory only
+  if (getLastCommandName(prefix) === 'cd') {
     return 'directory';
   }
 
@@ -145,11 +134,11 @@ async function listEntries(word: string, ctx: CompletionContext, dirsOnly: boole
   let expandedWord = word;
   let tildePrefix = '';
   if (word.startsWith('~/')) {
-    const home = ctx.env['HOME'] ?? '/home/user';
+    const home = ctx.env['HOME'] ?? DEFAULT_HOME;
     expandedWord = home + word.slice(1);
     tildePrefix = '~/';
   } else if (word === '~') {
-    const home = ctx.env['HOME'] ?? '/home/user';
+    const home = ctx.env['HOME'] ?? DEFAULT_HOME;
     expandedWord = home;
     tildePrefix = '~';
   }

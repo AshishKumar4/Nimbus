@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — long; CI median 240 s wall, 391 s CPU, 1.8 GiB peak (6 runs, 2026-10-06)
 // The Lean corpus (lean/): it builds with no sorry, the proofs of False from
 // tempting axioms still fail, every fixture is exactly what the models
 // generate, and lean/traceability.yaml holds (every theorem enrolled, kernel

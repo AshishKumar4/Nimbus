@@ -13,6 +13,7 @@
  * re-sent.
  */
 import { type HostRoute } from './composition.js';
+import type { WorkspaceEgress, WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 /** The props every SUPERVISOR binding for a process carries. */
 export interface SupervisorBindingProps {
     /** The Durable Object the binding's calls reach. */
@@ -25,6 +26,14 @@ export interface SupervisorBindingProps {
     hostIncarnation?: string;
     bindingKind: 'process';
     writerId: string;
+    /**
+     * The workspace's egress (NimbusWorkspaceOptions.egress), when its host
+     * supplied one: the process's network, its packument reads and its sockets
+     * go out through it, from the binding (SupervisorRPC). With its id, so a
+     * cache this binding fills is the egress's own.
+     */
+    egress?: WorkspaceEgress;
+    networkId?: string;
 }
 /**
  * The props of a SUPERVISOR binding minted in the Durable Object whose state
@@ -35,8 +44,15 @@ export declare function supervisorBindingProps(ctx: {
     readonly id: {
         toString(): string;
     };
-}, pid: number, options: {
+}, pid: number, 
+/**
+ * `network` is the workspace's (`workspace.network`), required so that no
+ * mint site can hand a process a binding that bypasses its egress; a
+ * binding no workspace's work goes through passes ISOLATE_NETWORK.
+ */
+options: {
     writerId: string;
+    network: WorkspaceNetwork;
     doId?: string;
     route?: HostRoute;
 }): SupervisorBindingProps;

@@ -16,7 +16,7 @@
 // the same storage.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -28,11 +28,12 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { processBridge, processFiles } from './lib/process-bridge.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
-import { attachSupervisorOps } from './session-supervisor-ops.mjs';
+import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { writeModuleSet } from './lib/module-map-bundle.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 adoptCtxExports({ SupervisorRPC: () => makeSupervisor() });
 
@@ -84,12 +85,7 @@ const env = {
     },
     get() { throw new Error('a one-shot exec never takes the keyed loader path'); },
   },
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)));
-    },
-  },
+  ASSETS: stagedAssets,
 };
 
 // The session's Durable Object storage, which outlives any one isolate.

@@ -3,6 +3,7 @@
 // the Python virtual socket kernel and is previewable through /port/<n>/.
 
 import { fetchPort, heredocCommand, makeAsserter, mintSession, stripAnsi, Terminal } from '../_driver.mjs';
+import { installPython, pipInstall } from './_setup.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -17,16 +18,8 @@ const t = new Terminal(sid);
 await t.connect();
 await t.waitForPrompt(60_000);
 
-const install = await t.run('nimbus install python', 180_000);
-a.check('python runtime is installed',
-  /installed at|already installed/.test(stripAnsi(install.output)) && !/catalog cannot be fetched|command not found/.test(stripAnsi(install.output)),
-  JSON.stringify(stripAnsi(install.output).slice(-500)));
-
-const pip = await t.run('pip install flask', 300_000);
-const cleanPip = stripAnsi(pip.output);
-a.check('pip install flask completes without extension wasm failures',
-  /Successfully installed flask/.test(cleanPip) && !/Failed to load MarkupSafe|Failed to load dynamic library|Wasm code generation disallowed/i.test(cleanPip),
-  JSON.stringify(cleanPip.slice(-1200)));
+await installPython(t, a, { timeoutMs: 180_000 });
+await pipInstall(t, a, 'flask');
 
 const app = `from flask import Flask, request
 

@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict';
 
 import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
+import { runCell, withProcessImport } from './lib/process-import.mjs';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 
 const parent = 'file:///home/user/app/lib/mod.js';
@@ -37,15 +38,11 @@ const loaded = [
 return { quoted, template, pattern: String(pattern), viaMember, viaOptional, loaded };
 `;
   const rewritten = rewriteDynamicImports(source, parent);
-  const calls = [];
-  globalThis.__nimbusDynamicImport = async (from, specifier, options) => {
-    calls.push(options === undefined ? [from, specifier] : [from, specifier, options]);
-    return `ns:${specifier}`;
-  };
-  try {
+  {
     // `import.meta` is only valid in a module, so it stands in for itself.
     const body = rewritten.replace('typeof import.meta', "'meta'");
-    const result = await new Function(`return (async () => {${body}})();`)();
+    const { result, calls } = await withProcessImport((specifier) => `ns:${specifier}`,
+      () => new Function(`return (async () => {${body}})();`)());
     assert.equal(result.quoted, 'await import("node:fs")', 'a string is text');
     assert.equal(result.template, 'import("ns:./in-template.js")', "a template's text is text, its expression code");
     assert.equal(result.pattern, '/import\\("x"\\)/', 'a regex is text');
@@ -60,8 +57,6 @@ return { quoted, template, pattern: String(pattern), viaMember, viaOptional, loa
       [parent, './nested.js'],
       [parent, 'ns:./nested.js'],
     ]);
-  } finally {
-    delete globalThis.__nimbusDynamicImport;
   }
 }
 
@@ -73,13 +68,9 @@ return { quoted, template, pattern: String(pattern), viaMember, viaOptional, loa
     'class Loader { static import(value = import("./class.js")) { return value; } }',
     'return Promise.all([api.import(), Loader.import(), import(`./${ratio}.js`)]);',
   ].join('\n');
-  const calls = [];
-  globalThis.__nimbusDynamicImport = async (from, spec) => { calls.push([from, spec]); return spec; };
-  try {
-    const result = await new Function(rewriteDynamicImports(source, parent))();
-    assert.deepEqual(result, ['./default.js', './class.js', './2.js']);
-    assert.deepEqual(calls, result.map(spec => [parent, spec]));
-  } finally { delete globalThis.__nimbusDynamicImport; }
+  const { result, calls } = await withProcessImport((spec) => spec, () => new Function(rewriteDynamicImports(source, parent))());
+  assert.deepEqual(result, ['./default.js', './class.js', './2.js']);
+  assert.deepEqual(calls, result.map(spec => [parent, spec]));
 }
 
 // Token traversal must still see later bindings, nested syntax
@@ -129,18 +120,15 @@ assert.equal(rewriteDynamicImports('const x = 1;', parent), 'const x = 1;');
   const service = new EsbuildService();
   const result = await service.transform(source, { rewriteOnly: true, dynamicImportParent: parent, moduleMetadata: true });
   assert.match(result.code, /^#!\/usr\/bin\/env node/, 'the hashbang stays the first line');
-  const calls = [];
-  globalThis.__nimbusDynamicImport = async (from, specifier) => { calls.push([from, specifier]); return { value: 7 }; };
-  try {
-    const module = { exports: {}, __nimbusImportMeta: { url: parent } };
-    const require = (id) => (id === 'node:url' ? { fileURLToPath: (url) => new URL(url).pathname } : {});
+  const module = { exports: {}, __nimbusImportMeta: { url: parent } };
+  const require = (id) => (id === 'node:url' ? { fileURLToPath: (url) => new URL(url).pathname } : {});
+  const { result: loaded, calls } = await withProcessImport(() => ({ value: 7 }), () => {
     // A loader skips the hashbang line; so does this.
-    new Function('exports', 'require', 'module', result.code.replace(/^#!/, '//'))(module.exports, require, module);
-    assert.deepEqual(await module.exports.loaded, ['/home/user/app/lib/', 7]);
-    assert.deepEqual(calls, [[parent, './cli-main.js']], "the hashbang line's text was not taken for an import");
-  } finally {
-    delete globalThis.__nimbusDynamicImport;
-  }
+    runCell(result.code.replace(/^#!/, '//'), { exports: module.exports, require, module });
+    return module.exports.loaded;
+  });
+  assert.deepEqual(loaded, ['/home/user/app/lib/', 7]);
+  assert.deepEqual(calls, [[parent, './cli-main.js']], "the hashbang line's text was not taken for an import");
 }
 
 // Invalid import arity/spread must remain a syntax error, not become a valid

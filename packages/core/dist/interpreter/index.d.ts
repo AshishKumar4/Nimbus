@@ -3,6 +3,7 @@ import { type ModuleCell } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
+export { replLineBody } from './repl-line.js';
 export type { ModuleCell } from './modules.js';
 export interface InterpreterHost {
     /** `import(specifier, options)` from code whose module URL is `parentUrl`. */

@@ -17,7 +17,7 @@
 //   - a cwd-relative dir arg still resolves against the cwd (inheritance).
 //   - `ls /missing` errors instead of silently listing the cwd.
 
-import { deleteSession, makeAsserter, mintSession, stripAnsi, Terminal } from '../_driver.mjs';
+import { deleteSession, makeAsserter, mintSession, stripAnsi, Terminal, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const label = 'shell/ls-absolute-path';
@@ -28,7 +28,6 @@ const sid = await mintSession();
 console.log(`SID: ${sid}`);
 const t = new Terminal(sid);
 
-const has = (out, word) => stripAnsi(out).replace(/\r/g, '\n').split('\n').map((l) => l.trim()).includes(word);
 const tail = (out) => JSON.stringify(stripAnsi(out).slice(-600));
 
 try {
@@ -41,21 +40,21 @@ try {
   {
     const { output } = await t.run("bash -c 'ls /'", 60_000);
     a.check('bash: `ls /` lists the ROOT filesystem, not the cwd',
-      has(output, 'bin') && has(output, 'usr') && !has(output, 'welcome.md'),
+      hasOutputLine(output, 'bin') && hasOutputLine(output, 'usr') && !hasOutputLine(output, 'welcome.md'),
       tail(output));
   }
 
   {
     const { output } = await t.run("bash -c 'ls /home/user'", 60_000);
     a.check('bash: `ls /home/user` lists home by absolute path',
-      has(output, 'welcome.md') && !/No such file/.test(stripAnsi(output)),
+      hasOutputLine(output, 'welcome.md') && !/No such file/.test(stripAnsi(output)),
       tail(output));
   }
 
   {
     const { output } = await t.run("bash -c 'cd /home/user && ls'", 60_000);
     a.check('bash: bare `ls` still lists the cwd',
-      has(output, 'welcome.md'),
+      hasOutputLine(output, 'welcome.md'),
       tail(output));
   }
 
@@ -65,20 +64,20 @@ try {
   {
     const { output } = await t.run("bash -c 'cd /home/user && ls ptest'", 60_000);
     a.check('bash: cwd-relative dir arg resolves against the cwd (inheritance)',
-      has(output, 'CWDMARK'),
+      hasOutputLine(output, 'CWDMARK'),
       tail(output));
   }
   {
     const { output } = await t.run("bash -c 'ls /ptest'", 60_000);
     a.check('bash: `/ptest` (absolute) does NOT resolve to the cwd dir',
-      /No such file/.test(stripAnsi(output)) && !has(output, 'CWDMARK'),
+      /No such file/.test(stripAnsi(output)) && !hasOutputLine(output, 'CWDMARK'),
       tail(output));
   }
 
   {
     const { output } = await t.run("bash -c 'ls /nonexistent-xyz'", 60_000);
     a.check('bash: `ls /missing` errors instead of listing the cwd',
-      /No such file|cannot access/i.test(stripAnsi(output)) && !has(output, 'welcome.md'),
+      /No such file|cannot access/i.test(stripAnsi(output)) && !hasOutputLine(output, 'welcome.md'),
       tail(output));
   }
 } finally {

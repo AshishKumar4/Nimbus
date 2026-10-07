@@ -8,6 +8,7 @@
 //      and returns the Flask response.
 
 import { fetchPort, heredocCommand, makeAsserter, mintSession, stripAnsi, Terminal } from '../_driver.mjs';
+import { installPython, pipInstall } from './_setup.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -22,16 +23,8 @@ const t = new Terminal(sid);
 await t.connect();
 await t.waitForPrompt(60_000);
 
-const install = await t.run('nimbus install python --reinstall', 240_000);
-a.check('python runtime installs from runtime catalog',
-  /installed at|already installed/.test(stripAnsi(install.output)) && !/catalog cannot be fetched|command not found/.test(stripAnsi(install.output)),
-  JSON.stringify(stripAnsi(install.output).slice(-500)));
-
-const pip = await t.run('pip install flask', 300_000);
-const cleanPip = stripAnsi(pip.output);
-a.check('pip install flask completes',
-  /Successfully installed flask/.test(cleanPip) && !/ModuleNotFoundError|PackageManager\.install\(\) got an unexpected keyword|Failed to load MarkupSafe|Failed to load dynamic library|Wasm code generation disallowed/i.test(cleanPip),
-  JSON.stringify(cleanPip.slice(-1000)));
+await installPython(t, a, { reinstall: true });
+await pipInstall(t, a, 'flask', { refuse: /ModuleNotFoundError|PackageManager\.install\(\) got an unexpected keyword/ });
 
 const script = `from flask import Flask, request
 

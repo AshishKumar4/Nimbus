@@ -33,10 +33,6 @@
  * The transform facet's runtime bundles it (oxc-facet/preamble.ts).
  */
 import { resolveTsSettings } from './tsconfig-raw.js';
-/** Whether `error` is a transform's report that it ran out of native stack. */
-export function isOxcStackExhaustion(error) {
-    return error instanceof Error && Reflect.get(error, 'stackExhausted') === true;
-}
 /** The wasm's exports, checked against the ABI scripts/oxc-wasm/src/abi.rs defines. */
 function bindExports(instance) {
     const exports = instance.exports;

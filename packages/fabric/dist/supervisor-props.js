@@ -19,14 +19,21 @@ import { hostRoute } from './composition.js';
  * is `ctx`, for process `pid`, reaching `options.doId` (this object by
  * default) by `options.route` (this isolate's composition by default).
  */
-export function supervisorBindingProps(ctx, pid, options) {
+export function supervisorBindingProps(ctx, pid, 
+/**
+ * `network` is the workspace's (`workspace.network`), required so that no
+ * mint site can hand a process a binding that bypasses its egress; a
+ * binding no workspace's work goes through passes ISOLATE_NETWORK.
+ */
+options) {
     if (typeof options.writerId !== 'string' || options.writerId.length === 0)
         throw new Error('a process supervisor binding requires a run');
     const own = ctx.id.toString();
     const doId = options.doId ?? own;
     const route = options.route ?? hostRoute() ?? undefined;
     const delivery = pid > 0 && doId === own ? supervisorDeliveryProps(ctx) : {};
-    return { doId, pid, route, ...delivery, bindingKind: 'process', writerId: options.writerId };
+    const egress = options.network.egress === undefined ? {} : { egress: options.network.egress, networkId: options.network.id };
+    return { doId, pid, route, ...delivery, bindingKind: 'process', writerId: options.writerId, ...egress };
 }
 /** The one mint for SUPERVISOR/outbound capabilities handed to a process. */
 export function mintProcessSupervisor(mint, props) {

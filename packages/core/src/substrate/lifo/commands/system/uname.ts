@@ -1,4 +1,5 @@
 import type { Command } from '../types.js';
+import { DEFAULT_HOSTNAME } from '../../../../constants.js';
 
 /**
  * Nimbus presents a Linux system: the syscall surface, the filesystem layout
@@ -9,7 +10,7 @@ import type { Command } from '../types.js';
  */
 const INFO = {
   sysname: 'Linux',
-  nodename: 'nimbus',
+  nodename: DEFAULT_HOSTNAME,
   release: '1.0.0',
   version: '#1 Nimbus',
   machine: 'wasm',

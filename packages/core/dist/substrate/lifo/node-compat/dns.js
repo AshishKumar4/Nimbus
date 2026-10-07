@@ -1,11 +1,4 @@
-/**
- * Node.js `dns` module shim for Lifo.
- *
- * Real DNS resolution is not available in the browser. The callback-style API
- * invokes callbacks with an ENOTFOUND error, while the promises API rejects.
- * `lookup` is the most commonly used function so it gets special treatment:
- * for "localhost" it resolves to 127.0.0.1, everything else errors.
- */
+import { createHostsResolver } from '../kernel/index.js';
 const NOTFOUND = 'ENOTFOUND';
 function makeError(hostname, syscall) {
     const err = new Error(`getaddrinfo ${NOTFOUND} ${hostname}`);
@@ -14,27 +7,24 @@ function makeError(hostname, syscall) {
     err.syscall = syscall;
     return err;
 }
-function lookup(hostname, optionsOrCb, cb) {
-    let callback;
-    let all = false;
-    if (typeof optionsOrCb === 'function') {
-        callback = optionsOrCb;
+/** `hostname` as getaddrinfo would answer it here: a literal as itself, a name from `resolver`. */
+function lookupAddress(resolver, hostname) {
+    const address = /^[0-9.]+$/.test(hostname) || hostname.includes(':') ? hostname : resolver.lookup(hostname)?.value;
+    return address === undefined ? null : { address, family: address.includes(':') ? 6 : 4 };
+}
+function createLookup(resolver) {
+    function lookup(hostname, optionsOrCb, cb) {
+        const callback = typeof optionsOrCb === 'function' ? optionsOrCb : cb;
+        const all = typeof optionsOrCb === 'object' && optionsOrCb?.all === true;
+        const entry = lookupAddress(resolver, hostname);
+        if (entry === null)
+            callback(makeError(hostname, 'getaddrinfo'));
+        else if (all)
+            callback(null, [entry]);
+        else
+            callback(null, entry.address, entry.family);
     }
-    else {
-        if (typeof optionsOrCb === 'object' && optionsOrCb?.all)
-            all = true;
-        callback = cb;
-    }
-    if (hostname === 'localhost' || hostname === '127.0.0.1') {
-        if (all) {
-            callback(null, [{ address: '127.0.0.1', family: 4 }]);
-        }
-        else {
-            callback(null, '127.0.0.1', 4);
-        }
-        return;
-    }
-    callback(makeError(hostname, 'getaddrinfo'));
+    return lookup;
 }
 function resolve(hostname, rrtypeOrCb, cb) {
     const callback = typeof rrtypeOrCb === 'function' ? rrtypeOrCb : cb;
@@ -70,23 +60,8 @@ function setServers(_servers) {
 function getServers() {
     return [];
 }
-// dns.promises API
+// dns.promises API, but for lookup, which createDns binds to a resolver.
 const promises = {
-    lookup: (hostname, options) => {
-        return new Promise((resolve, reject) => {
-            if (hostname === 'localhost' || hostname === '127.0.0.1') {
-                const entry = { address: '127.0.0.1', family: 4 };
-                if (typeof options === 'object' && options?.all) {
-                    resolve([entry]);
-                }
-                else {
-                    resolve(entry);
-                }
-                return;
-            }
-            reject(makeError(hostname, 'getaddrinfo'));
-        });
-    },
     resolve: (hostname, _rrtype) => {
         return Promise.reject(makeError(hostname, 'queryA'));
     },
@@ -125,20 +100,54 @@ const NOTINITIALIZED = 'ENOTINITIALIZED';
 const REFUSED = 'EREFUSED';
 const SERVFAIL = 'ESERVFAIL';
 const TIMEOUT = 'ETIMEOUT';
-export { lookup, resolve, resolve4, resolve6, resolveMx, resolveTxt, resolveSrv, resolveNs, resolveCname, reverse, setServers, getServers, promises, NOTFOUND, ADDRGETNETWORKPARAMS, BADFAMILY, BADFLAGS, BADHINTS, BADNAME, BADQUERY, BADRESP, BADSTR, CANCELLED, CONNREFUSED, DESTRUCTION, EOF, FILE, FORMERR, LOADIPHLPAPI, NODATA, NOMEM, NONAME, NOTINITIALIZED, REFUSED, SERVFAIL, TIMEOUT, };
-export default {
-    lookup,
-    resolve,
-    resolve4,
-    resolve6,
-    resolveMx,
-    resolveTxt,
-    resolveSrv,
-    resolveNs,
-    resolveCname,
-    reverse,
-    setServers,
-    getServers,
-    promises,
-    NOTFOUND,
-};
+/** The dns module, its lookups answered from `resolver` (one holding the default /etc/hosts, without a kernel). */
+export function createDns(resolver = createHostsResolver()) {
+    const lookup = createLookup(resolver);
+    const mod = {
+        lookup,
+        resolve,
+        resolve4,
+        resolve6,
+        resolveMx,
+        resolveTxt,
+        resolveSrv,
+        resolveNs,
+        resolveCname,
+        reverse,
+        setServers,
+        getServers,
+        promises: {
+            ...promises,
+            lookup: (hostname, options) => {
+                const entry = lookupAddress(resolver, hostname);
+                if (entry === null)
+                    return Promise.reject(makeError(hostname, 'getaddrinfo'));
+                return Promise.resolve(typeof options === 'object' && options?.all ? [entry] : entry);
+            },
+        },
+        NOTFOUND,
+        ADDRGETNETWORKPARAMS,
+        BADFAMILY,
+        BADFLAGS,
+        BADHINTS,
+        BADNAME,
+        BADQUERY,
+        BADRESP,
+        BADSTR,
+        CANCELLED,
+        CONNREFUSED,
+        DESTRUCTION,
+        EOF,
+        FILE,
+        FORMERR,
+        LOADIPHLPAPI,
+        NODATA,
+        NOMEM,
+        NONAME,
+        NOTINITIALIZED,
+        REFUSED,
+        SERVFAIL,
+        TIMEOUT,
+    };
+    return { ...mod, default: mod };
+}

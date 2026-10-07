@@ -23,6 +23,7 @@
     "packages/sdk/src/**/*.ts",
     "packages/config/src/**/*.ts",
     "packages/computesdk-nimbus/src/**/*.ts",
-    "apps/hosted-demo/src/**/*.ts"
+    "apps/hosted-demo/src/**/*.ts",
+    "apps/ci-runner/src/**/*.ts"
   ]
 }

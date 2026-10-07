@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 4 s wall, 1 s CPU, 0.0 GiB peak (6 runs, 2026-10-06)
 // Compare the native guest HTTP bridge with Node's HTTP server: binary
 // requests, pipe, streaming before end, HEAD/204, duplicate listen errors,
 // closure and two independent ephemeral listeners. Also exercise Nimbus's

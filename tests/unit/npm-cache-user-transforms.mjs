@@ -21,6 +21,8 @@ class FakeSql {
 const db = new Database(':memory:');
 const sql = new FakeSql(db);
 const cache = new NpmCache(sql);
+/** Rows in the transform cache's own table, read beside the cache rather than through it. */
+const transformRows = () => db.query('SELECT COUNT(*) AS n FROM user_module_transforms').get().n;
 
 const PATH = 'home/user/projects/src/App.tsx';
 const BASE = '/s/nimble-otter-4271/preview';
@@ -62,7 +64,7 @@ cache.putUserModuleTransform({
 assert.equal(cache.getUserModuleTransform(PATH, ROOT, 'hashA', V).code, 'export default 1; // root');
 assert.equal(cache.getUserModuleTransform(PATH, BASE, 'hashA', V).code, 'export default 1;',
   'the two bases keep independent rows');
-assert.equal(cache.getStats().userModuleTransforms, 2, 'two bases → two rows');
+assert.equal(transformRows(), 2, 'two bases → two rows');
 
 // Overwrite-in-place on the same (path, base) with new content.
 cache.putUserModuleTransform({
@@ -76,13 +78,13 @@ cache.putUserModuleTransform({
 assert.equal(cache.getUserModuleTransform(PATH, BASE, 'hashA', V), null,
   'old hash no longer matches after overwrite');
 assert.equal(cache.getUserModuleTransform(PATH, BASE, 'hashB', V).code, 'export default 2;');
-assert.equal(cache.getStats().userModuleTransforms, 2, 'still two rows (overwritten in place, not duplicated)');
+assert.equal(transformRows(), 2, 'still two rows (overwritten in place, not duplicated)');
 
 // Delete (file removed) → clears EVERY base for that path.
 cache.deleteUserModuleTransform(PATH);
 assert.equal(cache.getUserModuleTransform(PATH, BASE, 'hashB', V), null);
 assert.equal(cache.getUserModuleTransform(PATH, ROOT, 'hashA', V), null);
-assert.equal(cache.getStats().userModuleTransforms, 0);
+assert.equal(transformRows(), 0);
 
 // Hibernation-survival: a fresh NpmCache over the SAME sql still reads
 // what an earlier instance wrote.

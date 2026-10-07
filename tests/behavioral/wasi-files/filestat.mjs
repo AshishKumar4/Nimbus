@@ -5,33 +5,18 @@
 // path_filestat_get and prints ('0' + (size%10)) + '\n'. With size=13,
 // expected stdout = "3\n".
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
-import { writeFixtureCmd } from './_fixtures.mjs';
+import { openWasiProbe, tailLines, trimmedLines } from '../wasi/_harness.mjs';
 
-const sid = await mintSession();
-console.log(`[wasi-files/filestat] sid=${sid} BASE=${BASE}`);
+const probe = await openWasiProbe('wasi-files/filestat', { dir: '/home/user/w2', fixture: 'filestat', as: 'fs.wasm' });
+const { t } = probe;
+try {
+  const r = await t.run('wasm-runner fs.wasm', 60_000);
+  const tail = tailLines(r.output, 6);
+  const lines = trimmedLines(tail);
+  const ok = lines.some(s => s === '3');
 
-const t = new Terminal(sid);
-await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(60_000);
-
-await t.run('mkdir -p /home/user/w2 && cd /home/user/w2', 10_000);
-await t.run(writeFixtureCmd('filestat', 'fs.wasm'), 30_000);
-
-const r = await t.run('wasm-runner fs.wasm', 60_000);
-const out = stripAnsi(r.output);
-const tail = out.split(/\r?\n/).slice(-6).join('\n');
-const lines = tail.split(/\r?\n/).map(s => s.trim());
-const ok = lines.some(s => s === '3');
-
-await t.close();
-
-console.log(JSON.stringify({ probe: 'wasi-files/filestat', sid, base: BASE, tail, ok }, null, 2));
-
-const checks = [['path_filestat_get returns size=13 (mod 10 = 3)', ok]];
-let pass = 0;
-for (const [n, o] of checks) { console.log(`  ${o ? 'PASS' : 'FAIL'}  ${n}`); if (o) pass++; }
-const verdict = pass === checks.length ? 'passing' : 'failing';
-console.log(`[wasi-files/filestat] ${verdict} — ${pass}/${checks.length}`);
-process.exit(verdict === 'passing' ? 0 : 1);
+  probe.report([['path_filestat_get returns size=13 (mod 10 = 3)', ok]], { tail, ok });
+} finally {
+  await probe.close();
+}
+process.exit(probe.exitCode());

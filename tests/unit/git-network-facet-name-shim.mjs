@@ -16,19 +16,15 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
+import { ESBUILD_NAME_GLOBAL_SHIM } from '../../packages/core/src/_shared/esbuild-facet-shim.ts';
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
 import { GIT_PACK_SRC } from '../../packages/worker/src/git/pack/facet.generated.ts';
-
-const FACET_NAME_SHIM =
-  'if (typeof globalThis.__name !== "function") {\n' +
-  '  globalThis.__name = (target, value) => Object.defineProperty(target, "name", { value, configurable: true });\n' +
-  '}';
 
 const template = readFileSync(new URL('../../packages/worker/src/git/network-facet.ts', import.meta.url), 'utf8');
 assert.ok(!/\.toString\(\)\}/.test(template), 'the facet template embeds a function by toString()');
 
 const facet = assembleGitNetworkFacetSource();
-assert.ok(facet.includes(FACET_NAME_SHIM), 'assembled git facet is missing the idempotent globalThis.__name shim');
+assert.ok(facet.includes(ESBUILD_NAME_GLOBAL_SHIM), 'assembled git facet is missing the idempotent globalThis.__name shim');
 for (const [name, source] of [['GIT_PACK_SRC', GIT_PACK_SRC]]) {
   assert.ok(facet.includes(source), name + ' is not spliced into the facet');
   if (source.includes('__name(')) assert.ok(/\bvar __name\b/.test(source), name + ' calls __name( without declaring it');

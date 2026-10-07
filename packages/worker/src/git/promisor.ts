@@ -11,6 +11,7 @@
  */
 
 import { execGitNetwork, type GitNetworkResult } from './network-facet.js';
+import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 
 export interface FetchMissingObjectsRequest {
   pid: number;
@@ -42,6 +43,8 @@ export async function fetchMissingObjects(
   ctx: DurableObjectState,
   env: unknown,
   request: FetchMissingObjectsRequest,
+  /** The workspace's network: the promisor is reached through its egress (execGitNetwork). */
+  workspaceNetwork: WorkspaceNetwork,
 ): Promise<FetchMissingObjectsResult> {
   const network = await execGitNetwork(ctx, env, {
     op: 'fetch-objects',
@@ -52,7 +55,7 @@ export async function fetchMissingObjects(
     oids: [...request.oids],
     quiet: true,
     auth: request.auth,
-  });
+  }, workspaceNetwork);
   if (!network.success) throw new PromisorFetchError(request.remote, network);
   return { fetched: network.fetchedObjects ?? 0, network };
 }

@@ -148,6 +148,91 @@
    "args": "cat l1 | %T -n +3",
    "stdout": "þÿ\nplain\nhÃ©llo\n",
    "exit": 0
+  },
+  {
+   "args": "-c 1g long",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "-c 1T long",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-c 1b long",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-c +1b long",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-c 1kB long",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-c K long",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-n 1M long",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-c 1E long",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "-c 1mB long",
+   "stdout": "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\n",
+   "exit": 0
+  },
+  {
+   "args": "--li=1 l1",
+   "stdout": "hÃ©llo\n",
+   "exit": 0
+  },
+  {
+   "args": "--l1",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "--q l1 l1",
+   "stdout": "café\nnaïve\nþÿ\nplain\nhÃ©llo\ncafé\nnaïve\nþÿ\nplain\nhÃ©llo\n",
+   "exit": 0
+  },
+  {
+   "args": "-n",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "-x l1",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "l1 -1",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "-n1 -3 l1",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "--verb -n1 l1",
+   "stdout": "==> l1 <==\nhÃ©llo\n",
+   "exit": 0
   }
  ]
 }

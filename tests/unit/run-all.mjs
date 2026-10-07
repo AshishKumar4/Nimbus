@@ -28,6 +28,41 @@
 //   NIMBUS_UNIT_ONLY  — comma-separated names (leaf or path) to run.
 //   NIMBUS_UNIT_SKIP  — comma-separated names to skip.
 //
+// Tiers:
+//   A file's leading comment block (its lines up to the first one that is
+//   neither blank nor a `//` comment) may hold one marker,
+//   `// @tier <name> — <reason>` (the separator may also be `-` or `:`):
+//     slow       drives a local workerd, runs at scale or is a long
+//                differential; the reason states the measured cost.
+//     quiet-cpu  asserts timing that foreign load breaks. Always runs in the
+//                serial phase below, like `// @serial`.
+//   No marker is the fast tier. `--tier fast|slow|all` / NIMBUS_UNIT_TIER
+//   picks which run (default all; slow is every file fast leaves out). An
+//   unknown name, a marker without a reason or a second marker is a usage
+//   error (exit 2) naming the file, whatever is selected.
+//
+// Sharding (the CI runner, apps/ci-runner, runs one shard per container):
+//   --shard I/N        run the I-th (1-based) of N disjoint parts of the
+//                      selection, balanced longest-first by expected time.
+//   --timings PATH     JSON `{ files: { "<name>.mjs": { wallMs, cpuMs } } }`
+//                      the balance reads. A job slot is taken to be one CPU,
+//                      so a pooled file costs the larger of its wall and CPU
+//                      time (one running four threads holds four slots'
+//                      worth); a file in the serial phase has every CPU and
+//                      costs its wall time. A file the timings lack costs the
+//                      median.
+//   Every shard computes the same partition from the same inputs, so
+//   `--shard 3/20 --timings t.json` reproduces CI shard 3 locally.
+//
+// Reports:
+//   --list             print the selection (name, tier, serial) and exit.
+//   --json PATH        also write every file's verdict, wall time and CPU
+//                      time to PATH, and a failing file's whole output. CPU is the case's whole process tree,
+//                      read from its cgroup under run-bounded or
+//                      NIMBUS_TEST_CGROUP (null otherwise); outside
+//                      run-bounded it also lists the commands the case ran
+//                      (seen every 25 ms), e.g. workerd.
+//
 // Each file runs with its own empty TMPDIR (and TMP, TEMP). A file that
 // leaves anything in it FAILs, naming what it left, and the leftovers are
 // removed: a test removes what it creates, in finally, on failure too.
@@ -38,7 +73,7 @@
 //   Output is capped at 1 MiB per file; exceeding it fails and kills the tree.
 
 import { runBoundedProcess, DEFAULT_TEST_TIMEOUT_MS } from '../../scripts/lib/bounded-process.mjs';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { availableParallelism, tmpdir } from 'node:os';
 import { join, basename, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -98,7 +133,7 @@ function matchAny(collection, name) {
   return collection.has(name) || collection.has(leaf);
 }
 
-const targets = FILES.filter((name) => {
+const selected = FILES.filter((name) => {
   if (only.length > 0 && !matchAny(only, name)) return false;
   if (skip.size > 0 && matchAny(skip, name)) return false;
   return true;
@@ -118,21 +153,141 @@ const targets = FILES.filter((name) => {
  */
 const SERIAL_RE = /^\/\/\s*@serial\b/;
 
+const sources = new Map(FILES.map((name) => [name, readFileSync(join(__dirname, name), 'utf8')]));
+
 function isSerialMarked(name) {
-  const firstLine = readFileSync(join(__dirname, name), 'utf8').split('\n', 1)[0];
-  return SERIAL_RE.test(firstLine);
+  return SERIAL_RE.test(sources.get(name).split('\n', 1)[0]);
 }
 
-const serialFiles = JOBS > 1 ? targets.filter(isSerialMarked) : [];
+// ── Tiers ────────────────────────────────────────────────────────────
+
+const TIERS = ['fast', 'slow', 'quiet-cpu'];
+const TIER_LINE_RE = /^\/\/\s*@tier\b/;
+const TIER_RE = /^\/\/\s*@tier\s+([a-z][a-z-]*?)\s*(?:—|:|\s-)\s*(\S.*)$/;
+
+/** `{ tier, reason }` from a file's leading comment block, or `{ error }`. */
+function tierOf(name) {
+  const lines = sources.get(name).split('\n');
+  const markers = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (i === 0 && line.startsWith('#!')) continue;
+    if (line !== '' && !line.startsWith('//')) break;
+    if (TIER_LINE_RE.test(line)) markers.push({ line: i + 1, text: line });
+  }
+  if (markers.length === 0) return { tier: 'fast', reason: '' };
+  if (markers.length > 1) return { error: `${markers.length} @tier markers (lines ${markers.map((m) => m.line).join(', ')}); a file has one` };
+  const match = TIER_RE.exec(markers[0].text);
+  if (!match) return { error: `line ${markers[0].line}: expected \`// @tier <name> — <reason>\`, got ${JSON.stringify(markers[0].text)}` };
+  if (match[1] === 'fast' || !TIERS.includes(match[1])) return { error: `line ${markers[0].line}: unknown tier ${JSON.stringify(match[1])}; a marker names one of ${TIERS.slice(1).join(', ')}` };
+  return { tier: match[1], reason: match[2] };
+}
+
+const tiers = new Map(FILES.map((name) => [name, tierOf(name)]));
+const tierErrors = [...tiers].filter(([, t]) => t.error);
+if (tierErrors.length > 0) {
+  for (const [name, t] of tierErrors) console.error(`FATAL: ${name}: ${t.error}`);
+  process.exit(2);
+}
+
+const TIER = flagValue('--tier', 'NIMBUS_UNIT_TIER') || 'all';
+if (!['fast', 'slow', 'all'].includes(TIER)) {
+  console.error(`FATAL: --tier must be fast, slow or all, got ${JSON.stringify(TIER)}`);
+  process.exit(2);
+}
+
+/** In the serial phase: `// @serial`, or a quiet-cpu file. */
+const runsAlone = (name) => isSerialMarked(name) || tiers.get(name).tier === 'quiet-cpu';
+
+const tiered = selected.filter((name) => TIER === 'all'
+  || (TIER === 'fast') === (tiers.get(name).tier === 'fast'));
+
+// ── Shards ───────────────────────────────────────────────────────────
+
+const SHARD = flagValue('--shard', 'NIMBUS_UNIT_SHARD') || undefined;
+const TIMINGS = flagValue('--timings', 'NIMBUS_UNIT_TIMINGS') || undefined;
+
+/**
+ * The I-th of N parts of `names`, longest first: each file joins the part
+ * whose expected finish it moves least. A part's expected time is its pool
+ * (the larger of total/jobs and its longest file) plus its serial files
+ * one after another. Ties go to the lower part and names break ties in
+ * order, so every shard computes the same partition from the same inputs.
+ */
+function shardOf(names, index, count, expectedMs) {
+  const parts = Array.from({ length: count }, () => ({ pool: 0, longest: 0, serial: 0, names: [] }));
+  const finish = (p) => Math.max(p.pool / JOBS, p.longest) + p.serial;
+  const order = [...names].sort((a, b) => expectedMs(b) - expectedMs(a) || a.localeCompare(b));
+  for (const name of order) {
+    const ms = expectedMs(name);
+    const alone = runsAlone(name);
+    let best = 0;
+    let bestFinish = Infinity;
+    for (let i = 0; i < count; i++) {
+      const p = parts[i];
+      const after = alone ? finish(p) + ms : Math.max((p.pool + ms) / JOBS, p.longest, ms) + p.serial;
+      if (after < bestFinish) { best = i; bestFinish = after; }
+    }
+    const p = parts[best];
+    if (alone) p.serial += ms; else { p.pool += ms; p.longest = Math.max(p.longest, ms); }
+    p.names.push(name);
+  }
+  return { names: new Set(parts[index].names), expectedMs: Math.round(finish(parts[index])) };
+}
+
+let known = null;
+if (TIMINGS !== undefined) {
+  try { known = JSON.parse(readFileSync(TIMINGS, 'utf8')).files ?? {}; } catch (error) {
+    console.error(`FATAL: --timings ${TIMINGS}: ${error.message}`);
+    process.exit(2);
+  }
+}
+/**
+ * Expected cost from --timings: max(wall, CPU) in the pool, wall alone in
+ * the serial phase, where a file has every CPU. A file it lacks costs the
+ * median.
+ */
+const expectedOf = known && (() => {
+  const cost = (name) => (runsAlone(name) ? known[name]?.wallMs || 0 : Math.max(known[name]?.wallMs || 0, known[name]?.cpuMs || 0));
+  const measured = tiered.map(cost).filter((ms) => Number.isFinite(ms) && ms > 0).sort((a, b) => a - b);
+  const median = measured.length > 0 ? measured[Math.floor(measured.length / 2)] : 1000;
+  return (name) => (Number.isFinite(cost(name)) && cost(name) > 0 ? cost(name) : median);
+})();
+
+let shard = null;
+let targets = tiered;
+if (SHARD !== undefined) {
+  const match = /^(\d+)\/(\d+)$/.exec(SHARD);
+  const [index, count] = match ? [Number(match[1]), Number(match[2])] : [0, 0];
+  if (!(count >= 1 && index >= 1 && index <= count)) {
+    console.error(`FATAL: --shard must be I/N with 1 <= I <= N, got ${JSON.stringify(SHARD)}`);
+    process.exit(2);
+  }
+  const part = shardOf(tiered, index - 1, count, expectedOf ?? (() => 1000));
+  targets = tiered.filter((name) => part.names.has(name));
+  shard = { index, count, expectedMs: part.expectedMs, universe: tiered };
+}
+
+const serialFiles = JOBS > 1 ? targets.filter(runsAlone) : [];
 const pooledFiles = JOBS > 1 ? targets.filter((name) => !serialFiles.includes(name)) : targets;
+
+if (process.argv.includes('--list')) {
+  for (const name of targets) console.log(`${name}\t${tiers.get(name).tier}\t${runsAlone(name) ? 'serial' : 'pool'}`);
+  process.exit(0);
+}
 
 console.log(
   `unit/run-all — ${targets.length} file${targets.length === 1 ? '' : 's'} discovered`
-  + ` (jobs ${JOBS}${serialFiles.length > 0 ? `, ${serialFiles.length} marked @serial` : ''})`,
+  + ` (jobs ${JOBS}${serialFiles.length > 0 ? `, ${serialFiles.length} run alone` : ''})`,
 );
+if (TIER !== 'all' || shard) {
+  console.log(`unit/run-all — tier ${TIER}${shard ? `, shard ${shard.index}/${shard.count} of ${shard.universe.length} (expected ${(shard.expectedMs / 1000).toFixed(0)}s)` : ''}`);
+}
 console.log(process.env.NIMBUS_TEST_PID_ISOLATION === '1'
   ? 'unit/run-all — isolation: per-case cgroup + PID namespace'
-  : 'unit/run-all — isolation: portable cleanup only; use /mnt/scratch/nimbus/run-bounded for local verification');
+  : process.env.NIMBUS_TEST_CGROUP
+    ? `unit/run-all — isolation: per-case cgroup under ${process.env.NIMBUS_TEST_CGROUP}`
+    : 'unit/run-all — isolation: portable cleanup only; use /mnt/scratch/nimbus/run-bounded for local verification');
 
 // ── Execution ────────────────────────────────────────────────────────
 
@@ -166,6 +321,10 @@ async function runOnce(path) {
     reason: result.reason || (!result.ok ? `exit code=${result.code} signal=${result.signal ?? 'none'}` : ''),
     stderr: result.stderr + leak,
     elapsedMs: Date.now() - t0,
+    cpuMs: result.cpuMs ?? null,
+    memoryPeakBytes: result.memoryPeakBytes ?? null,
+    commands: result.commands ?? [],
+    launchError: result.launchError,
   };
 }
 
@@ -182,7 +341,17 @@ function report(name, r) {
       .filter((l) => l.trim() && !/^Bun v\d+\.\d+\.\d+ \([^)]+\)$/.test(l));
     for (const l of stderrLines.slice(-4)) console.log('    stderr: ' + l.slice(-2048));
   }
-  return { name, ok: r.ok, elapsed: Number(elapsedS) };
+  return {
+    name, ok: r.ok, elapsed: Number(elapsedS),
+    tier: tiers.get(name).tier, serial: runsAlone(name),
+    wallMs: r.elapsedMs, cpuMs: r.cpuMs, memoryPeakBytes: r.memoryPeakBytes, commands: r.commands,
+    // The isolation could not start the file: no test ran, and a CI runner
+    // grades the run as an infrastructure error, not a test failure.
+    ...(r.launchError ? { launchError: r.launchError } : {}),
+    // A failing file's whole output (bounded-process keeps up to 1 MiB of
+    // each stream): the four lines above rarely say which scenario failed.
+    ...(r.ok ? {} : { reason: r.reason, stdoutTail: r.stdout.slice(-4096), stderrTail: r.stderr.slice(-4096), stdout: r.stdout, stderr: r.stderr }),
+  };
 }
 
 const results = [];
@@ -196,8 +365,10 @@ if (JOBS === 1) {
   }
 } else {
   // Worker pool: `queue.shift()` is atomic between awaits, so each file
-  // is claimed by exactly one worker.
+  // is claimed by exactly one worker. With timings, longest first, so the
+  // pool does not end on one long file.
   const queue = [...pooledFiles];
+  if (expectedOf) queue.sort((a, b) => expectedOf(b) - expectedOf(a) || a.localeCompare(b));
   await Promise.all(
     Array.from({ length: Math.min(JOBS, queue.length) }, async () => {
       while (queue.length > 0) {
@@ -216,6 +387,15 @@ if (JOBS === 1) {
 const totalElapsed = ((Date.now() - t0) / 1000).toFixed(1);
 const pass = results.filter((r) => r.ok).length;
 const fail = results.length - pass;
+const JSON_PATH = flagValue('--json', 'NIMBUS_UNIT_JSON') || undefined;
+if (JSON_PATH !== undefined) {
+  writeFileSync(JSON_PATH, `${JSON.stringify({
+    version: 1, tier: TIER, jobs: JOBS, timeoutMs: TIMEOUT_MS,
+    isolation: process.env.NIMBUS_TEST_PID_ISOLATION === '1' ? 'systemd' : process.env.NIMBUS_TEST_CGROUP ? 'cgroup' : 'portable',
+    shard, elapsedMs: Date.now() - t0, pass, fail,
+    files: results.map(({ elapsed, ...r }) => r),
+  }, null, 1)}\n`);
+}
 console.log('');
 console.log(`unit/run-all — ${pass} pass / ${fail} fail in ${totalElapsed}s`);
 if (fail > 0) {

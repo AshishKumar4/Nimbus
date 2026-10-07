@@ -8,7 +8,7 @@
 // Backticks are parsed by the shell lexer as command substitution,
 // with single quotes preserving literals and double quotes expanding.
 
-import { deleteSession, mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../../../_driver.mjs';
+import { deleteSession, mintSession, Terminal, makeAsserter, termBody } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r4/new/backtick-substitution');
@@ -20,28 +20,20 @@ try {
 await t.connect();
 await t.waitForPrompt(60_000);
 
-function body(raw) {
-  const ansi = stripAnsi(raw);
-  const lines = ansi.split(/\r?\n/);
-  if (lines.length && /\$\s*$/.test(lines[lines.length - 1])) lines.pop();
-  if (lines.length && /\$\s/.test(lines[0])) lines.shift();
-  return lines.join('\n');
-}
-
 const r1 = await t.run('echo `echo hi`', 5_000);
-a.check('bare `echo hi` substitutes', body(r1.output) === 'hi', `body=${JSON.stringify(body(r1.output))}`);
+a.check('bare `echo hi` substitutes', termBody(r1.output) === 'hi', `body=${JSON.stringify(termBody(r1.output))}`);
 
 const r2 = await t.run('echo `date +%Y`', 5_000);
-a.check('backtick with date +%Y', /^20\d\d$/.test(body(r2.output)), `body=${JSON.stringify(body(r2.output))}`);
+a.check('backtick with date +%Y', /^20\d\d$/.test(termBody(r2.output)), `body=${JSON.stringify(termBody(r2.output))}`);
 
 const r3 = await t.run('X=`echo world` && echo "hello $X"', 5_000);
-a.check('assign via backtick result', body(r3.output) === 'hello world', `body=${JSON.stringify(body(r3.output))}`);
+a.check('assign via backtick result', termBody(r3.output) === 'hello world', `body=${JSON.stringify(termBody(r3.output))}`);
 
 const r4 = await t.run('echo "year=`date +%Y`"', 5_000);
-a.check('double-quoted backtick expands', /^year=20\d\d$/.test(body(r4.output)), `body=${JSON.stringify(body(r4.output))}`);
+a.check('double-quoted backtick expands', /^year=20\d\d$/.test(termBody(r4.output)), `body=${JSON.stringify(termBody(r4.output))}`);
 
 const r5 = await t.run("echo 'literal `cmd` here'", 5_000);
-a.check('single-quoted backtick preserved literal', body(r5.output) === 'literal `cmd` here', `body=${JSON.stringify(body(r5.output))}`);
+a.check('single-quoted backtick preserved literal', termBody(r5.output) === 'literal `cmd` here', `body=${JSON.stringify(termBody(r5.output))}`);
 
 } finally {
   try { await t.close(); } catch {}

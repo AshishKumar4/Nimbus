@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 27 s wall, 30 s CPU, 0.7 GiB peak (6 runs, 2026-10-06)
 // Someone who ran `npm install` gets bash and python. Nothing else.
 //
 // `core-wasm-runtime-bun.mjs` proves the runtimes execute, but it reaches into
@@ -37,7 +38,7 @@ const RUNTIMES = [
  * runtime packages by name. No wasm, no manifest, no digest, no path.
  */
 const EMBEDDER = `import { DatabaseSync } from 'node:sqlite';
-import { NimbusWorkspace, localFacetHost } from '@nimbus-sh/core';
+import { ISOLATE_NETWORK, NimbusWorkspace, localFacetHost } from '@nimbus-sh/core';
 import bash from '@nimbus-sh/runtime-bash';
 import cpython from '@nimbus-sh/runtime-cpython';
 import { writeText } from '@nimbus-sh/core/vfs/vfs.js';
@@ -66,7 +67,7 @@ const workspace = await NimbusWorkspace.create({
   transactions,
   generation: 1,
   cwd: '/home/user',
-  facets: localFacetHost(),
+  facets: localFacetHost(ISOLATE_NETWORK),
   runtimes: [bash, cpython],
 });
 

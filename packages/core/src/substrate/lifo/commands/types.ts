@@ -35,6 +35,12 @@ export interface CommandInputStream {
 }
 export interface TerminalInputStream extends CommandInputStream {
   rawMode: boolean;
+  /**
+   * termios ISIG: when true, Ctrl+C and Ctrl+\ signal the foreground
+   * command; when false, they are its input (0x03, 0x1c), as a
+   * program that reads them as keys asks for (a REPL's readline).
+   */
+  signalKeys: boolean;
 }
 
 /**
@@ -76,6 +82,8 @@ export interface CommandContext {
   isFdTerminal?: (fd: number) => boolean;
   /** Whether `fd` is a shell pipe (S_ISFIFO): its reader ends a writer by closing it. */
   isFdPipe?: (fd: number) => boolean;
+  /** Whether the shell running this command runs `name` itself, as a builtin (type and command -v ask). */
+  isShellBuiltin?: (name: string) => boolean;
   setUmask(mask: number): void;
   /** Run `argv` as a child process under `cred`, with this command's stdio and environment, and wait for it. */
   runAs(cred: VfsCred, argv: string[], options?: RunAsOptions): Promise<ChildExit>;

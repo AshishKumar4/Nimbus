@@ -18,12 +18,10 @@
 // simulated: it copies the envelope as the wire does and records each call.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { mock } from 'bun:test';
 import { FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../packages/core/src/constants.ts';
+import { stagedAssets } from './lib/staged-assets.mjs';
+import { runnerLoader } from './lib/one-shot-runner.mjs';
 
 mock.module('cloudflare:workers', () => ({
   WorkerEntrypoint: class { constructor(ctx, env) { this.ctx = ctx; this.env = env; } },
@@ -96,30 +94,7 @@ const hostEnv = {
 };
 adoptCtxExports({ SupervisorRPC: ({ props }) => new SupervisorRPC({ props }, hostEnv) });
 
-const runnerDir = mkdtempSync(join(tmpdir(), 'nimbus-refetch-batch-'));
-let runners = 0;
-const env = {
-  LOADER: {
-    load(config) {
-      const file = writeModuleSet(join(runnerDir, `runner-${runners++}`), config.modules, 'runner.js');
-      const loaded = import(pathToFileURL(file).href);
-      return {
-        getEntrypoint: () => ({
-          async fetch(request) { return (await loaded).default.fetch(request, { SUPERVISOR: config.env?.SUPERVISOR }); },
-          [Symbol.dispose]() {},
-        }),
-        [Symbol.dispose]() {},
-      };
-    },
-    get() { throw new Error('the one-shot runner is loaded, not keyed'); },
-  },
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)));
-    },
-  },
-};
+const env = { LOADER: runnerLoader('refetch-batch'), ASSETS: stagedAssets };
 
 try {
   const manager = new FacetManager(ctx, env, host.processes, new PortRegistry(), processHostFor, {});
@@ -167,6 +142,5 @@ fs.writeFileSync('/home/user/probe/done.txt', 'ok');
   globalThis.console = realConsole;
   globalThis.process = realProcess;
   globalThis.Buffer = realBuffer;
-  rmSync(runnerDir, { recursive: true, force: true });
 }
 console.log('node-refetch-batched-learn: ok');

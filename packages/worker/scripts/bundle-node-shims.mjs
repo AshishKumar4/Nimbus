@@ -47,8 +47,8 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { stageRuntimeAsset } from './stage-asset.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -102,27 +102,16 @@ const SOURCES = [
   },
 ];
 
-const assetDir = path.join(ROOT, 'public/_assets/runtime');
-await fs.mkdir(assetDir, { recursive: true });
-const existing = await fs.readdir(assetDir);
 const pins = [];
 for (const { name, family, source, from } of SOURCES) {
   if (typeof source !== 'string' || source.length === 0) {
     throw new Error(`[bundle-node-shims] ${from} is ${typeof source === 'string' ? 'empty' : typeof source}, not the source to stage`);
   }
-  const sha256 = createHash('sha256').update(source, 'utf8').digest('hex');
-  const buildId = sha256.slice(0, 16);
-  const assetName = `${family}-${buildId}.js`;
-  // Remove stale same-family assets so the directory carries exactly one blob
-  // per family (the entry constant pins which one a deploy serves).
-  const isFamily = (f) => /^[0-9a-f]{16}\.js$/.test(f.slice(family.length + 1)) && f.startsWith(`${family}-`);
-  for (const f of existing) {
-    if (isFamily(f) && f !== assetName) await fs.unlink(path.join(assetDir, f));
-  }
-  await fs.writeFile(path.join(assetDir, assetName), source, 'utf8');
+  // One blob per family: the entry constant pins which one a deploy serves.
+  const { assetName, assetPath, buildId, sha256 } = stageRuntimeAsset(ROOT, family, source);
   pins.push(
     `/** ${from} */`,
-    `export const ${name}_ENTRY: string = ${JSON.stringify(`/_assets/runtime/${assetName}`)};`,
+    `export const ${name}_ENTRY: string = ${JSON.stringify(assetPath)};`,
     `export const ${name}_BUILD_ID: string = ${JSON.stringify(buildId)};`,
     `export const ${name}_SHA256: string = ${JSON.stringify(sha256)};`,
     '',

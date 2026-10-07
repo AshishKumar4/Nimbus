@@ -9,7 +9,7 @@
 //
 // Category: R (runtime-behavioral)
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('console-facet/bare-console-log-still-works');
@@ -24,11 +24,6 @@ await t.waitForPrompt(60_000);
 // running the process, so substring-search would falsely match the
 // echo for `console.log("...")`-shaped args. Real process output
 // arrives on its own line.
-function hasOutputLine(stripped, marker) {
-  const lines = stripped.split(/\r?\n/).map((l) => l.trim());
-  return lines.some((l) => l === marker);
-}
-
 // 1. console.log — the canonical hot path.
 {
   const { output } = await t.run(`node -e 'console.log("regress-log-A")'`, 30_000);

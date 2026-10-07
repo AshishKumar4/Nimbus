@@ -1,22 +1,7 @@
 import { asciiBytes, concatBytes, inputChunks, isBrokenPipe, writeBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
+import { parseSuffixedCount } from '../../utils/size-units.js';
 class HeadUsage extends Error {
-}
-/** GNU's multipliers: b is 512; each of K M G T P E Z Y R Q is 1024^n, or 1000^n followed by B, 1024^n by iB. */
-const POWERS = 'KMGTPEZYRQ';
-function multiplier(suffix) {
-    if (suffix === '')
-        return 1;
-    if (suffix === 'b')
-        return 512;
-    const m = /^([KkMmGTPEZYRQ])(B|iB)?$/.exec(suffix);
-    if (m === null)
-        return null;
-    const n = POWERS.indexOf(m[1].toUpperCase()) + 1;
-    // GNU takes lower-case k and m, but not g, t, ...
-    if (m[1] !== m[1].toUpperCase() && m[1] !== 'k' && m[1] !== 'm')
-        return null;
-    return (m[2] === 'B' ? 1000 : 1024) ** n;
 }
 /**
  * A count as GNU head reads one: a leading `-` (on the value as given) means
@@ -25,12 +10,10 @@ function multiplier(suffix) {
  */
 function parseCount(value, unit) {
     const allBut = value.startsWith('-');
-    const m = /^[ \t]*\+?(\d+)([A-Za-z]*)$/.exec(allBut ? value.slice(1) : value);
-    const factor = m ? multiplier(m[2]) : null;
-    if (m === null || factor === null)
+    const count = parseSuffixedCount(allBut ? value.slice(1) : value, 'bkKmMGTPEZYRQ0');
+    if (count === null)
         throw new HeadUsage(`invalid number of ${unit}: \u2018${value}\u2019`);
-    const count = Number(m[1]) * factor;
-    return { unit, count: Number.isFinite(count) ? count : Number.MAX_SAFE_INTEGER, allBut };
+    return { unit, count: Math.min(count, Number.MAX_SAFE_INTEGER), allBut };
 }
 const command = async (ctx) => {
     let mode = { unit: 'lines', count: 10, allBut: false };

@@ -6,10 +6,19 @@ import { dirname, join } from 'node:path';
 const requestFile = process.argv[2];
 const statusFile = join(dirname(requestFile), 'status.json');
 let recorded = false;
+// The case's CPU so far: this process shares the case's cgroup with the
+// target and everything it started, and cpu.stat counts all of them.
+function cgroupCpuUsec() {
+  try {
+    const group = readFileSync('/proc/self/cgroup', 'utf8').match(/^0::(\/.*)$/m)?.[1];
+    const usec = Number(readFileSync(`/sys/fs/cgroup${group}/cpu.stat`, 'utf8').match(/^usage_usec (\d+)$/m)?.[1]);
+    return Number.isSafeInteger(usec) ? usec : null;
+  } catch { return null; }
+}
 function record(code, signal, error = '') {
   if (recorded) return;
   recorded = true;
-  writeFileSync(statusFile, JSON.stringify({ code, signal, error }));
+  writeFileSync(statusFile, JSON.stringify({ code, signal, error, cpuUsec: cgroupCpuUsec() }));
   // bubblewrap's PID1 reaper tears down any detached descendants afterward.
   process.exit(code ?? 1);
 }

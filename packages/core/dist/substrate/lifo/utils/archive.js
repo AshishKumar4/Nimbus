@@ -2,13 +2,13 @@ import { crc32 } from '@nimbus-sh/platform/crc32.js';
 import { resolve } from './path.js';
 import { encode, decode, concatBytes } from './encoding.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
-// ─── Gzip (browser CompressionStream/DecompressionStream) ───
-export async function compressGzip(data) {
-    const cs = new CompressionStream('gzip');
-    const writer = cs.writable.getWriter();
+// ─── Gzip (CompressionStream/DecompressionStream) ───
+/** `data` through one gzip transform stream, read to its end. */
+async function pumpGzip(data, stream) {
+    const writer = stream.writable.getWriter();
     writer.write(data);
     writer.close();
-    const reader = cs.readable.getReader();
+    const reader = stream.readable.getReader();
     const chunks = [];
     for (;;) {
         const { done, value } = await reader.read();
@@ -18,20 +18,11 @@ export async function compressGzip(data) {
     }
     return concatBytes(...chunks);
 }
+export async function compressGzip(data) {
+    return await pumpGzip(data, new CompressionStream('gzip'));
+}
 export async function decompressGzip(data) {
-    const ds = new DecompressionStream('gzip');
-    const writer = ds.writable.getWriter();
-    writer.write(data);
-    writer.close();
-    const reader = ds.readable.getReader();
-    const chunks = [];
-    for (;;) {
-        const { done, value } = await reader.read();
-        if (done)
-            break;
-        chunks.push(value);
-    }
-    return concatBytes(...chunks);
+    return await pumpGzip(data, new DecompressionStream('gzip'));
 }
 function tarWriteString(buf, offset, str, len) {
     const bytes = encode(str);

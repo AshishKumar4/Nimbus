@@ -19,6 +19,8 @@
 import { joinRealm } from './realm-guest.js';
 import { realmOutcome } from './realm.js';
 import { isFacetPayload, isFacetSubmit, wasmCompiler } from './local-facet-host.js';
+import { isEgressHostEvent } from './realm-egress.js';
+import { routeFetchThroughHost } from './realm-egress-guest.js';
 const isScopedFn = (value) => typeof value === 'function';
 const isEvaluator = (value) => typeof value === 'function';
 /**
@@ -35,7 +37,13 @@ const AsyncFunction = Object.getPrototypeOf(async () => { }).constructor;
 const joined = await joinRealm();
 if (!isFacetPayload(joined.payload))
     throw new Error('facet-guest: started without a facet');
-const { tag, parking, preamble, supervisor } = joined.payload;
+const { tag, parking, preamble, supervisor, egress } = joined.payload;
+// Under an egress the facet's fetch crosses to the host, which sends it out
+// through the egress (realm-egress.ts). A call holds the facet while it runs,
+// so a fetch it waits on needs no hold of its own.
+const offTheBox = egress
+    ? routeFetchThroughHost((event) => joined.post(event), () => { }, `Nimbus: WebSocket is not available to facet '${tag}' when the workspace's network goes through an egress`)
+    : null;
 const isTypedArray = (value) => ArrayBuffer.isView(value) && !(value instanceof DataView);
 /**
  * A copy of `value` that owns its bytes when it is a view on more of them (a
@@ -118,6 +126,10 @@ async function run(submit) {
 }
 // Submits arrive one at a time (the host orders them), each answered by its id.
 joined.events.on('message', (event) => {
+    if (isEgressHostEvent(event)) {
+        offTheBox?.answer(event);
+        return;
+    }
     if (!isFacetSubmit(event))
         return;
     void (async () => {

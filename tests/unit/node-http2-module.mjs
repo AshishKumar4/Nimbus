@@ -13,21 +13,10 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
-import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { createModuleMap } from '../../packages/core/src/substrate/lifo/node-compat/index.ts';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
-import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
-import { writeModuleSet } from './lib/module-map-bundle.mjs';
-import { supervisorDouble } from './lib/supervisor-double.mjs';
+import { adoptSessionSupervisor, oneShotManager, runnerLoader } from './lib/one-shot-runner.mjs';
 
 /** The report, as source: the same text runs under each runtime. */
 const REPORT = String.raw`
@@ -111,43 +100,10 @@ assert.deepEqual(expected.names, ['Http2ServerRequest', 'Http2ServerResponse', '
 
 // A Nimbus process: a one-shot, the generated runner over the real shims artifact.
 const { host, rawVfs } = createAuthority();
-const dec = new TextDecoder();
 let out = '';
-adoptCtxExports({
-  SupervisorRPC: ({ props }) => supervisorDouble(async (name, args) => {
-    if (name === 'stdout' || name === 'stderr') { out += dec.decode(args[0]); return; }
-    if (name === 'reportExit') return;
-    return host.supervisorOp({ op: name, args, pid: props?.pid });
-  }),
-});
-const runnerDir = mkdtempSync(join(tmpdir(), 'nimbus-http2-'));
-process.on('exit', () => rmSync(runnerDir, { recursive: true, force: true }));
-let runnerN = 0;
-const env = {
-  LOADER: {
-    load(config) {
-      const file = writeModuleSet(join(runnerDir, `runner-${runnerN++}`), config.modules, 'runner.js');
-      const loaded = import(pathToFileURL(file).href);
-      const supervisor = config.env?.SUPERVISOR;
-      return {
-        getEntrypoint: () => ({
-          async fetch(request) { return (await loaded).default.fetch(request, { SUPERVISOR: supervisor }); },
-          [Symbol.dispose]() {},
-        }),
-        [Symbol.dispose]() {},
-      };
-    },
-    get() { throw new Error('a one-shot exec never takes the keyed loader path'); },
-  },
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)));
-    },
-  },
-};
-const manager = new FacetManager(createFacetCtx(createFacetWorld(() => ({})), 'node-http2-module'), env, host.processes, new PortRegistry(), processHostFor, {});
-manager.setVfs(rawVfs, processFiles(rawVfs));
+adoptSessionSupervisor(host, (text) => { out += text; });
+const loader = runnerLoader('http2');
+const manager = oneShotManager('node-http2-module', { host, rawVfs, loader });
 const real = { console: globalThis.console, process: globalThis.process, Buffer: globalThis.Buffer };
 let result;
 try {

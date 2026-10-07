@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { cutContent, chunkHash, hex } from '../../packages/core/src/vfs/content-chunking.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 // The store (Nimbus.ContentStore.Step) and its cold tier (Nimbus.ContentStore.Tier).
 const FIXTURES = ['lean/fixtures/content-store.json', 'lean/fixtures/content-store-tier.json'];

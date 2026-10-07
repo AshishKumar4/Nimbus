@@ -1,5 +1,4 @@
 // @serial
-// The unchanged <100 ms launch-cost assertions need an uncontended sample.
 // A program in the inline node's realm cannot take its host down, and its
 // realm lives exactly as long as a Node process would (Kinu ask 17, review).
 //
@@ -21,10 +20,14 @@
 //   vfserror  a filesystem refusal keeps its class: rm({ force: true }) of a
 //             missing path succeeds; a plain error keeps its errno;
 //   cost      a trivial ES module, and CommonJS and ES modules that load http
-//             without a server, end as soon as their event loop is empty.
+//             without a server, start without waiting (under 100 ms idle
+//             before their first instruction, by the scheduler's accounting)
+//             and end as soon as their event loop is empty (their run returns
+//             within 100 ms of their main script's end).
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const CASES = ['start', 'port', 'body', 'abort', 'timer', 'rejection', 'vfserror', 'cost'];
@@ -43,7 +46,7 @@ if (process.env.CASE === undefined) {
 }
 
 const { NimbusWorkspace } = await import('../../packages/core/src/workspace/nimbus-workspace.ts');
-const { createSqliteVfsTestHarness } = await import('./sqlite-vfs-test-harness.mjs');
+const { createSqliteVfsTestHarness } = await import('./lib/sqlite-vfs-test-harness.mjs');
 const harness = createSqliteVfsTestHarness();
 const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1 });
 const run = async (command, options = {}) => {
@@ -71,13 +74,16 @@ switch (process.env.CASE) {
     break;
   }
   case 'port': {
-    // CommonJS, so the import() is the realm's own, not node-compat's.
-    const reach = await run(`node -e "const p = import('node:worker_threads'); p.then(({ workerData }) => console.log('PORTS ' + JSON.stringify(Object.keys(workerData ?? {}))))"`);
+    // The realm's own import(), through an indirect eval: an import() in the
+    // program's text loads through the lifo loader (node-compat's
+    // worker_threads), as its require does; code a program builds at run
+    // time reaches the realm's real module.
+    const reach = await run(`node -e "const p = (0, eval)('import(\\'node:worker_threads\\')'); p.then(({ workerData }) => console.log('PORTS ' + JSON.stringify(Object.keys(workerData ?? {}))))"`);
     assert.equal(reach.out, 'PORTS []\n', `the realm's workerData holds no port: ${reach.err}`);
     // The real route: take the port off the guest's own next post, then send
     // the host what no host method answers.
     const escape = [
-      "const p = import('node:worker_threads');",
+      "const p = (0, eval)('import(\\'node:worker_threads\\')');",
       'p.then(({ MessagePort }) => {',
       '  const post = MessagePort.prototype.postMessage;',
       '  let taken = null;',
@@ -208,27 +214,117 @@ switch (process.env.CASE) {
     break;
   }
   case 'cost': {
-    await ws.fs.mkdir('/home/user/m', { recursive: true });
-    await ws.fs.writeFile('/home/user/m/one.mjs', 'export {};\nconsole.log(1);\n');
-    await run('node m/one.mjs');
-    const time = async (line) => {
-      const times = [];
-      for (let i = 0; i < 5; i++) {
-        const t = performance.now();
-        const r = await run(line);
-        assert.equal(r.code, 0, r.err);
-        times.push(performance.now() - t);
+    // A run's cost is measured in two parts, each the way load cannot move it.
+    //
+    // Startup, from the run's start to its program's first instruction (the
+    // program prints the time, on its own clock): the time in it when no
+    // thread doing the work (this process's main thread, and every thread
+    // the run starts, its realm's Worker among them) was on a CPU or waiting
+    // for one. That is the startup's idle: a sleep or a poll before the
+    // program runs. Its CPU (reading and compiling modules) and its waits
+    // for a CPU, which a loaded machine stretches past any bound (a whole run
+    // took 60-136 ms at load 107, against 21 ms quiet), are not idle.
+    //
+    // It is read from Linux's per-thread scheduler accounting
+    // (/proc/self/task/<tid>/schedstat: CPU time and run-queue wait), which
+    // a sampler thread records about every millisecond, and it is counted
+    // per sampling interval: an interval's idle is its length less what the
+    // threads did in it, never below 0. Threads at work at once in one
+    // interval (both waiting for the one CPU) cancel no idle in another,
+    // which a sum over the whole startup did: 60 ms of the host's own work
+    // during the realm's boot, on one loaded CPU, hid 150 ms of idle there.
+    // Linux reports a run-queue wait when it ends, so a thread's reported
+    // busy goes back into the intervals before the report, at most an
+    // interval's length in each.
+    //
+    // Teardown, from the main script's end to the run's return: what
+    // runNodeProgram's polls cost (five 30 ms sleeps after a trivial
+    // module's main script, 167 ms in all), by the wall clock. The realm's
+    // Worker ends during it, and its accounting with it.
+    const { Worker } = await import('node:worker_threads');
+    const sampler = new Worker(`
+      const { parentPort } = require('node:worker_threads');
+      const { readdirSync, readFileSync } = require('node:fs');
+      const busy = (tid) => { try { const [cpu, wait] = readFileSync('/proc/self/task/' + tid + '/schedstat', 'utf8').split(' ').map(Number); return cpu + wait; } catch { return null; } };
+      parentPort.on('message', ({ control, main, before }) => {
+        const running = new Int32Array(control);
+        const skip = new Set(before);
+        const samples = [];
+        const sample = () => {
+          const threads = {};
+          for (const tid of readdirSync('/proc/self/task')) {
+            if (tid === main || !skip.has(tid)) { const b = busy(tid); if (b !== null) threads[tid] = b; }
+          }
+          samples.push({ at: performance.timeOrigin + performance.now(), threads });
+        };
+        sample();
+        parentPort.postMessage({ started: true });
+        while (Atomics.load(running, 0) === 1) { Atomics.wait(running, 0, 1, 1); sample(); }
+        parentPort.postMessage({ samples });
+      });
+    `, { eval: true });
+    const fromSampler = () => new Promise((resolve) => sampler.once('message', resolve));
+    /** Idle in [from, to], by interval (above). */
+    const idleBetween = (samples, from, to) => {
+      const spans = samples.slice(1).map((s, i) => s.at - samples[i].at);
+      const busy = spans.map(() => 0);
+      for (const tid of new Set(samples.flatMap((s) => Object.keys(s.threads)))) {
+        let carry = 0;
+        for (let i = spans.length - 1; i >= 0; i--) {
+          const end = samples[i + 1].threads[tid];
+          const owed = (end === undefined ? 0 : (end - (samples[i].threads[tid] ?? 0)) / 1e6) + carry;
+          busy[i] += Math.min(owed, spans[i]);
+          carry = owed - Math.min(owed, spans[i]);
+        }
       }
-      return times.sort((a, b) => a - b)[2];
+      let idle = 0;
+      for (let i = 0; i < spans.length; i++) {
+        const inside = Math.min(samples[i + 1].at, to) - Math.max(samples[i].at, from);
+        if (inside > 0) idle += Math.max(0, spans[i] - busy[i]) * (inside / spans[i]);
+      }
+      return idle;
     };
-    await ws.fs.writeFile('/home/user/m/http.mjs', "import 'http';\nconsole.log(1);\n");
+    const now = () => performance.timeOrigin + performance.now();
+    await ws.fs.mkdir('/home/user/m', { recursive: true });
+    await ws.fs.writeFile('/home/user/m/one.mjs', 'export {};\nconsole.log(performance.timeOrigin + performance.now());\n');
+    await run('node m/one.mjs');
+    const median = (values) => values.sort((a, b) => a - b)[2];
+    const time = async (line) => {
+      const startups = [];
+      const teardowns = [];
+      for (let i = 0; i < 5; i++) {
+        const control = new SharedArrayBuffer(4);
+        new Int32Array(control)[0] = 1;
+        const started = fromSampler();
+        sampler.postMessage({ control, main: String(process.pid), before: readdirSync('/proc/self/task') });
+        await started;
+        const t0 = now();
+        const r = await run(line);
+        const returned = now();
+        const sampled = fromSampler();
+        Atomics.store(new Int32Array(control), 0, 0);
+        Atomics.notify(new Int32Array(control), 0);
+        const { samples } = await sampled;
+        assert.equal(r.code, 0, r.err);
+        const first = Number(r.out.trim());
+        startups.push(idleBetween(samples, t0, first));
+        teardowns.push(returned - first);
+      }
+      return { startup: median(startups), teardown: median(teardowns) };
+    };
+    await ws.fs.writeFile('/home/user/m/http.mjs', "import 'http';\nconsole.log(performance.timeOrigin + performance.now());\n");
     const trivial = await time('node m/one.mjs');
-    const http = await time(`node -e "require('http'); console.log(1)"`);
+    const http = await time(`node -e "require('http'); console.log(performance.timeOrigin + performance.now())"`);
     const esmHttp = await time('node m/http.mjs');
-    console.log(`  a trivial ES module: ${trivial.toFixed(1)} ms; loading http without a server: ${http.toFixed(1)} ms (CommonJS), ${esmHttp.toFixed(1)} ms (ES module)`);
-    assert.ok(trivial < 100, `a trivial ES module ends as its event loop empties (${trivial.toFixed(0)} ms)`);
-    assert.ok(http < 100, `loading http without a server ends as its event loop empties (${http.toFixed(0)} ms)`);
-    assert.ok(esmHttp < 100, `an ES module loading http without a server ends as its event loop empties (${esmHttp.toFixed(0)} ms)`);
+    console.log(`  idle before the program's first instruction: a trivial ES module ${trivial.startup.toFixed(1)} ms; loading http without a server ${http.startup.toFixed(1)} ms (CommonJS), ${esmHttp.startup.toFixed(1)} ms (ES module)`);
+    console.log(`  from its main script's end to its run's return: a trivial ES module ${trivial.teardown.toFixed(1)} ms; loading http without a server ${http.teardown.toFixed(1)} ms (CommonJS), ${esmHttp.teardown.toFixed(1)} ms (ES module)`);
+    assert.ok(trivial.startup < 100, `a trivial ES module starts without waiting (${trivial.startup.toFixed(0)} ms idle before its first instruction)`);
+    assert.ok(http.startup < 100, `loading http without a server starts without waiting (${http.startup.toFixed(0)} ms idle before its first instruction)`);
+    assert.ok(esmHttp.startup < 100, `an ES module loading http without a server starts without waiting (${esmHttp.startup.toFixed(0)} ms idle before its first instruction)`);
+    assert.ok(trivial.teardown < 100, `a trivial ES module ends as its event loop empties (${trivial.teardown.toFixed(0)} ms)`);
+    assert.ok(http.teardown < 100, `loading http without a server ends as its event loop empties (${http.teardown.toFixed(0)} ms)`);
+    assert.ok(esmHttp.teardown < 100, `an ES module loading http without a server ends as its event loop empties (${esmHttp.teardown.toFixed(0)} ms)`);
+    await sampler.terminate();
     break;
   }
 }

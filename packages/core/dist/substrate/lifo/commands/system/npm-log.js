@@ -8,6 +8,7 @@
  * that label frozen at "starting npm install" for the whole install, so
  * honouring it means speaking npm's wire format on the same stream.
  */
+import { DIM, GREEN, RED, RESET, YELLOW } from '../../utils/colors.js';
 /** npm's own ordering: a level enables itself and everything quieter. */
 const LEVEL_RANK = {
     silent: 0,
@@ -48,4 +49,27 @@ export function npmHttpCacheLine(url, integrity) {
 export function npmAddedLine(packages, elapsedMs) {
     const unit = packages === 1 ? 'package' : 'packages';
     return `added ${packages} ${unit} in ${(elapsedMs / 1000).toFixed(1)}s`;
+}
+/**
+ * The end of an install, as a person reads it, for every install path (the
+ * lifo npm, its install port, the hosted npm-fast): a red `Failed:` line on
+ * stderr for what failed; then `up to date in Xs` when nothing was installed
+ * or failed, else `added N packages (F files) in Xs`, yellow with the failure
+ * count when partial, green otherwise; then dim `(N from cache)` and
+ * `linked N bins into DIR`. npmAddedLine is the machine's spelling of it.
+ */
+export function installSummary(report) {
+    const stderr = report.failed.length > 0 ? `${RED}Failed: ${report.failed.join(', ')}${RESET}\n` : '';
+    const secs = (report.elapsedMs / 1000).toFixed(1);
+    if (report.installed === 0) {
+        return { stdout: report.failed.length === 0 ? `${GREEN}up to date in ${secs}s${RESET}\n` : '', stderr };
+    }
+    const partial = report.failed.length > 0;
+    const files = report.totalFiles !== undefined ? ` (${report.totalFiles} files)` : '';
+    let stdout = `\n${partial ? YELLOW : GREEN}added ${report.installed} packages${files} in ${secs}s${partial ? ` (${report.failed.length} failed, see above)` : ''}${RESET}\n`;
+    if (report.fromCacheHits)
+        stdout += `${DIM}  (${report.fromCacheHits} from cache)${RESET}\n`;
+    if (report.linkedBins)
+        stdout += `${DIM}  linked ${report.linkedBins} bin${report.linkedBins === 1 ? '' : 's'} into ${report.globalBinDir}${RESET}\n`;
+    return { stdout, stderr };
 }

@@ -8,6 +8,7 @@
  * Uses a VFS→isomorphic-git FS adapter over the command's view of the
  * namespace, as its credential: a repository on SQLite or on a mount alike.
  */
+import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
@@ -71,11 +72,22 @@ export declare function parseFetchDepth(args: readonly string[]): {
  */
 export declare function parseCloneFilter(spec: string): string;
 /**
- * Every flag is either handled or refused loudly. Silently skipping unknown
- * flags corrupted positionals for value-taking ones (`--branch dev URL`
- * parsed `dev` as the URL) and silently no-opped `--filter=blob:none` — a
- * "blobless" clone that was not blobless.
+ * `git init`'s arguments, as git's parse-options takes them: -q, --bare,
+ * the initial branch (`-b <name>`, `--initial-branch[=]<name>`,
+ * `--no-initial-branch`) and one directory; short options cluster (`-qq`,
+ * `-qbmain`, `-qb main`: b takes the rest of the cluster, else the next
+ * argument). The branch's name is never the directory (`git init -b main`
+ * initialized ./main). git's other options are refused as unsupported.
  */
+export declare function parseInitArgs(args: readonly string[]): {
+    quiet: boolean;
+    bare: boolean;
+    branch?: string;
+    directory?: string;
+} | {
+    error: string;
+    code: number;
+};
 export declare function parseCloneArgs(args: string[]): ParsedCloneArgs;
 /**
  * The index entries that restoring `restored` replaces (add_index_entry_with_check):
@@ -89,6 +101,8 @@ export declare function replacedIndexEntries(dc: DirCache, restored: ReadonlySet
  * this module and its ~106 KB network-facet dependency out of the cold
  * script-eval graph.
  */
-export declare function runGitCommand(ctx: Ctx, vfs: SqliteVFS, doCtx?: DurableObjectState, doEnv?: any): Promise<number>;
+export declare function runGitCommand(ctx: Ctx, vfs: SqliteVFS, doCtx?: DurableObjectState, doEnv?: any, 
+/** The workspace's network (`workspace.network`): clone, fetch, pull, push and promisor fetches go out through it. */
+network?: WorkspaceNetwork): Promise<number>;
 export {};
 //# sourceMappingURL=commands.d.ts.map

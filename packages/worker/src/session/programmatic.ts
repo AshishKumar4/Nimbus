@@ -36,6 +36,7 @@ import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/
 import { timers, type TimerHost } from '@nimbus-sh/fabric/timers.js';
 import { parseShellState, type NamedShell, type NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
+import { singleQuote } from '@nimbus-sh/core/_shared/shell-quote.js';
 import { collectExecStream, createExecStream, type ExecExit, type ExecOutput, type ExecStream, type ExecStreamName, type ExecStreamWriter } from '@nimbus-sh/core/runtime/exec-stream.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 import { _acquireForRoutedRequest } from './rpc.js';
@@ -681,9 +682,9 @@ export async function rpcRunCode(
   }
 
   if (language === 'shell') return rpcExec(self, code, options);
-  if (language === 'python') return rpcExec(self, `python -c ${shellQuote(code)}`, options);
-  if (language === 'ruby') return rpcExec(self, `ruby -e ${shellQuote(code)}`, options);
-  return rpcExec(self, `node -e ${shellQuote(code)}`, options);
+  if (language === 'python') return rpcExec(self, `python -c ${singleQuote(code)}`, options);
+  if (language === 'ruby') return rpcExec(self, `ruby -e ${singleQuote(code)}`, options);
+  return rpcExec(self, `node -e ${singleQuote(code)}`, options);
 }
 
 export async function rpcInstallRuntime(
@@ -1544,6 +1545,3 @@ function serializePort(self: ProgrammaticHost, p: PortEntry): SerializedPort {
   };
 }
 
-function shellQuote(s: string): string {
-  return `'${String(s).replace(/'/g, `'\\''`)}'`;
-}

@@ -1,3 +1,4 @@
+import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
 import { type NimbusFilesystemAuthority } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { PrebundlePool } from "../facets/prebundle-pool.js";
@@ -27,6 +28,8 @@ export interface RuntimeServiceContext {
     armResidentKeepalive: () => void;
     /** The host's own authority: a session has exactly one, and this is it. */
     filesystem: () => NimbusFilesystemAuthority;
+    /** The workspace's network (`workspace.network`): its egress, when the host supplied one. */
+    network: () => WorkspaceNetwork;
 }
 export declare function ensureBundlePool(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): PrebundlePool;
 export declare function ensureFacetManager(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): ComposedFacetManager;

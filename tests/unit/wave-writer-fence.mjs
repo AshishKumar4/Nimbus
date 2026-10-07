@@ -32,8 +32,8 @@ import {
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createWaveWriter } from '../../packages/platform/src/wave-writer.ts';
 import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { attachSupervisorOps } from './session-supervisor-ops.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 
 mock.module('cloudflare:workers', () => ({
   WorkerEntrypoint: class {

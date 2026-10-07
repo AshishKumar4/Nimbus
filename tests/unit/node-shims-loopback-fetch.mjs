@@ -78,12 +78,18 @@ assert.equal(Response.prototype.clone, nativeClone);
   assert.equal(new URL(routed[2].url).pathname, '/event');
 }
 
+// ── IPv6 loopback is routed too: a URL's hostname keeps its brackets ─────────
+{
+  await globalThis.fetch('http://[::1]:6000/health');
+  assert.equal(routed[3]?.port, 6000, 'http://[::1]:<port> is in-session loopback');
+}
+
 // ── non-loopback falls through to real fetch with the Node UA ────────────────
 {
   const res = await globalThis.fetch('https://api.anthropic.com/v1/models');
   assert.equal(res.status, 299, 'external fetch went to the origin, not the loopback router');
   assert.equal(originCalls.at(-1).ua, 'node', 'Node default UA injected on the passthrough');
-  assert.equal(routed.length, 3, 'external host was NOT routed as loopback');
+  assert.equal(routed.length, 4, 'external host was NOT routed as loopback');
 }
 
 // An outbound fetch has its own binding rather than the guest's supervisor

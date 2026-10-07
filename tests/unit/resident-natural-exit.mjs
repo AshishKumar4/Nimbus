@@ -230,6 +230,35 @@ await runScenarios(import.meta.filename, {
     assert.deepEqual(log.exit, { code: 0, reason: '' }, 'and the same exit, before its boot answered');
   },
 
+  // An upgrade aborted while it handshakes, refused after the abort with a
+  // body the relay holds open: the body is not wanted, so it is closed at
+  // once and holds nothing; the program ends with its abort, as in Node.
+  async abortedUpgradeRefusedLaterHoldsNothing() {
+    const closed = [];
+    const program = [
+      'const controller = new AbortController();',
+      'const req = require("http").request("http://relay.invalid/slow", {',
+      '  headers: { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version": "13" },',
+      '  signal: controller.signal,',
+      '});',
+      'req.on("error", (e) => console.log("error " + e.name));',
+      'req.end();',
+      'setTimeout(() => controller.abort(), 20);',
+    ].join('\n');
+    const { log } = await launch(program, {
+      supervisorOverrides: {
+        // The refusal arrives after the abort; its body (id 9) stays open at the relay.
+        wsOpen: async () => { await sleep(200); return { refused: { status: 401, statusText: 'Unauthorized', headers: [], body: 9 } }; },
+        wsPoll: async (id, waitMs) => { await sleep(Math.min(waitMs, 100)); return id === 9 ? [{ kind: 'message', text: null, bytes: new Uint8Array([1]) }] : []; },
+        wsClose: async (id) => { closed.push(id); },
+      },
+    });
+    await until(() => log.exit !== null, 'the exit after the abort, the late refusal holding nothing', 3_000);
+    assert.equal(log.stdout, 'error AbortError\n');
+    assert.deepEqual(log.exit, { code: 0, reason: '' });
+    assert.deepEqual(closed, [9], "the late refusal's body was closed at the relay");
+  },
+
   async watchHoldsAFinishedProgram() {
     const { log } = await launch('console.log("done");', { argv: ['--watch', '/home/user/app/main.js'] });
     await sleep(300);

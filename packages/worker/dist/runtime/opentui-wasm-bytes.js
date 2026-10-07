@@ -16,26 +16,22 @@
  * the backend.
  */
 import { OPENTUI_WASM_BUILD_ID, OPENTUI_WASM_ENTRY, OPENTUI_WASM_SHA256, } from '../opentui-wasm-artifact.generated.js';
-import { fetchStagedBytes } from './staged-source.js';
+import { fetchStagedBytes, stagedAsset } from './staged-source.js';
 /**
  * Synthetic L2 cache key for the OpenTUI wasm asset. Build-id-pinned so a
  * same-version rebuild with different bytes lands a fresh entry instead of
  * serving stale content from a warm colo cache.
  */
 const OPENTUI_WASM_L2_KEY = `https://nimbus-cache.invalid${OPENTUI_WASM_ENTRY}?build=${OPENTUI_WASM_BUILD_ID}`;
-const OPENTUI_WASM_ASSET = {
+const OPENTUI_WASM_ASSET = stagedAsset({
+    label: 'OpenTUI wasm',
     path: OPENTUI_WASM_ENTRY,
     l2Key: OPENTUI_WASM_L2_KEY,
     sha256: OPENTUI_WASM_SHA256,
     contentType: 'application/wasm',
-    poisonedCache: 'reject',
-    missingBinding: `Nimbus: the OpenTUI backend requires an env.ASSETS binding (serves ${OPENTUI_WASM_ENTRY})`,
-    fetchFailed: (res) => `OpenTUI wasm asset fetch failed: ${res.status} ${res.statusText} for ` +
-        `${OPENTUI_WASM_ENTRY} — deploy is missing the staged opentui artifact`,
-    integrityFailed: (digest, from) => `OpenTUI wasm integrity check failed: expected ${OPENTUI_WASM_SHA256}, got ` +
-        `${digest} (${from}) — the staged artifact is ` +
-        `corrupt or out of sync with opentui-wasm-artifact.generated.ts`,
-};
+    requiredBy: 'the OpenTUI backend',
+    stagedBy: 'scripts/opentui/build-wasm.mjs',
+});
 /**
  * Fetch the staged OpenTUI wasm bytes and verify their SHA-256 against the
  * generated digest.

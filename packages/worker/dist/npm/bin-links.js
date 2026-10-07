@@ -40,10 +40,7 @@ const NpmBinManifestSchema = z.object({
 const PackageJsonSchema = z.object({
     name: z.string().min(1),
     version: z.string().optional(),
-    bin: z.union([
-        z.string(),
-        z.record(z.string(), z.string()),
-    ]).optional(),
+    bin: z.unknown().optional(),
 }).passthrough();
 export function npmBinDirPath(nodeModulesPath) {
     return normalizeVfsPath(`${nodeModulesPath}/.bin`);
@@ -89,6 +86,41 @@ export function packageBinEntries(pkg, nodeModulesPath) {
         // VFS path under the package dir.
         targetPath: isStagedArtifactTarget(target) ? target : `${packagePath}/${target}`,
     }));
+}
+/**
+ * The names the package at `packagePath` declares in `bin`, as npm reads its
+ * package.json (npmBinMap), whether or not their targets exist: what an
+ * install links, and what removing the package unlinks.
+ */
+export async function declaredPackageBins(vfs, packagePath) {
+    const pkg = await readPackageJson(vfs, `${packagePath}/package.json`);
+    return pkg ? [...npmBinMap(pkg.name, pkg.bin).keys()] : [];
+}
+/**
+ * The bin `npx` runs from the package at `packagePath`: under
+ * `--package=<pkg> <command>`, the one named `command`; for `npx <pkg>`
+ * (`command` null), the one libnpmexec's getBinFromManifest chooses: the
+ * first, when every bin names one target; else the one named after the
+ * package, its scope dropped; else none ("could not determine executable to
+ * run"). Only the chosen bin is then validated as a linked bin is (target
+ * present, `.js`/`.cjs`/`.mjs` probed, a staged-artifact sentinel passed
+ * through): a broken one runs nothing, never another bin in its place.
+ */
+export async function npxPackageBin(vfs, packagePath, command) {
+    const path = normalizeVfsPath(packagePath);
+    const pkg = await readPackageJson(vfs, `${path}/package.json`);
+    if (!pkg)
+        return null;
+    const bins = npmBinMap(pkg.name, pkg.bin);
+    let chosen = command;
+    if (chosen === null) {
+        const unscoped = pkg.name.replace(/^@[^/]+\//, '');
+        chosen = new Set(bins.values()).size === 1 ? [...bins.keys()][0] : bins.has(unscoped) ? unscoped : null;
+    }
+    if (chosen === null || !bins.has(chosen))
+        return null;
+    const [entry] = await packageJsonBinEntry(vfs, path, pkg, chosen);
+    return entry ?? null;
 }
 export async function resolveNpmBin(vfs, cwd, name) {
     const root = normalizeVfsPath(cwd || '/home/user');

@@ -1,6 +1,5 @@
-import { resolve } from '../../utils/path.js';
+import { inputChunks } from '../../utils/bytes-io.js';
 const enc = new TextEncoder();
-const CHUNK = 65536;
 class CutUsage extends Error {
 }
 /** A list: items split on commas or blanks; N, N-M, N-, -M. Sorted, overlaps merged. */
@@ -94,29 +93,6 @@ function cutRecord(record, o) {
         start = i + 1;
     }
     return parts;
-}
-async function* chunksOf(ctx, file) {
-    if (file === undefined || file === '-') {
-        const stdin = ctx.stdin;
-        if (stdin === undefined)
-            return;
-        if (stdin.readBytes) {
-            for (let chunk = await stdin.readBytes(CHUNK); chunk !== null && chunk.length > 0; chunk = await stdin.readBytes(CHUNK))
-                yield chunk;
-            return;
-        }
-        for (let text = await stdin.read(); text !== null; text = await stdin.read())
-            yield enc.encode(text);
-        return;
-    }
-    const path = resolve(ctx.cwd, file);
-    for (let offset = 0;;) {
-        const chunk = await ctx.vfs.readRange(path, offset, CHUNK);
-        if (chunk.length === 0)
-            return;
-        yield chunk;
-        offset += chunk.length;
-    }
 }
 const command = async (ctx) => {
     let mode = null;
@@ -243,7 +219,8 @@ const command = async (ctx) => {
     for (const file of files.length > 0 ? files : [undefined]) {
         let carry = new Uint8Array(0);
         try {
-            for await (const chunk of chunksOf(ctx, file)) {
+            // Streamed, a character device too: a pipe's reader can stop it (`cut -z -b1 /dev/zero | head`).
+            for await (const chunk of inputChunks(ctx, file, { slice: true })) {
                 const data = carry.length === 0 ? chunk : new Uint8Array(carry.length + chunk.length);
                 if (carry.length > 0) {
                     data.set(carry);

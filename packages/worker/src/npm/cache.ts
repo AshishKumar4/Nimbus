@@ -285,26 +285,6 @@ export class NpmCache {
     return entry;
   }
 
-  /**
-   * Bulk read of cached registry entries — used by the resolver-facet
-   * dispatcher to pre-load cached metadata it can ship across to the
-   * facet at phase start. Caller passes a hard cap; we LIMIT in SQL so
-   * a pathologically warm cache doesn't OOM the supervisor reading its
-   * own cache.
-   *
-   * Order: most-recently-fetched first, so when the cap truncates we
-   * keep the freshest entries (most likely to satisfy current ranges).
-   */
-  dumpRegistryEntries(maxRows: number): RegistryCacheEntry[] {
-    this.ensureSchema();
-    const rows = [...this.sql.exec(
-      `SELECT ${NpmCache.REGISTRY_COLUMNS}
-       FROM pkg_registry_cache ORDER BY fetched_at DESC LIMIT ?`,
-      maxRows,
-    )];
-    return rows.map((r) => this.rowToRegistryEntry(r));
-  }
-
   /** Get all cached versions for a package name. */
   getRegistryVersions(name: string): RegistryCacheEntry[] {
     this.ensureSchema();
@@ -314,21 +294,6 @@ export class NpmCache {
       name,
     )];
     return rows.map((r) => this.rowToRegistryEntry(r));
-  }
-
-  /** Store registry metadata for a resolved package version. */
-  putRegistryEntry(entry: RegistryCacheEntry): void {
-    this.ensureSchema();
-    this.sql.exec(
-      `INSERT OR REPLACE INTO pkg_registry_cache
-       (${NpmCache.REGISTRY_COLUMNS})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      entry.name, entry.version, entry.tarballUrl, entry.integrity,
-      entry.depsJson, entry.peerDepsJson || '{}',
-      entry.exportsJson, entry.main, entry.moduleField,
-      entry.binJson, entry.platformJson || '{}', entry.optionalDepsJson || '{}',
-      entry.fetchedAt,
-    );
   }
 
   /**
@@ -448,11 +413,6 @@ export class NpmCache {
     });
   }
 
-  /** Delete lockfile for a project (e.g., after package.json changes). */
-  deleteLockfile(projectPath: string): void {
-    this.ensureSchema();
-    this.sql.exec(`DELETE FROM pkg_lockfile WHERE project_path = ?`, projectPath);
-  }
 
   // ── ESM bundles ───────────────────────────────────────────────────────
 
@@ -488,17 +448,6 @@ export class NpmCache {
     );
   }
 
-  /** Delete a pre-bundled ESM module (e.g., after package update). */
-  deleteEsmBundle(specifier: string): void {
-    this.ensureSchema();
-    this.sql.exec(`DELETE FROM pkg_esm_bundles WHERE specifier = ?`, specifier);
-  }
-
-  /** Delete all ESM bundles (e.g., after full reinstall). */
-  clearEsmBundles(): void {
-    this.ensureSchema();
-    this.sql.exec(`DELETE FROM pkg_esm_bundles`);
-  }
 
   // ── User-module transforms ────────────────────────────────────────────
 
@@ -555,26 +504,5 @@ export class NpmCache {
   deleteUserModuleTransform(vfsPath: string): void {
     this.ensureSchema();
     this.sql.exec(`DELETE FROM user_module_transforms WHERE vfs_path = ?`, vfsPath);
-  }
-
-  // ── Stats ─────────────────────────────────────────────────────────────
-
-  getStats(): {
-    registryEntries: number;
-    lockfileProjects: number;
-    esmBundles: number;
-    userModuleTransforms: number;
-  } {
-    this.ensureSchema();
-    const reg = [...this.sql.exec(`SELECT COUNT(*) as cnt FROM pkg_registry_cache`)];
-    const locks = [...this.sql.exec(`SELECT COUNT(DISTINCT project_path) as cnt FROM pkg_lockfile`)];
-    const esm = [...this.sql.exec(`SELECT COUNT(*) as cnt FROM pkg_esm_bundles`)];
-    const xforms = [...this.sql.exec(`SELECT COUNT(*) as cnt FROM user_module_transforms`)];
-    return {
-      registryEntries: Number(reg[0]?.cnt ?? 0),
-      lockfileProjects: Number(locks[0]?.cnt ?? 0),
-      esmBundles: Number(esm[0]?.cnt ?? 0),
-      userModuleTransforms: Number(xforms[0]?.cnt ?? 0),
-    };
   }
 }

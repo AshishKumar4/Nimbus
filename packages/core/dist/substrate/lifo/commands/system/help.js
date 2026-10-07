@@ -1,10 +1,5 @@
-const BUILTINS = [
-    'cd', 'pwd', 'echo', 'clear', 'export', 'exit',
-    'true', 'false', 'jobs', 'fg', 'bg', 'history',
-    'source', '.', 'alias', 'unalias',
-];
+/** How help groups the commands it lists; what it lists is what the shell has. */
 const CATEGORIES = {
-    'Shell builtins': BUILTINS,
     'File system': [
         'ls', 'cat', 'mkdir', 'rm', 'cp', 'mv', 'touch', 'find', 'tree',
         'stat', 'ln', 'du', 'df', 'mount', 'chmod', 'file', 'rmdir', 'realpath',
@@ -22,13 +17,27 @@ const CATEGORIES = {
     ],
     'Network': ['curl', 'wget', 'ping', 'dig'],
     'Archive': ['tar', 'gzip', 'gunzip', 'zip', 'unzip'],
-    'Node.js': ['node', 'npm', 'lifo'],
+    'Node.js': ['node', 'npm', 'npx', 'lifo'],
 };
-export function createHelpCommand(_registry) {
+/**
+ * help: the shell's builtins, then each category's commands the registry
+ * has, then the registered commands no category names. `builtinNames` is
+ * the calling shell's (Shell.builtinNames).
+ */
+export function createHelpCommand(registry, builtinNames = () => []) {
     return async (ctx) => {
+        const categorized = new Set(Object.values(CATEGORIES).flat());
+        const builtins = [...builtinNames()];
+        const sections = [
+            ['Shell builtins', builtins],
+            ...Object.entries(CATEGORIES).map(([category, names]) => [category, names.filter((name) => registry.has(name))]),
+            ['Other commands', registry.list().filter((name) => !categorized.has(name) && !builtins.includes(name))],
+        ];
         await ctx.stdout.write('Lifo Commands\n');
         await ctx.stdout.write('==================\n\n');
-        for (const [category, commands] of Object.entries(CATEGORIES)) {
+        for (const [category, commands] of sections) {
+            if (commands.length === 0)
+                continue;
             await ctx.stdout.write(`${category}:\n`);
             // Format in columns
             const cols = 6;

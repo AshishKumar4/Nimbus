@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — drives a local workerd; CI median 28 s wall, 28 s CPU, 1.0 GiB peak (6 runs, 2026-10-06)
 /**
  * git-clone-matches-git-workerd — what Nimbus's `git clone` leaves in .git is
  * what real git's leaves.

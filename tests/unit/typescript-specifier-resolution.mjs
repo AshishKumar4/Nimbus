@@ -29,30 +29,13 @@
 import assert from 'node:assert/strict';
 import { prefetchForRequire } from '../../packages/core/src/runtime/require-resolver.ts';
 import { typescriptFallbackCandidates } from '../../packages/core/src/_shared/typescript-specifiers.ts';
+import { NODE_SHIM_RESOLUTION_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import {
   bundleTypescriptLoader,
   isBundleModuleCandidate,
 } from '../../packages/core/src/runtime/bundle-cell-transform.ts';
-
-class FakeVfs {
-  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
-
-  constructor(files = {}) {
-    this.files = new Map(Object.entries(files));
-    this.dirs = new Set();
-    for (const path of this.files.keys()) {
-      const parts = path.split('/');
-      for (let i = 1; i < parts.length; i++) this.dirs.add(parts.slice(0, i).join('/'));
-    }
-  }
-  exists(path) { return this.files.has(path) || this.dirs.has(path); }
-  isDirectory(path) { return this.dirs.has(path); }
-  readFileString(path) {
-    if (!this.files.has(path)) throw new Error(`missing file: ${path}`);
-    return this.files.get(path);
-  }
-}
+import { FakeVfs } from './lib/fake-require-fs.mjs';
 
 /** What the entry's specifiers resolved to — the entry itself is always shipped. */
 const bundleOf = async (files, entryFile) =>
@@ -163,16 +146,9 @@ for (const [base, expected] of TABLE) {
 // "keep in sync" comment has never caught a drift.
 {
   const shim = generateShimsCode();
-  assert.ok(
-    shim.includes('__typescriptFallbackCandidates'),
-    'the emitted shim carries the TypeScript fallback mapping',
-  );
-  const start = shim.indexOf('const __NON_MAPPING_EXTENSION');
-  const source = shim.slice(start);
-  const end = source.indexOf('\n}\n');
-  assert.ok(start > 0 && end > 0, 'the emitted mapping is a complete block');
+  assert.ok(shim.includes(NODE_SHIM_RESOLUTION_PREAMBLE), 'the emitted shim carries the compiled resolution preamble');
   // eslint-disable-next-line no-new-func
-  const emitted = new Function(`${source.slice(0, end + 2)}\nreturn __typescriptFallbackCandidates;`)();
+  const emitted = new Function(`${NODE_SHIM_RESOLUTION_PREAMBLE}\nreturn typescriptFallbackCandidates;`)();
   for (const [base, expected] of TABLE) {
     assert.deepEqual(emitted(base), expected, `the emitted mapping agrees for ${base}`);
   }

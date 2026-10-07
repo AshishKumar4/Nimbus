@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { attachSupervisorOps } from './session-supervisor-ops.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);

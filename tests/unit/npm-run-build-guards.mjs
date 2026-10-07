@@ -31,7 +31,7 @@ import {
   refusedNextSubcommand,
   NEXT_REFUSAL_MESSAGE,
 } from '../../packages/worker/src/session/helpers.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { writeText } from '../../packages/core/src/vfs/vfs.ts';
 
 // ── 1 + 2. core npmRun over a real workspace ─────────────────────────────

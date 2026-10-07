@@ -12,7 +12,7 @@ import { registerUnixCommands } from '../../packages/core/src/shell/unix-command
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);

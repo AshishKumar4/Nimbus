@@ -19,4 +19,15 @@ export declare function readBracedExpansion(input: string, pos: number): {
     inner: string;
     end: number;
 };
+/**
+ * The body of a balanced `open`...`close` span whose body starts at `pos`
+ * (just past `open`), and where it ends (just past `close`, or the input's
+ * end when it never closes). Quotes and nested `$(...)` inside it are
+ * skipped whole, so a `close` inside them does not end it.
+ */
+export declare function readBalancedCommand(input: string, pos: number, open: string, close: string): {
+    body: string;
+    end: number;
+    closed: boolean;
+};
 //# sourceMappingURL=lexer.d.ts.map

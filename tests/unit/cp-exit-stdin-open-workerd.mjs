@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 31 s wall, 28 s CPU, 1.0 GiB peak (6 runs, 2026-10-06)
 // A child_process child ends when its command does, whether or not its
 // parent has ended its stdin, as under Node.
 //

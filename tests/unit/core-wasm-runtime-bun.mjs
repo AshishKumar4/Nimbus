@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 47 s wall, 34 s CPU, 0.6 GiB peak (6 runs, 2026-10-06)
 // The wasm half of Nimbus, off Cloudflare.
 //
 // `nimbus-workspace-embedded.mjs` proves the JavaScript half runs over
@@ -8,7 +9,7 @@
 // compile a module in workerd and every runner named it directly.
 //
 // It is now a port (core runtime/facet-host.ts) with two implementations, and
-// this drives the non-Cloudflare one: `localFacetHost()`, which compiles in
+// this drives the non-Cloudflare one: `localFacetHost(ISOLATE_NETWORK)`, which compiles in
 // place because nothing outside workerd forbids it. Real GNU bash 5.2.37 and
 // real BusyBox, from `@nimbus-sh/core` only, in a plain bun process.
 //
@@ -19,10 +20,11 @@
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { missingRuntimeFile, RUNTIMES, seedRuntime } from './lib/wasm-runtimes.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { localFacetHost } from '../../packages/core/src/runtime/local-facet-host.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { readText, writeText } from '../../packages/core/src/vfs/vfs.ts';
 
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
@@ -63,7 +65,7 @@ const open = (options) => NimbusWorkspace.create({
 // Reopened rather than re-created: the registration under test is the one a
 // Durable Object performs after eviction, reading the runtimes off its own
 // filesystem. Seeding then reopening is exactly that sequence.
-const ws = await open({ facets: localFacetHost() });
+const ws = await open({ facets: localFacetHost(ISOLATE_NETWORK) });
 
 {
   const version = await ws.exec('wasm-runner --version');
@@ -146,7 +148,7 @@ const ws = await open({ facets: localFacetHost() });
   // statuses are GNU's; on one that cannot, a WASI child has no way to pause,
   // so the command fails and says why rather than report a false end of input
   // or lose output.
-  const parks = localFacetHost().parking === 'jspi';
+  const parks = localFacetHost(ISOLATE_NETWORK).parking === 'jspi';
   for (const [command, want] of [
     ['yes | cat | head -1; echo "${PIPESTATUS[*]}"', 'y\n141 141 0\n'],
     ['yes | head -c 80000000 | wc -c; echo "${PIPESTATUS[*]}"', '80000000\n141 0 0\n'],

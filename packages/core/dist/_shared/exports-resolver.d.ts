@@ -11,9 +11,10 @@
  *      into the facet's runtime) import the typed functions too, so a
  *      pre-bundle resolves exactly as the supervisor does.
  *
- *   3. User-shell `node` runtime (JS string) — `src/node-shims.ts` embeds
- *      the same JS source so `require()` from inside a user's `node` script
- *      sees the same exports map as the install pipeline.
+ *   3. User-shell `node` runtime (JS string) — the node shims embed this
+ *      code, compiled once from node-shim-resolution.ts, so `require()`
+ *      from inside a user's `node` script sees the same exports map as the
+ *      install pipeline.
  *
  *
  * Spec features supported:
@@ -92,22 +93,4 @@ export interface SelfReferencingPackageJson {
  * caller resolves that subpath against `pkg.exports` with its conditions.
  */
 export declare function packageSelfReferenceSubpath(pkg: SelfReferencingPackageJson | null | undefined, specifier: string): string | null;
-/**
- * Returns the resolver source as plain JavaScript (no TypeScript syntax),
- * suitable for embedding into a generated worker preamble or shim string.
- *
- * The emitted source declares four top-level functions in scope:
- *   - resolveExports(exports, subpath, conditions)
- *   - resolveConditionValue(target, conditions)        (helper)
- *   - resolvePackageEntry(pkg, subpath, conditions)
- *   - packageSelfReferenceSubpath(pkg, specifier)
- *
- * It also declares two arrays:
- *   - DEFAULT_ESM_CONDITIONS
- *   - DEFAULT_CJS_CONDITIONS
- *
- * This source must be byte-equivalent to the TS impl above (modulo type
- * annotations and `export` keywords). Keep them in sync — there is one
- */
-export declare function getExportsResolverJS(): string;
 //# sourceMappingURL=exports-resolver.d.ts.map

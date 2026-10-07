@@ -31,7 +31,10 @@ const t = new Terminal(sid);
 await t.connect();
 await t.waitForPrompt(15_000);
 
-await t.run('nimbus install clang', 300_000);
+// The catalog's default clang must be the v13 sysroot this fix lives in.
+const rInst = await t.run('nimbus install clang ; nimbus install --list', 300_000);
+a.check('default install resolves to clang@wasi-libc-modern',
+  /clang@wasi-libc-modern/.test(stripAnsi(rInst.output)), JSON.stringify(stripAnsi(rInst.output).slice(-400)));
 await t.run(heredocCommand('m.c', CSRC), 10_000);
 
 const rc = await t.run('clang m.c -o m', 240_000);

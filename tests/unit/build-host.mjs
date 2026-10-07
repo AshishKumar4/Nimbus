@@ -17,7 +17,7 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { rolldownBuildHost } from '../../packages/worker/src/facets/build-facet.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { durableObject, freshFacetClass, memories, releaseBuildFacetHarness } from './lib/build-facet-harness.mjs';
 
 const { BuildFacet, cleanup } = await freshFacetClass();

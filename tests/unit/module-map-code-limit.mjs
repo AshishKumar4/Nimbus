@@ -24,6 +24,7 @@ import {
   createFacetCtx,
   createFacetWorld,
 } from './facet-host-harness.mjs';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 const MIB = 1024 * 1024;
 /** The smallest valid module: the magic number and version 1. */
@@ -149,7 +150,7 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
   const pool = new IsolatePool(
     { LOADER: { get: () => ({ getEntrypoint: () => ({ async execute() { return 'ran'; } }) }) } },
     { id: { toString: () => 'pool-ceiling-id' } },
-    { omitSupervisor: true, wasmModules: { 'giant.wasm': new ArrayBuffer(DYNAMIC_WORKER_CODE_LIMIT_BYTES) } },
+    { network: ISOLATE_NETWORK, omitSupervisor: true, wasmModules: { 'giant.wasm': new ArrayBuffer(DYNAMIC_WORKER_CODE_LIMIT_BYTES) } },
   );
   await assert.rejects(
     pool.submit((value) => value, 'payload'),
@@ -165,7 +166,7 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
   const poolWith = (wasm) => new IsolatePool(
     { LOADER: { get: (id, code) => { loaded.push({ id, code }); return { getEntrypoint: () => ({ async execute() { return 'ran'; } }) }; } } },
     { id: { toString: () => 'pool-host-wasm-id' } },
-    { omitSupervisor: true, wasmModules: { 'esbuild.wasm': wasm } },
+    { network: ISOLATE_NETWORK, omitSupervisor: true, wasmModules: { 'esbuild.wasm': wasm } },
   );
 
   // Nobody said what it is: no identity to key warm slots by, no size to count.

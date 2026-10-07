@@ -31,7 +31,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ViteDevServer } from '../../packages/worker/src/facets/vite-dev-server.ts';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const root = 'home/user/app';
 
@@ -315,7 +315,7 @@ try {
       esbuild: new EsbuildService(undefined, { engine: esbuildEngine }),
       bundlePool: { acquire: async () => pool },
     });
-    const prebundle = () => installer.prebundleUsedModules(root, new Map([['pkg', {}]]), project.vfs.as(CRED_KERNEL));
+    const prebundle = () => installer.prebundleUsedModules(root, new Map([['pkg', {}]]), project.vfs.as(CRED_KERNEL), () => {});
     const row = () => new NpmCache(project.harness.sql).getEsmBundle('pkg');
 
     await prebundle();

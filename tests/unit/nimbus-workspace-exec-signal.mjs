@@ -6,14 +6,8 @@
 // signal died in a detached controller and every one of these hung or ran.
 
 import assert from 'node:assert/strict';
-import { Database } from 'bun:sqlite';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { openWorkspace } from './lib/test-box.mjs';
 
-const openWorkspace = () => {
-  const harness = createSqliteVfsTestHarness(new Database(':memory:'));
-  return NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
-};
 
 const ws = await openWorkspace();
 

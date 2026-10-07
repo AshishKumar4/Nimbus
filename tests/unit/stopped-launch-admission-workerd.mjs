@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 16 s wall, 15 s CPU, 1.2 GiB peak (6 runs, 2026-10-06)
 // A parent plus nine children at fs.readFileSync(0) used to retain all ten
 // launch admissions after their Workers stopped. B then waited forever,
 // and the parent could not close the stopped children's stdins until B

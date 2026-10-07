@@ -14,19 +14,11 @@
 // Each test runs in a FRESH session because a hung yes-pipe pollutes
 // the session for subsequent commands.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, termBody } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r6/new/yes-pipe-head');
 console.log(`shell/compat/r6/new/yes-pipe-head — ${process.env.BASE}`);
-
-function body(raw) {
-  const ansi = stripAnsi(raw);
-  const lines = ansi.split(/\r?\n/);
-  if (lines.length && /\$\s*$/.test(lines[lines.length - 1])) lines.pop();
-  if (lines.length && /\$\s/.test(lines[0])) lines.shift();
-  return lines.join('\n');
-}
 
 async function runIsolated(cmd, timeoutMs) {
   const sid = await mintSession();
@@ -37,7 +29,7 @@ async function runIsolated(cmd, timeoutMs) {
   let bodyText = '';
   try {
     const r = await t.run(cmd, timeoutMs);
-    bodyText = body(r.output);
+    bodyText = termBody(r.output);
   } catch (e) {
     failed = true;
     bodyText = `TIMEOUT: ${e.message}`;

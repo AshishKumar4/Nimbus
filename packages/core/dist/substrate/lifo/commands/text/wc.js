@@ -1,3 +1,4 @@
+import { getopt } from '../../utils/args.js';
 import { asciiBytes, inputChunks, utf8SequenceLength, writeBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
 /** glibc's iswspace in a UTF-8 locale. */
@@ -106,6 +107,14 @@ function decode(data, i, len) {
         return ((data[i] & 0x0f) << 12) | ((data[i + 1] & 0x3f) << 6) | (data[i + 2] & 0x3f);
     return ((data[i] & 0x07) << 18) | ((data[i + 1] & 0x3f) << 12) | ((data[i + 2] & 0x3f) << 6) | (data[i + 3] & 0x3f);
 }
+const WC_OPTIONS = {
+    short: 'lwmcL',
+    long: {
+        lines: ['l', 'none'], words: ['w', 'none'], chars: ['m', 'none'], bytes: ['c', 'none'],
+        'max-line-length': ['L', 'none'], total: ['total', 'required'],
+    },
+};
+const WC_COLUMNS = { l: 'lines', w: 'words', m: 'chars', c: 'bytes', L: 'width' };
 const command = async (ctx) => {
     const want = { lines: false, words: false, chars: false, bytes: false, width: false };
     let total = 'auto';
@@ -115,51 +124,21 @@ const command = async (ctx) => {
         return 1;
     };
     const args = ctx.args;
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-        if (arg === '--') {
-            files.push(...args.slice(i + 1));
-            break;
-        }
-        if (arg.startsWith('--')) {
-            const [name, value] = arg.slice(2).split(/=(.*)/s, 2);
-            if (name === 'lines')
-                want.lines = true;
-            else if (name === 'words')
-                want.words = true;
-            else if (name === 'chars')
-                want.chars = true;
-            else if (name === 'bytes')
-                want.bytes = true;
-            else if (name === 'max-line-length')
-                want.width = true;
-            else if (name === 'total') {
-                if (value !== 'auto' && value !== 'always' && value !== 'only' && value !== 'never')
-                    return usage(`invalid argument \u2018${value ?? ''}\u2019 for \u2018--total\u2019`);
-                total = value;
-            }
-            else
-                return usage(`unrecognized option '--${name}'`);
+    for (const event of getopt(args, WC_OPTIONS)) {
+        if (event.kind === 'error')
+            return usage(event.message);
+        if (event.kind === 'operand') {
+            files.push(event.value);
             continue;
         }
-        if (!arg.startsWith('-') || arg === '-') {
-            files.push(arg);
-            continue;
+        if (event.key === 'total') {
+            const value = event.value;
+            if (value !== 'auto' && value !== 'always' && value !== 'only' && value !== 'never')
+                return usage(`invalid argument \u2018${value ?? ''}\u2019 for \u2018--total\u2019`);
+            total = value;
         }
-        for (const flag of arg.slice(1)) {
-            if (flag === 'l')
-                want.lines = true;
-            else if (flag === 'w')
-                want.words = true;
-            else if (flag === 'm')
-                want.chars = true;
-            else if (flag === 'c')
-                want.bytes = true;
-            else if (flag === 'L')
-                want.width = true;
-            else
-                return usage(`invalid option -- '${flag}'`);
-        }
+        else
+            want[WC_COLUMNS[event.key]] = true;
     }
     if (!want.lines && !want.words && !want.chars && !want.bytes && !want.width) {
         want.lines = want.words = want.bytes = true;

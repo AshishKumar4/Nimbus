@@ -445,7 +445,8 @@ export const COMMONJS_CELL_IMPORTS = [
  * answer runtime code from the launch's `gen/` modules, or else record it for
  * the next launch and interpret it (`__nimbusRuntimeCode`, which the shims'
  * Function constructors, `vm.compileFunction`, `vm.runInThisContext`,
- * `Module.prototype._compile` and the loader of a file outside the map call).
+ * `Module.prototype._compile`, the loader of a file outside the map and the
+ * REPL call).
  *
  * Expects COMMONJS_CELL_IMPORTS, a `__NIMBUS_CODE_CELLS` table of
  * CommonJsCellRow rows and a `__NIMBUS_RUNTIME_CODE` list of staged keys.
@@ -618,6 +619,14 @@ globalThis.__nimbusRuntimeCode = Object.freeze({
   },
   compileModule(path, text) {
     return __nimbusRuntimeModule(String(path).replace(/^\\/+/, ""), text);
+  },
+  // A line typed at the JavaScript REPL (core runtime/js-repl.ts): the async
+  // function the interpreter's replLineBody makes of it, compiled as an
+  // AsyncFunction constructor's is; null while more lines may complete it.
+  compileReplLine(code) {
+    const { replLineBody } = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}");
+    const __body = replLineBody(String(code));
+    return __body === null ? null : __nimbusRuntimeCodeCompile({ kind: "async", params: [], body: __body }, "Code typed at the REPL");
   },
 });
 // What this launch could not compile, for the next launch of its command.

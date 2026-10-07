@@ -1,1 +1,1 @@
-{"version":3,"file":"cut.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/text/cut.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAkB,MAAM,aAAa,CAAC;AA4H3D,QAAA,MAAM,OAAO,EAAE,OAwHd,CAAC;AAEF,eAAe,OAAO,CAAC"}
+{"version":3,"file":"cut.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/text/cut.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAuG3C,QAAA,MAAM,OAAO,EAAE,OAyHd,CAAC;AAEF,eAAe,OAAO,CAAC"}

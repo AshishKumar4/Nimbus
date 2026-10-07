@@ -8,7 +8,7 @@ import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/co
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { evaluateTest } from '../../packages/core/src/substrate/lifo/shell/test-builtin.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
 const OTHER = Object.freeze({ uid: 2000, gid: 2000, groups: Object.freeze([2000]), umask: 0o022 });

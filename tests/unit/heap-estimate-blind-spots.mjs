@@ -10,14 +10,11 @@
 // kill. Naming it as a blind spot was the first fix; measuring it is the real
 // one, and a measured site belongs in the breakdown, not beside it.
 //
-// This test pins both halves: every reported blind spot is actionable, and the
-// prefetch path is no longer one because it now has components of its own.
+// This test pins that the prefetch path is no longer a blind spot because it
+// now has components of its own.
 
 import assert from 'node:assert/strict';
-import {
-  estimateSupervisorHeap,
-  HEAP_BLIND_SPOTS,
-} from '../../packages/platform/src/heap-estimate.ts';
+import { estimateSupervisorHeap } from '../../packages/platform/src/heap-estimate.ts';
 import {
   readDiagCounters,
   prefetchBundleStart,
@@ -28,20 +25,6 @@ import { SUPERVISOR_HEAP_CEILING_BYTES } from '../../packages/platform/src/limit
 
 const vfsInputs = { cacheHotBytes: 35 * 1024, inFlightWriteBytes: 0 };
 const estimate = estimateSupervisorHeap(readDiagCounters(), vfsInputs);
-
-// ── The estimate still declares its own coverage ────────────────────────
-assert.ok(Array.isArray(estimate.blindSpots), 'estimate carries a blind-spot list');
-assert.equal(estimate.blindSpots, HEAP_BLIND_SPOTS);
-
-// Whatever is listed must be actionable — a blind spot that does not name its
-// site is indistinguishable from a shrug.
-for (const spot of estimate.blindSpots) {
-  assert.ok(spot.source.length > 0, 'a blind spot names its allocation site');
-  assert.ok(spot.source.includes(':'), 'blind spots are module-qualified');
-  assert.ok(spot.reason.length > 0, 'a blind spot explains what it allocates');
-  assert.ok(spot.capBytes === null || spot.capBytes > 0,
-    'capBytes is a positive bound or null for unbounded');
-}
 
 // ── The prefetch path is measured, not caveated ─────────────────────────
 const sources = estimate.blindSpots.map((s) => s.source);

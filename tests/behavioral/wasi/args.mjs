@@ -5,44 +5,19 @@
 // the program sees its own filename as argv[0]. We don't pass extra
 // args here, so argc should be 1 → output "1\n".
 
-import { mintSession, deleteSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
-import { writeFixtureCmd } from './_fixtures.mjs';
+import { openWasiProbe, tailLines } from './_harness.mjs';
 
-const sid = await mintSession();
-console.log(`[wasi/args] sid=${sid} BASE=${BASE}`);
-
-const t = new Terminal(sid);
-let exitCode = 1;
+const probe = await openWasiProbe('wasi/args', { dir: '/home/user/wasi', fixture: 'args', as: 'args.wasm' });
+const { t } = probe;
 try {
-  await t.connect();
-  await sleep(2_000);
-  await t.waitForPrompt(60_000);
-
-  await t.run('mkdir -p /home/user/wasi && cd /home/user/wasi', 10_000);
-  await t.run(writeFixtureCmd('args', 'args.wasm'), 30_000);
-
   const result = await t.run('wasm-runner args.wasm _start', 30_000);
-  const out = stripAnsi(result.output);
-  const tail = out.split(/\r?\n/).slice(-6).join('\n');
+  const tail = tailLines(result.output, 6);
   const argcOk = /^\s*1\s*$/m.test(tail);
 
-  const findings = { probe: 'wasi/args', sid, base: BASE, tail, argcOk };
-  console.log(JSON.stringify(findings, null, 2));
-
-  const checks = [
+  probe.report([
     ['argc (no extra args) → "1"', argcOk],
-  ];
-  let pass = 0;
-  for (const [name, ok] of checks) {
-    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}`);
-    if (ok) pass++;
-  }
-  const verdict = pass === checks.length ? 'passing' : 'failing';
-  console.log(`[wasi/args] ${verdict} — ${pass}/${checks.length}`);
-  exitCode = verdict === 'passing' ? 0 : 1;
+  ], { tail, argcOk });
 } finally {
-  await t.close().catch(() => {});
-  const del = await deleteSession(sid, 'wasi/args');
-  console.log(`deleteSession: ${del.status}`);
+  await probe.close();
 }
-process.exit(exitCode);
+process.exit(probe.exitCode());

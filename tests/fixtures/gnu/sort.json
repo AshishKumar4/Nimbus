@@ -16,7 +16,11 @@
   "vers": "YS0xLjEwCmEtMS4yCmEtMS4yYQphLTEuMn5yYzEKYS0xLjkKLngKYgo=",
   "dup": "YQphCkEKYgpiCmIKYwoKCmQgeApkICB4CmUgeQrpCukK",
   "long": "bGluZSAwCmxpbmUgMQpsaW5lIDIKbGluZSAzCmxpbmUgNApsaW5lIDUKbGluZSA2CmxpbmUgNwpsaW5lIDgKbGluZSA5CmxpbmUgMTAKbGluZSAxMQpsaW5lIDEyCmxpbmUgMTMKbGluZSAxNApsaW5lIDE1CmxpbmUgMTYKbGluZSAxNwpsaW5lIDE4CmxpbmUgMTkKbGluZSAyMApsaW5lIDIxCmxpbmUgMjIKbGluZSAyMwpsaW5lIDI0CmxpbmUgMjUKbGluZSAyNgpsaW5lIDI3CmxpbmUgMjgKbGluZSAyOQo=",
-  "nl2": "XDpcOlw6CmgKXDpcOgpiMQoKYjIKXDoKZgo="
+  "nl2": "XDpcOlw6CmgKXDpcOgpiMQoKYjIKXDoKZgo=",
+  "seed0": "AAAAAAAAAAAAAAAAAAAAAA==",
+  "seed1": "MDEyMzQ1Njc4OWFiY2RlZg==",
+  "seedshort": "c2hvcnQ=",
+  "rin": "YgphCmMKYQpkCmUKQgpiIGEKYSBiCg=="
  },
  "cases": [
   {
@@ -268,6 +272,126 @@
    "args": "-rk1,1 -k2n kv",
    "stdout": "c 1 z\nb 2 x\nb  3 v\na 2 w\na 10 y\n",
    "exit": 0
+  },
+  {
+   "args": "LC_ALL=C %T -R --random-source=seed0 rin",
+   "stdout": "a\na\nb\nb a\nB\nd\ne\na b\nc\n",
+   "exit": 0
+  },
+  {
+   "args": "LC_ALL=C %T -R --random-source=seed1 rin",
+   "stdout": "b a\nd\na b\nb\na\na\nc\ne\nB\n",
+   "exit": 0
+  },
+  {
+   "args": "LC_ALL=C %T -Rr --random-source=seed1 rin",
+   "stdout": "B\ne\nc\na\na\nb\na b\nd\nb a\n",
+   "exit": 0
+  },
+  {
+   "args": "LC_ALL=C %T -Ru --random-source=seed1 rin",
+   "stdout": "b a\nd\na b\nb\na\nc\ne\nB\n",
+   "exit": 0
+  },
+  {
+   "args": "LC_ALL=C %T --sort=random --random-source=seed1 rin",
+   "stdout": "b a\nd\na b\nb\na\na\nc\ne\nB\n",
+   "exit": 0
+  },
+  {
+   "args": "LC_ALL=C %T -k2,2R -s --random-source=seed1 rin",
+   "stdout": "b a\na b\nb\na\nc\na\nd\ne\nB\n",
+   "exit": 0
+  },
+  {
+   "args": "LC_ALL=C %T -R --random-source seed1 rin",
+   "stdout": "b a\nd\na b\nb\na\na\nc\ne\nB\n",
+   "exit": 0
+  },
+  {
+   "args": "LC_ALL=C %T -R --random-source=seedshort rin",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "LC_ALL=C %T -R --random-source=nope rin",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "--rev l1",
+   "stdout": "plain\nnaïve\nhÃ©llo\ncafé\nþÿ\n",
+   "exit": 0
+  },
+  {
+   "args": "--re l1",
+   "stdout": "plain\nnaïve\nhÃ©llo\ncafé\nþÿ\n",
+   "exit": 0
+  },
+  {
+   "args": "--count=3 l1",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "--key",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "-k",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "--sort=nope l1",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "--di l1",
+   "stdout": "þÿ\ncafé\nhÃ©llo\nnaïve\nplain\n",
+   "exit": 0
+  },
+  {
+   "args": "-rk1,1 l1",
+   "stdout": "plain\nnaïve\nhÃ©llo\ncafé\nþÿ\n",
+   "exit": 0
+  },
+  {
+   "args": "l1 -r",
+   "stdout": "plain\nnaïve\nhÃ©llo\ncafé\nþÿ\n",
+   "exit": 0
+  },
+  {
+   "args": "--sort=gen l1",
+   "stdout": "þÿ\ncafé\nhÃ©llo\nnaïve\nplain\n",
+   "exit": 0
+  },
+  {
+   "args": "--sort=general l1",
+   "stdout": "þÿ\ncafé\nhÃ©llo\nnaïve\nplain\n",
+   "exit": 0
+  },
+  {
+   "args": "--sort=h l1",
+   "stdout": "þÿ\ncafé\nhÃ©llo\nnaïve\nplain\n",
+   "exit": 0
+  },
+  {
+   "args": "--sort= l1",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "LC_ALL=C %T -R --random-source=/dev/zero rin",
+   "stdout": "a\na\nb\nb a\nB\nd\ne\na b\nc\n",
+   "exit": 0
+  },
+  {
+   "args": "LC_ALL=C %T -R --random-source=/dev/null rin",
+   "stdout": "",
+   "exit": 2
   }
  ]
 }

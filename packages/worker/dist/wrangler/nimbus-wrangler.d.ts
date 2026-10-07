@@ -13,10 +13,13 @@
  * The dynamic worker IS the user's Worker — running on the actual
  * Cloudflare Workers runtime, not a simulation.
  */
+import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { VfsEventEmitter } from '@nimbus-sh/core/vfs/events.js';
 export interface NimbusWranglerOptions {
+    /** The workspace's network: the worker under development goes out through its egress. */
+    network: WorkspaceNetwork;
     vfs: CredentialedVfs;
     vfsEvents: VfsEventEmitter;
     esbuild: EsbuildService;
@@ -53,6 +56,7 @@ export interface NimbusWranglerOptions {
  */
 export declare function rewriteLocationForOuter(location: string, outerWorkerBase: string, currentRequestUrl: string): string;
 export declare class NimbusWrangler {
+    private readonly network;
     private vfs;
     private vfsEvents;
     private esbuild;

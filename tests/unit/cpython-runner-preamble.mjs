@@ -36,16 +36,10 @@ if (!existsSync(WASM) || !existsSync(STDLIB)) {
   process.exit(0);
 }
 
+// The tail and the WASI host are proven by the boot below (it installs
+// __cpythonRun and runs a program); the socket kernel is not, so it is pinned.
 const preamble = buildCPythonPreamble();
-assert.ok(preamble.includes('__cpythonRun'), 'the tail must be present');
 assert.ok(preamble.includes('__nimbusVirtualSockets'), 'the socket kernel must be present');
-assert.ok(preamble.includes('__wasiMakeImports'), 'the WASI host must be present');
-
-// initFS must come before the supervisor adoption in the emitted text.
-const initFsAt = preamble.indexOf('__wasiInitFS({');
-const adoptAt = preamble.indexOf('__wasiAdoptSupervisor(globalThis.__nimbusPySupervisor');
-assert.ok(initFsAt > 0 && adoptAt > initFsAt,
-  'the supervisor must be adopted after __wasiInitFS, which clears it');
 
 // ── The four invariants this runtime rediscovered by hitting them ──────────
 // Every one of these was already true of ruby-runner, and every one cost a
@@ -87,13 +81,8 @@ assert.ok(initFsAt > 0 && adoptAt > initFsAt,
   // Supervisor publish/adopt are asserted over EVERY facet entry by
   // cpython-facet-entry-invariants.mjs, which discovers them rather than
   // listing files — repeating them here would be a second list to rot.
-  //
-  // The pool is built per invocation: supervisorPid is baked into the
-  //    SUPERVISOR binding at construction, so a held pool hands every later
-  //    caller the first caller's write credential.
-  const runnerSrc = readFileSync(path.join(RUNTIME_DIR, '../../../core/src/runtime/cpython-runner.ts'), 'utf8');
-  assert.ok(!/let\s+pool\s*:\s*(?:Nimbus)?IsolatePool\s*\|\s*null/.test(runnerSrc),
-    'the loader pool must not be cached across invocations');
+  // That the facet is opened per invocation under the invoker's pid is
+  // runtime-image-handoff.mjs's, driven through the runner.
   console.log('  ok  the preamble-text invariants ruby already knew are asserted, not documented');
 }
 

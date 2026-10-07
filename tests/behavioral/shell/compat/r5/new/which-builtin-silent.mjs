@@ -5,7 +5,7 @@
 // With -a flag, builtin classification IS printed alongside any
 // PATH match. Pre-fix our `which echo` printed 'echo: nimbus built-in'.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, termBody } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r5/new/which-builtin-silent');
@@ -16,22 +16,14 @@ const t = new Terminal(sid);
 await t.connect();
 await t.waitForPrompt(60_000);
 
-function body(raw) {
-  const ansi = stripAnsi(raw);
-  const lines = ansi.split(/\r?\n/);
-  if (lines.length && /\$\s*$/.test(lines[lines.length - 1])) lines.pop();
-  if (lines.length && /\$\s/.test(lines[0])) lines.shift();
-  return lines.join('\n');
-}
-
 // Probe 1: `which echo` default → empty stdout, exit 1 (silent).
 // echo is a shell builtin, not in canonical-bin map.
 const r1 = await t.run('which echo', 5_000);
 const r1ex = await t.run('echo "ex=$?"', 5_000);
 a.check(
   'which echo default → empty stdout, exit 1',
-  body(r1.output) === '' && body(r1ex.output) === 'ex=1',
-  `out=${JSON.stringify(body(r1.output))} ex=${JSON.stringify(body(r1ex.output))}`,
+  termBody(r1.output) === '' && termBody(r1ex.output) === 'ex=1',
+  `out=${JSON.stringify(termBody(r1.output))} ex=${JSON.stringify(termBody(r1ex.output))}`,
 );
 
 // Probe 2: `which -a echo` → prints builtin marker, exit 0
@@ -39,8 +31,8 @@ const r2 = await t.run('which -a echo', 5_000);
 const r2ex = await t.run('echo "ex=$?"', 5_000);
 a.check(
   'which -a echo → "echo: shell built-in command", exit 0',
-  /echo: shell built-in command/.test(body(r2.output)) && body(r2ex.output) === 'ex=0',
-  `out=${JSON.stringify(body(r2.output))} ex=${JSON.stringify(body(r2ex.output))}`,
+  /echo: shell built-in command/.test(termBody(r2.output)) && termBody(r2ex.output) === 'ex=0',
+  `out=${JSON.stringify(termBody(r2.output))} ex=${JSON.stringify(termBody(r2ex.output))}`,
 );
 
 // Probe 3: `which clang` (canonical-bin entry) prints path, exit 0
@@ -48,8 +40,8 @@ const r3 = await t.run('which clang', 5_000);
 const r3ex = await t.run('echo "ex=$?"', 5_000);
 a.check(
   'which clang (canonical-bin) → path, exit 0',
-  body(r3.output) === '/usr/local/bin/clang' && body(r3ex.output) === 'ex=0',
-  `out=${JSON.stringify(body(r3.output))} ex=${JSON.stringify(body(r3ex.output))}`,
+  termBody(r3.output) === '/usr/local/bin/clang' && termBody(r3ex.output) === 'ex=0',
+  `out=${JSON.stringify(termBody(r3.output))} ex=${JSON.stringify(termBody(r3ex.output))}`,
 );
 
 await t.close();

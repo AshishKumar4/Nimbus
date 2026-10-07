@@ -15,7 +15,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);

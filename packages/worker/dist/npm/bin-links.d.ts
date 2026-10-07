@@ -32,11 +32,30 @@ export interface NpmBinResolution extends NpmBinEntry {
  */
 type VfsLike = Pick<ProjectFs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir' | 'lstat'>;
 type WritableVfsLike = VfsLike & Pick<ProjectFs, 'mkdir' | 'writeFile' | 'chmod'>;
+/** What validating a bin's target reads. */
+type BinTargetFs = Pick<VfsLike, 'exists' | 'isDirectory'>;
 export declare function npmBinDirPath(nodeModulesPath: string): string;
 export declare function npmBinManifestPath(nodeModulesPath: string): string;
 export declare function createNpmBinManifest(entries: NpmBinEntry[]): NpmBinManifest;
 export declare function createNpmBinShim(entry: NpmBinEntry, shimDir: string): string;
 export declare function packageBinEntries(pkg: ResolvedPackage, nodeModulesPath: string): NpmBinEntry[];
+/**
+ * The names the package at `packagePath` declares in `bin`, as npm reads its
+ * package.json (npmBinMap), whether or not their targets exist: what an
+ * install links, and what removing the package unlinks.
+ */
+export declare function declaredPackageBins(vfs: Pick<VfsLike, 'readFileString'>, packagePath: string): Promise<string[]>;
+/**
+ * The bin `npx` runs from the package at `packagePath`: under
+ * `--package=<pkg> <command>`, the one named `command`; for `npx <pkg>`
+ * (`command` null), the one libnpmexec's getBinFromManifest chooses: the
+ * first, when every bin names one target; else the one named after the
+ * package, its scope dropped; else none ("could not determine executable to
+ * run"). Only the chosen bin is then validated as a linked bin is (target
+ * present, `.js`/`.cjs`/`.mjs` probed, a staged-artifact sentinel passed
+ * through): a broken one runs nothing, never another bin in its place.
+ */
+export declare function npxPackageBin(vfs: BinTargetFs & Pick<VfsLike, 'readFileString'>, packagePath: string, command: string | null): Promise<NpmBinEntry | null>;
 export declare function resolveNpmBin(vfs: VfsLike, cwd: string, name: string): Promise<NpmBinResolution | null>;
 /**
  * A path-shaped invocation of an npm bin shim: an executable entry of a

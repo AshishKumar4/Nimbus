@@ -16,41 +16,13 @@
 // `for await (const chunk of req)` and `req.pipe()` had nothing to iterate.
 
 import assert from 'node:assert/strict';
-import { generateShimsCode } from './lib/node-http-platform.mjs';
-
-function makeFacet() {
-  delete globalThis.__portRegistry;
-  const supervisor = { registerPort: () => {}, unregisterPort: () => {} };
-  const factory = new Function(
-    '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + generateShimsCode() +
-      '\n;return { http: builtins.http, Buffer: __BufferMod, serveHttp: globalThis.__nimbusServeHttp };',
-  );
-  return factory(
-    {},
-    {},
-    {},
-    supervisor,
-    { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-    '/home/user',
-    [],
-    {},
-    '/home/user/main.mjs',
-    '/home/user',
-  );
-}
-
-function routedRequest(port, path, init = {}) {
-  const headers = new Headers(init.headers || {});
-  headers.set('X-Nimbus-Port', String(port));
-  return new Request(`http://127.0.0.1:${port}${path}`, { ...init, headers });
-}
+import { routedRequest, shimHttpFacet } from './lib/node-http-platform.mjs';
 
 const enc = new TextEncoder();
 
 // ── the canonical Buffer.concat handler, at 16 bytes and at 64 KiB ──────────
 for (const size of [16, 64 * 1024]) {
-  const { http, Buffer, serveHttp } = makeFacet();
+  const { http, Buffer, serveHttp } = shimHttpFacet();
   const payload = new Uint8Array(size);
   for (let i = 0; i < size; i++) payload[i] = i & 0xff;
 
@@ -80,7 +52,7 @@ for (const size of [16, 64 * 1024]) {
 
 // ── every chunk delivered to 'data' is a Buffer, never a string ─────────────
 {
-  const { http, Buffer, serveHttp } = makeFacet();
+  const { http, Buffer, serveHttp } = shimHttpFacet();
   const seen = [];
   const server = http.createServer((req, res) => {
     req.on('data', (chunk) => {
@@ -100,7 +72,7 @@ for (const size of [16, 64 * 1024]) {
 
 // ── a JSON POST, the shape most real servers actually take ─────────────────
 {
-  const { http, Buffer, serveHttp } = makeFacet();
+  const { http, Buffer, serveHttp } = shimHttpFacet();
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
@@ -125,7 +97,7 @@ for (const size of [16, 64 * 1024]) {
 
 // ── binary bodies are bytes, not a UTF-8 round trip ────────────────────────
 {
-  const { http, Buffer, serveHttp } = makeFacet();
+  const { http, Buffer, serveHttp } = shimHttpFacet();
   // 0x80-0xff are invalid standalone UTF-8; a text() decode replaces them
   // with U+FFFD and the payload is silently corrupted.
   const payload = new Uint8Array([0x00, 0x80, 0xfe, 0xff, 0xc3, 0x28, 0x7f]);
@@ -145,7 +117,7 @@ for (const size of [16, 64 * 1024]) {
 
 // ── IncomingMessage is a Readable: async iteration and pipe both work ──────
 {
-  const { http, Buffer, serveHttp } = makeFacet();
+  const { http, Buffer, serveHttp } = shimHttpFacet();
   const server = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -161,7 +133,7 @@ for (const size of [16, 64 * 1024]) {
 // void the instant the handler returns is the same silent-loss failure the
 // parked-request queue already fixed one layer up.
 {
-  const { http, Buffer, serveHttp } = makeFacet();
+  const { http, Buffer, serveHttp } = shimHttpFacet();
   const server = http.createServer(async (req, res) => {
     await Promise.resolve();
     const chunks = [];
@@ -176,7 +148,7 @@ for (const size of [16, 64 * 1024]) {
 
 // ── request bodies stay isolated between concurrent requests ───────────────
 {
-  const { http, Buffer, serveHttp } = makeFacet();
+  const { http, Buffer, serveHttp } = shimHttpFacet();
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));

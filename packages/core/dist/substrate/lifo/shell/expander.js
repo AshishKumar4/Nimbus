@@ -1,5 +1,7 @@
+import { isShellIdentifier } from './names.js';
+import { DEFAULT_HOME } from '../../../constants.js';
 import { expandGlob, globMatch } from '../utils/glob.js';
-import { readBracedExpansion } from './lexer.js';
+import { readBalancedCommand, readBracedExpansion } from './lexer.js';
 /**
  * A parameter expansion that aborts the command it belongs to: `set -u` on an
  * unset parameter, or an explicit `${var:?message}`.
@@ -75,11 +77,11 @@ function findBraceSpan(text) {
             continue;
         }
         if (text[i] === '$' && text[i + 1] === '{') {
-            i = skipBalanced(text, i + 1, '{', '}');
+            i = readBalancedCommand(text, i + 2, '{', '}').end;
             continue;
         }
         if (text[i] === '$' && text[i + 1] === '(') {
-            i = skipBalanced(text, i + 1, '(', ')');
+            i = readBalancedCommand(text, i + 2, '(', ')').end;
             continue;
         }
         if (text[i] === '{') {
@@ -101,11 +103,11 @@ function findBraceEndWithTopLevelComma(text, start) {
             continue;
         }
         if (text[i] === '$' && text[i + 1] === '{') {
-            i = skipBalanced(text, i + 1, '{', '}') - 1;
+            i = readBalancedCommand(text, i + 2, '{', '}').end - 1;
             continue;
         }
         if (text[i] === '$' && text[i + 1] === '(') {
-            i = skipBalanced(text, i + 1, '(', ')') - 1;
+            i = readBalancedCommand(text, i + 2, '(', ')').end - 1;
             continue;
         }
         if (text[i] === '{') {
@@ -135,11 +137,11 @@ function splitBraceChoices(inner) {
             continue;
         }
         if (inner[i] === '$' && inner[i + 1] === '{') {
-            i = skipBalanced(inner, i + 1, '{', '}') - 1;
+            i = readBalancedCommand(inner, i + 2, '{', '}').end - 1;
             continue;
         }
         if (inner[i] === '$' && inner[i + 1] === '(') {
-            i = skipBalanced(inner, i + 1, '(', ')') - 1;
+            i = readBalancedCommand(inner, i + 2, '(', ')').end - 1;
             continue;
         }
         if (inner[i] === '{') {
@@ -157,24 +159,6 @@ function splitBraceChoices(inner) {
     }
     choices.push(inner.slice(start));
     return choices;
-}
-function skipBalanced(text, openPos, open, close) {
-    let depth = 1;
-    let i = openPos + 1;
-    while (i < text.length && depth > 0) {
-        if (text[i] === '\\') {
-            i += 2;
-            continue;
-        }
-        if (text[i] === open) {
-            depth++;
-        }
-        else if (text[i] === close) {
-            depth--;
-        }
-        i++;
-    }
-    return i;
 }
 // ─── Word assembly ───
 async function expandParts(parts, ctx) {
@@ -206,7 +190,7 @@ function tildeExpanded(text, ctx, preceding) {
     const atWordStart = !preceding.some((p) => p.kind === 'break' || p.text !== '');
     if (!atWordStart || !text.startsWith('~'))
         return text;
-    const home = ctx.env['HOME'] ?? '/home/user';
+    const home = ctx.env['HOME'] ?? DEFAULT_HOME;
     if (text === '~')
         return home;
     if (text.startsWith('~/'))
@@ -264,7 +248,7 @@ async function expandDollar(text, pos, ctx, quoted) {
     // by the lexer. This branch is retained only for caller-constructed WordPart
     // values that did not pass through the lexer.
     if (next === '(') {
-        const end = skipBalanced(text, pos + 1, '(', ')');
+        const end = readBalancedCommand(text, pos + 2, '(', ')').end;
         const output = await expandCommandSubstitution(text.slice(pos + 2, end - 1), ctx);
         return { pieces: [valuePiece(output, quoted)], end };
     }
@@ -494,7 +478,7 @@ async function applyDefault(ref, operator, colon, word, ctx, quoted) {
         throw new ExpansionError(`${ref.name}: ${value || 'parameter null or not set'}`);
     }
     if (operator === '=' && ref.subscript === undefined
-        && /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(ref.name)) {
+        && isShellIdentifier(ref.name)) {
         ctx.env[ref.name] = value;
     }
     return [valuePiece(value, quoted)];
@@ -687,7 +671,7 @@ function parameterWordParts(word) {
             continue;
         }
         if (ch === '$' && word[i + 1] === '(') {
-            const end = skipBalanced(word, i + 1, '(', ')');
+            const end = readBalancedCommand(word, i + 2, '(', ')').end;
             text += word.slice(i, end);
             i = end;
             continue;

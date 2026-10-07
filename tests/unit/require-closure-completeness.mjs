@@ -4,35 +4,7 @@ import assert from 'node:assert/strict';
 
 import { prefetchForRequire } from '../../packages/core/src/runtime/require-resolver.ts';
 import { VFS_BUNDLE_MAX_BYTES } from '../../packages/core/src/constants.ts';
-
-class FakeVfs {
-  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
-
-  constructor(files) {
-    this.files = new Map(Object.entries(files));
-    this.dirs = new Set();
-    for (const file of this.files.keys()) {
-      const parts = file.split('/');
-      for (let index = 1; index < parts.length; index++) {
-        this.dirs.add(parts.slice(0, index).join('/'));
-      }
-    }
-  }
-
-  exists(path) {
-    return this.files.has(path) || this.dirs.has(path);
-  }
-
-  isDirectory(path) {
-    return this.dirs.has(path);
-  }
-
-  readFileString(path) {
-    const content = this.files.get(path);
-    if (content === undefined) throw new Error(`missing file: ${path}`);
-    return content;
-  }
-}
+import { FakeVfs } from './lib/fake-require-fs.mjs';
 
 const root = 'usr/local/lib/node_modules';
 const entryPath = `${root}/large-cli/index.js`;

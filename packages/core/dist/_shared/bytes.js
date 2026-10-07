@@ -11,10 +11,21 @@
  * generateGitNetworkFacetCode) cannot import this module and must keep
  * their inline allocations — those copies are justified.
  */
+import { SinkWriter } from './byte-stream.js';
 /** Shared UTF-8 encoder. Stateless; safe to share across all callers. */
 export const enc = new TextEncoder();
 /** Shared UTF-8 decoder. Stateless; safe to share across all callers. */
 export const dec = new TextDecoder();
+/**
+ * A fresh ArrayBuffer holding exactly the bytes `bytes` views — its window,
+ * not its whole backing buffer — for APIs that take an ArrayBuffer
+ * (WebAssembly modules, structured clone across a facet boundary).
+ */
+export function toArrayBuffer(bytes) {
+    const out = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(out).set(bytes);
+    return out;
+}
 /**
  * A text consumer's edge over a byte stream: one streaming UTF-8 decoder per
  * key (a pid, or a (pid, stream) pair), so a multibyte character whose bytes
@@ -41,16 +52,12 @@ export class StreamTextDecoders {
     }
 }
 /**
- * A text writer's edge over a byte hook: the returned callback decodes with
- * its own streaming decoder, so a text consumer of an `onStdout`-shaped hook
- * reads whole characters even when a multibyte one straddles two chunks.
- * One per stream; do not share a sink between stdout and stderr.
+ * A text writer's edge over a byte hook: an `onStdout`-shaped callback whose
+ * bytes reach `write` as text through its own {@link SinkWriter}, so a text
+ * consumer reads whole characters even when a multibyte one straddles two
+ * chunks. One per stream; do not share a sink between stdout and stderr.
  */
 export function textSink(write) {
-    const decoder = new TextDecoder('utf-8');
-    return (bytes) => {
-        const text = decoder.decode(bytes, { stream: true });
-        if (text.length > 0)
-            return write(text);
-    };
+    const writer = new SinkWriter({ write });
+    return (bytes) => writer.write(bytes);
 }

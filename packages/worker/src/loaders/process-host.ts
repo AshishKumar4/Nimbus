@@ -4,6 +4,7 @@
  * this module owns only the deployment config that picks between them.
  */
 
+import { ISOLATE_NETWORK, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import {
   createProcessHost,
   type ProcessHostMode,
@@ -35,6 +36,8 @@ export function processHostFor(
   ctx: DurableObjectState,
   env: unknown,
   disk: () => ResidentDiskReader,
+  /** The workspace's network (the session's composition supplies it); absent, the isolate's own. */
+  network: () => WorkspaceNetwork = () => ISOLATE_NETWORK,
 ): ProcessHost {
-  return createProcessHost(processHostMode(env), ctx, env, disk);
+  return createProcessHost(processHostMode(env), ctx, env, disk, network);
 }

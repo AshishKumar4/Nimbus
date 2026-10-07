@@ -32,6 +32,7 @@ import { own } from './parser-realm.js';
 import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
+export { replLineBody } from './repl-line.js';
 /** The parameters of Node's CommonJS module wrapper. */
 const WRAPPER_PARAMS = ['exports', 'require', 'module', '__filename', '__dirname'];
 /** Extensions whose text is not JavaScript acorn can parse. */

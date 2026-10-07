@@ -95,7 +95,12 @@ jobs:
   unit:
     name: unit
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The suite runs on Cloudflare Containers (apps/ci-runner), sharded so
+    # a full run takes about ten minutes; this job only uploads the commit,
+    # waits, and prints the verdict. Run here on one runner, the suite did not
+    # fit this job's old 15 minutes: of 20 runs from 2026-10-03 to 10-06,
+    # none passed and 19 were cancelled.
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -107,31 +112,15 @@ jobs:
           # bundler and resolver drift from it (bun 1.4.2 dropped a side effect 1.4.0 keeps).
           bun-version: 1.4.0
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      # tests/unit/lean-proofs.mjs builds the Lean corpus (lean/) with the
-      # toolchain lean/lean-toolchain pins; the runner has no Lean.
-      - name: Cache the Lean toolchain
-        uses: actions/cache@v4
-        with:
-          path: ~/.elan
-          key: elan-${{ hashFiles('lean/lean-toolchain') }}
-
-      - name: Install Lean
-        run: |
-          if [ ! -x "$HOME/.elan/bin/lake" ]; then
-            curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
-              | sh -s -- -y --no-modify-path --default-toolchain "$(cat lean/lean-toolchain)"
-          fi
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-
-      # tests/unit/run-all.mjs runs every file in a worker pool and exits
-      # non-zero when any file fails, so this job IS the unit gate — no
-      # record-and-fail-later step needed. Its red status never decides
+      # scripts/ci-run.mjs is the same command every lane runs: it uploads
+      # `git archive` of the commit, runs every tests/unit file on dedicated
+      # containers, and exits 0 on pass, 1 when a test failed, 2 when the
+      # run could not grade the commit. Its red status never decides
       # whether the probes run (see the behavioral job's `if:`).
-      - name: Run unit tests
-        run: bun run test:unit
+      - name: Run unit tests on Cloudflare Containers
+        env:
+          NIMBUS_CI_TOKEN: ${{ secrets.NIMBUS_CI_TOKEN }}
+        run: bun scripts/ci-run.mjs "$GITHUB_SHA" --label "github ${{ github.event_name }} ${{ github.run_id }}"
 
   dist-integrity:
     name: dist-integrity
@@ -249,8 +238,11 @@ jobs:
         # The runner's default pool (16 probes at once): each probe mints
         # its own session and owns its own browsers, and most of its time
         # is spent waiting on the target.
+        # --ledger keeps the run's session ledger beside the log: every
+        # session a probe minted, when, and its DELETE, so a session that
+        # reset is looked up in Workers Logs by its session.
         run: |
-          bun tests/behavioral/run-all.mjs \
+          bun tests/behavioral/run-all.mjs --ledger probe-ledger.jsonl \
             ${{ github.event_name == 'push' && ' ' || '--no-retry' }} | tee behavioral.log
 
       - name: Upload run log
@@ -258,7 +250,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: behavioral-log-${{ github.event_name }}-${{ github.run_id }}
-          path: behavioral.log
+          path: |
+            behavioral.log
+            probe-ledger.jsonl
+          if-no-files-found: warn
           retention-days: 90
 
       - name: Delete the throwaway target

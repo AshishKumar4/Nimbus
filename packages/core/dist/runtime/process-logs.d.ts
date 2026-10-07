@@ -251,6 +251,7 @@ export declare class ProcessLogStore {
     };
     /** Return the last N chunks (by line count) in chronological order. */
     tail(pid: number, opts?: Pick<ProcessLogReadOptions, 'lines' | 'bytes'>): LogChunk[];
+    /** Index of the oldest chunk in the last N lines/bytes, walking newest → oldest. */
     private _tailStartIndex;
     /** All chunks for a pid, chronological. */
     all(pid: number): LogChunk[];

@@ -49,11 +49,13 @@ if (!('READY_STATE_OPEN' in WebSocket)) {
   });
 }
 
-if (!('serializeAttachment' in WebSocket.prototype)) {
-  WebSocket.prototype.serializeAttachment = function serializeAttachment(value) {
+// workerd's hibernatable-socket attachment, on the host's WebSocket.
+const socketPrototype = /** @type {any} */ (WebSocket.prototype);
+if (!('serializeAttachment' in socketPrototype)) {
+  socketPrototype.serializeAttachment = function serializeAttachment(value) {
     this._attachment = value;
   };
-  WebSocket.prototype.deserializeAttachment = function deserializeAttachment() {
+  socketPrototype.deserializeAttachment = function deserializeAttachment() {
     return this._attachment;
   };
 }
@@ -82,6 +84,8 @@ export function createBacking() {
 /**
  * One incarnation's DurableObjectState. A fresh ctx over the same backing
  * is what a hibernation wake or an instance reset produces.
+ *
+ * @param {{ name?: string, backing?: ReturnType<typeof createBacking>, exports?: object }} [options]
  */
 export function createActorCtx({ name = 'test-actor', backing = createBacking(), exports } = {}) {
   const { kv, db, sockets } = backing;

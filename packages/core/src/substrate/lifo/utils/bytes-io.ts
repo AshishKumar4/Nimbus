@@ -28,6 +28,11 @@ export interface InputChunkOptions {
    */
   readSize?: number;
   /**
+   * How much one read of a file asks: what a reader that judges each read
+   * as a whole (grep's binary test, GNU's 96 KiB) needs it to be.
+   */
+  fileReadSize?: number;
+  /**
    * The reader takes a leading slice and stops on its own (head with a
    * count), or writes to a pipe whose reader can stop it (cat). Only then is
    * a character device streamed for as long as it is asked. Any other reader
@@ -41,7 +46,7 @@ export interface InputChunkOptions {
 export async function* inputChunks(
   ctx: ByteInputContext,
   operand: string | undefined,
-  { readSize = CHUNK, slice = false }: InputChunkOptions = {},
+  { readSize = CHUNK, fileReadSize = CHUNK, slice = false }: InputChunkOptions = {},
 ): AsyncGenerator<Uint8Array> {
   if (operand === undefined || operand === '-') {
     const stdin = ctx.stdin;
@@ -73,7 +78,7 @@ export async function* inputChunks(
   // A regular file to its end; a character device (/dev/zero) for as long
   // as its slice reader keeps asking, which is why this is a generator.
   for (let offset = 0; ; ) {
-    const chunk = await ctx.vfs.readRange(path, offset, CHUNK);
+    const chunk = await ctx.vfs.readRange(path, offset, fileReadSize);
     if (chunk.length === 0) return;
     yield chunk;
     offset += chunk.length;
@@ -200,6 +205,23 @@ export function splitRecords(bytes: Uint8Array, delim: number): { records: Uint8
   const terminated = start === bytes.length;
   if (!terminated) records.push(bytes.subarray(start));
   return { records, terminated };
+}
+
+/** A blank, as GNU's field splitting (sort -k, uniq -f) means one: space or tab. */
+export function isBlank(byte: number): boolean {
+  return byte === 0x20 || byte === 0x09;
+}
+
+/** Where the field starting at `at` in `line` ends: past its leading blanks, then past its non-blanks. */
+export function skipBlankField(line: Uint8Array, at: number): number {
+  while (at < line.length && isBlank(line[at])) at++;
+  while (at < line.length && !isBlank(line[at])) at++;
+  return at;
+}
+
+/** An ASCII byte in upper case; any other byte as it is (GNU's -f and -i fold no other). */
+export function asciiUpper(byte: number): number {
+  return byte >= 0x61 && byte <= 0x7a ? byte - 32 : byte;
 }
 
 export function asciiBytes(text: string): Uint8Array {

@@ -26,10 +26,6 @@ await t.waitForPrompt(60_000);
 
 const A = makeAsserter('process-redeclare/synthetic-process');
 
-async function writeFile(path, contents) {
-  await t.run(`cat > ${path} << 'NIMBUS_HEREDOC_EOF'\n${contents}\nNIMBUS_HEREDOC_EOF`, 10_000);
-}
-
 // Build the exact shape that triggers the two-pass path:
 //   - .mjs extension (forces ESM detection)
 //   - top-level ESM imports
@@ -45,7 +41,7 @@ const _tla = await Promise.resolve('TLA_OK');
 
 console.log('SENTINEL=process_ok proc=' + (typeof process) + ' url=' + (typeof fileURLToPath) + ' tla=' + _tla);
 `;
-await writeFile('/home/user/pp/entry.mjs', src);
+await t.writeFile('/home/user/pp/entry.mjs', src);
 
 const r = await t.run('node /home/user/pp/entry.mjs', 30_000);
 const out = r.output;

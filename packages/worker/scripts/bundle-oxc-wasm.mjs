@@ -28,16 +28,15 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { changedInputs, oxcWasmInputs } from './oxc-wasm/inputs.mjs';
+import { sha256Hex as sha256 } from './stage-asset.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const ASSETS = path.join(ROOT, 'public', '_assets', 'oxc');
 const OUT_TS = path.join(ROOT, 'src', 'oxc-wasm-artifact.generated.ts');
 
-const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const fail = (message) => { throw new Error(`[bundle-oxc-wasm] ${message}`); };
 
 /** The wasm and its provenance: a fresh build's, or the committed stage's. */

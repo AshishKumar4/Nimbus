@@ -24,7 +24,7 @@
 import { parse, tokenizer, tokTypes } from 'acorn';
 import { full } from 'acorn-walk';
 
-import type { AstNode } from './javascript-ast.js';
+import { calleeName, type AstNode } from './javascript-ast.js';
 
 /** A partially known string: `prefix` + something + `suffix`. */
 interface Partial { prefix: string; suffix: string }
@@ -159,7 +159,7 @@ export function findStaticFsReferences(source: string, filename: string): Static
       if (id.type === 'Identifier') {
         bind(String(id.name), init);
         if (requiresPath(init)) pathBindings.add(String(id.name));
-        if (init && init.type === 'CallExpression' && calleeName(init) === 'createRequire') resolvers.add(String(id.name));
+        if (init && init.type === 'CallExpression' && calleeName(init.callee) === 'createRequire') resolvers.add(String(id.name));
       } else if (id.type === 'ObjectPattern' && requiresPath(init)) {
         for (const prop of id.properties as AstNode[]) {
           if (prop.type !== 'Property') continue;
@@ -254,7 +254,7 @@ export function findStaticFsReferences(source: string, filename: string): Static
       case 'CallExpression': {
         const callee = node.callee as AstNode;
         const args = (node.arguments as AstNode[]).map((a) => evaluate(a));
-        const name = calleeName(node);
+        const name = calleeName(node.callee);
         if (name === 'fileURLToPath') return args[0] ? urlToPath(args[0]) : undefined;
         if (name === 'pathToFileURL') {
           const v = args[0];
@@ -292,7 +292,7 @@ export function findStaticFsReferences(source: string, filename: string): Static
       return;
     }
     if (node.type !== 'CallExpression') return;
-    const name = calleeName(node);
+    const name = calleeName(node.callee);
     const args = node.arguments as AstNode[];
     if (name === 'resolve' && args.length >= 1 && isResolver(node.callee as AstNode)) {
       const spec = evaluate(args[0]);
@@ -328,7 +328,7 @@ export function findStaticFsReferences(source: string, filename: string): Static
     if (c.type !== 'MemberExpression') return false;
     const obj = c.object as AstNode;
     if (obj.type === 'Identifier') return obj.name === 'require' || resolvers.has(String(obj.name));
-    return obj.type === 'CallExpression' && calleeName(obj) === 'createRequire';
+    return obj.type === 'CallExpression' && calleeName(obj.callee) === 'createRequire';
   }
 
   function record(value: Value | undefined, sync = false) {
@@ -439,14 +439,6 @@ export function scanStaticFsTokens(source: string, filename: string): StaticFsRe
   refs.exact = mergeRefs(refs.exact);
   refs.listed = [...new Set(refs.listed)];
   return refs;
-}
-
-function calleeName(call: AstNode): string | null {
-  let c = call.callee as AstNode;
-  if (c.type === 'SequenceExpression') c = (c.expressions as AstNode[]).at(-1)!;
-  if (c.type === 'Identifier') return String(c.name);
-  if (c.type === 'MemberExpression' && !c.computed) return String((c.property as AstNode).name);
-  return null;
 }
 
 function flatten(v: Value | undefined): (string | null)[] {

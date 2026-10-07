@@ -10,7 +10,7 @@
  * code.
  */
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type SqliteVFS, type VfsStat as SqliteStat } from './sqlite-vfs.js';
-import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsRevision, VfsStat } from './vfs.js';
+import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsRevision, VfsStat, VfsWriteObserver } from './vfs.js';
 import { syscallError, toVfsError, VfsError, VFS_ERRNO, type VfsErrorCode } from './vfs-error.js';
 
 function absolute(key: string): string {
@@ -72,8 +72,17 @@ export class SqliteFiles implements VFS {
     return this.view;
   }
 
-  as(cred: VfsCred): SqliteFiles {
-    return new SqliteFiles(this.engine, this.engine.as(cred));
+  as(cred: VfsCred, actor?: string): SqliteFiles {
+    return new SqliteFiles(this.engine, this.engine.as(cred, actor === undefined ? undefined : { actor }));
+  }
+
+  /** Every mutation that lands on the database, through any view (SqliteVFS.observeWrites); paths absolute. */
+  observeWrites(observer: VfsWriteObserver): () => void {
+    return this.engine.observeWrites((event) => observer({
+      ...event,
+      path: absolute(event.path),
+      ...(event.oldPath !== undefined ? { oldPath: absolute(event.oldPath) } : {}),
+    }));
   }
 
   /** `op`, its engine errors as Node's for `syscall` on `path` (and `dest`). */

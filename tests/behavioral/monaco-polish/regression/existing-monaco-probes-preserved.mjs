@@ -1,19 +1,21 @@
-// monaco-polish/regression/existing-monaco-probes-preserved —
-// sample critical assertions from editor/B/file-tree-fix:
-//   - FileTree IIFE intact
-//   - fs-* WS protocol references intact
-//   - Monaco config (minimap, bracketPairColorization, font, theme)
+// monaco-polish/regression/existing-monaco-probes-preserved — after the
+// monaco-polish wave, in a real Chrome:
 //   - Editor public contract: ensureLoaded, openFile, save, openPalette,
 //     tryHandleFsResult, drainFsQueue
 //   - FileTree public contract: ensureLoaded, tryHandleFsResult,
 //     markDirty, setSelected, drainFsQueue
-//   - Ctrl+P keydown + Ctrl+S keydown
-//   - Editor-mode CSS rules (file-tree | editor-stack | preview)
+//   - Ctrl+P opens the command palette
 //
-// Category: H (hybrid). The Monaco config / keybinding / CSS checks are
-// structural contracts (the source string IS the wiring). The Editor and
-// FileTree public-method contract is asserted as OBSERVABLE behavior in a
-// real Chrome: the factories produce live runtime objects exposing the
+// The served-HTML shapes it once also sampled have one owner each: the
+// Monaco options are editor/monaco/new/monaco-vscode-features'; the
+// Ctrl+P / Ctrl+S handlers are ctrl-p-opens-file's and ctrl-s-saves-file's;
+// the FileTree module and the editor-mode tree CSS are
+// file-tree/panel/new/file-tree-renders'; the left-stack layout is
+// file-tree/panel/regression/editor-with-term-layout-still-works'; the fs-*
+// protocol is driven live by editor/monaco/new/fs-protocol-read-write.
+//
+// The Editor and FileTree public-method contract is asserted as OBSERVABLE
+// behavior: the factories produce live runtime objects exposing the
 // required methods as functions, and Ctrl+P actually opens the command
 // palette via Editor.openPalette. An exact-closing-brace source regex was
 // brittle here — the real returns carry a superset of methods
@@ -23,7 +25,7 @@
 // though the asserted methods are all present and wired. The live check
 // is the source of truth for the public contract.
 
-import { mintSession, BASE, makeAsserter, requestHeaders, deleteSession } from '../../_driver.mjs';
+import { mintSession, BASE, makeAsserter, deleteSession } from '../../_driver.mjs';
 import { launchBrowser, openPage } from '../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -31,61 +33,6 @@ const a = makeAsserter('monaco-polish/regression/existing-monaco-probes-preserve
 console.log(`monaco-polish/regression/existing-monaco-probes-preserved — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
-const html = await r.text();
-
-// Module presence.
-a.check('Editor IIFE present',
-  /const Editor\s*=\s*\(function\(\)/.test(html),
-  `Editor IIFE missing`);
-a.check('FileTree IIFE present',
-  /const FileTree\s*=\s*\(function\(\)/.test(html),
-  `FileTree IIFE missing`);
-
-// fs-* protocol.
-a.check('fs-read referenced', /fs-read/.test(html), `fs-read missing`);
-a.check('fs-write referenced', /fs-write/.test(html), `fs-write missing`);
-a.check('fs-list referenced', /fs-list/.test(html), `fs-list missing`);
-
-// Monaco config.
-a.check('Monaco minimap enabled',
-  /minimap:\s*\{[^}]*enabled:\s*true/.test(html),
-  `minimap regressed`);
-a.check('Monaco bracketPairColorization',
-  /bracketPairColorization:\s*\{[^}]*enabled:\s*true/.test(html),
-  `bracket-pair-color regressed`);
-a.check('Monaco fontFamily Menlo first',
-  /fontFamily:\s*["']Menlo[^"']*Monaco/.test(html),
-  `font regressed`);
-a.check('Monaco fontSize 14',
-  /fontSize:\s*14\b/.test(html),
-  `fontSize regressed`);
-a.check('Monaco theme vs-dark',
-  /theme:\s*['"]vs-dark['"]/.test(html),
-  `theme regressed`);
-a.check('Monaco automaticLayout true',
-  /automaticLayout:\s*true/.test(html),
-  `automaticLayout regressed`);
-
-// Keybindings.
-a.check('Ctrl+P keydown handler',
-  /isCtrlP\s*=\s*\(e\.ctrlKey\s*\|\|\s*e\.metaKey\)\s*&&\s*e\.key\s*===\s*['"]p['"]/.test(html),
-  `Ctrl+P regressed`);
-a.check('Ctrl+S keydown handler',
-  /isCtrlS\s*=\s*\(e\.ctrlKey\s*\|\|\s*e\.metaKey\)\s*&&\s*e\.key\s*===\s*['"]s['"]/.test(html),
-  `Ctrl+S regressed`);
-a.check('Monaco editor.addCommand(Ctrl+S) → save',
-  /addCommand\(window\.monaco\.KeyMod\.CtrlCmd\s*\|\s*window\.monaco\.KeyCode\.KeyS,\s*\(\)\s*=>\s*save\(\)\)/.test(html),
-  `Monaco Ctrl+S binding regressed`);
-
-// Editor-mode CSS — file tree | editor-stack | preview.
-a.check('.main.editor shows .panel-tree',
-  /\.main\.editor\s+\.panel-tree\s*\{[^}]*display:\s*flex/.test(html),
-  `panel-tree rule regressed`);
-a.check('.main.editor .panel-left-stack flex column',
-  /\.main\.editor\s+\.panel-left-stack\s*\{[^}]*display:\s*flex/.test(html) &&
-  /\.main\.editor\s+\.panel-left-stack\s*\{[^}]*flex-direction:\s*column/.test(html),
-  `left-stack regressed`);
 
 // Editor + FileTree public contract — asserted live, not by source regex.
 const EDITOR_METHODS = ['ensureLoaded', 'openFile', 'save', 'openPalette', 'tryHandleFsResult', 'drainFsQueue'];

@@ -7,7 +7,7 @@
 //   - Piped installer-style scripts execute through stdin.
 //   - Script files run with VFS-backed path resolution.
 
-import { deleteSession, heredocCommand, makeAsserter, mintSession, stripAnsi, Terminal } from '../_driver.mjs';
+import { deleteSession, heredocCommand, makeAsserter, mintSession, stripAnsi, Terminal, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const label = 'shell/sh-bash-entrypoints';
@@ -220,10 +220,3 @@ await t.run(heredocCommand('/home/user/install.sh', [
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);
 
-function hasOutputLine(output, expected) {
-  return output
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .map((line) => line.trim())
-    .includes(expected);
-}

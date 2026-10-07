@@ -15,7 +15,7 @@ import { testBox } from './lib/test-box.mjs';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { move } from '../../packages/core/src/vfs/move.ts';
 import { renameOutcome, VfsError } from '../../packages/core/src/vfs/vfs-error.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const USER = { uid: 1000, gid: 1000 };
 const text = (bytes) => new TextDecoder().decode(bytes);

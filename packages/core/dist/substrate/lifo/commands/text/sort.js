@@ -1,9 +1,11 @@
+import { getopt } from '../../utils/args.js';
 import { resolve } from '../../utils/path.js';
-import { concatBytes, decodeLossless, encodeLossless, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { asciiUpper, concatBytes, decodeLossless, encodeLossless, isBlank, readAllInput, skipBlankField, splitRecords, writeBytes } from '../../utils/bytes-io.js';
+import { createHash } from 'node:crypto';
 import { strerror } from '../../../../vfs/vfs-error.js';
 // GNU sort (coreutils 9.7) in en_US.UTF-8, on bytes. Keys (-k, -t), the
-// orderings -n -g -h -M -V, modifiers -b -d -f -i -r, -u, -s, -c/-C, -m, -o,
-// -z. Text compares as glibc's collation does: punctuation, symbols and
+// orderings -n -g -h -M -V -R (with --random-source), modifiers -b -d -f -i
+// -r, -u, -s, -c/-C, -m, -o, -z. Text compares as glibc's collation does: punctuation, symbols and
 // spaces (not currency) are ignored until everything else is equal, lower
 // case before upper, then those ignored characters decide, then the bytes.
 // Known limit: among strings that differ only in punctuation, glibc's
@@ -51,7 +53,6 @@ function compareBytes(a, b) {
     return a.length - b.length;
 }
 // ── orderings ──
-const isBlank = (b) => b === 0x20 || b === 0x09;
 /** -n: optional blanks, sign, digits with ',' thousands groups, '.' fraction. */
 function numericValue(s) {
     const m = /^[ \t]*(-?)((?:\d+(?:,\d+)*)?)(?:\.(\d*))?/.exec(s);
@@ -192,8 +193,19 @@ function verrevcmp(s1, s2) {
     }
     return 0;
 }
+/** A usage error: its message, and the status (2, or 1 for an argument argmatch refuses, as GNU's). */
 class SortUsage extends Error {
+    status;
+    constructor(message, status = 2) {
+        super(message);
+        this.status = status;
+    }
 }
+/** --sort's words, as GNU lists them, and the ordering letter each is. */
+const SORT_ORDERS = {
+    'general-numeric': 'g', 'human-numeric': 'h', month: 'M', numeric: 'n', random: 'R', version: 'V',
+};
+const SORT_NAMES = Object.keys(SORT_ORDERS);
 const ORDER_LETTERS = 'bdfgiMhnRrV';
 function applyOrderLetter(o, c, end) {
     switch (c) {
@@ -268,10 +280,7 @@ function keyRange(line, key, tab) {
                 at = i + 1;
             }
             else {
-                while (at < line.length && isBlank(line[at]))
-                    at++;
-                while (at < line.length && !isBlank(line[at]))
-                    at++;
+                at = skipBlankField(line, at);
             }
         }
         return at;
@@ -292,11 +301,7 @@ function keyRange(line, key, tab) {
             end = i === -1 ? line.length : i;
         }
         else {
-            while (at < line.length && isBlank(line[at]))
-                at++;
-            while (at < line.length && !isBlank(line[at]))
-                at++;
-            end = at;
+            end = skipBlankField(line, at);
         }
     }
     else {
@@ -320,13 +325,43 @@ function transformText(bytes, o) {
             continue;
         if (o.nonprinting && (b < 32 || b === 127))
             continue;
-        out.push(o.fold && b >= 97 && b <= 122 ? b - 32 : b);
+        out.push(o.fold ? asciiUpper(b) : b);
     }
     return Uint8Array.from(out);
 }
-function compareKey(a, b, o) {
+/**
+ * -R: keys ordered by the MD5 of a 16-byte salt followed by the key, as GNU
+ * sort's compare_random does, so equal keys sort together and a
+ * --random-source fixes the order. The salt is the source's first 16 bytes,
+ * or random ones. GNU hashes the key's strxfrm transform in a locale that
+ * collates (en_US.UTF-8), and its bytes in the C locale; this hashes the
+ * bytes, so a --random-source orders keys as GNU's C-locale sort does.
+ */
+class RandomOrder {
+    salt;
+    digests = new Map();
+    constructor(salt) {
+        this.salt = salt;
+    }
+    compare(a, b) {
+        return compareBytes(this.digest(a), this.digest(b)) || compareBytes(a, b);
+    }
+    digest(key) {
+        const id = decodeLossless(key);
+        const cached = this.digests.get(id);
+        if (cached)
+            return cached;
+        const digest = new Uint8Array(createHash('md5').update(this.salt).update(key).digest());
+        this.digests.set(id, digest);
+        return digest;
+    }
+}
+function compareKey(a, b, o, random) {
     let d;
-    if (o.kind === 'text') {
+    if (o.kind === 'R') {
+        d = random.compare(transformText(a, o), transformText(b, o));
+    }
+    else if (o.kind === 'text') {
         const x = transformText(a, o), y = transformText(b, o);
         d = collate(collationKey(decodeLossless(x)), collationKey(decodeLossless(y)));
     }
@@ -340,29 +375,38 @@ function compareKey(a, b, o) {
             d = compareHuman(x, y);
         else if (o.kind === 'M')
             d = monthOf(x) - monthOf(y);
-        else if (o.kind === 'V')
-            d = versionCompare(x, y);
         else
-            d = 0;
+            d = versionCompare(x, y);
     }
     return o.reverse ? -d : d;
 }
+const SORT_OPTIONS = {
+    short: 'bcCdfghik:mMno:rRsS:t:T:uVz',
+    long: {
+        'ignore-leading-blanks': ['b', 'none'], 'dictionary-order': ['d', 'none'], 'ignore-case': ['f', 'none'],
+        'general-numeric-sort': ['g', 'none'], 'ignore-nonprinting': ['i', 'none'], 'month-sort': ['M', 'none'],
+        'human-numeric-sort': ['h', 'none'], 'numeric-sort': ['n', 'none'], 'random-sort': ['R', 'none'],
+        reverse: ['r', 'none'], 'version-sort': ['V', 'none'], merge: ['m', 'none'], stable: ['s', 'none'],
+        unique: ['u', 'none'], 'zero-terminated': ['z', 'none'], key: ['k', 'required'],
+        'field-separator': ['t', 'required'], output: ['o', 'required'], check: ['c', 'optional'],
+        sort: ['sort', 'required'], 'random-source': ['random-source', 'required'], debug: ['debug', 'none'],
+        'buffer-size': ['S', 'required'], 'temporary-directory': ['T', 'required'], parallel: ['parallel', 'required'],
+        'batch-size': ['batch-size', 'required'], 'compress-program': ['compress-program', 'required'],
+        'files0-from': ['files0-from', 'required'],
+    },
+};
 const command = async (ctx) => {
     const global = { blanksStart: false, blanksEnd: false, dictionary: false, fold: false, nonprinting: false, kind: 'text', reverse: false };
     const keySpecs = [];
     let tab = null;
     let unique = false, stable = false, check = 'no', zero = false;
     let output;
+    let randomSource;
     const files = [];
     let keys = [];
     const usage = async (message) => {
         await ctx.stderr.write(`sort: ${message}\nTry 'sort --help' for more information.\n`);
         return 2;
-    };
-    const LONG = {
-        'ignore-leading-blanks': 'b', 'dictionary-order': 'd', 'ignore-case': 'f', 'general-numeric-sort': 'g',
-        'ignore-nonprinting': 'i', 'month-sort': 'M', 'human-numeric-sort': 'h', 'numeric-sort': 'n',
-        'random-sort': 'R', reverse: 'r', 'version-sort': 'V', merge: 'm', stable: 's', unique: 'u', 'zero-terminated': 'z',
     };
     try {
         const args = ctx.args;
@@ -382,114 +426,93 @@ const command = async (ctx) => {
                 throw new SortUsage('incompatible tabs');
             tab = b[0];
         };
-        for (let i = 0; i < args.length; i++) {
-            const arg = args[i];
-            if (arg === '--') {
-                files.push(...args.slice(i + 1));
-                break;
-            }
-            if (arg.startsWith('--')) {
-                const [name, inline] = arg.slice(2).split(/=(.*)/s, 2);
-                if (name in LONG) {
-                    const c = LONG[name];
-                    if (c === 'm') { /* inputs merge as a sort of their lines */ }
-                    else if (c === 's')
-                        stable = true;
-                    else if (c === 'u')
-                        unique = true;
-                    else if (c === 'z')
-                        zero = true;
-                    else
-                        applyOrderLetter(global, c, false);
-                }
-                else if (name === 'key')
-                    keySpecs.push(inline ?? args[++i]);
-                else if (name === 'field-separator')
-                    setTab(inline ?? args[++i]);
-                else if (name === 'output')
-                    output = inline ?? args[++i];
-                else if (name === 'check')
-                    check = inline === 'quiet' || inline === 'silent' ? 'quiet' : 'diagnose';
-                else if (name === 'sort') {
-                    const v = inline ?? args[++i];
-                    const c = { general: 'g', human: 'h', month: 'M', numeric: 'n', random: 'R', version: 'V' }[v];
-                    if (!c)
-                        throw new SortUsage(`invalid argument \u2018${v}\u2019 for \u2018--sort\u2019`);
-                    applyOrderLetter(global, c, false);
-                }
-                else if (['buffer-size', 'temporary-directory', 'parallel', 'batch-size', 'compress-program', 'random-source', 'files0-from'].includes(name)) {
-                    if (inline === undefined)
-                        i++;
-                }
-                else if (name !== 'debug')
-                    throw new SortUsage(`unrecognized option '--${name}'`);
+        for (const event of getopt(args, SORT_OPTIONS)) {
+            if (event.kind === 'error')
+                throw new SortUsage(event.message);
+            if (event.kind === 'operand') {
+                files.push(event.value);
                 continue;
             }
-            if (!arg.startsWith('-') || arg === '-') {
-                files.push(arg);
-                continue;
+            const { key, value } = event;
+            if (key === 'k')
+                keySpecs.push(value);
+            else if (key === 't')
+                setTab(value);
+            else if (key === 'o')
+                output = value;
+            else if (key === 'c')
+                check = value === 'quiet' || value === 'silent' ? 'quiet' : 'diagnose';
+            else if (key === 'C')
+                check = 'quiet';
+            else if (key === 'm') { /* inputs merge as a sort of their lines */ }
+            else if (key === 's')
+                stable = true;
+            else if (key === 'u')
+                unique = true;
+            else if (key === 'z')
+                zero = true;
+            else if (key === 'sort') {
+                // argmatch: the word, or an unambiguous prefix of one (`--sort=gen`).
+                const matches = SORT_NAMES.filter((name) => name.startsWith(value));
+                const c = SORT_ORDERS[value] ?? (matches.length === 1 ? SORT_ORDERS[matches[0]] : undefined);
+                if (!c)
+                    throw new SortUsage(`${matches.length > 1 ? 'ambiguous' : 'invalid'} argument \u2018${value}\u2019 for \u2018--sort\u2019\nValid arguments are:\n${SORT_NAMES.map((name) => `  - \u2018${name}\u2019`).join('\n')}`, 1);
+                applyOrderLetter(global, c, false);
             }
-            for (let j = 1; j < arg.length; j++) {
-                const flag = arg[j];
-                if ('ktoTS'.includes(flag)) {
-                    let value = arg.slice(j + 1);
-                    if (value === '')
-                        value = args[++i];
-                    if (value === undefined)
-                        throw new SortUsage(`option requires an argument -- '${flag}'`);
-                    if (flag === 'k')
-                        keySpecs.push(value);
-                    else if (flag === 't')
-                        setTab(value);
-                    else if (flag === 'o')
-                        output = value;
-                    break;
-                }
-                if (ORDER_LETTERS.includes(flag))
-                    applyOrderLetter(global, flag, false);
-                else if (flag === 'c')
-                    check = 'diagnose';
-                else if (flag === 'C')
-                    check = 'quiet';
-                else if (flag === 'm') { /* merge */ }
-                else if (flag === 's')
-                    stable = true;
-                else if (flag === 'u')
-                    unique = true;
-                else if (flag === 'z')
-                    zero = true;
-                else
-                    throw new SortUsage(`invalid option -- '${flag}'`);
-            }
+            else if (key === 'random-source')
+                randomSource = value;
+            else if (ORDER_LETTERS.includes(key))
+                applyOrderLetter(global, key, false);
+            // -S, -T, --parallel and the rest tune a sort that runs in memory: read and set aside.
         }
         keys = keySpecs.map((spec) => parseKey(spec, global));
     }
     catch (error) {
         if (error instanceof SortUsage)
-            return usage(error.message);
+            return (await usage(error.message), error.status);
         throw error;
+    }
+    let random = null;
+    if (global.kind === 'R' || keys.some((key) => key.kind === 'R')) {
+        let salt = crypto.getRandomValues(new Uint8Array(16));
+        if (randomSource !== undefined) {
+            try {
+                // Its first 16 bytes, read as such: the source may be a device without end (/dev/zero) or a large file.
+                const path = resolve(ctx.cwd, randomSource);
+                const parts = [];
+                for (let got = 0; got < 16;) {
+                    const chunk = await ctx.vfs.readRange(path, got, 16 - got);
+                    if (chunk.length === 0)
+                        break;
+                    parts.push(chunk);
+                    got += chunk.length;
+                }
+                salt = concatBytes(parts).subarray(0, 16);
+            }
+            catch (error) {
+                await ctx.stderr.write(`sort: open failed: ${randomSource}: ${strerror(error)}\n`);
+                return 2;
+            }
+            if (salt.length < 16) {
+                await ctx.stderr.write(`sort: '${randomSource}': end of file\n`);
+                return 2;
+            }
+        }
+        random = new RandomOrder(salt);
     }
     const delim = zero ? 0 : 0x0a;
     const lines = [];
     for (const file of files.length > 0 ? files : ['-']) {
         let bytes;
         try {
-            const parts = [];
-            for await (const chunk of inputChunks(ctx, file))
-                parts.push(chunk);
-            bytes = concatBytes(parts);
+            bytes = await readAllInput(ctx, file);
         }
         catch (error) {
             await ctx.stderr.write(`sort: cannot read: ${file}: ${strerror(error)}\n`);
             return 2;
         }
-        let start = 0;
-        for (let i = bytes.indexOf(delim); i !== -1; i = bytes.indexOf(delim, start)) {
-            lines.push(bytes.subarray(start, i));
-            start = i + 1;
-        }
-        if (start < bytes.length)
-            lines.push(bytes.subarray(start));
+        for (const record of splitRecords(bytes, delim).records)
+            lines.push(record);
     }
     const whole = { ...global, startField: 1, startChar: 1, endField: Infinity, endChar: 0 };
     const collated = new Map();
@@ -507,11 +530,11 @@ const command = async (ctx) => {
                 return global.reverse ? -d : d;
             }
             const [sa, ea] = keyRange(a, whole, tab), [sb, eb] = keyRange(b, whole, tab);
-            return compareKey(a.subarray(sa, ea), b.subarray(sb, eb), global);
+            return compareKey(a.subarray(sa, ea), b.subarray(sb, eb), global, random);
         }
         for (const key of keys) {
             const [sa, ea] = keyRange(a, key, tab), [sb, eb] = keyRange(b, key, tab);
-            const d = compareKey(a.subarray(sa, ea), b.subarray(sb, eb), key);
+            const d = compareKey(a.subarray(sa, ea), b.subarray(sb, eb), key, random);
             if (d !== 0)
                 return d;
         }

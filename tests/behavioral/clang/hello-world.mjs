@@ -58,9 +58,9 @@ await t.run(heredocCommand('hello.c', helloC), 15_000);
     size > 100, `parsed size=${size}`);
 }
 
-// 4. ./hello runs and prints "hello, world\n".
+// 4. ./hello runs, prints "hello, world\n" and exits 0.
 {
-  const { output, elapsed } = await t.run('./hello', 60_000);
+  const { output, elapsed } = await t.run('./hello ; echo RUN_EXIT=$?', 60_000);
   const stripped = stripAnsi(output);
   const notCmdNotFound = !/\.\/hello: command not found/.test(stripped);
   a.check('./hello dispatches via shell wasm-magic resolver (not command-not-found)',
@@ -68,6 +68,7 @@ await t.run(heredocCommand('hello.c', helloC), 15_000);
   const prints = /hello,\s*world/.test(stripped);
   a.check('./hello prints "hello, world"', prints && notCmdNotFound,
     prints ? `elapsed=${elapsed}ms` : `output=${JSON.stringify(stripped.slice(-400))}`);
+  a.check('./hello exits 0', /RUN_EXIT=0/.test(stripped), JSON.stringify(stripped.slice(-200)));
 }
 
 await t.close();

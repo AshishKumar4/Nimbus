@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { Database } from 'bun:sqlite';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { RuntimeManager } from '../../packages/core/src/runtime/runtime-manager.ts';
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';

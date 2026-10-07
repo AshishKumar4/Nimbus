@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 // More rows than one resumed slice copies (200 pages of 250), so the rest
 // runs after the open, in turns another writer can take.

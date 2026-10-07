@@ -23,7 +23,7 @@ import { FILESYSTEM_RPC_METHODS } from '../../../packages/core/src/runtime/vfs-s
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSupervisorBridgeStore, createSupervisorOpHandler } from '../../../packages/core/src/workspace/supervisor-op.ts';
-import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { makeImportsWithoutJSPI } from './wasi-imports.mjs';
 import { acrossRpc } from './rpc-error.mjs';
 
@@ -34,6 +34,7 @@ const enc = new TextEncoder();
 /** Whether this engine can park a guest: without JSPI a guest answers from the session, and these tests have nothing to test. */
 export const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
 
+/** @param {{ refuse?: (path: string) => boolean, storage?: object | null, world?: object | null }} [options] */
 export async function residentGuest({ refuse = () => false, storage = null, world = null } = {}) {
   const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
   writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiAdoptStorage, __wasiFsStats, __wasiSettleWrites };`);
@@ -64,13 +65,14 @@ export async function residentGuest({ refuse = () => false, storage = null, worl
       }
       try {
         const value = await dispatch({ op, args, pid });
-        if (op === 'fsOpen' && value && refuse(String(value.path))) refusedHandles.add(value.id);
+        const opened = /** @type {{ path?: string, id?: number } | undefined} */ (op === 'fsOpen' ? value : undefined);
+        if (opened && refuse(String(opened.path))) refusedHandles.add(opened.id);
         return value;
       } catch (error) { throw acrossRpc(error); }
     };
   }
   // What session/rpc.ts answers itself rather than through the op table.
-  supervisor.fsAcquire = async (...args) => own.acquire(...args);
+  supervisor.fsAcquire = async (epoch, cursor, options) => own.acquire(epoch, cursor, options);
   supervisor.fsList = async (...args) => own.list(...args);
   supervisor.fsReadBatch = async (requests) => {
     const out = [];

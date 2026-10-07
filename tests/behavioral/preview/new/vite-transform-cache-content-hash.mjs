@@ -19,79 +19,37 @@
 // failing if regressed: a path-only cache would return the FIRST
 // transform's output (old marker) for the second request after the edit.
 
-import WebSocket from 'ws';
-import { mintSession, wsHeaders, requestHeaders, deleteSession, sleep, stripAnsi }
-  from '../../_driver.mjs';
+import {
+  BASE, Terminal, deleteSession, makeAsserter, mintSession, requestHeaders,
+} from '../../_driver.mjs';
 
-const BASE = process.env.BASE;
-if (!BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
-const WS_BASE = BASE.replace(/^http/, 'ws');
-
-let pass = 0, fail = 0;
-const check = (name, ok, detail = '') => {
-  if (ok) { console.log(`  ✓ ${name}`); pass++; }
-  else { console.log(`  ✗ ${name}${detail ? ' — ' + detail : ''}`); fail++; }
-};
+if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
+const a = makeAsserter('vite-transform-cache-content-hash');
 
 const sid = await mintSession();
 console.log(`behavioral/preview/new/vite-transform-cache-content-hash — BASE=${BASE} sid=${sid}`);
 
-const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
-let buf = '';
-let tConn = false, tClosed = false;
-ws.on('open', () => { tConn = true; });
-ws.on('close', () => { tClosed = true; });
-ws.on('error', () => {});
-ws.on('message', (data) => {
-  try { const m = JSON.parse(data.toString('utf8'));
-    if (m.type === 'output' && typeof m.data === 'string') buf += m.data; } catch {}
-});
-
-async function waitFor(predicate, timeoutMs, label) {
-  const t0 = Date.now();
-  while (Date.now() - t0 < timeoutMs) {
-    if (predicate(stripAnsi(buf))) return Date.now() - t0;
-    if (tClosed) throw new Error(`terminal closed waiting for ${label}`);
-    await sleep(50);
-  }
-  throw new Error(`waitFor(${label}) timeout ${timeoutMs}ms; tail=${JSON.stringify(stripAnsi(buf).slice(-300))}`);
-}
-const cmd = (line) => ws.send(JSON.stringify({ type: 'input', data: line + '\r' }));
-async function run(line, timeoutMs = 30_000) {
-  const before = buf.length;
-  cmd(line);
-  await waitFor((b) => buf.length > before && /[$#>]\s*$/.test(b.trimEnd().slice(-3)),
-    timeoutMs, `prompt after ${line}`);
-}
-const writeFile = (path, content) => {
-  const b64 = Buffer.from(content, 'utf8').toString('base64');
-  return `node -e "require('fs').writeFileSync('${path}', Buffer.from('${b64}','base64').toString('utf8'))"`;
-};
-
+const t = new Terminal(sid);
 try {
-  {
-    const t0 = Date.now();
-    while (!tConn && Date.now() - t0 < 15_000) await sleep(50);
-    if (!tConn) throw new Error('terminal connect timeout');
-  }
-  await waitFor((b) => /[$#>]\s*$/.test(b.trimEnd().slice(-3)), 10_000, 'initial prompt');
+  await t.connect();
+  await t.waitForPrompt(10_000);
 
   const dir = '/home/user/xform-cache';
-  await run('cd /home/user', 5000);
-  await run(`mkdir -p ${dir}/src`, 5000);
-  await run(writeFile(`${dir}/package.json`,
-    JSON.stringify({ name: 'xform-cache', type: 'module', scripts: { dev: 'vite --host 0.0.0.0 --port 5173' } })), 10_000);
-  await run(writeFile(`${dir}/index.html`,
-    '<!doctype html><html><body><div id="root"></div><script type="module" src="/src/App.tsx"></script></body></html>'), 10_000);
+  await t.run('cd /home/user', 5000);
+  await t.run(`mkdir -p ${dir}/src`, 5000);
+  await t.writeFile(`${dir}/package.json`,
+    JSON.stringify({ name: 'xform-cache', type: 'module', scripts: { dev: 'vite --host 0.0.0.0 --port 5173' } }), 10_000);
+  await t.writeFile(`${dir}/index.html`,
+    '<!doctype html><html><body><div id="root"></div><script type="module" src="/src/App.tsx"></script></body></html>', 10_000);
   // A .tsx so the transform path (esbuild) is exercised. A unique marker
   // string lets us assert which version was served.
-  await run(writeFile(`${dir}/src/App.tsx`,
-    'export const MARKER: string = "MARKER_V1";\nexport default function App() { return null; }\n'), 10_000);
+  await t.writeFile(`${dir}/src/App.tsx`,
+    'export const MARKER: string = "MARKER_V1";\nexport default function App() { return null; }\n', 10_000);
 
-  await run(`cd ${dir}`, 5000);
-  buf = '';
-  cmd('npm run dev');
-  await waitFor((b) => /Nimbus Vite Dev Server/i.test(b), 30_000, 'vite banner');
+  await t.run(`cd ${dir}`, 5000);
+  t.reset();
+  t.cmd('npm run dev');
+  await t.waitFor((b) => /Nimbus Vite Dev Server/i.test(b), 30_000, 'vite banner');
 
   const modUrl = `${BASE}/s/${sid}/preview/src/App.tsx`;
 
@@ -99,39 +57,36 @@ try {
   //    (esbuild stripped the `: string` type annotation).
   const r1 = await fetch(modUrl, { redirect: 'manual', headers: requestHeaders() });
   const body1 = await r1.text();
-  check('first transform served (200)', r1.status === 200, `status=${r1.status}`);
-  check('first transform contains MARKER_V1', body1.includes('MARKER_V1'),
+  a.check('first transform served (200)', r1.status === 200, `status=${r1.status}`);
+  a.check('first transform contains MARKER_V1', body1.includes('MARKER_V1'),
     `tail=${JSON.stringify(body1.slice(-120))}`);
-  check('first transform is type-stripped JS (no `: string`)', !body1.includes(': string'),
+  a.check('first transform is type-stripped JS (no `: string`)', !body1.includes(': string'),
     'esbuild should have removed the TS annotation');
 
   // 2. Edit the source content, then re-request. A content-addressed
   //    cache must serve the NEW marker — never the stale V1 transform.
-  await run(writeFile(`${dir}/src/App.tsx`,
-    'export const MARKER: string = "MARKER_V2_EDITED";\nexport default function App() { return null; }\n'), 10_000);
-  // Give the VFS event a beat to propagate; the content-hash guarantee
-  // holds even if it doesn't, but we don't want to race the write RPC.
-  await sleep(500);
+  await t.writeFile(`${dir}/src/App.tsx`,
+    'export const MARKER: string = "MARKER_V2_EDITED";\nexport default function App() { return null; }\n', 10_000);
+  // The write has returned (the prompt is back); a content-addressed cache
+  // must serve it on the next request.
 
   const r2 = await fetch(modUrl, { redirect: 'manual', headers: requestHeaders() });
   const body2 = await r2.text();
-  check('post-edit transform served (200)', r2.status === 200, `status=${r2.status}`);
-  check('post-edit transform contains MARKER_V2_EDITED', body2.includes('MARKER_V2_EDITED'),
+  a.check('post-edit transform served (200)', r2.status === 200, `status=${r2.status}`);
+  a.check('post-edit transform contains MARKER_V2_EDITED', body2.includes('MARKER_V2_EDITED'),
     `tail=${JSON.stringify(body2.slice(-160))}`);
-  check('post-edit transform does NOT serve stale MARKER_V1', !body2.includes('MARKER_V1'),
+  a.check('post-edit transform does NOT serve stale MARKER_V1', !body2.includes('MARKER_V1'),
     'stale path-only cache hit would return V1');
 
   // 3. Re-request the unchanged V2 — should still be V2 (cache hit path).
   const r3 = await fetch(modUrl, { redirect: 'manual', headers: requestHeaders() });
   const body3 = await r3.text();
-  check('repeat request stays V2 (cache hit)', body3.includes('MARKER_V2_EDITED') && !body3.includes('MARKER_V1'));
+  a.check('repeat request stays V2 (cache hit)', body3.includes('MARKER_V2_EDITED') && !body3.includes('MARKER_V1'));
 } catch (e) {
-  console.error('FATAL:', e?.message || e);
-  fail++;
+  a.check('the probe ran to completion', false, e?.message || String(e));
 } finally {
-  try { ws.close(); } catch {}
-  await deleteSession(sid).catch(() => {});
+  await t.close();
+  await deleteSession(sid);
 }
 
-console.log(`\n  ──── [vite-transform-cache-content-hash] ${pass} pass / ${fail} fail`);
-process.exit(fail === 0 ? 0 : 1);
+process.exit(a.summary().fail === 0 ? 0 : 1);

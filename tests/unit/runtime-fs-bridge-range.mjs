@@ -18,7 +18,7 @@ import {
   SQL_MAX_BOUND_PARAMETERS,
 } from '../../packages/platform/src/limits.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
-import { chunkBytesWritten, createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { chunkBytesWritten, createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const APPEND_MODULE = '77777777-7777-4777-8777-777777777777';
 

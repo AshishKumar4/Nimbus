@@ -14,3 +14,4 @@ export { NimbusWorkspace } from './workspace/nimbus-workspace.js';
 export { RuntimeBlobDigestMismatch, seedRuntimePackage } from './runtime/runtime-package.js';
 export { RuntimeManager } from './runtime/runtime-manager.js';
 export { localFacetHost } from './runtime/local-facet-host.js';
+export { ISOLATE_NETWORK, workspaceNetwork } from './_shared/workspace-network.js';

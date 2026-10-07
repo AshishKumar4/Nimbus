@@ -34,7 +34,7 @@ import { syscallError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { readRangeOrWhole } from '../../packages/core/src/vfs/vfs.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { READ_AHEAD_CALLS } from '../../packages/core/src/substrate/lifo/commands/fs/find/walk.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();

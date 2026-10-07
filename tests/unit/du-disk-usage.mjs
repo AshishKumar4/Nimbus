@@ -20,7 +20,7 @@ import { join } from 'node:path';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { testBox } from './lib/test-box.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const GNU_DU = ['gnudu', 'du'].find((bin) => /GNU coreutils/.test(spawnSync(bin, ['--version'], { encoding: 'utf8' }).stdout ?? ''));
 assert.ok(GNU_DU, 'GNU du is required as the oracle (gnudu or du from GNU coreutils)');
@@ -102,6 +102,23 @@ try {
   await same(['-b', 'small', 'big.bin']);
   rmSync(join(disk, 'small'));
   root.unlink('tmp/w/small');
+  // -h and --si round up as gnulib's human_readable does, carries included:
+  // 1 MiB and a byte is 1.1M, not 1.0M.
+  for (const size of [1023, 1025, 10239, 10241, 1048575, 1048577, 999999, 1000001]) {
+    writeFileSync(join(disk, 'odd'), new Uint8Array(size));
+    root.writeFile('tmp/w/odd', new Uint8Array(size));
+    await same(['--apparent-size', '-h', 'odd']);
+    await same(['--apparent-size', '--si', 'odd']);
+  }
+  rmSync(join(disk, 'odd'));
+  root.unlink('tmp/w/odd');
+  // -B and -t read GNU's suffixes: lower-case g is a GiB for -B; -t reads 0x hex.
+  await same(['-s', '-B', 'k', 'd']);
+  await same(['-s', '-B', 'KiB', 'd']);
+  await same(['-s', '-B', '1g', 'big.bin']);
+  await same(['-s', '-B', 'kB', 'd']);
+  await same(['-t', '0x3000', 'd'], { sorted: true });
+  await same(['-t', '9kB', 'd'], { sorted: true });
   await same(['-sL', '.']);
   await same(['-aL', 'lnk']);
   await same(['-sH', 'lnk']);
@@ -116,6 +133,13 @@ try {
   await same(['--block-size=M', '-s', 'd']);
   await same(['-t', '5K', 'd'], { sorted: true });
   await same(['--exclude=deep', 'd'], { sorted: true });
+  // --exclude's patterns are fnmatch's: a `[` with no `]` is a literal
+  // (it used to compile to a RegExp and throw), classes and `?` match one.
+  await same(['--exclude=d[', 'd'], { sorted: true });
+  await same(['--exclude=[gh]', '-a', 'd'], { sorted: true });
+  await same(['--exclude=su?', 'd'], { sorted: true });
+  await same(['--exclude=*e*', '-a', 'd'], { sorted: true });
+  await same(['--exclude=d/sub', '-a', 'd'], { sorted: true });
   await same(['-l', '-x', '-s', 'd']);
   // A link back to its own directory: -L walks into it once, and a directory
   // already on the path (same dev, ino) is skipped, unlisted, not an error.

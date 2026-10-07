@@ -84,6 +84,7 @@ class RuntimeOwner {
             requestLaunchTurn: (at) => this._scheduleLaunchTurn(at),
             resolveWorkerLaunch: options.resolveWorkerLaunch,
             filesystem: () => options.workspace.filesystem,
+            network: () => options.workspace.network,
             armResidentKeepalive: () => armResidentKeepalive(this, (at) => this.scheduleKeepalive(at)),
         });
         options.workspace.shell.bindTerminal(this.terminal);

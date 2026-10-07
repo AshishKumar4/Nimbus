@@ -39,7 +39,8 @@ function CountedInstance(module, imports) {
   const instance = new NativeInstance(module, imports);
   // Another module (a build facet's binding in the same object) is not the facet's Oxc.
   if (typeof instance.exports.nimbus_oxc_transform !== 'function') return instance;
-  const allocated = instances.memories.reduce((bytes, memory) => bytes + memory.buffer.byteLength, instance.exports.memory.buffer.byteLength);
+  const memory = /** @type {WebAssembly.Memory} */ (instance.exports.memory);
+  const allocated = instances.memories.reduce((bytes, counted) => bytes + counted.buffer.byteLength, memory.buffer.byteLength);
   if (allocated > instances.memoryLimitBytes) throw new RangeError('Worker exceeded memory limit.');
   instances.created++;
   instances.memories.push(instance.exports.memory);
@@ -58,8 +59,8 @@ function CountedInstance(module, imports) {
   return { exports };
 }
 
-const facetSource = oxcFacetWorkerCode(wasmBytes.buffer, runtime)
-  .modules['worker.js']
+const facetSource = /** @type {string} */ (oxcFacetWorkerCode(wasmBytes.buffer, runtime)
+  .modules['worker.js'])
   .replace('import { DurableObject } from "cloudflare:workers";', 'const { DurableObject } = globalThis.__facetImports;')
   .replace('import oxcWasm from "oxc.wasm";', 'const { oxcWasm } = globalThis.__facetImports;');
 if (/^import /m.test(facetSource)) throw new Error('oxc-facet-harness: the facet module still has an import to bind');
@@ -67,11 +68,11 @@ if (/^import /m.test(facetSource)) throw new Error('oxc-facet-harness: the facet
 let moduleCopy = 0;
 /** A fresh evaluation of the facet module: its own Oxc driver and instance. */
 export async function freshFacetClass() {
-  globalThis.__facetImports = {
+  /** @type {any} */ (globalThis).__facetImports = {
     DurableObject: class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } },
     oxcWasm: wasmModule,
   };
-  WebAssembly.Instance = CountedInstance;
+  WebAssembly.Instance = /** @type {any} */ (CountedInstance);
   const source = `${facetSource}\n// copy ${++moduleCopy}`;
   return (await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'))).OxcFacet;
 }

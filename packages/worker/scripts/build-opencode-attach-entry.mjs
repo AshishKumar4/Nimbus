@@ -31,13 +31,38 @@ const require = createRequire(import.meta.url);
 const ATTACH_COMMAND = 'command:"attach <url>"';
 
 const STATIC_RE = /from\s*["']\.\/(chunk-[a-z0-9]+\.js)["']|import\s*["']\.\/(chunk-[a-z0-9]+\.js)["']/g;
-const DYN_RE = /import\(\s*["']\.\/(chunk-[a-z0-9]+\.js)["']\s*\)/g;
+// A dynamic import may carry import attributes: opencode loads its
+// tree-sitter wasm and highlight queries as `import("./chunk-….js", {with:{type:"wasm"}})`.
+const DYN_RE = /import\(\s*["']\.\/(chunk-[a-z0-9]+\.js)["']\s*[,)]/g;
 
-function edges(src) {
+/** The chunks `src` imports, statically or dynamically: the split build's only edges. */
+export function edges(src) {
   const out = new Set();
   for (const m of src.matchAll(STATIC_RE)) out.add(m[1] || m[2]);
   for (const m of src.matchAll(DYN_RE)) out.add(m[1]);
   return out;
+}
+
+/**
+ * Every chunk reachable from the `roots` sources through `edges`, whether
+ * or not `sourceOf` has it (a name with no source is reached, not walked).
+ *
+ * @param {Iterable<string>} roots  source texts
+ * @param {(chunk: string) => string | undefined} sourceOf
+ * @returns {Set<string>}
+ */
+export function chunkClosure(roots, sourceOf) {
+  const reached = new Set();
+  const queue = [...roots];
+  while (queue.length > 0) {
+    for (const chunk of edges(queue.pop())) {
+      if (reached.has(chunk)) continue;
+      reached.add(chunk);
+      const src = sourceOf(chunk);
+      if (src !== undefined) queue.push(src);
+    }
+  }
+  return reached;
 }
 
 /**
@@ -179,14 +204,7 @@ export async function buildOpencodeAttachEntryFromSources(entry, packInput) {
   }
 
   // Full attach-TUI runtime closure: static AND dynamic edges from the seeds.
-  const tui = new Set();
-  const queue = [...seeds];
-  while (queue.length > 0) {
-    const name = queue.pop();
-    if (tui.has(name) || !pack[name]) continue;
-    tui.add(name);
-    for (const e of edges(pack[name])) queue.push(e);
-  }
+  const tui = new Set([...seeds, ...chunkClosure([...seeds].map((seed) => pack[seed]), (name) => pack[name])]);
 
   const esbuild = require('esbuild');
   const result = await esbuild.build({
@@ -229,7 +247,7 @@ export async function buildOpencodeAttachEntryFromSources(entry, packInput) {
     ],
   });
   const out = asciiOnlyAttachEntry(result.outputFiles[0].text);
-  const residual = [...out.matchAll(/import\(\s*["'](?:\.\/)?(chunk-[a-z0-9]+\.js)["']\s*\)/g)];
+  const residual = [...out.matchAll(/import\(\s*["'](?:\.\/)?(chunk-[a-z0-9]+\.js)["']\s*[,)]/g)];
   if (residual.length > 0) {
     throw new Error(
       `[build-opencode-attach-entry] ${residual.length} runtime chunk import(s) survived the ` +

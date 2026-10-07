@@ -18,7 +18,18 @@
  * part of the spec; the bundler reads from that in-memory map.
  */
 import { getSharedRuntimeExternals } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 // ── Supervisor-side: build the slice for one specifier ──────────────────
+/**
+ * A file or directory removed (or replaced) between the walk listing it and
+ * reading it: the one read failure a walk passes over. Any other (the store
+ * unreadable, the session's storage gone) fails the walk, so a slice is never
+ * silently missing a file it lists, its entry least of all.
+ */
+function vanished(error) {
+    const code = Reflect.get(Object(error), 'code');
+    return code === 'ENOENT' || code === 'ENOTDIR';
+}
 export function buildSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
     const externals = new Set();
     for (const e of getSharedRuntimeExternals(specifier)) {
@@ -31,8 +42,6 @@ export function buildSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
     const slice = [];
     let totalBytes = 0;
     const visitedPkgs = new Set();
-    // Bare-specifier → top-level package name (handles @scope/pkg).
-    const pkgNameFor = (spec) => spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
     const addFile = (path) => {
         try {
             if (vfs.isDirectory(path)) {
@@ -46,8 +55,10 @@ export function buildSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
             slice.push({ path: '/' + path.replace(/^\/+/, ''), bytes, isDir: false });
             return true;
         }
-        catch {
-            return true; /* skip unreadable */
+        catch (error) {
+            if (vanished(error))
+                return true;
+            throw error;
         }
     };
     /**
@@ -64,8 +75,10 @@ export function buildSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
         try {
             entries = vfs.readdir(dir);
         }
-        catch {
-            return true;
+        catch (error) {
+            if (vanished(error))
+                return true;
+            throw error;
         }
         for (const entry of entries) {
             if (entry.name === 'node_modules')
@@ -122,8 +135,17 @@ export function buildSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
         let pkgJson = null;
         const pkgJsonPath = pkgDir + '/package.json';
         if (vfs.exists(pkgJsonPath)) {
+            let text = null;
             try {
-                pkgJson = JSON.parse(vfs.readFileString(pkgJsonPath));
+                text = vfs.readFileString(pkgJsonPath);
+            }
+            catch (error) {
+                if (!vanished(error))
+                    throw error;
+            }
+            // A manifest that is not JSON names no dependencies.
+            try {
+                pkgJson = text === null ? null : JSON.parse(text);
             }
             catch { }
         }
@@ -134,7 +156,7 @@ export function buildSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
         }
         return true;
     };
-    const pkgName = pkgNameFor(specifier);
+    const pkgName = packageNameFromSpecifier(specifier);
     if (!visitPkg(pkgName, true)) {
         // Cap exceeded — caller bails out. Empty caller = caller will fall
         // back to legacy in-supervisor path or skip pre-bundling entirely.

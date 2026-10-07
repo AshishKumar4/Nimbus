@@ -10,10 +10,11 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { moduleMapBundle } from './lib/module-map-bundle.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -49,12 +50,7 @@ const env = {
     },
     get() { throw new Error('unexpected keyed loader call'); },
   },
-  ASSETS: {
-    async fetch(request) {
-      const staged = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(readFileSync(new URL(`../../packages/worker/public/${staged}`, import.meta.url)), { status: 200 });
-    },
-  },
+  ASSETS: stagedAssets,
 };
 adoptCtxExports({ SupervisorRPC: () => ({ [Symbol.dispose]() {} }) });
 

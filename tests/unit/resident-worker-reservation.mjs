@@ -9,14 +9,7 @@
 
 import assert from 'node:assert/strict';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
-import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { readFileSync } from 'node:fs';
 import {
   persistPortCapability,
   readPortExposure,
@@ -25,7 +18,7 @@ import {
   reservePort,
 } from '../../packages/worker/src/session/port-capability.ts';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../../packages/worker/src/session/keys.ts';
-import { processFiles } from './lib/process-bridge.mjs';
+import { launchManager } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -37,7 +30,7 @@ const defer = () => { let resolve; const promise = new Promise((r) => { resolve 
 // genuinely parked at the boot gate, not merely queued behind preflight.
 let bootHold = null;
 let bootEntered = null;
-const world = createFacetWorld(() => {
+const program = () => {
   const boot = { id: `boot-${world.boots.length + 1}`, served: 0 };
   return {
     boot,
@@ -51,24 +44,9 @@ const world = createFacetWorld(() => {
       return Response.json({ boot: boot.id, served: boot.served });
     },
   };
-});
-
-const env = {
-  LOADER: world.loader,
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)), { status: 200 });
-    },
-  },
 };
-const ctx = createFacetCtx(world, 'do-test');
-const processes = new SessionProcessSupervisor();
-const portRegistry = new PortRegistry();
-const fm = new FacetManager(ctx, env, processes, portRegistry, processHostFor, {});
-const disk = createSqliteVfsTestHarness();
-const managerVfs = new SqliteVFS(disk.sql, disk.ctx);
-fm.setVfs(managerVfs, processFiles(managerVfs));
+
+const { world, ctx, ports: portRegistry, manager: fm } = launchManager('do-test', { evaluate: program });
 const none = new Set();
 const CONFLICT = /port reservation conflict: durable worker does not own port/;
 const record = (port) => ctx.storage.rows.get(`${PORT_CAPABILITY_KEY_PREFIX}${port}`);

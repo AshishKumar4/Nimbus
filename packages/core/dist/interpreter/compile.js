@@ -1,5 +1,5 @@
 import { reparseFunction } from './reparse.js';
-import { analyzeLazyFunction, childNodes, patternIdentifiers, releaseScopes, } from './scope.js';
+import { analyzeLazyFunction, patternIdentifiers, releaseScopes, suspendsInFunction, } from './scope.js';
 import { BigInt, Error, ReferenceError, RegExp, SafeMap, SafeSet, SafeWeakMap, SyntaxError, TypeError, append, arraySliceFrom, contains, copyList, createDataProperty, dataDescriptor, everyItem, globalObject, indexWhere, listOf, mapList, newList, newSafeList, objectFreeze, objectHasOwn, promiseReject, reflectApply, reflectDefineProperty, reflectGet, objectGetPrototypeOf, reflectHas, reflectSet, reflectSetPrototypeOf, safeGenerator, skipTrivia, someItem, stringOf, stringSlice, symbolAsyncIterator, symbolIterator, toObject, withElement, withFirst, withLast, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 import { AWAIT, BREAK, CONTINUE, Completion, DELEGATE, FunctionInfo, PrivateName, TDZ, THIS_BEFORE_SUPER, YIELD, functionName, initializeInstance, frameTemplate, isObject, makeFunction, operators, signalOperand, superConstruct, tdzError, up, upN, } from './runtime.js';
@@ -45,6 +45,10 @@ function expectedArgumentCount(params) {
         n++;
     }
     return n;
+}
+/** What a pattern element binds: the element itself, or an AssignmentPattern's left. */
+function patternTarget(element) {
+    return element.type === 'AssignmentPattern' ? element.left : element;
 }
 /** The [parameter slot, body var slot] pairs of body vars that start with a parameter's value. */
 function parameterCopies(fs, varScope) {
@@ -115,43 +119,7 @@ export class Compiler {
         if (!node || this.shape === 'plain' || this.shape === 'method' || this.shape === 'arrow'
             || this.shape === 'classBase' || this.shape === 'classDerived')
             return false;
-        const cached = this.suspendCache.get(node);
-        if (cached !== undefined)
-            return cached;
-        let result = false;
-        switch (node.type) {
-            case 'AwaitExpression':
-            case 'YieldExpression':
-                result = true;
-                break;
-            case 'ForOfStatement':
-                result = node.await || this.suspends(node.left) || this.suspends(node.right) || this.suspends(node.body);
-                break;
-            case 'FunctionExpression':
-            case 'FunctionDeclaration':
-            case 'ArrowFunctionExpression':
-                result = false;
-                break;
-            case 'ClassExpression':
-            case 'ClassDeclaration': {
-                result = this.suspends(node.superClass);
-                const members = node.body.body;
-                for (let i = 0; i < members.length && !result; i++) {
-                    const m = members[i];
-                    if (m.type !== 'StaticBlock' && m.computed && this.suspends(m.key))
-                        result = true;
-                }
-                break;
-            }
-            default: {
-                const children = childNodes(node);
-                for (let i = 0; i < children.length && !result; i++)
-                    if (this.suspends(children[i]))
-                        result = true;
-            }
-        }
-        this.suspendCache.set(node, result);
-        return result;
+        return suspendsInFunction(node, this.suspendCache);
     }
     // ── Scopes ──
     /**
@@ -1547,13 +1515,22 @@ export class Compiler {
             }
             case 'AssignmentPattern': {
                 const inner = this.patternBinder(pattern.left, init);
-                const dflt = pattern.left.type === 'Identifier' ? this.named(pattern.right, pattern.left.name).s : this.expr(pattern.right).s;
+                const dflt = this.patternDefault(pattern).s;
                 return (env, value) => inner(env, value === undefined ? dflt(env) : value);
             }
             case 'ObjectPattern': return this.objectPatternBinder(pattern, init);
             case 'ArrayPattern': return this.arrayPatternBinder(pattern, init);
             case 'RestElement': return this.patternBinder(pattern.argument, init);
         }
+    }
+    /**
+     * The value a pattern element's default gives an undefined value, planned
+     * once for both flavors (patternBinder, patternBinderGen): an anonymous
+     * function or class default takes an identifier target's name, as
+     * `const { f = function () {} } = o` names it `f`.
+     */
+    patternDefault(element) {
+        return element.left.type === 'Identifier' ? this.named(element.right, element.left.name) : this.expr(element.right);
     }
     /** A member expression as an assignment target: evaluates its reference, then returns its setter. */
     memberTarget(node) {
@@ -1627,12 +1604,9 @@ export class Compiler {
             };
         }
         const key = this.propertyKey(p.key, p.computed);
-        const value = p.value;
-        const bind = this.patternBinder(value.type === 'AssignmentPattern' ? value.left : value, init);
-        const target = value.type === 'AssignmentPattern' ? value.left : value;
-        const dflt = value.type === 'AssignmentPattern'
-            ? (value.left.type === 'Identifier' ? this.named(value.right, value.left.name).s : this.expr(value.right).s)
-            : null;
+        const target = patternTarget(p.value);
+        const bind = this.patternBinder(target, init);
+        const dflt = p.value.type === 'AssignmentPattern' ? this.patternDefault(p.value).s : null;
         const member = target.type === 'MemberExpression' ? this.memberTarget(target) : null;
         return (env, source, used) => {
             const k = key(env);
@@ -1655,10 +1629,8 @@ export class Compiler {
         if (e.type === 'RestElement') {
             return { kind: 'rest', bind: this.patternBinder(e.argument, init), member: e.argument.type === 'MemberExpression' ? this.memberTarget(e.argument) : null };
         }
-        const target = e.type === 'AssignmentPattern' ? e.left : e;
-        const dflt = e.type === 'AssignmentPattern'
-            ? (e.left.type === 'Identifier' ? this.named(e.right, e.left.name).s : this.expr(e.right).s)
-            : null;
+        const target = patternTarget(e);
+        const dflt = e.type === 'AssignmentPattern' ? this.patternDefault(e).s : null;
         return { kind: 'one', bind: this.patternBinder(target, init), dflt, member: target.type === 'MemberExpression' ? this.memberTarget(target) : null };
     }
     arrayPatternBinder(pattern, init) {
@@ -1841,10 +1813,8 @@ export class Compiler {
      * value, and the binding or assignment.
      */
     elementGen(element, init) {
-        const target = element.type === 'AssignmentPattern' ? element.left : element;
-        const dflt = element.type === 'AssignmentPattern'
-            ? asGen(element.left.type === 'Identifier' ? this.named(element.right, element.left.name) : this.expr(element.right))
-            : null;
+        const target = patternTarget(element);
+        const dflt = element.type === 'AssignmentPattern' ? asGen(this.patternDefault(element)) : null;
         if (target.type === 'MemberExpression') {
             const ref = this.memberTargetGen(target);
             return {

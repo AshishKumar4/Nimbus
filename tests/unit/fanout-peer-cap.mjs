@@ -18,6 +18,7 @@ import {
   MAX_PEER_FANOUT,
 } from '../../packages/fabric/src/fanout.ts';
 import { beginLoaderFetch, DO_DYNAMIC_WORKER_LIMIT } from '../../packages/fabric/src/budgets.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 function makeEnv(seen) {
   return {
@@ -47,6 +48,7 @@ async function dispatch(count, opts = {}) {
   const seen = [];
   const phases = [];
   const pool = new Fanout(makeEnv(seen), ctx, {
+    network: ISOLATE_NETWORK,
     tag: 'peer-cap-test',
     omitSupervisor: true,
     onDispatchPhase: (width) => phases.push(width),

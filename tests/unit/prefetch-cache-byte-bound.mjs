@@ -13,14 +13,13 @@
 // bytes were resetting the DO.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readDiagCounters } from '../../packages/platform/src/diag-counters.ts';
@@ -28,6 +27,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import {
   PREFETCH_CACHE_MAX_BYTES,
 } from '../../packages/core/src/constants.ts';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
@@ -44,15 +44,7 @@ const env = {
     },
     get() { throw new Error('unused'); },
   },
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(
-        readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-        { status: 200 },
-      );
-    },
-  },
+  ASSETS: stagedAssets,
 };
 
 // A real session ctx: an exec's bundle build is paged like a resident launch,

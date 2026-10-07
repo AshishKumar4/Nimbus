@@ -1,8 +1,9 @@
 import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
+import { installSummary } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import { exitCodeForSignal, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
-import { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -11,6 +12,7 @@ import { prewarmBuildFacet } from '../facets/build-facet.js';
 import { runFresh } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler, resolveRuntimeScriptPath } from '@nimbus-sh/core/runtime/runtime-registry.js';
+import { jsReplProgram } from '@nimbus-sh/core/runtime/js-repl.js';
 import { resolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { normalizeVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
@@ -105,7 +107,7 @@ export async function registerHostedCommands(self, workspace) {
     // first `git` invocation so it stays out of the cold script-eval graph.
     registry.register('git', async (ctx) => {
         const { runGitCommand } = await import('../git/commands.js');
-        return runGitCommand(ctx, sqliteFs, self.ctx, self.env);
+        return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network);
     });
     // ── runtime package manager: `nimbus install` package manager + runner registry.
     //
@@ -115,23 +117,6 @@ export async function registerHostedCommands(self, workspace) {
     // 2. Register the `nimbus` shell verb (install/uninstall/list/available).
     // 3. Rehydrate any previously-installed runtimes from VFS so their
     //    bins reappear in the registry after DO eviction or WS reconnect.
-    // Real git (git.wasm), one WASI process per invocation: core runtime/git-runner.ts.
-    // Image caching and fsmonitor token provenance live for this workspace
-    // incarnation, not for one command (and not across hibernation).
-    let gitFactory = null;
-    workspace.runtimes.registerRunner(GIT_RUNNER, (manifest, installRoot, binName, binKind) => {
-        let handler = null;
-        return async (ctx) => {
-            gitFactory ??= (async () => {
-                const { makeGitRunnerFactory } = await import('@nimbus-sh/core/runtime/git-runner.js');
-                const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-                return makeGitRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem });
-            })().catch((error) => { gitFactory = null; throw error; });
-            handler ??= gitFactory.then((factory) => factory(manifest, installRoot, binName, binKind))
-                .catch((error) => { handler = null; throw error; });
-            return (await handler)(ctx);
-        };
-    });
     workspace.runtimes.registerRunner('clang-runner', (manifest, installRoot, binName, binKind) => async (ctx) => {
         const { makeClangRunnerFactory } = await import('@nimbus-sh/core/runtime/clang-runner.js');
         const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
@@ -147,7 +132,7 @@ export async function registerHostedCommands(self, workspace) {
     // no flags that would consume args) drops into an interactive
     // REPL. The wrap is purely additive — args-bearing invocations
     // pass through to the existing handler unchanged.
-    const cpythonRunner = (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx) {
+    workspace.runtimes.registerRunner('cpython-runner', (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx) {
         const argv = ctx.args || [];
         // No args at all → REPL session. Hand off to runPythonRepl
         // which builds its own IsolatePool (separate from the
@@ -179,11 +164,9 @@ export async function registerHostedCommands(self, workspace) {
         return await makeCPythonRunnerFactory({
             facets: facetHostForManager(facetMgr),
             startResident: cpythonResidentStart(facetMgr),
+            network: workspace.network,
         })(manifest, installRoot, binName, binKind)(ctx);
-    };
-    // The stock build, and the one importing the Nimbus extensions (CPYTHON_RUNNER): one runner.
-    workspace.runtimes.registerRunner('cpython-runner', cpythonRunner);
-    workspace.runtimes.registerRunner(CPYTHON_RUNNER, cpythonRunner);
+    });
     // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
     // as python-runner: ruby+stdlib.wasm rides via LOADER modules-map,
     // bootstrap runs at child-facet module-init time, per-call
@@ -218,6 +201,7 @@ export async function registerHostedCommands(self, workspace) {
             registry,
             startResident: rubyResidentStart(facetMgr),
             getHome: () => workspace.shell.getEnv().HOME ?? DEFAULT_HOME,
+            network: workspace.network,
         })(manifest, installRoot, binName, binKind);
         return runner(ctx);
     });
@@ -356,9 +340,10 @@ export async function registerHostedCommands(self, workspace) {
         run: (code, opts) => runFresh(facetMgr, code, opts),
         supportsBinSpawn: true,
         routesServers: true,
+        repl: jsReplProgram(`Welcome to Node.js ${NODE_VERSION}.\nType ".help" for more information.\n`),
     };
     {
-        const oneShotNode = buildRuntimeHandler(nodeSpec, {
+        const nodeCommand = buildRuntimeHandler(nodeSpec, {
             getEsbuild: () => {
                 if (!self.esbuildService) {
                     self.ensureSqliteFs();
@@ -368,15 +353,7 @@ export async function registerHostedCommands(self, workspace) {
             },
             registry,
         });
-        // REPL Stream A: no-args invocation → drop into REPL session.
-        registry.register('node', async function nodeReplOrOneShot(ctx) {
-            const argv = ctx.args || [];
-            if (argv.length === 0 && terminal) {
-                const { runNodeRepl } = await import('../runtime/node-repl.js');
-                return await runNodeRepl({ facetMgr, terminal: terminal });
-            }
-            return await oneShotNode(ctx);
-        });
+        registry.register('node', nodeCommand);
     }
     // ── bun command (runtime registry refactor: refactored to use runtime-registry) ──
     //
@@ -418,6 +395,7 @@ export async function registerHostedCommands(self, workspace) {
         run: (code, opts) => runBunScript(facetMgr, code, opts),
         supportsBinSpawn: true,
         routesServers: true,
+        repl: jsReplProgram(`Welcome to Bun v${BUN_VERSION}\nType ".help" for more information.\n`),
         subcommands: {
             // bun install / i / add → npm install (same VFS, same R2 caches).
             install: async (ctx, reg) => {
@@ -512,7 +490,7 @@ export async function registerHostedCommands(self, workspace) {
         },
     };
     {
-        const oneShotBun = buildRuntimeHandler(bunSpec, {
+        const bunCommand = buildRuntimeHandler(bunSpec, {
             getEsbuild: () => {
                 if (!self.esbuildService) {
                     self.ensureSqliteFs();
@@ -522,15 +500,7 @@ export async function registerHostedCommands(self, workspace) {
             },
             registry,
         });
-        // REPL Stream A: no-args invocation → drop into REPL session.
-        registry.register('bun', async function bunReplOrOneShot(ctx) {
-            const argv = ctx.args || [];
-            if (argv.length === 0 && terminal) {
-                const { runBunRepl } = await import('../runtime/bun-repl.js');
-                return await runBunRepl({ facetMgr, terminal: terminal });
-            }
-            return await oneShotBun(ctx);
-        });
+        registry.register('bun', bunCommand);
     }
     // ── wasm-runner: native WebAssembly, on this session's facet host ──
     //
@@ -553,7 +523,7 @@ export async function registerHostedCommands(self, workspace) {
                 const { loaderFacetHost } = await import('../runtime/facet-loader-host.js');
                 const wasmSpec = wasmRunnerSpec({
                     filesystem: workspace.filesystem,
-                    facets: loaderFacetHost(self.env, self.ctx),
+                    facets: loaderFacetHost(self.env, self.ctx, workspace.network),
                     processes: self.processes,
                 });
                 wasmHandler = buildRuntimeHandler(wasmSpec, {
@@ -683,6 +653,7 @@ export async function registerHostedCommands(self, workspace) {
                 '   \x1b[2mDeploy with real wrangler to get the real bindings.\x1b[0m\n\n');
         }
         self.nimbusWrangler = new NimbusWrangler({
+            network: workspace.network,
             vfs: kernelFs,
             vfsEvents: sqliteFs.events,
             esbuild: self.esbuildService,
@@ -762,20 +733,14 @@ export async function registerHostedCommands(self, workspace) {
         if (!installer)
             throw new Error('npm installer is not initialized');
         const result = await installer.install(cwd, { packages, pid: ctx.pid, cred: requireVfsCred(ctx.cred, 'npm-fast'), registry: ctx.env?.NPM_REGISTRY });
-        if (result.failed.length > 0) {
-            ctx.stderr.write('\x1b[31mFailed: ' + result.failed.join(', ') + '\x1b[0m\n');
-        }
-        // [HONEST INSTALL MESSAGE P0a] Yellow + "(N failed, see above)"
-        // when partial. Green only when failed.length === 0. Pre-fix the
-        // green line printed unconditionally — see user transcript line
-        // 831 ("added 264 packages" with 353 silent failures above).
-        const partial = result.failed.length > 0;
-        const color = partial ? '\x1b[33m' : '\x1b[32m';
-        const suffix = partial ? ` (${result.failed.length} failed, see above)` : '';
-        ctx.stdout.write(`\n${color}added ${result.installed.length} packages (${result.totalFiles} files) in ${(result.elapsed / 1000).toFixed(1)}s${suffix}\x1b[0m\n`);
-        if (result.cachedHits > 0) {
-            ctx.stdout.write(`\x1b[2m  (${result.cachedHits} from cache)\x1b[0m\n`);
-        }
+        const summary = installSummary({
+            installed: result.installed.length, failed: result.failed, elapsedMs: result.elapsed,
+            totalFiles: result.totalFiles, fromCacheHits: result.cachedHits,
+        });
+        if (summary.stderr)
+            ctx.stderr.write(summary.stderr);
+        if (summary.stdout)
+            ctx.stdout.write(summary.stdout);
         return result.failed.length > 0 ? 1 : 0;
     });
     HeredocHandler.install(shell, terminal);
@@ -1318,25 +1283,25 @@ export async function registerHostedCommands(self, workspace) {
     // Nimbus's NpmInstaller and execute the package bin via the Node runtime.
     registry.register('npx', async (ctx) => {
         const npxArgs = ctx.args || [];
-        const { describeNpxSelfInvocation, formatNpxHelp, getNpxCommandArgs, getNpxCommandWord, resolveNpxBinary, } = await import('../npm/npx-install.js');
-        const selfInvocation = describeNpxSelfInvocation(npxArgs);
-        if (selfInvocation === 'missing') {
+        const { formatNpxHelp, parseNpxInvocation, resolveNpxBinary } = await import('../npm/npx-install.js');
+        const invocation = parseNpxInvocation(npxArgs);
+        if (invocation.self === 'missing') {
             ctx.stderr.write('Usage: npx <command> [args...]\n');
             return 1;
         }
-        if (selfInvocation === 'version') {
+        if (invocation.self === 'version') {
             ctx.stdout.write(NPM_VERSION + '\n');
             return 0;
         }
-        if (selfInvocation === 'help') {
+        if (invocation.self === 'help') {
             ctx.stdout.write(formatNpxHelp());
             return 0;
         }
-        const cmd = getNpxCommandWord(npxArgs);
+        const cmd = invocation.command;
         // Check if it's a built-in command (vite, esbuild, etc.)
         const resolved = cmd ? await registry.resolve(cmd, resolveContext(ctx.cwd, ctx.env, ctx.vfs)) : null;
         if (resolved) {
-            return await resolved({ ...ctx, args: getNpxCommandArgs(npxArgs) });
+            return await resolved({ ...ctx, args: invocation.args });
         }
         // Nimbus-native npx install + run path. Routes package installation
         // through NpmInstaller's full-packument resolver.
@@ -1544,5 +1509,5 @@ export async function registerHostedCommands(self, workspace) {
     registry.register('kill', createKillCommand(processRegistry, hostSignals));
     registry.register('top', createTopCommand(processRegistry));
     registry.register('watch', createWatchCommand(registry));
-    registry.register('help', createHelpCommand(registry));
+    registry.register('help', createHelpCommand(registry, () => shell.builtinNames()));
 }

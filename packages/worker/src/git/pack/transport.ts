@@ -18,10 +18,13 @@
  * (@nimbus-sh/platform/wave-writer.js), a ranged write by SupervisorRPC's
  * delivery, each under its own receipt; a piece never repeats them.
  *
- * Each is tried RETRY_ATTEMPTS times, RETRY_BACKOFF_MS apart (each wait
- * jittered by a quarter); every retry is logged by its caller with its
- * cause. Nothing else is retried.
+ * Each is tried RETRY_ATTEMPTS times, RETRY_BACKOFF_MS apart, through the
+ * platform's one retry policy (@nimbus-sh/platform retry.ts: its loop, and
+ * each wait jittered by a quarter); every retry is logged by its caller
+ * with its cause. Nothing else is retried.
  */
+
+import { retryDelayMs, retrying } from '@nimbus-sh/platform/retry.js';
 
 export const RETRY_ATTEMPTS = 3;
 /** The waits before the second and the third try. */
@@ -45,9 +48,7 @@ export function isLostTransport(message: string): boolean {
 
 /** The wait before try `attempt + 2` (0-based `attempt` of the one that failed). */
 export function retryDelay(attempt: number, schedule: readonly number[] = RETRY_BACKOFF_MS): Promise<void> {
-  const base = schedule[Math.min(attempt, schedule.length - 1)] ?? 0;
-  const delay = Math.max(0, Math.round(base + (Math.random() * 2 - 1) * base * 0.25));
-  return new Promise((resolve) => setTimeout(resolve, delay));
+  return new Promise((resolve) => setTimeout(resolve, retryDelayMs(schedule, attempt)));
 }
 
 /** cf-git's HTTP client surface (isomorphic-git's GitHttp). */
@@ -85,24 +86,15 @@ export function retryingGitHttp(base: GitHttp, schedule: readonly number[] = RET
         for await (const chunk of req.body) chunks.push(chunk);
         request = { ...req, body: chunks };
       }
-      for (let attempt = 0; ; attempt++) {
-        const last = attempt + 1 >= RETRY_ATTEMPTS;
-        let response: GitHttpResponse;
-        try {
-          response = await base.request(request);
-        } catch (error) {
-          if (!idempotent || last) throw error;
-          await retryDelay(attempt, schedule);
-          continue;
-        }
-        if (!idempotent || !TRANSIENT_HTTP_STATUSES.has(response.statusCode) || last) return response;
-        try {
-          await response.body?.cancel?.();
-        } catch {
-          // The answer is being dropped either way.
-        }
-        await retryDelay(attempt, schedule);
-      }
+      if (!idempotent) return await base.request(request);
+      return await retrying(() => base.request(request), {
+        retries: RETRY_ATTEMPTS - 1,
+        schedule,
+        retryReason: (outcome) => !outcome.ok ? 'failed in transit'
+          : TRANSIENT_HTTP_STATUSES.has(outcome.value.statusCode) ? 'HTTP ' + outcome.value.statusCode
+          : null,
+        discard: (response) => response.body?.cancel?.(),
+      });
     },
   };
 }

@@ -18,7 +18,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { SHIMS_STORE_PRELUDE, declareNamespace, listAuthority } from './lib/shims-namespace.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 // A supervisor whose calls fail exactly the way a real one does: the error
 // arrives having crossed the RPC hop.

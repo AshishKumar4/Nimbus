@@ -22,6 +22,7 @@
 
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import type { ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
 import type { ResolvedWorkerLaunch, WorkerRecipe } from './manager.js';
 
@@ -48,11 +49,6 @@ export function purgeDurableWorkerImages(
     removed += 1;
   }
   return removed;
-}
-
-async function sha256Hex(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 /**

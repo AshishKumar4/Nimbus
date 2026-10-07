@@ -144,6 +144,7 @@ export async function expandGlob(pattern: string, cwd: string, vfs: ProcessView)
   return results.sort();
 }
 
-function hasGlobChars(s: string): boolean {
+/** Whether `s` holds a glob's special characters (`*`, `?`, `[`). */
+export function hasGlobChars(s: string): boolean {
   return s.includes('*') || s.includes('?') || s.includes('[');
 }

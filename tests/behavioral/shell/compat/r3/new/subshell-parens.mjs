@@ -7,7 +7,7 @@
 // Post-fix: the shell parser/interpreter handles `(...)` groups and
 // restores cwd/env for subshell execution.
 
-import { deleteSession, mintSession, Terminal, makeAsserter, stripAnsi } from '../../../../_driver.mjs';
+import { deleteSession, mintSession, Terminal, makeAsserter, termBody } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r3/new/subshell-parens');
@@ -15,14 +15,6 @@ console.log(`shell/compat/r3/new/subshell-parens — ${process.env.BASE}`);
 
 const sid = await mintSession();
 const t = new Terminal(sid);
-
-function body(raw) {
-  const ansi = stripAnsi(raw);
-  const lines = ansi.split(/\r?\n/);
-  if (lines.length && /\$\s*$/.test(lines[lines.length - 1])) lines.pop();
-  if (lines.length && /\$\s/.test(lines[0])) lines.shift();
-  return lines.join('\n');
-}
 
 try {
   await t.connect();
@@ -32,8 +24,8 @@ try {
   const r1 = await t.run('(echo a; echo b)', 5_000);
   a.check(
     'bare `(echo a; echo b)` runs both (no parse error)',
-    body(r1.output) === 'a\nb',
-    `body=${JSON.stringify(body(r1.output))}`,
+    termBody(r1.output) === 'a\nb',
+    `body=${JSON.stringify(termBody(r1.output))}`,
   );
 
   // Probe 2: cd inside bare subshell doesn't leak.
@@ -42,8 +34,8 @@ try {
   const r2 = await t.run('pwd', 5_000);
   a.check(
     'cd inside bare subshell does NOT leak to parent (cwd restored)',
-    body(r2.output) === '/home/user',
-    `body=${JSON.stringify(body(r2.output))}`,
+    termBody(r2.output) === '/home/user',
+    `body=${JSON.stringify(termBody(r2.output))}`,
   );
 
   // Probe 3: env var inside bare subshell doesn't leak.
@@ -52,8 +44,8 @@ try {
   const r3 = await t.run('echo "PARENT=$SUBVAR"', 5_000);
   a.check(
     'env var set inside bare subshell is scoped (parent SUBVAR empty)',
-    body(r3.output) === 'PARENT=',
-    `body=${JSON.stringify(body(r3.output))}`,
+    termBody(r3.output) === 'PARENT=',
+    `body=${JSON.stringify(termBody(r3.output))}`,
   );
 } finally {
   try { await t.close(); } catch {}

@@ -316,7 +316,10 @@ Useful commands:
 |---|---|
 | Typecheck | `bun run typecheck` |
 | Build packages | `bun run --cwd packages/worker build` |
-| Unit suite | `for f in tests/unit/*.mjs; do bun "$f" || break; done` |
+| Unit suite: the gate | `bun scripts/ci-run.mjs <commit>` |
+| Unit suite, fast tier, locally | `bun tests/unit/run-all.mjs --tier fast` |
+| Unit suite, everything, locally | `bun tests/unit/run-all.mjs` |
+| One unit file | `bun tests/unit/<file>.mjs` |
 | All live probes | `BASE=<target> bun test:behavioral` |
 | One live probe | `BASE=<target> bun tests/behavioral/<path>.mjs` |
 | Limit runner scope | `NIMBUS_PROBE_ONLY=<path-fragment> BASE=<target> bun test:behavioral` |
@@ -338,6 +341,77 @@ probe's to delete in
 design and the demo's TTL reaps it, so the ledger marks it `reap: 'ttl'` and
 `run-all` reports it as TTL-reaped rather than leaked.
 `NIMBUS_PROBE_KEEP_SESSIONS=1` keeps sessions for forensics.
+
+### The unit suite
+
+**The full-suite gate is `bun scripts/ci-run.mjs <commit>`.** It runs every
+`tests/unit` file of that commit on Cloudflare Containers
+(`apps/ci-runner`, Worker `nimbus-ci-runner`). The suite is split into
+shards, each a dedicated 4-vCPU, 12 GiB container running 4 files at a
+time. Shards are balanced longest-first by each file's measured time, and
+no other lane's load reaches them. It prints:
+
+- every failing file with its output tail, and the path of its whole output;
+- the slowest files;
+- wall time, CPU and cost.
+
+It exits 0 on pass and 1 when a test failed. Exit 2 means the run could not
+grade the commit (upload, install, or a container lost twice, each retried
+once), which is never a test verdict: run it again.
+
+Measured 2026-10-06, 803-804 files:
+
+- about 8–10 minutes on 5–6 shards (6.4 on 16);
+- 61–91 test CPU-minutes;
+- $0.14–0.21 a run;
+- zero failures in 399 executions of the files that drive a local workerd,
+  across 18 full runs. On the workstation, 8 of those files run three times
+  each that day failed 10 of 24 executions.
+
+- It tests the commit, never the working tree: commit first. Nothing is
+  pushed. `git archive` of the commit goes to R2, keyed by tree, so a rerun
+  does not upload again.
+- A commit from before sharded runs (older `main`) runs under the CI image's
+  runner, and the verdict says so. `bun scripts/ci-run.mjs main --only
+  <file>` is how to show a failure is not yours.
+- Flags:
+  - `--tier fast|slow|all`, `--only a,b`, `--shards N`, `--jobs J`;
+  - `--timeout MS`: 900 s per file by default, because a container vCPU is
+    about 1.5x slower than a workstation core;
+  - `--status <run>` follows a run started elsewhere;
+  - interrupting the command cancels the run.
+- Every file's verdict, wall time, CPU, peak memory and the commands it ran
+  are saved to `~/.local/state/nimbus/ci-runs/<run>.json`. A failing file's
+  whole output goes to `<run>/<file>.out`; `--logs` saves the shard logs.
+- The token is `~/.config/nimbus/ci-token`, or `NIMBUS_CI_TOKEN`.
+- Secrets the suite needs are Workers secrets named `SUITE_ENV_<NAME>` on
+  `nimbus-ci-runner`, never in the image. The suite needs none today.
+
+**Tiers.** A file's leading comment block may carry one marker:
+
+- `// @tier slow — <reason>`: drives a local workerd, has a CI median of
+  30 s wall or more, 30 s CPU or more, or peaks at 1 GiB or more. The
+  reason carries the measured numbers.
+- `// @tier quiet-cpu — <reason>`: asserts timing that foreign load breaks.
+  It runs alone, in the serial phase.
+
+No marker is the fast tier. `bun tests/unit/run-all.mjs --tier fast` is the
+local check before CI: 755 files, none of which starts a workerd, in about
+2.5 minutes at `--jobs 8`. `--list` prints the selection. A malformed marker
+stops the runner with exit 2, naming the file.
+
+A fast-tier file that measured slow in a CI run is named under the verdict.
+Its marker belongs in the commit that made it slow.
+
+**The local full suite** (`bun tests/unit/run-all.mjs`, under
+`/mnt/scratch/nimbus/run-bounded` and the release-suite lock) still works,
+and is the fallback when CI is down. On the shared workstation it takes 8–40
+minutes at `--jobs 8` and longer serially, and its workerd tests fail under
+foreign load.
+
+The runner itself: `bun apps/ci-runner/scripts/deploy.mjs` (docker
+required) stages the image, deploys, waits for the image rollout, and keeps
+the token. A shard refuses a container still on the previous image.
 
 ### Probe targets
 

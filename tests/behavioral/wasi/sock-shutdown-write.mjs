@@ -14,39 +14,18 @@
 // half-close vs full-close, (2) the readable side still functions
 // post-shutdown.
 
-import { mintSession, deleteSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
-import { writeStreamBFixtureCmd } from './_fixtures-stream-b.mjs';
+import { openWasiProbe, tailLines, trimmedLines } from './_harness.mjs';
 
-const sid = await mintSession();
-console.log(`[wasi/sock-shutdown-write] sid=${sid} BASE=${BASE}`);
-
-const t = new Terminal(sid);
-let exitCode = 1;
+const probe = await openWasiProbe('wasi/sock-shutdown-write', { dir: '/home/user/sb', fixture: 'sock-shutdown-write', as: 'ss.wasm' });
+const { t } = probe;
 try {
-  await t.connect();
-  await sleep(2_000);
-  await t.waitForPrompt(60_000);
-
-  await t.run('mkdir -p /home/user/sb && cd /home/user/sb', 10_000);
-  await t.run(writeStreamBFixtureCmd('sock-shutdown-write', 'ss.wasm'), 30_000);
-
   const r = await t.run('wasm-runner ss.wasm', 90_000);
-  const out = stripAnsi(r.output);
-  const tail = out.split(/\r?\n/).slice(-8).join('\n');
-  const lines = tail.split(/\r?\n/).map(s => s.trim());
+  const tail = tailLines(r.output, 8);
+  const lines = trimmedLines(tail);
   const ok = lines.some(s => s === '1');
 
-  console.log(JSON.stringify({ probe: 'wasi/sock-shutdown-write', sid, base: BASE, tail, ok }, null, 2));
-
-  const checks = [['shutdown(WR) + recv-loop receives nonzero bytes', ok]];
-  let pass = 0;
-  for (const [n, o] of checks) { console.log(`  ${o ? 'PASS' : 'FAIL'}  ${n}`); if (o) pass++; }
-  const verdict = pass === checks.length ? 'passing' : 'failing';
-  console.log(`[wasi/sock-shutdown-write] ${verdict} — ${pass}/${checks.length}`);
-  exitCode = verdict === 'passing' ? 0 : 1;
+  probe.report([['shutdown(WR) + recv-loop receives nonzero bytes', ok]], { tail, ok });
 } finally {
-  await t.close().catch(() => {});
-  const del = await deleteSession(sid, 'wasi/sock-shutdown-write');
-  console.log(`deleteSession: ${del.status}`);
+  await probe.close();
 }
-process.exit(exitCode);
+process.exit(probe.exitCode());

@@ -21,7 +21,9 @@ export class PromisorFetchError extends Error {
     }
 }
 /** One request to the promisor remote for `oids`; resolves when their pack is durable. */
-export async function fetchMissingObjects(ctx, env, request) {
+export async function fetchMissingObjects(ctx, env, request, 
+/** The workspace's network: the promisor is reached through its egress (execGitNetwork). */
+workspaceNetwork) {
     const network = await execGitNetwork(ctx, env, {
         op: 'fetch-objects',
         pid: request.pid,
@@ -31,7 +33,7 @@ export async function fetchMissingObjects(ctx, env, request) {
         oids: [...request.oids],
         quiet: true,
         auth: request.auth,
-    });
+    }, workspaceNetwork);
     if (!network.success)
         throw new PromisorFetchError(request.remote, network);
     return { fetched: network.fetchedObjects ?? 0, network };

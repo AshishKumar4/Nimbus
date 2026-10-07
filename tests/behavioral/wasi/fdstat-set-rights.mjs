@@ -10,39 +10,18 @@
 // fd_fdstat_get, prints '1' if BOTH match exactly. Pre-B6 the shim
 // returned a hardcoded 0x3FFFFFFF mask regardless of narrowing → '0'.
 
-import { mintSession, deleteSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
-import { writeStreamBFixtureCmd } from './_fixtures-stream-b.mjs';
+import { openWasiProbe, tailLines, trimmedLines } from './_harness.mjs';
 
-const sid = await mintSession();
-console.log(`[wasi/fdstat-set-rights] sid=${sid} BASE=${BASE}`);
-
-const t = new Terminal(sid);
-let exitCode = 1;
+const probe = await openWasiProbe('wasi/fdstat-set-rights', { dir: '/home/user/sb', fixture: 'fdstat-set-rights', as: 'fsr.wasm' });
+const { t } = probe;
 try {
-  await t.connect();
-  await sleep(2_000);
-  await t.waitForPrompt(60_000);
-
-  await t.run('mkdir -p /home/user/sb && cd /home/user/sb', 10_000);
-  await t.run(writeStreamBFixtureCmd('fdstat-set-rights', 'fsr.wasm'), 30_000);
-
   const r = await t.run('wasm-runner fsr.wasm', 60_000);
-  const out = stripAnsi(r.output);
-  const tail = out.split(/\r?\n/).slice(-6).join('\n');
-  const lines = tail.split(/\r?\n/).map(s => s.trim());
+  const tail = tailLines(r.output, 6);
+  const lines = trimmedLines(tail);
   const ok = lines.some(s => s === '1');
 
-  console.log(JSON.stringify({ probe: 'wasi/fdstat-set-rights', sid, base: BASE, tail, ok }, null, 2));
-
-  const checks = [['set_rights(7,3) round-trips through fdstat_get', ok]];
-  let pass = 0;
-  for (const [n, o] of checks) { console.log(`  ${o ? 'PASS' : 'FAIL'}  ${n}`); if (o) pass++; }
-  const verdict = pass === checks.length ? 'passing' : 'failing';
-  console.log(`[wasi/fdstat-set-rights] ${verdict} — ${pass}/${checks.length}`);
-  exitCode = verdict === 'passing' ? 0 : 1;
+  probe.report([['set_rights(7,3) round-trips through fdstat_get', ok]], { tail, ok });
 } finally {
-  await t.close().catch(() => {});
-  const del = await deleteSession(sid, 'wasi/fdstat-set-rights');
-  console.log(`deleteSession: ${del.status}`);
+  await probe.close();
 }
-process.exit(exitCode);
+process.exit(probe.exitCode());

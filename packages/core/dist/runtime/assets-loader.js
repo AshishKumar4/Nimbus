@@ -68,10 +68,20 @@ export class NimbusAssetLoadError extends Error {
  * @throws {NimbusAssetLoadError} on binding missing or non-2xx.
  */
 export function loadAssetBytes(assets, path) {
+    return loadAsset(assets, path, __assetBytesCache, async (r) => new Uint8Array(await r.arrayBuffer()));
+}
+/**
+ * Load an asset as a UTF-8 string. Same caching discipline as
+ * {@link loadAssetBytes}.
+ */
+export function loadAssetText(assets, path) {
+    return loadAsset(assets, path, __assetTextCache, (r) => r.text());
+}
+function loadAsset(assets, path, cache, decode) {
     if (!assets || typeof assets.fetch !== 'function') {
         return Promise.reject(new NimbusAssetLoadError(`ASSETS binding missing — cannot load ${path}. Did you forget the assets.binding=ASSETS in wrangler.jsonc?`, 'E_ASSETS_BINDING_MISSING', path));
     }
-    const cached = __assetBytesCache.get(path);
+    const cached = cache.get(path);
     if (cached)
         return cached;
     const promise = (async () => {
@@ -86,47 +96,15 @@ export function loadAssetBytes(assets, path) {
             if (!r.ok) {
                 throw new NimbusAssetLoadError(`Asset fetch failed: ${path} → ${r.status}`, 'E_ASSET_FETCH_FAILED', path, r.status);
             }
-            const buf = await r.arrayBuffer();
-            return new Uint8Array(buf);
+            return await decode(r);
         }
         finally {
             disposeRpcResource(r);
         }
     })();
-    __assetBytesCache.set(path, promise);
+    cache.set(path, promise);
     // Evict on failure so subsequent calls retry.
-    promise.catch(() => __assetBytesCache.delete(path));
-    return promise;
-}
-/**
- * Load an asset as a UTF-8 string. Same caching discipline as
- * {@link loadAssetBytes}.
- */
-export function loadAssetText(assets, path) {
-    if (!assets || typeof assets.fetch !== 'function') {
-        return Promise.reject(new NimbusAssetLoadError(`ASSETS binding missing — cannot load ${path}. Did you forget the assets.binding=ASSETS in wrangler.jsonc?`, 'E_ASSETS_BINDING_MISSING', path));
-    }
-    const cached = __assetTextCache.get(path);
-    if (cached)
-        return cached;
-    const promise = (async () => {
-        const url = `https://assets.invalid${path}`;
-        const r = await assets.fetch(url);
-        try {
-            if (r.status === 404) {
-                throw new NimbusAssetLoadError(`Asset not found: ${path}`, 'E_ASSET_NOT_FOUND', path, 404);
-            }
-            if (!r.ok) {
-                throw new NimbusAssetLoadError(`Asset fetch failed: ${path} → ${r.status}`, 'E_ASSET_FETCH_FAILED', path, r.status);
-            }
-            return await r.text();
-        }
-        finally {
-            disposeRpcResource(r);
-        }
-    })();
-    __assetTextCache.set(path, promise);
-    promise.catch(() => __assetTextCache.delete(path));
+    promise.catch(() => cache.delete(path));
     return promise;
 }
 /**

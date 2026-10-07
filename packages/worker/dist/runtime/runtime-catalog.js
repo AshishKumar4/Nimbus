@@ -303,36 +303,12 @@ export function runtimeCatalogSource(env) {
         async resolve(spec) {
             const { name, versionOverride } = splitRuntimeSpec(spec);
             const catalog = await fetchCatalog(env);
-            // `python` is CPython now: a bare spec follows the supersession, an
-            // explicit `python@<version>` is a deliberate request and bypasses it.
-            const superseding = versionOverride === null ? SUPERSEDED_RUNTIMES[name] : undefined;
-            const runtimeName = (superseding !== undefined && catalog.runtimes[superseding] ? superseding : null)
-                ?? (catalog.runtimes[name] ? name : null);
-            let resolved = runtimeName;
+            let resolved = catalogRuntimeNamed(catalog, name, versionOverride);
             if (resolved === null) {
-                // Bin-name aliasing is catalog-driven: any command a runtime
-                // provides resolves to that runtime. A superseded runtime does not
-                // answer for a command name either — its runner is no longer
-                // registered, and the successor declares the same commands further
-                // down this same loop.
-                for (const [candidate, entry] of Object.entries(catalog.runtimes)) {
-                    if (versionOverride === null
-                        && SUPERSEDED_RUNTIMES[candidate] !== undefined
-                        && catalog.runtimes[SUPERSEDED_RUNTIMES[candidate]])
-                        continue;
-                    const versionEntry = entry.versions[entry.default];
-                    if (!versionEntry)
-                        continue;
-                    try {
-                        const manifest = await fetchManifest(env, versionEntry);
-                        if (runtimeEntrypoints(manifest).some((ep) => ep.binName === name)) {
-                            resolved = candidate;
-                            break;
-                        }
-                    }
-                    catch {
-                        // A bad manifest should not prevent canonical catalog names from
-                        // resolving; it only suppresses bin-name aliasing for that runtime.
+                for await (const provider of catalogCommandProviders(env, catalog, versionOverride)) {
+                    if (runtimeEntrypoints(provider.manifest).some((ep) => ep.binName === name)) {
+                        resolved = provider.runtimeName;
+                        break;
                     }
                 }
             }
@@ -352,6 +328,66 @@ export function runtimeCatalogSource(env) {
             return pkg;
         },
     };
+}
+/**
+ * The runtime a catalog name stands for. `python` is CPython now: a bare
+ * name follows the supersession, an explicit `python@<version>` is a
+ * deliberate request and bypasses it. Null when the catalog has neither.
+ */
+function catalogRuntimeNamed(catalog, name, versionOverride) {
+    const superseding = versionOverride === null ? SUPERSEDED_RUNTIMES[name] : undefined;
+    if (superseding !== undefined && catalog.runtimes[superseding])
+        return superseding;
+    return catalog.runtimes[name] ? name : null;
+}
+/**
+ * The runtimes that answer for a command name, in catalog order, each with
+ * its default version's manifest: bin-name aliasing is catalog-driven, so
+ * any command a runtime provides resolves to that runtime. A superseded
+ * runtime answers for none unless the request names a version: its runner
+ * is no longer registered, and its successor declares the same commands.
+ * A manifest that fails to load suppresses only its own runtime's aliases,
+ * never the catalog's canonical names.
+ */
+async function* catalogCommandProviders(env, catalog, versionOverride) {
+    for (const [runtimeName, entry] of Object.entries(catalog.runtimes)) {
+        if (versionOverride === null
+            && SUPERSEDED_RUNTIMES[runtimeName] !== undefined
+            && catalog.runtimes[SUPERSEDED_RUNTIMES[runtimeName]])
+            continue;
+        const versionEntry = entry.versions[entry.default];
+        if (!versionEntry)
+            continue;
+        let manifest;
+        try {
+            manifest = await fetchManifest(env, versionEntry);
+        }
+        catch {
+            continue;
+        }
+        yield { runtimeName, manifest };
+    }
+}
+/**
+ * Every command a bare `nimbus install <command>` resolves, mapped to the
+ * runtime it installs: the catalog's names first, then each runtime's
+ * commands, exactly as runtimeCatalogSource.resolve picks them.
+ */
+export async function catalogCommandIndex(env) {
+    const catalog = await fetchCatalog(env);
+    const index = new Map();
+    for (const name of Object.keys(catalog.runtimes)) {
+        const runtimeName = catalogRuntimeNamed(catalog, name, null);
+        if (runtimeName !== null)
+            index.set(name, runtimeName);
+    }
+    for await (const { runtimeName, manifest } of catalogCommandProviders(env, catalog, null)) {
+        for (const ep of runtimeEntrypoints(manifest)) {
+            if (!index.has(ep.binName))
+                index.set(ep.binName, runtimeName);
+        }
+    }
+    return index;
 }
 /** Read the entry at `address`, or null on miss, on a stripped Cache API,
  *  or when what came back does not hash to the key it was found under. */

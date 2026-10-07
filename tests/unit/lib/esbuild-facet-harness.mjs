@@ -92,8 +92,8 @@ const countedJsFnBody = [
 globalThis.__esbuilds = esbuilds;
 
 const wasmModule = await WebAssembly.compile(wasmBytes);
-const facetSource = esbuildFacetWorkerCode(wasmBytes.buffer.slice(wasmBytes.byteOffset, wasmBytes.byteOffset + wasmBytes.byteLength), countedJsFnBody, await staged(ESBUILD_CLI_ASSET_PATH), await staged(OXC_FACET_ASSET_PATH))
-  .modules['worker.js']
+const facetSource = /** @type {string} */ (esbuildFacetWorkerCode(wasmBytes.buffer.slice(wasmBytes.byteOffset, wasmBytes.byteOffset + wasmBytes.byteLength), countedJsFnBody, await staged(ESBUILD_CLI_ASSET_PATH), await staged(OXC_FACET_ASSET_PATH))
+  .modules['worker.js'])
   .replace('import { DurableObject } from "cloudflare:workers";', 'const { DurableObject } = globalThis.__facetImports;')
   .replace('import wasmModule from "esbuild.wasm";', 'const { wasmModule } = globalThis.__facetImports;');
 if (/^import /m.test(facetSource)) throw new Error('esbuild-facet-harness: the facet module still has an import to bind');

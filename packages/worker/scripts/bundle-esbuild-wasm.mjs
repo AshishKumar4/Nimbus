@@ -69,10 +69,10 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { resolvePackageDir } from './resolve-package-dir.mjs';
+import { sha256Hex, stageAsset } from './stage-asset.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -148,11 +148,12 @@ async function main() {
   // The esbuild facet fetches it (digest-checked) when it is loaded and
   // hands it to its module map, where workerd compiles it at the facet's
   // startup; no other isolate holds it.
+  // An old version's adapter and wasm are removed as each is staged.
+  const staleEsbuild = (ext) => (entry) => entry.startsWith('esbuild-') && entry.endsWith(ext);
   const wasmBytes = await fs.readFile(WASM_SRC);
-  await fs.mkdir(OUT_ASSETS_DIR, { recursive: true });
   const wasmAssetName = `esbuild-${version}.wasm`;
-  await fs.writeFile(path.join(OUT_ASSETS_DIR, wasmAssetName), wasmBytes);
-  const wasmSha256 = createHash('sha256').update(wasmBytes).digest('hex');
+  const removed = stageAsset(OUT_ASSETS_DIR, wasmAssetName, wasmBytes, staleEsbuild('.wasm'));
+  const wasmSha256 = sha256Hex(wasmBytes);
   console.log(
     `[bundle-esbuild-wasm] staged esbuild.wasm → public/_assets/${wasmAssetName} (${(wasmBytes.length / (1024 * 1024)).toFixed(1)} MiB)`,
   );
@@ -160,21 +161,13 @@ async function main() {
   const jsAssetName = `esbuild-${version}.js`;
   const jsAssetOut = path.join(OUT_ASSETS_DIR, jsAssetName);
   const jsBytes = Buffer.from(jsFn, 'utf8');
-  await fs.writeFile(jsAssetOut, jsBytes);
-  const jsSha256 = createHash('sha256').update(jsBytes).digest('hex');
+  removed.push(...stageAsset(OUT_ASSETS_DIR, jsAssetName, jsBytes, staleEsbuild('.js')));
+  const jsSha256 = sha256Hex(jsBytes);
   console.log(
     `[bundle-esbuild-wasm] wrote JS adapter → ${path.relative(ROOT, jsAssetOut)} (${(jsBytes.length / 1024).toFixed(1)} KiB)`,
   );
 
-  // ── 3. Clean up stale staged esbuild assets in public/_assets/ ──────
-  // Keeps the deploy lean: an old version's adapter and wasm are removed.
-  for (const entry of await fs.readdir(OUT_ASSETS_DIR)) {
-    if (entry.startsWith('esbuild-') && ((entry.endsWith('.wasm') && entry !== wasmAssetName) || (entry.endsWith('.js') && entry !== jsAssetName))) {
-      const stale = path.join(OUT_ASSETS_DIR, entry);
-      await fs.unlink(stale);
-      console.log(`[bundle-esbuild-wasm] removed stale asset: ${entry}`);
-    }
-  }
+  for (const entry of removed) console.log(`[bundle-esbuild-wasm] removed stale asset: ${entry}`);
 
   // ── 4. Emit the generated TS module: paths, sizes and digests only ──
   // Nothing is inline: the Worker bundle carries no part of esbuild-wasm.

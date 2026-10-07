@@ -81,6 +81,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { filesUnder, trackedFileDigests } from './lib/fs-walk.mjs';
 
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -210,25 +211,7 @@ function toolVersions() {
  * mtime — same rule as the output snapshot.
  */
 export function fingerprintBuildInputs({ root = REPO_ROOT } = {}) {
-  const listed = spawnSync(
-    'git',
-    ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...INPUT_ROOTS],
-    { cwd: root, encoding: 'buffer', maxBuffer: 1 << 28 },
-  );
-  if (listed.status !== 0) {
-    throw new Error(`git ls-files failed: ${listed.stderr?.toString() ?? listed.error?.message}`);
-  }
-  const entries = [];
-  for (const rel of listed.stdout.toString('utf8').split('\0')) {
-    if (!rel) continue;
-    let bytes;
-    try {
-      bytes = readFileSync(join(root, rel));
-    } catch {
-      continue;
-    }
-    entries.push([rel, createHash('sha256').update(bytes).digest('hex')]);
-  }
+  const entries = [...trackedFileDigests(root, INPUT_ROOTS)];
   entries.sort(([a], [b]) => (a < b ? -1 : 1));
   const toolchain = toolVersions();
   const h = createHash('sha256');
@@ -256,6 +239,14 @@ export function readFixpointRecord({ root = REPO_ROOT } = {}) {
   return parsed;
 }
 
+/** A progress logger that drops its line: the default for every `log` option. */
+const silent = (_line) => {};
+
+/**
+ * The verified fixpoint as FIXPOINT_RECORD stores it.
+ * @typedef {{ version: number, fingerprint: string, toolchain: object, roots: string[], outputs: Record<string, string> }} FixpointRecord
+ */
+
 /**
  * Is the live tree byte-for-byte a state this gate already verified?
  * The inputs must fingerprint identically (same src, scripts, configs,
@@ -263,7 +254,10 @@ export function readFixpointRecord({ root = REPO_ROOT } = {}) {
  * (nothing hand-edited, nothing added or removed). Reuses diffSnapshots
  * so "what moved" reads the same as the rebuild drift.
  */
-export function verifyFixpointRecord({ root = REPO_ROOT, record, log = () => {} } = {}) {
+/**
+ * @param {{ root?: string, record: FixpointRecord, log?: (line: string) => void }} options
+ */
+export function verifyFixpointRecord({ root = REPO_ROOT, record, log = silent }) {
   const live = fingerprintBuildInputs({ root });
   if (live.fingerprint !== record.fingerprint) {
     return { ok: false, reason: 'build inputs changed since the recorded fixpoint' };
@@ -287,7 +281,10 @@ export function verifyFixpointRecord({ root = REPO_ROOT, record, log = () => {} 
  * byte-identical bytes. Written ONLY on the verified path — never after
  * drift, never after an asset violation.
  */
-export function writeFixpointRecord({ root = REPO_ROOT, fingerprint, outputs, log = () => {} } = {}) {
+/**
+ * @param {{ root?: string, fingerprint: ReturnType<typeof fingerprintBuildInputs>, outputs: Map<string, string>, log?: (line: string) => void }} options
+ */
+export function writeFixpointRecord({ root = REPO_ROOT, fingerprint, outputs, log = silent }) {
   const record = {
     version: FIXPOINT_RECORD_VERSION,
     fingerprint: fingerprint.fingerprint,
@@ -310,29 +307,9 @@ export function writeFixpointRecord({ root = REPO_ROOT, fingerprint, outputs, lo
  * its bytes are.
  */
 export function snapshotBuildOutputs({ root = REPO_ROOT, roots = OUTPUT_ROOTS } = {}) {
-  const listed = spawnSync(
-    'git',
-    ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...roots],
-    { cwd: root, encoding: 'buffer', maxBuffer: 1 << 28 },
-  );
-  if (listed.status !== 0) {
-    throw new Error(`git ls-files failed: ${listed.stderr?.toString() ?? listed.error?.message}`);
-  }
-
-  const digests = new Map();
-  for (const rel of listed.stdout.toString('utf8').split('\0')) {
-    if (!rel) continue;
-    let bytes;
-    try {
-      bytes = readFileSync(join(root, rel));
-    } catch {
-      // A tracked file that is not on disk. Absence is a state the diff
-      // below reports, so it belongs out of the map rather than in it.
-      continue;
-    }
-    digests.set(rel, createHash('sha256').update(bytes).digest('hex'));
-  }
-  return digests;
+  // A tracked file that is not on disk is left out of the map: absence is a
+  // state the diff reports.
+  return trackedFileDigests(root, roots);
 }
 
 /** What the build did to the tree, as three sorted path lists. */
@@ -358,7 +335,7 @@ export function diffSnapshots(before, after) {
  * say what a change MEANS in its own terms.
  */
 export function rebuildDrift({
-  root = REPO_ROOT, roots = OUTPUT_ROOTS, steps = BUILD_FIXPOINT, log = () => {},
+  root = REPO_ROOT, roots = OUTPUT_ROOTS, steps = BUILD_FIXPOINT, log = silent,
 } = {}) {
   const before = snapshotBuildOutputs({ root, roots });
   log(`digested ${before.size} build outputs under ${roots.join(', ')}`);
@@ -366,7 +343,7 @@ export function rebuildDrift({
   return diffSnapshots(before, snapshotBuildOutputs({ root, roots }));
 }
 
-export function runBuildFixpoint({ root = REPO_ROOT, steps = BUILD_FIXPOINT, log = () => {} } = {}) {
+export function runBuildFixpoint({ root = REPO_ROOT, steps = BUILD_FIXPOINT, log = silent } = {}) {
   for (const step of steps) {
     log(`${step.cwd} → ${step.script} (${step.why})`);
     const result = spawnSync('bun', ['run', '--cwd', step.cwd, step.script], {
@@ -393,24 +370,9 @@ function normalizeDigest(value) {
   return hex ? hex[1] : null;
 }
 
-/** Every `.generated.js` under a package's dist, deepest first. */
+/** Every `.generated.js` under a package's dist, sorted. */
 function generatedModules(distDir) {
-  const found = [];
-  const walk = (dir) => {
-    let entries;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) walk(path);
-      else if (entry.name.endsWith('.generated.js')) found.push(path);
-    }
-  };
-  walk(distDir);
-  return found.sort();
+  return filesUnder(distDir).filter((rel) => rel.endsWith('.generated.js')).map((rel) => join(distDir, rel)).sort();
 }
 
 /** Every string under `node`, with the export name that led to it. */
@@ -551,7 +513,7 @@ export async function checkStagedAssets({ root = REPO_ROOT } = {}) {
  * entirely — they verify a different tree.
  */
 export async function assertDistMatchesSource({
-  root = REPO_ROOT, roots = OUTPUT_ROOTS, steps = BUILD_FIXPOINT, log = () => {}, useCache = true,
+  root = REPO_ROOT, roots = OUTPUT_ROOTS, steps = BUILD_FIXPOINT, log = silent, useCache = true,
 } = {}) {
   const defaultScope = roots === OUTPUT_ROOTS && steps === BUILD_FIXPOINT;
   // An output whose source is gone would ship, and load. The record cannot
@@ -599,7 +561,7 @@ export async function assertDistMatchesSource({
 }
 
 /** The staged-asset half of the gate. Throws on violation; shared by both paths. */
-async function checkFixpointAssets({ root = REPO_ROOT, log = () => {} } = {}) {
+async function checkFixpointAssets({ root = REPO_ROOT, log = silent } = {}) {
   const assets = await checkStagedAssets({ root });
   for (const note of assets.verified) log(`asset ok — ${note}`);
   for (const gap of assets.unverified) log(`asset unverified — ${gap}`);
@@ -613,7 +575,7 @@ async function checkFixpointAssets({ root = REPO_ROOT, log = () => {} } = {}) {
   return assets;
 }
 
-function logUncommittedOutputs({ root = REPO_ROOT, log = () => {} } = {}) {
+function logUncommittedOutputs({ root = REPO_ROOT, log = silent } = {}) {
   // Not a violation. dist is tracked, so a rebuild that legitimately
   // followed an uncommitted src change leaves output that wants
   // committing — but the deploy itself is correct, and refusing a dirty
@@ -633,17 +595,6 @@ function logUncommittedOutputs({ root = REPO_ROOT, log = () => {} } = {}) {
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.jsx'];
 /** tsc's outputs for one source, longest suffix first. */
 const OUTPUT_SUFFIXES = ['.d.ts.map', '.d.mts.map', '.d.cts.map', '.js.map', '.mjs.map', '.cjs.map', '.d.ts', '.d.mts', '.d.cts', '.js', '.mjs', '.cjs'];
-
-function filesUnder(dir, prefix = '') {
-  if (!existsSync(dir)) return [];
-  const out = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.isDirectory()) out.push(...filesUnder(join(dir, entry.name), rel));
-    else out.push(rel);
-  }
-  return out;
-}
 
 /**
  * Build outputs nothing in the tree produces any more, by path.

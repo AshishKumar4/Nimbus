@@ -12,7 +12,7 @@ import { Database } from 'bun:sqlite';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { DEFAULT_PATH } from '../../packages/core/src/constants.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const SEEDED_PASSWD_USER_HOME = 'root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:Nimbus User:/home/user:/bin/sh\n';
 const SEEDED_PROFILE_USER_HOME = `export PATH=${DEFAULT_PATH}\nexport EDITOR=nano\n`;

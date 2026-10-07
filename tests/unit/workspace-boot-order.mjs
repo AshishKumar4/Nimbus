@@ -28,7 +28,7 @@ proc.writeFile('/home/user/y.txt', 'from-process');
 assert.equal((await box.commands.run('cat /home/user/y.txt')).stdout, 'from-process');
 
 // The kernel's resolver still knows localhost.
-assert.equal(box.kernel.networkStack.getDNS().lookup('localhost')?.value, '127.0.0.1');
+assert.equal(box.kernel.dns.lookup('localhost')?.value, '127.0.0.1');
 
 box.destroy();
 console.log('workspace-boot-order: ok');

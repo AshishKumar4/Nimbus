@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const FAN_OUT = 5;
 const LEVELS = 3;

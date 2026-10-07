@@ -1,4 +1,5 @@
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
+import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { EsbuildService, generateEsbuildFacetRuntimeSource, generateTransformFacetRuntimeSource, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
@@ -191,7 +192,8 @@ export async function runEsbuildCli(ctx, env, pid, args, output) {
     if (!mint)
         throw new Error('Nimbus: no supervisor entrypoint is composed, so the esbuild facet cannot reach the files');
     const supervisor = mint({
-        props: supervisorBindingProps(ctx, pid, { writerId: crypto.randomUUID() }),
+        // The esbuild facet has no network (its loader denies one): nothing to route.
+        props: supervisorBindingProps(ctx, pid, { writerId: crypto.randomUUID(), network: ISOLATE_NETWORK }),
     });
     return onEsbuildFacet(ctx, env, (facet) => facet.cli(args, supervisor, output));
 }

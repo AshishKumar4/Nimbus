@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 30 s wall, 0 s CPU, 0.0 GiB peak (6 runs, 2026-10-06)
 // N17 end to end. A lazy import commits its rows at once and leaves the
 // chunks it did not carry pending; the embedder's fetch hydrates them in the
 // background.
@@ -17,7 +18,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL, gateSyncLaunch } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const enc = new TextEncoder();

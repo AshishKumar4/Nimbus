@@ -340,6 +340,8 @@ const JSX_CASES = {
   'tsconfig with comments and trailing commas': { tsconfigRaw: '{\n  // c\n  "compilerOptions": { /* x */ "jsx": "react-jsx", },\n}' },
   'tsconfig // comment ended by a CR': { tsconfigRaw: '{"compilerOptions": { // c\r"jsx": "react-jsx"}}' },
   'tsconfig // comment ended by U+2028': { tsconfigRaw: '{"compilerOptions": { // c\u2028"jsx": "react-jsx"}}' },
+  'tsconfig after a byte-order mark': { tsconfigRaw: '\uFEFF' + tc({ jsx: 'react-jsx' }) },
+  'tsconfig with U+2028 between tokens': { tsconfigRaw: '{"compilerOptions":\u2028{"jsx": "react-jsx"}}\u2029' },
   // esbuild's own jsxFragment may be a constant (validateJSXExpr); a factory may not.
   'jsxFragment 0': { jsxFragment: '0' },
   'jsxFragment "frag"': { jsxFragment: '"frag"' },

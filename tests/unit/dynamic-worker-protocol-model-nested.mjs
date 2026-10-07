@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 304 s wall, 264 s CPU, 0.1 GiB peak (6 runs, 2026-10-06)
 // The Dynamic Worker ledger's deadlock protocol over every interleaving
 // (lib/ledger-protocol-model.mjs, wired to production), for families of two
 // guest holders, one under the other, each with up to two children of three
@@ -9,13 +10,8 @@
 // may take); the rest of the two-holder scope, and the mutants:
 // dynamic-worker-protocol-model.
 
-import { checkFamilies, childSets } from './lib/ledger-protocol-model.mjs';
+import { checkFamilies, nestedCases } from './lib/ledger-protocol-model.mjs';
 
-const sets = childSets(2);
-const cases = [];
-for (const [i, a] of sets.entries()) {
-  if (i % 2 !== 0) continue;
-  for (const b of sets) cases.push([{ parent: 'R', children: a }, { parent: 0, children: b }]);
-}
+const cases = nestedCases(0);
 await checkFamilies(cases);
 console.log('ok - dynamic-worker-protocol-model-nested (two holders, one under the other: no refusal while one can progress, and one whenever all are stuck)');

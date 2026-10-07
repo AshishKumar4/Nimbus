@@ -586,7 +586,13 @@ export function readBracedExpansion(input, pos) {
     const balanced = readBalancedCommand(input, pos + 2, '{', '}');
     return { text: input.slice(pos, balanced.end), inner: balanced.body, end: balanced.end };
 }
-function readBalancedCommand(input, pos, open, close) {
+/**
+ * The body of a balanced `open`...`close` span whose body starts at `pos`
+ * (just past `open`), and where it ends (just past `close`, or the input's
+ * end when it never closes). Quotes and nested `$(...)` inside it are
+ * skipped whole, so a `close` inside them does not end it.
+ */
+export function readBalancedCommand(input, pos, open, close) {
     let i = pos;
     let depth = 1;
     let body = '';

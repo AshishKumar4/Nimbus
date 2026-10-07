@@ -21,6 +21,11 @@ export interface InputChunkOptions {
      */
     readSize?: number;
     /**
+     * How much one read of a file asks: what a reader that judges each read
+     * as a whole (grep's binary test, GNU's 96 KiB) needs it to be.
+     */
+    fileReadSize?: number;
+    /**
      * The reader takes a leading slice and stops on its own (head with a
      * count), or writes to a pipe whose reader can stop it (cat). Only then is
      * a character device streamed for as long as it is asked. Any other reader
@@ -30,7 +35,7 @@ export interface InputChunkOptions {
     slice?: boolean;
 }
 /** An operand's bytes in bounded chunks; `-` or undefined is standard input. */
-export declare function inputChunks(ctx: ByteInputContext, operand: string | undefined, { readSize, slice }?: InputChunkOptions): AsyncGenerator<Uint8Array>;
+export declare function inputChunks(ctx: ByteInputContext, operand: string | undefined, { readSize, fileReadSize, slice }?: InputChunkOptions): AsyncGenerator<Uint8Array>;
 /** All of an operand's bytes. */
 export declare function readAllInput(ctx: ByteInputContext, operand: string | undefined): Promise<Uint8Array>;
 export declare function concatBytes(parts: readonly Uint8Array[]): Uint8Array;
@@ -55,5 +60,11 @@ export declare function splitRecords(bytes: Uint8Array, delim: number): {
     records: Uint8Array[];
     terminated: boolean;
 };
+/** A blank, as GNU's field splitting (sort -k, uniq -f) means one: space or tab. */
+export declare function isBlank(byte: number): boolean;
+/** Where the field starting at `at` in `line` ends: past its leading blanks, then past its non-blanks. */
+export declare function skipBlankField(line: Uint8Array, at: number): number;
+/** An ASCII byte in upper case; any other byte as it is (GNU's -f and -i fold no other). */
+export declare function asciiUpper(byte: number): number;
 export declare function asciiBytes(text: string): Uint8Array;
 //# sourceMappingURL=bytes-io.d.ts.map

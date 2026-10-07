@@ -12,43 +12,15 @@
 // hung poll (bare `opencode` never launched its TUI).
 
 import assert from 'node:assert/strict';
-import { generateShimsCode } from './lib/node-http-platform.mjs';
-
-function makeFacet() {
-  delete globalThis.__portRegistry;
-  const supervisor = { registerPort: () => {}, unregisterPort: () => {} };
-  const code = generateShimsCode();
-  const factory = new Function(
-    '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + code + '\n;return { http: builtins.http, serveHttp: globalThis.__nimbusServeHttp };',
-  );
-  return factory(
-    {},
-    {},
-    {},
-    supervisor,
-    { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-    '/home/user',
-    [],
-    {},
-    '/home/user/main.mjs',
-    '/home/user',
-  );
-}
+import { routedRequest, shimHttpFacet } from './lib/node-http-platform.mjs';
 
 const dec = new TextDecoder();
-
-function routedRequest(port, path, init = {}) {
-  const headers = new Headers(init.headers || {});
-  headers.set('X-Nimbus-Port', String(port));
-  return new Request(`http://127.0.0.1:${port}${path}`, { ...init, headers });
-}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── requests before on("request") are parked, then served on attach ──────────
 {
-  const { http, serveHttp } = makeFacet();
+  const { http, serveHttp } = shimHttpFacet();
   const server = http.createServer(); // effect-platform: no handler yet
   server.listen(4096);
 
@@ -79,7 +51,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── request bodies survive parking ────────────────────────────────────────────
 {
-  const { http, serveHttp } = makeFacet();
+  const { http, serveHttp } = shimHttpFacet();
   const server = http.createServer();
   server.listen(4097);
 
@@ -99,7 +71,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── createServer(handler) keeps the direct synchronous dispatch path ─────────
 {
-  const { http, serveHttp } = makeFacet();
+  const { http, serveHttp } = shimHttpFacet();
   const server = http.createServer((_req, res) => { res.writeHead(200); res.end('direct'); });
   server.listen(4098);
   const res = await serveHttp(routedRequest(4098, '/'));

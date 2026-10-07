@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { adoptCtxExports, composeFabric } from '../../packages/fabric/src/composition.ts';
 import { openSupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 const boundProps = [];
 composeFabric({ supervisorEntrypoint: 'SupervisorRPC' });
@@ -32,19 +33,19 @@ const route = { supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'NIMBUS_SE
 
 // A positive supervisorPid must reach the SUPERVISOR binding props.
 boundProps.length = 0;
-new IsolatePool(env, ctx, { supervisorPid: 42 });
+new IsolatePool(env, ctx, { network: ISOLATE_NETWORK, supervisorPid: 42 });
 assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 42, route, bindingKind: 'infrastructure' }],
   'supervisorPid must be minted into the SUPERVISOR binding props');
 
 // Default (unset) stays 0 — resolve/pre-bundle pools never call _pid().
 boundProps.length = 0;
-new IsolatePool(env, ctx, {});
+new IsolatePool(env, ctx, { network: ISOLATE_NETWORK,});
 assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 0, route, bindingKind: 'infrastructure' }],
   'absent supervisorPid defaults to 0');
 
 // supervisorDoIdOverride and supervisorPid compose (peer-DO install path).
 boundProps.length = 0;
-new IsolatePool(env, ctx, { supervisorDoIdOverride: 'coordinator-do', supervisorPid: 7 });
+new IsolatePool(env, ctx, { network: ISOLATE_NETWORK, supervisorDoIdOverride: 'coordinator-do', supervisorPid: 7 });
 assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route, bindingKind: 'infrastructure' }],
   'supervisorPid composes with supervisorDoIdOverride');
 
@@ -69,10 +70,12 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route, bindingKi
   // Two pools identical except supervisorPid — generation-1 then
   // generation-2 of the same session.
   const poolG1 = new IsolatePool({ LOADER: keyedLoader }, keyedCtx, {
+    network: ISOLATE_NETWORK,
     tag: 'x', concurrency: 1, supervisorPid: 1000001,
   });
   await poolG1.map((v) => v, ['a']);
   const poolG2 = new IsolatePool({ LOADER: keyedLoader }, keyedCtx, {
+    network: ISOLATE_NETWORK,
     tag: 'x', concurrency: 1, supervisorPid: 2000001,
   });
   await poolG2.map((v) => v, ['a']);
@@ -93,10 +96,12 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route, bindingKi
   // Warm reuse preserved: same identity → same id.
   loaderIds.length = 0;
   const poolG2b = new IsolatePool({ LOADER: keyedLoader }, keyedCtx, {
+    network: ISOLATE_NETWORK,
     tag: 'x', concurrency: 1, supervisorPid: 2000001,
   });
   await poolG2b.map((v) => v, ['a']);
   const warmPool = new IsolatePool({ LOADER: keyedLoader }, keyedCtx, {
+    network: ISOLATE_NETWORK,
     tag: 'x', concurrency: 1, supervisorPid: 2000001,
   });
   await warmPool.map((v) => v, ['a']);
@@ -127,7 +132,7 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route, bindingKi
   const incarnations = [openSupervisorDeliveries(before).incarnation, openSupervisorDeliveries(after).incarnation];
   boundProps.length = 0;
   for (const ctx of [before, after]) {
-    const pool = new IsolatePool({ LOADER: keyedLoader }, ctx, { tag: 'x', concurrency: 1, supervisorPid: 5 });
+    const pool = new IsolatePool({ LOADER: keyedLoader }, ctx, { network: ISOLATE_NETWORK, tag: 'x', concurrency: 1, supervisorPid: 5 });
     await pool.map((v) => v, ['a']);
     await pool.dispose();
   }
@@ -136,7 +141,7 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route, bindingKi
   assert.notEqual(loaderIds[0], loaderIds[1], 'a restarted instance reused the warm slot of the one before');
 
   boundProps.length = 0;
-  new IsolatePool(env, before, { supervisorDoIdOverride: 'coordinator-do', supervisorPid: 7 });
+  new IsolatePool(env, before, { network: ISOLATE_NETWORK, supervisorDoIdOverride: 'coordinator-do', supervisorPid: 7 });
   assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route, bindingKind: 'infrastructure' }],
     'a binding routed to another actor named this instance');
 
@@ -146,7 +151,7 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route, bindingKi
   loaderIds.length = 0;
   boundProps.length = 0;
   for (const ctx of [before, after]) {
-    const pool = new IsolatePool({ LOADER: keyedLoader }, ctx, { tag: 'esbuild-bundle', concurrency: 1 });
+    const pool = new IsolatePool({ LOADER: keyedLoader }, ctx, { network: ISOLATE_NETWORK, tag: 'esbuild-bundle', concurrency: 1 });
     await pool.map((v) => v, ['a']);
     await pool.dispose();
   }

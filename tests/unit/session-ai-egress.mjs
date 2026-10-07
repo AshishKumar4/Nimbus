@@ -8,6 +8,7 @@
 // must agree, and both must leave everything else alone: a request carrying a
 // user's own real provider key is not ours and goes to that provider.
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
@@ -179,6 +180,7 @@ function curlCtx(args, env) {
 {
   const routed = [];
   const kernel = {
+    network: ISOLATE_NETWORK,
     portRegistry: { get: () => undefined },
     routeLoopback: async (port, request) => {
       routed.push({ port, url: request.url, authorization: request.headers.get('authorization') });

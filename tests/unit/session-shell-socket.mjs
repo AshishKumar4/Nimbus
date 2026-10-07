@@ -8,27 +8,9 @@ import {
   noteShellSocketActivity,
   tagShellSocket,
 } from '../../packages/worker/src/session/shell-socket.ts';
+import { ctxFor, socket } from './lib/shell-socket-double.mjs';
 
 const NOW = 1_700_000_000_000;
-
-function socket({ kind = 'shell', readyState = WebSocket.OPEN, seenAt, autoResponseAt } = {}) {
-  let attachment = kind === null ? null : (seenAt === undefined ? { kind } : { kind, seenAt });
-  return {
-    readyState,
-    autoResponseAt: autoResponseAt ?? null,
-    closedWith: null,
-    writes: 0,
-    deserializeAttachment: () => attachment,
-    serializeAttachment(next) { attachment = next; this.writes += 1; },
-    close(code, reason) { this.closedWith = { code, reason }; this.readyState = WebSocket.CLOSING; },
-  };
-}
-
-function ctxFor(sockets) {
-  return {
-    getWebSocketAutoResponseTimestamp: (ws) => sockets.find((s) => s === ws)?.autoResponseAt ?? null,
-  };
-}
 
 {
   const ws = socket({ kind: null });

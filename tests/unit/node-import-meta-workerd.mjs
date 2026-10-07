@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 12 s wall, 11 s CPU, 0.9 GiB peak (6 runs, 2026-10-06)
 // ES module entry metadata must name the VFS file, just as Node names its
 // file. sv 1.0 searches for its package.json from import.meta.dirname; a
 // launch with no package.json in its cwd must still find the CLI's package.

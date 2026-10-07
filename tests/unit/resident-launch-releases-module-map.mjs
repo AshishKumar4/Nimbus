@@ -34,25 +34,13 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import {
-  FacetManager,
-  buildFacetVfsBundleSource,
-  generateLongRunningNodeCode,
-  releaseGeneratedSources,
-  releaseSerializedSources,
-} from '../../packages/worker/src/facets/manager.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { buildFacetVfsBundleSource, generateLongRunningNodeCode, releaseGeneratedSources, releaseSerializedSources } from '../../packages/worker/src/facets/manager.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
-import { processFiles } from './lib/process-bridge.mjs';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 import { generatedModuleSet, moduleMapText } from './lib/module-map-bundle.mjs';
+import { launchManager } from './lib/facet-launch-harness.mjs';
 
 const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
@@ -120,31 +108,7 @@ adoptCtxExports({
   }),
 });
 
-const world = createFacetWorld(() => ({
-  async startProcess() { return { ok: true }; },
-  async handleHttpRequest() { return new Response('ok'); },
-}));
-
-const ctx = createFacetCtx(world, 'resident-launch-release');
-const env = {
-  LOADER: world.loader,
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(
-        readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-        { status: 200 },
-      );
-    },
-  },
-};
-
-const manager = new FacetManager(
-  ctx, env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {},
-);
-const harness = createSqliteVfsTestHarness();
-const vfs = new SqliteVFS(harness.sql, harness.ctx);
-manager.setVfs(vfs, processFiles(vfs));
+const { world, manager, vfs } = launchManager('resident-launch-release');
 
 const fs = vfs.as(CRED_KERNEL);
 fs.mkdir('home/user/node_modules/dep/lib', { recursive: true, mode: 0o755 });

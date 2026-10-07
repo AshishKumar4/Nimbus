@@ -23,6 +23,7 @@
  *     mounted project's packages are put there through the view (see
  *     fetchIntoMount)
  */
+import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -71,6 +72,8 @@ export declare class NpmInstaller {
      * when the feature flag is on, using the facet's own global fetch.
      */
     private fetchFn;
+    /** The workspace's network: every resolve and install facet (here and in peers) goes out through it. */
+    private readonly network;
     /**
      * npm-protocol log sink for the install in flight. Set per invocation
      * because `--loglevel` is a per-invocation flag; the no-op default is
@@ -84,6 +87,8 @@ export declare class NpmInstaller {
         env?: any;
         onProgress?: (msg: string) => void;
         fetchFn?: FetchFn;
+        /** The workspace's network (`workspace.network`). */
+        network: WorkspaceNetwork;
     });
     /** Expose cache for external use (e.g., serveModule in vite-dev-server). */
     get npmCache(): NpmCache;
@@ -223,8 +228,6 @@ export declare class NpmInstaller {
      * were removed.
      */
     private pruneExtraneous;
-    /** The names the package at `dir` links in `.bin`, from its package.json as npm reads it (npmBinMap). */
-    private declaredBins;
     /**
      * npm ci: the placements package-lock.json (or npm-shrinkwrap.json)
      * records, checked against package.json first. The ABI policy the resolver
@@ -259,18 +262,6 @@ export declare class NpmInstaller {
      * JSX elements get rejected as "alien" — silent render failure.
      */
     private prebundleUsedModules;
-    /**
-     * Scan project source files for bare import specifiers.
-     * Returns unique bare specifiers including subpaths (e.g., both `react`
-     * AND `react/jsx-runtime` so each can be pre-bundled separately with the
-     * correct externals for shared-runtime isolation).
-     *
-     * Also injects common JSX-runtime subpaths derived from esbuild's automatic
-     * JSX transform: if `react` is imported, we also queue `react/jsx-runtime`
-     * and `react/jsx-dev-runtime` because the compiled JSX output imports from
-     * them even if the source never wrote `import ... from "react/jsx-runtime"`.
-     */
-    private scanBareImports;
     /**
      * Resolve a package's entry point to a VFS path.
      */

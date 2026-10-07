@@ -28,4 +28,26 @@ export declare function npmHttpFetchLine(url: string, elapsedMs: number): string
 export declare function npmHttpCacheLine(url: string, integrity?: string): string;
 /** `added N packages in Xs` — npm's install summary, unstyled. */
 export declare function npmAddedLine(packages: number, elapsedMs: number): string;
+/** What an install did, as its styled summary reports it. */
+export interface InstallReport {
+    readonly installed: number;
+    readonly failed: readonly string[];
+    readonly elapsedMs: number;
+    readonly totalFiles?: number;
+    readonly fromCacheHits?: number;
+    readonly linkedBins?: number;
+    readonly globalBinDir?: string;
+}
+/**
+ * The end of an install, as a person reads it, for every install path (the
+ * lifo npm, its install port, the hosted npm-fast): a red `Failed:` line on
+ * stderr for what failed; then `up to date in Xs` when nothing was installed
+ * or failed, else `added N packages (F files) in Xs`, yellow with the failure
+ * count when partial, green otherwise; then dim `(N from cache)` and
+ * `linked N bins into DIR`. npmAddedLine is the machine's spelling of it.
+ */
+export declare function installSummary(report: InstallReport): {
+    stdout: string;
+    stderr: string;
+};
 //# sourceMappingURL=npm-log.d.ts.map

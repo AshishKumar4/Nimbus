@@ -61,7 +61,7 @@ export function makeClangRunnerFactory(deps) {
                 ctx.stderr.write(`${binName}: ${notHydrated}\n`);
                 return 1;
             }
-            const { uid, gid, groups, umask } = requireVfsCred(ctx.cred, binName);
+            const { uid, gid, groups } = requireVfsCred(ctx.cred, binName);
             const processCred = { uid, gid, groups: [...groups] };
             // Fast paths — no wasm boot.
             if (hasLeadingCliFlag(argv, CLANG_VERSION_FLAGS)) {
@@ -290,12 +290,10 @@ export function makeClangRunnerFactory(deps) {
                     ctx.stderr.write(`${binName}: link produced no ${parsed.outputPath} (internal error)\n`);
                     return 1;
                 }
-                // A linker writes a new executable: 0777 under the caller's umask,
-                // as ld and wasm-ld leave it (even over a file someone chmod -x'd).
-                // The binji images cannot ask for it themselves: they predate the
-                // Nimbus filesystem extension (nimbus_fs) a rebuilt libc would use.
+                // Real linkers chmod their output executable (+x even after a
+                // prior chmod -x) — so `./a.out` runs with no manual chmod.
                 try {
-                    await vfs.chmod(outputGuest.replace(/^\/+/, ''), 0o777 & ~umask);
+                    await vfs.chmod(outputGuest.replace(/^\/+/, ''), 0o755);
                 }
                 catch (error) {
                     ctx.stderr.write(`${binName}: ${parsed.outputPath}: ${errorMessage(error)}\n`);

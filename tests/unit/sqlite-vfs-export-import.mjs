@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 68 s wall, 61 s CPU, 1.1 GiB peak (6 runs, 2026-10-06)
 /**
  * sqlite-vfs-export-import — moving a tree between databases (SPEC P4, N15,
  * N16): rows by chunk hash, bytes only for chunks the importer lacks. A
@@ -11,7 +12,7 @@
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 function open(harness = createSqliteVfsTestHarness()) {
   const raw = new SqliteVFS(harness.sql, harness.ctx);

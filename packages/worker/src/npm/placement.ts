@@ -14,7 +14,7 @@ export function nestedPlacement(parent: string, name: string): string {
 }
 
 /** The containing placement, `''` at root. */
-export function parentPlacement(placement: string): string {
+function parentPlacement(placement: string): string {
   const i = placement.lastIndexOf(NM);
   return i < 0 ? '' : placement.slice(0, i);
 }

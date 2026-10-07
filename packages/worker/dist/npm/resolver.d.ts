@@ -40,8 +40,6 @@ export interface PackagePlacement {
     placement: string;
     pkg: ResolvedPackage;
 }
-/** The walk's placement decisions carried forward: first version per name at root, the rest nested. */
-export declare function computeHoistPlan(resolved: Map<string, ResolvedPackage>, nested?: Map<string, ResolvedPackage>): HoistPlan;
 /** Every placement in the plan, root first. */
 export declare function hoistPlacements(plan: HoistPlan): PackagePlacement[];
 //# sourceMappingURL=resolver.d.ts.map

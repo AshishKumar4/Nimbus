@@ -19,7 +19,7 @@
 //      a fully attacker-controlled store still cannot serve wrong bytes.
 
 import assert from 'node:assert/strict';
-import { gzipSync, gunzipSync } from 'node:zlib';
+import { gunzipSync } from 'node:zlib';
 import { installPackagesInFacet } from '../../packages/worker/src/npm/install-batch-facet.ts';
 import {
   R2CacheClient,
@@ -35,79 +35,20 @@ import {
   decodeWriteBatchStream,
   encodeWriteBatchStream,
 } from '../../packages/platform/src/w7-frame.ts';
+import { packageTarball, sriOf } from './lib/tarball-fixture.mjs';
+import './lib/install-facet-scope.mjs';
 
-globalThis.streamPackageEntries = streamPackageEntries;
-globalThis.streamTarEntries = streamTarEntries;
-globalThis.readableStreamToAsyncIterable = readableStreamToAsyncIterable;
-globalThis.encodeWriteBatchStream = encodeWriteBatchStream;
-globalThis.__nimbusWaveWriter = await import('../../packages/platform/src/wave-writer.ts');
-globalThis.__nimbusUseRpcResult = async (promise, use) => use(await promise);
-globalThis.DecompressionStream = class DecompressionStream {
-  readable;
-  writable;
-
-  constructor(format) {
-    assert.equal(format, 'gzip');
-    const transform = new TransformStream({
-      transform(chunk, controller) {
-        controller.enqueue(gunzipSync(chunk));
-      },
-    });
-    this.readable = transform.readable;
-    this.writable = transform.writable;
-  }
-};
 
 // ── tar fixtures ────────────────────────────────────────────────────────
 
-function octal(value, width) {
-  return value.toString(8).padStart(width - 1, '0') + '\0';
-}
-
-function tarFile(name, text) {
-  const data = new TextEncoder().encode(text);
-  const header = new Uint8Array(512);
-  const write = (offset, value, width) => {
-    header.set(new TextEncoder().encode(value).subarray(0, width), offset);
-  };
-  write(0, name, 100);
-  write(100, octal(0o644, 8), 8);
-  write(108, octal(0, 8), 8);
-  write(116, octal(0, 8), 8);
-  write(124, octal(data.length, 12), 12);
-  write(136, octal(0, 12), 12);
-  header.fill(0x20, 148, 156);
-  header[156] = 0x30;
-  write(257, 'ustar\0', 6);
-  write(263, '00', 2);
-  write(148, octal(header.reduce((sum, byte) => sum + byte, 0), 8), 8);
-  const padded = new Uint8Array(Math.ceil(data.length / 512) * 512);
-  padded.set(data);
-  return [header, padded];
-}
-
 /** A one-file package tarball whose index.js body is `payload`. */
 function makeTarball(payload) {
-  const parts = [
-    ...tarFile('package/package.json', '{"name":"react","version":"19.0.0"}'),
-    ...tarFile('package/index.js', payload),
-    new Uint8Array(1024),
-  ];
-  const tar = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
-  let offset = 0;
-  for (const part of parts) {
-    tar.set(part, offset);
-    offset += part.length;
-  }
-  return new Uint8Array(gzipSync(tar));
+  return packageTarball({
+    'package/package.json': '{"name":"react","version":"19.0.0"}',
+    'package/index.js': payload,
+  });
 }
 
-async function sriOf(bytes) {
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-512', bytes));
-  let bin = '';
-  for (const byte of digest) bin += String.fromCharCode(byte);
-  return `sha512-${btoa(bin)}`;
-}
 
 // ── harness ─────────────────────────────────────────────────────────────
 
@@ -304,11 +245,13 @@ function stubFetch(byUrl) {
   }
   assert.equal(bucket.store.size, 0, 'an unverifiable package never touches the shared store');
 
-  // Every SRI algorithm npm emits is addressable.
-  for (const [algo, expected] of [['sha512', 'SHA-512'], ['sha384', 'SHA-384'], ['sha256', 'SHA-256'], ['sha1', 'SHA-1']]) {
-    const parsed = parseTarballAddress(`${algo}-${btoa('x'.repeat(20))}`);
+  // Every SRI algorithm npm emits is addressable, by a digest of its length;
+  // a digest of another length is not one of it.
+  for (const [algo, expected, bytes] of [['sha512', 'SHA-512', 64], ['sha384', 'SHA-384', 48], ['sha256', 'SHA-256', 32], ['sha1', 'SHA-1', 20]]) {
+    const parsed = parseTarballAddress(`${algo}-${btoa('x'.repeat(bytes))}`);
     assert.ok(parsed, `${algo} must be addressable`);
     assert.equal(parsed.digestAlgo, expected);
+    assert.equal(parseTarballAddress(`${algo}-${btoa('x'.repeat(bytes - 1))}`), null, `${algo} of ${bytes - 1} bytes is not addressable`);
   }
 }
 

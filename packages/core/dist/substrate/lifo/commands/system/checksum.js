@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { concatBytes, decodeLossless, encodeLossless, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { decodeLossless, encodeLossless, inputChunks, readAllInput, writeBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
+import { shellEscape } from '../../../../_shared/shell-quote.js';
 function nodeHasher(name) {
     const h = createHash(name);
     return { update: (b) => { h.update(b); }, digest: () => new Uint8Array(h.digest()) };
@@ -262,35 +263,6 @@ function unescapeName(name) {
 }
 const toBase64 = (bytes) => btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(''));
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-/** A name as GNU quotes it in a message (quotef): bare when safe, else shell-quoted. */
-export function quoteName(name) {
-    if (name !== '' && /^[A-Za-z0-9%+,\-./:=@_^]+$/.test(name) && !/^[~#]/.test(name))
-        return name;
-    if (/[\x00-\x1f\x7f]/.test(name)) {
-        // Control characters as $'\n' pieces between single-quoted runs.
-        let out = '';
-        let run = '';
-        const flush = () => { if (run !== '') {
-            out += `'${run.replace(/'/g, `'\\''`)}'`;
-            run = '';
-        } };
-        for (const ch of name) {
-            const code = ch.charCodeAt(0);
-            if (code < 0x20 || code === 0x7f) {
-                flush();
-                const named = { 7: 'a', 8: 'b', 9: 't', 10: 'n', 11: 'v', 12: 'f', 13: 'r' };
-                out += `$'\\${named[code] ?? code.toString(8).padStart(3, '0')}'`;
-            }
-            else
-                run += ch;
-        }
-        flush();
-        return out;
-    }
-    if (name.includes("'") && !/[$`"\\!]/.test(name))
-        return `"${name}"`;
-    return `'${name.replace(/'/g, `'\\''`)}'`;
-}
 async function hashFile(ctx, file, algorithm, bits) {
     if (algorithm.kind === 'digest') {
         const h = algorithm.make(bits);
@@ -318,7 +290,7 @@ async function sumFiles(ctx, o) {
             result = await hashFile(ctx, file, o.algorithm, o.bits);
         }
         catch (error) {
-            await ctx.stderr.write(`${o.program}: ${quoteName(file)}: ${strerror(error)}\n`);
+            await ctx.stderr.write(`${o.program}: ${shellEscape(file)}: ${strerror(error)}\n`);
             status = 1;
             continue;
         }
@@ -381,13 +353,10 @@ async function checkFiles(ctx, o) {
     for (const list of lists) {
         let text;
         try {
-            const parts = [];
-            for await (const chunk of inputChunks(ctx, list))
-                parts.push(chunk);
-            text = decodeLossless(concatBytes(parts));
+            text = decodeLossless(await readAllInput(ctx, list));
         }
         catch (error) {
-            await ctx.stderr.write(`${o.program}: ${quoteName(list)}: ${strerror(error)}\n`);
+            await ctx.stderr.write(`${o.program}: ${shellEscape(list)}: ${strerror(error)}\n`);
             status = 1;
             continue;
         }
@@ -435,7 +404,7 @@ async function checkFiles(ctx, o) {
             if (want === null || name === null || name === '') {
                 badFormat++;
                 if (o.mode === 'warn')
-                    await warn(`${quoteName(list)}: ${index + 1}: improperly formatted ${tagOf(o.algorithm, o.bits) || 'checksum'} checksum line`);
+                    await warn(`${shellEscape(list)}: ${index + 1}: improperly formatted ${tagOf(o.algorithm, o.bits) || 'checksum'} checksum line`);
                 continue;
             }
             formatted++;
@@ -448,7 +417,7 @@ async function checkFiles(ctx, o) {
                 if (o.ignoreMissing && code === 'ENOENT')
                     continue;
                 unreadable++;
-                await ctx.stderr.write(`${o.program}: ${quoteName(name)}: ${strerror(error)}\n`);
+                await ctx.stderr.write(`${o.program}: ${shellEscape(name)}: ${strerror(error)}\n`);
                 await say(`${name}: FAILED open or read\n`);
                 continue;
             }
@@ -468,7 +437,7 @@ async function checkFiles(ctx, o) {
             }
         }
         if (formatted === 0) {
-            await ctx.stderr.write(`${o.program}: ${list === '-' ? 'standard input' : quoteName(list)}: no properly formatted checksum lines found\n`);
+            await ctx.stderr.write(`${o.program}: ${list === '-' ? 'standard input' : shellEscape(list)}: no properly formatted checksum lines found\n`);
             status = 1;
             continue;
         }
@@ -480,7 +449,7 @@ async function checkFiles(ctx, o) {
         if (mismatched > 0)
             await warn(`WARNING: ${plural(mismatched, 'computed checksum did NOT match', 'computed checksums did NOT match')}`);
         if (o.ignoreMissing && matched === 0 && mismatched === 0 && unreadable === 0) {
-            await warn(`${quoteName(list)}: no file was verified`);
+            await warn(`${shellEscape(list)}: no file was verified`);
             status = 1;
         }
         if (mismatched > 0 || unreadable > 0 || (o.strict && badFormat > 0))

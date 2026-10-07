@@ -9,8 +9,9 @@
  * fails the pinned digest: a stale or partial asset never reaches workerd's
  * loader or a facet. L2 is written only with verified bytes read from ASSETS.
  *
- * Artifacts differ only in what they name in errors and in what a bad L2 entry
- * means to their caller (`poisonedCache`), so each passes those in.
+ * Artifacts differ only in what they name in errors, their L2 key, and what a
+ * bad L2 entry means to their caller (`poisonedCache`); `stagedAsset` builds
+ * each from those.
  */
 /** Minimal env shape — any env with an ASSETS Fetcher binding. */
 export interface StagedSourceEnv {
@@ -51,10 +52,27 @@ export declare function fetchStagedText(env: StagedSourceEnv, asset: StagedAsset
  */
 export declare function memoizeUntilRejected<A, T>(load: (arg: A) => Promise<T>): (arg: A) => Promise<T>;
 /**
+ * The `StagedAsset` of an artifact `stagedBy` staged and pinned, which
+ * `requiredBy` reads: one wording for every artifact's failures, naming the
+ * artifact, its path and the script that restages it. A bad L2 entry is
+ * refused unless the artifact says to replace it (`poisonedCache`).
+ */
+export declare function stagedAsset(asset: {
+    label: string;
+    path: string;
+    sha256: string;
+    /** The L2 key: carries the build id, version or digest, so it changes with the bytes. */
+    l2Key: string;
+    contentType?: string;
+    requiredBy: string;
+    stagedBy: string;
+    poisonedCache?: StagedAsset['poisonedCache'];
+}): StagedAsset;
+/**
  * The `StagedAsset` of a facet source text staged under
- * public/_assets/runtime/ by `stagedBy` and needed by `requiredBy`: a bad L2
- * entry is replaced from ASSETS, since every later fetch in the colo for the
- * build would otherwise fail on it.
+ * public/_assets/runtime/ by `stagedBy` and needed by `requiredBy`: keyed in
+ * L2 by build id, and a bad L2 entry is replaced from ASSETS, since every
+ * later fetch in the colo for the build would otherwise fail on it.
  */
 export declare function stagedRuntimeSource(source: {
     label: string;

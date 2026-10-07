@@ -27,6 +27,7 @@ import {
 } from '../../packages/platform/src/composition.ts';
 import { hostNamespaceBinding, hostOpDispatch } from '../../packages/fabric/src/host-dispatch.ts';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 // ── 0. A host whose errors lose their code across RPC is refused ────────────
 // workerd carries an error's own properties (the `code` a program branches
@@ -105,7 +106,7 @@ import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
   adoptCtxExports({ SupervisorRPC: ({ props }) => { minted.push(props); return { props }; } });
   const ctx = { id: { toString: () => 'coordinator-do' }, waitUntil() {} };
   const env = { LOADER: { get() { return {}; } } };
-  new IsolatePool(env, ctx, { tag: 'route-test', supervisorPid: 7 });
+  new IsolatePool(env, ctx, { network: ISOLATE_NETWORK, tag: 'route-test', supervisorPid: 7 });
   assert.deepEqual(minted.at(-1), {
     doId: 'coordinator-do', pid: 7,
     bindingKind: 'infrastructure',
@@ -114,7 +115,7 @@ import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
   // A fanout peer mints the COORDINATOR's binding: its doId and its route,
   // whatever the peer's own isolate composed.
   const coordinatorRoute = { supervisorEntrypoint: 'Sup', hostNamespace: 'OrchestratorAgent', hostDispatchMethod: 'dispatchNimbus' };
-  new IsolatePool(env, ctx, { tag: 'route-test', supervisorDoIdOverride: 'the-coordinator', supervisorRoute: coordinatorRoute });
+  new IsolatePool(env, ctx, { network: ISOLATE_NETWORK, tag: 'route-test', supervisorDoIdOverride: 'the-coordinator', supervisorRoute: coordinatorRoute });
   assert.deepEqual(minted.at(-1), { doId: 'the-coordinator', pid: 0, route: coordinatorRoute, bindingKind: 'infrastructure' });
 }
 

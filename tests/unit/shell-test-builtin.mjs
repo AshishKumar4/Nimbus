@@ -10,7 +10,7 @@ import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
 import { testBox } from './lib/test-box.mjs';
 import { HeadlessTerminal } from '../../packages/core/src/substrate/lifo/sandbox/HeadlessTerminal.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const raw = new SqliteVFS(harness.sql, harness.ctx);

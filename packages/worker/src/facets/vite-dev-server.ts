@@ -22,6 +22,8 @@
  *       messages through the DO WebSocket → frontend dispatches to iframe.
  */
 
+import { scanCjsExports } from '@nimbus-sh/core/runtime/cjs-export-names.js';
+import { createModuleLexer } from '@nimbus-sh/core/runtime/module-lexer.js';
 import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { VfsEvent } from '@nimbus-sh/core/vfs/events.js';
@@ -56,11 +58,14 @@ import type { BundlePool, BundlePoolProvider } from './prebundle-pool.js';
 import { VITE_MODULE_CACHE_MAX_ENTRIES, ON_DEMAND_SLICE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import {
-  scanNamedImports,
+  scanProjectImports,
+  transformParser,
   namedImportSignature,
   buildSyntheticEntry,
   buildScopedSliceForSynthetic,
   syntheticEntryPath,
+  PROJECT_SCAN,
+  type ScanBudget,
 } from '../runtime/barrel-synthesizer.js';
 import type { SliceEntry } from '../npm/pre-bundle-facet.js';
 import { resolvePackageEntry, resolveExports } from '@nimbus-sh/core/_shared/exports-resolver.js';
@@ -345,12 +350,10 @@ export function rewriteExternalRequires(code: string, basePath: string): string 
  * Cloudflare Workers runtime disallows string-to-code generation outside of
  * module initialization.
  *
- * Patterns we detect (scanning the entire bundled text, not just the top level):
- *   - `exports.NAME = ...`
- *   - `exports["NAME"] = ...`
- *   - `Object.defineProperty(exports, "NAME", ...)`
- *   - `module.exports.NAME = ...`
- *   - `module.exports = { NAME, NAME2, ... }` (object literal)
+ * The names are the CJS scan's Vite policy over the entire bundled text:
+ * `exports.NAME =`, `exports["NAME"] =`, `module.exports.NAME =`, every
+ * `Object.defineProperty(exports, "NAME", ...)`, and every key of a
+ * `module.exports = { ... }` literal whatever its value.
  *
  * Input  (esbuild output):
  *   var require_X = __commonJS({ "...": function(exports) { exports.jsx = ...; exports.jsxs = ...; } });
@@ -406,81 +409,128 @@ export function synthesizeCjsNamedExports(code: string): string {
 }
 
 /**
- * Statically extract named export names from a CJS bundle source. Scans the
- * entire text (not scoped — CJS exports appear throughout __commonJS wrappers)
- * for `exports.X =`, `exports["X"] =`, `Object.defineProperty(exports, "X", ...)`,
- * and `module.exports = { X, Y }` patterns.
- *
- * Returns a deduplicated array of valid ES identifier names, filtered to
- * exclude reserved keywords and `default` (which is already the default export).
+ * The names a CJS bundle source exports that can be ES named exports:
+ * runtime/cjs-export-names.ts's scan under its Vite policy (every key a
+ * module may put on module.exports, anywhere in the text: CJS exports appear
+ * throughout __commonJS wrappers; real Vite reads any named import off the
+ * default, so a name missed here is an import that fails), less `default`
+ * (already the default export), reserved words and anything that is not an
+ * ES identifier.
  */
 function extractCjsExportNames(code: string): string[] {
-  const names = new Set<string>();
-
-  // Pattern 1: exports.NAME = ...
-  // Matches `exports.createRoot = ...`, `exports . hydrateRoot = ...`
-  for (const m of code.matchAll(/(?:^|[^.\w$])exports\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=/g)) {
-    names.add(m[1]);
-  }
-
-  // Pattern 2: exports["NAME"] = ... or exports['NAME'] = ...
-  for (const m of code.matchAll(/(?:^|[^.\w$])exports\s*\[\s*["']([A-Za-z_$][A-Za-z0-9_$]*)["']\s*\]\s*=/g)) {
-    names.add(m[1]);
-  }
-
-  // Pattern 3: Object.defineProperty(exports, "NAME", ...)
-  for (const m of code.matchAll(/Object\.defineProperty\s*\(\s*exports\s*,\s*["']([A-Za-z_$][A-Za-z0-9_$]*)["']/g)) {
-    names.add(m[1]);
-  }
-
-  // Pattern 4: module.exports.NAME = ...
-  for (const m of code.matchAll(/module\s*\.\s*exports\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=/g)) {
-    names.add(m[1]);
-  }
-
-  // Pattern 5: module.exports = { NAME, NAME2: value, ... }
-  // Find `module.exports = {` then scan the balanced braces for keys.
-  const moduleExportsMatch = code.match(/module\s*\.\s*exports\s*=\s*\{/);
-  if (moduleExportsMatch) {
-    const startIdx = moduleExportsMatch.index! + moduleExportsMatch[0].length;
-    // Find matching closing brace (simple depth tracking, ignoring strings/comments).
-    let depth = 1;
-    let i = startIdx;
-    while (i < code.length && depth > 0) {
-      const ch = code[i];
-      if (ch === '{') depth++;
-      else if (ch === '}') depth--;
-      else if (ch === '"' || ch === "'" || ch === '`') {
-        // Skip string literal
-        const quote = ch;
-        i++;
-        while (i < code.length && code[i] !== quote) {
-          if (code[i] === '\\') i++;
-          i++;
-        }
-      }
-      i++;
-    }
-    if (depth === 0) {
-      const objBody = code.substring(startIdx, i - 1);
-      // Extract keys from object literal (identifier before `:` or `,`/`}`).
-      for (const m of objBody.matchAll(/(?:^|[,{])\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*(?=[,:}])/g)) {
-        names.add(m[1]);
-      }
-      // Also: quoted keys like "name": value
-      for (const m of objBody.matchAll(/(?:^|[,{])\s*["']([A-Za-z_$][A-Za-z0-9_$]*)["']\s*:/g)) {
-        names.add(m[1]);
-      }
-    }
-  }
-
-  // Filter: exclude `default` (already the default export), reserved words,
-  // and anything that's not a valid ES identifier.
-  return Array.from(names).filter(n =>
+  return scanCjsExports(code, 'vite').names.filter(n =>
     /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n) &&
     n !== 'default' &&
     !RESERVED_ES_KEYWORDS.has(n),
   );
+}
+
+/**
+ * A module that fails in the page with `diag`. It declares `names` (each
+ * undefined) beside its default, so an importer of any of them links, and
+ * throws `diag` as it evaluates: the preview's overlay shows that, where a
+ * module lacking a name the importer asks for would fail to link with "does
+ * not provide an export named ..." and never run.
+ */
+export function failingModule(diag: string, names: Iterable<string>): string {
+  const escaped = JSON.stringify(diag);
+  // A string export name must be well-formed Unicode (a lone surrogate is a
+  // SyntaxError); `__nimbus_missing` is this module's own binding.
+  const declared = [...new Set(names)].filter((name) => name !== 'default' && name !== '__nimbus_missing' && isWellFormedUnicode(name));
+  const exportList = declared
+    .map((name) => (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) && !RESERVED_ES_KEYWORDS.has(name) ? `__nimbus_missing as ${name}` : `__nimbus_missing as ${JSON.stringify(name)}`))
+    .join(', ');
+  return `// nimbus: ${diag.replace(/\r?\n/g, ' ')}\n`
+    + `const __nimbus_missing = undefined;\n`
+    + `export default __nimbus_missing;\n`
+    + (exportList ? `export { ${exportList} };\n` : '')
+    + `console.error(${escaped});\n`
+    + `throw new Error(${escaped});\n`;
+}
+
+/** No lone UTF-16 surrogate: what a string export name may hold. */
+function isWellFormedUnicode(text: string): boolean {
+  return !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text);
+}
+
+/**
+ * What the scan of a package's exports, for a module that could not be
+ * bundled, reads at most: files followed through `export *` and CommonJS
+ * reexports. The project's named imports are scanned within PROJECT_SCAN,
+ * as for a barrel. Both run in the session's isolate on a path that has
+ * already failed (a package past its slice cap among them);
+ * es-module-lexer's buffer is twice a source's length rounded up to a
+ * power of two, and the project scan keeps each file it cannot lex until
+ * its walk ends. A file past a bound adds no names rather than its size.
+ */
+const EXPORT_SCAN: ScanBudget = { files: 64, fileBytes: 1024 * 1024, totalBytes: 4 * 1024 * 1024 };
+
+/**
+ * The names the module at `entry` exports, as far as its source and the
+ * relative modules it re-exports say: ESM `export`s (es-module-lexer), or
+ * for a module without them, CommonJS's (cjs-export-names under the Vite
+ * policy). Best effort, and bounded (EXPORT_SCAN): what cannot be read,
+ * resolved or afforded adds nothing.
+ */
+function moduleExportNames(vfs: CredentialedVfs, entry: string): Set<string> {
+  const names = new Set<string>();
+  const lex = createModuleLexer();
+  const queue = [entry];
+  const seen = new Set<string>();
+  const resolveRelative = (from: string, specifier: string): string | null => {
+    const dir = from.slice(0, from.lastIndexOf('/'));
+    const base = normalizePath(dir + '/' + specifier);
+    for (const suffix of ['', '.js', '.mjs', '.cjs', '/index.js', '/index.mjs']) {
+      try {
+        if (vfs.exists(base + suffix) && !vfs.isDirectory(base + suffix)) return base + suffix;
+      } catch { /* unreadable: nothing */ }
+    }
+    return null;
+  };
+  let read = 0;
+  while (queue.length > 0 && seen.size < EXPORT_SCAN.files) {
+    const path = queue.shift()!;
+    if (seen.has(path)) continue;
+    seen.add(path);
+    let source: string;
+    try {
+      const size = vfs.stat(path).size;
+      if (size > EXPORT_SCAN.fileBytes || read + size > EXPORT_SCAN.totalBytes) continue;
+      read += size;
+      source = vfs.readFileString(path);
+    } catch {
+      continue;
+    }
+    let esm = false;
+    try {
+      const [imports, exports] = lex(source);
+      if (Array.isArray(exports)) {
+        for (const lexed of exports) {
+          const name: unknown = Reflect.get(Object(lexed), 'n');
+          if (typeof name === 'string') {
+            names.add(name);
+            esm = true;
+          }
+        }
+      }
+      for (const lexed of imports) {
+        const statement = source.slice(lexed.ss, lexed.se);
+        if (!/^export\s*\*\s*from/.test(statement)) continue;
+        esm = true;
+        const specifier = source.slice(lexed.s, lexed.e);
+        const target = specifier.startsWith('.') ? resolveRelative(path, specifier) : null;
+        if (target) queue.push(target);
+      }
+    } catch { /* not ESM: the CommonJS scan below */ }
+    if (esm) continue;
+    const cjs = scanCjsExports(source, 'vite');
+    for (const name of cjs.names) names.add(name);
+    for (const specifier of cjs.reexports) {
+      const target = specifier.startsWith('.') ? resolveRelative(path, specifier) : null;
+      if (target) queue.push(target);
+    }
+  }
+  return names;
 }
 
 /** ES reserved keywords that can't be used as destructured variable names. */
@@ -2025,7 +2075,7 @@ export class ViteDevServer {
 
   // ── Module serving (/@modules/<pkg>) ──────────────────────────────────
 
-  private getBarrelModuleCacheInfo(specifier: string): BarrelModuleCacheInfo | null {
+  private async getBarrelModuleCacheInfo(specifier: string): Promise<BarrelModuleCacheInfo | null> {
     const pkgName = packageNameFromSpecifier(specifier);
     if (specifier !== pkgName) return null;
 
@@ -2033,7 +2083,16 @@ export class ViteDevServer {
     const fileCount = countPackageFiles(this.vfs, pkgDir);
     if (fileCount <= BARREL_PKG_FILE_THRESHOLD) return null;
 
-    const names = scanNamedImports(this.vfs, this.root).get(pkgName) ?? null;
+    // Bounded, as every scan of the project in the session's isolate. A
+    // scan that left files unread may miss a name one of them imports, and
+    // an entry synthesized from it would bundle without that export: such
+    // a barrel is bundled whole, as any package is, said once per request.
+    const scan = await scanProjectImports(this.vfs, this.root, transformParser(this.esbuild), PROJECT_SCAN);
+    if (scan.unread !== null) {
+      this.log('warn', `[vite-dev] ${pkgName} is a barrel package (${fileCount} files), but the scan of the project for the names it imports left ${scan.unread} unread; bundling ${pkgName} whole rather than from an entry that could miss one`);
+      return null;
+    }
+    const names = scan.namedImports.get(pkgName) ?? null;
     return {
       pkgName,
       fileCount,
@@ -2042,11 +2101,17 @@ export class ViteDevServer {
     };
   }
 
+  /**
+   * Whether a cached bundle answers this request. A bundle synthesized from
+   * some names (its inputHash set) answers only a barrel request for those
+   * names; any other request, a barrel's whose project scan left files
+   * unread among them, takes only a whole bundle.
+   */
   private cachedModuleMatchesBarrelInput(
     inputHash: string | undefined,
     barrelInfo: BarrelModuleCacheInfo | null,
   ): boolean {
-    if (!barrelInfo) return true;
+    if (!barrelInfo) return !inputHash;
     return !!barrelInfo.inputHash && inputHash === barrelInfo.inputHash;
   }
 
@@ -2054,7 +2119,7 @@ export class ViteDevServer {
     const JS_CT = 'application/javascript; charset=utf-8';
     const generation = this.configGeneration;
     const cacheKey = this.ck(base, `@modules/${specifier}`);
-    const barrelInfo = this.getBarrelModuleCacheInfo(specifier);
+    const barrelInfo = await this.getBarrelModuleCacheInfo(specifier);
 
     // 1. In-memory cache (hot path — already bundled)
     const memCached = this.moduleCache.get(cacheKey);
@@ -2161,6 +2226,8 @@ export class ViteDevServer {
     // Falls back to the EsbuildService (its build host) ONLY if no bundle
     // pool was provided (legacy callers / tests).
     const resolved = this.resolvePackage(specifier);
+    // Why no bundle came of it, for the module served instead.
+    let failure: string | null = resolved ? null : 'its entry module could not be resolved in node_modules';
     // Barrel packages (lucide-react, @phosphor-icons/react, react-icons,
     // @mui/icons-material, …) ship hundreds/thousands of tiny re-export
     // files. Bundling the whole barrel OOMs esbuild's 128 MiB facet.
@@ -2171,7 +2238,7 @@ export class ViteDevServer {
     if (resolved) {
       const pkgName = packageNameFromSpecifier(specifier);
       const pkgDir = this.root + '/node_modules/' + pkgName;
-      const barrelInfo = knownBarrelInfo ?? this.getBarrelModuleCacheInfo(specifier);
+      const barrelInfo = knownBarrelInfo ?? await this.getBarrelModuleCacheInfo(specifier);
       const fileCount = barrelInfo?.fileCount ?? countPackageFiles(this.vfs, pkgDir);
       const isBarrel = !!barrelInfo && specifier === pkgName;
       let bundled: string | null = null;
@@ -2203,10 +2270,10 @@ export class ViteDevServer {
           // No statically-resolvable imports. We refuse to CDN-fallback
           // (100% edge contract) AND we refuse to bundle the whole
           // barrel (would OOM the facet). barrel fallback support: return
-          // a 200 module that throws on first use so the runtime
-          // error surfaces in the BROWSER console (where the user is
-          // looking) AND on the dev-server log (Process tab) — instead
-          // of an opaque 500 in the network panel.
+          // a 200 module that throws as it runs (failingModule) so the
+          // error surfaces in the BROWSER (where the user is looking) AND
+          // on the dev-server log (Process tab) — instead of an opaque
+          // 500 in the network panel.
           const diag =
             `[vite-dev] cannot bundle ${specifier}: barrel package (${fileCount} files) ` +
             `with no static named imports detected in user source. ` +
@@ -2215,17 +2282,10 @@ export class ViteDevServer {
             `\`import { IconName } from '${pkgName}'\` so Nimbus can synthesize ` +
             `a tree-shakable entry.`;
           this.log('error', diag);
-          const escaped = JSON.stringify(diag);
-          return new Response(
-            `// nimbus: ${diag}\n` +
-            `const __err = new Error(${escaped});\n` +
-            `console.error(${escaped});\n` +
-            `export default new Proxy({}, { get: () => { throw __err; } });\n`,
-            {
-              status: 200,
-              headers: { ...headers, 'Content-Type': JS_CT, 'X-Nimbus-Bundle-Status': 'no-static-imports' },
-            },
-          );
+          return new Response(failingModule(diag, []), {
+            status: 200,
+            headers: { ...headers, 'Content-Type': JS_CT, 'X-Nimbus-Bundle-Status': 'no-static-imports' },
+          });
         }
         const nmDirOnDemand = this.root + '/node_modules';
         const synth = buildSyntheticEntry(this.vfs, nmDirOnDemand, pkgName, names);
@@ -2238,14 +2298,10 @@ export class ViteDevServer {
           // diagnostic.
           const diag = `Nimbus: synthetic entry generation failed for ${specifier} (barrel: ${fileCount} files; ${names.size} static imports). The package's index does not match any pattern Nimbus's barrel synthesizer understands (export {…} from, export * from, top-level decls). File a bug.`;
           this.log('error', diag);
-          const escaped = JSON.stringify(diag);
-          return new Response(
-            `// nimbus: synthetic entry generation returned null for ${specifier}\n` +
-            `console.error(${escaped});\n` +
-            `const __err = new Error(${escaped});\n` +
-            `export default new Proxy({}, { get: () => { throw __err; } });\n`,
-            { status: 200, headers: { ...headers, 'Content-Type': JS_CT, 'X-Nimbus-Bundle-Status': 'synth-null' } },
-          );
+          return new Response(failingModule(diag, names), {
+            status: 200,
+            headers: { ...headers, 'Content-Type': JS_CT, 'X-Nimbus-Bundle-Status': 'synth-null' },
+          });
         }
         const synthPath = syntheticEntryPath(this.root, pkgName);
         try {
@@ -2258,11 +2314,10 @@ export class ViteDevServer {
           // separate for log triage.
           const msg = `[vite-dev] failed to write synthetic entry for ${specifier}: ${e?.message || e}`;
           this.log('error', msg);
-          const escaped = JSON.stringify(msg);
-          return new Response(
-            `// nimbus: ${msg}\nconsole.error(${escaped});\nconst __err = new Error(${escaped});\nexport default new Proxy({}, { get: () => { throw __err; } });\n`,
-            { status: 200, headers: { ...headers, 'Content-Type': JS_CT, 'X-Nimbus-Bundle-Status': 'vfs-write-failed' } },
-          );
+          return new Response(failingModule(msg, names), {
+            status: 200,
+            headers: { ...headers, 'Content-Type': JS_CT, 'X-Nimbus-Bundle-Status': 'vfs-write-failed' },
+          });
         }
         bundleEntryPath = synthPath;
         synthetic = true;
@@ -2299,8 +2354,8 @@ export class ViteDevServer {
               // references (+ transitive relative imports + package.json).
               // Skips the full package walk so icon-libraries with
               // thousands of files don't blow the 28 MiB cap.
-              const scoped = buildScopedSliceForSynthetic(
-                this.vfs, nmDir, pkgName, syntheticReferencedFiles,
+              const scoped = await buildScopedSliceForSynthetic(
+                this.vfs, nmDir, pkgName, syntheticReferencedFiles, transformParser(this.esbuild),
               );
               const built: { slice: SliceEntry[]; totalBytes: number } = {
                 slice: scoped.entries,
@@ -2367,13 +2422,16 @@ export class ViteDevServer {
                 bundledManifests = request.manifests;
               } else if (result && result.errorText) {
                 this.log('error', '[vite-dev] facet bundle failed for ' + specifier + ': ' + result.errorText);
+                failure = 'its bundle failed: ' + result.errorText;
               }
               result = null;
             } else {
               this.log('error', '[vite-dev] slice walker exceeded cap for ' + specifier);
+              failure = `its files exceed the ${(SLICE_CAP_BYTES / (1024 * 1024)).toFixed(0)} MiB a bundle may be built from`;
             }
           } catch (e: any) {
             this.log('error', '[vite-dev] on-demand facet dispatch failed for ' + specifier + ': ' + (e?.message || e));
+            failure = String(e?.message || e);
           }
         } else {
           // Fallback — the EsbuildService's build (its build host). Used
@@ -2415,6 +2473,7 @@ export class ViteDevServer {
             }
           } catch (e: any) {
             this.log('error', '[vite-dev] esbuild bundle failed for ' + specifier + ': ' + (e?.message || e));
+            failure = String(e?.message || e);
           }
         }
 
@@ -2497,9 +2556,10 @@ export class ViteDevServer {
     //    accidental "you forgot to install X" silent failure (we log
     //    a clear warning to the supervisor for visibility).
     //
-    // b. Package IS installed but bundling failed (slice cap, OOM,
-    //    unresolvable internal import). Return 503 with throwing
-    //    module body — the user needs to see the failure to fix it.
+    // b. Package IS installed but bundling failed (slice cap, a build
+    //    facet reset twice, unresolvable internal import). Serve a module
+    //    that links and throws the cause as it runs (failingModule): the
+    //    user needs to see the failure, not a missing export.
     const pkgName = packageNameFromSpecifier(specifier);
     const installed = this.vfs.exists(this.root + '/node_modules/' + pkgName);
     if (!installed) {
@@ -2521,23 +2581,22 @@ export class ViteDevServer {
     }
     const diag =
       `[vite-dev] cannot serve /preview/@modules/${specifier}: ` +
-      `on-demand bundle failed (esbuild OOM, slice cap, or unresolved internal import). ` +
-      `Check supervisor logs for the underlying error. ` +
-      `If the package is a "barrel" (icon library, etc.), Nimbus ` +
-      `auto-tree-shakes from your static named imports — make sure ` +
-      `you're using \`import { Foo } from '${pkgName}'\` syntax ` +
-      `(not \`import * as X\` or dynamic \`import()\`).`;
+      `Nimbus could not bundle it: ${failure ?? 'its bundle produced no output'}. Reload the page to try again; ` +
+      `the dev server's log (Process tab) has the details.`;
     this.log('error', diag);
-    // barrel fallback support: same 200-stub pattern. The supervisor's
-    // own bundle pipeline failed — surface the diagnostic in the
-    // browser console where the user is looking, not in a 503 the
-    // browser's module loader treats as "module-not-found".
-    const escaped = JSON.stringify(diag);
-    const errCode =
-      `// nimbus: ${diag}\nconsole.error(${escaped});\n` +
-      `const __err = new Error(${escaped});\n` +
-      `export default new Proxy({}, { get: () => { throw __err; } });\n`;
-    return new Response(errCode, {
+    // A module that links against whatever its importers ask of it and
+    // throws `diag` as it runs (failingModule): the browser shows this
+    // cause, not a missing export of an empty stub. Not cached, so a
+    // reload bundles again.
+    const names = new Set<string>(resolved ? moduleExportNames(this.vfs, resolved) : []);
+    if (specifier === pkgName) {
+      try {
+        const scan = await scanProjectImports(this.vfs, this.root, transformParser(this.esbuild), PROJECT_SCAN);
+        if (scan.unread !== null) this.log('warn', `[vite-dev] the module served for ${specifier} declares the names the project imports from it as far as its scan read: it left ${scan.unread} unread`);
+        for (const name of scan.namedImports.get(pkgName) ?? []) names.add(name);
+      } catch { /* the package's own exports above */ }
+    }
+    return new Response(failingModule(diag, names), {
       status: 200,
       headers: {
         ...headers,

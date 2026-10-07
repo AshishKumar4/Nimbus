@@ -94,11 +94,12 @@ const sessionAttachPaths = new Map();
 const LEDGER = process.env.NIMBUS_PROBE_LEDGER || '';
 const PROBE = relative(dirname(fileURLToPath(import.meta.url)), process.argv[1] || '');
 const undeleted = new Map(); // sid → the headers it was minted with
+const minted = []; // { sid, at }: every session this probe minted, in order
 let exitHookArmed = false;
 
 function ledger(event, sid, status, extra = {}) {
   // One appendFileSync per line, so parallel probes never interleave lines.
-  if (LEDGER) appendFileSync(LEDGER, `${JSON.stringify({ probe: PROBE, sid, event, status, ...extra })}\n`);
+  if (LEDGER) appendFileSync(LEDGER, `${JSON.stringify({ probe: PROBE, sid, event, status, at: new Date().toISOString(), ...extra })}\n`);
 }
 
 /**
@@ -109,13 +110,28 @@ function ledger(event, sid, status, extra = {}) {
 function noteMinted(sid, status, { reap } = {}) {
   if (!exitHookArmed) {
     exitHookArmed = true;
+    // First, so a failure names its sessions as they were before the hook below deletes them.
+    process.on('exit', nameMintedOnFailure);
     process.on('exit', deleteUndeletedSync);
     for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
       process.on(signal, () => process.exit(130));
     }
   }
   undeleted.set(sid, requestHeaders({ 'X-Nimbus-Cleanup-Reason': 'probe-exit' }));
+  minted.push({ sid, at: new Date().toISOString() });
   ledger('mint', sid, status, reap ? { reap } : {});
+}
+
+/**
+ * A failing probe's output names every session it minted, with the time it
+ * was minted: a session that reset (a socket closed 1006) is then looked up
+ * by that session in Workers Logs and Traces (AGENTS.md "Tails reset
+ * sessions"), which a probe's own messages do not name.
+ */
+function nameMintedOnFailure(code) {
+  if (code === 0) return;
+  console.error(`sessions this probe minted on ${BASE} (exit ${code}):`);
+  for (const { sid, at } of minted) console.error(`  ${sid}  minted ${at}${undeleted.has(sid) ? '' : '  (deleted by the probe)'}`);
 }
 
 // 'exit' listeners must be synchronous, so a child of the same runtime runs the fetches.
@@ -295,6 +311,8 @@ export class Terminal {
     this.wsOptions = options.wsOptions ?? wsHeaders();
     this.ws = null;
     this.buf = '';
+    /** The `spawn` frames the session sent: one per process it started. */
+    this.spawns = [];
     this.connected = false;
     this.closed = false;
     this.closeDetail = null;
@@ -315,6 +333,8 @@ export class Terminal {
         const m = JSON.parse(data.toString('utf8'));
         if (m.type === 'output' && typeof m.data === 'string') {
           this.buf += m.data;
+        } else if (m.type === 'spawn') {
+          this.spawns.push(m);
         }
       } catch { /* non-json control frames ignored */ }
     });
@@ -393,6 +413,11 @@ export class Terminal {
     await this.waitForNewPrompt(timeoutMs);
     const elapsed = Date.now() - t0;
     return { elapsed, output: stripAnsi(this.buf) };
+  }
+
+  /** Write `content` to `path` with a quoted heredoc (heredocCommand). */
+  async writeFile(path, content, timeoutMs = 10_000) {
+    return this.run(heredocCommand(path, content), timeoutMs);
   }
 
   async close() {
@@ -488,6 +513,29 @@ export function writeFileViaShell(termCmd, path, content) {
 export function heredocCommand(path, content) {
   // Single-quoted EOF marker prevents shell expansion of $/`/\;
   return `cat > ${path} << 'NIMBUS_HEREDOC_EOF'\n${content}\nNIMBUS_HEREDOC_EOF`;
+}
+
+/**
+ * What one `Terminal.run` printed: ANSI stripped, without the command's
+ * echo line (`… $ cmd`) or the prompt it returned to.
+ */
+export function termBody(raw) {
+  const lines = stripAnsi(raw).split(/\r?\n/);
+  if (lines.length && /\$\s*$/.test(lines[lines.length - 1])) lines.pop();
+  if (lines.length && /\$\s/.test(lines[0])) lines.shift();
+  return lines.join('\n');
+}
+
+/**
+ * Whether some line of `output`, trimmed, is exactly `expected`. A bare
+ * `\r` ends a line as `\n` does: a terminal redraws over it.
+ */
+export function hasOutputLine(output, expected) {
+  return stripAnsi(output)
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .includes(expected);
 }
 
 /**

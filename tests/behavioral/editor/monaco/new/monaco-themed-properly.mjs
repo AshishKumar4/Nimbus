@@ -42,19 +42,8 @@ a.check('onDidChangeModelLanguage wired to statusbar',
   /onDidChangeModelLanguage\(\(e\)\s*=>\s*\{[^}]*statusLang/.test(html),
   `language-change handler not wired`);
 
-// Font configured properly (Menlo/Monaco/Consolas — VSCode default
-// chain on macOS/Linux/Windows respectively).
-a.check('font chain leads with Menlo',
-  /fontFamily:\s*["']Menlo[^"']*Monaco/.test(html),
-  `font chain wrong`);
-a.check('font size 14 (VSCode default for editor)',
-  /fontSize:\s*14\b/.test(html),
-  `font size != 14`);
-
-// Theme = vs-dark.
-a.check('theme = vs-dark',
-  /theme:\s*['"]vs-dark['"]/.test(html),
-  `theme wrong`);
+// The editor's font chain, size and theme are monaco-vscode-features'
+// option contract; this probe owns the chrome around the editor.
 
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);

@@ -20,7 +20,7 @@ import { parseRuntimeManifest, type RuntimeManifest } from './runtime-manifest.j
 import type { MinShellRegistry } from './installed-runtimes.js';
 import { resolveContext } from '../substrate/lifo/commands/registry.js';
 import type { RuntimeManager } from './runtime-manager.js';
-import type { RuntimeAvailability } from './runtime-package.js';
+import { splitRuntimeSpec, type RuntimeAvailability } from './runtime-package.js';
 
 /** The slice of CommandContext the install/uninstall path reads — also the
  *  shape a programmatic caller fakes, since it has no terminal behind it. */
@@ -213,9 +213,7 @@ async function runNimbusUninstall(
     return 2;
   }
   const spec = args[0];
-  const atIdx = spec.indexOf('@');
-  const name = atIdx >= 0 ? spec.slice(0, atIdx) : spec;
-  const version = atIdx >= 0 ? spec.slice(atIdx + 1) : null;
+  const { name, versionOverride: version } = splitRuntimeSpec(spec);
 
   const matches = (await deps.runtimes.list()).filter((runtime) =>
     runtime.name === name && (version === null || runtime.version === version),

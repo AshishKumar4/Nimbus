@@ -24,7 +24,7 @@
  * capture's name.
  */
 import { Parser, parseExpressionAt, tokenizer, tokTypes } from 'acorn';
-import { isAstNode } from './javascript-ast.js';
+import { applySourceEdits, isAstNode } from './javascript-ast.js';
 import { createModuleLexer } from './module-lexer.js';
 import { ambiguousSlashes, htmlComments, lineEnd, Lines, parenthesisEnd, skipTrivia } from './import-lexer-hazards.js';
 export const DYNAMIC_IMPORT_HELPER = '__nimbusDynamicImport';
@@ -449,13 +449,5 @@ function applyEdits(code, edits, metas, names, insertion) {
             edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
         edits.push({ start: insertion, end: insertion, text: `\n"use strict";\nconst ${binding} = arguments[2];\n` });
     }
-    edits.sort((a, b) => a.start - b.start || a.end - b.end);
-    const parts = [];
-    let at = 0;
-    for (const { start, end, text } of edits) {
-        parts.push(code.slice(at, start), text);
-        at = end;
-    }
-    parts.push(code.slice(at));
-    return parts.join('');
+    return applySourceEdits(code, edits);
 }

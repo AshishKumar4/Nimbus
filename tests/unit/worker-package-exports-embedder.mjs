@@ -32,7 +32,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { readPortExposure, readPortReservation } from '../../packages/worker/src/session/port-capability.ts';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../../packages/worker/src/session/keys.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });

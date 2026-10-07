@@ -7,52 +7,8 @@ import {
   MAX_TX_LOGICAL_ROWS,
   MAX_TX_SQL_EXECS,
 } from '../../packages/platform/src/limits.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-
-function openVfs(harness = createSqliteVfsTestHarness()) {
-  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-  // Load the running counters now: probes below read stats from inside a
-  // statement, where the first read's aggregate would re-enter them.
-  rawVfs.getStats();
-  return { harness, rawVfs, vfs: rawVfs.as(CRED_KERNEL) };
-}
-
-function reopenVfs(harness) {
-  return openVfs(createSqliteVfsTestHarness(harness.db)).vfs;
-}
-
-function bytes(length, seed = 0) {
-  const data = new Uint8Array(length);
-  for (let index = 0; index < length; index++) data[index] = (index + seed) % 251;
-  return data;
-}
-
-function fileInode(path, data, mtime = 1) {
-  return {
-    path,
-    parentPath: path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '',
-    isDir: false,
-    size: data.length,
-    mtime,
-    mode: 0o644,
-    chunkCount: data.length === 0 ? 0 : Math.ceil(data.length / CHUNK_SIZE),
-  };
-}
-
-function chunks(path, data) {
-  const result = [];
-  for (let chunkId = 0; chunkId * CHUNK_SIZE < data.length; chunkId++) {
-    result.push({
-      path,
-      chunkId,
-      data: data.slice(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE),
-    });
-  }
-  return result;
-}
+import { bytes, fileChunks, fileInode, openVfs, reopenVfs } from './lib/staged-import.mjs';
 
 function transactionGroups(harness, fromStatement = 0) {
   const groups = new Map();
@@ -297,8 +253,8 @@ for (let statement = 1; statement <= truncateStatementCount; statement++) {
 
 function streamPayload(entries) {
   return {
-    inodes: entries.map(({ path, data }) => fileInode(path, data)),
-    chunks: entries.flatMap(({ path, data }) => chunks(path, data)),
+    inodes: entries.map(({ path, data }) => fileInode(path, data.length)),
+    chunks: entries.flatMap(({ path, data }) => fileChunks(path, data)),
   };
 }
 
@@ -468,10 +424,10 @@ function streamFromBytes(bytes) {
 {
   const { vfs } = openVfs();
   const data = bytes(3, 91);
-  const duplicate = fileInode('duplicate.bin', data);
+  const duplicate = fileInode('duplicate.bin', data.length);
   assert.throws(() => encodeWriteBatchStream({
     inodes: [duplicate, { ...duplicate, mtime: duplicate.mtime + 1 }],
-    chunks: chunks(duplicate.path, data),
+    chunks: fileChunks(duplicate.path, data),
   }), /duplicate path ownership/);
   assert.equal(vfs.exists('duplicate.bin'), false);
 }

@@ -14,7 +14,9 @@
  *     asynchronously (fd 0, read to its end) holds the guest exactly as a
  *     blocking read holds a Node program;
  *   - events: its output, the requests its loopback clients make, the
- *     requests this side forwards to its servers, its exit.
+ *     requests this side forwards to its servers, its exit, and under an
+ *     egress the requests it makes off the box, whose responses cross back
+ *     as they arrive (runtime/realm-egress.ts).
  *
  * Everything the program sends is untrusted: this side answers only the calls
  * it names below, with arguments of their kind, and never lets a message, an
@@ -28,9 +30,10 @@ import { type RealmOutcome } from '../../../../runtime/realm.js';
 import type { CommandContext } from '../types.js';
 import type { Kernel, VirtualRequest } from '../../kernel/index.js';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
+import { type EgressGuestEvent, type EgressHostEvent } from '../../../../runtime/realm-egress.js';
 import type { NodeProgram } from './node.js';
 /** The session services a run reaches: the kernel's ports and loopback, where the host has them. */
-export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback'>>;
+export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'dns' | 'network'>>;
 /** The filesystem methods a call names: NodeFilesystem's, but its change listener. */
 export type FsMethod = Exclude<keyof NodeFilesystem, 'onChange'>;
 /** A synchronous call the guest makes. */
@@ -50,11 +53,11 @@ export type NodeCall = {
     readonly op: 'watch';
     readonly on: boolean;
 };
-/** A response, as data, either way across. */
+/** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
     readonly status: number;
     readonly headers: Record<string, string>;
-    readonly body: string;
+    readonly body: string | Uint8Array;
 }
 /** What the guest posts on `events`. */
 export type GuestEvent = {
@@ -68,7 +71,7 @@ export type GuestEvent = {
     readonly url: string;
     readonly method: string;
     readonly headers: Record<string, string>;
-    readonly body: string | null;
+    readonly body: string | Uint8Array | null;
 } | {
     readonly type: 'served';
     readonly id: number;
@@ -76,7 +79,7 @@ export type GuestEvent = {
 } | {
     readonly type: 'exit';
     readonly code: number;
-};
+} | EgressGuestEvent;
 /** What this side posts on `events`. */
 export type HostEvent = {
     readonly type: 'fetched';
@@ -89,10 +92,20 @@ export type HostEvent = {
     readonly request: VirtualRequest;
 } | {
     readonly type: 'changed';
-};
-/** What the realm starts with: the program. */
+} | EgressHostEvent;
+/**
+ * What the realm starts with: the program, the kernel's /etc/hosts its
+ * dns.lookup answers from, and whether its network goes through an egress.
+ */
 export interface NodeRealmPayload {
     readonly program: NodeProgram;
+    readonly hosts?: string;
+    /**
+     * The workspace's network goes through its host's egress: every request
+     * the program makes off the box crosses here (`egress`) and leaves through
+     * it; a WebSocket, which cannot cross, is refused by name.
+     */
+    readonly egress: boolean;
 }
 export declare function isGuestEvent(value: unknown): value is GuestEvent;
 export declare function isHostEvent(value: unknown): value is HostEvent;

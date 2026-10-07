@@ -13,7 +13,7 @@
 //
 // Category: R (runtime-behavioral)
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell-polish/read-from-stdin');
@@ -23,11 +23,6 @@ const sid = await mintSession();
 const t = new Terminal(sid);
 await t.connect();
 await t.waitForPrompt(60_000);
-
-function hasOutputLine(stripped, marker) {
-  const lines = stripped.split(/\r?\n/).map((l) => l.trim());
-  return lines.some((l) => l === marker);
-}
 
 // 1. read VAR < file — single-line file.
 {

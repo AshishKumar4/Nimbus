@@ -9,39 +9,18 @@
 // Fixture: creates "tf2.dat", calls path_filestat_set_times(_, 1, …, 8),
 // reads back via path_filestat_get, prints '1' if mtime > 0 else '0'.
 
-import { mintSession, deleteSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
-import { writeStreamBFixtureCmd } from './_fixtures-stream-b.mjs';
+import { openWasiProbe, tailLines, trimmedLines } from './_harness.mjs';
 
-const sid = await mintSession();
-console.log(`[wasi/filestat-set-times-path] sid=${sid} BASE=${BASE}`);
-
-const t = new Terminal(sid);
-let exitCode = 1;
+const probe = await openWasiProbe('wasi/filestat-set-times-path', { dir: '/home/user/sb', fixture: 'fst-path', as: 'fst-p.wasm' });
+const { t } = probe;
 try {
-  await t.connect();
-  await sleep(2_000);
-  await t.waitForPrompt(60_000);
-
-  await t.run('mkdir -p /home/user/sb && cd /home/user/sb', 10_000);
-  await t.run(writeStreamBFixtureCmd('fst-path', 'fst-p.wasm'), 30_000);
-
   const r = await t.run('wasm-runner fst-p.wasm', 60_000);
-  const out = stripAnsi(r.output);
-  const tail = out.split(/\r?\n/).slice(-6).join('\n');
-  const lines = tail.split(/\r?\n/).map(s => s.trim());
+  const tail = tailLines(r.output, 6);
+  const lines = trimmedLines(tail);
   const ok = lines.some(s => s === '1');
 
-  console.log(JSON.stringify({ probe: 'wasi/filestat-set-times-path', sid, base: BASE, tail, ok }, null, 2));
-
-  const checks = [['path_filestat_set_times(MTIM_NOW) → mtime > 0', ok]];
-  let pass = 0;
-  for (const [n, o] of checks) { console.log(`  ${o ? 'PASS' : 'FAIL'}  ${n}`); if (o) pass++; }
-  const verdict = pass === checks.length ? 'passing' : 'failing';
-  console.log(`[wasi/filestat-set-times-path] ${verdict} — ${pass}/${checks.length}`);
-  exitCode = verdict === 'passing' ? 0 : 1;
+  probe.report([['path_filestat_set_times(MTIM_NOW) → mtime > 0', ok]], { tail, ok });
 } finally {
-  await t.close().catch(() => {});
-  const del = await deleteSession(sid, 'wasi/filestat-set-times-path');
-  console.log(`deleteSession: ${del.status}`);
+  await probe.close();
 }
-process.exit(exitCode);
+process.exit(probe.exitCode());

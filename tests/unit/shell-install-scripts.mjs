@@ -31,7 +31,7 @@ import { registerUnixCommands } from '../../packages/core/src/shell/unix-command
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 import { installPathExecResolver } from '../../packages/core/src/shell/exec-dispatch.ts';
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { installCompressionStreams } from './lib/web-compression-streams.mjs';
 
 // gzip is a Workers global; this host is bun, which lacks it. Without this the

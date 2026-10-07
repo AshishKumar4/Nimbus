@@ -96,8 +96,9 @@ export class HistoryManager {
     get(index) {
         return this.entries[index];
     }
+    /** Every entry, oldest first; the store's own array, for reading. */
     getAll() {
-        return [...this.entries];
+        return this.entries;
     }
     get length() {
         return this.entries.length;

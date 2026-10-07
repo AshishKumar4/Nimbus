@@ -12,78 +12,18 @@
 // the barrier, and a peer write to the same path still evicts.
 
 import assert from 'node:assert/strict';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processBridge } from './lib/process-bridge.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { PROCESS_DIR, shimStoreProcess } from './lib/shim-store-process.mjs';
 
 // The platform's timer, captured before the shims wrap setTimeout in the
 // resumption barrier: a wait that must not itself be a barriered resumption.
 const rawSetTimeout = globalThis.setTimeout;
 
-const harness = createSqliteVfsTestHarness();
-const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
-// The supervisor acts as the process's own credential, as SupervisorRPC does,
-// and the tree the process works in is its own: what it writes back is owned
-// by it, and a stat of it says so.
-const bridge = processBridge(rawVfs, rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }));
-function ownTree(path = '') {
-  for (const entry of vfs.readdir(path)) {
-    const at = path ? `${path}/${entry.name}` : entry.name;
-    vfs.chown(at, 1000, 1000);
-    if (entry.type === 'directory') ownTree(at);
-  }
-}
 const enc = new TextEncoder();
-const dec = new TextDecoder();
-const dir = '/home/user/p';
-vfs.mkdir(dir, { recursive: true });
-vfs.mkdir('opt'); // seeded by the kernel, and the user's (ownTree)
-
-ownTree();
-const supervisor = {
-  readFile: async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; },
-  writeFile: (p, c) => bridge.writeFile(p, c),
-  stat: (p) => bridge.stat(p),
-  lstat: (p) => bridge.stat(p, { followSymlinks: false }),
-  readdir: (p) => bridge.readdir(p),
-  exists: async (p) => (await bridge.stat(p)) !== null,
-  access: (p, m) => bridge.access(p, m),
-  mkdir: (p) => bridge.mkdir(p, { recursive: true }),
-  fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-  fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
-};
-
-// The supervisor stamps a facet's bundle with the cursor it was read at, and
-// the launcher seeds globalThis.__nimbusVfsCursor from it (FacetVfsState.cursor
-// -> facets/manager.ts). Without that seed the first ACQUIRE carries a null
-// epoch and is answered with a poison, which drops the resident set for a
-// reason that has nothing to do with what this test is measuring.
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
-
-const factory = new Function(
-  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
-  + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
-);
-const metadata = { 'home/user/p': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } };
-const out = (declareNamespace({ metadata: metadata, manifest: { 'home/user': ['p'], 'home/user/p': [] } }), factory(
-  {},
-  {},
-  supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  dir,
-  [],
-  {},
-  `${dir}/s.mjs`,
-  dir,
-));
-const { fs } = out;
-const stats = globalThis.__nimbusVfsCoherence;
+const dir = PROCESS_DIR;
+// /opt: seeded by the kernel, and the user's like the rest of the tree.
+const { vfs, supervisor, fs, setTimeout: shimSetTimeout, stats } = shimStoreProcess({ seed: (kernel) => kernel.mkdir('opt') });
+const out = { setTimeout: shimSetTimeout };
 
 const FILES = 40;
 const written = [];

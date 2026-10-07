@@ -32,8 +32,6 @@
  *
  * The transform facet's runtime bundles it (oxc-facet/preamble.ts).
  */
-/** Whether `error` is a transform's report that it ran out of native stack. */
-export declare function isOxcStackExhaustion(error: unknown): boolean;
 export interface OxcTransformOptions {
     loader?: string;
     format?: string;

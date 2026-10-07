@@ -16,8 +16,7 @@ export interface TranslateOptions {
 export declare const WORD = "[\\p{L}\\p{N}_]";
 export declare const NOT_WORD = "[^\\p{L}\\p{N}_]";
 /** A character as a literal in a JavaScript `u` pattern; `-` is escaped only in a class. */
-/** A character as a literal in a `u` pattern. */
-export declare function literalChar(ch: string): string;
+export declare function literal(ch: string, inClass?: boolean): string;
 /** A BRE or ERE as JavaScript regex source (`u` flag). */
 export declare function translate(p: string, options: TranslateOptions): string;
 //# sourceMappingURL=posix-regex.d.ts.map

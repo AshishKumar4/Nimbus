@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 25 s wall, 32 s CPU, 0.6 GiB peak (6 runs, 2026-10-06)
 // Exercise installed public packages, not the repository's patched dependency.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';

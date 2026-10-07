@@ -314,6 +314,8 @@ export declare class EsbuildService {
      * flushes. Every other source takes esbuild's own CommonJS output.
      */
     transform(code: string, options?: EsbuildTransformOptions): Promise<TransformResult>;
+    /** One transform on the in-isolate engine, of source the provided-module pre-pass has seen. */
+    private transformInIsolate;
     /**
      * Transform many modules in one round trip to the transform host (or in
      * this isolate when there is none). Outcomes are positional, and a module

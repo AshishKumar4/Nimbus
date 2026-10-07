@@ -126,7 +126,6 @@ export declare class R2Emulator {
     private _evalConditional;
     private _normalizeEtag;
     private _applyRange;
-    private _sha256Hex;
     private _normalizeHash;
     private _encodeCursor;
     private _decodeCursor;

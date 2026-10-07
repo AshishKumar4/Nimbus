@@ -5,21 +5,15 @@
  *            child-facet isolate (state persists on globalThis).
  *   Layer 2: stdin routing via WebSocketTerminal.attachRepl().
  *   Layer 3: prompt detection per-runtime — Pyodide uses sentinel-
- *            controlled sys.ps1; Bun/Node/Ruby use per-runtime regex.
+ *            controlled sys.ps1; Ruby uses a per-runtime regex.
  *
  * This file owns the runtime-agnostic plumbing. Per-runtime adapters
  * live in src/runtime/<name>-repl.ts and implement the ReplAdapter
- * interface declared below.
+ * interface declared below. (`node` and `bun` run their REPL as a
+ * program instead, core runtime/js-repl.ts.)
  */
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
-export function replPushResult(result) {
-    if (result.exit)
-        return { kind: 'exit', exitCode: result.exitCode || 0, stdout: result.stdout, stderr: result.stderr };
-    if (result.incomplete)
-        return { kind: 'incomplete' };
-    return { kind: 'output', stdout: result.stdout || '', stderr: result.stderr || '' };
-}
 export class ReplSession {
     adapter;
     detachRepl = null;

@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { classifyError } from '../../packages/platform/src/oom-classify.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 const cloneVersionError =
   'Unable to deserialize cloned data due to invalid or unsupported version';
@@ -31,7 +32,7 @@ const loader = {
 const pool = new IsolatePool(
   { LOADER: loader },
   { id: { toString: () => 'test-session-id' } },
-  { omitSupervisor: true, timeoutMs: 0, retries: 0, tag: 'clone-retry-test' },
+  { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0, retries: 0, tag: 'clone-retry-test' },
 );
 
 assert.equal(await pool.submit((value) => value, 'payload'), 'recovered');

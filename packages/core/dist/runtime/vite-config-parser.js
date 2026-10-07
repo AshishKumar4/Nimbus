@@ -1,5 +1,6 @@
 import { booleanField, literalBooleanValue, literalStringValue, nodeList, nodeName, nodeProp, parseJavaScriptModule, stringField, } from './javascript-ast.js';
 import { full, simple } from 'acorn-walk';
+import { isJsonRecord } from './jsonc.js';
 /**
  * Read a `vite.config.ts` without a TypeScript transform where the transform
  * cannot change what this reader sees.
@@ -176,7 +177,7 @@ function readViteConfig(ast) {
         if (esbuild) {
             const computed = [];
             const value = staticValue(esbuild, 'esbuild', computed);
-            if (value === false || isPlainObject(value))
+            if (value === false || isJsonRecord(value))
                 config.esbuild = value;
             else
                 computed.splice(0, computed.length, 'esbuild');
@@ -374,7 +375,6 @@ function defineValue(node) {
 }
 /** What `staticValue` gives a value it cannot read. */
 const COMPUTED = Symbol('computed');
-const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 /**
  * A literal value: strings, numbers, booleans, null, template literals with
  * nothing substituted, negated numbers, arrays and objects of them. An
@@ -446,7 +446,7 @@ function pluginCalls(plugins, imports) {
         const argument = nodeList(element, 'arguments')[0];
         const computed = [];
         const options = argument ? staticValue(argument, 'options', computed) : {};
-        calls.push({ specifier, options: isPlainObject(options) ? options : {}, computed: isPlainObject(options) || !argument ? computed : ['options'] });
+        calls.push({ specifier, options: isJsonRecord(options) ? options : {}, computed: isJsonRecord(options) || !argument ? computed : ['options'] });
     }
     return calls;
 }

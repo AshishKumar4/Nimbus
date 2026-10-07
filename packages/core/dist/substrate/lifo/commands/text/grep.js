@@ -1,6 +1,7 @@
 import { resolve } from '../../utils/path.js';
+import { concatBytes, inputChunks, readAllInput } from '../../utils/bytes-io.js';
 import { globMatch as fnmatch } from '../../utils/glob.js';
-import { PosixRegexSyntax, WORD, translate, literalChar } from '../../utils/posix-regex.js';
+import { PosixRegexSyntax, WORD, translate, literal } from '../../utils/posix-regex.js';
 class GrepUsage extends Error {
 }
 const enc = new TextEncoder();
@@ -11,7 +12,7 @@ const BUFFER = 98304;
 function compile(patterns, syntax, ignoreCase, word, whole, multiline) {
     const flags = `u${ignoreCase ? 'i' : ''}${multiline ? 's' : ''}`;
     const sources = patterns.map((p) => {
-        let source = syntax === 'F' ? [...p].map((c) => literalChar(c)).join('') : syntax === 'P' ? p : translate(p, { extended: syntax === 'E' });
+        let source = syntax === 'F' ? [...p].map((c) => literal(c)).join('') : syntax === 'P' ? p : translate(p, { extended: syntax === 'E' });
         if (whole)
             source = `^(?:${source})$`;
         else if (word)
@@ -326,42 +327,6 @@ function parseArgs(args) {
     }
     return o;
 }
-async function* fileChunks(vfs, path) {
-    for (let offset = 0;;) {
-        const chunk = await vfs.readRange(path, offset, BUFFER);
-        if (chunk.length === 0)
-            return;
-        yield chunk;
-        offset += chunk.length;
-    }
-}
-async function* stdinChunks(stdin) {
-    if (stdin === undefined)
-        return;
-    if (typeof stdin === 'string') {
-        const bytes = enc.encode(stdin);
-        for (let i = 0; i < bytes.length; i += BUFFER)
-            yield bytes.subarray(i, i + BUFFER);
-        return;
-    }
-    if (stdin.readBytes) {
-        for (let chunk = await stdin.readBytes(BUFFER); chunk !== null && chunk.length > 0; chunk = await stdin.readBytes(BUFFER))
-            yield chunk;
-        return;
-    }
-    for (let text = await stdin.read(); text !== null; text = await stdin.read())
-        yield enc.encode(text);
-}
-function concat(parts) {
-    const total = parts.reduce((n, part) => n + part.length, 0);
-    const out = new Uint8Array(total);
-    let at = 0;
-    for (const part of parts) {
-        out.set(part, at);
-        at += part.length;
-    }
-    return out;
-}
 function hasEncodingError(bytes) {
     try {
         utf8Strict.decode(bytes);
@@ -394,10 +359,7 @@ export async function runGrep(ctx) {
         try {
             let bytes;
             if (file === '-') {
-                const parts = [];
-                for await (const chunk of stdinChunks(ctx.stdin))
-                    parts.push(chunk);
-                bytes = concat(parts);
+                bytes = await readAllInput(ctx, '-');
             }
             else {
                 bytes = await ctx.vfs.readFile(resolve(ctx.cwd, file));
@@ -436,7 +398,7 @@ export async function runGrep(ctx) {
     const flush = async () => {
         if (out.length === 0)
             return;
-        const bytes = concat(out);
+        const bytes = concatBytes(out);
         out.length = 0;
         outBytes = 0;
         if (ctx.stdout.writeBytes)
@@ -619,7 +581,7 @@ export async function runGrep(ctx) {
                 if (o.binaryFiles === 'without-match' && lineNo === 0)
                     return;
             }
-            const data = carry.length === 0 ? chunk : concat([carry, chunk]);
+            const data = carry.length === 0 ? chunk : concatBytes([carry, chunk]);
             let start = 0;
             for (let i = data.indexOf(eol); i !== -1; i = data.indexOf(eol, start)) {
                 await handle(data.subarray(start, i));
@@ -706,7 +668,8 @@ export async function runGrep(ctx) {
         if (commandLine && o.exclude.length > 0 && excluded(display, o.exclude))
             return;
         try {
-            await searchSource({ chunks: fileChunks(ctx.vfs, path), name: display });
+            // Streamed, a character device too: -q and -m stop reading (`grep -qz '^$' /dev/zero`).
+            await searchSource({ chunks: inputChunks(ctx, path, { fileReadSize: BUFFER, slice: true }), name: display });
         }
         catch (e) {
             if (e?.code === 'EPIPE')
@@ -718,7 +681,7 @@ export async function runGrep(ctx) {
         if (stop)
             break;
         if (operand === '-') {
-            await searchSource({ chunks: stdinChunks(ctx.stdin), name: o.label });
+            await searchSource({ chunks: inputChunks(ctx, '-', { readSize: BUFFER }), name: o.label });
             continue;
         }
         // `grep -r PAT` with no operand names what it finds without a "./".

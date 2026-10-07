@@ -6,6 +6,8 @@
 import { VfsError } from '../../../packages/core/src/vfs/vfs-error.ts';
 
 export function asyncMemoryVfs() {
+  /** @typedef {{ type: string, mode: number, mtimeMs: number, data?: Uint8Array, target?: string }} Node */
+  /** @type {Map<string, Node>} */
   const nodes = new Map([['/', { type: 'directory', mode: 0o40777, mtimeMs: Date.now() }]]);
   const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
   const fail = (code, path) => { throw new VfsError(code, `${code}: ${path}`, path); };
@@ -114,4 +116,26 @@ export function asyncMemoryVfs() {
     async utimes(path, _atimeMs, mtimeMs) { await tick(); const node = nodes.get(resolve(path, true)); if (node === undefined) fail('ENOENT', path); node.mtimeMs = mtimeMs; },
     describe: () => ({ source: 'memory', type: 'repro-async' }),
   };
+}
+
+/**
+ * `vfs` as a mount with no synchronous face: `sync` is absent, so the
+ * namespace awaits every call. By default the backend's own methods answer
+ * as they do (a synchronous backend still returns at once). `deep` makes the
+ * face asynchronous all the way down, as an embedder's drive or device is:
+ * every method answers a promise on a later turn, and a view as a principal
+ * (`as()`) is as asynchronous.
+ */
+export function asyncOnly(vfs, { deep = false } = {}) {
+  return new Proxy(vfs, {
+    get(target, key) {
+      if (key === 'sync') return undefined;
+      const value = target[key];
+      if (typeof value !== 'function') return value;
+      if (!deep) return value.bind(target);
+      if (key === 'as') return (...args) => asyncOnly(value.apply(target, args), { deep });
+      return (...args) => Promise.resolve().then(() => value.apply(target, args));
+    },
+    has: (target, key) => key !== 'sync' && key in target,
+  });
 }

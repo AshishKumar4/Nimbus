@@ -1,6 +1,7 @@
 import { maxSatisfying, satisfies as pep440Satisfies, valid as validPep440Version, validRange as validPep440Range, } from '@renovatebot/pep440';
 import { parsePipRequirementsFile, parsePipRequirementsLine, RequirementsSyntaxError, } from 'pip-requirements-js';
 import { z } from 'zod/v4';
+import { errorText } from '../_shared/error-text.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
 import { isRuntimePythonPackageArtifactMetadata, } from './runtime-manifest.js';
@@ -415,7 +416,7 @@ async function readVfsText(vfs, path) {
         return { text: new TextDecoder('utf-8').decode((await vfs.readFile(path))) };
     }
     catch (e) {
-        return { error: errorMessage(e) };
+        return { error: errorText(e) };
     }
 }
 async function probeVfsPath(vfs, path) {
@@ -423,11 +424,8 @@ async function probeVfsPath(vfs, path) {
         return { exists: (await vfs.exists(path)) };
     }
     catch (e) {
-        return { error: errorMessage(e) };
+        return { error: errorText(e) };
     }
-}
-function errorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
 }
 async function resolveRequirements(roots, constraints, includeDependencies, runtimeContext) {
     const requirements = new Map();
@@ -468,7 +466,7 @@ async function resolveRequirements(roots, constraints, includeDependencies, runt
             : null;
         const metadata = dependencyLines
             ? null
-            : await fetchPypiJson(name, resolvedPkg.package.version);
+            : await fetchPypiJson(runtimeContext.network, name, resolvedPkg.package.version);
         if (metadata && 'error' in metadata)
             return metadata;
         for (const depLine of dependencyLines ?? metadata?.data.info.requires_dist ?? []) {
@@ -536,7 +534,7 @@ async function resolveOneRequirement(req, runtimeContext) {
     const sourcePolicy = PIP_SOURCE_PACKAGES[req.name];
     if (sourcePolicy)
         return resolveSourcePolicy(req, sourcePolicy);
-    const metadata = await fetchPypiJson(req.name);
+    const metadata = await fetchPypiJson(runtimeContext.network, req.name);
     if ('error' in metadata)
         return metadata;
     const releases = metadata.data.releases || {};
@@ -546,7 +544,7 @@ async function resolveOneRequirement(req, runtimeContext) {
     if (!version) {
         return { error: `no PyPI release of ${req.name} satisfies ${range || '>=0'}` };
     }
-    const versionMetadata = await fetchPypiJson(req.name, version);
+    const versionMetadata = await fetchPypiJson(runtimeContext.network, req.name, version);
     if ('error' in versionMetadata)
         return versionMetadata;
     const files = versionMetadata.data.urls || releases[version] || [];
@@ -607,16 +605,17 @@ function findBestVersion(versions, range) {
         return null;
     }
 }
-async function fetchPypiJson(name, version) {
+async function fetchPypiJson(network, name, version) {
     const canonical = canonicalPackageName(name);
-    const key = version ? `${canonical}@${version}` : canonical;
+    // Cached per network: what one workspace's egress answered is never another's.
+    const key = `${network.id}|` + (version ? `${canonical}@${version}` : canonical);
     let entry = pypiCache.get(key);
     if (!entry) {
         const url = version
             ? `${PYPI_API}/${encodeURIComponent(canonical)}/${encodeURIComponent(version)}/json`
             : `${PYPI_API}/${encodeURIComponent(canonical)}/json`;
         entry = {
-            promise: fetch(url).then(async (resp) => {
+            promise: network.fetch(url).then(async (resp) => {
                 if (!resp.ok)
                     throw new Error(`HTTP ${resp.status}`);
                 return PypiJsonSchema.parse(await resp.json());
@@ -893,6 +892,15 @@ function buildPipInstallCode(plan, sitePackages) {
         '    sys.path.insert(0, target_site_packages)',
         'def _nimbus_dist_info_dir(name, version):',
         '    return os.path.join(target_site_packages, name.replace("-", "_") + "-" + version + ".dist-info")',
+        // The record pip reads back: a pure wheel with no RECORD entries.
+        'def _nimbus_write_dist_info(dist_info, policy):',
+        '    os.makedirs(dist_info, exist_ok=True)',
+        '    with open(os.path.join(dist_info, "METADATA"), "w", encoding="utf-8") as f:',
+        '        f.write("Metadata-Version: 2.1\\nName: " + policy["canonicalName"] + "\\nVersion: " + policy["version"] + "\\n")',
+        '    with open(os.path.join(dist_info, "WHEEL"), "w", encoding="utf-8") as f:',
+        '        f.write("Wheel-Version: 1.0\\nGenerator: Nimbus pip\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n")',
+        '    with open(os.path.join(dist_info, "RECORD"), "w", encoding="utf-8") as f:',
+        '        f.write("")',
         'def _nimbus_load_pyodide_manifest():',
         '    try:',
         '        with open(pyodide_manifest_path, "r", encoding="utf-8") as f:',
@@ -1011,13 +1019,7 @@ function buildPipInstallCode(plan, sitePackages) {
         '    dist_info = _nimbus_dist_info_dir(policy["canonicalName"], policy["version"])',
         '    if os.path.isdir(dist_info):',
         '        shutil.rmtree(dist_info)',
-        '    os.makedirs(dist_info, exist_ok=True)',
-        '    with open(os.path.join(dist_info, "METADATA"), "w", encoding="utf-8") as f:',
-        '        f.write("Metadata-Version: 2.1\\nName: " + policy["canonicalName"] + "\\nVersion: " + policy["version"] + "\\n")',
-        '    with open(os.path.join(dist_info, "WHEEL"), "w", encoding="utf-8") as f:',
-        '        f.write("Wheel-Version: 1.0\\nGenerator: Nimbus pip\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n")',
-        '    with open(os.path.join(dist_info, "RECORD"), "w", encoding="utf-8") as f:',
-        '        f.write("")',
+        '    _nimbus_write_dist_info(dist_info, policy)',
         // A variant package's code is already inside the interpreter and on its
         // sys.path; only the record is missing, and that record is what makes the
         // next spawn pick the interpreter that has it.
@@ -1025,13 +1027,7 @@ function buildPipInstallCode(plan, sitePackages) {
         '    dist_info = _nimbus_dist_info_dir(policy["canonicalName"], policy["version"])',
         '    if os.path.exists(os.path.join(dist_info, "METADATA")):',
         '        return',
-        '    os.makedirs(dist_info, exist_ok=True)',
-        '    with open(os.path.join(dist_info, "METADATA"), "w", encoding="utf-8") as f:',
-        '        f.write("Metadata-Version: 2.1\\nName: " + policy["canonicalName"] + "\\nVersion: " + policy["version"] + "\\n")',
-        '    with open(os.path.join(dist_info, "WHEEL"), "w", encoding="utf-8") as f:',
-        '        f.write("Wheel-Version: 1.0\\nGenerator: Nimbus pip\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n")',
-        '    with open(os.path.join(dist_info, "RECORD"), "w", encoding="utf-8") as f:',
-        '        f.write("")',
+        '    _nimbus_write_dist_info(dist_info, policy)',
         'for source_package in source_packages:',
         '    _nimbus_install_source_package(source_package)',
         'for variant_package in variant_packages:',

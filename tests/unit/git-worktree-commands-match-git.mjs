@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 43 s wall, 36 s CPU, 0.3 GiB peak (6 runs, 2026-10-06)
 // git rev-parse, ls-files and diff over the Nimbus VFS print what the real
 // git on this machine prints for the same repository: the same bytes on
 // stdout, the same exit code. Each scenario is built on disk with real git,
@@ -28,7 +29,7 @@ import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry
 import { GIT_BUNDLE_ENTRY } from '../../packages/worker/src/git-bundle.generated.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 // The facet's git module is the staged asset the Worker fetches (runtime/git-bundle-artifact.ts).
 const GIT_BUNDLE_CODE = readFileSync(new URL(`../../packages/worker/public${GIT_BUNDLE_ENTRY}`, import.meta.url), 'utf8');

@@ -8,6 +8,7 @@
 
 import assert from 'node:assert/strict';
 import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
+import { runCell, withProcessImport } from './lib/process-import.mjs';
 
 const parent = 'file:///home/user/app/main.cjs';
 
@@ -31,19 +32,12 @@ const rows = [
 
 const failures = [];
 for (const [misread, cell, expected] of rows) {
-  const calls = [];
-  globalThis.__nimbusDynamicImport = async (from, name) => {
-    calls.push([from, name]);
-    return { value: 7 };
-  };
   try {
-    const run = new Function('exports', 'require', 'module', rewriteDynamicImports(cell, parent));
-    assert.deepEqual(await run({}, undefined, {}), expected);
+    const { result, calls } = await withProcessImport(() => ({ value: 7 }), () => runCell(rewriteDynamicImports(cell, parent)));
+    assert.deepEqual(result, expected);
     assert.deepEqual(calls, [[parent, './x.mjs']], 'the import goes to the process');
   } catch (error) {
     failures.push(`${misread}: ${error.message}`);
-  } finally {
-    delete globalThis.__nimbusDynamicImport;
   }
 }
 assert.deepEqual(failures, []);

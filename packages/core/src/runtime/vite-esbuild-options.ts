@@ -25,6 +25,7 @@
  */
 
 import type { ParsedViteConfig } from './vite-config-parser.js';
+import { isJsonRecord } from './jsonc.js';
 
 /** The compiler options a tsconfig gives esbuild through Vite: what changes a module's output. */
 export const MEANINGFUL_TSCONFIG_FIELDS = [
@@ -53,8 +54,8 @@ export interface ViteEsbuildSettings {
 
 /** Whether `value` is ViteEsbuildSettings, as a session kept it across hibernation. */
 export function isViteEsbuildSettings(value: unknown): value is ViteEsbuildSettings {
-  if (!isObject(value)) return false;
-  return (value.esbuild === false || isObject(value.esbuild)) && typeof value.hasConfig === 'boolean'
+  if (!isJsonRecord(value)) return false;
+  return (value.esbuild === false || isJsonRecord(value.esbuild)) && typeof value.hasConfig === 'boolean'
     && Array.isArray(value.unread) && value.unread.every((item) => typeof item === 'string');
 }
 
@@ -82,7 +83,7 @@ const PLUGIN_ESBUILD: Record<string, (options: Record<string, unknown>) => { esb
 function merge(base: unknown, override: unknown): unknown {
   if (override === undefined || override === null) return base;
   if (Array.isArray(base) && Array.isArray(override)) return [...base, ...override];
-  if (isObject(base) && isObject(override)) {
+  if (isJsonRecord(base) && isJsonRecord(override)) {
     const out: Record<string, unknown> = { ...base };
     for (const [key, value] of Object.entries(override)) out[key] = merge(out[key], value);
     return out;
@@ -90,7 +91,6 @@ function merge(base: unknown, override: unknown): unknown {
   return override;
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 /**
  * `config.esbuild` as Vite 7's resolveConfig makes it for `vite` from a
@@ -130,7 +130,7 @@ export function viteEsbuildPluginOptions(esbuild: Readonly<Record<string, unknow
     minifyWhitespace: false,
     treeShaking: false,
     keepNames: false,
-    supported: { ...DEFAULT_ESBUILD_SUPPORTED, ...(isObject(rest.supported) ? rest.supported : {}) },
+    supported: { ...DEFAULT_ESBUILD_SUPPORTED, ...(isJsonRecord(rest.supported) ? rest.supported : {}) },
   };
 }
 
@@ -167,8 +167,8 @@ export function viteTransformOptions(
     if ((loader === 'ts' || loader === 'tsx') && tsconfigCompilerOptions) {
       for (const field of MEANINGFUL_TSCONFIG_FIELDS) if (field in tsconfigCompilerOptions) fromFile[field] = tsconfigCompilerOptions[field];
     }
-    const raw = isObject(tsconfigRaw) ? tsconfigRaw : {};
-    const compilerOptions: Record<string, unknown> = { ...fromFile, ...(isObject(raw.compilerOptions) ? raw.compilerOptions : {}) };
+    const raw = isJsonRecord(tsconfigRaw) ? tsconfigRaw : {};
+    const compilerOptions: Record<string, unknown> = { ...fromFile, ...(isJsonRecord(raw.compilerOptions) ? raw.compilerOptions : {}) };
     if (compilerOptions.useDefineForClassFields === undefined && compilerOptions.target === undefined) compilerOptions.useDefineForClassFields = false;
     if (options.jsx) compilerOptions.jsx = undefined;
     if (options.jsxFactory) compilerOptions.jsxFactory = undefined;

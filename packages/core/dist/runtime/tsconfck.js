@@ -18,6 +18,8 @@
  * config read, so an edit of any of them is known to matter.
  */
 import { normalizeVfsPath } from '../vfs/path.js';
+import { jsoncToJson } from './jsonc.js';
+import { splitBareSpecifier } from './barrel-detect.js';
 import { parseResolvablePackageJson } from '../_shared/exports-resolver.js';
 /** A config that could not be read or resolved, as tsconfck's TSConfckParseError. */
 export class TsconfckParseError extends Error {
@@ -218,10 +220,7 @@ function requireResolve(request, from, fs) {
         const at = resolve(dirname(from), request);
         return asFile(at) ?? asDirectory(at);
     }
-    const parts = request.split('/');
-    const nameLength = request.startsWith('@') ? 2 : 1;
-    const name = parts.slice(0, nameLength).join('/');
-    const subpath = parts.slice(nameLength).join('/');
+    const { name, subpath } = splitBareSpecifier(request);
     for (let dir = dirname(from);; dir = dirname(dir)) {
         if (basename(dir) !== 'node_modules') {
             const pkgDir = `${dir === '/' ? '' : dir}/node_modules/${name}`;
@@ -473,92 +472,8 @@ function pattern2regex(resolvedPattern, allowJs) {
     return new RegExp(regexStr + '$');
 }
 // ── JSON with comments ───────────────────────────────────────────────────
-/** A tsconfig's text as JSON: BOM, comments and dangling commas stripped; `{}` where nothing is left. */
+/** A tsconfig's text as JSON, as tsconfck reads it (jsonc.ts); `{}` where nothing is left. */
 export function toJson(tsconfigJson) {
-    const stripped = stripDanglingComma(stripJsonComments(tsconfigJson.charCodeAt(0) === 0xfeff ? tsconfigJson.slice(1) : tsconfigJson));
+    const stripped = jsoncToJson(tsconfigJson, 'tsconfck');
     return stripped.trim() === '' ? '{}' : stripped;
-}
-function stripDanglingComma(pseudoJson) {
-    let insideString = false;
-    let offset = 0;
-    let result = '';
-    let danglingCommaPos = null;
-    for (let i = 0; i < pseudoJson.length; i++) {
-        const currentCharacter = pseudoJson[i];
-        if (currentCharacter === '"' && !isEscaped(pseudoJson, i))
-            insideString = !insideString;
-        if (insideString) {
-            danglingCommaPos = null;
-            continue;
-        }
-        if (currentCharacter === ',') {
-            danglingCommaPos = i;
-            continue;
-        }
-        if (danglingCommaPos) {
-            if (currentCharacter === '}' || currentCharacter === ']') {
-                result += pseudoJson.slice(offset, danglingCommaPos) + ' ';
-                offset = danglingCommaPos + 1;
-                danglingCommaPos = null;
-            }
-            else if (!/\s/.test(currentCharacter)) {
-                danglingCommaPos = null;
-            }
-        }
-    }
-    return result + pseudoJson.substring(offset);
-}
-function isEscaped(jsonString, quotePosition) {
-    let index = quotePosition - 1;
-    let backslashCount = 0;
-    while (jsonString[index] === '\\') {
-        index -= 1;
-        backslashCount += 1;
-    }
-    return Boolean(backslashCount % 2);
-}
-const strip = (string, start, end) => string.slice(start, end).replace(/\S/g, ' ');
-function stripJsonComments(jsonString) {
-    let isInsideString = false;
-    let isInsideComment = false;
-    let offset = 0;
-    let result = '';
-    for (let index = 0; index < jsonString.length; index++) {
-        const currentCharacter = jsonString[index];
-        const nextCharacter = jsonString[index + 1];
-        if (!isInsideComment && currentCharacter === '"' && !isEscaped(jsonString, index))
-            isInsideString = !isInsideString;
-        if (isInsideString)
-            continue;
-        if (!isInsideComment && currentCharacter + nextCharacter === '//') {
-            result += jsonString.slice(offset, index);
-            offset = index;
-            isInsideComment = 'single';
-            index++;
-        }
-        else if (isInsideComment === 'single' && currentCharacter + nextCharacter === '\r\n') {
-            index++;
-            isInsideComment = false;
-            result += strip(jsonString, offset, index);
-            offset = index;
-        }
-        else if (isInsideComment === 'single' && currentCharacter === '\n') {
-            isInsideComment = false;
-            result += strip(jsonString, offset, index);
-            offset = index;
-        }
-        else if (!isInsideComment && currentCharacter + nextCharacter === '/*') {
-            result += jsonString.slice(offset, index);
-            offset = index;
-            isInsideComment = 'multi';
-            index++;
-        }
-        else if (isInsideComment === 'multi' && currentCharacter + nextCharacter === '*/') {
-            index++;
-            isInsideComment = false;
-            result += strip(jsonString, offset, index + 1);
-            offset = index + 1;
-        }
-    }
-    return result + (isInsideComment ? strip(jsonString.slice(offset)) : jsonString.slice(offset));
 }

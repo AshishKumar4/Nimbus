@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { buildWithRolldown } from '../../packages/core/src/runtime/rolldown-build.ts';
+import { originalPosition } from './lib/sourcemap-vlq.mjs';
 
 const fromWorker = createRequire(new URL('../../packages/worker/package.json', import.meta.url));
 const experimental = await import(fromWorker.resolve('rolldown/experimental'));
@@ -20,28 +21,6 @@ const api = {
   parseSync: experimental.parseSync,
 };
 
-/** The original [line, column] (1-based line) a generated position maps to: the source map's `mappings`, decoded. */
-function original(sourceMap, line, column) {
-  const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  const state = [0, 0, 0, 0];
-  let found = null;
-  sourceMap.mappings.split(';').forEach((segments, generated) => {
-    let col = 0;
-    for (const segment of segments.split(',').filter(Boolean)) {
-      const fields = [];
-      for (let i = 0, value = 0, shift = 0; i < segment.length; i++) {
-        const digit = B64.indexOf(segment[i]);
-        value += (digit & 31) << shift;
-        if (digit & 32) shift += 5;
-        else { fields.push(value & 1 ? -(value >>> 1) : value >>> 1); value = 0; shift = 0; }
-      }
-      col += fields[0];
-      for (let i = 1; i < fields.length; i++) state[i - 1] += fields[i];
-      if (generated === line - 1 && fields.length > 1 && col <= column) found = [state[1] + 1, state[2]];
-    }
-  });
-  return found;
-}
 
 const SOURCE = `import { used } from './a'; export const y = used + 1;
 import /* a comment */ { other } from './b'; export const z = other * 2;
@@ -71,7 +50,7 @@ for (const compilerOptions of [{ importsNotUsedAsValues: 'preserve' }, { preserv
   for (const [token, expected] of [['used + 1', 'used + 1'], ['other * 2', 'other * 2']]) {
     const at = lines.findIndex((line) => line.includes(token));
     assert.ok(at >= 0, `${token} is in the output`);
-    const [line, column] = original(map, at + 1, lines[at].indexOf(token)) ?? [];
+    const [line, column] = originalPosition(map, at + 1, lines[at].indexOf(token)) ?? [];
     assert.equal(sourceLines[line - 1]?.slice(column, column + expected.length), expected,
       `${JSON.stringify(compilerOptions)}: ${token} maps to line ${line}, column ${column}`);
   }
@@ -88,7 +67,7 @@ for (const jsxFragment of ['"\u2028"', "'\u2029'"]) {
   const sourceLines = files['home/user/p/frag.tsx'].split('\n');
   for (const token of ['after = 1', 'later = 2']) {
     const at = lines.findIndex((line) => line.includes(token));
-    const [line, column] = original(map, at + 1, lines[at].indexOf(token)) ?? [];
+    const [line, column] = originalPosition(map, at + 1, lines[at].indexOf(token)) ?? [];
     assert.equal(sourceLines[line - 1]?.slice(column, column + token.length), token, `${jsxFragment}: ${token} maps to line ${line}, column ${column}`);
   }
 }

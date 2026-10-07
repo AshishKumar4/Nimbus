@@ -23,19 +23,9 @@
 
 import assert from 'node:assert/strict';
 import { resolveOnePackumentInFacet } from '../../packages/worker/src/npm/resolve-one-facet.ts';
-import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-resolve-preamble.ts';
+import './lib/resolve-facet-scope.mjs';
 import { PACKAGE_ABI_POLICY } from '../../packages/worker/src/facets/wasm-swap-registry.ts';
 
-const PREAMBLE_SYMBOLS = [
-  'SHOULD_SWAP', 'SHOULD_REJECT_FAIL',
-  'NATIVE_EXECUTABLE_REJECT', 'NATIVE_PLATFORM_REJECT', 'IS_OPTIONAL_NATIVE_BINDING', 'PARSE_SEMVER', 'COMPARE_SEMVER',
-  'SATISFIES_RANGE', 'RESOLVE_VERSION', 'IS_SEMVER_RANGE', 'STAGED_ARTIFACT', 'STAGED_ARTIFACT_APPLY',
-];
-Object.assign(
-  globalThis,
-  new Function(`${NPM_RESOLVE_PREAMBLE}\nreturn { ${PREAMBLE_SYMBOLS.join(', ')} };`)(),
-);
-globalThis.__nimbusUseRpcResult = async (promise, use) => use(await promise);
 
 const spec = (overrides = {}) => ({
   cachedEntries: [],

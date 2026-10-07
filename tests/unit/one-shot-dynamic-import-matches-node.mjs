@@ -15,22 +15,14 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
-import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
-import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
-import { writeModuleSet } from './lib/module-map-bundle.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { supervisorDouble } from './lib/supervisor-double.mjs';
+import { adoptSessionSupervisor, oneShotManager, runnerLoader } from './lib/one-shot-runner.mjs';
 
 const ROOT = '/home/user/dio';
 const files = {
@@ -146,51 +138,14 @@ try {
 // ── a one-shot node in the session ───────────────────────────────────────
 const authority = createAuthority();
 const { host, rawVfs, kfs } = authority;
-const dec = new TextDecoder();
 let out = '';
-adoptCtxExports({
-  SupervisorRPC: ({ props }) => supervisorDouble(async (name, args) => {
-    if (name === 'stdout' || name === 'stderr') { out += dec.decode(args[0]); return; }
-    if (name === 'reportExit') return;
-    return host.supervisorOp({ op: name, args, pid: props?.pid });
-  }),
-});
-const runnerDir = mkdtempSync(join(tmpdir(), 'nimbus-dynamic-import-'));
-process.on('exit', () => rmSync(runnerDir, { recursive: true, force: true }));
-let runnerN = 0;
-const env = {
-  LOADER: {
-    load(config) {
-      const file = writeModuleSet(join(runnerDir, `runner-${runnerN++}`), config.modules, 'runner.js');
-      const loaded = import(pathToFileURL(file).href);
-      const supervisor = config.env?.SUPERVISOR;
-      return {
-        getEntrypoint: () => ({
-          async fetch(request) { return (await loaded).default.fetch(request, { SUPERVISOR: supervisor }); },
-          [Symbol.dispose]() {},
-        }),
-        [Symbol.dispose]() {},
-      };
-    },
-    get() { throw new Error('a one-shot exec never takes the keyed loader path'); },
-  },
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)));
-    },
-  },
-};
-const manager = new FacetManager(
-  createFacetCtx(createFacetWorld(() => ({})), 'one-shot-dynamic-import'),
-  env, host.processes, new PortRegistry(), processHostFor, {},
-);
-manager.setVfs(rawVfs, processFiles(rawVfs));
+adoptSessionSupervisor(host, (text) => { out += text; });
+const loader = runnerLoader('dynamic-import');
+const manager = oneShotManager('one-shot-dynamic-import', { host, rawVfs, loader });
 // The engine the transform facet runs (lib/oxc-engine.mjs); the service's
 // in-isolate path runs the same transform-then-rewrite.
-const esbuild = new EsbuildService();
-esbuild.ensureInit = async () => {};
-esbuild._esbuild = (await import('./lib/oxc-engine.mjs')).oxcEngine;
+const { oxcEngine } = await import('./lib/oxc-engine.mjs');
+const esbuild = new EsbuildService(undefined, { engine: async () => oxcEngine });
 manager.setEsbuildService(esbuild);
 
 for (const [rel, text] of Object.entries(files)) {

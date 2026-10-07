@@ -1,3 +1,4 @@
+import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import { type RuntimeArtifactMetadata, type RuntimePythonPackageArtifactMetadata } from './runtime-manifest.js';
 /** Where `pip install` puts packages for the user whose home is `home`. */
 export declare function pythonSitePackages(home: string): string;
@@ -18,6 +19,8 @@ export declare function sessionUsesSciVariant(vfs: PythonPipVfs, home: string): 
 export interface PythonPipRuntimeContext {
     /** The installing user's home: packages go to its {@link pythonSitePackages}. */
     home: string;
+    /** The workspace's network: PyPI is reached through its egress, when it has one. */
+    network: WorkspaceNetwork;
     pyodideLockfileText?: string | null;
     runtimeArtifacts?: RuntimeArtifactMetadata[];
 }

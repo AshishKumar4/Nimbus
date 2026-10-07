@@ -20,8 +20,8 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { attachSupervisorOps } from './session-supervisor-ops.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 
 const dec = new TextDecoder();
 

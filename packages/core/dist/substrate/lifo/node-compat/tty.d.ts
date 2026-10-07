@@ -14,10 +14,10 @@ export declare class WriteStream extends Writable {
     readonly isTTY = true;
     columns: number;
     rows: number;
-    clearLine(_dir: number, _cb?: () => void): boolean;
-    clearScreenDown(_cb?: () => void): boolean;
-    cursorTo(_x: number, _y?: number | (() => void), _cb?: () => void): boolean;
-    moveCursor(_dx: number, _dy: number, _cb?: () => void): boolean;
+    clearLine(dir: number, cb?: () => void): boolean;
+    clearScreenDown(cb?: () => void): boolean;
+    cursorTo(x: number, y?: number | (() => void), cb?: () => void): boolean;
+    moveCursor(dx: number, dy: number, cb?: () => void): boolean;
     getColorDepth(): number;
     hasColors(count?: number): boolean;
     getWindowSize(): [number, number];

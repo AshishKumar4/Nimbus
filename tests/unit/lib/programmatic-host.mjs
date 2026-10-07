@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 
 import { NimbusWorkspace } from '../../../packages/core/src/workspace/nimbus-workspace.ts';
-import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 /**
  * @param {{

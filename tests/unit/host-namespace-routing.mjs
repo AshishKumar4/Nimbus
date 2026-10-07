@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs';
 import { Fanout } from '../../packages/fabric/src/fanout.ts';
 import { DO_DYNAMIC_WORKER_LIMIT } from '../../packages/fabric/src/budgets.ts';
 import { composeFabric, hostNamespace } from '../../packages/fabric/src/composition.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 const ctx = { id: { toString: () => 'host-namespace-test-do' }, waitUntil() {} };
 
@@ -46,7 +47,7 @@ const ctx = { id: { toString: () => 'host-namespace-test-do' }, waitUntil() {} }
     },
   };
 
-  const pool = new Fanout(env, ctx, { tag: 'ns-test', omitSupervisor: true });
+  const pool = new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag: 'ns-test', omitSupervisor: true });
   // Wider than the coordinator's Dynamic Worker budget, so it shards.
   const width = DO_DYNAMIC_WORKER_LIMIT + 1;
   const tasks = Array.from({ length: width }, (_, i) => ({ key: `t-${i}`, args: i }));

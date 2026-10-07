@@ -9,8 +9,9 @@
  * fails the pinned digest: a stale or partial asset never reaches workerd's
  * loader or a facet. L2 is written only with verified bytes read from ASSETS.
  *
- * Artifacts differ only in what they name in errors and in what a bad L2 entry
- * means to their caller (`poisonedCache`), so each passes those in.
+ * Artifacts differ only in what they name in errors, their L2 key, and what a
+ * bad L2 entry means to their caller (`poisonedCache`); `stagedAsset` builds
+ * each from those.
  */
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
@@ -90,24 +91,41 @@ export function memoizeUntilRejected(load) {
     };
 }
 /**
+ * The `StagedAsset` of an artifact `stagedBy` staged and pinned, which
+ * `requiredBy` reads: one wording for every artifact's failures, naming the
+ * artifact, its path and the script that restages it. A bad L2 entry is
+ * refused unless the artifact says to replace it (`poisonedCache`).
+ */
+export function stagedAsset(asset) {
+    const { label, path, sha256, stagedBy } = asset;
+    return {
+        path,
+        l2Key: asset.l2Key,
+        sha256,
+        contentType: asset.contentType,
+        poisonedCache: asset.poisonedCache ?? 'reject',
+        missingBinding: `Nimbus: ${asset.requiredBy} requires an env.ASSETS binding (serves ${path}) — ` +
+            'add the assets binding from the embed config (see packages/worker README)',
+        fetchFailed: (res) => `${label} asset fetch failed: ${res.status} ${res.statusText} for ${path} — ` +
+            `deploy is missing the staged asset (run ${stagedBy})`,
+        integrityFailed: (digest, from) => `${label} integrity check failed: expected ${sha256}, got ${digest} (${from}) for ${path} — ` +
+            `the staged asset is corrupt or out of sync; rerun ${stagedBy} and redeploy`,
+    };
+}
+/**
  * The `StagedAsset` of a facet source text staged under
- * public/_assets/runtime/ by `stagedBy` and needed by `requiredBy`: a bad L2
- * entry is replaced from ASSETS, since every later fetch in the colo for the
- * build would otherwise fail on it.
+ * public/_assets/runtime/ by `stagedBy` and needed by `requiredBy`: keyed in
+ * L2 by build id, and a bad L2 entry is replaced from ASSETS, since every
+ * later fetch in the colo for the build would otherwise fail on it.
  */
 export function stagedRuntimeSource(source) {
-    return {
+    return stagedAsset({
+        label: source.label,
         path: source.entry,
-        l2Key: `https://nimbus-cache.invalid${source.entry}?build=${source.buildId}`,
         sha256: source.sha256,
+        l2Key: `https://nimbus-cache.invalid${source.entry}?build=${source.buildId}`,
+        requiredBy: source.requiredBy,
+        stagedBy: source.stagedBy,
         poisonedCache: 'refetch',
-        missingBinding: `Nimbus: ${source.requiredBy} requires an env.ASSETS binding (serves the ` +
-            `staged ${source.label} source at ${source.entry}) — add the assets ` +
-            'binding from the embed config (see packages/worker README)',
-        fetchFailed: (res) => `${source.label} asset fetch failed: ${res.status} ${res.statusText} for ` +
-            `${source.entry} — deploy is missing the staged source (run ${source.stagedBy})`,
-        integrityFailed: (digest) => `${source.label} asset integrity mismatch for ${source.entry}: ` +
-            `expected ${source.sha256.slice(0, 16)}…, got ${digest.slice(0, 16)}… — ` +
-            `the staged asset is stale or corrupt; rerun ${source.stagedBy} and redeploy`,
-    };
+    });
 }

@@ -1,15 +1,10 @@
 /**
- * unix-commands.ts — Nimbus v2.0 Unix command implementations.
- *
- * Every command is a real implementation operating on SqliteVFS.
- * No stubs, no "not implemented" — each does actual work.
- *
- * Commands: which, env, export, unset, history, clear, alias, date,
- * uptime, tree, grep -r, head, tail, wc, diff, sort, uniq,
- * sed (s///), awk (field extract), xargs, tee, chown, ln -s,
- * du, man/help, basename, dirname, printf, true, false, seq, sleep,
- * touch, stat, file, xxd, od, hexdump, base64, sha256sum, id, hostname,
- * realpath
+ * unix-commands.ts — the Unix commands that need the shell's own machinery:
+ * credentials, mounts, command resolution (which/type/command/xargs) and the
+ * durable store's metadata. Every command is a real implementation; the
+ * pure byte/text tools are the substrate's (substrate/lifo/commands), which
+ * `textCommand` wraps where this module registers one of them.
+ * `registerUnixCommands` at the end is the list.
  */
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { Command } from '../substrate/lifo/commands/types.js';

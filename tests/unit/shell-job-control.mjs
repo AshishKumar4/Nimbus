@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const cases = [
   ['sleep 30 & sleep 31 & jobs; kill %1 %2; wait', '[1]-  Running                    sleep 30 &\n[2]+  Running                    sleep 31 &\n'],

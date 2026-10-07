@@ -293,9 +293,11 @@ export function auditParser(code, realm) {
   const imports = program.body.filter((s) => s.type === 'ImportDeclaration').length;
   program.body.forEach((statement, index) => {
     if (statement.type !== 'ExpressionStatement' || !isRealmCall(statement.expression, 'nullPrototypes')) return;
-    const target = statement.expression.arguments[0];
+    const call = /** @type {import('acorn').CallExpression} */ (statement.expression);
+    // Only an identifier has a binding; anything else fails functionLiteral below.
+    const target = /** @type {import('acorn').Identifier} */ (call.arguments[0]);
     const binding = bindingOf(target);
-    if (statement.expression.arguments.length !== 1 || !functionLiteral(binding)) {
+    if (call.arguments.length !== 1 || !functionLiteral(binding)) {
       find(statement, 'nullPrototypes given something other than a variable whose value is a function literal');
       return;
     }
@@ -303,7 +305,8 @@ export function auditParser(code, realm) {
     const declaration = binding.values[0];
     const declared = declaration.type === 'FunctionDeclaration'
       ? program.body.slice(imports, index).every((s) => s.type === 'ExpressionStatement' && isRealmCall(s.expression, 'nullPrototypes'))
-      : program.body[index - 1]?.type === 'VariableDeclaration' && program.body[index - 1].declarations.some((d) => d.init === declaration);
+      : program.body[index - 1]?.type === 'VariableDeclaration'
+        && /** @type {import('acorn').VariableDeclaration} */ (program.body[index - 1]).declarations.some((d) => d.init === declaration);
     if (!declared) find(statement, `nullPrototypes(${target.name}) away from where ${target.name} is declared`);
     else nulled.add(binding);
   });

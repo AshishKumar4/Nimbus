@@ -9,6 +9,48 @@ const spec = {
     quiet: { type: 'boolean', short: 'q' },
     help: { type: 'boolean' },
 };
+/**
+ * Compress each file to FILE.gz, or decompress each FILE.gz to FILE, as GNU
+ * gzip 1.14 does: the input goes unless -k; an existing output is not
+ * overwritten without -f (a warning, even under -q); a name without the
+ * .gz suffix is skipped with a warning, which -q silences. Exit status: 1
+ * for an error, else 2 for a warning, else 0.
+ */
+export async function gzipFiles(ctx, files, options) {
+    let exitCode = 0;
+    const warn = async (message, quietable) => {
+        if (quietable && options.quiet)
+            return;
+        await ctx.stderr.write(`${options.name}: ${message}\n`);
+        if (exitCode === 0)
+            exitCode = 2;
+    };
+    for (const file of files) {
+        const path = resolve(ctx.cwd, file);
+        try {
+            if (options.decompress && !path.endsWith('.gz')) {
+                await warn(`${file}: unknown suffix -- ignored`, true);
+                continue;
+            }
+            const outPath = options.decompress ? path.slice(0, -3) : `${path}.gz`;
+            if (!options.force && (await ctx.vfs.exists(outPath))) {
+                await warn(`${options.decompress ? file.slice(0, -3) : `${file}.gz`} already exists;\tnot overwritten`, false);
+                continue;
+            }
+            const data = await ctx.vfs.readFile(path);
+            await ctx.vfs.writeFile(outPath, options.decompress ? await decompressGzip(data) : await compressGzip(data));
+            if (!options.keep)
+                await ctx.vfs.unlink(path);
+        }
+        catch (e) {
+            if (!isVfsError(e))
+                throw e;
+            await ctx.stderr.write(`${options.name}: ${file}: ${e.message}\n`);
+            exitCode = 1;
+        }
+    }
+    return exitCode;
+}
 const command = async (ctx) => {
     const { flags, positional, unknown } = parseArgs(ctx.args, spec);
     if (flags.help) {
@@ -26,48 +68,12 @@ const command = async (ctx) => {
         await ctx.stderr.write(`gzip: invalid option -- '${rejected[0].replace(/^-+/, '')}'\n`);
         return 1;
     }
-    const keep = flags.keep === true;
-    const decompress = flags.decompress === true;
-    const files = positional;
-    if (files.length === 0) {
+    if (positional.length === 0) {
         await ctx.stderr.write('gzip: missing file operand\n');
         return 1;
     }
-    let exitCode = 0;
-    for (const file of files) {
-        const path = resolve(ctx.cwd, file);
-        try {
-            if (decompress) {
-                if (!path.endsWith('.gz')) {
-                    await ctx.stderr.write(`gzip: ${file}: unknown suffix -- ignored\n`);
-                    exitCode = 1;
-                    continue;
-                }
-                const data = (await ctx.vfs.readFile(path));
-                const decompressed = await decompressGzip(data);
-                const outPath = path.slice(0, -3);
-                (await ctx.vfs.writeFile(outPath, decompressed));
-                if (!keep)
-                    (await ctx.vfs.unlink(path));
-            }
-            else {
-                const data = (await ctx.vfs.readFile(path));
-                const compressed = await compressGzip(data);
-                (await ctx.vfs.writeFile(path + '.gz', compressed));
-                if (!keep)
-                    (await ctx.vfs.unlink(path));
-            }
-        }
-        catch (e) {
-            if (isVfsError(e)) {
-                await ctx.stderr.write(`gzip: ${file}: ${e.message}\n`);
-                exitCode = 1;
-            }
-            else {
-                throw e;
-            }
-        }
-    }
-    return exitCode;
+    return await gzipFiles(ctx, positional, {
+        name: 'gzip', decompress: flags.decompress === true, keep: flags.keep === true, force: flags.force === true, quiet: flags.quiet === true,
+    });
 };
 export default command;

@@ -3,43 +3,12 @@
 import assert from 'node:assert/strict';
 import { makeClangRunnerFactory } from '../../packages/core/src/runtime/clang-runner.ts';
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-
-const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
+import { installedRuntime, runtimeContext } from './lib/runtime-session.mjs';
 
 // A session with a home but no installed runtime: the only thing a refusal can
 // come from is the missing blob the manifest names.
-function missingInstallAuthority() {
-  const harness = createSqliteVfsTestHarness();
-  const raw = new SqliteVFS(harness.sql, harness.ctx);
-  const root = raw.as(CRED_KERNEL);
-  root.mkdir('home/user', { recursive: true, mode: 0o755 });
-  root.chown('home/user', USER.uid, USER.gid);
-  return new ProcessFiles(raw);
-}
-
-function outputContext(filesystem, args) {
-  let stdout = '';
-  let stderr = '';
-  return {
-    ctx: {
-      pid: 17,
-      vfs: new ProcessView(filesystem.bind({ pid: 17, cred: USER })),
-      cred: USER,
-      args,
-      cwd: '/home/user',
-      env: {},
-      stdin: '',
-      stdout: { write: (value) => { stdout += value; } },
-      stderr: { write: (value) => { stderr += value; } },
-    },
-    output: () => ({ stdout, stderr }),
-  };
-}
+const missingInstallAuthority = () => installedRuntime().filesystem;
+const outputContext = (filesystem, args) => runtimeContext(filesystem, { args, pid: 17 });
 
 // A missing install is refused before anything is compiled, so a host that
 // throws on use proves the refusal happened first.

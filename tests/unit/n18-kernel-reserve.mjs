@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { StorageLedger } from '../../packages/core/src/runtime/storage-ledger.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 // The default reserve: 1% of the limit, and never under 16 MiB.
 assert.equal(new StorageLedger(createSqliteVfsTestHarness().sql).kernelReserve, 100_000_000);

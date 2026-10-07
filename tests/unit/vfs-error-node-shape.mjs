@@ -19,7 +19,7 @@ import * as vfsErrors from '../../packages/core/src/vfs/vfs-error.ts';
 import { NimbusFlueApi } from '../../packages/sdk/src/flue.ts';
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { processBridge } from './lib/process-bridge.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const { VfsError, VFS_DESCRIPTION, syscallError, toVfsError } = vfsErrors;
 const bytes = (text) => new TextEncoder().encode(text);

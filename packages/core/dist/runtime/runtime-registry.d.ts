@@ -184,6 +184,12 @@ export interface RuntimeSpec {
      * (RuntimeRunOpts.launchesServer).
      */
     routesServers?: boolean;
+    /**
+     * The program run with no script at a terminal, its stdin the terminal's
+     * lines: the runtime's REPL (js-repl.ts), as `node` runs its own. With no
+     * script and stdin not a terminal, the program is stdin (`echo code | node`).
+     */
+    repl?: string;
 }
 /**
  * Minimal registry shape we depend on. Avoids importing the full vendored

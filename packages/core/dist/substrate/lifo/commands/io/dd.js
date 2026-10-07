@@ -3,12 +3,7 @@ import { encode } from '../../utils/encoding.js';
 import { SinkWriter } from '../../../../_shared/byte-stream.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 import { isCharacterDevice, statOrThrow } from '../../../../vfs/vfs.js';
-const SIZE_SUFFIXES = new Map([
-    ['c', 1], ['w', 2], ['b', 512],
-    ['kB', 1000], ['K', 1024], ['k', 1024], ['KiB', 1024],
-    ['MB', 1000 ** 2], ['M', 1024 ** 2], ['m', 1024 ** 2], ['MiB', 1024 ** 2],
-    ['GB', 1000 ** 3], ['G', 1024 ** 3], ['g', 1024 ** 3], ['GiB', 1024 ** 3],
-]);
+import { parseSuffixedCount } from '../../utils/size-units.js';
 const command = async (ctx) => {
     const parsed = parseOptions(ctx.args);
     if (!parsed.ok) {
@@ -233,25 +228,19 @@ function parseOptions(args) {
     }
     return { ok: true, options };
 }
-/** `1024`, `1K`, `2MiB`, `3x4` — GNU dd's size grammar. */
+/**
+ * `1024`, `1K`, `2MiB`, `3x4`: GNU dd's size grammar, factors joined by `x`,
+ * each a count with dd's suffixes (`c` bytes, `w` words, `b` blocks, ...) or
+ * digits followed by a bare `B`.
+ */
 function parseSize(value) {
-    let total = null;
+    let total = 1;
     for (const factor of value.split('x')) {
-        const match = /^(\d+)([a-zA-Z]*)$/.exec(factor);
-        if (!match)
+        const count = parseSuffixedCount(/[0-9]B$/.test(factor) ? factor.slice(0, -1) : factor, 'bcEGkKMPQRTwYZ0');
+        if (count === null)
             return null;
-        const digits = Number.parseInt(match[1], 10);
-        if (!Number.isSafeInteger(digits))
-            return null;
-        let scale = 1;
-        if (match[2]) {
-            const suffix = SIZE_SUFFIXES.get(match[2]);
-            if (suffix === undefined)
-                return null;
-            scale = suffix;
-        }
-        total = (total ?? 1) * digits * scale;
+        total *= count;
     }
-    return total;
+    return Number.isSafeInteger(total) ? total : null;
 }
 export default command;

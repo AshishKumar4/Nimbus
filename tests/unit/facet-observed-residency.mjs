@@ -39,15 +39,16 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { launchFs } from './lib/launch-fs.mjs';
 import {
   CWD_SNAPSHOT_MAX_FILE_BYTES,
 } from '../../packages/core/src/constants.ts';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
-import { attachSupervisorOps } from './session-supervisor-ops.mjs';
+import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { writeModuleSet } from './lib/module-map-bundle.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 // ── Part 1: admission is a budget, not a policy ─────────────────────────────
 //
@@ -210,14 +211,7 @@ const env = {
     },
     get() { throw new Error('a one-shot exec never takes the keyed loader path'); },
   },
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(
-        readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-      );
-    },
-  },
+  ASSETS: stagedAssets,
 };
 
 // A real session ctx, not a bare `{ id, waitUntil }`: the exec's bundle build

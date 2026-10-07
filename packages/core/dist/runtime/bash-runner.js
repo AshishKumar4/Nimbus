@@ -1,3 +1,28 @@
+/**
+ * bash-runner — real GNU bash 5.2.37 (wasm32-wasi, asyncified) in a
+ * dedicated facet.
+ *
+ * bash CANNOT run through the stock JSPI wasm-runner: the binary is
+ * asyncify-instrumented (fork/setjmp/blocking-pipe unwinds) and needs
+ * 15 `nimbus_proc` imports plus MULTIPLE instances per facet (fork).
+ * This runner embeds the proven multi-instance fork/pipe/exec/setjmp
+ * scheduler (packages/worker/wasm/bash/run-bash-fork.mjs — the local
+ * acid-test driver, itself a port of the PROVEN-LIVE fork M1/M2/M3
+ * mechanisms) as a facet preamble.
+ *
+ * Architecture (mirrors ruby-runner's facet dispatch):
+ *  - bash.async.wasm + the coreutil exec targets ship through the facet
+ *    host, which compiles them and exposes them on
+ *    globalThis.__NIMBUS_WASM.
+ *  - The preamble defines __bashBoot / __bashFeed. Boot instantiates
+ *    bash, pumps the scheduler until the process tree exits or the
+ *    root parks on a terminal stdin read; each feed delivers stdin
+ *    bytes and pumps again. Facet state persists across submits on
+ *    the warm isolate (same mechanism as __rubyInstance caching).
+ *  - stdout/stderr accumulate per pump slice and stream back to the
+ *    CommandContext; VFS writes come back as a WasiFsDiff on exit.
+ */
+import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
 import { withHostView } from './process-files.js';
 import { z } from 'zod';
 import { BASH_RUNNER_BODY_SRC } from './bash-runner.generated.js';
@@ -344,7 +369,7 @@ export function makeBashRunnerFactory(deps) {
             catch (e) {
                 // Killed: the program ends as an interrupted one does.
                 if (ctx.signal.aborted)
-                    return 130;
+                    return exitCodeForAbortSignal(ctx.signal);
                 ctx.stderr.write(`${binName}: dispatch failed: ${errorMessage(e)}\n`);
                 return 1;
             }

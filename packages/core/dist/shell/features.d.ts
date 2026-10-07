@@ -5,7 +5,7 @@ interface ShellLike {
     drainPasteQueue(): void;
     redrawLine(): void;
     running: boolean;
-    history: string[];
+    readonly history: readonly string[];
     lineBuffer: string;
     cursorPos: number;
     screenCursorRow: number;
@@ -33,7 +33,6 @@ export declare class HeredocHandler {
     private heredocInfo;
     private currentHeredocIndex;
     private bodies;
-    private historyLengthAtStart;
     /** Safety limit to prevent unbounded memory growth */
     private static readonly MAX_HEREDOC_LINES;
     constructor(shell: ShellLike, terminal: TerminalLike);

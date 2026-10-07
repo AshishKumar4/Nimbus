@@ -7,6 +7,10 @@
 
 import { supervisorAnswer } from '../../../packages/core/src/runtime/vfs-supervisor.ts';
 
+/**
+ * @param {(method: string, args: unknown[]) => unknown} call
+ * @param {(name: string) => boolean} [lacks]
+ */
 export function supervisorDouble(call, lacks = () => false) {
   return new Proxy({}, {
     get(_target, name) {

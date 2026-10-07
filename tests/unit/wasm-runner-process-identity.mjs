@@ -23,9 +23,10 @@ import wabtInit from 'wabt';
 
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { localFacetHost } from '../../packages/core/src/runtime/local-facet-host.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { rpcExec } from '../../packages/worker/src/session/programmatic.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { programmaticHost } from './lib/programmatic-host.mjs';
 
 // Creates `made-by-guest` in its working directory (the preopen at fd 3) and
@@ -55,7 +56,7 @@ const AGENT = { uid: 2000, gid: 2000 };
  * the pid). Everything else is the local host's.
  */
 function pidKeyedFacets(workspace) {
-  const local = localFacetHost();
+  const local = localFacetHost(ISOLATE_NETWORK);
   return {
     ...local,
     open(spec) {
@@ -85,7 +86,7 @@ const unmake = (ws) => { if (made(ws)) ws.vfs.as(CRED_KERNEL).unlink('home/user/
 // ── The library host: ws.exec ───────────────────────────────────────────────
 {
   const harness = createSqliteVfsTestHarness();
-  const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1, facets: localFacetHost() });
+  const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1, facets: localFacetHost(ISOLATE_NETWORK) });
   seed(ws);
 
   const own = await ws.exec('cd /home/user/locked && /home/user/guest.wasm');

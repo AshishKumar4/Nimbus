@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 27 s wall, 32 s CPU, 2.2 GiB peak (6 runs, 2026-10-06)
 // A filesystem refusal reaches a program exactly as it did when SupervisorRPC
 // threw it (Kinu ask 16), through the real workerd hops: process isolate →
 // SupervisorRPC → session Durable Object and back. SupervisorRPC now answers a

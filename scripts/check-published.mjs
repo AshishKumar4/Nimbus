@@ -11,11 +11,11 @@
 //
 // Usage: bun scripts/check-published.mjs   (exit 1 names each package to bump)
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { filesUnder, sha256Hex } from './lib/fs-walk.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const REGISTRY = 'https://registry.npmjs.org';
@@ -40,14 +40,7 @@ const run = (command, args, cwd) => execFileSync(command, args, { cwd, stdio: ['
 /** Every file of an unpacked tarball (its `package/` directory) as path → sha256. */
 async function fileDigests(dir) {
   const digests = new Map();
-  const walk = async (at) => {
-    for (const entry of await readdir(at, { withFileTypes: true })) {
-      const path = join(at, entry.name);
-      if (entry.isDirectory()) await walk(path);
-      else digests.set(relative(dir, path), createHash('sha256').update(await readFile(path)).digest('hex'));
-    }
-  };
-  await walk(dir);
+  for (const rel of filesUnder(dir)) digests.set(rel, sha256Hex(await readFile(join(dir, rel))));
   return digests;
 }
 

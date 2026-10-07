@@ -34,13 +34,24 @@ export declare function prewarmBuildFacet(ctx: DurableObjectState, env: unknown)
  * without one, its failure says what happened.
  */
 export declare function rolldownBuildHost(ctx: DurableObjectState, env: unknown, fallback?: EsbuildBuildHost): EsbuildBuildHost;
+/** A pre-bundle whose build facet was reset under it twice: the call and its one retry. */
+export declare class BuildFacetResetError extends Error {
+    readonly specifier: string;
+    readonly reason: string;
+    constructor(specifier: string, reason: string);
+}
 /**
  * Pre-bundles one npm specifier from its slice in the Durable Object's build
  * facet (core runtime/prebundle-slice.ts on rolldown): the slice crosses
  * once, with the call, and the bundle comes back. A failed pre-bundle is a
  * result (`ok: false`), as is one whose binding died under it, which also
- * retires that generation; a call that throws drops the stub, as a build's
- * does.
+ * retires that generation.
+ *
+ * A call that throws (the facet's isolate reset under it: past its memory,
+ * or its host gone) drops the stub, and the pre-bundle, which is pure, runs
+ * once more on a fresh facet, logged. A second throw is a
+ * BuildFacetResetError naming the package and why; a facet that never
+ * loaded is the load's own error, not retried.
  */
 export declare function buildFacetPrebundler(ctx: DurableObjectState, env: unknown): (spec: PrebundleSpec) => Promise<PrebundleResult>;
 /**

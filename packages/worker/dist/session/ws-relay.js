@@ -39,6 +39,23 @@
  * small fraction of that, because a session can hold several.
  */
 export const WS_RELAY_MAX_BACKLOG_BYTES = 4 * 1024 * 1024;
+/**
+ * The most of a refused upgrade's body the facet is handed (an HTTP 401's
+ * JSON, say): enough to read why, never a download through the relay.
+ */
+export const WS_RELAY_REFUSAL_BODY_MAX_BYTES = 64 * 1024;
+/** How long a refused upgrade's body is read for: one held open past this is cut there. */
+export const WS_RELAY_REFUSAL_BODY_MAX_MS = 30_000;
+/**
+ * Request headers the relay owns, never the facet's: the handshake's own
+ * (the upgrade is the relay's fetch; Sec-WebSocket-Protocol is the
+ * subprotocols it is given) and the hop-by-hop ones.
+ */
+const RELAY_OWNED_HEADERS = new Set([
+    'connection', 'upgrade', 'host', 'content-length', 'transfer-encoding', 'keep-alive', 'te', 'trailer',
+    'proxy-authorization', 'proxy-connection',
+    'sec-websocket-key', 'sec-websocket-version', 'sec-websocket-extensions', 'sec-websocket-accept', 'sec-websocket-protocol',
+]);
 /** Longest a facet's poll may park before returning empty. */
 const WS_RELAY_MAX_WAIT_MS = 5_000;
 function eventBytes(event) {
@@ -61,28 +78,54 @@ function upgradeUrl(url) {
     return target.href;
 }
 export class WebSocketRelay {
+    network;
     entries = new Map();
     nextId = 1;
+    /** `network`: the workspace's, whose egress opens every socket a process asks for. */
+    constructor(network) {
+        this.network = network;
+    }
     /**
      * Open the real socket and start buffering for the facet.
      *
      * Workers has no client `new WebSocket(url)` inside a Durable Object; the
-     * upgrade is an ordinary fetch whose response carries the socket. No header
-     * from the facet is forwarded — the facet supplies a URL and subprotocols
-     * and nothing else, so the supervisor cannot be used to attach its own
-     * ambient credentials to a request the facet chose the destination of.
+     * upgrade is an ordinary fetch, through the workspace's network, whose
+     * response carries the socket. The facet's own request headers go with it
+     * (an Authorization, an Origin, a Cookie: what `ws` and Node's WebSocket
+     * send), but those the relay owns (RELAY_OWNED_HEADERS); the supervisor
+     * adds none of its own, so the request is the one the program could have
+     * sent itself, to the destination it chose, through the same egress. A
+     * destination that does not upgrade is answered as it answered, at once:
+     * its status and headers, and (`refusalBody`) its body to read as it comes.
      */
-    async open(pid, url, protocols) {
-        const headers = { Upgrade: 'websocket' };
+    async open(pid, url, protocols, requestHeaders = [], refusalBody = false) {
+        const headers = new Headers();
+        for (const [name, value] of requestHeaders) {
+            if (!RELAY_OWNED_HEADERS.has(name.toLowerCase()))
+                headers.append(name, value);
+        }
+        headers.set('Upgrade', 'websocket');
         if (protocols.length > 0)
-            headers['Sec-WebSocket-Protocol'] = protocols.join(', ');
-        const response = await fetch(upgradeUrl(url), { headers });
+            headers.set('Sec-WebSocket-Protocol', protocols.join(', '));
+        const response = await this.network().fetch(upgradeUrl(url), { headers });
         const socket = response.webSocket;
         if (!socket) {
-            throw new Error(`websocket relay: ${url} did not upgrade (HTTP ${response.status}); ` +
-                'the supervisor terminates a facet’s sockets so inbound frames arrive through it');
+            const head = { status: response.status, statusText: response.statusText, headers: [...response.headers] };
+            if (!refusalBody || response.body === null) {
+                await response.body?.cancel().catch(() => { });
+                return { refused: { ...head, body: null } };
+            }
+            const id = this.nextId++;
+            const entry = { socket: null, pid, pending: [], pendingBytes: 0, waiters: [], closed: false };
+            this.entries.set(id, entry);
+            void this.relayRefusalBody(id, entry, response.body);
+            return { refused: { ...head, body: id } };
         }
         socket.accept();
+        // A binary frame as bytes: workerd's WebSocket gives a Blob by default
+        // (the standard binaryType, compat date 2026-09-26, measured), which no
+        // view reads, so every binary frame reached the facet empty.
+        socket.binaryType = 'arraybuffer';
         const id = this.nextId++;
         const protocol = response.headers.get('sec-websocket-protocol') ?? '';
         const entry = {
@@ -104,7 +147,7 @@ export class WebSocketRelay {
             entry.closed = true;
         });
         this.deliver(id, { kind: 'open', protocol });
-        return { id, protocol };
+        return { id, protocol, headers: [...response.headers] };
     }
     /**
      * The facet's long poll. Returns whatever has arrived, or parks until
@@ -132,7 +175,7 @@ export class WebSocketRelay {
     }
     send(pid, id, text, bytes) {
         const entry = this.entryFor(pid, id);
-        if (!entry || entry.closed)
+        if (!entry || entry.closed || entry.socket === null)
             return;
         entry.socket.send(text !== null ? text : (bytes ?? new Uint8Array(0)));
     }
@@ -141,8 +184,9 @@ export class WebSocketRelay {
         if (!entry)
             return;
         entry.closed = true;
+        entry.cancel?.();
         try {
-            entry.socket.close(code, reason);
+            entry.socket?.close(code, reason);
         }
         catch { /* already gone */ }
         this.entries.delete(id);
@@ -155,6 +199,56 @@ export class WebSocketRelay {
             if (entry.pid === pid)
                 this.close(pid, id, 1001, 'process exited');
         }
+    }
+    /**
+     * A refused upgrade's body, to the facet as it comes: each chunk a binary
+     * message, up to WS_RELAY_REFUSAL_BODY_MAX_BYTES and for at most
+     * WS_RELAY_REFUSAL_BODY_MAX_MS, then a close saying how it ended. The rest
+     * is cancelled: nothing of it waits here past the bound.
+     */
+    async relayRefusalBody(id, entry, body) {
+        const reader = body.getReader();
+        entry.cancel = () => { reader.cancel().catch(() => { }); };
+        let resolveLate = () => { };
+        const late = new Promise((resolve) => { resolveLate = resolve; });
+        const timer = setTimeout(() => resolveLate('late'), WS_RELAY_REFUSAL_BODY_MAX_MS);
+        let length = 0;
+        let end;
+        try {
+            for (;;) {
+                const next = await Promise.race([reader.read(), late]);
+                if (entry.closed)
+                    return;
+                if (next === 'late') {
+                    end = { kind: 'close', code: 1001, reason: `websocket relay: the refusal's body was still open after ${WS_RELAY_REFUSAL_BODY_MAX_MS} ms` };
+                    break;
+                }
+                if (next.done) {
+                    end = { kind: 'close', code: 1000, reason: '' };
+                    break;
+                }
+                const room = WS_RELAY_REFUSAL_BODY_MAX_BYTES - length;
+                const chunk = next.value.byteLength > room ? next.value.subarray(0, room) : next.value;
+                if (chunk.byteLength > 0)
+                    this.deliver(id, { kind: 'message', text: null, bytes: chunk });
+                length += chunk.byteLength;
+                if (next.value.byteLength > room) {
+                    end = { kind: 'close', code: 1009, reason: `websocket relay: the refusal's body was cut at ${WS_RELAY_REFUSAL_BODY_MAX_BYTES} bytes` };
+                    break;
+                }
+            }
+        }
+        catch {
+            end = { kind: 'close', code: 1006, reason: "websocket relay: the refusal's body failed" };
+        }
+        finally {
+            clearTimeout(timer);
+            reader.cancel().catch(() => { });
+        }
+        if (entry.closed)
+            return;
+        this.deliver(id, end);
+        entry.closed = true;
     }
     entryFor(pid, id) {
         const entry = this.entries.get(id);
@@ -184,8 +278,9 @@ export class WebSocketRelay {
                     'while the process was not reading; the socket was closed rather than dropping frames',
             });
             entry.closed = true;
+            entry.cancel?.();
             try {
-                entry.socket.close(1009, 'inbound backlog exceeded');
+                entry.socket?.close(1009, 'inbound backlog exceeded');
             }
             catch { /* already gone */ }
         }

@@ -417,6 +417,7 @@ class Run {
     this.sayAll();
   }
 
+  /** @param {[move: string, id: any, replyId?: any, how?: any]} step */
   async move([move, id, replyId, how]) {
     const p = this.get(id);
     const g = this.guests.get(id);
@@ -544,6 +545,10 @@ const idOf = (m) => m.join(':');
  * `maxStates` distinct states, up to the order of independent moves: the
  * violations found, each with the moves that led there. Each state is
  * reached by replaying its moves on a fresh ledger and process table.
+ *
+ * @param {any} production
+ * @param {any} topology
+ * @param {{ maxStates?: number, collect?: number, stop?: (found: { violation: unknown, path: unknown[], guests: unknown }) => boolean, focus?: number | null }} [options]
  */
 export async function explore(production, topology, { maxStates = 200_000, collect = 1, stop = () => false, focus = null } = {}) {
   // State → the moves already covered from it (its sleep set when explored).
@@ -620,6 +625,57 @@ export function childSets(n, kinds = ['q', 'b', 's']) {
 }
 
 /**
+ * Two guest holders, one under the other, each with up to two children:
+ * half `half` (0 or 1) of the upper holder's child sets, each against every
+ * child set of the lower holder. Two halves, because the whole does not fit
+ * one test file's time budget.
+ */
+export function nestedCases(half) {
+  const sets = childSets(2);
+  const cases = [];
+  for (const [i, a] of sets.entries()) {
+    if (i % 2 !== half) continue;
+    for (const b of sets) cases.push([{ parent: 'R', children: a }, { parent: 0, children: b }]);
+  }
+  return cases;
+}
+
+/**
+ * The child sets three-holder families rotate through: a queued child; a
+ * queued child and a builtin; a queued child and a shell line over a queued
+ * program.
+ */
+export const THREE_HOLDER_ROTATIONS = Object.freeze([
+  [['q'], ['q', 'b'], ['q', 's']],
+  [['q', 'b'], ['q', 's'], ['q']],
+  [['q', 's'], ['q'], ['q', 'b']],
+]);
+
+const THREE_HOLDER_PARENTS = { side: ['R', 'R', 'R'], chain: ['R', 0, 1], fork: ['R', 0, 0] };
+
+/**
+ * Three-holder families of `shape` ('side', 'chain', 'fork') over every
+ * rotation; in a chain or a fork, each holder in turn the one whose news and
+ * reports race (focus 10/20/30). `skip(rotation, focus)` drops a run past a
+ * file's budget.
+ */
+/**
+ * @param {'side' | 'chain' | 'fork'} shape
+ * @param {{ skip?: (rotation: number, focus: number | null) => boolean }} [options]
+ */
+export function threeHolderCases(shape, { skip = () => false } = {}) {
+  const parents = THREE_HOLDER_PARENTS[shape];
+  const cases = [];
+  for (const [r, children] of THREE_HOLDER_ROTATIONS.entries()) {
+    const family = children.map((c, i) => ({ parent: parents[i], children: c }));
+    for (const focus of shape === 'side' ? [null] : [10, 20, 30]) {
+      if (!skip(r, focus)) cases.push([family, focus]);
+    }
+  }
+  return cases;
+}
+
+/**
  * Explore every case (a family, or [family, focus]) under production;
  * fail on the first violation, with its path. Returns the states explored.
  */
@@ -675,6 +731,7 @@ class StoppedAdmissions {
   }
 
   deferred() {
+    /** @type {(value?: unknown) => void} */
     let resolve;
     const promise = new Promise((r) => { resolve = r; });
     return { promise, resolve };
@@ -862,18 +919,21 @@ export async function checkBrokerRefusalMapping() {
       const ctx = {}, processes = new SessionProcessSupervisor();
       const root = processes.spawn('root', [], '/');
       const end = beginLoaderFetch(ctx, 'root', undefined, root.pid);
-      let refuse, entered, hooks;
+      /** @type {(value?: unknown) => void} */ let refuse;
+      /** @type {(value?: unknown) => void} */ let entered;
+      /** @type {{ onStarted: () => void, onStdout: (bytes: Uint8Array) => void }} */ let hooks;
       const refusal = new Promise((resolve) => { refuse = resolve; });
       const running = new Promise((resolve) => { entered = resolve; });
       const broker = new FacetProcessManager({
         processes, issueNews: (pid) => issueProcessNews(ctx, pid),
         vfsForProcess() { throw new Error('no file'); },
-        commandRegistry: { async resolve() { return { kind: 'facet-direct' }; } },
-        facetMgr: { async execStream(payload, _opts, output) {
+        // Doubles: a command resolves to a facet, and the facet refuses.
+        commandRegistry: /** @type {any} */ ({ async resolve() { return { kind: 'facet-direct' }; } }),
+        facetMgr: /** @type {any} */ ({ async execStream(payload, _opts, output) {
           hooks = output; entered();
           await refusal;
           throw new budgets.DynamicWorkerDeadlockError(JSON.parse(payload).processPid, [root.pid]);
-        } },
+        } }),
       });
       try {
         const { childPid } = await broker.spawn({ parentPid: root.pid, command: 'node', args: ['R'], cwd: '/', env: {}, stdio: ['pipe', 'pipe', 'pipe'] });

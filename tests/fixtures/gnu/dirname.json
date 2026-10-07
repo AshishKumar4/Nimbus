@@ -1,0 +1,67 @@
+{
+ "tool": "dirname",
+ "inputs": {},
+ "cases": [
+  {
+   "args": "/a/b/c",
+   "stdout": "/a/b\n",
+   "exit": 0
+  },
+  {
+   "args": "/a/b/c x /",
+   "stdout": "/a/b\n.\n/\n",
+   "exit": 0
+  },
+  {
+   "args": "a//b//",
+   "stdout": "a\n",
+   "exit": 0
+  },
+  {
+   "args": "a",
+   "stdout": ".\n",
+   "exit": 0
+  },
+  {
+   "args": "/",
+   "stdout": "/\n",
+   "exit": 0
+  },
+  {
+   "args": "//",
+   "stdout": "/\n",
+   "exit": 0
+  },
+  {
+   "args": "/usr/",
+   "stdout": "/\n",
+   "exit": 0
+  },
+  {
+   "args": "dir/file",
+   "stdout": "dir\n",
+   "exit": 0
+  },
+  {
+   "args": "a/b/..",
+   "stdout": "a/b\n",
+   "exit": 0
+  },
+  {
+   "args": "\"\"",
+   "stdout": ".\n",
+   "exit": 0
+  },
+  {
+   "args": ".",
+   "stdout": ".\n",
+   "exit": 0
+  },
+  {
+   "args": "..",
+   "stdout": ".\n",
+   "exit": 0
+  }
+ ],
+ "recorded": "dirname (GNU coreutils) 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)"
+}

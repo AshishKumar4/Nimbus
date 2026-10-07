@@ -35,9 +35,19 @@ import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.
  * cache layout so tooling that introspects npx state sees the expected path. */
 export declare const NPX_CACHE_DIR = "/tmp/.npx-cache";
 export type NpxSelfInvocation = 'help' | 'version' | 'missing' | null;
-export declare function describeNpxSelfInvocation(rawArgs: string[]): NpxSelfInvocation;
-export declare function getNpxCommandWord(rawArgs: string[]): string | null;
-export declare function getNpxCommandArgs(rawArgs: string[]): string[];
+/** What `npx <args>` asks for, read once. */
+export interface NpxInvocation {
+    /** npx's own `--help`/`--version`, no command at all, or null for a command. */
+    self: NpxSelfInvocation;
+    /** The command word: a package spec, or the bin name under `--package`. */
+    command: string | null;
+    /** The command's own arguments. */
+    args: string[];
+    /** `--package <pkg>`: the package to install, whose bin `command` names. */
+    packageOverride: string | null;
+    yes: boolean;
+}
+export declare function parseNpxInvocation(rawArgs: string[]): NpxInvocation;
 export declare function formatNpxHelp(): string;
 /**
  * Result of a Nimbus-native npx invocation.
@@ -62,7 +72,7 @@ export interface NpxResolveResult {
 /**
  * Resolve a binary for `npx <args>` by:
  *   1. Parsing args.
- *   2. Checking node_modules/.bin/<binName> in cwd, then NPX cache.
+ *   2. Checking the package in cwd/node_modules, then the NPX cache, for its bin.
  *   3. If absent, installing the package via NpmInstaller into
  *      /tmp/.npx-cache, then re-checking.
  *
@@ -71,12 +81,12 @@ export interface NpxResolveResult {
  * spawning) makes it testable.
  *
  * Note: deliberately does not format `--version`/`--help` for npx itself.
- * Callers can use describeNpxSelfInvocation()/formatNpxHelp() before calling
+ * Callers can use parseNpxInvocation()/formatNpxHelp() before calling
  * this resolver.
  */
 export declare function resolveNpxBinary(installer: NpmInstaller, 
 /** The caller's view of the namespace (runtime/project-fs.ts): the project and the npx cache alike. */
-vfs: Pick<ProjectFs, 'exists' | 'readFileString' | 'mkdir' | 'writeFile'>, 
+vfs: Pick<ProjectFs, 'exists' | 'isDirectory' | 'readFileString' | 'mkdir' | 'writeFile'>, 
 /** The caller's credential: what the npx cache install is written as. */
 cred: VfsCred, cwd: string, rawArgs: string[], log: (msg: string) => void, pid: number, 
 /** The command's `NPM_REGISTRY`; the npx cache install reads from it too. */

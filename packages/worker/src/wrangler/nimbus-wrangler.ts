@@ -14,6 +14,7 @@
  * Cloudflare Workers runtime, not a simulation.
  */
 
+import { loaderOutbound, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { VfsEvent, VfsEventEmitter } from '@nimbus-sh/core/vfs/events.js';
@@ -72,6 +73,8 @@ interface WranglerConfig {
 }
 
 export interface NimbusWranglerOptions {
+  /** The workspace's network: the worker under development goes out through its egress. */
+  network: WorkspaceNetwork;
   vfs: CredentialedVfs;
   vfsEvents: VfsEventEmitter;
   esbuild: EsbuildService;
@@ -202,6 +205,7 @@ function renderWorkerRunningHtml(opts: { workerName: string; outerWorkerBase: st
 // ── NimbusWrangler ────────────────────────────────────────────────────────
 
 export class NimbusWrangler {
+  private readonly network: WorkspaceNetwork;
   private vfs: CredentialedVfs;
   private vfsEvents: VfsEventEmitter;
   private esbuild: EsbuildService;
@@ -225,6 +229,7 @@ export class NimbusWrangler {
     this.vfsEvents = opts.vfsEvents;
     this.esbuild = opts.esbuild;
     this.loaderEnv = opts.env;
+    this.network = opts.network;
     this.supervisorCtx = opts.ctx || null;
     this.root = opts.root.replace(/^\/+/, '').replace(/\/+$/, '');
     this.onLog = opts.onLog;
@@ -492,6 +497,7 @@ export class NimbusWrangler {
         mainModule,
         modules,
         env: this.buildInnerEnv(),
+        ...loaderOutbound(this.network),
       });
       if (classesEntrypoint !== null && !(await this.registerDoClasses(worker, classesEntrypoint, doBindings))) return false;
       this.workerStub = worker.getEntrypoint();

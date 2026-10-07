@@ -1,9 +1,9 @@
-import type { Command, CommandContext } from '../types.js';
+import type { Command } from '../types.js';
 import { resolve, basename } from '../../utils/path.js';
 import { parseArgs } from '../../utils/args.js';
+import { resolveCopyTargets } from './copy-targets.js';
 import { move } from '../../../../vfs/move.js';
 import { isVfsError, strerror } from '../../../../vfs/vfs-error.js';
-import { statOrThrow } from '../../../../vfs/vfs.js';
 
 const spec = {
   force: { type: 'boolean' as const, short: 'f' },
@@ -28,28 +28,17 @@ const command: Command = async (ctx) => {
     return 1;
   }
 
-  const targetDir = typeof flags['target-directory'] === 'string' && flags['target-directory']
-    ? flags['target-directory']
-    : null;
-  const sources = targetDir ? positional : positional.slice(0, -1);
-  const rawDest = targetDir ?? positional[positional.length - 1];
-
-  if (sources.length === 0 || rawDest === undefined) {
-    await ctx.stderr.write('mv: missing operand\n');
+  const targets = await resolveCopyTargets(ctx, positional, typeof flags['target-directory'] === 'string' && flags['target-directory'] ? flags['target-directory'] : null);
+  if (typeof targets === 'string' || targets === null) {
+    await ctx.stderr.write(`mv: ${targets ?? 'missing operand'}\n`);
     return 1;
   }
-
-  const dest = resolve(ctx.cwd, rawDest);
-  const destIsDir = (await isDirectory(ctx, dest));
-  if (sources.length > 1 && !destIsDir) {
-    await ctx.stderr.write(`mv: target '${rawDest}' is not a directory\n`);
-    return 1;
-  }
+  const { sources, rawDest, destIsDir } = targets;
 
   let exitCode = 0;
   for (const source of sources) {
     const src = resolve(ctx.cwd, source);
-    const target = destIsDir ? resolve(dest, basename(src)) : dest;
+    const target = targets.targetFor(src);
     if (flags['no-clobber'] && (await ctx.vfs.exists(target))) continue;
     try {
       // Across mounts, a copy that lands whole or not at all (vfs/move.ts).
@@ -78,14 +67,5 @@ const command: Command = async (ctx) => {
   }
   return exitCode;
 };
-
-async function isDirectory(ctx: CommandContext, path: string): Promise<boolean> {
-  try {
-    return (await statOrThrow(ctx.vfs, path)).type === 'directory';
-  } catch (error) {
-    if (isVfsError(error) && error.code === 'ENOENT') return false;
-    throw error;
-  }
-}
 
 export default command;

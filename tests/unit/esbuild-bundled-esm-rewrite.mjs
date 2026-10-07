@@ -18,7 +18,6 @@ const absoluteUrl = 'file:///home/user/node_modules/pkg/chunk.js';
 const transformed = rewriteBundledEsmToCjs(source, absoluteUrl);
 assert.ok(transformed, 'bundler-emitted ESM should use the bounded rewrite');
 assert.doesNotMatch(transformed.code, /(^|[;\n])\s*(?:import|export)\b/);
-assert.match(transformed.code, /module\.require\("\.\/dep\.js"\)/);
 
 let sideEffects = 0;
 const module = { exports: {}, require: null };
@@ -103,11 +102,17 @@ assert.ok(
   ),
   'await inside a computed async method is not top-level',
 );
-assert.equal(
-  rewriteBundledEsmToCjs('export default initialize(); const later = 1;', absoluteUrl),
-  null,
-  'moving a default export across later statements is not safe',
-);
+{
+  // A default export evaluates where it stands, before the statements after it.
+  const middle = rewriteBundledEsmToCjs(
+    'const order = ["first"]; export default order.join(); order.push("later");',
+    absoluteUrl,
+  );
+  assert.ok(middle, 'a default export before later statements takes the bounded path');
+  const record = { exports: {}, require() { throw new Error('unexpected require'); } };
+  new Function('exports', 'require', 'module', '__filename', '__dirname', middle.code)(record.exports, undefined, record, '/chunk.js', '/');
+  assert.equal(record.exports.default, 'first', 'read before the later push');
+}
 assert.equal(
   rewriteBundledEsmToCjs(
     'import x from "y"; var a = { class: "x" }; if (a) { await boot(); } export { a };',

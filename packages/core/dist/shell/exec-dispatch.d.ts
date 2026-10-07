@@ -1,6 +1,6 @@
 /**
  * exec-dispatch — POSIX execve semantics for path-shaped shell invocations
- * (`./x`, `/abs/x`, `dir/x`). Pure decision logic; the resolve-hook in
+ * (`./x`, `/abs/x`, `../x`). Pure decision logic; the resolve-hook in
  * session/init.ts turns decisions into commands (wasm-runner, shebang
  * interpreter, sh fallback, or an error writer).
  *

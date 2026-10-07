@@ -21,7 +21,7 @@
  * files come, and the index is written once.
  */
 
-import { S_IFGITLINK, S_IFMT, comparePaths, type DirCache, type IndexEdit, type NewEntry } from './dircache.js';
+import { NewEntries, S_IFGITLINK, S_IFMT, comparePaths, type DirCache, type IndexEdit } from './dircache.js';
 import type { Excludes } from './excludes.js';
 import { diffTrees, type Leaf, type ObjectStore } from './tree.js';
 import { walkTreeAndIndex } from './status.js';
@@ -387,7 +387,7 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
   }
   // The blobs to write, fetched in one request where a partial clone lacks them.
   await store.prefetch(ops.flatMap((op) => (op.method === 'create' || op.method === 'update' || op.method === 'update-dir-to-blob' ? [op.oid] : [])));
-  const added: NewEntry[] = [];
+  const added = new NewEntries();
   for (const op of ops) {
     if (op.method !== 'create' && op.method !== 'update' && op.method !== 'update-dir-to-blob' && op.method !== 'mkdir-index') continue;
     if (op.method !== 'mkdir-index') {
@@ -399,7 +399,7 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
         await writer.chmod(file(op.path), op.mode === 0o100755 ? 0o755 : 0o644);
       }
     }
-    added.push({ path: op.path, mode: op.mode, oid: op.oid, stat: await tree.fs.lstat(op.path) });
+    added.add({ path: op.path, mode: op.mode, oid: op.oid, stat: await tree.fs.lstat(op.path) });
   }
   return { removed, added };
 }

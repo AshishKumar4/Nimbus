@@ -45,5 +45,13 @@ export declare function countPackageFiles(vfs: PackageTree, pkgDir: string, cap?
  * → "@radix-ui/react"). Used by callers building the pkgDir path.
  */
 export declare function packageNameFromSpecifier(specifier: string): string;
+/**
+ * A bare specifier's package name (`@scope/name` or `name`) and the subpath
+ * after it, `''` for the package itself: `@a/b/c/d` → `@a/b` and `c/d`.
+ */
+export declare function splitBareSpecifier(specifier: string): {
+    name: string;
+    subpath: string;
+};
 export {};
 //# sourceMappingURL=barrel-detect.d.ts.map

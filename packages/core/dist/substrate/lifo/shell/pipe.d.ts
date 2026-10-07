@@ -2,21 +2,19 @@ import type { CommandOutputStream, CommandInputStream } from '../commands/types.
 /** Whether a stream is an end of a shell pipe (S_ISFIFO). */
 export declare function isPipeEnd(stream: CommandOutputStream | CommandInputStream | undefined): boolean;
 /**
- * A shell pipe that carries the producer's exact bytes. Text writes are
- * encoded once at the write side, `writeBytes` stores bytes verbatim, and
- * the text view (`read`/`readAll`/`readLine`) decodes progressively so a
- * multi-byte UTF-8 sequence split across chunks survives intact.
+ * A shell pipe that carries the producer's exact bytes: a ByteQueue with a
+ * writer end. Text writes are encoded once at the write side, `writeBytes`
+ * stores bytes verbatim; a writer waits while the pipe holds its capacity
+ * (pipe-rules.ts decides) and gets EPIPE once the reader is gone.
  */
 export declare class PipeChannel {
-    private buffer;
-    private closed;
-    private waiting;
-    private decoder;
+    private readonly queue;
     private queuedBytes;
     /** A host that can park a writer (the wasm bash's JSPI host): pipe-rules.ts decides. */
     private readonly capacity;
     private drained;
     private readerClosed;
+    private writerClosed;
     private unlinkSignal;
     constructor(signal?: AbortSignal);
     private push;
@@ -25,20 +23,6 @@ export declare class PipeChannel {
     cancel(): void;
     readonly writer: CommandOutputStream;
     readonly reader: CommandInputStream;
-    /** Next queued chunk, a waiter's delivery, or null once closed and empty. */
-    private pull;
-    private read;
-    private readAll;
-    private readLine;
-    /**
-     * Bounded byte read: returns whatever the producer has already delivered,
-     * capped at maxLength. maxLength bounds the result, it is never a fill
-     * target — waiting to complete it would stall every consumer downstream of
-     * a live open producer. A larger chunk keeps only its first maxLength
-     * bytes; the remainder stays queued in original order.
-     */
-    private readBytes;
     close(): void;
-    private deliver;
 }
 //# sourceMappingURL=pipe.d.ts.map

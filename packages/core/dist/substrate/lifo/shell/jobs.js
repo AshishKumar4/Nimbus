@@ -26,37 +26,58 @@ export function resolveJobSpec(spec, jobs) {
     }
     return found;
 }
+/**
+ * A shell's jobs, by number: a view over the process table, where each job
+ * is a process. A subshell's table starts as a copy of its parent's; the
+ * job records are shared, which is safe because what changes about a job
+ * (its state) is its process's, and how it ended is set once.
+ */
 export class JobTable {
+    processes;
     jobs = new Map();
     waited = new Map();
-    add(command, promise, abortController, pid) {
+    constructor(processes) {
+        this.processes = processes;
+    }
+    /** Run `promise` as a background job: a process in the table, numbered as bash numbers jobs. Its pid and number. */
+    start(options) {
         // bash: one more than the highest job still in the table.
         const id = Math.max(0, ...this.jobs.keys()) + 1;
         this.waited.delete(id);
-        const job = {
-            id,
-            command,
-            promise,
-            abortController,
-            status: 'running',
-            exitCode: null,
-            ...(pid === undefined ? {} : { pid }),
-        };
-        promise.then((code) => {
-            job.status = 'done';
-            job.exitCode = code;
-        }).catch(() => {
-            job.status = 'done';
-            job.exitCode = 1;
+        const pid = this.processes.spawn({
+            command: options.command.split(' ')[0] || 'unknown',
+            args: options.command.split(' '),
+            cwd: options.cwd,
+            env: options.env,
+            isForeground: false,
+            promise: options.promise,
+            abortController: options.abortController,
+            jobId: id,
         });
-        this.jobs.set(id, job);
-        return id;
+        const processes = this.processes;
+        let exitCode = null;
+        const promise = processes.get(pid)?.promise ?? options.promise;
+        promise.then((code) => { exitCode = code; }, () => { exitCode = 1; });
+        this.jobs.set(id, {
+            id,
+            command: options.command,
+            promise,
+            abortController: options.abortController,
+            pid,
+            get exitCode() { return exitCode; },
+            get status() {
+                if (exitCode !== null)
+                    return 'done';
+                return processes.get(pid)?.status === 'stopped' ? 'stopped' : 'running';
+            },
+        });
+        return { pid, id };
     }
     list() {
         return Array.from(this.jobs.values());
     }
     fork() {
-        const child = new JobTable();
+        const child = new JobTable(this.processes);
         child.jobs = new Map(this.jobs);
         return child;
     }

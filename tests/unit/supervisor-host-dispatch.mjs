@@ -6,46 +6,20 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { dec } from '../../packages/core/src/_shared/bytes.ts';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
-const build = await Bun.build({
-  // A virtual entry re-exports the real entrypoint AND composeFabric, so the
-  // bundle's composition state is the one the test configures — a data: URL
-  // cannot share module instances with this file.
-  entrypoints: ['supervisor-host-dispatch-entry'],
-  target: 'bun',
-  plugins: [{
-    name: 'supervisor-entrypoint-host',
-    setup(builder) {
-      builder.onResolve({ filter: /^supervisor-host-dispatch-entry$/ }, () => ({ path: 'entry', namespace: 'test' }));
-      builder.onLoad({ filter: /.*/, namespace: 'test' }, (args) => args.path === 'entry'
-        ? {
-            contents:
-              'export { SupervisorRPC } from ' +
-              JSON.stringify(new URL('../../packages/worker/src/session/supervisor-rpc.ts', import.meta.url).pathname) +
-              '; export { composeFabric } from ' +
-              JSON.stringify(new URL('../../packages/platform/src/composition.ts', import.meta.url).pathname) + ';',
-            loader: 'js',
-          }
-        : args.path === 'sockets'
-          ? { contents: 'export function connect() { throw new Error("no sockets in this test"); }', loader: 'js' }
-          : { contents: 'export class WorkerEntrypoint {}', loader: 'js' });
-      builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'workers', namespace: 'test' }));
-      // The binding's outbound connect (SupervisorRPC.connect) is not driven here.
-      builder.onResolve({ filter: /^cloudflare:sockets$/ }, () => ({ path: 'sockets', namespace: 'test' }));
-      builder.onResolve({ filter: /^@nimbus-sh\/platform\/composition\.js$/ }, () => ({
-        // Bundled, not external: a bare specifier inside a data: URL module
-        // has nothing to resolve against.
-        path: new URL('../../packages/platform/src/composition.ts', import.meta.url).pathname,
-      }));
-    },
-  }],
+// The entrypoint and composeFabric in one graph, so the bundle's composition
+// state is the one the test configures.
+const { SupervisorRPC, composeFabric: bundleComposeFabric } = await importWorkerBundle({
+  'packages/worker/src/session/supervisor-rpc.ts': ['SupervisorRPC'],
+  'packages/platform/src/composition.ts': ['composeFabric'],
+}, {
+  // The binding's outbound connect (SupervisorRPC.connect) is not driven here.
+  stubs: [{ filter: /^cloudflare:sockets$/, contents: 'export function connect() { throw new Error("no sockets in this test"); }' }],
 });
-assert.equal(build.success, true, build.logs.map(String).join('\n'));
-const bundle = await import('data:text/javascript;base64,' + Buffer.from(await build.outputs[0].text()).toString('base64'));
-const { SupervisorRPC, composeFabric: bundleComposeFabric } = bundle;
 bundleComposeFabric({ supervisorEntrypoint: 'Supervisor', hostNamespace: 'HOSTS', hostDispatchMethod: 'dispatchWorkspace' });
 
 // A real filesystem the native ops can actually run against — the session
@@ -102,6 +76,7 @@ const uid = CRED_SESSION_USER.uid, gid = CRED_SESSION_USER.gid;
 const mask = 0o077, rOk = 0o4, xOk = 0o1, seekTo = 2;
 const options = { followSymlinks: false }, epoch = 'epoch', cursor = 9, after = 'after', limit = 32;
 const url = 'https://remote.test/', protocols = ['protocol'], id = 7, waitMs = 25, text = 'text';
+const wsHeaders = [['Authorization', 'Bearer t']];
 const code = 0, reason = 'closed', offset = 0, length = 3;
 const requests = [{ path, offset, length }], moduleId = 'module', operationId = 'operation';
 const payload = { inodes: [], chunks: [] }, stream = encodeWriteBatchStream({ inodes: [], chunks: [] });
@@ -140,7 +115,7 @@ const INPUTS = {
   fsRevision: [path],
   fsList: [after, limit],
   fsStorageGrant: ['proc-slot-0', 4096, 8192],
-  wsOpen: [url, protocols],
+  wsOpen: [url, protocols, wsHeaders, true],
   wsPoll: [id, waitMs],
   wsSend: [id, text, bytes],
   wsClose: [id, code, reason],

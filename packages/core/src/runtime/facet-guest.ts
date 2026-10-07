@@ -20,6 +20,8 @@
 import { joinRealm } from './realm-guest.js';
 import { realmOutcome } from './realm.js';
 import { isFacetPayload, isFacetSubmit, wasmCompiler, type FacetSubmit, type SupervisorView } from './local-facet-host.js';
+import { isEgressHostEvent } from './realm-egress.js';
+import { routeFetchThroughHost } from './realm-egress-guest.js';
 import type { FacetBindings } from './facet-host.js';
 
 /** A submitted function after it has been re-created inside the facet's scope. */
@@ -42,7 +44,15 @@ const AsyncFunction = Object.getPrototypeOf(async (): Promise<void> => {}).const
 
 const joined = await joinRealm();
 if (!isFacetPayload(joined.payload)) throw new Error('facet-guest: started without a facet');
-const { tag, parking, preamble, supervisor } = joined.payload;
+const { tag, parking, preamble, supervisor, egress } = joined.payload;
+
+// Under an egress the facet's fetch crosses to the host, which sends it out
+// through the egress (realm-egress.ts). A call holds the facet while it runs,
+// so a fetch it waits on needs no hold of its own.
+const offTheBox = egress
+  ? routeFetchThroughHost((event) => joined.post(event), () => {},
+    `Nimbus: WebSocket is not available to facet '${tag}' when the workspace's network goes through an egress`)
+  : null;
 
 type TypedArray = Int8Array | Uint8Array | Uint8ClampedArray | Int16Array | Uint16Array | Int32Array | Uint32Array
   | Float32Array | Float64Array | BigInt64Array | BigUint64Array;
@@ -130,6 +140,10 @@ async function run(submit: FacetSubmit): Promise<unknown> {
 
 // Submits arrive one at a time (the host orders them), each answered by its id.
 joined.events.on('message', (event) => {
+  if (isEgressHostEvent(event)) {
+    offTheBox?.answer(event);
+    return;
+  }
   if (!isFacetSubmit(event)) return;
   void (async () => {
     const installing = await realmOutcome(() => install(event));

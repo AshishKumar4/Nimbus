@@ -186,6 +186,13 @@ export declare class Compiler {
      * assignment patterns go through PutValue).
      */
     patternBinder(pattern: Pattern, init: boolean): (env: Env, value: unknown) => void;
+    /**
+     * The value a pattern element's default gives an undefined value, planned
+     * once for both flavors (patternBinder, patternBinderGen): an anonymous
+     * function or class default takes an identifier target's name, as
+     * `const { f = function () {} } = o` names it `f`.
+     */
+    private patternDefault;
     /** A member expression as an assignment target: evaluates its reference, then returns its setter. */
     private memberTarget;
     private objectPatternBinder;

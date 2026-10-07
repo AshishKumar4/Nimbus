@@ -43,10 +43,10 @@ import { generateSqliteShimCode } from './sqlite-shim.js';
 import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
 import { CHILD_NEWS_SOURCE } from './child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
-import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.js';
-import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE } from '../loaders/generated-workers.js';
-import { getTypescriptSpecifiersJS } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
+import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE } from '../loaders/generated-workers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
+import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { LOOPBACK_HOSTNAMES } from '@nimbus-sh/core/_shared/loopback.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
@@ -54,22 +54,24 @@ import { STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { FACET_PROVIDED_PACKAGES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS, VFS_CAPACITY, } from '@nimbus-sh/core/constants.js';
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
+import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
 const UNDICI_SHIM_CODE = generateUndiciShimCode();
 const FACET_PROVIDED_PACKAGES_LITERAL = JSON.stringify(FACET_PROVIDED_PACKAGES);
-const EXPORTS_RESOLVER_JS = getExportsResolverJS();
-const TYPESCRIPT_SPECIFIERS_JS = getTypescriptSpecifiersJS();
 // Node version fingerprint. Single source of truth in constants.ts.
 // Interpolated as JS literals into the emitted process shim. See
 // constants.ts for the rationale (create-astro preflight, etc.).
 const NODE_VERSION_LITERAL = JSON.stringify(NODE_VERSION);
 const NODE_VERSIONS_LITERAL = JSON.stringify(NODE_VERSIONS);
-// AI-egress mediation policy, interpolated for the same reason: the emitted
-// shim is a string and cannot import, so the constants it decides with come
-// from _shared/ai-egress.ts at build time rather than being written twice.
+// AI-egress mediation policy and the loopback host list, interpolated for the
+// same reason: the emitted shim is a string and cannot import, so the
+// constants it decides with, and the credential predicate's own source, come
+// from _shared/ai-egress.ts and _shared/loopback.ts at build time rather than
+// being written twice.
 const AI_TOKEN_ENV_LITERAL = JSON.stringify(NIMBUS_AI_TOKEN_ENV);
 const AI_CREDENTIAL_HEADERS_LITERAL = JSON.stringify(NIMBUS_AI_CREDENTIAL_HEADERS);
+const LOOPBACK_HOSTNAMES_LITERAL = JSON.stringify(LOOPBACK_HOSTNAMES);
 const ABI_ADVISORIES_LITERAL = JSON.stringify(PACKAGE_ABI_POLICY.rejects.map((r) => [r.from, r.suggest ? `${r.reason} … try: ${r.suggest}` : r.reason]));
 export function generateShimsCode() {
     return `
@@ -363,6 +365,33 @@ function __nimbusWasmDigest(bytes) {
 })();
 
 // ═══════════════════════════════════════════════════════════════════════
+// ──  RequestInit.cache, as Node takes it ─────────────────────────────
+// Node's fetch keeps no HTTP cache, so the modes it accepts all go to the
+// network. workerd accepts only "no-store" and "no-cache" (measured:
+// "default", "reload" and "force-cache" throw "Unsupported cache mode"), and
+// axios's fetch adapter passes cache: "default" on every request. A Request
+// or fetch drops those three: the request goes to the network, as Node's
+// would. What Node refuses ("only-if-cached" outside same-origin mode, an
+// unknown mode) workerd refuses too, and is left to it.
+const __nodeCacheInit = (init) => {
+  if (!init || typeof init !== "object") return init;
+  const mode = init.cache;
+  if (mode !== "default" && mode !== "reload" && mode !== "force-cache") return init;
+  const { cache, ...rest } = init;
+  return rest;
+};
+if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestInstalled) {
+  globalThis.__nimbusNodeRequestInstalled = true;
+  // A Proxy, not a subclass: every Request stays the platform's, so
+  // instanceof holds for the ones the runtime itself makes.
+  globalThis.Request = new Proxy(globalThis.Request, {
+    construct(target, args, newTarget) {
+      return Reflect.construct(target, [args[0], __nodeCacheInit(args[1])], newTarget);
+    },
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // ──  fetch default User-Agent ───────────────────────────────────────
 // workerd's global fetch sends no User-Agent by default, but Node's
 // undici fetch adds \`User-Agent: node\`. Servers that require a UA
@@ -391,7 +420,7 @@ function __nimbusWasmDigest(bytes) {
     if (Array.isArray(h)) return h.some((p) => String(p?.[0]).toLowerCase() === "user-agent");
     return Object.keys(h).some((k) => k.toLowerCase() === "user-agent");
   };
-  const __loopbackHosts = new Set(["127.0.0.1", "localhost", "0.0.0.0", "::1"]);
+  const __loopbackHosts = new Set(${LOOPBACK_HOSTNAMES_LITERAL});
   const __fetchUrl = (input) => {
     try {
       const href = typeof input === "string" ? input
@@ -455,7 +484,7 @@ function __nimbusWasmDigest(bytes) {
     for (const name of __aiCredentialHeaders) {
       const raw = __headerOf(input, init, name);
       if (!raw) continue;
-      if (String(raw).trim().replace(/^bearer\\s+/i, "") !== token) continue;
+      if (presentedCredential(String(raw)) !== token) continue;
       return Promise.resolve(__supervisor.routeLoopback(${NIMBUS_AI_GATEWAY_PORT}, __supervisorRequest(url, input, init)));
     }
     return null;
@@ -538,7 +567,7 @@ function __nimbusWasmDigest(bytes) {
     return response;
   };
   globalThis.fetch = function fetch(input, init) {
-    return __nimbusTrackOp(__barriered(input, init));
+    return __nimbusTrackOp(__barriered(input, __nodeCacheInit(init)));
   };
   // A fetch settles once the headers arrive; reading the body is a SECOND
   // in-flight operation on the same connection, and \`const r = await
@@ -5511,10 +5540,91 @@ const __fsMod = (() => {
 // purpose: it dispatches plain event-shaped objects, which is what a
 // relayed frame can carry across RPC, and it keeps \`onmessage\` and
 // \`addEventListener\` served by one path instead of two.
+//
+// The second argument is Node's: subprotocols, or a WebSocketInit
+// \`{ protocols, headers }\` (undici's), whose headers the supervisor sends
+// with the upgrade. What the handshake answered (the upgrade's response
+// headers, or a refusal: __nimbusRefusal) is kept on the socket under
+// __NIMBUS_WS_HANDSHAKE, for the \`ws\` package's upgrade path
+// (runtime/node-ws-upgrade.ts), which asks for a refusal's body with
+// __NIMBUS_WS_REFUSAL_BODY in the init.
+const __NIMBUS_WS_HANDSHAKE = Symbol.for("nimbus.websocket.handshake");
+const __NIMBUS_WS_REFUSAL_BODY = Symbol.for("nimbus.websocket.refusal-body");
+
+// A refused upgrade, as the relay answered it (session/ws-relay.ts): its
+// head at once, and its body (when asked for) read from the relay as it
+// comes, for the one consumer that reads it, until it ends or is cancelled.
+// An open body holds the process, as a response's socket does in Node.
+function __nimbusRefusal(supervisor, refused) {
+  const pending = [];
+  let ended = refused.body === null ? true : null;
+  let consumer = null;
+  let cancelled = false;
+  const hold = refused.body === null ? null : __nimbusHoldSocket();
+  const finish = (complete) => {
+    if (ended !== null) return;
+    ended = complete;
+    if (hold) hold(false);
+    if (consumer) consumer.end(complete);
+  };
+  if (refused.body !== null) {
+    (async () => {
+      while (ended === null && !cancelled) {
+        let events;
+        try {
+          events = await __nimbusUseRpcResultUnref(supervisor.wsPoll(refused.body, 5000), (result) => result);
+        } catch { finish(false); return; }
+        if (!Array.isArray(events)) continue;
+        for (const event of events) {
+          if (cancelled) return;
+          // Its bytes are an inbound delivery, as a frame is.
+          await __nimbusInboundBarrier();
+          if (event.kind === "message" && event.bytes) {
+            if (consumer) consumer.chunk(event.bytes);
+            else pending.push(event.bytes);
+          } else if (event.kind === "close") {
+            finish(event.code === 1000);
+            return;
+          }
+        }
+      }
+    })();
+  }
+  return {
+    status: refused.status,
+    statusText: refused.statusText,
+    headers: refused.headers,
+    /** Its body to \`onChunk\`, then \`onEnd(complete)\`: whether it arrived whole. */
+    read(onChunk, onEnd) {
+      consumer = { chunk: onChunk, end: onEnd };
+      for (const chunk of pending.splice(0)) onChunk(chunk);
+      if (ended !== null) onEnd(ended);
+    },
+    /** The body is not wanted: the relay stops reading it. */
+    cancel() {
+      if (cancelled || ended !== null) return;
+      cancelled = true;
+      if (hold) hold(false);
+      __nimbusUseRpcResultUnref(supervisor.wsClose(refused.body), () => undefined).catch(() => {});
+    },
+  };
+}
 const __NimbusRelayedWebSocket = (() => {
   const CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3;
+  /** A header list as the relay takes it: [name, value] pairs. */
+  const headerPairs = (headers) => {
+    if (headers === undefined || headers === null) return [];
+    if (typeof headers.forEach === "function" && !Array.isArray(headers)) {
+      const pairs = [];
+      headers.forEach((value, name) => { pairs.push([String(name), String(value)]); });
+      return pairs;
+    }
+    if (Array.isArray(headers)) return headers.map(([name, value]) => [String(name), String(value)]);
+    return Object.entries(headers).flatMap(([name, value]) =>
+      value === undefined ? [] : (Array.isArray(value) ? value : [value]).map((one) => [name, String(one)]));
+  };
   class NimbusWebSocket {
-    constructor(url, protocols) {
+    constructor(url, protocolsOrInit) {
       const supervisor = _nimbusSupervisor();
       if (!supervisor || typeof supervisor.wsOpen !== "function") {
         // Not a fallback to the platform socket, deliberately. An
@@ -5539,21 +5649,40 @@ const __NimbusRelayedWebSocket = (() => {
       this._id = null;
       this._done = false;
       this._sends = Promise.resolve();
+      const init = protocolsOrInit !== null && typeof protocolsOrInit === "object" && !Array.isArray(protocolsOrInit)
+        ? protocolsOrInit : { protocols: protocolsOrInit };
+      const protocols = init.protocols;
       const requested = protocols === undefined ? []
         : (Array.isArray(protocols) ? protocols.map(String) : [String(protocols)]);
+      const headers = headerPairs(init.headers);
+      const refusalBody = init[__NIMBUS_WS_REFUSAL_BODY] === true;
+      this[__NIMBUS_WS_HANDSHAKE] = null;
       // Open, or opening, until its close: a handle, as Node's WebSocket is.
       // Taken only once the socket exists, past every throw in this
       // constructor: a caught constructor failure holds nothing.
       this._hold = __nimbusHoldSocket();
-      this._ready = this._connect(supervisor, requested);
+      this._ready = this._connect(supervisor, requested, headers, refusalBody);
     }
 
-    async _connect(supervisor, protocols) {
+    async _connect(supervisor, protocols, headers, refusalBody) {
       try {
         const opened = await __nimbusUseRpcResultUnref(
-          supervisor.wsOpen(this.url, protocols),
+          supervisor.wsOpen(this.url, protocols, headers, refusalBody),
           (result) => result,
         );
+        if (opened.refused) {
+          if (this.readyState !== CONNECTING) {
+            // Closed while it handshook (an aborted request): its body is not
+            // wanted, and nothing of it may hold the process; close() reports the close.
+            if (opened.refused.body !== null) {
+              __nimbusUseRpcResultUnref(supervisor.wsClose(opened.refused.body), () => undefined).catch(() => {});
+            }
+            return;
+          }
+          this[__NIMBUS_WS_HANDSHAKE] = __nimbusRefusal(supervisor, opened.refused);
+          throw new Error("websocket relay: " + this.url + " did not upgrade (HTTP " + opened.refused.status + ")");
+        }
+        this[__NIMBUS_WS_HANDSHAKE] = { status: 101, statusText: "Switching Protocols", headers: opened.headers || [] };
         this._id = opened.id;
         this.protocol = opened.protocol || "";
         this._pump(supervisor);
@@ -5763,10 +5892,12 @@ globalThis.WebSocket = __NimbusRelayedWebSocket;
 //
 // History: F1 root cause in framework-fixes wave. Pre-fix create-next-app
 // errored with "Cannot find module 'node:constants'" at module init.
-const __constantsMod = {
-  // ── dlopen flags ──────────────────────────────────────────────────
-  RTLD_LAZY: 1, RTLD_NOW: 2, RTLD_GLOBAL: 256, RTLD_LOCAL: 0, RTLD_DEEPBIND: 8,
-  // ── errno (Linux ABI) ─────────────────────────────────────────────
+// The errno, signal, priority and dlopen tables, written once: node:constants
+// spreads them flat, os.constants nests them by name.
+const __dlopenConstants = { RTLD_LAZY: 1, RTLD_NOW: 2, RTLD_GLOBAL: 256, RTLD_LOCAL: 0, RTLD_DEEPBIND: 8 };
+// Errno (Linux ABI). fs/network libraries (graceful-fs, retry layers in
+// node-fetch wrappers) probe these to decide retry strategy.
+const __errnoConstants = {
   E2BIG: 7, EACCES: 13, EADDRINUSE: 98, EADDRNOTAVAIL: 99, EAFNOSUPPORT: 97,
   EAGAIN: 11, EALREADY: 114, EBADF: 9, EBADMSG: 74, EBUSY: 16,
   ECANCELED: 125, ECHILD: 10, ECONNABORTED: 103, ECONNREFUSED: 111,
@@ -5784,10 +5915,14 @@ const __constantsMod = {
   EPROTONOSUPPORT: 93, EPROTOTYPE: 91, ERANGE: 34, EROFS: 30,
   ESPIPE: 29, ESRCH: 3, ESTALE: 116, ETIME: 62, ETIMEDOUT: 110,
   ETXTBSY: 26, EWOULDBLOCK: 11, EXDEV: 18,
-  // ── Process priority (os.setPriority / os.getPriority) ────────────
+};
+// Process priority, for os.setPriority / os.getPriority.
+const __priorityConstants = {
   PRIORITY_LOW: 19, PRIORITY_BELOW_NORMAL: 10, PRIORITY_NORMAL: 0,
   PRIORITY_ABOVE_NORMAL: -7, PRIORITY_HIGH: -14, PRIORITY_HIGHEST: -20,
-  // ── Signals (POSIX + Linux) ───────────────────────────────────────
+};
+// Signals (POSIX + Linux), numbered as the Linux ABI numbers them.
+const __signalConstants = {
   SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5,
   SIGABRT: 6, SIGIOT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9,
   SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14,
@@ -5795,6 +5930,12 @@ const __constantsMod = {
   SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24,
   SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29,
   SIGPOLL: 29, SIGPWR: 30, SIGSYS: 31,
+};
+const __constantsMod = {
+  ...__dlopenConstants,
+  ...__errnoConstants,
+  ...__priorityConstants,
+  ...__signalConstants,
   // ── fs constants (O_*, S_IF*, S_I*, F_OK.., COPYFILE_*, UV_*) ────
   // Node's constants module is the union of os, fs and crypto constants;
   // the fs slice is __fsConstants, the same object fs.constants exposes.
@@ -5876,59 +6017,10 @@ const __osMod = {
   // "console.log(require('os').constants)"\`). The shape is stable;
   // pinning POSIX signal numbers per the LSB / glibc table.
   constants: {
-    // ── Signals ──────────────────────────────────────────────────
-    // Standard POSIX + Linux-specific signals as Node exposes them.
-    // Numbers match the Linux ABI; portable signal-name lookups
-    // (which is what 100% of npm consumers do) work regardless of
-    // platform.
-    signals: {
-      SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5,
-      SIGABRT: 6, SIGIOT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9,
-      SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14,
-      SIGTERM: 15, SIGCHLD: 17, SIGSTKFLT: 16, SIGCONT: 18, SIGSTOP: 19,
-      SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24,
-      SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29,
-      SIGPOLL: 29, SIGPWR: 30, SIGSYS: 31,
-    },
-    // ── Errno ────────────────────────────────────────────────────
-    // Standard Linux errno codes. fs/network libraries (e.g.
-    // graceful-fs, retry layers in node-fetch wrappers) probe these
-    // to decide retry strategy. Subset matches Node's exposed surface.
-    errno: {
-      E2BIG: 7, EACCES: 13, EADDRINUSE: 98, EADDRNOTAVAIL: 99,
-      EAFNOSUPPORT: 97, EAGAIN: 11, EALREADY: 114, EBADF: 9,
-      EBADMSG: 74, EBUSY: 16, ECANCELED: 125, ECHILD: 10,
-      ECONNABORTED: 103, ECONNREFUSED: 111, ECONNRESET: 104,
-      EDEADLK: 35, EDESTADDRREQ: 89, EDOM: 33, EDQUOT: 122,
-      EEXIST: 17, EFAULT: 14, EFBIG: 27, EHOSTUNREACH: 113,
-      EIDRM: 43, EILSEQ: 84, EINPROGRESS: 115, EINTR: 4, EINVAL: 22,
-      EIO: 5, EISCONN: 106, EISDIR: 21, ELOOP: 40, EMFILE: 24,
-      EMLINK: 31, EMSGSIZE: 90, EMULTIHOP: 72, ENAMETOOLONG: 36,
-      ENETDOWN: 100, ENETRESET: 102, ENETUNREACH: 101, ENFILE: 23,
-      ENOBUFS: 105, ENODATA: 61, ENODEV: 19, ENOENT: 2, ENOEXEC: 8,
-      ENOLCK: 37, ENOLINK: 67, ENOMEM: 12, ENOMSG: 42, ENOPROTOOPT: 92,
-      ENOSPC: 28, ENOSR: 63, ENOSTR: 60, ENOSYS: 38, ENOTCONN: 107,
-      ENOTDIR: 20, ENOTEMPTY: 39, ENOTSOCK: 88, ENOTSUP: 95,
-      ENOTTY: 25, ENXIO: 6, EOPNOTSUPP: 95, EOVERFLOW: 75, EPERM: 1,
-      EPIPE: 32, EPROTO: 71, EPROTONOSUPPORT: 93, EPROTOTYPE: 91,
-      ERANGE: 34, EROFS: 30, ESPIPE: 29, ESRCH: 3, ESTALE: 116,
-      ETIME: 62, ETIMEDOUT: 110, ETXTBSY: 26, EWOULDBLOCK: 11, EXDEV: 18,
-    },
-    // ── Priority ────────────────────────────────────────────────
-    // Process priority constants for os.setPriority / os.getPriority.
-    // Not used by anything we've observed, but Node exposes them and
-    // some libs check defined-ness before falling through.
-    priority: {
-      PRIORITY_LOW: 19,
-      PRIORITY_BELOW_NORMAL: 10,
-      PRIORITY_NORMAL: 0,
-      PRIORITY_ABOVE_NORMAL: -7,
-      PRIORITY_HIGH: -14,
-      PRIORITY_HIGHEST: -20,
-    },
-    // ── dlopen flags ────────────────────────────────────────────
-    // Documented for completeness; Nimbus has no real dlopen.
-    dlopen: { RTLD_LAZY: 1, RTLD_NOW: 2, RTLD_GLOBAL: 256, RTLD_LOCAL: 0 },
+    signals: __signalConstants,
+    errno: __errnoConstants,
+    priority: __priorityConstants,
+    dlopen: __dlopenConstants,
   },
 };
 
@@ -6844,6 +6936,17 @@ const __tlsMod = (() => {
     return socket;
   };
   const connect = (...args) => {
+    // Under a workspace egress a TLS socket cannot be made: the egress's
+    // connect carries plain TCP only, and making the session here would go
+    // around it. The refusal names the limit; HTTPS by fetch is unaffected.
+    if (globalThis.__nimbusEgress === true) {
+      const refused = realNet ? new realNet.Socket() : null;
+      const error = new Error(${JSON.stringify(EGRESS_TLS_REFUSAL)});
+      error.code = 'ERR_NIMBUS_EGRESS_TLS';
+      if (!refused) throw error;
+      queueMicrotask(() => refused.destroy(error));
+      return refused;
+    }
     const proxied = !!(__nimbusReplay && __nimbusReplay.outbound);
     if (!proxied) __nimbusReplay?.effect("tls.connect " + describe(args));
     const socket = proxied ? proxiedConnect(...args) : real.connect(...args);
@@ -6885,6 +6988,11 @@ const __tlsMod = (() => {
         counted.set(p, new Proxy(value, {
           apply(target, self, args) { __nimbusReplay?.effect('tls.' + p); return Reflect.apply(target, self, args); },
           construct(target, args, newTarget) {
+            if (globalThis.__nimbusEgress === true) {
+              const error = new Error(${JSON.stringify(EGRESS_TLS_REFUSAL)});
+              error.code = 'ERR_NIMBUS_EGRESS_TLS';
+              throw error;
+            }
             if (__nimbusReplay && __nimbusReplay.outbound) {
               throw notImplemented('tls.' + p, 'a TLS socket the program builds itself is not made in a program whose network goes through Nimbus (one started with its stdin open); use tls.connect');
             }
@@ -8778,6 +8886,11 @@ const __processMod = {
     throw err;
   },
 };
+// Node's process reads as one: Object.prototype.toString gives "[object
+// process]", which axios (utils.kindOf) and others test to pick their Node
+// paths (axios: its http adapter rather than its fetch one). As Node defines
+// it: an own property, writable, not enumerable, not configurable.
+Object.defineProperty(__processMod, Symbol.toStringTag, { value: "process", writable: true, enumerable: false, configurable: false });
 
 function __nimbusRuntimeErrorTrace(error) {
   if (error && typeof error === "object") {
@@ -8867,6 +8980,7 @@ builtins.child_process = __childProcessMod;
 builtins.process = __processMod;
 builtins.console = __consoleMod;
 ${NATIVE_HTTP_SOURCE}
+${NODE_WS_UPGRADE_SOURCE}
 // W3 — net.Socket honest-error mode.
 //
 // Pre-W3 behaviour: \`new net.Socket().connect(443, 'example.com')\`
@@ -9881,26 +9995,23 @@ function __resolveFile(base) {
   // that this cannot find; both come from src/_shared/typescript-specifiers.ts
   // and tests/unit/typescript-specifier-resolution.mjs compares them.
   const baseTrim = base.replace(/\\/+$/, "");
-  for (const cand of __typescriptFallbackCandidates(baseTrim)) {
+  for (const cand of typescriptFallbackCandidates(baseTrim)) {
     if (__pathIsFile(cand)) return cand;
   }
-  for (const ext of __TYPESCRIPT_INDEX_CANDIDATES) {
+  for (const ext of TYPESCRIPT_INDEX_CANDIDATES) {
     const cand = baseTrim + ext;
     if (__pathIsFile(cand)) return cand;
   }
   return null;
 }
 
-// ── Single-source-of-truth exports/imports resolver (W2) ───────────────
-// Emitted from src/_shared/exports-resolver.ts via getExportsResolverJS().
-// Declares: resolveExports, resolveConditionValue, resolvePackageEntry,
-//           DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS.
-${EXPORTS_RESOLVER_JS}
-
-// ── TypeScript specifier fallbacks ────────────────────────────────────────
-// Emitted from src/_shared/typescript-specifiers.ts. Declares:
-// __typescriptFallbackCandidates, __TYPESCRIPT_INDEX_CANDIDATES.
-${TYPESCRIPT_SPECIFIERS_JS}
+// ── Resolution and credential rules, compiled from @nimbus-sh/core ──────
+// _shared/node-shim-resolution.ts (NODE_SHIM_RESOLUTION_PREAMBLE). Declares
+// resolveExports, resolvePackageEntry, packageSelfReferenceSubpath,
+// DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates,
+// TYPESCRIPT_INDEX_CANDIDATES and presentedCredential (a function declaration,
+// so the fetch patch above can call it).
+${NODE_SHIM_RESOLUTION_PREAMBLE}
 
 /** Conditions for runtime CJS resolution (user-shell node). */
 const __NIMBUS_CJS_CONDITIONS = ["require", "node", "default"];

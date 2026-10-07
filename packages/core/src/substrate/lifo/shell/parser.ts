@@ -12,8 +12,7 @@ import {
   type CompoundCommandNode,
   type IfNode,
   type ForNode,
-  type WhileNode,
-  type UntilNode,
+  type LoopNode,
   type CaseNode,
   type DoubleBracketNode,
   type FunctionDefNode,
@@ -202,8 +201,8 @@ class Parser {
       switch (token.value) {
         case 'if': return this.parseIf();
         case 'for': return this.parseFor();
-        case 'while': return this.parseWhile();
-        case 'until': return this.parseUntil();
+        case 'while':
+        case 'until': return this.parseLoop(token.value);
         case 'case': return this.parseCase();
       }
 
@@ -354,8 +353,8 @@ class Parser {
     return { type: 'for', variable, words, body, redirections };
   }
 
-  private parseWhile(): WhileNode {
-    this.expectWord('while');
+  private parseLoop(keyword: LoopNode['type']): LoopNode {
+    this.expectWord(keyword);
     const condition = this.parseCompoundList(['do']);
     this.expectWord('do');
     const body = this.parseCompoundList(['done']);
@@ -363,19 +362,7 @@ class Parser {
 
     const redirections = this.parseTrailingRedirections();
 
-    return { type: 'while', condition, body, redirections };
-  }
-
-  private parseUntil(): UntilNode {
-    this.expectWord('until');
-    const condition = this.parseCompoundList(['do']);
-    this.expectWord('do');
-    const body = this.parseCompoundList(['done']);
-    this.expectWord('done');
-
-    const redirections = this.parseTrailingRedirections();
-
-    return { type: 'until', condition, body, redirections };
+    return { type: keyword, condition, body, redirections };
   }
 
   private parseCase(): CaseNode {

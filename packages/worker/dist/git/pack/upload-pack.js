@@ -8,7 +8,8 @@
  * fast as its consumer pulls, so nothing between the network and the pack
  * processor buffers more than one side-band packet.
  */
-import { RETRY_ATTEMPTS, STALL_MS, TRANSIENT_HTTP_STATUSES, UPLOAD_PACK_ERROR_PREFIX, retryDelay } from './transport.js';
+import { retrying } from '@nimbus-sh/platform/retry.js';
+import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UPLOAD_PACK_ERROR_PREFIX } from './transport.js';
 import { PackFormatError } from './format.js';
 export class UploadPackError extends Error {
     status;
@@ -41,32 +42,33 @@ function repoUrl(url) {
 /** A request whose transient failures are retried before any byte is read (transport.ts). */
 async function send(options, path, init) {
     const doFetch = options.fetch ?? fetch;
-    for (let attempt = 0;; attempt++) {
-        const last = attempt + 1 >= RETRY_ATTEMPTS;
-        let response;
-        // Headers that do not come within the stall time are a stall too.
-        const stallMs = options.stallMs ?? STALL_MS;
+    // Headers that do not come within the stall time are a stall too.
+    const stallMs = options.stallMs ?? STALL_MS;
+    const attempt = async () => {
         let timer = null;
+        const stalled = new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new UploadPackError('no response for ' + Math.round(stallMs / 1000) + ' s')), stallMs);
+        });
         try {
-            const stalled = new Promise((_, reject) => {
-                timer = setTimeout(() => reject(new UploadPackError('no response for ' + Math.round(stallMs / 1000) + ' s')), stallMs);
-            });
-            response = await Promise.race([doFetch(repoUrl(options.url) + path, { ...init, signal: options.signal }), stalled]);
-        }
-        catch (error) {
-            if (last)
-                throw error instanceof UploadPackError ? error : new UploadPackError('the request failed: ' + (error instanceof Error ? error.message : String(error)));
-            await retryDelay(attempt);
-            continue;
+            return await Promise.race([doFetch(repoUrl(options.url) + path, { ...init, signal: options.signal }), stalled]);
         }
         finally {
             if (timer !== null)
                 clearTimeout(timer);
         }
-        if (!TRANSIENT_HTTP_STATUSES.has(response.status) || last)
-            return response;
-        await response.body?.cancel();
-        await retryDelay(attempt);
+    };
+    try {
+        return await retrying(attempt, {
+            retries: RETRY_ATTEMPTS - 1,
+            schedule: RETRY_BACKOFF_MS,
+            retryReason: (outcome) => !outcome.ok ? 'failed in transit'
+                : TRANSIENT_HTTP_STATUSES.has(outcome.value.status) ? 'HTTP ' + outcome.value.status
+                    : null,
+            discard: (response) => response.body?.cancel(),
+        });
+    }
+    catch (error) {
+        throw error instanceof UploadPackError ? error : new UploadPackError('the request failed: ' + (error instanceof Error ? error.message : String(error)));
     }
 }
 export { STALL_MS };

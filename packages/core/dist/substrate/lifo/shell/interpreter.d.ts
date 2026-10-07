@@ -92,8 +92,15 @@ type ExecutionIo = {
      * to a field a nested execute reassigns.
      */
     writeToTerminal?: (text: string) => void;
+    /** The controlling terminal: fd 0 by default, and what `/dev/tty` opens. */
     terminalStdin?: TerminalInputStream;
     terminalFds?: TerminalFdState;
+    /**
+     * A job started with `&`, and what it runs: it still has the controlling
+     * terminal (an explicit `/dev/tty` opens it) but is not its foreground
+     * job, so it does not read it by default or own its modes.
+     */
+    background?: boolean;
     scriptMode?: boolean;
     signal?: AbortSignal;
     registerProcess?: boolean;
@@ -178,7 +185,6 @@ export interface InterpreterConfig {
  * `a=(x y); a=plain` sets `a[0]` and leaves `a[1]` alone, which is bash's rule
  * and the reason a variable's type only changes through `unset`.
  */
-export declare function assignScalar(env: Record<string, string>, arrays: Map<string, (string | undefined)[]>, name: string, value: string): void;
 export declare class Interpreter {
     private config;
     private lastExitCode;
@@ -242,8 +248,7 @@ export declare class Interpreter {
      */
     private loopTick;
     private executeFor;
-    private executeWhile;
-    private executeUntil;
+    private executeLoop;
     private executeCase;
     private executeFunctionDef;
     private executeGroup;
@@ -272,11 +277,6 @@ export declare class Interpreter {
      * Returns false when the name is readonly, which the caller reports.
      */
     private applyAssignment;
-    /** One variable's whole binding, so a scope can put it back exactly. */
-    private saveVariable;
-    private restoreVariable;
-    /** The array behind a subscripted assignment, promoting a scalar if needed. */
-    private arrayFor;
     private executeFunction;
     /**
      * Bind a name to the running function, unset, so an assignment to it does

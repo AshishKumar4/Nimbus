@@ -36,6 +36,7 @@ import {
   loaderLedgerStats,
 } from '../../packages/fabric/src/budgets.ts';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 const CAP_MESSAGE = 'Dynamic worker concurrency limit exceeded: each request may have up to 10 concurrent dynamic worker invocations. Wait for one to finish before starting another.';
 
@@ -315,7 +316,7 @@ function wait(ctx, key, options, log) {
     counted.add(`resident-${i}`);
     return beginLoaderFetch(ctx, `resident-${i}`);
   });
-  const pool = new IsolatePool({ LOADER: loader }, ctx, { omitSupervisor: true, timeoutMs: 0 });
+  const pool = new IsolatePool({ LOADER: loader }, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0 });
   const started = Date.now();
   const result = pool.submit((value) => value, 'payload');
   const RELEASE_AT = 1000;
@@ -343,7 +344,7 @@ function wait(ctx, key, options, log) {
       return { getEntrypoint: () => ({ async execute() { throw new Error(CAP_MESSAGE); } }) };
     },
   };
-  const pool = new IsolatePool({ LOADER: loader }, ctx, { omitSupervisor: true, timeoutMs: 0 });
+  const pool = new IsolatePool({ LOADER: loader }, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0 });
   await assert.rejects(pool.submit((value) => value, 'payload'), /loader.get refused the retry/);
   assert.equal(gets, 2, 'the refused call was let in again, and its setup threw');
   assert.deepEqual(loaderLedgerStats(ctx).inFlightWorkers, [], 'and the hold it was let in on is given back');

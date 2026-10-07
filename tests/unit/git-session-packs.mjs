@@ -21,7 +21,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { GIT_CLONE_JOB_MARKER } from '../../packages/worker/src/git/network-facet.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const work = mkdtempSync(join(tmpdir(), 'nimbus-session-packs-'));
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', HOME: work, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z' };

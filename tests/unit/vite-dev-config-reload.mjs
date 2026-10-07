@@ -20,7 +20,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ViteDevServer } from '../../packages/worker/src/facets/vite-dev-server.ts';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const root = 'home/user/app';
 const config = ({ alias, define, extra = '' }) =>

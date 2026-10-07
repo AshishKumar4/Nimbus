@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { supervisorFilesystem } from '../../packages/core/src/runtime/vfs-supervisor.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const KERNEL = { uid: 0, gid: 0, groups: [0], umask: 0o022 };
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };

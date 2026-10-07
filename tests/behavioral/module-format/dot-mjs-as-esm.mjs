@@ -29,11 +29,9 @@
 //      parses correctly. Pre-fix the \w+ regex truncated at $, missed
 //      this import shape, the line landed in body → "Cannot use import
 //      statement outside a module" at facet pre-compile.
-//   3. wild-sv: `npx --yes sv@latest create ...` runs to completion
-//      WITHOUT "Identifier 'redirect' has already been declared". (Probe
-//      doesn't assert SK scaffold success in totality — that's the
-//      sveltekit-real probe's job. We only check the .mjs-specific
-//      pre-compile error is gone.)
+//
+// The wild case, sv's own engine-*.mjs, runs once in
+// frameworks/sveltekit-real.
 
 import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../_driver.mjs';
 
@@ -133,36 +131,6 @@ A.check(
   'synthetic-dollar-ident: NO "import statement outside" error',
   !/import statement outside/i.test(dollarResult.output),
   dollarResult.output.slice(-500),
-);
-
-// ── Check 3: wild-sv ────────────────────────────────────────────────
-//
-// `npx --yes sv@latest create mvp --template minimal --types ts --no-add-ons --no-install`
-// triggers loading sv/dist/engine-*.mjs via the npx-cache pipeline.
-// Pre-fix this fails with "Identifier 'redirect' has already been declared".
-// Post-fix it should at least flip PAST that error. The scaffold itself
-// may surface OTHER errors (out of scope for this wave — see
-// sveltekit-real probe and audit anti-req).
-//
-// We DO NOT assert scaffold success — only that the specific .mjs
-// pre-compile error is absent from stderr.
-
-await t.run('rm -rf /home/user/sv-probe && mkdir -p /home/user/sv-probe && cd /home/user/sv-probe', 5_000);
-const svRun = await t.run(
-  'npx --yes sv@latest create mvp --template minimal --types ts --no-add-ons --no-install',
-  360_000,
-);
-const svOut = svRun.output;
-
-A.check(
-  'wild-sv: NO "Identifier \'redirect\' has already been declared" in sv invocation',
-  !/Identifier 'redirect' has already been declared/.test(svOut),
-  svOut.slice(-600),
-);
-A.check(
-  'wild-sv: NO generic "already been declared" syntax error from engine-*.mjs pre-compile',
-  !/engine-[^']+\.mjs[\s\S]*?already been declared/.test(svOut),
-  svOut.slice(-600),
 );
 
 await t.close();

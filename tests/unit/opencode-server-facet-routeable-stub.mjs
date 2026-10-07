@@ -26,6 +26,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
+import { missingAssets } from './lib/staged-assets.mjs';
 
 adoptCtxExports({ SupervisorRPC: (_opts) => ({ __supervisor: true }) });
 
@@ -45,7 +46,7 @@ const world = createFacetWorld(() => ({
 
 const env = {
   LOADER: world.loader,
-  ASSETS: { async fetch() { return new Response('', { status: 404 }); } },
+  ASSETS: missingAssets,
 };
 const ctx = createFacetCtx(world, 'do-test');
 const processes = new SessionProcessSupervisor();

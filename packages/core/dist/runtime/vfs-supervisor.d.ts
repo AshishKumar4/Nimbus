@@ -1,71 +1,17 @@
 import type { RuntimeFsBridge, RuntimeSynchronousFs } from './os-contracts.js';
 import type { WasiSupervisorStub } from './wasi/types.js';
-/** Names on the existing supervisor RPC capability; this table owns no state. */
-export declare const FILESYSTEM_RPC_METHODS: {
-    readonly stat: "stat";
-    readonly readFile: "readFileBytes";
-    readonly writeFile: "writeFile";
-    readonly readRange: "fsReadRange";
-    readonly writeRange: "fsWriteRange";
-    readonly truncate: "fsTruncate";
-    readonly utimes: "utimes";
-    readonly chmod: "chmod";
-    readonly access: "access";
-    readonly chown: "chown";
-    readonly open: "fsOpen";
-    readonly read: "fsRead";
-    readonly write: "fsWrite";
-    readonly close: "fsClose";
-    readonly readdir: "readdir";
-    readonly mkdir: "mkdir";
-    readonly unlink: "unlink";
-    readonly rmdir: "rmdir";
-    readonly rename: "rename";
-    readonly readlink: "readlink";
-    readonly linkLeadsTo: "fsLinkLeadsTo";
-    readonly symlink: "symlink";
-    readonly fsync: "fsSync";
-    readonly revision: "fsRevision";
-    readonly acquire: "fsAcquire";
-    readonly list: "fsList";
-    readonly realpath: "fsRealpath";
-    readonly remove: "fsRemove";
-    readonly copyFile: "fsCopyFile";
-    readonly copyTree: "fsCopyTree";
-    readonly fstat: "fsFstat";
-    readonly dup: "fsDup";
-    readonly seek: "fsSeek";
-    readonly setStatus: "fsSetStatus";
-    readonly readdirHandle: "fsReaddirHandle";
-    readonly ftruncate: "fsFtruncate";
-    readonly fchmod: "fsFchmod";
-    readonly fchown: "fsFchown";
-    readonly futimes: "fsFutimes";
-    readonly appendOnce: "fsAppend";
-    readonly acknowledgeAppend: "fsAppendAck";
-    readonly writeBatch: "writeBatch";
-    readonly writeStream: "writeBatchStream";
-    readonly acquireExclusiveMutation: "fsAcquireExclusiveMutation";
-    readonly releaseExclusiveMutation: "fsReleaseExclusiveMutation";
-};
-type Method = keyof typeof FILESYSTEM_RPC_METHODS;
-export type FilesystemSupervisor = {
-    [K in Method as typeof FILESYSTEM_RPC_METHODS[K]]: RuntimeFsBridge[K];
-} & {
-    readonly synchronous?: RuntimeSynchronousFs;
-};
-/** Local facets retain the process-bound bridge and its synchronous capability. */
-export declare function vfsSupervisor(fs: RuntimeFsBridge): FilesystemSupervisor;
-type BridgeRpcMethod = typeof FILESYSTEM_RPC_METHODS[Method];
+import { FILESYSTEM_ANSWERED_RPC_METHODS } from './filesystem-mirrors.generated.js';
+export { FILESYSTEM_RPC_METHODS, vfsSupervisor } from './filesystem-mirrors.generated.js';
+export type { FilesystemSupervisor } from './filesystem-methods.js';
 /** The calls node's shims make that the bridge does not name. */
 declare const NODE_SHIM_RPC_METHODS: readonly ["readFile", "writeFileStat", "lstat", "exists", "hasLegacySymlinkUnder", "setUmask", "fsAcquired", "fsStorageGrant", "fsReadRangeUncached", "fsReadBatch"];
 /**
  * The SupervisorRPC methods `answer` runs: the filesystem surface, every
- * table entry above but the streamed write (a stream does not travel inside
+ * table entry but a streamed one (a stream does not travel inside
  * `answer`'s argument list), and the node shims' own calls. The worker checks
  * each is a method of its SupervisorRPC.
  */
-export type SupervisorAnsweredMethod = Exclude<BridgeRpcMethod, typeof FILESYSTEM_RPC_METHODS.writeStream> | typeof NODE_SHIM_RPC_METHODS[number];
+export type SupervisorAnsweredMethod = typeof FILESYSTEM_ANSWERED_RPC_METHODS[number] | typeof NODE_SHIM_RPC_METHODS[number];
 export declare const SUPERVISOR_ANSWERED_METHODS: readonly SupervisorAnsweredMethod[];
 export declare function isSupervisorAnsweredMethod(name: unknown): name is SupervisorAnsweredMethod;
 /**
@@ -126,5 +72,4 @@ export declare function installAnsweringSupervisor(): void;
  * refusals arrive as answers (answeringSupervisor).
  */
 export declare function supervisorFilesystem(remote: WasiSupervisorStub, local?: RuntimeSynchronousFs): RuntimeFsBridge;
-export {};
 //# sourceMappingURL=vfs-supervisor.d.ts.map

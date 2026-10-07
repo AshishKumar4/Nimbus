@@ -11,13 +11,24 @@ const { NimbusScopeError, NimbusSessionPinError } = await import('../../../../pa
 
 const env = { JWT_SECRET: 'rot' };
 
+/** A gate that lets the token through: the check fails with what it threw. */
+function passes(name, gate) {
+  try {
+    gate();
+    a.check(name, true);
+  } catch (e) {
+    a.check(name, false, `threw ${e?.constructor?.name}: ${e?.message}`);
+  }
+}
+
 // Token with explicit scopes ⊆ required → ok.
 {
   const t = await issueNimbusToken(env, { tn: 'a', scopes: ['session:create', 'session:attach'] });
   const v = await verifyNimbusToken(env, t);
-  requireScopes(v, ['session:create']);     // pass
-  requireScopes(v, ['session:attach']);     // pass
-  a.check('explicit scope present → no throw', true);
+  passes('explicit scope present → no throw', () => {
+    requireScopes(v, ['session:create']);
+    requireScopes(v, ['session:attach']);
+  });
 }
 
 // Token missing required scope → NimbusScopeError.
@@ -35,15 +46,14 @@ const env = { JWT_SECRET: 'rot' };
 {
   const t = await issueNimbusToken(env, { tn: 'a' });
   const v = await verifyNimbusToken(env, t);
-  requireScopes(v, ['session:admin', 'session:nuclear-launch']);
-  a.check('undefined scopes → all permitted (legacy)', true);
+  passes('undefined scopes → all permitted (legacy)', () => requireScopes(v, ['session:admin', 'session:nuclear-launch']));
 }
 
 // sid pin enforcement.
 {
   const t = await issueNimbusToken(env, { tn: 'a', sid: 'pretty-otter-42' });
   const v = await verifyNimbusToken(env, t);
-  requireSessionPin(v, 'pretty-otter-42'); // pass
+  passes('sid pin match → pin check pass', () => requireSessionPin(v, 'pretty-otter-42'));
   let threw = false;
   try { requireSessionPin(v, 'other-session'); } catch (e) {
     threw = e instanceof NimbusSessionPinError
@@ -57,8 +67,7 @@ const env = { JWT_SECRET: 'rot' };
 {
   const t = await issueNimbusToken(env, { tn: 'a' });
   const v = await verifyNimbusToken(env, t);
-  requireSessionPin(v, 'any-session-id');
-  a.check('no sid in token → pin check pass', true);
+  passes('no sid in token → pin check pass', () => requireSessionPin(v, 'any-session-id'));
 }
 
 const sum = a.summary();

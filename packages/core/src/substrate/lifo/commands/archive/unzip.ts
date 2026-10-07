@@ -3,7 +3,7 @@ import { resolve, dirname } from '../../utils/path.js';
 import { parseZip } from '../../utils/archive.js';
 import { parseArgs } from '../../utils/args.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
-import { exists } from '../../../../vfs/vfs.js';
+import { writeBytes } from '../../utils/bytes-io.js';
 
 const spec = {
   list: { type: 'boolean' as const, short: 'l' },
@@ -104,10 +104,5 @@ const command: Command = async (ctx) => {
 
   return 0;
 };
-
-async function writeBytes(stdout: { write(text: string): void; writeBytes?(bytes: Uint8Array): void }, bytes: Uint8Array): Promise<void> {
-  if (stdout.writeBytes) (await stdout.writeBytes(bytes));
-  else (await stdout.write(new TextDecoder().decode(bytes)));
-}
 
 export default command;
