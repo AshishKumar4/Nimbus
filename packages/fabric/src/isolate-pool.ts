@@ -31,7 +31,7 @@ import { supervisorEntrypoint, hostRoute, type HostRoute } from './composition.j
 import { supervisorLoaderKey } from './supervisor-props.js';
 import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { serializeFunction, hashSource } from './vendor/serialize.js';
+import { djb2, serializeFunction, hashSource } from './vendor/serialize.js';
 import {
   beginLoaderFetch,
   beginLoaderFetchWhenFree,
@@ -246,12 +246,12 @@ export interface IsolateCallOptions {
    * permitted. The bytes ride INSIDE the worker code blob; workerd
    * never crosses structured-clone, never executes user-eval.
    *
-   * Cache key impact: per-call bytes are fingerprinted (length +
-   * first/last byte per module) and folded into the loader cache
-   * key. Identical bytes on the same slot → warm reuse; different
-   * bytes → fresh isolate. The pool's existing `wasmHash` field
-   * captures CONSTRUCTOR-time bytes only; per-call bytes get an
-   * independent fingerprint mixed into the slot id at dispatch.
+   * Cache key impact: per-call bytes are fingerprinted as
+   * constructor bytes are (name, length, djb2 of every byte) and
+   * folded into the loader cache key. Identical bytes on the same
+   * slot → warm reuse; different bytes → fresh isolate. The pool's
+   * `wasmHash` field captures CONSTRUCTOR-time bytes only; per-call
+   * bytes get their own fingerprint mixed into the slot id at dispatch.
    *
    * Naming collision rule: a per-call key MUST NOT collide with a
    * constructor-time key (after identifier sanitisation). The
@@ -414,6 +414,15 @@ export function assembleLoaderWorkerModuleSource(
 }
 
 /**
+ * A wasm image's identity in a loader cache key: its name, its length and
+ * the djb2 of every byte, so a warm slot never runs other bytes than the
+ * ones it was built from.
+ */
+function wasmContentFingerprint(name: string, wasm: ArrayBuffer): string {
+  return `${name}:${wasm.byteLength}:${djb2(new Uint8Array(wasm)).toString(36)}`;
+}
+
+/**
  * Nimbus-scoped parallel dispatch over `env.LOADER`. Tasks are pure
  * functions whose last argument is an `env` object containing the
  * forwarded bindings (default: `{ SUPERVISOR }`).
@@ -473,9 +482,9 @@ export class IsolatePool {
   }>;
   /** Hash of every constructor-time wasm module, folded into the loader
    *  cache key so changes invalidate warm slots: a compiled module by the
-   *  identity its host described, bytes by name + length + first/last
-   *  byte. Hashing the FULL bytes would be O(20+ MiB) per dispatch and is
-   *  unnecessary — they are pinned at deploy time. */
+   *  identity its host described, bytes by their content fingerprint,
+   *  computed once at construction. Bytes are not pinned at deploy time:
+   *  an interpreter image can be read from the filesystem. */
   private readonly wasmHash: string;
   /**
    * Short prefix of the owning DO's id, baked into the loader.get()
@@ -543,12 +552,7 @@ export class IsolatePool {
       for (const [name, wasm] of Object.entries(opts.wasmModules)) {
         let fingerprint: string;
         if (wasm instanceof ArrayBuffer) {
-          // Name + length + first/last byte: hashing 20+ MiB of wasm per
-          // dispatch would be wasteful, and these bytes change only with
-          // the deployed bundle.
-          const u = new Uint8Array(wasm);
-          const len = u.byteLength;
-          fingerprint = `${name}:${len}:${len > 0 ? u[0] : 0}:${len > 0 ? u[len - 1] : 0}`;
+          fingerprint = wasmContentFingerprint(name, wasm);
         } else if (wasm instanceof WebAssembly.Module) {
           const identity = hostWasmIdentity(wasm);
           if (!identity) {
@@ -678,51 +682,17 @@ export class IsolatePool {
   }
 
   /**
-   * Compute a stable fingerprint of a list of {name,bytes} entries.
-   * Returns '0' for the empty list (cache-key bytes-stable for the
-   * common no-per-call-wasm case). Same fingerprinting strategy as
-   * the constructor's `wasmHash`: name + length + first/last byte
-   * per module. Hashing all bytes would be O(20+ MiB) per dispatch
-   * for nothing — the length+endpoints fingerprint is a strong-
-   * enough discriminator and identical bytes produce identical
-   * fingerprints (warm reuse).
-   *
-   * Per-call wasm fingerprinting MUST be content-sensitive: when a user
-   * compiles two .c files (e.g. `clang a.c -o a` then `clang b.c -o b`)
-   * the resulting .wasm binaries may differ by only a few bytes deep
-   * inside the code section. The old fingerprint
-   * `name + len + first + last` collided for such cases, returning the
-   * same cache key and forcing a warm-isolate reuse that served the
-   * FIRST binary's WebAssembly.Module on the second dispatch (verified
-   * in prod: ./a and ./b were both 7572 bytes with identical first/last
-   * bytes, differing only at offset 651 — clang-state-fix wave repro).
-   *
-   * Fix: hash the ACTUAL bytes via djb2 over the full content. Per-call
-   * wasm is typically the user's compiled binary (KBs to a few MiB);
-   * djb2 of a few MiB takes microseconds on the supervisor side and
-   * runs once per dispatch (not per request — warm-reuse-on-match still
-   * works for the legitimate "same bytes" case). The savings of NOT
-   * hashing the wasm were marginal; the correctness cost was severe.
+   * The per-call images' part of the loader cache key: '0' for none, so
+   * the common no-per-call-wasm dispatch keeps one stable key. Content
+   * sensitive, as the constructor's is: clang's ./a and ./b were both
+   * 7572 bytes with equal first and last bytes, differing only at offset
+   * 651, and a length+endpoints key ran ./a's module for ./b.
    */
   #fingerprintWasm(
     entries: Array<{ name: string; wasm: ArrayBuffer }>,
   ): string {
     if (entries.length === 0) return '0';
-    const parts: string[] = [];
-    for (const w of entries) {
-      const u = new Uint8Array(w.wasm);
-      const len = u.byteLength;
-      // djb2 over the bytes. Faster than crypto.subtle.digest at small
-      // sizes, deterministic, and good enough for cache-key
-      // disambiguation (NOT cryptographic — the loader cache doesn't
-      // protect against malicious inputs).
-      let h = 5381;
-      for (let i = 0; i < len; i++) {
-        h = ((h << 5) + h + u[i]) | 0;
-      }
-      parts.push(`${w.name}:${len}:${(h >>> 0).toString(36)}`);
-    }
-    return hashSource(parts.join('|'));
+    return hashSource(entries.map((w) => wasmContentFingerprint(w.name, w.wasm)).join('|'));
   }
 
   /**

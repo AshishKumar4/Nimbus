@@ -19,7 +19,7 @@
  */
 
 import { networkRef, requireNetwork, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { serializeFunction } from './vendor/serialize.js';
+import { djb2, serializeFunction } from './vendor/serialize.js';
 import { BindingError } from './vendor/errors.js';
 import { IsolatePool, type FacetTaskFn } from './isolate-pool.js';
 import { claimDynamicWorkers, dynamicWorkerHeadroom, type DynamicWorkerClaim } from './budgets.js';
@@ -483,27 +483,17 @@ export class Fanout {
 }
 
 /**
- * Stable hash → shard. Uses a fresh djb2 over the key (NOT
- * hashSource) and modulos by peerCount.
+ * Stable hash → shard: the key's djb2 integer modulo peerCount.
  *
- * Why not reuse hashSource: hashSource returns a base-36 string,
- * NOT hex — its alphabet is `[0-9a-z]`. parseInt(str, 16) on a
- * base-36 string aborts at the first non-hex char (any of g-z),
- * which produces extremely poor distribution: keys with the same
- * leading-hex-prefix collide regardless of their suffix. (Seen in
- * the wild: `task-0 .. task-7` all collided onto shard 4.)
+ * The integer, never hashSource's base-36 text: parseInt(text, 16)
+ * stops at the first letter past f, so keys with one leading prefix
+ * collided (`task-0 .. task-7` all landed on shard 4). peerCount <=
+ * MAX_PEER_FANOUT (32) << 2^32, so the modulo distributes uniformly.
  *
  * Deterministic: same key + same peerCount → same shard, every run.
  * Tests use this to predict placement.
  */
 export function hashKeyToShard(key: string, peerCount: number): number {
   if (peerCount <= 1) return 0;
-  // djb2, returning an unsigned 32-bit integer — full 2^32 range,
-  // no string-format conversion gotchas. peerCount <= MAX_PEER_FANOUT
-  // (32) << 2^32, so the modulo distributes uniformly for any input.
-  let h = 5381;
-  for (let i = 0; i < key.length; i++) {
-    h = ((h << 5) + h + key.charCodeAt(i)) | 0;
-  }
-  return (h >>> 0) % peerCount;
+  return djb2(key) % peerCount;
 }

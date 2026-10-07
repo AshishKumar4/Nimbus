@@ -27,11 +27,22 @@ export function serializeFunction(fn: Function): string {
   return source;
 }
 
-// djb2 hash — fast, deterministic, not cryptographic. Used only for loader cache key differentiation.
-export function hashSource(source: string): string {
+/**
+ * djb2 over a string's UTF-16 code units or over bytes, as an unsigned
+ * 32-bit integer: fast, deterministic, not cryptographic. The one hash
+ * behind loader cache keys and peer placement.
+ */
+export function djb2(input: string | Uint8Array): number {
   let hash = 5381;
-  for (let i = 0; i < source.length; i++) {
-    hash = ((hash << 5) + hash + source.charCodeAt(i)) | 0;
+  if (typeof input === 'string') {
+    for (let i = 0; i < input.length; i++) hash = ((hash << 5) + hash + input.charCodeAt(i)) | 0;
+  } else {
+    for (let i = 0; i < input.length; i++) hash = ((hash << 5) + hash + input[i]) | 0;
   }
-  return (hash >>> 0).toString(36);
+  return hash >>> 0;
+}
+
+/** {@link djb2} of `source` in base 36, for loader cache keys. */
+export function hashSource(source: string): string {
+  return djb2(source).toString(36);
 }
