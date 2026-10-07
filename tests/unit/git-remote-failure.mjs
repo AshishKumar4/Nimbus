@@ -139,6 +139,21 @@ try {
     }
     console.log('  ok  a remote not configured: git\'s "does not appear to be a git repository", exit as git');
   }
+
+  // The same, in a repository made as a shell makes one: `git init`, `git config`, a commit, `git remote add`.
+  {
+    assert.equal((await session.git('/home/user', ['init', '-q', '/home/user/shell'])).code, 0);
+    for (const args of [['config', 'user.name', 'a'], ['config', 'user.email', 'a@b']]) assert.equal((await session.git('/home/user/shell', args)).code, 0);
+    session.kernel.writeFile('home/user/shell/a', 'a\n');
+    for (const args of [['add', 'a'], ['commit', '-q', '-m', 'one'], ['remote', 'add', 'origin', 'https://example.invalid/r.git']]) {
+      const step = await session.git('/home/user/shell', args);
+      assert.equal(step.code, 0, `${args[0]}: ${step.stderr}`);
+    }
+    const nosuch = await session.git('/home/user/shell', ['fetch', 'nosuch']);
+    assert.equal(nosuch.code, 128, `fetch nosuch: ${nosuch.stdout}${nosuch.stderr}`);
+    assert.match(nosuch.stderr, /^fatal: 'nosuch' does not appear to be a git repository\n/);
+    console.log('  ok  a remote not configured, in a repository a shell made');
+  }
 } finally {
   server.close();
   rmSync(work, { recursive: true, force: true });
