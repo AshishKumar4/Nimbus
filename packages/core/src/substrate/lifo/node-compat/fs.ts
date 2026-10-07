@@ -8,6 +8,7 @@ import { EventEmitter } from './events.js';
 import { Buffer } from './buffer.js';
 import { fsError, isVfsError, type FsError } from '../../../vfs/vfs-error.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
+import { S_IFMT } from '../../../vfs/vfs.js';
 
 // ─── Dirent ───
 
@@ -55,14 +56,16 @@ interface NodeStat {
 
 /**
  * Node's Stats for a filesystem stat: its identity, links, owner, mode and
- * times as the filesystem has them (no birth time is kept: ctime stands in).
+ * times as the filesystem has them (no birth time is kept: ctime stands in),
+ * the mode with its type's format bits where the filesystem's has none.
  */
 function toNodeStat(stat: VfsStat): NodeStat {
-  const holds = DIRENT_TYPES[direntTypeOfStat(stat)].node;
+  const type = DIRENT_TYPES[direntTypeOfStat(stat)];
+  const holds = type.node;
   return {
     dev: stat.dev,
     ino: stat.ino,
-    mode: stat.mode,
+    mode: stat.mode & S_IFMT ? stat.mode : type.format | stat.mode,
     nlink: stat.nlink,
     uid: stat.uid,
     gid: stat.gid,
