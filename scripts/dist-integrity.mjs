@@ -66,9 +66,10 @@
  *   every dirty worktree would be turned off within a week.
  *
  * Used by:
- *   - apps/hosted-demo/package.json  predeploy / deploy:production
- *   - apps/probe/package.json        predeploy
- *   - tests/behavioral/_throwaway-target.mjs, _staging-target.mjs
+ *   - apps/hosted-demo/package.json, apps/probe/package.json  predeploy
+ *   - scripts/ci/bundle.mjs and build.mjs, on CI: every release (staging,
+ *     production, throwaways) and remote-build
+ *   - tests/behavioral/_throwaway-target.mjs (an `up` without a release)
  *   - tests/unit/dist-integrity.mjs  (the mechanism, red and green)
  *   - `bun scripts/dist-integrity.mjs` (CLI)
  *   - every published package's prepublishOnly, as
@@ -138,6 +139,15 @@ export const BUILD_FIXPOINT = [
     cwd: 'packages/worker',
     script: 'bundle',
     why: 'stage assets and regenerate sources — bundle:shims reads dist',
+  },
+  // The bundle regenerates sources in core too (bundle-facet-workers.mjs
+  // writes core's src/runtime/wasi-instance.generated.ts and
+  // bash-runner.generated.ts), so core compiles again before the worker:
+  // without it a stale core reached its fixpoint only on a second rebuild.
+  {
+    cwd: 'packages/core',
+    script: 'build',
+    why: 'carry the sources the worker bundle regenerates in core into dist',
   },
   {
     cwd: 'packages/worker',
