@@ -17,6 +17,7 @@
  */
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
@@ -71,7 +72,7 @@ import { persistDurableWorkerImage, purgeDurableWorkerImages, } from './durable-
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, } from '@nimbus-sh/core/constants.js';
+import { CF_COMPAT_DATE, DEFAULT_HOME, GUEST_COMPAT_FLAGS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
@@ -594,24 +595,39 @@ function interpreterModules(sources) {
     };
 }
 /**
+ * The URL an entry's import() resolves against and its `Function` carries:
+ * the script's own, as Node names it (`-e` code is `<cwd>/[eval]`, stdin
+ * `<cwd>/[stdin]`).
+ */
+export function entryImporterUrl(filename, cwd) {
+    const base = cwd.replace(/\/+$/, '') || '/';
+    const path = filename === undefined || filename === '<eval>'
+        ? `${base}/[eval]`
+        : filename === '[stdin]' ? `${base}/[stdin]` : filename;
+    return moduleImporterUrl(path);
+}
+/**
  * The entry code as a module of the map, named for the script it came from so
  * its stack frames carry that path; `-e` code is `[eval]`. The runtime may
  * have lowered it from ESM (runtime-registry.ts), which nothing here records,
- * so its scope is read off the code itself (declaresWrapperBinding).
+ * so its scope is read off the code itself (declaresWrapperBinding). Its
+ * `Function` carries `importer` (entryImporterUrl).
  */
-function entryModule(userCode, filename) {
+function entryModule(userCode, filename, importer) {
     const code = rewriteProvidedCommonJsModules(userCode);
     return {
         name: commonJsEntryModuleName(filename || '[eval]'),
         text: wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function').text,
+        importer,
     };
 }
 /**
  * Generate one-shot runtime code with a plain fetch handler. `filename`
- * names the entry's module, and so its stack frames.
+ * names the entry's module, and so its stack frames; with `cwd` it is the
+ * entry's importer (entryImporterUrl).
  */
-export async function generateEntrypointCode(userCode, vfsState, usesSqlite, sources, wasmImports = [], filename) {
-    const entry = entryModule(userCode, filename);
+export async function generateEntrypointCode(userCode, vfsState, usesSqlite, sources, wasmImports = [], filename, cwd = DEFAULT_HOME) {
+    const entry = entryModule(userCode, filename, entryImporterUrl(filename, cwd));
     const bundleSource = await facetVfsBundleSourceFor(vfsState);
     return {
         code: `
@@ -800,7 +816,7 @@ ${RESIDENCY_MISS_REPORT}
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
       // the file, as Node does. \`-p\`'s returns the value it prints.
-      const __entryResult = __nimbusEntryOutcome(__nimbusEntryWrapper(${JSON.stringify(entry.name)}, filename || "/home/user/script.js")(
+      const __entryResult = __nimbusEntryOutcome(__nimbusEntryWrapper(${JSON.stringify(entry.name)}, filename || "/home/user/script.js", ${JSON.stringify(entry.importer)})(
         mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user"
       ));
       const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs);
@@ -994,7 +1010,7 @@ function facetWasmImportsSource(wasmImports) {
         + `\nglobalThis.__nimbusPrecompiledWasmByDigest = new Map([${byDigest.join(', ')}]);`;
 }
 export async function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, sources, pacer) {
-    const entry = entryModule(userCode, opts.filename);
+    const entry = entryModule(userCode, opts.filename, entryImporterUrl(opts.filename, opts.cwd || DEFAULT_HOME));
     const safeArgs = JSON.stringify({
         argv: opts.argv || [],
         nodeCommandLine: opts.node ?? null,
@@ -1306,7 +1322,7 @@ ${RESIDENCY_MISS_REPORT}
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
       // the file, as Node does. \`-p\`'s returns the value it prints.
-      const __entryResult = __nimbusEntryOutcome(__nimbusEntryWrapper(${JSON.stringify(entry.name)}, filename || "/home/user/script.js")(
+      const __entryResult = __nimbusEntryOutcome(__nimbusEntryWrapper(${JSON.stringify(entry.name)}, filename || "/home/user/script.js", ${JSON.stringify(entry.importer)})(
         mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user"
       ));
       if (attachedTty) {
@@ -3973,6 +3989,13 @@ const RESTART_BACKOFF_BASE_MS = 1_000;
 function residentRestartPolicy(env) {
     return env?.[RESTART_POLICY_ENV] === 'on-failure' ? 'on-failure' : 'never';
 }
+/** What an app reports of its live process: its exec id and the process it restarts, each when it has one. */
+function processReportFields(entry) {
+    return {
+        ...execIdField(entry),
+        ...(entry?.restartedFrom === undefined ? {} : { restartedFrom: entry.restartedFrom }),
+    };
+}
 /**
  * The durable owner a journal row serves: the row's stamped field for
  * reservation-claimed residents, falling back to the worker recipe's own
@@ -3985,6 +4008,23 @@ function residentOwner(record) {
  *  seconds after a launch settles, while the resident runs. */
 function residentLaunchDoing(record) {
     return record.phase === 'running' ? 'running' : 'starting';
+}
+/**
+ * Why a resident the session restarted is not restarted again. One that was
+ * running when the session restarted had been restarted already, and had not
+ * run RESIDENT_PROVEN_MS: a new process whose isolate has used about a second
+ * of CPU makes Cloudflare restart the session (spike/isolate-move), and
+ * restarting it again would only repeat that.
+ */
+function residentAbandonedNotice(record, now) {
+    if (record.phase === 'running' && record.runningSince !== undefined) {
+        const seconds = Math.max(0, Math.round((now - record.runningSince) / 1000));
+        return `\x1b[2m[nimbus: the session restarted again ${seconds} s after restarting "${record.command}", so it is left stopped: `
+            + 'Cloudflare restarts a session when a newly started process has used about a second of CPU, and restarting '
+            + `it would do that again; start it again with: ${record.command}]\x1b[0m\r\n`;
+    }
+    return '\x1b[2m[nimbus: the session restarted again while '
+        + `"${record.command}" was ${residentLaunchDoing(record)} — leaving it stopped]\x1b[0m\r\n`;
 }
 export class FacetManager {
     ctx;
@@ -4168,10 +4208,16 @@ export class FacetManager {
             generationBase: () => this.processes.pidBase,
             waitUntil: (promise) => this.ctx.waitUntil(promise),
             redrive: (record, attempt) => this._redrive(record, attempt),
-            onRedrive: (record) => this.hooks.notify?.('\x1b[2m[nimbus: the session restarted while '
-                + `"${record.command}" was ${residentLaunchDoing(record)} — restarting it]\x1b[0m\r\n`),
-            onAbandoned: (record) => this.hooks.notify?.('\x1b[2m[nimbus: the session restarted again while '
-                + `"${record.command}" was ${residentLaunchDoing(record)} — leaving it stopped]\x1b[0m\r\n`),
+            onRedrive: (record) => {
+                // A line in the Worker's logs as well: the platform logs nothing for the restart itself.
+                console.warn(`[facet-manager] the session restarted while pid ${record.pid} ("${record.command}") was ${residentLaunchDoing(record)}; restarting it`);
+                this.hooks.notify?.('\x1b[2m[nimbus: the session restarted while '
+                    + `"${record.command}" was ${residentLaunchDoing(record)} — restarting it]\x1b[0m\r\n`);
+            },
+            onAbandoned: (record) => {
+                console.warn(`[facet-manager] the session restarted again while pid ${record.pid} ("${record.command}") was ${residentLaunchDoing(record)}; left stopped`);
+                this.hooks.notify?.(residentAbandonedNotice(record, Date.now()));
+            },
             onRedriveFailed: (record, e) => {
                 console.warn(`[facet-manager] resident pid ${record.pid} ("${record.command}") not re-driven: ${errorMessage(e)}`);
                 this.hooks.notify?.(`\x1b[2m[nimbus: "${record.command}" could not be restarted: `
@@ -4246,7 +4292,7 @@ export class FacetManager {
         // backoff; a row that is gone is owed nothing.
         if (!(await this.launchJournal.rows()).has(key))
             return;
-        await this.launchJournal.drive(key, row);
+        await this.launchJournal.drive(key, row, { lostToReset: false });
     }
     /** Claim identity AND write its recovery row in one serializable storage transaction. */
     async _claimResident(record) {
@@ -4369,12 +4415,7 @@ export class FacetManager {
             return code;
         if (this.esbuild === null)
             throw new Error('entry dynamic import requires the transform service');
-        const base = cwd.replace(/\/+$/, '') || '/';
-        const path = filename === undefined || filename === '<eval>'
-            ? `${base}/[eval]`
-            : filename === '[stdin]' ? `${base}/[stdin]` : filename;
-        const parentUrl = 'file:///' + path.replace(/^\/+/, '');
-        return transformEntryScript(code, parentUrl, { host: this.esbuild, store: this._transformStore(), pacer });
+        return transformEntryScript(code, entryImporterUrl(filename, cwd), { host: this.esbuild, store: this._transformStore(), pacer });
     }
     /**
      * The store this session's launches keep their transform results in: the
@@ -6031,7 +6072,7 @@ export class FacetManager {
                     // own assets, for the same reason.
                     const stagedModules = await this._stagedBindingModulesByValue(vfsState.stagedBindings ?? []);
                     const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user', pacer);
-                    const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports, opts.filename);
+                    const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME);
                     const codeModules = {};
                     for (const [name, text] of Object.entries(generatedWorker.codeModules))
                         codeModules[name] = { cjs: text };
@@ -6701,7 +6742,11 @@ export class FacetManager {
             // Reported through onRedriveFailed, and the row is superseded.
             throw new Error('its journal entry predates the credential a re-drive runs under, so it is not started as anyone else');
         }
-        const identity = { cred: record.cred, ...(record.execId === undefined ? {} : { execId: record.execId }) };
+        const identity = {
+            cred: record.cred,
+            ...(record.execId === undefined ? {} : { execId: record.execId }),
+            restart: { from: { pid: record.pid, cause: 'session-restart' }, doing: residentLaunchDoing(record) },
+        };
         switch (recipe.kind) {
             case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt, identity);
             case 'worker': {
@@ -6740,6 +6785,22 @@ export class FacetManager {
         }
     }
     /**
+     * The process-table entry of a resident launch: a child of its invoker,
+     * under its credential, as exec's. A re-drive has no invoker (the journal
+     * never holds one): it runs as the row says, records the process it
+     * restarts, and says so as its first line of output. The terminal the
+     * session's restart disconnected is not where the user looks for it.
+     */
+    _spawnLaunchEntry(command, argv, cwd, invokerPid, redriven) {
+        if (redriven === undefined)
+            return this.processes.spawn(command, argv, cwd, { parentPid: invokerPid });
+        const { restart, ...identity } = redriven;
+        const entry = this.processes.spawn(command, argv, cwd, { ...identity, restartedFrom: restart.from });
+        this.processes.appendOutput(entry.pid, 'stderr', `[nimbus: the session restarted while "${command}" was ${restart.doing}, so this process restarted; `
+            + `it was pid ${restart.from.pid}]\n`);
+        return entry;
+    }
+    /**
      * Spawn a long-running Node process with the same shimmed require/fs/http
      * environment used by foreground `node <script>` execution.
      *
@@ -6773,9 +6834,7 @@ export class FacetManager {
             entry = found;
         }
         else {
-            // A child of its invoker, under its credential, as exec's. A re-drive has
-            // no invoker (the journal never holds one): it runs as the row says.
-            entry = this.processes.spawn(command, launchArgv({ execArgv: opts.node?.execArgv, argv: opts.argv }), cwd, { parentPid: opts.invokerPid, ...redriven });
+            entry = this._spawnLaunchEntry(command, launchArgv({ execArgv: opts.node?.execArgv, argv: opts.argv }), cwd, opts.invokerPid, redriven);
         }
         this.processes.setLongRunning(entry.pid);
         if (opts.attachedTty)
@@ -6939,14 +6998,14 @@ export class FacetManager {
         finally {
             pacer.settle();
         }
-        // Booted and running: the launch proved itself, so the resident starts
-        // its running life with a fresh re-drive budget. If the process already
+        // Booted and running: the resident's budget is whole again once it has
+        // run RESIDENT_PROVEN_MS from now (fenced-work.ts). If the process already
         // ended inside the launch body's own settlement, the terminal hook has
         // released the row — do not write it back. Amended, not rewritten from
         // `record`: a port the program bound during its boot has already been
         // stamped onto the row, and the settle must not lose it.
         if (this.launchJournal.has(entry.pid)) {
-            await this._amendRow(entry.pid, (row) => ({ ...row, attempt: 0, phase: 'running' }));
+            await this._amendRow(entry.pid, (row) => ({ ...row, phase: 'running', runningSince: Date.now() }));
         }
     }
     async _residentLaunchBody(entry, code, command, cwd, opts, pacer, durableFacetName, launchEnv) {
@@ -7307,7 +7366,7 @@ export class FacetManager {
         await this.processes.reap();
         // The table entry carries the same argv the identity is derived from, so
         // a runtime resident reads the same way through either path.
-        const entry = this.processes.spawn(command, opts.resident?.argv ?? [], cwd, { parentPid: opts.invokerPid, ...redriven });
+        const entry = this._spawnLaunchEntry(command, opts.resident?.argv ?? [], cwd, opts.invokerPid, redriven);
         // Stamp the process-table entry so /api/processes exposes this as a
         // long-running process.
         this.processes.setLongRunning(entry.pid);
@@ -7450,9 +7509,8 @@ export class FacetManager {
             this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget);
             const boot = foreground ? await Promise.race([handle.booted(), foreground.interrupted]) : await handle.booted();
             if (record && this.launchJournal.has(entry.pid)) {
-                // Booted and running: the launch proved itself, so the resident
-                // starts its running life with a fresh re-drive budget.
-                await this._amendRow(entry.pid, (row) => ({ ...row, attempt: 0, phase: 'running' }));
+                // Booted and running: its budget is whole again once it has run RESIDENT_PROVEN_MS (fenced-work.ts).
+                await this._amendRow(entry.pid, (row) => ({ ...row, phase: 'running', runningSince: Date.now() }));
             }
             if (opts.port && opts.port > 0 && opts.port < 65536) {
                 if (opts.durable && !opts.resident) {
@@ -7739,8 +7797,8 @@ export class FacetManager {
                 app.status = 'running';
             apps.set(identity.owner, app);
         }
-        // The live pid's exec id, read from its process: the one place it lives.
-        return [...apps.values()].map((app) => (app.pid === null ? app : { ...app, ...execIdField(this.processes.get(app.pid)) }));
+        // The live pid's exec id and restart, read from its process: the one place they live.
+        return [...apps.values()].map((app) => (app.pid === null ? app : { ...app, ...processReportFields(this.processes.get(app.pid)) }));
     }
     async registerPort(pid, port) {
         if (port > 0 && port < 65536) {
@@ -7919,7 +7977,8 @@ export class FacetManager {
         const { promise: boundHit, resolve: markBound } = withResolvers();
         setTimeout(() => markBound(true), DURABLE_ENSURE_BOOT_BUDGET_MS);
         const failed = await Promise.race([
-            this.launchJournal.drive(rowKey, record),
+            // A previous instance's row: the session restarted under it.
+            this.launchJournal.drive(rowKey, record, { lostToReset: true }),
             boundHit,
         ]);
         if (failed)

@@ -29,7 +29,7 @@ import { ROOT_ENV, frameTemplate, installHost, isObject, makeFunction } from './
 import { analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
 import { ownFunctionExpression, ownProgram } from './tree.js';
 import { own } from './parser-realm.js';
-import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, arrayIsArray, charCodeAt, isWhitespaceCode, objectKeys, reflectGet, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
+import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, arrayIsArray, charCodeAt, isWhitespaceCode, objectKeys, reflectGet, reflectGetOwnPropertyDescriptor, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
@@ -199,6 +199,18 @@ let installed = null;
 function unitContext(source, module, host, moduleScope) {
     return { source, module, host, imports: new SafeMap(), moduleScope };
 }
+/** A unit's host: `origin`'s import() and `Function` binding, or else the host's import() against `parentUrl` and the global `Function`. */
+function unitHost(host, origin, parentUrl) {
+    if (origin === undefined) {
+        return { dynamicImport: (specifier, options) => host.dynamicImport(parentUrl, specifier, options), functionBinding: null };
+    }
+    // Its own property only: an origin without a Function must not take one a program put on Object.prototype.
+    const own = reflectGetOwnPropertyDescriptor(origin, 'Function');
+    return {
+        dynamicImport: (specifier, options) => origin.import(specifier, options),
+        functionBinding: own === undefined || own.value === undefined ? null : { value: own.value },
+    };
+}
 export function createInterpreter(hostOps, host) {
     if (host.primordials !== LAUNCH_PRIMORDIALS)
         throw new Error('interpreter: its built-ins were not captured at the launch start');
@@ -207,7 +219,7 @@ export function createInterpreter(hostOps, host) {
         installed = hostOps;
     }
     const interpreter = {
-        compileFunction(kind, params, body) {
+        compileFunction(kind, params, body, origin) {
             // A trailing source map is parsed only when the shortened body fails.
             const short = withoutTrailingLineComments(body);
             let parsed;
@@ -223,20 +235,20 @@ export function createInterpreter(hostOps, host) {
             const node = ownFunctionExpression(parsed.node);
             const analysis = analyzeFunction(node);
             const root = analysis.functionScopeOf(node);
-            const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);
+            const unit = unitContext(text, false, unitHost(host, origin, undefined), null);
             const fi = new Compiler(analysis, unit, text, 0, root).rootFunction(node, 'anonymous', runtimeFunctionSource(kind, params, body));
             releaseScopes(root);
             return makeFunction(fi, ROOT_ENV, undefined);
         },
-        compileModule(path, text) {
+        compileModule(path, text, origin) {
             if (UNPARSED_EXTENSIONS[extensionOf(path)])
                 throw new UnsupportedSyntax(`${extensionOf(path)} source`);
             const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
-            const unitHost = { dynamicImport: (specifier, options) => host.dynamicImport(parentUrl, specifier, options) };
+            const moduleHost = unitHost(host, origin, parentUrl);
             const compileCell = (program) => {
                 const analysis = analyzeProgram(program, { kind: 'module', strict: true });
                 const root = analysis.functionScopeOf(program);
-                const cell = moduleCell(new Compiler(analysis, unitContext(text, true, unitHost, root), text, 0, root).modulePlan(program, root));
+                const cell = moduleCell(new Compiler(analysis, unitContext(text, true, moduleHost, root), text, 0, root).modulePlan(program, root));
                 releaseScopes(root);
                 return cell;
             };
@@ -261,23 +273,23 @@ export function createInterpreter(hostOps, host) {
             }
             const analysis = analyzeCommonJs(script, WRAPPER_PARAMS);
             const root = analysis.functionScopeOf(script);
-            const fi = new Compiler(analysis, unitContext(text, false, unitHost, null), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
+            const fi = new Compiler(analysis, unitContext(text, false, moduleHost, null), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
             releaseScopes(root);
             // Called as the loader calls a staged cell, so `this` matches the next launch's.
             return makeFunction(fi, ROOT_ENV, undefined);
         },
-        compileExpression(code) {
+        compileExpression(code, origin) {
             const at = scriptExpression(code, REALM);
             if (at === null)
                 throw new UnsupportedSyntax('a vm script that is not one expression');
             const body = expressionFunctionBody(stringSlice(code, 0, at.prologueEnd), stringSlice(code, at.start, at.end));
-            return interpreter.compileFunction('function', [], body);
+            return interpreter.compileFunction('function', [], body, origin);
         },
         runScript(text) {
             const program = ownProgram(parse(text, SCRIPT_OPTIONS));
             const analysis = analyzeProgram(program, { kind: 'script', strict: false });
             const root = analysis.functionScopeOf(program);
-            const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);
+            const unit = unitContext(text, false, unitHost(host, undefined, undefined), null);
             const body = new Compiler(analysis, unit, text, 0, root).programBody(program, root);
             releaseScopes(root);
             if (body.g !== null)
