@@ -68,6 +68,12 @@ export interface ProcessFsSession {
   openWriter(first: boolean): Promise<string | null>;
   /** One attempt of one wave (SupervisorRPC.writeBatchStream). */
   writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence, owner?: string): Promise<unknown>;
+  /**
+   * Retire writer epoch `writer` (SupervisorRPC.retireWaveWriter): an
+   * attempt of it that arrives from now on is refused. Absent, the session
+   * fences nothing to retire.
+   */
+  retireWriter?(writer: string): Promise<void>;
   /** Delegations; absent, the process holds none and the session decides every op. */
   readonly grants?: ProcessFsGrantSession;
 }
@@ -284,6 +290,12 @@ const DATA_PIECE_BYTES = WAVE_BYTES;
 export const MAX_DELEGATIONS_PER_PROCESS = 8;
 /** Mutations in a subtree before the client takes it. */
 export const GRANT_AFTER = 8;
+
+/** A link's target, at most (PATH_MAX, as symlink(2) bounds it). */
+const SYMLINK_TARGET_MAX = 4096;
+
+const utf8 = new TextEncoder();
+const utf8Bytes = (text: string): number => utf8.encode(text).byteLength;
 /** A grant unused this long is given back. */
 export const GRANT_IDLE_MS = 2_000;
 /** Inode numbers a first grant of a subtree reserves; each renewal doubles it. */
@@ -442,6 +454,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   let epoch: { writer: string | null; openedAt: number; numbering: ProcessFsNumbering | null } | null = null;
   let ack = 0;
   let wave = 0;
+  /** Writer epochs given up whose retirement the session has not answered yet (lostEpoch). */
+  const retiring: string[] = [];
   const failures: ProcessFsFailure[] = [];
   /** Entries logged, the last one answered (every one before it is), and the flushes waiting for a place in the log. */
   let logged = 0;
@@ -503,6 +517,12 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const writerFor = async (entries: readonly Entry[]): Promise<string | null> => {
     const numberedPending = entries.some((entry) => entry.seq !== 0) || queue.some((entry) => entry.seq !== 0);
     if (epoch !== null && (epoch.writer === null || numberedPending || now() - epoch.openedAt < WAVE_EPOCH_TTL_MS / 2)) return epoch.writer;
+    // An epoch given up is retired before anything else is sent (lostEpoch);
+    // one the session cannot be told of yet is told before the next wave.
+    while (retiring.length > 0) {
+      await session.retireWriter?.(retiring[0]!);
+      retiring.shift();
+    }
     const openedAt = now();
     const writer = await session.openWriter(counters.epochs === 0);
     epoch = { writer, openedAt, numbering: null };
@@ -558,12 +578,24 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       journal.dropThrough(entries[entries.length - 1]!.jid);
       return;
     }
-    const ops = entries.map(opOf);
-    // Sent: the heap's copy is the wave's now.
-    for (const entry of entries) if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
-    const bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
-    // Numbered once, under the epoch they are first sent under; a re-send keeps them.
-    numberEntries(entries);
+    let ops: ProcessFsOp[];
+    let bytes: Uint8Array;
+    try {
+      ops = entries.map(opOf);
+      // Sent: the heap's copy is the wave's now.
+      for (const entry of entries) if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
+      bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
+      // Numbered once, under the epoch they are first sent under; a re-send keeps them.
+      numberEntries(entries);
+    } catch (error) {
+      // Refused here, before any of it left (a log that cannot be read back,
+      // an op no wave can carry): answered as refused, each one, never left waiting.
+      const code = (error as { code?: unknown } | null)?.code;
+      const errno = typeof code === 'string' && /^E[A-Z0-9]+$/.test(code) ? code : 'EIO';
+      for (const entry of entries) fail(entry, errno, `this write could not be sent: ${error instanceof Error ? error.message : String(error)}`);
+      journal.dropThrough(entries[entries.length - 1]!.jid);
+      return;
+    }
     const firstSeq = entries[0]!.seq;
     counters.waves++;
     counters.maxWaveOps = Math.max(counters.maxWaveOps, entries.length);
@@ -583,7 +615,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       });
     } catch (error) {
       // Lost past every re-send, or refused before any op (the epoch gone): their fate is unknown.
-      lostEpoch(entries, `the session did not answer this write: ${error instanceof Error ? error.message : String(error)}`);
+      lostEpoch(entries, `the session did not answer this write: ${error instanceof Error ? error.message : String(error)}`, writer);
       return;
     }
     // The session's own answer (SqliteVFS.writeStream's, through the binding).
@@ -592,7 +624,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     // Unfenced, the session numbers nothing: committedOps says how far it went.
     const cursor = writer === null ? firstSeq - 1 + (answer.ok ? entries.length : answer.committedOps) : answer.sequence?.cursor;
     if (cursor === undefined) {
-      lostEpoch(entries, `the session answered this write without its cursor: ${error?.message ?? 'no error'}`);
+      lostEpoch(entries, `the session answered this write without its cursor: ${error?.message ?? 'no error'}`, writer);
       return;
     }
     ack = Math.max(ack, cursor);
@@ -636,20 +668,24 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       queue.unshift(...back);
       return;
     }
-    lostEpoch(back, `the session could not apply this write: ${error?.message ?? 'no error'}`);
+    lostEpoch(back, `the session could not apply this write: ${error?.message ?? 'no error'}`, writer);
   };
 
   /**
    * Ops whose fate the session cannot answer: failures, and the epoch they
    * were numbered under is given up, so the ops after them are numbered
-   * under a new one (the session would refuse them as a gap).
+   * under a new one (the session would refuse them as a gap). The session
+   * retires it before the new one opens (retiring): an attempt of it still
+   * on its way is refused when it arrives, instead of landing after, and
+   * over, what the new epoch sends.
    */
-  const lostEpoch = (entries: Entry[], message: string): void => {
+  const lostEpoch = (entries: Entry[], message: string, writer: string | null): void => {
     for (const entry of entries) {
       counters.lost++;
       fail(entry, 'EIO', message);
     }
     journal.dropThrough(entries[entries.length - 1]!.jid);
+    if (writer !== null) retiring.push(writer);
     epoch = null;
     for (const entry of queue) entry.seq = 0;
   };
@@ -727,9 +763,15 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       }
       if (kind === null || grant.ended) continue;
       counters.recalls++;
+      // Frozen first: nothing more is decided under it, so the prefix the
+      // flush sends is everything decided before the recall, and what the
+      // process does there from now on goes to the session as anyone's.
+      const wasClosing = grant.closing;
+      grant.closing = true;
       await client.flush();
       if (kind === 'share') {
         grant.shared = true;
+        grant.closing = wasClosing;
         options.released?.(grant.root);
       }
       try {
@@ -886,6 +928,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       const acknowledged = submitOptions?.acknowledged === true;
       const named = pathsOf(op);
       for (const path of named) if (!canonical(path)) throw fsError('EINVAL', `EINVAL: not a filesystem path the session takes: '${path}'`, path);
+      // A link's target past PATH_MAX is refused here, as symlink(2) refuses it; no wave could carry it.
+      if (op.type === 'call' && op.call.call === 'symlink' && utf8Bytes(op.call.target) > SYMLINK_TARGET_MAX) {
+        throw fsError('ENAMETOOLONG', `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
+      }
       const parts = pieces(op);
       const bytes = parts.reduce((sum, part) => sum + (part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0), 0);
       if (acknowledged && pendingSyncBytes + bytes > syncCap) {

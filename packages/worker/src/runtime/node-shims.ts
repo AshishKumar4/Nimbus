@@ -9479,15 +9479,18 @@ function __nimbusOutputGate() {
   return client ? client.effect() : null;
 }
 
-// Send a line to the session's stderr for this process, at its gate.
+// Send a line to the session's stderr for this process, at its gate: every
+// diagnostic Nimbus prints for a process, as its own output is. Answers once
+// sent (never rejects); the run's pending writes wait for it too.
 function __nimbusReleaseStderr(line) {
-  if (!__supervisor || typeof __supervisor.stderr !== "function") return;
+  if (!__supervisor || typeof __supervisor.stderr !== "function") return Promise.resolve();
   const send = () => __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(line)), () => undefined);
   const gate = __nimbusOutputGate();
   let task;
-  try { task = gate === null ? send() : gate.then(send); } catch { return; }
+  try { task = gate === null ? send() : gate.then(send); } catch { return Promise.resolve(); }
   task = Promise.resolve(task).catch(() => {});
   if (typeof __pendingIO !== "undefined" && Array.isArray(__pendingIO)) __pendingIO.push(task);
+  return task;
 }
 
 function __nimbusReportProcessExit(code, reason) {

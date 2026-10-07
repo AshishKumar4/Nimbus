@@ -1116,9 +1116,7 @@ ${RESIDENCY_MISS_REPORT}
         const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
         exitCode = 1;
-        if (__supervisor && !captureOutput) {
-          try { const __traceBytes = __nimbusOutEnc.encode(trace + "\\n"); __pendingIO.push(__supervisor.stderr(__traceBytes).catch((e2) => __onRpcDrop(__traceBytes.byteLength, e2))); } catch {}
-        }
+        if (__supervisor && !captureOutput) __nimbusReleaseStderr(trace + "\\n");
       }
     }
     // A program that ended without process.exit still gets its 'exit' event.
@@ -1158,10 +1156,7 @@ ${RESIDENCY_MISS_REPORT}
     if (__replayShort) {
       stderr += __replayShort;
       exitCode = 1;
-      if (__supervisor && !captureOutput) {
-        const __shortBytes = __nimbusOutEnc.encode(__replayShort);
-        __pendingIO.push(__supervisor.stderr(__shortBytes).catch((e) => __onRpcDrop(__shortBytes.byteLength, e)));
-      }
+      if (__supervisor && !captureOutput) __nimbusReleaseStderr(__replayShort);
     }
     await __drainPendingIO();
 
@@ -1172,11 +1167,7 @@ ${RESIDENCY_MISS_REPORT}
         const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
         exitCode = 1;
-        if (!captureOutput) {
-          try {
-            await __supervisor.stderr(__nimbusOutEnc.encode(trace + "\\n"));
-          } catch {}
-        }
+        if (!captureOutput) await __nimbusReleaseStderr(trace + "\\n");
       }
     }
 
@@ -1402,6 +1393,9 @@ const __nimbusPlatformSetTimeout = setTimeout;
 // guidance it would otherwise contradict is printed.
 async function __nimbusReportLearningFailure(supervisor, error) {
   try {
+    // At the process's output gate, as every diagnostic of a process is.
+    const gate = typeof __nimbusOutputGate === "function" ? __nimbusOutputGate() : null;
+    if (gate !== null) await gate;
     if (supervisor) await supervisor.stderr(new TextEncoder().encode("Nimbus: runtime code persistence failed: " + String(error?.message || error) + "\\n"));
   } catch {}
 }
@@ -1672,9 +1666,7 @@ ${RESIDENCY_MISS_REPORT}
         const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
         exitCode = 1;
-        if (__supervisor && !captureOutput) {
-          try { const __traceBytes = __nimbusOutEnc.encode(trace + "\\n"); __pendingIO.push(__supervisor.stderr(__traceBytes).catch((e2) => __onRpcDrop(__traceBytes.byteLength, e2))); } catch {}
-        }
+        if (__supervisor && !captureOutput) __nimbusReleaseStderr(trace + "\\n");
       }
     }
 
@@ -1701,7 +1693,7 @@ ${RESIDENCY_MISS_REPORT}
       if (__residencyReport) {
         stderr += __residencyReport;
         if (Number(code ?? 0) === 0) code = 1;
-        try { await __supervisor.stderr(__nimbusOutEnc.encode(__residencyReport)); } catch {}
+        await __nimbusReleaseStderr(__residencyReport);
       }
       await __supervisor.reportExit(code, reason || "", __nimbusDataReadMisses(), [...(globalThis.__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger(), __nimbusExecutedModuleMisses());
       __nimbusProcessExitReported = true;
@@ -1710,7 +1702,7 @@ ${RESIDENCY_MISS_REPORT}
       const trace = (e && e.stack) || (e && e.message) || String(e);
       stderr += trace + "\\n";
       if (__supervisor) {
-        try { await __supervisor.stderr(__nimbusOutEnc.encode(trace + "\\n")); } catch {}
+        await __nimbusReleaseStderr(trace + "\\n");
         await __nimbusReportFinalExit(1, trace + "\\n");
       }
     };
@@ -1770,7 +1762,7 @@ ${RESIDENCY_MISS_REPORT}
       const tail = "[orphan output: " + __rpcDrops + " dropped RPC write(s), ~" +
         __rpcDropBytes + " bytes lost" +
         (__rpcLastError ? "; last error: " + __rpcLastError : "") + "]\\n";
-      try { await __supervisor.stderr(__nimbusOutEnc.encode(tail)); } catch {}
+      await __nimbusReleaseStderr(tail);
     }
     if (exitCode !== 0) {
       await __nimbusReportFinalExit(exitCode, stderr || ("exit " + exitCode + "\\n"));

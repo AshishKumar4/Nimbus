@@ -241,7 +241,7 @@ async function create(fs, path, text) {
   // Still readable through the description, as POSIX has it.
   assert.equal(dec.decode(await s.fs.read(old.id, 0, 10)), '12');
   await s.fs.flush();
-  assert.equal(s.kernel.exists('home/user/proj/gone/f'), false, 'a write through a description of an unlinked file made its name again');
+  assert.equal(await withRecall(() => s.kernel.exists('home/user/proj/gone/f')), false, 'a write through a description of an unlinked file made its name again');
   // A new file of that name is not the old description's.
   await create(s.fs, '/home/user/proj/gone/f', 'new');
   await s.fs.write(old.id, null, enc.encode('zz'));

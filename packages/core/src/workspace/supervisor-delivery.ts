@@ -537,6 +537,16 @@ export class SupervisorDeliveries {
     return bytes;
   }
 
+  /**
+   * Retire process `pid`'s write-wave epoch `writer`: from now on it admits
+   * nothing, and an attempt of it already admitted is refused at its next
+   * commit (admitWave's check). How a writer that gave a wave up (its fate
+   * unknown) keeps a late attempt of it from landing after what it sends next.
+   */
+  retireWaveWriter(pid: number, writer: string): void {
+    this.waveEpochs.delete(`${pid}:${writer}`);
+  }
+
   /** A process ended: its receipts answer nothing more, their ids stay refused, and its wave epochs close. */
   forget(pid: number): void {
     const prefix = `${pid}:`;
