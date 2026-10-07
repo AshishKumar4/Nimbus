@@ -111,12 +111,24 @@ export class PackObjectStore {
         this.packs = packs;
         return packs;
     }
+    /**
+     * The pack holding `oid`, searched most recently used first, as git's
+     * packed_git_mru: neighbouring objects (a history's trees, a checkout's
+     * blobs) are mostly in one pack, and a clone has scores of packs.
+     */
     async locate(oid, retried = false) {
         const target = oidFromHex(oid);
-        for (const pack of await this.list()) {
+        const packs = await this.list();
+        for (let i = 0; i < packs.length; i++) {
+            const pack = packs[i];
             const offset = await runAsync(this.find(pack, target), (range) => this.fetch(range));
-            if (offset !== null)
-                return { pack, offset };
+            if (offset === null)
+                continue;
+            if (i > 0) {
+                packs.splice(i, 1);
+                packs.unshift(pack);
+            }
+            return { pack, offset };
         }
         // A pack written since the list was taken (git's reprepare_packed_git).
         if (!retried) {

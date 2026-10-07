@@ -46,6 +46,11 @@ export declare class PackObjectStore {
     /** Forget the pack list: a fetch added one. */
     refresh(): void;
     private list;
+    /**
+     * The pack holding `oid`, searched most recently used first, as git's
+     * packed_git_mru: neighbouring objects (a history's trees, a checkout's
+     * blobs) are mostly in one pack, and a clone has scores of packs.
+     */
     private locate;
     /** Binary search of one idx's fanout bucket, a page at a time; null when absent. */
     private find;
