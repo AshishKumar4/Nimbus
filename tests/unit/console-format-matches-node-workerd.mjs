@@ -5,12 +5,12 @@
 // depth 2, Map and Set, circular references, a class's name, an error with
 // its stack, its own properties and its cause), %s %d %i %f %j %o %O %c and
 // %%, a group's indent, console.dir's options, console.assert and
-// console.count, colours only for a terminal. The process's console printed
+// console.count, colours where Node uses them. The process's console printed
 // objects as JSON (`{"a":1}` for Node's `{ a: 1 }`).
 //
 // The same program runs under real node and as `node` in a session, its
 // output redirected to files (no terminal: no colours), and the bytes must
-// be equal. At the terminal, colours are on as Node's are.
+// be equal. Under FORCE_COLOR, the colours are Node's too.
 //
 // One difference is workerd's and not covered: its inspect prints a symbol
 // key bare (`{ Symbol(k): 3 }`) where Node 22 brackets it (`{ [Symbol(k)]:
@@ -72,10 +72,13 @@ console.count();
 console.debug('debug', 1);
 `;
 
+// Colours where Node's console would use them: FORCE_COLOR forces them for
+// any stream (Node's shouldColorize), as a terminal with colours does.
 const COLOURED = String.raw`
 const util = require('util');
-process.stdout.write(JSON.stringify([process.stdout.isTTY === true, util.inspect({ a: 1, s: 'x' }, { colors: true })]) + '\n');
-console.log({ a: 1, s: 'x' });
+console.log({ a: 1, s: 'x', n: null, d: new Date(0) }, [true, 2n, Symbol('y')]);
+console.error(new Map([['k', /r/]]));
+console.log('%o and %s', { a: 1 }, 'plain', util.inspect('x', { colors: false }));
 `;
 
 // ── real node ────────────────────────────────────────────────────────────
@@ -87,8 +90,11 @@ try {
   const node = spawnSync('node', ['prog.js'], { cwd: disk, encoding: 'utf8' });
   assert.equal(node.status, 0, node.stderr);
   expected = { stdout: node.stdout, stderr: node.stderr };
-  // Node colours an object for a terminal exactly as util.inspect does with colors: true.
-  colouredExpected = spawnSync('node', ['-p', "require('util').inspect({ a: 1, s: 'x' }, { colors: true })"], { encoding: 'utf8' }).stdout.trimEnd();
+  writeFileSync(join(disk, 'coloured.js'), COLOURED);
+  const forced = spawnSync('node', ['coloured.js'], { cwd: disk, env: { ...process.env, FORCE_COLOR: '1' }, encoding: 'utf8' });
+  assert.equal(forced.status, 0, forced.stderr);
+  colouredExpected = { stdout: forced.stdout, stderr: forced.stderr };
+  assert.match(forced.stdout, /\x1b\[33m1\x1b\[39m/, 'premise: node colours under FORCE_COLOR');
 } finally {
   rmSync(disk, { recursive: true, force: true });
 }
@@ -121,15 +127,8 @@ try {
     assert.deepEqual(differing, [], `stdout differs from node's:\n${differing.join('\n')}\n--- session:\n${actual.stdout}`);
     assert.equal(actual.stdout, expected.stdout, 'stdout is node\'s, byte for byte');
     assert.equal(actual.stderr, expected.stderr, 'stderr is node\'s, byte for byte');
-    // At the terminal: colours, as util.inspect's.
-    const coloured = await t.run('cd /home/user/console && node coloured.js', 60_000);
-    const text = coloured.output.replace(/\r/g, '');
-    const report = text.split('\n').find((l) => l.startsWith('[true,') || l.startsWith('[false,'));
-    assert.ok(report, `the coloured run reported: ${text.slice(-600)}`);
-    const [tty, inspected] = JSON.parse(report);
-    assert.equal(tty, true, 'stdout is a terminal');
-    assert.equal(inspected, colouredExpected, 'util.inspect colours as node\'s');
-    assert.ok(text.includes(colouredExpected), `console.log colours an object at a terminal: ${JSON.stringify(text.slice(-300))}`);
+    await t.run('cd /home/user/console && FORCE_COLOR=1 node coloured.js > cout.txt 2> cerr.txt; echo "STATUS=$?"', 120_000);
+    assert.deepEqual({ stdout: await read('cout.txt'), stderr: await read('cerr.txt') }, colouredExpected, 'coloured as node colours');
   } finally {
     await t.close();
     await deleteSession(sid).catch(() => {});
