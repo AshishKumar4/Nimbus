@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Breaking for Cloudflare embedders: the hosting Worker must explicitly set
+  `"limits": { "cpu_ms": 300000 }` in its Wrangler configuration. Omitting
+  `limits` or configuring a smaller CPU ceiling is now refused by deployment
+  validation. `@nimbus-sh/config` emits the required block automatically.
+
 - Added explicit, evidence-based per-kind facet CPU and subrequest limits,
   replacing the implicit 30-second Loader CPU default. Resident filesystem
   transport retains its invocation budget across incoming HTTP requests, so

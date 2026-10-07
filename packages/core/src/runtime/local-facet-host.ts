@@ -41,6 +41,7 @@ import type {
   FacetSpec,
   FacetSubmitOptions,
 } from './facet-host.js';
+import { DEFAULT_FACET_TASK_TIMEOUT_MS } from './facet-host.js';
 import { requireNetwork, type WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { RuntimeFsBridge } from './os-contracts.js';
 import { isEgressGuestEvent, RealmEgress } from './realm-egress.js';
@@ -188,13 +189,17 @@ function facetIsolation(): 'thread' | 'process' {
  * `workspaceNetwork(egress)` for the egress the workspace is created with,
  * `ISOLATE_NETWORK` without one): every facet goes out through it.
  */
-export function localFacetHost(network: WorkspaceNetwork): FacetHost {
+export function localFacetHost(network: WorkspaceNetwork, options: { defaultTimeoutMs?: number } = {}): FacetHost {
   requireNetwork(network, 'localFacetHost');
+  const defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_FACET_TASK_TIMEOUT_MS;
+  if (!Number.isInteger(defaultTimeoutMs) || defaultTimeoutMs <= 0 || defaultTimeoutMs > 2_147_483_647) {
+    throw new Error('localFacetHost: defaultTimeoutMs must be a positive bounded timer value');
+  }
   return {
     parking: engineParks(),
     // A worker of a Bun or Node process, not a Worker isolate.
     memoryBudgetBytes: 1024 * 1024 * 1024,
-    open: (spec) => new RealmFacet(spec, network),
+    open: (spec) => new RealmFacet(spec, network, defaultTimeoutMs),
   };
 }
 
@@ -219,7 +224,7 @@ class RealmFacet implements Facet {
   private readonly synchronous: RuntimeFsBridge['synchronous'];
   private readonly isolation = facetIsolation();
 
-  constructor(private readonly spec: FacetSpec, private readonly network: WorkspaceNetwork) {
+  constructor(private readonly spec: FacetSpec, private readonly network: WorkspaceNetwork, readonly defaultTimeoutMs: number) {
     this.supervisor = spec.syscalls ? vfsSupervisor(spec.syscalls.vfs) : null;
     this.synchronous = spec.syscalls?.vfs.synchronous;
   }
@@ -334,8 +339,8 @@ class RealmFacet implements Facet {
     signal?.addEventListener('abort', onAbort, { once: true });
     // An abort that came between the check above and the listener.
     if (signal?.aborted) onAbort();
-    const timer = options?.timeoutMs === undefined ? undefined
-      : setTimeout(() => stop(ended(this.spec.tag, `timed out after ${options.timeoutMs} ms`)), options.timeoutMs);
+    const timeoutMs = options?.timeoutMs ?? this.defaultTimeoutMs;
+    const timer = setTimeout(() => stop(ended(this.spec.tag, `timed out after ${timeoutMs} ms`)), timeoutMs);
     let realm: Realm | null = null;
     const id = ++this.ids;
     try {

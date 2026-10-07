@@ -45,7 +45,7 @@ import {
   type ResidentSupervisorProps,
 } from './process-fabric.js';
 import { supervisorLoaderKey, mintProcessSupervisor, type SupervisorBindingProps } from './supervisor-props.js';
-import { applyFacetLimits, facetLimits, type FacetResourceLimits } from './facet-limits.js';
+import { applyFacetLimits, facetLimits, facetLoaderKey, type FacetResourceLimits } from './facet-limits.js';
 
 // ── Loaded-worker entrypoint plumbing ───────────────────────────────────────
 
@@ -591,7 +591,7 @@ function residentProcessClass(
     );
   }
   return loader
-    .get(loaderKey, async () => applyFacetLimits('process', await residentWorkerConfig(env, disk, supervisor, params.boot)))
+    .get(facetLoaderKey('process', loaderKey), async () => applyFacetLimits('process', await residentWorkerConfig(env, disk, supervisor, params.boot)))
     .getDurableObjectClass(RESIDENT_PROCESS_CLASS, { limits: facetLimits('process') });
 }
 

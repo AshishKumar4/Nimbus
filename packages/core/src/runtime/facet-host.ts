@@ -117,6 +117,9 @@ export interface FacetSubmitOptions {
   wasmModules?: Record<string, ArrayBuffer>;
 }
 
+/** Bounded fallback for non-workerd and legacy hosts; platform policy is separate. */
+export const DEFAULT_FACET_TASK_TIMEOUT_MS = 30_000;
+
 /**
  * One facet's scope, for as long as a runtime needs it.
  *
