@@ -29,6 +29,7 @@ var __nimbusProcessFsModule = (() => {
     PROCESS_FS_HEAP_WINDOW_BYTES: () => PROCESS_FS_HEAP_WINDOW_BYTES,
     PROCESS_FS_SYNC_CAP_BYTES: () => PROCESS_FS_SYNC_CAP_BYTES,
     drainProcessFsJournal: () => drainProcessFsJournal,
+    failuresError: () => failuresError,
     memoryJournal: () => memoryJournal,
     processFsClient: () => processFsClient,
     sqlJournal: () => sqlJournal
@@ -1664,12 +1665,7 @@ var __nimbusProcessFsModule = (() => {
           settling = false;
         }
         const taken = client.takeFailures();
-        if (taken.length > 0) {
-          throw Object.assign(new Error(
-            `${taken.length} filesystem change${taken.length === 1 ? "" : "s"} this process made did not reach the session:
-` + taken.map((failure) => `  ${failure.op} ${failure.path}: ${failure.errno}: ${failure.message}`).join("\n")
-          ), { code: "EIO", failures: taken });
-        }
+        if (taken.length > 0) throw failuresError(taken);
       },
       takeFailures() {
         return failures.splice(0, failures.length);
@@ -1687,6 +1683,12 @@ var __nimbusProcessFsModule = (() => {
     return client;
   }
   var DRAIN_WAVE_BASE = 2 ** 40;
+  function failuresError(failures) {
+    return Object.assign(new Error(
+      `${failures.length} filesystem change${failures.length === 1 ? "" : "s"} this process made did not reach the session:
+` + failures.map((failure) => `  ${failure.op} ${failure.path}: ${failure.errno}: ${failure.message}`).join("\n")
+    ), { code: failures.length === 1 ? failures[0].errno : "EIO", failures });
+  }
   async function drainProcessFsJournal(options) {
     const { journal, session } = options;
     const drained = { landed: 0, failures: [] };

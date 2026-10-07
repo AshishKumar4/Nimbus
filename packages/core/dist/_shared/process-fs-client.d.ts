@@ -256,6 +256,14 @@ export declare const GRANT_AFTER = 8;
 /** A grant unused this long is given back. */
 export declare const GRANT_IDLE_MS = 2000;
 export declare function processFsClient(options: ProcessFsClientOptions): ProcessFsClient;
+/**
+ * The error a process's failed changes are reported as at an effect (a
+ * response, its exit): each named, with the session's errno and message.
+ */
+export declare function failuresError(failures: readonly ProcessFsFailure[]): Error & {
+    code: string;
+    failures: readonly ProcessFsFailure[];
+};
 /** What a drain of a dead process's journal did: the changes that landed, and those the session refused. */
 export interface ProcessFsDrain {
     landed: number;

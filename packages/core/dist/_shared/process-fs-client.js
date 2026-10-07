@@ -764,10 +764,8 @@ export function processFsClient(options) {
                 settling = false;
             }
             const taken = client.takeFailures();
-            if (taken.length > 0) {
-                throw Object.assign(new Error(`${taken.length} filesystem change${taken.length === 1 ? '' : 's'} this process made did not reach the session:\n`
-                    + taken.map((failure) => `  ${failure.op} ${failure.path}: ${failure.errno}: ${failure.message}`).join('\n')), { code: 'EIO', failures: taken });
-            }
+            if (taken.length > 0)
+                throw failuresError(taken);
         },
         takeFailures() {
             return failures.splice(0, failures.length);
@@ -782,6 +780,14 @@ export function processFsClient(options) {
 }
 /** Where a drain's wave numbers start: past any a process sends (2^40 waves). */
 const DRAIN_WAVE_BASE = 2 ** 40;
+/**
+ * The error a process's failed changes are reported as at an effect (a
+ * response, its exit): each named, with the session's errno and message.
+ */
+export function failuresError(failures) {
+    return Object.assign(new Error(`${failures.length} filesystem change${failures.length === 1 ? '' : 's'} this process made did not reach the session:\n`
+        + failures.map((failure) => `  ${failure.op} ${failure.path}: ${failure.errno}: ${failure.message}`).join('\n')), { code: failures.length === 1 ? failures[0].errno : 'EIO', failures });
+}
 /**
  * Send what a process's journal still holds, as the process would have:
  * each entry under the writer and number it was given (journal.numberings),
