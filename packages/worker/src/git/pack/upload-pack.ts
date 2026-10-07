@@ -48,7 +48,15 @@ export interface PackRequest {
   /** The receiver's shallow commits (its .git/shallow). */
   shallows?: readonly string[];
   depth?: number;
+  /** deepen-since: history after this time (seconds since the epoch). */
+  deepenSince?: number;
+  /** deepen-not: history not reachable from these refs. */
+  deepenNot?: readonly string[];
+  /** deepen-relative: `depth` counts from the receiver's shallow boundary. */
+  deepenRelative?: boolean;
   filter?: string;
+  /** include-tag: annotated tags of the objects sent come with them (on unless false). */
+  includeTag?: boolean;
   /** Ask for a thin pack: deltas against `haves` the server need not send. */
   thin?: boolean;
 }
@@ -71,7 +79,7 @@ const AGENT = 'agent=git/nimbus';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-function pktLine(text: string): Uint8Array {
+export function pktLine(text: string): Uint8Array {
   const body = encoder.encode(text);
   const out = new Uint8Array(body.byteLength + 4);
   out.set(encoder.encode((body.byteLength + 4).toString(16).padStart(4, '0')));
@@ -79,7 +87,7 @@ function pktLine(text: string): Uint8Array {
   return out;
 }
 
-function headers(options: UploadPackOptions, extra: Record<string, string>): Record<string, string> {
+export function headers(options: UploadPackOptions, extra: Record<string, string>): Record<string, string> {
   const result: Record<string, string> = { 'user-agent': 'git/nimbus', ...extra };
   if (options.auth && (options.auth.username || options.auth.password)) {
     result.authorization = 'Basic ' + btoa(options.auth.username + ':' + options.auth.password);
@@ -87,7 +95,7 @@ function headers(options: UploadPackOptions, extra: Record<string, string>): Rec
   return result;
 }
 
-function repoUrl(url: string): string {
+export function repoUrl(url: string): string {
   return url.endsWith('/') ? url.slice(0, -1) : url;
 }
 
@@ -124,7 +132,7 @@ async function send(options: UploadPackOptions, path: string, init: RequestInit)
 export { STALL_MS };
 
 /** pkt-lines off a byte stream, pulled one at a time; null is a flush. */
-class PktReader {
+export class PktReader {
   private buffer: Uint8Array = new Uint8Array(0);
   private done = false;
 
@@ -192,14 +200,15 @@ class PktReader {
   }
 }
 
-function text(payload: Uint8Array): string {
+export function text(payload: Uint8Array): string {
   const line = decoder.decode(payload);
   return line.endsWith('\n') ? line.slice(0, -1) : line;
 }
 
-export async function discover(options: UploadPackOptions): Promise<Advertisement> {
-  const response = await send(options, '/info/refs?service=git-upload-pack', {
-    headers: headers(options, { accept: 'application/x-git-upload-pack-advertisement' }),
+/** The refs and capabilities `service` (upload-pack for a fetch, receive-pack for a push) advertises. */
+export async function discover(options: UploadPackOptions, service: 'git-upload-pack' | 'git-receive-pack' = 'git-upload-pack'): Promise<Advertisement> {
+  const response = await send(options, '/info/refs?service=' + service, {
+    headers: headers(options, { accept: 'application/x-' + service + '-advertisement' }),
   });
   if (response.status === 401 || response.status === 403) {
     await response.body?.cancel();
@@ -211,7 +220,7 @@ export async function discover(options: UploadPackOptions): Promise<Advertisemen
   }
   const reader = new PktReader(response.body.getReader(), options.stallMs);
   const first = await reader.next();
-  if (!first || text(first) !== '# service=git-upload-pack') throw new UploadPackError('not a smart HTTP server');
+  if (!first || text(first) !== '# service=' + service) throw new UploadPackError('not a smart HTTP server');
   if (await reader.next() !== null) throw new UploadPackError('advertisement header lacks its flush');
   const advertisement: Advertisement = { refs: new Map(), symrefs: new Map(), capabilities: new Set() };
   let firstRef = true;
@@ -247,12 +256,24 @@ export async function discover(options: UploadPackOptions): Promise<Advertisemen
 /** Capabilities to ask for, from those the server offers. */
 function requestCapabilities(advertised: Set<string>, request: PackRequest): string[] {
   // include-tag: annotated tags of the objects sent come with them, as git asks (clone follows them).
-  const capabilities = ['side-band-64k', 'ofs-delta', 'include-tag'].filter((capability) => advertised.has(capability));
+  const capabilities = ['side-band-64k', 'ofs-delta', ...(request.includeTag === false ? [] : ['include-tag'])]
+    .filter((capability) => advertised.has(capability));
   if (!advertised.has('side-band-64k')) throw new UploadPackError('the server does not offer side-band-64k');
   if (request.thin && advertised.has('thin-pack')) capabilities.push('thin-pack');
-  if (request.depth !== undefined || (request.shallows?.length ?? 0) > 0) {
+  const deepens = request.depth !== undefined || request.deepenSince !== undefined || (request.deepenNot?.length ?? 0) > 0;
+  if (deepens || (request.shallows?.length ?? 0) > 0) {
     if (!advertised.has('shallow')) throw new UploadPackError('the server does not support shallow fetches');
     capabilities.push('shallow');
+  }
+  // fetch-pack.c: the server must offer each deepen option the request uses.
+  for (const [used, capability] of [
+    [request.deepenSince !== undefined, 'deepen-since'],
+    [(request.deepenNot?.length ?? 0) > 0, 'deepen-not'],
+    [request.deepenRelative === true, 'deepen-relative'],
+  ] as const) {
+    if (!used) continue;
+    if (!advertised.has(capability)) throw new UploadPackError('the server does not support ' + capability);
+    capabilities.push(capability);
   }
   if (request.filter !== undefined) {
     if (!advertised.has('filter')) throw new UploadPackError('the server does not support --filter');
@@ -270,6 +291,8 @@ export async function requestPack(options: UploadPackOptions, advertised: Set<st
   request.wants.forEach((oid, index) => lines.push(pktLine('want ' + oid + (index === 0 ? ' ' + capabilities.join(' ') : '') + '\n')));
   for (const oid of request.shallows ?? []) lines.push(pktLine('shallow ' + oid + '\n'));
   if (request.depth !== undefined) lines.push(pktLine('deepen ' + request.depth + '\n'));
+  if (request.deepenSince !== undefined) lines.push(pktLine('deepen-since ' + request.deepenSince + '\n'));
+  for (const ref of request.deepenNot ?? []) lines.push(pktLine('deepen-not ' + ref + '\n'));
   if (request.filter !== undefined) lines.push(pktLine('filter ' + request.filter + '\n'));
   lines.push(encoder.encode('0000'));
   for (const oid of request.haves ?? []) lines.push(pktLine('have ' + oid + '\n'));
