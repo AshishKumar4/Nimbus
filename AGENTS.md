@@ -555,8 +555,22 @@ Agent-specific probes:
 | Dry-run production deploy | `bun run --cwd apps/hosted-demo wrangler deploy -e production --dry-run --outdir /tmp/wrangler-build` |
 | Check deploy isolation | `bun scripts/deploy-isolation.mjs` |
 | Check dist matches src | `bun scripts/dist-integrity.mjs` |
+| Typecheck and dist fixpoint, remotely | `bun scripts/ci/remote-build.mjs [<commit>] [--no-cache]` |
 
 The root `predev` script regenerates worker bundles.
+
+**Lanes do not build on the workstation.** No typecheck, tsc, bundling or
+`dist-integrity` run there. `bun scripts/ci/remote-build.mjs` does both on
+armada for a commit (default HEAD; commit first), from the lane's worktree.
+It prints each row (`dist-fixpoint`, `typecheck`), with the errors of a red
+one. When HEAD's dist is not the fixpoint, it applies the patch that makes
+it so (the rebuilt outputs and `dist-fixpoint.json`) to the worktree. Review
+the patch, commit it, then run `ci-run` on that commit. Exit 0 means clean;
+1 means a patch to commit or a red row; 2 means not graded, so run it again.
+The container step is `scripts/ci/build.mjs --out <file>`, which any runner
+can run in a clean checkout after `bun install --frozen-lockfile`. Verdicts
+and patches are kept in `~/.local/state/nimbus/remote-builds/`. A full
+rebuild takes about 35 s there, plus about 25 s for the typecheck.
 
 Every deploy path (`predeploy`, `deploy:production`, the throwaway and
 staging targets) runs `scripts/dist-integrity.mjs` instead of a build. It
