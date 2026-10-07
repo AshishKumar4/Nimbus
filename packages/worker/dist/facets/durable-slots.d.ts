@@ -31,8 +31,8 @@ export declare function durableFacetName(slot: number): string;
  * transaction, so a concurrent spawn cannot split the claim, and a re-read
  * after a reset — or after eviction — answers the same name.
  *
- * A fresh name is charged to the lifetime facet-ID ledger, which every
- * facet name on this DO shares, and is refused there at the wall.
+ * The name is charged to the lifetime facet-ID ledger, which every facet
+ * name on this DO shares.
  */
 export declare function acquireDurableFacetSlot(ctx: DurableObjectState, owner: string): Promise<string>;
 /**

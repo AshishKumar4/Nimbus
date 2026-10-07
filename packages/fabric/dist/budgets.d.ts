@@ -340,10 +340,15 @@ export declare function chargeFacetSlot(ctx: FacetNameLedgerStorage, slot: numbe
 /**
  * Charge an explicit facet name before its facet is created: its first use
  * ever consumes one lifetime ID, and any later use, in this incarnation or
- * another, costs nothing. A first use at the wall is refused, so nothing is
- * created. Resolves with the count after the charge.
+ * another, costs nothing, so a caller may charge a name on every use.
+ * `refuseAtWall` refuses a first use at the wall, before anything is
+ * charged or created; without it the platform's own failure at creation
+ * is what stops it, named by the ledger (withFacetBudgetNamed). Resolves
+ * with the count after the charge.
  */
-export declare function chargeFacetName(ctx: FacetNameLedgerStorage, name: string): Promise<number>;
+export declare function chargeFacetName(ctx: FacetNameLedgerStorage, name: string, { refuseAtWall }: {
+    refuseAtWall: boolean;
+}): Promise<number>;
 /** The best count available without awaiting storage. */
 export declare function facetNameCount(ctx: FacetNameLedgerStorage): number;
 /** The count with every charge so far applied, for a first failure on a fresh boot. */
