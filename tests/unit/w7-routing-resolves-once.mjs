@@ -11,7 +11,9 @@
 // directories, against 40 now, and the routed wave took about twice the
 // unrouted one's CPU (live: 272 ms against 124 ms per slow clone wave).
 // Anything else that commits still starts a new view: a link of the wave's
-// own, here, and another writer's change (w7-mount-routing.mjs).
+// own, here, and another writer's change (w7-mount-routing.mjs). And a record
+// that lands here is placed in its own turn: only one that may route to a
+// mount takes the asynchronous router path (routeRecord).
 
 import assert from 'node:assert/strict';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -38,9 +40,12 @@ function session() {
   new ProcessFiles(engine);
   const router = engine.waveRouter;
   assert.ok(router, 'the namespace installs its wave router');
-  const lookups = { count: 0 };
+  const lookups = { count: 0, routed: 0 };
   const resolve = router.resolveDirectory.bind(router);
   router.resolveDirectory = (...args) => { lookups.count++; return resolve(...args); };
+  // The asynchronous router path, which a record that lands here never takes.
+  const routeRecord = engine.routeRecord.bind(engine);
+  engine.routeRecord = (...args) => { lookups.routed++; return routeRecord(...args); };
   return { user: engine.as(CRED_SESSION_USER), lookups };
 }
 
@@ -55,6 +60,8 @@ const wave = (inodes, chunkData = () => data) => ({ inodes, chunks: inodes.map((
   assert.equal(result.ok, true, JSON.stringify(result.error));
   assert.equal(user.readdir('home/user/repo/d7').length, FILES / DIRS);
   assert.equal(lookups.count, DIRS, `a ${FILES}-file wave over ${DIRS} directories looked them up ${lookups.count} times`);
+  // Placed in their own turn, no await per record (red before: every record, ${FILES * 3} and more, went through it).
+  assert.equal(lookups.routed, 0, `${lookups.routed} records of a wave that lands here took the asynchronous router path`);
 }
 
 // ── A link of the wave's own starts a new view: the names after it are placed again ──
