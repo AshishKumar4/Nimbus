@@ -481,26 +481,35 @@ export class R2CacheClient {
       return null;
     }
     this._recordHit('L3', 'tarball', ab.byteLength);
-    // Write through to L2. Best-effort: failure is silent.
-    const writeBack = new Response(wb, {
-      headers: {
-        'Content-Type': 'application/gzip',
-        'Cache-Control': 'public, max-age=31536000, immutable',
-      },
-    });
-    // Await the put so subsequent reads of the same key strictly
-    // hit L2 (no double-fetch race during fill). See the matching
-    // note in getPackument above.
-    if (!this.readOnly) await l2Put(l2Key, writeBack);
+    // Write through to L2, awaited so subsequent reads of the same key
+    // strictly hit L2 (no double-fetch race during fill). See the
+    // matching note in getPackument below.
+    if (!this.readOnly) await this.fillTarballL2(l2Key, wb);
     return wb;
   }
 
   /**
-   * Store a tarball at `integrity`'s content address. Bytes are stored
-   * as-is (gzipped tar). No-op if the bucket binding is missing, if the
-   * integrity string is not a verifiable SRI, or if the bytes do not
-   * hash to the address — a caller cannot place bytes under someone
-   * else's key, which keeps the store's contract absolute.
+   * The colo copy of verified tarball bytes, kept as long as the cache layer
+   * will: a content address never changes what it names. Best-effort: a
+   * failed put is silent.
+   */
+  private async fillTarballL2(l2Key: Request, bytes: Uint8Array): Promise<void> {
+    await l2Put(l2Key, new Response(bytes, {
+      headers: {
+        'Content-Type': 'application/gzip',
+        'Cache-Control': 'public, max-age=31536000, immutable',
+      },
+    }));
+  }
+
+  /**
+   * Store a tarball at `integrity`'s content address, in R2 and in this
+   * colo's L2. Bytes are stored as-is (gzipped tar). No-op if the bucket
+   * binding is missing, if the integrity string is not a verifiable SRI,
+   * or if the bytes do not hash to the address — a caller cannot place
+   * bytes under someone else's key, which keeps the store's contract
+   * absolute. Filling R2 alone sent the next session in the colo to R2
+   * for bytes this one had just fetched from the registry.
    *
    * Returns true on success, false otherwise (the cache is best-effort;
    * failure must not break the install).
@@ -512,14 +521,17 @@ export class R2CacheClient {
     const view = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes;
     if (view.length > MAX_R2_TARBALL_BYTES) return false;
     if (!await bytesMatchAddress(view, address)) return false;
+    let stored: boolean;
     try {
       await this.tarballBucket.put(tarballKey(address), view, {
         httpMetadata: { contentType: 'application/gzip' },
       });
-      return true;
+      stored = true;
     } catch {
-      return false;
+      stored = false;
     }
+    await this.fillTarballL2(new Request(tarballL2Url(address)), view);
+    return stored;
   }
 
 

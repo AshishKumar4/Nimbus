@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import { workspaceNetwork } from '../../packages/core/src/_shared/workspace-network.ts';
 import { PACKUMENT_TTL_MS, R2CacheClient, packumentKey, packumentL2Url } from '../../packages/worker/src/npm/r2-cache.ts';
 import { resolveOnePackumentInFacet } from '../../packages/worker/src/npm/resolve-one-facet.ts';
+import { withColoCache } from './lib/colo-cache.mjs';
 import './lib/resolve-facet-scope.mjs';
 
 // The resolve facet reads its policy/semver helpers as bare identifiers
@@ -49,21 +50,6 @@ function packumentJson(name, version, tarball) {
     'dist-tags': { latest: version },
     versions: { [version]: { name, version, dist: { tarball, integrity: 'sha512-AAAA' }, dependencies: {} } },
   });
-}
-
-/** caches.default as workerd has it: one colo's Request-keyed responses. */
-function fakeColoCache() {
-  const entries = new Map();
-  return {
-    entries,
-    async match(request) {
-      const entry = entries.get(request.url);
-      return entry ? new Response(entry.body, { headers: entry.headers }) : undefined;
-    },
-    async put(request, response) {
-      entries.set(request.url, { body: await response.text(), headers: Object.fromEntries(response.headers) });
-    },
-  };
 }
 
 const originalFetch = globalThis.fetch;
@@ -207,49 +193,40 @@ function recordingFetch(responder) {
 //       A fill of R2 alone left the colo cold until a later session read R2
 //       back (Markflow's 818 packuments: resolve 27.9 s from the registry,
 //       then 22.6 s from R2, then 6.4 s from L2, a session each). ─────────
-{
-  const hadCaches = Object.hasOwn(globalThis, 'caches');
-  const originalCaches = globalThis.caches;
-  const colo = fakeColoCache();
-  globalThis.caches = { default: colo };
-  try {
-    const bucket = fakeBucket();
-    const body = packumentJson('react', '19.0.0', 'https://registry.npmjs.org/react/-/react-19.0.0.tgz');
-    recordingFetch(() => new Response(body, { status: 200 }));
-    const before = Date.now();
-    await new R2CacheClient(null, bucket).readThroughPackument('react');
+await withColoCache(async (colo) => {
+  const bucket = fakeBucket();
+  const body = packumentJson('react', '19.0.0', 'https://registry.npmjs.org/react/-/react-19.0.0.tgz');
+  recordingFetch(() => new Response(body, { status: 200 }));
+  const before = Date.now();
+  await new R2CacheClient(null, bucket).readThroughPackument('react');
 
-    const filled = colo.entries.get(packumentL2Url('react'));
-    assert.ok(filled, 'the registry fill wrote the colo cache');
-    assert.equal(filled.body, body, 'with the registry response, verbatim');
-    assert.equal(filled.headers['x-nimbus-expiresat'], bucket.store.get(packumentKey('react')).customMetadata.expiresAt,
-      'the colo copy expires when the R2 copy does');
-    const maxAge = Number(/^public, max-age=(\d+)$/.exec(filled.headers['cache-control'])?.[1]);
-    assert.ok(maxAge <= PACKUMENT_TTL_MS / 1000 && maxAge >= (PACKUMENT_TTL_MS - (Date.now() - before)) / 1000 - 1,
-      `the colo keeps it for the packument TTL: ${filled.headers['cache-control']}`);
+  const filled = colo.entries.get(packumentL2Url('react'));
+  assert.ok(filled, 'the registry fill wrote the colo cache');
+  assert.equal(new TextDecoder().decode(filled.body), body, 'with the registry response, verbatim');
+  assert.equal(filled.headers['x-nimbus-expiresat'], bucket.store.get(packumentKey('react')).customMetadata.expiresAt,
+    'the colo copy expires when the R2 copy does');
+  const maxAge = Number(/^public, max-age=(\d+)$/.exec(filled.headers['cache-control'])?.[1]);
+  assert.ok(maxAge <= PACKUMENT_TTL_MS / 1000 && maxAge >= (PACKUMENT_TTL_MS - (Date.now() - before)) / 1000 - 1,
+    `the colo keeps it for the packument TTL: ${filled.headers['cache-control']}`);
 
-    // Another session in the colo, over an R2 that has nothing: the colo answers.
-    const calls = recordingFetch(() => { throw new Error('must not fetch: the colo cache holds it'); });
-    const reader = new R2CacheClient(null, fakeBucket());
-    const next = await reader.readThroughPackument('react');
-    assert.equal(next.json, body);
-    assert.equal(next.source, 'r2-cache');
-    assert.equal(calls.length, 0);
-    assert.deepEqual(reader.stats(), { l2HitsPackument: 1, l3GetsPackument: 0, l2HitsTarball: 0, l3GetsTarball: 0 });
+  // Another session in the colo, over an R2 that has nothing: the colo answers.
+  const calls = recordingFetch(() => { throw new Error('must not fetch: the colo cache holds it'); });
+  const reader = new R2CacheClient(null, fakeBucket());
+  const next = await reader.readThroughPackument('react');
+  assert.equal(next.json, body);
+  assert.equal(next.source, 'r2-cache');
+  assert.equal(calls.length, 0);
+  assert.deepEqual(reader.stats(), { l2HitsPackument: 1, l3GetsPackument: 0, l2HitsTarball: 0, l3GetsTarball: 0 });
 
-    // What an egress answered is the workspace's: it fills neither tier.
-    colo.entries.clear();
-    const egressBucket = fakeBucket();
-    const egress = { async fetch() { return new Response(body, { status: 200 }); } };
-    const own = await new R2CacheClient(null, egressBucket).readThroughPackument('react', { retries: 0 }, workspaceNetwork(egress));
-    assert.equal(own.source, 'network');
-    assert.equal(colo.entries.size, 0, 'an egress answer reached the colo cache');
-    assert.equal(egressBucket.store.size, 0, 'an egress answer reached R2');
-  } finally {
-    if (hadCaches) globalThis.caches = originalCaches;
-    else delete globalThis.caches;
-  }
-}
+  // What an egress answered is the workspace's: it fills neither tier.
+  colo.entries.clear();
+  const egressBucket = fakeBucket();
+  const egress = { async fetch() { return new Response(body, { status: 200 }); } };
+  const own = await new R2CacheClient(null, egressBucket).readThroughPackument('react', { retries: 0 }, workspaceNetwork(egress));
+  assert.equal(own.source, 'network');
+  assert.equal(colo.entries.size, 0, 'an egress answer reached the colo cache');
+  assert.equal(egressBucket.store.size, 0, 'an egress answer reached R2');
+});
 
 globalThis.fetch = originalFetch;
 console.log('npm-packument-cache-provenance: ok');
