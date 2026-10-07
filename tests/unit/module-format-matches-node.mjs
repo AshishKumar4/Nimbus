@@ -3,8 +3,10 @@
 // "Determining module system"; syntax detection is on by default from
 // v22.7.0): a file with no package "type" is an ES module when it holds
 // syntax that only a module can (an import or export, import.meta, a
-// top-level await, a top-level `const require`), and so is `-e` code or a
-// program on stdin, unless --input-type says otherwise.
+// top-level await, a top-level `const require`), as V8's first error
+// compiling it as CommonJS names it (src/node_contextify.cc), and so is `-e`
+// code or a program on stdin, compiled with no wrapper's names, unless
+// --input-type says otherwise.
 //
 // The runtime used to read module syntax as a top-level import or export
 // alone, and `-e` and stdin code not at all: a module whose only module
@@ -55,6 +57,24 @@ const files = {
   'meta.js': line("'meta'", 'typeof import.meta.url', "import.meta.url.endsWith('/meta.js')"),
   'tla.js': line("'tla'", 'await Promise.resolve(1)'),
   'redeclare.js': `const require = 'mine';\n${line("'redeclare'", 'require')}`,
+  // A top-level lexical binding of a wrapper name through any pattern,
+  // declarator or escape: V8's redeclaration, which Node retries as a module.
+  'destructured.js': `const { __filename } = {};\n${line("'destructured'", 'typeof require')}`,
+  'declarators.js': `const a = 1, require = 2;\n${line("'declarators'", 'typeof module', 'require')}`,
+  'escaped.js': `const requir\\u0065 = 3;\n${line("'escaped'", 'typeof module', 'require')}`,
+  'pattern.js': `let { a: [, exports] } = { a: [0, 4] };\n${line("'pattern'", 'typeof module', 'exports')}`,
+  'class.js': `class module {}\n${line("'class'", 'typeof require', 'typeof module')}`,
+  // Not one: in a block, a var, a function, a class expression's name.
+  'not-bindings.js': `{ const require = 5; }\nvar exports = 6;\nfunction __dirname() {}\nconst C = class module {};\n${line("'not-bindings'", 'typeof require', 'exports', 'typeof __dirname')}`,
+  // Top-level awaits V8 finds where a call, a parenthesis or a conditional
+  // wants another token: errors Node retries as a module.
+  'awaits.js': `const v = [(await 1), f(await 2), true ? await 3 : 0];\nfunction f(x) { return x; }\n${line("'awaits'", 'v', 'typeof require')}`,
+  // One in a template's ${}: V8's "Missing } in template expression", which
+  // Node does not retry, so CommonJS, which cannot compile it.
+  'template-await.js': 'console.log(`${await 1}`);\n',
+  // `typeof` of a CommonJS name is 'undefined' in a module; text that only
+  // reads so (a string, a template, a regular expression) is the module's.
+  'typeofs.mjs': `const text = ['typeof __nimbusEsmScope.require', \`typeof __nimbusEsmScope.module \${typeof exports}\`, /typeof __nimbusEsmScope.__dirname/.source];\n// typeof __nimbusEsmScope.__filename\n${line("'typeofs'", 'text', 'typeof require', 'typeof (__filename)')}`,
   // CommonJS that only looks like it: an await in an arrow's body, a function named await.
   'arrow.js': `const f = async () => await 1;\nf().then((v) => { ${line("'arrow'", 'typeof require', 'v').trim()} });\n`,
   'awaitcall.js': `function await(x) { return x; }\n${line("'awaitcall'", 'typeof require', 'await(2)')}`,
@@ -109,6 +129,15 @@ const RUNS = [
   ['meta.js'],
   ['tla.js'],
   ['redeclare.js'],
+  ['destructured.js'],
+  ['declarators.js'],
+  ['escaped.js'],
+  ['pattern.js'],
+  ['class.js'],
+  ['not-bindings.js'],
+  ['awaits.js'],
+  ['template-await.js', { fails: true }],
+  ['typeofs.mjs'],
   ['arrow.js'],
   ['awaitcall.js'],
   ['imp.cjs'],
@@ -119,6 +148,9 @@ const RUNS = [
   ['--input-type=module', '-e', line("'input-type'", 'typeof import.meta.url')],
   ['--input-type', 'module', '-e', line("'input-type spaced'", 'typeof import.meta', 'typeof require')],
   ['-', { stdin: `import { sep } from 'node:path';\n${line("'stdin'", 'sep')}` }],
+  // Code Node evaluates is compiled with no wrapper: a `const require` is CommonJS's own.
+  ['-e', `const require = 'own';\n${line("'eval-redeclare'", 'typeof module', 'require')}`],
+  ['-', { stdin: `const { module } = { module: 'own' };\n${line("'stdin-redeclare'", 'typeof exports', 'module')}` }],
   ['plain.mjs'],
   ['typed/plain.js'],
   ['deps.cjs'],

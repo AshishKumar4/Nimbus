@@ -59,6 +59,7 @@ interface AcornParser {
   finishNode<T>(node: T, type: string): T;
   raiseRecoverable(pos: number, message: string): void;
   next(): void;
+  scopeStack: Array<{ var: string[] }>;
 }
 const AcornParserClass = Parser as unknown as new (options: Options, input: string) => AcornParser;
 
@@ -139,53 +140,180 @@ export type ModuleSyntaxToken = 'import' | 'export' | 'import.meta';
 export const COMMONJS_WRAPPER_NAMES: ReadonlySet<string> = new Set(['exports', 'require', 'module', '__filename', '__dirname']);
 
 /**
- * Whether `source` holds syntax only an ES module can, as Node's syntax
- * detection defines it (doc/api/packages.md "Syntax detection", on by
- * default from v22.7.0): syntax that throws when evaluated as CommonJS. That
- * is an `import` or `export` declaration, `import.meta`, `await` at the top
- * level, or a top-level lexical declaration of a name the CommonJS wrapper
- * binds (`const __dirname = …`). `import()` is valid in both.
+ * Whether Node runs `source`, whose extension and package "type" leave it
+ * undecided, as an ES module: Node's syntax detection (doc/api/packages.md
+ * "Syntax detection", on by default from v22.7.0), as src/node_contextify.cc
+ * ContainsModuleSyntax decides it. Node compiles the source as CommonJS (a
+ * file as the body of the wrapper function, whose parameters are the
+ * wrapper's names; `--eval` code and stdin, `scope` 'eval', with none) and it
+ * is CommonJS if that compiles. Otherwise V8's first error decides: one at
+ * an `import` (not `import(`), an `export` or `import.meta` makes it a
+ * module; one Node retries (a lexical redeclaration of a wrapper name, and
+ * the errors a top-level `await` gives) makes it a module if it compiles as
+ * one; any other leaves it CommonJS.
  *
- * A declaration or `import.meta` is read off the tokens. The other two are
- * read off them as candidates (an `await` outside every function body, a
- * `let`, `const` or `class` of a wrapper name) and settled as Node settles
- * every case: the source fails to compile in the wrapper and parses as a
- * module. A source that does not tokenize as a module is not one.
+ * Only an `import`, an `export`, `import.meta`, a top-level `await` or a
+ * top-level lexical declaration can make the answer a module, so a walk of
+ * the tokens answers every other source CommonJS without a parse (a
+ * multi-MiB bundle must fit a 48 MiB heap). One that finds a top-level
+ * `import` or `export`, or `import.meta`, before either of the others
+ * answers module. Where that differs from Node (a syntax error before it;
+ * an `import` or `export` nested in a block) the source compiles under
+ * neither, and fails either way. The rest are compiled, by acorn in V8's
+ * place (commonJsCompileError).
  */
-export function containsModuleSyntax(source: string): boolean {
-  const word = (token: Token, text: string) =>
-    token.type === tokTypes.name && token.end - token.start === text.length && source.startsWith(text, token.start);
+export function containsModuleSyntax(source: string, scope: 'file' | 'eval' = 'file'): boolean {
   const scan = unscopedAwaitScanner(source);
-  let previous: TokenType = tokTypes.eof;
-  let lexical = false;
+  const bindings = lexicalBindingScanner(scope === 'file' ? COMMONJS_WRAPPER_NAMES : new Set<string>());
+  let moduleSyntax = false;
   let candidate = false;
-  const found = walkTopLevelModuleTokens(source, (token, syntax, topLevel) => {
-    if (syntax !== null) return true;
-    if (lexical && token.type === tokTypes.name && COMMONJS_WRAPPER_NAMES.has(source.slice(token.start, token.end))) candidate = true;
-    if (!candidate && scan(token)) candidate = true;
-    const member = previous === tokTypes.dot || previous === tokTypes.questionDot;
-    lexical = topLevel && !member && (token.type === tokTypes._const || token.type === tokTypes._class || word(token, 'let'));
-    previous = token.type;
-    return false;
-  });
-  if (found !== false) return found === true;
+  // Tokenized as CommonJS is compiled: a script's tokens (a legacy octal is one).
+  walkTopLevelModuleTokens(source, (token, syntax, topLevel) => {
+    if (syntax !== null) moduleSyntax = true;
+    else if (bindings(token, topLevel) || scan(token)) candidate = true;
+    return moduleSyntax || candidate;
+  }, 'script');
+  if (moduleSyntax) return true;
   if (!candidate && !scan.atEnd()) return false;
-  return !compilesAsCommonJs(source) && parses(source, MODULE_PARSE_OPTIONS);
+  const error = commonJsCompileError(source, scope);
+  if (error === null) return false;
+  if (error.esModuleSyntax) return true;
+  return compilesAsModuleAfter(source, error.at);
 }
 
-/** Whether `source` compiles as Node compiles a CommonJS module: the body of its wrapper function. */
-function compilesAsCommonJs(source: string): boolean {
-  const body = source.startsWith('#!') ? '//' + source.slice(2) : source;
-  return parses(`(function (exports, require, module, __filename, __dirname) {${body}\n})`, { ecmaVersion: 'latest', sourceType: 'script' });
+/**
+ * A top-level lexical declaration's state, handed the tokens in order: true
+ * for each name token in a `let`, `const` or `class` declaration's binding
+ * part (its patterns, every declarator's, and a class's name) whose name,
+ * escapes read, is one of `names`. A key in a pattern counts too: it only
+ * asks for the compile, which settles it.
+ */
+function lexicalBindingScanner(names: ReadonlySet<string>): (token: Token, topLevel: boolean) => boolean {
+  // In a declarator's target, or its value, from a `let` or `const` to the `;` after it.
+  let declarator: 'none' | 'binding' | 'initializer' = 'none';
+  let depth = 0;
+  let className = false;
+  let previous: TokenType = tokTypes.eof;
+  return (token, topLevel) => {
+    const type = token.type;
+    const after = previous;
+    previous = type;
+    if (className) {
+      className = false;
+      if (type === tokTypes.name && names.has(tokenName(token))) return true;
+    }
+    if (topLevel && after !== tokTypes.dot && after !== tokTypes.questionDot) {
+      if (type === tokTypes._class) className = true;
+      else if (type === tokTypes._const || (type === tokTypes.name && tokenName(token) === 'let')) {
+        declarator = 'binding';
+        depth = 0;
+        return false;
+      }
+    }
+    if (declarator === 'none') return false;
+    if (type === tokTypes.braceL || type === tokTypes.dollarBraceL || type === tokTypes.parenL || type === tokTypes.bracketL) depth++;
+    else if (type === tokTypes.braceR || type === tokTypes.parenR || type === tokTypes.bracketR) depth--;
+    if (depth < 0 || (depth === 0 && type === tokTypes.semi)) declarator = 'none';
+    else if (depth === 0 && type === tokTypes.eq && declarator === 'binding') declarator = 'initializer';
+    else if (depth === 0 && type === tokTypes.comma) declarator = 'binding';
+    return declarator === 'binding' && type === tokTypes.name && names.has(tokenName(token));
+  };
 }
 
-function parses(source: string, options: Options): boolean {
+/** A name token's name, escapes read (acorn sets `value`, which its declarations leave out). */
+function tokenName(token: Token): string {
+  const value: unknown = Reflect.get(token, 'value');
+  return typeof value === 'string' ? value : '';
+}
+
+/** acorn's messages for V8's errors at `import.meta` and at an `import` or `export` statement: a module's syntax. */
+const MODULE_SYNTAX_ERRORS = new Set([
+  "'import' and 'export' may appear only with 'sourceType: module'",
+  "'import' and 'export' may only appear at the top level",
+  "Cannot use 'import.meta' outside a module",
+]);
+
+/**
+ * acorn's first error compiling `source` as Node compiles CommonJS (in V8's
+ * place, which raises its first at the same token): at `at`, and whether V8
+ * names it module syntax (an `import` or `export` where neither can be, or
+ * `import.meta`). Null when it compiles. The wrapper's parameters are the top
+ * scope's names (acorn's "commonjs" source type is a function body's), so a
+ * lexical declaration of one is a redeclaration, through any pattern and
+ * escape, as V8 finds it.
+ */
+function commonJsCompileError(source: string, scope: 'file' | 'eval'): { at: number; esModuleSyntax: boolean } | null {
+  const parser = new CommonJsBodyParser({ ecmaVersion: 'latest', sourceType: 'commonjs', allowHashBang: true }, source);
+  parser.parameters = scope === 'file' ? [...COMMONJS_WRAPPER_NAMES] : [];
   try {
-    parseStatements(source, options, {});
-    return true;
+    parser.parse();
+    return null;
+  } catch (e) {
+    const at = (e as { pos?: unknown }).pos;
+    if (!(e instanceof SyntaxError) || typeof at !== 'number') throw e;
+    const message = e.message.replace(/ \(\d+:\d+\)$/, '');
+    // V8 names an `import` not followed by `(` or `.` and an `export` its own way wherever it stands.
+    const keyword = /^(?:import(?!\s*[(.])|export)(?![\w$])/.test(source.slice(at));
+    return { at, esModuleSyntax: MODULE_SYNTAX_ERRORS.has(message) || (message === 'Unexpected token' && keyword) };
+  }
+}
+
+/** acorn over the body of a function whose parameters are `parameters` (a CommonJS module's wrapper's). */
+class CommonJsBodyParser extends StatementParser {
+  parameters: readonly string[] = [];
+
+  parseTopLevel(node: Program): Program {
+    this.scopeStack[0]!.var.push(...this.parameters);
+    return super.parseTopLevel(node);
+  }
+}
+
+/**
+ * Whether `source` compiles as an ES module, and V8's first error compiling
+ * it as CommonJS, at `at`, is one Node retries it for. Every such error of a
+ * source that compiles as a module is a redeclaration of a wrapper name or
+ * an `await` read as CommonJS's identifier, whose next token V8 finds where
+ * the construct around it wants another. Each of those messages is on
+ * Node's list but one: V8 names an `await` whose expression a template's
+ * `${}` holds, as it closes, "Missing } in template expression"
+ * (templateAwaitAt).
+ */
+function compilesAsModuleAfter(source: string, at: number): boolean {
+  // The nodes holding `at`, innermost first: each finishes after those it holds.
+  const holding: AstNode[] = [];
+  try {
+    parseStatements(source, { ...MODULE_PARSE_OPTIONS, preserveParens: true }, {
+      onNode: (node) => {
+        if (node.start <= at && at < node.end) holding.push(node);
+      },
+    });
   } catch {
     return false;
   }
+  return !templateAwaitAt(holding, at);
+}
+
+/**
+ * Whether the CommonJS compile's error at `at` is an `await` (read as an
+ * identifier) ending the expression of a template literal's `${}`: the
+ * innermost `await` before `at` holding it, up through the constructs V8
+ * leaves when the operand after it cannot continue the expression (an
+ * operator's either side, a sequence, a conditional's test or alternative,
+ * an assignment's value), to a template literal.
+ */
+function templateAwaitAt(holding: readonly AstNode[], at: number): boolean {
+  const index = holding.findIndex((node) => node.type === 'AwaitExpression' && node.start < at);
+  if (index === -1) return false;
+  let child = holding[index]!;
+  for (const parent of holding.slice(index + 1)) {
+    const continues = parent.type === 'BinaryExpression' || parent.type === 'LogicalExpression'
+      || parent.type === 'SequenceExpression' || parent.type === 'UnaryExpression'
+      || (parent.type === 'AssignmentExpression' && parent.right === child)
+      || (parent.type === 'ConditionalExpression' && parent.consequent !== child);
+    if (!continues) return parent.type === 'TemplateLiteral';
+    child = parent;
+  }
+  return false;
 }
 
 /**
@@ -338,14 +466,15 @@ function unscopedAwaitScanner(source: string): ((token: Token) => boolean) & { a
  * member named so (after `.` or `?.`). `visit` returns true to stop the walk.
  *
  * Returns true when `visit` stopped it, false at the end of the source, and
- * null when the source does not tokenize.
+ * null when the source does not tokenize (as `sourceType` does).
  */
 export function walkTopLevelModuleTokens(
   source: string,
   visit: (token: Token, syntax: ModuleSyntaxToken | null, topLevel: boolean) => boolean,
+  sourceType: 'module' | 'script' = 'module',
 ): boolean | null {
   try {
-    const tokens = tokenizer(source, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true });
+    const tokens = tokenizer(source, { ecmaVersion: 'latest', sourceType, allowHashBang: true });
     let braces = 0;
     let parens = 0;
     let brackets = 0;
