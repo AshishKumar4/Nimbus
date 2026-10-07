@@ -9676,12 +9676,13 @@ export class SqliteVFS {
       }
       const after = this._revision;
       // Read as the wave's writer: its receipts recall none of what it holds.
-      this.withHolds(holds, () => applied.results.entries().forEach(([at, result]) => {
+      const { results, befores } = applied;
+      this.withHolds(holds, () => results.forEach((result, at) => {
         const call = calls[at]!;
         progress.committedGroupSequence++;
         progress.committedPathCount += call.paths;
         progress.committedOps++;
-        (progress.mutations ??= []).push({ index: call.index, before: applied.befores[at]!, after });
+        (progress.mutations ??= []).push({ index: call.index, before: befores[at]!, after });
         if (call.receipt && result) {
           // The revision its file was published at, as its path reports it.
           progress.receipts.push({
