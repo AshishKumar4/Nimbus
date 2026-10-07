@@ -331,21 +331,24 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   await c.settle();
 }
 
-// ── room: a writer with many to send waits while two waves' worth are unanswered ──
+// ── The same file's next bytes fold into its unsent change: 500 rewrites, one write ──
 {
   const s = session();
   const c = client(s);
-  const big = new Uint8Array(3 * 1024 * 1024);
-  let roomed = 0;
-  const writers = [0, 1, 2, 3].map(async (i) => {
-    const release = await c.room(big.byteLength);
-    roomed++;
-    try { await c.submit(writeFile(`home/user/big${i}`, big)); } finally { release(); }
-  });
-  await Promise.resolve();
-  assert.ok(roomed <= 2, `${roomed} writers took room at once for 12 MiB (a window is 8 MiB)`);
-  await Promise.all(writers);
-  assert.equal(c.pendingBytes, 0);
+  const gate = Promise.withResolvers();
+  s.fault = async (deliver) => { await gate.promise; return deliver(); };
+  // The first goes out alone (nothing in flight); the rest wait behind it, and fold.
+  for (let i = 0; i < 500; i++) c.submit(writeFile('home/user/rewritten', `version ${i}`), { acknowledged: true });
+  for (let i = 0; i < 200; i++) c.submit(appendFile('home/user/appended', `${i},`), { acknowledged: true });
+  c.submit(mkdir('home/user/between'), { acknowledged: true });
+  c.submit(appendFile('home/user/appended', 'after'), { acknowledged: true });
+  s.fault = null;
+  gate.resolve();
+  await c.settle();
+  assert.equal(s.text('home/user/rewritten'), 'version 499');
+  assert.equal(s.text('home/user/appended'), Array.from({ length: 200 }, (_, i) => `${i},`).join('') + 'after');
+  assert.ok(c.stats().folded >= 697, `only ${c.stats().folded} folded`);
+  assert.ok(s.calls.waves <= 3, `${s.calls.waves} waves`);
 }
 
 // ── What a held subtree decides ahead of the session is bounded ──

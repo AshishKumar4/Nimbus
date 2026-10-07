@@ -148,7 +148,6 @@ function makeShimFsFacet(supervisor, bundle = {}) {
   drainVfsMutations: __nimbusDrainVfsMutations,
   flushVfsWrite: __nimbusFlushVfsWrite,
   drainVfsWrites: __nimbusDrainVfsWrites,
-  persistVfsWrite: __nimbusPersistVfsWrite,
 };`,
   );
   // Staged content comes with its records, as every launch stages it
@@ -278,8 +277,8 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
   assert.deepEqual(calls, ['older', 'newer']);
 }
 
-// Ranged appends and full writes to one path are ordered together, while a
-// mutation for another path is free to complete independently.
+// An append and the full write after it reach the authority in the order they
+// were made (the process's one log), whatever the first's latency.
 {
   let releaseAppend;
   let appendStarted;
@@ -300,23 +299,15 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
       completions.push('full');
     },
   };
-  const { fs, writes, flushVfsWrite } = makeShimFsFacet(supervisor);
+  const { fs } = makeShimFsFacet(supervisor);
   const path = '/home/user/append-order.txt';
   const append = fs.promises.appendFile(path, 'A');
   await appendCall;
   const full = fs.promises.writeFile(path, 'newer');
-
-  writes['home/user/independent.txt'] = 'independent';
-  await flushVfsWrite(
-    '/home/user/independent.txt',
-    async () => { completions.push('independent'); },
-  );
-  assert.deepEqual(completions, ['independent'], 'different paths do not share a queue');
-
   releaseAppend();
   await Promise.all([append, full]);
   assert.equal(durable, 'newer');
-  assert.deepEqual(completions, ['independent', 'append', 'full']);
+  assert.deepEqual(completions, ['append', 'full']);
 }
 
 // A full write queued before an append remains a full image; the later append
@@ -329,6 +320,12 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
   let durable = 'base';
   const calls = [];
   const supervisor = {
+    async stat() { return { type: 'file', size: durable.length }; },
+    async fsWriteRange(_path, position, bytes) {
+      const suffix = new TextDecoder().decode(bytes);
+      calls.push(`range:${suffix}`);
+      durable = durable.slice(0, position) + suffix;
+    },
     async writeFile(_path, content) {
       const text = cellText(content);
       calls.push(`full:${text}`);
@@ -347,7 +344,8 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
   releaseFull();
   await Promise.all([full, append]);
   assert.equal(durable, 'newA');
-  assert.deepEqual(calls, ['full:new', 'full:newA']);
+  // The append extends what the write made, at the authority's end.
+  assert.deepEqual(calls, ['full:new', 'range:A']);
 }
 
 // Concurrent appends to a live-only file carry only their uncommitted suffix
@@ -647,21 +645,23 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
   assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/truncate-race.txt'), false);
 }
 
-// A failed operation rejects its caller without poisoning that path's queue;
-// the captured cell remains pending and a later generation can still persist.
+// A refused write rejects its caller and leaves nothing of it parked; the
+// path's next write is sent and lands.
 {
-  const { writes, flushVfsWrite } = makeShimFsFacet({});
-  const path = '/home/user/retry-after-failure.txt';
-  writes['home/user/retry-after-failure.txt'] = 'failed';
-  await assert.rejects(
-    flushVfsWrite(path, async () => { throw new Error('injected queue failure'); }),
-    /injected queue failure/,
-  );
-  assert.equal(writes['home/user/retry-after-failure.txt'], 'failed');
-
-  writes['home/user/retry-after-failure.txt'] = 'recovered';
+  let refuse = true;
   let durable;
-  await flushVfsWrite(path, async (content) => { durable = cellText(content); });
+  const supervisor = {
+    async writeFile(_path, content) {
+      if (refuse) throw Object.assign(new Error('EACCES: injected refusal'), { code: 'EACCES' });
+      durable = cellText(content);
+    },
+  };
+  const { fs, writes } = makeShimFsFacet(supervisor);
+  const path = '/home/user/retry-after-failure.txt';
+  await assert.rejects(fs.promises.writeFile(path, 'failed'), (error) => error.code === 'EACCES');
+  assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/retry-after-failure.txt'), false, 'a refused write stayed parked');
+  refuse = false;
+  await fs.promises.writeFile(path, 'recovered');
   assert.equal(durable, 'recovered');
   assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/retry-after-failure.txt'), false);
 }

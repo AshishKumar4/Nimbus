@@ -77,6 +77,17 @@ async function replay(supervisor, stream) {
           else if (call.call === 'unlink') await supervisor.unlink(abs(call.path));
           else if (call.call === 'rmdir') await supervisor.rmdir(abs(call.path));
           else if (call.call === 'ftruncate') noted(await supervisor.fsTruncate(abs(call.path), call.size));
+          else if (call.call === 'rm') {
+            try {
+              // A mock without fsRemove removes a file as unlink does.
+              if (typeof supervisor.fsRemove === 'function') await supervisor.fsRemove(abs(call.path), { recursive: call.recursive === true, force: call.force === true });
+              else await supervisor.unlink(abs(call.path));
+            } catch (error) {
+              if (!(call.force === true && error?.code === 'ENOENT')) throw error;
+            }
+          }
+          else if (call.call === 'lchown') noted(await supervisor.chown(abs(call.path), call.uid, call.gid, { followSymlinks: false }));
+          else if (call.call === 'lutimes') noted(await supervisor.utimes(abs(call.path), call.atime, call.mtime));
           else await supervisor.symlink(call.target, abs(call.path));
           break;
         }

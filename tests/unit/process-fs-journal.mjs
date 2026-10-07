@@ -98,7 +98,8 @@ function mortalPort(s, live = Infinity) {
   const s = session();
   const sql = facetSql();
   const c = processFsClient({ session: mortalPort(s, 0), journal: sqlJournal(sql), retry: RETRY });
-  for (let i = 0; i < 300; i++) c.submit(append('home/user/out/log', `${i}\n`), { acknowledged: true });
+  // Three files in turn: nothing folds.
+  for (let i = 0; i < 300; i++) c.submit(append(`home/user/out/log${i % 3}`, `${i}\n`), { acknowledged: true });
   // The process is gone: its client with it. The facet's SQLite is what is left.
   await new Promise((resolve) => setTimeout(resolve, 10));
   const reopened = sqlJournal(sql);
@@ -106,7 +107,10 @@ function mortalPort(s, live = Infinity) {
   const drained = await drainProcessFsJournal({ journal: reopened, session: s.port, retry: RETRY });
   assert.equal(drained.landed, 300);
   assert.deepEqual(drained.failures, []);
-  assert.equal(s.text('home/user/out/log').split('\n').length, 301, 'an append was lost or doubled');
+  for (const k of [0, 1, 2]) {
+    const want = Array.from({ length: 100 }, (_, n) => `${n * 3 + k}\n`).join('');
+    assert.equal(s.text(`home/user/out/log${k}`), want, `log${k}: an append was lost, doubled or reordered`);
+  }
   assert.equal(reopened.entries().length, 0);
 }
 

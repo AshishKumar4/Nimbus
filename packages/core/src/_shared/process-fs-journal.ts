@@ -36,6 +36,8 @@ export interface ProcessFsJournal {
   append(op: ProcessFsOp): number;
   /** The entry `jid`, still held. */
   read(jid: number): ProcessFsOp;
+  /** The entry `jid` (not yet sent) is now `op`: a later change folded into it. */
+  replace(jid: number, op: ProcessFsOp): void;
   /** Every entry held, in order. */
   entries(): { jid: number; op: ProcessFsOp }[];
   /** Forget every entry up to `jid` (answered: committed, refused, or failed). */
@@ -99,6 +101,12 @@ export function sqlJournal(sql: JournalSql): ProcessFsJournal {
       if (row === undefined) throw new Error(`process-fs journal: entry ${jid} is not held`);
       return opOf(String(row.op), row.data);
     },
+    replace(jid, op) {
+      const before = [...sql.exec('SELECT LENGTH(data) AS bytes FROM nimbus_fs_journal WHERE jid = ?', jid)][0];
+      const row = rowOf(op);
+      sql.exec('UPDATE nimbus_fs_journal SET op = ?, data = ? WHERE jid = ?', row.json, row.data, jid);
+      bytes += (row.data?.byteLength ?? 0) - Number(before?.bytes ?? 0);
+    },
     entries() {
       return [...sql.exec('SELECT jid, op, data FROM nimbus_fs_journal ORDER BY jid')]
         .map((row) => ({ jid: Number(row.jid), op: opOf(String(row.op), row.data) }));
@@ -144,6 +152,12 @@ export function memoryJournal(): ProcessFsJournal {
       const op = held.get(jid);
       if (op === undefined) throw new Error(`process-fs journal: entry ${jid} is not held`);
       return op;
+    },
+    replace(jid, op) {
+      const before = held.get(jid);
+      if (before === undefined) throw new Error(`process-fs journal: entry ${jid} is not held`);
+      bytes += (dataOf(op)?.byteLength ?? 0) - (dataOf(before)?.byteLength ?? 0);
+      held.set(jid, op);
     },
     entries() {
       return [...held].map(([jid, op]) => ({ jid, op }));
