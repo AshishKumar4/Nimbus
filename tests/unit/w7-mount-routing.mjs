@@ -387,6 +387,28 @@ function scripted(overrides) {
   assert.equal(seeded.seeded, false);
   assert.equal(engine.as(CRED_KERNEL).exists('home/user/example-app'), false, 'the starter project was written beneath a mount');
 }
+// A seed step that follows its name's link (exists, stat, readText, chown,
+// chmod, writeFile, mkdir -p) is placed where the link leads. Red before:
+// placed by its directory alone, /etc as a link to a mounted directory was
+// the root's, so the engine followed it into its own directory beneath the
+// mount point (absent: mkdir /etc EEXIST), and a link at /etc/hostname to a
+// file on a mount was written beneath the mount point.
+{
+  const s = session();
+  s.shared.mkdir('/accounts');
+  s.kernel.symlink('/shared/accounts', 'etc');
+  await seedBaseFilesystem(s.files);
+  assert.match(dec.decode(s.shared.readFile('/accounts/passwd')), /^root:x:0:0/, '/etc/passwd did not reach the mount behind /etc');
+  assert.deepEqual(s.sqliteNames('shared'), [], 'the seed wrote SQLite beneath the mount point');
+}
+{
+  const s = session();
+  s.kernel.mkdir('etc', { mode: 0o755 });
+  s.kernel.symlink('/shared/hostname', 'etc/hostname');
+  await seedBaseFilesystem(s.files);
+  assert.equal(s.inMount(s.shared, '/hostname'), 'nimbus\n', 'the seed did not write through the link at /etc/hostname onto the mount');
+  assert.deepEqual(s.sqliteNames('shared'), [], 'the seed wrote SQLite beneath the mount point');
+}
 {
   // Each of the project's names is placed, not only its root: a mount deep in it stops the seed.
   const harness = createSqliteVfsTestHarness();
@@ -429,6 +451,44 @@ function scripted(overrides) {
   const at = await s.send(wave(file('shared/at-limit', new Uint8Array(ROUTED_FILE_MAX).fill(7))));
   assert.equal(at.ok, true, JSON.stringify(at.error));
   assert.equal(s.shared.readFile('/at-limit').byteLength, ROUTED_FILE_MAX);
+}
+
+// Three waves at once, each with a file at ROUTED_FILE_MAX on a mount: a
+// mounted record is admitted with its whole size reserved, so an admitted
+// record always finishes. Red before: each wave held its file's chunks as
+// they came, all three held most of the shared write credit between them,
+// and each waited for more before its file-end, for good.
+{
+  const s = session();
+  const frames = await Promise.all([0, 1, 2].map(async (i) => new Uint8Array(
+    await new Response(encodeWriteBatchStream(wave(file(`shared/whole-${i}`, new Uint8Array(ROUTED_FILE_MAX).fill(i + 1))))).arrayBuffer(),
+  )));
+  // Each producer hands over 60% of its wave, and the rest once all three
+  // were asked for it (or 300 ms on, when one never is).
+  let asked = 0;
+  const allAsked = Promise.withResolvers();
+  const streams = frames.map((bytes) => {
+    const cut = Math.floor(bytes.byteLength * 0.6);
+    let pulls = 0;
+    return new ReadableStream({
+      type: 'bytes',
+      async pull(controller) {
+        if (pulls++ === 0) { controller.enqueue(bytes.slice(0, cut)); return; }
+        if (++asked === 3) allAsked.resolve();
+        await Promise.race([allAsked.promise, new Promise((resolve) => setTimeout(resolve, 300))]);
+        controller.enqueue(bytes.slice(cut));
+        controller.close();
+      },
+    });
+  });
+  const sent = Promise.all(streams.map((stream) => s.op({ op: 'writeBatchStream', args: [], cred: CRED_SESSION_USER, stream })));
+  let timer;
+  const stuck = new Promise((resolve) => { timer = setTimeout(() => resolve('stuck'), 10_000); });
+  const results = await Promise.race([sent, stuck]);
+  clearTimeout(timer);
+  assert.notEqual(results, 'stuck', 'three waves, each holding part of a mounted file, waited on each other for good');
+  for (const result of results) assert.equal(result.ok, true, JSON.stringify(result.error));
+  for (const i of [0, 1, 2]) assert.deepEqual(s.shared.readFile(`/whole-${i}`), new Uint8Array(ROUTED_FILE_MAX).fill(i + 1));
 }
 
 // A cached route carries the revision its lookup saw: after anything

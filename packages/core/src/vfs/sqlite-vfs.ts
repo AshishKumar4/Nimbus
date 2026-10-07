@@ -531,11 +531,12 @@ export const ROUTED_LINK_TARGET_MAX = 4096;
 
 /**
  * The largest file a wave writes to a mount. A routed file is one
- * whole-file writeFile, its bytes held under the wave's credit until that
- * call (half the shared write credit, so a held file never starves the
- * wave); a larger one is refused (ENOTSUP, naming this) before anything is
- * touched. A backend that declares an atomic streaming write could take
- * more; none does yet.
+ * whole-file writeFile, its bytes held until that call under credit its
+ * record reserves whole when it is admitted (so an admitted record always
+ * finishes; at most the shared write credit, MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES,
+ * and half of it, so a held file never starves the wave); a larger one is
+ * refused (ENOTSUP, naming this) before anything is touched. A backend that
+ * declares an atomic streaming write could take more; none does yet.
  */
 export const ROUTED_FILE_MAX = 4 * 1024 * 1024;
 
@@ -8768,35 +8769,38 @@ export class SqliteVFS {
    * point, when a lookup leaves the synchronous backends, or when it fails. A caller that writes in this same turn writes where the
    * namespace would.
    */
-  placesHere(names: readonly string[], cred: VfsCred = CRED_KERNEL, options?: { aboveMounts?: boolean }): boolean {
-    return this.placedHere(names, cred, undefined, options?.aboveMounts === true);
+  placesHere(names: readonly string[], cred: VfsCred = CRED_KERNEL, options?: { aboveMounts?: boolean; follow?: boolean }): boolean {
+    return this.placedHere(names, cred, undefined, options?.aboveMounts === true, options?.follow === true);
   }
 
   /**
    * `aboveMounts`: a directory above a mount point counts as this
    * filesystem's, as a directory record there is (making, reading or
    * owning the root's directory); else it is the namespace's to answer.
+   * `follow`: each name is looked up whole, a link at it followed, as an
+   * operation that follows its name's link (stat, chown, writeFile) is
+   * placed; else by its directory, the name itself not followed.
    */
-  private placedHere(names: readonly string[], cred: VfsCred, signal?: AbortSignal, aboveMounts = false): boolean {
+  private placedHere(names: readonly string[], cred: VfsCred, signal?: AbortSignal, aboveMounts = false, follow = false): boolean {
     const router = this.waveRouter;
     if (router === null) return true;
     const routes = new Map<string, string>();
     for (const named of names) {
       const key = this.storageKey(named, cred);
-      const parent = this.parentPath(key);
-      let resolved = routes.get(parent);
+      const looked = follow ? key : this.parentPath(key);
+      let resolved = routes.get(looked);
       if (resolved === undefined) {
         let answer: string | Promise<string>;
         try {
-          answer = parent === '' ? '' : router.resolveDirectory('/' + parent, cred, signal);
+          answer = looked === '' ? '/' : router.resolveDirectory('/' + looked, cred, signal);
         } catch {
           return false;
         }
         if (answer instanceof Promise) { answer.catch(() => {}); return false; }
         resolved = answer;
-        routes.set(parent, resolved);
+        routes.set(looked, resolved);
       }
-      const path = `${resolved === '/' ? '' : resolved}/${key.slice(key.lastIndexOf('/') + 1)}`;
+      const path = follow ? resolved : `${resolved === '/' ? '' : resolved}/${key.slice(key.lastIndexOf('/') + 1)}`;
       // On a mount, or a directory above a mount point: the namespace's to answer.
       if (router.placement(path) !== null || (!aboveMounts && router.composes(path))) return false;
     }
@@ -8855,6 +8859,8 @@ export class SqliteVFS {
       reach?: WaveMountReach;
       guard: () => void;
       settleBefore: () => void;
+      /** The credit a mounted record's whole bytes take, granted before any of them is decoded. */
+      reserve: (bytes: number) => Promise<CreditLease | null>;
       setPhase: (phase: WriteBatchStreamFailurePhase) => void;
       committed: (receipt: WriteStreamReceipt | null) => void;
     },
@@ -8942,9 +8948,14 @@ export class SqliteVFS {
         if (record.inode.kind !== 'symlink' && record.inode.size > ROUTED_FILE_MAX) {
           throw vfsError('ENOTSUP', record.inode.path, `a wave writes a file to a mount in one call, up to ${ROUTED_FILE_MAX} bytes; this one is ${record.inode.size}`);
         }
+        // Admitted with its whole size reserved: its chunks draw on that, never
+        // on the shared credit, so three waves each holding part of a file
+        // cannot all wait for more before their file-ends.
+        const lease = await at.reserve(record.inode.size);
         at.file = {
           streamContentId: record.streamContentId, named: record.inode.path, placed, link: record.inode.kind === 'symlink',
           mode: record.inode.mode, size: record.inode.size, received: 0, nextChunk: 0, held: [], index: at.index,
+          credit: { left: record.inode.size, lease },
           ...(record.inode.call === undefined ? {} : { call: record.inode.call }),
         };
         return true;
@@ -8989,6 +9000,7 @@ export class SqliteVFS {
         } finally {
           at.file = null;
           for (const chunk of file.held) chunk.release();
+          file.credit.lease?.release();
         }
         return true;
       }
@@ -9367,8 +9379,7 @@ export class SqliteVFS {
       }
     };
 
-    const retainChunk = async (byteLength: number, signal?: AbortSignal): Promise<CreditLease> => {
-      if (group.wouldExceedPieces(byteLength, 1) !== null) flushGroup();
+    const acquireCredit = async (byteLength: number, signal?: AbortSignal): Promise<CreditLease> => {
       const writeLease = await awaitCredit(
         () => this.writeStreamCredits.tryAcquire(byteLength),
         () => this.writeStreamCredits.acquire(byteLength, signal),
@@ -9394,6 +9405,17 @@ export class SqliteVFS {
           supervisorLease.release();
         },
       };
+    };
+
+    const retainChunk = async (byteLength: number, signal?: AbortSignal): Promise<CreditLease> => {
+      // A mounted file's chunk: covered by what its record reserved when admitted.
+      const covered = routed.file?.credit;
+      if (covered !== undefined) {
+        covered.left -= byteLength;
+        return { bytes: byteLength, release: () => {} };
+      }
+      if (group.wouldExceedPieces(byteLength, 1) !== null) flushGroup();
+      return acquireCredit(byteLength, signal);
     };
 
     try {
@@ -9445,6 +9467,7 @@ export class SqliteVFS {
             flushGroup();
             options.admit?.();
           },
+          reserve: (bytes) => (bytes === 0 ? Promise.resolve(null) : acquireCredit(bytes, options.signal)),
           setPhase: (next) => { phase = next; },
           committed: (receipt) => {
             progress.committedGroupSequence++;
@@ -9749,6 +9772,7 @@ export class SqliteVFS {
       // A routed file the wave did not finish: what it held goes back.
       if (routed.file !== null) {
         for (const chunk of routed.file.held) chunk.release();
+        routed.file.credit.lease?.release();
         routed.file = null;
       }
       if (!recordIteratorFinished && recordIterator?.return) {
@@ -11985,6 +12009,8 @@ interface RoutedFile {
   nextChunk: number;
   held: { data: Uint8Array; release(): void }[];
   index: number;
+  /** What its record reserved when admitted (its whole size), and how much of it its chunks have not drawn yet. */
+  credit: { left: number; lease: CreditLease | null };
   /** A process's data call (W7Call), made by the namespace's call of that name. */
   call?: W7DataCall;
 }

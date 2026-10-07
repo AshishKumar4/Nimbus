@@ -1060,8 +1060,11 @@ async function seedOnNamespace(steps: Generator<SeedStep, void, unknown>, filesy
     const call = step.value;
     let answer: unknown;
     const cred = call.as === 'kernel' ? CRED_KERNEL : CRED_SESSION_USER;
-    // A directory above a mount point is the root's, as a wave's directory record there is.
-    if (filesystem.engine.placesHere([call.path], cred, { aboveMounts: true })) {
+    // A directory above a mount point is the root's, as a wave's directory
+    // record there is. A step is placed as its call looks its name up: every
+    // one follows a link at it but a lone mkdir (mkdir -p stats it first).
+    const follow = call.op !== 'mkdir' || call.recursive === true;
+    if (filesystem.engine.placesHere([call.path], cred, { aboveMounts: true, follow })) {
       answer = engineStep(engine[call.as], call);
     } else {
       const view = mounted[call.as];
