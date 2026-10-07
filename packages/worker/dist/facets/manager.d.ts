@@ -266,6 +266,16 @@ interface FacetVfsState {
     truncated: boolean;
     /** Diagnostics: how the build's transforms were answered. */
     transforms?: BundleCellTransformStats;
+    /**
+     * Modules the program reaches only through an \`import()\` (phase 2 of the
+     * closure walk), which no static walk from the entry or a staged package
+     * entry reaches: they evaluate only if that call runs. Their synchronous
+     * reads are not planned at boot; the \`import()\` that evaluates them
+     * fetches them first (lazyReadsByTarget).
+     */
+    lazyModules?: readonly string[];
+    /** Each lazy module's lazy importers (PrefetchResult.edges, reversed, within lazyModules). */
+    lazyImporters?: Readonly<Record<string, readonly string[]>>;
     /** Telemetry: served from the prefetch-bundle cache (no VFS walk). */
     cacheHit?: boolean;
     /**
@@ -618,6 +628,19 @@ export declare function addBinTargetSiblings(vfs: LaunchFs, scriptPath: string |
     added: number;
     wasmPaths: string[];
 }>;
+/**
+ * The table an \`import()\` reads its target's lazy synchronous reads from
+ * (FacetVfsState.lazyModules): for each lazy module that an \`import()\` may
+ * target, the synchronous reads (static-fs-refs' exact, sync) of every lazy
+ * module evaluating it evaluates, itself included, by its lazy importers.
+ * \`syncReadsOf\` holds each lazy module that reads; the table is keyed by
+ * each of its lazy ancestors. Vite 8's \`import("lightningcss")\` resolves to
+ * lightningcss-wasm's wasm-node.mjs, which reads lightningcss_node.wasm
+ * (15.8 MB) at module top level: an entry under that target, fetched when the
+ * import() runs (a dev server with css.transformer 'lightningcss', a build's
+ * CSS minify), never at a launch that does not import it.
+ */
+export declare function lazyReadsByTarget(syncReadsOf: ReadonlyMap<string, readonly string[]>, lazyImporters: Readonly<Record<string, readonly string[]>>): Record<string, string[]>;
 /**
  * The wasm images a program's closure holds, by path and content digest.
  *

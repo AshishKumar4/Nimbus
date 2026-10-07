@@ -50,6 +50,13 @@ export interface PrefetchResult {
     entryPaths?: ReadonlySet<string>;
     /** A dependency closure's `import()` deferrals, which it does not walk: phase 2's queue order. */
     deferred?: DeferredImport[];
+    /**
+     * What each staged module loads: its static dependencies, and in phase 2
+     * the \`import()\` targets it defers, each by the file it resolved to. The
+     * planner reads ancestry from it (which modules an \`import()\` of a
+     * target evaluates).
+     */
+    edges?: ReadonlyMap<string, readonly string[]>;
 }
 /** An `import()` a module defers, and how many its module defers (phase 2's order). */
 export interface DeferredImport {
@@ -58,6 +65,8 @@ export interface DeferredImport {
     alternatives: number;
     /** The file, when the walk resolved it already (a tool config and what it names). */
     path?: string;
+    /** The module that defers it (PrefetchResult.edges). */
+    from?: string;
 }
 /**
  * The walk stopped at the snapshot bound. `bytesSeen` is content

@@ -226,11 +226,11 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     // loads the few its input names. Walking a table first spent the bound on
     // grammars the program never loads, and cut the deferral it does.
     const deferredDynamic = new Map();
-    function defer({ specifier, fromDir, alternatives, path }) {
+    function defer({ specifier, fromDir, alternatives, path, from }) {
         let queue = deferredDynamic.get(alternatives);
         if (queue === undefined)
             deferredDynamic.set(alternatives, queue = []);
-        queue.push(path === undefined ? { specifier, fromDir } : { specifier, fromDir, path });
+        queue.push({ specifier, fromDir, ...(path !== undefined ? { path } : {}), ...(from !== undefined ? { from } : {}) });
     }
     function nextDeferred() {
         let fewest = Infinity;
@@ -360,10 +360,20 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         // walk everything else as CJS/ESM.
         if (!vfsPath.endsWith('.json')) {
             const fromDir = vfsPath.includes('/') ? vfsPath.substring(0, vfsPath.lastIndexOf('/')) : '.';
-            (await parseAndResolve(content, fromDir, entry));
+            (await parseAndResolve(content, fromDir, entry, vfsPath));
         }
     }
-    async function parseAndResolve(code, fromDir, entry = false) {
+    const edges = new Map();
+    function edge(from, to) {
+        if (from === undefined || from === to)
+            return;
+        let children = edges.get(from);
+        if (children === undefined)
+            edges.set(from, children = []);
+        if (!children.includes(to))
+            children.push(to);
+    }
+    async function parseAndResolve(code, fromDir, entry = false, fromFile) {
         if (declined || closureExceeded)
             return;
         if (progress)
@@ -425,8 +435,10 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                 if (closureExceeded || declined)
                     break;
                 const staged = await resolveStaticDependency(specifier, fromDir);
-                if (staged)
-                    (await addFile(staged.resolved));
+                if (staged) {
+                    edge(fromFile, staged.resolved);
+                    await addFile(staged.resolved);
+                }
                 followUp(specifier, staged);
             }
         }
@@ -446,11 +458,13 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             const resolved = (await resolveDynamicImport(specifier, fromDir));
             if (closureExceeded)
                 break;
-            if (resolved)
-                (await addFile(resolved));
+            if (resolved) {
+                edge(fromFile, resolved);
+                await addFile(resolved);
+            }
         }
         for (const specifier of deferrals)
-            defer({ specifier, fromDir, alternatives: deferrals.size });
+            defer({ specifier, fromDir, alternatives: deferrals.size, ...(fromFile !== undefined ? { from: fromFile } : {}) });
     }
     // A dynamic `import()` loads what Node's ESM resolver names (the process's
     // loader resolves it the same way, core/_shared/esm-resolver.ts): the
@@ -548,11 +562,12 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             const resolved = next.path ?? await resolveDynamicImport(next.specifier, next.fromDir);
             if (!resolved)
                 continue;
+            edge(next.from, resolved);
             await addFile(resolved);
             if (configRoots.has(resolved) && typeof bundle[resolved] === 'string')
                 await deferConfigNames(resolved);
         }
-        return { bundle, speculative, entryPaths };
+        return { bundle, speculative, entryPaths, edges };
     }
     try {
         return await walk();
