@@ -417,6 +417,20 @@ export function runtimeCodeModuleName(key: string): string {
 /** Base64 of whole bytes: a `wasm` entry's. */
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
+/**
+ * Whether a `wasm` entry's base64 is a module a launch may learn: the guest's
+ * limits held again where the entry is received, before it is learned, kept
+ * or staged (a report is the guest's word, not proof): whole base64 of at most
+ * RUNTIME_WASM_MAX_BYTES that WebAssembly.validate accepts.
+ */
+function isLearnableWasm(base64: string): boolean {
+  if (base64.length > Math.ceil(RUNTIME_WASM_MAX_BYTES / 3) * 4 || !BASE64.test(base64)) return false;
+  let bytes: Uint8Array;
+  try { bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)); } catch { return false; }
+  if (bytes.byteLength > RUNTIME_WASM_MAX_BYTES) return false;
+  try { return WebAssembly.validate(bytes); } catch { return false; }
+}
+
 /** A ledger entry as the supervisor receives it: shape-checked, or null. */
 export function parseRuntimeCodeEntry(value: unknown): RuntimeCodeEntry | null {
   if (typeof value !== 'object' || value === null) return null;
@@ -426,7 +440,7 @@ export function parseRuntimeCodeEntry(value: unknown): RuntimeCodeEntry | null {
       ? { kind: 'module', path: v.path, text: v.text } : null;
   }
   if (v.kind === 'expression') return typeof v.code === 'string' ? { kind: 'expression', code: v.code } : null;
-  if (v.kind === 'wasm') return typeof v.bytes === 'string' && BASE64.test(v.bytes) ? { kind: 'wasm', bytes: v.bytes } : null;
+  if (v.kind === 'wasm') return typeof v.bytes === 'string' && isLearnableWasm(v.bytes) ? { kind: 'wasm', bytes: v.bytes } : null;
   if (typeof v.kind !== 'string' || !isRuntimeFunctionKind(v.kind)) return null;
   if (!Array.isArray(v.params) || !v.params.every((p: unknown): p is string => typeof p === 'string') || typeof v.body !== 'string') return null;
   return { kind: v.kind, params: [...v.params], body: v.body };
