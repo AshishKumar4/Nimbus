@@ -15,7 +15,8 @@ import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import { execGitNetwork, GIT_CLONE_JOB_MARKER, type GitNetworkResult } from './network-facet.js';
-import { remoteFailureText, urlCredentials } from './pack/remote-failure.js';
+import { noSuchRemoteText, remoteFailureText, urlCredentials } from './pack/remote-failure.js';
+import { GitGlobalsError, parseConfigParameter, withConfigOverrides, type ConfigOverrides } from './config-params.js';
 import { packsSeam, type GitPacksSeam, type PromisorFetch } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -274,88 +275,8 @@ export interface ParsedGitGlobals {
   subArgs: string[];
   /** The directory the subcommand runs in, after every `-C`. */
   dir: string;
-  /** `-c <name>=<value>`: each key (its section and name in lower case), its values in order. */
-  config: Map<string, string[]>;
-}
-
-/** A refusal of git's own options, in git's words, and the exit it takes. */
-export class GitGlobalsError extends Error {
-  constructor(readonly lines: string, readonly code: number) {
-    super(lines.trimEnd());
-    this.name = 'GitGlobalsError';
-  }
-}
-
-/** iskeychar: what a config section and variable name are made of. */
-const isKeyChar = (c: string) => /^[A-Za-z0-9-]$/.test(c);
-
-/**
- * git_config_push_parameter and git_config_parse_key for one `-c` text: the
- * key before the first '=' (a missing '=' is a boolean's true), its section
- * and variable name in lower case, its subsection as written. An invalid one
- * is git's error, then "unable to parse command-line config" (128).
- */
-function configParameter(text: string): [string, string] {
-  const eq = text.indexOf('=');
-  const key = eq < 0 ? text : text.slice(0, eq);
-  const value = eq < 0 ? 'true' : text.slice(eq + 1);
-  const refuse = (error: string): never => {
-    throw new GitGlobalsError(`error: ${error}\nfatal: unable to parse command-line config\n`, 128);
-  };
-  // config_parse_pair, as git reads a split `-c` parameter back.
-  if (key === '') refuse('empty config key');
-  const lastDot = key.lastIndexOf('.');
-  if (lastDot <= 0) refuse(`key does not contain a section: ${key}`);
-  if (lastDot === key.length - 1) refuse(`key does not contain variable name: ${key}`);
-  const firstDot = key.indexOf('.');
-  let stored = '';
-  for (let i = 0; i < key.length; i++) {
-    const c = key[i];
-    // The subsection, between the first dot and the last, is kept as written.
-    if (i > firstDot && i < lastDot) {
-      if (c === '\n') refuse(`invalid key (newline): ${key}`);
-      stored += c;
-      continue;
-    }
-    if (c === '.') { stored += c; continue; }
-    if (!isKeyChar(c) || (i === lastDot + 1 && !/^[A-Za-z]$/.test(c))) refuse(`invalid key: ${key}`);
-    stored += c.toLowerCase();
-  }
-  return [stored, value];
-}
-
-/** A config key as `-c` stores it: section and variable name in lower case, the subsection kept. */
-function configKey(path: string): string {
-  const first = path.indexOf('.');
-  const last = path.lastIndexOf('.');
-  if (first < 0) return path.toLowerCase();
-  return path.slice(0, first).toLowerCase() + path.slice(first, last) + path.slice(last).toLowerCase();
-}
-
-/**
- * `git` with `-c`'s settings over every file's: a key `-c` set reads as its
- * last value, and all of them follow the files' for one read whole, for this
- * command only (nothing is written).
- */
-function withConfigOverrides<G extends { getConfig(args: { path: string }): Promise<unknown> }>(git: G, overrides: Map<string, string[]>): G {
-  if (overrides.size === 0) return git;
-  return new Proxy(git, {
-    get(target, property, receiver) {
-      if (property === 'getConfig') {
-        return async (args: { path: string }) => {
-          const values = overrides.get(configKey(args.path));
-          return values !== undefined ? values[values.length - 1] : await target.getConfig(args);
-        };
-      }
-      if (property === 'getConfigAll') {
-        return async (args: { path: string }) => {
-          const base = await (target as unknown as { getConfigAll(args: { path: string }): Promise<unknown[]> }).getConfigAll(args);
-          return [...base, ...(overrides.get(configKey(args.path)) ?? [])];
-        };
-      }
-      return Reflect.get(target, property, receiver);
-    },
-  });
+  /** `-c <name>=<value>` (config-params.ts). */
+  config: ConfigOverrides;
 }
 
 /**
@@ -367,14 +288,14 @@ function withConfigOverrides<G extends { getConfig(args: { path: string }): Prom
  */
 export function parseGitGlobals(args: string[], cwd: string): ParsedGitGlobals {
   let dir = cwd;
-  const config = new Map<string, string[]>();
+  const config: ConfigOverrides = new Map();
   let i = 0;
   for (; i < args.length; i++) {
     const arg = args[i];
     if (arg === '-c') {
       const text = args[++i];
       if (text === undefined) throw new GitGlobalsError(`-c expects a configuration string\n${GIT_USAGE}\n`, 129);
-      const [key, value] = configParameter(text);
+      const [key, value] = parseConfigParameter(text);
       config.set(key, [...(config.get(key) ?? []), value]);
     } else if (arg === '-C') {
       const path = args[++i];
@@ -2589,12 +2510,11 @@ async function remoteUrl(git: CfGit, fs: GitFs, dir: string, remote: string): Pr
   return typeof value === 'string' ? value : undefined;
 }
 
-/** What git says of a remote that names neither a configured remote nor a repository (transport.c, connect.c). */
-function noSuchRemote(remote: string): string {
-  return `fatal: '${remote}' does not appear to be a git repository\n`
-    + 'fatal: Could not read from remote repository.\n\n'
-    + 'Please make sure you have the correct access rights\n'
-    + 'and the repository exists.\n';
+/** The URL `remote` names, or undefined, git's refusal of it written (pack/remote-failure.ts noSuchRemoteText). */
+async function knownRemote(ctx: Ctx, git: CfGit, fs: GitFs, dir: string, remote: string): Promise<string | undefined> {
+  const url = await remoteUrl(git, fs, dir, remote);
+  if (url === undefined) await ctx.stderr.write(noSuchRemoteText(remote));
+  return url;
 }
 
 /**
@@ -3027,8 +2947,8 @@ export async function runGitCommand(
         const rest = fetchArgs.filter((arg, i) => !FETCH_DEPTH_FLAGS.includes(arg.split('=')[0]) &&
           !(i > 0 && ['--depth', '--deepen'].includes(fetchArgs[i - 1])));
         const remote = rest[0] || 'origin';
-        const fetchUrl = await remoteUrl(git, fs, dir, remote);
-        if (fetchUrl === undefined) { await ctx.stderr.write(noSuchRemote(remote)); return 128; }
+        const fetchUrl = await knownRemote(ctx, git, fs, dir, remote);
+        if (fetchUrl === undefined) return 128;
         if (!doCtx || !doEnv) {
           ctx.stderr.write('[git] fetch requires DO ctx + env (internal configuration error)\n');
           return 1;
@@ -3063,8 +2983,8 @@ export async function runGitCommand(
         const remote = rest[0] || 'origin';
         const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
         // Its fetch, git's child, fails (128); pull says 1.
-        const pullUrl = await remoteUrl(git, fs, dir, remote);
-        if (pullUrl === undefined) { await ctx.stderr.write(noSuchRemote(remote)); return 1; }
+        const pullUrl = await knownRemote(ctx, git, fs, dir, remote);
+        if (pullUrl === undefined) return 1;
         if (!doCtx || !doEnv) {
           ctx.stderr.write('[git] pull requires DO ctx + env (internal configuration error)\n');
           return 1;
@@ -3102,8 +3022,8 @@ export async function runGitCommand(
         const { quiet, rest } = takeQuiet(subArgs);
         const remote = rest[0] || 'origin';
         const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
-        const pushUrl = await remoteUrl(git, fs, dir, remote);
-        if (pushUrl === undefined) { await ctx.stderr.write(noSuchRemote(remote)); return 128; }
+        const pushUrl = await knownRemote(ctx, git, fs, dir, remote);
+        if (pushUrl === undefined) return 128;
         if (!doCtx || !doEnv) {
           ctx.stderr.write('[git] push requires DO ctx + env (internal configuration error)\n');
           return 1;
