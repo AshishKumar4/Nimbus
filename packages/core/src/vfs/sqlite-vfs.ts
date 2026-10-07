@@ -8615,9 +8615,11 @@ export class SqliteVFS {
         );
         if (linked !== null) throw linkedDirectoryRefusal(linked);
       });
-      for (const path of deletes) commitDelete(path);
+      // Held aside while the removals commit: commitDelete flushes what is
+      // pending, and the directories go in the bounded batches below.
       const directories = pendingDirectories;
       pendingDirectories = [];
+      for (const path of deletes) commitDelete(path);
       for (const inode of directories) {
         if (this.newPlan().wouldExceedInodes(pendingDirectories.length + 1) !== null) flushDirectories();
         pendingDirectories.push(inode);

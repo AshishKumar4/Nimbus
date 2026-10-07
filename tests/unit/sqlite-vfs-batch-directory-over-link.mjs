@@ -19,7 +19,11 @@
 //   (3) a batch (writeBatch): refused alike, nothing changed; allowed with
 //       the link among its removals;
 //   (4) the wave writer, as git add used it (root .git): refused, the link
-//       and its target untouched.
+//       and its target untouched;
+//   (5) holding the leading section loses no bound: a removal and 301
+//       directories (with a file each) commit, the directories in batches a
+//       transaction takes (they failed E2BIG when the removal flushed them
+//       all at once).
 
 import assert from 'node:assert/strict';
 
@@ -113,6 +117,30 @@ function wave() {
   kernel.writeBatch({ inodes: [dir(`${REPO}/.git/objects`)], chunks: [], deletePaths: [`${REPO}/.git/objects`] });
   assert.equal(kernel.lstat(`${REPO}/.git/objects`).type, 'directory');
   console.log('  ok  (3) a batch is refused alike, and allowed when it removes the link');
+}
+
+// ── (5) a wave of a removal and more directories than a batch takes ────────
+// The leading directories commit in the bounded batches the stream always
+// cut them into, the removals first (a wave of one removal and 300 sibling
+// directories with a file each: ~602 owned paths, under W7's 1024, over a
+// transaction's 256 rows).
+{
+  const { kernel } = setup();
+  const inodes = [];
+  const chunks = [];
+  for (let i = 0; i < 300; i++) {
+    inodes.push(dir(`${REPO}/many/d${i}`));
+    const f = file(`${REPO}/many/d${i}/f`, `file ${i}`);
+    inodes.push(f.inode);
+    chunks.push(f.chunk);
+  }
+  inodes.unshift(dir(`${REPO}/many`));
+  const result = await kernel.writeStream(encodeWriteBatchStream({ deletePaths: [`${REPO}/stale.txt`], inodes, chunks }));
+  assert.equal(result.ok, true, result.error?.message);
+  assert.equal(kernel.readdir(`${REPO}/many`).length, 300);
+  assert.equal(new TextDecoder().decode(kernel.readFile(`${REPO}/many/d299/f`)), 'file 299');
+  assert.throws(() => kernel.lstat(`${REPO}/stale.txt`), /ENOENT/);
+  console.log('  ok  (5) a removal and 301 directories commit, the directories in bounded batches');
 }
 
 // ── (4) the wave writer, as git add used it ────────────────────────────────
