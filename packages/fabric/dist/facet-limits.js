@@ -4,12 +4,12 @@ const FACET_CPU_MS = 300_000;
 const FACET_TASK_TIMEOUT_MS = 300_000;
 export const FACET_LIMITS = Object.freeze({
     // Resident filesystem transport retains its charging scope across HTTP
-    // calls (native10000 failed on the tenth1000-write call). Workers documents
-    // a10M maximum, and Loader custom limits only lower platform limits:
+    // calls (native 10000 failed on the tenth 1000-write call). Workers documents
+    // a 10M maximum, and Loader custom limits only lower platform limits:
     // https://developers.cloudflare.com/workers/platform/limits/#subrequests
     // https://developers.cloudflare.com/dynamic-workers/usage/limits/
     // Acceptance of a larger input is not proof of a larger enforced ceiling.
-    // This finite lifetime bound eventually stops10M transport operations, not
+    // This finite lifetime bound eventually stops 10M transport operations, not
     // necessarily quickly. CPU bounds hot loops per invocation; the separate
     // task wall deadline bounds one-shot I/O. A low-CPU resident loop spanning
     // requests may run until this lifetime ceiling; do not promise fast shutdown.
