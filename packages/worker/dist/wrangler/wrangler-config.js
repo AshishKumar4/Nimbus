@@ -1,7 +1,8 @@
 /**
  * wrangler-config.ts — a project's wrangler.json or wrangler.jsonc, as
- * `nimbus wrangler dev`, its unsupported-binding warning and the repo's
- * deploy-isolation gate read it.
+ * `nimbus wrangler dev`, its unsupported-binding warning, the repo's
+ * deploy-isolation gate and its release uploads (scripts/ci/lib/release.mjs)
+ * read it.
  */
 import { parse, printParseErrorCode } from 'jsonc-parser';
 /**
