@@ -295,12 +295,19 @@ export declare class R2CacheClient {
      * On hit, we read both the packument JSON and the absolute
      * `expiresAt` timestamp from the L2 entry's headers — the absolute
      * timestamp matters because L2 may serve a cached response near
-     * the end of its 5-min TTL, and the caller's `expired` check still
-     * needs to fire correctly. On miss, we fall through to R2 and
-     * write back to L2 with a 5-min `Cache-Control: max-age=300`
-     * (matching the existing R2 customMetadata.expiresAt semantic).
+     * the end of its TTL, and the caller's `expired` check still needs
+     * to fire correctly. On miss, we fall through to R2 and write back
+     * to L2 until the R2 entry's customMetadata.expiresAt
+     * (fillPackumentL2).
      */
     getPackument(name: string, registry?: string): Promise<CachedPackument | null>;
+    /**
+     * The colo copy of a packument, kept until `expiresAt`: the cache layer
+     * drops it at its max-age, and the absolute time rides in a header so a
+     * read can re-check the boundary even if the cache layer extends the
+     * entry. Best-effort: a failed put is silent.
+     */
+    private fillPackumentL2;
     /**
      * Resolve a packument through the whole stack: cache read, and on a
      * miss (or an expired entry) the registry fetch plus the cache fill.
@@ -333,8 +340,9 @@ export declare class R2CacheClient {
      */
     network?: WorkspaceNetwork): Promise<PackumentReadThrough>;
     /**
-     * Write a packument JSON to R2 with a TTL stamp in customMetadata.
-     * No-op if the bucket binding is missing.
+     * Write a packument JSON to R2 with a TTL stamp (`expiresAt`, by default
+     * the packument TTL from now) in customMetadata. No-op if the bucket
+     * binding is missing.
      *
      * Only `readThroughPackument` (and the debug bench seeder) call this:
      * it is a storage primitive, never an RPC. See readThroughPackument
@@ -343,7 +351,7 @@ export declare class R2CacheClient {
      * Returns true on success, false on failure (same best-effort posture
      * as putTarball).
      */
-    putPackument(name: string, json: string, registry?: string): Promise<boolean>;
+    putPackument(name: string, json: string, registry?: string, expiresAt?: number): Promise<boolean>;
     /** Lightweight feature-detection for callers that want to log path. */
     hasTarballBucket(): boolean;
     /** Lightweight feature-detection for callers that want to log path. */
