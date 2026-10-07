@@ -111,6 +111,8 @@ export interface GitNetworkOpts {
     relative?: boolean;
     /** `git clone --filter=<spec>`, normalized: a partial clone of a promisor remote. */
     filter?: string;
+    /** `git clone --sparse`: a cone-mode sparse checkout of the top's files only. */
+    sparse?: boolean;
     /** Fast clone, full history: blobs per history request (tuning; history.ts by default). */
     historyBlobsPerBatch?: number;
     /** Fast clone, full history: root trees per history request (tuning; history.ts by default). */

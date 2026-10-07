@@ -2121,6 +2121,7 @@ export default {
             step = await __nimbusGitPack.clonePlanFromStore(context, {
               commit: requireOid(history.commit, 'streamed commit'),
               blobsPerBatch: opts.blobsPerBatch,
+              sparse: opts.sparse === true,
             });
           } else if (history.step === 'plan') {
             step = await __nimbusGitPack.historyPlan(context, {
@@ -2280,6 +2281,7 @@ export default {
           filter: opts.filter,
           blobsPerBatch: opts.blobsPerBatch,
           budgetUnits: opts.historyBudgetUnits,
+          sparse: opts.sparse === true,
         }, advertisement);
         prepared = started.stream ? { stream: started.stream } : { fast: started };
         return respond(true, { prepared, metadataOverlay: overlayStats() });

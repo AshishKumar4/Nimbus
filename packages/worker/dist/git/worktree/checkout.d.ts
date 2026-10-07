@@ -19,10 +19,24 @@
  * Refusals are reported together, as git reports them, before anything is
  * written. Then files go, directories go (deepest first), directories come,
  * files come, and the index is written once.
+ *
+ * In a sparse checkout (unpack-trees.c with its sparse patterns), a path
+ * outside the cone takes the target's entry in the index with skip-worktree
+ * set and nothing in the worktree: its blob is not read (nor fetched, in a
+ * partial clone), no directory is made for it, and what the worktree holds
+ * there is not looked at (verify_absent passes a new skip-worktree entry). A
+ * skip-worktree entry is up to date whatever the worktree holds
+ * (verify_uptodate skips it); one whose file is there is not skip-worktree
+ * by the time it is read (WorktreeRepo.readIndex). Then the cone is applied
+ * to every entry the trees left as it was (apply_sparse_checkout): one
+ * outside it leaves the worktree, if up to date (else it stays, and is
+ * named), and one inside comes back. A directory outside the cone goes once
+ * a removal empties it.
  */
 import { type DirCache, type IndexEdit } from './dircache.js';
 import type { Excludes } from './excludes.js';
 import { type ObjectStore } from './tree.js';
+import type { SparseMatcher } from '../pack/sparse.js';
 import { type Worktree } from './walk.js';
 /** The worktree writes a checkout makes, at absolute paths (createGitFs's checkout rules). */
 export interface CheckoutWriter {
@@ -64,6 +78,10 @@ export interface SwitchContext {
     root: string;
     writer: CheckoutWriter;
     operation: CheckoutOperation;
+    /** The worktree's sparse checkout (WorktreeRepo.sparseMatcher), or null. */
+    sparse?: SparseMatcher | null;
+    /** Where git's warnings go (display_warning_msgs): a checkout's, not a reset's. */
+    warn?: (text: string) => Promise<void>;
 }
 /**
  * Move the worktree from `head` (a tree; null when forced or unborn) to

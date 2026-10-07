@@ -16,6 +16,7 @@
  * nothing reads it back but a delta whose base has left the cache.
  */
 import { decodeBatch, encodeBatch, parseTree, CheckoutPlan, MODE_GITLINK, MODE_SYMLINK, MODE_TREE } from './plan.js';
+import { coneMatcher, coneOf, coneSparseCheckout } from './sparse.js';
 import { ENTRY_BYTES, entryOffset } from './idx.js';
 import { installPack, RangedPackFile, readRange, resumeInstall } from './install.js';
 import { ByteLru } from './byte-lru.js';
@@ -145,10 +146,12 @@ function shortName(fullRef) {
     return fullRef.replace(/^refs\/(heads|tags)\//, '');
 }
 /**
- * The config `git clone --depth N [--filter=<spec>]` writes. Of an empty
- * remote git's single-branch clone writes no fetch refspec (`empty`).
+ * The config `git clone --depth N [--filter=<spec>] [--sparse]` writes. Of
+ * an empty remote git's single-branch clone writes no fetch refspec
+ * (`empty`). A sparse clone's settings are the worktree's
+ * (config.worktree, SPARSE_WORKTREE_CONFIG), which the extension enables.
  */
-function cloneConfig(url, fullRef, filter, empty = false) {
+function cloneConfig(url, fullRef, filter, empty = false, sparse = false) {
     const branch = fullRef.startsWith('refs/heads/') ? shortName(fullRef) : null;
     // A partial clone's repository is format 1 (extensions); git sets it so.
     let config = '[core]\n\trepositoryformatversion = ' + (filter === undefined ? 0 : 1) +
@@ -163,7 +166,16 @@ function cloneConfig(url, fullRef, filter, empty = false) {
         config += '\tpromisor = true\n\tpartialclonefilter = ' + filter + '\n';
     if (branch !== null)
         config += '[branch "' + branch + '"]\n\tremote = origin\n\tmerge = refs/heads/' + branch + '\n';
+    if (sparse)
+        config += '[extensions]\n\tworktreeConfig = true\n';
     return config;
+}
+/** What `git clone --sparse` (sparse-checkout init --cone) sets for the worktree. */
+const SPARSE_WORKTREE_CONFIG = '[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = true\n';
+/** A sparse clone's worktree config and its cone: the top's files only. */
+async function writeSparseCheckout(writer) {
+    await writer.file('.git/config.worktree', 0o644, encoder.encode(SPARSE_WORKTREE_CONFIG));
+    await writer.file('.git/info/sparse-checkout', 0o644, encoder.encode(coneSparseCheckout([])));
 }
 /**
  * Store a pack stream: process it, name the pack by its id, write its idx
@@ -315,7 +327,7 @@ export async function cloneFast(context, request, advertisement) {
     const capabilities = advertisement.capabilities;
     // An empty remote's clone is partial as git's is: its config names the promisor.
     if (advertisement.refs.size === 0)
-        return await cloneEmpty(context, advertisement, request.filter);
+        return await cloneEmpty(context, advertisement, request.filter, request.sparse === true);
     if (!capabilities.has('filter') || !takesWantsById(advertisement))
         return await cloneStream(context, request, advertisement, transport);
     const { fullRef, commit, tagObject } = resolveRef(advertisement, request.ref);
@@ -339,6 +351,8 @@ export async function cloneFast(context, request, advertisement) {
     let planBlobs = null;
     // Blobs a blob:limit pack carries, written as they arrive with their index entries.
     const arrived = new Set();
+    // Every blob the pack carries: none is fetched again (a sparse clone's skip-worktree blobs among them).
+    const stored = new Set();
     const inline = [];
     const receipts = new Map();
     let blobWriter = null;
@@ -359,7 +373,7 @@ export async function cloneFast(context, request, advertisement) {
             if (found === undefined)
                 throw new PackFormatError('the pack lacks tree ' + oidToHex(data, at));
             return found;
-        });
+        }, request.sparse === true ? coneMatcher(coneOf([])) : undefined);
     };
     const head = tagObject ?? commit;
     const promisorRefs = head + ' HEAD\n' + head + ' ' + fullRef + '\n';
@@ -405,6 +419,7 @@ export async function cloneFast(context, request, advertisement) {
             else if (object.type === 'commit' && hex === commit)
                 commitObject = object.data;
             else if (object.type === 'blob') {
+                stored.add(hex);
                 plannable ??= commitObject !== null && treesComplete(trees, commitTree(commitObject, commit));
                 if (plannable && plan === null) {
                     plan = planFrom();
@@ -479,9 +494,10 @@ export async function cloneFast(context, request, advertisement) {
         shares.push({ name: 'index-prepare', bytes: share.byteLength });
         await writer.file(STAGE_DIR + '/index-prepare', 0o644, share);
     }
-    const staged = await stagePlan(writer, plan, cacheTree, arrived, request.blobsPerBatch);
+    // A clone that is not partial holds every blob, a sparse one's skip-worktree blobs too.
+    const staged = await stagePlan(writer, plan, cacheTree, stored, request.blobsPerBatch, { storeSkipped: !partial });
     shares.push(...staged.shares);
-    await writeCloneMetadata(writer, context.url, { fullRef, commit, tagObject, shallows: response.shallows, filter: request.filter });
+    await writeCloneMetadata(writer, context.url, { fullRef, commit, tagObject, shallows: response.shallows, filter: request.filter, sparse: request.sparse });
     await writer.flush();
     return {
         commit,
@@ -501,11 +517,14 @@ export async function cloneFast(context, request, advertisement) {
 }
 /**
  * The checkout's staged files: a batch file per run of blobs not in
- * `present` (plan.ts encodeBatch), the gitlinks' index entries (each also an
- * empty directory), and the TREE extension's bytes.
+ * `present` (plan.ts encodeBatch), the index entries no batch writes (a
+ * gitlink's, its directory made; a skip-worktree entry's, with no stat, as
+ * git writes one), and the TREE extension's bytes. `storeSkipped`: the
+ * blobs only skip-worktree entries name are fetched too (a clone that is
+ * not partial).
  */
-async function stagePlan(writer, plan, cacheTree, present, blobsPerBatch) {
-    const batches = plan.batches(Math.min(MAX_BATCHES, Math.ceil(plan.count / (blobsPerBatch ?? BLOBS_PER_BATCH))), present);
+async function stagePlan(writer, plan, cacheTree, present, blobsPerBatch, options) {
+    const batches = plan.batches(Math.min(MAX_BATCHES, Math.ceil(plan.count / (blobsPerBatch ?? BLOBS_PER_BATCH))), present, options);
     const batchPlans = [];
     for (const batch of batches) {
         // The writer takes the bytes (W7 may detach them): measure first.
@@ -518,17 +537,21 @@ async function stagePlan(writer, plan, cacheTree, present, blobsPerBatch) {
         });
         await writer.file(STAGE_DIR + '/batch-' + batch.index, 0o644, encoded);
     }
-    // Gitlinks are checked out as empty directories and indexed with no stat.
-    const gitlinks = [];
+    // Gitlinks are checked out as empty directories and indexed with no stat;
+    // a skip-worktree entry is indexed with none, and nothing is written for it.
+    const unwritten = [];
     for (let i = 0; i < plan.count; i++) {
-        if (plan.mode(i) !== MODE_GITLINK)
-            continue;
-        await writer.directory(plan.path(i));
-        gitlinks.push(encodeIndexEntry(plan.path(i), MODE_GITLINK, plan.oid(i), null));
+        if (plan.skipWorktree(i)) {
+            unwritten.push(encodeIndexEntry(plan.pathBytesOf(i), plan.mode(i), plan.oid(i), null, { skipWorktree: true }));
+        }
+        else if (plan.mode(i) === MODE_GITLINK) {
+            await writer.directory(plan.path(i));
+            unwritten.push(encodeIndexEntry(plan.path(i), MODE_GITLINK, plan.oid(i), null));
+        }
     }
-    const gitlinkShare = concat(gitlinks);
-    const shares = [{ name: 'index-gitlinks', bytes: gitlinkShare.byteLength }];
-    await writer.file(STAGE_DIR + '/index-gitlinks', 0o644, gitlinkShare);
+    const unwrittenShare = concat(unwritten);
+    const shares = [{ name: 'index-unwritten', bytes: unwrittenShare.byteLength }];
+    await writer.file(STAGE_DIR + '/index-unwritten', 0o644, unwrittenShare);
     const cacheTreeBytes = cacheTree.byteLength;
     await writer.file(STAGE_DIR + '/cache-tree', 0o644, cacheTree);
     return { batches: batchPlans, shares, cacheTreeBytes };
@@ -542,7 +565,9 @@ async function stagePlan(writer, plan, cacheTree, present, blobsPerBatch) {
 async function writeCloneMetadata(writer, url, clone) {
     const { fullRef, commit } = clone;
     const branch = fullRef.startsWith('refs/heads/') ? shortName(fullRef) : null;
-    await writer.file('.git/config', 0o644, encoder.encode(cloneConfig(url, fullRef, clone.filter)));
+    await writer.file('.git/config', 0o644, encoder.encode(cloneConfig(url, fullRef, clone.filter, false, clone.sparse === true)));
+    if (clone.sparse === true)
+        await writeSparseCheckout(writer);
     await writer.file('.git/HEAD', 0o644, encoder.encode(branch === null ? commit + '\n' : 'ref: ' + fullRef + '\n'));
     const packed = '# pack-refs with: peeled fully-peeled sorted \n';
     if (branch !== null) {
@@ -589,7 +614,7 @@ async function cloneStream(context, request, advertisement, transport) {
         budgetUnits: request.budgetUnits,
         onObject: (object) => watch.see(object.type, object.oid),
     });
-    await writeCloneMetadata(writer, context.url, { fullRef, commit, tagObject, shallows: response.shallows });
+    await writeCloneMetadata(writer, context.url, { fullRef, commit, tagObject, shallows: response.shallows, sparse: request.sparse });
     await writer.flush();
     return {
         stream: {
@@ -603,7 +628,7 @@ async function cloneStream(context, request, advertisement, transport) {
     };
 }
 /** The empty repository git clone makes of an empty remote. */
-async function cloneEmpty(context, advertisement, filter) {
+async function cloneEmpty(context, advertisement, filter, sparse) {
     const writer = context.writer();
     writer.setPin(context.marker.path, context.marker.text, true);
     for (const dir of CLONE_DIRECTORIES)
@@ -611,7 +636,9 @@ async function cloneEmpty(context, advertisement, filter) {
     // Without the remote's HEAD (protocol v0 names no unborn branch) git takes
     // its init default, as Nimbus's git init does.
     const fullRef = advertisement.symrefs.get('HEAD') ?? 'refs/heads/master';
-    await writer.file('.git/config', 0o644, encoder.encode(cloneConfig(context.url, fullRef, filter, true)));
+    await writer.file('.git/config', 0o644, encoder.encode(cloneConfig(context.url, fullRef, filter, true, sparse)));
+    if (sparse)
+        await writeSparseCheckout(writer);
     await writer.file('.git/HEAD', 0o644, encoder.encode('ref: ' + fullRef + '\n'));
     await writer.flush();
     return {
@@ -666,12 +693,13 @@ export async function clonePlanFromStore(context, request) {
         throw new PackFormatError('the clone lacks commit ' + request.commit);
     const tree = commitTree(commitObject.data, request.commit);
     const trees = await readTrees(store, tree);
-    const plan = CheckoutPlan.fromTrees(trees.get(tree), (data, at) => trees.get(oidToHex(data, at)));
+    const plan = CheckoutPlan.fromTrees(trees.get(tree), (data, at) => trees.get(oidToHex(data, at)), request.sparse === true ? coneMatcher(coneOf([])) : undefined);
     const cacheTree = cacheTreeOf('', tree, trees).built.bytes;
     trees.clear();
     const writer = context.writer();
     writer.setPin(context.marker.path, context.marker.text, true);
-    const staged = await stagePlan(writer, plan, cacheTree, new Set(), request.blobsPerBatch);
+    // The pack holds every blob: a batch reads only what it writes.
+    const staged = await stagePlan(writer, plan, cacheTree, new Set(), request.blobsPerBatch, { storeSkipped: false });
     await writer.flush();
     return {
         commit: request.commit,
