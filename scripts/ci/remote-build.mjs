@@ -31,8 +31,11 @@ import { fileURLToPath } from 'node:url';
 const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 // PreparedSkunk's armada clone: upstream (/mnt/local/armada) packs a commit
 // without the trees the environment's ancestors share with it, which no
-// environment holds ("fatal: unable to read tree"); 17db0d5 there fixes it.
+// environment holds ("fatal: unable to read tree"); ARMADA_PACK_FIX fixes
+// it, and an ARMADA_DIR without it is refused. Only the client differs: it
+// talks to the same deployed armada.
 const ARMADA_DIR = '/mnt/local/nimbus/wt/armada-contrib';
+const ARMADA_PACK_FIX = '17db0d5';
 
 /** What the container needs that the commit may lack, from this checkout. */
 export const OVERLAY = ['.armada.json', 'scripts/armada/setup.sh', 'scripts/armada/install.sh', 'scripts/ci/build.mjs'];
@@ -77,6 +80,8 @@ export function overlayCommit(repo, sha, files = OVERLAY, from = SELF_ROOT) {
 /** Run build.mjs on armada for `commit`; resolves to its verdict, or throws saying why it was not graded. */
 async function buildOnArmada(repo, commit, args) {
   const armadaDir = process.env.ARMADA_DIR || ARMADA_DIR;
+  const fixed = spawnSync('git', ['merge-base', '--is-ancestor', ARMADA_PACK_FIX, 'HEAD'], { cwd: armadaDir, encoding: 'utf8' });
+  if (fixed.status !== 0) throw new Error(`the armada in ${armadaDir} lacks its packing fix ${ARMADA_PACK_FIX}${fixed.stderr ? `: ${fixed.stderr.trim()}` : ''}`);
   const { connect } = await import(join(armadaDir, 'src', 'sdk.ts'));
   const armada = connect();
   const cli = spawn('bun', [join(armadaDir, 'src', 'cli.ts'), 'map', `--commit=${commit}`, '--times=1', '--output', '--json',
