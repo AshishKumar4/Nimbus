@@ -115,7 +115,7 @@ const INPUTS = {
   fsRevision: [path],
   fsList: [after, limit],
   fsStorageGrant: ['proc-slot-0', 4096, 8192],
-  wsOpen: [url, protocols, wsHeaders],
+  wsOpen: [url, protocols, wsHeaders, true],
   wsPoll: [id, waitMs],
   wsSend: [id, text, bytes],
   wsClose: [id, code, reason],

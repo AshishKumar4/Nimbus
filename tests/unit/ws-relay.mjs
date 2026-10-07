@@ -9,12 +9,13 @@
 // only by an integer id would let a facet read another process's socket.
 // The upgrade carries the program's own headers but the handshake's and the
 // hop-by-hop ones, and a refused upgrade is answered as the destination
-// answered it (status, headers, a bounded head of its body), so a client
-// built on http.request (the ws package) sees what it would see in Node.
+// answered it, at once (status, headers), its body (when asked for) read as
+// it comes, bounded by bytes and by time, so a client built on http.request
+// (the ws package) sees what it would see in Node.
 
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
-import { WebSocketRelay, WS_RELAY_MAX_BACKLOG_BYTES, WS_RELAY_REFUSAL_BODY_MAX_BYTES } from '../../packages/worker/src/session/ws-relay.ts';
+import { WebSocketRelay, WS_RELAY_MAX_BACKLOG_BYTES, WS_RELAY_REFUSAL_BODY_MAX_BYTES, WS_RELAY_REFUSAL_BODY_MAX_MS } from '../../packages/worker/src/session/ws-relay.ts';
 
 function fakeSocket() {
   const listeners = new Map();
@@ -70,24 +71,60 @@ const OTHER_PID = 1000003;
 // ── the upgrade, and what the facet is told when it does not happen ──
 {
   const relay = new WebSocketRelay(() => ISOLATE_NETWORK);
+  /** Everything a poll of `id` answers until its close. */
+  const drain = async (id) => {
+    const events = [];
+    while (events.at(-1)?.kind !== 'close') events.push(...await relay.poll(PID, id, 1000));
+    return events;
+  };
+  const heldOpen = (bytes, cancelled) => new ReadableStream({
+    start(controller) { controller.enqueue(bytes); },
+    cancel() { cancelled.push('cancelled'); },
+  });
   globalThis.fetch = workerdFetch(() => new Response('{"error":"unauthorized"}', {
     status: 401, statusText: 'Unauthorized', headers: { 'content-type': 'application/json', 'www-authenticate': 'Bearer' },
   }));
-  const refused = await relay.open(PID, 'wss://example.invalid/s', []);
-  assert.deepEqual(refused, {
-    refused: {
-      status: 401,
-      statusText: 'Unauthorized',
-      headers: [['content-type', 'application/json'], ['www-authenticate', 'Bearer']],
-      body: new TextEncoder().encode('{"error":"unauthorized"}'),
-      truncated: false,
-    },
-  }, 'a destination that refuses the upgrade is answered as it answered: status, headers, body');
+  const head = { status: 401, statusText: 'Unauthorized', headers: [['content-type', 'application/json'], ['www-authenticate', 'Bearer']] };
+  assert.deepEqual(await relay.open(PID, 'wss://example.invalid/s', []), { refused: { ...head, body: null } },
+    'a destination that refuses the upgrade is answered as it answered: its status and headers, no body when none was asked for');
+  const refused = await relay.open(PID, 'wss://example.invalid/s', [], [], true);
+  assert.deepEqual({ ...refused.refused, body: typeof refused.refused.body }, { ...head, body: 'number' }, 'asked for, its body is read from an id');
+  const read = await drain(refused.refused.body);
+  assert.deepEqual(read.map((e) => e.kind), ['message', 'close']);
+  assert.equal(new TextDecoder().decode(read[0].bytes), '{"error":"unauthorized"}');
+  assert.equal(read[1].code, 1000, 'the body ended as the destination ended it');
+
+  // Held open after a short body: the head is answered at once, the body as it comes, and the close cancels the rest.
+  const cancelled = [];
+  globalThis.fetch = workerdFetch(() => new Response(heldOpen(new TextEncoder().encode('partial'), cancelled), { status: 401 }));
+  const open = await relay.open(PID, 'wss://example.invalid/s', [], [], true);
+  assert.equal(open.refused.status, 401, 'a refusal whose body stays open is answered at once');
+  const first = await relay.poll(PID, open.refused.body, 1000);
+  assert.equal(new TextDecoder().decode(first[0].bytes), 'partial', 'its body as it comes');
+  relay.close(PID, open.refused.body);
+  await Promise.resolve();
+  assert.deepEqual(cancelled, ['cancelled'], "closing it cancels the destination's body");
+
+  // Exactly the byte bound, then held open: all of it at once; the time bound ends it (the timer shortened here).
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...args) => realSetTimeout(fn, ms === WS_RELAY_REFUSAL_BODY_MAX_MS ? 20 : ms, ...args);
+  try {
+    const cut = [];
+    globalThis.fetch = workerdFetch(() => new Response(heldOpen(new Uint8Array(WS_RELAY_REFUSAL_BODY_MAX_BYTES), cut), { status: 401 }));
+    const exact = await relay.open(PID, 'wss://example.invalid/s', [], [], true);
+    const events = await drain(exact.refused.body);
+    assert.equal(events.filter((e) => e.kind === 'message').reduce((n, e) => n + e.bytes.byteLength, 0), WS_RELAY_REFUSAL_BODY_MAX_BYTES);
+    assert.equal(events.at(-1).code, 1001, 'a body still open at the time bound is cut there');
+    assert.deepEqual(cut, ['cancelled'], 'and the rest cancelled');
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
 
   globalThis.fetch = workerdFetch(() => new Response(new Uint8Array(WS_RELAY_REFUSAL_BODY_MAX_BYTES + 10), { status: 500 }));
-  const long = await relay.open(PID, 'wss://example.invalid/s', []);
-  assert.equal(long.refused.body.byteLength, WS_RELAY_REFUSAL_BODY_MAX_BYTES, 'a long refusal body is cut at the bound');
-  assert.equal(long.refused.truncated, true, 'and says it was');
+  const long = await relay.open(PID, 'wss://example.invalid/s', [], [], true);
+  const longEvents = await drain(long.refused.body);
+  assert.equal(longEvents.filter((e) => e.kind === 'message').reduce((n, e) => n + e.bytes.byteLength, 0), WS_RELAY_REFUSAL_BODY_MAX_BYTES, 'a long refusal body is cut at the byte bound');
+  assert.equal(longEvents.at(-1).code, 1009, 'and says it was');
 }
 
 // ── the program's headers go with the upgrade, but the relay's own ──

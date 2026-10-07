@@ -24,7 +24,12 @@
 //     /ws-echo; on the host its twin, a ws server answering alike): the
 //     subprotocol, text, binary and a 70000-byte message echoed, the
 //     upgrade's own headers, a ping's pong, a server close and a client
-//     close, and a refused upgrade, give the same transcript.
+//     close, and a refused upgrade, give the same transcript;
+//   - and at its edges: a refusal whose body is held open (short, or exactly
+//     64 KiB) is reported at once, its body read as it comes; a text frame
+//     or a close reason that is not UTF-8 closes the socket with 1007; an
+//     upgrade request aborted before or while it handshakes (its signal, as
+//     ws's own option too) fails with Node's AbortError.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change. Needs the npm registry
@@ -34,7 +39,6 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
@@ -91,6 +95,82 @@ const encodedBase = process.argv[3];
     out.failed = String(error && error.message);
   }
   console.log('AXIOS ' + JSON.stringify(out));
+})();
+`;
+
+/** The upgrade's edges against the server at `base`, as a transcript; each case is bounded, a hang recorded. */
+const WS_EDGES = String.raw`
+const http = require('http');
+const https = require('https');
+const WebSocket = require('ws');
+const base = process.argv[2];
+const transcript = [];
+const say = (line) => transcript.push(line);
+/** A case: it calls done(), or 'timeout' is recorded after 6 s. */
+const step = (name, run) => new Promise((resolve) => {
+  const timer = setTimeout(() => { say(name + ' timeout'); resolve(); }, 6000);
+  run(() => { clearTimeout(timer); resolve(); });
+});
+const UPGRADE = { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version': '13' };
+(async () => {
+  await step('refused-open', (done) => {
+    const ws = new WebSocket(base + '/ws-refused-open');
+    ws.on('error', (e) => say('refused-open error ' + e.message));
+    ws.on('close', (code) => { say('refused-open close ' + code); done(); });
+  });
+  await step('global-refused', (done) => {
+    const ws = new globalThis.WebSocket(base + '/ws-refused-open');
+    ws.onerror = () => { say('global-refused error'); done(); };
+  });
+  for (const path of ['/ws-refused-open', '/ws-refused-64k']) {
+    await step('body ' + path, (done) => {
+      const ws = new WebSocket(base + path);
+      ws.on('unexpected-response', (req, res) => {
+        let bytes = 0;
+        say('body ' + path + ' status ' + res.statusCode);
+        res.on('data', (d) => { bytes += d.length; });
+        setTimeout(() => { say('body ' + path + ' read ' + bytes); req.destroy(); done(); }, 3000);
+      });
+      ws.on('error', () => {});
+    });
+  }
+  await step('invalid-text', (done) => {
+    const ws = new WebSocket(base + '/ws-echo');
+    ws.on('open', () => ws.send(Buffer.from([0xff]), { binary: false }));
+    ws.on('message', (data) => say('invalid-text echoed ' + JSON.stringify(String(data))));
+    ws.on('close', (code, reason) => { say('invalid-text close ' + code + ' ' + JSON.stringify(String(reason))); done(); });
+    ws.on('error', (e) => say('invalid-text error ' + e.message));
+  });
+  await step('invalid-reason', (done) => {
+    const ws = new WebSocket(base + '/ws-echo');
+    ws.on('open', () => ws.close(4000, Buffer.from([0xff])));
+    ws.on('close', (code, reason) => { say('invalid-reason close ' + code + ' ' + JSON.stringify([...reason])); done(); });
+    ws.on('error', (e) => say('invalid-reason error ' + e.message));
+  });
+  for (const when of ['before', 'during']) {
+    await step('request ' + when, (done) => {
+      const controller = new AbortController();
+      if (when === 'before') controller.abort();
+      const secure = base.startsWith('wss:');
+      const req = (secure ? https : http).request(base.replace(/^ws/, 'http') + '/ws-slow', { headers: UPGRADE, signal: controller.signal });
+      req.on('error', (e) => say('request ' + when + ' error ' + e.name + ' ' + e.code + ' ' + e.message));
+      req.on('upgrade', () => say('request ' + when + ' upgrade'));
+      req.on('close', () => { say('request ' + when + ' close'); done(); });
+      req.end();
+      if (when === 'during') setTimeout(() => controller.abort(), 200);
+    });
+    await step('ws ' + when, (done) => {
+      const controller = new AbortController();
+      if (when === 'before') controller.abort();
+      const ws = new WebSocket(base + '/ws-slow', { signal: controller.signal });
+      ws.on('open', () => say('ws ' + when + ' open'));
+      ws.on('error', (e) => say('ws ' + when + ' error ' + e.name + ' ' + e.code + ' ' + e.message));
+      ws.on('close', (code) => { say('ws ' + when + ' close ' + code); done(); });
+      if (when === 'during') setTimeout(() => controller.abort(), 200);
+    });
+  }
+  console.log('EDGES ' + JSON.stringify(transcript));
+  process.exit(0);
 })();
 `;
 
@@ -181,28 +261,48 @@ const get = (mod, url) => new Promise((resolve, reject) => {
 `;
 
 /** Host Node's side: the clients installed at PACKAGES, and an echo server answering as the egress's /ws-echo does. */
+/** The echo server the egress's /ws-* routes answer as, for host Node: a ws server in a Node process of its own, on `port`. */
+const WS_TWIN = (port) => String.raw`
+const http = require('http');
+const { WebSocketServer } = require('ws');
+const CRLF = '\r\n';
+const server = http.createServer();
+const wss = new WebSocketServer({ noServer: true, handleProtocols: (protocols) => [...protocols][0] ?? false });
+const echo = (req) => (ws) => {
+  // A frame that is not UTF-8 fails the connection (1007); ws reports it here too.
+  ws.on('error', () => {});
+  ws.on('message', (data, isBinary) => {
+    if (!isBinary && String(data) === 'headers') ws.send(JSON.stringify({ authorization: req.headers.authorization ?? null, origin: req.headers.origin ?? null }));
+    else if (!isBinary && String(data) === 'close') ws.close(4001, 'bye');
+    else ws.send(data, { binary: isBinary });
+  });
+};
+server.on('upgrade', (req, socket, head) => {
+  // A client that gives up on a refusal resets its connection.
+  socket.on('error', () => {});
+  // A refusal whose body is sent and then held open, as the egress's.
+  if (req.url === '/ws-refused-open' || req.url === '/ws-refused-64k') {
+    socket.write(['HTTP/1.1 401 Unauthorized', 'content-type: text/plain', '', ''].join(CRLF));
+    socket.write(req.url === '/ws-refused-open' ? 'partial' : Buffer.alloc(65536, 97));
+    return;
+  }
+  if (req.url === '/ws-refused') {
+    const body = JSON.stringify({ error: 'unauthorized' });
+    socket.end(['HTTP/1.1 401 Unauthorized', 'content-type: application/json', 'www-authenticate: Bearer',
+      'content-length: ' + body.length, 'connection: close', '', body].join(CRLF));
+    return;
+  }
+  const delay = req.url === '/ws-slow' ? 2000 : 0;
+  setTimeout(() => wss.handleUpgrade(req, socket, head, echo(req)), delay);
+});
+server.listen(${port}, '127.0.0.1', () => console.log('LISTENING'));
+`;
+
+/** Host Node's side: the clients installed at PACKAGES, and an echo server answering as the egress's /ws-* routes do. */
 async function hostSide() {
   const dir = mkdtempSync(join(tmpdir(), 'node-clients-'));
   const installed = spawnSync('npm', ['install', '--no-audit', '--no-fund', '--prefix', dir, ...PACKAGES], { encoding: 'utf8', timeout: 300_000 });
   assert.equal(installed.status, 0, 'host npm install:\n' + installed.stderr.slice(-1200));
-  const { WebSocketServer } = createRequire(join(dir, 'package.json'))('ws');
-  const server = createServer();
-  const wss = new WebSocketServer({ noServer: true, handleProtocols: (protocols) => [...protocols][0] ?? false });
-  server.on('upgrade', (req, socket, head) => {
-    if (req.url === '/ws-refused') {
-      const body = JSON.stringify({ error: 'unauthorized' });
-      socket.end(`HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nwww-authenticate: Bearer\r\ncontent-length: ${body.length}\r\nconnection: close\r\n\r\n${body}`);
-      return;
-    }
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      ws.on('message', (data, isBinary) => {
-        if (!isBinary && String(data) === 'headers') ws.send(JSON.stringify({ authorization: req.headers.authorization ?? null, origin: req.headers.origin ?? null }));
-        else if (!isBinary && String(data) === 'close') ws.close(4001, 'bye');
-        else ws.send(data, { binary: isBinary });
-      });
-    });
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   /** `source` under host Node, from the clients' directory, with `args`. */
   const children = [];
   const run = (name, source, args = []) => {
@@ -222,16 +322,19 @@ async function hostSide() {
     writeFileSync(join(dir, name), source);
     const child = spawn('node', [join(dir, name)], { cwd: dir, stdio: ['ignore', 'pipe', 'inherit'] });
     children.push(child);
-    return new Promise((resolve) => child.stdout.on('data', (d) => { if (String(d).includes('LISTENING')) resolve(); }));
+    return new Promise((resolve, reject) => {
+      child.stdout.on('data', (d) => { if (String(d).includes('LISTENING')) resolve(); });
+      child.on('exit', (code) => reject(new Error(`${name} exited ${code} before it listened`)));
+    });
   };
+  const wsPort = await freePort();
+  await serve('ws-twin.js', WS_TWIN(wsPort));
   return {
     run,
     serve,
-    echoBase: `ws://127.0.0.1:${server.address().port}`,
+    echoBase: `ws://127.0.0.1:${wsPort}`,
     close: () => {
       for (const child of children) child.kill();
-      wss.close();
-      server.close();
       rmSync(dir, { recursive: true, force: true });
     },
   };
@@ -324,6 +427,14 @@ try {
           labelled((await host.run('ws-echo.js', WS, [host.echoBase])).stdout, 'WS')];
         console.log('  ws: ' + JSON.stringify(ws[0]));
         assert.deepEqual(ws[0], ws[1], 'the ws package against an echo server gives the transcript host Node gives');
+
+        const edgesSource = Buffer.from(WS_EDGES).toString('base64');
+        const wroteEdges = await terminal.run(`node -e "require('fs').writeFileSync('/home/user/clients/ws-edges.js', Buffer.from('${edgesSource}', 'base64'))"`);
+        assert.equal(wroteEdges.status, 0, wroteEdges.stdout);
+        const edges = [labelled((await terminal.run('cd /home/user/clients && node ws-edges.js wss://egress-test.invalid', 180_000)).stdout, 'EDGES'),
+          labelled((await host.run('ws-edges.js', WS_EDGES, [host.echoBase])).stdout, 'EDGES')];
+        console.log('  ws edges: ' + JSON.stringify(edges[0]));
+        assert.deepEqual(edges[0], edges[1], "the upgrade's edges give the transcript host Node gives");
       } finally {
         host.close();
       }

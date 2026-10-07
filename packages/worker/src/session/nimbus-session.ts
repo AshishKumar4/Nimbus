@@ -860,8 +860,8 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcFsList(after: string | null, limit: number | null, pid?: number): Promise<VfsListPage> {
     return _rpc._rpcFsList(this as any, after, limit, pid);
   }
-  async _rpcWsOpen(url: string, protocols: string[], headers?: [string, string][] | null, pid?: number): Promise<any> {
-    return _rpc._rpcWsOpen(this as any, url, protocols, headers, pid);
+  async _rpcWsOpen(url: string, protocols: string[], headers?: [string, string][] | null, refusalBody?: boolean | null, pid?: number): Promise<any> {
+    return _rpc._rpcWsOpen(this as any, url, protocols, headers, refusalBody, pid);
   }
   async _rpcWsPoll(id: number, waitMs: number, pid?: number): Promise<any> {
     return _rpc._rpcWsPoll(this as any, id, waitMs, pid);

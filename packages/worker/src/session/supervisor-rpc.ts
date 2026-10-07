@@ -545,8 +545,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * it a third party wakes the facet at a time of its own choosing and the
    * facet's next synchronous read serves bytes the authority has replaced.
    */
-  async wsOpen(url: string, protocols: string[], headers?: WsRelayHeaders): Promise<WsRelayOpened> {
-    return this._call(this._fsOp('wsOpen', [url, protocols, headers ?? []]));
+  async wsOpen(url: string, protocols: string[], headers?: WsRelayHeaders, refusalBody?: boolean): Promise<WsRelayOpened> {
+    return this._call(this._fsOp('wsOpen', [url, protocols, headers ?? [], refusalBody === true]));
   }
 
   async wsPoll(id: number, waitMs: number): Promise<unknown[]> {
