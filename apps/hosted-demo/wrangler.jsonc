@@ -159,7 +159,7 @@
     // (packages/worker/src/runtime/runtime-catalog.ts). Written by
     // packages/worker/scripts/bundle-runtime.mjs into every vars block here;
     // vars do not inherit, so each environment states its own.
-    "NIMBUS_RUNTIME_CATALOG_SHA256": "2827a7f7245403cb7644c27f0075423dd1ba00313b8c40f70f4dfa5bcd097ed0",
+    "NIMBUS_RUNTIME_CATALOG_SHA256": "872af3d728e0d2c1509898c1716437d2e2739a55cc20a3f56febddf1a6bfb015",
     // Diagnostic gate for [sqlite-vfs/W2.5b] logs. Set to "1" to enable;
     // empty/absent disables. The diag code remains in
     // packages/worker/src/vfs/sqlite-vfs.ts
@@ -372,7 +372,7 @@
       "preview_urls": true,
       "workers_dev": true,
       "vars": {
-        "NIMBUS_RUNTIME_CATALOG_SHA256": "2827a7f7245403cb7644c27f0075423dd1ba00313b8c40f70f4dfa5bcd097ed0",
+        "NIMBUS_RUNTIME_CATALOG_SHA256": "872af3d728e0d2c1509898c1716437d2e2739a55cc20a3f56febddf1a6bfb015",
         "NIMBUS_DIAG_INSTALL_PIPELINE": "",
         // Staging is the test environment, which is exactly what the debug
         // gate exists to distinguish: diag write surfaces (cache/telemetry
@@ -466,7 +466,7 @@
         { "pattern": "*.nimbus-os.dev/*", "zone_name": "nimbus-os.dev" }
       ],
 	      "vars": {
-	        "NIMBUS_RUNTIME_CATALOG_SHA256": "2827a7f7245403cb7644c27f0075423dd1ba00313b8c40f70f4dfa5bcd097ed0",
+	        "NIMBUS_RUNTIME_CATALOG_SHA256": "872af3d728e0d2c1509898c1716437d2e2739a55cc20a3f56febddf1a6bfb015",
 	        "NIMBUS_DIAG_INSTALL_PIPELINE": "",
 	        "NIMBUS_PROCESS_HOST": "facet",
 	        "NIMBUS_AGENT_MODEL": "@cf/zai-org/glm-5.2",
