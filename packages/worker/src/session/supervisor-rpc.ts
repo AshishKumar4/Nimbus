@@ -78,7 +78,7 @@ import {
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { fsReadBatchRequestBytes, type FsAcquireArgs, type FsAcquiredAnswer, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
-import { LOST_CALL_HEDGE_AFTER_MS } from '@nimbus-sh/platform/lost-call.js';
+import { LOST_CALL_HEDGE_AFTER_MS, WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 // cache metrics support: per-tier hit/miss counters.
 //
@@ -774,8 +774,19 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * sent unfenced. Minting is harmless to repeat, so a lost call is hedged
    * like a read (lost-call.ts).
    */
-  async openWaveWriter(): Promise<string | null> {
+  /**
+   * `first`: the process's first epoch, asked once per run by its writer
+   * (process-fs-client): the one minted with this binding answers it, with
+   * no round trip, while it is young (a quarter of its life). Any later one
+   * is minted anew: a writer that numbers afresh never reuses an epoch.
+   */
+  async openWaveWriter(first = false): Promise<string | null> {
     if (this._hostIncarnation() === undefined) return null;
+    const props = this.ctx.props as { waveWriter?: unknown; waveWriterMintedAt?: unknown } | undefined;
+    if (first && typeof props?.waveWriter === 'string' && typeof props.waveWriterMintedAt === 'number'
+      && Date.now() - props.waveWriterMintedAt < WAVE_EPOCH_TTL_MS / 4) {
+      return props.waveWriter;
+    }
     const answer = await this._call(this._resent<{ writer: string }>(
       { op: 'openWaveWriter', args: [], pid: this._pid() },
       { kind: 'open' },

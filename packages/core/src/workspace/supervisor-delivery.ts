@@ -40,6 +40,7 @@ import {
   type SupervisorJoinedReadOpName,
 } from './supervisor-ops.js';
 import type { WaveMountReach } from '../vfs/sqlite-vfs.js';
+import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 
 export type { SupervisorDeliveredOpName, SupervisorJoinedReadOpName };
 
@@ -609,9 +610,15 @@ export function openSupervisorDeliveries(ctx: object): SupervisorDeliveries {
  * What to spread into the props of a SUPERVISOR binding minted for a process
  * of the instance whose state `ctx` is: its `hostIncarnation`, or nothing
  * when that host applies nothing once — and then the binding sends each
- * mutation once.
+ * mutation once. For process `pid`, a write-wave epoch minted with it
+ * (`waveWriter`, at `waveWriterMintedAt`): the process's first wave needs no
+ * round trip for one (SupervisorRPC.openWaveWriter).
  */
-export function supervisorDeliveryProps(ctx: object): { hostIncarnation?: string } {
+export function supervisorDeliveryProps(ctx: object, pid = 0): { hostIncarnation?: string; waveWriter?: string; waveWriterMintedAt?: number } {
   const deliveries = hosts.get(ctx);
-  return deliveries === undefined ? {} : { hostIncarnation: deliveries.incarnation };
+  if (deliveries === undefined) return {};
+  return {
+    hostIncarnation: deliveries.incarnation,
+    ...(pid > 0 ? { waveWriter: deliveries.openWaveWriter(pid, WAVE_EPOCH_TTL_MS), waveWriterMintedAt: Date.now() } : {}),
+  };
 }

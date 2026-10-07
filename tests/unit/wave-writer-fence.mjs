@@ -193,4 +193,43 @@ const byteStream = (bytes) => new ReadableStream({
   console.log(`  ok  an attempt overtaken while it runs commits nothing more (${written} of ${inodes.length} files)`);
 }
 
+// ── A process's first epoch is the one minted with its binding: no round trip ──
+{
+  const harness = createSqliteVfsTestHarness();
+  const kernel = new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL);
+  kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
+  kernel.chown('home/user', 1000, 1000);
+  const ctx = {};
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const processes = new SessionProcessSupervisor();
+  const host = { sqliteFs: vfs, processes, ensureSqliteFs() {}, supervisorDeliveries: openSupervisorDeliveries(ctx) };
+  attachSupervisorOps(host, buildSessionSupervisorOps(host, createSupervisorBridgeStore({ vfs, processes, filesystem: new ProcessFiles(vfs) })));
+  const ops = [];
+  const env = {
+    NIMBUS_SESSION: {
+      idFromName: (id) => ({ toString: () => id }),
+      idFromString: (id) => ({ toString: () => id }),
+      get: () => ({ supervisorOp: (sent) => { ops.push(sent.op); return host.supervisorOp(sent); } }),
+    },
+  };
+  const pid = processes.spawn('node', ['node'], '/home/user').pid;
+  const props = { doId: 'session', pid, writerId: 'minted-run', ...supervisorDeliveryProps(ctx, pid) };
+  assert.equal(typeof props.waveWriter, 'string', 'no epoch was minted with the binding');
+  const rpc = new SupervisorRPC({ props }, env);
+  assert.equal(await rpc.openWaveWriter(true), props.waveWriter);
+  assert.deepEqual(ops, [], 'the first epoch cost a round trip');
+  // Admitted: a wave fenced with it lands.
+  const fence = { writer: props.waveWriter, wave: 1, attempt: 1 };
+  const landed = await rpc.writeBatchStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops: [{ type: 'call', call: { call: 'writeFile', path: 'home/user/minted', mode: 0o644, data: enc.encode('m') } }] }), fence);
+  assert.equal(landed.ok, true, JSON.stringify(landed.error));
+  // Any later epoch is a new one: a writer that numbers afresh never reuses one.
+  const later = await rpc.openWaveWriter(false);
+  assert.notEqual(later, props.waveWriter);
+  assert.deepEqual(ops, ['writeBatchStream', 'openWaveWriter']);
+  // An old binding's epoch is not handed out.
+  const stale = new SupervisorRPC({ props: { ...props, waveWriterMintedAt: Date.now() - 10 * 60_000 } }, env);
+  assert.notEqual(await stale.openWaveWriter(true), props.waveWriter);
+  console.log('  ok  a process\'s first epoch is its binding\'s, and only the first');
+}
+
 console.log('wave writer fence: ok');

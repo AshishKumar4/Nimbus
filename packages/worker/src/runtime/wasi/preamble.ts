@@ -253,7 +253,7 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): ResidentF
   const waves = sup as unknown as WaveSender;
   const session: ProcessFsSession = {
     // Called as methods of the stub, never through .call/.apply: on an RPC stub those are remote method names too.
-    openWriter: () => waves.openWaveWriter(),
+    openWriter: (first) => waves.openWaveWriter(first),
     writeBatchStream: (stream, fence, owner) => (owner === undefined ? waves.writeBatchStream(stream, fence) : waves.writeBatchStream(stream, fence, owner)),
     grants: {
       acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
@@ -267,7 +267,7 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): ResidentF
 
 /** The stub's wave calls (SupervisorRPC.openWaveWriter, writeBatchStream). */
 interface WaveSender {
-  openWaveWriter(): Promise<string | null>;
+  openWaveWriter(first: boolean): Promise<string | null>;
   writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence, owner?: string): Promise<unknown>;
 }
 

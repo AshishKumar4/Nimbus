@@ -57,8 +57,12 @@ export type ProcessFsOp =
 
 /** What the client asks of the session. */
 export interface ProcessFsSession {
-  /** A writer epoch (openWaveWriter); null when the session fences nothing (nothing between them loses a call). */
-  openWriter(): Promise<string | null>;
+  /**
+   * A writer epoch (openWaveWriter); null when the session fences nothing
+   * (nothing between them loses a call). `first`: the run's first, which the
+   * binding may answer with the epoch minted with it.
+   */
+  openWriter(first: boolean): Promise<string | null>;
   /** One attempt of one wave (SupervisorRPC.writeBatchStream). */
   writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence, owner?: string): Promise<unknown>;
   /** Delegations; absent, the process holds none and the session decides every op. */
@@ -431,7 +435,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     if (epoch !== null && (epoch.writer === null || now() - epoch.openedAt < WAVE_EPOCH_TTL_MS / 2)) return epoch.writer;
     charge('openWaveWriter');
     const openedAt = now();
-    const writer = await session.openWriter();
+    const writer = await session.openWriter(counters.epochs === 0);
     epoch = { writer, openedAt };
     counters.epochs++;
     nextSeq = 1;
