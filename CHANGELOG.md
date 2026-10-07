@@ -6,20 +6,22 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed: a build facet no longer fills with the builds it has run until its
-  isolate is reset. rolldown (1.2.11, native and wasm alike) never frees a
-  build whose plugin has an output hook: the hook's context caches the
-  build's options, whose `invalidateJsSideCache` callback holds that context,
-  a cycle across the binding. Nimbus's build plugin had one
-  (`generateBundle`, for each module's import order), so every pre-bundle's
-  slice and every build's module sources and plugin stayed in the facet's
-  isolate. Measured on Markflow's install: the facet's V8 heap and external
-  memory grew from 18 to 415 MiB over 136 pre-bundles, and on throwaways
-  six concurrent Markflow sessions had 1 to 7 facet resets per 12 ("Durable
-  Object's isolate exceeded its memory limit and was reset"), each on a
-  small pre-bundle after 20 to 40 others. The import order now comes from
-  `moduleParsed`; the same pre-bundles hold 65 to 76 MiB between calls,
-  flat. Every facet ran in an isolate of its own, one Durable Object each,
-  one call at a time; the builds of different sessions never met in one.
+  isolate is reset. rolldown (1.2.11 and 1.2.12, native and wasm alike) never
+  frees a build whose plugin has an output hook or `buildStart`: for those
+  hooks it caches the build's normalized options, a wrapper of a native
+  object, on the build's plugin context data, and something the native object
+  holds strongly reaches that data back, a cycle through the binding that no
+  collector frees. Nimbus's build plugin had one (`generateBundle`, for each
+  module's import order), so every pre-bundle's slice and every build's module
+  sources and plugin stayed in the facet's isolate. Measured on Markflow's
+  install: the facet's V8 heap and external memory grew from 18 to 415 MiB
+  over 136 pre-bundles, and on throwaways six concurrent Markflow sessions had
+  1 to 7 facet resets per 12 ("Durable Object's isolate exceeded its memory
+  limit and was reset"), each on a small pre-bundle after 20 to 40 others. The
+  import order now comes from `moduleParsed`; the same pre-bundles hold 65 to
+  76 MiB between calls, flat. Every facet ran in an isolate of its own, one
+  Durable Object each, one call at a time; the builds of different sessions
+  never met in one.
 - The build facet asks to be retired once its binding passes 40 MiB, not
   64: a call peaks at the binding it starts on plus what it grows it by
   (up to 41 MiB, measured) plus its slice and the isolate's JavaScript.

@@ -310,21 +310,22 @@ function isWellFormedUnicode(text) {
     return !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text);
 }
 /**
- * What an export scan reads, at most: files followed through `export *` (and
- * CommonJS reexports), one file's bytes, and all of them. It runs in the
- * session's isolate on a path that has already failed (a package past its
- * slice cap among them), and es-module-lexer's buffer is twice a source's
- * length rounded up to a power of two: a file past the per-file bound adds
- * no names rather than a buffer of its size.
+ * What the scans of a module that could not be bundled read, at most: the
+ * package's exports (files followed through `export *` and CommonJS
+ * reexports) and the project's named imports. They run in the session's
+ * isolate on a path that has already failed (a package past its slice cap
+ * among them); es-module-lexer's buffer is twice a source's length rounded
+ * up to a power of two, and the project scan keeps each file it cannot lex
+ * until its walk ends. A file past a bound adds no names rather than its
+ * size.
  */
-const EXPORT_SCAN_FILES = 64;
-const EXPORT_SCAN_FILE_BYTES = 1024 * 1024;
-const EXPORT_SCAN_TOTAL_BYTES = 4 * 1024 * 1024;
+const EXPORT_SCAN = { files: 64, fileBytes: 1024 * 1024, totalBytes: 4 * 1024 * 1024 };
+const PROJECT_SCAN = { files: 2048, fileBytes: 1024 * 1024, totalBytes: 16 * 1024 * 1024 };
 /**
  * The names the module at `entry` exports, as far as its source and the
  * relative modules it re-exports say: ESM `export`s (es-module-lexer), or
  * for a module without them, CommonJS's (cjs-export-names under the Vite
- * policy). Best effort, and bounded (EXPORT_SCAN_*): what cannot be read,
+ * policy). Best effort, and bounded (EXPORT_SCAN): what cannot be read,
  * resolved or afforded adds nothing.
  */
 function moduleExportNames(vfs, entry) {
@@ -345,7 +346,7 @@ function moduleExportNames(vfs, entry) {
         return null;
     };
     let read = 0;
-    while (queue.length > 0 && seen.size < EXPORT_SCAN_FILES) {
+    while (queue.length > 0 && seen.size < EXPORT_SCAN.files) {
         const path = queue.shift();
         if (seen.has(path))
             continue;
@@ -353,7 +354,7 @@ function moduleExportNames(vfs, entry) {
         let source;
         try {
             const size = vfs.stat(path).size;
-            if (size > EXPORT_SCAN_FILE_BYTES || read + size > EXPORT_SCAN_TOTAL_BYTES)
+            if (size > EXPORT_SCAN.fileBytes || read + size > EXPORT_SCAN.totalBytes)
                 continue;
             read += size;
             source = vfs.readFileString(path);
@@ -2384,7 +2385,7 @@ export class ViteDevServer {
         const names = new Set(resolved ? moduleExportNames(this.vfs, resolved) : []);
         if (specifier === pkgName) {
             try {
-                const projectNames = (await scanProjectImports(this.vfs, this.root, transformParser(this.esbuild))).namedImports.get(pkgName);
+                const projectNames = (await scanProjectImports(this.vfs, this.root, transformParser(this.esbuild), PROJECT_SCAN)).namedImports.get(pkgName);
                 for (const name of projectNames ?? [])
                     names.add(name);
             }

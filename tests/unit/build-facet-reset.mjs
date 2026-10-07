@@ -14,8 +14,11 @@
 //   - the dev server, its pool failing so: the module it serves links against
 //     what the project imports (an ESM package, a CommonJS one, a package
 //     re-exporting with `export *`, one with a key no export name can be,
-//     one whose entry is past what the scan reads) and throws the cause as
-//     it evaluates.
+//     one whose entry is past what the scan reads, a project with a source
+//     file past what its scan reads) and throws the cause as it evaluates;
+//   - the barrel package's three exits that serve such a module (no static
+//     named imports to synthesize an entry from, an index the synthesizer
+//     cannot read, a synthetic entry that cannot be written) do the same.
 
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -116,8 +119,8 @@ try {
 
   // ── The dev server, its pool reset twice ───────────────────────────────
   const root = 'home/user/app';
-  /** What the dev server serves for /@modules/<specifier> when every pre-bundle is reset twice, and what importing `names` from it does. */
-  async function servedOnReset(tag, files, specifier, imports) {
+  /** What the dev server serves for /@modules/<specifier> when every pre-bundle is reset twice, and what `importer` (importing './served.mjs') does with it. */
+  async function servedOnReset(tag, files, specifier, importer) {
     const harness = createSqliteVfsTestHarness();
     const vfs = new SqliteVFS(harness.sql, harness.ctx);
     const kernel = vfs.as(CRED_KERNEL);
@@ -146,7 +149,7 @@ try {
     const dir = join(scratch, tag);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'served.mjs'), code);
-    writeFileSync(join(dir, 'importer.mjs'), `import { ${imports.join(', ')} } from './served.mjs';\nexport const used = [${imports.map((i) => i.split(' as ').pop()).join(', ')}];\n`);
+    writeFileSync(join(dir, 'importer.mjs'), importer);
     const printed = [];
     console.error = (...args) => printed.push(args.join(' '));
     let outcome;
@@ -157,6 +160,14 @@ try {
     }
     return { response, code, outcome };
   }
+  /** An importer of `imports` (each a name, or `name as local`) from the module served. */
+  const importing = (imports) => `import { ${imports.join(', ')} } from './served.mjs';\nexport const used = [${imports.map((i) => i.split(' as ').pop()).join(', ')}];\n`;
+  /** A barrel package: `index` beside more files than BARREL_PKG_FILE_THRESHOLD (1500). */
+  const barrel = (name, packageJson, index, extra = {}) => {
+    const files = { [`node_modules/${name}/package.json`]: JSON.stringify({ name, ...packageJson }), [`node_modules/${name}/index.js`]: index, ...extra };
+    for (let n = 0; n < 1501; n++) files[`node_modules/${name}/icons/i${n}.js`] = `export const I${n} = ${n};\n`;
+    return files;
+  };
   const cases = [
     {
       tag: 'esm', specifier: 'tailwind-merge', imports: ['twMerge'],
@@ -197,6 +208,47 @@ try {
       },
     },
     {
+      // A project source past what the project scan reads (1 MiB) adds no names; the others still do.
+      tag: 'huge-project', specifier: 'dyn-pkg', imports: ['small'], declared: ['small'], undeclared: ['inHuge'],
+      files: {
+        'package.json': JSON.stringify({ name: 'app' }),
+        'src/main.ts': "import { small } from 'dyn-pkg';\nconsole.log(small);\n",
+        'src/generated.js': `import { inHuge } from 'dyn-pkg';\nconsole.log(inHuge);\n// ${'x'.repeat(1536 * 1024)}\n`,
+        'node_modules/dyn-pkg/package.json': JSON.stringify({ name: 'dyn-pkg', main: 'index.js' }),
+        // Its exports are made at run time: no scan of the package names them.
+        'node_modules/dyn-pkg/index.js': 'Object.assign(module.exports, Object.fromEntries([["small", 1], ["inHuge", 2]]));\n',
+      },
+    },
+    {
+      // Barrel, no static named imports in the project: no entry to synthesize.
+      tag: 'barrel-no-imports', specifier: 'big-icons', status: 'no-static-imports', cause: /barrel package \(\d+ files\) with no static named imports/,
+      importer: "import * as Icons from './served.mjs';\nimport whole from './served.mjs';\nexport const used = [Icons, whole];\n",
+      files: {
+        'package.json': JSON.stringify({ name: 'app' }),
+        'src/main.ts': "import * as Icons from 'big-icons';\nconsole.log(Icons);\n",
+        ...barrel('big-icons', { type: 'module', module: 'index.js', main: 'index.js' }, "export * from './icons/i0.js';\n"),
+      },
+    },
+    {
+      // Barrel whose index the synthesizer cannot read (CommonJS): no synthetic entry.
+      tag: 'barrel-synth-null', specifier: 'cjs-icons', imports: ['I0'], status: 'synth-null', cause: /synthetic entry generation failed for cjs-icons/,
+      files: {
+        'package.json': JSON.stringify({ name: 'app' }),
+        'src/main.ts': "import { I0 } from 'cjs-icons';\nconsole.log(I0);\n",
+        ...barrel('cjs-icons', { main: 'index.js' }, 'module.exports = { I0: 0 };\n'),
+      },
+    },
+    {
+      // Barrel whose synthetic entry cannot be written (a file where its directory goes).
+      tag: 'barrel-write-failed', specifier: 'esm-icons', imports: ['I0'], status: 'vfs-write-failed', cause: /failed to write synthetic entry for esm-icons/,
+      files: {
+        'package.json': JSON.stringify({ name: 'app' }),
+        'src/main.ts': "import { I0 } from 'esm-icons';\nconsole.log(I0);\n",
+        'node_modules/.nimbus-synthetic': 'a file, not a directory\n',
+        ...barrel('esm-icons', { type: 'module', module: 'index.js', main: 'index.js' }, "export { I0 } from './icons/i0.js';\n"),
+      },
+    },
+    {
       tag: 'star', specifier: 'ui-kit', imports: ['Button', 'Card'],
       files: {
         'package.json': JSON.stringify({ name: 'app' }),
@@ -208,10 +260,11 @@ try {
       },
     },
   ];
-  for (const { tag, specifier, imports, files, unscanned } of cases) {
-    const { response, code, outcome } = await servedOnReset(tag, files, specifier, imports);
+  for (const { tag, specifier, imports, importer, files, unscanned, declared = [], undeclared = [], status = 'bundle-failed', cause = /build facet was reset twice while pre-bundling/ } of cases) {
+    const { response, code, outcome } = await servedOnReset(tag, files, specifier, importer ?? importing(imports));
     const message = outcome instanceof Error ? outcome.message : String(outcome);
-    check(`${tag}: the module served links against { ${imports.join(', ')} } and throws the cause`, outcome instanceof Error && !(outcome instanceof SyntaxError) && /build facet was reset twice while pre-bundling/.test(message) && message.includes(specifier), `${outcome?.constructor?.name}: ${message.slice(0, 300)}`);
+    const what = importer ? 'its importer' : `{ ${imports.join(', ')} }`;
+    check(`${tag}: the module served links against ${what} and throws the cause`, outcome instanceof Error && !(outcome instanceof SyntaxError) && cause.test(message) && message.includes(specifier), `${outcome?.constructor?.name}: ${message.slice(0, 300)}`);
     let parsed = 'it parses';
     try {
       acorn.parse(code, { sourceType: 'module', ecmaVersion: 'latest' });
@@ -220,7 +273,9 @@ try {
     }
     check(`${tag}: the module served is a module by the spec's grammar`, parsed === 'it parses', parsed);
     if (unscanned) check(`${tag}: the entry past the scan's bound was not read`, !code.includes(` as ${unscanned}`), code.slice(0, 300));
-    check(`${tag}: not cached, and says why it is not a bundle`, response.status === 200 && response.headers.get('cache-control') === 'no-store' && response.headers.get('x-nimbus-bundle-status') === 'bundle-failed', `${response.status} ${JSON.stringify([...response.headers])} ${code.slice(0, 200)}`);
+    if (declared.length || undeclared.length) check(`${tag}: it declares ${declared.join(', ')}, not ${undeclared.join(', ')} (a file past the project scan's bound was not read)`, declared.every((name) => code.includes(` as ${name}`)) && !undeclared.some((name) => code.includes(name)), code.slice(0, 300));
+    const cacheable = status === 'bundle-failed' ? response.headers.get('cache-control') === 'no-store' : true;
+    check(`${tag}: says why it is not a bundle (${status})${status === 'bundle-failed' ? ', not cached' : ''}`, response.status === 200 && cacheable && response.headers.get('x-nimbus-bundle-status') === status, `${response.status} ${JSON.stringify([...response.headers])} ${code.slice(0, 200)}`);
   }
 } finally {
   releaseBuildFacetHarness();

@@ -6,14 +6,17 @@
 // pre-bundles, "Durable Object's isolate exceeded its memory limit and was
 // reset", whatever the build in flight was).
 //
-// rolldown 1.2.11 keeps a build alive across its binding, native and wasm
-// alike, when a plugin has an output hook (generateBundle, renderChunk) or
-// buildStart: the hook's context caches the build's normalized options (a
-// native object holding the build's options), whose invalidateJsSideCache
-// callback is a threadsafe function bound to that same context, so neither
-// side is ever freed, nor anything the build's plugin reaches (here: every
-// file of a pre-bundle's slice, every module's source, the caller's plugin).
-// The facet's runtime asks rolldown for no such hook.
+// rolldown (1.2.11, 1.2.12) keeps a build alive, native and wasm alike, when
+// a plugin has an output hook (generateBundle, renderChunk) or buildStart:
+// for those hooks it caches the build's normalized options, a wrapper of a
+// native object, on the build's plugin context data, and something that
+// native object holds strongly reaches that data back. A cycle through the
+// binding no collector frees, so neither the build nor anything its plugin
+// reaches is (here: every file of a pre-bundle's slice, every module's
+// source, the caller's plugin). Not caching the options frees it; holding
+// invalidateJsSideCache's or deferSyncScanData's reference to the context
+// data weakly does not (/mnt/local/nimbus/spike/rolldown-leak). The facet's
+// runtime asks rolldown for no such hook.
 //
 // Here, the staged facet (build-facet-harness) runs pre-bundles, each with a
 // 2 MiB file in its slice, and builds; once collected, every pre-bundle's

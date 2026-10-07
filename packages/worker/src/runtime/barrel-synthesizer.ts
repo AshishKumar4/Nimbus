@@ -122,8 +122,12 @@ export interface ProjectImports {
  * (parsedImportView). The lexer reads ~77 MB/s where Oxc's transform,
  * in-process, reads ~26 MB/s and costs a transform-facet hop besides, so
  * the parser is the exception, not the path.
+ *
+ * With a `budget`, the walk reads at most what it allows, checked with a
+ * stat before each read: a file past the per-file or the remaining total
+ * bytes is skipped, and the walk ends after `files` candidate files.
  */
-export async function scanProjectImports(vfs: CredentialedVfs, projDir: string, parse: SourceParser): Promise<ProjectImports> {
+export async function scanProjectImports(vfs: CredentialedVfs, projDir: string, parse: SourceParser, budget?: ScanBudget): Promise<ProjectImports> {
   const bare = new Set<string>();
   const namedImports: NamedImportMap = new Map();
   const scanExts = new Set(['.ts', '.tsx', '.jsx', '.js', '.mjs']);
@@ -146,6 +150,9 @@ export async function scanProjectImports(vfs: CredentialedVfs, projDir: string, 
 
   // Files the lexer cannot decide, read with the parser once the walk is done.
   const undecided: { source: string; path: string; ext: string }[] = [];
+  // What the budget has left.
+  let filesLeft = budget?.files ?? Infinity;
+  let bytesLeft = budget?.totalBytes ?? Infinity;
 
   const scan = (code: string, ext: string): void => {
     for (const specifier of importedSpecifiers(code)) {
@@ -176,7 +183,7 @@ export async function scanProjectImports(vfs: CredentialedVfs, projDir: string, 
   };
 
   const walk = (dir: string, depth: number): void => {
-    if (depth > 6) return;
+    if (depth > 6 || filesLeft <= 0) return;
     let entries: { name: string; type: string }[];
     try { entries = vfs.readdir(dir); } catch { return; }
     for (const entry of entries) {
@@ -192,6 +199,14 @@ export async function scanProjectImports(vfs: CredentialedVfs, projDir: string, 
       if (dot < 0) continue;
       const ext = entry.name.substring(dot);
       if (!scanExts.has(ext)) continue;
+      if (budget) {
+        if (filesLeft <= 0) return;
+        filesLeft--;
+        let size: number;
+        try { size = vfs.stat(path).size; } catch { continue; }
+        if (size > budget.fileBytes || size > bytesLeft) continue;
+        bytesLeft -= size;
+      }
       let source: string;
       try { source = vfs.readFileString(path); } catch { continue; }
       const view = lexedImportView(source, path);
@@ -203,6 +218,16 @@ export async function scanProjectImports(vfs: CredentialedVfs, projDir: string, 
   walk(projDir, 0);
   for (const { source, path, ext } of undecided) scan(await parsedImportView(source, path, parse), ext);
   return { bareSpecifiers: [...bare], namedImports };
+}
+
+/** What a source scan may read, at most. */
+export interface ScanBudget {
+  /** Files considered (each stat'd, then read or skipped). */
+  readonly files: number;
+  /** One file's bytes: a bigger file is skipped unread. */
+  readonly fileBytes: number;
+  /** Every file's bytes together: a file past what is left is skipped unread. */
+  readonly totalBytes: number;
 }
 
 /**

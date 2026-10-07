@@ -15607,7 +15607,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
   const pending = /* @__PURE__ */ new Map();
   const inputBytes = /* @__PURE__ */ new Map();
   const importsOf2 = /* @__PURE__ */ new Map();
-  const importOrder2 = /* @__PURE__ */ new Map();
+  const graph = /* @__PURE__ */ new Map();
   const importedBy = (importer, id2, record2) => {
     if (importer === void 0) return;
     const list2 = importsOf2.get(importer) ?? [];
@@ -15615,7 +15615,8 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     importsOf2.set(importer, list2);
   };
   const importsInOrder = (importer) => {
-    const order = importOrder2.get(importer) ?? [];
+    const info = graph.get(importer);
+    const order = info ? [...info.importedIds, ...info.dynamicallyImportedIds] : [];
     const at = (id2) => {
       const i2 = order.indexOf(id2);
       return i2 < 0 ? order.length : i2;
@@ -15658,12 +15659,10 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     unresolved.push({ importer, source, kind, text, pluginName });
     return { id: source, external: true };
   };
-  const graph = /* @__PURE__ */ new Map();
   const vfs = {
     name: plugin.name,
     moduleParsed(info) {
       graph.set(info.id, { importedIds: [...info.importedIds], dynamicallyImportedIds: [...info.dynamicallyImportedIds] });
-      importOrder2.set(info.id, [...info.importedIds, ...info.dynamicallyImportedIds]);
     },
     async resolveId(source, importer, extra) {
       if (source.startsWith("\0")) return null;
