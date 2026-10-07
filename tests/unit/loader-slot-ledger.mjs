@@ -34,6 +34,7 @@ import {
   createFacetCtx,
   createFacetWorld,
 } from './facet-host-harness.mjs';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 // The platform's words for the limit, as a deployed Durable Object received them.
 const CAP_MESSAGE = 'Dynamic worker concurrency limit exceeded: each request may have up to 10 concurrent dynamic worker invocations. Wait for one to finish before starting another.';
@@ -61,7 +62,7 @@ assert.equal(
       };
     },
   };
-  const pool = new IsolatePool({ LOADER: loader }, ctx, { omitSupervisor: true, concurrency: 2 });
+  const pool = new IsolatePool({ LOADER: loader }, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, concurrency: 2 });
   await pool.map((value) => value, ['a', 'b', 'c', 'd']);
 
   const afterMap = loaderLedgerStats(ctx);
@@ -99,7 +100,7 @@ assert.equal(
       return { getEntrypoint: () => ({ async execute() { throw new Error(CAP_MESSAGE); } }) };
     },
   };
-  const pool = new IsolatePool({ LOADER: loader }, ctx, { omitSupervisor: true, timeoutMs: 0 });
+  const pool = new IsolatePool({ LOADER: loader }, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0 });
   await assert.rejects(
     pool.submit((value) => value, 'payload'),
     (error) => {

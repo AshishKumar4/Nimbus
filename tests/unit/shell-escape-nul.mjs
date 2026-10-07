@@ -36,7 +36,8 @@ try {
   assert.equal(await printf('a\\tb'), 'a\tb');
   assert.equal(await printf('a\\nb'), 'a\nb');
   assert.equal(await printf('a\\x41b'), 'aAb');
-  assert.equal(await printf('a\\101b'), 'a\\101b', 'bare octal is not an escape here');
+  // A format's octal escape is \NNN (GNU coreutils 9.7 printf prints `aAb`).
+  assert.equal(await printf('a\\101b'), 'aAb', 'a format reads bare octal');
   assert.equal(await printf('a\\qb'), 'a\\qb', 'an unknown escape stays verbatim');
 
   // ── echo, through the registry (Shell has its own `echo` builtin, so the

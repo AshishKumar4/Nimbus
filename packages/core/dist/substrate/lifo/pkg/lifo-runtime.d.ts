@@ -8,6 +8,7 @@
  *   - lifo.resolve()  – resolve a path relative to cwd
  */
 import type { Command } from '../commands/types.js';
+import type { CommandRegistry } from '../commands/registry.js';
 import type { ProcessView as VFS } from '../../../runtime/process-files.js';
 export interface LifoPackageManifest {
     commands: Record<string, string>;
@@ -41,4 +42,14 @@ export interface LifoPackageJson {
  * Read a package.json and return the lifo manifest if present.
  */
 export declare function readLifoManifest(vfs: VFS, pkgDir: string): Promise<LifoPackageManifest | null>;
+/**
+ * Register each command a lifo manifest declares, its entry under `pkgDir`.
+ * `requireEntry` skips a command whose entry file is not there (an install,
+ * a boot restore); a dev link registers every declared command, so a
+ * missing entry fails when it runs. Returns the names registered, in the
+ * manifest's order.
+ */
+export declare function registerLifoManifestCommands(vfs: VFS, registry: CommandRegistry, pkgDir: string, manifest: LifoPackageManifest, options: {
+    requireEntry: boolean;
+}): Promise<string[]>;
 //# sourceMappingURL=lifo-runtime.d.ts.map

@@ -2,6 +2,7 @@
 // through handleFetch: `vite-config` (or whatever `storage` seeds) is in
 // storage, nothing is in memory, and the port registry is empty.
 
+import { ISOLATE_NETWORK } from '../../../packages/core/src/_shared/workspace-network.ts';
 import { PortRegistry } from '../../../packages/core/src/runtime/port-registry.ts';
 import { CRED_SESSION_USER } from '../../../packages/core/src/runtime/os-contracts.ts';
 
@@ -48,6 +49,8 @@ export function makeWokenSession(storage, { vfs, routes, bundlePool = null, pidB
   const store = new Map(Object.entries(storage));
   let nextPid = pidBase;
   const self = {
+    // The session's workspace, for what it hands a dev server: its network (no egress here).
+    runtimeWorkspace: { network: ISOLATE_NETWORK },
     env: {},
     sqliteFs: null,
     esbuildService: null,

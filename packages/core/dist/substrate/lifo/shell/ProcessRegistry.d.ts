@@ -27,7 +27,7 @@ export interface Process {
     abortController: AbortController;
     /** Exit code (null if still running) */
     exitCode: number | null;
-    /** Optional job ID for background jobs (for backwards compat with JobTable) */
+    /** A background job's number in its shell's job table (`%N`), which kill reads. */
     jobId?: number;
 }
 /**
@@ -50,6 +50,8 @@ export interface SpawnOptions {
     abortController: AbortController;
     /** Parent PID (defaults to 1 - shell) */
     ppid?: number;
+    /** A background job's number, which its shell's job table gives it. */
+    jobId?: number;
 }
 /**
  * Central process registry for tracking all running processes.
@@ -60,7 +62,6 @@ export declare class ProcessRegistry {
     private processes;
     private resolvers;
     private nextPid;
-    private nextJobId;
     private shellAbortController;
     registerShell(cwd: string, env: Record<string, string>): number;
     /**

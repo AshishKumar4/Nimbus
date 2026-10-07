@@ -33,6 +33,7 @@
  *     content store answers `resolveWorkerLaunch` and this is never reached
  *     for its recipes (see `WorkerRecipe.resident`).
  */
+import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -75,6 +76,8 @@ export interface FacetManagerDeps {
     vfs: SqliteVFS;
     /** The session's one authority — the manager never constructs a second. */
     filesystem: ProcessFiles;
+    /** The workspace's network (`workspace.network`): every process it runs goes out through it. */
+    network: () => WorkspaceNetwork;
     /**
      * A host's esbuild, shared with the manager. Absent: one whose transforms
      * run in the loader-backed transform facet, never in this isolate.

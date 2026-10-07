@@ -174,6 +174,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
       vfsEvents: self.sqliteFs!.events,
       userConfigBundle,
       extraSyntheticFiles,
+      network: self.runtimeWorkspace!.network,
     });
     self.cirrusReal = cirrusReal;
     // Reserve a PID so `ps`/logs show it like any other facet.

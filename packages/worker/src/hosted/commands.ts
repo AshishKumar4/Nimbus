@@ -1,5 +1,6 @@
 import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { createKillCommand, type HostProcessSignals } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
+import { installSummary } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import { exitCodeForSignal, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
@@ -123,7 +124,7 @@ registry.register('chsh', makeChshCommand({
 // first `git` invocation so it stays out of the cold script-eval graph.
 registry.register('git', async (ctx: any) => {
   const { runGitCommand } = await import('../git/commands.js');
-  return runGitCommand(ctx, sqliteFs, self.ctx, self.env);
+  return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network);
 });
 
 // ── runtime package manager: `nimbus install` package manager + runner registry.
@@ -188,6 +189,7 @@ workspace.runtimes.registerRunner(
     return await makeCPythonRunnerFactory({
       facets: facetHostForManager(facetMgr),
       startResident: cpythonResidentStart(facetMgr),
+      network: workspace.network,
     })(manifest, installRoot, binName, binKind)(ctx);
   },
 );
@@ -227,6 +229,7 @@ workspace.runtimes.registerRunner(
       registry,
       startResident: rubyResidentStart(facetMgr),
       getHome: () => workspace.shell.getEnv().HOME ?? DEFAULT_HOME,
+      network: workspace.network,
     })(manifest, installRoot, binName, binKind);
     return runner(ctx);
   },
@@ -577,7 +580,7 @@ const bunSpec: RuntimeSpec = {
       const { loaderFacetHost } = await import('../runtime/facet-loader-host.js');
       const wasmSpec: RuntimeSpec = wasmRunnerSpec({
         filesystem: workspace.filesystem,
-        facets: loaderFacetHost(self.env, self.ctx),
+        facets: loaderFacetHost(self.env, self.ctx, workspace.network),
         processes: self.processes,
       });
       wasmHandler = buildRuntimeHandler(wasmSpec, {
@@ -734,6 +737,7 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
     }
 
     self.nimbusWrangler = new NimbusWrangler({
+      network: workspace.network,
       vfs: kernelFs,
       vfsEvents: sqliteFs.events,
       esbuild: self.esbuildService!,
@@ -818,23 +822,12 @@ registry.register('npm-fast', async (ctx: any) => {
   if (!installer) throw new Error('npm installer is not initialized');
   const result = await installer.install(cwd, { packages, pid: ctx.pid, cred: requireVfsCred(ctx.cred, 'npm-fast'), registry: ctx.env?.NPM_REGISTRY });
 
-  if (result.failed.length > 0) {
-    ctx.stderr.write('\x1b[31mFailed: ' + result.failed.join(', ') + '\x1b[0m\n');
-  }
-
-  // [HONEST INSTALL MESSAGE P0a] Yellow + "(N failed, see above)"
-  // when partial. Green only when failed.length === 0. Pre-fix the
-  // green line printed unconditionally — see user transcript line
-  // 831 ("added 264 packages" with 353 silent failures above).
-  const partial = result.failed.length > 0;
-  const color = partial ? '\x1b[33m' : '\x1b[32m';
-  const suffix = partial ? ` (${result.failed.length} failed, see above)` : '';
-  ctx.stdout.write(
-    `\n${color}added ${result.installed.length} packages (${result.totalFiles} files) in ${(result.elapsed / 1000).toFixed(1)}s${suffix}\x1b[0m\n`
-  );
-  if (result.cachedHits > 0) {
-    ctx.stdout.write(`\x1b[2m  (${result.cachedHits} from cache)\x1b[0m\n`);
-  }
+  const summary = installSummary({
+    installed: result.installed.length, failed: result.failed, elapsedMs: result.elapsed,
+    totalFiles: result.totalFiles, fromCacheHits: result.cachedHits,
+  });
+  if (summary.stderr) ctx.stderr.write(summary.stderr);
+  if (summary.stdout) ctx.stdout.write(summary.stdout);
   return result.failed.length > 0 ? 1 : 0;
 });
 
@@ -1629,6 +1622,6 @@ registry.register('kill', createKillCommand(processRegistry, hostSignals));
 
 registry.register('top', createTopCommand(processRegistry));
 registry.register('watch', createWatchCommand(registry));
-registry.register('help', createHelpCommand(registry));
+registry.register('help', createHelpCommand(registry, () => shell.builtinNames()));
 
 }

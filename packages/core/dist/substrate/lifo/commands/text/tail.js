@@ -1,17 +1,23 @@
-import { concatBytes, inputChunks, writeBytes, asciiBytes } from '../../utils/bytes-io.js';
+import { getopt } from '../../utils/args.js';
+import { asciiBytes, readAllInput, writeBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
+import { parseSuffixedCount } from '../../utils/size-units.js';
 class TailUsage extends Error {
 }
+/** A count as GNU tail reads one: `+N` counts from the start, `-N` (or N) back from the end, with head's suffixes. */
 function parseCount(value, unit) {
-    const m = /^([+-]?)(\d+)([bkKmMgG]?|[kKmMgG]B|[kKmMgG]iB)?$/.exec(value);
-    if (m === null)
+    const count = parseSuffixedCount(value.startsWith('-') ? value.slice(1) : value, 'bkKmMGTPEZYRQ0');
+    if (count === null)
         throw new TailUsage(`invalid number of ${unit}: \u2018${value}\u2019`);
-    const scale = { '': 1, b: 512, k: 1024, K: 1024, kB: 1000, KB: 1000, KiB: 1024, m: 1048576, M: 1048576, MB: 1e6, MiB: 1048576, g: 1073741824, G: 1073741824, GB: 1e9, GiB: 1073741824 };
-    const factor = scale[m[3] ?? ''];
-    if (factor === undefined)
-        throw new TailUsage(`invalid number of ${unit}: \u2018${value}\u2019`);
-    return { unit, count: Number(m[2]) * factor, fromStart: m[1] === '+' };
+    return { unit, count: Math.min(count, Number.MAX_SAFE_INTEGER), fromStart: value.startsWith('+') };
 }
+const TAIL_OPTIONS = {
+    short: 'n:c:qvzfF',
+    long: {
+        lines: ['n', 'required'], bytes: ['c', 'required'], quiet: ['q', 'none'], silent: ['q', 'none'],
+        verbose: ['v', 'none'], 'zero-terminated': ['z', 'none'], follow: ['f', 'optional'],
+    },
+};
 const command = async (ctx) => {
     let mode = { unit: 'lines', count: 10, fromStart: false };
     let headers = null;
@@ -22,60 +28,25 @@ const command = async (ctx) => {
         return 1;
     };
     try {
-        const args = ctx.args;
-        for (let i = 0; i < args.length; i++) {
-            const arg = args[i];
-            if (arg === '--') {
-                files.push(...args.slice(i + 1));
-                break;
-            }
-            if (arg.startsWith('--')) {
-                const [name, inline] = arg.slice(2).split(/=(.*)/s, 2);
-                const value = () => inline ?? args[++i];
-                if (name === 'lines')
-                    mode = parseCount(value() ?? '', 'lines');
-                else if (name === 'bytes')
-                    mode = parseCount(value() ?? '', 'bytes');
-                else if (name === 'quiet' || name === 'silent')
-                    headers = false;
-                else if (name === 'verbose')
-                    headers = true;
-                else if (name === 'zero-terminated')
-                    delim = 0;
-                else
-                    return usage(`unrecognized option '--${name}'`);
-                continue;
-            }
-            if (!arg.startsWith('-') || arg === '-') {
-                files.push(arg);
-                continue;
-            }
-            // The obsolete -N (as the first option): the last N lines.
-            if (/^-\d+$/.test(arg)) {
-                mode = parseCount(arg.slice(1), 'lines');
-                continue;
-            }
-            for (let j = 1; j < arg.length; j++) {
-                const flag = arg[j];
-                if (flag === 'n' || flag === 'c') {
-                    let value = arg.slice(j + 1);
-                    if (value === '')
-                        value = args[++i];
-                    if (value === undefined)
-                        return usage(`option requires an argument -- '${flag}'`);
-                    mode = parseCount(value, flag === 'n' ? 'lines' : 'bytes');
-                    break;
-                }
-                if (flag === 'q')
-                    headers = false;
-                else if (flag === 'v')
-                    headers = true;
-                else if (flag === 'z')
-                    delim = 0;
-                else if (flag === 'f' || flag === 'F') { /* a finished input has nothing to follow */ }
-                else
-                    return usage(`invalid option -- '${flag}'`);
-            }
+        // The obsolete -N, as the first word: the last N lines.
+        const args = /^-\d+$/.test(ctx.args[0] ?? '') ? ctx.args.slice(1) : ctx.args;
+        if (args !== ctx.args)
+            mode = parseCount(ctx.args[0].slice(1), 'lines');
+        for (const event of getopt(args, TAIL_OPTIONS)) {
+            // A digit is an option only as the obsolete -N, first; elsewhere GNU names its first digit.
+            if (event.kind === 'error')
+                return usage(event.message.replace(/^invalid option -- '(\d)'$/, 'option used in invalid context -- $1'));
+            if (event.kind === 'operand')
+                files.push(event.value);
+            else if (event.key === 'n' || event.key === 'c')
+                mode = parseCount(event.value, event.key === 'n' ? 'lines' : 'bytes');
+            else if (event.key === 'q')
+                headers = false;
+            else if (event.key === 'v')
+                headers = true;
+            else if (event.key === 'z')
+                delim = 0;
+            // -f/-F: a finished input has nothing to follow.
         }
     }
     catch (error) {
@@ -91,10 +62,7 @@ const command = async (ctx) => {
     for (const file of files) {
         let bytes;
         try {
-            const parts = [];
-            for await (const chunk of inputChunks(ctx, file))
-                parts.push(chunk);
-            bytes = concatBytes(parts);
+            bytes = await readAllInput(ctx, file);
         }
         catch (error) {
             await ctx.stderr.write(`tail: cannot open '${file}' for reading: ${strerror(error)}\n`);

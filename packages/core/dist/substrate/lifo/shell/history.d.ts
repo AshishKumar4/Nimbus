@@ -19,7 +19,8 @@ export declare class HistoryManager {
      */
     expand(line: string): string | null;
     get(index: number): string | undefined;
-    getAll(): string[];
+    /** Every entry, oldest first; the store's own array, for reading. */
+    getAll(): readonly string[];
     get length(): number;
 }
 //# sourceMappingURL=history.d.ts.map

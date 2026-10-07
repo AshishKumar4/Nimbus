@@ -1,6 +1,5 @@
 import { resolve } from '../../utils/path.js';
-import { dispatchWorkspaceRequest, workspaceRequestPort } from './kernel-fetch.js';
-const MAX_REDIRECTS = 20;
+import { hopInit, sendHop, walkRedirects } from './kernel-fetch.js';
 function parseWgetArgs(args) {
     const options = { quiet: false };
     for (let i = 0; i < args.length; i++) {
@@ -21,17 +20,6 @@ function parseWgetArgs(args) {
         }
     }
     return options;
-}
-function wgetHeader(headers, name) {
-    const wanted = name.toLowerCase();
-    for (const [key, value] of Object.entries(headers)) {
-        if (key.toLowerCase() === wanted)
-            return value;
-    }
-    return undefined;
-}
-function isRedirectStatus(status) {
-    return status >= 300 && status < 400;
 }
 function createWgetImpl(kernel) {
     return async (ctx) => {
@@ -63,77 +51,29 @@ function createWgetImpl(kernel) {
             await ctx.stderr.write(`Connecting... `);
         }
         try {
-            let response;
-            if (!kernel) {
-                // No kernel bound: fetch's own redirect handling stands — the
-                // process-wide default keeps its documented behavior.
-                const res = await fetch(url, { signal: ctx.signal });
-                response = {
-                    status: res.status,
-                    statusText: res.statusText,
-                    headers: Object.fromEntries(res.headers.entries()),
-                    body: await res.text(),
-                };
+            // Every hop is classified first: bound to a kernel, a loopback one,
+            // including one a redirect lands on, is served by its port table or its
+            // host's loopback router, never by fetch.
+            const walk = await walkRedirects({ url: new URL(url), method: 'GET', headers: new Headers() }, { follow: true, send: (hop) => sendHop(kernel, hop.url, hopInit(hop, ctx.signal)) });
+            if (walk.kind === 'refused') {
+                if (!options.quiet)
+                    await ctx.stderr.write('failed.\n');
+                await ctx.stderr.write(`wget: unable to connect to ${walk.url}\n`);
+                return 1;
             }
-            else {
-                // Bound to a kernel: every hop is classified first. A loopback hop —
-                // including one a redirect lands on — is served by this kernel's port
-                // table or its host's loopback router, never by fetch.
-                let current = url;
-                let hops = 0;
-                for (;;) {
-                    const requestUrl = new URL(current);
-                    const port = workspaceRequestPort(kernel, requestUrl);
-                    if (port !== null) {
-                        const local = await dispatchWorkspaceRequest(kernel, port, new Request(requestUrl, { method: 'GET', signal: ctx.signal }));
-                        if (local.kind === 'refused') {
-                            if (!options.quiet)
-                                await ctx.stderr.write('failed.\n');
-                            await ctx.stderr.write(`wget: unable to connect to ${current}\n`);
-                            return 1;
-                        }
-                        if (local.kind === 'aborted') {
-                            await ctx.stderr.write('wget: request aborted\n');
-                            return 1;
-                        }
-                        if (local.kind === 'timeout') {
-                            await ctx.stderr.write('wget: request timed out\n');
-                            return 1;
-                        }
-                        const res = local.response;
-                        response = {
-                            status: res.status,
-                            statusText: res.statusText,
-                            headers: Object.fromEntries(res.headers.entries()),
-                            body: await res.text(),
-                        };
-                    }
-                    else {
-                        const res = await fetch(requestUrl, { redirect: 'manual', signal: ctx.signal });
-                        response = {
-                            status: res.status,
-                            statusText: res.statusText,
-                            headers: Object.fromEntries(res.headers.entries()),
-                            body: await res.text(),
-                        };
-                    }
-                    if (!isRedirectStatus(response.status))
-                        break;
-                    const location = wgetHeader(response.headers, 'location');
-                    if (!location)
-                        break;
-                    if (++hops > MAX_REDIRECTS) {
-                        await ctx.stderr.write(`wget: too many redirects\n`);
-                        return 1;
-                    }
-                    try {
-                        current = new URL(location, requestUrl).toString();
-                    }
-                    catch {
-                        break;
-                    }
-                }
+            if (walk.kind === 'aborted') {
+                await ctx.stderr.write('wget: request aborted\n');
+                return 1;
             }
+            if (walk.kind === 'timeout') {
+                await ctx.stderr.write('wget: request timed out\n');
+                return 1;
+            }
+            if (walk.kind === 'too-many-redirects') {
+                await ctx.stderr.write('wget: too many redirects\n');
+                return 1;
+            }
+            const response = { status: walk.response.status, statusText: walk.response.statusText, body: await walk.response.text() };
             if (!options.quiet) {
                 await ctx.stderr.write(`connected.\n`);
                 await ctx.stderr.write(`HTTP request sent, awaiting response... ${response.status} ${response.statusText}\n`);

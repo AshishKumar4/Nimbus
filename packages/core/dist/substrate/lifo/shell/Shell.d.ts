@@ -66,7 +66,7 @@ export declare class Shell {
     lineBuffer: string;
     cursorPos: number;
     screenCursorRow: number;
-    history: string[];
+    /** Where Up/Down stands in the history: -1 is the line being typed. */
     historyIndex: number;
     private savedLine;
     running: boolean;
@@ -116,6 +116,14 @@ export declare class Shell {
      * options, traps, readonly names and aliases are that child's.
      */
     private forContext;
+    /**
+     * The command history, oldest first: the one store (HistoryManager, kept
+     * in ~/.bash_history) that Up/Down, reverse search, Alt+. and the history
+     * builtin all read, each line as it ran (after `!` expansion).
+     */
+    get history(): readonly string[];
+    /** The names this shell runs itself, as help and completion list them. */
+    builtinNames(): string[];
     private registerBuiltins;
     getJobTable(): JobTable;
     /**
@@ -244,6 +252,7 @@ export declare class Shell {
     /** The right-hand side of a declaration: `(word …)` is an array literal. */
     private assignDeclared;
     private assignEnv;
+    private variableStore;
     private snapshotShellState;
     private restoreShellState;
     private builtinExit;

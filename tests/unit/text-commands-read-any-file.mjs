@@ -26,6 +26,7 @@ assert.equal(await shell('sed s/b/y/ f.png'), 'y\na\na\n');
 assert.equal(await shell("sed s/y/Y/ z | tr '\\0' '@'"), 'x@Y\n', 'a NUL is edited through, not skipped');
 assert.equal(await shell('nl f.png'), '     1\tb\n     2\ta\n     3\ta\n');
 assert.equal(await shell('rev f'), 'b\nz\nz\n');
+assert.equal(await shell("awk '{print}' f.png"), 'b\na\na\n');
 
 // Every lifo text command, as the lifo registry registers it.
 const registry = createDefaultRegistry();
@@ -50,7 +51,6 @@ for (const [name, args, want] of [
   ['wc', ['-l', 'f.png'], null],
   ['uniq', ['f.png'], 'b\na\n'],
   ['cut', ['-f1', 'f.png'], 'b\na\na\n'],
-  ['awk', ['{print}', 'f.png'], 'b\na\na\n'],
   ['sort', ['f.png'], 'a\na\nb\n'],
   ['tail', ['-n', '1', 'f.png'], 'a\n'],
 ]) {

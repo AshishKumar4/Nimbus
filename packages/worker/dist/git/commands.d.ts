@@ -8,6 +8,7 @@
  * Uses a VFS→isomorphic-git FS adapter over the command's view of the
  * namespace, as its credential: a repository on SQLite or on a mount alike.
  */
+import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
@@ -89,6 +90,8 @@ export declare function replacedIndexEntries(dc: DirCache, restored: ReadonlySet
  * this module and its ~106 KB network-facet dependency out of the cold
  * script-eval graph.
  */
-export declare function runGitCommand(ctx: Ctx, vfs: SqliteVFS, doCtx?: DurableObjectState, doEnv?: any): Promise<number>;
+export declare function runGitCommand(ctx: Ctx, vfs: SqliteVFS, doCtx?: DurableObjectState, doEnv?: any, 
+/** The workspace's network (`workspace.network`): clone, fetch, pull, push and promisor fetches go out through it. */
+network?: WorkspaceNetwork): Promise<number>;
 export {};
 //# sourceMappingURL=commands.d.ts.map

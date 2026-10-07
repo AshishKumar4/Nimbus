@@ -152,6 +152,67 @@ holding.close();
   console.log('  [6] a SIGKILLed holder leaves nothing that blocks');
 }
 
+// [7] A run the lock refuses never touches the ledger a running suite
+// keeps: before, it emptied the --ledger file first, and the leaks the
+// running suite had recorded there were gone.
+const LEDGER = join(SCRATCH, 'probe-ledger.jsonl');
+const RECORDED = `${JSON.stringify({ probe: 'p.mjs', sid: 'leaked-1', event: 'mint', status: 302, at: new Date().toISOString() })}\n`;
+{
+  writeFileSync(LEDGER, RECORDED);
+  const suite = holdLock({ pid: process.pid, runId: 'unit-ledger-holder', base: 'https://nimbus-tw-holder.example.workers.dev', cwd: '/tmp', startedAt: new Date().toISOString() });
+  const r = runRunner(['--ledger', LEDGER]);
+  suite.close();
+  assert.equal(r.status, 3, r.out);
+  assert.equal(readFileSync(LEDGER, 'utf8'), RECORDED, "the refused run left the running suite's ledger as it was");
+  console.log('  [7] a run the lock refuses leaves the running suite\'s ledger alone');
+}
+
+// [8] --allow-concurrent runs beside another suite, but not into its
+// ledger: a path another run is writing is refused, by name.
+{
+  const writing = new Database(`${LEDGER}.lock`, { create: true });
+  writing.exec('BEGIN EXCLUSIVE');
+  const r = runRunner(['--allow-concurrent', '--ledger', LEDGER]);
+  writing.close();
+  assert.equal(r.status, 3, r.out);
+  assert.match(r.out, new RegExp(`another behavioral run is writing its session ledger at ${LEDGER.replaceAll('/', '\\/')}`));
+  assert.equal(readFileSync(LEDGER, 'utf8'), RECORDED, 'the ledger it refused is untouched');
+  console.log('  [8] a ledger another run is writing is refused, even with --allow-concurrent');
+}
+
+// [9] A free path is this run's: made even when no probe mints, kept after
+// the run, and its lock free again once the run ends (the lock file stays,
+// as the run lock's does).
+{
+  const r = runRunner(['--ledger', LEDGER]);
+  assert.equal(r.status, 0, r.out);
+  assert.equal(readFileSync(LEDGER, 'utf8'), '', "the run's own ledger, empty: no probe ran");
+  assert.match(r.out, new RegExp(`session ledger: ${LEDGER.replaceAll('/', '\\/')}`));
+  const next = new Database(`${LEDGER}.lock`);
+  next.exec('BEGIN EXCLUSIVE');
+  next.close();
+  assert.equal(runRunner(['--ledger', LEDGER]).status, 0, 'and the next run takes it');
+  console.log('  [9] a free --ledger path is the run\'s, kept after it, and its lock is free again');
+}
+
+// [10] A run that waited on a ledger's lock holds the file the next run
+// locks too. B opens the lock file, A runs on the path and ends, B takes
+// the lock A held, and C, given the same path, is refused. Had A removed
+// the lock file as it ended, B would hold a removed file while C made and
+// locked a new one: both writing the ledger.
+{
+  const RACE = join(SCRATCH, 'race-ledger.jsonl');
+  const b = new Database(`${RACE}.lock`, { create: true });
+  const a = runRunner(['--allow-concurrent', '--ledger', RACE]);
+  assert.equal(a.status, 0, a.out);
+  b.exec('BEGIN EXCLUSIVE');
+  const c = runRunner(['--allow-concurrent', '--ledger', RACE]);
+  b.close();
+  assert.equal(c.status, 3, `C ran while B held the ledger's lock: ${c.out}`);
+  assert.match(c.out, /another behavioral run is writing its session ledger/);
+  console.log('  [10] a run that took the lock after the last one ended still keeps the next one out');
+}
+
 rmSync(SCRATCH, { recursive: true, force: true });
 
 console.log('probe-runner-serialization: all tests passed');

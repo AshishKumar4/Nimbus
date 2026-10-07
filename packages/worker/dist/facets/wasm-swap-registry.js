@@ -34,7 +34,7 @@
  */
 import { NATIVE_BIN_EXTENSIONS, NATIVE_UNSUPPORTED_ABI, NIMBUS_ABI_TARGET, PYODIDE_PACKAGE_ABI, } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
-import { compareSemver, parseSemver } from '../npm/semver.js';
+import { compareSemver, parseSemver } from '@nimbus-sh/core/_shared/npm-semver.js';
 // ─────────────────────────────────────────────────────────────────────────
 // The policy
 // ─────────────────────────────────────────────────────────────────────────

@@ -113,7 +113,8 @@ const PAGES: Record<string, { synopsis: string; description: string }> = {
 
   // Node.js
   node: { synopsis: 'node [-e CODE] [FILE]', description: 'Execute JavaScript using the Node.js-compatible runtime.' },
-  pkg: { synopsis: 'pkg install|remove|list [PACKAGE]', description: 'Package manager for installing and managing packages.' },
+  npm: { synopsis: 'npm install|ci|run|ls|search|info [ARGS...]', description: 'Install and manage npm packages and run package scripts.' },
+  npx: { synopsis: 'npx COMMAND [ARGS...]', description: 'Run a command from a local or remote npm package.' },
 };
 
 const command: Command = async (ctx) => {

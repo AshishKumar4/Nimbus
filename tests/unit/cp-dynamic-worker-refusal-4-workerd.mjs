@@ -7,7 +7,7 @@
 // own under its wrapper's pid, which `npm run` awaits: one grandchild's
 // spawn fails EAGAIN and the other eight run. Before, the wrapper's work and
 // its caller's await of it went uncounted, and all ten hung. (The rest of
-// the ledger's refusals: cp-dynamic-worker-refusal-workerd, -2, -3.)
+// the ledger's refusals: cp-dynamic-worker-refusal-workerd, -2, -3, -5, -6, -7.)
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -66,8 +66,13 @@ try {
   const terminal = await localTerminal(probe, { install: [] });
   try {
     for (const [name, source] of Object.entries(SCENARIOS)) await terminal.writeFile(`/home/user/${name}.js`, source);
+    // A family here can take minutes on a loaded machine, one launch after
+    // another, and the session's own later turn (the ledger's refusal) came
+    // 1 to 23 s late under contention: what tells a hang from that is the
+    // session's Dynamic Worker ledger, which stops changing.
+    const ledger = async () => { const { loader } = await terminal.memory(); return [loader.holders, loader.waiters, loader.news]; };
     const run = async (name, { args = '' } = {}) => {
-      const r = await terminal.run(`node /home/user/${name}.js ${args}`, 180_000);
+      const r = await terminal.run(`node /home/user/${name}.js ${args}`, 280_000, { progress: ledger, stalledMs: 120_000 });
       assert.equal(r.status, 0, `${name}: ${r.stdout.slice(-800)}`);
       return splitScenarioOutput(r.stdout);
     };
