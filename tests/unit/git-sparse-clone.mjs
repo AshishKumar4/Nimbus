@@ -13,7 +13,9 @@
 //   - git checkout of another commit: what changed outside the cone is
 //     indexed skip-worktree and never written (nor fetched, partial), what
 //     changed inside is written; the same index and worktree as host git;
-//   - an edit inside the cone, add -A and commit: the tree host git writes.
+//   - an edit inside the cone, add -A and commit: the tree host git writes;
+//   - a merge: refused with a named message, nothing changed (it does not
+//     read skip-worktree entries yet).
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -148,6 +150,30 @@ try {
           `partial: after the checkouts, the same objects missing as host git (${requests.fetchObjects - fetchesBefore} fetches)`);
       }
       if (checkout) console.log(`  ok  checkout in the sparse clone (${name}): host git's index and worktree, outside the cone unwritten`);
+
+      // A merge in a sparse checkout is refused, named, before anything is touched (the merge
+      // does not read skip-worktree entries yet): HEAD, the index and the worktree as they were.
+      if (name === 'stream') {
+        const ident = { GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b' };
+        for (const args of [['checkout', first], ['checkout', '-b', 'side']]) {
+          const step = await git('/home/user/' + name, args, ident);
+          assert.equal(step.code, 0, `${args.join(' ')}: ${step.stderr}`);
+        }
+        session.kernel.writeFile('home/user/' + name + '/run.sh', '#!/bin/sh\necho side\n');
+        const sideCommit = await git('/home/user/' + name, ['commit', '-q', '-a', '-m', 'side'], ident);
+        assert.equal(sideCommit.code, 0, sideCommit.stderr);
+        const before = session.materialize('home/user/' + name, join(work, `ours-${name}-before-merge`));
+        const merged = await git('/home/user/' + name, ['merge', 'main'], ident);
+        assert.equal(merged.code, 128, `merge: refused: ${merged.stderr}`);
+        assert.equal(merged.stderr, 'fatal: merging in a sparse checkout is not supported yet; nothing was changed\n');
+        const after = session.materialize('home/user/' + name, join(work, `ours-${name}-after-merge`));
+        assert.deepEqual(worktreeOf(after), worktreeOf(before), 'merge refused: the worktree as it was');
+        for (const args of [['ls-files', '-s', '-t'], ['rev-parse', 'HEAD', 'side']]) {
+          assert.equal(hostGit(after, args), hostGit(before, args), `merge refused: ${args.join(' ')} as it was`);
+        }
+        assert.equal((await git('/home/user/' + name, ['checkout', 'main'], ident)).code, 0);
+        console.log('  ok  merge in the sparse clone (stream): refused, named, nothing changed');
+      }
 
       // An edit inside the cone, add -A, commit: host git's tree.
       writeFileSync(join(host, 'README.md'), 'edited\n');
