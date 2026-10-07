@@ -45,7 +45,7 @@ try {
   a.check('exits 128', missing.code === 128, missing.out.slice(-400));
   a.check('with git\'s prompt failure', missing.out.includes("fatal: could not read Username for 'https://github.com': terminal prompts disabled"), missing.out.slice(-400));
 
-  const made = await step('a repository whose origin does not resolve', 'mkdir -p /home/user/lr && cd /home/user/lr && git init -q && git config user.name a && git config user.email a@b && echo a > a && git add a && git commit -q -m one && git remote add origin https://example.invalid/r.git');
+  const made = await step('a repository whose origin does not resolve', 'mkdir -p /home/user/lr && cd /home/user/lr && git init -q -b main && git config user.name a && git config user.email a@b && echo a > a && git add a && git commit -q -m one && git remote add origin https://example.invalid/r.git');
   a.check('the repository is made', made.code === 0, made.out.slice(-400));
   const fetched = await step('fetch from it', 'git fetch');
   a.check('fetch exits 128 with "unable to access"', fetched.code === 128 && fetched.out.includes("fatal: unable to access 'https://example.invalid/r.git/': "), fetched.out.slice(-400));
