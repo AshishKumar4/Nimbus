@@ -108,7 +108,17 @@ interface LocalHandle {
   append: boolean;
   position: number;
   path: string;
+  /**
+   * Written through: the session's open description it writes by (W7Call
+   * description), its access fixed at its open; and the session's descriptor
+   * of it once the open is answered, which it reads and stats through.
+   */
+  description?: string;
+  session?: Promise<number | undefined>;
 }
+
+/** A new open description's id: unguessable, so no other process's call names it. */
+const descriptionId = (): string => crypto.randomUUID().replaceAll('-', '');
 
 /** The decisions the process made in a held subtree, not yet sent. */
 export interface DelegationHolder {
@@ -136,6 +146,10 @@ export interface DelegationHolder {
   send(): Promise<void>;
   /** Whether `handleId` writes through: its reads are the session's (readThrough). */
   through(handleId: number): boolean;
+  /** A write-through description's session descriptor (its open answered), or undefined (a mount's file keeps none). */
+  sessionOf(handleId: number): Promise<number | undefined>;
+  /** fcntl(F_SETFL) of one of the holder's descriptors: O_APPEND is its writes' to keep. */
+  setStatus(handleId: number, status: { append?: boolean }): void;
   /** The size this process gave file `ino` through a description of it still open, or undefined: what a stat of it by name reports here. */
   writing(ino: number): number | undefined;
   /**
@@ -223,6 +237,14 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     };
     file.bytes = new Uint8Array(0);
     dirty.delete(file);
+    // Each open description of it is the session's from here: opened there,
+    // in the log's order, with the access it was opened with.
+    for (const handle of new Set(handles.values())) {
+      if (handle.file !== file || handle.description !== undefined) continue;
+      handle.description = descriptionId();
+      const answer = client.submit({ type: 'call', call: { call: 'open', path: file.key, mode: file.mode, ...(handle.readable ? { read: true as const } : {}), description: handle.description } }, { acknowledged: true });
+      handle.session = answer.then((answered) => answered.receipt?.handle, () => undefined);
+    }
   };
 
   /** Log each file's latest bytes, in the order last written, under the name it has now. */
@@ -261,6 +283,13 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     ...(options.grantInos === undefined ? {} : { grantInos: options.grantInos }),
     ...(options.journal === undefined ? {} : { journal: options.journal }),
     released: dropDecisions,
+    // Closing starts (a recall, an idle or renewing give-back): nothing more
+    // is decided under it, and its files' descriptions write through from now
+    // on, so the flush that follows covers everything accepted before.
+    freezing: (root) => {
+      drain();
+      for (const [ino, file] of files) if (within(file.key, root)) goThrough(file, ino);
+    },
     drain,
   });
 
@@ -445,6 +474,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     },
 
     openThrough: async (key, path, flags) => {
+      const description = descriptionId();
       const call: ProcessFsOp = {
         type: 'call',
         call: {
@@ -453,6 +483,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
           ...(flags.truncate ? { truncate: true as const } : {}),
           ...(flags.exclusive ? { exclusive: true as const } : {}),
           ...(flags.followSymlinks === false ? { nofollow: true as const } : {}),
+          ...(flags.read ? { read: true as const } : {}),
+          description,
         },
       };
       // After what was decided before it, as every op is.
@@ -473,11 +505,18 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         : { key, bytes: new Uint8Array(0), length: stat.size, mode: stat.mode & 0o7777, through: { ino: stat.ino, entry } };
       files.set(stat.ino, file);
       const id = nextHandle--;
-      handles.set(id, { file, readable: !!flags.read, writable: true, append: !!flags.append, position: 0, path });
+      handles.set(id, { file, readable: !!flags.read, writable: true, append: !!flags.append, position: 0, path, description, session: Promise.resolve(stat.handle) });
       return { id, path } as RuntimeFileHandle;
     },
 
     through: (handleId) => handles.get(handleId)?.file.through !== undefined,
+
+    sessionOf: (handleId) => handleOf(handleId).session ?? Promise.resolve(undefined),
+
+    setStatus: (handleId, status) => {
+      const handle = handleOf(handleId);
+      if (status.append !== undefined) handle.append = status.append;
+    },
 
     writing: (ino) => {
       const file = files.get(ino);
@@ -513,13 +552,14 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         // Through: by the file's number, ordered with everything else; an
         // O_APPEND write lands at the file's end as the session has it then.
         const { ino } = file.through;
+        const by = handle.description === undefined ? {} : { description: handle.description };
         if (handle.append) {
-          client.submit({ type: 'call', call: { call: 'append', path: file.key, ino, data: bytes.slice() } }, { acknowledged: true });
+          client.submit({ type: 'call', call: { call: 'append', path: file.key, ino, ...by, data: bytes.slice() } }, { acknowledged: true });
           file.length += bytes.byteLength;
           handle.position = file.length;
         } else {
           const at = offset ?? handle.position;
-          client.submit({ type: 'call', call: { call: 'write', path: file.key, ino, offset: at, data: bytes.slice() } }, { acknowledged: true });
+          client.submit({ type: 'call', call: { call: 'write', path: file.key, ino, ...by, offset: at, data: bytes.slice() } }, { acknowledged: true });
           file.length = Math.max(file.length, at + bytes.byteLength);
           if (offset === null) handle.position = at + bytes.byteLength;
         }
@@ -551,7 +591,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const handle = handleOf(handleId);
       const file = handle.file;
       if (file.through !== undefined) {
-        client.submit({ type: 'call', call: { call: 'ftruncate', path: file.key, ino: file.through.ino, size } }, { acknowledged: true });
+        client.submit({ type: 'call', call: { call: 'ftruncate', path: file.key, ino: file.through.ino, ...(handle.description === undefined ? {} : { description: handle.description }), size } }, { acknowledged: true });
         file.length = size;
         unsent = true;
         return;
@@ -575,7 +615,15 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       return { ...entry, size: handle.file.length };
     },
 
-    close: (handleId) => { handleOf(handleId); handles.delete(handleId); },
+    close: (handleId) => {
+      const handle = handleOf(handleId);
+      handles.delete(handleId);
+      // The session's description closes with its last descriptor here (a dup shares it), in the log's order.
+      if (handle.description === undefined) return;
+      for (const other of handles.values()) if (other === handle) return;
+      client.submit({ type: 'call', call: { call: 'close', path: handle.file.key, description: handle.description } }, { acknowledged: true });
+      unsent = true;
+    },
 
     keyOf: (handleId) => handleOf(handleId).file.key,
 

@@ -161,6 +161,13 @@ export interface ProcessFsClientOptions {
    */
   readonly drain?: () => void;
   /**
+   * A grant of `root` starts closing (recalled, given back idle or for a
+   * renewal): called before the flush that sends what was decided under it,
+   * so the runtime stops deciding there first (its files' descriptions go
+   * through the session) and that flush covers all it accepted until now.
+   */
+  readonly freezing?: (root: string) => void;
+  /**
    * The process's umask now: stamped on each call that makes a name with a
    * mode (writeFile, appendFile, mkdir) as it is logged, unless the call
    * names one, so the session applies the umask the process had when it
@@ -749,6 +756,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    */
   const close = async (grant: Grant): Promise<void> => {
     grant.closing = true;
+    options.freezing?.(grant.root);
     await client.flush();
     await end(grant);
   };
@@ -792,6 +800,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       // process does there from now on goes to the session as anyone's.
       const wasClosing = grant.closing;
       grant.closing = true;
+      options.freezing?.(grant.root);
       await client.flush();
       if (kind === 'share') {
         grant.shared = true;

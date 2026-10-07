@@ -558,6 +558,8 @@ export interface WaveSequenceAnswer {
 /** A streamed file's stat as published: what a producer's git index entry records. */
 export interface WriteStreamReceipt {
   path: string;
+  /** An `open` call's: the session's descriptor of the description it opened (WaveDescriptions.open). */
+  handle?: number;
   ino: number;
   mode: number;
   size: number;
@@ -696,6 +698,24 @@ export interface WriteStreamOptions {
   admit?: () => void;
   mountReach?: WaveMountReach;
   sequence?: WaveSequence;
+  /** The writing process's open descriptions, for its `open`, `close` and description calls (W7Call description). */
+  descriptions?: WaveDescriptions;
+}
+
+/**
+ * A process's open descriptions as its waves name them (W7Call
+ * `description`): kept by the binding that serves the process, as its
+ * descriptors are (SqliteRuntimeFsBridge), so the process reads, stats and
+ * closes them as its own. Each one's access was decided at its open: a later
+ * chmod, chown, rename or unlink never changes what it can do, and its file
+ * lives until its last close.
+ */
+export interface WaveDescriptions {
+  /** Open the file at `path` under `id`, its access checked now; the session's descriptor of it. */
+  open(path: string, rights: { read: boolean; write: boolean }, id: string, cred: VfsCred): number;
+  /** The description `id` names, or undefined (never opened, or closed). */
+  node(id: string): VfsOpenDescription | undefined;
+  close(id: string): void;
 }
 
 export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
@@ -8353,6 +8373,8 @@ export class SqliteVFS {
        * here (and noted), undefined when only the asynchronous lookup decides.
        */
       placeSync: (kind: 'directory' | 'file' | 'delete', named: string) => string | null | undefined;
+      /** The process's open descriptions: a call through one is applied by it, wherever its file is named now. */
+      descriptions: WaveDescriptions | undefined;
       /** A name placed on this filesystem: rechecked right before its commit. */
       placedHere: (kind: 'directory' | 'file' | 'delete', named: string, resolved: string, epoch: number) => void;
       /** The delegations the wave's writer holds: its lookups recall none of them. */
@@ -8431,6 +8453,8 @@ export class SqliteVFS {
       }
       case 'call': {
         const call = record.call;
+        // A description's call is the description's: its file is this filesystem's (a mount keeps none).
+        if (call.call === 'close' || ('description' in call && call.description !== undefined && at.descriptions?.node(call.description) !== undefined)) return false;
         if (call.call !== 'mkdir') at.routes.clear();
         const placed = await mountOf(
           call.call === 'mkdir' ? 'directory'
@@ -8480,6 +8504,7 @@ export class SqliteVFS {
         return true;
       }
       case 'file-begin': {
+        if (record.inode.description !== undefined && at.descriptions?.node(record.inode.description) !== undefined) return false;
         const placed = await mountOf('file', record.inode.path);
         if (placed === null) return false;
         if (record.inode.kind === 'symlink') at.routes.clear();
@@ -8612,12 +8637,19 @@ export class SqliteVFS {
    * description whose file no name has any more (the bytes go with it).
    */
   private applyDataCall(
-    file: { path: string; call: W7DataCall; mode: number; ino?: number; offset?: number; umask?: number },
+    file: { path: string; call: W7DataCall; mode: number; ino?: number; offset?: number; umask?: number; description?: string },
     bytes: Uint8Array,
     caller: VfsCred,
+    descriptions: WaveDescriptions | undefined,
   ): VfsStat | null {
     // The umask the process made the call under, when it says (W7Call umask).
     const cred = withUmask(caller, file.umask);
+    // Through an open description: its file, by its inode, as its open authorized it.
+    if (file.description !== undefined && (file.call === 'write' || file.call === 'append')) {
+      const node = this.describedBy(descriptions, file.description, file.path);
+      node.write(file.call === 'write' ? file.offset! : node.end?.() ?? node.stat().size, bytes);
+      return node.stat();
+    }
     switch (file.call) {
       case 'writeFile':
         this.writeFile(file.path, bytes, { mode: file.mode, ino: file.ino }, cred);
@@ -8648,7 +8680,7 @@ export class SqliteVFS {
    * write permission; a name made empty with `mode` less the call's umask, or
    * an existing file emptied when `truncate`. Its answer is the file's stat.
    */
-  private openToWrite(call: Extract<W7PathCall, { call: 'open' }>, caller: VfsCred): VfsStat {
+  private openToWrite(call: Extract<W7PathCall, { call: 'open' }>, caller: VfsCred, descriptions: WaveDescriptions | undefined): VfsStat {
     const cred = withUmask(caller, call.umask);
     const follow = call.nofollow !== true;
     const name = this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode;
@@ -8660,10 +8692,22 @@ export class SqliteVFS {
     if (there === undefined) {
       this.writeFile(call.path, new Uint8Array(0), { mode: call.mode }, cred);
     } else {
-      this.checkAccess(call.path, 2, cred);
+      // Every access asked, decided now: an O_RDWR of a write-only file is EACCES here, not at its first read.
+      this.checkAccess(call.path, (call.read === true ? 4 : 0) | 2, cred);
       if (call.truncate === true) this.truncate(call.path, 0, cred);
     }
-    return this.stat(call.path, cred, true);
+    const stat = this.stat(call.path, cred, true);
+    if (call.description === undefined) return stat;
+    if (descriptions === undefined) throw vfsError('ENOTSUP', call.path, 'no binding keeps open descriptions for this wave');
+    const handle = descriptions.open(call.path, { read: call.read === true, write: true }, call.description, cred);
+    return Object.assign(stat, { handle });
+  }
+
+  /** The open description a process's call names (W7Call description): EBADF when none is open under it. */
+  private describedBy(descriptions: WaveDescriptions | undefined, id: string, path: string): VfsOpenDescription {
+    const node = descriptions?.node(id);
+    if (node === undefined) throw vfsError('EBADF', path, `no open description '${id}'`);
+    return node;
   }
 
   /**
@@ -8762,6 +8806,7 @@ export class SqliteVFS {
       ino?: number;
       offset?: number;
       umask?: number;
+      description?: string;
       parts: Uint8Array[];
       received: number;
       nextChunk: number;
@@ -8844,6 +8889,8 @@ export class SqliteVFS {
         case 'batch-end':
           return true;
         case 'file-begin':
+          // A description's write is its file's, wherever that is named now.
+          if (record.inode.description !== undefined && options.descriptions?.node(record.inode.description) !== undefined) return true;
           return record.inode.kind !== 'symlink' && placeSync('file', record.inode.path) === null;
         case 'directory':
           return placeSync('directory', record.inode.path) === null;
@@ -9285,9 +9332,11 @@ export class SqliteVFS {
         (progress.mutations ??= []).push({ index: call.index, before: befores[at]!, after });
         if (call.receipt && result) {
           // The revision its file was published at, as its path reports it.
+          const handle: unknown = Reflect.get(result, 'handle');
           progress.receipts.push({
             path: call.path, ino: result.ino, mode: result.mode, size: result.size, mtimeMs: result.mtime, ctimeMs: result.ctime,
             uid: result.uid, gid: result.gid, dev: this.deviceId, revision: this.revision(call.path, cred),
+            ...(typeof handle === 'number' ? { handle } : {}),
           });
         }
         if (call.seq !== null) advanced(call.seq);
@@ -9390,6 +9439,7 @@ export class SqliteVFS {
           holds,
           view: viewEpoch,
           placeSync,
+          descriptions: options.descriptions,
           placedHere: (kind, named, resolved, epoch) => { placedHere[kind].set(named, { resolved, epoch }); },
           signal: options.signal,
           reach: options.mountReach,
@@ -9440,6 +9490,7 @@ export class SqliteVFS {
             ...(record.inode.ino === undefined ? {} : { ino: record.inode.ino }),
             ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
             ...(record.inode.umask === undefined ? {} : { umask: record.inode.umask }),
+            ...(record.inode.description === undefined ? {} : { description: record.inode.description }),
             parts: [], received: 0, nextChunk: 0,
             credit: { left: record.inode.size, lease },
           };
@@ -9473,7 +9524,7 @@ export class SqliteVFS {
           const lease = file.credit.lease;
           queueCall(file.path, () => {
             try {
-              return this.applyDataCall(file, bytes, cred);
+              return this.applyDataCall(file, bytes, cred, options.descriptions);
             } finally {
               if (lease !== null && callLeases.delete(lease)) lease.release();
             }
@@ -9675,8 +9726,12 @@ export class SqliteVFS {
                 else if (call.call === 'unlink') this.unlink(call.path, cred);
                 else if (call.call === 'rmdir') this.rmdir(call.path, cred);
                 else if (call.call === 'ftruncate') {
-                  const at = this.describedFile(call.path, call.ino, cred);
-                  if (at !== null) this.truncate(at, call.size, cred);
+                  // Through its description when it names one: authorized at its open.
+                  if (call.description !== undefined) this.describedBy(options.descriptions, call.description, call.path).truncate(call.size);
+                  else {
+                    const at = this.describedFile(call.path, call.ino, cred);
+                    if (at !== null) this.truncate(at, call.size, cred);
+                  }
                 }
                 else if (call.call === 'rm') {
                   // fs.rm: a name not there is no refusal when forced.
@@ -9689,7 +9744,9 @@ export class SqliteVFS {
                 }
                 else if (call.call === 'lchown') this.chown(call.path, call.uid, call.gid, cred, false);
                 else if (call.call === 'lutimes') this.utimes(call.path, call.atime, call.mtime, cred, false);
-                else if (call.call === 'open') return this.openToWrite(call, cred);
+                else if (call.call === 'open') return this.openToWrite(call, cred, options.descriptions);
+                // Closing a description already gone (a mount's open keeps none) closes nothing.
+                else if (call.call === 'close') options.descriptions?.close(call.description);
                 else this.symlink(call.target, call.path, cred, call.ino);
               }, { alone: call.call !== 'mkdir', receipt: call.call === 'open' });
               break;

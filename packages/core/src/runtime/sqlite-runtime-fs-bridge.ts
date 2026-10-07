@@ -1,4 +1,4 @@
-import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
+import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription, type WaveDescriptions } from '../vfs/sqlite-vfs.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
 import { readDeclaredSource, readRangeOrWhole, type SyncVFS, type VfsRemoval, type VfsStat } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
@@ -34,6 +34,8 @@ interface OpenDescription {
 export interface SqliteDescriptorScope {
   nextId: number;
   handles: Map<number, OpenDescription>;
+  /** The process's open descriptions its waves name (W7Call description), by the id it chose: descriptors of its own. */
+  waveDescriptions: Map<string, number>;
   closed: boolean;
   /** Aborted when the scope closes; cancels in-flight stream commits. */
   abort: AbortController;
@@ -41,7 +43,7 @@ export interface SqliteDescriptorScope {
 }
 
 export function createSqliteDescriptorScope(): SqliteDescriptorScope {
-  return { nextId: 1, handles: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set() };
+  return { nextId: 1, handles: new Map(), waveDescriptions: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set() };
 }
 
 /**
@@ -79,6 +81,7 @@ export function closeDescriptions(scope: SqliteDescriptorScope): unknown[] {
     }
   }
   scope.handles.clear();
+  scope.waveDescriptions.clear();
   return lost;
 }
 
@@ -783,8 +786,39 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   writeStream(stream: ReadableStream<Uint8Array>, options?: Parameters<CredentialedVfs['writeStream']>[1]) {
-    return this.vfs.writeStream(stream, options);
+    return this.vfs.writeStream(stream, { ...options, descriptions: this.waveDescriptions });
   }
+
+  /**
+   * The open descriptions a process's waves name (WaveDescriptions): each one
+   * this binding's descriptor, so the process reads, stats and closes it as
+   * any of its own; its access decided at its open, and its file alive until
+   * its close.
+   */
+  private readonly waveDescriptions: WaveDescriptions = {
+    open: (path, rights, id, cred) => {
+      const node = this.rawVfs.openDescription(path, cred, rights, this.vfs.principal, this.vfs.holds);
+      const handle: RuntimeFileHandle = {
+        id: this.scope.nextId++, path, flags: Object.freeze(normalizeOpenFlags({ read: rights.read, write: rights.write })), position: 0, closed: false,
+      };
+      this.scope.handles.set(handle.id, { handle, node, refs: 1 });
+      // The same id opened again (an op re-sent after its answer was lost is answered, not applied): the newer is it.
+      const prior = this.scope.waveDescriptions.get(id);
+      if (prior !== undefined && this.scope.handles.has(prior)) this.close(prior);
+      this.scope.waveDescriptions.set(id, handle.id);
+      return handle.id;
+    },
+    node: (id) => {
+      const handleId = this.scope.waveDescriptions.get(id);
+      return handleId === undefined ? undefined : this.scope.handles.get(handleId)?.node;
+    },
+    close: (id) => {
+      const handleId = this.scope.waveDescriptions.get(id);
+      if (handleId === undefined) return;
+      this.scope.waveDescriptions.delete(id);
+      if (this.scope.handles.has(handleId)) this.close(handleId);
+    },
+  };
 
   /**
    * A lease, or with `terms` a delegation (made by the process that holds

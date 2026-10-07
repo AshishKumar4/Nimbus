@@ -199,6 +199,16 @@ async function create(fs, path, text) {
   assert.equal(s.kernel.exists('home/user/proj/d2/c.txt'), false);
 }
 
+/** Resolves once `ready()` answers, polling. */
+async function until(ready, what) {
+  for (let i = 0; i < 400; i++) {
+    const value = ready();
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`never: ${what}`);
+}
+
 // ── A resident's process logs what it sends in its own store until the session answers ──
 // (process-fs-journal.ts): what it dies holding, the session drains from
 // there. Red before: the holder's client was made without the journal.
@@ -372,18 +382,95 @@ async function create(fs, path, text) {
   await s.fs.settle();
 }
 
-// ── Review 12: a refusal of a write through is reported at the description's next fsync ──
+// ── Review D (POSIX): an open description's access is fixed at its open ──
+// A chmod and chown after the open leave its writes allowed; an O_RDWR of a
+// write-only file is EACCES at the open. Red before: each write rechecked
+// the name's permission (EACCES at the next fsync), and the open asked only
+// for write.
 {
   const s = session();
-  s.kernel.writeFile('home/user/ro.txt', enc.encode('ro'));
-  s.kernel.chown('home/user/ro.txt', 1000, 1000);
-  const fd = await s.fs.open('/home/user/ro.txt', { write: true });
-  // Made read-only by the kernel after the open: the session refuses the write.
-  s.kernel.chown('home/user/ro.txt', 0, 0);
-  s.kernel.chmod('home/user/ro.txt', 0o444);
-  await s.fs.write(fd.id, 0, enc.encode('XX'));
-  await assert.rejects(async () => s.fs.fsync(fd.id), { code: 'EACCES' }, 'a refused write through was not reported, with its errno');
+  s.kernel.writeFile('home/user/kept.txt', enc.encode(''));
+  s.kernel.chown('home/user/kept.txt', 1000, 1000);
+  const fd = await s.fs.open('/home/user/kept.txt', { write: true });
+  s.kernel.chown('home/user/kept.txt', 0, 0);
+  s.kernel.chmod('home/user/kept.txt', 0o444);
+  await s.fs.write(fd.id, 0, enc.encode('still mine'));
+  await s.fs.fsync(fd.id);
   await s.fs.close(fd.id);
+  await s.fs.settle();
+  assert.equal(await withRecall(() => s.kernel.readFileString('home/user/kept.txt')), 'still mine', 'a chmod after the open stopped its writes');
+  s.kernel.writeFile('home/user/wonly.txt', enc.encode('secret'));
+  s.kernel.chown('home/user/wonly.txt', 1000, 1000);
+  s.kernel.chmod('home/user/wonly.txt', 0o200);
+  await assert.rejects(async () => s.fs.open('/home/user/wonly.txt', { read: true, write: true }), { code: 'EACCES' }, 'O_RDWR of a write-only file opened');
+}
+
+// ── Review D: reads, fstat and writes go through the description's own file ──
+// Red before: the first read reopened the old name (the replacement's bytes,
+// or ENOENT), fstat by name said nlink 0 after a rename, and a write after
+// an unlink was dropped.
+{
+  const s = session();
+  s.kernel.writeFile('home/user/rr.txt', enc.encode(''));
+  s.kernel.chown('home/user/rr.txt', 1000, 1000);
+  const fd = await s.fs.open('/home/user/rr.txt', { read: true, write: true });
+  await s.fs.write(fd.id, 0, enc.encode('mine'));
+  const ino = (await s.fs.fstat(fd.id)).ino;
+  // Renamed away, and the name reused for another file.
+  await withRecall(() => s.kernel.rename('home/user/rr.txt', 'home/user/rr.old'));
+  await withRecall(() => s.kernel.writeFile('home/user/rr.txt', enc.encode('other')));
+  assert.equal(dec.decode(await s.fs.read(fd.id, 0, 10)), 'mine', 'a read reopened the name, not the description\'s file');
+  const renamed = await s.fs.fstat(fd.id);
+  assert.equal(renamed.ino, ino);
+  assert.equal(renamed.nlink, 1, 'fstat of a renamed description said it has no name');
+  // Unlinked: still its file, still writable, until its close.
+  await withRecall(() => s.kernel.unlink('home/user/rr.old'));
+  await s.fs.write(fd.id, 4, enc.encode('+more'));
+  await s.fs.fsync(fd.id);
+  assert.equal(dec.decode(await s.fs.read(fd.id, 0, 20)), 'mine+more', 'a write after an unlink was dropped');
+  assert.equal((await s.fs.fstat(fd.id)).nlink, 0);
+  await s.fs.close(fd.id);
+  await s.fs.settle();
+  assert.equal(await withRecall(() => s.kernel.readFileString('home/user/rr.txt')), 'other');
+}
+
+// ── Review D8 (race): what a description writes while its grant's recall is sent goes through ──
+// Red before: the description went on deciding while the recall's flush
+// waited, and the drain after it replayed the whole file over the peer's write.
+{
+  const gate = Promise.withResolvers();
+  let holding = false;
+  const s = session({ gate: { then: (resolve, reject) => (holding ? gate.promise : Promise.resolve()).then(resolve, reject) } });
+  await s.fs.mkdir('/home/user/proj/race', { mode: 0o755 });
+  const fd = await s.fs.open('/home/user/proj/race/f', { read: true, write: true, create: true, truncate: true, mode: 0o644 });
+  await s.fs.write(fd.id, null, enc.encode('abcd'));
+  holding = true;
+  const peer = withRecall(() => s.kernel.writeRange('home/user/proj/race/f', 2, enc.encode('Z')));
+  await until(() => s.fs.stats().client.recalls >= 1, 'the recall');
+  // The recall's send is held: the description writes meanwhile.
+  await s.fs.write(fd.id, 0, enc.encode('X'));
+  holding = false;
+  gate.resolve();
+  await peer;
+  await s.fs.fsync(fd.id);
+  assert.equal(await withRecall(() => s.kernel.readFileString('home/user/proj/race/f')), 'XbZd', 'a write during the recall replayed the whole file over the peer');
+  await s.fs.close(fd.id);
+  await s.fs.settle();
+}
+
+// ── Review D: O_APPEND set on a write-through description is the description's ──
+// Red before: setStatus of the holder's descriptor went to the session (EBADF).
+{
+  const s = session();
+  s.kernel.writeFile('home/user/st.log', enc.encode('a;'));
+  s.kernel.chown('home/user/st.log', 1000, 1000);
+  const fd = await s.fs.open('/home/user/st.log', { write: true });
+  await s.fs.setStatus(fd.id, { append: true });
+  await s.fs.write(fd.id, null, enc.encode('b;'));
+  await s.fs.fsync(fd.id);
+  await s.fs.close(fd.id);
+  await s.fs.settle();
+  assert.equal(await withRecall(() => s.kernel.readFileString('home/user/st.log')), 'a;b;');
 }
 
 console.log('wasi delegation holder: ok');

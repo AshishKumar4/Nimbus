@@ -8,7 +8,9 @@
  * one operation per path, deletes then directories then files) is still
  * decoded for the one release that rolls v4 out: delete it with W7_MAGIC_V3.
  * Fields added to v4 since (each deploys with both ends, so the magic stays):
- * a create call's `umask`, and the `open` call (a write description's open).
+ * a create call's `umask`; the `open` and `close` calls (a write
+ * description's), and a description's `description` on its write, append
+ * and ftruncate calls.
  */
 
 import { crc32 } from './crc32.js';
@@ -106,16 +108,18 @@ export type W7Call =
   | { call: 'writeFile'; path: string; mode: number; ino?: number; umask?: number; data: Uint8Array }
   | { call: 'appendFile'; path: string; mode: number; ino?: number; umask?: number; data: Uint8Array }
   /**
-   * A write through an open description (pwrite(2)) at `offset`: of the
-   * file whose inode is `ino` when the process knows it (wherever that file
-   * is named now, and nowhere once no name has it), else of the file at
+   * A write through an open description (pwrite(2)) at `offset`: through
+   * the session's description `description` when given (opened by an `open`
+   * call: its access was decided then, and no later chmod, chown, rename or
+   * unlink changes it), else of the file whose inode is `ino` (wherever that
+   * file is named now, and nowhere once no name has it), else of the file at
    * `path`. Past its end, the gap reads as zeros.
    */
-  | { call: 'write'; path: string; ino?: number; offset: number; data: Uint8Array }
+  | { call: 'write'; path: string; ino?: number; description?: string; offset: number; data: Uint8Array }
   /** A write through an O_APPEND description: at the file's end as it is when the write lands. */
-  | { call: 'append'; path: string; ino?: number; data: Uint8Array }
-  /** ftruncate(2) through an open description: the file `ino` names when given, else the one at `path`. */
-  | { call: 'ftruncate'; path: string; ino?: number; size: number }
+  | { call: 'append'; path: string; ino?: number; description?: string; data: Uint8Array }
+  /** ftruncate(2) through an open description: `description`'s file, else the file `ino` names, else the one at `path`. */
+  | { call: 'ftruncate'; path: string; ino?: number; description?: string; size: number }
   /** `existing: 'ok'`: a directory already there answers success, as `mkdir -p` takes it (anything else there is still EEXIST). */
   | { call: 'mkdir'; path: string; mode: number; ino?: number; umask?: number; existing?: 'ok' }
   | { call: 'unlink'; path: string }
@@ -132,14 +136,19 @@ export type W7Call =
   /** utimes of the link itself (lutimes). */
   | { call: 'lutimes'; path: string; atime: number; mtime: number }
   /**
-   * open(2) of a file to write it, as the session's own open decides it: a
-   * name made (`create`, `mode` less `umask`) or refused (EEXIST when
-   * `exclusive`, ENOENT without `create`, EISDIR, EACCES), emptied when
-   * `truncate`, a link at the name followed unless `nofollow` (ELOOP). Its
-   * answer is the file's stat; the description writes it by its number
-   * (write, append and ftruncate calls with `ino`).
+   * open(2) of a file to write it (and to read it when `read`), as the
+   * session's own open decides it: a name made (`create`, `mode` less
+   * `umask`) or refused (EEXIST when `exclusive`, ENOENT without `create`,
+   * EISDIR, EACCES for any access asked that the file's mode refuses),
+   * emptied when `truncate`, a link at the name followed unless `nofollow`
+   * (ELOOP). Its answer is the file's stat. With `description` (an id the
+   * process chose), the session keeps the open description under it, its
+   * access fixed now; the description's write, append and ftruncate calls
+   * name it, and its `close` ends it.
    */
-  | { call: 'open'; path: string; mode: number; umask?: number; create?: true; truncate?: true; exclusive?: true; nofollow?: true };
+  | { call: 'open'; path: string; mode: number; umask?: number; read?: true; create?: true; truncate?: true; exclusive?: true; nofollow?: true; description?: string }
+  /** close(2) of the session's open description `description` (an `open` call's). */
+  | { call: 'close'; path: string; description: string };
 
 /** A call whose bytes travel as a file's chunks. */
 export type W7DataCall = Extract<W7Call, { data: Uint8Array }>['call'];
@@ -243,6 +252,8 @@ interface FileBeginMetadata extends InodeMetadata {
   offset?: number;
   /** A writeFile's or appendFile's umask (W7Call umask). */
   umask?: number;
+  /** A write's or append's open description (W7Call description). */
+  description?: string;
 }
 
 interface FileEndMetadata {
@@ -277,7 +288,7 @@ export interface W7DecodeOptions {
 
 type W7DirectoryInode = BatchInodeEntry & { kind: 'directory'; isDir: true };
 /** `call`: the file is a W7DataCall's bytes (its path, mode and size), not an upsert's inode. */
-type W7ContentInode = BatchInodeEntry & { kind: 'file' | 'symlink'; isDir: false; call?: W7DataCall; offset?: number; umask?: number };
+type W7ContentInode = BatchInodeEntry & { kind: 'file' | 'symlink'; isDir: false; call?: W7DataCall; offset?: number; umask?: number; description?: string };
 
 export type W7DecodedRecord =
   | { type: 'delete'; path: string }
@@ -665,7 +676,7 @@ async function* decodeRecords(
           if (v3) throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
           summary.pathCount++;
           summary.opCount++;
-          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'create', 'truncate', 'exclusive', 'nofollow']);
+          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'read', 'create', 'truncate', 'exclusive', 'nofollow', 'description']);
           yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
           break;
         }
@@ -795,6 +806,7 @@ async function* encodeFile(file: EncoderFile, state: EncoderState): AsyncGenerat
     ...(file.inode.call === undefined ? {} : { call: file.inode.call }),
     ...(file.inode.offset === undefined ? {} : { offset: file.inode.offset }),
     ...(file.inode.umask === undefined ? {} : { umask: file.inode.umask }),
+    ...(file.inode.description === undefined ? {} : { description: file.inode.description }),
   }, state);
   let fileCheck = 0;
   let chunkId = 0;
@@ -986,6 +998,7 @@ function prepareOps(payload: BatchWritePayload, batchId: string): EncoderOp[] {
           inode.call = call.call;
           if (call.call === 'write') inode.offset = safeInteger(call.offset, 'write offset');
           if ('umask' in call && call.umask !== undefined) inode.umask = umaskOf(call.umask, `${call.call} umask`);
+          if ('description' in call && call.description !== undefined) inode.description = descriptionId(call.description, `${call.call} description`);
           const chunks = w7Chunks(path, call.data);
           return { kind: 'file', file: { inode, contentId: `${batchId}:${fileIndex++}`, chunks, source: null } };
         }
@@ -1034,7 +1047,7 @@ function parseFileBegin(bytes: Uint8Array, v3: boolean): FileBeginMetadata {
     bytes,
     'file-begin',
     ['path', 'kind', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'],
-    v3 ? inodeOptional(v3) : [...inodeOptional(v3), 'call', 'offset', 'umask'],
+    v3 ? inodeOptional(v3) : [...inodeOptional(v3), 'call', 'offset', 'umask', 'description'],
   );
   const base = parseInodeMetadata(value, 'file-begin');
   if (value.kind !== 'file' && value.kind !== 'symlink') {
@@ -1057,13 +1070,15 @@ function parseFileBegin(bytes: Uint8Array, v3: boolean): FileBeginMetadata {
   if (call !== undefined && value.kind !== 'file') throw new Error(`w7-frame: ${base.path}: a ${String(call)} writes a file`);
   // An offset is a write's, and only a description's writes name an inode.
   if ((call === 'write') !== (value.offset !== undefined)) throw new Error(`w7-frame: ${base.path}: a write, and only a write, has an offset`);
-  // A umask is a call's that makes a name with a mode.
+  // A umask is a call's that makes a name with a mode; a description, a description's write's.
   if (value.umask !== undefined && call !== 'writeFile' && call !== 'appendFile') throw new Error(`w7-frame: ${base.path}: only a writeFile or appendFile has a umask`);
+  if (value.description !== undefined && call !== 'write' && call !== 'append') throw new Error(`w7-frame: ${base.path}: only a write or append names a description`);
   return {
     ...base, kind: value.kind, contentId, size, chunkCount,
     ...(call === undefined ? {} : { call }),
     ...(value.offset === undefined ? {} : { offset: safeInteger(value.offset, 'write offset') }),
     ...(value.umask === undefined ? {} : { umask: umaskOf(value.umask, 'file-begin umask') }),
+    ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'file-begin description') }),
   };
 }
 
@@ -1093,11 +1108,15 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
         ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'symlink ino') }),
       };
     case 'ftruncate':
-      if (keys !== 'call,ino,path,size' && keys !== 'call,path,size') break;
+      if (keys.replace(',description', '').replace(',ino', '') !== 'call,path,size') break;
       return {
         call: 'ftruncate', path: path(value.path, 'ftruncate path'), size: safeInteger(value.size, 'ftruncate size'),
         ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'ftruncate ino') }),
+        ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'ftruncate description') }),
       };
+    case 'close':
+      if (keys !== 'call,description,path') break;
+      return { call: 'close', path: path(value.path, 'close path'), description: descriptionId(value.description, 'close description') };
     case 'rm': {
       if (keys.replace(',force', '').replace(',recursive', '') !== 'call,path') break;
       for (const flag of ['recursive', 'force'] as const) {
@@ -1113,9 +1132,9 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
       if (keys !== 'call,gid,path,uid') break;
       return { call: 'lchown', path: path(value.path, 'lchown path'), uid: u32(value.uid, 'lchown uid'), gid: u32(value.gid, 'lchown gid') };
     case 'open': {
-      const flags = ['create', 'exclusive', 'nofollow', 'truncate'] as const;
+      const flags = ['create', 'exclusive', 'nofollow', 'read', 'truncate'] as const;
       let required = keys;
-      for (const flag of [...flags, 'umask']) required = required.replace(`,${flag}`, '');
+      for (const flag of ['create', 'description', 'exclusive', 'nofollow', 'read', 'truncate', 'umask']) required = required.replace(`,${flag}`, '');
       if (required !== 'call,mode,path') break;
       for (const flag of flags) {
         if (value[flag] !== undefined && value[flag] !== true) throw new Error(`w7-frame: open ${flag} is true or absent`);
@@ -1127,6 +1146,8 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
         ...(value.truncate === true ? { truncate: true as const } : {}),
         ...(value.exclusive === true ? { exclusive: true as const } : {}),
         ...(value.nofollow === true ? { nofollow: true as const } : {}),
+        ...(value.read === true ? { read: true as const } : {}),
+        ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'open description') }),
       };
     }
     case 'lutimes':
@@ -1178,6 +1199,13 @@ function parseInodeMetadata(value: Record<string, unknown>, label: string): Inod
     mode: u32(value.mode, `${label} mode`),
     ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, `${label} ino`) }),
   };
+}
+
+/** An open description's id, as a process chose it: up to 64 characters of [A-Za-z0-9_-]. */
+function descriptionId(value: unknown, label: string): string {
+  const id = boundedString(value, label, 64);
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`w7-frame: ${label} is not a description id`);
+  return id;
 }
 
 /** A umask: permission bits, 0 to 0o777. */
@@ -1300,6 +1328,7 @@ function fileInode(metadata: FileBeginMetadata): W7ContentInode {
     ...(metadata.call === undefined ? {} : { call: metadata.call }),
     ...(metadata.offset === undefined ? {} : { offset: metadata.offset }),
     ...(metadata.umask === undefined ? {} : { umask: metadata.umask }),
+    ...(metadata.description === undefined ? {} : { description: metadata.description }),
   };
 }
 
