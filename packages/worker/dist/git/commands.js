@@ -18,6 +18,7 @@ import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { DEFAULT_CONTEXT, DEFAULT_RENAME_SCORE, absentSpec, binaryPath, bytesFromBinary, detectRenames, formatNameOnly, formatNameStatus, formatPatch, formatStat, parseRenameScore, pathLine, statFile, StatList, } from './unified-diff.js';
 import { CheckoutRefused, UnmergedIndex, switchTrees } from './worktree/checkout.js';
+import { sparseCheckout } from './sparse-checkout.js';
 import { DirCache, NewEntries, comparePaths } from './worktree/dircache.js';
 import { isValidRefName } from './worktree/refname.js';
 import { PairList } from './worktree/pairs.js';
@@ -3105,6 +3106,28 @@ network = ISOLATE_NETWORK) {
                 return await revParse(ctx, git, fs, repoVfs, subArgs);
             case 'ls-files':
                 return await lsFiles(ctx, git, repoVfs, fs, subArgs);
+            case 'sparse-checkout': {
+                const repo = await discoverRepo(repoVfs, dir);
+                if (!repo) {
+                    await ctx.stderr.write(NOT_A_REPOSITORY);
+                    return 128;
+                }
+                if (!repo.worktree) {
+                    await ctx.stderr.write(NOT_A_WORK_TREE);
+                    return 128;
+                }
+                const root = normalizeVfsPath(repo.worktree);
+                const here = normalizeVfsPath(dir);
+                return await sparseCheckout({
+                    wrepo: worktreeRepo(ctx, git, repoVfs, fs, repo.gitdir, repo.worktree),
+                    root: repo.worktree,
+                    // git's prefix: the command's directory below the top.
+                    prefix: here.startsWith(`${root}/`) ? `${here.slice(root.length + 1)}/` : '',
+                    writer: checkoutWriter(repoVfs, repo.worktree),
+                    stdout: async (text) => { await ctx.stdout.write(text); },
+                    stderr: async (text) => { await ctx.stderr.write(text); },
+                }, subArgs);
+            }
             case 'log': {
                 const maxCount = parseInt(getFlag(subArgs, '-n') || getFlag(subArgs, '--max-count') || '10');
                 const oneline = subArgs.includes('--oneline');

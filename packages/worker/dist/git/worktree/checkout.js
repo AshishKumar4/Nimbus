@@ -124,7 +124,7 @@ const hasCode = (error, ...codes) => error instanceof Error && 'code' in error &
  * CheckoutRefused, having written nothing, when git would refuse.
  */
 export async function switchTrees(ctx, head, target, force) {
-    const { store, tree, dc, excludes, root, writer } = ctx;
+    const { store, tree, dc, excludes } = ctx;
     const sparse = ctx.sparse ?? null;
     const outside = (path) => sparse !== null && !sparse.includes(path);
     if (!force) {
@@ -176,19 +176,8 @@ export async function switchTrees(ctx, head, target, force) {
         }
     }
     // The worktree's view of a path, as a walk from the top sees it: nothing below a link or a file.
-    const leading = new Map();
-    const reachable = async (path) => {
-        const dir = parentOf(path);
-        if (!dir)
-            return true;
-        let real = leading.get(dir);
-        if (real === undefined) {
-            real = await reachable(dir) && (await tree.fs.lstat(dir))?.type === 'directory';
-            leading.set(dir, real);
-        }
-        return real;
-    };
-    const lstat = async (path) => (await reachable(path)) ? await tree.fs.lstat(path) : null;
+    const view = worktreeView(tree);
+    const lstat = view.lstat;
     const ops = [];
     const refusal = { local: [], directories: [], untracked: [] };
     const replaced = new Set();
@@ -396,39 +385,122 @@ export async function switchTrees(ctx, head, target, force) {
             untracked: [...new Set(refusal.untracked)],
         }, ctx.operation);
     }
-    // apply_sparse_checkout for each entry the trees left as it was: outside the cone it is made
-    // skip-worktree, its file going if up to date (a reset's always), else staying and named; inside,
-    // one that was skip-worktree is written.
-    const left = [];
+    const left = { notUptodate: [], unmerged: [], orphaned: [] };
     if (sparse !== null) {
-        const moved = new Set(ops.map((op) => op.path));
-        for (let i = 0; i < dc.count; i++) {
-            if (dc.stage(i) !== 0)
-                continue;
-            const path = dc.path(i);
-            const inside = sparse.includes(path);
-            if (inside !== dc.skipWorktree(i) || moved.has(path))
-                continue;
-            const gitlink = kindOfMode(dc.mode(i)) === 'commit';
-            const st = await lstat(path);
-            if (inside) {
-                // Its file is not there (it would not be skip-worktree if it were): it is written.
-                if (st === null)
-                    ops.push({ method: gitlink ? 'mkdir-index' : 'create', path, oid: dc.oid(i), mode: dc.mode(i) });
-            }
-            else if (gitlink || force || st === null || (st.type !== 'directory' && await compareEntry(tree, dc, i, path, st) === null)) {
-                ops.push({ method: 'sparsify', path, index: i, gitlink, present: st !== null && (st.type === 'directory') === gitlink });
+        ops.push(...await sparseOps(ctx, view, sparse, new Set(ops.map((op) => op.path)), force, left, false));
+        const text = sparseLeftWarning(left);
+        if (text && ctx.warn)
+            await ctx.warn(text);
+    }
+    return await applyOps(ctx, ops, sparse);
+}
+/** display_warning_msgs: each kind's paths, then the advice once; '' when nothing was left. */
+function sparseLeftWarning({ notUptodate, unmerged, orphaned }) {
+    const list = (paths) => paths.map((path) => `\t${path}\n`).join('');
+    let text = '';
+    if (notUptodate.length > 0)
+        text += `warning: The following paths are not up to date and were left despite sparse patterns:\n${list(notUptodate)}\n`;
+    if (unmerged.length > 0)
+        text += `warning: The following paths are unmerged and were left despite sparse patterns:\n${list(unmerged)}\n`;
+    if (orphaned.length > 0)
+        text += `warning: The following paths were already present and thus not updated despite sparse patterns:\n${list(orphaned)}\n`;
+    return text && `${text}After fixing the above paths, you may want to run \`git sparse-checkout reapply\`.\n`;
+}
+function worktreeView(tree) {
+    const leading = new Map();
+    const reachable = async (path) => {
+        const dir = parentOf(path);
+        if (!dir)
+            return true;
+        let real = leading.get(dir);
+        if (real === undefined) {
+            real = await reachable(dir) && (await tree.fs.lstat(dir))?.type === 'directory';
+            leading.set(dir, real);
+        }
+        return real;
+    };
+    const blockedDirs = new Map();
+    const blockedDir = async (dir) => {
+        if (!dir)
+            return false;
+        let blocked = blockedDirs.get(dir);
+        if (blocked === undefined) {
+            if (await blockedDir(parentOf(dir))) {
+                blocked = true;
             }
             else {
-                left.push(path);
+                const st = await tree.fs.lstat(dir);
+                blocked = st !== null && st.type !== 'directory';
+            }
+            blockedDirs.set(dir, blocked);
+        }
+        return blocked;
+    };
+    return {
+        lstat: async (path) => ((await reachable(path)) ? await tree.fs.lstat(path) : null),
+        blocked: (path) => blockedDir(parentOf(path)),
+    };
+}
+/**
+ * apply_sparse_checkout for each entry `moved` does not name: outside the
+ * cone it is made skip-worktree, its file going if up to date (a reset's
+ * always), else staying (`left`); inside, one that was skip-worktree is
+ * written, unless something is in its way (then it is skip-worktree no
+ * longer, and named). An unmerged entry stays, named when `unmerged`
+ * (update_sparsity's warn_conflicted_path).
+ */
+async function sparseOps(ctx, view, sparse, moved, force, left, unmerged) {
+    const { tree, dc } = ctx;
+    const ops = [];
+    for (let i = 0; i < dc.count; i++) {
+        if (dc.stage(i) !== 0) {
+            const path = dc.path(i);
+            if (unmerged && left.unmerged[left.unmerged.length - 1] !== path)
+                left.unmerged.push(path);
+            continue;
+        }
+        const path = dc.path(i);
+        const inside = sparse.includes(path);
+        if (inside !== dc.skipWorktree(i) || moved.has(path))
+            continue;
+        const gitlink = kindOfMode(dc.mode(i)) === 'commit';
+        const st = await view.lstat(path);
+        if (inside) {
+            // Its file is not there (it would not be skip-worktree if it were): it is written, but over nothing.
+            if (st === null && !await view.blocked(path)) {
+                ops.push({ method: gitlink ? 'mkdir-index' : 'create', path, oid: dc.oid(i), mode: dc.mode(i) });
+            }
+            else {
+                left.orphaned.push(path);
+                dc.setSkipWorktree(i, false);
             }
         }
+        else if (gitlink || force || st === null || (st.type !== 'directory' && await compareEntry(tree, dc, i, path, st) === null)) {
+            ops.push({ method: 'sparsify', path, index: i, gitlink, present: st !== null && (st.type === 'directory') === gitlink });
+        }
+        else {
+            left.notUptodate.push(path);
+        }
     }
-    if (left.length > 0 && ctx.warn) {
-        await ctx.warn('warning: The following paths are not up to date and were left despite sparse patterns:\n'
-            + left.map((path) => `\t${path}\n`).join('')
-            + '\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.\n');
-    }
+    return ops;
+}
+/**
+ * update_sparsity (sparse-checkout set, add, reapply, disable): `sparse`
+ * applied to every entry of the index, nothing else moved; what it leaves
+ * is named as git names it. Answers the index edit that goes with it.
+ */
+export async function updateSparsity(ctx, sparse) {
+    const view = worktreeView(ctx.tree);
+    const left = { notUptodate: [], unmerged: [], orphaned: [] };
+    const ops = await sparseOps(ctx, view, sparse, new Set(), false, left, true);
+    const text = sparseLeftWarning(left);
+    if (text && ctx.warn)
+        await ctx.warn(text);
+    return await applyOps(ctx, ops, sparse);
+}
+/** Files go, directories go (deepest first), directories come, files come: the worktree moved and the index edit. */
+async function applyOps(ctx, ops, sparse) {
+    const { store, tree, dc, root, writer } = ctx;
     const removed = new Set();
     const unindex = (path) => {
         const at = dc.find(path);

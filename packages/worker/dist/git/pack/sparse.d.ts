@@ -27,6 +27,8 @@ export interface Cone {
     recursive: readonly string[];
     parents: readonly string[];
 }
+/** Every path: the cone `sparse-checkout disable` applies, and a file holding "/*" alone. */
+export declare const FULL_CONE: Cone;
 /**
  * The cone `git sparse-checkout set --cone <dirs>` makes (sparse-checkout.c
  * insert_recursive_pattern): each directory recursive and its ancestors
