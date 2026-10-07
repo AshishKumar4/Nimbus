@@ -71,6 +71,8 @@ function commandContext(args) {
     vfs: {
       async realpath(path) { return path; },
       async stat() { return { type: 'directory', size: 0, mtimeMs: 0, dev: 1 }; },
+      // Each directory is empty: a destination is one a clone may take.
+      async readdir() { return []; },
     },
   };
 }

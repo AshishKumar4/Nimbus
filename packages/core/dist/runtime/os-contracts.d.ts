@@ -307,7 +307,8 @@ export interface RuntimeFsBridge {
     chown(path: RuntimeFsPath, uid: number, gid: number, options?: {
         followSymlinks?: boolean;
     }): Awaitable<VfsMutationReceipt>;
-    open(path: RuntimeFsPath, flags: RuntimeOpenFlags): Awaitable<RuntimeFileHandle>;
+    /** `options.mutationOwner`: the lease an open for writing presents. */
+    open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): Awaitable<RuntimeFileHandle>;
     read(handleId: number, offset: number | null, length: number): Awaitable<Uint8Array>;
     write(handleId: number, offset: number | null, bytes: Uint8Array): Awaitable<number>;
     close(handleId: number): Awaitable<void>;
@@ -317,9 +318,9 @@ export interface RuntimeFsBridge {
     mkdir(path: RuntimeFsPath, options?: {
         recursive?: boolean;
         mode?: number;
-    }): Awaitable<void>;
-    unlink(path: RuntimeFsPath): Awaitable<void>;
-    rmdir(path: RuntimeFsPath): Awaitable<void>;
+    } & RuntimeMutationOwner): Awaitable<void>;
+    unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
+    rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
     rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
     readlink(path: RuntimeFsPath): Awaitable<string | null>;
     /**

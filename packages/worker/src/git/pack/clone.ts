@@ -21,6 +21,7 @@ import { coneMatcher, coneOf, coneSparseCheckout } from './sparse.js';
 import { ENTRY_BYTES, entryOffset } from './idx.js';
 import { installPack, RangedPackFile, readRange, resumeInstall, type PackFiles, type PackSummary } from './install.js';
 import { ByteLru } from './byte-lru.js';
+import { GitEntryWriteFailure } from './mount-writer.js';
 import { GRAPH_RECORDS_DIR } from './commit-graph.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';
 import { encodeIndexEntry, encodeIndexFile, splitIndexEntries, type EntryStat } from '../worktree/dircache.js';
@@ -170,6 +171,8 @@ export interface CloneBatchResult {
   indexBytes: number;
   /** The batch's own pack; null for a streamed clone's batch, read from the clone's pack. */
   pack: PackSummary | null;
+  /** git's error for each file it could not write (mount-writer.ts GitEntryWriteFailure): the checkout fails once it is done. */
+  checkoutErrors?: string[];
 }
 
 /** A clone whose server takes no wants by id: its one pack, stored, perhaps still to be decoded. */
@@ -936,6 +939,8 @@ export async function cloneBatch(
   let resolved = 0;
   let files = 0;
   const written: { path: string; mode: number; oid: Uint8Array }[] = [];
+  // A file that cannot be written: git's error, the checkout going on to the next (check_updates).
+  const checkoutErrors: string[] = [];
   const emit = async (oid: Uint8Array, data: Uint8Array): Promise<void> => {
     const paths = blobs.get(oidToHex(oid));
     if (paths === undefined) return;
@@ -943,8 +948,14 @@ export async function cloneBatch(
     // The writer takes what it is given, and the base cache keeps `data`:
     // each path gets its own copy.
     for (const { mode, path } of paths) {
-      if (mode === MODE_SYMLINK) await writer.symlink(path, decoder.decode(data));
-      else await writer.file(path, mode, data.slice());
+      try {
+        if (mode === MODE_SYMLINK) await writer.symlink(path, decoder.decode(data));
+        else await writer.file(path, mode, data.slice());
+      } catch (error) {
+        if (!(error instanceof GitEntryWriteFailure)) throw error;
+        checkoutErrors.push(error.lines);
+        continue;
+      }
       written.push({ path, mode, oid });
       files++;
     }
@@ -987,7 +998,7 @@ export async function cloneBatch(
   const indexBytes = share.byteLength;
   await writer.file(STAGE_DIR + '/index-' + request.index, 0o644, share);
   await writer.flush();
-  return { index: request.index, blobs: resolved, files, indexBytes, pack: summary };
+  return { index: request.index, blobs: resolved, files, indexBytes, pack: summary, ...(checkoutErrors.length > 0 ? { checkoutErrors } : {}) };
 }
 
 /**
@@ -1004,6 +1015,8 @@ export async function cloneFinish(
     tags?: readonly CloneTag[];
     /** A full clone's commit records (history.ts graphLists), or null when one did not parse: no graph. */
     graph?: { name: string; bytes: number }[] | null;
+    /** A file could not be written: as git dies before it writes its index, there is none. */
+    checkoutFailed?: boolean;
   },
 ): Promise<{ indexEntries: number; indexBytes: number; tags: number }> {
   const entries: Uint8Array[] = [];
@@ -1024,7 +1037,7 @@ export async function cloneFinish(
   const indexBytes = index.byteLength;
   const writer = context.writer();
   writer.setPin(context.marker.path, context.marker.text, true);
-  await writer.file('.git/index', 0o644, index);
+  if (request.checkoutFailed !== true) await writer.file('.git/index', 0o644, index);
   // With its history fetched (history.ts) the clone is no longer shallow.
   if (request.full === true) await writer.remove('.git/shallow');
   // git clone follows tags: those whose objects it fetched (include-tag sent

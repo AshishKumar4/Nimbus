@@ -49,6 +49,7 @@
       "name": "@nimbus-sh/probe",
       "version": "0.1.0",
       "dependencies": {
+        "@nimbus-sh/core": "workspace:^",
         "@nimbus-sh/sdk": "workspace:^",
         "@nimbus-sh/worker": "workspace:^",
       },

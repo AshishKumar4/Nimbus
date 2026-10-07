@@ -41,6 +41,7 @@ import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
 import { tagsHeld, type CloneBatchResult, type ClonePrepared, type CloneStreamed, type CloneTag } from './pack/clone.js';
 import { COMMITS_PER_CHUNK, treeSlices, type HistoryKind, type HistoryStepResult, type StagedFile } from './pack/history.js';
 import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js';
+import { CHECKOUT_FAILED } from './pack/mount-writer.js';
 
 export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters';
 
@@ -96,6 +97,8 @@ export interface GitNetworkOpts {
   onCloneCheckoutPhase?: () => Promise<void>;
   /** Clone-only: normalized root covered by the exclusive mutation lease. */
   exclusiveMutationRoot?: string;
+  /** The repository (a clone's destination) is on a mounted filesystem (`dir` its namespace path), where a wave's files are bounded (pack/mount-writer.ts). */
+  onMount?: boolean;
   /** Trusted supervisor-only lease owner; never sent to the dynamic worker. */
   mutationOwner?: string;
   /**
@@ -146,6 +149,8 @@ export interface GitSupervisorRpcCounters {
   symlink: number;
   legacySymlinkSubtree: number;
   stdout: number;
+  /** On a mount, a file past a wave's limit (pack/mount-writer.ts): its open, each write, its stat and close. */
+  fileApi: number;
 }
 
 export interface GitMetadataOverlayStats {
@@ -209,6 +214,8 @@ export interface GitNetworkResult {
   phases?: GitNetworkPhaseDiagnostic[];
   errorPhase?: GitCloneInvocationPhase | 'operation';
   errorCode?: GitNetworkErrorCode;
+  /** A write git would have failed: git's own lines for it (pack/mount-writer.ts GitWriteFailure). */
+  gitFailure?: string;
   budget?: GitCloneBudgetDiagnostic;
   /** A clone that failed after it wrote: its caller cleans up (git/clone-job.ts). */
   cleanup?: boolean;
@@ -240,6 +247,7 @@ interface FacetInvocationResult {
   refused?: unknown;
   errorCode?: unknown;
   fetched?: unknown;
+  gitFailure?: unknown;
   graphFilters?: unknown;
 }
 
@@ -269,6 +277,7 @@ const EMPTY_SUPERVISOR_RPC_COUNTERS: GitSupervisorRpcCounters = {
   symlink: 0,
   legacySymlinkSubtree: 0,
   stdout: 0,
+  fileApi: 0,
 };
 
 const EMPTY_METADATA_OVERLAY_STATS: GitMetadataOverlayStats = {
@@ -313,6 +322,7 @@ function parseSupervisorRpcCounters(value: unknown): GitSupervisorRpcCounters {
     symlink: nonNegativeCounter(counters.symlink),
     legacySymlinkSubtree: nonNegativeCounter(counters.legacySymlinkSubtree),
     stdout: nonNegativeCounter(counters.stdout),
+    fileApi: nonNegativeCounter(counters.fileApi),
   };
 }
 
@@ -404,12 +414,15 @@ class GitClonePhaseError extends Error {
   readonly diagnostic: GitNetworkPhaseDiagnostic;
   readonly mutated: boolean | undefined;
   readonly errorCode: GitNetworkErrorCode | undefined;
+  /** A write git would have failed: git's lines (GitNetworkResult.gitFailure). */
+  readonly gitFailure: string | undefined;
 
   constructor(
     phase: GitCloneInvocationPhase,
     message: string,
     diagnostic: GitNetworkPhaseDiagnostic,
     errorCode?: GitNetworkErrorCode,
+    gitFailure?: string,
   ) {
     super(message);
     this.name = 'GitClonePhaseError';
@@ -417,6 +430,7 @@ class GitClonePhaseError extends Error {
     this.diagnostic = diagnostic;
     this.mutated = diagnostic.mutated;
     this.errorCode = errorCode;
+    this.gitFailure = gitFailure;
   }
 }
 
@@ -658,6 +672,8 @@ interface CloneBatchRun {
   phases: GitNetworkPhaseDiagnostic[];
   accountResult(result: FacetInvocationResult): void;
   progress: GitSupervisorStub | null;
+  /** git's error for each worktree file a batch could not write, by batch: the checkout fails once all are done. */
+  checkoutErrors: Map<number, string[]>;
 }
 
 /**
@@ -760,6 +776,8 @@ async function invokeClonePhase(
       phase,
       typeof invocation.result.error === 'string' ? invocation.result.error : phase + ' failed',
       invocation.diagnostic,
+      undefined,
+      typeof invocation.result.gitFailure === 'string' ? invocation.result.gitFailure : undefined,
     );
   }
   return invocation;
@@ -785,6 +803,7 @@ async function runCloneBatches(
     const result = (invocation.result as { batch?: CloneBatchResult }).batch;
     if (result === undefined) throw new GitClonePhaseError('clone-batch', 'clone-batch returned no batch', invocation.diagnostic);
     shares.push({ name: 'index-' + result.index, bytes: result.indexBytes });
+    if (result.checkoutErrors !== undefined) run.checkoutErrors.set(result.index, result.checkoutErrors);
     completed++;
     run.budgetContext.batchesCompleted++;
     run.budgetContext.filesWritten += result.files;
@@ -921,8 +940,10 @@ async function runCloneFinish(
   /** A full clone's commit records (runCloneHistory), for its commit-graph. */
   graph: StagedFile[] | null,
   run: CloneBatchRun,
+  /** A file could not be written: no index, and the marker stays for the clone's cleanup. */
+  checkoutFailed = false,
 ): Promise<void> {
-  const finish = await invokeClonePhase('clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes, tags, graph }, run);
+  const finish = await invokeClonePhase('clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes, tags, graph, checkoutFailed }, run);
   if (run.progress) await writeClonePhaseProgress(run.progress, finish.diagnostic);
 }
 
@@ -971,11 +992,12 @@ export interface GraphFiltersOutcome {
 export async function runGraphFilters(
   ctx: DurableObjectState,
   env: any,
-  opts: { pid: number; dir: string; pieceBudgetMs?: number; pieceCommits?: number },
+  opts: { pid: number; dir: string; pieceBudgetMs?: number; pieceCommits?: number; onMount?: boolean },
   network: WorkspaceNetwork,
 ): Promise<GraphFiltersOutcome> {
   const result = await execGitNetwork(ctx, env, {
     op: 'graph-filters', pid: opts.pid, dir: opts.dir, quiet: true, timeout: GRAPH_FILTERS_TIMEOUT_MS,
+    ...(opts.onMount === true ? { onMount: true } : {}),
     graphFilterPieceCommits: opts.pieceCommits, graphFilterPieceBudgetMs: opts.pieceBudgetMs,
   }, network);
   if (!result.success) throw new Error('graph-filters: ' + (result.error ?? 'failed'));
@@ -1167,6 +1189,8 @@ export async function execGitNetwork(
                 ? prepare.result.error
                 : 'clone-prepare returned an invalid result',
               prepare.diagnostic,
+              undefined,
+              typeof prepare.result.gitFailure === 'string' ? prepare.result.gitFailure : undefined,
             );
           }
           if (!opts.quiet) await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic);
@@ -1182,6 +1206,7 @@ export async function execGitNetwork(
             phases,
             accountResult,
             progress: opts.quiet ? null : supervisorBinding,
+            checkoutErrors: new Map(),
           };
           const identity = { jobId, optionsHash };
           let fast = prepared.fast;
@@ -1208,7 +1233,26 @@ export async function execGitNetwork(
           // A clone that is not partial has every object once its batches (and history) are in.
           if (prepared.fast !== undefined && facetOpts.filter === undefined) await onCloneCheckoutPhase?.();
           const tags = tagsHeld(prepared.fast?.tags ?? prepared.stream?.tags ?? [], tagsFound);
-          await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, graph, run);
+          // A file a batch could not write: as git, every object fetched first, the clone
+          // finished but its index, then the checkout's failure with git's errors (its repository kept).
+          const checkoutErrors = [...run.checkoutErrors.entries()].sort(([a], [b]) => a - b).flatMap(([, errors]) => errors);
+          await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, graph, run, checkoutErrors.length > 0);
+          if (checkoutErrors.length > 0) {
+            facets.fence?.();
+            return {
+              success: false,
+              error: 'unable to checkout working tree',
+              errorPhase: 'clone-finish',
+              gitFailure: checkoutErrors.join('') + CHECKOUT_FAILED,
+              cleanup: true,
+              elapsed: Date.now() - start,
+              filesWritten,
+              bytesWritten,
+              supervisorRpc,
+              metadataOverlay,
+              phases,
+            };
+          }
           return {
             success: true,
             elapsed: Date.now() - start,
@@ -1251,6 +1295,7 @@ export async function execGitNetwork(
             errorCode: phaseError instanceof GitCloneBudgetExceededError
               ? phaseError.code
               : phaseError.errorCode,
+            gitFailure: phaseError.gitFailure,
             budget: phaseError instanceof GitCloneBudgetExceededError
               ? phaseError.budget
               : undefined,
@@ -1588,7 +1633,7 @@ function createSupervisorRpcCounters() {
   return {
     stat: 0, lstat: 0, readdir: 0, readFile: 0,
     fsReadRange: 0, fsWriteRange: 0, rename: 0, lock: 0, writeBatchStream: 0, readlink: 0, symlink: 0,
-    legacySymlinkSubtree: 0, stdout: 0,
+    legacySymlinkSubtree: 0, stdout: 0, fileApi: 0,
   };
 }
 
@@ -1690,7 +1735,7 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
       },
     },
     writer(onReceipts) {
-      return __nimbusWaveWriter.createWaveWriter({
+      const waves = __nimbusWaveWriter.createWaveWriter({
         supervisor: {
           // The writer's fence for this attempt goes with it: the session refuses a late original.
           writeBatchStream(stream, fence) {
@@ -1712,6 +1757,13 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
           if (onReceipts) onReceipts(report.receipts);
         },
       });
+      if (opts.onMount !== true) return waves;
+      // On a mount a file past a wave's limit is written through the session's file API (pack/mount-writer.ts).
+      return __nimbusGitPack.mountWriter(waves, facetFileApi(supervisor, stats, deadline), dir, (receipts) => {
+        stats.filesWritten += receipts.length;
+        for (const receipt of receipts) stats.bytesWritten += receipt.size;
+        if (onReceipts) onReceipts(receipts);
+      });
     },
     dir,
     url: opts.url,
@@ -1719,6 +1771,29 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
     marker: { path: '.git/' + CLONE_JOB_MARKER, text: cloneJobMarker(opts) },
     onProgress: (line) => log('remote: ' + line + '\\n'),
   };
+}
+
+/**
+ * The session's file API through the facet's binding (pack/mount-writer.ts
+ * FileApi), its lease presented by the binding, each call counted; within
+ * the phase's deadline as withinDeadline admits calls (a close or an
+ * unlink, cleaning up, past it too).
+ */
+function facetFileApi(supervisor, stats, deadline = null) {
+  const call = (counter, fn) => {
+    stats.supervisorRpc[counter]++;
+    return useRpcResult(fn(), (result) => result);
+  };
+  return __nimbusGitPack.withinDeadline({
+    mkdir: (path, options) => call('fileApi', () => supervisor.mkdir(path, options)),
+    unlink: (path) => call('fileApi', () => supervisor.unlink(path)),
+    discard: (path) => call('fileApi', () => supervisor.unlink(path)),
+    fsOpen: (path, flags) => call('fileApi', () => supervisor.fsOpen(path, flags)),
+    fsWrite: (id, offset, bytes) => call('fileApi', () => supervisor.fsWrite(id, offset, bytes)),
+    fsFstat: (id) => call('fileApi', () => supervisor.fsFstat(id)),
+    fsClose: (id) => call('fileApi', () => supervisor.fsClose(id)),
+    rename: (from, to) => call('rename', () => supervisor.rename(from, to)),
+  }, deadline);
 }
 
 /**
@@ -1745,7 +1820,10 @@ function createBufferedFs(
   authoritativeRootMetadata,
   phaseDeadline = null,
   worktreeRoot = null,
+  onMount = false,
 ) {
+  // On a mount, a file past a wave's limit is written in place (pack/mount-writer.ts).
+  const fileApi = onMount ? facetFileApi(supervisor, stats, phaseDeadline) : null;
   const metadata = new Map();
   const children = new Map();
   const textEncoder = new TextEncoder();
@@ -2118,6 +2196,15 @@ function createBufferedFs(
             mtimeMs: now, ctimeMs: now, atimeMs: now,
           };
           setMetadata(p, fileMetadata);
+          if (fileApi !== null && buf.length > __nimbusGitPack.MOUNT_WAVE_FILE_MAX) {
+            // What the waves hold before it lands first; then the file, as a program writes it.
+            await writer.flush();
+            const stat = await __nimbusGitPack.replaceFile(fileApi, '/' + p, mode, buf);
+            stampEntry(fileMetadata, stat.mtimeMs);
+            stats.filesWritten++;
+            stats.bytesWritten += buf.length;
+            return;
+          }
           await writer.file(p, mode, buf, fileMetadata);
         });
       },
@@ -2499,11 +2586,15 @@ export default {
           cacheTreeBytes: opts.cacheTreeBytes,
           tags: opts.tags,
           graph: opts.graph,
+          checkoutFailed: opts.checkoutFailed === true,
         });
         // The marker goes last: until it does, a failure leaves the clone abortable.
-        const writer = context.writer();
-        await writer.remove('.git/' + CLONE_JOB_MARKER);
-        await writer.flush();
+        // A checkout that failed keeps it: the clone's cleanup (git's junk mode) is still to come.
+        if (opts.checkoutFailed !== true) {
+          const writer = context.writer();
+          await writer.remove('.git/' + CLONE_JOB_MARKER);
+          await writer.flush();
+        }
         return respond(true, { finished, metadataOverlay: emptyMetadataOverlayStats() });
       }
       if (phase === 'clone-prepare') {
@@ -2581,6 +2672,7 @@ export default {
         phaseDeadline,
         // fetch, pull and push work in a repository that already exists.
         phase === 'operation' ? normalizePath(opts.dir) : null,
+        opts.onMount === true,
       );
       const fs = bufferedFs.fs;
       // cf-git reads packed objects by range and stores a fetched pack as it arrives (git/pack/facet-packs.ts).
@@ -2685,6 +2777,8 @@ export default {
       return respond(false, {
         error: (e && e.message) || String(e),
         errorCode: e && typeof e.code === 'string' ? e.code : undefined,
+        // A write git would have failed: git's own lines (pack/mount-writer.ts).
+        gitFailure: e instanceof __nimbusGitPack.GitWriteFailure ? e.lines : undefined,
         metadataOverlay: overlayStats(),
       });
     }

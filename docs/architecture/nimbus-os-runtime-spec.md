@@ -227,6 +227,18 @@ These areas exist, but are not yet good enough for Nimbus OS quality:
   `merge` or `pull` in any sparse checkout, are refused before anything
   changes.
 
+  A repository may be on a mounted filesystem: `clone`, `fetch`, `pull` and
+  `push` write there through the namespace, under the clone's lease (the
+  namespace refuses everyone else's writes there meanwhile). A file a wave
+  could not carry to a mount (over 4 MiB) is written as any program writes
+  a large file (open, write in pieces, close), the index to `index.lock`
+  and renamed over it, as git does. A failed clone there is removed as on
+  the session's own filesystem. A mount backend without `rename`,
+  `writeRange` or `truncate` fails the clone with the namespace's refusal
+  naming the call (EXDEV for a rename it cannot make in place, ENOTSUP for
+  the others), and the destination is removed. Writers outside Nimbus are not
+  fenced by the lease.
+
   Its worktree commands (`status`, `diff`, `add`, `commit`, `ls-files`,
   `reset`, `checkout`, and the worktree side of `merge`) read the index as
   its own bytes and walk the worktree a directory at a time

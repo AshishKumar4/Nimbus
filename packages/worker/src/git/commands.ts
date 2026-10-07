@@ -16,7 +16,7 @@ import { engineKey, type ProcessView } from '@nimbus-sh/core/runtime/process-fil
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import { execGitNetwork, GIT_CLONE_JOB_MARKER, runGraphFilters, type GitNetworkResult } from './network-facet.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
-import { cleanUpClone, deleteCloneJob, setCloneJobPhase, writeCloneJob, type CloneJobRecord } from './clone-job.js';
+import { bridgeCleanupFs, cleanUpClone, deleteCloneJob, setCloneJobPhase, writeCloneJob, type CleanupBridge, type CloneJobRecord } from './clone-job.js';
 import { packsSeam, type GitPacksSeam, type PromisorFetch } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -2610,6 +2610,36 @@ async function resetCommand(
  * this module and its ~106 KB network-facet dependency out of the cold
  * script-eval graph.
  */
+/**
+ * `path` in the namespace as `view` sees it, every link resolved: the
+ * nearest name above it that is there, resolved, and the rest as given.
+ */
+async function namespacePath(view: Pick<ProcessView, 'realpath'>, path: string): Promise<string> {
+  let at = '/' + normalizeVfsPath(path);
+  let below = '';
+  for (;;) {
+    try {
+      const real = await view.realpath(at);
+      return below === '' ? real : `${real === '/' ? '' : real}/${below}`;
+    } catch (error) {
+      if (at === '/' || (!isVfsError(error, 'ENOENT') && !isVfsError(error, 'ENOTDIR'))) throw error;
+      const cut = at.lastIndexOf('/');
+      below = below === '' ? at.slice(cut + 1) : `${at.slice(cut + 1)}/${below}`;
+      at = at.slice(0, cut) || '/';
+    }
+  }
+}
+
+/** The first name on the way to `path` (a resolved namespace path) that is not there, or `path` itself when it is. */
+async function firstMissing(view: Pick<ProcessView, 'stat'>, path: string): Promise<string> {
+  const parts = normalizeVfsPath(path).split('/');
+  for (let i = 1; i <= parts.length; i++) {
+    const prefix = '/' + parts.slice(0, i).join('/');
+    if (await view.stat(prefix, { follow: false }) === null) return prefix;
+  }
+  return '/' + parts.join('/');
+}
+
 export async function runGitCommand(
   ctx: Ctx,
   vfs: SqliteVFS,
@@ -2617,6 +2647,8 @@ export async function runGitCommand(
   doEnv?: any,
   /** The workspace's network (`workspace.network`): clone, fetch, pull, push and promisor fetches go out through it. */
   network: WorkspaceNetwork = ISOLATE_NETWORK,
+  /** The session's filesystem authority: a host bridge on the namespace, for the cleanup of a clone on a mount. */
+  filesystem?: { openHost(cred: VfsCred): { fs: { synchronous?: CleanupBridge }; dispose(): Promise<void> } },
 ): Promise<number> {
   let globals: ParsedGitGlobals;
   try {
@@ -2691,11 +2723,11 @@ export async function runGitCommand(
       const remote = await promisorRemote(gitdir);
       if (remote === null || !doCtx || !doEnv) return false;
       const top = gitdir.endsWith('/.git') ? gitdir.slice(0, -'/.git'.length) : gitdir;
-      const target = await onEngine(top || '/');
-      if (target === null) return false;
+      const place = await placeRepository(top || '/');
       await fetchMissingObjects(doCtx, doEnv, {
         pid: ctx.pid,
-        dir: target,
+        dir: place.dir,
+        onMount: place.mount,
         remote: remote.name,
         url: remote.url,
         oids,
@@ -2710,12 +2742,13 @@ export async function runGitCommand(
       key: async (path) => await engineKey(ctx.vfs, vfs, path),
       writeStream: (stream) => vfs.as(ctx.cred).writeStream(stream),
     });
-    // The network commands write through the engine's streamed batches, at
-    // the repository's engine key; a mounted repository has none.
-    const onEngine = async (target: string): Promise<string | null> => {
+    // Where a network command writes a repository: its engine key, or on a
+    // mount its path in the namespace (every link resolved), which the
+    // facet's writes reach as the command's own would.
+    const placeRepository = async (target: string): Promise<{ dir: string; mount: boolean }> => {
       const key = await engineKey(ctx.vfs, vfs, target);
-      if (key === null) await ctx.stderr.write(`fatal: git ${sub} writes a repository only on the workspace filesystem; '${target}' is on a mounted one\n`);
-      return key === null ? null : '/' + key;
+      if (key !== null) return { dir: '/' + key, mount: false };
+      return { dir: await namespacePath(ctx.vfs, target), mount: true };
     };
     // A clone still running owns its repository: git would not show one
     // half-made, and a command reading it now would take its shallow or
@@ -2771,8 +2804,8 @@ export async function runGitCommand(
         } else {
           dest = dir + '/' + url.split('/').pop()?.replace('.git', '');
         }
-        const target = await onEngine(dest);
-        if (target === null) return 128;
+        const place = await placeRepository(dest);
+        const target = place.dir;
 
         if (!doCtx || !doEnv) {
           ctx.stderr.write('[git] clone requires DO ctx + env (internal configuration error)\n');
@@ -2786,9 +2819,13 @@ export async function runGitCommand(
         // through the trusted SupervisorRPC binding. Taken as the command's
         // credential: the clone writes as it, so a confined caller's /tmp is
         // held where those writes land, not at the shared tmp/ of that name.
-        const mutationLease = vfs.as(ctx.cred).acquireExclusiveMutation(target, {
-          includeMissingAncestors: true,
-        });
+        // On a mount the lease's root is the first name missing on the way
+        // to the destination as the namespace sees it (SQLite's own inodes do
+        // not say), held at that path: the namespace refuses another's
+        // mutations there by it, as it does on SQLite.
+        const mutationLease = place.mount
+          ? vfs.as(ctx.cred).acquireExclusiveMutation(await firstMissing(ctx.vfs, target))
+          : vfs.as(ctx.cred).acquireExclusiveMutation(target, { includeMissingAncestors: true });
         // A piece of the clone that hung may still write: the facet runner
         // hands the lease to a new owner before it runs the piece again.
         let mutationOwner = mutationLease.owner;
@@ -2796,7 +2833,7 @@ export async function runGitCommand(
         // Delegate to git-network-facet: heavy packfile processing runs in
         // a dynamic worker with its own CPU budget, not the supervisor DO.
         // It owns the lease from when it is called, and releases it.
-        const doClone = async (job: CloneJobRecord): Promise<boolean> => {
+        const doClone = async (job: CloneJobRecord): Promise<number> => {
           let cloned = false;
           try {
             let result: GitNetworkResult;
@@ -2813,6 +2850,7 @@ export async function runGitCommand(
               quiet,
               exclusiveDestination: true,
               exclusiveMutationRoot: mutationLease.root,
+              onMount: place.mount,
               cloneJobId: job.jobId,
               onCloneCheckoutPhase: () => setCloneJobPhase(doCtx.storage, job, 'checkout'),
               mutationOwner,
@@ -2842,25 +2880,33 @@ export async function runGitCommand(
                 `${(result.bytesWritten / 1024).toFixed(1)}KB in ${(result.elapsed / 1000).toFixed(1)}s)\n`,
               );
               cloned = true;
-              return true;
+              return 0;
             }
-            ctx.stderr.write(`\n[git] clone failed: ${result.error}\n`);
+            // A write git would have failed: git's words, and git's 128 (it dies); else what failed.
+            const code = result.gitFailure !== undefined ? 128 : 1;
+            ctx.stderr.write(result.gitFailure ?? `\n[git] clone failed: ${result.error}\n`);
             if (result.cleanup !== true) {
               await deleteCloneJob(doCtx.storage, job.dir);
-              return false;
+              return code;
             }
             // As git's remove_junk: in the DO, under the clone's lease (its
             // current owner: the facets were fenced), as the clone's credential.
+            // On a mount, through the namespace (a host bridge presenting the lease).
+            const host = place.mount ? filesystem?.openHost(ctx.cred) : undefined;
             try {
-              const cleaned = await cleanUpClone(vfs.as(ctx.cred, { mutationOwner }), doCtx.storage, job, {
+              const bridge = host?.fs.synchronous;
+              if (place.mount && bridge === undefined) throw new Error('no namespace to clean it up through');
+              const cleaned = await cleanUpClone(bridge ? bridgeCleanupFs(bridge, mutationOwner) : vfs.as(ctx.cred, { mutationOwner }), doCtx.storage, job, {
                 sliceEntries: Number(ctx.env.NIMBUS_GIT_CLONE_CLEANUP_SLICE) || undefined,
               });
               if (cleaned.outcome === 'kept-repo') ctx.stderr.write(JUNK_LEAVE_REPO_WARNING);
             } catch (error) {
               // The record stays: the session finishes the cleanup when it next starts.
               ctx.stderr.write(`[git] could not remove the failed clone at '${dest}': ${String((error as Error)?.message ?? error)}\n`);
+            } finally {
+              await host?.dispose();
             }
-            return false;
+            return code;
           } finally {
             vfs.releaseExclusiveMutation(mutationOwner);
             // A full clone's changed-path filters, once it has answered
@@ -2870,6 +2916,7 @@ export async function runGitCommand(
               doCtx.waitUntil(runGraphFilters(doCtx, doEnv, {
                 pid: ctx.pid,
                 dir: target,
+                onMount: place.mount,
                 pieceCommits: Number(ctx.env.NIMBUS_GIT_GRAPH_FILTER_PIECE_COMMITS) || undefined,
                 pieceBudgetMs: Number(ctx.env.NIMBUS_GIT_GRAPH_FILTER_PIECE_BUDGET_MS) || undefined,
               }, network).then((outcome) => {
@@ -2890,9 +2937,10 @@ export async function runGitCommand(
           // The destination is absent or an empty directory, proven under the
           // lease before the record is written: a cleanup removes only what
           // the clone made. git's refusal otherwise.
-          const user = vfs.as(ctx.cred);
-          const rootExisted = user.exists(target);
-          if (rootExisted && (user.lstat(target).type !== 'directory' || user.readdir(target).length > 0)) {
+          // Asked of the namespace, as the command sees it: a mount's destination is the mount's.
+          const existing = await ctx.vfs.stat(target, { follow: false });
+          const rootExisted = existing !== null;
+          if (existing !== null && (existing.type !== 'directory' || (await ctx.vfs.readdir(target)).length > 0)) {
             await ctx.stderr.write(`fatal: destination path '${destArg || dest.slice(dest.lastIndexOf('/') + 1)}' already exists and is not an empty directory.\n`);
             return 128;
           }
@@ -2908,6 +2956,8 @@ export async function runGitCommand(
             phase: 'transport',
             generation: generation(doCtx),
             startedAt: Date.now(),
+            root: mutationLease.root,
+            ...(place.mount ? { mount: true } : {}),
           };
           try {
             await writeCloneJob(doCtx.storage, job);
@@ -2923,7 +2973,7 @@ export async function runGitCommand(
             progress.write('[git] clone running in background...\n');
             return 0;
           }
-          return (await task) ? 0 : 1;
+          return await task;
         } finally {
           if (!handedOff) vfs.releaseExclusiveMutation(mutationOwner);
         }
@@ -3103,8 +3153,8 @@ export async function runGitCommand(
       }
 
       case 'fetch': {
-        const target = await onEngine(dir);
-        if (target === null) return 128;
+        const place = await placeRepository(dir);
+        const target = place.dir;
         const { quiet, rest: fetchArgs } = takeQuiet(subArgs);
         let deepen: { depth: number; relative: boolean } | undefined;
         try {
@@ -3125,6 +3175,7 @@ export async function runGitCommand(
           op: 'fetch',
           pid: ctx.pid,
           dir: target,
+          onMount: place.mount,
           remote,
           quiet,
           depth: deepen?.depth,
@@ -3146,8 +3197,8 @@ export async function runGitCommand(
       case 'pull': {
         // git pull is a fetch of the branch, then a merge of it: the merge through the session's one
         // checkout policy, as `git merge` runs it.
-        const target = await onEngine(dir);
-        if (target === null) return 128;
+        const place = await placeRepository(dir);
+        const target = place.dir;
         const { quiet, rest } = takeQuiet(subArgs);
         const remote = rest[0] || 'origin';
         const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
@@ -3166,6 +3217,7 @@ export async function runGitCommand(
           op: 'fetch',
           pid: ctx.pid,
           dir: target,
+          onMount: place.mount,
           remote,
           ref: branch,
           quiet,
@@ -3184,8 +3236,8 @@ export async function runGitCommand(
       }
 
       case 'push': {
-        const target = await onEngine(dir);
-        if (target === null) return 128;
+        const place = await placeRepository(dir);
+        const target = place.dir;
         const { quiet, rest } = takeQuiet(subArgs);
         const remote = rest[0] || 'origin';
         const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
@@ -3198,6 +3250,7 @@ export async function runGitCommand(
           op: 'push',
           pid: ctx.pid,
           dir: target,
+          onMount: place.mount,
           remote,
           ref: branch,
           quiet,

@@ -53,22 +53,28 @@ function stagedGitBundle() {
  * `asUser`: the facets' calls act as the session user, as a session's
  * process does (SupervisorRPC), its permissions checked; by default as the
  * kernel.
+ * `mounts`: backends mounted in the session's namespace, by mount point; the
+ * facets' supervisor then reaches the namespace as the session's does (a
+ * host bridge of the session's ProcessFiles), mounts and their guard
+ * included, as the session user.
  */
-export async function createFacetSession(work, { realGit = false, asUser = false } = {}) {
+export async function createFacetSession(work, { realGit = false, asUser = false, mounts = {} } = {}) {
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = vfs.as(CRED_KERNEL);
   kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
   kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
   const files = new ProcessFiles(vfs);
-  const actor = asUser ? vfs.as(CRED_SESSION_USER) : kernel;
-  const bridge = new SqliteRuntimeFsBridge(actor, vfs);
+  for (const [point, backend] of Object.entries(mounts)) files.vfs.mount(point, backend);
+  const mounted = Object.keys(mounts).length > 0;
+  const actor = asUser || mounted ? vfs.as(CRED_SESSION_USER) : kernel;
+  const bridge = mounted ? files.openHost(CRED_SESSION_USER).fs : new SqliteRuntimeFsBridge(actor, vfs);
   // failWaveAt: the 1-based write wave that fails, once, as a dropped session connection does.
   // hangPhaseAt: the 1-based facet call of that phase that never answers, once.
   // stallPhaseAt: the same, but the call runs on, its answer withheld: a late writer.
   // refusals: the facets' mutations the session refused, with why.
   const requests = {
-    fetchObjects: 0, phases: [], attempts: [], rangeReads: [], rangeWrites: [], waves: 0,
+    fetchObjects: 0, phases: [], attempts: [], rangeReads: [], rangeWrites: [], waves: 0, fileApi: 0,
     failWaveAt: 0, hangPhaseAt: null, stallPhaseAt: null, stalled: [], refusals: [], loads: 0,
     // calls: every facet call's phase, attempt and batch; withhold: resumed packs whose step's answer is lost.
     calls: [], withhold: new Set(),
@@ -100,17 +106,20 @@ export async function createFacetSession(work, { realGit = false, asUser = false
         return refused(async () => bridge.writeRange(path, offset, bytes, { createParents: true, ...lease }));
       },
       async fsTruncate(path, size) { return refused(async () => bridge.truncate(path, size, lease)); },
+      // The session's file API: a mkdir and an open for writing present the lease (supervisor-op.ts).
+      async mkdir(path, options) { return refused(async () => bridge.mkdir(path, { ...options, ...lease })); },
+      async fsOpen(path, flags) { requests.fileApi++; return refused(async () => bridge.open(path, { ...flags, sync: true }, lease)); },
+      async fsWrite(id, offset, bytes) { requests.fileApi++; return refused(async () => bridge.write(id, offset, bytes)); },
+      async fsFstat(id) { return bridge.fstat(id); },
+      async fsClose(id) { return bridge.close(id); },
       async rename(from, to) {
         const result = await refused(async () => bridge.rename(from, to, lease));
         // loseRename: the step that made this rename never answers (its tmp pack's name goes to withhold).
         if (requests.loseRename?.(from, to)) requests.withhold.add(from.slice(from.lastIndexOf('/') + 1));
         return result;
       },
-      // unlink carries no lease: the session's supervisor op has none for it either (supervisor-op.ts).
-      async unlink(path) { return refused(async () => bridge.unlink(path)); },
-      async fsOpen(path, flags) { return refused(async () => bridge.open(path, flags)); },
-      async fsWrite(handle, offset, bytes) { return refused(async () => bridge.write(handle, offset, bytes)); },
-      async fsClose(handle) { return bridge.close(handle); },
+      // unlink presents the lease, as the session's supervisor op does (supervisor-op.ts).
+      async unlink(path) { return refused(async () => bridge.unlink(path, lease)); },
       async chmod(path, mode) { return refused(async () => bridge.chmod(path, mode)); },
       async writeBatchStream(stream) {
         if (++requests.waves === requests.failWaveAt) {
@@ -188,8 +197,26 @@ export async function createFacetSession(work, { realGit = false, asUser = false
       stdout: { write(s) { stdout += s; } },
       stderr: { write(s) { stderr += s; } },
       vfs: files.view({ pid: 7, cred: CRED_SESSION_USER }),
-    }, vfs, doCtx, doEnv);
+    }, vfs, doCtx, doEnv, undefined, files);
     return { code, stdout: stdout.replace(/\x1b\[[0-9;]*m/g, ''), stderr };
+  }
+
+  /** Copy a session directory, through the namespace as the session user (a mount's included), to `out` on disk. */
+  async function materializeAt(root, out) {
+    const view = files.view({ pid: 7, cred: CRED_SESSION_USER });
+    const copy = async (path) => {
+      for (const entry of await view.readdir(path)) {
+        const child = path + '/' + entry.name;
+        const target = join(out, child.slice(root.length));
+        const stat = await view.stat(child, { follow: false });
+        if (stat.type === 'directory') { mkdirSync(target, { recursive: true }); await copy(child); }
+        else if (stat.type === 'file') writeFileSync(target, await view.readFile(child), { mode: stat.mode & 0o777 });
+        else if (stat.type === 'symlink') symlinkSync(await view.readlink(child), target);
+      }
+    };
+    mkdirSync(out, { recursive: true });
+    await copy(root);
+    return out;
   }
 
   /** Copy a session directory (engine path) to `out` on disk. */
@@ -215,5 +242,5 @@ export async function createFacetSession(work, { realGit = false, asUser = false
     return { dir: out, objects: hostObjects(work, out) };
   }
 
-  return { vfs, kernel, git, requests, doCtx, doEnv, materialize, sessionObjects, settled };
+  return { vfs, kernel, files, git, requests, doCtx, doEnv, materialize, materializeAt, sessionObjects, settled };
 }

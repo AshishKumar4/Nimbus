@@ -54,6 +54,20 @@ published independently in the `@nimbus-sh` npm scope.
   after eight. Waiting fills now get room in the order they asked, and one ask
   covers them all (`astro dev`: "import() prefetch: could not fetch
   …/zod/v4/locales/…; its fetches did not land").
+- Added: a git repository on a mounted filesystem. `git clone` onto a mount
+  (before: "writes a repository only on the workspace filesystem"), and
+  `git fetch`, `pull` and `push` in a repository there. A file over a wave's
+  4 MiB mount limit is written through the session's file API (open, write,
+  close), the index through `index.lock`. A failed or interrupted clone
+  there is cleaned up as on the session's own filesystem. A mount backend
+  without `rename`, `writeRange` or `truncate` fails the clone with the
+  namespace's refusal naming the call (EXDEV for a rename, ENOTSUP for the
+  others), and the destination is removed.
+- Fixed: a write wave routed onto a mount, and a lease holder's `mkdir`,
+  `open` for writing, `unlink` and `rmdir`, did not present the caller's
+  exclusive-mutation lease: under its own lease a holder was refused EBUSY
+  there. A file opened under a lease now writes and truncates under it.
+
 - Fixed: a write wave ignored mounts. A W7 wave (`writeBatchStream`, which
   `git clone`, `git checkout` and `npm install` use) wrote every record to
   the session's SQLite store, even under a mount. A file under a mount

@@ -107,6 +107,8 @@ export interface GitNetworkOpts {
     onCloneCheckoutPhase?: () => Promise<void>;
     /** Clone-only: normalized root covered by the exclusive mutation lease. */
     exclusiveMutationRoot?: string;
+    /** The repository (a clone's destination) is on a mounted filesystem (`dir` its namespace path), where a wave's files are bounded (pack/mount-writer.ts). */
+    onMount?: boolean;
     /** Trusted supervisor-only lease owner; never sent to the dynamic worker. */
     mutationOwner?: string;
     /**
@@ -156,6 +158,8 @@ export interface GitSupervisorRpcCounters {
     symlink: number;
     legacySymlinkSubtree: number;
     stdout: number;
+    /** On a mount, a file past a wave's limit (pack/mount-writer.ts): its open, each write, its stat and close. */
+    fileApi: number;
 }
 export interface GitMetadataOverlayStats {
     entries: number;
@@ -196,6 +200,8 @@ export interface GitNetworkResult {
     phases?: GitNetworkPhaseDiagnostic[];
     errorPhase?: GitCloneInvocationPhase | 'operation';
     errorCode?: GitNetworkErrorCode;
+    /** A write git would have failed: git's own lines for it (pack/mount-writer.ts GitWriteFailure). */
+    gitFailure?: string;
     budget?: GitCloneBudgetDiagnostic;
     /** A clone that failed after it wrote: its caller cleans up (git/clone-job.ts). */
     cleanup?: boolean;
@@ -241,6 +247,7 @@ export declare function runGraphFilters(ctx: DurableObjectState, env: any, opts:
     dir: string;
     pieceBudgetMs?: number;
     pieceCommits?: number;
+    onMount?: boolean;
 }, network: WorkspaceNetwork): Promise<GraphFiltersOutcome>;
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.

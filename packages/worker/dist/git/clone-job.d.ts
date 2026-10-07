@@ -33,6 +33,7 @@
  * destination absent or empty before it writes the record, so a cleanup
  * removes only what the clone made.
  */
+import type { RuntimeSynchronousFs } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { VfsCred } from '@nimbus-sh/core/vfs/vfs.js';
 /** What a clone's job record says. */
 export interface CloneJobRecord {
@@ -48,6 +49,10 @@ export interface CloneJobRecord {
     /** The session's generation (fabric generation.ts) that ran the clone: an earlier one's clone is not running. */
     generation: number;
     startedAt: number;
+    /** The root the clone's lease held (its destination's first missing name), reserved again as it was; absent on older records. */
+    root?: string;
+    /** The destination is on a mounted filesystem (`dir` its namespace path): its cleanup goes through the namespace. */
+    mount?: boolean;
 }
 /** The storage the records live in (DurableObjectStorage's async KV). */
 export interface CloneJobStorage {
@@ -102,7 +107,20 @@ export interface SessionCleanupFs {
         };
     };
     releaseExclusiveMutation(owner: string): void;
+    /**
+     * The namespace as `cred`, presenting `owner`'s lease, for a clone on a
+     * mount (`dispose` when done); absent where no mount can be (a session
+     * whose filesystem is the engine alone).
+     */
+    namespace?(cred: VfsCred, owner: string): {
+        fs: CleanupFs;
+        dispose(): Promise<void>;
+    };
 }
+/** A host bridge's synchronous calls (RuntimeFsBridge.synchronous), as the namespace's cleanup takes them. */
+export type CleanupBridge = Pick<RuntimeSynchronousFs, 'readFile' | 'readdir' | 'unlink' | 'rmdir'>;
+/** A cleanup's filesystem over the namespace (a host bridge), `owner`'s lease presented by each removal. */
+export declare function bridgeCleanupFs(bridge: CleanupBridge, owner: string): CleanupFs;
 /** The records of clones an earlier generation of the session ran (than `current`): none of them is running. */
 export declare function listInterruptedClones(storage: CloneJobStorage, current: number): Promise<CloneJobRecord[]>;
 /** The session's filesystem as recovery takes it: views and leases by credential, and the session-wide lease. */

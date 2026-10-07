@@ -135,7 +135,7 @@ import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 // S10: heap probe + W5 OOM-ring persistence extracted.
 import * as _diag from './diag.js';
 import { ServedReads } from '../facets/read-profile.js';
-import { CloneRecovery } from '../git/clone-job.js';
+import { CloneRecovery, bridgeCleanupFs } from '../git/clone-job.js';
 
 /** The ops whose non-null answer is a file's content served to a process. */
 const SERVED_READ_OPS: ReadonlySet<string> = new Set(['readFile', 'readFileBytes', 'fsReadRange', 'fsReadRangeUncached']);
@@ -1178,8 +1178,19 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
       // are reserved before anything can write there, and cleaned up
       // (git/clone-job.ts) in the background, a slice at a time. Records not
       // listed (yet) hold every write instead: none is served on a guess.
-      (this.cloneRecovery ??= new CloneRecovery(this.ctx.storage, generation(this.ctx)))
-        .start(this.sqliteFs, (task) => this.ctx.waitUntil(task));
+      const engine = this.sqliteFs;
+      (this.cloneRecovery ??= new CloneRecovery(this.ctx.storage, generation(this.ctx))).start({
+        as: (cred, options) => engine.as(cred, options),
+        releaseExclusiveMutation: (owner) => engine.releaseExclusiveMutation(owner),
+        acquireGlobalExclusiveMutation: (reason) => engine.acquireGlobalExclusiveMutation(reason),
+        // A clone on a mount, through the namespace (a host bridge presenting its lease).
+        namespace: (cred, owner) => {
+          const host = this.getFilesystemAuthority().openHost(cred);
+          const bridge = host.fs.synchronous;
+          if (bridge === undefined) throw new Error('the host bridge has no synchronous face');
+          return { fs: bridgeCleanupFs(bridge, owner), dispose: () => host.dispose() };
+        },
+      }, (task) => this.ctx.waitUntil(task));
     }
     return this.sqliteFs;
   }

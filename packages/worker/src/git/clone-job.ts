@@ -34,6 +34,7 @@
  * removes only what the clone made.
  */
 
+import type { RuntimeSynchronousFs } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { VfsCred } from '@nimbus-sh/core/vfs/vfs.js';
 
 /** What a clone's job record says. */
@@ -50,6 +51,10 @@ export interface CloneJobRecord {
   /** The session's generation (fabric generation.ts) that ran the clone: an earlier one's clone is not running. */
   generation: number;
   startedAt: number;
+  /** The root the clone's lease held (its destination's first missing name), reserved again as it was; absent on older records. */
+  root?: string;
+  /** The destination is on a mounted filesystem (`dir` its namespace path): its cleanup goes through the namespace. */
+  mount?: boolean;
 }
 
 /** The storage the records live in (DurableObjectStorage's async KV). */
@@ -193,6 +198,30 @@ export interface SessionCleanupFs {
     acquireExclusiveMutation(path: string, options?: { includeMissingAncestors?: boolean }): { owner: string };
   };
   releaseExclusiveMutation(owner: string): void;
+  /**
+   * The namespace as `cred`, presenting `owner`'s lease, for a clone on a
+   * mount (`dispose` when done); absent where no mount can be (a session
+   * whose filesystem is the engine alone).
+   */
+  namespace?(cred: VfsCred, owner: string): { fs: CleanupFs; dispose(): Promise<void> };
+}
+
+/** A host bridge's synchronous calls (RuntimeFsBridge.synchronous), as the namespace's cleanup takes them. */
+export type CleanupBridge = Pick<RuntimeSynchronousFs, 'readFile' | 'readdir' | 'unlink' | 'rmdir'>;
+
+/** A cleanup's filesystem over the namespace (a host bridge), `owner`'s lease presented by each removal. */
+export function bridgeCleanupFs(bridge: CleanupBridge, owner: string): CleanupFs {
+  const at = (path: string) => '/' + path.replace(/^\/+/, '');
+  return {
+    readFile: (path) => {
+      const bytes = bridge.readFile(at(path));
+      if (bytes === null) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+      return bytes;
+    },
+    readdir: (path) => bridge.readdir(at(path)),
+    unlink: (path) => bridge.unlink(at(path), { mutationOwner: owner }),
+    rmdir: (path) => bridge.rmdir(at(path), { mutationOwner: owner }),
+  };
 }
 
 /** The records of clones an earlier generation of the session ran (than `current`): none of them is running. */
@@ -317,7 +346,11 @@ export function reserveInterruptedClones(vfs: SessionCleanupFs, records: readonl
   const reserved: ReservedClone[] = [];
   for (const record of records) {
     try {
-      reserved.push({ record, owner: vfs.as(record.cred).acquireExclusiveMutation(record.dir, { includeMissingAncestors: true }).owner });
+      // The root its clone held, as it was; an older record's from its destination, as the clone took it.
+      const lease = record.root === undefined
+        ? vfs.as(record.cred).acquireExclusiveMutation(record.dir, { includeMissingAncestors: true })
+        : vfs.as(record.cred).acquireExclusiveMutation(record.root);
+      reserved.push({ record, owner: lease.owner });
     } catch {
       // Left for the next generation.
     }
@@ -337,9 +370,21 @@ export async function finishReservedClones(
 ): Promise<CleanupOutcome[]> {
   const outcomes: CleanupOutcome[] = [];
   let failure: unknown = null;
+  // Each record on its own: one that fails (its namespace not made, its cleanup or its namespace's
+  // disposal failing) keeps its record for the next generation, its lease released, and the rest go on.
   for (const { record, owner } of reserved) {
     try {
-      outcomes.push(await cleanUpClone(vfs.as(record.cred, { mutationOwner: owner }), storage, record, options));
+      // A clone on a mount is cleaned up through the namespace.
+      let namespace: { fs: CleanupFs; dispose(): Promise<void> } | undefined;
+      try {
+        if (record.mount === true) {
+          namespace = vfs.namespace?.(record.cred, owner);
+          if (namespace === undefined) throw new Error(`no namespace to clean up the clone at /${record.dir} through`);
+        }
+        outcomes.push(await cleanUpClone(namespace?.fs ?? vfs.as(record.cred, { mutationOwner: owner }), storage, record, options));
+      } finally {
+        await namespace?.dispose();
+      }
     } catch (error) {
       failure ??= error;
     } finally {
