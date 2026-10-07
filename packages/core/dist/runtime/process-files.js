@@ -199,16 +199,6 @@ class GuardedProcessBridge {
     fchmod(handleId, mode) { this.guard(); return this.target.fchmod(handleId, mode); }
     fchown(handleId, uid, gid) { this.guard(); return this.target.fchown(handleId, uid, gid); }
     futimes(handleId, atimeMs, mtimeMs) { this.guard(); return this.target.futimes(handleId, atimeMs, mtimeMs); }
-    appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes) {
-        this.guard();
-        this.ownPid(pid);
-        return this.target.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes);
-    }
-    acknowledgeAppend(pid, writerId, moduleId, operationId) {
-        this.guard();
-        this.ownPid(pid);
-        return this.target.acknowledgeAppend(pid, writerId, moduleId, operationId);
-    }
     writeBatch(payload, options) {
         this.guard();
         // As writeStream: closing the scope cancels the commit.
@@ -431,7 +421,6 @@ export class ProcessFiles {
         }
         finally {
             this.processes.delete(pid);
-            this.engine.revokeAppendWriters(pid);
         }
     }
     /** See NimbusFilesystemAuthority.rewindProcess. */
@@ -458,7 +447,6 @@ export class ProcessFiles {
         this.listings.delete(pid);
         const scope = this.processes.get(pid);
         this.processes.delete(pid);
-        this.engine.revokeAppendWriters(pid);
         if (!scope || scope.closed)
             return { lost: [] };
         const lost = [];
@@ -477,14 +465,6 @@ export class ProcessFiles {
         scope.subscriptions.clear();
         return { lost };
     }
-    async activateAppendWriter(pid, writerId) {
-        if (this.retired.has(pid))
-            throw Object.assign(new Error('ESTALE: process released'), { code: 'ESTALE' });
-        this.engine.activateAppendWriter(pid, writerId);
-    }
-    async revokeAppendWriter(pid, writerId) { this.engine.revokeAppendWriter(pid, writerId); }
-    async revokeAppendWriters(pid) { this.engine.revokeAppendWriters(pid); }
-    async revokeAppendWritersThrough(maxPid) { this.engine.revokeAppendWritersThrough(maxPid); }
     /** The mounts `cred` sees, root first: what df, mount and `/proc/mounts` list. */
     mounts(cred) {
         const engine = this.engine;
@@ -590,12 +570,6 @@ class AwaitingProcessBridge {
     gateLaunch(named) { return this.bridge.gateLaunch(named); }
     revision(path) { return this.bridge.revision(path); }
     subscribe(path, listener) { return this.bridge.subscribe(path, listener); }
-    appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes) {
-        return this.bridge.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes);
-    }
-    acknowledgeAppend(pid, writerId, moduleId, operationId) {
-        return this.bridge.acknowledgeAppend(pid, writerId, moduleId, operationId);
-    }
     writeBatch(payload, options) { return this.bridge.writeBatch(payload, options); }
     writeStream(stream, options) { return this.bridge.writeStream(stream, options); }
     acquireExclusiveMutation(path, options) {

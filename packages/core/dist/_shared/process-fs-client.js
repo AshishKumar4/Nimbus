@@ -134,7 +134,6 @@ export function processFsClient(options) {
     const timers = options.timers ?? GLOBAL_TIMERS;
     const now = options.now ?? Date.now;
     const syncCap = options.syncCapBytes ?? PROCESS_FS_SYNC_CAP_BYTES;
-    const charge = options.charge ?? (() => { });
     /** Logged, not yet sent; the first ones may carry numbers from a wave they came back from. */
     const queue = [];
     let inFlight = null;
@@ -215,7 +214,6 @@ export function processFsClient(options) {
     const writerFor = async () => {
         if (epoch !== null && (epoch.writer === null || now() - epoch.openedAt < WAVE_EPOCH_TTL_MS / 2))
             return epoch.writer;
-        charge('openWaveWriter');
         const openedAt = now();
         const writer = await session.openWriter(counters.epochs === 0);
         epoch = { writer, openedAt };
@@ -259,8 +257,7 @@ export function processFsClient(options) {
     const send = async (entries) => {
         const first = entries[0];
         if (first.op.type === 'run') {
-            const { name, run } = first.op;
-            charge(name);
+            const { run } = first.op;
             try {
                 const value = await run();
                 settled(first);
@@ -292,7 +289,6 @@ export function processFsClient(options) {
         wave++;
         let result;
         try {
-            charge('writeBatchStream');
             result = await sendWaveAttempts({
                 supervisor: session,
                 writer: async () => writer,
@@ -301,7 +297,7 @@ export function processFsClient(options) {
                 wave,
                 ...(writer === null ? {} : { sequence: { seq: firstSeq, ack } }),
                 ...(options.retry === undefined ? {} : { retry: options.retry }),
-                resent: () => { counters.resends++; charge('writeBatchStream'); },
+                resent: () => { counters.resends++; },
                 timers,
             });
         }
@@ -423,7 +419,6 @@ export function processFsClient(options) {
         counters.released++;
         options.released?.(grant.root);
         try {
-            charge('fsReleaseExclusiveMutation');
             await session.grants?.release(grant.owner);
         }
         catch {
@@ -436,7 +431,6 @@ export function processFsClient(options) {
         while (!grant.ended) {
             let kind;
             try {
-                charge('fsAwaitRecall');
                 kind = await port.awaitRecall(grant.owner, recallPollMs);
             }
             catch {
@@ -459,7 +453,6 @@ export function processFsClient(options) {
                 options.released?.(grant.root);
             }
             try {
-                charge('fsRecalled');
                 await port.recalled(grant.owner, kind);
             }
             catch {
@@ -530,7 +523,6 @@ export function processFsClient(options) {
             const inos = rangeOf.has(target) ? rangeOf.get(target) * 2 : (options.grantInos ?? GRANT_INOS);
             let granted;
             try {
-                charge('fsAcquireExclusiveMutation');
                 granted = await port.acquire('/' + target, { reads: true, inos, bytes: GRANT_BYTES });
             }
             catch (error) {

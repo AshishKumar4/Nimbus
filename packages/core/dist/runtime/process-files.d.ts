@@ -120,10 +120,6 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     killProcess(pid: number): {
         lost: number[];
     };
-    activateAppendWriter(pid: number, writerId: string): Promise<void>;
-    revokeAppendWriter(pid: number, writerId: string): Promise<void>;
-    revokeAppendWriters(pid: number): Promise<void>;
-    revokeAppendWritersThrough(maxPid: number): Promise<void>;
     /** The mounts `cred` sees, root first: what df, mount and `/proc/mounts` list. */
     mounts(cred: Readonly<VfsCred>): readonly NimbusMountEntry[];
     /**

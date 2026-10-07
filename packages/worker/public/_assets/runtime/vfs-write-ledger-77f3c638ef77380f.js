@@ -1020,8 +1020,6 @@ var __nimbusProcessFsModule = (() => {
     const timers = options.timers ?? GLOBAL_TIMERS2;
     const now = options.now ?? Date.now;
     const syncCap = options.syncCapBytes ?? PROCESS_FS_SYNC_CAP_BYTES;
-    const charge = options.charge ?? (() => {
-    });
     const queue = [];
     let inFlight = null;
     let scheduled = false;
@@ -1101,7 +1099,6 @@ var __nimbusProcessFsModule = (() => {
     };
     const writerFor = async () => {
       if (epoch !== null && (epoch.writer === null || now() - epoch.openedAt < WAVE_EPOCH_TTL_MS / 2)) return epoch.writer;
-      charge("openWaveWriter");
       const openedAt = now();
       const writer = await session.openWriter(counters.epochs === 0);
       epoch = { writer, openedAt };
@@ -1136,8 +1133,7 @@ var __nimbusProcessFsModule = (() => {
     const send = async (entries) => {
       const first = entries[0];
       if (first.op.type === "run") {
-        const { name, run } = first.op;
-        charge(name);
+        const { run } = first.op;
         try {
           const value = await run();
           settled(first);
@@ -1163,7 +1159,6 @@ var __nimbusProcessFsModule = (() => {
       wave++;
       let result;
       try {
-        charge("writeBatchStream");
         result = await sendWaveAttempts({
           supervisor: session,
           writer: async () => writer,
@@ -1174,7 +1169,6 @@ var __nimbusProcessFsModule = (() => {
           ...options.retry === void 0 ? {} : { retry: options.retry },
           resent: () => {
             counters.resends++;
-            charge("writeBatchStream");
           },
           timers
         });
@@ -1268,7 +1262,6 @@ var __nimbusProcessFsModule = (() => {
       counters.released++;
       options.released?.(grant.root);
       try {
-        charge("fsReleaseExclusiveMutation");
         await session.grants?.release(grant.owner);
       } catch {
       }
@@ -1278,7 +1271,6 @@ var __nimbusProcessFsModule = (() => {
       while (!grant.ended) {
         let kind;
         try {
-          charge("fsAwaitRecall");
           kind = await port.awaitRecall(grant.owner, recallPollMs);
         } catch {
           if (!grant.ended) {
@@ -1297,7 +1289,6 @@ var __nimbusProcessFsModule = (() => {
           options.released?.(grant.root);
         }
         try {
-          charge("fsRecalled");
           await port.recalled(grant.owner, kind);
         } catch {
         }
@@ -1349,7 +1340,6 @@ var __nimbusProcessFsModule = (() => {
         const inos = rangeOf.has(target) ? rangeOf.get(target) * 2 : options.grantInos ?? GRANT_INOS;
         let granted;
         try {
-          charge("fsAcquireExclusiveMutation");
           granted = await port.acquire("/" + target, { reads: true, inos, bytes: GRANT_BYTES });
         } catch (error) {
           if (error?.code !== "ENOENT") refusedRoots.add(target);

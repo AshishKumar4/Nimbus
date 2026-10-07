@@ -267,7 +267,7 @@ export interface SupervisorOpBridgeStore {
 }
 /**
  * Exported so the session's `supervisorBridge` — used by RPC bodies the
- * envelope delegates back to (fsOpen, fsAppend, writeBatch, …) — is the
+ * envelope delegates back to (fsOpen, writeBatch, …) — is the
  * same cache the handler's native ops serve from, never a second one.
  */
 export declare function createSupervisorBridgeStore(deps: Pick<SupervisorOpDeps, 'vfs' | 'processes' | 'filesystem'>): SupervisorOpBridgeStore;

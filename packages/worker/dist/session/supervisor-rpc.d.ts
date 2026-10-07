@@ -7,7 +7,8 @@
  * Props: { doId: string, pid: number, writerId: string, route: HostRoute, hostIncarnation?: string }
  *   doId — the supervisor DO's durable object ID (for routing)
  *   pid  — the process ID (for stdout/stderr routing)
- *   writerId — the active append-writer incarnation for this process
+ *   writerId — the run of the process the binding was minted for (its stdin
+ *           reads and replay journal are that run's)
  *   route — the host namespace and dispatch method, minted with the binding
  *           in the host's isolate; this entrypoint may answer from another
  *   hostIncarnation — the host instance that minted the binding, present
@@ -23,7 +24,7 @@
  *   mkdir(path) → void
  *   unlink(path) → void
  *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
- *   fsReadRange/fsWriteRange/fsAppend/fsAppendAck/fsTruncate
+ *   fsReadRange/fsWriteRange/fsTruncate
  *     → shared RuntimeFsBridge operations
  *   fsReadBatch(requests) → per-request results  (many reads and lstats, one round trip)
  *   fsList(after, limit) → one page of what EXISTS, with per-path revisions
@@ -155,7 +156,6 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     private _pid;
     /** The run of the process this binding was minted for, when it has one. */
     private _runId;
-    private _writerId;
     /**
      * The filesystem call `method` (one of SUPERVISOR_ANSWERED_METHODS), with a
      * refusal answered as a value: a facet's client (core vfs-supervisor.ts
@@ -304,14 +304,6 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      */
     fsReadBatch(requests: FsReadBatchRequest[]): Promise<FsReadBatchEntry[]>;
     fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<VfsMutationReceipt>;
-    /**
-     * An append and its acknowledgement carry the append ledger's own identity
-     * (writer, module incarnation, operation sequence), whose receipt the host
-     * keeps until the acknowledgement: a repeat of either applies nothing twice,
-     * so a dropped one is simply re-sent.
-     */
-    fsAppend(path: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer): Promise<number>;
-    fsAppendAck(moduleId: string, operationId: string): Promise<void>;
     fsTruncate(path: string, size: number): Promise<VfsMutationReceipt>;
     /**
      * Bulk-write all inodes + chunks in ONE transactionSync on the supervisor.

@@ -178,14 +178,6 @@ export declare const FILESYSTEM_METHODS: {
         readonly rpc: "fsFutimes";
         readonly answer: "value";
     };
-    readonly appendOnce: {
-        readonly rpc: "fsAppend";
-        readonly answer: "value";
-    };
-    readonly acknowledgeAppend: {
-        readonly rpc: "fsAppendAck";
-        readonly answer: "value";
-    };
     readonly writeBatch: {
         readonly rpc: "writeBatch";
         readonly answer: "value";

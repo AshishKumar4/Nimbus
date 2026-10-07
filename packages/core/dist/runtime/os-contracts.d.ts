@@ -186,10 +186,6 @@ export interface NimbusFilesystemAuthority {
      * from the first as the run before's were. The pid stays live.
      */
     rewindProcess?(pid: number): Promise<void>;
-    activateAppendWriter(pid: number, writerId: string): Promise<void>;
-    revokeAppendWriter(pid: number, writerId: string): Promise<void>;
-    revokeAppendWriters(pid: number): Promise<void>;
-    revokeAppendWritersThrough(maxPid: number): Promise<void>;
     /**
      * The mounts `cred` sees, in mount order. Synchronous so `/proc/mounts`
      * can read it; only usage is async. A wrapper exposing its own mounts
@@ -386,8 +382,6 @@ export interface RuntimeFsBridge {
     fchmod(handleId: number, mode: number): Awaitable<void>;
     fchown(handleId: number, uid: number, gid: number): Awaitable<void>;
     futimes(handleId: number, atimeMs: number, mtimeMs: number): Awaitable<void>;
-    appendOnce(path: RuntimeFsPath, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): Awaitable<number>;
-    acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): Awaitable<void>;
     /** `signal`: cancels it before its commit (a released process publishes nothing). */
     writeBatch(payload: import('@nimbus-sh/platform/w7-frame.js').BatchWritePayload, options?: {
         signal?: AbortSignal;

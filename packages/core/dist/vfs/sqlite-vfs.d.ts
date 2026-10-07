@@ -32,9 +32,8 @@ export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { type Principal, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
-/** Every table of the content store, dropped when an older schema is reset. */
 /** The tables the store keeps (dropped whole by a reset of an older store; listed by an embedder's destroy). */
-export declare const STORE_TABLES: readonly ["vfs_append_receipts_v2", "vfs_append_writer_state_v2", "vfs_append_module_state_v2", "vfs_append_pid_revocations_v2", "vfs_append_acked_gaps_v2", "vfs_state", "vfs_inodes", "vfs_chunks", "vfs_contents", "vfs_content_chunks", "vfs_inode_history", "vfs_tombstones", "vfs_cold_trash", "vfs_gc_queue", "vfs_snapshots", "vfs_jobs", "vfs_wave_cursors"];
+export declare const STORE_TABLES: readonly ["vfs_state", "vfs_inodes", "vfs_chunks", "vfs_contents", "vfs_content_chunks", "vfs_inode_history", "vfs_tombstones", "vfs_cold_trash", "vfs_gc_queue", "vfs_snapshots", "vfs_jobs", "vfs_wave_cursors"];
 /** The root directory has no row; this is what it is. */
 export declare const ROOT_DIRECTORY_MODE = 16877;
 /** The root's inode number, reserved: the allocator starts at 2. */
@@ -206,8 +205,6 @@ export interface CredentialedVfs {
     /** Ranged read that bypasses the LRU content cache (see SqliteVFS.readRange). */
     readRangeUncached(path: string, offset: number, length: number): Uint8Array;
     writeRange(path: string, offset: number, bytes: Uint8Array): void;
-    appendOnce(path: string, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): number;
-    acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void;
     truncate(path: string, size: number): void;
     readFileString(path: string): string;
     stat(path: string): VfsStat;
@@ -538,7 +535,6 @@ export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
     };
 });
 export declare const INODE_ROWS_PER_SQL_EXEC: number;
-export declare const VFS_APPEND_RECEIPT_LIMIT = 2048;
 type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
 type TransactionSource = 'strict-batch' | 'range-mutation' | 'content-stage' | 'content-publish' | 'content-gc';
 type TransactionLimitMode = 'bounded';
@@ -1432,21 +1428,6 @@ export declare class SqliteVFS {
      * writeAppendRun); absent, now.
      */
     private writeRange;
-    /**
-     * Publish an append and its dedupe receipt in the same SQLite transaction.
-     * Large content may stage privately first, but its inode publication and
-     * receipt still share the final transaction. Receipts are removed only by
-     * explicit client acknowledgement after that client relinquishes retries.
-     */
-    private appendOnce;
-    activateAppendWriter(pid: number, writerId: string): void;
-    private acknowledgeAppend;
-    revokeAppendWriter(pid: number, writerId: string): void;
-    revokeAppendWriters(pid: number): void;
-    revokeAppendWritersThrough(maxPid: number): void;
-    private finishAppendPidRevocation;
-    private deleteAppendRowsBounded;
-    private resumeAppendMaintenance;
     /**
      * Truncate or zero-extend to `size`. Only the chunk at the new end is
      * re-cut; rows past it go. Every mutation commits before return.

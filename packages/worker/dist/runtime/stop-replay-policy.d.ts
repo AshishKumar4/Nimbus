@@ -140,12 +140,6 @@ export declare const REPLAY_OPERATION_POLICY: {
     fsWriteRange: {
         readonly kind: "effect";
     };
-    fsAppend: {
-        readonly kind: "effect";
-    };
-    fsAppendAck: {
-        readonly kind: "effect";
-    };
     fsTruncate: {
         readonly kind: "effect";
     };

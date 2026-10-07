@@ -298,8 +298,6 @@ export declare function _rpcStdinFileRead(self: RpcHost, path: string, offset: n
  */
 export declare function _rpcFsReadBatch(self: RpcHost, requests: unknown, pid?: number): Promise<FsReadBatchEntry[]>;
 export declare function _rpcFsWriteRange(self: RpcHost, path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<VfsMutationReceipt>;
-export declare function _rpcFsAppend(self: RpcHost, path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
-export declare function _rpcFsAppendAck(self: RpcHost, writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
 /**
  * Called by CirrusHmrRPC.hmrSend. Runs in the DO's own context so
  * we can legally write to hibernatable WS sockets owned by this

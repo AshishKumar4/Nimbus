@@ -49,7 +49,7 @@ const ROOT_FOR_WALK = { type: 'directory', mode: 0o40755, uid: 0, gid: 0 };
 const MUTATIONS = new Set([
     'writeFile', 'writeFileFrom', 'writeRange', 'truncate', 'utimes', 'chmod', 'chown', 'write', 'close', 'mkdir',
     'unlink', 'rmdir', 'rename', 'symlink', 'remove', 'copyFile', 'copyTree', 'ftruncate', 'fchmod', 'fchown',
-    'futimes', 'appendOnce', 'acknowledgeAppend', 'writeBatch', 'writeStream',
+    'futimes', 'writeBatch', 'writeStream',
 ]);
 /** Those that name their file by descriptor; every other one names a path, and may name a held file. */
 const DESCRIPTOR_MUTATIONS = new Set(['write', 'close', 'ftruncate', 'fchmod', 'fchown', 'futimes']);

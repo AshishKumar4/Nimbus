@@ -5038,10 +5038,6 @@ export class FacetManager {
     }
     revokeProcessVfsWriters(pid, writerId) {
         openSupervisorDeliveries(this.ctx).endReadRun(pid, writerId);
-        if (writerId === undefined)
-            this.vfs?.revokeAppendWriters(pid);
-        else
-            this.vfs?.revokeAppendWriter(pid, writerId);
     }
     /**
      * True while a resident facet holds this pid — it was adopted through the
@@ -6481,9 +6477,6 @@ export class FacetManager {
                 recording: () => journal.recording,
                 disqualify: (why) => journal.disqualify(why + ` (REPLAY_JOURNAL_MAX_ENTRIES=${REPLAY_JOURNAL_MAX_ENTRIES}; REPLAY_READ_RECEIPT_MAX_BYTES=${REPLAY_READ_RECEIPT_MAX_BYTES})`),
             });
-        // ProcessTable PIDs are monotonic within a generation and generation-strided
-        // across resets, so this live entry is the sole positive authority root.
-        this.vfs?.activateAppendWriter(pid, writerId);
     }
     /**
      * Grant every suspended launch a chunk of this turn — the session's alarm

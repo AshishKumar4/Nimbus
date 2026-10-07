@@ -360,14 +360,6 @@ export class SqliteRuntimeFsBridge {
     owned(owner) {
         return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner, actor: this.vfs.principal.actor, holds: this.vfs.holds });
     }
-    appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes) {
-        return called({ syscall: 'append', path }, () => {
-            return this.vfs.appendOnce(this.sqlitePath(path, true, 'append'), pid, writerId, moduleId, operationId, digest, bytes);
-        });
-    }
-    acknowledgeAppend(pid, writerId, moduleId, operationId) {
-        this.vfs.acknowledgeAppend(pid, writerId, moduleId, operationId);
-    }
     truncate(path, size, options = {}) {
         return called({ syscall: 'truncate', path }, () => {
             const located = this.locateMutation(path, options.followSymlinks !== false, 'truncate', options.mutationOwner);

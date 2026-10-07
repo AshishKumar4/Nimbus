@@ -7,7 +7,8 @@
  * Props: { doId: string, pid: number, writerId: string, route: HostRoute, hostIncarnation?: string }
  *   doId — the supervisor DO's durable object ID (for routing)
  *   pid  — the process ID (for stdout/stderr routing)
- *   writerId — the active append-writer incarnation for this process
+ *   writerId — the run of the process the binding was minted for (its stdin
+ *           reads and replay journal are that run's)
  *   route — the host namespace and dispatch method, minted with the binding
  *           in the host's isolate; this entrypoint may answer from another
  *   hostIncarnation — the host instance that minted the binding, present
@@ -23,7 +24,7 @@
  *   mkdir(path) → void
  *   unlink(path) → void
  *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
- *   fsReadRange/fsWriteRange/fsAppend/fsAppendAck/fsTruncate
+ *   fsReadRange/fsWriteRange/fsTruncate
  *     → shared RuntimeFsBridge operations
  *   fsReadBatch(requests) → per-request results  (many reads and lstats, one round trip)
  *   fsList(after, limit) → one page of what EXISTS, with per-path revisions
@@ -299,13 +300,6 @@ export class SupervisorRPC extends WorkerEntrypoint {
         const run = this.ctx.props?.writerId;
         return typeof run === 'string' && run.length > 0 ? run : undefined;
     }
-    _writerId() {
-        const writerId = this.ctx.props?.writerId;
-        if (typeof writerId !== 'string' || writerId.length === 0) {
-            throw new Error('SupervisorRPC: missing VFS writer incarnation');
-        }
-        return writerId;
-    }
     // ── Filesystem RPC ────────────────────────────────────────────────────
     /**
      * The filesystem call `method` (one of SUPERVISOR_ANSWERED_METHODS), with a
@@ -579,18 +573,6 @@ export class SupervisorRPC extends WorkerEntrypoint {
     }
     async fsWriteRange(path, offset, bytes) {
         return this._call(this._fsMutation('fsWriteRange', [path, offset, bytes]));
-    }
-    /**
-     * An append and its acknowledgement carry the append ledger's own identity
-     * (writer, module incarnation, operation sequence), whose receipt the host
-     * keeps until the acknowledgement: a repeat of either applies nothing twice,
-     * so a dropped one is simply re-sent.
-     */
-    async fsAppend(path, moduleId, operationId, bytes) {
-        return this._call(this._resent({ op: 'fsAppend', args: [path, moduleId, operationId, bytes], pid: this._pid(), writerId: this._writerId() }, { kind: 'append', operationId }));
-    }
-    async fsAppendAck(moduleId, operationId) {
-        return this._call(this._resent({ op: 'fsAppendAck', args: [moduleId, operationId], pid: this._pid(), writerId: this._writerId() }, { kind: 'append', operationId }));
     }
     async fsTruncate(path, size) {
         return this._call(this._fsMutation('fsTruncate', [path, size]));

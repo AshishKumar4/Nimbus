@@ -47,8 +47,6 @@ export declare const FILESYSTEM_RPC_METHODS: {
     readonly fchmod: "fsFchmod";
     readonly fchown: "fsFchown";
     readonly futimes: "fsFutimes";
-    readonly appendOnce: "fsAppend";
-    readonly acknowledgeAppend: "fsAppendAck";
     readonly writeBatch: "writeBatch";
     readonly writeStream: "writeBatchStream";
     readonly acquireExclusiveMutation: "fsAcquireExclusiveMutation";
@@ -57,7 +55,7 @@ export declare const FILESYSTEM_RPC_METHODS: {
     readonly recalled: "fsRecalled";
 };
 /** The RPC names a facet calls through `answer`: every method but a streamed one. */
-export declare const FILESYSTEM_ANSWERED_RPC_METHODS: readonly ["stat", "readFileBytes", "writeFile", "fsReadRange", "fsWriteRange", "fsTruncate", "utimes", "chmod", "access", "chown", "fsOpen", "fsRead", "fsWrite", "fsClose", "readdir", "mkdir", "unlink", "rmdir", "rename", "readlink", "fsLinkLeadsTo", "symlink", "fsSync", "fsRevision", "fsAcquire", "fsList", "fsRealpath", "fsRemove", "fsCopyFile", "fsCopyTree", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsAppend", "fsAppendAck", "writeBatch", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "fsAwaitRecall", "fsRecalled"];
+export declare const FILESYSTEM_ANSWERED_RPC_METHODS: readonly ["stat", "readFileBytes", "writeFile", "fsReadRange", "fsWriteRange", "fsTruncate", "utimes", "chmod", "access", "chown", "fsOpen", "fsRead", "fsWrite", "fsClose", "readdir", "mkdir", "unlink", "rmdir", "rename", "readlink", "fsLinkLeadsTo", "symlink", "fsSync", "fsRevision", "fsAcquire", "fsList", "fsRealpath", "fsRemove", "fsCopyFile", "fsCopyTree", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "writeBatch", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "fsAwaitRecall", "fsRecalled"];
 /** Local facets retain the process-bound bridge and its synchronous capability. */
 export declare function vfsSupervisor(fs: RuntimeFsBridge): FilesystemSupervisor;
 /**

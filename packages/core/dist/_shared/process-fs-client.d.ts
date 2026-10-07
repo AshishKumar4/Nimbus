@@ -129,8 +129,6 @@ export interface ProcessFsClientOptions {
      * yields, so its bytes are all held until then.
      */
     readonly syncCapBytes?: number;
-    /** Told of every call the client makes to the session (the invocation budget). */
-    readonly charge?: (call: string) => void;
     /** The lost-call policy's timings; tests shorten them. */
     readonly retry?: {
         backoffMs: readonly number[];

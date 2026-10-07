@@ -96,8 +96,6 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     } & RuntimeMutationOwner): VfsMutationReceipt;
     /** This caller's view, presenting `owner`'s exclusive mutation lease when it names one. */
     private owned;
-    appendOnce(path: RuntimeFsPath, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): number;
-    acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void;
     truncate(path: RuntimeFsPath, size: number, options?: {
         followSymlinks?: boolean;
     } & RuntimeMutationOwner): VfsMutationReceipt;

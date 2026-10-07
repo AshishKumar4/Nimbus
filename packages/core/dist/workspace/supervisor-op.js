@@ -147,8 +147,6 @@ export const SUPERVISOR_OP_ROUTES = {
     wsSend: { method: '_rpcWsSend', args: [0, 1, 2, 'pid'] },
     wsClose: { method: '_rpcWsClose', args: [0, 1, 2, 'pid'] },
     fsReadBatch: { method: '_rpcFsReadBatch', args: [0, 'pid'] },
-    fsAppend: { method: '_rpcFsAppend', args: [0, 'writerId', 1, 2, 3, 'pid'] },
-    fsAppendAck: { method: '_rpcFsAppendAck', args: ['writerId', 0, 1, 'pid'] },
     writeBatch: { method: '_rpcWriteBatch', args: [0, 'pid'] },
     putRegistryEntries: { method: '_rpcPutRegistryEntries', args: [0] },
     prefetch: { method: '_rpcPrefetch', args: [0, 1] },
@@ -344,7 +342,7 @@ const NATIVE_BY_OP = NATIVE_OPS;
 const ROUTE_BY_OP = SUPERVISOR_OP_ROUTES;
 /**
  * Exported so the session's `supervisorBridge` — used by RPC bodies the
- * envelope delegates back to (fsOpen, fsAppend, writeBatch, …) — is the
+ * envelope delegates back to (fsOpen, writeBatch, …) — is the
  * same cache the handler's native ops serve from, never a second one.
  */
 export function createSupervisorBridgeStore(deps) {
