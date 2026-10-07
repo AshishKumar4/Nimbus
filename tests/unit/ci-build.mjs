@@ -17,7 +17,7 @@
 // commit each time.
 
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -260,6 +260,29 @@ if (import.meta.main && existsSync('pkg/dist/old.bin')) { renameSync('pkg/dist/o
     writeFileSync(join(client, 'cli.ts'), '// edited\n');
     assert.throws(() => armadaClient({ dir: client, repo: upstream, pin }), /must be a clean checkout .* with local changes/);
     git(client, 'checkout', '-q', '--', 'cli.ts');
+    // Every lane checks the one client checkout at once: 8 checks in
+    // parallel processes all pass, and leave no ref of theirs behind, while
+    // a neighbour keeps FETCH_HEAD empty, as another lane's fetch does
+    // between the moment it starts (git truncates the file) and its end.
+    const lib = new URL('../../scripts/ci/lib/armada.mjs', import.meta.url).href;
+    const neighbour = spawn('sh', ['-c', 'while :; do : > "$1"; done', 'sh', join(client, '.git', 'FETCH_HEAD')], { stdio: 'ignore' });
+    const checks = await Promise.all(Array.from({ length: 8 }, () => new Promise((resolve) => {
+      const child = spawn(process.execPath, ['-e', `
+        const { armadaClient } = await import(${JSON.stringify(lib)});
+        try { armadaClient(${JSON.stringify({ dir: client, repo: upstream, pin })}); console.log('passed'); }
+        catch (error) { console.log('refused: ' + error.message); }`], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = '';
+      child.stdout.on('data', (chunk) => { out += chunk; });
+      child.on('close', () => resolve(out.trim()));
+    }))).finally(() => neighbour.kill());
+    assert.deepEqual(checks, Array(8).fill('passed'), checks.join('\n'));
+    assert.equal(git(client, 'for-each-ref', 'refs/nimbus/'), '', 'each check deletes its own ref');
+    // A fetch that fails says it could not check, never that the history was rewritten.
+    assert.throws(() => armadaClient({ dir: client, repo: join(root, 'no-such-armada.git'), pin }), (error) => {
+      assert.match(error.message, /could not fetch main of .* to check the pin \(not graded; run again\)/);
+      assert.doesNotMatch(error.message, /rewritten/);
+      return true;
+    });
     // Main rewritten under the pin: a new root commit, force-pushed.
     git(seed, 'checkout', '-q', '--orphan', 'rewritten');
     writeFileSync(join(seed, 'cli.ts'), '// rewritten\n');
@@ -267,7 +290,7 @@ if (import.meta.main && existsSync('pkg/dist/old.bin')) { renameSync('pkg/dist/o
     git(seed, 'commit', '-qm', 'rewritten');
     git(seed, 'push', '-q', '--force', upstream, 'rewritten:main');
     assert.throws(() => armadaClient({ dir: client, repo: upstream, pin }), /is not on main of .*: its history was rewritten under the pin/);
-    console.log('  ok  the armada client is a clean checkout of the pin, and the pin must still be on its repository\'s main');
+    console.log('  ok  the armada client is a clean checkout of the pin, and the pin must still be on its repository\'s main; 8 parallel checks all pass, and a failed fetch is not graded');
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

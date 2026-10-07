@@ -97,6 +97,12 @@
  *   git dir) before its first snapshot and holds it through build,
  *   rollback and verification. A second gate waits for the first; the
  *   kernel releases the lock when its process ends, however it ends.
+ *
+ * WHAT THE PACKAGES SHIP, CHECKED IN SOURCE
+ *   No exported variable statement in a published package declares more
+ *   than one name (scripts/lib/export-declarators.mjs): bundlers built on
+ *   rolldown before 1.1.4 with keepNames drop `export` from every name
+ *   after the first. Checked on every gate, cached or not.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -105,6 +111,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } fr
 import { delimiter, dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { checkoutLockFd, holdsCheckoutLock, withCheckoutLock } from './lib/checkout-lock.mjs';
+import { multiDeclaratorExports, multiDeclaratorReason } from './lib/export-declarators.mjs';
 import { filesUnder, trackedFileDigests } from './lib/fs-walk.mjs';
 import { BuildFailure, diffSnapshots, transaction } from './lib/output-transaction.mjs';
 
@@ -669,6 +676,12 @@ export function assertDistMatchesSource({
 async function verifyUnderLock({ root, roots, steps, log, useCache }) {
   const defaultScope = roots === OUTPUT_ROOTS && steps === BUILD_FIXPOINT;
   assertWorkspaceToolchain({ root, steps });
+  // A rule on what the published packages ship, checked in their source,
+  // cached or not (scripts/lib/export-declarators.mjs).
+  if (defaultScope) {
+    const multi = multiDeclaratorExports({ root });
+    if (multi.length > 0) throw new Error(multiDeclaratorReason(multi));
+  }
   // An output whose source is gone would ship, and load. The record cannot
   // vouch for a file no build writes, so the cached path checks first; a
   // rebuild clears every dist (its removals are drift) and checks after.
