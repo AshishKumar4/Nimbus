@@ -82,7 +82,10 @@ export type BundleCell = {
     readonly path: string;
     /** A TypeScript source: its emit becomes the module cell, and the source keeps its bytes. */
     readonly typescript: boolean;
-    /** Lowered from ESM, so its module's block scope applies (commonjs-cell.ts THE WRAPPER). */
+    /**
+     * Lowered from ESM or compiled from TypeScript, so its module's block scope
+     * applies (commonjs-cell.ts THE WRAPPER); a CommonJS cell is only rewritten.
+     */
     readonly lowered: boolean;
     readonly absUrl: string;
 } & (

@@ -148,7 +148,7 @@ export function prepareBundleCell(path, source) {
     }
     // CommonJS already: only its dynamic import() calls change.
     const rewriteOnly = path.endsWith('.cjs') || (!typescript && !looksLikeEsm(path, src));
-    const cell = { path, typescript, lowered: !rewriteOnly && !typescript, absUrl };
+    const cell = { path, typescript, lowered: !rewriteOnly, absUrl };
     if (!rewriteOnly && !typescript && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
         let rewritten;
         try {
