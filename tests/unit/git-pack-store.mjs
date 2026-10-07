@@ -168,6 +168,22 @@ try {
   assert.deepEqual(others, [], 'after the first hit, no other pack\'s idx is read');
   console.log('  ok  200 neighbours in the last of 8 packs: no other idx read after the first');
 
+  // Concurrent searches promote the packs they hit while others are part way
+  // through the order: none drops a pack, so has() still finds every pack's
+  // objects (a fetch checks many parents at once). Reads finish in a shuffled
+  // order (seeded), idx pages uncached.
+  let shuffle = 7;
+  const jitter = () => new Promise((resolve) => setTimeout(resolve, (shuffle = (shuffle * 1103515245 + 12345) >>> 0) % 3));
+  const slow = { ...nodeFs(), async readRange(path, offset, length) { await jitter(); return nodeFs().readRange(path, offset, length); } };
+  const concurrent = new PackObjectStore(slow, many, { pageCacheBytes: 1 });
+  const idsOf = (name) => git(many, ['show-index'], readFileSync(join(many, 'objects/pack', name))).toString().trim().split('\n').map((line) => line.split(' ')[1]);
+  const perPack = idxNames.map(idsOf);
+  const wanted = [];
+  for (let round = 0; round < 40; round++) for (let p = idxNames.length - 1; p >= 0; p--) wanted.push(perPack[p][round]);
+  await Promise.all(wanted.map(async (oid) => assert.ok(await concurrent.read(oid), oid)));
+  for (const [p, ids] of perPack.entries()) assert.equal(await concurrent.has(ids[1000]), true, `pack ${p} is still searched after concurrent promotions`);
+  console.log(`  ok  ${wanted.length} concurrent searches across 8 packs: every pack still searched`);
+
   console.log('git-pack-store: ok');
 } finally {
   rmSync(work, { recursive: true, force: true });
