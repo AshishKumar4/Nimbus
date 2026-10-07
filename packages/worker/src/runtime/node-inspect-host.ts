@@ -146,7 +146,7 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw`function createNodeInspect(pl
     removeColors: (str) => String.prototype.replace.call(str, colorRegExp, ""),
   };
 
-  // ── THE BINDING: V8's internal slots, read by workerd's inspect ─────────
+  // THE BINDING: V8's internal slots, read by workerd's inspect.
   // A promise's state and result, a proxy's target and handler, a Map or Set
   // iterator's and a weak collection's entries are V8 internals no user-land
   // JavaScript can read; workerd's inspect reads them. After an intrinsic
