@@ -119,9 +119,11 @@ export function declareNamespace({ metadata = {}, manifest = {} } = {}) {
  * module, once, and given its module's own Function as the guest gives it.
  */
 globalThis.__nimbusTestCompileCell = (text, key) => {
+  /** @type {{ exports: unknown }} */
   const moduleObject = { exports: {} };
   new Function('module', 'exports', wrapCommonJsCell(text, declaresWrapperBinding(text) ? 'block' : 'function').text)(moduleObject, moduleObject.exports);
-  return moduleObject.exports(globalThis.__nimbusCodeOrigin(moduleImporterUrl(key)).Function);
+  const factory = /** @type {(moduleFunction: unknown) => unknown} */ (moduleObject.exports);
+  return factory(globalThis.__nimbusCodeOrigin(moduleImporterUrl(key)).Function);
 };
 const MODULE_CELLS = `
 const __nimbusTestCells = new Map();
