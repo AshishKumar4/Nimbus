@@ -1094,7 +1094,10 @@ export async function engineKey(
 }
 
 /** POSIX access(2) modes. */
-export const F_OK = 0, X_OK = 1, W_OK = 2, R_OK = 4;
+export const F_OK = 0;
+export const X_OK = 1;
+export const W_OK = 2;
+export const R_OK = 4;
 
 /**
  * A process's namespace as a `VFS` over its bound bridge, plus the process
