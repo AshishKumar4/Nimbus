@@ -38,13 +38,13 @@ import {
   type QueuedPair,
 } from './unified-diff.js';
 import { CheckoutRefused, UnmergedIndex, switchTrees, type CheckoutWriter } from './worktree/checkout.js';
-import { DirCache, comparePaths, type IndexEdit, type NewEntry } from './worktree/dircache.js';
+import { DirCache, NewEntries, comparePaths, type IndexEdit, type NewEntry } from './worktree/dircache.js';
 import { PairList, type PairSide } from './worktree/pairs.js';
 import { WorktreeRepo, configBool } from './worktree/repo.js';
 import { collectStatus, inSpecs, shortStatusLines, walkTreeAndIndex, type StatusChange } from './worktree/status.js';
 import { EMPTY_TREE, treeLeaves, treeOf, writeTreeFromIndex } from './worktree/tree.js';
 import {
-  DirtySet, modeFromStat, newCounters, scanWorktree, worktreeBlob, worktreeBlobId, type Dirty, type WalkCounters, type WorktreeStat,
+  DirtySet, modeFromStat, newCounters, scanWorktree, worktreeBlob, worktreeBlobId, type Dirty, type ScanResult, type WalkCounters, type WorktreeStat,
 } from './worktree/walk.js';
 
 // ── Lazy-loaded isomorphic-git (avoid ~1MB load on every cold start) ────
@@ -575,19 +575,19 @@ async function stageTracked(ctx: Ctx, wrepo: WorktreeRepo, git: CfGit): Promise<
   const scan = await scanWorktree(await wrepo.worktree(), dc, { untracked: 'no', excludes: null, uncleanIsDirty: true, unmerged: true });
   for (const line of scan.errors.tracked) await ctx.stderr.write(`${line}\n`);
   const removed = new Set<number>();
-  const added: NewEntry[] = [];
+  const added = new NewEntries();
   for (const [i, dirty] of scan.dirty) {
     const entry = dirty.change === 'D' ? null : await indexEntryFor(wrepo, git, dc, dc.path(i));
-    if (entry) added.push(entry);
+    if (entry) added.add(entry);
     else removed.add(i);
   }
   // An unmerged path is resolved as add -u resolves it: with what the worktree holds, or by its removal.
   for (const { path, lo, hi, stat } of scan.unmerged) {
     const entry = stat === null || stat.type === 'directory' ? null : await indexEntryFor(wrepo, git, dc, path);
-    if (entry) added.push(entry);
+    if (entry) added.add(entry);
     else for (let k = lo; k < hi; k++) removed.add(k);
   }
-  if (removed.size || added.length || dc.refreshed) await wrepo.writeIndex(dc, { removed, added });
+  if (removed.size || added.count || dc.refreshed) await wrepo.writeIndex(dc, { removed, added });
 }
 
 type GitFs = ReturnType<typeof createGitFs>;
@@ -783,6 +783,38 @@ function entriesInSpecs(dc: DirCache, specs: readonly string[]): number[] {
   return [...picked].sort((x, y) => x - y);
 }
 
+/** One tracked path add stages: entries [at, end) to replace with the worktree's file, or to remove. */
+interface TrackedChange {
+  at: number;
+  end: number;
+  action: 'add' | 'remove';
+  stat: WorktreeStat | null;
+  unmerged: boolean;
+}
+
+/**
+ * add's tracked changes in index order, as the walk left them, one at a time:
+ * each dirty entry, and each unmerged path (resolved with what the worktree
+ * holds, or by its removal). Removals but with --no-all (`all` false).
+ */
+function* trackedChanges(scan: ScanResult, all: boolean | null): Generator<TrackedChange> {
+  const unmerged = [...scan.unmerged].sort((a, b) => a.lo - b.lo);
+  let u = 0;
+  const resolved = function* (at: number): Generator<TrackedChange> {
+    for (; u < unmerged.length && unmerged[u].lo < at; u++) {
+      const { lo, hi, stat } = unmerged[u];
+      if (stat !== null && stat.type !== 'directory') yield { at: lo, end: hi, action: 'add', stat, unmerged: true };
+      else if (all !== false) yield { at: lo, end: hi, action: 'remove', stat: null, unmerged: true };
+    }
+  };
+  for (const [i, dirty] of scan.dirty) {
+    yield* resolved(i);
+    if (dirty.change !== 'D') yield { at: i, end: i + 1, action: 'add', stat: null, unmerged: false };
+    else if (all !== false) yield { at: i, end: i + 1, action: 'remove', stat: null, unmerged: false };
+  }
+  yield* resolved(Infinity);
+}
+
 const ADD_USAGE = 'usage: git add [-n | --dry-run] [-v | --verbose] [-f | --force] [-A | --all | --no-all] '
   + '[-u | --update] [--] <pathspec>...\n';
 /** git add's options this git does not do: they are git's, so they are refused as unsupported, not unknown. */
@@ -890,18 +922,6 @@ async function addCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args:
         }
       }
     }
-    // Tracked paths first, in index order, then the new ones, as git's add_files_to_cache and add_files go.
-    // An unmerged path is resolved: what the worktree holds replaces its stages, or its deletion removes them.
-    const tracked: { at: number; end: number; action: 'add' | 'remove'; stat: WorktreeStat | null; unmerged: boolean }[] = [];
-    for (const [i, dirty] of scan.dirty) {
-      if (dirty.change !== 'D') tracked.push({ at: i, end: i + 1, action: 'add', stat: null, unmerged: false });
-      else if (all !== false) tracked.push({ at: i, end: i + 1, action: 'remove', stat: null, unmerged: false });
-    }
-    for (const { lo, hi, stat } of scan.unmerged) {
-      if (stat !== null && stat.type !== 'directory') tracked.push({ at: lo, end: hi, action: 'add', stat, unmerged: true });
-      else if (all !== false) tracked.push({ at: lo, end: hi, action: 'remove', stat: null, unmerged: true });
-    }
-    tracked.sort((a, b) => a.at - b.at);
     // read_directory's warnings, then diff-files' lstat failures, then add_files' advice.
     for (const line of [...scan.errors.untracked, ...scan.errors.tracked]) await ctx.stderr.write(`${line}\n`);
     if (ignored.length) {
@@ -913,9 +933,11 @@ async function addCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args:
     let out = '';
     const show = dryRun || verbose;
     const removed = new Set<number>();
-    const added: NewEntry[] = [];
+    // Each new entry is held as its bytes as soon as it is made (a file of Linux's 96,000 changed: 10 MiB, not 80).
+    const added = new NewEntries();
     const tree = await wrepo.worktree();
-    for (const { at: i, end, action, stat: st, unmerged } of tracked) {
+    // Tracked paths first, in index order, then the new ones, as git's add_files_to_cache and add_files go.
+    for (const { at: i, end, action, stat: st, unmerged } of trackedChanges(scan, all)) {
       const path = dc.path(i);
       if (action === 'remove') {
         if (show) out += `remove '${path}'\n`;
@@ -933,7 +955,7 @@ async function addCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args:
       }
       const entry = await indexEntryFor(wrepo, git, dc, path);
       if (show && (unmerged || !(entry && entry.oid === dc.oid(i) && entry.mode === dc.mode(i)))) out += `add '${path}'\n`;
-      if (entry) added.push(entry);
+      if (entry) added.add(entry);
       else for (let k = i; k < end; k++) removed.add(k);
     }
     let advised = false;
@@ -969,11 +991,11 @@ async function addCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args:
         }
         await ctx.stderr.write(text);
       }
-      if (entry && !dryRun) added.push(entry);
+      if (entry && !dryRun) added.add(entry);
     }
     if (show) await writeBinary(ctx.stdout, binaryPath(out));
     // Its stat refreshes ride in the one index write that stages (git add writes once).
-    if (!dryRun && (removed.size || added.length || dc.refreshed)) await wrepo.writeIndex(dc, { removed, added });
+    if (!dryRun && (removed.size || added.count || dc.refreshed)) await wrepo.writeIndex(dc, { removed, added });
     return ignored.length ? 1 : 0;
   });
 }
@@ -1689,7 +1711,7 @@ async function checkoutPaths(
     }
     const writer = checkoutWriter(vfs, root);
     await wrepo.store.prefetch(files.map(({ oid }) => oid));
-    const added: NewEntry[] = [];
+    const added = new NewEntries();
     for (const { path, oid, mode } of files) {
       const file = `${root}/${path}`;
       const { data } = await wrepo.store.read(oid);
@@ -1699,13 +1721,13 @@ async function checkoutPaths(
         await writer.writeFile(file, data);
         await writer.chmod(file, mode === 0o100755 ? 0o755 : 0o644);
       }
-      added.push({ path, mode, oid, stat: await wrepo.fs.lstat(path) });
+      added.add({ path, mode, oid, stat: await wrepo.fs.lstat(path) });
     }
     // The index takes each file's fresh stat data (and, from a tree, its blob). An entry a
     // restored path replaces goes, as add_index_entry_with_check replaces it: a file at
     // one of its leading directories, or anything below it.
     const removed = replacedIndexEntries(dc, new Set(files.map(({ path }) => path)));
-    if (added.length || removed.size) await wrepo.writeIndex(dc, { removed, added });
+    if (added.count || removed.size) await wrepo.writeIndex(dc, { removed, added });
     return 0;
   });
 }
@@ -2266,13 +2288,13 @@ async function resetIndex(ctx: Ctx, wrepo: WorktreeRepo, tree: string, specs: re
 async function indexFromTree(wrepo: WorktreeRepo, tree: string, specs: readonly string[]): Promise<DirCache> {
   const old = await wrepo.readIndex();
   const removed = new Set<number>();
-  const added: NewEntry[] = [];
+  const added = new NewEntries();
   await walkTreeAndIndex(wrepo.store, tree, old, specs, (path, leaf, lo, hi) => {
     if (leaf && hi - lo === 1 && old.stage(lo) === 0 && old.oid(lo) === leaf.oid && old.mode(lo) === leaf.mode) return;
     for (let i = lo; i < hi; i++) removed.add(i);
-    if (leaf) added.push({ path, mode: leaf.mode, oid: leaf.oid, stat: null });
+    if (leaf) added.add({ path, mode: leaf.mode, oid: leaf.oid, stat: null });
   }, { cacheTree: old.cacheTree() });
-  return removed.size || added.length ? DirCache.parse(old.encode({ removed, added }), old.timestamp) : old;
+  return removed.size || added.count ? DirCache.parse(old.encode({ removed, added }), old.timestamp) : old;
 }
 
 const RESET_USAGE = 'usage: git reset [--mixed | --soft | --hard] [-q] [<commit>]\n'
