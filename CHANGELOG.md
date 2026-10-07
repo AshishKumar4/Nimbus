@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a launch that loads rolldown, satteri or the Astro compiler by a
+  name its code computes (`nuxt dev`: nuxi loads the project's nuxt, which
+  loads vite and rolldown) carried none of their staged bindings, and failed
+  with "Cannot find module '../rolldown-binding.linux-x64-gnu.node'". It now
+  fails by name: which binding, the version Nimbus stages, and that the next
+  launch of the command carries it.
 - Fixed: `nuxt dev` failed its first run with "Cannot find native binding":
   Nuxt reaches Vite, and Vite rolldown, through an `import()` whose specifier
   is a variable, so the launch never carried rolldown's staged wasm binding,
