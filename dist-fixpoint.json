@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "e82f06635d20906ac915d8c08bd2d99885487a4df2e8e79748d94bb7ba1db5e0",
+  "fingerprint": "faedddcb99e70d446b74fb792225a37906fdbb51eb6092e718147ff88386f301",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2279,9 +2279,9 @@
     "packages/worker/dist/wrangler/nimbus-wrangler.d.ts": "040a2a4bfa75bd9096323ccdbed1a0890fbfaa3f6bc47830776e703de1c62cdb",
     "packages/worker/dist/wrangler/nimbus-wrangler.d.ts.map": "5dc388feb05ca98af3f5024fb4c63d92b97def86601a7ae6941fe56762fbff51",
     "packages/worker/dist/wrangler/nimbus-wrangler.js": "9fea12c5359dc9cfcd53244081b89a39b63e4da68a1a99a8846c2e634738509a",
-    "packages/worker/dist/wrangler/wrangler-config.d.ts": "1c9bfc4ef154acf296f8010576affab0db90da953221eee7393e77756433f08b",
-    "packages/worker/dist/wrangler/wrangler-config.d.ts.map": "fb56830038d74dcce26568401def5d1f5826ec4a8e8a6396d7d2568bd157e2c6",
-    "packages/worker/dist/wrangler/wrangler-config.js": "dd2baa00ac6608f801aafda975a8307ca8a65b858713521d5f2c06fc164d2419",
+    "packages/worker/dist/wrangler/wrangler-config.d.ts": "2d34a16d72dd3b6e3d72d3dfd070bece421f124e2d039a1e036c85e1a7857af0",
+    "packages/worker/dist/wrangler/wrangler-config.d.ts.map": "e32191eaed094594846bf8844fb92558323e0e87c7414959ae29d0489925e27c",
+    "packages/worker/dist/wrangler/wrangler-config.js": "6e806ba17de1ef1485787861279e574c78452e161b98d32638b4d96dcb9124a6",
     "packages/worker/frontend/agent-chat/agent-chat.css": "9ada51411d5f72e4dc14c394546a3d50a5dd7487bd3baa056bd15d867c91e0cf",
     "packages/worker/frontend/agent-chat/api.ts": "f14e7324b27e3fd6e5acfd9888f0e33b20a0c006296753556ad20f780409a4a2",
     "packages/worker/frontend/agent-chat/components/AgentChat.tsx": "077309ac17ce669af03499e44084c880c4ea31ad3ce0524f53b2cea489fa42ae",
@@ -2625,7 +2625,7 @@
     "packages/worker/src/workspace-host.ts": "816e14307a8cdf211c77405d00fa71f7ffeb105c5c6d008cfc982e20e5b2dce5",
     "packages/worker/src/workspace.ts": "39d753a50eadabfd3c9739bdfff05f9874ce6333761914ed5698a8d9fac5013c",
     "packages/worker/src/wrangler/nimbus-wrangler.ts": "fe9c8b5d239e3fea527e076c3c311dadf7c49ac6b9140f1f423c3790cc8c881f",
-    "packages/worker/src/wrangler/wrangler-config.ts": "a2fb8796607e8d87c3a3972892e6aef8ad79c1fea884e68094a7c4195e150302",
+    "packages/worker/src/wrangler/wrangler-config.ts": "4576f90f079be8c425a0388bcb18ff13a62819ca113351bf6a9d8fa9a2012f06",
     "packages/worker/tsconfig.json": "fa6f4d05c31f08aebf48fc3a2373a2478cb3df3f937c5246a9c47a310ec08c0b",
     "packages/worker/vendor/git-http.generated.d.ts": "5adcb490107c88a98f78c45c9cbc6ed5b0e67ab2db87d3de1a44f7d2aa0736b7",
     "packages/worker/vendor/git-upstream.generated.d.ts": "1a3e44a15fed146a199b53d3e858ad3bd934725bcf187fdd8f9dcd82d1649fa6",

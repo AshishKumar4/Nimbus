@@ -1,7 +1,8 @@
 /**
  * wrangler-config.ts — a project's wrangler.json or wrangler.jsonc, as
- * `nimbus wrangler dev`, its unsupported-binding warning and the repo's
- * deploy-isolation gate read it.
+ * `nimbus wrangler dev`, its unsupported-binding warning, the repo's
+ * deploy-isolation gate and its release uploads (scripts/ci/lib/release.mjs)
+ * read it.
  */
 /**
  * Subset of wrangler.jsonc we actually understand. Unknown top-level
@@ -66,6 +67,21 @@ export interface WranglerConfig {
     migrations?: any[];
     /** Environment blocks: the deploy-isolation gate reads them; `nimbus wrangler dev` serves the top level. */
     env?: Record<string, WranglerConfig>;
+    /**
+     * Build-time global replacements (wrangler's `define`). A release built by
+     * `wrangler deploy` is uploaded as a Preview only when the Preview's own
+     * `define` is the same (scripts/ci/lib/release.mjs).
+     */
+    define?: Record<string, string>;
+    /** What `wrangler preview` applies over the top level: the release path compares its `define`. */
+    previews?: {
+        define?: Record<string, string>;
+        [k: string]: unknown;
+    };
+    /** Import aliases for wrangler's bundler; a release uploads an already bundled module and drops them. */
+    alias?: Record<string, string>;
+    /** The JSON schema an editor validates the file against; dropped from a release's upload config. */
+    $schema?: string;
 }
 /**
  * A wrangler.json or wrangler.jsonc as wrangler reads one: jsonc-parser,
