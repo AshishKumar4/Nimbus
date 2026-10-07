@@ -351,6 +351,27 @@ async function create(fs, path, text) {
   assert.equal(s.fs.stats().client.ops > 0, true, 'the writes did not go through the client');
 }
 
+// ── Review D (FilthySwordtail): a file written through is read by name as the session has it ──
+// Red before: the holder answered its empty buffer for the file's content,
+// so readFile returned nothing and a pin, after the close, pinned nothing.
+{
+  const s = session();
+  s.kernel.writeFile('home/user/through.txt', enc.encode(''));
+  s.kernel.chown('home/user/through.txt', 1000, 1000);
+  const fd = await s.fs.open('/home/user/through.txt', { write: true });
+  await s.fs.write(fd.id, null, enc.encode('through bytes'));
+  assert.equal(dec.decode(await s.fs.readFile('/home/user/through.txt')), 'through bytes', 'readFile of a file written through');
+  await s.fs.close(fd.id);
+  assert.equal(dec.decode(await s.fs.readFile('/home/user/through.txt')), 'through bytes', 'and after its close');
+  const st = await s.fs.stat('/home/user/through.txt');
+  const pinned = await s.fs.pinContent('/home/user/through.txt', st);
+  if (pinned !== null) {
+    assert.equal(dec.decode(pinned.bytes), 'through bytes', 'a pin of a file written through');
+    pinned.release();
+  }
+  await s.fs.settle();
+}
+
 // ── Review 12: a refusal of a write through is reported at the description's next fsync ──
 {
   const s = session();

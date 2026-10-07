@@ -380,7 +380,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     content: (entry) => {
       if (entry.dev !== store.device) return undefined;
       const file = files.get(entry.ino);
-      return file === undefined ? undefined : file.bytes.slice(0, file.length);
+      // A file written through holds no bytes here: the session's are its.
+      return file === undefined || file.through !== undefined ? undefined : file.bytes.slice(0, file.length);
     },
 
     owns: (handleId) => handles.has(handleId),
