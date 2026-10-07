@@ -1286,7 +1286,7 @@ export function facetWasmImports(
  * The static imports that compile a launch's wasm images at module eval and
  * park them by VFS path for the node-shims WebAssembly seam.
  */
-function facetWasmImportsSource(wasmImports: readonly FacetWasmImport[]): string {
+export function facetWasmImportsSource(wasmImports: readonly FacetWasmImport[]): string {
   if (wasmImports.length === 0) return '';
   const lines = wasmImports.map((entry, index) =>
     `import __nimbusWasm${index} from ${JSON.stringify(entry.moduleName)};`);
