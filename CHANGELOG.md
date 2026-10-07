@@ -53,7 +53,9 @@ published independently in the `@nimbus-sh` npm scope.
   bytes, is charged as each fetch is issued and as each range of it is
   read, manifests included; past it nothing more is fetched and the `import()`
   fails with `ERR_NIMBUS_PREFETCH_BOUND` rather than load on part of its
-  closure. Its reads are its own: a file the program itself failed to
+  closure. A file whose fetches never land fails it with
+  `ERR_NIMBUS_PREFETCH_UNREADABLE`, naming the file, rather than resolve past
+  it. Its reads are its own: a file the program itself failed to
   read stays in the program's exit report. A floating `import(...).then(...)`
   keeps the process while it fetches, and an `import()` of a module already
   loaded fetches nothing.
