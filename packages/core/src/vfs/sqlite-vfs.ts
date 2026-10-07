@@ -9610,7 +9610,7 @@ export class SqliteVFS {
      * after (WaveMutation), read in the turn it commits.
      */
     const committing = <T>(path: string, apply: () => T): T => {
-      const index = recordIndex - 1;
+      const index = recordIndex;
       const before = this.revision(path, cred);
       let value: T;
       if (sequence === null || applying === null) {
@@ -9682,8 +9682,8 @@ export class SqliteVFS {
             if (record.type === 'delete' || record.type === 'directory' || (record.type === 'file-begin' && record.inode.call === undefined)) {
               throw vfsError('EINVAL', record.type === 'delete' ? record.path : record.inode.path, 'a sequenced wave carries calls, renames, truncates and attribute changes, not upserts');
             }
-            // Each op's number is its place in the wave (recordIndex counts ops, from 1).
-            const seq = sequence.spec.first + recordIndex - 1;
+            // Each op's number is its place in the wave (recordIndex counts ops, from 0).
+            const seq = sequence.spec.first + recordIndex;
             if (seq <= sequence.cursor) {
               if (record.type === 'file-begin') skipping = record.streamContentId;
               continue;
