@@ -27,7 +27,7 @@ import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs
 const LEAVES = 5000;
 const BOUND_FILES = 4096;
 
-function world(files) {
+function world(files, { afterStat } = {}) {
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
   const vfs = rawVfs.as(CRED_KERNEL);
@@ -49,10 +49,14 @@ function world(files) {
     }
   }
   // The authority, counting data reads: issued, and in flight.
-  const io = { reads: 0, inFlight: 0, readPaths: [] };
+  const io = { reads: 0, inFlight: 0, readPaths: [], bytes: 0 };
   const supervisor = {
     readFile: async (path) => { const bytes = await bridge.readFile(path); return bytes ? new TextDecoder().decode(bytes) : null; },
-    stat: (path) => bridge.stat(path),
+    stat: async (path) => {
+      const found = await bridge.stat(path);
+      if (afterStat) afterStat(path, (body) => vfs.writeFile(path, enc.encode(body)));
+      return found;
+    },
     lstat: (path) => bridge.stat(path, { followSymlinks: false }),
     readdir: (path) => bridge.readdir(path),
     exists: async (path) => (await bridge.stat(path)) !== null,
@@ -62,7 +66,9 @@ function world(files) {
       io.readPaths.push(path);
       try {
         await new Promise((resolve) => setTimeout(resolve, 1));
-        return await bridge.readRange(path, offset, length);
+        const bytes = await bridge.readRange(path, offset, length);
+        io.bytes += bytes ? bytes.byteLength : 0;
+        return bytes;
       } finally {
         io.inFlight--;
       }
@@ -114,6 +120,25 @@ const rejection = async (promise) => {
   const error = await rejection(hydrated(() => names.map((k) => read(k, null)), quota('heavy', { bytes: 10000 })));
   assert.equal(error?.code, 'ERR_NIMBUS_PREFETCH_BOUND', `12,000 raw bytes exceed a 10,000-byte quota (6,000 as UTF-16): ${error}`);
   assert.ok(io.reads <= 2, `the third file's bytes were never read (${io.reads} reads)`);
+  assert.equal(io.inFlight, 0);
+}
+
+// ── a file that grows between its stat and its read is charged as it is read ──
+// (DustyPanther's fourth recheck: the quota charged the stat's size, and the
+// read then took the file as it found it, whole.)
+{
+  const path = 'home/user/app/node_modules/growing/index.js';
+  let grown = false;
+  const { hydrated, read, quota, io } = world({ [path]: 'x'.repeat(1024) }, {
+    afterStat: (statted, write) => {
+      if (grown || statted !== '/' + path) return;
+      grown = true;
+      write('y'.repeat(1024 * 1024));
+    },
+  });
+  const error = await rejection(hydrated(() => read(path, null), quota('growing', { bytes: 200 * 1024 })));
+  assert.equal(error?.code, 'ERR_NIMBUS_PREFETCH_BOUND', `1 MiB read past a 200 KiB quota, admitted at its 1 KiB stat: ${error}`);
+  assert.ok(io.bytes <= 200 * 1024, `no more than the quota was read (${io.bytes} bytes)`);
   assert.equal(io.inFlight, 0);
 }
 
