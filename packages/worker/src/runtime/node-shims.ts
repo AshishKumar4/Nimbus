@@ -8103,11 +8103,9 @@ const __NIMBUS_TERM_ENVS = {
 const __NIMBUS_CI_ENVS = [["APPVEYOR", 8], ["BUILDKITE", 8], ["CIRCLECI", 24], ["DRONE", 8], ["GITEA_ACTIONS", 24], ["GITHUB_ACTIONS", 24], ["GITLAB_CI", 8], ["TRAVIS", 8]];
 const __NIMBUS_TERM_ENVS_REG_EXP = [/ansi/, /color/, /linux/, /direct/, /^con[0-9]*x[0-9]/, /^rxvt/, /^screen/, /^xterm/, /^vt100/, /^vt220/];
 let __nimbusColorWarned = false;
-// The warnings Node's console and colour policy emit (process.emitWarning),
-// where the process has one: this process does not yet, and prints none.
+// The warnings Node's console and colour policy emit: process.emitWarning.
 function __nimbusEmitWarning(...args) {
-  const emitWarning = globalThis.process?.emitWarning;
-  if (typeof emitWarning === "function") Reflect.apply(emitWarning, globalThis.process, args);
+  return Reflect.apply(__processMod.emitWarning, __processMod, args);
 }
 function __nimbusWarnOnDeactivatedColors(env) {
   if (__nimbusColorWarned) return;
@@ -9128,6 +9126,71 @@ function __nimbusSignalSelf(signal) {
 }
 
 const __processEvents = new __eventsMod();
+// Node's process.emitWarning and the 'warning' listener it installs unless
+// told not to (lib/internal/process/warning.js, lib/internal/process/
+// pre_execution.js setupWarningHandler, v22.22.3): the warning is an Error
+// named for its type, emitted on the next tick; the listener prints
+// "(node:<pid>) <Type>: <message>" to stderr, the first time with how to
+// trace it. --disable-warning and --redirect-warnings are not read.
+let __nimbusTraceWarningHelperShown = false;
+function __nimbusOnWarning(warning) {
+  if (!(warning instanceof Error)) return;
+  const isDeprecation = warning.name === "DeprecationWarning";
+  if (isDeprecation && __processMod.noDeprecation) return;
+  const trace = __processMod.traceProcessWarnings || (isDeprecation && __processMod.traceDeprecation);
+  let msg = "(node:" + __processMod.pid + ") ";
+  if (warning.code) msg += "[" + warning.code + "] ";
+  if (trace && warning.stack) msg += warning.stack;
+  else msg += typeof warning.toString === "function" ? String(warning.toString()) : Error.prototype.toString.call(warning);
+  if (typeof warning.detail === "string") msg += "\\n" + warning.detail;
+  if (!trace && !__nimbusTraceWarningHelperShown) {
+    const flag = isDeprecation ? "--trace-deprecation" : "--trace-warnings";
+    const argv0 = __pathMod.basename(__processMod.argv0 || "node", ".exe");
+    msg += "\\n(Use \`" + argv0 + " " + flag + " ...\` to show where the warning was created)";
+    __nimbusTraceWarningHelperShown = true;
+  }
+  __consoleMod.error(msg);
+}
+function __nimbusProcessEmitWarning(warning, type, code, ctor) {
+  if (__processMod.noDeprecation && type === "DeprecationWarning") return;
+  let detail;
+  if (type !== null && typeof type === "object" && !Array.isArray(type)) {
+    ctor = type.ctor;
+    code = type.code;
+    if (typeof type.detail === "string") detail = type.detail;
+    type = type.type || "Warning";
+  } else if (typeof type === "function") {
+    ctor = type;
+    code = undefined;
+    type = "Warning";
+  }
+  const invalid = (name, expected, value) => Object.assign(
+    new TypeError("The \\"" + name + "\\" argument must be " + expected + "." + __nimbusReceived(value)), { code: "ERR_INVALID_ARG_TYPE" });
+  if (type !== undefined && typeof type !== "string") throw invalid("type", "of type string", type);
+  if (typeof code === "function") {
+    ctor = code;
+    code = undefined;
+  } else if (code !== undefined && typeof code !== "string") {
+    throw invalid("code", "of type string", code);
+  }
+  if (typeof warning === "string") {
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 0;
+    warning = new Error(warning);
+    Error.stackTraceLimit = limit;
+    warning.name = String(type || "Warning");
+    if (code !== undefined) warning.code = code;
+    if (detail !== undefined) warning.detail = detail;
+    Error.captureStackTrace(warning, ctor || __processMod.emitWarning);
+  } else if (!(warning instanceof Error)) {
+    throw invalid("warning", "of type string or an instance of Error", warning);
+  }
+  if (warning.name === "DeprecationWarning") {
+    if (__processMod.noDeprecation) return;
+    if (__processMod.throwDeprecation) return __processMod.nextTick(() => { throw warning; });
+  }
+  __processMod.nextTick(() => __processEvents.emit("warning", warning));
+}
 let __processUmask = Number(cred.umask) & 0o777;
 const __processMod = {
   argv: ["node", ...(argv || [])],
@@ -9172,6 +9235,7 @@ const __processMod = {
   ),
   memoryUsage: () => ({ rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 }),
   nextTick: (fn, ...a) => queueMicrotask(() => fn(...a)),
+  emitWarning: __nimbusProcessEmitWarning,
   on: (name, listener) => { __processEvents.on(name, listener); return __processMod; },
   addListener: (name, listener) => { __processEvents.on(name, listener); return __processMod; },
   prependListener: (name, listener) => { __processEvents.prependListener(name, listener); return __processMod; },
@@ -9253,6 +9317,10 @@ const __processMod = {
     throw err;
   },
 };
+// The 'warning' listener Node installs (setupWarningHandler), unless warnings are off.
+if (__processMod.env.NODE_NO_WARNINGS !== "1" && !String(__processMod.env.NODE_OPTIONS || "").split(/\\s+/).includes("--no-warnings")) {
+  __processEvents.on("warning", __nimbusOnWarning);
+}
 // Node's process reads as one: Object.prototype.toString gives "[object
 // process]", which axios (utils.kindOf) and others test to pick their Node
 // paths (axios: its http adapter rather than its fetch one). As Node defines
