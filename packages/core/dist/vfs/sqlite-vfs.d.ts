@@ -1112,8 +1112,11 @@ export declare class SqliteVFS {
     private readChunk;
     /**
      * The one read of a stored chunk: the bytes of a row whose state holds
-     * them (chunkHeld), from its `size`, `data` and `state`. EIO for `what`
-     * when a deflated row does not inflate to its size.
+     * them (chunkHeld), from its `hash`, `size`, `data` and `state`. A
+     * deflated row's bytes are checked against its name before anything
+     * returns, caches, exports or tiers them (raw deflate carries no check of
+     * its own): EIO for `what` when they do not inflate to its size, or do
+     * not hash to its name.
      */
     private heldChunkBytes;
     /**
