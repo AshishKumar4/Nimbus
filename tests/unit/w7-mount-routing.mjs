@@ -695,14 +695,15 @@ const ops = (...list) => ({ inodes: [], chunks: [], ops: list });
 // Red before: each wave queued calls of 512 KiB (under the 1 MiB group
 // threshold, so not yet made, their credit held), and its next 3.5 MiB call
 // waited on the 8 MiB pool the other waves' queued calls filled: every wave
-// waited, for good.
+// waited, for good. Eighteen waves of one 512 KiB call each fill it.
 {
   const s = session();
   const piece = (n) => new Uint8Array(n).fill(1);
   const waves = [];
-  for (let w = 0; w < 4; w++) {
+  // Enough waves that their queued calls alone fill the 8 MiB pool.
+  for (let w = 0; w < 18; w++) {
     const list = [];
-    for (let i = 0; i < 3; i++) list.push({ type: 'call', call: { call: 'writeFile', path: `home/user/c${w}-${i}`, mode: 0o644, data: piece(512 * 1024) } });
+    list.push({ type: 'call', call: { call: 'writeFile', path: `home/user/c${w}-0`, mode: 0o644, data: piece(512 * 1024) } });
     list.push({ type: 'call', call: { call: 'writeFile', path: `home/user/c${w}-big`, mode: 0o644, data: piece(3.5 * 1024 * 1024) } });
     waves.push(s.send(ops(...list)));
   }
