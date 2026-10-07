@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `astro dev` failed some first runs with an unhandled "EAGAIN … aria-query/lib/index.js":
+  Vite's dependency optimizer reads, synchronously, the entries of what a
+  framework includes for itself (Astro's dev toolbar includes `astro >
+  aria-query`, `astro > axobject-query` and `astro > html-escaper`), and a
+  launch planned only the entries of the project's own dependencies. It now
+  also plans the entries of those dependencies' dependencies.
 - Fixed: `vinext dev` answered every App Router page 404, because `fs.glob`
   matched no braces: `fs.glob`, `fs.globSync` and `fs.promises.glob` are now
   Node's own, its Glob over the minimatch it vendors, with every option
