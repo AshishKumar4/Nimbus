@@ -65,7 +65,7 @@ import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
 import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
-import { RUNTIME_INTERPRETER_MODULE } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { RUNTIME_INTERPRETER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
@@ -355,7 +355,30 @@ function __nimbusWasmDigest(bytes) {
   // an installed package whose image has to travel as a map member (the
   // closure walk registers it), or be inlined in module text the loader
   // itself evaluates.
+  // A refused image Node would have compiled (it validates) is named, once,
+  // and learned (commonjs-cell.ts recordWasm) for the next launch of the
+  // command to carry by digest: an image built in memory comes from no file
+  // the closure walk could record, and its caller often catches the refusal
+  // and carries on without it, silently.
+  const named = new Set();
+  const name = (bytes) => {
+    let valid = false;
+    try { valid = WA.validate(bytes); } catch {}
+    const digest = valid ? __nimbusWasmDigest(bytes) : null;
+    if (digest === null || named.has(digest)) return;
+    named.add(digest);
+    const size = bytes.byteLength;
+    const runtime = globalThis.__nimbusRuntimeCode;
+    const learned = size <= ${RUNTIME_WASM_MAX_BYTES} && !!(runtime && typeof runtime.recordWasm === "function" && runtime.recordWasm(bytes));
+    const where = globalThis.__currentModulePath ? " while loading " + globalThis.__currentModulePath : "";
+    const line = "Nimbus: a WebAssembly module of " + size + " bytes" + where + " was compiled from bytes this launch does not carry,"
+      + " and a Worker compiles wasm only from its launch's module map, so the compile was refused; "
+      + (learned ? "it is staged, and the next launch of this command carries it."
+        : "it is not staged" + (size > ${RUNTIME_WASM_MAX_BYTES} ? " (over the ${RUNTIME_WASM_MAX_BYTES}-byte limit a launch learns)" : "") + ".");
+    try { globalThis.process.stderr.write(line + "\\n"); } catch { try { console.error(line); } catch {} }
+  };
   const refusal = (e, bytes) => {
+    name(bytes);
     const size = (bytes && typeof bytes === "object" && typeof bytes.byteLength === "number") ? bytes.byteLength : 0;
     const where = globalThis.__currentModulePath ? " while loading " + globalThis.__currentModulePath : "";
     return new Error(

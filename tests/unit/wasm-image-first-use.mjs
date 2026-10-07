@@ -28,10 +28,10 @@ const IMPORTS = [
 // ── the runner names the images; it imports none ──
 const source = facetWasmImportsSource(IMPORTS);
 assert.doesNotMatch(source, /^\s*import\s+\w+\s+from\s+["']__nimbus_wasm_/m, 'no image is a static import, which compiles it at load');
-assert.match(source, /^import \{ createRequire as (\w+) \} from "node:module";$/m, 'the runner takes the registry\'s require');
+assert.match(source, /__nimbusCreateRequire\(import\.meta\.url\)/, 'the runner compiles through the registry\'s require (COMMONJS_CELL_IMPORTS)');
 assert.equal(facetWasmImportsSource([]), '', 'a launch with no image adds nothing');
 
-// Evaluate it as the runner's module scope would: its one import supplied.
+// Evaluate it as the runner's module scope would: the registry's createRequire supplied.
 const required = [];
 const compiled = new Map(IMPORTS.map((entry) => [entry.moduleName, { tag: 'loader-compiled ' + entry.moduleName }]));
 const createRequire = (url) => {
@@ -39,9 +39,8 @@ const createRequire = (url) => {
   return (specifier) => { required.push(specifier); return compiled.get(specifier.replace(/^\.\//, '')); };
 };
 const scope = {};
-const body = source.replace(/^import \{ createRequire as (\w+) \} from "node:module";$/m, 'const $1 = __createRequire;')
-  .replaceAll('import.meta.url', '__url');
-new Function('globalThis', '__createRequire', '__url', body)(scope, createRequire, 'file:///bundle/worker.js');
+const body = source.replaceAll('import.meta.url', '__url');
+new Function('globalThis', '__nimbusCreateRequire', '__url', body)(scope, createRequire, 'file:///bundle/worker.js');
 assert.deepEqual(required, [], 'loading the runner compiles nothing');
 
 // ── the seam compiles an image when its bytes are compiled, once ──
