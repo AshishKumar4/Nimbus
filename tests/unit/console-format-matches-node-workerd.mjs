@@ -87,11 +87,13 @@ let expected;
 let colouredExpected;
 try {
   writeFileSync(join(disk, 'prog.js'), PROGRAM);
-  const node = spawnSync('node', ['prog.js'], { cwd: disk, encoding: 'utf8' });
+  // The oracle's colours are decided by these alone, as the session's are.
+  const { NO_COLOR, FORCE_COLOR, NODE_DISABLE_COLORS, ...plain } = process.env;
+  const node = spawnSync('node', ['prog.js'], { cwd: disk, env: plain, encoding: 'utf8' });
   assert.equal(node.status, 0, node.stderr);
   expected = { stdout: node.stdout, stderr: node.stderr };
   writeFileSync(join(disk, 'coloured.js'), COLOURED);
-  const forced = spawnSync('node', ['coloured.js'], { cwd: disk, env: { ...process.env, FORCE_COLOR: '1' }, encoding: 'utf8' });
+  const forced = spawnSync('node', ['coloured.js'], { cwd: disk, env: { ...plain, FORCE_COLOR: '1' }, encoding: 'utf8' });
   assert.equal(forced.status, 0, forced.stderr);
   colouredExpected = { stdout: forced.stdout, stderr: forced.stderr };
   assert.match(forced.stdout, /\x1b\[33m1\x1b\[39m/, 'premise: node colours under FORCE_COLOR');
