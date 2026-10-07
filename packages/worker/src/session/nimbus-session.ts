@@ -969,8 +969,14 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     return _rpc._rpcRouteHostedHttp(this as any, workerKey, request);
   }
   async _rpcHostLost(workerKey: string, capability: string): Promise<boolean> {
-    this.ensureSqliteFs();
-    this.ensureFacetManager();
+    // The host asks until it gets an answer; a session that cannot stand up
+    // to act on the report holds no process of that host, and says so.
+    try {
+      this.ensureSqliteFs();
+      this.ensureFacetManager();
+    } catch {
+      return false;
+    }
     return _rpc._rpcHostLost(this as any, workerKey, capability);
   }
   async _rpcCancelHostProcess(workerKey: string): Promise<{ cancelled: boolean }> {
