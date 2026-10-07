@@ -5477,9 +5477,10 @@ export class FacetManager {
             // shell's Ctrl+C or `kill <pid>`. The process was not a crash and the
             // abort text is not its stderr: mark it killed and hand back 130 (the
             // shell's signalled status) with nothing for the terminal to print.
-            // A one-shot that sent changes may have held more it never sent:
-            // said, with the bound, however it ended (ProcessFsClient.effect).
-            const unsettled = openSupervisorDeliveries(this.ctx).wroteWaves(entry.pid) ? `${UNSETTLED_END_NOTE}\n` : '';
+            // A one-shot that ended abnormally may have lost writes it
+            // acknowledged and never sent: said, with the bound, every time (the
+            // session cannot know whether there were any: they never left).
+            const unsettled = `${UNSETTLED_END_NOTE}\n`;
             if (abortController.signal.aborted) {
                 this.processes.kill(entry.pid);
                 if (unsettled && !opts.captureOutput)

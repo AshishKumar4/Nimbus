@@ -265,11 +265,13 @@ export declare const PROCESS_FS_HEAP_WINDOW_BYTES: number;
 export declare const DECIDED_BACKLOG_OPS: number;
 export declare const DECIDED_BACKLOG_BYTES: number;
 /**
- * What a one-shot process (no store of its own) that ended before its
- * changes were all answered (it died, or was killed) says in its output:
- * every change ahead of an output it released is in the session
- * (ProcessFsClient.effect), and what it logged after its last one may not
- * be, at most the decided backlog.
+ * What a one-shot process (no store of its own) that ended abnormally (it
+ * died, or was killed) says in its output, whatever it did: every change
+ * ahead of an output it released is in the session (ProcessFsClient.effect),
+ * but what it acknowledged since it last yielded to its event loop never left
+ * its isolate (up to the synchronous cap), and what it sent after its last
+ * output may not have been answered (up to the decided backlog). The session
+ * cannot count the first: it never saw them.
  */
 export declare const UNSETTLED_END_NOTE: string;
 /** `error`, said with UNSETTLED_END_NOTE: a one-shot's run that ended with changes it may have lost. */

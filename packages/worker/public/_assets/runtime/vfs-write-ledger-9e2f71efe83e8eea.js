@@ -1139,7 +1139,7 @@ var __nimbusProcessFsModule = (() => {
   var PROCESS_FS_HEAP_WINDOW_BYTES = 2 * WAVE_BYTES;
   var DECIDED_BACKLOG_OPS = 2 * WAVE_PATHS;
   var DECIDED_BACKLOG_BYTES = 2 * WAVE_BYTES;
-  var UNSETTLED_END_NOTE = `[nimbus] the process ended before its changes were all in the session: any it made after its last output may be lost (at most ${DECIDED_BACKLOG_OPS} changes, ${DECIDED_BACKLOG_BYTES / (1024 * 1024)} MiB)`;
+  var UNSETTLED_END_NOTE = `[nimbus] the process ended abnormally: an unknown number of its writes since it last yielded (up to the ${PROCESS_FS_HEAP_SYNC_CAP_BYTES / (1024 * 1024)} MiB synchronous cap), and up to ${DECIDED_BACKLOG_OPS} not yet answered after its last output, may be lost`;
   function unsettledEnd(error) {
     const message = error instanceof Error ? error.message : String(error);
     const code = typeof error === "object" && error !== null ? Reflect.get(error, "code") : void 0;
