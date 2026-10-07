@@ -8009,6 +8009,59 @@ function __nimbusFormatTime(ms) {
   if (seconds !== 0) return seconds.toFixed(3) + "s";
   return Number(ms.toFixed(3)) + "ms";
 }
+// The columns a string takes (Node's getStringWidth): an ASCII character
+// one, a control none; past ASCII, East Asian full width two and the
+// zero-width marks none, as Node's build without ICU counts them.
+function __nimbusStringWidth(str) {
+  str = __utilMod.stripVTControlCharacters(String(str)).normalize("NFC");
+  let width = 0;
+  for (const char of str) {
+    const code = char.codePointAt(0);
+    if (code < 127) width += code >= 32 ? 1 : 0;
+    else if (__nimbusFullWidth(code)) width += 2;
+    else if (!__nimbusZeroWidth(code)) width++;
+  }
+  return width;
+}
+function __nimbusFullWidth(code) {
+  return code >= 0x1100 && (code <= 0x115f || code === 0x2329 || code === 0x232a
+    || (code >= 0x2e80 && code <= 0x3247 && code !== 0x303f) || (code >= 0x3250 && code <= 0x4dbf)
+    || (code >= 0x4e00 && code <= 0xa4c6) || (code >= 0xa960 && code <= 0xa97c) || (code >= 0xac00 && code <= 0xd7a3)
+    || (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe10 && code <= 0xfe19) || (code >= 0xfe30 && code <= 0xfe6b)
+    || (code >= 0xff01 && code <= 0xff60) || (code >= 0xffe0 && code <= 0xffe6) || (code >= 0x1b000 && code <= 0x1b001)
+    || (code >= 0x1f200 && code <= 0x1f251) || (code >= 0x1f300 && code <= 0x1f64f) || (code >= 0x20000 && code <= 0x3fffd));
+}
+function __nimbusZeroWidth(code) {
+  return code <= 0x1f || (code >= 0x7f && code <= 0x9f) || (code >= 0x300 && code <= 0x36f)
+    || (code >= 0x200b && code <= 0x200f) || (code >= 0x20d0 && code <= 0x20ff) || (code >= 0xfe00 && code <= 0xfe0f)
+    || (code >= 0xfe20 && code <= 0xfe2f) || (code >= 0xe0100 && code <= 0xe01ef);
+}
+// Node's lib/internal/cli_table.js: the head and the columns of cell text, drawn.
+function __nimbusTable(head, columns) {
+  const renderRow = (row, widths) => {
+    let out = "│ ";
+    for (let i = 0; i < row.length; i++) {
+      out += row[i] + " ".repeat(Math.ceil(widths[i] - __nimbusStringWidth(row[i])));
+      if (i !== row.length - 1) out += " │ ";
+    }
+    return out + " │";
+  };
+  const rows = [];
+  const widths = head.map((h) => __nimbusStringWidth(h));
+  const longest = Math.max(...columns.map((column) => column.length));
+  for (let i = 0; i < head.length; i++) {
+    const column = columns[i];
+    for (let j = 0; j < longest; j++) {
+      rows[j] ??= [];
+      const value = rows[j][i] = Object.prototype.hasOwnProperty.call(column, j) ? column[j] : "";
+      widths[i] = Math.max(widths[i] || 0, __nimbusStringWidth(value));
+    }
+  }
+  const divider = widths.map((w) => "─".repeat(w + 2));
+  let result = "┌" + divider.join("┬") + "┐\\n" + renderRow(head, widths) + "\\n" + "├" + divider.join("┼") + "┤\\n";
+  for (const row of rows) result += renderRow(row, widths) + "\\n";
+  return result + "└" + divider.join("┴") + "┘";
+}
 class __NimbusConsole {
   #stdout;
   #stderr;
@@ -8140,8 +8193,62 @@ class __NimbusConsole {
     Reflect.apply(this.log, this, ["%s: %s", label, __nimbusFormatTime(performance.now() - start), ...data]);
     return true;
   }
-  table(data) {
-    Reflect.apply(this.log, this, [data]);
+  // Node's console.table and lib/internal/cli_table.js. A Map or Set
+  // iterator is tabled as the object it is: Node previews one without
+  // consuming it, which only its internals can.
+  table(data, properties) {
+    if (properties !== undefined && !Array.isArray(properties)) {
+      const e = new TypeError("The \\"properties\\" argument must be an instance of Array.");
+      e.code = "ERR_INVALID_ARG_TYPE";
+      throw e;
+    }
+    if (data === null || typeof data !== "object") return this.log(data);
+    const options = this.#optionsFor(this.#stdout());
+    const show = (v) => __utilMod.inspect(v, {
+      depth: v !== null && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length > 2 ? -1 : 0,
+      maxArrayLength: 3,
+      breakLength: Infinity,
+      ...options,
+    });
+    const indexes = (length) => Array.from({ length }, (_, i) => show(i));
+    const render = (head, columns) => this.log(__nimbusTable(head, columns));
+    if (__realUtil.types.isMap(data)) {
+      const keys = [];
+      const values = [];
+      for (const [k, v] of data) { keys.push(show(k)); values.push(show(v)); }
+      return render(["(iteration index)", "Key", "Values"], [indexes(keys.length), keys, values]);
+    }
+    if (__realUtil.types.isSet(data)) {
+      const values = [];
+      for (const v of data) values.push(show(v));
+      return render(["(iteration index)", "Values"], [indexes(values.length), values]);
+    }
+    const map = Object.create(null);
+    let hasPrimitives = false;
+    const primitives = [];
+    const indexKeys = Object.keys(data);
+    for (let i = 0; i < indexKeys.length; i++) {
+      const item = data[indexKeys[i]];
+      const primitive = item === null || (typeof item !== "function" && typeof item !== "object");
+      if (properties === undefined && primitive) {
+        hasPrimitives = true;
+        primitives[i] = show(item);
+      } else {
+        for (const key of properties || Object.keys(item)) {
+          map[key] ??= [];
+          map[key][i] = (primitive && properties) || !Object.prototype.hasOwnProperty.call(item, key) ? "" : show(item[key]);
+        }
+      }
+    }
+    const keys = Object.keys(map);
+    const values = Object.values(map);
+    if (hasPrimitives) {
+      keys.push("Values");
+      values.push(primitives);
+    }
+    keys.unshift("(index)");
+    values.unshift(indexKeys);
+    return render(keys, values);
   }
   timeStamp() {}
   profile() {}
