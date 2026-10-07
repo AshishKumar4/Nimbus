@@ -142,6 +142,31 @@ const learned = [{ path: `${NM}/one/index.js` }, { path: `${NM}/two/index.js` }]
   assert.equal(kept[0], kept[1], `the learned root and its dependency are kept or evicted together (root ${kept[0]}, dependency ${kept[1]})`);
 }
 
+// Groups overlap: a root records its whole static closure, the optional
+// cells an earlier root staged included, and pruning removes a cell only when
+// no group it survives in includes it. A and B share S; A stages S, B reuses
+// it, and B is also read evidence (an earlier run read its source), so B's
+// group survives the pruning that removes A's: S stays with it.
+{
+  const lowering = new EsbuildService(undefined, {
+    transformHost: async (requests) => requests.map(({ code }) => ({ code: code + '\n//' + '~'.repeat(code.length >> 1), map: '', warnings: [] })),
+  });
+  const overlapping = {
+    ...files,
+    [`${NM}/a/index.ts`]: `import "../shared/s.ts";\nexport const a: string = "${'a'.repeat(20_000)}";\n`,
+    [`${NM}/b/index.ts`]: 'import "../shared/s.ts";\nexport const b: number = 1;\n',
+    [`${NM}/shared/s.ts`]: `export const s: string = "${'s'.repeat(20_000)}";\n`,
+  };
+  const state = await buildPrefetchBundle(launchFs(overlapping).fs, {
+    scriptPath: `${APP}/entry.js`, cwd: '/' + APP, entryCode: overlapping[`${APP}/entry.js`], esbuild: lowering,
+    executedModules: [{ path: `${NM}/a/index.ts` }, { path: `${NM}/b/index.ts` }],
+    observedReads: new Set([`${NM}/b/index.ts`]), maxBundleBytes: 50_000,
+  });
+  assert.equal(typeof state.bundle[`${NM}/b/index.ts`], 'string', 'the observed root survives the pruning');
+  assert.equal(typeof state.bundle[`${NM}/shared/s.ts`], 'string', 'and keeps the dependency it shares with the root that was pruned');
+  assert.equal(state.bundle[`${NM}/a/index.ts`], undefined, 'the other root was pruned');
+}
+
 // A closure past the bound by itself still fails, by name.
 await assert.rejects(build([], 10), (error) => error instanceof ClosureBoundExceededError);
 
