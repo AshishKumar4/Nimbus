@@ -26,15 +26,41 @@
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
-export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects';
+export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters';
 /**
  * The clone's job marker, in its git directory from prepare until the clone
  * is whole: the proof an abort needs that the destination is the clone's,
  * and what tells every other git command the repository is not yet one.
  */
 export declare const GIT_CLONE_JOB_MARKER = "nimbus-clone-job";
+/** One step of a clone's changed-path filters pass (git/pack/graph-filters.ts). */
+export type GraphFiltersStep = {
+    step: 'plan';
+} | {
+    step: 'piece';
+    layer: string;
+    pass: string;
+    from: number;
+    to: number;
+    budgetMs: number;
+} | {
+    step: 'assemble';
+    layer: string;
+    pass: string;
+    files: {
+        name: string;
+        bytes: number;
+    }[];
+} | {
+    step: 'discard';
+    layer: string;
+    pass: string;
+};
 export interface GitNetworkOpts {
     op: GitNetworkOp;
+    /** For graph-filters: commits a piece is asked for, and its wall-time budget (tuning). */
+    graphFilterPieceCommits?: number;
+    graphFilterPieceBudgetMs?: number;
     /** Invoking process identity used to bind every supervisor filesystem RPC. */
     pid: number;
     /** Absolute working tree directory (e.g. "/home/user/project") */
@@ -95,6 +121,8 @@ export interface GitNetworkOpts {
     relative?: boolean;
     /** `git clone --filter=<spec>`, normalized: a partial clone of a promisor remote. */
     filter?: string;
+    /** `git clone --sparse`: a cone-mode sparse checkout of the top's files only. */
+    sparse?: boolean;
     /** Fast clone, full history: blobs per history request (tuning; history.ts by default). */
     historyBlobsPerBatch?: number;
     /** Fast clone, full history: root trees per history request (tuning; history.ts by default). */
@@ -123,6 +151,8 @@ export interface GitSupervisorRpcCounters {
     /** Pack appends (and a thin pack's count rewrite): one per <=448 KiB piece. */
     fsWriteRange: number;
     rename: number;
+    /** A commit-graph chain's lock: its create, write, close, chmod and removal. */
+    lock: number;
     writeBatchStream: number;
     readlink: number;
     symlink: number;
@@ -177,6 +207,8 @@ export interface GitNetworkResult {
     cleanup?: boolean;
     /** fetch-objects: objects the promisor pack holds. */
     fetchedObjects?: number;
+    /** For graph-filters: the step's answer. */
+    graphFilters?: unknown;
 }
 export interface GitCloneBudgetDiagnostic {
     phase: GitCloneInvocationPhase;
@@ -186,6 +218,36 @@ export interface GitCloneBudgetDiagnostic {
     elapsedMs: number;
     limitMs: number;
 }
+/** How a clone's changed-path filters pass went. */
+export interface GraphFiltersOutcome {
+    /** The new layer's name, or null when the chain was left as it is. */
+    layer: string | null;
+    /**
+     * Why the chain was left as it is: there is no graph, it is not one
+     * unfiltered base layer, another writer holds its lock, or it changed
+     * under the pass.
+     */
+    skipped?: 'no-graph' | 'not-a-base' | 'locked' | 'moved';
+    commits: number;
+    pieces: number;
+    /** Trees read from the packs, and their bytes. */
+    trees: number;
+    treeBytes: number;
+    elapsed: number;
+}
+/**
+ * A full clone's commit-graph (git/pack/graph-filters.ts), after the clone
+ * has answered: one facet loaded for the whole pass and invoked once a step,
+ * as a clone invokes its phases (a facet loaded a step deepened each step's
+ * subrequests until "Subrequest depth limit exceeded", measured on vscode's
+ * fourteenth). Each piece holds a tree cache and the pack store's.
+ */
+export declare function runGraphFilters(ctx: DurableObjectState, env: any, opts: {
+    pid: number;
+    dir: string;
+    pieceBudgetMs?: number;
+    pieceCommits?: number;
+}, network: WorkspaceNetwork): Promise<GraphFiltersOutcome>;
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.
  */

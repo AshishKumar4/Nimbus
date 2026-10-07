@@ -6,7 +6,8 @@
  *
  *   commits  every commit, no trees or blobs (filter tree:0); their root
  *            trees listed in pack order (newest first: neighbours share
- *            most of their trees)
+ *            most of their trees), and each recorded for the clone's
+ *            commit-graph (commit-graph.ts commitRecord)
  *   trees    the root trees of a run of commits with everything below them
  *            but blobs (filter blob:none), in runs of COMMITS_PER_CHUNK;
  *            each blob met is listed with its basename
@@ -23,6 +24,7 @@
  * clone fetches 137.16 MB in 3.
  */
 
+import { GRAPH_RECORDS_DIR, commitRecord } from './commit-graph.js';
 import { decodeBatch, parseTree, MODE_GITLINK, MODE_TREE } from './plan.js';
 import { OID_BYTES, oidToHex, PackFormatError } from './format.js';
 import {
@@ -72,6 +74,12 @@ export interface HistoryStepResult {
   pending: PendingPack | null;
   /** Lists written (STAGE_DIR files): root trees for commits, blobs for trees. */
   lists: StagedFile[];
+  /**
+   * commits: the commits' records for the commit-graph (GRAPH_RECORDS_DIR
+   * files; commit-graph.ts commitRecord); null when one did not parse, which
+   * no graph is written for, as git writes none.
+   */
+  graphLists?: StagedFile[] | null;
   /** Ids of the clone's tag interest this step's pack held (clone.ts TagWatch). */
   tagsFound?: string[];
 }
@@ -85,8 +93,14 @@ function transport(context: CloneContext): UploadPackOptions {
 
 /** Collects one invocation's list records and writes them as one staged file. */
 class ListWriter {
+  /** A record could not be made (a commit that does not parse): the list is not written. */
+  refused = false;
+
   private readonly parts: Uint8Array[] = [];
   private size = 0;
+
+  /** `dir`: where its file goes, relative to the clone (the staging directory, unless the list outlives it). */
+  constructor(private readonly dir: string = STAGE_DIR) {}
 
   add(bytes: Uint8Array): void {
     this.parts.push(bytes);
@@ -94,18 +108,26 @@ class ListWriter {
   }
 
   async write(writer: CloneWriter, name: string): Promise<StagedFile[]> {
-    if (this.size === 0) return [];
+    if (this.size === 0 || this.refused) return [];
     const bytes = this.size;
-    await writer.file(STAGE_DIR + '/' + name, 0o644, concat(this.parts));
+    if (this.dir !== STAGE_DIR) await writer.directory(this.dir);
+    await writer.file(this.dir + '/' + name, 0o644, concat(this.parts));
     return [{ name, bytes }];
   }
 }
 
-/** What a kind of piece records as its objects resolve. */
-function lister(kind: HistoryKind, list: ListWriter): StorePackOptions['onObject'] {
+/** What a kind of piece records as its objects resolve: `graph`, a commits piece's records for the commit-graph. */
+function lister(kind: HistoryKind, list: ListWriter, graph: ListWriter): StorePackOptions['onObject'] {
   if (kind === 'commits') {
     return (object) => {
-      if (object.type === 'commit') list.add(hexBytes(commitTree(object.data, oidToHex(object.oid))));
+      if (object.type !== 'commit') return;
+      list.add(hexBytes(commitTree(object.data, oidToHex(object.oid))));
+      try {
+        graph.add(commitRecord(object.oid, object.data));
+      } catch (error) {
+        if (!(error instanceof PackFormatError)) throw error;
+        graph.refused = true;
+      }
     };
   }
   if (kind === 'trees') {
@@ -142,19 +164,21 @@ async function settle(
   kind: HistoryKind,
   stored: StoredPack,
   list: ListWriter,
+  graph: ListWriter,
   listName: string,
   watch: TagWatch,
 ): Promise<HistoryStepResult> {
   const lists = await list.write(writer, listName);
+  const graphLists = graph.refused ? null : await graph.write(writer, 'graph-' + listName);
   await writer.flush();
   const tagsFound = [...watch.found];
-  if ('pending' in stored) return { kind, pack: null, pending: stored.pending, lists, tagsFound };
-  return { kind, pack: stored.summary, pending: null, lists, tagsFound };
+  if ('pending' in stored) return { kind, pack: null, pending: stored.pending, lists, graphLists, tagsFound };
+  return { kind, pack: stored.summary, pending: null, lists, graphLists, tagsFound };
 }
 
 /** What a piece records as its objects resolve, and which of the clone's tags' ids it meets. */
-function watcher(kind: HistoryKind, list: ListWriter, watch: TagWatch): StorePackOptions['onObject'] {
-  const listed = lister(kind, list);
+function watcher(kind: HistoryKind, list: ListWriter, graph: ListWriter, watch: TagWatch): StorePackOptions['onObject'] {
+  const listed = lister(kind, list, graph);
   return (object) => {
     watch.see(object.type, object.oid);
     return listed?.(object);
@@ -204,14 +228,16 @@ export async function historyStep(
   const response = await requestPack(transport(context), new Set(request.capabilities), { wants, filter, ...(depth !== undefined ? { depth } : {}) });
   if (response.pack === null) throw new PackFormatError('the server sent no pack for history piece ' + request.piece);
   const list = new ListWriter();
+  // Kept past the clone, for its commit-graph (graph-filters.ts).
+  const graph = new ListWriter(GRAPH_RECORDS_DIR);
   const watch = new TagWatch(request.tagInterest ?? []);
   const stored = await storePackResumable(context, writer, response.pack, 'tmp_pack_' + request.jobId + '_' + request.piece, {
     cacheBytes: HISTORY_CACHE_BYTES,
     recentBytes: HISTORY_RECENT_BYTES,
     budgetUnits: request.budgetUnits,
-    onObject: watcher(request.kind, list, watch),
+    onObject: watcher(request.kind, list, graph, watch),
   });
-  return await settle(writer, request.kind, stored, list, 'list-' + request.piece + '-0', watch);
+  return await settle(writer, request.kind, stored, list, graph, 'list-' + request.piece + '-0', watch);
 }
 
 /** A piece whose decoding stopped at the budget, continued from its stored pack. */
@@ -224,27 +250,33 @@ export async function historyResume(
   const recordName = 'settled-' + request.pending.tmpName;
   const settled = await settledBefore(context, request.pending.tmpName, recordName);
   if (settled !== null) {
-    const extra = settled.extra as { lists: StagedFile[]; tagsFound: string[] };
-    return { kind: request.kind, pack: settled.summary, pending: null, lists: extra.lists, tagsFound: extra.tagsFound };
+    const extra = settled.extra as { lists: StagedFile[]; graphLists?: StagedFile[] | null; tagsFound: string[] };
+    return { kind: request.kind, pack: settled.summary, pending: null, lists: extra.lists, graphLists: extra.graphLists === undefined ? [] : extra.graphLists, tagsFound: extra.tagsFound };
   }
   const writer = context.writer();
   writer.setPin(context.marker.path, context.marker.text, true);
   const list = new ListWriter();
+  const graph = new ListWriter(GRAPH_RECORDS_DIR);
   const watch = new TagWatch(request.tagInterest ?? []);
   const listName = 'list-' + request.piece + '-' + request.part;
   let lists: StagedFile[] = [];
+  let graphLists: StagedFile[] | null = [];
   const stored = await resumePack(context, writer, request.pending, {
     cacheBytes: HISTORY_CACHE_BYTES,
     recentBytes: HISTORY_RECENT_BYTES,
     budgetUnits: request.budgetUnits,
-    onObject: watcher(request.kind, list, watch),
+    onObject: watcher(request.kind, list, graph, watch),
     record: {
       name: recordName,
-      publish: async () => ({ lists: (lists = await list.write(writer, listName)), tagsFound: [...watch.found] }),
+      publish: async () => ({
+        lists: (lists = await list.write(writer, listName)),
+        graphLists: (graphLists = graph.refused ? null : await graph.write(writer, 'graph-' + listName)),
+        tagsFound: [...watch.found],
+      }),
     },
   });
-  if ('pending' in stored) return await settle(writer, request.kind, stored, list, listName, watch);
-  return { kind: request.kind, pack: stored.summary, pending: null, lists, tagsFound: [...watch.found] };
+  if ('pending' in stored) return await settle(writer, request.kind, stored, list, graph, listName, watch);
+  return { kind: request.kind, pack: stored.summary, pending: null, lists, graphLists, tagsFound: [...watch.found] };
 }
 
 /** An open-addressing set of 20-byte ids, each with a basename: the plan's only large structure. */

@@ -252,6 +252,8 @@ export class DirCache {
     tree;
     /** The cache tree changed: written, it saves the next command reading trees. */
     cacheTreeChanged = false;
+    /** Entries whose skip-worktree bit this command turned (setSkipWorktree), to the value they are written with. */
+    skipTurned = new Map();
     /** `bytes` are this index's own: a refresh patches them. */
     constructor(bytes, offsets, version, timestamp, extensions, trailer) {
         this.bytes = bytes;
@@ -411,7 +413,43 @@ export class DirCache {
         return (this.flags(i) & VALID) !== 0;
     }
     skipWorktree(i) {
-        return (this.extendedFlags(i) & SKIP_WORKTREE) !== 0;
+        return this.skipTurned.get(i) ?? (this.extendedFlags(i) & SKIP_WORKTREE) !== 0;
+    }
+    /**
+     * Set or clear entry `i`'s skip-worktree bit (CE_SKIP_WORKTREE), as a
+     * sparse checkout does to an entry it keeps: the entry is written so, its
+     * stat as it is.
+     */
+    setSkipWorktree(i, skip) {
+        if (((this.extendedFlags(i) & SKIP_WORKTREE) !== 0) === skip)
+            this.skipTurned.delete(i);
+        else
+            this.skipTurned.set(i, skip);
+    }
+    /** Whether any entry is skip-worktree: none in a version 2 file, which has no second flags word. */
+    hasSkipWorktree() {
+        if (this.version === 2 && this.skipTurned.size === 0)
+            return false;
+        for (let i = 0; i < this.count; i++)
+            if (this.skipWorktree(i))
+                return true;
+        return false;
+    }
+    /** Entry `i` laid out again with its skip-worktree bit turned: the second flags word comes or goes with it. */
+    withSkipTurned(i, skip) {
+        const name = this.pathBytes(i);
+        const extended = (this.extendedFlags(i) & ~SKIP_WORKTREE) | (skip ? SKIP_WORKTREE : 0);
+        const out = new Uint8Array(paddedLength(extended !== 0, name.length));
+        out.set(this.bytes.subarray(this.offsets[i], this.offsets[i] + FLAGS_AT));
+        const flags = (this.flags(i) & ~EXTENDED) | (extended !== 0 ? EXTENDED : 0);
+        out[FLAGS_AT] = flags >> 8;
+        out[FLAGS_AT + 1] = flags & 0xff;
+        if (extended !== 0) {
+            out[FIXED_BYTES] = extended >> 8;
+            out[FIXED_BYTES + 1] = extended & 0xff;
+        }
+        out.set(name, FIXED_BYTES + (extended !== 0 ? 2 : 0));
+        return out;
     }
     intentToAdd(i) {
         return (this.extendedFlags(i) & INTENT_TO_ADD) !== 0;
@@ -532,6 +570,15 @@ export class DirCache {
                 continue;
             if (a > 0 && compareBytes(added.name(order[a - 1]), key) === 0)
                 continue;
+            const turned = this.skipTurned.get(i);
+            if (turned !== undefined) {
+                flush();
+                const piece = this.withSkipTurned(i, turned);
+                extended ||= (flagsAt(piece, 0) & EXTENDED) !== 0;
+                emit(piece, smudged.has(i));
+                count++;
+                continue;
+            }
             // An entry is copied in its own layout: one with the second flags word keeps the file at version 3.
             extended ||= (this.flags(i) & EXTENDED) !== 0;
             count++;
@@ -568,7 +615,7 @@ export class DirCache {
         const added = edit.added ?? NO_ENTRIES;
         // Nothing but stat refreshes, which patched these bytes where they lie: the file is these bytes
         // with a new checksum, and no second copy of the index is made (a status refresh at 96,000 entries).
-        if (removed.size === 0 && added.count === 0 && smudged.size === 0 && !this.cacheTreeChanged
+        if (removed.size === 0 && added.count === 0 && smudged.size === 0 && !this.cacheTreeChanged && this.skipTurned.size === 0
             && this.version !== 4 && this.trailer !== null && this.extensions.every(({ signature }) => signature === 'TREE' || signature === 'REUC')) {
             const end = this.bytes.length - OID_BYTES;
             this.bytes.set(createHash('sha1').update(this.bytes.subarray(0, end)).digest(), end);

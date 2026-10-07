@@ -69,6 +69,8 @@ export interface CloneRequest {
     history?: boolean;
     /** A streamed clone's decoding budget per invocation (processor.ts WORK_BUDGET_UNITS by default). */
     budgetUnits?: number;
+    /** `git clone --sparse`: a cone-mode sparse checkout of the top's files only. */
+    sparse?: boolean;
 }
 export interface CloneBatchPlan {
     index: number;
@@ -221,6 +223,7 @@ export declare function cloneFast(context: CloneContext, request: CloneRequest, 
 export declare function clonePlanFromStore(context: CloneContext, request: {
     commit: string;
     blobsPerBatch?: number;
+    sparse?: boolean;
 }): Promise<ClonePrepared>;
 export declare function concat(parts: Uint8Array[]): Uint8Array;
 /** One batch: its blobs fetched by id, written at their paths as they resolve. */
@@ -233,7 +236,11 @@ export declare function cloneBatch(context: CloneContext, request: {
     /** A streamed clone's batch: its blobs are in the repository's pack already. */
     local?: boolean;
 }): Promise<CloneBatchResult>;
-/** The index, from the batches' shares; then the staging directory goes. */
+/**
+ * The index, from the batches' shares; then the staging directory goes. A
+ * full clone's commit records stay for its commit-graph, written after the
+ * clone answers (graph-filters.ts), unless one did not parse.
+ */
 export declare function cloneFinish(context: CloneContext, request: {
     shares: {
         name: string;
@@ -242,6 +249,11 @@ export declare function cloneFinish(context: CloneContext, request: {
     full?: boolean;
     cacheTreeBytes?: number;
     tags?: readonly CloneTag[];
+    /** A full clone's commit records (history.ts graphLists), or null when one did not parse: no graph. */
+    graph?: {
+        name: string;
+        bytes: number;
+    }[] | null;
 }): Promise<{
     indexEntries: number;
     indexBytes: number;

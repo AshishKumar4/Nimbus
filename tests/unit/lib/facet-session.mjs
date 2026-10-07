@@ -50,11 +50,15 @@ function stagedGitBundle() {
 
 /**
  * `realGit`: the facet runs the staged cf-git bundle (fetch, pull, push), not a stub.
+ * `asUser`: the facets' calls act as the session user, as a session's
+ * process does (SupervisorRPC), its permissions checked; by default as the
+ * kernel.
  * `mounts`: backends mounted in the session's namespace, by mount point; the
  * facets' supervisor then reaches the namespace as the session's does (a
- * host bridge of the session's ProcessFiles), mounts and their guard included.
+ * host bridge of the session's ProcessFiles), mounts and their guard
+ * included, as the session user.
  */
-export async function createFacetSession(work, { realGit = false, mounts = {} } = {}) {
+export async function createFacetSession(work, { realGit = false, asUser = false, mounts = {} } = {}) {
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = vfs.as(CRED_KERNEL);
@@ -62,9 +66,9 @@ export async function createFacetSession(work, { realGit = false, mounts = {} } 
   kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
   const files = new ProcessFiles(vfs);
   for (const [point, backend] of Object.entries(mounts)) files.vfs.mount(point, backend);
-  // With mounts, the facets write as the session user, as a session's binding does (its pid's credential).
-  const writer = Object.keys(mounts).length > 0 ? vfs.as(CRED_SESSION_USER) : kernel;
-  const bridge = Object.keys(mounts).length > 0 ? files.openHost(CRED_SESSION_USER).fs : new SqliteRuntimeFsBridge(kernel, vfs);
+  const mounted = Object.keys(mounts).length > 0;
+  const actor = asUser || mounted ? vfs.as(CRED_SESSION_USER) : kernel;
+  const bridge = mounted ? files.openHost(CRED_SESSION_USER).fs : new SqliteRuntimeFsBridge(actor, vfs);
   // failWaveAt: the 1-based write wave that fails, once, as a dropped session connection does.
   // hangPhaseAt: the 1-based facet call of that phase that never answers, once.
   // stallPhaseAt: the same, but the call runs on, its answer withheld: a late writer.
@@ -116,13 +120,14 @@ export async function createFacetSession(work, { realGit = false, mounts = {} } 
       },
       // unlink presents the lease, as the session's supervisor op does (supervisor-op.ts).
       async unlink(path) { return refused(async () => bridge.unlink(path, lease)); },
+      async chmod(path, mode) { return refused(async () => bridge.chmod(path, mode)); },
       async writeBatchStream(stream) {
         if (++requests.waves === requests.failWaveAt) {
           await stream.cancel();
           throw new Error('Network connection lost.');
         }
         return refused(async () => {
-          const result = await writer.writeStream(stream, lease);
+          const result = await actor.writeStream(stream, lease);
           if (result.ok === false) requests.refusals.push(String(result.error?.code ?? result.error?.message));
           return result;
         });
@@ -137,8 +142,12 @@ export async function createFacetSession(work, { realGit = false, mounts = {} } 
   writeFileSync(join(tempDir, 'git-network-worker.mjs'), assembleGitNetworkFacetSource());
   writeFileSync(join(tempDir, 'git-bundle.js'), realGit ? stagedGitBundle() : 'export const git = {}; export const gitHttp = {};');
   const facet = await import(pathToFileURL(join(tempDir, 'git-network-worker.mjs')).href);
-  // The DO's storage, as a clone's job records use it (git/clone-job.ts).
-  const doCtx = { id: { toString: () => 'facet-session-do' }, storage: memoryStorage() };
+  // Work a command leaves running after it answers (a full clone's
+  // changed-path filters): `settled()` waits for all of it. The DO's
+  // storage, as a clone's job records use it (git/clone-job.ts).
+  const background = [];
+  const doCtx = { id: { toString: () => 'facet-session-do' }, storage: memoryStorage(), waitUntil(promise) { background.push(promise); } };
+  const settled = async () => { while (background.length > 0) await background.shift(); };
   const doEnv = {
     ASSETS: stagedAssets,
     LOADER: {
@@ -233,5 +242,5 @@ export async function createFacetSession(work, { realGit = false, mounts = {} } 
     return { dir: out, objects: hostObjects(work, out) };
   }
 
-  return { vfs, kernel, files, git, requests, doCtx, doEnv, materialize, materializeAt, sessionObjects };
+  return { vfs, kernel, files, git, requests, doCtx, doEnv, materialize, materializeAt, sessionObjects, settled };
 }
