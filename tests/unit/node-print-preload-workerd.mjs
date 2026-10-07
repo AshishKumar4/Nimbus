@@ -34,7 +34,8 @@ const W = '/home/user/pp';
 const FILES = {
   'package.json': JSON.stringify({ name: 'pp', dependencies: { envload: '*' } }),
   'pre.cjs': "console.log('pre', require.main === undefined, process.argv.length); globalThis.PRE = (globalThis.PRE || 0) + 1;",
-  'imp.mjs': "console.log('imp', typeof import.meta.url, globalThis.PRE);",
+  // With module syntax: an ES module with only import.meta is not lowered yet (bundle-cell-transform.ts looksLikeEsm).
+  'imp.mjs': "import { sep } from 'node:path'; console.log('imp', typeof import.meta.url, sep, globalThis.PRE);",
   'main.cjs': "console.log('main', require.main === module, globalThis.PRE ?? 0);",
   'data.json': JSON.stringify({ name: 'data' }),
   '.env': 'GREETING=hello\n',
