@@ -236,6 +236,16 @@ export class Interpreter {
             const abortController = new AbortController();
             const commandText = this.getListCommandText(list);
             const backgroundIo = this.createCommandIo(io);
+            // A job does not read the terminal: before any redirection of its
+            // own, its stdin is /dev/null, as POSIX gives an asynchronous list
+            // (bash's, for a shell without job control). So only the foreground
+            // job owns the terminal and its modes; a background REPL (`node &`)
+            // never takes the Ctrl-C meant for the foreground.
+            if (io.terminalFds?.stdin ?? (!io.stdin && Boolean(io.terminalStdin))) {
+                backgroundIo.stdin = this.createEmptyReader();
+                backgroundIo.terminalFds = { ...io.terminalFds, stdin: false };
+            }
+            delete backgroundIo.terminalStdin;
             backgroundIo.signal = abortController.signal;
             backgroundIo.registerProcess = false;
             backgroundIo.positionals = this.forkPositionals(io);

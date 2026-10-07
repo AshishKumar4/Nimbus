@@ -16,7 +16,9 @@
  *     a pattern) and every top-level function is a global before the line
  *     runs, keeping a value it has; a top-level function is assigned there
  *     too, as a script's are, as a function expression under its name, so
- *     the line has no binding of its own to shadow the global;
+ *     the line has no binding of its own to shadow the global; a function
+ *     in a block stays the block's, hoisted within it, and assigns its
+ *     global where it is declared (Annex B);
  *   - a declaration's initializers assign those globals where it stands,
  *     and `let`, `const` and `class` at the top level assign a global of
  *     their name the same way (a `const` stays assignable);
@@ -122,10 +124,9 @@ function statement(node, top, line) {
                 append(line.functions, node);
             }
             else {
-                // A function in a block is assigned when the block runs (Annex B).
-                append(line.edits, { start: node.start, end: node.start, text: `${node.id.name} = ` });
-                append(line.edits, { start: node.id.start, end: node.id.end, text: '' });
-                append(line.edits, { start: node.end, end: node.end, text: ';' });
+                // A function in a block stays the block's, hoisted within it, and
+                // its global is assigned where the declaration is evaluated (Annex B).
+                append(line.edits, { start: node.start, end: node.start, text: `this.${node.id.name} = ${node.id.name}; ` });
             }
             return;
         }
