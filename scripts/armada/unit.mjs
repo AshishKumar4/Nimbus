@@ -5,8 +5,9 @@
 // `plan` once, then `task` once for each part the plan prints. Each
 // standard-4 container pulls part after part from one queue, longest first.
 //
-//   unit.mjs plan --target S --timings FILE
-//     Prints the matrix: run-all's selection cut into parts of about S
+//   unit.mjs plan --target S --timings FILE [--tier fast|slow|all] [--only a.mjs,b.mjs]
+//     Prints the matrix: run-all's selection (`armada run <commit> -- --tier
+//     fast` narrows it) cut into parts of about S
 //     seconds each, at JOBS files at a time (tests/unit/lib/partition.mjs),
 //     from armada's medians in FILE (`{"files": {"<name>.mjs": seconds}}`).
 //     A part's rows are its files; its weight orders the queue. With no
@@ -43,15 +44,16 @@ const FIRST_PARTS = 16;
 const FILE_TIMEOUT_MS = 900_000;
 
 const [mode, ...args] = process.argv.slice(2);
-const option = (name) => {
+const optional = (name) => {
   const at = args.indexOf(name);
-  if (at < 0 || args[at + 1] === undefined) usage(`${name} needs a value`);
-  return args[at + 1];
+  if (at >= 0 && args[at + 1] === undefined) usage(`${name} needs a value`);
+  return at < 0 ? undefined : args[at + 1];
 };
+const option = (name) => optional(name) ?? usage(`${name} needs a value`);
 
 /** @returns {never} */
 function usage(message) {
-  console.error(`unit.mjs: ${message}\nusage: unit.mjs plan --target S --timings FILE | unit.mjs task PART --timings FILE --out OUT`);
+  console.error(`unit.mjs: ${message}\nusage: unit.mjs plan --target S --timings FILE [--tier T] [--only a,b] | unit.mjs task PART --timings FILE --out OUT`);
   process.exit(2);
 }
 
@@ -64,12 +66,16 @@ function measured(file) {
 function plan() {
   const target = Number(option('--target'));
   const known = measured(option('--timings'));
-  const listed = spawnSync(process.execPath, [RUN_ALL, '--list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+  const only = optional('--only');
+  const listed = spawnSync(process.execPath, [RUN_ALL, '--list', '--tier', optional('--tier') ?? 'all'], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, ...(only === undefined ? {} : { NIMBUS_UNIT_ONLY: only }) },
+  });
   if (listed.status !== 0) {
     console.error(`unit.mjs: run-all --list exited ${listed.status ?? listed.signal}`);
     process.exit(2);
   }
-  const files = listed.stdout.trim().split('\n').map((line) => line.split('\t'));
+  const files = listed.stdout.split('\n').filter(Boolean).map((line) => line.split('\t'));
+  if (files.length === 0) usage('the selection is empty');
   const names = files.map(([name]) => name);
   const alone = new Set(files.filter(([, , phase]) => phase === 'serial').map(([name]) => name));
   const runsAlone = (name) => alone.has(name);
