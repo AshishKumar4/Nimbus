@@ -3268,6 +3268,24 @@ const __fsMod = (() => {
   }
 
   /**
+   * A quota's charge for one read: the stat's size was admitted before it
+   * began; every byte the read reaches past it is charged before the range
+   * that reaches it is issued, or, for the first range, as it arrives. A file
+   * that grew between the stat and the read is charged for what it grew by,
+   * and a refusal ends the read there. `through` is the offset the read has
+   * reached or is about to.
+   */
+  function _rangeCharge(quota, admitted) {
+    let charged = admitted;
+    return (through) => {
+      if (through <= charged) return true;
+      if (!quota.bytes(through - charged)) return false;
+      charged = through;
+      return true;
+    };
+  }
+
+  /**
    * Ask what the authority has, then fetch it if there is anything to fetch.
    *
    * The stat is not an extra round trip on balance: where the path is absent —
@@ -3280,8 +3298,10 @@ const __fsMod = (() => {
     const supervisor = _supervisor();
     const absPath = "/" + k;
     // A quota's charge is the file's size, so a fetch under one is issued
-    // only once a stat has given it, and not at all past the quota.
-    if (quota && typeof supervisor.stat !== "function") { _faulted.delete("content:" + k); return; }
+    // only once a stat has given it, and not at all past the quota; and the
+    // read is charged in ranges, as it plans them.
+    if (quota && (typeof supervisor.stat !== "function" || typeof supervisor.fsReadRange !== "function")) { _faulted.delete("content:" + k); return; }
+    let charge = null;
     if (typeof supervisor.stat === "function") {
       let meta;
       // A thrown stat is the authority failing to answer, not an answer:
@@ -3293,8 +3313,9 @@ const __fsMod = (() => {
       if (meta === null || meta === undefined) { _observedAbsent.add(k); return; }
       if (meta.type === "directory") return;
       if (quota && !quota.bytes(Number(meta.size) || 0)) { _faulted.delete("content:" + k); return; }
+      if (quota) charge = _rangeCharge(quota, Number(meta.size) || 0);
     }
-    await _liveReadFile(absPath, undefined);
+    await _liveReadFile(absPath, undefined, undefined, charge);
   }
 
   /**
@@ -4894,9 +4915,11 @@ const __fsMod = (() => {
   // comes back short or missing still ends the file, exactly as taking them
   // one at a time did, so a file that shrank under the reader is read short
   // rather than read wrong.
-  async function _readChunksFrom(absPath, displayPath, supervisor, from) {
+  async function _readChunksFrom(absPath, displayPath, supervisor, from, charge) {
     const meta = await _fsRpc(supervisor.stat(absPath), "stat", displayPath, (result) => result);
     const end = meta ? Number(meta.size) || 0 : 0;
+    // A charged read pays for the remainder it plans before issuing it.
+    if (charge && !charge(end)) throw _fsErr("EFBIG", "read", displayPath);
     const offsets = [];
     for (let off = from; off < end; off += READ_STREAM_CHUNK_BYTES) offsets.push(off);
     const chunks = await Promise.all(offsets.map((off) => _readRangeAt(
@@ -4911,7 +4934,7 @@ const __fsMod = (() => {
     return parts;
   }
 
-  async function _liveReadFile(p, opts, refetch) {
+  async function _liveReadFile(p, opts, refetch, charge) {
     const absPath = _resolve(p);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     const supervisor = _supervisor();
@@ -4982,9 +5005,10 @@ const __fsMod = (() => {
           if (chunk === null) break;
           parts.push(chunk);
           total += chunk.byteLength;
+          if (charge && !charge(total)) throw _fsErr("EFBIG", "read", p);
           if (chunk.byteLength < READ_STREAM_CHUNK_BYTES) break;
           if (typeof supervisor.stat !== "function") continue;
-          for (const rest of await _readChunksFrom(absPath, p, supervisor, total)) {
+          for (const rest of await _readChunksFrom(absPath, p, supervisor, total, charge)) {
             parts.push(rest);
             total += rest.byteLength;
           }
