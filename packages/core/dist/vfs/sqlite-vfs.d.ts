@@ -1224,6 +1224,15 @@ export declare class SqliteVFS {
     private loadChunks;
     private readChunk;
     /**
+     * The one read of a stored chunk: the bytes of a row whose state holds
+     * them (chunkHeld), from its `hash`, `size`, `data` and `state`. A
+     * deflated row's bytes are checked against its name before anything
+     * returns, caches, exports or tiers them (raw deflate carries no check of
+     * its own): EIO for `what` when they do not inflate to its size, or do
+     * not hash to its name.
+     */
+    private heldChunkBytes;
+    /**
      * The content key of an inode's bytes: sha256 of them up to CHUNK_SIZE,
      * else the digest of the manifest's ordered chunk hashes. An in-place edit
      * clears a manifest's digest; it is recomputed here and stored unless
@@ -2140,6 +2149,13 @@ export declare class SqliteVFS {
         used: number;
         available: number;
     };
+    /**
+     * Whether this filesystem's store has been deleted under it: its tables
+     * gone from the database (the Durable Object's storage deleted, as a
+     * session's destroy does). Read from the database itself, where this
+     * instance's caches would still answer lookups.
+     */
+    storeDeleted(): boolean;
     getStats(): {
         files: number;
         directories: number;

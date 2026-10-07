@@ -16112,6 +16112,9 @@ async function prebundleSlice(spec2, build3) {
       return { contents: loader === "binary" ? bytes : new TextDecoder().decode(bytes), loader, resolveDir };
     }
   };
+  if (!await resolver.resolveFile(spec2.entryPath)) {
+    return failed(`its entry module ${norm(spec2.entryPath)} is not in its slice (${files.size} files): the package's files were not there to walk`);
+  }
   const outcome = await build3({ entryPoints: [norm(spec2.entryPath)], ...prebundleBuildOptions(spec2.define) }, plugin);
   if (outcome.failure) return failed(outcome.errors[0]?.text || outcome.failure);
   const script = outcome.outputFiles.find((file) => !file.path.endsWith(".css")) ?? outcome.outputFiles[0];

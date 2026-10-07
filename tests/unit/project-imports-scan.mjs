@@ -9,6 +9,10 @@
  * An import inside a comment names nothing; one after JSX is still read,
  * after a generic function type too, and a file the lexer cannot decide is
  * read by the parser it is given.
+ *
+ * With a budget, it reads no file over its per-file bytes, none past its
+ * total, and stops at the first file past its count; what it left unread is
+ * said (`unread`), and with nothing left unread, `unread` is null.
  */
 
 import assert from 'node:assert/strict';
@@ -47,7 +51,8 @@ const parse = async (path) => {
   parsed.push(path);
   return "const a = 1;\nimport Parsed from '@scope/parsed';\n";
 };
-const { bareSpecifiers, namedImports } = await scanProjectImports(vfs, 'app', parse);
+const { bareSpecifiers, namedImports, unread } = await scanProjectImports(vfs, 'app', parse);
+assert.equal(unread, null, 'a scan without a budget reads every file');
 assert.deepEqual(parsed, ['app/src/unclosed.jsx'], 'only the file the lexer cannot decide is parsed');
 assert.deepEqual([...bareSpecifiers].sort(), [
   '@scope/icons', '@scope/parsed', '@scope/pkg', '@scope/pkg/sub', '@scope/typed', 'after-apostrophe', 'after-generics', 'deep-pkg', 'lazy-pkg', 'lodash-es', 'lodash-es/debounce',
@@ -61,5 +66,46 @@ assert.deepEqual(
     'lucide-react': ['Deep', 'Home', 'IconProps', 'Zap'], 'site-config-pkg': ['Site'],
   },
 );
+
+// ── With a budget ──────────────────────────────────────────────────────────
+{
+  const sized = new FakeVfs({
+    'proj/src/a.ts': "import { A } from 'pkg';\n",
+    'proj/src/b.ts': `import { B } from 'pkg';\n// ${'x'.repeat(200)}\n`,
+    'proj/src/c.ts': `import { C } from 'pkg';\n// ${'x'.repeat(60)}\n`,
+    'proj/src/d.ts': "import { D } from 'pkg';\n",
+  });
+  // Every read the scan makes.
+  const reads = [];
+  const readFileString = sized.readFileString.bind(sized);
+  sized.readFileString = (path) => (reads.push(path), readFileString(path));
+  const scan = (budget) => {
+    reads.length = 0;
+    return scanProjectImports(sized, 'proj', parse, budget);
+  };
+  const names = (result) => [...(result.namedImports.get('pkg') ?? [])].sort();
+
+  const roomy = await scan({ files: 10, fileBytes: 1024, totalBytes: 4096 });
+  assert.deepEqual(names(roomy), ['A', 'B', 'C', 'D'], 'a budget it stays within changes nothing');
+  assert.equal(roomy.unread, null, 'and leaves nothing unread');
+
+  const perFile = await scan({ files: 10, fileBytes: 100, totalBytes: 4096 });
+  assert.deepEqual(names(perFile), ['A', 'C', 'D'], 'a file over the per-file bytes adds no names');
+  assert.ok(!reads.includes('proj/src/b.ts'), 'and is not read');
+  assert.match(perFile.unread ?? '', /^1 file\(s\) over 100 bytes \(proj\/src\/b\.ts\)$/, perFile.unread);
+
+  const total = await scan({ files: 10, fileBytes: 1024, totalBytes: 280 });
+  assert.deepEqual(names(total), ['A', 'B', 'D'], 'a file past what is left of the total adds no names');
+  assert.ok(!reads.includes('proj/src/c.ts'), 'and is not read');
+  assert.match(total.unread ?? '', /^1 file\(s\) past 280 bytes in all \(proj\/src\/c\.ts\)$/, total.unread);
+
+  const count = await scan({ files: 2, fileBytes: 1024, totalBytes: 4096 });
+  assert.deepEqual(names(count), ['A', 'B'], 'the walk stops at the first file past its count');
+  assert.deepEqual(reads, ['proj/src/a.ts', 'proj/src/b.ts'], 'reading none after it');
+  assert.equal(count.unread, 'the files from proj/src/c.ts on, past 2 files', count.unread);
+
+  const exact = await scan({ files: 4, fileBytes: 1024, totalBytes: 4096 });
+  assert.equal(exact.unread, null, 'a count that ends at the last file leaves nothing unread');
+}
 
 console.log('project-imports-scan: ok');
