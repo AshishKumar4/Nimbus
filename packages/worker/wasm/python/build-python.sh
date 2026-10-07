@@ -529,7 +529,9 @@ stage_sci() {
 	# link deliberately left out of each module; they are added here, once.
 	local objs archives
 	objs=$(cut -d' ' -f2 "$EXT/sci.modules" | tr '\n' ' ')
-	archives=$(find "$NUMPY_SRC/builddir" -name '*.a' | tr '\n' ' ')
+	# Sorted: find walks in directory order, which is the filesystem's, and the
+	# link order decides where every function and datum lands.
+	archives=$(find "$NUMPY_SRC/builddir" -name '*.a' | sort | tr '\n' ' ')
 	# -lc-printscan-long-double: wasi-libc's default printf aborts on a long
 	# double rather than formatting one, and numpy formats one while importing.
 	# The abort is a bare wasm trap; the reason only reaches stderr because
@@ -564,6 +566,9 @@ stage_assets() {
 	# wasm_assets.py reads sysconfig from whichever interpreter runs it, and the
 	# one that can run is the host build — so point it at the cross data.
 	( cd "$PYSRC/build-wasi"
+	  # The one module the build writes rather than unpacks: its .pyc records
+	  # its source's mtime, so the source is dated like every other stamp.
+	  touch -d "@$CPYTHON_SOURCE_DATE_EPOCH" "$(cat pybuilddir.txt)"/_sysconfigdata__wasi_wasm32-wasi.py
 	  _PYTHON_SYSCONFIGDATA_NAME=_sysconfigdata__wasi_wasm32-wasi \
 	  PYTHONPATH="$(cat pybuilddir.txt)" \
 	  "$PYSRC/build-host/python" "$PYSRC/Tools/wasm/wasm_assets.py" \
