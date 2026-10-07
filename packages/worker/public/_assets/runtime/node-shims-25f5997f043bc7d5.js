@@ -3212,7 +3212,11 @@ const __fsMod = (() => {
   function _recordResidencyMiss(absPath) {
     const k = _strip(absPath);
     _recordMiss(k);
-    _faultIn(_nsLandingKey(k) ?? k);
+    const landing = _nsLandingKey(k) ?? k;
+    _faultIn(landing);
+    // A speculation's miss through a link is fetched as the file it names.
+    const speculation = _speculation();
+    if (speculation && speculation.issued.has(landing)) speculation.issued.add(k);
   }
 
   function _residencySatisfied(absPath) {
@@ -3252,9 +3256,10 @@ const __fsMod = (() => {
     if (!_supervisor()) return;
     const speculation = _speculation();
     if (_faulted.has("content:" + k)) {
-      // Asked for already: a speculation waits on that same fill.
+      // Asked for already: a speculation waits on that same fill, and reads
+      // again after it as the one that issued it does.
       const pending = _repairOf.get(k);
-      if (speculation && pending) speculation.repairs.push(pending);
+      if (speculation && pending) { speculation.repairs.push(pending); speculation.issued.add(k); }
       return;
     }
     // A speculation's fetch is charged to its quota before it is issued, and
@@ -3282,20 +3287,22 @@ const __fsMod = (() => {
 
   /**
    * A quota's charge for one read: the stat's size was admitted before it
-   * began; every byte the read reaches past it is charged before the range
-   * that reaches it is issued, or, for the first range, as it arrives. A file
-   * that grew between the stat and the read is charged for what it grew by,
-   * and a refusal ends the read there. `through` is the offset the read has
-   * reached or is about to.
+   * began; every byte the read can reach past it is charged before the range
+   * that reaches it is issued. The first range asks for one byte past the
+   * admitted size, so a file that grew is seen to have grown, and the rest
+   * is planned (and charged) from a fresh stat; a refusal ends the read
+   * there. `through` is the offset the read is about to reach.
    */
   function _rangeCharge(quota, admitted) {
     let charged = admitted;
-    return (through) => {
+    const charge = (through) => {
       if (through <= charged) return true;
       if (!quota.bytes(through - charged)) return false;
       charged = through;
       return true;
     };
+    charge.admitted = admitted;
+    return charge;
   }
 
   /**
@@ -4969,13 +4976,17 @@ const __fsMod = (() => {
     let fill = refetch || null;
     let reachedFill = null;
     let first = null;
+    // A charged read's first range: one byte past what was admitted, charged
+    // before it is issued (_rangeCharge).
+    const firstLength = charge ? Math.min(READ_STREAM_CHUNK_BYTES, charge.admitted + 1) : READ_STREAM_CHUNK_BYTES;
+    if (charge && !charge(firstLength)) throw _fsErr("EFBIG", "read", p);
     if (!refetch && _servesFsAcquired(supervisor) && typeof supervisor.fsReadRange === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
       fill = _beginFill(_strip(absPath));
       try {
         const entries = await _acquiredRead(
           supervisor, "fsReadBatch",
-          [[{ path: absPath, offset: 0, length: READ_STREAM_CHUNK_BYTES }, { path: absPath, lstat: true }]],
+          [[{ path: absPath, offset: 0, length: firstLength }, { path: absPath, lstat: true }]],
           (promise) => _fsReadRpc(promise, "read", p, (result) => result), "read", p, fill,
         );
         const [read, learned] = Array.isArray(entries) ? entries : [];
@@ -5019,12 +5030,13 @@ const __fsMod = (() => {
         const parts = [];
         let total = 0;
         for (;;) {
-          const chunk = first !== null && total === 0 ? first.chunk : await _readRangeAt(absPath, p, total, READ_STREAM_CHUNK_BYTES);
+          const want = total === 0 ? firstLength : READ_STREAM_CHUNK_BYTES;
+          if (charge && !charge(total + want)) throw _fsErr("EFBIG", "read", p);
+          const chunk = first !== null && total === 0 ? first.chunk : await _readRangeAt(absPath, p, total, want);
           if (chunk === null) break;
           parts.push(chunk);
           total += chunk.byteLength;
-          if (charge && !charge(total)) throw _fsErr("EFBIG", "read", p);
-          if (chunk.byteLength < READ_STREAM_CHUNK_BYTES) break;
+          if (chunk.byteLength < want) break;
           if (typeof supervisor.stat !== "function") continue;
           for (const rest of await _readChunksFrom(absPath, p, supervisor, total, charge)) {
             parts.push(rest);
@@ -16727,11 +16739,13 @@ function __nimbusPrefetchQuota(specifier, limits) {
 // reads of files that exist but are not held are faulted in: under a
 // speculation (the fs's __nimbusVfsSpeculation), so they are the prefetch's
 // own and never the program's ledger, and charged to the quota as they are
-// issued. The step waits for exactly the fills it caused, every one of
-// them, whatever comes next, so none outlives it; then runs again. A step
-// that misses only what its fills could not bring stands as it is.
+// issued. The step waits for every fill it issued or joined, whatever comes
+// next, so none outlives it, and then runs again. A miss with no fetch
+// behind it (the fs gave the file up: its fetches did not land, after
+// every attempt) fails the import(), named: the step's answer would rest
+// on a read that did not happen (a resolver falling back past an unread
+// manifest).
 async function __nimbusHydrated(step, quota) {
-  let missed = null;
   for (let round = 1; ; round++) {
     const speculation = { misses: new Set(), repairs: [], issued: new Set(), quota };
     const outer = globalThis.__nimbusVfsSpeculation;
@@ -16742,20 +16756,23 @@ async function __nimbusHydrated(step, quota) {
     try { value = step(); } catch (e) { error = e; threw = true; } finally { globalThis.__nimbusVfsSpeculation = outer; }
     await Promise.allSettled(speculation.repairs);
     if (quota.error) throw quota.error;
-    // A miss is worth another round when this one issued or joined a fetch
-    // for it: a first miss, or one whose earlier fetch did not land and was
-    // issued again (_faultIn); a miss with no fetch behind it is final.
-    const fresh = [...speculation.misses].filter((k) => missed === null || !missed.has(k) || speculation.issued.has(k));
-    if (fresh.length === 0 || speculation.repairs.length === 0) {
+    if (speculation.misses.size === 0) {
       if (threw) throw error;
       return value;
     }
+    const given = [...speculation.misses].filter((k) => !speculation.issued.has(k));
+    if (given.length > 0) {
+      const unread = new Error("import() prefetch: could not fetch " + given.slice(0, 3).map((k) => "/" + k).join(", ")
+        + (given.length > 3 ? " and " + (given.length - 3) + " more" : "") + "; its fetches did not land");
+      unread.code = "ERR_NIMBUS_PREFETCH_UNREADABLE";
+      throw unread;
+    }
     if (round >= __IMPORT_HYDRATE_ROUNDS) {
-      const bound = new Error("import() prefetch: a resolution still misses after " + __IMPORT_HYDRATE_ROUNDS + " rounds of fetching (" + fresh.slice(0, 3).join(", ") + ")");
+      const bound = new Error("import() prefetch: a resolution still misses after " + __IMPORT_HYDRATE_ROUNDS + " rounds of fetching ("
+        + [...speculation.misses].slice(0, 3).join(", ") + ")");
       bound.code = "ERR_NIMBUS_PREFETCH_BOUND";
       throw bound;
     }
-    missed = new Set([...(missed || []), ...speculation.misses]);
   }
 }
 
