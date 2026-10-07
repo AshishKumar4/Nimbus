@@ -11,7 +11,7 @@
 import assert from 'node:assert/strict';
 import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
-import { installedRuntime, runtimeContext } from './lib/runtime-session.mjs';
+import { installedRuntime, runtimeContext, runtimeSupervisor } from './lib/runtime-session.mjs';
 
 const IMAGE_BYTES = 3 * 1024 * 1024 + 11;
 const image = Uint8Array.from({ length: IMAGE_BYTES }, (_, i) => (i * 7 + (i >> 12)) & 0xff);
@@ -53,7 +53,7 @@ function assertHandedOff(raw, images, name) {
   });
   const manifest = { version: '3.13.14', files: [{ path: 'share/cpython/python.wasm' }, { path: 'lib/python313.zip' }] };
   const facets = recordingFacets();
-  const run = makeCPythonRunnerFactory({ facets: facets.host })(manifest, '/runtime/python', 'python', undefined);
+  const run = makeCPythonRunnerFactory({ facets: facets.host, filesystem, processes: runtimeSupervisor() })(manifest, '/runtime/python', 'python', undefined);
 
   assert.equal(await run(context(filesystem, ['-c', 'print(1)'])), 0);
   assertHandedOff(raw, facets.images, 'python.wasm');
@@ -78,10 +78,10 @@ function assertHandedOff(raw, images, name) {
       return { async submit() { return { exitCode: 0, stdout: '', stderr: '' }; }, dispose() { disposed++; } };
     },
   };
-  const run = makeCPythonRunnerFactory({ facets: host })(manifest, '/runtime/python', 'python', undefined);
+  const run = makeCPythonRunnerFactory({ facets: host, filesystem, processes: runtimeSupervisor([41,42]) })(manifest, '/runtime/python', 'python', undefined);
   assert.equal(await run(runtimeContext(filesystem, { args: ['-c', 'print(1)'], pid: 41 }).ctx), 0);
   assert.equal(await run(runtimeContext(filesystem, { args: ['-c', 'print(2)'], pid: 42 }).ctx), 0);
-  assert.deepEqual(opened, [41, 42], 'each invocation opens its own facet under its own pid');
+  assert.deepEqual(opened, [43, 44], 'each invocation opens its own facet under a fresh runtime pid');
   assert.equal(disposed, 2, 'each invocation disposes the facet it opened');
   console.log('  ok  python opens a facet per invocation, under the invoker\'s pid');
 }
@@ -97,7 +97,7 @@ function assertHandedOff(raw, images, name) {
   const facets = recordingFacets();
   const started = [];
   const startResident = async (spec) => { started.push(spec.wasmVfsPath); return { exitCode: 0, stdout: '', stderr: '' }; };
-  const run = makeCPythonRunnerFactory({ facets: facets.host, startResident })(manifest, '/runtime/python', 'python', undefined);
+  const run = makeCPythonRunnerFactory({ facets: facets.host, filesystem, processes: runtimeSupervisor(), startResident })(manifest, '/runtime/python', 'python', undefined);
 
   assert.equal(await run(context(filesystem, ['-m', 'http.server', '8000'])), 0);
   assert.deepEqual(started, ['/runtime/python/share/cpython/python.wasm']);
@@ -110,7 +110,7 @@ function assertHandedOff(raw, images, name) {
   const { raw, filesystem } = installedRuntime({ 'runtime/ruby/share/ruby/ruby+stdlib.wasm': image });
   const manifest = { files: [{ path: 'share/ruby/ruby+stdlib.wasm' }] };
   const facets = recordingFacets();
-  const run = await makeRubyRunnerFactory({ facets: facets.host, filesystem, getHome: () => '/home/user' })(manifest, '/runtime/ruby', 'ruby', undefined);
+  const run = await makeRubyRunnerFactory({ facets: facets.host, filesystem, processes: runtimeSupervisor(), getHome: () => '/home/user' })(manifest, '/runtime/ruby', 'ruby', undefined);
 
   assert.equal(await run(context(filesystem, ['-e', 'puts 1'])), 0);
   assertHandedOff(raw, facets.images, 'ruby+stdlib.wasm');

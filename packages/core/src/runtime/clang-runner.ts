@@ -39,6 +39,8 @@ import { hasLeadingCliFlag } from './cli-flags.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import { exists, isFile, statOrThrow } from '../vfs/vfs.js';
+import { openRuntimeStdio } from './runtime-stdio.js';
+import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 
@@ -46,6 +48,7 @@ const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 export function makeClangRunnerFactory(deps: {
   facets: FacetHost;
   filesystem: NimbusFilesystemAuthority;
+  processes: SessionProcessSupervisor;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) =>
     Command {
 
@@ -168,10 +171,11 @@ export function makeClangRunnerFactory(deps: {
       // would hand every later caller the first caller's credential.
       const openTarget = (primaryName: 'clang' | 'wasm-ld', image: ArrayBuffer): ClangFacetTarget => ({
         primaryName,
+        pid: stdio.pid,
         facet: deps.facets.open({
           tag: `clang-runner-${primaryName}`,
           concurrency: 1,
-          syscalls: { vfs: ctx.vfs.process, pid: ctx.pid },
+          syscalls: stdio.syscalls,
           preamble: CLANG_RUNNER_PREAMBLE,
           wasmModules: { 'primary.wasm': image },
         }),
@@ -191,8 +195,11 @@ export function makeClangRunnerFactory(deps: {
         }
       }
 
+      const stdio = openRuntimeStdio(deps, ctx, [binName, ...argv].join(' '));
+      let outcome = 1;
       const compile = openTarget('clang', toolchain.clang);
       const link = openTarget('wasm-ld', toolchain.lld);
+      const execute = async (): Promise<number> => {
       try {
         // ── COMPILE PHASE ────────────────────────────────────────────
         // -I flags: each user -I path resolved against cwd, plus cwd itself
@@ -237,11 +244,9 @@ export function makeClangRunnerFactory(deps: {
             src,
           ];
           const compileStarted = Date.now();
-          const compileResult = await dispatchClangFacet(compile, { argv: compileArgv, cred: processCred }, ctx.signal);
+          const compileResult = await dispatchClangFacet(compile, { argv: compileArgv, cred: processCred }, stdio.signal);
           const compileMs = Date.now() - compileStarted;
           if (ctx.env?.NIMBUS_WASI_FS_STATS === '1') ctx.stderr.write(`[wasi-fs] clang wallMs=${compileMs} ${JSON.stringify(compileResult.fsStats ?? null)}\n`);
-          if (compileResult.stdout) ctx.stdout.write(compileResult.stdout);
-          if (compileResult.stderr) ctx.stderr.write(compileResult.stderr);
           if (compileResult.error) {
             ctx.stderr.write(`${binName}: ${compileResult.error}\n`);
             return 1;
@@ -287,11 +292,9 @@ export function makeClangRunnerFactory(deps: {
           '-o', outputGuest,
         ];
         const linkStarted = Date.now();
-        const linkResult = await dispatchClangFacet(link, { argv: linkArgv, cred: processCred }, ctx.signal);
+        const linkResult = await dispatchClangFacet(link, { argv: linkArgv, cred: processCred }, stdio.signal);
         const linkMs = Date.now() - linkStarted;
         if (ctx.env?.NIMBUS_WASI_FS_STATS === '1') ctx.stderr.write(`[wasi-fs] wasm-ld wallMs=${linkMs} ${JSON.stringify(linkResult.fsStats ?? null)}\n`);
-        if (linkResult.stdout) ctx.stdout.write(linkResult.stdout);
-        if (linkResult.stderr) ctx.stderr.write(linkResult.stderr);
         if (linkResult.error) {
           ctx.stderr.write(`${binName}: ${linkResult.error}\n`);
           return 1;
@@ -316,6 +319,9 @@ export function makeClangRunnerFactory(deps: {
         link.facet.dispose();
         if (scratchVfs) await vfs.remove(scratchVfs, { recursive: true, force: true });
       }
+      };
+      try { outcome = await execute(); return outcome; }
+      finally { stdio.finish(outcome); }
     }
   };
 }
@@ -577,6 +583,7 @@ interface ClangFacetArgs {
 
 interface ClangFacetTarget {
   primaryName: 'clang' | 'wasm-ld';
+  pid: number;
   facet: Facet;
 }
 
@@ -623,7 +630,7 @@ async function dispatchClangFacet(
   signal: AbortSignal,
 ): Promise<ClangFacetResult> {
   const facetFn = async function clangFacetCall(
-    inArgs: { primaryName: string; argv: string[]; cred: WasiCred },
+    inArgs: { primaryName: string; argv: string[]; cred: WasiCred; processPid: number },
     facetEnv: FacetBindings,
   ): Promise<ClangFacetResult> {
     const wasm = Reflect.get(globalThis, '__NIMBUS_WASM') as Record<string, unknown> | undefined;
@@ -648,6 +655,7 @@ async function dispatchClangFacet(
       cred: inArgs.cred,
       primaryMod,
       supervisor: facetEnv?.SUPERVISOR,
+      processPid: inArgs.processPid,
     });
   };
 
@@ -656,6 +664,7 @@ async function dispatchClangFacet(
       primaryName: target.primaryName,
       argv: args.argv,
       cred: args.cred,
+      processPid: target.pid,
     }, {
       timeoutMs: 300_000,
       // A kill or Ctrl-C ends the facet too, where the host can.
@@ -694,8 +703,6 @@ const CLANG_RUNNER_PREAMBLE_TAIL = `
 // moment the syscall returns.
 
 globalThis.__clangRun = async function __clangRun(args) {
-  const stdout = [];
-  const stderr = [];
 
   // The session root at '/', as every other runtime mounts it. This
   // toolchain's wasi-libc predates cwd support and resolves a path only
@@ -705,10 +712,12 @@ globalThis.__clangRun = async function __clangRun(args) {
     root: '',
     preopens: [{ wasiPath: '/', vfsPath: '' }],
     cred: args.cred,
+    pid: args.processPid,
   });
   // AFTER initFS, never before: initFS drops the adopted supervisor so a
   // pooled isolate cannot serve the previous tenant's filesystem.
   __wasiAdoptSupervisor(args.supervisor || null);
+  const output = globalThis.__wasiSupervisorOutput(args.supervisor);
 
   let memory = null;
   const wasi = __wasiMakeImports({
@@ -716,8 +725,8 @@ globalThis.__clangRun = async function __clangRun(args) {
     argv: args.argv || [],
     env: { USER: 'user', HOME: '/', PWD: '/' },
     getMemory: () => memory,
-    stdoutWrite: (s) => { stdout.push(s); },
-    stderrWrite: (s) => { stderr.push(s); },
+    stdoutBytes: output.stdoutBytes,
+    stderrBytes: output.stderrBytes,
   });
 
   let instance;
@@ -728,7 +737,7 @@ globalThis.__clangRun = async function __clangRun(args) {
     instance = (r instanceof WebAssembly.Instance ? r : r.instance);
   } catch (e) {
     return {
-      exitCode: 1, stdout: stdout.join(''), stderr: stderr.join(''),
+      exitCode: 1, stdout: '', stderr: '',
       error: 'primary (' + args.primaryName + ') instantiate failed: ' + (e && e.message),
     };
   }
@@ -736,13 +745,15 @@ globalThis.__clangRun = async function __clangRun(args) {
 
   const run = await __wasiRunStartAsync(instance, { memory });
   if (run.error) {
-    stderr.push('[clang-runner] ' + args.primaryName + ' trapped: ' + run.error + '\\n');
+    output.stderrBytes(new TextEncoder().encode('[clang-runner] ' + args.primaryName + ' trapped: ' + run.error + '\\n'));
   }
+  const lost = await output.drain();
 
   return {
-    exitCode: run.exitCode,
-    stdout: stdout.join(''),
-    stderr: stderr.join(''),
+    exitCode: lost ? run.exitCode || 1 : run.exitCode,
+    stdout: '',
+    stderr: '',
+    ...(lost ? { error: lost } : {}),
     fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
   };
 };

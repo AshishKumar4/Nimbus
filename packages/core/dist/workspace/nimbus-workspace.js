@@ -590,17 +590,17 @@ function registerWasmRuntimes(deps) {
     };
     const runners = {
         [BASH_RUNNER]: lazy(async () => (await import('../runtime/bash-runner.js'))
-            .makeBashRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem })),
+            .makeBashRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes })),
         // No `startResident`: a workspace owns no actor that could outlive the
         // call, so a program that keeps serving is refused by name rather than
         // run as a one-shot that dies with it. Same for ruby, where a script is
         // the shape that may bind a port.
         'cpython-runner': lazy(async () => (await import('../runtime/cpython-runner.js'))
-            .makeCPythonRunnerFactory({ facets: deps.facets })),
+            .makeCPythonRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes })),
         'ruby-runner': lazy(async () => (await import('../runtime/ruby-runner.js'))
-            .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, registry: deps.registry, getHome: deps.getHome })),
+            .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, registry: deps.registry, getHome: deps.getHome })),
         'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))
-            .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem })),
+            .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes })),
     };
     for (const [key, factory] of Object.entries(runners)) {
         deps.runtimes.registerRunner(key, factory);

@@ -28,8 +28,8 @@
  */
 export const CPYTHON_PREAMBLE_TAIL = String.raw `
 // ── CPython guest runtime ──────────────────────────────────────────────────
-globalThis.__nimbusPyStdout = globalThis.__nimbusPyStdout || [];
-globalThis.__nimbusPyStderr = globalThis.__nimbusPyStderr || [];
+let __nimbusPyOutput = null;
+let __nimbusPyOutputControl = null;
 
 // The only way into the VM. See constraint (1) above.
 const __nimbusEnterVm = (fn) =>
@@ -47,7 +47,7 @@ function __nimbusPyModule() {
 async function __nimbusPyBoot(args) {
   // The interpreter sees the whole session tree at '/': its stdlib, site
   // packages and the user's cwd are absolute paths under it.
-  __wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], cred: args.cred });
+  __wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], cred: args.cred, pid: args.supervisorPid || 0 });
   // AFTER initFS, never before. See constraint (2). The stub is read back off
   // globalThis rather than passed in, because the facet entry point published
   // it there before initFS wiped the adoption.
@@ -55,13 +55,21 @@ async function __nimbusPyBoot(args) {
     __wasiAdoptSupervisor(globalThis.__nimbusPySupervisor);
   }
 
+  const supervisor = globalThis.__nimbusPySupervisor;
+  __nimbusPyOutput = globalThis.__wasiSupervisorOutput({
+    stdout: (bytes) => {
+      const data = __nimbusPyOutputControl ? __nimbusPyOutputControl.feed(bytes) : bytes;
+      if (data.length) return supervisor.stdout(data);
+    },
+    stderr: (bytes) => supervisor.stderr(bytes),
+  });
   let instance = null;
   const made = __wasiMakeImports({
     argv: args.pyArgv || ['python'],
     env: args.userEnv || {},
     getMemory: () => instance.exports.memory,
-    stdoutWrite: (s) => { globalThis.__nimbusPyStdout.push(s); },
-    stderrWrite: (s) => { globalThis.__nimbusPyStderr.push(s); },
+    stdoutBytes: __nimbusPyOutput.stdoutBytes,
+    stderrBytes: __nimbusPyOutput.stderrBytes,
   });
   instance = new WebAssembly.Instance(__nimbusPyModule(), { wasi_snapshot_preview1: made.wasiImport });
 
@@ -141,14 +149,14 @@ globalThis.__nimbusVirtualSocketDidListen = globalThis.__nimbusVirtualSocketDidL
     if (!supervisor || typeof supervisor.registerPort !== 'function') return;
     try {
       const p = supervisor.registerPort(Number(port)).catch((e) => {
-        globalThis.__nimbusPyStderr.push(
-          '[cpython-runner] port registration failed: ' + ((e && e.message) || e) + '\n');
+        __nimbusPyOutput.stderrBytes(new TextEncoder().encode(
+          '[cpython-runner] port registration failed: ' + ((e && e.message) || e) + '\n'));
       });
       (globalThis.__nimbusVirtualPortRegistrationPromises
         = globalThis.__nimbusVirtualPortRegistrationPromises || []).push(p);
     } catch (e) {
-      globalThis.__nimbusPyStderr.push(
-        '[cpython-runner] port registration failed: ' + ((e && e.message) || e) + '\n');
+      __nimbusPyOutput.stderrBytes(new TextEncoder().encode(
+        '[cpython-runner] port registration failed: ' + ((e && e.message) || e) + '\n'));
     }
   };
 
@@ -173,6 +181,8 @@ async function __nimbusPySettled(result) {
   } catch (e) {
     failed = (e && e.message) || String(e);
   }
+  const outputFailure = __nimbusPyOutput ? await __nimbusPyOutput.drain() : null;
+  failed = failed || outputFailure;
   if (failed === null) return result;
   return { ...result, exitCode: result.exitCode || 1, error: result.error ? result.error + '; ' + failed : failed };
 }
@@ -189,12 +199,7 @@ globalThis.__cpythonRun = async function __cpythonRun(args) {
   return __nimbusPySettled(result);
 };
 async function __cpythonRunOnce(args) {
-  const stdoutStart = globalThis.__nimbusPyStdout.length;
-  const stderrStart = globalThis.__nimbusPyStderr.length;
-  const drain = () => ({
-    stdout: globalThis.__nimbusPyStdout.slice(stdoutStart).join(''),
-    stderr: globalThis.__nimbusPyStderr.slice(stderrStart).join(''),
-  });
+  const drain = () => ({ stdout: '', stderr: '' });
   let boot;
   try {
     boot = await __nimbusPyBoot(args);
@@ -218,21 +223,26 @@ async function __cpythonRunOnce(args) {
 // of these per session and no interleaving to guard against.
 globalThis.__cpythonReplBoot = globalThis.__cpythonReplBoot || null;
 globalThis.__cpythonReplRun = async function __cpythonReplRun(args) {
+  const controls = args.outputControls || [];
+  __nimbusPyOutputControl = controls.length ? globalThis.__wasiOutputControl(controls) : null;
   let result;
   try {
     result = await __cpythonReplLine(args);
   } catch (e) {
     result = { exitCode: 1, stdout: '', stderr: '', error: (e && e.message) || String(e) };
   }
+  const control = __nimbusPyOutputControl;
+  if (__nimbusPyOutput) await __nimbusPyOutput.drain();
+  __nimbusPyOutputControl = null;
+  if (control) {
+    const tail = control.finish();
+    if (tail.length) __nimbusPyOutput.stdoutBytes(tail);
+    result.control = control.values;
+  }
   return __nimbusPySettled(result);
 };
 async function __cpythonReplLine(args) {
-  const stdoutStart = globalThis.__nimbusPyStdout.length;
-  const stderrStart = globalThis.__nimbusPyStderr.length;
-  const drain = () => ({
-    stdout: globalThis.__nimbusPyStdout.slice(stdoutStart).join(''),
-    stderr: globalThis.__nimbusPyStderr.slice(stderrStart).join(''),
-  });
+  const drain = () => ({ stdout: '', stderr: '' });
   try {
     if (!globalThis.__cpythonReplBoot) {
       const boot = await __nimbusPyBoot(args);
@@ -270,8 +280,6 @@ globalThis.__cpythonProcess = globalThis.__cpythonProcess || null;
 
 globalThis.__cpythonStartProcess = async function __cpythonStartProcess(args) {
   if (globalThis.__cpythonProcess) return globalThis.__cpythonProcess.result;
-  const stdoutStart = globalThis.__nimbusPyStdout.length;
-  const stderrStart = globalThis.__nimbusPyStderr.length;
   const boot = await __nimbusPyBoot(args);
   let exitCode = 1;
   let error;
@@ -283,8 +291,8 @@ globalThis.__cpythonStartProcess = async function __cpythonStartProcess(args) {
   }
   const result = await __nimbusPySettled({
     exitCode,
-    stdout: globalThis.__nimbusPyStdout.slice(stdoutStart).join(''),
-    stderr: globalThis.__nimbusPyStderr.slice(stderrStart).join(''),
+    stdout: '',
+    stderr: '',
     ...(error === undefined ? {} : { error }),
   });
   globalThis.__cpythonProcess = { boot, result };
@@ -297,15 +305,16 @@ globalThis.__cpythonStartProcess = async function __cpythonStartProcess(args) {
 globalThis.__cpythonListeningPorts = async function __cpythonListeningPorts() {
   const proc = globalThis.__cpythonProcess;
   if (!proc) return [];
-  const before = globalThis.__nimbusPyStdout.length;
+  const controls = globalThis.__wasiOutputControl([{ key: 'ports', prefix: '__NIMBUS_PORTS__', suffix: '\n' }]);
+  __nimbusPyOutputControl = controls;
   await proc.boot.run('print("__NIMBUS_PORTS__" + repr(_nimbus_listening_ports()))');
-  const written = globalThis.__nimbusPyStdout.splice(before).join('');
-  const match = /__NIMBUS_PORTS__\[([^\]]*)\]/.exec(written);
-  // Anything the program itself printed in the same turn is kept.
-  const leftover = written.replace(/__NIMBUS_PORTS__\[[^\]]*\]\n?/, '');
-  if (leftover) globalThis.__nimbusPyStdout.push(leftover);
-  if (!match || !match[1].trim()) return [];
-  return match[1].split(',').map((n) => Number(n.trim())).filter((n) => n > 0);
+  await proc.boot.flush();
+  await __nimbusPyOutput.drain();
+  __nimbusPyOutputControl = null;
+  const tail = controls.finish();
+  if (tail.length) __nimbusPyOutput.stdoutBytes(tail);
+  await __nimbusPyOutput.drain();
+  return JSON.parse(controls.values.ports || '[]').filter((n) => Number.isInteger(n) && n > 0);
 };
 
 // One dispatch at a time for the whole process: two entries into the same
@@ -329,7 +338,7 @@ globalThis.__nimbusVirtualSocketRequestQueued = globalThis.__nimbusVirtualSocket
         // A request the server handled leaves what it wrote in the session; a
         // refusal goes to the process's stderr, naming the file.
         const settled = await __nimbusPySettled({ exitCode: rc });
-        if (settled.error) globalThis.__nimbusPyStderr.push('nimbus: ' + settled.error + '\n');
+        if (settled.error) __nimbusPyOutput.stderrBytes(new TextEncoder().encode('nimbus: ' + settled.error + '\n'));
         rc = settled.exitCode;
       }
       return rc === 0;

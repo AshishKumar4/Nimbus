@@ -4,6 +4,8 @@ import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 import { residentFilesystem, } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
 import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { processHost } from '@nimbus-sh/core/runtime/wasi/processes.js';
+import { wasiOutputRelay } from '@nimbus-sh/core/runtime/wasi/stdio.js';
+import { outputControlReader } from '@nimbus-sh/core/runtime/wasi/output-control.js';
 // errno constants
 const __WASI_ESUCCESS = 0;
 const __WASI_EAGAIN = 6;
@@ -565,8 +567,6 @@ function __wasiAllocateFd() { return nextFd++; }
 const __WASI_PARK_CEILING_MS = 15000; // measured; deadline must stay under
 const __WASI_PARK_DEADLINE_MS = 10000;
 void __WASI_PARK_CEILING_MS;
-/** Bytes a process's live output may have on their way to the session before a writer waits. */
-const __WASI_OUTPUT_IN_FLIGHT_BYTES = 1 << 20;
 /**
  * A process's stdout and stderr live, through the session's stdout and
  * stderr calls, as a node process's go: in order, byte for byte, and without
@@ -577,57 +577,7 @@ const __WASI_OUTPUT_IN_FLIGHT_BYTES = 1 << 20;
  * output is lost.
  */
 function __wasiSupervisorOutput(sup) {
-    const target = sup;
-    let chain = null;
-    let inFlight = 0;
-    let lost = null;
-    const send = (fd, bytes) => {
-        if (bytes.byteLength === 0)
-            return;
-        let at = 0;
-        const admit = () => {
-            if (lost !== null)
-                throw new Error(lost);
-            while (at < bytes.byteLength) {
-                const room = __WASI_OUTPUT_IN_FLIGHT_BYTES - inFlight;
-                // Capacity is admission, not a best-effort timer. A blocked writer
-                // resumes only when queued RPCs settle, or fails when one rejects.
-                if (room === 0)
-                    return chain.then(admit);
-                const size = Math.min(room, bytes.byteLength - at);
-                const part = at === 0 && size === bytes.byteLength ? bytes : bytes.subarray(at, at + size);
-                at += size;
-                inFlight += size;
-                const write = () => (fd === 1 ? target.stdout(part) : target.stderr(part));
-                // A local realm has a blocking capability: send its bytes before
-                // the WASM guest can enter another blocking read. Workerd returns a
-                // promise and the same relay keeps subsequent writes in its order.
-                let delivered;
-                try {
-                    delivered = chain ? chain.then(write) : write();
-                }
-                catch (error) {
-                    inFlight -= size;
-                    throw error;
-                }
-                if (delivered && typeof delivered.then === 'function') {
-                    const pending = Promise.resolve(delivered)
-                        .catch((error) => { lost ??= error instanceof Error ? error.message : String(error); })
-                        .finally(() => { inFlight -= size; if (chain === pending)
-                        chain = null; });
-                    chain = pending;
-                }
-                else
-                    inFlight -= size;
-            }
-        };
-        return admit();
-    };
-    return {
-        stdoutBytes: (bytes) => send(1, bytes),
-        stderrBytes: (bytes) => send(2, bytes),
-        drain: () => (chain ?? Promise.resolve()).then(() => lost),
-    };
+    return wasiOutputRelay(sup);
 }
 /**
  * This process's news tracker. Its reports reach the session in order, and
@@ -2061,4 +2011,6 @@ async function __wasiSettled(result) {
 // not typecheck in the supervisor bundle the body is authored in.
 globalThis.__wasiAdoptSupervisor = __wasiAdoptSupervisor;
 globalThis.__wasiSettleWrites = __wasiSettleWrites;
+globalThis.__wasiSupervisorOutput = __wasiSupervisorOutput;
+globalThis.__wasiOutputControl = outputControlReader;
 // ── END: wasi-instance preamble ─────────────────────────────────────────

@@ -49,6 +49,7 @@ import { buildPipInvocation, pythonSitePackages, sessionUsesSciVariant, } from '
 import { DEFAULT_HOME } from '../constants.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
+import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
 /** Where `nimbus install python` stages the interpreter inside the session. */
@@ -340,7 +341,7 @@ export function makeCPythonRunnerFactory(deps) {
                     return 1;
                 }
                 const command = [binName, ...argv].map((part) => (/^[A-Za-z0-9_./:=@+-]+$/.test(part) ? part : JSON.stringify(part))).join(' ');
-                const spawnResult = await deps.startResident({ wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid });
+                const spawnResult = await deps.startResident({ wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: runtimeOutput(ctx) });
                 if (spawnResult.stdout)
                     ctx.stdout.write(spawnResult.stdout);
                 if (spawnResult.stderr)
@@ -350,48 +351,47 @@ export function makeCPythonRunnerFactory(deps) {
             // Opened per invocation, not cached: the supervisor capability is bound
             // to this process's pid when the facet opens, so one held across calls
             // would hand every later caller the first caller's write credential.
-            const facet = deps.facets.open({
-                // The variant is in the tag because a host's constructor-time wasm
-                // fingerprint is name:length:first-byte:last-byte, not a content hash.
-                // Two variants differ by megabytes so they would not collide today, but
-                // a warm slot serving the wrong interpreter is not a failure worth
-                // leaving to a size coincidence.
-                tag: wantsSci ? 'cpython-runner:sci' : 'cpython-runner',
-                concurrency: 1,
-                // Never absent. Without the capability the facet reads its seed and can
-                // never write anything back — the program appears to run and its output
-                // never reaches the session.
-                syscalls: { vfs: ctx.vfs.process, pid: ctx.pid },
-                preamble: buildCPythonPreamble(),
-                wasmModules: { 'python.wasm': await vfs.readArrayBufferUncached(wasmVfs) },
-            });
-            let result;
+            const stdio = openRuntimeStdio(deps, ctx, [binName, ...argv].join(' '), { consumedStdin: parsed.mode === 'stdin' });
+            facetArgs.supervisorPid = stdio.pid;
+            let exitCode = 1;
+            let facet = null;
             try {
-                result = await facet.submit(cpythonRunFacetFn, facetArgs, {
+                facet = deps.facets.open({
+                    // The variant is in the tag because a host's constructor-time wasm
+                    // fingerprint is name:length:first-byte:last-byte, not a content hash.
+                    // Two variants differ by megabytes so they would not collide today, but
+                    // a warm slot serving the wrong interpreter is not a failure worth
+                    // leaving to a size coincidence.
+                    tag: wantsSci ? 'cpython-runner:sci' : 'cpython-runner',
+                    concurrency: 1,
+                    // Never absent. Without the capability the facet reads its seed and can
+                    // never write anything back — the program appears to run and its output
+                    // never reaches the session.
+                    syscalls: stdio.syscalls,
+                    preamble: buildCPythonPreamble(),
+                    wasmModules: { 'python.wasm': await vfs.readArrayBufferUncached(wasmVfs) },
+                });
+                const result = await facet.submit(cpythonRunFacetFn, facetArgs, {
                     timeoutMs: 120_000,
                     // A kill or Ctrl-C ends the facet too, where the host can.
-                    signal: ctx.signal,
+                    signal: stdio.signal,
                 });
+                exitCode = result.error ? result.exitCode || 1 : result.exitCode;
+                if (result.error)
+                    await ctx.stderr.write(`${binName}: ${result.error}\n`);
+                return exitCode;
             }
             catch (e) {
                 // Killed: the program ends as an interrupted one does.
-                if (ctx.signal.aborted)
-                    return 130;
+                if (stdio.signal.aborted)
+                    return exitCode = 130;
                 ctx.stderr.write(`${binName}: ${errorMessage(e)}\n`);
                 return 1;
             }
             finally {
-                facet.dispose();
+                facet?.dispose();
+                stdio.finish(exitCode);
             }
-            if (result.stdout)
-                ctx.stdout.write(result.stdout);
-            if (result.stderr)
-                ctx.stderr.write(result.stderr);
-            if (result.error) {
-                ctx.stderr.write(`${binName}: ${result.error}\n`);
-                return result.exitCode || 1;
-            }
-            return result.exitCode;
         };
     };
 }

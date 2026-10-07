@@ -34,6 +34,8 @@ import type { FacetBindings } from './facet-host.js';
 import { BASH_RUNNER, CRED_KERNEL, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { exists } from '../vfs/vfs.js';
+import { openRuntimeStdio } from './runtime-stdio.js';
+import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 
 type BashRunnerFactory = (
   manifest: RuntimeManifest,
@@ -51,6 +53,7 @@ const BashSliceSchema = z.object({
   stderr: z.string().optional(),
   error: z.string().optional(),
   stats: z.record(z.string(), z.unknown()).optional(),
+  control: z.record(z.string(), z.string()).optional(),
 }).passthrough();
 
 function normalizeSlice(raw: unknown): BashSlice | null {
@@ -63,6 +66,7 @@ function normalizeSlice(raw: unknown): BashSlice | null {
     stderr: parsed.data.stderr || '',
     error: parsed.data.error,
     stats: parsed.data.stats,
+    control: parsed.data.control,
   };
 }
 
@@ -130,6 +134,7 @@ export async function createBashFacetSession(deps: {
   artifacts: ProcessView;
   filesystem: RuntimeFsBridge;
   pid: number;
+  processes?: SessionProcessSupervisor;
   cred: VfsCred;
   manifest: RuntimeManifest;
   installRoot: string;
@@ -139,6 +144,8 @@ export async function createBashFacetSession(deps: {
   stdinData?: string;
   stdinClosed: boolean;
   stdinTty: boolean;
+  sharedInput?: boolean;
+  outputControls?: import('./wasi/output-control.js').OutputControlFrame[];
   signal?: AbortSignal;
 }): Promise<BashFacetSession> {
   deps.signal?.throwIfAborted();
@@ -185,7 +192,7 @@ export async function createBashFacetSession(deps: {
   const facet: Facet = deps.facets.open({
     tag: BASH_RUNNER,
     concurrency: 1,
-    syscalls: { vfs: deps.filesystem, pid: deps.pid },
+    syscalls: { vfs: deps.filesystem, pid: deps.pid, processes: deps.processes },
     preamble: BASH_RUNNER_PREAMBLE,
     wasmModules,
   });
@@ -254,6 +261,9 @@ export async function createBashFacetSession(deps: {
       stdinData: deps.stdinData ?? '',
       stdinClosed: deps.stdinClosed,
       stdinTty: deps.stdinTty,
+      processPid: deps.pid,
+      sharedInput: deps.sharedInput,
+      outputControls: deps.outputControls,
       busyboxApplets,
       coreutilsRoot: deps.installRoot + '/bin',
     });
@@ -326,6 +336,7 @@ function findScriptArgIndex(argv: string[]): number {
 export function makeBashRunnerFactory(deps: {
   facets: FacetHost;
   filesystem: NimbusFilesystemAuthority;
+  processes: SessionProcessSupervisor;
 }): BashRunnerFactory {
   return function bashRunnerFactory(manifest, installRoot, binName, _binKind) {
     return async function bashBinHandler(ctx: CommandContext): Promise<number> {
@@ -358,62 +369,49 @@ export function makeBashRunnerFactory(deps: {
       // (interactive bash, `read` builtins); a piped stdin is drained
       // upfront and closed so the scheduler never parks on it.
       const stdinIsTty = typeof ctx.isFdTerminal === 'function' ? ctx.isFdTerminal(0) : !ctx.stdin;
-      const feedStream: CommandInputStream | undefined = ctx.terminalStdin ?? ctx.stdin;
-      let stdinData = '';
-      let stdinClosed = true;
-      if (stdinIsTty && feedStream) {
-        stdinClosed = false;
-      } else if (ctx.stdin) {
-        stdinData = await ctx.stdin.readAll();
-      }
+      const stdio = openRuntimeStdio(deps, ctx, [binName, ...argv].join(' '));
+      let exitCode = 1;
 
       let session: BashFacetSession | null = null;
       try {
         session = await withHostView(deps.filesystem, CRED_KERNEL, (artifacts) => createBashFacetSession({
           facets: deps.facets,
           artifacts,
-          filesystem,
-          pid: ctx.pid,
+          filesystem: stdio.syscalls.vfs,
+          pid: stdio.pid,
+          processes: deps.processes,
           cred,
           manifest,
           installRoot,
           argv: [binName, ...argv],
           env: ctx.env || {},
           cwd,
-          stdinData,
-          stdinClosed,
+          stdinClosed: false,
           stdinTty: stdinIsTty,
+          sharedInput: true,
           // A kill or Ctrl-C ends the step running, and the program with it.
-          signal: ctx.signal,
+          signal: stdio.signal,
         }));
         let slice = session.initial;
 
         for (;;) {
-          if (slice.stdout) ctx.stdout.write(slice.stdout);
-          if (slice.stderr) ctx.stderr.write(slice.stderr);
           if (slice.state === 'exited') {
-            return slice.exitCode;
+            return exitCode = slice.exitCode;
           }
           if (slice.state === 'error') {
             ctx.stderr.write(`${binName}: ${slice.error || 'bash facet error'}\n`);
             return slice.exitCode || 1;
           }
-          // need-input: pull the next chunk from the terminal.
-          let data = '';
-          let eof = true;
-          if (!ctx.signal.aborted && feedStream) {
-            const chunk = await feedStream.read();
-            if (!ctx.signal.aborted) { data = chunk === null ? '' : chunk.replace(/\r\n?/g, '\n'); eof = chunk === null; }
-          }
-          slice = await session.push(data, eof);
+          throw new Error('a shared fd0 reader must suspend inside its byte channel');
         }
       } catch (e: unknown) {
         // Killed: the program ends as an interrupted one does.
-        if (ctx.signal.aborted) return 130;
+        if (stdio.signal.aborted) return exitCode = 130;
         ctx.stderr.write(`${binName}: dispatch failed: ${errorMessage(e)}\n`);
         return 1;
       } finally {
         await session?.close();
+        stdio.finish(exitCode);
       }
     };
   };

@@ -62,6 +62,8 @@ import {
 import type { RuntimeFsBridge, RuntimeVfsDirEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { processHost, type ChildNews, type PipeReadiness } from '@nimbus-sh/core/runtime/wasi/processes.js';
+import { wasiOutputRelay, type WasiOutputTarget } from '@nimbus-sh/core/runtime/wasi/stdio.js';
+import { outputControlReader } from '@nimbus-sh/core/runtime/wasi/output-control.js';
 declare const __wasiCreateChildNews: (send: (report: { blocked: boolean; frontier: number; seq: number }) => void) => ChildNews;
 
 // The resident store (worker vfs/facet-resident-store.ts FACET_RESIDENT_STORE_SOURCE),
@@ -632,9 +634,6 @@ const __WASI_PARK_CEILING_MS  = 15000;  // measured; deadline must stay under
 const __WASI_PARK_DEADLINE_MS = 10000;
 void __WASI_PARK_CEILING_MS;
 
-/** Bytes a process's live output may have on their way to the session before a writer waits. */
-const __WASI_OUTPUT_IN_FLIGHT_BYTES = 1 << 20;
-
 /**
  * A process's stdout and stderr live, through the session's stdout and
  * stderr calls, as a node process's go: in order, byte for byte, and without
@@ -644,51 +643,8 @@ const __WASI_OUTPUT_IN_FLIGHT_BYTES = 1 << 20;
  * everything was taken, with the error of a call the session refused, whose
  * output is lost.
  */
-function __wasiSupervisorOutput(sup: unknown): {
-  stdoutBytes(bytes: Uint8Array): void | Promise<void>;
-  stderrBytes(bytes: Uint8Array): void | Promise<void>;
-  drain(): Promise<string | null>;
-} {
-  const target = sup as { stdout(data: Uint8Array): void | Promise<void>; stderr(data: Uint8Array): void | Promise<void> };
-  let chain: Promise<void> | null = null;
-  let inFlight = 0;
-  let lost: string | null = null;
-  const send = (fd: 1 | 2, bytes: Uint8Array): void | Promise<void> => {
-    if (bytes.byteLength === 0) return;
-    let at = 0;
-    const admit = (): void | Promise<void> => {
-      if (lost !== null) throw new Error(lost);
-      while (at < bytes.byteLength) {
-        const room = __WASI_OUTPUT_IN_FLIGHT_BYTES - inFlight;
-        // Capacity is admission, not a best-effort timer. A blocked writer
-        // resumes only when queued RPCs settle, or fails when one rejects.
-        if (room === 0) return chain!.then(admit);
-        const size = Math.min(room, bytes.byteLength - at);
-        const part = at === 0 && size === bytes.byteLength ? bytes : bytes.subarray(at, at + size);
-        at += size;
-        inFlight += size;
-        const write = () => (fd === 1 ? target.stdout(part) : target.stderr(part));
-        // A local realm has a blocking capability: send its bytes before
-        // the WASM guest can enter another blocking read. Workerd returns a
-        // promise and the same relay keeps subsequent writes in its order.
-        let delivered: void | Promise<void>;
-        try { delivered = chain ? chain.then(write) : write(); }
-        catch (error) { inFlight -= size; throw error; }
-        if (delivered && typeof delivered.then === 'function') {
-          const pending = Promise.resolve(delivered)
-            .catch((error: unknown) => { lost ??= error instanceof Error ? error.message : String(error); })
-            .finally(() => { inFlight -= size; if (chain === pending) chain = null; });
-          chain = pending;
-        } else inFlight -= size;
-      }
-    };
-    return admit();
-  };
-  return {
-    stdoutBytes: (bytes) => send(1, bytes),
-    stderrBytes: (bytes) => send(2, bytes),
-    drain: () => (chain ?? Promise.resolve()).then(() => lost),
-  };
+function __wasiSupervisorOutput(sup: unknown): ReturnType<typeof wasiOutputRelay> {
+  return wasiOutputRelay(sup as WasiOutputTarget);
 }
 
 /**
@@ -2029,4 +1985,6 @@ async function __wasiSettled(result: WasiRunResult): Promise<WasiRunResult> {
 // not typecheck in the supervisor bundle the body is authored in.
 globalThis.__wasiAdoptSupervisor = __wasiAdoptSupervisor;
 globalThis.__wasiSettleWrites = __wasiSettleWrites;
+globalThis.__wasiSupervisorOutput = __wasiSupervisorOutput;
+globalThis.__wasiOutputControl = outputControlReader;
 // ── END: wasi-instance preamble ─────────────────────────────────────────

@@ -21,6 +21,12 @@ published independently in the `@nimbus-sh` npm scope.
   cannot withhold their bookkeeping. Fresh CPU turns still use the session's
   alarm-backed paced-work scheduler. Complete-file stdin reads use bounded
   1 MiB windows rather than one RPC per small stream chunk.
+- Fixed: CPython, Ruby, bash and the clang toolchain use the shared live WASI
+  byte relay instead of returning collected output at exit. Redirected files
+  receive flushed output during the run, binary pipes preserve their bytes,
+  and REPL/server control frames are bounded metadata rather than stored text.
+- Fixed: Node byte-mode readable streams expose Buffer chunks at their public
+  edge, preserving Buffer methods and encoding-aware toString calls.
 
 ## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 

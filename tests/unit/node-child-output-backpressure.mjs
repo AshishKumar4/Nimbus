@@ -18,7 +18,7 @@ const cp=factory({},{},{},sup,{uid:1000,gid:1000,groups:[1000],umask:0o022},'/',
 const child=cp.spawn('producer',[]);
 await sleep(50);
 assert.ok(polls>0&&polls<count,'without an application reader, stdout high-water mark stops broker acknowledgement');
-const bytes=[];child.stdout.on('data',d=>bytes.push(Buffer.from(d)));
+const bytes=[];child.stdout.on('data',d=>{ assert.ok(Buffer.isBuffer(d),'a child stdout data listener receives a Node Buffer');assert.equal(d.readUInt8(0),255);bytes.push(Buffer.from(d)); });
 await new Promise((resolve,reject)=>{const timeout=timer(()=>reject(new Error('the child did not close after its output was read')),5000);child.once('close',()=>{clearTimeout(timeout);resolve();});});
 assert.equal(Buffer.concat(bytes).length,count*piece.length);assert.ok(Buffer.concat(bytes).every(b=>b===255));
 assert.equal(child.stdin.destroyed, true, 'a child exit closes its parent-side stdin as Node does');

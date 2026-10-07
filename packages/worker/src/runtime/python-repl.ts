@@ -1,4 +1,5 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { toArrayBuffer } from '@nimbus-sh/core/_shared/bytes.js';
 import { withHostView, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
@@ -87,7 +88,7 @@ export interface PythonReplDeps {
    */
   start?: { cwd: string; binName: string };
 }
-const PythonFacetResult = z.object({ stdout: z.string(), stderr: z.string(), exitCode: z.number().int(), error: z.string().optional() });
+const PythonFacetResult = z.object({ stdout: z.string(), stderr: z.string(), exitCode: z.number().int(), error: z.string().optional(), control: z.record(z.string(), z.string()).optional() });
 const PythonFacetFailure = z.object({ __nimbusFacetError: z.string() });
 type PythonReplFacetResult = z.infer<typeof PythonFacetResult>;
 type InterpreterDeps = Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'home' | 'manifest' | 'pid' | 'start'>;
@@ -195,17 +196,15 @@ class PythonReplAdapter implements ReplAdapter {
       return { kind: 'error', stderr: `[python-repl] dispatch failed: ${message}\n` };
     }
 
-    if (result.stdout.includes(INCOMPLETE_MARKER)) return { kind: 'incomplete' };
+    if (result.control?.incomplete !== undefined) return { kind: 'incomplete' };
 
-    const exitAt = result.stdout.indexOf(EXIT_MARKER);
-    if (exitAt >= 0) {
-      const rest = result.stdout.slice(exitAt + EXIT_MARKER.length);
-      const code = Number.parseInt(rest.slice(0, rest.indexOf(':')), 10);
+    if (result.control?.exit !== undefined) {
+      const code = Number.parseInt(result.control.exit, 10);
       return {
         kind: 'exit',
         exitCode: Number.isFinite(code) ? code : 0,
         // Whatever the line printed before exiting is still the user's output.
-        stdout: result.stdout.slice(0, exitAt),
+        stdout: result.stdout,
         stderr: result.stderr,
       };
     }
@@ -283,7 +282,7 @@ class PythonReplAdapter implements ReplAdapter {
     };
     const pid = this.deps.pid;
     this.pool = typeof pid === 'number' && pid > 0
-      ? new IsolatePool(host.env, host.ctx, { ...base, supervisorPid: pid })
+      ? new IsolatePool(host.env, host.ctx, { ...base, supervisorPid: pid, processSupervisor: supervisorBindingProps(host.ctx, pid, { writerId: crypto.randomUUID() }) })
       // The install-time warm-up has no invoking process. It boots the
       // interpreter and never touches a file, so it asks for no supervisor
       // rather than binding one it cannot authenticate to.
@@ -316,9 +315,11 @@ class PythonReplAdapter implements ReplAdapter {
  * interpreter's setup, and `enter`, the source that starts the prompt in the
  * shell's working directory, which the facet runs once per interpreter.
  */
-export function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'start'>, pythonHome: string, userCode: string) {
+export function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'start' | 'pid'>, pythonHome: string, userCode: string) {
   return {
     userCode,
+    supervisorPid: deps.pid || 0,
+    outputControls: [{ key: 'incomplete', prefix: INCOMPLETE_MARKER }, { key: 'exit', prefix: EXIT_MARKER, suffix: ':' }],
     pythonHome,
     pyArgv: ['python'],
     userEnv: { HOME: deps.home, PYTHONUNBUFFERED: '1' },

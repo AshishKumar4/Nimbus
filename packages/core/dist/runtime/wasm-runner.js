@@ -328,13 +328,15 @@ export function makeWasmRunner(deps) {
                 const memRef = { mem: null };
                 const abi = args.wasiAbi || 'preview1';
                 const sup = facetEnv?.SUPERVISOR;
-                const live = args.liveOutput && typeof sup?.stdout === 'function' ? __wasiSupervisorOutput(sup) : null;
+                if (typeof sup?.stdout !== 'function')
+                    return { ok: false, mode: 'wasi', error: 'WASI process output capability is missing' };
+                const live = __wasiSupervisorOutput(sup);
                 const wasi = mk({
                     argv: args.wasiArgv || [],
                     env: args.wasiEnv || {},
                     abi,
                     threads: !!args.threads,
-                    ...(live ? { stdoutBytes: live.stdoutBytes, stderrBytes: live.stderrBytes } : {}),
+                    stdoutBytes: live.stdoutBytes, stderrBytes: live.stderrBytes,
                     ...(typeof sup?.cpReadStdin === 'function' ? { stdinRead: (maxBytes) => sup.cpReadStdin(args.processPid, 8000, undefined, maxBytes) } : {}),
                     // Non-null by ordering, not by check. The import table is only ever
                     // CALLED from inside the guest, and the guest cannot run before
@@ -441,8 +443,8 @@ export function makeWasmRunner(deps) {
                     ok: r.exitCode === 0 && !r.error && !lost,
                     mode: 'wasi',
                     streamedOutput: live !== null,
-                    stdout: wasi.getStdout(),
-                    stderr: wasi.getStderr(),
+                    stdout: '',
+                    stderr: '',
                     exitCode: lost && r.exitCode === 0 ? 1 : r.exitCode,
                     exports: Object.keys(inst.exports),
                     error: lost ?? r.error,
@@ -568,7 +570,7 @@ export function makeWasmRunner(deps) {
             const submitArgs = isWasi
                 ? {
                     processPid: pid,
-                    liveOutput: opts.output !== undefined,
+                    liveOutput: true,
                     mode: 'wasi',
                     wasiArgv,
                     wasiEnv,
@@ -667,6 +669,10 @@ export function makeWasmRunner(deps) {
         }
         catch { }
         const streamed = 'streamedOutput' in outcome && outcome.streamedOutput === true;
+        if (streamed && !opts.output) {
+            const stored = deps.processes.allLogs(pid);
+            return { exitCode, stdout: stored.filter(chunk => chunk.stream === 'stdout').map(chunk => chunk.data).join(''), stderr: stored.filter(chunk => chunk.stream === 'stderr').map(chunk => chunk.data).join('') + stderr };
+        }
         return { exitCode, stdout: streamed ? '' : stdout, stderr };
     };
 }

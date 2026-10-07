@@ -6074,6 +6074,13 @@ const __streamMod = (() => {
       if (typeof chunk === 'string' && !state.objectMode) {
         chunk = _enc.encode(chunk);
       }
+      if (!state.objectMode && chunk instanceof Uint8Array) {
+        // The channel carries Uint8Array; Node's byte-mode readable edge
+        // publishes Buffer. Object mode and setEncoding keep their own API.
+        const Buffer = typeof __BufferMod !== 'undefined' ? __BufferMod : globalThis.Buffer;
+        if (!Buffer) throw new Error('Nimbus byte streams require node:buffer');
+        if (!Buffer.isBuffer(chunk)) chunk = Buffer.from(chunk);
+      }
       state.buffer.push(chunk);
       state.readableLength += (chunk?.length || 0);
       if (state.flowing) this._flow();

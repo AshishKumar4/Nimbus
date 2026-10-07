@@ -5,9 +5,20 @@
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles, ProcessView } from '../../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
+import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
 
 export const SESSION_USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
+
+/** The same real process authority the runtime command uses in a workspace. */
+export function runtimeSupervisor(pids = [41]) {
+  const processes = new SessionProcessSupervisor();
+  for (const pid of pids) {
+    processes.setPidBase(pid - 1);
+    processes.spawn('sh', ['sh'], '/home/user');
+  }
+  return processes;
+}
 
 /**
  * A session whose home belongs to the session user, with `files` (path →
@@ -26,7 +37,7 @@ export function installedRuntime(files = {}) {
     root.mkdir(clean.replace(/\/[^/]+$/, ''), { recursive: true, mode: 0o755 });
     root.writeFile(clean, bytes, { mode: 0o644 });
   }
-  return { raw, root, filesystem: new ProcessFiles(raw) };
+  return { raw, root, filesystem: new ProcessFiles(raw), processes: new SessionProcessSupervisor() };
 }
 
 /**

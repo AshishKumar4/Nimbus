@@ -53,12 +53,14 @@ interface RubyReplStep {
     home: string;
     cwd: string;
     binName: string;
+    supervisorPid: number;
 }
 interface RubyReplFacetResult {
     stdout: string;
     stderr: string;
     exitCode: number;
     error?: string;
+    control?: Record<string, string>;
 }
 /**
  * Facet-side function. Self-contained — serialized via fn.toString();

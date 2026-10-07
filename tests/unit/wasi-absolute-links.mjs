@@ -32,6 +32,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { runtimeSupervisor } from './lib/runtime-session.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
 
@@ -92,7 +93,7 @@ if (hasHost('python3')) {
   const filesystem = new ProcessFiles(raw);
   const submitted = [];
   const env = { LOADER: { get: () => ({ getEntrypoint: () => ({ async execute(args) { submitted.push(args); return { exitCode: 0, stdout: '', stderr: '' }; } }) }) } };
-  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(env, { id: { toString: () => 'wasi-absolute-links' }, waitUntil() {} }) })(
+  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(env, { id: { toString: () => 'wasi-absolute-links' }, waitUntil() {} }), filesystem, processes: runtimeSupervisor() })(
     { version: '3.13.14', files: [{ path: 'share/cpython/python.wasm' }, { path: 'lib/python313.zip' }] }, '/runtime/python', 'python3', undefined);
   // What the guest runs (the runner's prelude, then the program), under a real CPython.
   const guest = async (cwd) => {

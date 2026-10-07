@@ -139,7 +139,7 @@ workspace.runtimes.registerRunner(
   (manifest, installRoot, binName, binKind) => async (ctx: CommandContext) => {
     const { makeClangRunnerFactory } = await import('@nimbus-sh/core/runtime/clang-runner.js');
     const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-    return await makeClangRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem })(
+    return await makeClangRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes })(
       manifest, installRoot, binName, binKind,
     )(ctx);
   },
@@ -187,6 +187,8 @@ workspace.runtimes.registerRunner(
     const { cpythonResidentStart } = await import('../runtime/cpython-resident.js');
     return await makeCPythonRunnerFactory({
       facets: facetHostForManager(facetMgr),
+      filesystem: workspace.filesystem,
+      processes: self.processes,
       startResident: cpythonResidentStart(facetMgr),
     })(manifest, installRoot, binName, binKind)(ctx);
   },
@@ -224,6 +226,7 @@ workspace.runtimes.registerRunner(
     const runner = await makeRubyRunnerFactory({
       facets: facetHostForManager(facetMgr),
       filesystem: workspace.filesystem,
+      processes: self.processes,
       registry,
       startResident: rubyResidentStart(facetMgr),
       getHome: () => workspace.shell.getEnv().HOME ?? DEFAULT_HOME,
@@ -252,6 +255,7 @@ workspace.runtimes.registerRunner(
         manifest,
         cred: ctx.cred,
         pid: ctx.pid,
+        processes: self.processes,
         filesystem: workspace.filesystem.bind({ pid: ctx.pid, cred: ctx.cred, signal: ctx.signal }),
         env: ctx.env,
         cwd: ctx.cwd || '/home/user',
@@ -260,7 +264,7 @@ workspace.runtimes.registerRunner(
     }
     const { makeBashRunnerFactory } = await import('@nimbus-sh/core/runtime/bash-runner.js');
     const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-    return await makeBashRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem })(
+    return await makeBashRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes })(
       manifest, installRoot, binName, binKind,
     )(ctx);
   },

@@ -71,9 +71,19 @@ export interface PythonReplDeps {
  * interpreter's setup, and `enter`, the source that starts the prompt in the
  * shell's working directory, which the facet runs once per interpreter.
  */
-export declare function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'start'>, pythonHome: string, userCode: string): {
+export declare function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'start' | 'pid'>, pythonHome: string, userCode: string): {
     enter?: string | undefined;
     userCode: string;
+    supervisorPid: number;
+    outputControls: ({
+        key: string;
+        prefix: string;
+        suffix?: undefined;
+    } | {
+        key: string;
+        prefix: string;
+        suffix: string;
+    })[];
     pythonHome: string;
     pyArgv: string[];
     userEnv: {

@@ -86,6 +86,7 @@ class BashReplAdapter {
             artifacts,
             filesystem: this.deps.filesystem,
             pid: this.deps.pid,
+            processes: this.deps.processes,
             cred: this.deps.cred,
             manifest: this.deps.manifest,
             installRoot: this.deps.installRoot,
@@ -99,12 +100,13 @@ class BashReplAdapter {
             cwd: this.deps.cwd,
             stdinClosed: false,
             stdinTty: true,
+            outputControls: [{ key: 'ps1', prefix: this.ps1Sentinel }, { key: 'ps2', prefix: this.ps2Sentinel }],
             signal,
         }));
         const initial = this.session.initial;
         if (initial.state !== 'need-input')
             return this.consumeSlice(initial, '');
-        const prompt = this.takePrompt(initial.stderr);
+        const prompt = this.takePrompt(initial);
         this.pendingStdout += initial.stdout;
         this.pendingStderr += prompt.stderr;
         if (prompt.kind === 'ps1')
@@ -122,7 +124,7 @@ class BashReplAdapter {
         return source.startsWith(prior) ? source.slice(prior.length) : source;
     }
     consumeSlice(slice, source) {
-        const prompt = this.takePrompt(slice.stderr);
+        const prompt = this.takePrompt(slice);
         this.pendingStdout += slice.stdout;
         this.pendingStderr += prompt.stderr;
         if (slice.state === 'exited') {
@@ -155,20 +157,20 @@ class BashReplAdapter {
             ...this.takeOutput('bash: interactive command did not reach a prompt\n'),
         };
     }
-    takePrompt(stderr) {
-        if (stderr.endsWith(this.ps1Sentinel)) {
+    takePrompt(slice) {
+        if (slice.control?.ps1 !== undefined) {
             return {
                 kind: 'ps1',
-                stderr: stderr.slice(0, -this.ps1Sentinel.length),
+                stderr: '',
             };
         }
-        if (stderr.endsWith(this.ps2Sentinel)) {
+        if (slice.control?.ps2 !== undefined) {
             return {
                 kind: 'ps2',
-                stderr: stderr.slice(0, -this.ps2Sentinel.length),
+                stderr: '',
             };
         }
-        return { kind: null, stderr };
+        return { kind: null, stderr: '' };
     }
     takeOutput(extraStderr = '') {
         const output = {

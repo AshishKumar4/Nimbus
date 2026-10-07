@@ -33,6 +33,7 @@ import { hasLeadingCliFlag } from './cli-flags.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import { statOrThrow } from '../vfs/vfs.js';
+import { openRuntimeStdio } from './runtime-stdio.js';
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 /** Build the runner factory. Closes over the facet host and the filesystem authority. */
 export function makeClangRunnerFactory(deps) {
@@ -152,10 +153,11 @@ export function makeClangRunnerFactory(deps) {
             // would hand every later caller the first caller's credential.
             const openTarget = (primaryName, image) => ({
                 primaryName,
+                pid: stdio.pid,
                 facet: deps.facets.open({
                     tag: `clang-runner-${primaryName}`,
                     concurrency: 1,
-                    syscalls: { vfs: ctx.vfs.process, pid: ctx.pid },
+                    syscalls: stdio.syscalls,
                     preamble: CLANG_RUNNER_PREAMBLE,
                     wasmModules: { 'primary.wasm': image },
                 }),
@@ -174,138 +176,141 @@ export function makeClangRunnerFactory(deps) {
                     return 1;
                 }
             }
+            const stdio = openRuntimeStdio(deps, ctx, [binName, ...argv].join(' '));
+            let outcome = 1;
             const compile = openTarget('clang', toolchain.clang);
             const link = openTarget('wasm-ld', toolchain.lld);
-            try {
-                // ── COMPILE PHASE ────────────────────────────────────────────
-                // -I flags: each user -I path resolved against cwd, plus cwd itself
-                // for quote-form lookup. wasm-clang's -cc1 mode does NOT add the
-                // working directory to the quote search list (the driver normally
-                // does), so `clang main.c` with `#include "greet.h"` next to it
-                // needs it spelled out.
-                const userIncludeFlags = [];
-                for (const ip of parsed.includePaths) {
-                    userIncludeFlags.push('-I', `/${resolveVfsPath(ip, cwd)}`);
-                }
-                userIncludeFlags.push('-I', cwdGuest);
-                // Compile each source to its own .o. With -c the object lands in the
-                // working directory as a real driver's does (or at -o for a single
-                // input); otherwise it goes to the scratch directory, keyed by the
-                // source's full path so src/foo.c and lib/foo.c never collide.
-                const objPaths = [];
-                for (const src of sourceInputs) {
-                    const objName = src.slice(src.lastIndexOf('/') + 1).replace(/\.(c|cc|cpp|cxx|c\+\+|C)$/, '.o');
-                    const objPath = scratchVfs
-                        ? `/${scratchVfs}/${src.replace(/^\/+/, '').replace(/\//g, '_').replace(/\.[^.]+$/, '.o')}`
-                        : sourceInputs.length === 1 && parsed.outputPath !== 'a.out'
-                            ? `/${resolveVfsPath(parsed.outputPath, cwd)}`
-                            : `${cwdGuest}/${objName}`;
-                    // For C++ inputs use -x c++; default -x c.
-                    const isCpp = /\.(cc|cpp|cxx|c\+\+|C)$/.test(src);
-                    const compileArgv = [
-                        'clang', '-cc1', '-emit-obj',
-                        '-disable-free',
-                        '-isysroot', sysrootDir,
-                        '-internal-isystem', `${sysrootDir}/include/c++/v1`,
-                        '-internal-isystem', `${sysrootDir}/include`,
-                        '-internal-isystem', `${sysrootDir}/lib/clang/8.0.1/include`,
-                        '-ferror-limit', '19',
-                        '-fmessage-length', '80',
-                        '-fcolor-diagnostics',
-                        '-O2',
-                        ...userIncludeFlags,
-                        '-o', objPath,
-                        '-x', isCpp ? 'c++' : 'c',
-                        src,
-                    ];
-                    const compileStarted = Date.now();
-                    const compileResult = await dispatchClangFacet(compile, { argv: compileArgv, cred: processCred }, ctx.signal);
-                    const compileMs = Date.now() - compileStarted;
-                    if (ctx.env?.NIMBUS_WASI_FS_STATS === '1')
-                        ctx.stderr.write(`[wasi-fs] clang wallMs=${compileMs} ${JSON.stringify(compileResult.fsStats ?? null)}\n`);
-                    if (compileResult.stdout)
-                        ctx.stdout.write(compileResult.stdout);
-                    if (compileResult.stderr)
-                        ctx.stderr.write(compileResult.stderr);
-                    if (compileResult.error) {
-                        ctx.stderr.write(`${binName}: ${compileResult.error}\n`);
-                        return 1;
-                    }
-                    if (compileResult.exitCode !== 0)
-                        return compileResult.exitCode;
-                    if (!(await producedFile(vfs, objPath))) {
-                        ctx.stderr.write(`${binName}: compile produced no ${objPath} (internal error)\n`);
-                        return 1;
-                    }
-                    objPaths.push(objPath);
-                }
-                // -c (compile-only): the objects are already where they belong.
-                if (parsed.compileOnly)
-                    return 0;
-                // ── LINK PHASE ───────────────────────────────────────────────
-                const stackSize = 1024 * 1024;
-                const userLinkFlags = [];
-                for (const lp of parsed.libraryPaths) {
-                    userLinkFlags.push('-L', `/${resolveVfsPath(lp, cwd)}`);
-                }
-                const outputGuest = `/${resolveVfsPath(parsed.outputPath, cwd)}`;
-                const linkArgv = [
-                    'wasm-ld',
-                    '--no-threads',
-                    '--export-dynamic',
-                    '-z', `stack-size=${stackSize}`,
-                    `-L${sysrootDir}/lib/wasm32-wasi`,
-                    // Stream-C: modern wasi-libc references __muloti4 / __divti3
-                    // (128-bit math from utimensat's timespec arithmetic) — these
-                    // live in compiler-rt's libclang_rt.builtins-wasm32.a at the
-                    // clang resource dir. binji-2020's libc.a self-bundled them;
-                    // modern doesn't, so we link compiler-rt explicitly. wasm-ld
-                    // dead-strips unused builtins, so binji binaries are unaffected.
-                    `-L${sysrootDir}/lib/clang/8.0.1/lib/wasi`,
-                    ...userLinkFlags,
-                    `${sysrootDir}/lib/wasm32-wasi/crt1.o`,
-                    ...objPaths,
-                    ...preBuiltLinkInputs,
-                    '-lc',
-                    ...parsed.libraries.map((l) => '-l' + l),
-                    '-lclang_rt.builtins-wasm32',
-                    '-o', outputGuest,
-                ];
-                const linkStarted = Date.now();
-                const linkResult = await dispatchClangFacet(link, { argv: linkArgv, cred: processCred }, ctx.signal);
-                const linkMs = Date.now() - linkStarted;
-                if (ctx.env?.NIMBUS_WASI_FS_STATS === '1')
-                    ctx.stderr.write(`[wasi-fs] wasm-ld wallMs=${linkMs} ${JSON.stringify(linkResult.fsStats ?? null)}\n`);
-                if (linkResult.stdout)
-                    ctx.stdout.write(linkResult.stdout);
-                if (linkResult.stderr)
-                    ctx.stderr.write(linkResult.stderr);
-                if (linkResult.error) {
-                    ctx.stderr.write(`${binName}: ${linkResult.error}\n`);
-                    return 1;
-                }
-                if (linkResult.exitCode !== 0)
-                    return linkResult.exitCode;
-                if (!(await producedFile(vfs, outputGuest))) {
-                    ctx.stderr.write(`${binName}: link produced no ${parsed.outputPath} (internal error)\n`);
-                    return 1;
-                }
-                // Real linkers chmod their output executable (+x even after a
-                // prior chmod -x) — so `./a.out` runs with no manual chmod.
+            const execute = async () => {
                 try {
-                    await vfs.chmod(outputGuest.replace(/^\/+/, ''), 0o755);
+                    // ── COMPILE PHASE ────────────────────────────────────────────
+                    // -I flags: each user -I path resolved against cwd, plus cwd itself
+                    // for quote-form lookup. wasm-clang's -cc1 mode does NOT add the
+                    // working directory to the quote search list (the driver normally
+                    // does), so `clang main.c` with `#include "greet.h"` next to it
+                    // needs it spelled out.
+                    const userIncludeFlags = [];
+                    for (const ip of parsed.includePaths) {
+                        userIncludeFlags.push('-I', `/${resolveVfsPath(ip, cwd)}`);
+                    }
+                    userIncludeFlags.push('-I', cwdGuest);
+                    // Compile each source to its own .o. With -c the object lands in the
+                    // working directory as a real driver's does (or at -o for a single
+                    // input); otherwise it goes to the scratch directory, keyed by the
+                    // source's full path so src/foo.c and lib/foo.c never collide.
+                    const objPaths = [];
+                    for (const src of sourceInputs) {
+                        const objName = src.slice(src.lastIndexOf('/') + 1).replace(/\.(c|cc|cpp|cxx|c\+\+|C)$/, '.o');
+                        const objPath = scratchVfs
+                            ? `/${scratchVfs}/${src.replace(/^\/+/, '').replace(/\//g, '_').replace(/\.[^.]+$/, '.o')}`
+                            : sourceInputs.length === 1 && parsed.outputPath !== 'a.out'
+                                ? `/${resolveVfsPath(parsed.outputPath, cwd)}`
+                                : `${cwdGuest}/${objName}`;
+                        // For C++ inputs use -x c++; default -x c.
+                        const isCpp = /\.(cc|cpp|cxx|c\+\+|C)$/.test(src);
+                        const compileArgv = [
+                            'clang', '-cc1', '-emit-obj',
+                            '-disable-free',
+                            '-isysroot', sysrootDir,
+                            '-internal-isystem', `${sysrootDir}/include/c++/v1`,
+                            '-internal-isystem', `${sysrootDir}/include`,
+                            '-internal-isystem', `${sysrootDir}/lib/clang/8.0.1/include`,
+                            '-ferror-limit', '19',
+                            '-fmessage-length', '80',
+                            '-fcolor-diagnostics',
+                            '-O2',
+                            ...userIncludeFlags,
+                            '-o', objPath,
+                            '-x', isCpp ? 'c++' : 'c',
+                            src,
+                        ];
+                        const compileStarted = Date.now();
+                        const compileResult = await dispatchClangFacet(compile, { argv: compileArgv, cred: processCred }, stdio.signal);
+                        const compileMs = Date.now() - compileStarted;
+                        if (ctx.env?.NIMBUS_WASI_FS_STATS === '1')
+                            ctx.stderr.write(`[wasi-fs] clang wallMs=${compileMs} ${JSON.stringify(compileResult.fsStats ?? null)}\n`);
+                        if (compileResult.error) {
+                            ctx.stderr.write(`${binName}: ${compileResult.error}\n`);
+                            return 1;
+                        }
+                        if (compileResult.exitCode !== 0)
+                            return compileResult.exitCode;
+                        if (!(await producedFile(vfs, objPath))) {
+                            ctx.stderr.write(`${binName}: compile produced no ${objPath} (internal error)\n`);
+                            return 1;
+                        }
+                        objPaths.push(objPath);
+                    }
+                    // -c (compile-only): the objects are already where they belong.
+                    if (parsed.compileOnly)
+                        return 0;
+                    // ── LINK PHASE ───────────────────────────────────────────────
+                    const stackSize = 1024 * 1024;
+                    const userLinkFlags = [];
+                    for (const lp of parsed.libraryPaths) {
+                        userLinkFlags.push('-L', `/${resolveVfsPath(lp, cwd)}`);
+                    }
+                    const outputGuest = `/${resolveVfsPath(parsed.outputPath, cwd)}`;
+                    const linkArgv = [
+                        'wasm-ld',
+                        '--no-threads',
+                        '--export-dynamic',
+                        '-z', `stack-size=${stackSize}`,
+                        `-L${sysrootDir}/lib/wasm32-wasi`,
+                        // Stream-C: modern wasi-libc references __muloti4 / __divti3
+                        // (128-bit math from utimensat's timespec arithmetic) — these
+                        // live in compiler-rt's libclang_rt.builtins-wasm32.a at the
+                        // clang resource dir. binji-2020's libc.a self-bundled them;
+                        // modern doesn't, so we link compiler-rt explicitly. wasm-ld
+                        // dead-strips unused builtins, so binji binaries are unaffected.
+                        `-L${sysrootDir}/lib/clang/8.0.1/lib/wasi`,
+                        ...userLinkFlags,
+                        `${sysrootDir}/lib/wasm32-wasi/crt1.o`,
+                        ...objPaths,
+                        ...preBuiltLinkInputs,
+                        '-lc',
+                        ...parsed.libraries.map((l) => '-l' + l),
+                        '-lclang_rt.builtins-wasm32',
+                        '-o', outputGuest,
+                    ];
+                    const linkStarted = Date.now();
+                    const linkResult = await dispatchClangFacet(link, { argv: linkArgv, cred: processCred }, stdio.signal);
+                    const linkMs = Date.now() - linkStarted;
+                    if (ctx.env?.NIMBUS_WASI_FS_STATS === '1')
+                        ctx.stderr.write(`[wasi-fs] wasm-ld wallMs=${linkMs} ${JSON.stringify(linkResult.fsStats ?? null)}\n`);
+                    if (linkResult.error) {
+                        ctx.stderr.write(`${binName}: ${linkResult.error}\n`);
+                        return 1;
+                    }
+                    if (linkResult.exitCode !== 0)
+                        return linkResult.exitCode;
+                    if (!(await producedFile(vfs, outputGuest))) {
+                        ctx.stderr.write(`${binName}: link produced no ${parsed.outputPath} (internal error)\n`);
+                        return 1;
+                    }
+                    // Real linkers chmod their output executable (+x even after a
+                    // prior chmod -x) — so `./a.out` runs with no manual chmod.
+                    try {
+                        await vfs.chmod(outputGuest.replace(/^\/+/, ''), 0o755);
+                    }
+                    catch (error) {
+                        ctx.stderr.write(`${binName}: ${parsed.outputPath}: ${errorMessage(error)}\n`);
+                        return 1;
+                    }
+                    return 0;
                 }
-                catch (error) {
-                    ctx.stderr.write(`${binName}: ${parsed.outputPath}: ${errorMessage(error)}\n`);
-                    return 1;
+                finally {
+                    compile.facet.dispose();
+                    link.facet.dispose();
+                    if (scratchVfs)
+                        await vfs.remove(scratchVfs, { recursive: true, force: true });
                 }
-                return 0;
+            };
+            try {
+                outcome = await execute();
+                return outcome;
             }
             finally {
-                compile.facet.dispose();
-                link.facet.dispose();
-                if (scratchVfs)
-                    await vfs.remove(scratchVfs, { recursive: true, force: true });
+                stdio.finish(outcome);
             }
         }
     };
@@ -605,6 +610,7 @@ async function dispatchClangFacet(target, args, signal) {
             cred: inArgs.cred,
             primaryMod,
             supervisor: facetEnv?.SUPERVISOR,
+            processPid: inArgs.processPid,
         });
     };
     try {
@@ -612,6 +618,7 @@ async function dispatchClangFacet(target, args, signal) {
             primaryName: target.primaryName,
             argv: args.argv,
             cred: args.cred,
+            processPid: target.pid,
         }, {
             timeoutMs: 300_000,
             // A kill or Ctrl-C ends the facet too, where the host can.
@@ -650,8 +657,6 @@ const CLANG_RUNNER_PREAMBLE_TAIL = `
 // moment the syscall returns.
 
 globalThis.__clangRun = async function __clangRun(args) {
-  const stdout = [];
-  const stderr = [];
 
   // The session root at '/', as every other runtime mounts it. This
   // toolchain's wasi-libc predates cwd support and resolves a path only
@@ -661,10 +666,12 @@ globalThis.__clangRun = async function __clangRun(args) {
     root: '',
     preopens: [{ wasiPath: '/', vfsPath: '' }],
     cred: args.cred,
+    pid: args.processPid,
   });
   // AFTER initFS, never before: initFS drops the adopted supervisor so a
   // pooled isolate cannot serve the previous tenant's filesystem.
   __wasiAdoptSupervisor(args.supervisor || null);
+  const output = globalThis.__wasiSupervisorOutput(args.supervisor);
 
   let memory = null;
   const wasi = __wasiMakeImports({
@@ -672,8 +679,8 @@ globalThis.__clangRun = async function __clangRun(args) {
     argv: args.argv || [],
     env: { USER: 'user', HOME: '/', PWD: '/' },
     getMemory: () => memory,
-    stdoutWrite: (s) => { stdout.push(s); },
-    stderrWrite: (s) => { stderr.push(s); },
+    stdoutBytes: output.stdoutBytes,
+    stderrBytes: output.stderrBytes,
   });
 
   let instance;
@@ -684,7 +691,7 @@ globalThis.__clangRun = async function __clangRun(args) {
     instance = (r instanceof WebAssembly.Instance ? r : r.instance);
   } catch (e) {
     return {
-      exitCode: 1, stdout: stdout.join(''), stderr: stderr.join(''),
+      exitCode: 1, stdout: '', stderr: '',
       error: 'primary (' + args.primaryName + ') instantiate failed: ' + (e && e.message),
     };
   }
@@ -692,13 +699,15 @@ globalThis.__clangRun = async function __clangRun(args) {
 
   const run = await __wasiRunStartAsync(instance, { memory });
   if (run.error) {
-    stderr.push('[clang-runner] ' + args.primaryName + ' trapped: ' + run.error + '\\n');
+    output.stderrBytes(new TextEncoder().encode('[clang-runner] ' + args.primaryName + ' trapped: ' + run.error + '\\n'));
   }
+  const lost = await output.drain();
 
   return {
-    exitCode: run.exitCode,
-    stdout: stdout.join(''),
-    stderr: stderr.join(''),
+    exitCode: lost ? run.exitCode || 1 : run.exitCode,
+    stdout: '',
+    stderr: '',
+    ...(lost ? { error: lost } : {}),
     fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
   };
 };

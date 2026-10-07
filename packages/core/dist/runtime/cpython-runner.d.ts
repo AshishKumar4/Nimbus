@@ -43,6 +43,8 @@
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { FacetHost } from './facet-host.js';
 import type { RuntimeManifest } from './runtime-manifest.js';
+import type { SessionProcessSupervisor } from './session-process-supervisor.js';
+import type { NimbusFilesystemAuthority } from './os-contracts.js';
 /**
  * The one canonical facet preamble. Composed in exactly one place: a
  * hand-rolled second copy is how ruby-repl once drifted into booting a VM whose
@@ -81,9 +83,13 @@ export type CPythonResidentStart = (spawn: {
     command: string;
     /** The launching command's process: the resident carries its exec id. */
     invokerPid: number;
+    signal: AbortSignal;
+    write(stream: 'stdout' | 'stderr', bytes: Uint8Array): void | Promise<void>;
 }) => Promise<CPythonFacetResult>;
 export declare function makeCPythonRunnerFactory(deps: {
     facets: FacetHost;
+    filesystem: NimbusFilesystemAuthority;
+    processes: SessionProcessSupervisor;
     /** Where a program that keeps serving goes. See {@link CPythonResidentStart}. */
     startResident?: CPythonResidentStart;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;

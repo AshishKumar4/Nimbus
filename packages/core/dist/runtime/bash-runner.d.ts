@@ -29,6 +29,7 @@ import type { Command } from '../substrate/lifo/commands/types.js';
 import type { BashBootArgs, BashFeedArgs, BashSlice } from './bash/types.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge, VfsCred } from './os-contracts.js';
 import type { FacetBindings } from './facet-host.js';
+import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 type BashRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 type BashStepArgs = BashBootArgs | BashFeedArgs;
 /** The step the classic submit transport carries: args object in, slice out.
@@ -60,6 +61,7 @@ export declare function createBashFacetSession(deps: {
     artifacts: ProcessView;
     filesystem: RuntimeFsBridge;
     pid: number;
+    processes?: SessionProcessSupervisor;
     cred: VfsCred;
     manifest: RuntimeManifest;
     installRoot: string;
@@ -69,11 +71,14 @@ export declare function createBashFacetSession(deps: {
     stdinData?: string;
     stdinClosed: boolean;
     stdinTty: boolean;
+    sharedInput?: boolean;
+    outputControls?: import('./wasi/output-control.js').OutputControlFrame[];
     signal?: AbortSignal;
 }): Promise<BashFacetSession>;
 export declare function makeBashRunnerFactory(deps: {
     facets: FacetHost;
     filesystem: NimbusFilesystemAuthority;
+    processes: SessionProcessSupervisor;
 }): BashRunnerFactory;
 /**
  * Source string injected as the facet `preamble`. The facet's scope evaluates
