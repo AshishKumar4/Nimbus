@@ -291,21 +291,27 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   assert.equal(s.text('home/user/two/b'), 'twob');
 }
 
-// ── A session call of its own is made in its place in the log ──
+// ── rm, lchown and lutimes are calls in the log, applied as the session's own ──
 {
   const s = session();
   const c = client(s);
-  const seen = [];
-  c.submit(writeFile('home/user/before', 'b'), { acknowledged: true });
-  const removed = c.call('fsRemove', 'home/user/before', async () => {
-    seen.push(['before landed', s.text('home/user/before')], ['after landed', s.text('home/user/after')]);
-    return 'removed';
-  });
-  c.submit(writeFile('home/user/after', 'a'), { acknowledged: true });
-  assert.equal(await removed, 'removed');
+  s.kernel.mkdir('home/user/tree/deep', { recursive: true });
+  s.kernel.writeFile('home/user/tree/deep/f', 'f');
+  s.kernel.chown('home/user/tree', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  s.kernel.chown('home/user/tree/deep', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  s.kernel.chown('home/user/tree/deep/f', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  s.kernel.writeFile('home/user/target', 't');
+  s.kernel.chown('home/user/target', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  await c.submit({ type: 'call', call: { call: 'symlink', path: 'home/user/link', target: 'target' } });
+  await assert.rejects(c.submit({ type: 'call', call: { call: 'rm', path: 'home/user/tree' } }), (error) => error.code === 'EISDIR' || error.code === 'EPERM');
+  await c.submit({ type: 'call', call: { call: 'rm', path: 'home/user/tree', recursive: true } });
+  assert.equal(s.kernel.exists('home/user/tree'), false);
+  await assert.rejects(c.submit({ type: 'call', call: { call: 'rm', path: 'home/user/gone' } }), (error) => error.code === 'ENOENT');
+  await c.submit({ type: 'call', call: { call: 'rm', path: 'home/user/gone', force: true } });
+  await c.submit({ type: 'call', call: { call: 'lutimes', path: 'home/user/link', atime: 1_000, mtime: 2_000 } });
+  assert.equal(s.kernel.lstat('home/user/link').mtime, 2_000, 'lutimes did not change the link itself');
+  assert.notEqual(s.kernel.stat('home/user/target').mtime, 2_000, 'lutimes changed what the link names');
   await c.settle();
-  assert.deepEqual(seen, [['before landed', 'b'], ['after landed', null]], 'the call was made out of its place in the log');
-  assert.equal(s.text('home/user/after'), 'a');
 }
 
 // ── A loop across many directories of one tree takes the tree, and its waves carry the rest ──

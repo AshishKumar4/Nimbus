@@ -124,17 +124,6 @@ function __nimbusAcknowledged(work, syscall, path) {
   });
 }
 
-/** A mutation no call record carries, made by \`run\` in its place in the client's log (ProcessFsClient.call). */
-function __nimbusVfsCall(name, path, run) {
-  if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendingOps = 0;
-  if (typeof __nimbusStopReplay !== "undefined") __nimbusStopReplay.effect(name);
-  const answer = __nimbusProcessFs().call(name, __nimbusVfsPathKey(path), run);
-  globalThis.__nimbusPendingOps++;
-  const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
-  answer.then(settled, settled);
-  return answer;
-}
-
 /** A cell's bytes, as a data call carries them. */
 function __nimbusVfsCellBytes(content) {
   return typeof content === "string" ? new TextEncoder().encode(content) : content;

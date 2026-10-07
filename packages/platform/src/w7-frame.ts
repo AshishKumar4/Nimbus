@@ -113,7 +113,17 @@ export type W7Call =
   | { call: 'mkdir'; path: string; mode: number; ino?: number; existing?: 'ok' }
   | { call: 'unlink'; path: string }
   | { call: 'rmdir'; path: string }
-  | { call: 'symlink'; path: string; target: string; ino?: number };
+  | { call: 'symlink'; path: string; target: string; ino?: number }
+  /**
+   * rm(1) as fs.rm makes it: a file or link unlinked, a directory with all
+   * it holds when `recursive` (else EISDIR's refusal, as unlink's), and a
+   * name not there no refusal when `force`.
+   */
+  | { call: 'rm'; path: string; recursive?: true; force?: true }
+  /** chown(2) of the link itself (lchown): the name's own entry, never what it names. */
+  | { call: 'lchown'; path: string; uid: number; gid: number }
+  /** utimes of the link itself (lutimes). */
+  | { call: 'lutimes'; path: string; atime: number; mtime: number };
 
 /** A call whose bytes travel as a file's chunks. */
 export type W7DataCall = Extract<W7Call, { data: Uint8Array }>['call'];
@@ -637,7 +647,7 @@ async function* decodeRecords(
           if (v3) throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
           summary.pathCount++;
           summary.opCount++;
-          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing']);
+          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime']);
           yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
           break;
         }
@@ -1063,6 +1073,26 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
       return {
         call: 'ftruncate', path: path(value.path, 'ftruncate path'), size: safeInteger(value.size, 'ftruncate size'),
         ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'ftruncate ino') }),
+      };
+    case 'rm': {
+      if (keys.replace(',force', '').replace(',recursive', '') !== 'call,path') break;
+      for (const flag of ['recursive', 'force'] as const) {
+        if (value[flag] !== undefined && value[flag] !== true) throw new Error(`w7-frame: rm ${flag} is true or absent`);
+      }
+      return {
+        call: 'rm', path: path(value.path, 'rm path'),
+        ...(value.recursive === true ? { recursive: true as const } : {}),
+        ...(value.force === true ? { force: true as const } : {}),
+      };
+    }
+    case 'lchown':
+      if (keys !== 'call,gid,path,uid') break;
+      return { call: 'lchown', path: path(value.path, 'lchown path'), uid: u32(value.uid, 'lchown uid'), gid: u32(value.gid, 'lchown gid') };
+    case 'lutimes':
+      if (keys !== 'atime,call,mtime,path') break;
+      return {
+        call: 'lutimes', path: path(value.path, 'lutimes path'),
+        atime: safeInteger(value.atime, 'lutimes atime'), mtime: safeInteger(value.mtime, 'lutimes mtime'),
       };
     default:
       throw new Error(`w7-frame: unknown call ${String(value.call)}`);

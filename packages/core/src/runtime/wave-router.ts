@@ -163,6 +163,21 @@ async function applyRecord(
       else if (call.call === 'rmdir') await ns.rmdir(call.path);
       // An open description's truncate, by its name: a mount numbers its files its own way.
       else if (call.call === 'ftruncate') await ns.truncate(call.path, call.size);
+      else if (call.call === 'rm') {
+        // The name itself, a link not followed: rm removes the link.
+        const there = await ns.stat(call.path, { follow: false });
+        await pinned();
+        if (there === null) {
+          if (!call.force) throw new VfsError('ENOENT', 'no such file or directory', call.path);
+        } else if (there.type === 'directory') {
+          if (!call.recursive) throw new VfsError('EISDIR', 'is a directory', call.path);
+          await ns.removeRecursive(call.path);
+        } else {
+          await ns.unlink(call.path);
+        }
+      }
+      // A mount keeps no owner or times of a link apart from what it names: refused, as a backend without them refuses.
+      else if (call.call === 'lchown' || call.call === 'lutimes') throw new VfsError('ENOTSUP', `${call.call} on a mount`, call.path);
       else await ns.symlink(call.target, call.path);
       return null;
     }

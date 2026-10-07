@@ -2654,9 +2654,7 @@ const __fsMod = (() => {
    * keep today's local-only behaviour. Without a ledger the RPC is issued
    * directly, which is what the async forms did before they were queued.
    */
-  // \`method\` names the supervisor RPC when it differs from the syscall the
-  // caller reports (lchown rides \`chown\`, rm rides \`fsRemove\`).
-  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after, method, dest) {
+  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after, dest) {
     const settle = _nsTakeFresh();
     const supervisor = _supervisor();
     if (!supervisor) { settle(); return null; }
@@ -3571,11 +3569,11 @@ const __fsMod = (() => {
       // Ordered behind the path's pending mutations: an fd write queued a
       // moment ago (modern-tar writes, then futimes, then closes) would
       // otherwise land AFTER the timestamp and reset it to "now".
-      // A link's own times (lutimes) are no attribute record's: that call is made in its place in the log.
+      // A link's own times (lutimes): the call of that name, not an attribute record (which follows the link).
       const leased = () => _ownMutation(absPath, () => _fsRpc(
         followSymlinks
           ? _vfsOp({ type: "setattr", path: _strip(absPath), attrs: { atime: time.atimeMs, mtime: time.mtimeMs } })
-          : __nimbusVfsCall("lutimes", absPath, () => supervisor.utimes(absPath, time.atimeMs, time.mtimeMs)),
+          : _vfsCall({ call: "lutimes", path: _strip(absPath), atime: time.atimeMs, mtime: time.mtimeMs }),
         syscall, p,
         _receiptOf,
       ));
@@ -3695,7 +3693,6 @@ const __fsMod = (() => {
       absPath, syscall, p,
       (s) => _chownCall(s, absPath, nextUid, nextGid, followSymlinks),
       () => _flushParkedWrite(absPath, supervisor),
-      "chown",
     );
   }
 
@@ -3704,7 +3701,7 @@ const __fsMod = (() => {
   function _chownCall(supervisor, absPath, uid, gid, followSymlinks) {
     return followSymlinks
       ? _vfsOp({ type: "setattr", path: _strip(absPath), attrs: { uid, gid } })
-      : __nimbusVfsCall("lchown", absPath, () => supervisor.chown(absPath, uid, gid, { followSymlinks: false }));
+      : _vfsCall({ call: "lchown", path: _strip(absPath), uid, gid });
   }
   function chownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, undefined, "chown"), "chown", p); }
   function lchownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, { followSymlinks: false }, "lchown"), "lchown", p); }
@@ -4126,7 +4123,7 @@ const __fsMod = (() => {
     if (oldK === newK) {
       if (source !== undefined) return null;
       if (_nsUnlisted(oldAbs, false, false) === null) throw _fsErr("ENOENT", "rename", oldP, newP);
-      return _queueStructuralMutation(oldAbs, "rename", oldP, () => _vfsOp({ type: "rename", from: oldK, to: newK }), undefined, undefined, newP);
+      return _queueStructuralMutation(oldAbs, "rename", oldP, () => _vfsOp({ type: "rename", from: oldK, to: newK }), undefined, newP);
     }
     // What rename(2) refuses before it moves anything, refused here before
     // the local tables move: the sync view applies a rename at once and the
@@ -4228,7 +4225,6 @@ const __fsMod = (() => {
       // also needs the destination's ancestors to exist and every pending
       // mutation beneath the source to have landed under the old name.
       () => Promise.all([__nimbusAwaitAncestorMutations(newAbs), __nimbusAwaitSubtreeMutations(oldAbs)]),
-      undefined,
       newP,
     );
     _fenceVfsMutation(newAbs, queued);
@@ -4282,10 +4278,9 @@ const __fsMod = (() => {
 
   // ── rmSync / rm ──
   // The local tables are edited at once (the same retraction unlinkSync and
-  // rmdirSync perform, over the whole subtree when recursive) and ONE
-  // authority RPC — fsRemove, which the bridge serves as unlink or a bounded
-  // recursive removal — is queued behind every pending mutation beneath the
-  // path. ENOENT under \`force\` is the authority's to swallow; locally an
+  // rmdirSync perform, over the whole subtree when recursive) and ONE call,
+  // rm (an unlink, or the tree when recursive), is logged behind every
+  // pending mutation beneath the path. ENOENT under \`force\` is the authority's to swallow; locally an
   // unknown path may still exist live, so it is asked rather than answered.
   function _rmQueued(p, opts, sync) {
     const o = opts || {};
@@ -4298,7 +4293,8 @@ const __fsMod = (() => {
       if (sync || error?.code !== "EAGAIN") throw error;
     }
     const supervisor = _supervisor();
-    const canRemove = !!supervisor && typeof supervisor.fsRemove === "function";
+    // Every session takes rm as a call in the process's log.
+    const canRemove = !!supervisor;
     if (st === undefined) {
       if (!canRemove) {
         if (o.force) return null;
@@ -4336,19 +4332,12 @@ const __fsMod = (() => {
       }
     }
     if (o.recursive) _forgetSyncTree(k); else _forgetSyncPath(k);
-    if (!canRemove) {
-      // No fsRemove: a plain file still has the unlink RPC.
-      if (st !== undefined && !st.isDirectory()) {
-        return _queueStructuralMutation(absPath, "rm", p, () => _vfsCall({ call: "unlink", path: k }), undefined, "unlink");
-      }
-      return null;
-    }
+    if (!canRemove) return null;
     return _queueStructuralMutation(
       absPath, "rm", p,
-      // A tree's removal is no call record: it is made in its place in the log.
-      (s) => __nimbusVfsCall("rm", absPath, () => s.fsRemove(absPath, { recursive: !!o.recursive, force: !!o.force || parked })),
+      // fs.rm as one call: the tree with it when recursive, an absent name no refusal when forced.
+      () => _vfsCall({ call: "rm", path: k, ...(o.recursive ? { recursive: true } : {}), ...(o.force || parked ? { force: true } : {}) }),
       () => __nimbusAwaitSubtreeMutations(absPath),
-      "fsRemove",
     );
   }
   function rmSync(p, opts) { _detachStructuralMutation(_rmQueued(p, opts, true), "rm", p); }

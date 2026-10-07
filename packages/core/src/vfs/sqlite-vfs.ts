@@ -8392,7 +8392,11 @@ export class SqliteVFS {
       case 'call': {
         const call = record.call;
         if (call.call !== 'mkdir') at.routes.clear();
-        const placed = await mountOf(call.call === 'mkdir' ? 'directory' : call.call === 'symlink' || call.call === 'ftruncate' ? 'file' : 'delete', call.path);
+        const placed = await mountOf(
+          call.call === 'mkdir' ? 'directory'
+            : call.call === 'symlink' || call.call === 'ftruncate' || call.call === 'lchown' || call.call === 'lutimes' ? 'file' : 'delete',
+          call.path,
+        );
         if (placed === null) return false;
         at.setPhase('publish');
         at.settleBefore();
@@ -9443,6 +9447,17 @@ export class SqliteVFS {
                   const at = this.describedFile(call.path, call.ino, cred);
                   if (at !== null) this.truncate(at, call.size, cred);
                 }
+                else if (call.call === 'rm') {
+                  // fs.rm: a name not there is no refusal when forced.
+                  try {
+                    if (call.recursive) this.removeRecursive(call.path, cred);
+                    else this.unlink(call.path, cred);
+                  } catch (error) {
+                    if (!(call.force && errnoOf(error) === 'ENOENT')) throw error;
+                  }
+                }
+                else if (call.call === 'lchown') this.chown(call.path, call.uid, call.gid, cred, false);
+                else if (call.call === 'lutimes') this.utimes(call.path, call.atime, call.mtime, cred, false);
                 else this.symlink(call.target, call.path, cred, call.ino);
               }, { alone: call.call !== 'mkdir' });
               break;
