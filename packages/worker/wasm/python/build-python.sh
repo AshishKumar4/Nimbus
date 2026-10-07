@@ -9,10 +9,14 @@
 # dead. _ssl, _hashlib, _lzma, _bz2 and _sqlite3 are absent for the same reason
 # — nobody cross-built the dependencies. They are all portable C.
 #
-#   ./build-python.sh                 # everything
-#   ./build-python.sh deps            # just the C dependencies
-#   ./build-python.sh wasi assets     # re-link the interpreter and repack
-#   ./build-python.sh ext sci assets  # rebuild the compiled packages and relink
+# Built through build-in-bwrap.sh, which runs this script with this directory
+# at /src/python and wasi-sdk 25.0 at /wasi-sdk; it refuses any other layout.
+#
+#   ./build-in-bwrap.sh <work>                  # everything but verify
+#   ./build-in-bwrap.sh <work> deps             # just the C dependencies
+#   ./build-in-bwrap.sh <work> wasi assets      # re-link the interpreter and repack
+#   ./build-in-bwrap.sh <work> ext sci assets   # rebuild the compiled packages and relink
+#   ./build-python.sh verify                    # from the tree: check the artifacts
 #
 # Outputs, next to this script:
 #   python.wasm       the interpreter, stripped, built as a WASI reactor
@@ -32,7 +36,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 : "${WASI_SDK:?set WASI_SDK to the wasi-sdk root (bin/clang, share/wasi-sysroot)}"
-BUILD="${BUILD:-$HERE/build}"
+BUILD="$HERE/build"
 SYSROOT="$WASI_SDK/share/wasi-sysroot"
 SRC="$BUILD/src"
 WORK="$BUILD/work"
@@ -88,6 +92,29 @@ PYSRC="$WORK/Python-$PYTHON_VERSION"
 OPENSSL_SOURCE_DATE_EPOCH=1786128611   # Fri Aug  7 18:50:11 2026 UTC
 CPYTHON_SOURCE_DATE_EPOCH=1786112021   # Aug  7 2026 14:13:41 (UTC)
 export TZ=UTC
+# Never inherited: each stage that stamps sets its own.
+unset SOURCE_DATE_EPOCH
+# One collation for every sort, the script's and its tools'.
+export LC_ALL=C
+
+# The layout every path in the output comes from (OpenSSL's directories, each
+# .pyc's source, __FILE__): this tree at /src/python and wasi-sdk 25.0 at
+# /wasi-sdk, as build-in-bwrap.sh lays them out. A stage that compiles refuses
+# any other, naming both, rather than ship a machine's paths or another
+# toolchain's code.
+RECIPE_HERE=/src/python
+RECIPE_WASI_SDK=/wasi-sdk
+RECIPE_WASI_SDK_VERSION=$'25.0\nwasi-libc: 574b88da4815\nllvm: ab4b5a2db582'
+require_recipe() {
+	[ "$HERE" = "$RECIPE_HERE" ] || {
+		echo "ERROR: this tree is at $HERE; the recipe's is $RECIPE_HERE (run build-in-bwrap.sh)" >&2; exit 1; }
+	[ "$WASI_SDK" = "$RECIPE_WASI_SDK" ] || {
+		echo "ERROR: WASI_SDK is $WASI_SDK; the recipe's is $RECIPE_WASI_SDK (run build-in-bwrap.sh)" >&2; exit 1; }
+	local version
+	version="$(head -3 "$WASI_SDK/VERSION" 2>/dev/null || true)"
+	[ "$version" = "$RECIPE_WASI_SDK_VERSION" ] || {
+		echo "ERROR: $WASI_SDK/VERSION reads '${version//$'\n'/ | }'; the recipe's is '${RECIPE_WASI_SDK_VERSION//$'\n'/ | }'" >&2; exit 1; }
+}
 
 log() { printf '\n=== %s ===\n' "$*"; }
 
@@ -689,5 +716,6 @@ if [ ${#stages[@]} -eq 0 ]; then
 	stages=(fetch deps nimbus hostpy wasi extenv ext sci assets verify)
 fi
 for stage in "${stages[@]}"; do
+	case "$stage" in fetch|verify) ;; *) require_recipe ;; esac
 	"stage_$stage"
 done
