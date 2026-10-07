@@ -15,7 +15,7 @@ async function readyFile(path) {
   assert.ok(existsSync(path), `missing readiness handshake: ${path}`);
 }
 async function lockStatus(path) {
-  const result = await runBoundedProcess('/usr/bin/flock', ['-n', path, '/usr/bin/true'], { timeoutMs: 1000 });
+  const result = await runBoundedProcess('/usr/bin/flock', ['-n', path, '/usr/bin/true']);
   assert.equal(result.reason, '');
   return result.code;
 }
