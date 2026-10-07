@@ -63,7 +63,11 @@ export interface ObjectWriter {
     write(type: 'blob' | 'tree' | 'commit', data: Uint8Array): Promise<string>;
     flush(): Promise<void>;
 }
-/** git_config_bool's spellings. */
+/**
+ * git_config_bool's spellings, of a value as cf-git reads it: a key with no
+ * `=` is 'true' there (git's true), and an explicit empty value is ''
+ * (git's false).
+ */
 export declare function configBool(value: unknown): boolean | undefined;
 export declare class WorktreeRepo {
     readonly vfs: ProjectFs;
@@ -140,9 +144,12 @@ export declare class WorktreeRepo {
      * path_found's remembered directory for a `path` the worktree lacks: the
      * top-most of its directories the worktree lacks, with its slash, or
      * `path/` when it has them all. The directories `path` shares with the one
-     * missing before (`known`) are there and not looked at again.
+     * missing before (`known`) are there and not looked at again. A directory
+     * is there as lstat("dir/") finds it: a link to one is.
      */
     private missingDirectory;
+    /** Whether the worktree's `path` is a directory, a link to one followed. */
+    private isDirectory;
     /** HEAD's tree, the empty tree while HEAD names no commit. */
     headTree(): Promise<string>;
     /** A pattern file's list, or none when it cannot be read. */

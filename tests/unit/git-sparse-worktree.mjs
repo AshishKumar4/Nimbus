@@ -21,6 +21,10 @@
 //   - checkout -- <paths> never checks out a skip-worktree entry, but with
 //     --ignore-skip-worktree-bits.
 //   - The cone as git reads it: the full cone "/*", and core.ignoreCase.
+//   - What is there as git looks: behind a link to a directory, a file
+//     outside the cone is there, though the first one below the link is
+//     missing; core.sparseCheckout as a bare key is true, and with an
+//     explicit empty value false.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -335,6 +339,35 @@ try {
     await q.run(['checkout', 'main']);
     q.same('a switch under core.ignoreCase');
     console.log('  ok  core.ignoreCase: the cone compared as git compares it');
+  }
+
+  {
+    // out/ outside the cone, made a link to a directory holding b/y but not a/: out/a/x is
+    // missing (path_found remembers out/a/, not out/), and out/b/y is there behind the link.
+    const disk = join(scratch, 'linked');
+    mkdirSync(disk);
+    sh(disk, ['init', '-q', '-b', 'main']);
+    for (const [path, text] of [['a/z.txt', 'z\n'], ['out/a/x', 'x\n'], ['out/b/y', 'y\n']]) {
+      mkdirSync(join(disk, path, '..'), { recursive: true });
+      writeFileSync(join(disk, path), text);
+    }
+    sh(disk, ['add', '-A'], ['commit', '-q', '-m', 'one'], ['sparse-checkout', 'set', 'a']);
+    mkdirSync(join(disk, 'elsewhere/b'), { recursive: true });
+    writeFileSync(join(disk, 'elsewhere/b/y'), 'changed\n');
+    symlinkSync('elsewhere', join(disk, 'out'));
+    const p = new Pair('linked', disk);
+    await p.run(['status', '--porcelain', '-uno'], { stdout: true });
+    console.log('  ok  behind a link to a directory: a file outside the cone is there, its missing sibling first');
+  }
+
+  for (const [name, line] of [['bare', 'sparseCheckout'], ['empty', 'sparseCheckout =']]) {
+    // config.worktree's core.sparseCheckout: a bare key is true, an explicit empty value false.
+    const disk = seed('config-' + name);
+    writeFileSync(join(disk, '.git/config.worktree'), `[core]\n\t${line}\n\tsparseCheckoutCone = true\n`);
+    const p = new Pair('config-' + name, disk);
+    p.write('b/x.txt', 'changed\n');
+    await p.run(['status', '--porcelain'], { stdout: true });
+    console.log(`  ok  core.sparseCheckout as ${name === 'bare' ? 'a bare key: true' : 'an explicit empty value: false'}, as git reads it`);
   }
 } finally {
   rmSync(scratch, { recursive: true, force: true });
