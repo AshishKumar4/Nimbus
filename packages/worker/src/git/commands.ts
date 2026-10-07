@@ -604,7 +604,7 @@ interface CfGit {
   writeRef(args: { fs: unknown; dir: string; ref: string; value: string; force: boolean; symbolic?: boolean }): Promise<void>;
   readObject(args: { fs: unknown; dir: string; oid: string; cache: object; format: 'parsed' | 'content' }): Promise<{ type: string; object: unknown }>;
   readCommit(args: { fs: unknown; gitdir: string; oid: string; cache?: object }): Promise<{ commit: { tree: string } }>;
-  readTree(args: { fs: unknown; gitdir: string; oid: string; cache?: object }): Promise<{ tree: { type: string; oid: string }[] }>;
+  readTree(args: { fs: unknown; gitdir: string; oid: string; cache?: object }): Promise<{ tree: { type: string; oid: string; path: string }[] }>;
   hashBlob(args: { object: Uint8Array }): Promise<{ oid: string }>;
   resolveRef(args: { fs: unknown; gitdir: string; ref: string }): Promise<string>;
   expandOid(args: { fs: unknown; gitdir: string; oid: string; cache: object }): Promise<string>;
