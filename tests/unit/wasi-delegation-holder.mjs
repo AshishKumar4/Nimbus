@@ -168,6 +168,8 @@ async function create(fs, path, text) {
   const s = session();
   await create(s.fs, '/home/user/top.txt', 'in home');
   assert.equal(s.filesystem.delegations.size, 0, 'the home directory was delegated');
+  // Written through the client: in the session once sent (what an output of the process waits for).
+  await s.fs.flush();
   assert.equal(dec.decode(s.kernel.readFile('home/user/top.txt')), 'in home');
   await s.fs.settle();
 }
@@ -204,7 +206,9 @@ async function create(fs, path, text) {
   const journal = sqlJournal(createSqliteVfsTestHarness().sql);
   const gate = Promise.withResolvers();
   const s = session({ journal, gate: gate.promise });
-  await s.fs.mkdir('/home/user/proj/logged', { mode: 0o755 });
+  // Made beforehand: every change of the process goes through the held waves.
+  s.kernel.mkdir('home/user/proj/logged', { mode: 0o755 });
+  s.kernel.chown('home/user/proj/logged', 1000, 1000);
   for (let index = 0; index < 20; index++) await create(s.fs, `/home/user/proj/logged/f${index}.txt`, `file ${index}\n`);
   const flushed = s.fs.flush();
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -248,6 +252,97 @@ async function create(fs, path, text) {
   await s.fs.close(old.id);
   await s.fs.settle();
   assert.equal(dec.decode(s.kernel.readFile('home/user/proj/gone/f')), 'new');
+}
+
+// ── Review A7 (recheck): fstat of a description answers from its own file, its name gone or reused ──
+// Red before: fstat looked the description's pathname up: EBADF once the
+// name was unlinked, and the replacement's stat once a rename reused it.
+{
+  const s = session();
+  await s.fs.mkdir('/home/user/proj/fst', { mode: 0o755 });
+  const a = await s.fs.open('/home/user/proj/fst/a', { read: true, write: true, create: true, truncate: true, mode: 0o644 });
+  await s.fs.write(a.id, null, enc.encode('aaaa'));
+  const ino = (await s.fs.fstat(a.id)).ino;
+  await s.fs.unlink('/home/user/proj/fst/a');
+  const gone = await s.fs.fstat(a.id);
+  assert.equal(gone.ino, ino, 'fstat of an unlinked description named another file');
+  assert.equal(gone.nlink, 0);
+  assert.equal(gone.size, 4);
+  const b = await s.fs.open('/home/user/proj/fst/b', { read: true, write: true, create: true, truncate: true, mode: 0o644 });
+  await s.fs.write(b.id, null, enc.encode('bb'));
+  const bIno = (await s.fs.fstat(b.id)).ino;
+  await create(s.fs, '/home/user/proj/fst/c', 'replacement');
+  await s.fs.rename('/home/user/proj/fst/c', '/home/user/proj/fst/b');
+  const replaced = await s.fs.fstat(b.id);
+  assert.equal(replaced.ino, bIno, 'fstat of a replaced description answered the replacement');
+  assert.equal(replaced.size, 2);
+  await s.fs.close(a.id);
+  await s.fs.close(b.id);
+  await s.fs.settle();
+}
+
+// ── Review 8: a description whose grant is given back writes through, never its whole held copy ──
+// The review's sequence: holder-made file abcd; the grant is revoked (a
+// peer writes Z at 2); the old description writes X at 0. The file is XbZd.
+// Red before: the drain wrote the description's whole held copy, Xbcd,
+// over the peer's Z.
+{
+  const s = session();
+  await s.fs.mkdir('/home/user/proj/through', { mode: 0o755 });
+  const fd = await s.fs.open('/home/user/proj/through/f', { read: true, write: true, create: true, truncate: true, mode: 0o644 });
+  await s.fs.write(fd.id, null, enc.encode('abcd'));
+  // A peer's write recalls (revokes) the grant: what was decided is sent first.
+  await withRecall(() => s.kernel.writeRange('home/user/proj/through/f', 2, enc.encode('Z')));
+  assert.equal(await withRecall(() => s.kernel.readFileString('home/user/proj/through/f')), 'abZd');
+  await s.fs.write(fd.id, 0, enc.encode('X'));
+  await s.fs.fsync(fd.id);
+  assert.equal(await withRecall(() => s.kernel.readFileString('home/user/proj/through/f')), 'XbZd', 'the description overwrote what the peer wrote');
+  // Its own reads are the session's, its writes included.
+  assert.equal(dec.decode(await s.fs.read(fd.id, 0, 10)), 'XbZd');
+  await s.fs.close(fd.id);
+  await s.fs.settle();
+}
+
+// ── Review 12: a file opened to write outside any held subtree is written through the client ──
+// One open call, then writes by number in the waves: no descriptor RPC per
+// write, and an O_APPEND write from two writers interleaves whole writes
+// (each at the end of the file as the session has it then).
+{
+  const s = session();
+  s.kernel.writeFile('home/user/shared.log', enc.encode(''));
+  s.kernel.chown('home/user/shared.log', 1000, 1000);
+  const callsBefore = { ...s.fs.stats().delegated };
+  const log = await s.fs.open('/home/user/shared.log', { write: true, append: true });
+  for (let i = 0; i < 5; i++) {
+    await s.fs.write(log.id, null, enc.encode(`p${i};`));
+    // A shell >> between the process's appends.
+    await withRecall(() => s.kernel.appendFile('home/user/shared.log', enc.encode(`s${i};`)));
+    await s.fs.fsync(log.id);
+  }
+  await s.fs.close(log.id);
+  await s.fs.settle();
+  const text = await withRecall(() => s.kernel.readFileString('home/user/shared.log'));
+  assert.equal(text.length, 'p0;s0;'.length * 5, `an append overwrote another: ${text}`);
+  for (let i = 0; i < 5; i++) {
+    assert.ok(text.includes(`p${i};`) && text.includes(`s${i};`), `a write was lost: ${text}`);
+  }
+  const after = s.fs.stats().delegated;
+  assert.equal((after.write ?? 0) - (callsBefore.write ?? 0), 0, 'a write through a description was a session call');
+  assert.equal(s.fs.stats().client.ops > 0, true, 'the writes did not go through the client');
+}
+
+// ── Review 12: a refusal of a write through is reported at the description's next fsync ──
+{
+  const s = session();
+  s.kernel.writeFile('home/user/ro.txt', enc.encode('ro'));
+  s.kernel.chown('home/user/ro.txt', 1000, 1000);
+  const fd = await s.fs.open('/home/user/ro.txt', { write: true });
+  // Made read-only by the kernel after the open: the session refuses the write.
+  s.kernel.chown('home/user/ro.txt', 0, 0);
+  s.kernel.chmod('home/user/ro.txt', 0o444);
+  await s.fs.write(fd.id, 0, enc.encode('XX'));
+  await assert.rejects(async () => s.fs.fsync(fd.id), /refused/, 'a refused write through was not reported');
+  await s.fs.close(fd.id);
 }
 
 console.log('wasi delegation holder: ok');

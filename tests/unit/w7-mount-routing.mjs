@@ -673,4 +673,43 @@ const ops = (...list) => ({ inodes: [], chunks: [], ops: list });
   assert.equal(s.inSqlite('home/user/huge'), null);
 }
 
+// 9 (recheck): a call's umask is the one it is made with on a mount too.
+// Red before: the routed data call dropped it, mkdir went with the wave's
+// credential, and a mount stores the mode it is given: 0o644 and 0o755
+// after umask(0o077).
+{
+  const s = session();
+  const result = await s.send(ops(
+    { type: 'call', call: { call: 'writeFile', path: 'shared/private', mode: 0o666, umask: 0o077, data: enc.encode('p') } },
+    { type: 'call', call: { call: 'mkdir', path: 'shared/secret', mode: 0o777, umask: 0o077 } },
+    { type: 'call', call: { call: 'open', path: 'shared/opened', mode: 0o666, umask: 0o077, create: true } },
+  ));
+  assert.equal(result.ok, true, JSON.stringify(result.error));
+  assert.equal(s.shared.stat('/private').mode & 0o777, 0o600, 'a mounted file ignored its call\'s umask');
+  assert.equal(s.shared.stat('/secret').mode & 0o777, 0o700, 'a mounted directory ignored its call\'s umask');
+  assert.equal(s.shared.stat('/opened').mode & 0o777, 0o600, 'a mounted open ignored its call\'s umask');
+  assert.deepEqual(s.sqliteNames('shared'), []);
+}
+
+// 10 (recheck): concurrent waves of gathered calls never wait on credit while holding their own.
+// Red before: each wave queued calls of 512 KiB (under the 1 MiB group
+// threshold, so not yet made, their credit held), and its next 3.5 MiB call
+// waited on the 8 MiB pool the other waves' queued calls filled: every wave
+// waited, for good.
+{
+  const s = session();
+  const piece = (n) => new Uint8Array(n).fill(1);
+  const waves = [];
+  for (let w = 0; w < 4; w++) {
+    const list = [];
+    for (let i = 0; i < 3; i++) list.push({ type: 'call', call: { call: 'writeFile', path: `home/user/c${w}-${i}`, mode: 0o644, data: piece(512 * 1024) } });
+    list.push({ type: 'call', call: { call: 'writeFile', path: `home/user/c${w}-big`, mode: 0o644, data: piece(3.5 * 1024 * 1024) } });
+    waves.push(s.send(ops(...list)));
+  }
+  const outcome = await Promise.race([Promise.all(waves).then((results) => results), new Promise((resolve) => setTimeout(() => resolve('stuck'), 20_000))]);
+  assert.notEqual(outcome, 'stuck', 'concurrent waves of gathered calls deadlocked on credit');
+  for (const result of outcome) assert.equal(result.ok, true, JSON.stringify(result.error));
+  assert.equal(s.engine.writeStreamCredits.stats.current, 0, 'credit was kept after the waves');
+}
+
 console.log('w7-mount-routing: ok');

@@ -7,6 +7,8 @@
  * producer and consumer deploys together. v3 (no rename, truncate or setattr,
  * one operation per path, deletes then directories then files) is still
  * decoded for the one release that rolls v4 out: delete it with W7_MAGIC_V3.
+ * Fields added to v4 since (each deploys with both ends, so the magic stays):
+ * a create call's `umask`, and the `open` call (a write description's open).
  */
 
 import { crc32 } from './crc32.js';
@@ -128,7 +130,16 @@ export type W7Call =
   /** chown(2) of the link itself (lchown): the name's own entry, never what it names. */
   | { call: 'lchown'; path: string; uid: number; gid: number }
   /** utimes of the link itself (lutimes). */
-  | { call: 'lutimes'; path: string; atime: number; mtime: number };
+  | { call: 'lutimes'; path: string; atime: number; mtime: number }
+  /**
+   * open(2) of a file to write it, as the session's own open decides it: a
+   * name made (`create`, `mode` less `umask`) or refused (EEXIST when
+   * `exclusive`, ENOENT without `create`, EISDIR, EACCES), emptied when
+   * `truncate`, a link at the name followed unless `nofollow` (ELOOP). Its
+   * answer is the file's stat; the description writes it by its number
+   * (write, append and ftruncate calls with `ino`).
+   */
+  | { call: 'open'; path: string; mode: number; umask?: number; create?: true; truncate?: true; exclusive?: true; nofollow?: true };
 
 /** A call whose bytes travel as a file's chunks. */
 export type W7DataCall = Extract<W7Call, { data: Uint8Array }>['call'];
@@ -654,7 +665,7 @@ async function* decodeRecords(
           if (v3) throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
           summary.pathCount++;
           summary.opCount++;
-          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask']);
+          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'create', 'truncate', 'exclusive', 'nofollow']);
           yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
           break;
         }
@@ -1101,6 +1112,23 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
     case 'lchown':
       if (keys !== 'call,gid,path,uid') break;
       return { call: 'lchown', path: path(value.path, 'lchown path'), uid: u32(value.uid, 'lchown uid'), gid: u32(value.gid, 'lchown gid') };
+    case 'open': {
+      const flags = ['create', 'exclusive', 'nofollow', 'truncate'] as const;
+      let required = keys;
+      for (const flag of [...flags, 'umask']) required = required.replace(`,${flag}`, '');
+      if (required !== 'call,mode,path') break;
+      for (const flag of flags) {
+        if (value[flag] !== undefined && value[flag] !== true) throw new Error(`w7-frame: open ${flag} is true or absent`);
+      }
+      return {
+        call: 'open', path: path(value.path, 'open path'), mode: u32(value.mode, 'open mode'),
+        ...(value.umask === undefined ? {} : { umask: umaskOf(value.umask, 'open umask') }),
+        ...(value.create === true ? { create: true as const } : {}),
+        ...(value.truncate === true ? { truncate: true as const } : {}),
+        ...(value.exclusive === true ? { exclusive: true as const } : {}),
+        ...(value.nofollow === true ? { nofollow: true as const } : {}),
+      };
+    }
     case 'lutimes':
       if (keys !== 'atime,call,mtime,path') break;
       return {

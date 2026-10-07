@@ -79,7 +79,7 @@ export function namespaceWaveRouter(namespace: CompositeVFS, credential: (cred: 
       const ns = view(cred, guard);
       // Removing its own slot after a failure is the record's own, unguarded.
       const cleanup = view(cred);
-      return applyRecord(ns, cleanup, record, pinsOf(ns, record));
+      return applyRecord(ns, cleanup, record, pinsOf(ns, record), cred.umask & 0o777);
     },
   };
 }
@@ -133,11 +133,18 @@ function pinOf(ns: CompositeVFS, dir: string): () => void | Promise<void> {
   };
 }
 
+/**
+ * `umask`: what a process's call that makes a name takes from its mode, as
+ * the session's own filesystem takes it (the call's own, W7Call umask, or
+ * its credential's): a mount stores the mode it is given. A record that is
+ * no call (a checkout's file or directory) carries its exact mode.
+ */
 async function applyRecord(
   ns: CompositeVFS,
   cleanup: CompositeVFS,
   record: RoutedWaveRecord,
   pinned: () => void | Promise<void>,
+  umask: number,
 ): Promise<RoutedStat | null> {
   switch (record.type) {
     case 'directory':
@@ -177,7 +184,7 @@ async function applyRecord(
         // `existing: 'ok'`: a directory there is made already, as mkdir -p takes it.
         const there = call.existing === 'ok' ? await ns.stat(call.path) : null;
         await pinned();
-        if (there === null || there.type !== 'directory') await ns.mkdir(call.path, { mode: call.mode });
+        if (there === null || there.type !== 'directory') await ns.mkdir(call.path, { mode: call.mode & ~umask });
       }
       else if (call.call === 'unlink') await ns.unlink(call.path);
       else if (call.call === 'rmdir') await ns.rmdir(call.path);
@@ -200,6 +207,19 @@ async function applyRecord(
       }
       // A mount keeps no owner or times of a link apart from what it names: refused, as a backend without them refuses.
       else if (call.call === 'lchown' || call.call === 'lutimes') throw new VfsError('ENOTSUP', `${call.call} on a mount`, call.path);
+      else if (call.call === 'open') {
+        // open(2) to write, as the session's own open decides it on a mount.
+        const name = await ns.stat(call.path, { follow: false });
+        if (name !== null && call.create === true && call.exclusive === true) throw new VfsError('EEXIST', 'file already exists', call.path);
+        if (call.nofollow === true && name?.type === 'symlink') throw new VfsError('ELOOP', 'too many levels of symbolic links', call.path);
+        const there = call.nofollow === true ? name : await ns.stat(call.path);
+        if (there === null && call.create !== true) throw new VfsError('ENOENT', 'no such file or directory', call.path);
+        if (there?.type === 'directory') throw new VfsError('EISDIR', 'is a directory', call.path);
+        await pinned();
+        if (there === null) await ns.writeFile(call.path, new Uint8Array(0), { mode: call.mode & ~umask });
+        else if (call.truncate === true) await ns.truncate(call.path, 0);
+        return statOf(await ns.stat(call.path));
+      }
       else await ns.symlink(call.target, call.path);
       return null;
     }
@@ -227,13 +247,13 @@ async function applyRecord(
       if (record.call === 'appendFile' || record.call === 'append') {
         const prior = await ns.stat(record.path);
         await pinned();
-        if (prior === null && record.call === 'appendFile') await ns.writeFile(record.path, record.bytes, { mode: record.mode });
+        if (prior === null && record.call === 'appendFile') await ns.writeFile(record.path, record.bytes, { mode: record.mode & ~umask });
         else if (prior === null) throw new VfsError('ENOENT', 'the file an open description appends to is gone', record.path);
         else await ns.writeRange(record.path, prior.size, record.bytes);
       } else if (record.call === 'write') {
         await ns.writeRange(record.path, record.offset ?? 0, record.bytes);
       } else {
-        await ns.writeFile(record.path, record.bytes, { mode: record.mode });
+        await ns.writeFile(record.path, record.bytes, { mode: record.mode & ~umask });
       }
       return statOf(await ns.stat(record.path));
     }
