@@ -2871,6 +2871,8 @@ network = ISOLATE_NETWORK) {
                 // A piece of the clone that hung may still write: the facet runner
                 // hands the lease to a new owner before it runs the piece again.
                 let mutationOwner = mutationLease.owner;
+                // Under the lease: whether a failed clone's cleanup keeps the destination (git's remove_junk).
+                const cloneRootExisted = vfs.as(ctx.cred).exists(target);
                 // Delegate to git-network-facet: heavy packfile processing runs in
                 // a dynamic worker with its own CPU budget, not the supervisor DO.
                 const doClone = async () => {
@@ -2886,6 +2888,8 @@ network = ISOLATE_NETWORK) {
                             quiet,
                             exclusiveDestination: true,
                             exclusiveMutationRoot: mutationLease.root,
+                            cloneRootExisted,
+                            cloneAbortPieceMs: Number(ctx.env.NIMBUS_GIT_CLONE_ABORT_PIECE_MS) || undefined,
                             mutationOwner,
                             rotateMutationOwner: () => (mutationOwner = vfs.rotateExclusiveMutation(mutationOwner)),
                             // Verification/tuning knobs: smaller pieces make ordinary repos

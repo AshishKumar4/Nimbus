@@ -63,6 +63,10 @@ function parseWaveDiagnostic(value) {
 }
 const CLONE_PHASE_TIMEOUT_MS = 240_000;
 const CLONE_ABORT_TIMEOUT_MS = 30_000;
+/** An abort invocation stops here and answers `more` (a 33,980-file worktree is removed file by file). */
+const CLONE_ABORT_PIECE_MS = 20_000;
+/** Abort invocations a failed clone's cleanup may take. */
+const CLONE_ABORT_PIECES_MAX = 30;
 const DEFAULT_CLONE_BUDGET_MS = 30 * 60_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 300_000;
 const EMPTY_SUPERVISOR_RPC_COUNTERS = {
@@ -783,15 +787,30 @@ export async function execGitNetwork(ctx, env, opts, /**
                             // A piece of this clone may still be running: its writes lose
                             // their authority before the abort removes what it wrote.
                             facets.fence?.();
-                            const abort = await invokeFacet(facets.entrypoint, 'clone-abort', crypto.randomUUID(), { ...facetOpts, jobId, optionsHash }, Date.now() + CLONE_ABORT_TIMEOUT_MS, CLONE_ABORT_TIMEOUT_MS);
-                            phases.push(abort.diagnostic);
-                            accountResult(abort.result);
-                            if (!opts.quiet)
-                                await writeClonePhaseProgress(supervisorBinding, abort.diagnostic);
-                            if (abort.result.success !== true) {
-                                cleanupError = typeof abort.result.error === 'string'
-                                    ? abort.result.error
-                                    : 'clone-abort failed';
+                            // A piece at a time: a large worktree takes several.
+                            for (let piece = 0;; piece++) {
+                                const abort = await invokeFacet(facets.entrypoint, 'clone-abort', crypto.randomUUID(), {
+                                    ...facetOpts,
+                                    jobId,
+                                    optionsHash,
+                                    cloneAbortPieceMs: positiveSafeInteger(facetOpts.cloneAbortPieceMs, CLONE_ABORT_PIECE_MS, 'clone abort piece'),
+                                }, Date.now() + CLONE_ABORT_TIMEOUT_MS, CLONE_ABORT_TIMEOUT_MS);
+                                phases.push(abort.diagnostic);
+                                accountResult(abort.result);
+                                if (!opts.quiet)
+                                    await writeClonePhaseProgress(supervisorBinding, abort.diagnostic);
+                                if (abort.result.success !== true) {
+                                    cleanupError = typeof abort.result.error === 'string'
+                                        ? abort.result.error
+                                        : 'clone-abort failed';
+                                    break;
+                                }
+                                if (abort.result.more !== true)
+                                    break;
+                                if (piece + 1 >= CLONE_ABORT_PIECES_MAX) {
+                                    cleanupError = 'clone-abort did not finish in ' + CLONE_ABORT_PIECES_MAX + ' invocations';
+                                    break;
+                                }
                             }
                         }
                         catch (abortError) {
@@ -2161,24 +2180,59 @@ export default {
           });
         }
         mutated = true;
-        // File by file, then the directories: one recursive delete of a full
-        // clone's .git (vscode: ~300 packs, idx and staged files) passes a
-        // write group's row limit, and the clone would stay marked.
-        const gitdir = normalizePath(opts.dir) + '/.git';
+        // What git's remove_junk (builtin/clone.c) removes: the work tree and
+        // its .git, and the destination itself unless it existed before the
+        // clone (then it stays, empty); never the leading directories the
+        // clone made. File by file, then the directories, deepest first, the
+        // job's marker last (until then a later invocation still owns it):
+        // one recursive delete of a full clone's .git (vscode: ~300 packs)
+        // or worktree (next.js: 33,980 files) passes a write group's row
+        // limit, and the clone would stay marked. Past its budget the
+        // invocation answers \`more\`, and the next one goes on.
+        const root = normalizePath(opts.dir);
+        const gitdir = root + '/.git';
+        const markerPath = cloneJobMarkerPath(opts.dir);
+        const stopAt = Date.now() + (Number(opts.cloneAbortPieceMs) || 20000);
+        let removed = 0;
+        let more = false;
+        const spent = () => removed > 0 && Date.now() >= stopAt;
+        // Every directory below the destination, parents before children.
         const directories = [];
         const walk = async (dir) => {
-          directories.push(dir);
-          for (const name of await fs.promises.readdir(dir)) {
+          stats.supervisorRpc.readdir++;
+          const entries = await useRpcResult(supervisor.readdir(dir), (result) => result);
+          for (const entry of Array.isArray(entries) ? entries : []) {
+            if (spent()) { more = true; return; }
+            const name = typeof entry === 'string' ? entry : entry.name;
             const path = dir + '/' + name;
-            const stat = await fs.promises.lstat(path);
-            if (stat.isDirectory()) await walk(path);
-            else if (name !== CLONE_JOB_MARKER) await fs.promises.unlink(path);
+            const type = typeof entry === 'string'
+              ? ((await fs.promises.lstat(path)).isDirectory() ? 'directory' : 'file')
+              : entry.type;
+            if (type === 'directory' || type === 'dir') {
+              directories.push(path);
+              await walk(path);
+              if (more) return;
+            } else if (path !== markerPath) {
+              await fs.promises.unlink(path);
+              removed++;
+            }
           }
         };
-        await walk(gitdir);
+        await walk(root);
         await flushWave();
-        for (const dir of directories.reverse()) await fs.promises.rmdir(dir, { recursive: true });
-        await flushWave();
+        if (!more) {
+          // The worktree's directories, deepest first, then .git's, the marker with it.
+          const inGit = (dir) => dir === gitdir || dir.startsWith(gitdir + '/');
+          const ordered = [...directories.filter((dir) => !inGit(dir)).reverse(), ...directories.filter(inGit).reverse()];
+          for (const dir of ordered) {
+            if (spent()) { more = true; break; }
+            await fs.promises.rmdir(dir, { recursive: inGit(dir) });
+            removed++;
+          }
+          if (!more && opts.cloneRootExisted !== true) await fs.promises.rmdir(root);
+          await flushWave();
+        }
+        return respond(true, { more, metadataOverlay: overlayStats() });
       } else if (opts.op === 'fetch-objects') {
         // A partial clone's missing objects (git/promisor.ts): one request,
         // stored as a promisor pack. Writes land below the repository only.

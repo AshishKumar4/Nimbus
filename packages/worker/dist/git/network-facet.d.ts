@@ -71,6 +71,14 @@ export interface GitNetworkOpts {
     timeout?: number;
     /** Clone-only: caller holds an exclusive mutation lease for dir. */
     exclusiveDestination?: boolean;
+    /**
+     * Clone-only: the destination existed (empty) before the clone. A failed
+     * clone's abort then empties it and keeps it; otherwise it removes it, as
+     * git's remove_junk does (builtin/clone.c).
+     */
+    cloneRootExisted?: boolean;
+    /** Clone-only tuning: one abort invocation's budget before it answers `more`. */
+    cloneAbortPieceMs?: number;
     /** Clone-only: normalized root covered by the exclusive mutation lease. */
     exclusiveMutationRoot?: string;
     /** Trusted supervisor-only lease owner; never sent to the dynamic worker. */
