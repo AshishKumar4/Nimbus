@@ -2468,8 +2468,16 @@ const __fsMod = (() => {
     // when the client disconnects — and counting it as an in-flight operation
     // would make a resident facet's drain wait for it, which buffers an open
     // response body. The window that needs holding is exactly the round trip.
+    // What the callback throws is an uncaught exception, as a timer's is in
+    // Node, not the rejection of the chain it runs on.
     const _barriered = (cb, args) => {
-      __nimbusTrackOp(_resumptionAcquire()).then(() => cb(...args));
+      __nimbusTrackOp(_resumptionAcquire()).then(() => {
+        try {
+          cb(...args);
+        } catch (error) {
+          __nimbusUncaughtException(error);
+        }
+      });
     };
     if (typeof _setTimeout === "function") {
       globalThis.setTimeout = function setTimeout(cb, ms, ...args) {
@@ -11010,12 +11018,17 @@ if (typeof globalThis.addEventListener === "function") {
     try { event.preventDefault?.(); } catch {}
   });
   globalThis.addEventListener("error", (event) => {
-    const error = event && typeof event === "object" && "error" in event ? event.error : event;
-    let handled = false;
-    try { handled = __processEvents.emit("uncaughtException", error); } catch {}
-    if (!handled) __nimbusFailUnhandledAsync(error, "exception");
+    __nimbusUncaughtException(event && typeof event === "object" && "error" in event ? event.error : event);
     try { event.preventDefault?.(); } catch {}
   });
+}
+
+// An exception no code caught: the process's 'uncaughtException' listeners
+// have it, or it ends the program.
+function __nimbusUncaughtException(error) {
+  let handled = false;
+  try { handled = __processEvents.emit("uncaughtException", error); } catch {}
+  if (!handled) __nimbusFailUnhandledAsync(error, "exception");
 }
 
 // ═══════════════════════════════════════════════════════════════════════
