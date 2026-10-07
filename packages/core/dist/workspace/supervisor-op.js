@@ -354,7 +354,7 @@ const NATIVE_OPS = {
  * same cursor its own waves moved.
  */
 export function processWaveSequence(pid, fence) {
-    return fence.seq === undefined ? undefined : { writer: `${pid}:${fence.writer}`, first: fence.seq, ack: fence.ack ?? 0 };
+    return fence.seq === undefined ? undefined : { writer: `${pid}:${fence.writer}`, first: fence.seq, ack: fence.ack ?? 0, pid };
 }
 /**
  * The session a gone process's write log (process-fs-journal.ts) is drained

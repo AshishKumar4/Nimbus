@@ -9,8 +9,8 @@
  * decoded for the one release that rolls v4 out: delete it with W7_MAGIC_V3.
  * Fields added to v4 since (each deploys with both ends, so the magic stays):
  * a create call's `umask`; the `open` and `close` calls (a write
- * description's), and a description's `description` on its write, append
- * and ftruncate calls.
+ * description's), an `open`'s `ino`, and a description's `description` on
+ * its write, append and ftruncate calls.
  */
 export type VfsInodeKind = 'file' | 'directory' | 'symlink';
 /** Entry for bulk inode creation via writeBatch(). */
@@ -196,12 +196,14 @@ export type W7Call =
  * (ELOOP). Its answer is the file's stat. With `description` (an id the
  * process chose), the session keeps the open description under it, its
  * access fixed now; the description's write, append and ftruncate calls
- * name it, and its `close` ends it.
+ * name it, and its `close` ends it. `ino`: the number a name it makes is
+ * given (a delegation's, as a mkdir's).
  */
  | {
     call: 'open';
     path: string;
     mode: number;
+    ino?: number;
     umask?: number;
     read?: true;
     create?: true;

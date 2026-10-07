@@ -9,8 +9,8 @@
  * decoded for the one release that rolls v4 out: delete it with W7_MAGIC_V3.
  * Fields added to v4 since (each deploys with both ends, so the magic stays):
  * a create call's `umask`; the `open` and `close` calls (a write
- * description's), and a description's `description` on its write, append
- * and ftruncate calls.
+ * description's), an `open`'s `ino`, and a description's `description` on
+ * its write, append and ftruncate calls.
  */
 import { crc32 } from './crc32.js';
 import { CHUNK_SIZE } from './limits.js';
@@ -847,7 +847,7 @@ function parsePathCall(value, path) {
         case 'open': {
             const flags = ['create', 'exclusive', 'nofollow', 'read', 'truncate'];
             let required = keys;
-            for (const flag of ['create', 'description', 'exclusive', 'nofollow', 'read', 'truncate', 'umask'])
+            for (const flag of ['create', 'description', 'exclusive', 'ino', 'nofollow', 'read', 'truncate', 'umask'])
                 required = required.replace(`,${flag}`, '');
             if (required !== 'call,mode,path')
                 break;
@@ -857,6 +857,7 @@ function parsePathCall(value, path) {
             }
             return {
                 call: 'open', path: path(value.path, 'open path'), mode: u32(value.mode, 'open mode'),
+                ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'open ino') }),
                 ...(value.umask === undefined ? {} : { umask: umaskOf(value.umask, 'open umask') }),
                 ...(value.create === true ? { create: true } : {}),
                 ...(value.truncate === true ? { truncate: true } : {}),

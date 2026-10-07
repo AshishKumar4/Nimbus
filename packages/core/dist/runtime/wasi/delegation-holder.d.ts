@@ -102,6 +102,13 @@ export interface DelegationHolder {
     send(): Promise<void>;
     /** A refusal the session has made of what this process logged, thrown now (with its errno), not waiting for anything: what a close reports. */
     reportRecorded(): void;
+    /**
+     * The process is about to change a name or an access at or above `keys`
+     * (anywhere, when absent) by a route not decided here (a call of the
+     * session's, or a change by name the client logs): each file it holds
+     * open there writes through from now on, its descriptions opened first.
+     */
+    changing(keys?: readonly string[]): void;
     /** Whether `handleId` writes through: its reads are the session's (readThrough). */
     through(handleId: number): boolean;
     /** A write-through description's session descriptor (its open answered), or undefined (a mount's file keeps none). */

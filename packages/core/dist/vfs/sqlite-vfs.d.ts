@@ -33,7 +33,7 @@ import { type Principal, type VfsDirentType, type VfsWriteEvent } from './vfs.js
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 /** The tables the store keeps (dropped whole by a reset of an older store; listed by an embedder's destroy). */
-export declare const STORE_TABLES: readonly ["vfs_state", "vfs_inodes", "vfs_chunks", "vfs_contents", "vfs_content_chunks", "vfs_inode_history", "vfs_tombstones", "vfs_cold_trash", "vfs_gc_queue", "vfs_snapshots", "vfs_jobs", "vfs_wave_cursors"];
+export declare const STORE_TABLES: readonly ["vfs_state", "vfs_inodes", "vfs_chunks", "vfs_contents", "vfs_content_chunks", "vfs_inode_history", "vfs_tombstones", "vfs_cold_trash", "vfs_gc_queue", "vfs_snapshots", "vfs_jobs", "vfs_wave_cursors", "vfs_wave_descriptions"];
 /** The root directory has no row; this is what it is. */
 export declare const ROOT_DIRECTORY_MODE = 16877;
 /** The root's inode number, reserved: the allocator starts at 2. */
@@ -380,6 +380,8 @@ export interface WaveSequence {
     writer: string;
     first: number;
     ack: number;
+    /** The process whose writer it is: what the session keeps of the process (its waves' open descriptions) is kept under it. */
+    pid: number;
 }
 /**
  * What a sequenced wave committed: every op up to `cursor`. `refused`: the
@@ -559,13 +561,19 @@ export interface WriteStreamOptions {
  * lives until its last close.
  */
 export interface WaveDescriptions {
-    /** Open the file at `path` under `id`, its access checked now; the session's descriptor of it. */
-    open(path: string, rights: {
+    /**
+     * Open `id`, a description of the file `ino` numbers with `rights`, its
+     * access decided already (SqliteVFS.describeInode): the session's
+     * descriptor of it, or null when no file has that number any more.
+     */
+    adopt(id: string, ino: number, rights: {
         read: boolean;
         write: boolean;
-    }, id: string, cred: VfsCred): number;
+    }, path: string, cred: VfsCred): number | null;
     /** The description `id` names, or undefined (never opened, or closed). */
     node(id: string): VfsOpenDescription | undefined;
+    /** The session's descriptor of `id`, or undefined. */
+    handle(id: string): number | undefined;
     close(id: string): void;
 }
 export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
@@ -939,6 +947,20 @@ export declare class SqliteVFS {
         write: boolean;
         sync?: boolean;
     }, principal?: Principal, holds?: () => ReadonlySet<string>): VfsOpenDescription;
+    /**
+     * A description of the file `ino` numbers, its access decided already: by
+     * the open that made it (creat(2) of a mode without write still writes),
+     * or by an open a process's wave made and the session kept
+     * (vfs_wave_descriptions). The inode an open description of it holds,
+     * else the one a name has; null once neither does (an unlinked file whose
+     * last description closed: its bytes went with it). `path` names it in
+     * errors.
+     */
+    describeInode(ino: number, path: string, cred: VfsCred, rights: {
+        read: boolean;
+        write: boolean;
+    }, principal?: Principal, holds?: () => ReadonlySet<string>): VfsOpenDescription | null;
+    private describe;
     /**
      * Hold `bytes`, written through `opened` at `offset`, in its file's
      * AppendRun when they extend the file (an O_APPEND write is at `end()`): a
@@ -2154,8 +2176,28 @@ export declare class SqliteVFS {
      * an existing file emptied when `truncate`. Its answer is the file's stat.
      */
     private openToWrite;
-    /** The open description a process's call names (W7Call description): EBADF when none is open under it. */
+    /**
+     * The open description a process's call names (W7Call description): its
+     * binding's; else, for a process's sequenced wave, the one the session
+     * kept for it (vfs_wave_descriptions), adopted into the binding with the
+     * access its open decided (the session restarted since, or the process is
+     * gone and its log is drained). Null when no file has its inode any more;
+     * undefined when none is open under `id`.
+     */
+    private described;
+    /** Whether `id` names an open description of the wave's process (described): its file is this filesystem's. */
+    private isDescribed;
+    /** The open description a process's call names (described): EBADF when none is open under it; null when its file is gone. */
     private describedBy;
+    /** A W7 `close`: the description goes, and what the session kept of it. */
+    private closeDescribed;
+    /**
+     * A re-sent `open` the writer's cursor passed: its answer again, as a
+     * receipt (the description's descriptor and its file's stat), adopted
+     * from what the session kept when the binding has it no more. Null when
+     * it is closed since, or its file is gone.
+     */
+    private reopened;
     /**
      * The file an open description writes: the one inode `ino` names, wherever
      * it is named now, or null once no name has it; without `ino`, the file at
@@ -2165,7 +2207,8 @@ export declare class SqliteVFS {
     private describedFile;
     /**
      * Process `pid` is over and its write log drained: its writers' cursors
-     * (`${pid}:${writer}`, processWaveSequence) go. They live exactly that long, so
+     * (`${pid}:${writer}`, processWaveSequence) go, and the open descriptions
+     * the session kept for it (vfs_wave_descriptions). They live exactly that long, so
      * a drain after a restart still finds them, and nothing else keeps them.
      */
     forgetSequences(pid: number): void;

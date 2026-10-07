@@ -808,17 +808,19 @@ export class SqliteRuntimeFsBridge {
     /**
      * The open descriptions a process's waves name (WaveDescriptions): each one
      * this binding's descriptor, so the process reads, stats and closes it as
-     * any of its own; its access decided at its open, and its file alive until
-     * its close.
+     * any of its own; its access decided at its open (SqliteVFS.describeInode),
+     * and its file alive until its close.
      */
     waveDescriptions = {
-        open: (path, rights, id, cred) => {
-            const node = this.rawVfs.openDescription(path, cred, rights, this.vfs.principal, this.vfs.holds);
+        adopt: (id, ino, rights, path, cred) => {
+            const node = this.rawVfs.describeInode(ino, path, cred, rights, this.vfs.principal, this.vfs.holds);
+            if (node === null)
+                return null;
             const handle = {
                 id: this.scope.nextId++, path, flags: Object.freeze(normalizeOpenFlags({ read: rights.read, write: rights.write })), position: 0, closed: false,
             };
             this.scope.handles.set(handle.id, { handle, node, refs: 1 });
-            // The same id opened again (an op re-sent after its answer was lost is answered, not applied): the newer is it.
+            // The same id opened again (an open re-sent after its answer was lost is answered, not applied): the newer is it.
             const prior = this.scope.waveDescriptions.get(id);
             if (prior !== undefined && this.scope.handles.has(prior))
                 this.close(prior);
@@ -828,6 +830,10 @@ export class SqliteRuntimeFsBridge {
         node: (id) => {
             const handleId = this.scope.waveDescriptions.get(id);
             return handleId === undefined ? undefined : this.scope.handles.get(handleId)?.node;
+        },
+        handle: (id) => {
+            const handleId = this.scope.waveDescriptions.get(id);
+            return handleId !== undefined && this.scope.handles.has(handleId) ? handleId : undefined;
         },
         close: (id) => {
             const handleId = this.scope.waveDescriptions.get(id);

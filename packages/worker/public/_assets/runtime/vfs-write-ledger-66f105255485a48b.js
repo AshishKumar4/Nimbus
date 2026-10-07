@@ -520,7 +520,7 @@ var __nimbusProcessFsModule = (() => {
       case "open": {
         const flags = ["create", "exclusive", "nofollow", "read", "truncate"];
         let required = keys;
-        for (const flag of ["create", "description", "exclusive", "nofollow", "read", "truncate", "umask"])
+        for (const flag of ["create", "description", "exclusive", "ino", "nofollow", "read", "truncate", "umask"])
           required = required.replace(`,${flag}`, "");
         if (required !== "call,mode,path")
           break;
@@ -532,6 +532,7 @@ var __nimbusProcessFsModule = (() => {
           call: "open",
           path: path(value.path, "open path"),
           mode: u32(value.mode, "open mode"),
+          ...value.ino === void 0 ? {} : { ino: inodeNumber(value.ino, "open ino") },
           ...value.umask === void 0 ? {} : { umask: umaskOf(value.umask, "open umask") },
           ...value.create === true ? { create: true } : {},
           ...value.truncate === true ? { truncate: true } : {},
@@ -1258,11 +1259,14 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   function fsError(errno, message, path) {
     return Object.assign(new Error(message), { code: errno, path });
   }
+  function descriptionOf(call) {
+    return "description" in call ? call.description : void 0;
+  }
   function folded(last, next) {
     if (last.type !== "call" || next.type !== "call" || !("data" in last.call) || !("data" in next.call)) return null;
     const a = last.call;
     const b = next.call;
-    if (a.path !== b.path || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES) return null;
+    if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES) return null;
     const inoOf = (call) => "ino" in call ? call.ino : void 0;
     const join = (left, right) => {
       const out = new Uint8Array(left.byteLength + right.byteLength);
@@ -1292,7 +1296,9 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     for (let at = DATA_PIECE_BYTES; at < data.byteLength; at += DATA_PIECE_BYTES) {
       const piece = data.subarray(at, Math.min(data.byteLength, at + DATA_PIECE_BYTES));
       const ino = "ino" in call ? call.ino : void 0;
-      out.push(call.call === "append" || call.call === "appendFile" ? { type: "call", call: { call: "append", path: call.path, ...ino === void 0 ? {} : { ino }, data: piece } } : { type: "call", call: { call: "write", path: call.path, ...ino === void 0 ? {} : { ino }, offset: (call.call === "write" ? call.offset : 0) + at, data: piece } });
+      const description = descriptionOf(call);
+      const by = description === void 0 ? {} : { description };
+      out.push(call.call === "append" || call.call === "appendFile" ? { type: "call", call: { call: "append", path: call.path, ...ino === void 0 ? {} : { ino }, ...by, data: piece } } : { type: "call", call: { call: "write", path: call.path, ...ino === void 0 ? {} : { ino }, ...by, offset: (call.call === "write" ? call.offset : 0) + at, data: piece } });
     }
     return out;
   }

@@ -45,6 +45,14 @@ const MAX_LISTINGS_PER_CALL = 64;
 const DELEGATE = Symbol('delegate');
 /** The root of the namespace as the walk asks about it (the authority's rootStat, for what the walk reads). */
 const ROOT_FOR_WALK = { type: 'directory', mode: 0o40755, uid: 0, gid: 0 };
+/**
+ * The session's calls that can change a name or an access: before one, the
+ * files this process holds open write through (DelegationHolder.changing),
+ * so their opens are decided as they were.
+ */
+const NAME_OR_ACCESS_CHANGES = new Set([
+    'chmod', 'chown', 'fchmod', 'fchown', 'rename', 'unlink', 'rmdir', 'remove', 'copyFile', 'copyTree', 'writeBatch', 'writeStream',
+]);
 /** The calls that can change the namespace or bytes: after one, the barrier is owed. */
 const MUTATIONS = new Set([
     'writeFile', 'writeFileFrom', 'writeRange', 'truncate', 'utimes', 'chmod', 'chown', 'write', 'close', 'mkdir',
@@ -106,9 +114,13 @@ export function residentFilesystem(session, resident, delegation) {
                 return value;
             // Whatever the session is asked, it has what this process decided first.
             // A refusal it met is the next sync's to report, not this call's.
-            return (...args) => (holder !== null && holder.pending()
-                ? timed(holder.send().then(() => Reflect.apply(value, target, args)))
-                : timed(Reflect.apply(value, target, args)));
+            return (...args) => {
+                if (holder !== null && typeof name === 'string' && NAME_OR_ACCESS_CHANGES.has(name))
+                    holder.changing();
+                return holder !== null && holder.pending()
+                    ? timed(holder.send().then(() => Reflect.apply(value, target, args)))
+                    : timed(Reflect.apply(value, target, args));
+            };
         },
     });
     const store = {
@@ -755,6 +767,11 @@ export function residentFilesystem(session, resident, delegation) {
      */
     const byClient = (name, op) => {
         delegated(name);
+        // A name it changes: the files the process holds open at or under it write through first.
+        if (op.type === 'rename')
+            holder.changing([op.from, op.to]);
+        else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir'))
+            holder.changing([op.call.path]);
         return holder.client.submit(op).then(() => { owed = true; }, (error) => { owed = true; throw error; });
     };
     const pathOf = (path) => (typeof path === 'string' ? path : path.path);

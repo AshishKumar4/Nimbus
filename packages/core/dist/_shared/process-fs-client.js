@@ -153,6 +153,10 @@ function nameOf(op) {
 function fsError(errno, message, path) {
     return Object.assign(new Error(message), { code: errno, path });
 }
+/** The open description a call writes through (W7Call description), if any. */
+function descriptionOf(call) {
+    return 'description' in call ? call.description : undefined;
+}
 /**
  * `next` folded into `last`, the log's unsent tail, when it is the same
  * file's next bytes and nothing was logged between them: a whole write
@@ -166,7 +170,8 @@ function folded(last, next) {
         return null;
     const a = last.call;
     const b = next.call;
-    if (a.path !== b.path || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES)
+    // Through one description only: another's access, or its file, may differ.
+    if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES)
         return null;
     const inoOf = (call) => ('ino' in call ? call.ino : undefined);
     const join = (left, right) => {
@@ -190,7 +195,11 @@ function folded(last, next) {
     }
     return null;
 }
-/** A data call larger than a piece: its first piece as the call, the rest as writes at their offsets. */
+/**
+ * A data call larger than a piece: its first piece as the call, the rest as
+ * writes at their offsets, each through the call's own description (its
+ * file, with the access its open decided).
+ */
 function pieces(op) {
     if (op.type !== 'call' || !('data' in op.call) || op.call.data.byteLength <= DATA_PIECE_BYTES)
         return [op];
@@ -201,9 +210,11 @@ function pieces(op) {
     for (let at = DATA_PIECE_BYTES; at < data.byteLength; at += DATA_PIECE_BYTES) {
         const piece = data.subarray(at, Math.min(data.byteLength, at + DATA_PIECE_BYTES));
         const ino = 'ino' in call ? call.ino : undefined;
+        const description = descriptionOf(call);
+        const by = description === undefined ? {} : { description };
         out.push(call.call === 'append' || call.call === 'appendFile'
-            ? { type: 'call', call: { call: 'append', path: call.path, ...(ino === undefined ? {} : { ino }), data: piece } }
-            : { type: 'call', call: { call: 'write', path: call.path, ...(ino === undefined ? {} : { ino }), offset: (call.call === 'write' ? call.offset : 0) + at, data: piece } });
+            ? { type: 'call', call: { call: 'append', path: call.path, ...(ino === undefined ? {} : { ino }), ...by, data: piece } }
+            : { type: 'call', call: { call: 'write', path: call.path, ...(ino === undefined ? {} : { ino }), ...by, offset: (call.call === 'write' ? call.offset : 0) + at, data: piece } });
     }
     return out;
 }

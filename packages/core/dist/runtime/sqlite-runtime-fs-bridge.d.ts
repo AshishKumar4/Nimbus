@@ -156,8 +156,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     /**
      * The open descriptions a process's waves name (WaveDescriptions): each one
      * this binding's descriptor, so the process reads, stats and closes it as
-     * any of its own; its access decided at its open, and its file alive until
-     * its close.
+     * any of its own; its access decided at its open (SqliteVFS.describeInode),
+     * and its file alive until its close.
      */
     private readonly waveDescriptions;
     /**
