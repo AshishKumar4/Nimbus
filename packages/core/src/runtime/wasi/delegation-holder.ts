@@ -652,5 +652,6 @@ function keyOfOp(op: W7Op): string {
     case 'delete': case 'truncate': case 'setattr': return op.path;
     case 'directory': case 'file': return op.inode.path;
     case 'rename': return op.from;
+    case 'call': return op.call.path;
   }
 }
