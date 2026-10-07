@@ -103,18 +103,22 @@ export declare function cloneStorage(ctx: DurableObjectState, clone: {
     populated(name: string): boolean | Promise<boolean>;
 }): Promise<void>;
 /**
- * The facet name for an ephemeral slot. Reused, and that is the entire point.
+ * The facet name for an ephemeral slot.
  *
  * A Durable Object admits 65,536 facets over its LIFETIME: the IDs are
- * append-only and are never reclaimed, so the bound is on facets ever CREATED,
- * not facets alive at once. Naming a facet after its pid, when pids never
- * repeat, therefore burned one of those IDs on every spawn — a long-lived
- * session would eventually exhaust its facet index with no way back, and the
- * failure is unrecoverable rather than merely slow.
+ * append-only and are never reclaimed, so every name ever created spends one,
+ * and the lifetime ledger (budgets.ts) counts them and names the wall.
  *
- * Reusing a NAME costs no new ID. So the name comes from a free list and the
- * pid stays what it always was: the process identity in the ProcessTable. The
- * two were only ever conflated because one of them happened to be handy.
+ * A released name is not handed to a later process of the same incarnation,
+ * though that would cost no new ID. Getting a name a just-released process
+ * held, with the next process's class, failed on Cloudflare: the next
+ * process's first call answered "internal error; reference = …" with
+ * durableObjectReset. That was vite8 after vinext, 7 of 7 on a throwaway,
+ * while 4 of 4 started on a fresh name (2026-10-07). An earlier reuse, of a
+ * released name's kept store, reset the whole object (82894375b). The
+ * platform gives no signal that a released facet is gone, so no reuse can be
+ * timed to follow it. The pid stays what it always was: the process
+ * identity in the ProcessTable.
  *
  * The book shares the facet-ID space with one other namespace: durable
  * applications, which mint `app-slot-<n>` names of their own (one ID per app,

@@ -215,6 +215,15 @@ export function isTransientDoReset(input) {
     return false;
 }
 /**
+ * A failure the platform reports without a cause: workerd's "internal error;
+ * reference = <id>", whose reference only Cloudflare can look up. The error
+ * may carry `durableObjectReset` (the object it reached was reset), and
+ * nothing else; the caller has to name what it was doing.
+ */
+export function isUnexplainedPlatformError(input) {
+    return /^internal error; reference = \S+$/i.test(readMessage(input).trim());
+}
+/**
  * Workerd shed the call because the target Durable Object's input-gate
  * queue was too deep or too old: "Durable Object is overloaded."
  *
