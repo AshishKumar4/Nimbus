@@ -45,20 +45,12 @@ export class CommandRegistry {
 export function createDefaultRegistry() {
     const registry = new CommandRegistry();
     // File system
-    registry.registerLazy('ls', () => import('./fs/ls.js'));
     registry.registerLazy('cat', () => import('./fs/cat.js'));
     registry.registerLazy('mkdir', () => import('./fs/mkdir.js'));
-    registry.registerLazy('rm', () => import('./fs/rm.js'));
     registry.registerLazy('cp', () => import('./fs/cp.js'));
     registry.registerLazy('mv', () => import('./fs/mv.js'));
-    registry.registerLazy('touch', () => import('./fs/touch.js'));
     registry.registerLazy('find', () => import('./fs/find.js'));
-    registry.registerLazy('tree', () => import('./fs/tree.js'));
-    registry.registerLazy('stat', () => import('./fs/stat.js'));
-    registry.registerLazy('ln', () => import('./fs/ln.js'));
-    registry.registerLazy('du', () => import('./fs/du.js'));
     registry.registerLazy('chmod', () => import('./fs/chmod.js'));
-    registry.registerLazy('file', () => import('./fs/file.js'));
     // Text processing
     registry.registerLazy('grep', () => import('./text/grep.js'));
     registry.registerLazy('head', () => import('./text/head.js'));
@@ -69,23 +61,17 @@ export function createDefaultRegistry() {
     registry.registerLazy('cut', () => import('./text/cut.js'));
     registry.registerLazy('tr', () => import('./text/tr.js'));
     registry.registerLazy('sed', () => import('./text/sed.js'));
-    registry.registerLazy('awk', () => import('./text/awk.js'));
     // I/O utilities
     registry.registerLazy('tee', () => import('./io/tee.js'));
-    registry.registerLazy('xargs', () => import('./io/xargs.js'));
     registry.registerLazy('yes', () => import('./io/yes.js'));
-    registry.registerLazy('printf', () => import('./io/printf.js'));
     registry.registerLazy('dd', () => import('./io/dd.js'));
     // System
     registry.registerLazy('env', () => import('./system/env.js'));
     registry.registerLazy('uname', () => import('./system/uname.js'));
-    registry.registerLazy('date', () => import('./system/date.js'));
     registry.registerLazy('sleep', () => import('./system/sleep.js'));
-    registry.registerLazy('uptime', () => import('./system/uptime.js'));
     registry.registerLazy('whoami', () => import('./system/whoami.js'));
     registry.registerLazy('hostname', () => import('./system/hostname.js'));
     registry.registerLazy('free', () => import('./system/free.js'));
-    registry.registerLazy('which', () => import('./system/which.js'));
     registry.registerLazy('stty', () => import('./system/stty.js'));
     // Network
     registry.registerLazy('curl', () => import('./net/curl.js'));
@@ -102,7 +88,6 @@ export function createDefaultRegistry() {
     registry.registerLazy('node', () => import('./system/node.js'));
     // Filesystem (continued)
     registry.registerLazy('rmdir', () => import('./fs/rmdir.js'));
-    registry.registerLazy('realpath', () => import('./fs/realpath.js'));
     registry.registerLazy('basename', () => import('./fs/basename.js'));
     registry.registerLazy('dirname', () => import('./fs/dirname.js'));
     registry.registerLazy('mktemp', () => import('./fs/mktemp.js'));
@@ -115,7 +100,6 @@ export function createDefaultRegistry() {
     registry.registerLazy('less', () => import('./text/less.js'));
     registry.registerLazy('tac', () => import('./text/tac.js'));
     registry.registerLazy('seq', () => import('./text/seq.js'));
-    registry.registerLazy('base64', () => import('./text/base64.js'));
     registry.registerLazy('strings', () => import('./text/strings.js'));
     // System (continued)
     registry.registerLazy('cal', () => import('./system/cal.js'));

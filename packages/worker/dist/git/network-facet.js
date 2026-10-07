@@ -24,6 +24,7 @@
  * See docs/analysis in git-network-facet plan — the canonical write-up lives
  * in the PR that introduced this file.
  */
+import { loaderOutbound } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
@@ -592,7 +593,11 @@ async function writeCloneProgressLine(supervisor, line) {
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.
  */
-export async function execGitNetwork(ctx, env, opts) {
+export async function execGitNetwork(ctx, env, opts, /**
+ * The workspace's network (`workspace.network`): every facet this operation
+ * loads goes out through its egress, when its host supplied one (prepare,
+ * every batch and history piece, a fence's reload, fetch/pull/push).
+ */ network) {
     const start = Date.now();
     const timeoutMs = opts.timeout ?? (opts.op === 'clone'
         ? DEFAULT_CLONE_BUDGET_MS
@@ -618,7 +623,7 @@ export async function execGitNetwork(ctx, env, opts) {
         // One run for every binding this operation mints, a fence's included.
         const writerId = crypto.randomUUID();
         const bindingFor = (owner) => ctxExports.SupervisorRPC({
-            props: { ...supervisorBindingProps(ctx, opts.pid, { writerId }), mutationOwner: owner },
+            props: { ...supervisorBindingProps(ctx, opts.pid, { writerId, network }), mutationOwner: owner },
         });
         const supervisorBinding = ctxExports?.SupervisorRPC ? bindingFor(mutationOwner) : undefined;
         if (!supervisorBinding) {
@@ -661,6 +666,8 @@ export async function execGitNetwork(ctx, env, opts) {
                     'git-bundle.js': gitBundleSource,
                 },
                 env: { SUPERVISOR: binding },
+                // The git server is reached through the workspace's egress, when it has one.
+                ...loaderOutbound(network),
             });
             const loadedWorker = env.LOADER.load(facetCode(supervisorBinding));
             worker = loadedWorker;

@@ -28,10 +28,7 @@ const CLASSES: Readonly<Record<string, string>> = {
 };
 
 /** A character as a literal in a JavaScript `u` pattern; `-` is escaped only in a class. */
-/** A character as a literal in a `u` pattern. */
-export function literalChar(ch: string): string { return literal(ch); }
-
-function literal(ch: string, inClass = false): string {
+export function literal(ch: string, inClass = false): string {
   if (ch === '-') return inClass ? '\\-' : '-';
   return /[\\^$.*+?()[\]{}|/]/.test(ch) ? `\\${ch}` : ch;
 }

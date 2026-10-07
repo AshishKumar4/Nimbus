@@ -10,13 +10,14 @@ import { synchronousFilesystem } from '../node-compat/filesystem.js';
  */
 
 import type { Command, CommandContext } from '../commands/types.js';
+import type { CommandRegistry } from '../commands/registry.js';
 import type { ProcessView as VFS } from '../../../runtime/process-files.js';
 import { resolve, dirname, join } from '../utils/path.js';
 import { createProcess } from '../node-compat/process.js';
 import { createConsole } from '../node-compat/console.js';
 import { Buffer } from '../node-compat/buffer.js';
-import { createModuleMap } from '../node-compat/index.js';
 import { ProcessExitError } from '../node-compat/index.js';
+import { createCjsLoader, isEsmSource } from '../node-compat/cjs-loader.js';
 import type { NodeContext } from '../node-compat/index.js';
 
 
@@ -95,23 +96,7 @@ function createLifoAPI(ctx: CommandContext): LifoAPI {
 
 // ─── Command loader ───
 
-/** Strip shebang line, preserve line numbers. */
-function stripShebang(src: string): string {
-  if (src.charCodeAt(0) === 0x23 && src.charCodeAt(1) === 0x21) {
-    const nl = src.indexOf('\n');
-    if (nl === -1) return '';
-    return '\n' + src.slice(nl + 1);
-  }
-  return src;
-}
-
-// ─── ESM detection & rewriting ───
-
-/** Quick check: does the source use ESM syntax (import/export at top level)? */
-function isEsmSource(source: string): boolean {
-  // Match import/export at the start of a line (not inside strings)
-  return /(?:^|\n)\s*(?:import\s|export\s)/m.test(source);
-}
+// ─── ESM rewriting ───
 
 /**
  * Rewrite bare specifier imports/exports to CDN URLs so the module
@@ -154,8 +139,8 @@ export function createLifoCommand(
       return executeEsmCommand(source, ctx, lifo);
     }
 
-    // ── CJS path: wrap in new Function() ──
-    return executeCjsCommand(source, entryPath, ctx, lifo);
+    // ── CJS path: the source read above, run by the shared loader ──
+    return executeCjsCommand(entryPath, source, ctx, lifo);
   };
 }
 
@@ -190,265 +175,53 @@ async function executeEsmCommand(
   }
 }
 
-function executeCjsCommand(
-  source: string,
+/**
+ * A CommonJS entry, run with the node command's loader (cjs-loader.ts) from
+ * the source already read: its requires resolve and cache as a node
+ * program's do. It exports the command's function,
+ * `module.exports = async function(ctx, lifo) { ... }`
+ * (or as `default`), which runs here in the shell's realm, since ctx and
+ * lifo are the shell's own objects.
+ */
+async function executeCjsCommand(
   entryPath: string,
+  source: string,
   ctx: CommandContext,
   lifo: LifoAPI,
 ): Promise<number> {
-  const entryDir = dirname(entryPath);
-  const filesystem = synchronousFilesystem(ctx.vfs);
-
-  // Build a node-compat context for require()
   const nodeCtx: NodeContext = {
-    filesystem,
+    filesystem: synchronousFilesystem(ctx.vfs),
     cwd: ctx.cwd,
     env: ctx.env,
     stdout: ctx.stdout,
     stderr: ctx.stderr,
     argv: [entryPath, ...ctx.args],
     filename: entryPath,
-    dirname: entryDir,
+    dirname: dirname(entryPath),
     signal: ctx.signal,
   };
-
-  const moduleMap = createModuleMap(nodeCtx);
-  const moduleCache = new Map<string, unknown>();
-
-  // Minimal require for lifo commands
-  function lifoRequire(name: string): unknown {
-    if (moduleCache.has(name)) return moduleCache.get(name);
-
-    // Built-in modules
-    if (moduleMap[name]) {
-      const mod = moduleMap[name]();
-      moduleCache.set(name, mod);
-      return mod;
-    }
-
-    // Relative files
-    if (name.startsWith('./') || name.startsWith('../') || name.startsWith('/')) {
-      const absPath = resolve(entryDir, name);
-      const candidates = [absPath, absPath + '.js', absPath + '.json'];
-      for (const p of candidates) {
-        if (filesystem().exists(p)) {
-          if (p.endsWith('.json')) {
-            const parsed = JSON.parse(filesystem().readFileString(p));
-            moduleCache.set(name, parsed);
-            return parsed;
-          }
-          const childSrc = filesystem().readFileString(p);
-          const childMod = executeModule(childSrc, p);
-          moduleCache.set(name, childMod);
-          return childMod;
-        }
-      }
-      // Try directory with index.js
-      const indexPath = join(absPath, 'index.js');
-      if (filesystem().exists(indexPath)) {
-        const childSrc = filesystem().readFileString(indexPath);
-        const childMod = executeModule(childSrc, indexPath);
-        moduleCache.set(name, childMod);
-        return childMod;
-      }
-      throw new Error(`Cannot find module '${name}'`);
-    }
-
-    // node_modules resolution (walk up)
-    const resolved = resolveNodeModule(name, entryDir);
-    if (resolved) {
-      if (moduleCache.has(resolved)) return moduleCache.get(resolved);
-      if (resolved.endsWith('.json')) {
-        const parsed = JSON.parse(filesystem().readFileString(resolved));
-        moduleCache.set(resolved, parsed);
-        return parsed;
-      }
-      const childSrc = filesystem().readFileString(resolved);
-      const childMod = executeModule(childSrc, resolved);
-      moduleCache.set(resolved, childMod);
-      return childMod;
-    }
-
-    throw new Error(`Cannot find module '${name}'`);
-  }
-
-  function resolveNodeModule(name: string, fromDir: string): string | null {
-    let pkgName: string;
-    let subpath: string | null = null;
-
-    if (name.startsWith('@')) {
-      const parts = name.split('/');
-      if (parts.length < 2) return null;
-      pkgName = parts[0] + '/' + parts[1];
-      if (parts.length > 2) subpath = parts.slice(2).join('/');
-    } else {
-      const idx = name.indexOf('/');
-      if (idx !== -1) {
-        pkgName = name.slice(0, idx);
-        subpath = name.slice(idx + 1);
-      } else {
-        pkgName = name;
-      }
-    }
-
-    // Walk up
-    let cur = fromDir;
-    for (;;) {
-      const candidate = join(cur, 'node_modules', pkgName);
-      if (filesystem().exists(candidate)) {
-        return resolvePackageEntry(candidate, subpath);
-      }
-      const parent = dirname(cur);
-      if (parent === cur) break;
-      cur = parent;
-    }
-
-    // Global + legacy
-    for (const base of ['/usr/lib/node_modules', '/usr/share/pkg/node_modules']) {
-      const candidate = join(base, pkgName);
-      if (filesystem().exists(candidate)) {
-        return resolvePackageEntry(candidate, subpath);
-      }
-    }
-
-    return null;
-  }
-
-  function resolvePackageEntry(pkgDir: string, subpath: string | null): string | null {
-    if (subpath) {
-      const abs = resolve(pkgDir, subpath);
-      for (const p of [abs, abs + '.js', abs + '.json']) {
-        if (filesystem().exists(p)) return p;
-      }
-      const idx = join(abs, 'index.js');
-      if (filesystem().exists(idx)) return idx;
-      return null;
-    }
-
-    const pkgJsonPath = join(pkgDir, 'package.json');
-    if (filesystem().exists(pkgJsonPath)) {
-      try {
-        const pkg = JSON.parse(filesystem().readFileString(pkgJsonPath));
-        if (pkg.main) {
-          const mainPath = resolve(pkgDir, pkg.main);
-          for (const p of [mainPath, mainPath + '.js']) {
-            if (filesystem().exists(p)) return p;
-          }
-        }
-      } catch { /* ignore */ }
-    }
-
-    const indexPath = join(pkgDir, 'index.js');
-    if (filesystem().exists(indexPath)) return indexPath;
-    return null;
-  }
-
-  function executeModule(modSource: string, modFilename: string): unknown {
-    const modDir = dirname(modFilename);
-    const modModule = { exports: {} as Record<string, unknown> };
-    const modExports = modModule.exports;
-
-    const modProcess = createProcess({
-      argv: nodeCtx.argv,
-      env: nodeCtx.env,
-      cwd: nodeCtx.cwd,
-      stdout: ctx.stdout,
-      stderr: ctx.stderr,
-    });
-    const modConsole = createConsole(ctx.stdout, ctx.stderr);
-
-    function modRequire(n: string): unknown {
-      // Update resolution base to this module's directory
-      if (n.startsWith('./') || n.startsWith('../')) {
-        const abs = resolve(modDir, n);
-        const candidates = [abs, abs + '.js', abs + '.json'];
-        for (const p of candidates) {
-          if (filesystem().exists(p)) {
-            if (moduleCache.has(p)) return moduleCache.get(p);
-            if (p.endsWith('.json')) {
-              const parsed = JSON.parse(filesystem().readFileString(p));
-              moduleCache.set(p, parsed);
-              return parsed;
-            }
-            const src = filesystem().readFileString(p);
-            return executeModule(src, p);
-          }
-        }
-        const idx = join(abs, 'index.js');
-        if (filesystem().exists(idx)) {
-          if (moduleCache.has(idx)) return moduleCache.get(idx);
-          const src = filesystem().readFileString(idx);
-          return executeModule(src, idx);
-        }
-        throw new Error(`Cannot find module '${n}'`);
-      }
-      return lifoRequire(n);
-    }
-
-    const clean = stripShebang(modSource);
-    const wrapped = `(function(exports,require,module,__filename,__dirname,console,process,Buffer,setTimeout,setInterval,clearTimeout,clearInterval,global){\n${clean}\n})`;
-
-    const fn = new Function('return ' + wrapped)();
-    fn(
-      modExports, modRequire, modModule, modFilename, modDir,
-      modConsole, modProcess, Buffer,
-      globalThis.setTimeout, globalThis.setInterval,
-      globalThis.clearTimeout, globalThis.clearInterval,
-      {},
-    );
-
-    return modModule.exports !== modExports ? modModule.exports : modExports;
-  }
-
-  // ── Execute the CJS entry ──
-
-  const cjsProcess = createProcess({
-    argv: nodeCtx.argv,
-    env: nodeCtx.env,
-    cwd: nodeCtx.cwd,
-    stdout: ctx.stdout,
-    stderr: ctx.stderr,
-  });
-  const nodeConsole = createConsole(ctx.stdout, ctx.stderr);
-
-  const module = { exports: {} as Record<string, unknown> };
-  const exports = module.exports;
-
-  const cleanSource = stripShebang(source);
-  const wrapped = `(function(exports,require,module,__filename,__dirname,console,process,Buffer,setTimeout,setInterval,clearTimeout,clearInterval,global){\n${cleanSource}\n})`;
+  const loader = createCjsLoader(nodeCtx, () => ({
+    process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr }),
+    console: createConsole(ctx.stdout, ctx.stderr),
+  }));
 
   try {
-    const fn = new Function('return ' + wrapped)();
-    fn(
-      exports, lifoRequire, module, entryPath, entryDir,
-      nodeConsole, cjsProcess, Buffer,
-      globalThis.setTimeout, globalThis.setInterval,
-      globalThis.clearTimeout, globalThis.clearInterval,
-      {},
-    );
-
-    // The entry should export a function: module.exports = async function(ctx, lifo) { ... }
-    const handler = typeof module.exports === 'function'
-      ? module.exports
-      : (module.exports as Record<string, unknown>).default;
+    // Its own source, already read: an entry with no dependencies needs no synchronous read at all.
+    const exported = loader.load(entryPath, { source, esm: false });
+    const handler = typeof exported === 'function'
+      ? exported
+      : (exported as Record<string, unknown> | null)?.default;
 
     if (typeof handler !== 'function') {
-      ctx.stderr.write(`lifo: ${entryPath} does not export a command function\n`);
-      return Promise.resolve(1);
+      await ctx.stderr.write(`lifo: ${entryPath} does not export a command function\n`);
+      return 1;
     }
-
-    return (handler as (c: CommandContext, l: LifoAPI) => Promise<number>)(ctx, lifo)
-      .then(code => typeof code === 'number' ? code : 0);
+    const code = await (handler as (c: CommandContext, l: LifoAPI) => Promise<number>)(ctx, lifo);
+    return typeof code === 'number' ? code : 0;
   } catch (e) {
-    if (e instanceof ProcessExitError) {
-      return Promise.resolve(e.exitCode);
-    }
-    if (e instanceof Error) {
-      ctx.stderr.write(`${e.stack || e.message}\n`);
-    } else {
-      ctx.stderr.write(`${String(e)}\n`);
-    }
-    return Promise.resolve(1);
+    if (e instanceof ProcessExitError) return e.exitCode;
+    await ctx.stderr.write(e instanceof Error ? `${e.stack || e.message}\n` : `${String(e)}\n`);
+    return 1;
   }
 }
 
@@ -472,4 +245,28 @@ export async function readLifoManifest(vfs: VFS, pkgDir: string): Promise<LifoPa
   } catch {
     return null;
   }
+}
+
+/**
+ * Register each command a lifo manifest declares, its entry under `pkgDir`.
+ * `requireEntry` skips a command whose entry file is not there (an install,
+ * a boot restore); a dev link registers every declared command, so a
+ * missing entry fails when it runs. Returns the names registered, in the
+ * manifest's order.
+ */
+export async function registerLifoManifestCommands(
+  vfs: VFS,
+  registry: CommandRegistry,
+  pkgDir: string,
+  manifest: LifoPackageManifest,
+  options: { requireEntry: boolean },
+): Promise<string[]> {
+  const registered: string[] = [];
+  for (const [cmdName, entryRelPath] of Object.entries(manifest.commands)) {
+    const entryPath = join(pkgDir, entryRelPath);
+    if (options.requireEntry && !(await vfs.exists(entryPath))) continue;
+    registry.register(cmdName, createLifoCommand(entryPath, vfs));
+    registered.push(cmdName);
+  }
+  return registered;
 }

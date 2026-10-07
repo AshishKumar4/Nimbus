@@ -44,7 +44,7 @@ import {
   type ResidentDiskReader,
   type ResidentSupervisorProps,
 } from './process-fabric.js';
-import { supervisorLoaderKey, mintProcessSupervisor } from './supervisor-props.js';
+import { supervisorLoaderKey, mintProcessSupervisor, type SupervisorBindingProps } from './supervisor-props.js';
 
 // ── Loaded-worker entrypoint plumbing ───────────────────────────────────────
 
@@ -646,9 +646,12 @@ async function runOneShot<T>(
       compatibilityFlags: spec.compatibilityFlags,
       mainModule: spec.mainModule,
       modules: spec.modules,
-      ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
-      // The same binding answers its network (SupervisorRPC.fetch/connect).
-      ...(supervisorBinding && params.outbound ? { globalOutbound: supervisorBinding } : {}),
+      ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding, ...egressMarker(supervisor) } } : {}),
+      // The same binding answers its network (SupervisorRPC.fetch/connect), which goes out
+      // through the workspace's egress; else the egress itself, when there is one.
+      ...(supervisorBinding && params.outbound
+        ? { globalOutbound: supervisorBinding }
+        : supervisor.egress !== undefined ? { globalOutbound: supervisor.egress } : {}),
     });
     // The loader has taken the map; holding it here would keep a second full
     // copy of the program alive for as long as the program runs.
@@ -703,7 +706,7 @@ export async function residentWorkerConfig(
   boot: ResidentBootSpec,
 ): Promise<Record<string, unknown>> {
   if (boot.kind === 'code' && boot.code.env !== undefined) {
-    const isolated = await residentLoaderConfig(boot.code, disk());
+    const isolated = workspaceOutbound(await residentLoaderConfig(boot.code, disk()), supervisor);
     assertModuleMapWithinCodeLimit(configModules(isolated));
     return isolated;
   }
@@ -715,7 +718,27 @@ export async function residentWorkerConfig(
   if (!supervisorRpc) {
     throw new Error(`Nimbus: ctx.exports.${supervisor.route?.supervisorEntrypoint ?? supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`);
   }
-  return { ...config, env: { SUPERVISOR: mintProcessSupervisor(supervisorRpc, supervisor) } };
+  return { ...workspaceOutbound(config, supervisor), env: { SUPERVISOR: mintProcessSupervisor(supervisorRpc, supervisor), ...egressMarker(supervisor) } };
+}
+
+/**
+ * What tells a process its network goes through an egress (`NIMBUS_EGRESS`):
+ * its node:tls refuses a TLS socket by name (EGRESS_TLS_REFUSAL), since the
+ * egress's connect carries plain TCP only.
+ */
+function egressMarker(supervisor: Pick<SupervisorBindingProps, 'egress'>): { NIMBUS_EGRESS?: true } {
+  return supervisor.egress === undefined ? {} : { NIMBUS_EGRESS: true };
+}
+
+/**
+ * `config` with the workspace's egress as its network when it states none:
+ * a process inherits its workspace's network, and under an egress
+ * (SupervisorBindingProps.egress) that is the egress. An explicit
+ * globalOutbound (a binding that mediates, or null that denies) stands.
+ */
+function workspaceOutbound<C extends object>(config: C, supervisor: Pick<SupervisorBindingProps, 'egress'>): C | (C & { globalOutbound: unknown }) {
+  if (supervisor.egress === undefined || 'globalOutbound' in config) return config;
+  return { ...config, globalOutbound: supervisor.egress };
 }
 
 /** The module map a loader config assembled, or empty when it named none. */

@@ -148,6 +148,46 @@
    "args": "-x dup",
    "stdout": "",
    "exit": 1
+  },
+  {
+   "args": "--c l1",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "--coun l1",
+   "stdout": "      1 café\n      1 naïve\n      1 þÿ\n      1 plain\n      1 hÃ©llo\n",
+   "exit": 0
+  },
+  {
+   "args": "--count=3 l1",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "--all l1",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "--all-repeated=prepend l1",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-f",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "--skip-f=1 l1",
+   "stdout": "café\n",
+   "exit": 0
+  },
+  {
+   "args": "-q l1",
+   "stdout": "",
+   "exit": 1
   }
  ]
 }

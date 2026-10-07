@@ -39,7 +39,7 @@
  */
 import { Parser, type Pattern } from 'acorn';
 import { applySourceEdits, type SourceEdit } from './javascript-ast.js';
-import { bindingScope, list, scoped, stringOf, type EsNode, type Scope } from './javascript-scope.js';
+import { bindingScope, list, namesBinding, scoped, stringOf, type EsNode, type Scope } from './javascript-scope.js';
 
 /**
  * One name an import binds: the module's namespace, or one of its exports
@@ -93,9 +93,28 @@ export type EsmRecord =
     readonly expression: { readonly start: number; readonly end: number };
   };
 
+/**
+ * Names for code generated around `source`: a prefix its text does not hold
+ * anywhere, then a number, so no binding of the source is one of them.
+ */
+export function generatedNames(source: string): () => string {
+  let prefix = '__nimbus_m';
+  while (source.includes(prefix)) prefix += '_';
+  let count = 0;
+  return () => `${prefix}${count++}`;
+}
+
 export interface CommonJsEmitOptions {
   /** `async`: the module in an async IIFE (top-level await); `sync`: at the wrapper's top level. */
   readonly body: 'sync' | 'async';
+  /**
+   * Where the emitter's own names come from: generatedNames over the source,
+   * by default. A caller that generates names of its own around the module
+   * (a wrapper's parameters, rewritten expressions) passes the allocator it
+   * drew them from, generatedNames over its original source, so the two never
+   * meet.
+   */
+  readonly names?: () => string;
   /** The CommonJS exports object, as an expression. Default `module.exports`. */
   readonly exportsObject?: string;
   /** The CommonJS require function, as an expression. Default `require`. */
@@ -205,33 +224,6 @@ function importReferences(program: unknown, names: readonly string[]): Map<strin
   return references;
 }
 
-/** Whether an identifier under `parent` by `key` names a binding, rather than a property, a key or a label. */
-function namesBinding(parent: EsNode, key: string): boolean {
-  switch (parent.type) {
-    case 'MemberExpression':
-      return key !== 'property' || parent.computed === true;
-    case 'Property':
-    case 'MethodDefinition':
-    case 'PropertyDefinition':
-      return key !== 'key' || parent.computed === true;
-    case 'ImportAttribute':
-      return key !== 'key';
-    case 'LabeledStatement':
-    case 'BreakStatement':
-    case 'ContinueStatement':
-    case 'MetaProperty':
-    // A declaration's own names: the emitter replaces the declaration whole.
-    case 'ImportSpecifier':
-    case 'ImportDefaultSpecifier':
-    case 'ImportNamespaceSpecifier':
-    case 'ExportSpecifier':
-    case 'ExportAllDeclaration':
-      return false;
-    default:
-      return true;
-  }
-}
-
 /** How an identifier under `parent` by `key` uses the binding it names. */
 function useOf(parent: EsNode, key: string, patternProperties: ReadonlySet<EsNode>): EsmReference['use'] {
   switch (parent.type) {
@@ -259,10 +251,7 @@ function useOf(parent: EsNode, key: string, patternProperties: ReadonlySet<EsNod
 
 /** The CommonJS for ES module `source`, whose import and export declarations are `records`. */
 export function emitCommonJs(source: string, records: readonly EsmRecord[], options: CommonJsEmitOptions): string {
-  let prefix = '__nimbus_m';
-  while (source.includes(prefix)) prefix += '_';
-  let temps = 0;
-  const temp = () => `${prefix}${temps++}`;
+  const temp = options.names ?? generatedNames(source);
   const key = (name: string) => `[${JSON.stringify(name)}]`;
   // The wrapper's top level holds only generated names (these helpers, and
   // the require every record calls): in an async body the module's own

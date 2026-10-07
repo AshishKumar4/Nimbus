@@ -39,7 +39,18 @@
  */
 import { Parser } from 'acorn';
 import { applySourceEdits } from './javascript-ast.js';
-import { bindingScope, list, scoped, stringOf } from './javascript-scope.js';
+import { bindingScope, list, namesBinding, scoped, stringOf } from './javascript-scope.js';
+/**
+ * Names for code generated around `source`: a prefix its text does not hold
+ * anywhere, then a number, so no binding of the source is one of them.
+ */
+export function generatedNames(source) {
+    let prefix = '__nimbus_m';
+    while (source.includes(prefix))
+        prefix += '_';
+    let count = 0;
+    return () => `${prefix}${count++}`;
+}
 /** `esm` lowered to the CommonJS function body of an async module. */
 export function lowerAsyncModule(esm) {
     return emitCommonJs(esm, readEsmRecords(esm), { body: 'async' });
@@ -143,32 +154,6 @@ function importReferences(program, names) {
     }
     return references;
 }
-/** Whether an identifier under `parent` by `key` names a binding, rather than a property, a key or a label. */
-function namesBinding(parent, key) {
-    switch (parent.type) {
-        case 'MemberExpression':
-            return key !== 'property' || parent.computed === true;
-        case 'Property':
-        case 'MethodDefinition':
-        case 'PropertyDefinition':
-            return key !== 'key' || parent.computed === true;
-        case 'ImportAttribute':
-            return key !== 'key';
-        case 'LabeledStatement':
-        case 'BreakStatement':
-        case 'ContinueStatement':
-        case 'MetaProperty':
-        // A declaration's own names: the emitter replaces the declaration whole.
-        case 'ImportSpecifier':
-        case 'ImportDefaultSpecifier':
-        case 'ImportNamespaceSpecifier':
-        case 'ExportSpecifier':
-        case 'ExportAllDeclaration':
-            return false;
-        default:
-            return true;
-    }
-}
 /** How an identifier under `parent` by `key` uses the binding it names. */
 function useOf(parent, key, patternProperties) {
     switch (parent.type) {
@@ -197,11 +182,7 @@ function useOf(parent, key, patternProperties) {
 }
 /** The CommonJS for ES module `source`, whose import and export declarations are `records`. */
 export function emitCommonJs(source, records, options) {
-    let prefix = '__nimbus_m';
-    while (source.includes(prefix))
-        prefix += '_';
-    let temps = 0;
-    const temp = () => `${prefix}${temps++}`;
+    const temp = options.names ?? generatedNames(source);
     const key = (name) => `[${JSON.stringify(name)}]`;
     // The wrapper's top level holds only generated names (these helpers, and
     // the require every record calls): in an async body the module's own

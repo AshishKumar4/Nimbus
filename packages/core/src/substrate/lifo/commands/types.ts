@@ -82,6 +82,8 @@ export interface CommandContext {
   isFdTerminal?: (fd: number) => boolean;
   /** Whether `fd` is a shell pipe (S_ISFIFO): its reader ends a writer by closing it. */
   isFdPipe?: (fd: number) => boolean;
+  /** Whether the shell running this command runs `name` itself, as a builtin (type and command -v ask). */
+  isShellBuiltin?: (name: string) => boolean;
   setUmask(mask: number): void;
   /** Run `argv` as a child process under `cred`, with this command's stdio and environment, and wait for it. */
   runAs(cred: VfsCred, argv: string[], options?: RunAsOptions): Promise<ChildExit>;

@@ -211,7 +211,7 @@ class RubyReplAdapter implements ReplAdapter {
     // every REPL eval died on boot) — compose it in exactly one place.
     const preamble = buildRubyPreamble();
 
-    const { env, ctx } = getFacetManagerLoaderHost(facetMgr);
+    const { env, ctx, network } = getFacetManagerLoaderHost(facetMgr);
     // The caller's filesystem, under the caller's credential: the prompt
     // starts in the shell's working directory and reads and writes there.
     this.pool = new IsolatePool(env, ctx, {
@@ -219,6 +219,8 @@ class RubyReplAdapter implements ReplAdapter {
       concurrency: 1,
       supervisorPid: this.deps.pid,
       preamble,
+      // The workspace's, as every facet a manager's runtimes open (facetHostForManager).
+      network,
     });
   }
 

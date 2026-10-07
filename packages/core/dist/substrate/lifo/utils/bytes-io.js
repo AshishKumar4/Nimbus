@@ -2,7 +2,7 @@ import { resolve } from './path.js';
 const enc = new TextEncoder();
 const CHUNK = 65536;
 /** An operand's bytes in bounded chunks; `-` or undefined is standard input. */
-export async function* inputChunks(ctx, operand, { readSize = CHUNK, slice = false } = {}) {
+export async function* inputChunks(ctx, operand, { readSize = CHUNK, fileReadSize = CHUNK, slice = false } = {}) {
     if (operand === undefined || operand === '-') {
         const stdin = ctx.stdin;
         if (stdin === undefined)
@@ -40,7 +40,7 @@ export async function* inputChunks(ctx, operand, { readSize = CHUNK, slice = fal
     // A regular file to its end; a character device (/dev/zero) for as long
     // as its slice reader keeps asking, which is why this is a generator.
     for (let offset = 0;;) {
-        const chunk = await ctx.vfs.readRange(path, offset, CHUNK);
+        const chunk = await ctx.vfs.readRange(path, offset, fileReadSize);
         if (chunk.length === 0)
             return;
         yield chunk;
@@ -187,6 +187,22 @@ export function splitRecords(bytes, delim) {
     if (!terminated)
         records.push(bytes.subarray(start));
     return { records, terminated };
+}
+/** A blank, as GNU's field splitting (sort -k, uniq -f) means one: space or tab. */
+export function isBlank(byte) {
+    return byte === 0x20 || byte === 0x09;
+}
+/** Where the field starting at `at` in `line` ends: past its leading blanks, then past its non-blanks. */
+export function skipBlankField(line, at) {
+    while (at < line.length && isBlank(line[at]))
+        at++;
+    while (at < line.length && !isBlank(line[at]))
+        at++;
+    return at;
+}
+/** An ASCII byte in upper case; any other byte as it is (GNU's -f and -i fold no other). */
+export function asciiUpper(byte) {
+    return byte >= 0x61 && byte <= 0x7a ? byte - 32 : byte;
 }
 export function asciiBytes(text) {
     return enc.encode(text);

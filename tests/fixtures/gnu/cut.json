@@ -444,6 +444,16 @@
    "args": "--complement -f1-9 -d: c1",
    "stdout": "\nno delim\n\n\n",
    "exit": 0
+  },
+  {
+   "args": "-z -b1 /dev/zero | head -c 3 | od -An -tx1",
+   "stdout": " 00 00 00\n",
+   "exit": 0
+  },
+  {
+   "args": "-b1 /dev/null",
+   "stdout": "",
+   "exit": 0
   }
  ]
 }

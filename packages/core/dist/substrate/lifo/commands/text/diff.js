@@ -1,268 +1,359 @@
-import { parseArgs } from '../../utils/args.js';
-import { resolve } from '../../utils/path.js';
-import { isVfsError } from '../../../../vfs/vfs-error.js';
-const spec = {
-    unified: { type: 'boolean', short: 'u' },
+import { getopt } from '../../utils/args.js';
+import { concatBytes, readAllInput, writeBytes } from '../../utils/bytes-io.js';
+import { basename, resolve } from '../../utils/path.js';
+import { isVfsError, strerror } from '../../../../vfs/vfs-error.js';
+import { statOrThrow } from '../../../../vfs/vfs.js';
+import { shellEscape } from '../../../../_shared/shell-quote.js';
+import { blankLine, compareTexts, diffText } from './diff-analysis.js';
+// GNU diffutils 3.12's options, every one, so a bad one is refused as getopt
+// refuses it; those this diff does not implement are refused by name.
+const DIFF_OPTIONS = {
+    short: '0123456789abBcC:dD:eEfF:hHiI:lL:nNpPqrsS:tTuU:vwW:x:X:yZ',
+    long: Object.fromEntries([
+        ['binary', 'binary', 'none'], ['brief', 'q', 'none'], ['changed-group-format', 'changed-group-format', 'required'],
+        ['color', 'color', 'optional'], ['context', 'C', 'optional'], ['ed', 'e', 'none'], ['exclude', 'x', 'required'],
+        ['exclude-from', 'X', 'required'], ['expand-tabs', 't', 'none'], ['forward-ed', 'f', 'none'],
+        ['from-file', 'from-file', 'required'], ['help', 'help', 'none'], ['horizon-lines', 'horizon-lines', 'required'],
+        ['ifdef', 'D', 'required'], ['ignore-all-space', 'w', 'none'], ['ignore-blank-lines', 'B', 'none'],
+        ['ignore-case', 'i', 'none'], ['ignore-file-name-case', 'ignore-file-name-case', 'none'],
+        ['ignore-matching-lines', 'I', 'required'], ['ignore-space-change', 'b', 'none'], ['ignore-tab-expansion', 'E', 'none'],
+        ['ignore-trailing-space', 'Z', 'none'], ['inhibit-hunk-merge', 'inhibit-hunk-merge', 'none'], ['initial-tab', 'T', 'none'],
+        ['label', 'L', 'required'], ['left-column', 'left-column', 'none'], ['line-format', 'line-format', 'required'],
+        ['minimal', 'd', 'none'], ['new-file', 'N', 'none'], ['new-group-format', 'new-group-format', 'required'],
+        ['new-line-format', 'new-line-format', 'required'], ['no-dereference', 'no-dereference', 'none'],
+        ['no-ignore-file-name-case', 'no-ignore-file-name-case', 'none'], ['normal', 'normal', 'none'],
+        ['old-group-format', 'old-group-format', 'required'], ['old-line-format', 'old-line-format', 'required'],
+        ['paginate', 'l', 'none'], ['palette', 'palette', 'required'], ['rcs', 'n', 'none'], ['recursive', 'r', 'none'],
+        ['report-identical-files', 's', 'none'], ['sdiff-merge-assist', 'sdiff-merge-assist', 'none'],
+        ['show-c-function', 'p', 'none'], ['show-function-line', 'F', 'required'], ['side-by-side', 'y', 'none'],
+        ['speed-large-files', 'H', 'none'], ['starting-file', 'S', 'required'], ['strip-trailing-cr', 'strip-trailing-cr', 'none'],
+        ['suppress-blank-empty', 'suppress-blank-empty', 'none'], ['suppress-common-lines', 'suppress-common-lines', 'none'],
+        ['tabsize', 'tabsize', 'required'], ['text', 'a', 'none'], ['to-file', 'to-file', 'required'],
+        ['unchanged-group-format', 'unchanged-group-format', 'required'], ['unchanged-line-format', 'unchanged-line-format', 'required'],
+        ['unidirectional-new-file', 'P', 'none'], ['unified', 'U', 'optional'], ['version', 'v', 'none'], ['width', 'W', 'required'],
+    ].map(([name, key, argument]) => [name, [key, argument]])),
 };
-function computeLCS(a, b) {
-    const m = a.length;
-    const n = b.length;
-    // Build DP table
-    const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-    for (let i = 1; i <= m; i++) {
-        for (let j = 1; j <= n; j++) {
-            if (a[i - 1] === b[j - 1]) {
-                dp[i][j] = dp[i - 1][j - 1] + 1;
+const USAGE = `Usage: diff [OPTION]... FILE1 FILE2
+Compare FILES line by line, as GNU diff does; these options are implemented:
+  -q, --brief                   report only when files differ
+  -s, --report-identical-files  report when two files are the same
+  -u, -U NUM, --unified[=NUM]   output NUM (default 3) lines of unified context
+      --normal                  output a normal diff (the default)
+  -L, --label LABEL             use LABEL instead of file name and timestamp
+  -i, --ignore-case             ignore case differences in file contents
+  -b, --ignore-space-change     ignore changes in the amount of white space
+  -w, --ignore-all-space        ignore all white space
+  -B, --ignore-blank-lines      ignore changes where lines are all blank
+  -a, --text                    treat all files as text
+  -d, --minimal                 try hard to find a smaller set of changes
+`;
+/** A name in a diagnostic, as GNU quotes an operand: ‘name’. */
+const quote = (name) => `\u2018${name}\u2019`;
+/** A name in a unified header, as gnulib's c_maybe quoting writes it (c quoting when it has a space). */
+function headerName(name) {
+    let escaped = '';
+    let needsQuotes = name.includes(' ');
+    for (const ch of name) {
+        const code = ch.charCodeAt(0);
+        const simple = { '"': '\\"', '\\': '\\\\', '\x07': '\\a', '\b': '\\b', '\f': '\\f', '\n': '\\n', '\r': '\\r', '\t': '\\t', '\v': '\\v' }[ch];
+        if (simple) {
+            escaped += simple;
+            needsQuotes = true;
+        }
+        else if (code < 0x20 || code === 0x7f) {
+            escaped += `\\${code.toString(8).padStart(3, '0')}`;
+            needsQuotes = true;
+        }
+        else
+            escaped += ch;
+    }
+    return needsQuotes ? `"${escaped}"` : name;
+}
+/** An mtime as GNU's `%Y-%m-%d %H:%M:%S.%N %z`, in local time. */
+function headerTime(mtimeMs) {
+    const date = new Date(mtimeMs);
+    const pad = (n, width = 2) => String(n).padStart(width, '0');
+    const offset = -date.getTimezoneOffset();
+    const zone = `${offset < 0 ? '-' : '+'}${pad(Math.floor(Math.abs(offset) / 60))}${pad(Math.abs(offset) % 60)}`;
+    const nanos = Math.round((((mtimeMs % 1000) + 1000) % 1000) * 1e6);
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(nanos, 9)} ${zone}`;
+}
+const encoder = new TextEncoder();
+const NO_NEWLINE = encoder.encode('\\ No newline at end of file\n');
+/** Output assembled from pieces: text, and lines as views of their files' bytes. */
+class Output {
+    pieces = [];
+    text(text) {
+        this.pieces.push(encoder.encode(text));
+    }
+    /** Line `i` of `text` after `flag`, and GNU's note when it has no newline. */
+    line(flag, text, i) {
+        this.pieces.push(flag, text.buffer.subarray(text.lineStart[i], text.lineStart[i + 1]));
+        if (i === text.lineCount - 1 && text.missingNewline)
+            this.pieces.push(NO_NEWLINE);
+    }
+    bytes() {
+        return concatBytes(this.pieces);
+    }
+}
+const [LESS, MORE, CONTEXT, MINUS, PLUS] = ['< ', '> ', ' ', '-', '+'].map((flag) => encoder.encode(flag));
+/** GNU's normal format: each change its own hunk, `NcM`/`NaM`/`NdM` over `<`, `---`, `>` lines. */
+function normalOutput(script, a, b, ignorable) {
+    const out = new Output();
+    // print_number_range: a range of one line is that line; of none, the line before.
+    const range = (first, last) => (last > first ? `${first + 1},${last + 1}` : `${last + 1}`);
+    for (const change of script) {
+        if (ignorable(change))
+            continue;
+        const letter = change.deleted && change.inserted ? 'c' : change.deleted ? 'd' : 'a';
+        out.text(`${range(change.line0, change.line0 + change.deleted - 1)}${letter}${range(change.line1, change.line1 + change.inserted - 1)}\n`);
+        for (let i = 0; i < change.deleted; i++)
+            out.line(LESS, a, change.line0 + i);
+        if (letter === 'c')
+            out.text('---\n');
+        for (let i = 0; i < change.inserted; i++)
+            out.line(MORE, b, change.line1 + i);
+    }
+    return out.bytes();
+}
+/**
+ * GNU's unified format: changes closer than 2×context+1 unchanged lines
+ * share a hunk (closer than `context` before an ignorable one), which shows
+ * `context` lines around them, unless every change in it is ignorable; the
+ * header range of one line is its number, of none the line before and `,0`.
+ */
+function unifiedOutput(script, a, b, context, header, ignorable) {
+    const out = new Output();
+    const range = (first, last) => {
+        const from = first + 1;
+        const to = last + 1;
+        return to <= from ? (to < from ? `${to},0` : `${to}`) : `${from},${to - from + 1}`;
+    };
+    out.text(`--- ${header[0]}\n+++ ${header[1]}\n`);
+    for (let at = 0; at < script.length;) {
+        let end = at;
+        while (end + 1 < script.length
+            && script[end + 1].line0 - (script[end].line0 + script[end].deleted) < (ignorable(script[end + 1]) ? context : 2 * context + 1))
+            end++;
+        const hunk = script.slice(at, end + 1);
+        at = end + 1;
+        if (hunk.every(ignorable))
+            continue;
+        const last = hunk[hunk.length - 1];
+        const first0 = Math.max(hunk[0].line0 - context, 0);
+        const first1 = Math.max(hunk[0].line1 - context, 0);
+        const last0 = Math.min(last.line0 + last.deleted - 1 + context, a.lineCount - 1);
+        const last1 = Math.min(last.line1 + last.inserted - 1 + context, b.lineCount - 1);
+        out.text(`@@ -${range(first0, last0)} +${range(first1, last1)} @@\n`);
+        let i = first0;
+        let j = first1;
+        let next = 0;
+        while (i <= last0 || j <= last1) {
+            const change = hunk[next];
+            if (!change || i < change.line0) {
+                out.line(CONTEXT, a, i++);
+                j++;
             }
             else {
-                dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+                for (let k = 0; k < change.deleted; k++)
+                    out.line(MINUS, a, i++);
+                for (let k = 0; k < change.inserted; k++)
+                    out.line(PLUS, b, j++);
+                next++;
             }
         }
     }
-    // Backtrack to get edit operations
-    const ops = [];
-    let i = m, j = n;
-    while (i > 0 || j > 0) {
-        if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
-            ops.push({ type: 'keep', oldLine: a[i - 1] });
-            i--;
-            j--;
-        }
-        else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-            ops.push({ type: 'insert', newLine: b[j - 1] });
-            j--;
-        }
-        else {
-            ops.push({ type: 'delete', oldLine: a[i - 1] });
-            i--;
-        }
-    }
-    return ops.reverse();
+    return out.bytes();
 }
-function formatNormal(ops) {
-    const output = [];
-    let oldIdx = 0;
-    let newIdx = 0;
-    let i = 0;
-    while (i < ops.length) {
-        const op = ops[i];
-        if (op.type === 'keep') {
-            oldIdx++;
-            newIdx++;
-            i++;
+function parseSettings(args) {
+    const settings = {
+        style: 'normal', ignoreBlankLines: false, context: 0, brief: false, reportIdentical: false, text: false, labels: [],
+        analysis: { ignoreCase: false, whiteSpace: 'none', minimal: false, horizon: 0 },
+    };
+    const analysis = { ...settings.analysis };
+    const operands = [];
+    let ocontext = -1;
+    let explicitContext = false;
+    let previousDigit = false;
+    for (const event of getopt(args, DIFF_OPTIONS)) {
+        if (event.kind === 'error')
+            return { usage: event.message };
+        if (event.kind === 'operand') {
+            operands.push(event.value);
+            previousDigit = false;
             continue;
         }
-        // Collect contiguous change block
-        const delStart = oldIdx;
-        const insStart = newIdx;
-        const delLines = [];
-        const insLines = [];
-        while (i < ops.length && ops[i].type !== 'keep') {
-            if (ops[i].type === 'delete') {
-                delLines.push(ops[i].oldLine);
-                oldIdx++;
+        const { key, value } = event;
+        const digit = /^[0-9]$/.test(key);
+        if (digit)
+            ocontext = (previousDigit ? ocontext * 10 : 0) + Number(key);
+        previousDigit = digit;
+        if (digit)
+            continue;
+        switch (key) {
+            case 'a':
+                settings.text = true;
+                break;
+            case 'b':
+                if (analysis.whiteSpace === 'none')
+                    analysis.whiteSpace = 'change';
+                break;
+            case 'w':
+                analysis.whiteSpace = 'all';
+                break;
+            case 'i':
+                analysis.ignoreCase = true;
+                break;
+            case 'B':
+                settings.ignoreBlankLines = true;
+                break;
+            case 'd':
+                analysis.minimal = true;
+                break;
+            case 'q':
+                settings.brief = true;
+                break;
+            case 's':
+                settings.reportIdentical = true;
+                break;
+            case 'normal':
+                settings.style = 'normal';
+                break;
+            case 'u':
+                settings.style = 'unified';
+                settings.context = Math.max(settings.context, 3);
+                break;
+            case 'U': {
+                if (value !== undefined && (!/^\s*[+-]?\d+$/.test(value) || Number(value) < 0))
+                    return { usage: `invalid context length ${quote(value)}` };
+                settings.style = 'unified';
+                settings.context = Math.max(settings.context, value === undefined ? 3 : Number(value));
+                explicitContext = true;
+                break;
             }
-            else {
-                insLines.push(ops[i].newLine);
-                newIdx++;
-            }
-            i++;
-        }
-        // Format range
-        const delRange = delLines.length === 1
-            ? `${delStart + 1}`
-            : delLines.length > 0
-                ? `${delStart + 1},${delStart + delLines.length}`
-                : `${delStart}`;
-        const insRange = insLines.length === 1
-            ? `${insStart + 1}`
-            : insLines.length > 0
-                ? `${insStart + 1},${insStart + insLines.length}`
-                : `${insStart}`;
-        if (delLines.length > 0 && insLines.length > 0) {
-            output.push(`${delRange}c${insRange}`);
-            for (const l of delLines)
-                output.push(`< ${l}`);
-            output.push('---');
-            for (const l of insLines)
-                output.push(`> ${l}`);
-        }
-        else if (delLines.length > 0) {
-            output.push(`${delRange}d${insRange}`);
-            for (const l of delLines)
-                output.push(`< ${l}`);
-        }
-        else {
-            output.push(`${delRange}a${insRange}`);
-            for (const l of insLines)
-                output.push(`> ${l}`);
+            case 'L':
+                if (settings.labels.length === 2)
+                    return { fatal: 'too many file label options' };
+                settings.labels.push(value);
+                break;
+            case 'help': return { help: true };
+            default:
+                return { fatal: `${key.length === 1 ? `-${key}` : `--${key}`}: option not supported` };
         }
     }
-    return output.length > 0 ? output.join('\n') + '\n' : '';
+    if (ocontext >= 0 && settings.style === 'unified' && (settings.context < ocontext || (ocontext < settings.context && !explicitContext))) {
+        settings.context = ocontext;
+    }
+    settings.analysis = { ...analysis, horizon: settings.context };
+    if (operands.length < 2)
+        return { usage: `missing operand after ${quote(operands[0] ?? 'diff')}` };
+    if (operands.length > 2)
+        return { usage: `extra operand ${quote(operands[2])}` };
+    return { operands: [operands[0], operands[1]], settings };
 }
-function formatUnified(ops, file1, file2) {
-    if (ops.every(o => o.type === 'keep'))
-        return '';
-    // Build annotated lines with indices
-    const annotated = [];
-    let oldIdx = 0, newIdx = 0;
-    for (const op of ops) {
-        if (op.type === 'keep') {
-            annotated.push({ type: 'keep', line: op.oldLine, oldIdx, newIdx });
-            oldIdx++;
-            newIdx++;
-        }
-        else if (op.type === 'delete') {
-            annotated.push({ type: 'delete', line: op.oldLine, oldIdx, newIdx });
-            oldIdx++;
-        }
-        else {
-            annotated.push({ type: 'insert', line: op.newLine, oldIdx, newIdx });
-            newIdx++;
-        }
-    }
-    // Group into hunks with 3 lines of context
-    const context = 3;
-    const hunks = [];
-    let currentHunk = null;
-    let lastChangeIdx = -Infinity;
-    for (let i = 0; i < annotated.length; i++) {
-        const a = annotated[i];
-        if (a.type !== 'keep') {
-            if (!currentHunk || i - lastChangeIdx > context * 2 + 1) {
-                // Start new hunk with leading context
-                if (currentHunk) {
-                    // Add trailing context to previous hunk
-                    for (let j = lastChangeIdx + 1; j < Math.min(lastChangeIdx + 1 + context, annotated.length); j++) {
-                        if (annotated[j].type === 'keep') {
-                            currentHunk.lines.push(` ${annotated[j].line}`);
-                            currentHunk.oldCount++;
-                            currentHunk.newCount++;
-                        }
-                    }
-                    hunks.push(currentHunk);
-                }
-                const ctxStart = Math.max(0, i - context);
-                // Count old/new lines from context start
-                let oStart = 0, nStart = 0;
-                for (let j = 0; j < ctxStart; j++) {
-                    if (annotated[j].type !== 'insert')
-                        oStart++;
-                    if (annotated[j].type !== 'delete')
-                        nStart++;
-                }
-                currentHunk = {
-                    oldStart: oStart + 1,
-                    newStart: nStart + 1,
-                    oldCount: 0,
-                    newCount: 0,
-                    lines: [],
-                };
-                for (let j = ctxStart; j < i; j++) {
-                    if (annotated[j].type === 'keep') {
-                        currentHunk.lines.push(` ${annotated[j].line}`);
-                        currentHunk.oldCount++;
-                        currentHunk.newCount++;
-                    }
-                }
-            }
-            else if (i - lastChangeIdx > 1) {
-                // Add intermediate context
-                for (let j = lastChangeIdx + 1; j < i; j++) {
-                    if (annotated[j].type === 'keep') {
-                        currentHunk.lines.push(` ${annotated[j].line}`);
-                        currentHunk.oldCount++;
-                        currentHunk.newCount++;
-                    }
-                }
-            }
-            if (a.type === 'delete') {
-                currentHunk.lines.push(`-${a.line}`);
-                currentHunk.oldCount++;
-            }
-            else {
-                currentHunk.lines.push(`+${a.line}`);
-                currentHunk.newCount++;
-            }
-            lastChangeIdx = i;
-        }
-    }
-    if (currentHunk) {
-        // Trailing context
-        for (let j = lastChangeIdx + 1; j < Math.min(lastChangeIdx + 1 + context, annotated.length); j++) {
-            if (annotated[j].type === 'keep') {
-                currentHunk.lines.push(` ${annotated[j].line}`);
-                currentHunk.oldCount++;
-                currentHunk.newCount++;
-            }
-        }
-        hunks.push(currentHunk);
-    }
-    const output = [];
-    output.push(`--- ${file1}`);
-    output.push(`+++ ${file2}`);
-    for (const hunk of hunks) {
-        output.push(`@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@`);
-        output.push(...hunk.lines);
-    }
-    return output.join('\n') + '\n';
-}
+/**
+ * diff FILE1 FILE2, as GNU diffutils 3.12's: its edit script (diff-analysis),
+ * in the normal or unified format; binary files (a NUL byte) compared whole;
+ * status 0 when the files are the same, 1 when they differ, 2 for trouble.
+ */
 const command = async (ctx) => {
-    const { flags, positional } = parseArgs(ctx.args, spec);
-    if (positional.length < 2) {
-        await ctx.stderr.write('diff: missing operand\n');
-        return 2;
-    }
-    const file1 = positional[0];
-    const file2 = positional[1];
-    let content1;
-    let content2;
-    const path1 = resolve(ctx.cwd, file1);
-    const path2 = resolve(ctx.cwd, file2);
-    const read = async (path, file) => {
-        try {
-            return await ctx.vfs.readFile(path);
-        }
-        catch (e) {
-            if (isVfsError(e)) {
-                await ctx.stderr.write(`diff: ${file}: ${e.message}\n`);
-                return null;
-            }
-            throw e;
-        }
-    };
-    const bytes1 = await read(path1, file1);
-    if (bytes1 === null)
-        return 2;
-    const bytes2 = await read(path2, file2);
-    if (bytes2 === null)
-        return 2;
-    // GNU's rule: a file with a NUL byte is binary, compared whole.
-    if (bytes1.includes(0) || bytes2.includes(0)) {
-        if (bytes1.length === bytes2.length && bytes1.every((byte, i) => byte === bytes2[i]))
-            return 0;
-        await ctx.stdout.write(`Binary files ${file1} and ${file2} differ\n`);
-        return 1;
-    }
-    const decoder = new TextDecoder();
-    content1 = decoder.decode(bytes1);
-    content2 = decoder.decode(bytes2);
-    if (content1 === content2) {
+    const parsed = parseSettings(ctx.args);
+    if ('help' in parsed) {
+        await ctx.stdout.write(USAGE);
         return 0;
     }
-    const lines1 = content1.split('\n');
-    const lines2 = content2.split('\n');
-    // Remove trailing empty from final newline
-    if (lines1.length > 0 && lines1[lines1.length - 1] === '')
-        lines1.pop();
-    if (lines2.length > 0 && lines2[lines2.length - 1] === '')
-        lines2.pop();
-    const ops = computeLCS(lines1, lines2);
-    if (flags.unified) {
-        await ctx.stdout.write(formatUnified(ops, file1, file2));
+    if ('usage' in parsed) {
+        await ctx.stderr.write(`diff: ${parsed.usage}\ndiff: Try 'diff --help' for more information.\n`);
+        return 2;
+    }
+    if ('fatal' in parsed) {
+        await ctx.stderr.write(`diff: ${parsed.fatal}\n`);
+        return 2;
+    }
+    const { operands, settings } = parsed;
+    // Each operand is inspected once, as GNU's compare_files stats it, and read by the
+    // name inspection settles: `-` is standard input, a directory beside a file names
+    // that file in it. Every operand that fails is named, and that is trouble (2).
+    const names = [...operands];
+    const stats = [null, null];
+    let trouble = false;
+    const failed = async (name, error) => {
+        if (!isVfsError(error))
+            throw error;
+        await ctx.stderr.write(`diff: ${shellEscape(name)}: ${strerror(error)}\n`);
+        trouble = true;
+    };
+    const inspect = async (f) => {
+        try {
+            stats[f] = names[f] === '-' ? null : await statOrThrow(ctx.vfs, resolve(ctx.cwd, names[f]));
+        }
+        catch (error) {
+            await failed(names[f], error);
+        }
+    };
+    await inspect(0);
+    await inspect(1);
+    if (trouble)
+        return 2;
+    if (stats[0]?.type === 'directory' && stats[1]?.type === 'directory') {
+        await ctx.stderr.write('diff: comparing directories: option not supported\n');
+        return 2;
+    }
+    for (const f of [0, 1]) {
+        const other = names[1 - f];
+        if (stats[f]?.type !== 'directory' || other === '-')
+            continue;
+        names[f] = `${names[f].replace(/\/+$/, '')}/${basename(other)}`;
+        await inspect(f);
+    }
+    if (trouble)
+        return 2;
+    const inputs = [];
+    for (const f of [0, 1]) {
+        try {
+            inputs.push({ bytes: await readAllInput(ctx, names[f]), mtimeMs: stats[f]?.mtimeMs ?? Date.now(), name: names[f] });
+        }
+        catch (error) {
+            await failed(names[f], error);
+            return 2;
+        }
+    }
+    const [first, second] = inputs;
+    const label = (n) => settings.labels[n] ?? shellEscape(inputs[n].name);
+    const same = first.bytes.length === second.bytes.length && first.bytes.every((byte, i) => byte === second.bytes[i]);
+    const identical = async () => {
+        if (settings.reportIdentical)
+            await ctx.stdout.write(`Files ${label(0)} and ${label(1)} are identical\n`);
+        return 0;
+    };
+    if (same)
+        return await identical();
+    // Binary (a NUL byte), or --brief without an option that would make unequal bytes equal: compared whole.
+    const ignoring = settings.ignoreBlankLines || settings.analysis.ignoreCase || settings.analysis.whiteSpace !== 'none';
+    if ((!settings.text && (first.bytes.includes(0) || second.bytes.includes(0))) || (settings.brief && !ignoring)) {
+        await ctx.stdout.write(`${settings.brief ? 'Files' : 'Binary files'} ${label(0)} and ${label(1)} differ\n`);
+        return 1;
+    }
+    const a = diffText(first.bytes);
+    const b = diffText(second.bytes);
+    const script = compareTexts(a, b, settings.analysis);
+    // -B: a change whose every line is blank (white space too, under -b or -w) is no difference.
+    const blank = (text, line) => blankLine(text, line, settings.analysis.whiteSpace);
+    const ignorable = (change) => settings.ignoreBlankLines
+        && Array.from({ length: change.deleted }, (_, i) => blank(a, change.line0 + i)).every(Boolean)
+        && Array.from({ length: change.inserted }, (_, i) => blank(b, change.line1 + i)).every(Boolean);
+    if (script.every(ignorable))
+        return await identical();
+    if (settings.brief) {
+        await ctx.stdout.write(`Files ${label(0)} and ${label(1)} differ\n`);
+        return 1;
+    }
+    if (settings.style === 'unified') {
+        const header = (n) => settings.labels[n] ?? `${headerName(inputs[n].name)}\t${headerTime(inputs[n].mtimeMs)}`;
+        await writeBytes(ctx.stdout, unifiedOutput(script, a, b, settings.context, [header(0), header(1)], ignorable));
     }
     else {
-        await ctx.stdout.write(formatNormal(ops));
+        await writeBytes(ctx.stdout, normalOutput(script, a, b, ignorable));
     }
     return 1;
 };

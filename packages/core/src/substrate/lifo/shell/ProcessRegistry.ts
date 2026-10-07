@@ -41,7 +41,7 @@ export interface Process {
   /** Exit code (null if still running) */
   exitCode: number | null;
 
-  /** Optional job ID for background jobs (for backwards compat with JobTable) */
+  /** A background job's number in its shell's job table (`%N`), which kill reads. */
   jobId?: number;
 }
 
@@ -72,6 +72,9 @@ export interface SpawnOptions {
 
   /** Parent PID (defaults to 1 - shell) */
   ppid?: number;
+
+  /** A background job's number, which its shell's job table gives it. */
+  jobId?: number;
 }
 
 /**
@@ -83,7 +86,6 @@ export class ProcessRegistry {
   private processes = new Map<number, Process>();
   private resolvers = new Map<number, (code: number) => void>();
   private nextPid = 2; // PID 1 reserved for shell
-  private nextJobId = 1; // Job IDs for background processes
   private shellAbortController: AbortController | null = null;
 
   registerShell(cwd: string, env: Record<string, string>): number {
@@ -118,9 +120,6 @@ export class ProcessRegistry {
    */
   spawn(opts: SpawnOptions): number {
     const pid = this.nextPid++;
-
-    // Assign job ID for background processes
-    const jobId = opts.isForeground ? undefined : this.nextJobId++;
     let resolveProcess: (code: number) => void = () => {};
     const trackedPromise = new Promise<number>((resolve) => {
       resolveProcess = resolve;
@@ -139,7 +138,7 @@ export class ProcessRegistry {
       promise: trackedPromise,
       abortController: opts.abortController,
       exitCode: null,
-      jobId,
+      ...(opts.jobId === undefined ? {} : { jobId: opts.jobId }),
     };
 
     this.resolvers.set(pid, resolveProcess);
@@ -355,7 +354,6 @@ export class ProcessRegistry {
       this.processes.set(1, shell);
     }
     this.nextPid = 2;
-    this.nextJobId = 1;
     this.resolvers.clear();
   }
 

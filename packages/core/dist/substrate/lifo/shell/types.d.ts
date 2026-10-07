@@ -94,18 +94,19 @@ export interface ForNode {
     body: ListNode[];
     redirections: RedirectionNode[];
 }
-export interface WhileNode {
+/** `while` runs its body while the condition succeeds, `until` while it fails. */
+export interface LoopNode {
+    type: 'while' | 'until';
+    condition: ListNode[];
+    body: ListNode[];
+    redirections: RedirectionNode[];
+}
+export type WhileNode = LoopNode & {
     type: 'while';
-    condition: ListNode[];
-    body: ListNode[];
-    redirections: RedirectionNode[];
-}
-export interface UntilNode {
+};
+export type UntilNode = LoopNode & {
     type: 'until';
-    condition: ListNode[];
-    body: ListNode[];
-    redirections: RedirectionNode[];
-}
+};
 export interface CaseNode {
     type: 'case';
     word: WordPart[];
@@ -135,6 +136,6 @@ export interface DoubleBracketNode {
     words: WordPart[][];
     redirections: RedirectionNode[];
 }
-export type CompoundCommandNode = SimpleCommandNode | DoubleBracketNode | IfNode | ForNode | WhileNode | UntilNode | CaseNode | GroupNode | SubshellNode | FunctionDefNode;
+export type CompoundCommandNode = SimpleCommandNode | DoubleBracketNode | IfNode | ForNode | LoopNode | CaseNode | GroupNode | SubshellNode | FunctionDefNode;
 export type ASTNode = ScriptNode | ListNode | PipelineNode | CompoundCommandNode;
 //# sourceMappingURL=types.d.ts.map

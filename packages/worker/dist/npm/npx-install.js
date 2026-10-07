@@ -27,9 +27,9 @@
  *   6. Invoke via Nimbus's `node` registry command (preserves PID
  *      tracking, log buffer, process table membership)
  */
-import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
+import { isStagedArtifactTarget, npxPackageBin } from './bin-links.js';
 import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { packageRangeSeparator } from './package-spec.js';
+import { packageRangeSeparator } from '@nimbus-sh/core/_shared/npm-spec.js';
 /** Path where npx caches packages it installs. Matches the vendored substrate
  * cache layout so tooling that introspects npx state sees the expected path. */
 export const NPX_CACHE_DIR = '/tmp/.npx-cache';
@@ -90,23 +90,14 @@ function parseNpxArgs(rawArgs) {
     if (invocation.self !== null || invocation.command === null) {
         return { error: invocation.self === 'missing' || invocation.self === null ? 'missing-cmd' : `--${invocation.self}` };
     }
-    // With --package=<pkg>, the positional arg is the BIN name and the package
-    // installs `<pkg>`. Without it, the positional arg is `<name>[@<version>]`
-    // and the binary is the last path segment of `<name>`.
+    // With --package=<pkg>, the positional arg is the bin to run and the
+    // package installs `<pkg>`. Without it, the positional arg is
+    // `<name>[@<version>]`, the package, and its manifest decides the bin.
     const first = invocation.command;
-    let pkgSpec;
-    let binName;
-    if (invocation.packageOverride) {
-        pkgSpec = invocation.packageOverride;
-        binName = first;
-    }
-    else {
-        pkgSpec = first;
-        const namePart = splitSpec(first).name;
-        binName = namePart.split('/').pop() || namePart;
-    }
+    const pkgSpec = invocation.packageOverride ?? first;
+    const command = invocation.packageOverride ? first : null;
     const { name: pkgName } = splitSpec(pkgSpec);
-    return { pkgSpec, pkgName, binName, binArgs: invocation.args, yes: invocation.yes };
+    return { pkgSpec, pkgName, command, binArgs: invocation.args, yes: invocation.yes };
 }
 /** Split `name@version` (or scoped `@scope/name@version`) into parts. */
 function splitSpec(spec) {
@@ -123,50 +114,21 @@ function splitSpec(spec) {
  * Returns the resolved absolute path (rooted at packageDir) if a
  * matching bin name is found, else null.
  */
-async function findBinInPackage(vfs, packageDir, binName) {
-    const pkgJsonPath = `${packageDir}/package.json`;
-    // SqliteVFS stores keys without leading slash. Check via the stripped
-    // key form to match the installer's write convention.
-    if (!await vfs.exists(_vfsKey(pkgJsonPath)))
-        return null;
-    let pkgJson;
-    try {
-        pkgJson = JSON.parse(await vfs.readFileString(_vfsKey(pkgJsonPath)));
-    }
-    catch {
-        return null;
-    }
-    // As npm installs them: a string `bin` is named for the package, and every
-    // target stays inside it.
-    const bins = npmBinMap(String(pkgJson.name || ''), pkgJson.bin);
-    const single = typeof pkgJson.bin === 'string';
-    // An object `bin` without the requested name runs its first entry, as npm
-    // runs a single-binary package; a string `bin` only under its own name.
-    const rel = bins.get(binName) ?? (single ? undefined : bins.values().next().value);
-    if (rel === undefined)
-        return null;
-    // The `node` registry command expects an absolute path as the first arg;
-    // vfs.exists checks it against _vfsKey internally.
-    return `${packageDir}/${rel}`;
-}
 /**
- * Locate a binary by name across the standard search paths npx uses:
- *   1. cwd/node_modules/.bin/<binName>    (project-local install)
- *   2. NPX_CACHE_NM/<pkgName>/...         (npx-cache install)
+ * Locate the bin npx runs across the standard search paths: the package in
+ * cwd/node_modules, then in the npx cache, its bin chosen and validated as
+ * npxPackageBin does.
  *
- * Returns the absolute path on hit, null on miss.
+ * Returns the bin's name and absolute path on hit, null on miss.
  */
-async function locateBinary(vfs, cwd, pkgName, binName) {
-    // 1. Project-local node_modules. The packageDir is cwd/node_modules/<pkgName>.
-    const projPkgDir = `${cwd}/node_modules/${pkgName}`;
-    const projHit = await findBinInPackage(vfs, projPkgDir, binName);
-    if (projHit && await vfs.exists(_vfsKey(projHit)))
-        return projHit;
-    // 2. NPX cache.
-    const npxPkgDir = `${NPX_CACHE_NM}/${pkgName}`;
-    const npxHit = await findBinInPackage(vfs, npxPkgDir, binName);
-    if (npxHit && await vfs.exists(_vfsKey(npxHit)))
-        return npxHit;
+async function locateBinary(vfs, cwd, pkgName, command) {
+    for (const packageDir of [`${cwd}/node_modules/${pkgName}`, `${NPX_CACHE_NM}/${pkgName}`]) {
+        const bin = await npxPackageBin(vfs, packageDir, command);
+        // npx runs the bin with `node`, which takes a file: a staged-artifact
+        // bin (a sentinel, not a path) is not one npx can run.
+        if (bin && !isStagedArtifactTarget(bin.targetPath))
+            return { name: bin.name, path: '/' + bin.targetPath };
+    }
     return null;
 }
 /**
@@ -206,7 +168,7 @@ async function ensureNpxCachePackageJson(vfs, pkgName, pkgRange) {
 /**
  * Resolve a binary for `npx <args>` by:
  *   1. Parsing args.
- *   2. Checking node_modules/.bin/<binName> in cwd, then NPX cache.
+ *   2. Checking the package in cwd/node_modules, then the NPX cache, for its bin.
  *   3. If absent, installing the package via NpmInstaller into
  *      /tmp/.npx-cache, then re-checking.
  *
@@ -230,14 +192,14 @@ registry) {
         return { ok: false, error: parsed.error };
     }
     // 1. Check project + NPX cache for pre-installed bin.
-    const existing = await locateBinary(vfs, cwd, parsed.pkgName, parsed.binName);
+    const existing = await locateBinary(vfs, cwd, parsed.pkgName, parsed.command);
     if (existing) {
         return {
             ok: true,
-            binPath: existing,
+            binPath: existing.path,
             binArgs: parsed.binArgs,
-            bundleProfile: bundleProfileForNpmBin({ name: parsed.binName, packageName: parsed.pkgName }),
-            source: cwd && existing.startsWith(cwd) ? 'project-nm' : 'npx-cache',
+            bundleProfile: bundleProfileForNpmBin({ name: existing.name, packageName: parsed.pkgName }),
+            source: cwd && existing.path.startsWith(cwd) ? 'project-nm' : 'npx-cache',
         };
     }
     // 2. Not found anywhere — install into NPX cache via NpmInstaller.
@@ -274,18 +236,20 @@ registry) {
         };
     }
     // 3. Re-check NPX cache after install.
-    const installed = await locateBinary(vfs, cwd, parsed.pkgName, parsed.binName);
+    const installed = await locateBinary(vfs, cwd, parsed.pkgName, parsed.command);
     if (installed) {
         return {
             ok: true,
-            binPath: installed,
+            binPath: installed.path,
             binArgs: parsed.binArgs,
-            bundleProfile: bundleProfileForNpmBin({ name: parsed.binName, packageName: parsed.pkgName }),
+            bundleProfile: bundleProfileForNpmBin({ name: installed.name, packageName: parsed.pkgName }),
             source: 'fresh-install',
         };
     }
     return {
         ok: false,
-        error: `npx: installed ${parsed.pkgSpec} but could not locate binary '${parsed.binName}' in ${NPX_CACHE_NM}/${parsed.pkgName}`,
+        error: parsed.command === null
+            ? `npx: could not determine executable to run from ${parsed.pkgSpec}`
+            : `npx: installed ${parsed.pkgSpec} but could not locate binary '${parsed.command}' in ${NPX_CACHE_NM}/${parsed.pkgName}`,
     };
 }

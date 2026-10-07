@@ -26,6 +26,7 @@
 import assert from 'node:assert/strict';
 import { Fanout } from '../../packages/fabric/src/fanout.ts';
 import { beginLoaderFetch, DO_DYNAMIC_WORKER_LIMIT } from '../../packages/fabric/src/budgets.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 assert.equal(DO_DYNAMIC_WORKER_LIMIT, 10, 'the documented per-DO limit');
 
@@ -80,6 +81,7 @@ function freshCtx() {
 async function run(width, { ctx = freshCtx(), world = makeWorld() } = {}) {
   const routes = [];
   const pool = new Fanout(world.env, ctx, {
+    network: ISOLATE_NETWORK,
     tag: 'routing-test',
     omitSupervisor: true,
     onRoute: (route) => routes.push(route),
@@ -160,7 +162,7 @@ for (const width of [5, 8, DO_DYNAMIC_WORKER_LIMIT]) {
   world.env.LOADER.get = () => ({
     getEntrypoint: () => ({ async execute() { throw new Error('task failed'); } }),
   });
-  const pool = new Fanout(world.env, ctx, { tag: 'routing-test', omitSupervisor: true, timeoutMs: 0 });
+  const pool = new Fanout(world.env, ctx, { network: ISOLATE_NETWORK, tag: 'routing-test', omitSupervisor: true, timeoutMs: 0 });
   await assert.rejects(pool.submitMany([{ key: 'k', args: 1 }, { key: 'l', args: 2 }], (x) => x), /task failed/);
   assert.equal((await run(DO_DYNAMIC_WORKER_LIMIT, { ctx })).route.topology, 'in-do',
     'a failed batch gives its width back');
@@ -193,7 +195,7 @@ for (const width of [5, 8, DO_DYNAMIC_WORKER_LIMIT]) {
       },
     },
   };
-  const batch = (tag) => new Fanout(env, ctx, { tag, omitSupervisor: true, timeoutMs: 0 }).submitMany(
+  const batch = (tag) => new Fanout(env, ctx, { network: ISOLATE_NETWORK, tag, omitSupervisor: true, timeoutMs: 0 }).submitMany(
     Array.from({ length: DO_DYNAMIC_WORKER_LIMIT }, (_, i) => ({ key: `${tag}-${i}`, args: i })),
     (x) => x,
   );

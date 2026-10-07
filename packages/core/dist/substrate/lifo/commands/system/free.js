@@ -1,36 +1,14 @@
-function humanSize(bytes) {
-    if (bytes < 1024)
-        return bytes + 'B';
-    if (bytes < 1024 * 1024)
-        return (bytes / 1024).toFixed(1) + 'K';
-    if (bytes < 1024 * 1024 * 1024)
-        return (bytes / (1024 * 1024)).toFixed(1) + 'M';
-    return (bytes / (1024 * 1024 * 1024)).toFixed(1) + 'G';
-}
+import { formatBinarySize, readHeapMemory } from '../../utils/system-info.js';
 const command = async (ctx) => {
-    let human = false;
-    for (const arg of ctx.args) {
-        if (arg === '-h')
-            human = true;
+    const human = ctx.args.includes('-h');
+    const memory = readHeapMemory();
+    if (memory === null) {
+        await ctx.stdout.write('Memory information not available in this runtime\n');
+        return 0;
     }
-    // Try to use performance.memory (Chrome-only API)
-    const perf = performance;
-    if (perf.memory) {
-        const total = perf.memory.jsHeapSizeLimit;
-        const used = perf.memory.usedJSHeapSize;
-        const free = total - used;
-        if (human) {
-            await ctx.stdout.write('              total        used        free\n');
-            await ctx.stdout.write(`Mem:     ${humanSize(total).padStart(10)}  ${humanSize(used).padStart(10)}  ${humanSize(free).padStart(10)}\n`);
-        }
-        else {
-            await ctx.stdout.write('              total        used        free\n');
-            await ctx.stdout.write(`Mem:     ${String(total).padStart(10)}  ${String(used).padStart(10)}  ${String(free).padStart(10)}\n`);
-        }
-    }
-    else {
-        await ctx.stdout.write('Memory information not available in this browser\n');
-    }
+    const cell = (bytes) => (human ? formatBinarySize(bytes) : String(bytes)).padStart(10);
+    await ctx.stdout.write('              total        used        free\n');
+    await ctx.stdout.write(`Mem:     ${cell(memory.total)}  ${cell(memory.used)}  ${cell(memory.total - memory.used)}\n`);
     return 0;
 };
 export default command;

@@ -8,6 +8,7 @@
 // a chatty endpoint evict the supervisor from its 64 MiB heap, and one keyed
 // only by an integer id would let a facet read another process's socket.
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 import { WebSocketRelay, WS_RELAY_MAX_BACKLOG_BYTES } from '../../packages/worker/src/session/ws-relay.ts';
 
@@ -53,7 +54,7 @@ const OTHER_PID = 1000003;
 
 // ── the upgrade, and what the facet is told when it does not happen ──
 {
-  const relay = new WebSocketRelay();
+  const relay = new WebSocketRelay(() => ISOLATE_NETWORK);
   globalThis.fetch = workerdFetch(() => ({ status: 404, webSocket: null, headers: { get: () => null } }));
   await assert.rejects(
     () => relay.open(PID, 'wss://example.invalid/s', []),
@@ -64,7 +65,7 @@ const OTHER_PID = 1000003;
 
 // ── the upgrade goes to the socket's own address over http(s) ──
 {
-  const relay = new WebSocketRelay();
+  const relay = new WebSocketRelay(() => ISOLATE_NETWORK);
   stubUpgrade(fakeSocket());
   fetched.length = 0;
   await relay.open(PID, 'wss://example.invalid:8443/s?x=1#f', []);
@@ -77,7 +78,7 @@ const OTHER_PID = 1000003;
 {
   const socket = fakeSocket();
   stubUpgrade(socket, { protocol: 'chat' });
-  const relay = new WebSocketRelay();
+  const relay = new WebSocketRelay(() => ISOLATE_NETWORK);
   const { id, protocol } = await relay.open(PID, 'wss://example.invalid/s', ['chat']);
   assert.equal(protocol, 'chat', 'the negotiated subprotocol reaches the facet');
   assert.ok(socket.accepted, 'the supervisor accepted the socket');
@@ -97,7 +98,7 @@ const OTHER_PID = 1000003;
 {
   const socket = fakeSocket();
   stubUpgrade(socket);
-  const relay = new WebSocketRelay();
+  const relay = new WebSocketRelay(() => ISOLATE_NETWORK);
   const { id } = await relay.open(PID, 'wss://example.invalid/s', []);
   await relay.poll(PID, id, 100); // drain the open event
 
@@ -113,7 +114,7 @@ const OTHER_PID = 1000003;
 {
   const socket = fakeSocket();
   stubUpgrade(socket);
-  const relay = new WebSocketRelay();
+  const relay = new WebSocketRelay(() => ISOLATE_NETWORK);
   const { id } = await relay.open(PID, 'wss://example.invalid/s', []);
   await relay.poll(PID, id, 100);
   // Ordered, not timed: a timer due inside the window has fired by the time
@@ -128,7 +129,7 @@ const OTHER_PID = 1000003;
 {
   const socket = fakeSocket();
   stubUpgrade(socket);
-  const relay = new WebSocketRelay();
+  const relay = new WebSocketRelay(() => ISOLATE_NETWORK);
   const { id } = await relay.open(PID, 'wss://example.invalid/s', []);
   const stolen = await relay.poll(OTHER_PID, id, 10);
   assert.deepEqual(
@@ -145,7 +146,7 @@ const OTHER_PID = 1000003;
 {
   const socket = fakeSocket();
   stubUpgrade(socket);
-  const relay = new WebSocketRelay();
+  const relay = new WebSocketRelay(() => ISOLATE_NETWORK);
   const { id } = await relay.open(PID, 'wss://example.invalid/s', []);
   const chunk = new Uint8Array(256 * 1024);
   for (let sent = 0; sent <= WS_RELAY_MAX_BACKLOG_BYTES + chunk.byteLength; sent += chunk.byteLength) {
@@ -167,7 +168,7 @@ const OTHER_PID = 1000003;
 {
   const socket = fakeSocket();
   stubUpgrade(socket);
-  const relay = new WebSocketRelay();
+  const relay = new WebSocketRelay(() => ISOLATE_NETWORK);
   const { id } = await relay.open(PID, 'wss://example.invalid/s', []);
   relay.closeForPid(PID);
   assert.equal(socket.closedWith.code, 1001, 'the process exiting closed its socket');

@@ -106,19 +106,16 @@ export interface ForNode {
   redirections: RedirectionNode[];
 }
 
-export interface WhileNode {
-  type: 'while';
+/** `while` runs its body while the condition succeeds, `until` while it fails. */
+export interface LoopNode {
+  type: 'while' | 'until';
   condition: ListNode[];
   body: ListNode[];
   redirections: RedirectionNode[];
 }
 
-export interface UntilNode {
-  type: 'until';
-  condition: ListNode[];
-  body: ListNode[];
-  redirections: RedirectionNode[];
-}
+export type WhileNode = LoopNode & { type: 'while' };
+export type UntilNode = LoopNode & { type: 'until' };
 
 export interface CaseNode {
   type: 'case';
@@ -156,8 +153,7 @@ export type CompoundCommandNode =
   | DoubleBracketNode
   | IfNode
   | ForNode
-  | WhileNode
-  | UntilNode
+  | LoopNode
   | CaseNode
   | GroupNode
   | SubshellNode

@@ -1,5 +1,6 @@
-import { asciiBytes, concatBytes, decodeLossless, encodeLossless, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { asciiBytes, concatBytes, decodeLossless, encodeLossless, readAllInput, writeBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
+import { translate } from '../../utils/posix-regex.js';
 class NlUsage extends Error {
 }
 function style(value, which) {
@@ -7,30 +8,13 @@ function style(value, which) {
         return { kind: value };
     if (value.startsWith('p')) {
         try {
-            return { kind: 'p', re: new RegExp(basicToJs(value.slice(1)), 'u') };
+            return { kind: 'p', re: new RegExp(translate(value.slice(1), { extended: false }), 'u') };
         }
         catch {
             throw new NlUsage(`invalid ${which} numbering style: \u2018${value}\u2019`);
         }
     }
     throw new NlUsage(`invalid ${which} numbering style: \u2018${value}\u2019`);
-}
-/** Enough of a BRE for -bpRE: `\(\)\|\{\}\+\?` become operators, bare ones literal. */
-function basicToJs(re) {
-    let out = '';
-    for (let i = 0; i < re.length; i++) {
-        const c = re[i];
-        if (c === '\\' && i + 1 < re.length) {
-            const n = re[++i];
-            out += '(){}|+?'.includes(n) ? n : `\\${n}`;
-        }
-        else if ('(){}|+?'.includes(c)) {
-            out += `\\${c}`;
-        }
-        else
-            out += c;
-    }
-    return out;
 }
 const command = async (ctx) => {
     const styles = { h: { kind: 'n' }, b: { kind: 't' }, f: { kind: 'n' } };
@@ -161,10 +145,7 @@ const command = async (ctx) => {
     for (const file of files.length > 0 ? files : ['-']) {
         let bytes;
         try {
-            const parts = [];
-            for await (const chunk of inputChunks(ctx, file))
-                parts.push(chunk);
-            bytes = concatBytes(parts);
+            bytes = await readAllInput(ctx, file);
         }
         catch (error) {
             await ctx.stderr.write(`nl: ${file}: ${strerror(error)}\n`);

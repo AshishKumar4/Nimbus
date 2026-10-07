@@ -1,6 +1,7 @@
 import type { Command, CommandContext } from '../types.js';
 import { resolve, basename, dirname } from '../../utils/path.js';
 import { parseArgs } from '../../utils/args.js';
+import { resolveCopyTargets } from './copy-targets.js';
 import { isVfsError, strerror, syscallError } from '../../../../vfs/vfs-error.js';
 import { exists, lstatOrThrow, statOrThrow } from '../../../../vfs/vfs.js';
 
@@ -35,27 +36,17 @@ const command: Command = async (ctx) => {
   }
   const recursive = flags.recursive === true || flags['recursive-upper'] === true || flags.archive === true;
   const preserve = flags.preserve === true || flags.archive === true;
-  const targetDir = typeof flags['target-directory'] === 'string' && flags['target-directory']
-    ? flags['target-directory']
-    : null;
-  const sources = targetDir ? positional : positional.slice(0, -1);
-  const rawDest = targetDir ?? positional[positional.length - 1];
-  if (sources.length === 0 || rawDest === undefined) {
-    await ctx.stderr.write('cp: missing operand\n');
+  const targets = await resolveCopyTargets(ctx, positional, typeof flags['target-directory'] === 'string' && flags['target-directory'] ? flags['target-directory'] : null);
+  if (typeof targets === 'string' || targets === null) {
+    await ctx.stderr.write(`cp: ${targets ?? 'missing operand'}\n`);
     return 1;
   }
-
-  const dest = resolve(ctx.cwd, rawDest);
-  const destIsDir = await isDirectory(ctx, dest);
-  if ((sources.length > 1 || targetDir) && !destIsDir) {
-    await ctx.stderr.write(`cp: target '${rawDest}' is not a directory\n`);
-    return 1;
-  }
+  const { sources, rawDest } = targets;
 
   let exitCode = 0;
   for (const source of sources) {
     const src = resolve(ctx.cwd, source);
-    const target = destIsDir ? resolve(dest, basename(src)) : dest;
+    const target = targets.targetFor(src);
     const stat = await lstatOrThrow(ctx.vfs, src).catch(async (e: unknown) => {
       if (!isVfsError(e)) throw e;
       await ctx.stderr.write(`cp: cannot stat '${source}': ${strerror(e)}\n`);
@@ -94,15 +85,6 @@ const command: Command = async (ctx) => {
   }
   return exitCode;
 };
-
-async function isDirectory(ctx: CommandContext, path: string): Promise<boolean> {
-  try {
-    return (await statOrThrow(ctx.vfs, path)).type === 'directory';
-  } catch (error) {
-    if (isVfsError(error) && error.code === 'ENOENT') return false;
-    throw error;
-  }
-}
 
 function errorCode(error: unknown): unknown {
   return error && typeof error === 'object' && 'code' in error ? error.code : undefined;
