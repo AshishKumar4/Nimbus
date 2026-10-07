@@ -7253,6 +7253,9 @@ export class SqliteVFS {
          * commits.
          */
         const mountOf = async (kind, named) => {
+            const quick = at.placeSync(kind, named);
+            if (quick !== undefined)
+                return quick;
             const parent = this.parentPath(named);
             let route = at.routes.get(parent);
             const epoch = at.view();
@@ -7566,6 +7569,65 @@ export class SqliteVFS {
                 view.epoch++;
             }
             return view.epoch;
+        };
+        /**
+         * Where `named` lands, decided in this turn when the lookup of its
+         * directory answers synchronously (it stays on this filesystem's
+         * backends): the namespace path when that is on a mount; null when it
+         * is placed here, noted for its commit to recheck. Undefined when the
+         * lookup would wait, or would refuse (a directory above a mount point,
+         * a lookup that fails): routeRecord decides those, with its errors.
+         */
+        const placeSync = (kind, named) => {
+            if (router === null)
+                return null;
+            const parent = this.parentPath(named);
+            const epoch = viewEpoch();
+            let route = routes.get(parent);
+            if (route === undefined || route.epoch !== epoch) {
+                let answer;
+                try {
+                    answer = parent === '' ? '' : this.withHolds(holds, () => router.resolveDirectory('/' + parent, cred, options.signal));
+                }
+                catch {
+                    return undefined;
+                }
+                if (typeof answer !== 'string') {
+                    answer.catch(() => { });
+                    return undefined;
+                }
+                route = { resolved: answer, epoch };
+                routes.set(parent, route);
+            }
+            const path = `${route.resolved === '/' ? '' : route.resolved}/${named.slice(named.lastIndexOf('/') + 1)}`;
+            if (router.placement(path) !== null)
+                return path;
+            if (kind !== 'directory' && router.composes(path))
+                return undefined;
+            placedHere[kind].set(named, { resolved: path, epoch });
+            return null;
+        };
+        /**
+         * A record that lands on this filesystem, decided without an await: a
+         * file (not a link) or directory placed here by placeSync, a chunk or end
+         * of a file no mount takes, or the batch's end. Every other record (a
+         * removal, a call, a link) goes to routeRecord.
+         */
+        const landsHere = (record) => {
+            if (routed.file !== null)
+                return false;
+            switch (record.type) {
+                case 'file-chunk':
+                case 'file-end':
+                case 'batch-end':
+                    return true;
+                case 'file-begin':
+                    return record.inode.kind !== 'symlink' && placeSync('file', record.inode.path) === null;
+                case 'directory':
+                    return placeSync('directory', record.inode.path) === null;
+                default:
+                    return false;
+            }
         };
         /** Around a commit of the wave's own files: when nothing else committed and none is a link, the view holds. */
         const ownFiles = (links, commit) => {
@@ -8078,7 +8140,7 @@ export class SqliteVFS {
                         applying = seq;
                     }
                 }
-                if (router !== null && await this.routeRecord(record, router, cred, {
+                if (router !== null && !landsHere(record) && await this.routeRecord(record, router, cred, {
                     get file() { return routed.file; },
                     set file(file) { routed.file = file; },
                     index: recordIndex,
@@ -8086,6 +8148,7 @@ export class SqliteVFS {
                     routes,
                     holds,
                     view: viewEpoch,
+                    placeSync,
                     placedHere: (kind, named, resolved, epoch) => { placedHere[kind].set(named, { resolved, epoch }); },
                     signal: options.signal,
                     reach: options.mountReach,

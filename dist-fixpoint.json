@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "5d5abac90c3276eebfd64f09ffb8a7716f3f85894d616d02776d532c2eeb6881",
+  "fingerprint": "5481aab85121576567b33165b0ce6f4ec8dcb09cdc08e756aacbff8fe6d494ba",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1072,8 +1072,8 @@
     "packages/core/dist/vfs/sqlite-files.d.ts.map": "497c497bb1548367ab859d8fa8dccf15dcb1641622356222a2e00e4f6907b27a",
     "packages/core/dist/vfs/sqlite-files.js": "78eefd2528b9f4c71f0540006b6c5293f98d54ef7362aa95cb80e8f26847a539",
     "packages/core/dist/vfs/sqlite-vfs.d.ts": "4f1e14abc4581e06042f3118dadbff3a45ce69acaeb09257e4d4bf4d60dbe2fb",
-    "packages/core/dist/vfs/sqlite-vfs.d.ts.map": "263a758eecd5b8fd05a0e67420ef9bbe623da640a77642ca5945493ac7681db6",
-    "packages/core/dist/vfs/sqlite-vfs.js": "c2f8bb67a6ac5767091e0eb4d4b71dbad9480b2949fc57e701c1addf752b01aa",
+    "packages/core/dist/vfs/sqlite-vfs.d.ts.map": "46b9528aea20defeb2341f74ec179deefd8de54c697d181eaa971ccab03e495d",
+    "packages/core/dist/vfs/sqlite-vfs.js": "f5097a1de8b8e8c1a9a2deb4d714d8921ae348ba7a59cdcf0bd7a3b9ddafedcf",
     "packages/core/dist/vfs/symlink-registry.d.ts": "2f070895b41608e49772066ace71fa2415b5500e655bbd6a204944057a4f0803",
     "packages/core/dist/vfs/symlink-registry.d.ts.map": "cb3c101363d49acdd12258f9e2e4941ddc026d6bf0092758080e922f9ecf1e96",
     "packages/core/dist/vfs/symlink-registry.js": "aeff373a644847fa6b5edcba0b3df01b1d81253f308adc859924c6fba0fbed1a",
@@ -1445,7 +1445,7 @@
     "packages/core/src/vfs/recall.ts": "2cab5fcd66884e7046d3587455193f6474f299d03003d5ed5ac67cc7ddb074ab",
     "packages/core/src/vfs/seed-project.ts": "941cc9b670ac3127247439a94e092b3c4f81098fa113d7e1d52a3d3600e39669",
     "packages/core/src/vfs/sqlite-files.ts": "79c50039a2005526534e576fc893ec98fd116514e370917b9a67aa01ae3215fc",
-    "packages/core/src/vfs/sqlite-vfs.ts": "154867fae0792a46f3f47456d6cbfb9795790ff2fa4e3da935df06e97556d6e1",
+    "packages/core/src/vfs/sqlite-vfs.ts": "0c9200eed5d7d6cd2828ba63c4d495af79c626489742d8713bf7b60b7a39e567",
     "packages/core/src/vfs/symlink-registry.ts": "02e7663e91b0ce2e6cb96732722767eef3669808e12693af66c65d695af7c98c",
     "packages/core/src/vfs/vfs-error.ts": "548bbb1755778924137aa5b7879376da60a8d8ef4aae5631bdebc9c3c3e8924c",
     "packages/core/src/vfs/vfs.ts": "9e8f3f185461ea9e6493896389bfdf7f74b960881c53adf02e0ed65ec35a7516",
