@@ -64,6 +64,8 @@ export interface WranglerConfig {
     };
     /** DO migrations — informational; we don't apply them (facets auto-create SQLite). */
     migrations?: any[];
+    /** Environment blocks: the deploy-isolation gate reads them; `nimbus wrangler dev` serves the top level. */
+    env?: Record<string, WranglerConfig>;
 }
 /**
  * A wrangler.json or wrangler.jsonc as wrangler reads one: jsonc-parser,
