@@ -42,6 +42,28 @@ export interface FileApi {
 }
 
 /**
+ * A file written at `at` as a program writes one: its directory made
+ * (`mkdir -p`), then opened, written in pieces and closed, at `written` (a
+ * name beside it, renamed over it after, as git's lock files are) or at
+ * `at` itself. Answers its stat.
+ */
+export async function writeInPlace(api: FileApi, at: string, mode: number, bytes: Uint8Array, written = at): Promise<FileStat> {
+  await api.mkdir(at.slice(0, at.lastIndexOf('/')), { recursive: true });
+  const handle = await api.fsOpen(written, { write: true, create: true, truncate: true, mode });
+  let stat: FileStat;
+  try {
+    for (let offset = 0; offset < bytes.byteLength; offset += WRITE_PIECE_BYTES) {
+      await api.fsWrite(handle.id, offset, bytes.subarray(offset, Math.min(bytes.byteLength, offset + WRITE_PIECE_BYTES)));
+    }
+    stat = await api.fsFstat(handle.id);
+  } finally {
+    await api.fsClose(handle.id);
+  }
+  if (written !== at) await api.rename(written, at);
+  return stat;
+}
+
+/**
  * `writer` (rooted at `dir`, a namespace path on a mount), with each file
  * over a wave's mount limit written through `api` instead, its receipt to
  * `onReceipts`.
@@ -54,20 +76,8 @@ export function mountWriter(writer: CloneWriter, api: FileApi, dir: string, onRe
       // What the waves hold before it (its directory among them) lands first.
       await writer.flush();
       const at = root + '/' + path;
-      await api.mkdir(at.slice(0, at.lastIndexOf('/')), { recursive: true });
       // git writes its index whole to index.lock, then renames it over the index.
-      const written = path === '.git/index' ? at + '.lock' : at;
-      const handle = await api.fsOpen(written, { write: true, create: true, truncate: true, mode });
-      let stat: FileStat;
-      try {
-        for (let offset = 0; offset < bytes.byteLength; offset += WRITE_PIECE_BYTES) {
-          await api.fsWrite(handle.id, offset, bytes.subarray(offset, Math.min(bytes.byteLength, offset + WRITE_PIECE_BYTES)));
-        }
-        stat = await api.fsFstat(handle.id);
-      } finally {
-        await api.fsClose(handle.id);
-      }
-      if (written !== at) await api.rename(written, at);
+      const stat = await writeInPlace(api, at, mode, bytes, path === '.git/index' ? at + '.lock' : at);
       onReceipts?.([{
         path: at.replace(/^\/+/, ''),
         ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, uid: stat.uid, gid: stat.gid, dev: stat.dev,

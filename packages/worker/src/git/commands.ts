@@ -2610,11 +2610,11 @@ export async function runGitCommand(
       const remote = await promisorRemote(gitdir);
       if (remote === null || !doCtx || !doEnv) return false;
       const top = gitdir.endsWith('/.git') ? gitdir.slice(0, -'/.git'.length) : gitdir;
-      const target = await onEngine(top || '/');
-      if (target === null) return false;
+      const place = await placeRepository(top || '/');
       await fetchMissingObjects(doCtx, doEnv, {
         pid: ctx.pid,
-        dir: target,
+        dir: place.dir,
+        onMount: place.mount,
         remote: remote.name,
         url: remote.url,
         oids,
@@ -2629,17 +2629,10 @@ export async function runGitCommand(
       key: async (path) => await engineKey(ctx.vfs, vfs, path),
       writeStream: (stream) => vfs.as(ctx.cred).writeStream(stream),
     });
-    // The network commands write through the engine's streamed batches, at
-    // the repository's engine key; a mounted repository has none.
-    const onEngine = async (target: string): Promise<string | null> => {
-      const key = await engineKey(ctx.vfs, vfs, target);
-      if (key === null) await ctx.stderr.write(`fatal: git ${sub} writes a repository only on the workspace filesystem; '${target}' is on a mounted one\n`);
-      return key === null ? null : '/' + key;
-    };
-    // Where a clone writes: its engine key, or on a mount its path in the
-    // namespace (every link resolved), which the facet's writes reach as the
-    // command's own would.
-    const placeClone = async (target: string): Promise<{ dir: string; mount: boolean }> => {
+    // Where a network command writes a repository: its engine key, or on a
+    // mount its path in the namespace (every link resolved), which the
+    // facet's writes reach as the command's own would.
+    const placeRepository = async (target: string): Promise<{ dir: string; mount: boolean }> => {
       const key = await engineKey(ctx.vfs, vfs, target);
       if (key !== null) return { dir: '/' + key, mount: false };
       return { dir: await namespacePath(ctx.vfs, target), mount: true };
@@ -2698,7 +2691,7 @@ export async function runGitCommand(
         } else {
           dest = dir + '/' + url.split('/').pop()?.replace('.git', '');
         }
-        const place = await placeClone(dest);
+        const place = await placeRepository(dest);
         const target = place.dir;
 
         if (!doCtx || !doEnv) {
@@ -2993,8 +2986,8 @@ export async function runGitCommand(
       }
 
       case 'fetch': {
-        const target = await onEngine(dir);
-        if (target === null) return 128;
+        const place = await placeRepository(dir);
+        const target = place.dir;
         const { quiet, rest: fetchArgs } = takeQuiet(subArgs);
         let deepen: { depth: number; relative: boolean } | undefined;
         try {
@@ -3015,6 +3008,7 @@ export async function runGitCommand(
           op: 'fetch',
           pid: ctx.pid,
           dir: target,
+          onMount: place.mount,
           remote,
           quiet,
           depth: deepen?.depth,
@@ -3036,8 +3030,8 @@ export async function runGitCommand(
       case 'pull': {
         // git pull is a fetch of the branch, then a merge of it: the merge through the session's one
         // checkout policy, as `git merge` runs it.
-        const target = await onEngine(dir);
-        if (target === null) return 128;
+        const place = await placeRepository(dir);
+        const target = place.dir;
         const { quiet, rest } = takeQuiet(subArgs);
         const remote = rest[0] || 'origin';
         const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
@@ -3053,6 +3047,7 @@ export async function runGitCommand(
           op: 'fetch',
           pid: ctx.pid,
           dir: target,
+          onMount: place.mount,
           remote,
           ref: branch,
           quiet,
@@ -3071,8 +3066,8 @@ export async function runGitCommand(
       }
 
       case 'push': {
-        const target = await onEngine(dir);
-        if (target === null) return 128;
+        const place = await placeRepository(dir);
+        const target = place.dir;
         const { quiet, rest } = takeQuiet(subArgs);
         const remote = rest[0] || 'origin';
         const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
@@ -3085,6 +3080,7 @@ export async function runGitCommand(
           op: 'push',
           pid: ctx.pid,
           dir: target,
+          onMount: place.mount,
           remote,
           ref: branch,
           quiet,

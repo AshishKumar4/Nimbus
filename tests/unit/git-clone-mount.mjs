@@ -3,7 +3,10 @@
 // mounted at /mnt/data), against host git cloning the same repository over
 // the same server: the same worktree, index (`ls-files -s`), refs and
 // objects (fsck clean), with depth 1 and with history; files over a wave's
-// 4 MiB mount limit included.
+// 4 MiB mount limit included. A clone there that fails is removed, through
+// the namespace. Then fetch, pull and push in the mounted repository, host
+// git doing the same in its clone: the same refs, objects, worktree and
+// index, and the server's branch where ours pushed it.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -62,6 +65,7 @@ try {
   hostGit(work, ['clone', '-q', '--bare', source, join(served, 'repo.git')]);
   hostGit(join(served, 'repo.git'), ['config', 'uploadpack.allowFilter', 'true']);
   hostGit(join(served, 'repo.git'), ['config', 'uploadpack.allowAnySHA1InWant', 'true']);
+  hostGit(join(served, 'repo.git'), ['config', 'http.receivepack', 'true']);
   const server = startGitHttpServer(served);
 
   const mountHarness = createSqliteVfsTestHarness();
@@ -69,7 +73,7 @@ try {
   // The session user's own directory on the mount.
   mountEngine.as(CRED_KERNEL).mkdir('work', { mode: 0o755 });
   mountEngine.as(CRED_KERNEL).chown('work', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
-  const session = await createFacetSession(work, { mounts: { '/mnt/data': new SqliteFiles(mountEngine, mountEngine.as(CRED_KERNEL)) } });
+  const session = await createFacetSession(work, { realGit: true, mounts: { '/mnt/data': new SqliteFiles(mountEngine, mountEngine.as(CRED_KERNEL)) } });
   try {
     // Host git's clone is the whole history without --depth: ours takes --no-shallow for it.
     for (const [name, args, hostArgs] of [['shallow', ['--depth', '1'], ['--depth', '1']], ['history', ['--no-shallow'], []]]) {
@@ -109,6 +113,47 @@ try {
     assert.equal(mountEngine.as(CRED_KERNEL).exists('work/failed'), false, 'its destination on the mount is gone');
     assert.equal((await session.doCtx.storage.list({ prefix: 'git-clone-job:' })).size, 0, 'and its record');
     console.log('  ok  a clone onto a mount that fails: its destination there removed, through the namespace');
+
+    // fetch and pull in the mounted repository (its full clone), host git in its own: a new
+    // commit with another file past a wave's mount limit.
+    const big2 = new Uint8Array(5 * 1024 * 1024);
+    for (let i = 0; i < big2.length; i += 65536) crypto.getRandomValues(big2.subarray(i, i + 65536));
+    put('assets/big2.bin', big2);
+    put('src/a.txt', 'a, a third time\n');
+    hostGit(source, ['add', '-A']);
+    hostGit(source, ['commit', '-q', '-m', 'three']);
+    hostGit(source, ['push', '-q', join(served, 'repo.git'), 'main']);
+    const hostHistory = join(work, 'host-history');
+    const ident = { GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b' };
+    const fetched = await session.git('/mnt/data/work/history', ['fetch', '-q'], ident);
+    assert.equal(fetched.code, 0, `fetch: ${fetched.stderr}`);
+    hostGit(hostHistory, ['fetch', '-q']);
+    const afterFetch = await session.materializeAt('/mnt/data/work/history', join(work, 'ours-fetched'));
+    assert.equal(hostGit(afterFetch, ['rev-parse', 'origin/main']), hostGit(hostHistory, ['rev-parse', 'origin/main']), 'fetch: origin/main');
+    assert.equal(spawnSync('git', ['fsck', '--full', '--no-dangling'], { cwd: afterFetch, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }).status, 0, 'fetch: fsck');
+    console.log('  ok  fetch in a mounted repository: host git\'s refs; fsck clean');
+    const pulled = await session.git('/mnt/data/work/history', ['pull', '-q'], ident);
+    assert.equal(pulled.code, 0, `pull: ${pulled.stderr}`);
+    hostGit(hostHistory, ['pull', '-q']);
+    const afterPull = await session.materializeAt('/mnt/data/work/history', join(work, 'ours-pulled'));
+    assert.deepEqual(worktreeOf(afterPull), worktreeOf(hostHistory), 'pull: the worktree');
+    assert.equal(hostGit(afterPull, ['ls-files', '-s']), hostGit(hostHistory, ['ls-files', '-s']), 'pull: the index');
+    assert.equal(hostGit(afterPull, ['rev-parse', 'HEAD']), hostGit(hostHistory, ['rev-parse', 'HEAD']), 'pull: HEAD');
+    assert.equal(hostGit(afterPull, ['status', '--porcelain']), '', 'pull: clean');
+    console.log('  ok  pull in a mounted repository: host git\'s worktree, index and HEAD, a 5 MiB file included');
+
+    // push from the mounted repository: the server's main is ours.
+    await session.files.view({ pid: 7, cred: CRED_SESSION_USER }).writeFile('/mnt/data/work/history/pushed.txt', new TextEncoder().encode('pushed\n'));
+    for (const args of [['add', 'pushed.txt'], ['commit', '-q', '-m', 'pushed']]) {
+      const step = await session.git('/mnt/data/work/history', args, ident);
+      assert.equal(step.code, 0, `${args[0]}: ${step.stderr}`);
+    }
+    const pushed = await session.git('/mnt/data/work/history', ['push', '-q'], ident);
+    assert.equal(pushed.code, 0, `push: ${pushed.stderr}`);
+    const afterPush = await session.materializeAt('/mnt/data/work/history', join(work, 'ours-pushed'));
+    assert.equal(hostGit(join(served, 'repo.git'), ['rev-parse', 'main']), hostGit(afterPush, ['rev-parse', 'HEAD']), 'push: the server\'s main is ours');
+    assert.equal(spawnSync('git', ['fsck', '--full', '--no-dangling'], { cwd: join(served, 'repo.git'), env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }).status, 0, 'push: the server fsck clean');
+    console.log('  ok  push from a mounted repository: the server\'s main is our commit; fsck clean');
   } finally {
     server.stop();
   }
