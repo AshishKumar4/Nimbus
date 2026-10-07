@@ -799,10 +799,10 @@ function lockRefusal(root, waitMs) {
 }
 
 // ── [23] RED: a gate in another PID namespace is waited for, not broken ─
-// run-bounded runs every gate under bwrap --unshare-pid: a pid written there
-// names nothing outside it.
+// A gate may run in a PID namespace of its own (bwrap --unshare-pid): a pid
+// written there names nothing outside it.
 {
-  assert.ok(existsSync('/usr/bin/bwrap'), 'this case needs bubblewrap (run-bounded and the CI image have it)');
+  assert.ok(existsSync('/usr/bin/bwrap'), 'this case needs bubblewrap (the CI image has it)');
   const { root } = await blockingFixture();
   const gate = spawn('/usr/bin/bwrap', [
     '--unshare-user', '--unshare-pid', '--die-with-parent', '--bind', '/', '/', '--proc', '/proc', '--dev-bind', '/dev', '/dev',

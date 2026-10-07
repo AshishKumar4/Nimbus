@@ -403,8 +403,8 @@ const BWRAP = '/usr/bin/bwrap';
 
 /**
  * Each build step runs as PID 1's child in a PID namespace of its own that
- * dies with this process (bwrap --unshare-pid --die-with-parent, as
- * run-bounded runs a test): when the gate dies, however it dies, the
+ * dies with this process (bwrap --unshare-pid --die-with-parent): when the
+ * gate dies, however it dies, the
  * namespace's init is killed and the kernel kills every process in it. So
  * nothing a step started (esbuild's service, which Node spawns with fds 0-2
  * only, among them) writes on after the checkout lock is released; the
