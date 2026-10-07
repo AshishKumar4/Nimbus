@@ -95,7 +95,8 @@ export function replLineBody(text) {
         }
         append(inner, { start: node.id.start, end: node.id.end, text: '' });
         assigned += `${node.id.name} = ${applyEdits(source, inner, node.start, node.end)}; `;
-        append(rest, { start: node.start, end: node.end, text: '' });
+        // An empty statement in its place: a label before it still labels one.
+        append(rest, { start: node.start, end: node.end, text: ';' });
         line.edits.length = 0;
         for (let j = 0; j < rest.length; j++)
             append(line.edits, rest[j]);
