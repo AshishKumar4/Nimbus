@@ -1111,6 +1111,15 @@ export declare class SqliteVFS {
     /** One chunk's bytes, through the LRU when `cached`. */
     private readChunk;
     /**
+     * The one read of a stored chunk: the bytes of a row whose state holds
+     * them (chunkHeld), from its `hash`, `size`, `data` and `state`. A
+     * deflated row's bytes are checked against its name before anything
+     * returns, caches, exports or tiers them (raw deflate carries no check of
+     * its own): EIO for `what` when they do not inflate to its size, or do
+     * not hash to its name.
+     */
+    private heldChunkBytes;
+    /**
      * The content key of an inode's bytes: sha256 of them up to CHUNK_SIZE,
      * else the digest of the manifest's ordered chunk hashes. An in-place edit
      * clears a manifest's digest; it is recomputed here and stored unless

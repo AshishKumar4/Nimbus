@@ -82,6 +82,7 @@ import {
   cutContent,
   hex,
 } from './content-chunking.js';
+import { inflateChunk } from './chunk-codec.js';
 import {
   CRED_KERNEL,
   sameCred,
@@ -539,6 +540,17 @@ const CHUNK_COLD = 1;
  * (pendingChunkError), never bytes.
  */
 const CHUNK_PENDING = 2;
+/**
+ * Bytes in `data`, deflated (chunk-codec.ts); `size` is the bytes'. A state
+ * of its own, not a codec beside CHUNK_LOCAL: every release before this one
+ * reads `data` only at CHUNK_LOCAL and refuses any other state, so code
+ * rolled back past it fails on a deflated chunk instead of returning it.
+ */
+const CHUNK_DEFLATED = 3;
+/** Bytes in `data` as written, once found not to deflate by an eighth: never tried again. */
+const CHUNK_KEPT = 4;
+/** SQL: the states whose bytes are in `data`. */
+const CHUNK_HELD = `(${CHUNK_LOCAL}, ${CHUNK_DEFLATED}, ${CHUNK_KEPT})`;
 /** SQL (over vfs_chunks AS c): no live row, live manifest or staging content names c. */
 const LIVE_CHUNK_UNREFERENCED = `
   AND NOT EXISTS (SELECT 1 FROM vfs_inodes WHERE chunk_id = c.id)
@@ -3892,11 +3904,11 @@ export class SqliteVFS {
         const page = missing.slice(i, i + KEYS_PER_SQL_EXEC);
         this._sqlReads++;
         for (const row of this.sql.exec(
-          `SELECT id, data, state FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`,
+          `SELECT id, hash, size, data, state FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`,
           ...page,
         )) {
-          if (Number(row.state) !== CHUNK_LOCAL) throw unreadableChunkError(Number(row.state), ref.path);
-          const data = this.blobToUint8Array(row.data);
+          if (!chunkHeld(Number(row.state))) throw unreadableChunkError(Number(row.state), ref.path);
+          const data = this.heldChunkBytes(row, ref.path);
           found.set(Number(row.id), data);
           this.cacheSet(Number(row.id), data);
         }
@@ -3913,11 +3925,11 @@ export class SqliteVFS {
         const byId = new Map<number, Uint8Array>();
         this._sqlReads++;
         for (const row of this.sql.exec(
-          `SELECT id, data, state FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`,
+          `SELECT id, hash, size, data, state FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`,
           ...page.map((row) => row.chunkId),
         )) {
-          if (Number(row.state) !== CHUNK_LOCAL) throw unreadableChunkError(Number(row.state), ref.path);
-          byId.set(Number(row.id), this.blobToUint8Array(row.data));
+          if (!chunkHeld(Number(row.state))) throw unreadableChunkError(Number(row.state), ref.path);
+          byId.set(Number(row.id), this.heldChunkBytes(row, ref.path));
         }
         for (const row of page) {
           const data = byId.get(row.chunkId);
@@ -4017,12 +4029,35 @@ export class SqliteVFS {
       if (hit) return hit;
     }
     this._sqlReads++;
-    const row = [...this.sql.exec('SELECT data, state FROM vfs_chunks WHERE id = ?', chunkId)][0];
+    const row = [...this.sql.exec('SELECT hash, size, data, state FROM vfs_chunks WHERE id = ?', chunkId)][0];
     if (!row) throw vfsError('EIO', path, `missing chunk ${chunkId}`);
-    if (Number(row.state) !== CHUNK_LOCAL) throw unreadableChunkError(Number(row.state), path);
-    const data = this.blobToUint8Array(row.data);
+    if (!chunkHeld(Number(row.state))) throw unreadableChunkError(Number(row.state), path);
+    const data = this.heldChunkBytes(row, path);
     if (cached) this.cacheSet(chunkId, data);
     return data;
+  }
+
+  /**
+   * The one read of a stored chunk: the bytes of a row whose state holds
+   * them (chunkHeld), from its `hash`, `size`, `data` and `state`. A
+   * deflated row's bytes are checked against its name before anything
+   * returns, caches, exports or tiers them (raw deflate carries no check of
+   * its own): EIO for `what` when they do not inflate to its size, or do
+   * not hash to its name.
+   */
+  private heldChunkBytes(row: SqlRow, what: string): Uint8Array {
+    const data = this.blobToUint8Array(row.data);
+    if (Number(row.state) !== CHUNK_DEFLATED) return data;
+    let raw: Uint8Array;
+    try {
+      raw = inflateChunk(data, Number(row.size));
+    } catch (error) {
+      throw vfsError('EIO', what, `a stored chunk is corrupt: ${(error as Error).message}`);
+    }
+    if (hashKey(chunkHash(raw)) !== hashKey(this.blobToUint8Array(row.hash))) {
+      throw vfsError('EIO', what, 'a stored chunk is corrupt: it does not hash to its name');
+    }
+    return raw;
   }
 
   /**
@@ -6930,7 +6965,8 @@ export class SqliteVFS {
       gcQueued: one('SELECT COUNT(*) AS n FROM vfs_gc_queue'),
       snapshots: one('SELECT COUNT(*) AS n FROM vfs_snapshots'),
       jobs: one('SELECT COUNT(*) AS n FROM vfs_jobs'),
-      databaseBytes: one('SELECT page_count * page_size AS n FROM pragma_page_count(), pragma_page_size()'),
+      // As admission reads it: workerd's databaseSize (its SQLite refuses page_count).
+      databaseBytes: databaseBytesOf(this.sql),
       ledger: this.ledger.view(),
     };
   }
@@ -7062,7 +7098,7 @@ export class SqliteVFS {
     for (let i = 0; i < hashes.length; i += KEYS_PER_SQL_EXEC) {
       const batch = hashes.slice(i, i + KEYS_PER_SQL_EXEC);
       for (const row of this.sql.exec(
-        `SELECT hash FROM vfs_chunks WHERE state = ${CHUNK_LOCAL} AND hash IN (${batch.map(() => '?').join(',')})`,
+        `SELECT hash FROM vfs_chunks WHERE state IN ${CHUNK_HELD} AND hash IN (${batch.map(() => '?').join(',')})`,
         ...batch.map(unhex),
       )) present.add(hex(this.blobToUint8Array(row.hash)));
     }
@@ -7081,11 +7117,11 @@ export class SqliteVFS {
     let index = 0;
     for (const hash of hashes) {
       if (chunks.length === EXPORT_PAGE_PIECES) break;
-      const row = [...this.sql.exec('SELECT size, data, state FROM vfs_chunks WHERE hash = ?', unhex(hash))][0];
+      const row = [...this.sql.exec('SELECT hash, size, data, state FROM vfs_chunks WHERE hash = ?', unhex(hash))][0];
       if (!row) throw vfsError('ENOENT', `chunk ${hash}`);
-      if (Number(row.state) !== CHUNK_LOCAL) throw coldChunkError(`chunk ${hash}`);
+      if (!chunkHeld(Number(row.state))) throw coldChunkError(`chunk ${hash}`);
       if (chunks.length > 0 && bytes + Number(row.size) > maxBytes) break;
-      const data = this.blobToUint8Array(row.data);
+      const data = this.heldChunkBytes(row, `chunk ${hash}`);
       chunks.push({ hash, data });
       bytes += data.byteLength;
       index++;
@@ -7828,8 +7864,8 @@ export class SqliteVFS {
     )][0];
     const windowEnd = window?.id === null || window?.id === undefined ? null : Number(window.id);
     const candidates = windowEnd === null ? [] : [...this.sql.exec(
-      `SELECT c.id, c.hash, c.data FROM vfs_chunks c
-       WHERE c.id > ? AND c.id <= ? AND c.state = ${CHUNK_LOCAL}
+      `SELECT c.id, c.hash, c.size, c.data, c.state FROM vfs_chunks c
+       WHERE c.id > ? AND c.id <= ? AND c.state IN ${CHUNK_HELD}
          AND (EXISTS (SELECT 1 FROM vfs_inode_history WHERE chunk_id = c.id)
            OR EXISTS (SELECT 1 FROM vfs_content_chunks cc JOIN vfs_inode_history h ON h.content_id = cc.content_id WHERE cc.chunk_id = c.id))
          ${LIVE_CHUNK_UNREFERENCED}${hotHistory}${pinnedContent}
@@ -7846,7 +7882,8 @@ export class SqliteVFS {
     for (const row of candidates) {
       if (pinned.has(Number(row.id))) continue;
       const hash = this.blobToUint8Array(row.hash);
-      const data = this.blobToUint8Array(row.data);
+      // The cold store holds a chunk's bytes, as its name says.
+      const data = this.heldChunkBytes(row, `chunk ${hex(hash)}`);
       await store.put(hex(hash), data);
       uploaded.push({ id: Number(row.id), hash });
       bytes += data.byteLength;
@@ -7868,7 +7905,7 @@ export class SqliteVFS {
                 AND (${hotNow.map(() => '(h.gen_from <= ? AND ? < h.gen_to)').join(' OR ')}))`;
           tiered += [...this.sql.exec(
             `UPDATE vfs_chunks AS c SET data = x'', state = ${CHUNK_COLD}
-             WHERE id IN (${batch.map(() => '?').join(',')}) AND state = ${CHUNK_LOCAL}${LIVE_CHUNK_UNREFERENCED}${hotClause}
+             WHERE id IN (${batch.map(() => '?').join(',')}) AND state IN ${CHUNK_HELD}${LIVE_CHUNK_UNREFERENCED}${hotClause}
              RETURNING id`,
             ...batch.map((entry) => entry.id),
             ...hotNow.flatMap((g) => [g, g]),
@@ -9385,7 +9422,7 @@ export class SqliteVFS {
           )) {
             const key = hashKey(this.blobToUint8Array(row.hash));
             chunkIds.set(key, Number(row.id));
-            if (Number(row.state) !== CHUNK_LOCAL) remote.add(key);
+            if (!chunkHeld(Number(row.state))) remote.add(key);
             if (Number(row.state) === CHUNK_PENDING) pending.add(key);
           }
         }
@@ -9407,8 +9444,9 @@ export class SqliteVFS {
           const key = hashKey(rewrite.piece.hash);
           if (chunkIds.has(key)) continue;
           for (const [other, id] of chunkIds) if (id === rewrite.chunkId) chunkIds.delete(other);
+          // Stored as written, whatever form the old bytes had.
           this.sql.exec(
-            'UPDATE vfs_chunks SET hash = ?, size = ?, data = ? WHERE id = ?',
+            `UPDATE vfs_chunks SET hash = ?, size = ?, data = ?, state = ${CHUNK_LOCAL} WHERE id = ?`,
             rewrite.piece.hash,
             rewrite.piece.data.byteLength,
             rewrite.piece.data,
@@ -10878,6 +10916,11 @@ function planIdReservation(plan: TransactionPlan): { inos: number; chunks: numbe
 /** Let the host settle storage writes between slices of a long job. */
 function yieldToStorage(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/** Whether a vfs_chunks state has the chunk's bytes in `data` (CHUNK_HELD). */
+function chunkHeld(state: number): boolean {
+  return state === CHUNK_LOCAL || state === CHUNK_DEFLATED || state === CHUNK_KEPT;
 }
 
 /** Why a chunk that is not local cannot be read. */
