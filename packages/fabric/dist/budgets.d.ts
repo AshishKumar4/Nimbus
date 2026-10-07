@@ -336,26 +336,27 @@ interface FacetNameLedgerStorage {
     };
 }
 /**
- * Charge the slot book's `slot`. A fresh incarnation restarts the book at
- * zero and issues the same `proc-slot-` names again, so only a slot past the
- * slot high-water is a name never minted before.
+ * Charge the slot book's `slot` before its facet is created. A fresh
+ * incarnation restarts the book at zero and issues the same `proc-slot-`
+ * names again, so only a slot past the slot high-water is a name never
+ * minted before; any other costs nothing, so a slot may be charged on every
+ * use. Resolves once the charge is durable.
  */
-export declare function chargeFacetSlot(ctx: FacetNameLedgerStorage, slot: number): void;
+export declare function chargeFacetSlot(ctx: FacetNameLedgerStorage, slot: number): Promise<void>;
 /**
  * Charge an explicit facet name before its facet is created: its first use
  * ever consumes one lifetime ID, and any later use, in this incarnation or
  * another, costs nothing, so a caller may charge a name on every use.
- * `refuseAtWall` refuses a first use at the wall, before anything is
- * charged or created; without it the platform's own failure at creation
- * is what stops it, named by the ledger (withFacetBudgetNamed). Resolves
- * with the count after the charge.
+ * `refuseAtWall` refuses a first use at the wall; without it the platform's
+ * own failure at creation is what stops it, named by the ledger
+ * (withFacetBudgetNamed). Resolves with the count once the charge is durable.
  */
 export declare function chargeFacetName(ctx: FacetNameLedgerStorage, name: string, { refuseAtWall }: {
     refuseAtWall: boolean;
 }): Promise<number>;
-/** The best count available without awaiting storage. */
+/** The count as last read or charged, without awaiting storage: 0 before the first read. */
 export declare function facetNameCount(ctx: FacetNameLedgerStorage): number;
-/** The count with every charge so far applied, for a first failure on a fresh boot. */
+/** The count once every charge so far has settled, read from storage if no read has yet succeeded. */
 export declare function facetNameCountDurable(ctx: FacetNameLedgerStorage): Promise<number>;
 /**
  * The lifetime facet-ID ledger: how many facet names this fabric has ever
