@@ -15,7 +15,7 @@
 // reaches is (here: every file of a pre-bundle's slice, every module's
 // source, the caller's plugin). Not caching the options frees it; holding
 // invalidateJsSideCache's or deferSyncScanData's reference to the context
-// data weakly does not (/mnt/local/nimbus/spike/rolldown-leak). The facet's
+// data weakly does not (measured by heap snapshot). The facet's
 // runtime asks rolldown for no such hook.
 //
 // Here, the staged facet (build-facet-harness) runs pre-bundles, each with a

@@ -1,9 +1,7 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readdirSync, readFileSync, writeFileSync, accessSync, constants, mkdirSync, mkdtempSync, rmdirSync, rmSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync, accessSync, constants, mkdirSync, rmdirSync, statSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
-import { tmpdir, userInfo } from 'node:os';
-import { fileURLToPath } from 'node:url';
 
 export const DEFAULT_TEST_TIMEOUT_MS = 300_000;
 const active = new Set();
@@ -103,7 +101,7 @@ function removeGroup(group) {
   return left.join(', ');
 }
 
-/** systemd's MemoryMax syntax (`4G`, `512M`, bytes) as bytes, for memory.max. */
+/** NIMBUS_TEST_MEMORY_MAX (`4G`, `512M`, bytes) as bytes, for memory.max. */
 function memoryBytes(value) {
   const match = /^(\d+)([KMGT]?)$/i.exec(String(value).trim());
   if (!match) throw new Error(`NIMBUS_TEST_MEMORY_MAX ${JSON.stringify(value)} is not <digits>[K|M|G|T]`);
@@ -112,7 +110,6 @@ function memoryBytes(value) {
 
 let installed = false;
 let interrupted = null;
-let warnedPortable = false;
 function installCleanup() {
   if (installed) return;
   installed = true;
@@ -159,20 +156,6 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     // The case's whole process tree, where its cgroup can be read: null otherwise.
     let cpuMs = null;
     let memoryPeakBytes = null;
-    // run-bounded explicitly requests PID isolation. Every case gets its own
-    // cgroup: detached descendants cannot escape, even before the first read.
-    // Outside that wrapper, retain the explicitly weaker portable fallback.
-    const strong = process.env.NIMBUS_TEST_PID_ISOLATION === '1';
-    // Direct private-bus access fails from the user/PID namespace; .host
-    // transport reaches the owning user manager for teardown and status.
-    const hostMachine = `${userInfo().username}@.host`;
-    if (strong && process.platform !== 'linux') throw new Error('PID/cgroup isolation requires Linux systemd and bwrap; use /mnt/scratch/nimbus/run-bounded');
-    if (!strong && !warnedPortable) {
-      warnedPortable = true;
-      console.error('bounded-process: portable cleanup only (no memory/PID isolation); local verification requires /mnt/scratch/nimbus/run-bounded');
-    }
-    const unit = strong
-      ? `nimbus-case-${randomUUID()}.service` : null;
     // The command is found in the child's own PATH, in either mode: a
     // spawn's lookup falls back to a default search path when PATH is empty,
     // so the portable mode ran \`sh\` that the isolated mode refused.
@@ -201,7 +184,7 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     // and cgroup.kill ends every descendant, setsid and reparented ones too.
     // A case whose environment carries NIMBUS_TEST_CGROUP is handed its own
     // group there, so a runner it starts nests its cases inside it.
-    const cgroupRoot = strong ? null : process.env.NIMBUS_TEST_CGROUP || null;
+    const cgroupRoot = process.env.NIMBUS_TEST_CGROUP || null;
     let caseGroup = null;
     if (cgroupRoot) {
       // env(1) takes the first argument without `=` as the command.
@@ -222,47 +205,6 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
         return;
       }
     }
-    let statusDir;
-    let statusFile;
-    let requestFile;
-    if (unit) {
-      try { accessSync('/usr/bin/bwrap', constants.X_OK); } catch {
-        const launchError = 'required PID isolation unavailable: /usr/bin/bwrap';
-        resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: launchError, launchError, code: null, signal: null, outputTruncated: false });
-        return;
-      }
-      const request = JSON.stringify({ executable, args, env });
-      if (Buffer.byteLength(request) > 1024 * 1024) {
-        const launchError = 'launch request exceeds 1048576 bytes';
-        resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: launchError, launchError, code: null, signal: null, outputTruncated: false });
-        return;
-      }
-      statusDir = mkdtempSync(resolvePath(tmpdir(), 'bounded-status-'));
-      statusFile = resolvePath(statusDir, 'status.json');
-      requestFile = resolvePath(statusDir, 'request.json');
-      // Neither environment values nor target arguments enter the launcher's
-      // argv or systemd metadata. mkdtemp is 0700; this request is 0600.
-      try { writeFileSync(requestFile, request, { mode: 0o600 }); }
-      catch (error) { rmSync(statusDir, { recursive: true, force: true }); throw error; }
-    }
-    const memoryMax = process.env.NIMBUS_TEST_MEMORY_MAX || '4G';
-    const launchArgs = unit ? [
-      // oneshot treats SIGTERM as a signal failure, not a clean service stop.
-      '--user', `--machine=${hostMachine}`, '--quiet', '--wait', '--pipe', '--service-type=oneshot', '--expand-environment=no',
-      `--unit=${unit}`, '--slice=nimbus-tests.slice',
-      '--description=Nimbus bounded subprocess',
-      `--working-directory=${cwd ?? process.cwd()}`,
-      `--property=MemoryMax=${memoryMax}`,
-      `--property=MemoryHigh=${process.env.NIMBUS_TEST_MEMORY_HIGH || memoryMax}`, '--property=MemorySwapMax=0',
-      '--property=OOMPolicy=kill', '--property=KillMode=control-group', '--property=TasksMax=256',
-      '--property=TimeoutStopSec=1s', `--property=TimeoutStartSec=${Math.max(1, Math.ceil(timeoutMs / 1000))}s`,
-      // The launcher needs the caller's user-bus environment. The target
-      // receives only its requested environment, not the manager's defaults.
-      // PID/user namespaces isolate signals, not filesystem or network access.
-      '--', '/usr/bin/bwrap', '--unshare-user', '--uid', String(process.getuid()), '--gid', String(process.getgid()),
-      '--unshare-pid', '--bind', '/', '/', '--proc', '/proc', '--dev-bind', '/dev', '/dev', '--die-with-parent',
-      '--', process.execPath, fileURLToPath(new URL('./subprocess-entry.mjs', import.meta.url)), requestFile,
-    ] : args;
     // The shell joins the case's group and execs env(1), which execs the
     // target with exactly the requested environment: the shell's own (it
     // adds PWD and drops names that are not identifiers) never reaches it.
@@ -271,21 +213,13 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
       ? spawn('/bin/sh', ['-c', `echo $$ > "$0/cgroup.procs" || { echo '${JOIN_FAILED}' >&2; exit 125; }; exec /usr/bin/env -i -- "$@"`, caseGroup,
         ...Object.entries(cgroupEnv).filter(([key, value]) => key && !key.includes('=') && value !== undefined).map(([key, value]) => `${key}=${value}`),
         executable, ...args], { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: {}, cwd })
-      : spawn(unit ? '/usr/bin/systemd-run' : executable, launchArgs, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: unit ? process.env : env, cwd });
+      : spawn(executable, args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env, cwd });
     const rootStart = child.pid ? identity(child.pid) : null;
     const job = {
       name,
       kill() {
-        if (unit) {
-          const killed = spawnSync('/usr/bin/systemctl', ['--user', `--machine=${hostMachine}`, 'kill', '--kill-whom=all', '--signal=KILL', unit], { encoding: 'utf8', timeout: 3000 });
-          if (killed.status !== 0 && reason && child.exitCode === null && child.signalCode === null) console.error(`cgroup cleanup ${unit}: ${killed.error?.message ?? killed.stderr}`);
-          // The systemd-run client can retain its bus/stdio handles after the
-          // service is killed. It is our direct child, not a namespace PID.
-          if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-        } else {
-          if (caseGroup) { try { writeFileSync(resolvePath(caseGroup, 'cgroup.kill'), '1'); } catch { /* Already removed. */ } }
-          killTree(child, rootStart, known);
-        }
+        if (caseGroup) { try { writeFileSync(resolvePath(caseGroup, 'cgroup.kill'), '1'); } catch { /* Already removed. */ } }
+        killTree(child, rootStart, known);
       },
       cancel(signal) {
         reason = `runner received ${signal}`;
@@ -294,12 +228,13 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     };
     active.add(job);
     // What the case started, as seen every 25 ms: a run's report says which
-    // files drive a local workerd. Strong isolation has no census.
+    // files drive a local workerd.
     const commands = new Set();
-    const census = unit ? null : setInterval(() => { if (child.pid) descendants(child.pid, rootStart, known, commands); }, 25);
+    const census = setInterval(() => { if (child.pid) descendants(child.pid, rootStart, known, commands); }, 25);
     // A setsid descendant may be reparented before the first census. Never
-    // wait forever on its inherited pipes. The outer run-bounded cgroup is
-    // REQUIRED: polling/process groups cannot close this race or bound RSS.
+    // wait forever on its inherited pipes. Only a case cgroup
+    // (NIMBUS_TEST_CGROUP) closes this race and bounds RSS: polling and
+    // process groups cannot.
     const cleanup = () => {
       job.kill();
       cleanupTimer ??= setTimeout(() => {
@@ -340,35 +275,6 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
       clearInterval(census);
       job.kill();
       active.delete(job);
-      if (unit) {
-        // Failed units remain queryable until reset. systemd-run's own exit
-        // status alone cannot distinguish an oracle exit from exec/OOM failure.
-        const info = spawnSync('/usr/bin/systemctl', ['--user', `--machine=${hostMachine}`, 'show', unit, '--property=Result,ExecMainCode,ExecMainStatus'], { encoding: 'utf8', timeout: 3000 });
-        const props = Object.fromEntries((info.stdout ?? '').trim().split('\n').map((line) => line.split('=')));
-
-        if (props.Result && !['success', 'exit-code'].includes(props.Result)) reason ||= `cgroup result=${props.Result} ExecMainCode=${props.ExecMainCode} ExecMainStatus=${props.ExecMainStatus}`;
-        if (props.ExecMainCode === '1') {
-          code = Number(props.ExecMainStatus);
-        } else if (props.ExecMainCode === '2' || props.ExecMainCode === '3') {
-          signal = `signal ${props.ExecMainStatus}`;
-          code = null;
-          reason ||= `process terminated by ${signal}`;
-        }
-        spawnSync('/usr/bin/systemctl', ['--user', `--machine=${hostMachine}`, 'reset-failed', unit], { stdio: 'ignore', timeout: 3000 });
-        try {
-          if (statSync(statusFile).size > 1024) throw new Error('oversized wait status');
-          const status = JSON.parse(readFileSync(statusFile, 'utf8'));
-          if (!(status.code === null || (Number.isInteger(status.code) && status.code >= 0 && status.code <= 255))
-            || !(status.signal === null || typeof status.signal === 'string') || typeof status.error !== 'string') throw new Error('invalid wait status');
-          code = status.code;
-          signal = status.signal;
-          if (Number.isSafeInteger(status.cpuUsec)) cpuMs = Math.round(status.cpuUsec / 1000);
-          if (status.error) reason ||= `spawn failed: ${status.error}`;
-          if (signal) reason ||= `process terminated by ${signal}`;
-        } catch (error) {
-          reason ||= `PID-isolated process produced no valid wait status: ${error.message}`;
-        } finally { rmSync(statusDir, { recursive: true, force: true }); }
-      }
       // The join shell's own failure: the target never started.
       const launchError = notStarted
         ?? (caseGroup && code === 125 && stderr.text().toString().includes(JOIN_FAILED) ? `could not join case cgroup ${caseGroup}` : undefined);
