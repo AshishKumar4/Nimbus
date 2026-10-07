@@ -88,6 +88,20 @@ export type TreeReader = (oid: Uint8Array) => Promise<Uint8Array>;
  * each entry below it. Null once there are more than `limit`.
  */
 export declare function changedPaths(read: TreeReader, from: Uint8Array | null, to: Uint8Array, limit?: number): Promise<Uint8Array[] | null>;
+/** A graph file's chunks, in its own order. */
+export declare function graphChunks(file: Uint8Array): [string, Uint8Array][];
+/** One layer's commits as the filters pass reads them: each one's root tree, first parent and date. */
+export interface LayerCommits {
+    count: number;
+    tree(position: number): Uint8Array;
+    /** Its first parent's position, or -1 for a root. */
+    firstParent(position: number): number;
+    date(position: number): bigint;
+}
+/** A base layer's commits (no BASE chunk: every parent is in it). */
+export declare function layerCommits(file: Uint8Array): LayerCommits;
+/** `file`, a graph without changed-path chunks, with `filters` (one per commit, in graph order) added. */
+export declare function withFilters(file: Uint8Array, filters: readonly Uint8Array[]): Uint8Array;
 /** A layer's name: its trailing hash, in hex. */
 export declare function graphName(file: Uint8Array): string;
 //# sourceMappingURL=commit-graph.d.ts.map

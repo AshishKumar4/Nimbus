@@ -26,15 +26,34 @@
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
-export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects';
+export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters';
 /**
  * The clone's job marker, in its git directory from prepare until the clone
  * is whole: the proof an abort needs that the destination is the clone's,
  * and what tells every other git command the repository is not yet one.
  */
 export declare const GIT_CLONE_JOB_MARKER = "nimbus-clone-job";
+/** One step of a clone's changed-path filters pass (git/pack/graph-filters.ts). */
+export type GraphFiltersStep = {
+    step: 'plan';
+} | {
+    step: 'piece';
+    layer: string;
+    from: number;
+    to: number;
+    budgetMs: number;
+} | {
+    step: 'assemble';
+    layer: string;
+    files: {
+        name: string;
+        bytes: number;
+    }[];
+};
 export interface GitNetworkOpts {
     op: GitNetworkOp;
+    /** For graph-filters: its step. */
+    graphFilters?: GraphFiltersStep;
     /** Invoking process identity used to bind every supervisor filesystem RPC. */
     pid: number;
     /** Absolute working tree directory (e.g. "/home/user/project") */
@@ -162,6 +181,8 @@ export interface GitNetworkResult {
     cleanupError?: string;
     /** fetch-objects: objects the promisor pack holds. */
     fetchedObjects?: number;
+    /** For graph-filters: the step's answer. */
+    graphFilters?: unknown;
 }
 export interface GitCloneBudgetDiagnostic {
     phase: GitCloneInvocationPhase;
@@ -171,6 +192,28 @@ export interface GitCloneBudgetDiagnostic {
     elapsedMs: number;
     limitMs: number;
 }
+/** How a clone's changed-path filters pass went. */
+export interface GraphFiltersOutcome {
+    /** The new layer's name, or null when there was nothing to do or the chain moved on. */
+    layer: string | null;
+    commits: number;
+    pieces: number;
+    /** Trees read from the packs, and their bytes. */
+    trees: number;
+    treeBytes: number;
+    elapsed: number;
+}
+/**
+ * A full clone's changed-path filters (git/pack/graph-filters.ts), after the
+ * clone has answered: plan, the pieces one at a time (each holds a tree
+ * cache and the pack store's), then the layer with the filters.
+ */
+export declare function runGraphFilters(ctx: DurableObjectState, env: any, opts: {
+    pid: number;
+    dir: string;
+    pieceBudgetMs?: number;
+    pieceCommits?: number;
+}, network: WorkspaceNetwork): Promise<GraphFiltersOutcome>;
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.
  */
