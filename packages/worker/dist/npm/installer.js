@@ -442,6 +442,13 @@ export class NpmInstaller {
                 .map(([name, ms]) => `${name}=${fmtPhaseMs(ms)}`)
                 .join(' '));
         log(`  storage: ${commitCount} transactions during fetch+write`);
+        // The same breakdown in Workers Logs, under the session's Durable
+        // Object: a slow install is traced there by phase, beside whatever else
+        // that object ran meanwhile (tests/behavioral/perf-regression/install-warm.mjs).
+        try {
+            console.log(`[npm:phases] ${JSON.stringify({ installed: installed.length, failed: failed.length, cachedHits, elapsed, commits: commitCount, phases })}`);
+        }
+        catch { /* logging never fails an install */ }
         return { installed, failed, totalFiles, elapsed, cachedHits, phases };
     }
     // ── Single-resolver / single-fetcher invariant ───────────────────────
