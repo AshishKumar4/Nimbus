@@ -630,7 +630,10 @@ export function __wasiMakeImports(opts) {
         dv.setUint32(off + 4, hi, true);
     }
     function readPath(ptr, len) {
-        const bytes = u8().subarray(ptr, ptr + len);
+        // By the constructor, not subarray: past 128 MiB of guest memory a
+        // Worker refuses a subarray's begin (wasi/filesystem.ts, guestBytes).
+        const mem = u8();
+        const bytes = new Uint8Array(mem.buffer, mem.byteOffset + ptr, Math.max(0, Math.min(len, mem.length - ptr)));
         return utf8dec.decode(bytes);
     }
     let stdoutBuf = '';
@@ -1077,7 +1080,7 @@ export function __wasiMakeImports(opts) {
             let off = 0;
             while (off < bufLen) {
                 const n = Math.min(bufLen - off, CHUNK);
-                crypto.getRandomValues(memU8.subarray(bufPtr + off, bufPtr + off + n));
+                crypto.getRandomValues(new Uint8Array(memU8.buffer, memU8.byteOffset + bufPtr + off, n));
                 off += n;
             }
             return __WASI_ESUCCESS;

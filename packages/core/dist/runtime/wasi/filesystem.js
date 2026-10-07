@@ -62,13 +62,19 @@ export function installAuthorityFilesystem(imports, options) {
     // through its semantics rather than dropping the entry.
     const hostClose = imports.fd_close;
     const memory = () => new Uint8Array(options.memory().buffer);
+    // Guest memory at a guest pointer is viewed by the constructor, never by
+    // subarray: in a Worker, a WebAssembly.Memory grows past the 128 MiB an
+    // ArrayBuffer may have, and subarray refuses a begin past that ("Invalid
+    // array buffer length", V8's CalculateByteLength against the embedder's
+    // maximum), where the constructor takes any offset within the buffer.
+    const guestBytes = (ptr, length) => new Uint8Array(options.memory().buffer, ptr, length);
     const view = () => new DataView(options.memory().buffer);
     const u32 = (ptr, value) => view().setUint32(ptr, value, true);
     const u64 = (ptr, value) => view().setBigUint64(ptr, BigInt(value), true);
     const path = (ptr, length) => {
         if (ptr < 0 || length < 0 || ptr + length > memory().length)
             fail('EFAULT');
-        const p = decoder.decode(memory().subarray(ptr, ptr + length));
+        const p = decoder.decode(guestBytes(ptr, length));
         if (p.includes('\0'))
             fail('EINVAL');
         return p;
@@ -268,7 +274,7 @@ export function installAuthorityFilesystem(imports, options) {
         if (e.kind === 'resident')
             fail('ENOTCAPABLE');
         for (const v of vectors.result) {
-            data.set(memory().subarray(v.ptr, v.ptr + v.length), used);
+            data.set(guestBytes(v.ptr, v.length), used);
             used += v.length;
         }
         return after(fs.write(e.handle.id, offset, data), n => { u32(written, n); return 0; });
