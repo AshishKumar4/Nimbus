@@ -64,6 +64,8 @@ import {
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
 import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
+import { createNodeInspect } from './node-inspect-host.js';
+import { EAST_ASIAN_WIDE_RANGES, NODE_INSPECT_SOURCE, NODE_PRIMORDIALS_SOURCE } from './node-inspect-source.js';
 
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
@@ -6031,17 +6033,72 @@ ${UNDICI_SHIM_CODE}
 // ═══════════════════════════════════════════════════════════════════════
 // ──  util module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-// util.inspect, format and formatWithOptions are workerd's node:util, a port
-// of Node's lib/internal/util/inspect.js: what a program prints of a value,
-// through util or console, is what Node prints
-// (console-format-matches-node-workerd). consola's FancyReporter calls
-// formatWithOptions directly (nuxi init).
+// util.inspect, format and formatWithOptions are Node v22.22.3's own
+// lib/internal/util/inspect.js (node-inspect-source.ts), evaluated the first
+// time a program formats a value, over what node-inspect-host.ts gives it in
+// place of Node's internals: what a program prints of a value, through util
+// or console, is what Node prints (node-inspect-matches-node,
+// console-format-matches-node-workerd). workerd's own node:util gives
+// util.types, and formats what only V8's internals read (a promise's state,
+// a proxy's target). consola's FancyReporter calls formatWithOptions
+// directly (nuxi init).
 const __realUtil = typeof __real_util !== "undefined"
   ? (__real_util.default ?? __real_util) : globalThis.process.getBuiltinModule("util");
+let __nimbusNodeInspectExports = null;
+function __nimbusNodeInspect() {
+  if (__nimbusNodeInspectExports !== null) return __nimbusNodeInspectExports;
+  // The East Asian Wide and Fullwidth ranges, ascending: [first, last] pairs.
+  const wide = ${JSON.stringify(EAST_ASIAN_WIDE_RANGES)}.split(",").flatMap((range) => {
+    const [first, last = first] = range.split("-");
+    return [parseInt(first, 16), parseInt(last, 16)];
+  });
+  __nimbusNodeInspectExports = (${createNodeInspect.toString()})({
+    util: __realUtil,
+    Buffer: __BufferMod,
+    url: { pathToFileURL: __urlMod.pathToFileURL, URL: __urlMod.URL },
+    process: __processMod,
+    builtinModules: __NodeModule.builtinModules,
+    eastAsianWide(code) {
+      let low = 0;
+      let high = wide.length / 2 - 1;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (code < wide[2 * mid]) high = mid - 1;
+        else if (code > wide[2 * mid + 1]) low = mid + 1;
+        else return true;
+      }
+      return false;
+    },
+    primordialsOf: function (primordials, globalThis) {
+${NODE_PRIMORDIALS_SOURCE}
+    },
+    inspectOf: function (exports, require, module, process, internalBinding, primordials) {
+${NODE_INSPECT_SOURCE}
+    },
+  });
+  return __nimbusNodeInspectExports;
+}
+// util.inspect, which loads Node's the first time it formats: its custom
+// symbol is Node's registered one, its options and styles Node's own.
+function __nimbusInspect(value, options) {
+  return Reflect.apply(__nimbusNodeInspect().inspect, this, arguments);
+}
+Object.defineProperties(__nimbusInspect, {
+  name: { value: "inspect" },
+  custom: { value: Symbol.for("nodejs.util.inspect.custom"), writable: true, enumerable: true, configurable: true },
+  defaultOptions: {
+    get() { return __nimbusNodeInspect().inspect.defaultOptions; },
+    set(options) { __nimbusNodeInspect().inspect.defaultOptions = options; },
+    enumerable: true, configurable: true,
+  },
+  colors: { get() { return __nimbusNodeInspect().inspect.colors; }, set(value) { __nimbusNodeInspect().inspect.colors = value; }, enumerable: true, configurable: true },
+  styles: { get() { return __nimbusNodeInspect().inspect.styles; }, set(value) { __nimbusNodeInspect().inspect.styles = value; }, enumerable: true, configurable: true },
+});
 const __utilMod = {
-  inspect: __realUtil.inspect,
-  format: __realUtil.format,
-  formatWithOptions: __realUtil.formatWithOptions,
+  inspect: __nimbusInspect,
+  format: function format(...args) { return __nimbusNodeInspect().format(...args); },
+  formatWithOptions: function formatWithOptions(options, ...args) { return __nimbusNodeInspect().formatWithOptions(options, ...args); },
+  stripVTControlCharacters: function stripVTControlCharacters(str) { return __nimbusNodeInspect().stripVTControlCharacters(str); },
   promisify: (fn) => (...a) => new Promise((res, rej) => fn(...a, (e, r) => e ? rej(e) : res(r))),
   callbackify: (fn) => (...a) => { const cb = a.pop(); fn(...a).then(r => cb(null, r), e => cb(e)); },
   // X.5-Q: util.types polyfill expansion. The pre-X.5-Q 3-method shape
@@ -6088,22 +6145,6 @@ const __utilMod = {
   isDeepStrictEqual: (a, b) => JSON.stringify(a) === JSON.stringify(b),
   TextEncoder: globalThis.TextEncoder,
   TextDecoder: globalThis.TextDecoder,
-  // util.stripVTControlCharacters(str) — Node 16.11+. Strips ANSI
-  // escape sequences from a string. Used by sv (svelte CLI), modern
-  // log libraries, and any CLI that wants to measure displayed-width
-  // independent of color codes. Pre-fix, sv's engine module imported
-  // this from 'node:util' and crashed at module-init with
-  // "stripVTControlCharacters is not a function".
-  //
-  // Real-Node impl strips C0/C1 ANSI escapes via a single regex.
-  // Standard CSI sequence pattern: ESC + '[' + parameter bytes + final byte.
-  stripVTControlCharacters: (str) => {
-    if (typeof str !== "string") return str;
-    // Covers most common ANSI sequences: CSI (\x1b[...m, \x1b[...K, etc.),
-    // OSC, simple ESC sequences. Mirrors the regex Node's lib/internal/
-    // util/inspect.js uses (slightly relaxed).
-    return str.replace(/\\x1b\\[[0-9;?]*[A-Za-z]|\\x1b[\\(\\)\\*\\+][AB012]|\\x1b\\][^\\x07\\x1b]*[\\x07\\x1b]|\\x1b[=>]/g, "");
-  },
   // util.styleText(format, text [, opts]) — Node 20.12+. Returns text
   // wrapped in ANSI escape sequences for terminal styling. Used by
   // create-vite and many modern CLIs.
@@ -8023,52 +8064,25 @@ function __nimbusFormatTime(ms) {
   if (seconds !== 0) return seconds.toFixed(3) + "s";
   return Number(ms.toFixed(3)) + "ms";
 }
-// The columns a string takes (Node's getStringWidth): an ASCII character
-// one, a control none; past ASCII, East Asian full width two and the
-// zero-width marks none, as Node's build without ICU counts them.
-function __nimbusStringWidth(str) {
-  str = __utilMod.stripVTControlCharacters(String(str)).normalize("NFC");
-  let width = 0;
-  for (const char of str) {
-    const code = char.codePointAt(0);
-    if (code < 127) width += code >= 32 ? 1 : 0;
-    else if (__nimbusFullWidth(code)) width += 2;
-    else if (!__nimbusZeroWidth(code)) width++;
-  }
-  return width;
-}
-function __nimbusFullWidth(code) {
-  return code >= 0x1100 && (code <= 0x115f || code === 0x2329 || code === 0x232a
-    || (code >= 0x2e80 && code <= 0x3247 && code !== 0x303f) || (code >= 0x3250 && code <= 0x4dbf)
-    || (code >= 0x4e00 && code <= 0xa4c6) || (code >= 0xa960 && code <= 0xa97c) || (code >= 0xac00 && code <= 0xd7a3)
-    || (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe10 && code <= 0xfe19) || (code >= 0xfe30 && code <= 0xfe6b)
-    || (code >= 0xff01 && code <= 0xff60) || (code >= 0xffe0 && code <= 0xffe6) || (code >= 0x1b000 && code <= 0x1b001)
-    || (code >= 0x1f200 && code <= 0x1f251) || (code >= 0x1f300 && code <= 0x1f64f) || (code >= 0x20000 && code <= 0x3fffd));
-}
-function __nimbusZeroWidth(code) {
-  return code <= 0x1f || (code >= 0x7f && code <= 0x9f) || (code >= 0x300 && code <= 0x36f)
-    || (code >= 0x200b && code <= 0x200f) || (code >= 0x20d0 && code <= 0x20ff) || (code >= 0xfe00 && code <= 0xfe0f)
-    || (code >= 0xfe20 && code <= 0xfe2f) || (code >= 0xe0100 && code <= 0xe01ef);
-}
 // Node's lib/internal/cli_table.js: the head and the columns of cell text, drawn.
 function __nimbusTable(head, columns) {
   const renderRow = (row, widths) => {
     let out = "│ ";
     for (let i = 0; i < row.length; i++) {
-      out += row[i] + " ".repeat(Math.ceil(widths[i] - __nimbusStringWidth(row[i])));
+      out += row[i] + " ".repeat(Math.ceil(widths[i] - __nimbusNodeInspect().getStringWidth(row[i])));
       if (i !== row.length - 1) out += " │ ";
     }
     return out + " │";
   };
   const rows = [];
-  const widths = head.map((h) => __nimbusStringWidth(h));
+  const widths = head.map((h) => __nimbusNodeInspect().getStringWidth(h));
   const longest = Math.max(...columns.map((column) => column.length));
   for (let i = 0; i < head.length; i++) {
     const column = columns[i];
     for (let j = 0; j < longest; j++) {
       rows[j] ??= [];
       const value = rows[j][i] = Object.prototype.hasOwnProperty.call(column, j) ? column[j] : "";
-      widths[i] = Math.max(widths[i] || 0, __nimbusStringWidth(value));
+      widths[i] = Math.max(widths[i] || 0, __nimbusNodeInspect().getStringWidth(value));
     }
   }
   const divider = widths.map((w) => "─".repeat(w + 2));
@@ -8121,6 +8135,9 @@ class __NimbusConsole {
     return color ? { colors: true } : {};
   }
   #format(stream, args) {
+    // Strings with no format directive are joined as formatWithOptions
+    // joins them, without loading Node's inspect for a line it never needs.
+    if (args.every((arg) => typeof arg === "string") && (args.length < 2 || !args[0].includes("%"))) return args.join(" ");
     return __utilMod.formatWithOptions(this.#optionsFor(stream), ...args);
   }
   #write(stream, string) {

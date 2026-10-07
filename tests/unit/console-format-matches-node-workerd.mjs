@@ -12,9 +12,11 @@
 // output redirected to files (no terminal: no colours), and the bytes must
 // be equal. Under FORCE_COLOR, the colours are Node's too.
 //
-// One difference is workerd's and not covered: its inspect prints a symbol
-// key bare (`{ Symbol(k): 3 }`) where Node 22 brackets it (`{ [Symbol(k)]:
-// 3 }`), workerd src/node/internal/internal_inspect.ts formatProperty.
+// The formatter is Node's own inspect.js (node-inspect-matches-node). The
+// values only V8's internals read (a promise's state, a proxy's target, an
+// iterator's entries) workerd's inspect formats, and they are printed here
+// too. workerd's inspect alone printed a symbol key bare (`{ Symbol(k): 3 }`
+// where Node brackets it), and a wide string's table column narrow.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -47,7 +49,18 @@ const outer = new Error('outer', { cause: inner }); outer.stack = 'Error: outer\
 console.log({ outer });
 console.log({ s: 'str', f() {}, g: () => {}, d: new Date(0), r: /x/g, u: undefined });
 console.log(new Uint8Array([1, 2, 3]), [, 1, , ]);
-console.log('multi\nline', { x: 'a\nb', 'quoted-key': 2 });
+console.log('multi\nline', { x: 'a\nb', 'quoted-key': 2, [Symbol('k')]: 3, [Symbol()]: 4 });
+console.log(Promise.resolve({ a: 1 }), new Promise(() => {}), new Map([[1, 2]]).entries(), new Set(['v']).values(), new Proxy({ p: 1 }, {}));
+const rejected = Promise.reject(Object.assign(new Error('no'), { stack: 'Error: no\n    at r (/r.js:1:1)' })); rejected.catch(() => {});
+console.log(rejected);
+class Sub extends Map { extra = true; }
+console.log(new Sub([[1, 2]]), Object.setPrototypeOf(new Map([[1, 2]]), null), Object.setPrototypeOf([1, 2], null));
+const many = new AggregateError([new Error('a')], 'many'); many.stack = 'AggregateError: many\n    at z (/z.js:3:3)'; many.errors[0].stack = 'Error: a\n    at a (/a.js:1:1)';
+console.log(many);
+console.log({ get value() { return 1; }, set value(v) {}, get only() { return 2; } }, { f() {}, async g() {}, *h() {} });
+console.log(Array.from({ length: 30 }, (_, i) => 'item' + i), ['日本', '語', 'テキスト', 'abc', 'de', 'f', 'g', 'h', 'i', 'j']);
+console.log(new URL('http://user:pw@host:8080/p?q=s#h'), Buffer.from('hello'), new Float64Array([0.5, -0]), new WeakMap());
+console.log(util.inspect({ a: { b: { c: { d: 1 } } } }, { depth: 0, sorted: true, compact: false, breakLength: 20 }), util.inspect('x'.repeat(30), { maxStringLength: 4 }));
 console.error({ to: 'stderr' }, 'and', ['text']);
 console.warn('%s warned', 'it');
 console.dir({ a: { b: { c: { d: 1 } } } }, { depth: 0 });
@@ -77,7 +90,7 @@ console.table(new Map([['k', { v: 1 }], [2, 'two']]));
 console.table(new Set(['s', 1]));
 console.table([{ a: 1, b: 2 }, { a: 3 }], ['a', 'b']);
 console.table('not tabular');
-console.table([{ wide: '日本語', ascii: 'abc' }]);
+console.table([{ wide: '日本語', ascii: 'abc', emoji: '😀👍🏽' }]);
 `;
 
 // Colours where Node's console would use them: FORCE_COLOR forces them for
