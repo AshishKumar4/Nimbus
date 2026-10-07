@@ -1,24 +1,38 @@
-/**
- * npm-init.ts — the package.json `npm init` writes: npm 10.9.8's, as its
- * init-package-json 7.0.2 builds it with every prompt at its default
- * (lib/default-input.js under `yes`, which npm also takes when stdin is not a
- * terminal), assigned over the package.json that is there, then the
- * @npmcli/package-json normalize steps init asks for (bin, gypfile, serverjs,
- * scriptpath, fillTypes) and the normalize-package-data fixes a new
- * package's fields reach (keywords, name, version, repository with the
- * bugs and homepage a hosted one has). It is written in the file's own
- * indent and line ending (json-parse-even-better-errors), and npm's message
- * says so.
- *
- * Named limits: npm's init.* and scope configs are at their defaults (none is
- * read), and normalize-package-data's other fixes of a package.json that was
- * already there are not made.
- */
+import type { CommandContext } from '../types.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
-/** What `npm init` writes in `dir`: the file, its text, and what npm prints. */
-export declare function npmInitPackage(vfs: VFS, dir: string): Promise<{
-    path: string;
-    text: string;
-    message: string;
-}>;
+import { type NpmConfig } from './npm-config.js';
+/** An npm error: its code, and its message's lines, each printed `npm error <line>`. */
+export declare class NpmError extends Error {
+    readonly code?: string | undefined;
+    constructor(message: string, code?: string | undefined);
+}
+/**
+ * The package `npm init <initializer>` runs (init.js execCreate): `@scope`
+ * is `@scope/create`, a hosted git repository `user/project` is
+ * `user/create-project`, a registry package `name@spec` is
+ * `create-name@spec` (`@scope/create-name@spec` for a scoped one); anything
+ * else is not an initializer.
+ */
+export declare function npmInitializerPackage(initializer: string): string;
+/**
+ * `npm init`, `npm create` and `npm innit` (npm.ts loads this module for
+ * them): with an initializer, npm exec's run of the package it names (npx);
+ * without, npm's own package.json, asked for on the command's input unless
+ * under `yes`.
+ */
+export declare function npmInitCommand(ctx: CommandContext): Promise<number>;
+/** The terminal the template asks its questions on. */
+export interface NpmInitIo {
+    /** Print `text` to standard output. */
+    print(text: string): Promise<void>;
+    /** Show `question` and read one line; null when the input ended. Throws NpmInitCanceled on ^C. */
+    ask(question: string): Promise<string | null>;
+}
+/** ^C at a question: npm warns `init canceled`. */
+export declare class NpmInitCanceled extends Error {
+}
+/** How the template ended: written, refused at "Is this OK?", or the input ended mid-question. */
+export type NpmInitOutcome = 'written' | 'aborted' | 'ended';
+/** `npm init` without an initializer in `dir` (init.js template, init-package-json). */
+export declare function npmInitTemplate(vfs: VFS, dir: string, config: NpmConfig, io: NpmInitIo): Promise<NpmInitOutcome>;
 //# sourceMappingURL=npm-init.d.ts.map

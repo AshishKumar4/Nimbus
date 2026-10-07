@@ -10,7 +10,6 @@ import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_sh
 import { RegistryPackumentSchema, RegistrySearchResponseSchema, renderSearchTable, } from './registry-schemas.js';
 import { parseNpmInstallInvocation, } from './npm-install-args.js';
 import { installSummary, npmLogEnabled } from './npm-log.js';
-import { npmInitPackage } from './npm-init.js';
 import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 /** The registry an install reads from when its env names none. */
 export const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org';
@@ -223,19 +222,13 @@ async function printHelp(ctx) {
     await ctx.stdout.write('  search <term>              search the npm registry\n');
     await ctx.stdout.write('  -v, --version              print npm version\n');
 }
-/** `npm init` and `npm init -y`: the package.json npm writes (npm-init.ts), and its message. */
+/**
+ * `npm init`, `npm create` and `npm innit` (npm-init.ts). npm's own
+ * libraries there (hosted-git-info, npm-package-arg, semver, the SPDX list)
+ * are evaluated the first time a session runs one, not when it starts.
+ */
 async function npmInit(ctx) {
-    let init;
-    try {
-        init = await npmInitPackage(ctx.vfs, ctx.cwd);
-    }
-    catch (error) {
-        await ctx.stderr.write(`npm error ${error instanceof Error ? error.message : String(error)}\n`);
-        return 1;
-    }
-    await ctx.vfs.writeFile(init.path, init.text);
-    await ctx.stdout.write(init.message);
-    return 0;
+    return (await import('./npm-init.js')).npmInitCommand(ctx);
 }
 async function npmInstall(ctx, registry, kernel, deps) {
     const args = ctx.args.slice(1);
@@ -664,6 +657,8 @@ export function createNpmCommand(registry, shellExecute, kernel, deps) {
         }
         switch (subcommand) {
             case 'init':
+            case 'create':
+            case 'innit':
                 return (await npmInit(ctx));
             case 'install':
             case 'i':
