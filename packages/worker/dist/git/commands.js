@@ -12,6 +12,7 @@ import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs } from '../runtime/project-fs.js';
 import { execGitNetwork, GIT_CLONE_JOB_MARKER } from './network-facet.js';
+import { anonymizeUrl, remoteFailureText } from './pack/remote-failure.js';
 import { packsSeam } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -2683,6 +2684,28 @@ async function resetCommand(ctx, git, vfs, fs, args, prefetch) {
  * this module and its ~106 KB network-facet dependency out of the cold
  * script-eval graph.
  */
+/** The URL a remote names: itself when it is one, else its configured remote.<name>.url. */
+async function remoteUrl(git, fs, dir, remote) {
+    if (remote.includes('://'))
+        return remote;
+    const value = await git.getConfig({ fs, dir, path: `remote.${remote}.url` });
+    return typeof value === 'string' ? value : undefined;
+}
+/**
+ * A network command that failed. When the git server could not be reached,
+ * or refused (pack/remote-failure.ts), git's message about the repository
+ * at `url`, and git's 128; else what failed, and 1.
+ */
+async function networkFailure(ctx, what, result, url) {
+    if (result.remoteFailure !== undefined && url !== undefined) {
+        // Credentials offered: the session's, or the URL's own.
+        const credentials = Boolean(ctx.env.GIT_USERNAME || ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN) || anonymizeUrl(url) !== url;
+        await ctx.stderr.write(remoteFailureText(url, result.remoteFailure, credentials));
+        return 128;
+    }
+    await ctx.stderr.write(`\n[git] ${what} failed: ${result.error}\n`);
+    return 1;
+}
 export async function runGitCommand(ctx, vfs, doCtx, doEnv, 
 /** The workspace's network (`workspace.network`): clone, fetch, pull, push and promisor fetches go out through it. */
 network = ISOLATE_NETWORK) {
@@ -2905,11 +2928,9 @@ network = ISOLATE_NETWORK) {
                         if (result.success) {
                             progress.write(`\n[git] clone complete (${result.filesWritten} files, ` +
                                 `${(result.bytesWritten / 1024).toFixed(1)}KB in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
+                            return 0;
                         }
-                        else {
-                            ctx.stderr.write(`\n[git] clone failed: ${result.error}\n`);
-                        }
-                        return result.success;
+                        return await networkFailure(ctx, 'clone', result, url);
                     }
                     finally {
                         vfs.releaseExclusiveMutation(mutationOwner);
@@ -2922,7 +2943,7 @@ network = ISOLATE_NETWORK) {
                     return 0;
                 }
                 else {
-                    return (await doClone()) ? 0 : 1;
+                    return await doClone();
                 }
             }
             case 'status':
@@ -3134,10 +3155,7 @@ network = ISOLATE_NETWORK) {
                         ctx.stdout.write(`\n[git] fetch complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
                     return 0;
                 }
-                else {
-                    ctx.stderr.write(`\n[git] fetch failed: ${result.error}\n`);
-                    return 1;
-                }
+                return await networkFailure(ctx, 'fetch', result, await remoteUrl(git, fs, dir, remote));
             }
             case 'pull': {
                 // git pull is a fetch of the branch, then a merge of it: the merge through the session's one
@@ -3173,7 +3191,8 @@ network = ISOLATE_NETWORK) {
                     },
                 }, network);
                 if (!result.success) {
-                    ctx.stderr.write(`\n[git] pull failed: ${result.error}\n`);
+                    // git's pull runs its fetch as a child: its message, and pull's own 1.
+                    await networkFailure(ctx, 'pull', result, await remoteUrl(git, fs, dir, remote));
                     return 1;
                 }
                 const merged = await mergeCommand(ctx, git, fs, repoVfs, dir, `${remote}/${branch}`, true, partial);
@@ -3211,10 +3230,7 @@ network = ISOLATE_NETWORK) {
                         ctx.stdout.write(`\n[git] push complete (${(result.elapsed / 1000).toFixed(1)}s)\n`);
                     return 0;
                 }
-                else {
-                    ctx.stderr.write(`\n[git] push failed: ${result.error}\n`);
-                    return 1;
-                }
+                return await networkFailure(ctx, 'push', result, await remoteUrl(git, fs, dir, remote));
             }
             case 'merge': {
                 const theirs = subArgs.find(a => !a.startsWith('-'));

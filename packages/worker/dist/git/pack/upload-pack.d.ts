@@ -9,6 +9,7 @@
  * processor buffers more than one side-band packet.
  */
 import { STALL_MS } from './transport.js';
+import { type RemoteFailure } from './remote-failure.js';
 export interface GitTransportAuth {
     username: string;
     password: string;
@@ -53,7 +54,8 @@ export interface PackResponse {
 }
 export declare class UploadPackError extends Error {
     readonly status?: number | undefined;
-    constructor(message: string, status?: number | undefined);
+    readonly failure?: RemoteFailure | undefined;
+    constructor(message: string, status?: number | undefined, failure?: RemoteFailure | undefined);
 }
 export { STALL_MS };
 export declare function discover(options: UploadPackOptions): Promise<Advertisement>;

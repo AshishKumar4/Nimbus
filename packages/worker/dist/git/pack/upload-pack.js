@@ -11,11 +11,14 @@
 import { retrying } from '@nimbus-sh/platform/retry.js';
 import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UPLOAD_PACK_ERROR_PREFIX } from './transport.js';
 import { PackFormatError } from './format.js';
+import { plainTextMessage } from './remote-failure.js';
 export class UploadPackError extends Error {
     status;
-    constructor(message, status) {
+    failure;
+    constructor(message, status, failure) {
         super(UPLOAD_PACK_ERROR_PREFIX + message);
         this.status = status;
+        this.failure = failure;
         this.name = 'UploadPackError';
     }
 }
@@ -47,7 +50,10 @@ async function send(options, path, init) {
     const attempt = async () => {
         let timer = null;
         const stalled = new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new UploadPackError('no response for ' + Math.round(stallMs / 1000) + ' s')), stallMs);
+            timer = setTimeout(() => {
+                const detail = 'no response for ' + Math.round(stallMs / 1000) + ' s';
+                reject(new UploadPackError(detail, undefined, { kind: 'transport', detail }));
+            }, stallMs);
         });
         try {
             return await Promise.race([doFetch(repoUrl(options.url) + path, { ...init, signal: options.signal }), stalled]);
@@ -68,7 +74,10 @@ async function send(options, path, init) {
         });
     }
     catch (error) {
-        throw error instanceof UploadPackError ? error : new UploadPackError('the request failed: ' + (error instanceof Error ? error.message : String(error)));
+        if (error instanceof UploadPackError)
+            throw error;
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new UploadPackError('the request failed: ' + detail, undefined, { kind: 'transport', detail });
     }
 }
 export { STALL_MS };
@@ -154,13 +163,14 @@ export async function discover(options) {
     const response = await send(options, '/info/refs?service=git-upload-pack', {
         headers: headers(options, { accept: 'application/x-git-upload-pack-advertisement' }),
     });
-    if (response.status === 401 || response.status === 403) {
-        await response.body?.cancel();
-        throw new UploadPackError('authentication failed (HTTP ' + response.status + ')', response.status);
-    }
     if (!response.ok || !response.body) {
-        await response.body?.cancel();
-        throw new UploadPackError('discovery answered HTTP ' + response.status, response.status);
+        // The server's text, as git shows it, with the status.
+        const message = await plainTextMessage(response.headers.get('content-type'), response.body);
+        const failure = { kind: 'status', status: response.status, ...(message === undefined ? {} : { message }) };
+        if (response.status === 401 || response.status === 403) {
+            throw new UploadPackError('authentication failed (HTTP ' + response.status + ')', response.status, failure);
+        }
+        throw new UploadPackError('discovery answered HTTP ' + response.status, response.status, failure);
     }
     const reader = new PktReader(response.body.getReader(), options.stallMs);
     const first = await reader.next();
