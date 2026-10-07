@@ -2079,6 +2079,20 @@ export class ViteDevServer {
 
   // ── Module serving (/@modules/<pkg>) ──────────────────────────────────
 
+  /**
+   * A pre-bundle as the browser loads it under the mount `base`, from
+   * esbuild's base-independent output. `__require("external")` calls (CJS
+   * source with esbuild externals) become ESM `import * as` + dispatch, so
+   * externalized packages (react, scheduler) work. Bare imports esbuild
+   * marked external carry the base: without it `import X from "scheduler"`
+   * 404s. A CJS-only package's __commonJS wrapper emits only `export
+   * default`, so its named exports are synthesized from a static scan, or
+   * `import { createRoot } from "react-dom/client"` would fail.
+   */
+  private servablePrebundle(bundled: string, base: string): string {
+    return synthesizeCjsNamedExports(rewriteAllImports(rewriteExternalRequires(bundled, base), this.aliases, base));
+  }
+
   private async getBarrelModuleCacheInfo(specifier: string): Promise<BarrelModuleCacheInfo | null> {
     const pkgName = packageNameFromSpecifier(specifier);
     if (specifier !== pkgName) return null;
@@ -2157,14 +2171,9 @@ export class ViteDevServer {
         esmBundle.sources.every((path) => this.mayRead(path)) &&
         (await this.bundleKeys(specifier, esmBundle.sources)).includes(esmBundle.bundleHash)
       ) {
-        let code = esmBundle.esmCode;
         // The persisted bundle is base-independent raw esbuild output; the
         // base-dependent rewrites (module URLs) are applied here, per request.
-        // Rewrite __require("external") calls to ESM imports so externalized
-        // packages (react, scheduler) actually work in the browser.
-        code = rewriteExternalRequires(code, base);
-        code = rewriteAllImports(code, this.aliases, base);
-        code = synthesizeCjsNamedExports(code);
+        const code = this.servablePrebundle(esmBundle.esmCode, base);
         this.cacheModule(generation, cacheKey, { code, timestamp: Date.now(), inputHash: esmBundle.inputHash });
         return new Response(code, {
           headers: { ...headers, 'Content-Type': JS_CT },
@@ -2509,19 +2518,7 @@ export class ViteDevServer {
             } catch { /* non-fatal */ }
           }
 
-          // Convert `__require("external")` calls (from CJS source with esbuild
-          // externals) into ESM `import * as` + dispatch, and rewrite any bare
-          // imports esbuild marked external so they carry the mount base.
-          // Without the base prefix, `import X from "scheduler"` 404s.
-          let code = rewriteExternalRequires(bundled, base);
-          code = rewriteAllImports(code, this.aliases, base);
-          // For CJS-only packages (react, react-dom), esbuild's __commonJS
-          // wrapper only emits `export default` — named imports like
-          // `import { createRoot } from "react-dom/client"` would fail. Statically
-          // scan the bundled source for CJS export patterns and synthesize
-          // named exports.
-          code = synthesizeCjsNamedExports(code);
-
+          const code = this.servablePrebundle(bundled, base);
           this.cacheModule(generation, cacheKey, { code, timestamp: Date.now(), inputHash: barrelInfo?.inputHash ?? '' });
           return new Response(code, {
             headers: { ...headers, 'Content-Type': JS_CT },
