@@ -224,6 +224,16 @@ export const PROCESS_FS_SYNC_CAP_BYTES = 64 * 1024 * 1024;
 /** What a writer that waits for room (ProcessFsClient.room) lets the client hold unanswered: two waves' worth. */
 export const PROCESS_FS_ROOM_BYTES = 2 * WAVE_BYTES;
 
+/**
+ * The most a process holds acknowledged (told it succeeded) and not yet
+ * answered by the session before a change in a held subtree stops being
+ * decided here and waits for its own answer: two waves' worth of ops and
+ * bytes. What a process killed mid-run can lose of what it decided is at
+ * most this (its synchronous calls' own bytes are bounded by the sync cap).
+ */
+export const DECIDED_BACKLOG_OPS = 2 * WAVE_PATHS;
+export const DECIDED_BACKLOG_BYTES = 2 * WAVE_BYTES;
+
 /** A data call's bytes per op: a larger one is sent as its first piece, then writes at offsets. */
 const DATA_PIECE_BYTES = WAVE_BYTES;
 
@@ -341,6 +351,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   let scheduled = false;
   let pendingBytes = 0;
   let pendingSyncBytes = 0;
+  let pendingSyncOps = 0;
   /** The writer epoch the log is numbered under, when it was opened, and its numbering. */
   let epoch: { writer: string | null; openedAt: number } | null = null;
   let nextSeq = 1;
@@ -389,7 +400,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
 
   const settled = (entry: Entry): void => {
     pendingBytes -= entry.bytes;
-    if (entry.acknowledged) pendingSyncBytes -= entry.bytes;
+    if (entry.acknowledged) {
+      pendingSyncBytes -= entry.bytes;
+      pendingSyncOps--;
+    }
     answered = Math.max(answered, entry.order);
     for (let at = marks.length - 1; at >= 0; at--) {
       if (marks[at]!.mark <= answered) marks.splice(at, 1)[0]!.resolve();
@@ -736,6 +750,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     holder(key) {
       const held = heldGrant(key);
       if (held !== undefined) {
+        // Decided here only while what it was told succeeded and the session
+        // has not answered stays under the backlog bound; past it, the change
+        // waits for its own answer (and so for the backlog's).
+        if (pendingSyncOps >= DECIDED_BACKLOG_OPS || pendingSyncBytes >= DECIDED_BACKLOG_BYTES) return undefined;
         held.lastUsed = now();
         return held;
       }
@@ -788,7 +806,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         const partBytes = part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0;
         queue.push({ op: part, seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, resolve, reject });
         pendingBytes += partBytes;
-        if (acknowledged) pendingSyncBytes += partBytes;
+        if (acknowledged) {
+          pendingSyncBytes += partBytes;
+          pendingSyncOps++;
+        }
         counters.ops++;
       }));
       schedule();

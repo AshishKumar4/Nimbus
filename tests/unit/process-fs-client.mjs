@@ -24,7 +24,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
-import { processFsClient } from '../../packages/core/src/_shared/process-fs-client.ts';
+import { DECIDED_BACKLOG_OPS, processFsClient } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
 
@@ -340,6 +340,32 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   assert.ok(roomed <= 2, `${roomed} writers took room at once for 12 MiB (a window is 8 MiB)`);
   await Promise.all(writers);
   assert.equal(c.pendingBytes, 0);
+}
+
+// ── What a held subtree decides ahead of the session is bounded ──
+{
+  const s = session();
+  s.kernel.mkdir('home/user/b', { mode: 0o755 });
+  s.kernel.chown('home/user/b', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const c = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 100 });
+  c.holder('home/user/b/x');
+  const grant = await until(() => c.holder('home/user/b/x'), 'the grant');
+  // The session stops answering: what is decided here piles up, to the bound.
+  const gate = Promise.withResolvers();
+  s.fault = async (deliver) => { await gate.promise; return deliver(); };
+  let decided = 0;
+  while (c.holder(`home/user/b/f${decided}`) !== undefined && decided < DECIDED_BACKLOG_OPS + 10) {
+    c.submit({ type: 'call', call: { call: 'writeFile', path: `home/user/b/f${decided}`, mode: 0o644, ino: c.number(grant), data: enc.encode('x') } }, { acknowledged: true });
+    decided++;
+  }
+  assert.equal(decided, DECIDED_BACKLOG_OPS, `${decided} changes decided ahead of the session`);
+  s.fault = null;
+  gate.resolve();
+  await c.flush();
+  assert.equal(c.stats().recalls, 0, 'the process\'s own waves recalled its subtree');
+  assert.notEqual(c.holder('home/user/b/next'), undefined, 'answered, the subtree is decided here again');
+  await c.settle();
+  assert.equal(s.text(`home/user/b/f${DECIDED_BACKLOG_OPS - 1}`), 'x');
 }
 
 console.log('process-fs-client: ok');
