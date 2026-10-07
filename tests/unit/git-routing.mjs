@@ -20,17 +20,19 @@ const commands = {
   transport: ['fetch', 'pull', 'push'],
   other: [undefined, '--version', '-v', '--help', '-h', 'help', 'archive', 'user-alias', 'constructor', '__proto__', 'toString'],
 };
+const jsCommands = new Set([undefined, '--version', '-v', '--help', '-h', 'clone', 'init', 'status', 'diff', 'add', 'commit', 'checkout', 'reset', 'log', 'branch', 'tag', 'remote', 'config', 'rev-parse', 'ls-files', 'merge', 'fetch', 'pull', 'push']);
+const regressions = { status: [35, 4798], diff: [27, 2217], add: [31, 2207], commit: [33, 4213], checkout: [56, 4330] };
 
 for (const [family, subs] of Object.entries(commands)) {
   for (const sub of subs) {
     assert.equal(classifyGitCommand(sub), family, String(sub));
-    const args = sub === undefined ? [] : [sub, '--arg', 'value'];
+    const args = sub === undefined ? [] : [sub];
     const original = [...args];
     const route = routeGitInvocation(args, '/home/user');
     assert.equal(route.family, family);
-    assert.equal(route.policy, GIT_FAMILY_POLICY[family]);
-    assert.equal(route.policy.backend, 'javascript', 'unmeasured families do not move to WASI');
-    assert.equal(route.policy.reason, family === 'clone' ? 'streamed-clone' : 'performance-unmeasured');
+    assert.equal(route.policy.backend, jsCommands.has(sub) ? 'javascript' : 'wasi', `${sub}: explicit capability route`);
+    if (jsCommands.has(sub) && family !== 'other') assert.equal(route.policy, GIT_FAMILY_POLICY[family]);
+    if (!jsCommands.has(sub)) assert.equal(route.policy.reason, 'javascript-capability-gap');
     assert.deepEqual(args, original, 'routing preserves the original argv');
   }
 }
@@ -47,7 +49,7 @@ for (const [args, expected] of [
   const { family, policy, ...parsed } = routeGitInvocation(args, '/home/user');
   assert.deepEqual(parsed, expected);
   assert.equal(family, classifyGitCommand(expected.sub));
-  assert.equal(policy, GIT_FAMILY_POLICY[family]);
+  assert.equal(policy.backend, expected.sub === 'stash' ? 'wasi' : 'javascript');
 }
 
 for (const args of [['-C'], ['--unknown', 'clone'], ['-c', 'alias.x=clone', 'x'], ['--git-dir=repo', 'status']]) {
@@ -56,6 +58,20 @@ for (const args of [['-C'], ['--unknown', 'clone'], ['-c', 'alias.x=clone', 'x']
 }
 
 assert.deepEqual(Object.keys(GIT_FAMILY_POLICY).sort(), Object.keys(commands).sort());
+for (const [family, [javascriptMs, wasiMs]] of Object.entries(regressions)) {
+  assert.deepEqual(GIT_FAMILY_POLICY[family], { backend: 'javascript', reason: 'latency-regression', javascriptMs, wasiMs });
+}
+for (const args of [
+  ['merge', '-s', 'ours', 'topic'], ['merge', '--strategy=ort', 'topic'], ['merge', '--ff-only', 'topic'], ['merge', '--abort'], ['merge', 'one', 'two'],
+  ['add', '-p'], ['commit', '--amend'], ['branch', '-m', 'new'], ['checkout', '--orphan', 'new'],
+  ['config', '--global', 'user.name', 'Ada'], ['log', '--graph'], ['pull', '--rebase'],
+  ['show', 'HEAD'], ['blame', 'a'], ['switch', 'main'], ['restore', 'a'], ['notes', 'list'], ['worktree', 'list'],
+]) {
+  assert.equal(routeGitInvocation(args, '/home/user').policy.backend, 'wasi', args.join(' '));
+}
+for (const args of [['merge', '-q', 'topic'], ['add', '-A'], ['commit', '-m', 'message'], ['checkout', '--', '--orphan'], ['log', '--oneline', '-n', '10']]) {
+  assert.equal(routeGitInvocation(args, '/home/user').policy.backend, 'javascript', args.join(' '));
+}
 assert.ok(Object.isFrozen(GIT_FAMILY_POLICY));
 for (const policy of Object.values(GIT_FAMILY_POLICY)) assert.ok(Object.isFrozen(policy));
-console.log('git-routing: command families, leading options and explicit unmeasured policy passed');
+console.log('git-routing: command families, explicit performance choices and capability gaps passed');
