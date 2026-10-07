@@ -3904,7 +3904,7 @@ export class SqliteVFS {
         const page = missing.slice(i, i + KEYS_PER_SQL_EXEC);
         this._sqlReads++;
         for (const row of this.sql.exec(
-          `SELECT id, size, data, state FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`,
+          `SELECT id, hash, size, data, state FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`,
           ...page,
         )) {
           if (!chunkHeld(Number(row.state))) throw unreadableChunkError(Number(row.state), ref.path);
@@ -3925,7 +3925,7 @@ export class SqliteVFS {
         const byId = new Map<number, Uint8Array>();
         this._sqlReads++;
         for (const row of this.sql.exec(
-          `SELECT id, size, data, state FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`,
+          `SELECT id, hash, size, data, state FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`,
           ...page.map((row) => row.chunkId),
         )) {
           if (!chunkHeld(Number(row.state))) throw unreadableChunkError(Number(row.state), ref.path);
@@ -4029,7 +4029,7 @@ export class SqliteVFS {
       if (hit) return hit;
     }
     this._sqlReads++;
-    const row = [...this.sql.exec('SELECT size, data, state FROM vfs_chunks WHERE id = ?', chunkId)][0];
+    const row = [...this.sql.exec('SELECT hash, size, data, state FROM vfs_chunks WHERE id = ?', chunkId)][0];
     if (!row) throw vfsError('EIO', path, `missing chunk ${chunkId}`);
     if (!chunkHeld(Number(row.state))) throw unreadableChunkError(Number(row.state), path);
     const data = this.heldChunkBytes(row, path);
@@ -4039,17 +4039,25 @@ export class SqliteVFS {
 
   /**
    * The one read of a stored chunk: the bytes of a row whose state holds
-   * them (chunkHeld), from its `size`, `data` and `state`. EIO for `what`
-   * when a deflated row does not inflate to its size.
+   * them (chunkHeld), from its `hash`, `size`, `data` and `state`. A
+   * deflated row's bytes are checked against its name before anything
+   * returns, caches, exports or tiers them (raw deflate carries no check of
+   * its own): EIO for `what` when they do not inflate to its size, or do
+   * not hash to its name.
    */
   private heldChunkBytes(row: SqlRow, what: string): Uint8Array {
     const data = this.blobToUint8Array(row.data);
     if (Number(row.state) !== CHUNK_DEFLATED) return data;
+    let raw: Uint8Array;
     try {
-      return inflateChunk(data, Number(row.size));
+      raw = inflateChunk(data, Number(row.size));
     } catch (error) {
       throw vfsError('EIO', what, `a stored chunk is corrupt: ${(error as Error).message}`);
     }
+    if (hashKey(chunkHash(raw)) !== hashKey(this.blobToUint8Array(row.hash))) {
+      throw vfsError('EIO', what, 'a stored chunk is corrupt: it does not hash to its name');
+    }
+    return raw;
   }
 
   /**
@@ -7109,7 +7117,7 @@ export class SqliteVFS {
     let index = 0;
     for (const hash of hashes) {
       if (chunks.length === EXPORT_PAGE_PIECES) break;
-      const row = [...this.sql.exec('SELECT size, data, state FROM vfs_chunks WHERE hash = ?', unhex(hash))][0];
+      const row = [...this.sql.exec('SELECT hash, size, data, state FROM vfs_chunks WHERE hash = ?', unhex(hash))][0];
       if (!row) throw vfsError('ENOENT', `chunk ${hash}`);
       if (!chunkHeld(Number(row.state))) throw coldChunkError(`chunk ${hash}`);
       if (chunks.length > 0 && bytes + Number(row.size) > maxBytes) break;

@@ -131,6 +131,38 @@ function compact(harness, id, state = DEFLATED) {
   }
 }
 
+// ── A valid deflate of other bytes of the same length is EIO, never bytes ──
+// Raw deflate carries no check: what it inflates to must hash to the row's
+// name. Red before: a read returned (and cached) the other bytes, and an
+// export or the cold store published them under the original name.
+{
+  const objects = new Map();
+  const coldStore = {
+    async put(key, bytes) { objects.set(key, new Uint8Array(bytes)); },
+    async get(key) { const bytes = objects.get(key); return bytes === undefined ? null : { arrayBuffer: async () => bytes.slice().buffer }; },
+    async delete(keys) { for (const key of keys) objects.delete(key); },
+  };
+  const store = open({ coldStore });
+  const { harness, raw, vfs } = store;
+  const right = source(12_000, 8);
+  const wrong = source(12_000, 9);
+  assert.equal(wrong.byteLength, right.byteLength);
+  assert.notDeepEqual(wrong, right);
+  vfs.writeFile('swapped.js', right);
+  const [row] = chunkRows(harness, 'swapped.js');
+  harness.sql.exec('UPDATE vfs_chunks SET data = ?, state = 3 WHERE id = ?', new Uint8Array(deflateRawSync(wrong)), row.id);
+  const corrupt = (error) => error.code === 'EIO' && /does not hash to its name/.test(error.message);
+  const view = reopen(store, { coldStore });
+  assert.throws(() => view.vfs.readFile('swapped.js'), corrupt, 'a read returned bytes that are not the chunk');
+  assert.throws(() => view.vfs.readRange('swapped.js', 0, 100), corrupt, 'a cached read returned them');
+  assert.throws(() => view.vfs.readRangeUncached('swapped.js', 0, 100), corrupt);
+  assert.throws(() => view.raw.exportChunks([sha(right)]), corrupt, 'an export published them under the name');
+  view.raw.snapshot('s');
+  view.vfs.unlink('swapped.js');
+  await assert.rejects(async () => { for (let pass = 0; !(await view.raw.tierColdChunks()).done; pass++) assert.ok(pass < 100); }, corrupt);
+  assert.equal(objects.size, 0, 'the cold store took them under the name');
+}
+
 // ── Export carries the bytes; the cold store holds them ───────────────────
 {
   const src = open();
