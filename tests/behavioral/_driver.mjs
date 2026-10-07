@@ -45,12 +45,50 @@ export function wsHeaders() {
   return Object.keys(headers).length > 0 ? { headers } : undefined;
 }
 
+/**
+ * What the session `sid` recorded about itself since `openedAt`, read after
+ * its socket closed abnormally: its isolate generation now, and its recovery
+ * ring's transitions since then (/api/_diag/memory, which every probe
+ * target serves: NIMBUS_DEBUG, PROBE_TARGET_VARS). A `ws-close`/`ws-error`
+ * on the generation it had means the session saw its socket end and lived:
+ * the connection dropped. An `init-session` after the socket opened, on a
+ * higher generation, means a fresh isolate: the session was reset or
+ * evicted. The ring is per isolate, so another session sharing it can add
+ * lines. `headers` are the socket's own credentials. Resolves to text,
+ * never throws; bounded at 10 s.
+ */
+async function sessionRecord(sid, openedAt, base, headers) {
+  try {
+    const r = await fetch(`${base}/s/${encodeURIComponent(sid)}/api/_diag/memory`, { headers, signal: AbortSignal.timeout(10_000) });
+    if (!r.ok) return `the session's record: unavailable (/api/_diag/memory answered ${r.status})`;
+    const diag = await r.json();
+    const time = (at) => new Date(at).toISOString().slice(11, 23);
+    const since = (diag.recoveryEvents ?? []).filter((e) => e.at >= openedAt - 1000).reverse()
+      .map((e) => `${time(e.at)} ${e.fromState}→${e.toState} ${e.trigger} gen ${e.isolateGen}${e.dataLoss ? ' DATA LOSS' : ''}`);
+    return `the session's record (socket opened ${time(openedAt)}; isolate gen now ${diag.hib?.isolateGen ?? '?'}): ${since.length ? since.join('; ') : 'no transitions since the socket opened'}`;
+  } catch (error) {
+    return `the session's record: unavailable (${error.message})`;
+  }
+}
+
+/**
+ * `text` with every credential it may carry replaced by `…`: an attach token
+ * in a URL's query (`nimbus_token=`, and any `token=`/`access_token=`), and
+ * a bearer. The one helper for every URL or response a probe prints; every
+ * assertion detail goes through it (makeAsserter).
+ */
+export function redactCredentials(text) {
+  return String(text)
+    .replace(/([?&#](?:nimbus_token|access_token|token)=)[^&#\s"'<>]+/gi, '$1…')
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/g, '$1…');
+}
+
 /** A close frame in one clause: `code 1006 (abnormal): <reason>`. */
 function describeSocketClose(code, reason) {
   const text = reason ? String(reason).slice(0, 200) : '';
   const known = code === 1000 ? 'normal'
     : code === 1001 ? 'going away'
-    : code === 1006 ? 'abnormal — no close frame; usually a session DO reset, named per AGENTS.md "Tails reset sessions"'
+    : code === 1006 ? 'abnormal — no close frame: the session reset, or the connection dropped; the session\'s own record follows'
     : code === 1011 ? 'server error'
     : code === 1012 ? 'service restart'
     : null;
@@ -118,8 +156,11 @@ function noteMinted(sid, status, { reap } = {}) {
     }
   }
   undeleted.set(sid, requestHeaders({ 'X-Nimbus-Cleanup-Reason': 'probe-exit' }));
-  minted.push({ sid, at: new Date().toISOString() });
-  ledger('mint', sid, status, reap ? { reap } : {});
+  // One time for the mint, in the failure's list and the ledger alike: read
+  // twice, the two could fall in different milliseconds.
+  const at = new Date().toISOString();
+  minted.push({ sid, at });
+  ledger('mint', sid, status, { at, ...(reap ? { reap } : {}) });
 }
 
 /**
@@ -316,6 +357,9 @@ export class Terminal {
     this.connected = false;
     this.closed = false;
     this.closeDetail = null;
+    this.closeCode = null;
+    this.openedAt = null;
+    this.closing = false;
   }
 
   async connect(timeoutMs = 15_000) {
@@ -323,9 +367,13 @@ export class Terminal {
     this.connected = false;
     this.closed = false;
     this.closeDetail = null;
-    this.ws.on('open', () => { this.connected = true; });
+    this.closeCode = null;
+    this.closing = false;
+    this.openedAt = Date.now();
+    this.ws.on('open', () => { this.connected = true; this.openedAt = Date.now(); });
     this.ws.on('close', (code, reason) => {
       this.closed = true;
+      this.closeCode = code;
       this.closeDetail = describeSocketClose(code, reason);
     });
     this.ws.on('message', (data) => {
@@ -367,8 +415,14 @@ export class Terminal {
           if (predicate(stripAnsi(this.buf))) { cleanup(); resolve(Date.now() - t0); }
           else if (this.closed) {
             cleanup();
-            reject(new Error(`Terminal closed while waiting for ${label} after ${Date.now() - t0}ms `
-              + `(${this.closeDetail ?? 'no close frame'}); tail: ${JSON.stringify(stripAnsi(this.buf).slice(-600))}`));
+            const elapsed = Date.now() - t0;
+            // A close this side did not ask for classifies itself: the
+            // session's own record of what happened to it since the socket opened.
+            const record = !this.closing && this.closeCode !== 1000
+              ? sessionRecord(this.sid, this.openedAt, this.wsBase.replace(/^ws/, 'http'), this.wsOptions?.headers ?? requestHeaders())
+              : null;
+            Promise.resolve(record).then((record) => reject(new Error(`Terminal closed while waiting for ${label} after ${elapsed}ms `
+              + `(${this.closeDetail ?? 'no close frame'}); tail: ${JSON.stringify(stripAnsi(this.buf).slice(-600))}${record ? `\n${record}` : ''}`)));
           }
         } catch (error) { cleanup(); reject(error); }
       };
@@ -421,6 +475,7 @@ export class Terminal {
   }
 
   async close() {
+    this.closing = true;
     if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
       try { this.ws.close(); } catch { /* swallow */ }
     }
@@ -548,8 +603,12 @@ export function makeAsserter(label) {
   const failures = [];
   return {
     check(name, ok, detail = '') {
-      if (ok) { console.log(`  ✓ ${name}`); pass++; }
-      else { console.log(`  ✗ ${name}${detail ? ' — ' + detail : ''}`); failures.push(`${name}: ${detail}`); fail++; }
+      if (ok) { console.log(`  ✓ ${name}`); pass++; return; }
+      // A detail is often a URL or a response: never a live credential.
+      const shown = redactCredentials(String(detail));
+      console.log(`  ✗ ${name}${shown ? ' — ' + shown : ''}`);
+      failures.push(`${name}: ${shown}`);
+      fail++;
     },
     summary() {
       console.log(`\n  ──── [${label}] ${pass} pass / ${fail} fail`);

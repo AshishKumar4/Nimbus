@@ -46,10 +46,12 @@
 //     BASE=<url> NIMBUS_PROBE_TOKEN=<jwt> bun tests/behavioral/run-all.mjs
 //
 // COMMANDS
-//   up      [--name <n>] [--no-build] [--ttl-ms <ms>] [--rotate-secrets]
+//   up      [--name <n>] [--no-build | --bundle <release dir>] [--ttl-ms <ms>] [--rotate-secrets]
 //           [--var KEY:VALUE ...]  override a config var for this deploy —
-//           how one build is stood up twice to compare two settings of it
-//   token   [--name <n>] [--ttl-ms <ms>]
+//           how one build is stood up twice to compare two settings of it.
+//           Every throwaway is deployed with the suite's target vars
+//           (_deploy-target.mjs PROBE_TARGET_VARS), as staging is
+//   token   [--name <n>] [--ttl-ms <ms>] [--json]   → the token, or JSON {base, token}
 //   session [--name <n>] [--ttl-ms <ms>]   → JSON {base, sessionId, token}
 //   down    [--name <n>] | --all
 //   list    every Preview under the parent, and which ones this checkout holds
@@ -69,15 +71,20 @@
 //   session, which is how the shared anon pool got exhausted. Self-minted
 //   tokens make that failure mode structurally impossible.
 
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { mintProbeToken } from './_mint-probe-token.mjs';
-import { assertDeployIsolated } from '../../scripts/deploy-isolation.mjs';
-import { assertDistMatchesSource } from '../../scripts/dist-integrity.mjs';
-import {
-  ROOT,
+import { assertInstalled } from '../../scripts/ci/lib/installed.mjs';
+
+const ROOT = join(import.meta.dirname, '..', '..');
+
+// Checked before the deploy path is imported: it parses wrangler configs
+// through packages/worker, which only an install provides.
+assertInstalled(ROOT, '_throwaway-target.mjs');
+const {
+  MACHINE_STATE_DIR,
+  PROBE_TARGET_VARS,
   WRANGLER,
   apiToken,
   assertCredentialHeld,
@@ -88,11 +95,16 @@ import {
   readState,
   requireAccountPin,
   waitForTarget,
+  withSecretsFile,
   wrangle,
   writeState,
-} from './_deploy-target.mjs';
+} = await import('./_deploy-target.mjs');
+const { assertDeployIsolated } = await import('../../scripts/deploy-isolation.mjs');
+const { uploadConfig } = await import('../../scripts/ci/lib/release.mjs');
 
 const PROBE_APP = join(ROOT, 'apps', 'probe');
+/** Machine state: every Preview this machine deleted, until its hostname stops answering. */
+const DELETED_PATH = join(MACHINE_STATE_DIR, 'deleted-previews.json');
 const STATE_DIR = join(ROOT, '.wrangler', 'throwaway-targets');
 
 /** Throwaways are always `<prefix><suffix>` so a stray one is obvious. */
@@ -118,8 +130,12 @@ const HOSTNAME_SETTLE_MS = 60_000;
 
 const [command, ...rest] = process.argv.slice(2);
 const flags = parseFlags(rest);
-/** `--var KEY:VALUE`, repeatable — forwarded to wrangler verbatim. */
-const varOverrides = rest.flatMap((arg, i) => (arg === '--var' && rest[i + 1] ? ['--var', rest[i + 1]] : []));
+/**
+ * The suite's target vars (PROBE_TARGET_VARS), then each `--var KEY:VALUE`
+ * given here, forwarded to wrangler verbatim: a later --var for the same
+ * key wins.
+ */
+const varOverrides = [...PROBE_TARGET_VARS, ...rest.flatMap((arg, i) => (arg === '--var' && rest[i + 1] ? ['--var', rest[i + 1]] : []))];
 
 const COMMANDS = { up, token, session, down, list };
 const run = COMMANDS[command];
@@ -174,7 +190,19 @@ async function up() {
     rotate: Boolean(flags['rotate-secrets']),
   });
 
-  if (flags.build !== false) await assertDistMatchesSource({ root: ROOT, log });
+  // --bundle: a release CI built for this commit, the dist gate included
+  // (scripts/ci/lib/release.mjs); this machine only uploads it.
+  // Without one, `wrangler preview` bundles here, after the gate builds:
+  // only a CI runner (GitHub's behavioral job) may do that. On the
+  // workstation it is remote-probes --deploy.
+  const bundle = flags.bundle ? uploadConfig(flags.bundle, 'apps/probe', { root: ROOT, preview: true, log }) : null;
+  if (!bundle && process.env.GITHUB_ACTIONS !== 'true') {
+    throw new Error('up without --bundle builds and bundles on this machine, which builds nothing: run `bun scripts/ci/remote-probes.mjs --deploy <name>`, which bundles on CI and uploads from here');
+  }
+  if (!bundle && flags.build !== false) {
+    const { assertDistMatchesSource } = await import('../../scripts/dist-integrity.mjs');
+    await assertDistMatchesSource({ root: ROOT, log });
+  }
 
   await ensurePreviewParent({ account, token });
 
@@ -188,7 +216,7 @@ async function up() {
 
   log(`deploying apps/probe as Preview ${preview} of ${PREVIEW_PARENT}`);
   for (let i = 0; i < varOverrides.length; i += 2) log(`var override: ${varOverrides[i + 1]}`);
-  const { base, deploymentId, startupMs } = await deployPreview({ account, token, preview, secret, before });
+  const { base, deploymentId, startupMs } = await deployPreview({ account, token, preview, secret, before, config: bundle });
   writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base, secret, secretPushed: true, createdAt });
   // The platform's own measure of the script's startup, limit 1 s
   // (https://developers.cloudflare.com/workers/platform/limits/#worker-startup-time).
@@ -210,7 +238,8 @@ async function up() {
 
 async function token() {
   const state = requireState(resolveName());
-  process.stdout.write(await mintProbeToken(state.secret, ttlMs()));
+  const jwt = await mintProbeToken(state.secret, ttlMs());
+  process.stdout.write(flags.json ? `${JSON.stringify({ base: state.base, token: jwt })}\n` : jwt);
 }
 
 async function session() {
@@ -229,11 +258,15 @@ async function down() {
 
   for (const name of names) {
     const preview = readState(statePath(name))?.preview ?? previewName(name);
+    const base = readState(statePath(name))?.base ?? null;
+    const existing = await cfApi(`/workers/workers/${PREVIEW_PARENT}/previews/${encodeURIComponent(preview)}`, { account, token });
     log(`deleting Preview ${preview} of ${PREVIEW_PARENT}`);
     wrangle(WRANGLER, ['preview', 'delete', '--name', preview, '--worker-name', PREVIEW_PARENT, '--skip-confirmation'], {
       cwd: PROBE_APP, account, allowFail: true,
     });
     const gone = await confirmDeleted({ name, preview, account, token });
+    // Its hostname may go on being served (spike/preview-stale): `list` looks.
+    if (existing.ok && base) recordDeleted({ name, preview, id: existing.result?.id ?? null, base });
     rmSync(statePath(name), { force: true });
     if (!gone.ok) {
       console.error(`FAILED to confirm ${name} is gone: ${gone.reason}`);
@@ -259,6 +292,41 @@ async function list() {
     const local = held.get(p.name);
     process.stdout.write(`${p.name}\t${workersDevUrlOf(p.urls) ?? '(no URL)'}\t${p.created_on ?? ''}\t${local ? `held here as ${local}` : 'not held here'}\n`);
   }
+  // Every Preview this machine deleted whose hostname still answers. The
+  // edge can go on serving a deleted Preview's first deployment for hours,
+  // under the deleted Preview's id, after the API has forgotten both
+  // (spike/preview-stale), and nothing can delete it. It holds the secret
+  // `down` discarded, so it mints nothing; listed so it is never mistaken
+  // for a live target. One whose hostname answers 404 is dropped; one that
+  // cannot be reached is kept, as unknown.
+  const live = new Set((listed.result ?? []).map((p) => p.name));
+  const still = [];
+  for (const entry of readDeleted()) {
+    if (live.has(entry.preview)) continue;
+    const answer = await fetch(entry.base, { redirect: 'manual', signal: AbortSignal.timeout(15_000) })
+      .then((r) => ({ status: r.status }), (error) => ({ error: error?.message ?? String(error) }));
+    // Only a real 404 means the hostname has gone: a failed fetch says nothing, and keeps the record.
+    if (answer.status === 404) continue;
+    still.push(entry);
+    process.stdout.write(answer.error
+      ? `${entry.preview}\t${entry.base}\tdeleted ${entry.deletedAt}\tunknown (fetch failed: ${answer.error})\n`
+      : `${entry.preview}\t${entry.base}\tdeleted ${entry.deletedAt}\tSTILL SERVED by the edge (${answer.status}): a deployment of this deleted Preview (last id ${entry.id ?? '?'}); nothing can delete it, and its secret is gone\n`);
+  }
+  writeDeleted(still);
+}
+
+// ── Deleted Previews ─────────────────────────────────────────────────
+
+function readDeleted() {
+  return readState(DELETED_PATH)?.previews ?? [];
+}
+
+function writeDeleted(previews) {
+  writeState(DELETED_PATH, { previews });
+}
+
+function recordDeleted({ name, preview, id, base }) {
+  writeDeleted([...readDeleted().filter((entry) => entry.preview !== preview), { name, preview, id, base, deletedAt: new Date().toISOString() }]);
 }
 
 // ── Previews ─────────────────────────────────────────────────────────
@@ -303,21 +371,13 @@ async function ensurePreviewParent({ account, token }) {
  * deployment id, the API serves that id as the Preview's latest, and it
  * differs from the latest before.
  */
-async function deployPreview({ account, token, preview, secret, before }) {
+async function deployPreview({ account, token, preview, secret, before, config = null }) {
   // The secret travels with the deployment: each Preview deployment
   // carries its own env, so every deploy uploads it again.
-  const dir = mkdtempSync(join(tmpdir(), 'nimbus-preview-secrets-'));
-  const secretsFile = join(dir, 'secrets.json');
-  let result;
-  try {
-    writeFileSync(secretsFile, JSON.stringify({ JWT_SECRET: secret }), { mode: 0o600 });
-    result = wrangle(WRANGLER, [
-      'preview', '--name', preview, '--worker-name', PREVIEW_PARENT,
-      '--ignore-base-config', '--json', '--secrets-file', secretsFile, ...varOverrides,
-    ], { cwd: PROBE_APP, account, allowFail: true });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  const result = withSecretsFile({ JWT_SECRET: secret }, (secretsFile) => wrangle(WRANGLER, [
+    'preview', '--name', preview, '--worker-name', PREVIEW_PARENT,
+    '--ignore-base-config', '--json', '--secrets-file', secretsFile, ...varOverrides, ...(config ? ['--config', config] : []),
+  ], { cwd: PROBE_APP, account, allowFail: true }));
   const stdout = result.stdout || '';
   let printed = null;
   try {

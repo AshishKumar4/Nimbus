@@ -8,8 +8,9 @@
   //   env.staging  → `nimbus-staging` / `nimbus-demo-staging` / 1003.
   //                  Persistent pre-production. `bun run staging:deploy`.
   //   env.production → `nimbus` / `nimbus-demo` / 1001. `bun run
-  //                  deploy:production` (`wrangler deploy -e production`),
-  //                  and nothing else.
+  //                  deploy:production <commit>` (scripts/ci/promote.mjs:
+  //                  `wrangler deploy -e production` of the release staging
+  //                  verified), and nothing else.
   //
   // The split is load-bearing, not tidiness. `wrangler deploy --name foo`
   // overrides ONLY the name; every binding still comes from the block being
@@ -346,8 +347,8 @@
     // env.production, with every account-level identifier swapped: Worker
     // `nimbus-staging`, database `nimbus-demo-staging`, rate-limit
     // namespace 1003, and its own Durable Object namespace and
-    // JWT_SECRET. `bun run staging:deploy` builds and deploys it; `bun
-    // run staging:test` runs the behavioral suite against it. Nothing
+    // JWT_SECRET. `bun run staging:deploy` uploads a release CI built and
+    // runs the matrix against it (scripts/ci/release.mjs). Nothing
     // here may name a production resource — tests/unit/deploy-isolation.mjs
     // checks this block by name, not just the top-level one.
     //
