@@ -7,7 +7,8 @@
  * and a table of where each entry starts: about 110 bytes a file, no object
  * per entry. A path is decoded only when asked for, and a lookup compares
  * bytes. A stat refresh patches the entry where it lies; any other change is
- * written by one ordered merge of the old entries' bytes with the new ones.
+ * written by one ordered merge of the old entries' bytes with the new ones,
+ * which are themselves held as bytes (NewEntries), straight into the file.
  */
 import { createHash } from 'node:crypto';
 import { oidFromHex, oidToHex } from '../pack/format.js';
@@ -92,6 +93,141 @@ export function objectId(type, data) {
     return oidToHex(createHash('sha1').update(encoder.encode(`${type} ${data.length}\0`)).update(data).digest());
 }
 export class IndexFormatError extends Error {
+}
+/** What NewEntries allocates at a time; an entry larger than this gets a chunk of its own. */
+const CHUNK_BYTES = 64 * 1024;
+/** An entry's flags word, at `at` in `bytes`. */
+function flagsAt(bytes, at) {
+    return (bytes[at + FLAGS_AT] << 8) | bytes[at + FLAGS_AT + 1];
+}
+/** Where an entry's name starts and how long it is, for the entry at `at` in `bytes` (version 2/3 layout). */
+function nameAt(bytes, at) {
+    const flags = flagsAt(bytes, at);
+    const start = at + FIXED_BYTES + (flags & EXTENDED ? 2 : 0);
+    const length = flags & NAME_MASK;
+    return [start, length < NAME_MASK ? length : bytes.indexOf(0, start) - start];
+}
+/** The names of two entries in place, in git's order: compareBytes without the views. */
+function compareNamesAt(a, aAt, b, bAt) {
+    const [aStart, aLength] = nameAt(a, aAt);
+    const [bStart, bLength] = nameAt(b, bAt);
+    const n = Math.min(aLength, bLength);
+    for (let i = 0; i < n; i++) {
+        const d = a[aStart + i] - b[bStart + i];
+        if (d !== 0)
+            return d;
+    }
+    return aLength - bLength;
+}
+/**
+ * New index entries as their bytes, each encoded (encodeIndexEntry's layout)
+ * as it is added, into chunks of CHUNK_BYTES: an entry costs its own size and
+ * eight bytes, no object. As objects (a path and an id as strings, a stat, a
+ * key for the sort, then the encoded piece), staging every file of a large
+ * worktree held about 900 bytes a file: 80 MiB for add -A at Linux's 96,000.
+ */
+export class NewEntries {
+    chunks = [];
+    /** Bytes used of the last chunk. */
+    used = 0;
+    chunkOf = new Uint32Array(16);
+    offsetOf = new Uint32Array(16);
+    count = 0;
+    /** Encode `entry`; its path and stat are not kept. */
+    add(entry) {
+        const name = encoder.encode(entry.path);
+        const skipWorktree = entry.skipWorktree === true;
+        const length = paddedLength(skipWorktree, name.length);
+        const last = this.chunks[this.chunks.length - 1];
+        if (last === undefined || this.used + length > last.length) {
+            this.chunks.push(new Uint8Array(Math.max(CHUNK_BYTES, length)));
+            this.used = 0;
+        }
+        if (this.count === this.chunkOf.length) {
+            const chunkOf = new Uint32Array(this.count * 2);
+            chunkOf.set(this.chunkOf);
+            this.chunkOf = chunkOf;
+            const offsetOf = new Uint32Array(this.count * 2);
+            offsetOf.set(this.offsetOf);
+            this.offsetOf = offsetOf;
+        }
+        const chunk = this.chunks.length - 1;
+        writeIndexEntry(this.chunks[chunk], this.used, name, entry.mode, entry.oid, entry.stat, { stage: entry.stage ?? 0, skipWorktree });
+        this.chunkOf[this.count] = chunk;
+        this.offsetOf[this.count] = this.used;
+        this.count++;
+        this.used += length;
+    }
+    /** Entry `k`'s bytes, a view. */
+    entry(k) {
+        const chunk = this.chunks[this.chunkOf[k]];
+        const at = this.offsetOf[k];
+        const [start, length] = nameAt(chunk, at);
+        return chunk.subarray(at, at + paddedLength(start - at > FIXED_BYTES, length));
+    }
+    /** Entry `k`'s name bytes, a view. */
+    name(k) {
+        const chunk = this.chunks[this.chunkOf[k]];
+        const [start, length] = nameAt(chunk, this.offsetOf[k]);
+        return chunk.subarray(start, start + length);
+    }
+    path(k) {
+        return decodePath(this.name(k));
+    }
+    stage(k) {
+        return (flagsAt(this.chunks[this.chunkOf[k]], this.offsetOf[k]) & STAGE_MASK) >> 12;
+    }
+    /** The order of entries `k` and `j`: by name, then stage. */
+    compare(k, j) {
+        return compareNamesAt(this.chunks[this.chunkOf[k]], this.offsetOf[k], this.chunks[this.chunkOf[j]], this.offsetOf[j])
+            || this.stage(k) - this.stage(j);
+    }
+    /**
+     * The entries' numbers in index order (name, then stage): as added when they
+     * came in it, as most commands add them. One path twice at one stage is refused.
+     */
+    order() {
+        const order = new Int32Array(this.count);
+        let sorted = true;
+        for (let k = 0; k < this.count; k++) {
+            order[k] = k;
+            if (k > 0 && sorted && this.compare(k - 1, k) > 0)
+                sorted = false;
+        }
+        if (!sorted)
+            order.sort((k, j) => this.compare(k, j));
+        for (let k = 1; k < order.length; k++) {
+            if (this.compare(order[k - 1], order[k]) === 0)
+                throw new IndexFormatError(`index: ${this.path(order[k])} added twice`);
+        }
+        return order;
+    }
+}
+/** No new entries. */
+const NO_ENTRIES = new NewEntries();
+/** Version 4's name compression, entry by entry: what each entry takes, then its bytes. */
+class Version4Names {
+    previous = new Uint8Array(0);
+    /** `entry` (version 2/3 layout) as version 4 writes it: its size, and its bytes when `out` is given. */
+    put(entry, out, at = 0) {
+        const flags = flagsAt(entry, 0);
+        const fixed = FIXED_BYTES + (flags & EXTENDED ? 2 : 0);
+        const [start, length] = nameAt(entry, 0);
+        const name = entry.subarray(start, start + length);
+        let common = 0;
+        while (common < this.previous.length && common < name.length && this.previous[common] === name[common])
+            common++;
+        const strip = encodeVarint(this.previous.length - common);
+        this.previous = name;
+        const size = fixed + strip.length + name.length - common + 1;
+        if (out) {
+            out.set(entry.subarray(0, fixed), at);
+            out.set(strip, at + fixed);
+            out.set(name.subarray(common), at + fixed + strip.length);
+            out[at + size - 1] = 0;
+        }
+        return size;
+    }
 }
 /**
  * The index of one repository. `timestamp` is the index file's mtime in
@@ -356,88 +492,131 @@ export class DirCache {
         this.uptodate[i] = 1;
         this.refreshed = true;
     }
+    /** Where entry `i` ends: the next one's start, or its own padded length for the last. */
+    entryEnd(i) {
+        const start = this.offsets[i];
+        return i + 1 < this.count ? this.offsets[i + 1] : start + paddedLength((this.flags(i) & EXTENDED) !== 0, this.pathBytes(i).length);
+    }
     /**
-     * The index file with `edit` applied: header, entries in path order, the
-     * extensions that still hold, and the checksum. `smudged` entries get size
-     * 0 (ce_smudge_racily_clean_entry). The cache tree goes once an entry
-     * changes, and the untracked cache and monitor tokens always: nothing here
-     * keeps them, and git rebuilds them.
+     * The ordered merge an edit writes: the old entries but `removed` and those
+     * an added one replaces, and the added ones (`order`), each passed to
+     * `emit` in path order. Old entries kept one after another go as one run
+     * (but at version 4, which re-encodes each name); a `smudged` one alone.
      */
-    encode(edit = {}, smudged = new Set()) {
-        const removed = edit.removed ?? new Set();
-        // Nothing but stat refreshes, which patched these bytes where they lie: the file is these bytes
-        // with a new checksum, and no second copy of the index is made (a status refresh at 96,000 entries).
-        if (removed.size === 0 && (edit.added ?? []).length === 0 && smudged.size === 0 && !this.cacheTreeChanged
-            && this.version !== 4 && this.trailer !== null && this.extensions.every(({ signature }) => signature === 'TREE' || signature === 'REUC')) {
-            const end = this.bytes.length - OID_BYTES;
-            this.bytes.set(createHash('sha1').update(this.bytes.subarray(0, end)).digest(), end);
-            return this.bytes;
-        }
-        const added = (edit.added ?? []).map((entry) => ({ entry, key: encoder.encode(entry.path), stage: entry.stage ?? 0 }));
-        added.sort((a, b) => compareBytes(a.key, b.key) || a.stage - b.stage);
-        for (let i = 1; i < added.length; i++) {
-            if (compareBytes(added[i - 1].key, added[i].key) === 0 && added[i - 1].stage === added[i].stage) {
-                throw new IndexFormatError(`index: ${added[i].entry.path} added twice`);
-            }
-        }
-        const pieces = [];
-        let extended = false;
-        let a = 0;
+    merge(added, order, removed, smudged, emit) {
+        const runs = this.version !== 4;
         let count = 0;
+        let extended = false;
+        let runStart = -1;
         let runEnd = -1;
+        const flush = () => {
+            if (runStart < 0)
+                return;
+            emit(this.bytes.subarray(runStart, runEnd), false);
+            runStart = -1;
+        };
+        let a = 0;
         for (let i = 0; i <= this.count; i++) {
             const key = i < this.count ? this.pathBytes(i) : null;
             // New entries before this one; one at its path replaces it.
-            while (a < added.length && (key === null || compareBytes(added[a].key, key) <= 0)) {
-                const { entry, key: name, stage } = added[a++];
-                extended ||= entry.skipWorktree === true;
-                pieces.push(encodeIndexEntry(name, entry.mode, entry.oid, entry.stat, { stage, skipWorktree: entry.skipWorktree }));
-                runEnd = -1;
+            while (a < order.length && (key === null || compareBytes(added.name(order[a]), key) <= 0)) {
+                flush();
+                const piece = added.entry(order[a++]);
+                extended ||= (flagsAt(piece, 0) & EXTENDED) !== 0;
+                emit(piece, false);
                 count++;
             }
             if (key === null)
                 break;
             if (removed.has(i))
                 continue;
-            if (a > 0 && compareBytes(added[a - 1].key, key) === 0)
+            if (a > 0 && compareBytes(added.name(order[a - 1]), key) === 0)
                 continue;
-            const start = this.offsets[i];
-            const end = i + 1 < this.count ? this.offsets[i + 1] : start + paddedLength((this.flags(i) & EXTENDED) !== 0, this.pathBytes(i).length);
-            let piece = this.bytes.subarray(start, end);
-            if (smudged.has(i)) {
-                piece = piece.slice();
-                piece.fill(0, 36, 40);
-            }
             // An entry is copied in its own layout: one with the second flags word keeps the file at version 3.
             extended ||= (this.flags(i) & EXTENDED) !== 0;
-            // Entries kept one after another are copied as one run (version 4 re-encodes each name, so it keeps them apart).
-            const last = pieces[pieces.length - 1];
-            if (this.version !== 4 && last !== undefined && runEnd === start && last.buffer === piece.buffer && piece.byteOffset === last.byteOffset + last.length) {
-                pieces[pieces.length - 1] = this.bytes.subarray(start - last.length, end);
+            count++;
+            const start = this.offsets[i];
+            const end = this.entryEnd(i);
+            if (!runs || smudged.has(i)) {
+                flush();
+                emit(this.bytes.subarray(start, end), smudged.has(i));
+            }
+            else if (runStart >= 0 && runEnd === start) {
+                runEnd = end;
             }
             else {
-                pieces.push(piece);
+                flush();
+                runStart = start;
+                runEnd = end;
             }
-            runEnd = end;
-            count++;
         }
+        flush();
+        return { count, extended };
+    }
+    /**
+     * The index file with `edit` applied: header, entries in path order, the
+     * extensions that still hold, and the checksum. `smudged` entries get size
+     * 0 (ce_smudge_racily_clean_entry). The cache tree goes once an entry
+     * changes, and the untracked cache and monitor tokens always: nothing here
+     * keeps them, and git rebuilds them.
+     *
+     * Written straight into the file's bytes: the merge runs once to size the
+     * file and once to fill it, so the file is the one copy this makes.
+     */
+    encode(edit = {}, smudged = new Set()) {
+        const removed = edit.removed ?? new Set();
+        const added = edit.added ?? NO_ENTRIES;
+        // Nothing but stat refreshes, which patched these bytes where they lie: the file is these bytes
+        // with a new checksum, and no second copy of the index is made (a status refresh at 96,000 entries).
+        if (removed.size === 0 && added.count === 0 && smudged.size === 0 && !this.cacheTreeChanged
+            && this.version !== 4 && this.trailer !== null && this.extensions.every(({ signature }) => signature === 'TREE' || signature === 'REUC')) {
+            const end = this.bytes.length - OID_BYTES;
+            this.bytes.set(createHash('sha1').update(this.bytes.subarray(0, end)).digest(), end);
+            return this.bytes;
+        }
+        const order = added.order();
+        const names = this.version === 4 ? new Version4Names() : null;
+        // Each pass is given its own name state: version 4 strips against the entry before.
+        let body = 0;
+        const { count, extended } = this.merge(added, order, removed, smudged, (piece) => {
+            body += names ? names.put(piece) : piece.length;
+        });
         // The cache tree loses the directories a changed entry is in (cache_tree_invalidate_path); the rest holds.
         const tree = this.cacheTree();
-        const changedPaths = [...[...removed].map((i) => this.path(i)), ...added.map(({ entry }) => entry.path)];
+        const changedPaths = function* (dc) {
+            for (const i of removed)
+                yield dc.path(i);
+            for (let k = 0; k < added.count; k++)
+                yield added.path(k);
+        };
         const extensions = [
-            ...(tree === null ? [] : [{ signature: 'TREE', bytes: tree.invalidate(changedPaths) }]),
+            ...(tree === null ? [] : [{ signature: 'TREE', bytes: tree.invalidate(changedPaths(this)) }]),
             ...this.extensions.filter(({ signature }) => signature === 'REUC'),
         ];
         // Version 3 demotes to 2 when no entry needs the second flags word (do_write_index).
         const version = this.version === 4 ? 4 : extended ? 3 : 2;
-        return writeIndexFile(version, count, version === 4 ? toVersion4(pieces) : pieces, extensions);
+        return writeIndexFile(version, count, body, (out, start) => {
+            const v4 = this.version === 4 ? new Version4Names() : null;
+            let at = start;
+            this.merge(added, order, removed, smudged, (piece, smudge) => {
+                const entryAt = at;
+                if (v4) {
+                    at += v4.put(piece, out, at);
+                }
+                else {
+                    out.set(piece, at);
+                    at += piece.length;
+                }
+                // The size field: the first 40 bytes are laid out alike in every version.
+                if (smudge)
+                    out.fill(0, entryAt + 36, entryAt + 40);
+            });
+        }, extensions);
     }
 }
-/** The file: header, the entries as given, the extensions, the checksum. */
-function writeIndexFile(version, count, body, extensions) {
-    let size = HEADER_BYTES + OID_BYTES;
-    for (const piece of body)
-        size += piece.length;
+/** The file: header, `bodyBytes` of entries (`writeBody` fills them in at `at`), the extensions, the checksum. */
+function writeIndexFile(version, count, bodyBytes, writeBody, extensions) {
+    let size = HEADER_BYTES + bodyBytes + OID_BYTES;
     for (const ext of extensions)
         size += 8 + ext.bytes.length;
     const out = new Uint8Array(size);
@@ -445,11 +624,8 @@ function writeIndexFile(version, count, body, extensions) {
     out.set(encoder.encode('DIRC'));
     view.setUint32(4, version);
     view.setUint32(8, count);
-    let at = HEADER_BYTES;
-    for (const piece of body) {
-        out.set(piece, at);
-        at += piece.length;
-    }
+    writeBody(out, HEADER_BYTES);
+    let at = HEADER_BYTES + bodyBytes;
     for (const ext of extensions) {
         out.set(encoder.encode(ext.signature), at);
         view.setUint32(at + 4, ext.bytes.length);
@@ -495,7 +671,16 @@ export function encodeIndexFile(entries, extensions = []) {
         }
         extended ||= (keyed[i].entry[FLAGS_AT] & (EXTENDED >> 8)) !== 0;
     }
-    return writeIndexFile(extended ? 3 : 2, keyed.length, keyed.map(({ entry }) => entry), extensions);
+    let body = 0;
+    for (const { entry } of keyed)
+        body += entry.length;
+    return writeIndexFile(extended ? 3 : 2, keyed.length, body, (out, start) => {
+        let at = start;
+        for (const { entry } of keyed) {
+            out.set(entry, at);
+            at += entry.length;
+        }
+    }, extensions);
 }
 function writeStat(bytes, at, stat) {
     const view = new DataView(bytes.buffer, bytes.byteOffset + at, 40);
@@ -516,42 +701,21 @@ function writeStat(bytes, at, stat) {
  * 1-8 NULs to a multiple of 8. A skip-worktree entry takes the second flags
  * word, which makes the file version 3.
  */
-export function encodeIndexEntry(path, mode, oid, stat, { stage = 0, skipWorktree = false } = {}) {
+export function encodeIndexEntry(path, mode, oid, stat, options = {}) {
     const name = typeof path === 'string' ? encoder.encode(path) : path;
-    const out = new Uint8Array(paddedLength(skipWorktree, name.length));
+    const out = new Uint8Array(paddedLength(options.skipWorktree === true, name.length));
+    writeIndexEntry(out, 0, name, mode, oid, stat, options);
+    return out;
+}
+/** encodeIndexEntry's bytes, written at `at` in `out` (which has room, zeroed). */
+function writeIndexEntry(out, at, name, mode, oid, stat, { stage = 0, skipWorktree = false } = {}) {
     if (stat)
-        writeStat(out, 0, stat);
-    const view = new DataView(out.buffer);
+        writeStat(out, at, stat);
+    const view = new DataView(out.buffer, out.byteOffset + at, paddedLength(skipWorktree, name.length));
     view.setUint32(24, mode);
-    out.set(typeof oid === 'string' ? oidFromHex(oid) : oid.subarray(0, OID_BYTES), 40);
+    out.set(typeof oid === 'string' ? oidFromHex(oid) : oid.subarray(0, OID_BYTES), at + 40);
     view.setUint16(FLAGS_AT, (skipWorktree ? EXTENDED : 0) | (stage << 12) | Math.min(name.length, NAME_MASK));
     if (skipWorktree)
         view.setUint16(FIXED_BYTES, SKIP_WORKTREE);
-    out.set(name, FIXED_BYTES + (skipWorktree ? 2 : 0));
-    return out;
-}
-/** Version 4's entries: each name as the bytes it strips from the last one's end and the bytes it adds, unpadded. */
-function toVersion4(pieces) {
-    const out = [];
-    let previous = new Uint8Array(0);
-    for (const piece of pieces) {
-        const view = new DataView(piece.buffer, piece.byteOffset, piece.byteLength);
-        const flags = view.getUint16(FLAGS_AT);
-        const fixed = FIXED_BYTES + (flags & EXTENDED ? 2 : 0);
-        let length = flags & NAME_MASK;
-        if (length === NAME_MASK)
-            length = piece.indexOf(0, fixed) - fixed;
-        const name = piece.subarray(fixed, fixed + length);
-        let common = 0;
-        while (common < previous.length && common < name.length && previous[common] === name[common])
-            common++;
-        const strip = encodeVarint(previous.length - common);
-        const entry = new Uint8Array(fixed + strip.length + name.length - common + 1);
-        entry.set(piece.subarray(0, fixed));
-        entry.set(strip, fixed);
-        entry.set(name.subarray(common), fixed + strip.length);
-        out.push(entry);
-        previous = name;
-    }
-    return out;
+    out.set(name, at + FIXED_BYTES + (skipWorktree ? 2 : 0));
 }

@@ -1,9 +1,12 @@
 #!/usr/bin/env bun
 // repl/python-hello-repl — `python` with no args drops into REPL.
-// Type `print("hi")<enter>` → "hi" on stdout. `exit()<enter>` → exit
-// code 0 + shell prompt returns.
+// Type `print("hi")<enter>` → "hi" on stdout. Each line is evaluated, as
+// the JavaScript REPLs' probe checks theirs (_js-repl.mjs): a value, a name
+// that lasts to the next line, a file written and read back. `exit()<enter>`
+// → exit code 0 + shell prompt returns.
 
 import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../_driver.mjs';
+import { pushLine } from './_push.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('repl/python-hello-repl');
@@ -42,6 +45,24 @@ const out1 = stripAnsi(t.buf);
 const hasHi = /\bhi\b/m.test(out1);
 a.check('print("hi") prints "hi" in REPL', hasHi,
   hasHi ? '' : JSON.stringify(out1.slice(-200)));
+
+// What each line prints, read between its echo and the next prompt (an
+// echo is never taken for output).
+for (const [line, expected] of [
+  ['1 + 1', '2'],
+  ['x = 40', ''],
+  ['x + 2', '42'],
+  ["open('/home/user/repl.txt', 'w').write('from the repl')", '13'],
+  ["open('/home/user/repl.txt').read()", "'from the repl'"],
+]) {
+  let printed;
+  try {
+    printed = (await pushLine(t, line, { timeoutMs: 30_000 })).replace(/\r/g, '').trim();
+  } catch (e) {
+    printed = `(no prompt: ${e.message})`;
+  }
+  a.check(`${line} prints ${JSON.stringify(expected)}`, printed === expected, JSON.stringify(printed));
+}
 
 // Send `exit()<enter>` → should return to shell prompt. `waitForPrompt`
 // accepts `>` as a prompt, and Python's own `>>> ` satisfies it, so waiting

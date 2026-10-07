@@ -1683,6 +1683,15 @@ export declare class SqliteVFS {
     private normalizeBatchInode;
     private authorizeBatch;
     /**
+     * Of the places `directories` are written at, the first that holds a
+     * symbolic link `deletes` (the same batch's removals, at their places) do
+     * not remove; null when there is none. A directory record never replaces a
+     * link: a producer that means to (git's checkout, over a link in a leading
+     * path) removes it first, in the same batch. `priors`: what stands at the
+     * places, where the caller has read it.
+     */
+    private linkReplacedByDirectory;
+    /**
      * Atomic bulk write: ALL inodes + chunks in ONE transactionSync().
      *
      * The complete mutation is preflighted against the Stage 2 transaction

@@ -5,8 +5,12 @@
 // which at 10k files took minutes and, on a Durable Object, died part way
 // with half the files staged. One add() of every path instead read them all
 // before writing any object, each with its own deflate stream, and 1,000
-// files reset the isolate. The repository it leaves must be one real git
-// accepts: fsck-clean, with a clean status against the files on disk.
+// files reset the isolate. Its objects go in waves into the engine (the
+// shared wave writer): a file is read, hashed and deflated before the next
+// is read, and at most two waves of objects (one buffering, one publishing)
+// wait to be written; every object is published before the index. The
+// repository it leaves must be one real git accepts: fsck-clean, with a
+// clean status against the files on disk.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -19,6 +23,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { WAVE_PATHS } from '../../packages/platform/src/wave-writer.ts';
 
 const FILES = 3000;
 // The VFS stamps inodes with Date.now(). One frozen second makes every index
@@ -34,6 +39,26 @@ kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
 kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
 const user = vfs.as(CRED_SESSION_USER);
 const files = new ProcessFiles(vfs);
+
+// The engine's waves: each object a wave publishes is no longer waiting; the index must come after them all.
+let objectsPublished = 0;
+let indexBeforeObjects = false;
+const engineAs = vfs.as.bind(vfs);
+vfs.as = (cred) => {
+  const engine = engineAs(cred);
+  return new Proxy(engine, {
+    get(target, key) {
+      if (key !== 'writeStream') return Reflect.get(target, key, target);
+      return async (stream, options) => {
+        const result = await target.writeStream(stream, options);
+        const objects = result.receipts.filter(({ path }) => path.startsWith(`${REPO}/.git/objects/`)).length;
+        objectsPublished += objects;
+        filesInFlight -= objects;
+        return result;
+      };
+    },
+  });
+};
 
 // What the command does through the view it is given: index writes, and
 // worktree files read but not yet written back as objects.
@@ -53,7 +78,10 @@ const observed = new Proxy(files.view({ pid: 1, cred: CRED_SESSION_USER }), {
     if (key === 'writeFile') {
       return (path, content, options) => {
         const key = path.replace(/^\/+/, '');
-        if (key === `${REPO}/.git/index`) indexWrites++;
+        if (key === `${REPO}/.git/index`) {
+          indexWrites++;
+          if (filesInFlight !== 0) indexBeforeObjects = true;
+        }
         if (key.startsWith(`${REPO}/.git/objects/`)) filesInFlight--;
         return target.writeFile(path, content, options);
       };
@@ -90,7 +118,9 @@ indexWrites = 0;
 peakFilesInFlight = filesInFlight = 0;
 await git('add', '-A');
 assert.equal(indexWrites, 1, `add -A of ${FILES} new files wrote the index ${indexWrites} times`);
-assert.ok(peakFilesInFlight >= 1 && peakFilesInFlight <= 2, `add -A held ${peakFilesInFlight} files at once`);
+assert.equal(objectsPublished, FILES, 'every blob went in the waves');
+assert.ok(peakFilesInFlight >= 1 && peakFilesInFlight <= 2 * WAVE_PATHS + 1, `add -A held ${peakFilesInFlight} files' objects at once (two waves: ${2 * WAVE_PATHS})`);
+assert.equal(indexBeforeObjects, false, 'the index was written before every object it names');
 // Taken here: the reads later commands make keep the counter moving.
 const stagedAtOnce = peakFilesInFlight;
 await git('commit', '-qm', 'base');
