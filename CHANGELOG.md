@@ -5,6 +5,10 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `nuxt dev` died at start with "BroadcastChannel is not a constructor":
+  `node:worker_threads` and the global now provide `BroadcastChannel`, which
+  delivers to the process's other open channels of the same name as Node does
+  and keeps the process alive until it is closed or unref'd.
 - Fixed: `react-router dev` (React Router 8.4) exited at once with "Oops, Node
   v22.19.0 detected": processes now report Node v22.22.3, the release the
   tests use as Node's reference, which meets its `>=22.22.0` engines floor.
