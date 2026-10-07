@@ -218,19 +218,30 @@ export interface RequiredModuleRoot {
 }
 
 /**
+ * A module the command line preloads (`node -r`, `--import`), as it named
+ * it: resolved from the working directory as the process resolves it there
+ * (a require, or an import()), and walked as a required root before the
+ * entry runs it.
+ */
+export interface PreloadModuleRoot {
+  preload: 'require' | 'import';
+  specifier: string;
+}
+
+/**
  * Resolve the complete dependency graph starting from entry code.
  * `conditions`: the program's own (`node --conditions`), beside Node's, for
  * `require` and `import` alike, as the process resolves under them.
  */
 export function prefetchForRequire(
   vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string,
-  maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot>,
+  maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>,
   conditions?: readonly string[],
 ): Promise<PrefetchOutcome>;
 export function prefetchForRequire(
   vfs: RequireFs, entryCode: string, cwd: string, entryFile: string | undefined,
   maxBundleBytes: number | undefined, progress: WalkProgress | undefined,
-  policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot>,
+  policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>,
   conditions?: readonly string[],
 ): Promise<DependencyClosureOutcome>;
 export async function prefetchForRequire(
@@ -241,7 +252,7 @@ export async function prefetchForRequire(
   maxBundleBytes: number = VFS_BUNDLE_MAX_BYTES,
   progress?: WalkProgress,
   policy?: DependencyClosurePolicy,
-  requiredRoots?: Iterable<RequiredModuleRoot>,
+  requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>,
   conditions: readonly string[] = [],
 ): Promise<DependencyClosureOutcome> {
   const report = progress;
@@ -579,6 +590,17 @@ export async function prefetchForRequire(
     // this same visited set and byte budget before any optional enrichment.
     // A tool config is not one (RequiredModuleRoot.config): phase 2's first.
     for (const root of requiredRoots ?? []) {
+      if ('preload' in root) {
+        if (isFacetProvided(root.specifier)) continue;
+        const resolved = root.preload === 'require'
+          ? (await resolveStaticDependency(root.specifier, cwdStripped))?.resolved
+          : await resolveDynamicImport(root.specifier, cwdStripped);
+        // Run before the entry, it is as much an entry: its own import()s are required too.
+        // One that does not resolve fails in the process, as Node's does.
+        if (resolved) await addFile(resolved, policy === undefined);
+        if (closureExceeded || declined) break;
+        continue;
+      }
       const path = stripLeadingSlashes(root.path);
       if (root.config && root.text === undefined) {
         configRoots.add(path);

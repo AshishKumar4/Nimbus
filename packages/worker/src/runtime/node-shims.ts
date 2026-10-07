@@ -37,7 +37,7 @@
  *   - the shared VFS write ledger source evaluated in the same scope
  *   - cwd: string
  *   - argv, env, filename, dirname: from args
- *   - nodeCommandLine: from args, { execArgv, conditions } (core runtime/node-cli.ts),
+ *   - nodeCommandLine: from args, the NodeLaunch (core runtime/node-cli.ts),
  *     or undefined where a host passes none
  *   - stdout, stderr, exitCode: capture variables
  */
@@ -10625,6 +10625,29 @@ globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, spe
     return __esmLoad(resolution);
   });
 };
+
+// The command line's preloads, before the program, as Node runs them
+// (pre_execution.js loadPreloadModules, then run_main.js
+// runEntryPointWithESMLoader): \`-r\` modules required from the working
+// directory in order, then \`--import\` ones imported from it, each awaited.
+async function __nimbusPreload() {
+  const fromDir = String(cwd || "/home/user").replace(/^\\/+/, "");
+  for (const specifier of __nimbusNodeCommandLine?.require ?? []) __requireFrom(String(specifier), fromDir);
+  const imports = __nimbusNodeCommandLine?.import ?? [];
+  if (imports.length === 0) return;
+  const parentUrl = builtins.url.pathToFileURL("/" + fromDir + "/").href;
+  for (const specifier of imports) await globalThis.__nimbusDynamicImport(parentUrl, String(specifier));
+}
+
+// \`node -p\`: its code returns the eval's completion value (core
+// runtime/node-eval.ts), printed when the process exits by the console.log the
+// code left in place (Node's runScriptInContext). Otherwise the entry's own result.
+function __nimbusEntryOutcome(result) {
+  if (__nimbusNodeCommandLine?.print !== true) return result;
+  const log = __consoleMod.log;
+  __processMod.on("exit", () => { log(result); });
+  return undefined;
+}
 
 // Node's import.meta.resolve, synchronous as in Node: the URL a specifier
 // names, even for a file or directory that will not load.

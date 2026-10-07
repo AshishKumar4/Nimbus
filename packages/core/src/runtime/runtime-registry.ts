@@ -48,7 +48,8 @@ import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { errorText } from '../_shared/error-text.js';
 import { exists } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerLaunchHost } from './server-launch.js';
-import { parseNodeCommandLine, type NodeCommandLine } from './node-cli.js';
+import { parseNodeCommandLine, type NodeCommandLine, type NodeLaunch } from './node-cli.js';
+import { nodeEvalCode, nodeStdinPrintCode } from './node-eval.js';
 
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
@@ -98,12 +99,12 @@ export interface RuntimeRunOpts {
   invokerPid?: number;
   /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */
   signal?: AbortSignal;
-  /** A Node command line's options before the program (`process.execArgv`; RuntimeSpec.nodeCommandLine). */
-  execArgv?: string[];
-  /** The program's own conditions (`--conditions`, `-C`, NODE_OPTIONS'), for its resolvers. */
-  conditions?: string[];
-  /** `-e`'s code, for a Node program that is one (`process._eval`). */
-  eval?: string;
+  /**
+   * A Node program's command line (RuntimeSpec.nodeCommandLine): its options
+   * (`process.execArgv`), its conditions, what it preloads, and its `-e`
+   * code; with `print`, the program's code returns the value to print.
+   */
+  node?: NodeLaunch;
   /**
    * The pipe or redirect the program's stdin is (`echo hi | node x.js`,
    * `node x.js < in.txt`); absent when stdin is the terminal. A runner
@@ -425,10 +426,8 @@ export function buildRuntimeHandler(
       return line.exitCode;
     }
     const flagSpan = line.programIndex;
-    // What a node run takes of its command line (RuntimeRunOpts.execArgv, .conditions, .eval).
-    const nodeRun = spec.nodeCommandLine
-      ? { execArgv: line.execArgv, conditions: line.conditions, ...(line.eval !== undefined ? { eval: line.eval } : {}) }
-      : {};
+    // What a node run takes of its command line (RuntimeRunOpts.node).
+    const { programIndex: _programIndex, version: _version, help: _help, print, ...launch } = line;
     // A node program's argv is its own: Node's options are execArgv. Another runtime's carries its flags.
     const leadingFlags = spec.nodeCommandLine ? [] : args.slice(0, flagSpan);
 
@@ -447,6 +446,8 @@ export function buildRuntimeHandler(
       stdin?: Pick<RuntimeRunOpts, 'stdin' | 'stdinFile'>;
       reserved?: boolean;
       launchesServer?: boolean;
+      /** The code returns the value `node -p` prints (node-eval.ts): Node prints only an eval's, not a file's. */
+      print?: boolean;
     }): Promise<number> => {
       const result = await spec.run(code, {
         cred: ctx.cred,
@@ -458,7 +459,7 @@ export function buildRuntimeHandler(
         filename: program.filename,
         dirname: program.dirname,
         command: program.command,
-        ...nodeRun,
+        ...(spec.nodeCommandLine ? { node: { ...launch, print: program.print === true } } : {}),
         ...program.stdin,
         ...(program.reserved === false ? {} : reservedProcess),
         ...(captureOutput ? { captureOutput: true } : {}),
@@ -483,22 +484,20 @@ export function buildRuntimeHandler(
       return 0;
     }
 
-    // ── -p / --print: Node prints the eval's result; not here ──
-    if (line.print) {
-      ctx.stderr.write(`${name}: -p/--print is not supported; use -e with console.log(...)\n`);
-      return 1;
-    }
-
-    // ── -e / --eval ──
+    // ── -e / --eval, and -p / --print ──
+    // Node's eval code as Node prepares it (node-eval.ts); `-p`'s returns
+    // the value the process prints when it exits.
     if (line.eval !== undefined) {
+      const code = spec.nodeCommandLine ? nodeEvalCode(line.eval, print) : line.eval;
       const programArgs = args.slice(flagSpan);
-      return runProgram(line.eval, {
+      return runProgram(code, {
+        print,
         argv: programArgs,
         filename: '<eval>',
         dirname: ctx.cwd || '/home/user',
         command: binSpawn?.command || `${name} -e ...`,
         stdin: programStdin,
-        launchesServer: await launches(line.eval, null, ctx.cwd || '/home/user', programArgs),
+        launchesServer: await launches(code, null, ctx.cwd || '/home/user', programArgs),
       });
     }
 
@@ -539,8 +538,11 @@ export function buildRuntimeHandler(
     // `process.argv[2]`, where a program written for real Node looks. The
     // program's own stdin is what is left after the read: nothing.
     if (scriptPath === '-') {
-      const code = ctx.stdin ? (await ctx.stdin.readAll()) : '';
+      const input = ctx.stdin ? (await ctx.stdin.readAll()) : '';
+      // `-p` prints the value of the code it read (eval_stdin.js).
+      const code = spec.nodeCommandLine && print ? nodeStdinPrintCode(input) : input;
       return runProgram(code, {
+        print,
         argv: [...leadingFlags, '-', ...args.slice(scriptIdx + 1)],
         filename: '[stdin]',
         dirname: ctx.cwd || '/home/user',

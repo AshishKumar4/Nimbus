@@ -43,6 +43,7 @@
 import type { FacetManager, FacetExecResult } from '../facets/manager.js';
 import { parsePortFromArgv } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import type { FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
+import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
 import type { StdinBytes } from '../facets/manager.js';
 
 /**
@@ -106,12 +107,8 @@ export interface RunFreshOpts {
   signal?: AbortSignal;
   /** Running the program starts a server (RuntimeRunOpts.launchesServer, server-launch.ts). */
   launchesServer?: boolean;
-  /** Node's options before the program (RuntimeRunOpts.execArgv). */
-  execArgv?: string[];
-  /** The program's own conditions (RuntimeRunOpts.conditions). */
-  conditions?: string[];
-  /** `-e`'s code (RuntimeRunOpts.eval). */
-  eval?: string;
+  /** A node program's command line (RuntimeRunOpts.node). */
+  node?: NodeLaunch;
 }
 
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
@@ -132,7 +129,7 @@ export async function runFresh(
   const wantsLongRunning =
     opts.forceLongRunning ||
     // Node's options are its execArgv now, not its argv (node-cli.ts).
-    isLongRunningInvocation([...(opts.execArgv ?? []), ...args]) ||
+    isLongRunningInvocation([...(opts.node?.execArgv ?? []), ...args]) ||
     (!opts.skipSpawn && opts.launchesServer === true);
 
   if (!wantsLongRunning) {
@@ -191,9 +188,7 @@ export async function runFresh(
       callerPid: opts.callerPid,
       invokerPid: opts.invokerPid,
       bundleProfile: opts.bundleProfile,
-      ...(opts.execArgv ? { execArgv: opts.execArgv } : {}),
-      ...(opts.conditions ? { conditions: opts.conditions } : {}),
-      ...(opts.eval !== undefined ? { eval: opts.eval } : {}),
+      ...(opts.node ? { node: opts.node } : {}),
     });
   } catch (e: any) {
     // Hard-fail per anti-requirement: missing env.LOADER throws here.
