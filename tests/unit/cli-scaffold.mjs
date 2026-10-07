@@ -1,0 +1,44 @@
+#!/usr/bin/env bun
+// cli-scaffold — `create-nimbus-app` writes the wrangler config that
+// @nimbus-sh/config builds for the template's choices (the public directory
+// and the session Agent's vars), so a scaffolded project deploys with every
+// setting an embedder built from the config package gets.
+
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parse, printParseErrorCode } from 'jsonc-parser';
+import { scaffold } from '../../packages/cli/src/commands/scaffold.ts';
+import { buildNimbusWranglerConfig } from '../../packages/config/src/index.ts';
+
+const root = mkdtempSync(join(tmpdir(), 'cli-scaffold-'));
+const oldStdoutWrite = process.stdout.write;
+const oldStderrWrite = process.stderr.write;
+try {
+  const target = join(root, 'my-app');
+  process.stdout.write = () => true;
+  process.stderr.write = () => true;
+  let code;
+  try {
+    code = await scaffold([target, '--name', 'my-worker']);
+  } finally {
+    process.stdout.write = oldStdoutWrite;
+    process.stderr.write = oldStderrWrite;
+  }
+  assert.equal(code, 0);
+
+  // wrangler reads its config with jsonc-parser, trailing commas allowed.
+  const errors = [];
+  const config = parse(readFileSync(join(target, 'wrangler.jsonc'), 'utf8'), errors, { allowTrailingComma: true });
+  assert.deepEqual(errors.map((e) => printParseErrorCode(e.error)), []);
+  assert.deepEqual(config, buildNimbusWranglerConfig({
+    name: 'my-worker',
+    nimbusPublicDirectory: true,
+    agent: { model: '@cf/moonshotai/kimi-k2.6', gatewayId: 'default' },
+  }));
+} finally {
+  rmSync(root, { recursive: true, force: true });
+}
+
+console.log('cli-scaffold: ok');
