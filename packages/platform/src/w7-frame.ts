@@ -318,6 +318,31 @@ export function encodeWriteBatchStream(payload: BatchWritePayload): ReadableStre
 }
 
 /**
+ * The bytes encodeWriteBatchStream would stream for `payload`, as one buffer:
+ * for a payload held in memory (no streamed sources), the same records in
+ * the same order, copied once.
+ */
+export async function encodeWriteBatch(payload: BatchWritePayload): Promise<Uint8Array> {
+  if ((payload.streams?.length ?? 0) > 0) throw new Error('w7-frame: a payload with streamed sources is never encoded whole');
+  const batchId = crypto.randomUUID();
+  const parts: Uint8Array[] = [W7_MAGIC];
+  let length = W7_MAGIC.byteLength;
+  for await (const record of encodeRecords(batchId, preparePayload(payload, batchId))) {
+    for (const part of record) {
+      parts.push(part);
+      length += part.byteLength;
+    }
+  }
+  const out = new Uint8Array(length);
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.byteLength;
+  }
+  return out;
+}
+
+/**
  * Parse the v3 preamble eagerly, then expose validated operation records
  * incrementally. Chunk credit is acquired after its bounded header validates
  * and before its payload bytes are read or copied.

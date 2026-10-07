@@ -56,6 +56,7 @@
  */
 
 import {
+  encodeWriteBatch,
   encodeWriteBatchStream,
   W7_MAX_OWNED_PATH_BYTES,
   W7_MAX_PATHS_PER_BATCH,
@@ -83,6 +84,8 @@ export const WAVE_PATHS = W7_MAX_PATHS_PER_BATCH - 8;
 export const WAVE_PATH_BYTES = W7_MAX_OWNED_PATH_BYTES - 4 * 1024;
 /** Buffered content bytes that close a wave. */
 export const WAVE_BYTES = 4 * 1024 * 1024;
+/** The pieces a wave encoded whole crosses its transport in. */
+const SEND_SLICE_BYTES = 1024 * 1024;
 
 
 /**
@@ -737,20 +740,43 @@ export class WaveWriter<Meta = undefined> {
   /**
    * Send one wave, again while its transport is lost (see the module's
    * comment), and answer with what the session answered.
+   *
+   * Across a transport (a supervisor that opens epochs), a wave held in
+   * memory is encoded whole as it is sent, and the transport's first read
+   * waits for that; it then takes the wave in SEND_SLICE_BYTES pieces and
+   * never waits on the encoder again. A re-send sends the same bytes, and the
+   * wave's records are let go once it is encoded.
+   * Measured, eight producers into one session, Markflow's file sizes: the
+   * encoder's stream, pulled through the watchdog as the transport read it,
+   * took 1,002 files/s; the wave encoded first, 1,374 (re-chunking that
+   * stream to 64 KiB or 1 MiB gained nothing). A wave with a streamed
+   * source is never held whole, and a session's own writer has no transport
+   * to wait on: both stream as the encoder makes them.
    */
   private async send(payload: BatchWritePayload, wave: number): Promise<unknown> {
+    const streamed = (payload.streams?.length ?? 0) > 0;
+    if (streamed || this.options.supervisor.openWaveWriter === undefined) {
+      return this.sendAttempts(() => encodeWriteBatchStream(payload), streamed, wave);
+    }
+    const whole = encodeWriteBatch(payload);
+    // A failure to encode reaches the attempt that reads it.
+    whole.catch(() => {});
+    return this.sendAttempts(() => slices(whole, SEND_SLICE_BYTES), false, wave);
+  }
+
+  private async sendAttempts(open: () => ReadableStream<Uint8Array>, streamed: boolean, wave: number): Promise<unknown> {
     const { backoffMs, stallMs, answerDeadlineMs } = this.options.retry
       ?? { backoffMs: LOST_CALL_RESEND_BACKOFF_MS, stallMs: LOST_STREAM_STALL_MS, answerDeadlineMs: LOST_STREAM_ANSWER_MS };
     for (let attempt = 0; ; attempt++) {
       const writer = await this.currentEpoch();
-      const attemptStream = abortable(encodeWriteBatchStream(payload), stallMs, answerDeadlineMs);
+      const attemptStream = abortable(open(), stallMs, answerDeadlineMs);
       const fence: WaveFence | undefined = writer === null ? undefined : { writer, wave, attempt: attempt + 1 };
       const answer = this.options.supervisor.writeBatchStream(attemptStream.stream, fence);
       try {
         return await Promise.race([answer, attemptStream.lost]);
       } catch (error) {
         const lost = error instanceof WaveLost || isLostFencedCall(error);
-        if (!lost || (payload.streams?.length ?? 0) > 0 || attempt >= backoffMs.length) throw error;
+        if (!lost || streamed || attempt >= backoffMs.length) throw error;
         // The abandoned attempt can read nothing more, and its late answer is dropped.
         attemptStream.abort(error);
         answer.then(disposeRpcResource, () => {});
@@ -826,6 +852,27 @@ class WaveLost extends Error {
     super(message);
     this.name = 'WaveLost';
   }
+}
+
+/**
+ * `whole`'s bytes as a stream of `size`-byte pieces, each its own copy: the
+ * watched stream they pass through transfers what it enqueues, and the bytes
+ * stay whole for a re-send.
+ */
+function slices(whole: Promise<Uint8Array>, size: number): ReadableStream<Uint8Array> {
+  let at = 0;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const bytes = await whole;
+      if (at >= bytes.byteLength) {
+        controller.close();
+        return;
+      }
+      const end = Math.min(bytes.byteLength, at + size);
+      controller.enqueue(bytes.slice(at, end));
+      at = end;
+    },
+  }, { highWaterMark: 0 });
 }
 
 /**
