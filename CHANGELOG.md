@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a module a launch's map had no room for (the bound evicts the
+  largest guesses first) that the program then loaded through an `import()`
+  could not read what it reads synchronously, nor compile its WebAssembly:
+  `nuxt dev` evicted rollup, and Nitro's load of it failed reading
+  `bindings_wasm_bg.wasm`. An evicted module's wasm images are now carried,
+  and the `import()` that reaches it fetches its synchronous reads.
 - Fixed: a launch that loads rolldown, satteri or the Astro compiler by a
   name its code computes (`nuxt dev`: nuxi loads the project's nuxt, which
   loads vite and rolldown) carried none of their staged bindings, and failed

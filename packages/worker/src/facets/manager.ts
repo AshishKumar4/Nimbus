@@ -1949,6 +1949,14 @@ interface FacetVfsState {
   lazyModules?: readonly string[];
   /** Each lazy module's lazy importers (PrefetchResult.edges, reversed, within lazyModules). */
   lazyImporters?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * The modules the snapshot's bound evicted that name a synchronous call
+   * (evictedReaders): modules the program may still load late, as runtime
+   * code through an \`import()\`. The data plan puts what each reads in the
+   * lazy-read table under its own path, for that import()'s closure walk to
+   * fetch.
+   */
+  evictedReaders?: readonly string[];
   /** Telemetry: served from the prefetch-bundle cache (no VFS walk). */
   cacheHit?: boolean;
   /**
@@ -4332,6 +4340,8 @@ async function _buildPrefetchBundle(
   const size = encodedBundleSize(bundle);
   const rawBytes = new Map<string, number>();
   let rawTotal = 0;
+  /** What the bound evicts, held until its images and reads are named below. */
+  const evictedCells: Record<string, string | Uint8Array> = {};
   for (const [path, cell] of Object.entries(bundle)) {
     const bytes = _bundleCellRawBytes(cell);
     rawBytes.set(path, bytes);
@@ -4428,6 +4438,7 @@ async function _buildPrefetchBundle(
     for (const k of Object.keys(bundle)) {
       if (retained.has(k)) continue;
       evicted.push([k, rawBytes.get(k) ?? 0]);
+      evictedCells[k] = bundle[k]!;
       delete bundle[k];
       emits.delete(k);
       lowered.delete(k);
@@ -4460,7 +4471,11 @@ async function _buildPrefetchBundle(
     for (const child of children) if (lazySet.has(child)) (lazyImporters[child] ??= []).push(from);
   }
 
-  const wasmImages = (await collectClosureWasmImages(vfs, bundle, binSiblingAdd.wasmPaths));
+  // An evicted module is still one the program may load late (as runtime
+  // code, through an import()): its images ride in the map, bytes only since
+  // they compile on first use, and its reads are named for that import().
+  const wasmImages = (await collectClosureWasmImages(vfs, { ...bundle, ...evictedCells }, binSiblingAdd.wasmPaths));
+  const readers = evictedReaders(evictedCells);
 
   return {
     bundle,
@@ -4471,9 +4486,30 @@ async function _buildPrefetchBundle(
     truncated,
     ...(transforms ? { transforms } : {}),
     ...(lazyModules.length > 0 ? { lazyModules, lazyImporters } : {}),
+    ...(readers.length > 0 ? { evictedReaders: readers } : {}),
     bundleSideModulesRequired,
     ...(wasmImages.length > 0 ? { wasmImages } : {}),
   };
+}
+
+/** At most this many evicted readers are planned: the launch's start args carry their reads. */
+const EVICTED_READERS_MAX = 256;
+const SYNC_CALL_NAME = /[a-z]Sync\b/;
+
+/**
+ * The evicted JavaScript modules whose text names a synchronous call: the
+ * ones the data plan reads (static-fs-refs.ts, from the VFS as written).
+ * Most of what a bound evicts is data or declarations (Astro's 575 shiki
+ * grammars and .d.ts files), which this costs a substring search.
+ */
+export function evictedReaders(cells: Readonly<Record<string, string | Uint8Array>>): string[] {
+  const readers: string[] = [];
+  for (const [path, cell] of Object.entries(cells)) {
+    if (readers.length >= EVICTED_READERS_MAX) break;
+    // \`Sync\` and not \`Sync(\`: a lowered module calls \`(0, import_fs.readFileSync)(…)\`.
+    if (typeof cell === 'string' && /\.[cm]?js$/.test(path) && SYNC_CALL_NAME.test(cell)) readers.push(stripLeadingSlashes(path));
+  }
+  return readers;
 }
 
 // ── FacetManager ────────────────────────────────────────────────────────
@@ -5484,6 +5520,12 @@ export class FacetManager {
       refs.push({ ...moduleRefs, exact: moduleRefs.exact.filter((ref) => !ref.sync) });
     });
     const lazyReads = lazyReadsByTarget(syncReadsOf, vfsState.lazyImporters ?? {});
+    // An evicted module's reads, under its own path: the import() whose
+    // closure walk reaches it fetches them (node-shims.ts __nimbusStageImport).
+    await this._closureStaticRefs(vfs, vfsState.evictedReaders ?? [], pacer, (path, moduleRefs) => {
+      const reads = moduleRefs.exact.filter((ref) => ref.sync).map((ref) => stripLeadingSlashes(ref.path));
+      if (reads.length > 0) lazyReads[path] = [...new Set([...(lazyReads[path] ?? []), ...reads])];
+    });
     trace(`${refs.length} modules name paths (${syncReadsOf.size} lazy ones' synchronous reads deferred to their import()); learned reads`);
     // Where this process's listing walks mounts, the plan's below and its own
     // at boot: what its launch names.
