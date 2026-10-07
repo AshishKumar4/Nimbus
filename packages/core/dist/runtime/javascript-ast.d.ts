@@ -49,20 +49,29 @@ export type ModuleSyntaxToken = 'import' | 'export' | 'import.meta';
  */
 export declare const COMMONJS_WRAPPER_NAMES: ReadonlySet<string>;
 /**
- * Whether `source` holds syntax only an ES module can, as Node's syntax
- * detection defines it (doc/api/packages.md "Syntax detection", on by
- * default from v22.7.0): syntax that throws when evaluated as CommonJS. That
- * is an `import` or `export` declaration, `import.meta`, `await` at the top
- * level, or a top-level lexical declaration of a name the CommonJS wrapper
- * binds (`const __dirname = …`). `import()` is valid in both.
+ * Whether Node runs `source`, whose extension and package "type" leave it
+ * undecided, as an ES module: Node's syntax detection (doc/api/packages.md
+ * "Syntax detection", on by default from v22.7.0), as src/node_contextify.cc
+ * ContainsModuleSyntax decides it. Node compiles the source as CommonJS (a
+ * file as the body of the wrapper function, whose parameters are the
+ * wrapper's names; `--eval` code and stdin, `scope` 'eval', with none) and it
+ * is CommonJS if that compiles. Otherwise V8's first error decides: one at
+ * an `import` (not `import(`), an `export` or `import.meta` makes it a
+ * module; one Node retries (a lexical redeclaration of a wrapper name, and
+ * the errors a top-level `await` gives) makes it a module if it compiles as
+ * one; any other leaves it CommonJS.
  *
- * A declaration or `import.meta` is read off the tokens. The other two are
- * read off them as candidates (an `await` outside every function body, a
- * `let`, `const` or `class` of a wrapper name) and settled as Node settles
- * every case: the source fails to compile in the wrapper and parses as a
- * module. A source that does not tokenize as a module is not one.
+ * Only an `import`, an `export`, `import.meta`, a top-level `await` or a
+ * top-level lexical declaration can make the answer a module, so a walk of
+ * the tokens answers every other source CommonJS without a parse (a
+ * multi-MiB bundle must fit a 48 MiB heap). One that finds a top-level
+ * `import` or `export`, or `import.meta`, before either of the others
+ * answers module. Where that differs from Node (a syntax error before it;
+ * an `import` or `export` nested in a block) the source compiles under
+ * neither, and fails either way. The rest are compiled, by acorn in V8's
+ * place (commonJsCompileError).
  */
-export declare function containsModuleSyntax(source: string): boolean;
+export declare function containsModuleSyntax(source: string, scope?: 'file' | 'eval'): boolean;
 /**
  * Whether `source` may hold an `await` outside every function body (a
  * top-level await), read off its tokens: true when one is found, or when the
@@ -78,9 +87,9 @@ export declare function hasUnscopedAwait(source: string): boolean;
  * member named so (after `.` or `?.`). `visit` returns true to stop the walk.
  *
  * Returns true when `visit` stopped it, false at the end of the source, and
- * null when the source does not tokenize.
+ * null when the source does not tokenize (as `sourceType` does).
  */
-export declare function walkTopLevelModuleTokens(source: string, visit: (token: Token, syntax: ModuleSyntaxToken | null, topLevel: boolean) => boolean): boolean | null;
+export declare function walkTopLevelModuleTokens(source: string, visit: (token: Token, syntax: ModuleSyntaxToken | null, topLevel: boolean) => boolean, sourceType?: 'module' | 'script'): boolean | null;
 /** A replacement of source text `[start, end)` by `text`. */
 export interface SourceEdit {
     start: number;

@@ -1,13 +1,4 @@
-/**
- * module-format.ts — which module system Node runs a source under, as
- * doc/api/packages.md "Determining module system" defines it (Node 22, with
- * syntax detection on by default from v22.7.0).
- *
- * The answer decides whether a source is lowered to CommonJS before it runs
- * (every runtime here runs CommonJS: commonjs-cell.ts says why), so the shell's
- * `node`, the facet's entry and the lifo substrate's loader all ask it here.
- */
-import { COMMONJS_WRAPPER_NAMES, containsModuleSyntax } from './javascript-ast.js';
+import { COMMONJS_WRAPPER_NAMES, applySourceEdits, containsModuleSyntax, parseStatements } from './javascript-ast.js';
 import { vfsPathExtension } from '../vfs/path.js';
 /** The "type" a parsed package.json declares. */
 export function packageTypeOf(pkg) {
@@ -40,14 +31,15 @@ export function isEsModuleFile(path, source, packageType) {
 }
 /**
  * Whether Node runs `--eval` code or a program read from stdin as an ES
- * module: as `--input-type` says, and without it by its syntax.
+ * module: as `--input-type` says, and without it by its syntax, compiled as
+ * Node compiles such code as CommonJS, where no wrapper binds a name.
  */
 export function isEsModuleInput(source, inputType) {
     if (inputType === 'module')
         return true;
     if (inputType === 'commonjs')
         return false;
-    return containsModuleSyntax(source);
+    return containsModuleSyntax(source, 'eval');
 }
 /**
  * The global the guest defines (node-shims.ts) with an accessor for each
@@ -65,16 +57,32 @@ export const ES_MODULE_SCOPE_GLOBAL = '__nimbusEsmScope';
  * bounded rewrite's equivalent) applies it.
  */
 export const ES_MODULE_UNBOUND_NAMES = Object.fromEntries([...COMMONJS_WRAPPER_NAMES].map((name) => [name, `${ES_MODULE_SCOPE_GLOBAL}.${name}`]));
-// `typeof` of an accessor ES_MODULE_UNBOUND_NAMES left as the whole operand:
-// not one read further (`typeof require.cache` reads require, and throws).
-const TYPEOF_UNBOUND = new RegExp(`\\btypeof(\\s*\\(*\\s*)${ES_MODULE_SCOPE_GLOBAL}\\.(?:${[...COMMONJS_WRAPPER_NAMES].join('|')})\\b(?!\\s*(?:[.[(]|\\?\\.))`, 'g');
 /**
  * A lowered ES module's code with `typeof` of each wrapper name 'undefined',
  * as `typeof` of a name bound nowhere is, where the define made the name an
- * accessor that throws when read.
+ * accessor that throws when read: each `typeof` whose operand is one of
+ * ES_MODULE_UNBOUND_NAMES' accessors, found in the code's syntax tree (not
+ * one read further, as `typeof require.cache` reads require and throws; and
+ * never text in a string, template, comment or regular expression).
  */
 export function esModuleScopeTypeofs(code) {
-    return code.includes(ES_MODULE_SCOPE_GLOBAL) ? code.replace(TYPEOF_UNBOUND, 'typeof$1(void 0)') : code;
+    if (!code.includes(ES_MODULE_SCOPE_GLOBAL))
+        return code;
+    const edits = [];
+    parseStatements(code, { ecmaVersion: 'latest', sourceType: 'commonjs', allowHashBang: true }, {
+        onNode: (node) => {
+            const operand = node.type === 'UnaryExpression' && node.operator === 'typeof' ? node.argument : null;
+            if (operand !== null && isUnboundNameAccessor(operand))
+                edits.push({ start: operand.start, end: operand.end, text: '(void 0)' });
+        },
+    });
+    return applySourceEdits(code, edits);
+}
+/** `__nimbusEsmScope.<name>` for a CommonJS wrapper name: what the define made a free reference to one. */
+function isUnboundNameAccessor(node) {
+    return node.type === 'MemberExpression' && !node.computed && !node.optional
+        && node.object.type === 'Identifier' && node.object.name === ES_MODULE_SCOPE_GLOBAL
+        && node.property.type === 'Identifier' && COMMONJS_WRAPPER_NAMES.has(node.property.name);
 }
 /**
  * `source`, which Node runs as an ES module, as one to the transform whatever

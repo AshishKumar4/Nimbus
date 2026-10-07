@@ -56,7 +56,7 @@
  * any other storage failure throws.
  */
 import type { BundleCellResultStore, StoredBundleCell } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
-import type { PackageType } from '@nimbus-sh/core/runtime/module-format.js';
+import type { ModuleScope, PackageType } from '@nimbus-sh/core/runtime/module-format.js';
 import type { SqlDatabase, SqlTransactions } from '@nimbus-sh/core/runtime/os-contracts.js';
 /** The session storage ledger's admission, as the store uses it (core StorageLedger). */
 export interface TransformStoreLedger {
@@ -104,7 +104,7 @@ export declare class TransformStore implements BundleCellResultStore {
      * @param ledger The session's storage ledger, which admits every write.
      */
     constructor(sql: SqlDatabase, transactions: SqlTransactions, ledger: TransformStoreLedger, host: string, options?: TransformStoreOptions);
-    key(kind: 'cell' | 'entry', at: string, source: string, packageType?: PackageType): Promise<string>;
+    key(kind: 'cell' | 'entry', at: string, source: string, packageType?: PackageType, scope?: ModuleScope | null): Promise<string>;
     getMany(keys: readonly string[]): Map<string, StoredBundleCell>;
     /** The result a row holds, or null when its parts do not add up to it. */
     private readCode;

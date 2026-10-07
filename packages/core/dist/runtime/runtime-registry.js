@@ -136,6 +136,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             ...(binSpawn.stdinWriter === true ? { stdinWriter: true } : {}),
         } : {};
         const bundleProfile = parseFacetBundleProfile(nimbusCtx.__nimbusBundleProfile);
+        const moduleScope = spec.moduleScope ?? 'node';
         // How the analyses of a program's code read its modules: the command's
         // own view of the filesystem.
         const programHost = {
@@ -200,7 +201,9 @@ export function buildRuntimeHandler(spec, ctx0) {
                 ...(captureOutput ? { captureOutput: true } : {}),
                 ...(bundleProfile ? { bundleProfile } : {}),
                 ...(program.launchesServer ? { launchesServer: true } : {}),
-                ...(program.esModule ? { esModule: true } : {}),
+                // Evaluated as Node's loader runs an ES module, in Node's scope.
+                ...(program.esModule && moduleScope === 'node' ? { esModule: true } : {}),
+                moduleScope,
             });
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
@@ -244,9 +247,9 @@ export function buildRuntimeHandler(spec, ctx0) {
         async function lowerToCommonJs(code, loader, url, what, esm) {
             try {
                 const eb = await getEsbuild();
-                // An ES module keeps its scope (module-format.ts): strict, no CommonJS wrapper name.
+                // An ES module keeps Node's scope (module-format.ts ModuleScope): strict, no CommonJS wrapper name.
                 return (await eb.transform(code, {
-                    loader, format: 'cjs', dynamicImportParent: url, moduleMetadata: true, ...(esm ? { esModuleScope: true } : {}),
+                    loader, format: 'cjs', dynamicImportParent: url, moduleMetadata: true, ...(esm && moduleScope === 'node' ? { esModuleScope: true } : {}),
                 })).code;
             }
             catch (e) {

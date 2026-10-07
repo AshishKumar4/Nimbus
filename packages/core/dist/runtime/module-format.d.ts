@@ -13,9 +13,19 @@ export declare function declaredPackageType(packageJson: string): PackageType;
 export declare function isEsModuleFile(path: string, source: string, packageType: () => PackageType): boolean;
 /**
  * Whether Node runs `--eval` code or a program read from stdin as an ES
- * module: as `--input-type` says, and without it by its syntax.
+ * module: as `--input-type` says, and without it by its syntax, compiled as
+ * Node compiles such code as CommonJS, where no wrapper binds a name.
  */
 export declare function isEsModuleInput(source: string, inputType: string | undefined): boolean;
+/**
+ * Whose scope a runtime runs an ES module in. Node's binds none of
+ * CommonJS's wrapper names, and is strict with `this` undefined at the top
+ * (ES_MODULE_UNBOUND_NAMES, esModuleSource, esModuleScopeTypeofs: the
+ * transform's EsbuildTransformOptions.esModuleScope). Bun's binds `require`,
+ * `__filename` and `__dirname` in every module (bun.sh/docs/runtime/modules),
+ * and a module is lowered as CommonJS, all of whose names it keeps.
+ */
+export type ModuleScope = 'node' | 'bun';
 /**
  * The global the guest defines (node-shims.ts) with an accessor for each
  * CommonJS wrapper name, which throws the ReferenceError V8 throws for a name
@@ -35,7 +45,10 @@ export declare const ES_MODULE_UNBOUND_NAMES: Readonly<Record<string, string>>;
 /**
  * A lowered ES module's code with `typeof` of each wrapper name 'undefined',
  * as `typeof` of a name bound nowhere is, where the define made the name an
- * accessor that throws when read.
+ * accessor that throws when read: each `typeof` whose operand is one of
+ * ES_MODULE_UNBOUND_NAMES' accessors, found in the code's syntax tree (not
+ * one read further, as `typeof require.cache` reads require and throws; and
+ * never text in a string, template, comment or regular expression).
  */
 export declare function esModuleScopeTypeofs(code: string): string;
 /**

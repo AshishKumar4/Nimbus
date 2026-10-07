@@ -42,6 +42,7 @@ import type { EsbuildService } from './esbuild-service.js';
 import { type FacetBundleProfile } from './bundle-profile.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
+import { type ModuleScope } from './module-format.js';
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
  * the existing RunFreshResult / RunBunResult shapes — kept narrow so
@@ -68,6 +69,8 @@ export interface RuntimeRunOpts {
      * explained as Node's loader explains it.
      */
     esModule?: boolean;
+    /** Whose scope its ES modules run in (RuntimeSpec.moduleScope): absent, Node's. */
+    moduleScope?: ModuleScope;
     /** Primitive #1/G4 hooks. node-runner consumes these; other
      *  runtimes ignore them safely. */
     skipSpawn?: boolean;
@@ -196,6 +199,11 @@ export interface RuntimeSpec {
      * script and stdin not a terminal, the program is stdin (`echo code | node`).
      */
     repl?: string;
+    /**
+     * Whose scope the runtime runs an ES module in (module-format.ts
+     * ModuleScope), the entry's and every module it loads: absent, Node's.
+     */
+    moduleScope?: ModuleScope;
 }
 /**
  * Minimal registry shape we depend on. Avoids importing the full vendored

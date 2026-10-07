@@ -3509,9 +3509,10 @@ async function cellPackageTypes(vfs, paths) {
  * sources; a script patching an installed ES module and writing it back).
  *
  * Every cell lowered from ESM or compiled from TypeScript is added to
- * `lowered` (its module's block scope, commonjs-cell.ts THE WRAPPER).
+ * `lowered` (its module's block scope, commonjs-cell.ts THE WRAPPER). An ES
+ * module is lowered in the launch's runtime's module `scope`.
  */
-async function transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, esbuild, pacer, store) {
+async function transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, scope, esbuild, pacer, store) {
     // Snapshot the cells first — transforms await; never iterate-and-mutate.
     const cells = [];
     for (const path of Object.keys(bundle)) {
@@ -3521,7 +3522,7 @@ async function transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, e
         if (typeof source === 'string' && needsBundleCellTransform(path, source, packageType))
             cells.push({ path, source, packageType });
     }
-    return transformBundleCells(cells, { host: esbuild, store, pacer }, (path, result) => {
+    return transformBundleCells(cells, { host: esbuild, store, pacer, scope }, (path, result) => {
         placeEmit(path, result.code);
         if (result.lowered)
             lowered.add(path);
@@ -3615,7 +3616,7 @@ export async function buildPrefetchBundle(vfs, options) {
         lease.release();
     }
 }
-async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, executedModules, transformStore, }) {
+async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, moduleScope = 'node', observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, executedModules, transformStore, }) {
     // Read the cursor BEFORE the walk: a mutation that lands while the bundle
     // is being assembled must be reported as invalidated, not silently missed.
     const admitted = await vfs.acquire(null, 0);
@@ -3788,7 +3789,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
         // Transient failures propagate through the launch failure path before
         // serialization/cache/LOADER publication. Per-source verdicts still use
         // the lazy diagnostic cells installed by transformEsmInBundle.
-        transforms = await transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, esbuild, pacer, transformStore);
+        transforms = await transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, moduleScope, esbuild, pacer, transformStore);
     }
     else {
         // No esbuild service was given: the ESM cells stage as diagnostics that
@@ -4829,8 +4830,9 @@ export class FacetManager {
         const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
         const { cred } = entry;
         const profile = spec.bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
+        const moduleScope = spec.moduleScope ?? 'node';
         const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
-        const key = `${profile}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}`;
+        const key = `${profile}\x00${moduleScope}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}`;
         const revision = (await vfs.revision());
         // An entry built at an older revision can never be SERVED again — the
         // lookup below requires an exact match — so from the first write after it
@@ -4883,6 +4885,7 @@ export class FacetManager {
             entryCode: spec.entryCode,
             esbuild: this.esbuild ?? undefined,
             bundleProfile: profile,
+            moduleScope,
             observedReads: new Set(learning.dataReads),
             pacer,
             learnedFor,
@@ -4925,7 +4928,7 @@ export class FacetManager {
             emits: vfsState.emits,
             lowered: vfsState.lowered,
             codeOnly: vfsState.codeOnly,
-            runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer),
+            runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope),
         });
         vfsState.cacheHit = false;
         // Serialization is total: bundleSource/serializedManifest/serializedMetadata
@@ -5002,7 +5005,7 @@ export class FacetManager {
      * path as a cell: the guest looks a path up first and the key only for a
      * path the map lacks — the same text written under a fresh name.
      */
-    async _stagedRuntimeCode(learning, vfs, pacer) {
+    async _stagedRuntimeCode(learning, vfs, pacer, moduleScope) {
         const modules = new Map();
         for (const [codeKey, entry] of learning.code) {
             if (entry.kind === 'expression') {
@@ -5016,10 +5019,10 @@ export class FacetManager {
             if (entry.path.startsWith('data:')) {
                 if (!this.esbuild)
                     throw new Error('No transformer for a staged data URL module');
-                // A data: URL is always an ES module to Node.
+                // A data: URL is always an ES module to Node, in the runtime's scope.
                 const result = await this.esbuild.transform(entry.text, {
                     loader: 'js', format: 'cjs', target: 'esnext',
-                    moduleMetadata: true, dynamicImportParent: 'data:text/javascript,', esModuleScope: true,
+                    moduleMetadata: true, dynamicImportParent: 'data:text/javascript,', ...(moduleScope === 'node' ? { esModuleScope: true } : {}),
                 });
                 modules.set(codeKey, wrapCommonJsCell(result.code, 'block').text);
                 continue;
@@ -5031,7 +5034,7 @@ export class FacetManager {
             const lowered = new Set();
             const packageTypeOf = await cellPackageTypes(vfs, [path]);
             if (this.esbuild)
-                await transformEsmInBundle(file, placeEmit, lowered, packageTypeOf, this.esbuild, pacer, this._transformStore());
+                await transformEsmInBundle(file, placeEmit, lowered, packageTypeOf, moduleScope, this.esbuild, pacer, this._transformStore());
             else
                 _markBundleEsmAsFailed(file, placeEmit, packageTypeOf, 'no esbuild service was given to this launch');
             let code = emits.get(path) ?? file[path];
@@ -5256,7 +5259,7 @@ export class FacetManager {
         const pacer = this._launchPacer(entry.pid);
         let vfsState;
         try {
-            vfsState = await this._buildProcessBundle(entry, { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, bundleProfile: opts.bundleProfile }, pacer);
+            vfsState = await this._buildProcessBundle(entry, { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope }, pacer);
         }
         catch (err) {
             // The require closure that cannot fit the snapshot bound is the
@@ -5406,7 +5409,7 @@ export class FacetManager {
                 // the prefetch cache keeps it: the next run builds it again, a hit
                 // when nothing it holds has changed since.
                 if (vfsState.generatedSourcesReleased) {
-                    vfsState = await this._buildProcessBundle(entry, { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile }, pacer);
+                    vfsState = await this._buildProcessBundle(entry, { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope }, pacer);
                     dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
                 }
             }
@@ -6964,7 +6967,7 @@ export class FacetManager {
         const __bundleStart = diagOn ? Date.now() : 0;
         if (this.debugEnabled)
             this.processes.appendOutput(entry.pid, 'stderr', '[nimbus-debug] launch: building the module map\n');
-        const vfsState = await this._buildProcessBundle(entry, { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile }, pacer);
+        const vfsState = await this._buildProcessBundle(entry, { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope }, pacer);
         if (this.debugEnabled) {
             this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] module map: ${vfsState.reachableCount} files${vfsState.cacheHit ? ' (prefetch cache)' : ''}, `
                 + `transforms ${JSON.stringify(vfsState.transforms ?? null)} (${pacer.chunks} turns so far)\n`);

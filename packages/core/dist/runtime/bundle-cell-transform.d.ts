@@ -19,7 +19,7 @@
  * Nothing that decides a cell's output may live outside that closure.
  */
 import { type EsbuildTransformOutcome, type EsbuildTransformRequest } from './esbuild-service.js';
-import { type PackageType } from './module-format.js';
+import { type ModuleScope, type PackageType } from './module-format.js';
 /**
  * Bundled ESM this large is lowered in the session (esbuild-service.ts
  * rewriteBundledEsmToCjs) rather than by the transform host, whose memory
@@ -116,13 +116,14 @@ export interface BundleCellResult {
     readonly failed: boolean;
 }
 /**
- * Run the session's steps of the pipeline on `source`, staged at `path`.
+ * Run the session's steps of the pipeline on `source`, staged at `path`, for
+ * a runtime whose ES modules run in `scope` (module-format.ts ModuleScope).
  *
  * This is computation in the caller's isolate proportional to the source —
  * the provided-module pre-pass and, for large bundled ESM, its lowering to
  * CommonJS — so a paced caller accounts the source before it.
  */
-export declare function prepareBundleCell(path: string, source: string, packageType: PackageType): BundleCell;
+export declare function prepareBundleCell(path: string, source: string, packageType: PackageType, scope: ModuleScope): BundleCell;
 /**
  * The cell's result from the host's (or the session's) outcome. A transient
  * error is no verdict on the source — the host could not run the transform
@@ -150,9 +151,10 @@ export interface BundleCellResultStore {
     /**
      * The content address of `source` staged at `at` as a `kind`: a module
      * cell at its bundle path, under its package scope's `packageType` (which
-     * decides whether it is an ES module), or an entry script at its URL.
+     * decides whether it is an ES module) for a runtime whose ES modules run
+     * in `scope`, or an entry script at its URL.
      */
-    key(kind: 'cell' | 'entry', at: string, source: string, packageType?: PackageType): Promise<string>;
+    key(kind: 'cell' | 'entry', at: string, source: string, packageType?: PackageType, scope?: ModuleScope): Promise<string>;
     /** The results held for `keys`; a key the store does not hold is absent. */
     getMany(keys: readonly string[]): Map<string, StoredBundleCell>;
     /**
@@ -205,16 +207,18 @@ export interface BundleCellTransformStats {
  * Only a paced launch stores what it transforms: its writes land on as many
  * turns as they take, where an unpaced one would put every write in one turn.
  * A transient host failure throws (settleBundleCell) before anything of its
- * slice is placed.
+ * slice is placed. Each cell is lowered for the launch's runtime's module
+ * `scope`.
  */
 export declare function transformBundleCells(cells: ReadonlyArray<{
     readonly path: string;
     readonly source: string;
     readonly packageType: PackageType;
-}>, { host, store, pacer }: {
+}>, { host, store, pacer, scope }: {
     host: BundleCellHost;
     store?: BundleCellResultStore | null;
     pacer?: BundleCellPacer;
+    scope: ModuleScope;
 }, place: (path: string, result: BundleCellResult) => void): Promise<BundleCellTransformStats>;
 /**
  * The entry script as the facet compiles it (entryScriptRequest), read from

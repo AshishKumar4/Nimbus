@@ -317,9 +317,10 @@ export function rewriteProvidedCommonJsModules(source) {
  * statement at a time (readEsmRecords, bounded memory, imports live) and
  * emitted by the one emitter. Null for what it leaves to the host: top-level
  * await (its body is synchronous), an import.meta member it does not bind, a
- * module acorn cannot parse, and a source with no module syntax.
+ * module acorn cannot parse, and a source with no module syntax. In Bun's
+ * `scope` (module-format.ts ModuleScope) the module keeps CommonJS's names.
  */
-export function rewriteBundledEsmToCjs(source, absoluteUrl, moduleFactory = false) {
+export function rewriteBundledEsmToCjs(source, absoluteUrl, moduleFactory = false, scope = 'node') {
     if (hasUnscopedAwait(source))
         return null;
     // Read a statement at a time (readEsmRecords), so a multi-MiB bundle reads
@@ -341,11 +342,12 @@ export function rewriteBundledEsmToCjs(source, absoluteUrl, moduleFactory = fals
     // A free use of a CommonJS wrapper name binds nothing in an ES module, as
     // the transform's define has it (ES_MODULE_UNBOUND_NAMES).
     const unbound = [];
-    for (const [name, references] of wrapperUses) {
-        const to = ES_MODULE_UNBOUND_NAMES[name];
-        for (const { start, end, use } of references)
-            unbound.push({ start, end, text: use === 'shorthand' ? `${name}: ${to}` : to });
-    }
+    if (scope === 'node')
+        for (const [name, references] of wrapperUses) {
+            const to = ES_MODULE_UNBOUND_NAMES[name];
+            for (const { start, end, use } of references)
+                unbound.push({ start, end, text: use === 'shorthand' ? `${name}: ${to}` : to });
+        }
     // Only generated references use wrapper arguments. Source declarations
     // named module/require/exports retain their own meanings. An import.meta
     // is one token run, so it is inside a record's range or outside every one.
@@ -355,7 +357,8 @@ export function rewriteBundledEsmToCjs(source, absoluteUrl, moduleFactory = fals
         requireFunction: moduleFactory ? 'arguments[1]' : 'module.require',
         edits: [...metaEdits, ...unbound].filter((edit) => !records.some(({ start, end }) => edit.start >= start && edit.end <= end)),
     });
-    return { code: esModuleScopeTypeofs((moduleFactory ? '"use strict";\n' : '') + code), map: '', warnings: [] };
+    const strict = (moduleFactory ? '"use strict";\n' : '') + code;
+    return { code: scope === 'node' ? esModuleScopeTypeofs(strict) : strict, map: '', warnings: [] };
 }
 const __outputDecoder = new TextDecoder();
 /**
