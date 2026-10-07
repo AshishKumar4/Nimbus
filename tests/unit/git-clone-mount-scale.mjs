@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // @tier slow — a measurement: a depth-1 clone of a generated repository of
-// vscode's shape at a tenth of its size (2,000 files in nested directories,
-// about 40 MiB, eight files over a wave's 4 MiB mount limit), into the
+// vscode's shape at a tenth of its size (2,008 files in nested directories,
+// 69.6 MiB, eight files over a wave's 4 MiB mount limit), into the
 // session's own filesystem and onto a SqliteFiles mount on its own
 // database, in one session each. Both match host git (worktree, index);
 // the wall time and the session calls each made are printed side by side.
