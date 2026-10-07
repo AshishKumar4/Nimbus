@@ -33,7 +33,8 @@ import { diffGraphs, referenceGraph } from './lib/commit-graph-reference.mjs';
 const work = mkdtempSync(join(tmpdir(), 'nimbus-history-'));
 const hostGit = (cwd, args) => hostGitIn(work, cwd, args);
 const hostObjects = (dir) => hostObjectsIn(work, dir);
-const session = await createFacetSession(work);
+// As the session user: the commit-graph's files are read-only to it, as git makes them.
+const session = await createFacetSession(work, { asUser: true });
 
 try {
   const source = join(work, 'source');
