@@ -39,6 +39,7 @@ try {
   for (const dir of [monitored, baseline]) { mkdirSync(dir); git(dir, 'init', '-q', '-b', 'main'); }
   sqlFiles().mkdir(root + '.git', { recursive: true });
   file('src/a.txt', 'one\n'); file('src/b.txt', 'two\n'); file('top.txt', 'top\n');
+  vfs.snapshot('fsmonitor-native-base');
   for (const dir of [monitored, baseline]) { git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', 'base'); }
   const hook = new URL('./lib/git-fsmonitor-nimbus.mjs', import.meta.url).pathname;
   git(monitored, 'config', 'core.fsmonitor', `bun '${hook}' '${database}'`);
@@ -63,6 +64,9 @@ try {
   execFileSync('bun', ['-e', peer, database], { stdio: 'pipe' });
   for (const dir of [monitored, baseline]) writeFileSync(join(dir, 'src/a.txt'), 'peer\n');
   vfs = new SqliteVFS(harness.sql, harness.ctx); compare('another process writes before the hook acquires');
+  vfs.restore('fsmonitor-native-base', { subtree: 'home/user/repo' });
+  for (const dir of [monitored, baseline]) { git(dir, 'reset', '--hard', '-q', 'HEAD'); git(dir, 'clean', '-fdq'); }
+  compare('snapshot-restored working tree');
   vfs.rotateIncarnation(); compare('restore/new epoch poisons the old Git index token');
   file('after-restore.txt', 'fresh\n'); compare('new clock publication becomes trusted'); compare('second wake after restore');
   assert.ok([...harness.sql.exec('SELECT value FROM nimbus_git_fsmonitor')].length > 0, 'native Git used the durable hook');

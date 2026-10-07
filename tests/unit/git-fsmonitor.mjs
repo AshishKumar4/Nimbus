@@ -14,6 +14,7 @@ const kernel = vfs.as(CRED_KERNEL);
 kernel.mkdir('home/user/repo/src', { recursive: true });
 kernel.mkdir('home/user/repo/.git', { recursive: true });
 kernel.writeFile('home/user/repo/src/a', 'one');
+vfs.snapshot('fsmonitor-initial');
 const authority = new ProcessFiles(vfs);
 const lease = authority.openHost(CRED_SESSION_USER);
 const fs = lease.fs;
@@ -53,7 +54,10 @@ try {
   finally { peer.dispose(); }
   const fromPeer = await query(beforePeer.token, { monitor: makeGitFsmonitor(state) });
   assert.deepEqual(fromPeer.paths, ['peer.txt'], 'another process view is in the same acquired revision feed');
-  const mounted = await query(fromPeer.token, { mounts: ['/home/user/repo/vendor', '/outside', '/home/user/repo/.git/objects'] });
+  vfs.restore('fsmonitor-initial', { subtree: 'home/user/repo' });
+  const restored = await query(fromPeer.token, { monitor: makeGitFsmonitor(state) });
+  assert.ok(restored.paths.length > 0, 'a restored subtree cannot answer clean against its old token');
+  const mounted = await query(restored.token, { mounts: ['/home/user/repo/vendor', '/outside', '/home/user/repo/.git/objects'] });
   assert.deepEqual(mounted.paths, ['vendor/'], 'every visible external worktree mount is dirty');
   assert.deepEqual((await query(mounted.token, { monitor: makeGitFsmonitor(state), mounts: [] })).paths, ['vendor/'], 'removing a mount cannot make an old token clean');
   kernel.writeFile('home/user/unrelated-next', 'new revision');
