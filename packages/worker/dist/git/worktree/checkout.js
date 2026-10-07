@@ -36,7 +36,7 @@
 import { NewEntries, S_IFGITLINK, S_IFMT, comparePaths } from './dircache.js';
 import { diffTrees } from './tree.js';
 import { walkTreeAndIndex } from './status.js';
-import { compareEntry, scanWorktree } from './walk.js';
+import { compareEntry, matchStat, scanWorktree } from './walk.js';
 /** unpack-trees.c's unpack_plumbing_errors: the paths of each kind, then "Aborting". */
 function refusalMessage({ local, directories, untracked }, operation) {
     const list = (paths) => paths.map((path) => `\t${path}\n`).join('');
@@ -446,16 +446,26 @@ function worktreeView(tree) {
  * cone it is made skip-worktree, its file going if up to date (a reset's
  * always), else staying (`left`); inside, one that was skip-worktree is
  * written, unless something is in its way (then it is skip-worktree no
- * longer, and named). An unmerged entry stays, named when `unmerged`
- * (update_sparsity's warn_conflicted_path).
+ * longer, and named). An unmerged entry stays. `alone`: update_sparsity on
+ * its own (sparse-checkout), where an unmerged entry is named
+ * (warn_conflicted_path) and up to date means verify_uptodate's stat match
+ * (ie_match_stat, the content read only for a racy entry), the index not
+ * refreshed first as a checkout refreshes it.
  */
-async function sparseOps(ctx, view, sparse, moved, force, left, unmerged) {
+async function sparseOps(ctx, view, sparse, moved, force, left, alone) {
+    const uptodate = async (i, path, st) => {
+        if (st.type === 'directory')
+            return false;
+        if (alone && matchStat(ctx.dc, i, st, ctx.tree.filemode) !== 0)
+            return false;
+        return await compareEntry(ctx.tree, ctx.dc, i, path, st) === null;
+    };
     const { tree, dc } = ctx;
     const ops = [];
     for (let i = 0; i < dc.count; i++) {
         if (dc.stage(i) !== 0) {
             const path = dc.path(i);
-            if (unmerged && left.unmerged[left.unmerged.length - 1] !== path)
+            if (alone && left.unmerged[left.unmerged.length - 1] !== path)
                 left.unmerged.push(path);
             continue;
         }
@@ -475,7 +485,7 @@ async function sparseOps(ctx, view, sparse, moved, force, left, unmerged) {
                 dc.setSkipWorktree(i, false);
             }
         }
-        else if (gitlink || force || st === null || (st.type !== 'directory' && await compareEntry(tree, dc, i, path, st) === null)) {
+        else if (gitlink || force || st === null || await uptodate(i, path, st)) {
             ops.push({ method: 'sparsify', path, index: i, gitlink, present: st !== null && (st.type === 'directory') === gitlink });
         }
         else {
