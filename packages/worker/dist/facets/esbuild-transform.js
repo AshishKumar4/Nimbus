@@ -1,5 +1,5 @@
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
-import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
+import { applyFacetLimits, facetLimits, facetLoaderKey } from '@nimbus-sh/fabric/facet-limits.js';
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { EsbuildService, generateEsbuildFacetRuntimeSource, generateTransformFacetRuntimeSource, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
@@ -66,7 +66,7 @@ const ESBUILD_FACET_BODY = [
     '}',
 ].join('\n');
 // The loader serves the code it cached under an id, so the id carries the code.
-export const ESBUILD_FACET_WORKER_ID = `nimbus-esbuild:${ESBUILD_WASM_VERSION}:${ESBUILD_CLI_BUILD_ID}:${OXC_FACET_BUILD_ID}:${hashSource(ESBUILD_FACET_BODY)}`;
+export const ESBUILD_FACET_WORKER_ID = facetLoaderKey('esbuild', `nimbus-esbuild:${ESBUILD_WASM_VERSION}:${ESBUILD_CLI_BUILD_ID}:${OXC_FACET_BUILD_ID}:${hashSource(ESBUILD_FACET_BODY)}`);
 /**
  * Slim Worker Loader module whose DO class owns the esbuild wasm.
  * `wasm` is the staged esbuild.wasm (fetchEsbuildWasmBytes), compiled by the

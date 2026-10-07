@@ -51,6 +51,8 @@ export interface FacetInvocationLimits extends FacetResourceLimits {
 /** Hosting Worker constraint; the policy remains the sole source of these values. */
 export declare const MAX_FACET_CPU_MS: number;
 export declare function facetLimits(kind: FacetKind): Readonly<FacetResourceLimits>;
+/** A cached worker must not retain an earlier policy's limits or guest binding. */
+export declare function facetLoaderKey(kind: FacetKind, key: string): string;
 /** Native enforcement and the guest's earlier, reportable refusal share one policy. */
 export declare function applyFacetLimits<C extends object>(kind: FacetKind, code: C): C & {
     limits: {

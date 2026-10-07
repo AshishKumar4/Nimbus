@@ -845,7 +845,7 @@ export class CirrusReal {
                 // The fallback main.js export is `export default class
                 // CirrusRealStateless extends WorkerEntrypoint { ... }` —
                 // resolved as the DEFAULT, not as a named entrypoint.
-                this.facetStub = worker.getEntrypoint?.();
+                this.facetStub = worker.getEntrypoint?.(undefined, { limits: facetLimits('process') });
                 if (!this.facetStub) {
                     this.bootError =
                         'cirrus-real fallback: worker.getEntrypoint() returned no stub. ' +

@@ -1,6 +1,6 @@
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
-import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
+import { applyFacetLimits, facetLimits, facetLoaderKey } from '@nimbus-sh/fabric/facet-limits.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { ROLLDOWN_FACET_ASSET_PATH, ROLLDOWN_FACET_BUILD_ID, ROLLDOWN_FACET_SHA256 } from '../rolldown-facet-artifact.generated.js';
 import { fetchStagedText, stagedAsset } from '../runtime/staged-source.js';
@@ -119,14 +119,14 @@ const BUILD_FACET_BODY = [
     '}',
 ].join('\n');
 // The loader serves the code it cached under an id, so the id carries the code.
-export const BUILD_FACET_WORKER_ID = [
+export const BUILD_FACET_WORKER_ID = facetLoaderKey('build', [
     'nimbus-build',
     `rolldown-${ROLLDOWN.version}-${ROLLDOWN.wasm.sha256.slice(0, 16)}`,
     NAPI_WASM_LOADER.sha256.slice(0, 16),
     NAPI_WASM_TRAMPOLINE.sha256.slice(0, 16),
     ROLLDOWN_FACET_BUILD_ID,
     hashSource(BUILD_FACET_BODY),
-].join(':');
+].join(':'));
 export async function fetchBuildFacetParts(env) {
     const [loader, trampoline, rolldown, runtime] = await Promise.all([
         fetchStagedBindingAsset(env, NAPI_WASM_LOADER).then((bytes) => new TextDecoder().decode(bytes)),
