@@ -40,6 +40,7 @@ import {
 } from './unified-diff.js';
 import { CheckoutRefused, UnmergedIndex, switchTrees, type CheckoutWriter } from './worktree/checkout.js';
 import { DirCache, NewEntries, comparePaths, type IndexEdit, type NewEntry } from './worktree/dircache.js';
+import { isValidRefName } from './worktree/refname.js';
 import { PairList, type PairSide } from './worktree/pairs.js';
 import { WorktreeRepo, configBool } from './worktree/repo.js';
 import { collectStatus, inSpecs, shortStatusLines, walkTreeAndIndex, type StatusChange } from './worktree/status.js';
@@ -414,10 +415,12 @@ const INIT_USAGE = [
 ].join('\n');
 
 /**
- * `git init`'s arguments: -q, --bare, the initial branch (`-b <name>`,
- * `-b<name>`, `--initial-branch[=]<name>`) and the directory. The branch's
- * name is never the directory (`git init -b main` initialized `./main`).
- * git's other options are refused here as unsupported.
+ * `git init`'s arguments, as git's parse-options takes them: -q, --bare,
+ * the initial branch (`-b <name>`, `--initial-branch[=]<name>`,
+ * `--no-initial-branch`) and one directory; short options cluster (`-qq`,
+ * `-qbmain`, `-qb main`: b takes the rest of the cluster, else the next
+ * argument). The branch's name is never the directory (`git init -b main`
+ * initialized ./main). git's other options are refused as unsupported.
  */
 export function parseInitArgs(args: readonly string[]): { quiet: boolean; bare: boolean; branch?: string; directory?: string } | { error: string; code: number } {
   let quiet = false;
@@ -425,27 +428,45 @@ export function parseInitArgs(args: readonly string[]): { quiet: boolean; bare: 
   let branch: string | undefined;
   let directory: string | undefined;
   let dashdash = false;
+  const unknown = (what: string) => ({ error: `error: unknown ${what}\n${INIT_USAGE}`, code: 129 });
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (dashdash || arg === '-' || !arg.startsWith('-')) {
       if (directory !== undefined) return { error: INIT_USAGE_LINE, code: 129 };
       directory = arg;
-      continue;
-    }
-    if (arg === '--') dashdash = true;
-    else if (arg === '-q' || arg === '--quiet') quiet = true;
-    else if (arg === '--no-quiet') quiet = false;
-    else if (arg === '--bare') bare = true;
-    else if (arg === '--no-bare') bare = false;
-    else if (arg === '-b' || arg === '--initial-branch') {
-      if (i + 1 >= args.length) return { error: arg === '-b' ? "error: switch `b' requires a value\n" : "error: option `initial-branch' requires a value\n", code: 129 };
-      branch = args[++i];
-    } else if (arg.startsWith('--initial-branch=')) branch = arg.slice('--initial-branch='.length);
-    else if (arg.startsWith('-b')) branch = arg.slice(2);
-    else if (/^--(no-)?(template|separate-git-dir|object-format|ref-format|shared)(=|$)/.test(arg)) {
-      return { error: `fatal: git init ${arg.split('=')[0]} is not supported here\n`, code: 128 };
+    } else if (arg === '--') {
+      dashdash = true;
+    } else if (arg.startsWith('--')) {
+      const [name, value] = arg.includes('=') ? [arg.slice(2, arg.indexOf('=')), arg.slice(arg.indexOf('=') + 1)] : [arg.slice(2), undefined];
+      if (name === 'quiet' || name === 'no-quiet' || name === 'bare' || name === 'no-bare' || name === 'no-initial-branch') {
+        if (value !== undefined) return { error: `error: option \`${name}' takes no value\n`, code: 129 };
+        if (name === 'no-initial-branch') branch = undefined;
+        else if (name.endsWith('quiet')) quiet = name === 'quiet';
+        else bare = name === 'bare';
+      } else if (name === 'initial-branch') {
+        if (value !== undefined) branch = value;
+        else if (i + 1 < args.length) branch = args[++i];
+        else return { error: "error: option `initial-branch' requires a value\n", code: 129 };
+      } else if (/^(no-)?(template|separate-git-dir|object-format|ref-format|shared)$/.test(name)) {
+        return { error: `fatal: git init --${name} is not supported here\n`, code: 128 };
+      } else {
+        return unknown(`option \`${name}'`);
+      }
     } else {
-      return { error: `error: unknown ${arg.startsWith('--') ? `option \`${arg.slice(2).split('=')[0]}'` : `switch \`${arg.slice(1, 2)}'`}\n${INIT_USAGE}`, code: 129 };
+      // A cluster of short options.
+      for (let k = 1; k < arg.length; k++) {
+        const flag = arg[k];
+        if (flag === 'q') {
+          quiet = true;
+        } else if (flag === 'b') {
+          if (k + 1 < arg.length) branch = arg.slice(k + 1);
+          else if (i + 1 < args.length) branch = args[++i];
+          else return { error: "error: switch `b' requires a value\n", code: 129 };
+          break;
+        } else {
+          return unknown(`switch \`${flag}'`);
+        }
+      }
     }
   }
   return { quiet, bare, branch, directory };
@@ -2584,10 +2605,19 @@ export async function runGitCommand(
           const stripped = initDir.replace(/^\/+/, '');
           if (!await repoVfs.exists(stripped)) await repoVfs.mkdir(stripped, { recursive: true });
         }
-        await git.init({ fs, dir: initDir, bare: initArgs.bare, ...(initArgs.branch === undefined ? {} : { defaultBranch: initArgs.branch }) });
-        if (!initArgs.quiet) {
-          ctx.stdout.write(`Initialized empty Git repository in ${initDir}${initArgs.bare ? '' : '/.git'}/\n`);
+        const gitDir = `${initDir}${initArgs.bare ? '' : '/.git'}`;
+        // A repository whose HEAD is there is re-initialized, as git does: its HEAD (and branch) stay.
+        if (await repoVfs.exists(`${gitDir}/HEAD`.replace(/^\/+/, ''))) {
+          if (initArgs.branch !== undefined) ctx.stderr.write(`warning: re-init: ignored --initial-branch=${initArgs.branch}\n`);
+          if (!initArgs.quiet) ctx.stdout.write(`Reinitialized existing Git repository in ${gitDir}/\n`);
+          return 0;
         }
+        if (initArgs.branch !== undefined && !isValidRefName(`refs/heads/${initArgs.branch}`)) {
+          ctx.stderr.write(`fatal: invalid initial branch name: '${initArgs.branch}'\n`);
+          return 128;
+        }
+        await git.init({ fs, dir: initDir, bare: initArgs.bare, ...(initArgs.branch === undefined ? {} : { defaultBranch: initArgs.branch }) });
+        if (!initArgs.quiet) ctx.stdout.write(`Initialized empty Git repository in ${gitDir}/\n`);
         return 0;
       }
 
