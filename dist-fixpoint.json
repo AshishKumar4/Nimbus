@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "3729b96e8f2c1210cd7d92684b4d668136d126f00e50891357cda4f9e488baf3",
+  "fingerprint": "2cc250e515e08c3d4a97992e6e62523f5e90b2e1301165bd6b30e03212dea65b",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1444,7 +1444,7 @@
     "packages/fabric/dist/facet-pool.d.ts": "da616e32ee8e9c69965e45b5c928239bc1f208e8da81e3c6d654b02341a6b6b3",
     "packages/fabric/dist/facet-pool.d.ts.map": "a057e5a39fe3c7dfed828f2867a6f62a0f9cb6f344b57480f3c42eaebe329271",
     "packages/fabric/dist/facet-pool.js": "3ba602bbd9c2d91e81ebf42f5889790baf504043d1db1543d791918e10fa1c6d",
-    "packages/fabric/dist/fanout.d.ts": "6826f2f7953efaca33e49d07ad73cbfcf762419cfa57d129b392d9a3ca2c3526",
+    "packages/fabric/dist/fanout.d.ts": "c8601d6059403b4b5d6f14b1941514f766299a0c9175d640dbdc8452f2e22366",
     "packages/fabric/dist/fanout.d.ts.map": "a1ce2858625e0ba316b4d74a9e8147734507595fe8bcadcc1c14b50e6bc20c66",
     "packages/fabric/dist/fanout.js": "bc77f69ad03f240a3f15435169c31605909cc1d6ef5e9ff66c127871561a2137",
     "packages/fabric/dist/fenced-work.d.ts": "3be67d95350c5e065b22b571cf17677f0960b8dcf0660565d78f4d9a2f1d5378",
@@ -1523,7 +1523,7 @@
     "packages/fabric/src/do-calls.ts": "a21074c90aebc8ea28132e26b7100a2f9c14147da3ce1a40cbbc6a8e800b2b90",
     "packages/fabric/src/facet-limits.ts": "54d5724f5a0fae01aa625770b7a156f51648a86a16b635dd9b22522a99f5e553",
     "packages/fabric/src/facet-pool.ts": "8d329728e4e972a031b647cb872c2fc664ad0de0be064b8f5d2ca7303d8d4d53",
-    "packages/fabric/src/fanout.ts": "3d6f71140dffd6ae086fcd73bcb01b1f56535e7745f0e8e2b7ade7c39d5aa42b",
+    "packages/fabric/src/fanout.ts": "bbe276ea514726dc12c515fa918244f6f6f0f4356267943b816c7305cab6f92e",
     "packages/fabric/src/fenced-work.ts": "dc178399bfdebb63fcfad0ec793bc3fb3e30ef00e74c5a1b3adab615e50a6efd",
     "packages/fabric/src/generation.ts": "88e572708b46c791b7da2f90c8802d9be51c72227696d77d2f524a3b49aa7fc9",
     "packages/fabric/src/host-dispatch.ts": "2514327e1650eb8ca851eb4bcb1315dc20e67f12ed50e067ee144deab95a05cc",
