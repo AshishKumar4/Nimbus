@@ -72,6 +72,8 @@ try {
  await terminal.run('chmod 755 /home/user/node_modules/.bin/byte-tool');
  const raw = await terminal.run(`node -e "process.stdout.write(Buffer.from([0xff,0xfe]))" | xxd -p`);
  assert.match(raw.stdout, new RegExp('^'+hostBytes.stdout.toString('hex')+'\\s*$','m'), 'Node foreground output matches host Node through a shell pipe');
+ const fdRaw = await terminal.run(`node -e "require('fs').write(1,Buffer.from([0xff,0xfe]),()=>{})" | xxd -p`);
+ assert.match(fdRaw.stdout, /^fffe\s*$/m, 'asynchronous fs.write reaches foreground fd 1 as bytes too');
  const binBytes = await terminal.run('./node_modules/.bin/byte-tool --bytes | xxd -p');
  assert.equal(binBytes.status, 0, binBytes.stdout);
  assert.match(binBytes.stdout, /^fffe\s*$/m, 'an npm-bin foreground fd forwards bytes without decoding or feeding its own log back');

@@ -4954,8 +4954,9 @@ const __fsMod = (() => {
     catch (e) { queueMicrotask(() => cb(e)); return; }
     const n = Number(fd);
     if (n === 1 || n === 2) {
-      (n === 2 ? __processMod.stderr : __processMod.stdout).write(_dec.decode(norm.bytes));
-      queueMicrotask(() => cb(null, norm.bytes.byteLength, data));
+      try {
+        (n === 2 ? __processMod.stderr : __processMod.stdout).write(norm.bytes, error => cb(error || null, error ? 0 : norm.bytes.byteLength, data));
+      } catch (error) { queueMicrotask(() => cb(error, 0, data)); }
       return;
     }
     const handle = _fdFor(fd, "write", cb);

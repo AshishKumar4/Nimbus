@@ -898,6 +898,11 @@ if (__ocResident) {
     return true;
   };
 }
+// The VFS shim's fd 1/2 writes use its process object even when one-shot mode
+// leaves the native process global authoritative. Both views must use the
+// same bounded capture/live sink, never the shim's default text collector.
+__processMod.stdout.write = process.stdout.write;
+__processMod.stderr.write = process.stderr.write;
 const __ocFmt = (...a) => a.map((x) => {
   if (typeof x === "string") return x;
   try { return JSON.stringify(x); } catch { return String(x); }

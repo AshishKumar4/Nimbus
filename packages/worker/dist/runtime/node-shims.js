@@ -8765,8 +8765,8 @@ function __nimbusWriteLiveOutput(streamName, data, encoding, callback, send) {
   if (__nimbusProgramStopped) return true;
   const bytes = __nimbusOutBytes(data, encoding);
   const stream = __processMod[streamName];
-  const text = __nimbusOutText(streamName, bytes);
-  if (streamName === 'stderr') stderr += text; else stdout += text;
+  // Live output belongs to the byte delivery/replay ledger, not also to an
+  // unbounded returned-result string. Explicit capture uses its own writer.
   stream.writableLength += bytes.byteLength;
   const ready = stream.writableLength < stream.writableHighWaterMark;
   if (!ready) stream.writableNeedDrain = true;
