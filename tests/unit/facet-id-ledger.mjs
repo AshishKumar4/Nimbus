@@ -193,4 +193,28 @@ function spawn(fabric, pid) {
   await p3.done;
 }
 
+// ── (5) a slot's charge is durable before its facet exists ──────────────────
+// The write of the first slot's charge fails: that process never boots and
+// no facet is created. The next spawn takes the slot and is counted once.
+{
+  const { world, ctx, fabric } = setup();
+  const put = ctx.storage.put;
+  let failing = true;
+  ctx.storage.put = async (...args) => {
+    if (failing) throw new Error('storage write failed');
+    return put(...args);
+  };
+  const refused = await spawn(fabric, 1);
+  await assert.rejects(refused.booted(), /storage write failed/);
+  refused.kill();
+  await refused.done.catch(() => {});
+  assert.equal(world.boots.length, 0, 'no facet is created without a durable charge');
+  failing = false;
+  const next = await spawn(fabric, 2);
+  await next.booted();
+  assert.equal((await facetIdBudget(ctx)).consumed, 1, 'the slot is one id');
+  next.kill();
+  await next.done;
+}
+
 console.log('ok - facet-id-ledger (minted counted, reuse free, durable across resets, wall named)');

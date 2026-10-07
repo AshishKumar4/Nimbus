@@ -147,67 +147,54 @@ const start = async () => ({ class: {} });
   await reused.retire();
 }
 
-// ── 7. A write the ledger lost never leaves a name uncounted ─────────────────
-// The count write fails as a lease's first use is charged. After a reset over
-// the same storage, the name must still count: charged again if need be,
-// never adopted as minted with no count behind it.
-
-{
-  const kv = new Map();
-  let failCount = true;
-  const first = createHost({ kv, failPut: (keys) => failCount && keys.includes(FACET_NAME_HIGH_WATER_KEY) });
-  const lease = await facetPool(first.ctx).acquire('head-1', start);
-  lease.detach();
-  await lease.retire();
-  failCount = false;
-  const second = createHost({ kv });
-  await facetPool(second.ctx).acquire('head-1', start).then((reused) => reused.detach());
-  assert.equal(facetNameCount(second.ctx), 1, 'head-1 is one lifetime id after the reset');
-}
-
-// ── 8. A charge lands whole or not at all ────────────────────────────────────
-// The write that records a name's charge fails whenever it would mark the
-// name minted. After a reset, the name counts once: a count without its
-// mark would charge it twice.
+// ── 7. A charge that is not durable fails, and creates nothing ──────────────
+// The write of head-1's charge fails, so its lease is refused before the
+// facet exists. After a reset, a different name is the only id consumed.
 
 {
   const kv = new Map();
   let failing = true;
-  const first = createHost({ kv, failPut: (keys) => failing && keys.some((key) => key.includes('head-1')) });
-  await facetPool(first.ctx).acquire('head-1', start).then((lease) => lease.detach());
+  const first = createHost({ kv, failPut: () => failing });
+  await assert.rejects(() => facetPool(first.ctx).acquire('head-1', start), /storage write/);
+  assert.ok(!first.verbs.some(([verb, name]) => verb === 'get' && name === 'head-1'), 'no facet without a durable charge');
   failing = false;
   const second = createHost({ kv });
-  await facetPool(second.ctx).acquire('head-1', start).then((lease) => lease.detach());
-  assert.equal(facetNameCount(second.ctx), 1, 'head-1 is one lifetime id after the reset');
+  await facetPool(second.ctx).acquire('head-2', start).then((lease) => lease.detach());
+  assert.equal(kv.get(FACET_NAME_HIGH_WATER_KEY), 1, 'head-2 is the one id consumed');
 }
 
-// ── 9. A later write carries a charge an earlier write lost ──────────────────
-// head-1's write fails; head-2's succeeds. After a reset both names are
-// minted and counted once each.
+// ── 8. A failed read of a name's mark fails its charge, never recounts it ────
+// head-1 is minted and counted. After a reset, the read of its mark fails
+// (at once, as DO storage's get can): that charge fails and writes nothing,
+// and the next one finds the mark.
 
 {
   const kv = new Map();
-  let failures = 1;
-  const first = createHost({ kv, failPut: () => failures-- > 0 });
+  const first = createHost({ kv });
   await facetPool(first.ctx).acquire('head-1', start).then((lease) => lease.detach());
-  await facetPool(first.ctx).acquire('head-2', start).then((lease) => lease.detach());
-  const second = createHost({ kv });
-  await facetPool(second.ctx).acquire('head-1', start).then((lease) => lease.detach());
-  await facetPool(second.ctx).acquire('head-2', start).then((lease) => lease.detach());
-  assert.equal(facetNameCount(second.ctx), 2, 'head-1 and head-2 are two lifetime ids after the reset');
+  assert.equal(kv.get(FACET_NAME_HIGH_WATER_KEY), 1);
+  let failures = 1;
+  const second = createHost({ kv, failGet: (key) => key.includes('head-1') && failures-- > 0 });
+  const pool = facetPool(second.ctx);
+  await assert.rejects(() => pool.acquire('head-1', start), /storage read/);
+  assert.equal(kv.get(FACET_NAME_HIGH_WATER_KEY), 1, 'a read that failed charges nothing');
+  await pool.acquire('head-1', start).then((lease) => lease.detach());
+  assert.equal(kv.get(FACET_NAME_HIGH_WATER_KEY), 1, 'head-1 is still one id');
 }
 
-// ── 10. A read that fails at once does not stop the ledger ───────────────────
-// DO storage can throw from get() itself. The name it was reading is charged
-// as never minted, and every later charge still runs.
+// ── 9. A failed read of the count fails the charge; the next one adopts it ──
+// Five ids are spent. The read of that count fails once: a charge made then
+// is refused, never counted from zero.
 
 {
+  const kv = new Map([[FACET_NAME_HIGH_WATER_KEY, 5]]);
   let failures = 1;
-  const host = createHost({ failGet: (key) => key.includes('head-1') && failures-- > 0 });
+  const host = createHost({ kv, failGet: (key) => key === FACET_NAME_HIGH_WATER_KEY && failures-- > 0 });
   const pool = facetPool(host.ctx);
+  await assert.rejects(() => pool.acquire('head-1', start), /storage read/);
+  assert.equal(kv.get(FACET_NAME_HIGH_WATER_KEY), 5, 'nothing is written from a count never read');
   await pool.acquire('head-1', start).then((lease) => lease.detach());
-  await pool.acquire('head-2', start).then((lease) => lease.detach());
-  assert.equal(facetNameCount(host.ctx), 2, 'both leases are charged');
+  assert.equal(kv.get(FACET_NAME_HIGH_WATER_KEY), 6);
 }
 
 console.log('ok - fabric-facet-pool (retire reclaims, throw-safe, detach keeps, loud leak, id budget)');
