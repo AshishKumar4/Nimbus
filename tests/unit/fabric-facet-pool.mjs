@@ -18,7 +18,7 @@ import {
 
 /** The platform seam: a ctx.facets that records which verb touched which
  *  facet, and models the storage consequence of each. */
-function createHost({ failDelete = false, namesMinted, kv = new Map(), failPut = () => false } = {}) {
+function createHost({ failDelete = false, namesMinted, kv = new Map(), failPut = () => false, failGet = () => false } = {}) {
   const verbs = [];
   const storage = new Map(); // name -> 'live' | 'kept' | 'wiped'
   if (namesMinted !== undefined) kv.set(FACET_NAME_HIGH_WATER_KEY, namesMinted);
@@ -28,10 +28,16 @@ function createHost({ failDelete = false, namesMinted, kv = new Map(), failPut =
     kv,
     ctx: {
       storage: {
-        async get(key) { return kv.get(key); },
-        async put(key, value) {
-          if (failPut(key)) throw new Error(`storage write of ${key} failed`);
-          kv.set(key, value);
+        // DO storage's get may answer synchronously, and so may its failure.
+        get(key) {
+          if (failGet(key)) throw new Error(`storage read of ${key} failed`);
+          return Promise.resolve(kv.get(key));
+        },
+        // Both of DO storage's forms; a multi-key put is one atomic write.
+        async put(keyOrEntries, value) {
+          const entries = typeof keyOrEntries === 'string' ? { [keyOrEntries]: value } : keyOrEntries;
+          if (failPut(Object.keys(entries))) throw new Error(`storage write of ${Object.keys(entries)} failed`);
+          for (const [key, entry] of Object.entries(entries)) kv.set(key, entry);
         },
       },
       facets: {
@@ -149,7 +155,7 @@ const start = async () => ({ class: {} });
 {
   const kv = new Map();
   let failCount = true;
-  const first = createHost({ kv, failPut: (key) => failCount && key === FACET_NAME_HIGH_WATER_KEY });
+  const first = createHost({ kv, failPut: (keys) => failCount && keys.includes(FACET_NAME_HIGH_WATER_KEY) });
   const lease = await facetPool(first.ctx).acquire('head-1', start);
   lease.detach();
   await lease.retire();
@@ -157,6 +163,51 @@ const start = async () => ({ class: {} });
   const second = createHost({ kv });
   await facetPool(second.ctx).acquire('head-1', start).then((reused) => reused.detach());
   assert.equal(facetNameCount(second.ctx), 1, 'head-1 is one lifetime id after the reset');
+}
+
+// ── 8. A charge lands whole or not at all ────────────────────────────────────
+// The write that records a name's charge fails whenever it would mark the
+// name minted. After a reset, the name counts once: a count without its
+// mark would charge it twice.
+
+{
+  const kv = new Map();
+  let failing = true;
+  const first = createHost({ kv, failPut: (keys) => failing && keys.some((key) => key.includes('head-1')) });
+  await facetPool(first.ctx).acquire('head-1', start).then((lease) => lease.detach());
+  failing = false;
+  const second = createHost({ kv });
+  await facetPool(second.ctx).acquire('head-1', start).then((lease) => lease.detach());
+  assert.equal(facetNameCount(second.ctx), 1, 'head-1 is one lifetime id after the reset');
+}
+
+// ── 9. A later write carries a charge an earlier write lost ──────────────────
+// head-1's write fails; head-2's succeeds. After a reset both names are
+// minted and counted once each.
+
+{
+  const kv = new Map();
+  let failures = 1;
+  const first = createHost({ kv, failPut: () => failures-- > 0 });
+  await facetPool(first.ctx).acquire('head-1', start).then((lease) => lease.detach());
+  await facetPool(first.ctx).acquire('head-2', start).then((lease) => lease.detach());
+  const second = createHost({ kv });
+  await facetPool(second.ctx).acquire('head-1', start).then((lease) => lease.detach());
+  await facetPool(second.ctx).acquire('head-2', start).then((lease) => lease.detach());
+  assert.equal(facetNameCount(second.ctx), 2, 'head-1 and head-2 are two lifetime ids after the reset');
+}
+
+// ── 10. A read that fails at once does not stop the ledger ───────────────────
+// DO storage can throw from get() itself. The name it was reading is charged
+// as never minted, and every later charge still runs.
+
+{
+  let failures = 1;
+  const host = createHost({ failGet: (key) => key.includes('head-1') && failures-- > 0 });
+  const pool = facetPool(host.ctx);
+  await pool.acquire('head-1', start).then((lease) => lease.detach());
+  await pool.acquire('head-2', start).then((lease) => lease.detach());
+  assert.equal(facetNameCount(host.ctx), 2, 'both leases are charged');
 }
 
 console.log('ok - fabric-facet-pool (retire reclaims, throw-safe, detach keeps, loud leak, id budget)');
