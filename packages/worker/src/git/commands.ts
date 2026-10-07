@@ -377,6 +377,79 @@ export function parseCloneFilter(spec: string): string {
  * parsed `dev` as the URL) and silently no-opped `--filter=blob:none` — a
  * "blobless" clone that was not blobless.
  */
+/** git init's usage line, as git 2.53 prints it for a second directory (usage()). */
+const INIT_USAGE_LINE = [
+  'usage: git init [-q | --quiet] [--bare] [--template=<template-directory>]',
+  '         [--separate-git-dir <git-dir>] [--object-format=<format>]',
+  '         [--ref-format=<format>]',
+  '         [-b <branch-name> | --initial-branch=<branch-name>]',
+  '         [--shared[=<permissions>]] [<directory>]',
+  '',
+].join('\n');
+
+/** git init's usage, as git 2.53 prints it after an option it does not know (usage_with_options()). */
+const INIT_USAGE = [
+  'usage: git init [-q | --quiet] [--bare] [--template=<template-directory>]',
+  '                [--separate-git-dir <git-dir>] [--object-format=<format>]',
+  '                [--ref-format=<format>]',
+  '                [-b <branch-name> | --initial-branch=<branch-name>]',
+  '                [--shared[=<permissions>]] [<directory>]',
+  '',
+  '    --[no-]template <template-directory>',
+  '                          directory from which templates will be used',
+  '    --[no-]bare           create a bare repository',
+  '    --shared[=<permissions>]',
+  '                          specify that the git repository is to be shared amongst several users',
+  '    -q, --[no-]quiet      be quiet',
+  '    --[no-]separate-git-dir <gitdir>',
+  '                          separate git dir from working tree',
+  '    -b, --[no-]initial-branch <name>',
+  '                          override the name of the initial branch',
+  '    --[no-]object-format <hash>',
+  '                          specify the hash algorithm to use',
+  '    --[no-]ref-format <format>',
+  '                          specify the reference format to use',
+  '', '',
+].join('\n');
+
+/**
+ * `git init`'s arguments: -q, --bare, the initial branch (`-b <name>`,
+ * `-b<name>`, `--initial-branch[=]<name>`) and the directory. The branch's
+ * name is never the directory (`git init -b main` initialized `./main`).
+ * git's other options are refused here as unsupported.
+ */
+export function parseInitArgs(args: readonly string[]): { quiet: boolean; bare: boolean; branch?: string; directory?: string } | { error: string; code: number } {
+  let quiet = false;
+  let bare = false;
+  let branch: string | undefined;
+  let directory: string | undefined;
+  let dashdash = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (dashdash || arg === '-' || !arg.startsWith('-')) {
+      if (directory !== undefined) return { error: INIT_USAGE_LINE, code: 129 };
+      directory = arg;
+      continue;
+    }
+    if (arg === '--') dashdash = true;
+    else if (arg === '-q' || arg === '--quiet') quiet = true;
+    else if (arg === '--no-quiet') quiet = false;
+    else if (arg === '--bare') bare = true;
+    else if (arg === '--no-bare') bare = false;
+    else if (arg === '-b' || arg === '--initial-branch') {
+      if (i + 1 >= args.length) return { error: arg === '-b' ? "error: switch `b' requires a value\n" : "error: option `initial-branch' requires a value\n", code: 129 };
+      branch = args[++i];
+    } else if (arg.startsWith('--initial-branch=')) branch = arg.slice('--initial-branch='.length);
+    else if (arg.startsWith('-b')) branch = arg.slice(2);
+    else if (/^--(no-)?(template|separate-git-dir|object-format|ref-format|shared)(=|$)/.test(arg)) {
+      return { error: `fatal: git init ${arg.split('=')[0]} is not supported here\n`, code: 128 };
+    } else {
+      return { error: `error: unknown ${arg.startsWith('--') ? `option \`${arg.slice(2).split('=')[0]}'` : `switch \`${arg.slice(1, 2)}'`}\n${INIT_USAGE}`, code: 129 };
+    }
+  }
+  return { quiet, bare, branch, directory };
+}
+
 export function parseCloneArgs(args: string[]): ParsedCloneArgs {
   let depthFlag: string | undefined;
   let branch: string | undefined;
@@ -2438,7 +2511,8 @@ export async function runGitCommand(
   }
 
   // `git init <path>` works on that path, every other subcommand on the cwd.
-  const initPath = sub === 'init' ? subArgs.find((a: string) => !a.startsWith('-')) : undefined;
+  const initArgs = sub === 'init' ? parseInitArgs(subArgs) : null;
+  const initPath = initArgs !== null && !('error' in initArgs) ? initArgs.directory : undefined;
   const initDir = initPath === undefined ? dir : initPath.startsWith('/') ? initPath : dir + '/' + initPath;
 
   try {
@@ -2498,14 +2572,18 @@ export async function runGitCommand(
     }
     switch (sub) {
       case 'init': {
+        if (initArgs === null || 'error' in initArgs) {
+          ctx.stderr.write(initArgs?.error ?? INIT_USAGE);
+          return initArgs?.code ?? 129;
+        }
         if (initPath) {
           // Ensure the target directory exists
           const stripped = initDir.replace(/^\/+/, '');
           if (!await repoVfs.exists(stripped)) await repoVfs.mkdir(stripped, { recursive: true });
         }
-        await git.init({ fs, dir: initDir });
-        if (!subArgs.includes('-q') && !subArgs.includes('--quiet')) {
-          ctx.stdout.write(`Initialized empty Git repository in ${initDir}/.git/\n`);
+        await git.init({ fs, dir: initDir, bare: initArgs.bare, ...(initArgs.branch === undefined ? {} : { defaultBranch: initArgs.branch }) });
+        if (!initArgs.quiet) {
+          ctx.stdout.write(`Initialized empty Git repository in ${initDir}${initArgs.bare ? '' : '/.git'}/\n`);
         }
         return 0;
       }
