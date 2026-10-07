@@ -31,7 +31,7 @@ import {
   type EsbuildTransformRequest,
 } from './esbuild-service.js';
 import { MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
-import { ES_MODULE_UNBOUND_NAMES, esModuleSource, isEsModuleFile, type PackageType } from './module-format.js';
+import { esModuleSource, isEsModuleFile, type PackageType } from './module-format.js';
 
 /**
  * Bundled ESM this large is lowered in the session (esbuild-service.ts
@@ -190,7 +190,7 @@ export function prepareBundleCell(path: string, source: string, packageType: Pac
       ? { rewriteOnly: true, dynamicImportParent: absUrl, moduleMetadata }
       : {
         loader: loader ?? 'js', format: 'cjs', target: 'esnext', dynamicImportParent: absUrl, moduleMetadata,
-        ...(esm ? { define: ES_MODULE_UNBOUND_NAMES } : {}),
+        ...(esm ? { esModuleScope: true } : {}),
       },
   });
   let src: string;
@@ -200,14 +200,13 @@ export function prepareBundleCell(path: string, source: string, packageType: Pac
     // The pre-pass cannot read this cell: a verdict on it alone, like esbuild's.
     return { path, typescript, lowered: false, absUrl, outcome: { error: errorText(e) } };
   }
-  if (esm) src = esModuleSource(src);
   // CommonJS already: only its dynamic import() calls change.
   const rewriteOnly = !typescript && !esm;
   const cell = { path, typescript, lowered: !rewriteOnly, absUrl };
   if (esm && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
     let rewritten: EsbuildTransformOutcome | null;
     try {
-      rewritten = rewriteBundledEsmToCjs(src, absUrl, true);
+      rewritten = rewriteBundledEsmToCjs(esModuleSource(src), absUrl, true);
     } catch (e) {
       rewritten = { error: errorText(e) };
     }

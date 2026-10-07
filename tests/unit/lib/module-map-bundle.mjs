@@ -46,7 +46,7 @@ export function moduleMapBundle(modules, entry = modules['worker.js'] ? 'worker.
   return bundle;
 }
 
-/** The entry's CommonJsCellRow table: `[key, moduleName, head, tail, hashbang, adopt]`. */
+/** The entry's CommonJsCellRow table: `[key, moduleName, head, tail, hashbang, adopt, esModule]`. */
 export function moduleMapCodeCells(modules, entry = modules['worker.js'] ? 'worker.js' : 'runner.js') {
   const table = modules[entry].match(/^const __NIMBUS_CODE_CELLS = (.*);$/m);
   if (!table) throw new Error(`${entry} declares no __NIMBUS_CODE_CELLS`);

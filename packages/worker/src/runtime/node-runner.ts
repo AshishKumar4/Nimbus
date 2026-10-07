@@ -176,6 +176,7 @@ export async function runFresh(
       cwd,
       filename: opts.filename,
       dirname: opts.dirname,
+      ...(opts.esModule ? { esModule: true } : {}),
       command,
       port,
       attachedTty: opts.attachedTty,

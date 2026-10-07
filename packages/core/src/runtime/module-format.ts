@@ -51,16 +51,40 @@ export function isEsModuleInput(source: string, inputType: string | undefined): 
 }
 
 /**
+ * The global the guest defines (node-shims.ts) with an accessor for each
+ * CommonJS wrapper name, which throws the ReferenceError V8 throws for a name
+ * bound nowhere ("require is not defined"), from the frame that named it.
+ */
+export const ES_MODULE_SCOPE_GLOBAL = '__nimbusEsmScope';
+
+/**
  * What a free reference to each CommonJS wrapper name becomes in an ES module
- * lowered to the CommonJS a facet runs (commonjs-cell.ts): a name bound
- * nowhere, so `typeof require` is 'undefined' and a call or read throws
- * ReferenceError, as in Node's ES module scope, while the lowering's own
- * require and module.exports still reach the wrapper's. The transform's
- * `define` (and the bounded rewrite's equivalent) applies it.
+ * lowered to the CommonJS a facet runs (commonjs-cell.ts): its accessor on
+ * ES_MODULE_SCOPE_GLOBAL, so reading, calling or assigning it throws as in
+ * Node's ES module scope, which binds none of them, while the lowering's own
+ * require and module.exports still reach the wrapper's. `typeof` of one is
+ * 'undefined' (esModuleScopeTypeofs). The transform's `define` (and the
+ * bounded rewrite's equivalent) applies it.
  */
 export const ES_MODULE_UNBOUND_NAMES: Readonly<Record<string, string>> = Object.fromEntries(
-  [...COMMONJS_WRAPPER_NAMES].map((name) => [name, `${name}_is_not_defined_in_ES_module_scope`]),
+  [...COMMONJS_WRAPPER_NAMES].map((name) => [name, `${ES_MODULE_SCOPE_GLOBAL}.${name}`]),
 );
+
+// `typeof` of an accessor ES_MODULE_UNBOUND_NAMES left as the whole operand:
+// not one read further (`typeof require.cache` reads require, and throws).
+const TYPEOF_UNBOUND = new RegExp(
+  `\\btypeof(\\s*\\(*\\s*)${ES_MODULE_SCOPE_GLOBAL}\\.(?:${[...COMMONJS_WRAPPER_NAMES].join('|')})\\b(?!\\s*(?:[.[(]|\\?\\.))`,
+  'g',
+);
+
+/**
+ * A lowered ES module's code with `typeof` of each wrapper name 'undefined',
+ * as `typeof` of a name bound nowhere is, where the define made the name an
+ * accessor that throws when read.
+ */
+export function esModuleScopeTypeofs(code: string): string {
+  return code.includes(ES_MODULE_SCOPE_GLOBAL) ? code.replace(TYPEOF_UNBOUND, 'typeof$1(void 0)') : code;
+}
 
 /**
  * `source`, which Node runs as an ES module, as one to the transform whatever

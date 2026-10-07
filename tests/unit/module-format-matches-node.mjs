@@ -13,6 +13,14 @@
 // with a top-level await; `node --input-type=module -e "import …"` failed
 // with "Cannot use import statement outside a module".
 //
+// An ES module has none of CommonJS's names. Using one throws V8's
+// ReferenceError ("require is not defined") from the module's own frame,
+// and Node's loader completes the message where it leaves the module's job
+// (an entry, an import(), a require() of it): "in ES module scope", the
+// package.json that made a .js a module, or top-level await's ambiguity.
+// The runtime said "require_is_not_defined_in_ES_module_scope is not
+// defined", a name it made up.
+//
 // One fixture tree, on disk for real node and in the session's filesystem for
 // `node` through the runtime handler (the shell's command) and a one-shot
 // launch (module-map walk, ESM→CJS transform, the facet): each run prints
@@ -25,6 +33,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { buildRuntimeHandler } from '../../packages/core/src/runtime/runtime-registry.ts';
+import { SEED_FILES, SEED_PROJECT_DIR } from '../../packages/core/src/vfs/seed-project.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createAuthority } from './lib/resident-body.mjs';
@@ -69,7 +78,30 @@ const files = {
   'own-require.mjs': `import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\n${line("'own-require'", 'typeof require', "require('node:path').sep")}`,
   // What Node refuses: a require in an ES module, an import in a .cjs or a type:commonjs .js.
   'require-in-esm.mjs': "require('node:path');\n",
+  // What a CommonJS name in an ES module throws: V8's ReferenceError, which
+  // Node's loader explains where it leaves the module's job (an entry, an
+  // import(), a require()), naming the package that made a .js a module, or
+  // naming top-level await; anywhere else it is V8's own.
+  'typed/module-exports.js': 'module.exports = 1;\n',
+  'chain.mjs': "import './typed/module-exports.js';\n",
+  'tla-require.mjs': "await 1;\nrequire('node:path');\n",
+  'tla-scope.mjs': `await 0;\n${SCOPE('tla-scope')}`,
+  'caught.mjs': 'try { exports.x = 1; } catch (e) { globalThis.caught = [e.name, e.message]; }\nexport {};\n',
+  'later.mjs': "process.on('uncaughtException', (e) => { console.log(JSON.stringify(['later', e.name, e.message])); });\nsetTimeout(() => { __dirname; }, 0);\nexport {};\n",
+  'scope-errors.cjs': `const report = [];
+const frameFile = (e) => /([^/\\s:()]+):\\d+:\\d+\\)?$/.exec(e.stack.split('\\n').find((l) => l.startsWith('    at ')) ?? '')?.[1] ?? null;
+try { require('./require-in-esm.mjs'); } catch (e) { report.push(['require', e.name, e.message, e.code ?? null, frameFile(e)]); }
+import('./typed/module-exports.js').catch((e) => { report.push(['import', e.name, e.message, e.code ?? null, frameFile(e)]); })
+  .then(() => import('./tla-require.mjs')).catch((e) => { report.push(['tla', e.name, e.message, e.code ?? null]); })
+  .then(() => import('./caught.mjs')).then(() => { report.push(['caught', ...globalThis.caught]); console.log(JSON.stringify(report)); });
+`,
   'import-in.cjs': "import { sep } from 'node:path';\nconsole.log(sep);\n",
+  // The starter a session is seeded with: its JavaScript is correct Node in
+  // the module format its package.json gives it (a Vite project, "type":
+  // "module"), and loads as node loads it.
+  ...Object.fromEntries(SEED_FILES.filter(({ path }) => /\.(?:m?js|cjs|json)$/.test(path))
+    .map(({ path, content }) => [`example-app/${path.slice(SEED_PROJECT_DIR.length + 1)}`, content])),
+  'seed.mjs': `import { readFileSync } from 'node:fs';\nimport config from './example-app/tailwind.config.js';\nconst pkg = JSON.parse(readFileSync(new URL('./example-app/package.json', import.meta.url), 'utf8'));\n${line("'seed'", 'pkg.type', 'config')}`,
   'commonjs/package.json': JSON.stringify({ name: 'commonjs', type: 'commonjs' }),
   'commonjs/import.js': "import { sep } from 'node:path';\nconsole.log(sep);\n",
 };
@@ -93,13 +125,27 @@ const RUNS = [
   ['deps.cjs'],
   ['esm-scope.mjs'],
   ['own-require.mjs'],
-  ['require-in-esm.mjs', { fails: 'ReferenceError' }],
-  ['import-in.cjs', { fails: 'SyntaxError' }],
-  ['commonjs/import.js', { fails: 'SyntaxError' }],
+  ['seed.mjs'],
+  ['tla-scope.mjs'],
+  ['scope-errors.cjs'],
+  ['later.mjs'],
+  ['require-in-esm.mjs', { fails: true }],
+  ['typed/module-exports.js', { fails: true }],
+  ['chain.mjs', { fails: true }],
+  ['--input-type=module', '-e', "require('node:path');\n", { fails: true }],
+  ['import-in.cjs', { fails: true }],
+  ['commonjs/import.js', { fails: true }],
 ];
 const argsOf = (run) => run.filter((arg) => typeof arg === 'string');
 const stdinOf = (run) => run.find((arg) => typeof arg === 'object')?.stdin;
-const failsWith = (run) => run.find((arg) => typeof arg === 'object')?.fails;
+const failsWith = (run) => run.find((arg) => typeof arg === 'object')?.fails === true;
+// What an uncaught error prints, as \`<Name>: <message>\` and any lines of the
+// message, up to its first frame; and the file of that frame.
+function uncaught(text) {
+  const block = /^[A-Z]\w*Error(?::[^\n]*)?(?:\n(?!    at )[^\n]+)*/m.exec(text)?.[0] ?? null;
+  const frame = block === null ? '' : text.slice(text.indexOf(block) + block.length).split('\n').find((l) => l.startsWith('    at ')) ?? '';
+  return { block, frame: /([^/\s:()]+):\d+:\d+\)?$/.exec(frame)?.[1] ?? null };
+}
 
 // ── real node ────────────────────────────────────────────────────────────
 const disk = realpathSync(mkdtempSync(join(tmpdir(), 'module-format-')));
@@ -111,15 +157,17 @@ try {
   }
   for (const run of RUNS) {
     const node = spawnSync('node', argsOf(run), { cwd: disk, input: stdinOf(run) ?? '', encoding: 'utf8' });
-    const fails = failsWith(run);
-    if (fails !== undefined) {
+    // What node says of the tree, said of the session's.
+    const here = (text) => text.replaceAll(disk, ROOT);
+    if (failsWith(run)) {
       assert.notEqual(node.status, 0, `premise: node ${argsOf(run).join(' ')} fails`);
-      assert.match(node.stderr, new RegExp(`^${fails}: `, 'm'), `premise: node ${argsOf(run).join(' ')} throws a ${fails}`);
-      expected.push(null);
+      const error = uncaught(here(node.stderr));
+      assert.ok(error.block, `premise: node ${argsOf(run).join(' ')} prints an error: ${node.stderr}`);
+      expected.push(error);
       continue;
     }
     assert.equal(node.status, 0, `node ${argsOf(run).join(' ')}: ${node.stderr}`);
-    expected.push(JSON.parse(node.stdout.trim().split('\n').at(-1)));
+    expected.push(JSON.parse(here(node.stdout.trim().split('\n').at(-1))));
   }
 } finally {
   rmSync(disk, { recursive: true, force: true });
@@ -167,10 +215,15 @@ for (let i = 0; i < RUNS.length; i++) {
     });
   } finally { Object.assign(globalThis, real); }
   const label = `node ${argsOf(run).join(' ').slice(0, 60)}`;
-  const fails = failsWith(run);
-  if (fails !== undefined) {
+  if (failsWith(run)) {
     assert.notEqual(exitCode, 0, `${label} fails, as in node: ${stdout}${out}`);
-    assert.match(stderr + out + stdout, new RegExp(`\\b${fails}\\b`), `${label} throws a ${fails}, as node does: ${stderr}${out}`);
+    const error = uncaught(stderr + out + stdout);
+    assert.equal(error.block, expected[i].block, `${label} throws what node throws: ${stderr}${out}`);
+    // The frame the error names first is the module's that threw, as node's
+    // is (\`-e\` code is no file: node names it [eval1]).
+    if (!argsOf(run)[0].startsWith('-') && expected[i].block.startsWith('ReferenceError')) {
+      assert.equal(error.frame, expected[i].frame, `${label}: the first frame is the module's: ${stderr}${out}`);
+    }
     continue;
   }
   const printed = (out + stdout).trim().split('\n').at(-1) ?? '';
