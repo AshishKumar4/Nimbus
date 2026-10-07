@@ -173,6 +173,8 @@ export interface ProcessFsClient {
   settle(): Promise<void>;
   /** The failures not yet reported, taken (the next effect reports them). */
   takeFailures(): ProcessFsFailure[];
+  /** The failures not yet reported, taken as the error an effect fails with (failuresError), or null. */
+  takeFailuresError(): (Error & { code: string }) | null;
   /**
    * A change the program was told succeeded, refused or unanswered where the
    * runtime awaited it on the program's behalf (a synchronous call's own
@@ -935,6 +937,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     takeFailures() {
       return failures.splice(0, failures.length);
     },
+    takeFailuresError() {
+      const taken = failures.splice(0, failures.length);
+      return taken.length === 0 ? null : failuresError(taken);
+    },
     noteFailure(failure) {
       failures.push(failure);
     },
@@ -955,7 +961,7 @@ export function failuresError(failures: readonly ProcessFsFailure[]): Error & { 
   return Object.assign(new Error(
     `${failures.length} filesystem change${failures.length === 1 ? '' : 's'} this process made did not reach the session:\n`
       + failures.map((failure) => `  ${failure.op} ${failure.path}: ${failure.errno}: ${failure.message}`).join('\n'),
-  ), { code: failures.length === 1 ? failures[0]!.errno : 'EIO', failures });
+  ), { code: 'EIO', failures });
 }
 
 /** What a drain of a dead process's journal did: the changes that landed, and those the session refused. */
