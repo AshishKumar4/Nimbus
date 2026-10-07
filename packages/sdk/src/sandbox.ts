@@ -19,6 +19,7 @@ import {
 } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { z } from 'zod/v4';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
+import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
 
 export type RuntimeSpec = string;
 export type RuntimeName =
@@ -757,7 +758,7 @@ export class NimbusSandbox {
   }
 
   private get root(): string {
-    return this.options.root ?? this.profile.root ?? '/home/user';
+    return this.options.root ?? this.profile.root ?? DEFAULT_HOME;
   }
 
   private stub(): NimbusSessionSurface {

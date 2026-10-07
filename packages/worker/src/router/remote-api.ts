@@ -5,6 +5,7 @@ import {
 import { isValidSessionId } from '../_shared/session-id.js';
 import { z } from 'zod/v4';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
+import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
 import {
   NimbusAuthError,
   isNimbusIdComponent,
@@ -212,7 +213,7 @@ export async function handleNimbusRemoteApi(
   const profile = sdk?.config?.sandboxes?.[profileName]
     ?? sdk?.config?.sandboxes?.default
     ?? {};
-  const root = body.root ?? profile.root ?? '/home/user';
+  const root = body.root ?? profile.root ?? DEFAULT_HOME;
   const doName = `${remoteAuth.tenantSegment}:${match.sandboxId}`;
   const id = env.NIMBUS_SESSION.idFromName(doName);
   const stub = env.NIMBUS_SESSION.get(id);
