@@ -32,8 +32,12 @@ const enc = new TextEncoder();
 /** Whether this engine can park a guest: without JSPI a guest answers from the session, and these tests have nothing to test. */
 export const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
 
-/** @param {{ refuse?: (path: string) => boolean }} [options] */
-export async function residentGuest({ refuse = () => false } = {}) {
+/**
+ * `preopen` is the session directory the guest's "/" is (wasm-runner's is
+ * the shell's cwd); the session root by default.
+ * @param {{ refuse?: (path: string) => boolean, preopen?: string }} [options]
+ */
+export async function residentGuest({ refuse = () => false, preopen = '' } = {}) {
   const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
   writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites };`);
   let P;
@@ -80,7 +84,7 @@ export async function residentGuest({ refuse = () => false } = {}) {
   };
 
   const memory = new WebAssembly.Memory({ initial: 16 });
-  P.__wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], cred: USER });
+  P.__wasiInitFS({ root: preopen, preopens: [{ wasiPath: '/', vfsPath: preopen }], cred: USER });
   P.__wasiAdoptSupervisor(supervisor);
   const { wasiImport } = makeImportsWithoutJSPI(P, {
     argv: ['guest'], env: {}, getMemory: () => memory, stdoutWrite: () => {}, stderrWrite: () => {},
@@ -126,6 +130,21 @@ export async function residentGuest({ refuse = () => false } = {}) {
       view().setUint32(IOV, at, true);
       view().setUint32(IOV + 4, bytes.byteLength, true);
       return wasiImport.fd_write(fd, IOV, 1, OUT);
+    },
+    /** The process's own view of the session's files, as the supervisor answers it. */
+    authority: own,
+    /** path_filestat_get: { filetype, size }, or a thrown errno. */
+    async stat(name) {
+      const n = putPath(name);
+      const errno = await wasiImport.path_filestat_get(PREOPEN_FD, 1, PATH, n, OUT);
+      if (errno !== 0) throw Object.assign(new Error(`stat ${name}: errno ${errno}`), { errno });
+      return { filetype: view().getUint8(OUT + 16), size: Number(view().getBigUint64(OUT + 32, true)) };
+    },
+    /** fd_filestat_get of the preopen itself: { filetype }, or a thrown errno. */
+    async statPreopen() {
+      const errno = await wasiImport.fd_filestat_get(PREOPEN_FD, OUT);
+      if (errno !== 0) throw Object.assign(new Error(`fd_filestat_get ${PREOPEN_FD}: errno ${errno}`), { errno });
+      return { filetype: view().getUint8(OUT + 16) };
     },
     /** path_filestat_get: the size the guest sees, or a thrown errno. */
     async statSize(name) {
