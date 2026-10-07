@@ -144,8 +144,8 @@ export async function handleAgentRequest(self: Host, request: Request, url: URL)
     // The browser copy goes too: it is the transport that would otherwise
     // re-seed the session on the very next request.
     const headers = new Headers();
-    appendCookie(headers, clearAuthCookie(request));
-    appendCookie(headers, clearStateCookie());
+    headers.append('Set-Cookie', clearAuthCookie(request));
+    headers.append('Set-Cookie', clearStateCookie());
     return json({ ok: true }, 200, headers);
   }
 
@@ -280,7 +280,7 @@ async function oauthStart(self: Host, request: Request, url: URL): Promise<Respo
 
   const headers = new Headers();
   try {
-    appendCookie(headers, await sealStateCookie(self, stored));
+    headers.append('Set-Cookie', await sealStateCookie(self, stored));
   } catch (e: any) {
     return json({
       error: e?.message || String(e),
@@ -324,11 +324,11 @@ async function oauthCallback(self: Host, request: Request, url: URL): Promise<Re
       expiresAt: token.expires_in ? Date.now() + Math.max(0, Number(token.expires_in) - 30) * 1000 : null,
     });
     const headers = new Headers();
-    appendCookie(headers, clearStateCookie());
+    headers.append('Set-Cookie', clearStateCookie());
     return oauthResultHtml(true, 'Cloudflare connected.', payload.sessionId, headers);
   } catch (e: any) {
     const headers = new Headers();
-    appendCookie(headers, clearStateCookie());
+    headers.append('Set-Cookie', clearStateCookie());
     return oauthResultHtml(false, e?.message || String(e), payload.sessionId, headers);
   }
 }
@@ -1049,10 +1049,6 @@ function clearStateCookie(): string {
 
 function clearAuthCookie(request: Request): string {
   return clearNimbusAgentOAuthCookie(request);
-}
-
-function appendCookie(headers: Headers, cookie: string): void {
-  headers.append('Set-Cookie', cookie);
 }
 
 async function sealCookie(self: Host, value: unknown, purpose: string): Promise<string> {
