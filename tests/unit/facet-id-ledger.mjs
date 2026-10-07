@@ -2,13 +2,13 @@
 // The 65,536 facet-ID lifetime budget, counted instead of prosed about.
 //
 // A Durable Object admits 65,536 facet IDs over its LIFETIME; the IDs are
-// append-only and never reclaimed. The slot book already stops per-spawn burn
-// by reusing names — but nothing COUNTED the IDs actually consumed, and the
-// exhaustion failure is unrecoverable for the DO while the platform's message
-// for it names nothing. What has to hold:
+// append-only and never reclaimed. Each process of an incarnation takes a
+// name no earlier process of it held (residentFacetName), so every spawn
+// spends one; the exhaustion failure is unrecoverable for the DO while the
+// platform's message for it names nothing. What has to hold:
 //
-//   (1) the ledger counts names ever minted, not spawns: reuse — same
-//       incarnation or after a reset — never increments it;
+//   (1) the ledger counts names ever minted: one per process of an
+//       incarnation, and none for a name reused after a reset;
 //   (2) the count is durable: a fresh incarnation adopts the persisted
 //       high-water instead of restarting it, and never writes a smaller one;
 //   (3) a creation failure AT the wall names the budget and the count, and a
@@ -68,7 +68,7 @@ function spawn(fabric, pid) {
   });
 }
 
-// ── (1) names minted are counted; reuse is not ──────────────────────────────
+// ── (1) names minted are counted, one per process ────────────────────────────
 {
   const { ctx, fabric } = setup();
   const a = await spawn(fabric, 1);
@@ -81,14 +81,14 @@ function spawn(fabric, pid) {
     'three concurrent processes mint three names',
   );
 
-  // Release one and spawn again: the freed name is reused, no new ID burned.
+  // Release one and spawn again: the next process takes a fourth name.
   c.kill();
   await c.done;
   const d = await spawn(fabric, 4);
   await d.booted();
   assert.equal(
-    (await facetIdBudget(ctx)).consumed, 3,
-    'a spawn that reuses a freed name consumes no new facet ID',
+    (await facetIdBudget(ctx)).consumed, 4,
+    'a spawn after a release takes a name of its own',
   );
   for (const handle of [a, b, d]) { handle.kill(); await handle.done; }
 }
@@ -158,4 +158,4 @@ function spawn(fabric, pid) {
   await handle.done.catch(() => {});
 }
 
-console.log('ok - facet-id-ledger (minted counted, reuse free, durable across resets, wall named)');
+console.log('ok - facet-id-ledger (minted counted, durable across resets, wall named)');
