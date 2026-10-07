@@ -527,7 +527,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       }
 
       const stat = this.vfs.stat(p);
-      const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal);
+      const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, owner);
       const handle: RuntimeFileHandle = {
         id: this.scope.nextId++,
         path: p,

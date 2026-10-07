@@ -2336,9 +2336,12 @@ export class SqliteVFS {
     cred: VfsCred,
     rights: { read: boolean; write: boolean; sync?: boolean },
     principal?: Principal,
+    /** The exclusive-mutation lease the open presented: its writes and truncates present it too, as the right was checked at open. */
+    mutationOwner?: string,
   ): VfsOpenDescription {
     const origin: Principal = principal ?? this.activeOrigin ?? Object.freeze({ cred });
     const asOpener = <A extends unknown[], R>(call: (...args: A) => R) => (...args: A): R => this.asOrigin(origin, () => call(...args));
+    const owned = <A extends unknown[], R>(call: (...args: A) => R) => asOpener((...args: A): R => this.withMutationOwner(mutationOwner, () => call(...args)));
     const resolved = this.checkAccess(path, (rights.read ? 4 : 0) | (rights.write ? 2 : 0), cred);
     if (!resolved.inode) throw vfsKeyError('ENOENT', path);
     // Descriptions share the canonical inode object: a second descriptor
@@ -2391,7 +2394,7 @@ export class SqliteVFS {
         const run = this.appendRuns.get(node.ino);
         return run === undefined ? node.size : run.base + run.bytes;
       },
-      write: asOpener((offset: number, bytes: Uint8Array): number => {
+      write: owned((offset: number, bytes: Uint8Array): number => {
         if (!rights.write) throw vfsKeyError('EBADF', path);
         if (live().isDir) throw vfsKeyError('EISDIR', path);
         const start = clampNonNegativeInt(offset);
@@ -2409,7 +2412,7 @@ export class SqliteVFS {
         current();
         if (rights.write) this.raiseAppendFailure(opened);
       },
-      truncate: asOpener((size: number): void => {
+      truncate: owned((size: number): void => {
         if (!rights.write) throw vfsKeyError('EBADF', path);
         const node = writable();
         if (node.isDir) throw vfsKeyError('EISDIR', path);

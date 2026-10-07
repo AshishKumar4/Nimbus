@@ -71,9 +71,10 @@ try {
   mountEngine.as(CRED_KERNEL).chown('work', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
   const session = await createFacetSession(work, { mounts: { '/mnt/data': new SqliteFiles(mountEngine, mountEngine.as(CRED_KERNEL)) } });
   try {
-    for (const [name, args] of [['shallow', ['--depth', '1']], ['history', ['--no-shallow']]]) {
+    // Host git's clone is the whole history without --depth: ours takes --no-shallow for it.
+    for (const [name, args, hostArgs] of [['shallow', ['--depth', '1'], ['--depth', '1']], ['history', ['--no-shallow'], []]]) {
       const host = join(work, 'host-' + name);
-      hostGit(work, ['clone', '-q', ...args, 'file://' + join(served, 'repo.git'), host]);
+      hostGit(work, ['clone', '-q', ...hostArgs, 'file://' + join(served, 'repo.git'), host]);
       const cloned = await session.git('/home/user', ['clone', ...args, server.url + '/repo.git', '/mnt/data/work/' + name]);
       assert.equal(cloned.code, 0, `${name}: ${cloned.stderr}`);
       const ours = await session.materializeAt('/mnt/data/work/' + name, join(work, 'ours-' + name));
