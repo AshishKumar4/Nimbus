@@ -107,6 +107,8 @@ if (stray.length > 0) {
 // The patch, through a scratch index so the checkout's own is untouched.
 const scratch = mkdtempSync(join(tmpdir(), 'ci-build-index-'));
 let patch = null;
+/** Why the patch could not be made, if it could not. @type {string | null} */
+let unmade = null;
 /** @type {Record<string, { mode: string, blob: string } | null>} */
 const blobs = {};
 try {
@@ -129,11 +131,12 @@ try {
     blobs[fields[i + 1]] = status === 'D' ? null : { mode, blob };
   }
 } catch (error) {
-  // No patch can be trusted: not graded, with what failed.
-  finish(head, [fixpoint, { name: 'patch', exitCode: 2, seconds: 0, output: error.message }], null, 2);
+  unmade = error.message;
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
+// No patch can be trusted: not graded, with what failed.
+if (unmade !== null) finish(head, [fixpoint, { name: 'patch', exitCode: 2, seconds: 0, output: unmade }], null, 2);
 if (patch !== null && fixpoint.exitCode === 0) fixpoint.exitCode = 1;
 
 const typecheck = await step('typecheck', root, 'bun', ['run', 'typecheck']);
