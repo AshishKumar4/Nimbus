@@ -21,13 +21,14 @@ const probeOf = (name) => name.replace(/^tests\/behavioral\//, '').replace(/\.mj
  * read too, so a ✗ lost from a truncated output still counts.
  *
  * @param {string} output
- * @returns {{ finished: boolean, pass: number, fail: number, failed: string[] }}
+ * @returns {{ finished: boolean, pass: number, fail: number, failed: Array<{ label: string, detail: string }> }}
+ *   `detail`, the ✗ line's text after ` — ` (its first line only)
  */
 export function outcomeOf(output) {
   const failed = [];
   for (const line of output.split('\n')) {
-    const check = /^ {2}✗ (.*?)(?: — .*)?$/.exec(line);
-    if (check) failed.push(check[1]);
+    const check = /^ {2}✗ (.*?)(?: — (.*))?$/.exec(line);
+    if (check) failed.push({ label: check[1], detail: check[2] ?? '' });
   }
   const summary = [...output.matchAll(/^ {2}──── \[[^\]]*\] (\d+) pass \/ (\d+) fail$/gm)].at(-1);
   return { finished: summary !== undefined, pass: Number(summary?.[1] ?? 0), fail: Number(summary?.[2] ?? 0), failed };
@@ -37,10 +38,18 @@ export function outcomeOf(output) {
 function beyondDeferral(row, entry) {
   const outcome = outcomeOf(row.output);
   if (!outcome.finished) return 'it did not reach its summary (an exception, or killed), so not every other assertion ran';
-  const others = outcome.failed.filter((label) => label !== entry.assertion);
-  if (others.length > 0) return `other assertions failed: ${others.map((label) => `✗ ${label}`).join('; ')}`;
-  if (outcome.fail !== 1 || !outcome.failed.includes(entry.assertion)) {
+  const others = outcome.failed.filter((check) => check.label !== entry.assertion);
+  if (others.length > 0) return `other assertions failed: ${others.map((check) => `✗ ${check.label}`).join('; ')}`;
+  const pinned = outcome.failed.find((check) => check.label === entry.assertion);
+  if (outcome.fail !== 1 || !pinned) {
     return `its summary says ${outcome.fail} failed, and the one deferrable is ✗ ${entry.assertion}${outcome.failed.length ? '' : ' (no ✗ line found)'}`;
+  }
+  // The approved failure itself: `HTTP <status>: <page>`, the page titled as approved.
+  const http = /^HTTP (\d{3}): (.*)$/.exec(pinned.detail);
+  const title = http ? /<title[^>]*>([^<]*)<\/title>/i.exec(http[2])?.[1] : undefined;
+  if (Number(http?.[1]) !== entry.failure.status || title !== entry.failure.title) {
+    return `it failed with ${http ? `HTTP ${http[1]}${title === undefined ? ' (no <title>)' : ` "${title}"`}` : JSON.stringify(pinned.detail.slice(0, 120))}, `
+      + `not the approved HTTP ${entry.failure.status} "${entry.failure.title}"`;
   }
   return null;
 }

@@ -694,9 +694,11 @@ if and only if every red row is a probe in `tests/behavioral/_deferred.mjs`,
 the user's record of what a release may ship with, that failed exactly as
 approved. Each entry names the probe, the one assertion that may fail (its
 exact label), the reason, the user's dated approval, the owner and the
-tracking item. A deferred probe's row is covered only if the probe reached
-its asserter's summary, that assertion failed, and every other assertion
-passed, setup and cleanup included; any other ✗, or an exception, is red.
+tracking item, plus the approved failure itself: the HTTP status and page
+title its ✗ detail must show. A deferred probe's row is covered only if
+the probe reached its asserter's summary and that assertion failed exactly
+so, and every other assertion passed, setup and cleanup included. Any
+other ✗, any other detail on that assertion, or an exception is red.
 The hosted-demo checks, the production-only checks and the session ledger
 can never be deferred: the record refuses to load an entry for them. A deferred probe still runs, and its output is kept in `staged.json`.
 If it passes, or does not run, the matrix is red, so a deferral ends when

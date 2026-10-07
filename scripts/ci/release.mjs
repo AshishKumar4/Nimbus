@@ -140,7 +140,7 @@ if (!flags['no-matrix']) {
   const graded = gradeMatrix([read(suite.verdict), read(hosted.verdict)], DEFERRED);
   staged.matrix = { exitCode: graded.exitCode, suite, hosted, deferrals: graded.applied, problems: graded.problems };
   for (const entry of graded.applied) {
-    console.log(`release: DEFERRED ${entry.probe} — red in ${entry.rows.length} row${entry.rows.length === 1 ? '' : 's'}, shipped by deferral of ✗ ${entry.assertion} only: ${entry.reason} (approved ${entry.approved}; owner ${entry.owner}; tracking ${entry.tracking})`);
+    console.log(`release: DEFERRED ${entry.probe} — red in ${entry.rows.length} row${entry.rows.length === 1 ? '' : 's'}, shipped by deferral of ✗ ${entry.assertion} with HTTP ${entry.failure.status} "${entry.failure.title}" only: ${entry.reason} (approved ${entry.approved}; owner ${entry.owner}; tracking ${entry.tracking})`);
   }
   for (const problem of graded.problems) console.log(`release: ${problem}`);
   // The matrix graded this upload only if staging served it throughout.

@@ -23,9 +23,11 @@ const BEHAVIORAL = join(import.meta.dirname, '..', 'behavioral');
     const source = readFileSync(join(BEHAVIORAL, `${entry.probe}.mjs`), 'utf8');
     assert.ok(source.includes(`'${entry.assertion}'`) || source.includes(`"${entry.assertion}"`), `${entry.probe}: it asserts no ${JSON.stringify(entry.assertion)}`);
   }
-  const good = { probe: 'frameworks/nuxt-real', assertion: 'a', reason: 'r', approved: 'user, 2026-10-07', owner: 'o', tracking: 't' };
+  const good = { probe: 'frameworks/nuxt-real', assertion: 'a', failure: { status: 503, title: 't' }, reason: 'r', approved: 'user, 2026-10-07', owner: 'o', tracking: 't' };
   for (const [entry, refused] of [
     [{ ...good, assertion: '' }, /assertion is required/],
+    [{ ...good, failure: undefined }, /failure \{ status, title \} is required/],
+    [{ ...good, failure: { status: 503 } }, /failure \{ status, title \} is required/],
     [{ ...good, approved: 'main, 2026-10-07' }, /approved must be the user's, dated/],
     [{ ...good, approved: 'user' }, /approved must be the user's, dated/],
     [{ ...good, probe: 'frameworks/no-such-probe' }, /no such probe/],
@@ -39,7 +41,10 @@ const BEHAVIORAL = join(import.meta.dirname, '..', 'behavioral');
 }
 
 const PINNED = 'nuxt dev SSR serves the Vue app through the port route on its first run';
-const deferral = { probe: 'frameworks/nuxt-real', assertion: PINNED, reason: 'r', approved: 'user, 2026-10-07', owner: 'o', tracking: 't' };
+const deferral = { probe: 'frameworks/nuxt-real', assertion: PINNED, failure: { status: 503, title: 'Starting Nuxt... | Nuxt' }, reason: 'r', approved: 'user, 2026-10-07', owner: 'o', tracking: 't' };
+// The real first-run detail (staging, 2026-10-07T05:20Z), and a served page that is the wrong app.
+const NITRO_503 = 'HTTP 503: <!DOCTYPE html><html lang="en"><head><title data-app-name="Nuxt">Starting Nuxt... | Nuxt</title><meta charset="utf-8">';
+const WRONG_200 = 'HTTP 200: <!DOCTYPE html><html><head><title>Welcome to Nuxt</title></head><body><div id="__nuxt">';
 const row = (name, exitCode, output = '') => ({ name: name === 'session-ledger' || name === 'probes' ? name : `tests/behavioral/${name}.mjs`, exitCode, seconds: 1, output });
 /** nuxt-real's output as makeAsserter prints it: each check, then (unless it threw) the summary. */
 const nuxt = (checks, { finished = true } = {}) => [
@@ -47,7 +52,8 @@ const nuxt = (checks, { finished = true } = {}) => [
   ...checks.map(([ok, label, detail]) => `  ${ok ? '✓' : '✗'} ${label}${detail ? ` — ${detail}` : ''}`),
   ...(finished ? ['', `  ──── [frameworks/nuxt-real] ${checks.filter(([ok]) => ok).length} pass / ${checks.filter(([ok]) => !ok).length} fail`] : ['error: install failed', '      at nuxt-real.mjs:26:35']),
 ].join('\n');
-const asApproved = nuxt([[true, 'nuxi creates the real minimal project'], [true, 'npm install succeeds'], [false, PINNED, 'status 503\nNitro builder: building…'], [true, 'probe session deleted']]);
+const withPinned = (detail) => nuxt([[true, 'nuxi creates the real minimal project'], [true, 'npm install succeeds'], [false, PINNED, `${detail}\nnuxt dev output…`], [true, 'probe session deleted']]);
+const asApproved = withPinned(NITRO_503);
 const verdict = (...tasks) => ({ tasks: tasks.map((rows, i) => ({ task: `part ${i + 1}/${tasks.length}`, outcome: { kind: 'exited' }, rows })) });
 const ledger = row('session-ledger', 0);
 
@@ -55,7 +61,7 @@ const ledger = row('session-ledger', 0);
   const graded = gradeMatrix([verdict([row('git-local', 0), row('frameworks/nuxt-real', 1, asApproved), ledger])], [deferral]);
   assert.equal(graded.exitCode, 0, graded.problems.join('\n'));
   assert.deepEqual(graded.applied.map((entry) => entry.probe), ['frameworks/nuxt-real']);
-  assert.match(graded.applied[0].rows[0].output, /status 503/, 'the deferred probe\'s output is kept');
+  assert.match(graded.applied[0].rows[0].output, /Starting Nuxt/, 'the deferred probe\'s output is kept');
   console.log('  ok  a deferred probe failing exactly as approved: green, with the deferral applied and the probe\'s output kept');
 }
 {
@@ -67,6 +73,11 @@ const ledger = row('session-ledger', 0);
     ['an install failure that did not throw', nuxt([[true, 'nuxi creates the real minimal project'], [false, 'npm install succeeds', 'x'], [false, PINNED, '503'], [true, 'probe session deleted']]), /other assertions failed: ✗ npm install succeeds/],
     ['a summary counting a failure whose ✗ line was lost', `${nuxt([[true, 'a'], [false, PINNED, '503']])}`.replace('1 pass / 1 fail', '1 pass / 2 fail'), /its summary says 2 failed/],
     ['the pinned assertion only in prose, not as a ✗', `  ✗ npm install succeeds — the next step is ${PINNED}\n\n  ──── [frameworks/nuxt-real] 2 pass / 1 fail`, /other assertions failed: ✗ npm install succeeds/],
+    // The pinned assertion failing some other way: the approval is for Nitro's 503, not for the assertion.
+    ['a 200 serving the wrong Vue content', withPinned(WRONG_200), /failed with HTTP 200 "Welcome to Nuxt", not the approved HTTP 503 "Starting Nuxt\.\.\. \| Nuxt"/],
+    ['a 502 from the port route', withPinned('HTTP 502: No process listening on port 3000'), /failed with HTTP 502 \(no <title>\)/],
+    ['a 503 that is not the loading page', withPinned('HTTP 503: <html><head><title>Service Unavailable</title>'), /failed with HTTP 503 "Service Unavailable"/],
+    ['never served', withPinned('not served'), /failed with "not served"/],
   ];
   for (const [what, output, why] of cases) {
     const graded = gradeMatrix([verdict([row('frameworks/nuxt-real', 1, output), ledger])], [deferral]);
@@ -74,7 +85,7 @@ const ledger = row('session-ledger', 0);
     assert.match(graded.red.join('\n'), why, what);
     assert.deepEqual(graded.applied, [], what);
   }
-  assert.deepEqual(outcomeOf(asApproved), { finished: true, pass: 3, fail: 1, failed: [PINNED] }, 'outcomeOf reads the checks and the summary');
+  assert.deepEqual(outcomeOf(asApproved), { finished: true, pass: 3, fail: 1, failed: [{ label: PINNED, detail: NITRO_503 }] }, 'outcomeOf reads the checks, their details and the summary');
   console.log('  ok  a deferred probe failing any other way (setup, cleanup, an exception, a lost ✗): red, saying how');
 }
 {
