@@ -4167,9 +4167,16 @@ export class FacetManager {
             generationBase: () => this.processes.pidBase,
             waitUntil: (promise) => this.ctx.waitUntil(promise),
             redrive: (record, attempt) => this._redrive(record, attempt),
-            onRedrive: (record) => this.hooks.notify?.('\x1b[2m[nimbus: the session restarted while '
-                + `"${record.command}" was ${residentLaunchDoing(record)} — restarting it]\x1b[0m\r\n`),
-            onAbandoned: (record) => this.hooks.notify?.(residentAbandonedNotice(record, Date.now())),
+            onRedrive: (record) => {
+                // A line in the Worker's logs as well: the platform logs nothing for the restart itself.
+                console.warn(`[facet-manager] the session restarted while pid ${record.pid} ("${record.command}") was ${residentLaunchDoing(record)}; restarting it`);
+                this.hooks.notify?.('\x1b[2m[nimbus: the session restarted while '
+                    + `"${record.command}" was ${residentLaunchDoing(record)} — restarting it]\x1b[0m\r\n`);
+            },
+            onAbandoned: (record) => {
+                console.warn(`[facet-manager] the session restarted again while pid ${record.pid} ("${record.command}") was ${residentLaunchDoing(record)}; left stopped`);
+                this.hooks.notify?.(residentAbandonedNotice(record, Date.now()));
+            },
             onRedriveFailed: (record, e) => {
                 console.warn(`[facet-manager] resident pid ${record.pid} ("${record.command}") not re-driven: ${errorMessage(e)}`);
                 this.hooks.notify?.(`\x1b[2m[nimbus: "${record.command}" could not be restarted: `
