@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync,
+  chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -112,7 +112,12 @@ export function createMirror(label) {
     }
   };
 
-  /** `beforeWrite(path)`: awaited before each whole-file write the command makes (a gate). */
+  /**
+   * `beforeWrite(path)`: awaited before each whole-file write the command makes (a gate).
+   * @param {string} cwd
+   * @param {string[]} args
+   * @param {{ beforeWrite?: (path: string) => Promise<void> }} [options]
+   */
   const nimbusGit = async (cwd, args, { beforeWrite } = {}) => {
     let stdout = '';
     let stderr = '';
@@ -172,6 +177,12 @@ export function createMirror(label) {
       writeFileSync(disk, text);
       user.mkdir(virtual.slice(0, virtual.lastIndexOf('/')), { recursive: true });
       user.writeFile(virtual, new TextEncoder().encode(text));
+    }
+
+    /** A file's times set, in both worktrees, to `seconds` since the epoch. */
+    touch(path, seconds) {
+      utimesSync(join(this.disk, path), seconds, seconds);
+      user.utimes(`${this.virtual}/${path}`, seconds * 1000, seconds * 1000);
     }
 
     /** Ours copied out to disk, for host git to read. */

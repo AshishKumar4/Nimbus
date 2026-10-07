@@ -39,7 +39,7 @@ import type { Excludes } from './excludes.js';
 import { diffTrees, type Leaf, type ObjectStore } from './tree.js';
 import { walkTreeAndIndex } from './status.js';
 import type { SparseMatcher } from '../pack/sparse.js';
-import { compareEntry, scanWorktree, type Worktree, type WorktreeStat } from './walk.js';
+import { compareEntry, matchStat, scanWorktree, type Worktree, type WorktreeStat } from './walk.js';
 
 /** The worktree writes a checkout makes, at absolute paths (createGitFs's checkout rules). */
 export interface CheckoutWriter {
@@ -473,18 +473,26 @@ function worktreeView(tree: Worktree): WorktreeView {
  * cone it is made skip-worktree, its file going if up to date (a reset's
  * always), else staying (`left`); inside, one that was skip-worktree is
  * written, unless something is in its way (then it is skip-worktree no
- * longer, and named). An unmerged entry stays, named when `unmerged`
- * (update_sparsity's warn_conflicted_path).
+ * longer, and named). An unmerged entry stays. `alone`: update_sparsity on
+ * its own (sparse-checkout), where an unmerged entry is named
+ * (warn_conflicted_path) and up to date means verify_uptodate's stat match
+ * (ie_match_stat, the content read only for a racy entry), the index not
+ * refreshed first as a checkout refreshes it.
  */
 async function sparseOps(
-  ctx: SparsityContext, view: WorktreeView, sparse: SparseMatcher, moved: ReadonlySet<string>, force: boolean, left: SparseLeft, unmerged: boolean,
+  ctx: SparsityContext, view: WorktreeView, sparse: SparseMatcher, moved: ReadonlySet<string>, force: boolean, left: SparseLeft, alone: boolean,
 ): Promise<Op[]> {
+  const uptodate = async (i: number, path: string, st: WorktreeStat): Promise<boolean> => {
+    if (st.type === 'directory') return false;
+    if (alone && matchStat(ctx.dc, i, st, ctx.tree.filemode) !== 0) return false;
+    return await compareEntry(ctx.tree, ctx.dc, i, path, st) === null;
+  };
   const { tree, dc } = ctx;
   const ops: Op[] = [];
   for (let i = 0; i < dc.count; i++) {
     if (dc.stage(i) !== 0) {
       const path = dc.path(i);
-      if (unmerged && left.unmerged[left.unmerged.length - 1] !== path) left.unmerged.push(path);
+      if (alone && left.unmerged[left.unmerged.length - 1] !== path) left.unmerged.push(path);
       continue;
     }
     const path = dc.path(i);
@@ -500,7 +508,7 @@ async function sparseOps(
         left.orphaned.push(path);
         dc.setSkipWorktree(i, false);
       }
-    } else if (gitlink || force || st === null || (st.type !== 'directory' && await compareEntry(tree, dc, i, path, st) === null)) {
+    } else if (gitlink || force || st === null || await uptodate(i, path, st)) {
       ops.push({ method: 'sparsify', path, index: i, gitlink, present: st !== null && (st.type === 'directory') === gitlink });
     } else {
       left.notUptodate.push(path);

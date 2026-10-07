@@ -10,7 +10,8 @@
 //     core.sparseCheckout, core.sparseCheckoutCone) and moves the worktree;
 //     list names the cone; add widens it; set run from a subdirectory takes
 //     its directories below it.
-//   - What set leaves: a changed file outside the cone (named, kept); a
+//   - What set leaves: a changed file outside the cone, or one whose content
+//     is the index's but its stat not (named, kept: no refresh first); a
 //     directory outside the cone with untracked files in it (named, kept);
 //     one with only ignored files and empty directories (removed, with
 //     them).
@@ -93,12 +94,20 @@ try {
     await p.run(['sparse-checkout', 'set', 'a']);
     p.same('set a, with a changed file and untracked and ignored files outside it');
     sameFiles(p, 'set a');
-    // Nothing but what is ignored, then nothing at all: the directory goes.
-    p.write('b/y.txt', 'by\n');
+    // Nothing but what is ignored, then nothing at all: the directory goes. The changed file is
+    // restored as a user restores it, its index entry refreshed with it.
+    await p.run(['checkout', '--', 'b/y.txt']);
     p.write('b/d/untracked.txt', null);
     p.write('c/e/build.log', null);
     await p.run(['sparse-checkout', 'reapply']);
     p.same('reapply, once nothing untracked is left');
+    // Its content as the index has it, its stat not: not up to date, as git's verify_uptodate
+    // judges it without refreshing the index first; named and kept.
+    await p.run(['sparse-checkout', 'set', 'a', 'b']);
+    p.write('b/y.txt', 'by\n');
+    p.touch('b/y.txt', 2000000000);
+    await p.run(['sparse-checkout', 'set', 'a']);
+    p.same('set a, a file outside restored in content but not in stat');
     console.log('  ok  set and reapply: a changed file and a directory with untracked files named and kept; one with only ignored files removed');
   }
 
