@@ -25,10 +25,10 @@
  * createWorkerdSlots (WORKERD_SLOTS_SOURCE); where Node runs this host (its
  * parity test), Node's own binding. Named limits (fine-print capabilities):
  * a proxy among a slot's values is a stand-in over its target and handler,
- * which no program code is ever handed: shown without showProxy, its
- * target's custom inspect is not called (Node calls it with the proxy as
- * this), and a proxy inside it is shown by its innermost target, its traps
- * not run; and a holder whose own Symbol.toStringTag is an accessor, or with
+ * which no program code is ever handed: shown without showProxy, one whose
+ * target has a custom inspect shows as unknown (Node calls the hook with the
+ * proxy as this), and a proxy inside it is shown by its innermost target,
+ * its traps not run; and a holder whose own Symbol.toStringTag is an accessor, or with
  * a proxy on its prototype chain, shows its slot as unknown, since reading
  * it would run that code once more than Node.
  *

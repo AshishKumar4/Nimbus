@@ -7910,8 +7910,6 @@ function __nimbusNodeInspect() {
   // stands for (null, revoked). inspect.js never formats one as an object:
   // it asks getProxyDetails first, which unwraps it (below).
   const standIns = new WeakMap();
-  // A target shown without its custom inspect (withoutCustomInspect).
-  const views = new WeakSet();
   function standIn(node) {
     if (node.revoked) {
       const revocable = Proxy.revocable({}, {});
@@ -7941,26 +7939,6 @@ function __nimbusNodeInspect() {
       if (own !== undefined) return own.get !== undefined || typeof own.value === "function";
     }
     return false;
-  }
-  // 'target' as inspect.js formats it without its custom inspect, which it
-  // would call with a stand-in as this: every other read is the target's, a
-  // getter's this the target, over a shadow no invariant ties to it.
-  function withoutCustomInspect(target) {
-    const shadow = Array.isArray(target) ? [] : Object.create(null);
-    const view = new Proxy(shadow, {
-      get: (_, key) => (key === customInspect ? undefined : Reflect.get(target, key, target)),
-      has: (_, key) => key !== customInspect && Reflect.has(target, key),
-      ownKeys: () => Reflect.ownKeys(target),
-      getPrototypeOf: () => Reflect.getPrototypeOf(target),
-      getOwnPropertyDescriptor(_, key) {
-        const own = Reflect.getOwnPropertyDescriptor(target, key);
-        if (own === undefined || (Array.isArray(shadow) && key === "length")) return own;
-        const get = own.get;
-        return { ...own, configurable: true, ...(get ? { get: function () { return Reflect.apply(get, target, []); } } : {}) };
-      },
-    });
-    views.add(view);
-    return view;
   }
   // Whether workerd formats 'holder' with none of a program's code run: no
   // proxy on its prototype chain (its constructor name is read there), and
@@ -7998,7 +7976,6 @@ function __nimbusNodeInspect() {
     return [rejected ? kRejected : kFulfilled, result];
   }
   function getProxyDetails(proxy, showProxy) {
-    if (views.has(proxy)) return undefined;
     let parts = standIns.get(proxy);
     if (parts === undefined) {
       const first = capture(proxy, {}, 0);
@@ -8009,9 +7986,10 @@ function __nimbusNodeInspect() {
     if (parts === null) return showProxy ? [null, null] : null;
     if (showProxy) return parts;
     // inspect.js calls the target's custom inspect with the proxy as this: a
-    // program's own proxy is that; a stand-in must never be.
+    // program's own proxy is that; a stand-in must never be, so the target of
+    // one, if it has such a hook, is not shown (nor its constructor's checks run).
     const target = innermostTarget(parts[0]);
-    return standIns.has(proxy) && !standIns.has(target) && reachesCustomInspect(target) ? withoutCustomInspect(target) : target;
+    return standIns.has(proxy) && !standIns.has(target) && reachesCustomInspect(target) ? UNKNOWN : target;
   }
   function previewEntries(value, isKeyValue) {
     if (!formatsInertly(value)) return isKeyValue === undefined ? [ITEMS_UNKNOWN] : [[ITEMS_UNKNOWN], false];
