@@ -441,6 +441,12 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   const next = setup({ storage: first.storage, world, disk: first.disk });
   next.processes.setPidBase(PID_GEN_STRIDE);
   assert.equal(await next.fm.ensureDurableAppOnPort(20820), 'started');
+  // A request that brings the app back before recovery does is the session's
+  // restart all the same, and the user is told so, once.
+  assert.equal(
+    next.notices.filter((line) => /the session restarted while "ruby server\.rb" was running — restarting it/.test(line)).length, 1,
+    `a request-driven re-drive is announced; notices were: ${JSON.stringify(next.notices)}`,
+  );
   const recovered = (await journalRows(next.ctx)).find((candidate) => candidate.pid > PID_GEN_STRIDE);
   assert.equal(recovered.owner, row.owner, 'runtime re-drive preserves derived identity');
   assert.equal(recovered.port, 20820);
