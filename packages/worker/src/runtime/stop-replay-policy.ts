@@ -55,8 +55,9 @@ export const REPLAY_OPERATION_POLICY = {
     const v = omit(value, ['epoch', 'rev']) as { entries?: unknown[] } | null;
     return v && Array.isArray(v.entries) ? { ...v, entries: v.entries.map((e) => omit(e, ['rev'])) } : v;
   } },
-  // The cache's physical facet name is not exposed by Node; its grant is.
-  fsStorageGrant: { kind: 'observation', args: (a) => a.slice(1) },
+  // Facet identity and free-space cache sizing are internal; the granted
+  // reservation and every other reply field remain observable and checked.
+  fsStorageGrant: { kind: 'observation', args: (a) => a.slice(1), answer: (value) => omit(value, ['available']) },
   wsOpen: effect, wsPoll: read, wsSend: effect, wsClose: effect,
   fsOpen: { kind: 'open' }, fsRead: read, fsWrite: effect, fsClose: read,
   fsReadRange: read, fsReadRangeUncached: read, fsReadBatch: read,
