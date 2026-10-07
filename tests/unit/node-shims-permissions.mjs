@@ -115,9 +115,9 @@ function callbackResult(invoke) {
   );
 
   const forbiddenChown = createShim({
-    supervisor: {
+    supervisor: waveSupervisor({
       chown: async () => { throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }); },
-    },
+    }),
   });
   await assert.rejects(
     forbiddenChown.fs.promises.chown('/home/user/file', 0, 0),

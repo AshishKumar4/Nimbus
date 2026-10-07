@@ -516,6 +516,21 @@ export interface WriteBatchStreamProgress {
   receipts: WriteStreamReceipt[];
   /** A sequenced wave's answer (WriteStreamOptions.sequence). */
   sequence?: WaveSequenceAnswer;
+  /** Each call, rename, truncate and attribute change the wave committed here (not on a mount): what its maker dates its own copy by. */
+  mutations?: WaveMutation[];
+}
+
+/**
+ * One op a wave committed (`index`, its place among the wave's ops, from 0):
+ * its path's revision right before it and the session's right after, read
+ * in the turn it committed, as a single call's receipt has them
+ * (VfsMutationReceipt): a copy dated at or above `before` was current, and
+ * with this op on it is current at `after`.
+ */
+export interface WaveMutation {
+  index: number;
+  before: number;
+  after: number;
 }
 
 /**
@@ -9579,7 +9594,6 @@ export class SqliteVFS {
     // `first`, and one the writer's cursor has passed is answered, never
     // applied again.
     const sequence = options.sequence === undefined ? null : { spec: options.sequence, cursor: 0 };
-    let opIndex = -1;
     /** The number of the op being applied: a refusal now is its answer. */
     let applying: number | null = null;
     /** A re-sent data call the cursor has passed: its chunks are drained, not applied. */
@@ -9589,16 +9603,28 @@ export class SqliteVFS {
       progress.sequence = { cursor: seq };
       applying = null;
     };
-    /** Commit `apply` as the op being applied: in a sequenced wave, in one transaction with its cursor's move. */
-    const committing = <T>(apply: () => T): T => {
-      if (sequence === null || applying === null) return apply();
-      const seq = applying;
-      const value = this.publishedTransaction(() => {
-        const result = apply();
-        this.advanceSequence(sequence.spec.writer, seq);
-        return result;
-      }, (error) => error);
-      advanced(seq);
+    /**
+     * Commit `apply`, the op at the wave's current place, made at `path`: in
+     * a sequenced wave in one transaction with its cursor's move, and either
+     * way answered with the path's revision before it and the session's
+     * after (WaveMutation), read in the turn it commits.
+     */
+    const committing = <T>(path: string, apply: () => T): T => {
+      const index = recordIndex - 1;
+      const before = this.revision(path, cred);
+      let value: T;
+      if (sequence === null || applying === null) {
+        value = apply();
+      } else {
+        const seq = applying;
+        value = this.publishedTransaction(() => {
+          const result = apply();
+          this.advanceSequence(sequence.spec.writer, seq);
+          return result;
+        }, (error) => error);
+        advanced(seq);
+      }
+      (progress.mutations ??= []).push({ index, before, after: this._revision });
       return value;
     };
 
@@ -9656,7 +9682,8 @@ export class SqliteVFS {
             if (record.type === 'delete' || record.type === 'directory' || (record.type === 'file-begin' && record.inode.call === undefined)) {
               throw vfsError('EINVAL', record.type === 'delete' ? record.path : record.inode.path, 'a sequenced wave carries calls, renames, truncates and attribute changes, not upserts');
             }
-            const seq = sequence.spec.first + ++opIndex;
+            // Each op's number is its place in the wave (recordIndex counts ops, from 1).
+            const seq = sequence.spec.first + recordIndex - 1;
             if (seq <= sequence.cursor) {
               if (record.type === 'file-begin') skipping = record.streamContentId;
               continue;
@@ -9740,7 +9767,7 @@ export class SqliteVFS {
           flushDirectories();
           options.admit?.();
           const bytes = concatBytes(file.parts);
-          const stat = this.withHolds(holds, () => committing(() => asCaller(() => this.applyDataCall(file, bytes, cred))));
+          const stat = this.withHolds(holds, () => committing(file.path, () => asCaller(() => this.applyDataCall(file, bytes, cred))));
           if (stat !== null) {
             progress.receipts.push({
               path: file.path, ino: stat.ino, mode: stat.mode, size: stat.size, mtimeMs: stat.mtime, ctimeMs: stat.ctime,
@@ -9920,7 +9947,7 @@ export class SqliteVFS {
               flushGroup();
               flushDirectories();
               options.admit?.();
-              committing(() => asCaller(() => {
+              committing(record.type === 'rename' ? record.from : record.path, () => asCaller(() => {
                 if (record.type === 'rename') this.rename(record.from, record.to, cred);
                 else if (record.type === 'truncate') this.truncate(record.path, record.size, cred);
                 else if ('mode' in record.attrs) this.chmod(record.path, record.attrs.mode, cred);
@@ -9940,7 +9967,7 @@ export class SqliteVFS {
               flushDirectories();
               options.admit?.();
               const call = record.call;
-              committing(() => asCaller(() => {
+              committing(call.path, () => asCaller(() => {
                 if (call.call === 'mkdir') {
                   // mkdir(2): a name that is there, whatever it is, is EEXIST
                   // (the engine's mkdir keeps an existing directory as made);

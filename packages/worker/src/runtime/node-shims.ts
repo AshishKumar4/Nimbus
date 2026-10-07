@@ -1671,6 +1671,11 @@ const __fsMod = (() => {
   function _vfsOp(op) {
     return __nimbusSubmitVfs(op);
   }
+  // What dates an own mutation's cell (__nimbusEndOwnMutation): a logged
+  // op's mutation receipt, or what a call made in its place answered.
+  function _receiptOf(answer) {
+    return answer && answer.mutation !== undefined ? answer.mutation : answer;
+  }
   // The stat a data call's receipt answers, as a live stat describes the path.
   function _receiptStat(receipt) {
     return {
@@ -2517,9 +2522,11 @@ const __fsMod = (() => {
    * than merely linearizability.
    */
   async function _resumptionRelease() {
+    // Everything logged before the effect (the structural changes, the
+    // descriptor writes), marked now: what is logged after it is not waited for.
+    const logged = globalThis.__nimbusProcessFs?.flush();
     await __nimbusFlushVfsWriteBack(_supervisor());
-    // And everything logged before them: the structural changes, the descriptor writes.
-    await globalThis.__nimbusProcessFs?.flush();
+    await logged;
   }
 
   // Every untrusted resumption — a facet-local timer, an outbound fetch
@@ -2663,7 +2670,7 @@ const __fsMod = (() => {
       // what an unstamped cell already costs.
       await _ownMutation(
         absPath,
-        () => _fsRpc(rpc(supervisor), syscall, displayPath, (result) => result, dest),
+        () => _fsRpc(rpc(supervisor), syscall, displayPath, _receiptOf, dest),
       );
       _markVfsStale();
     };
@@ -2777,7 +2784,7 @@ const __fsMod = (() => {
       try {
         await _ownMutation(
           absPath,
-          () => _fsRpc(_vfsOp({ type: "setattr", path: k, attrs: { mode: _localModes[k] } }), "chmod", absPath, () => undefined),
+          () => _fsRpc(_vfsOp({ type: "setattr", path: k, attrs: { mode: _localModes[k] } }), "chmod", absPath, _receiptOf),
         );
       } catch (error) {
         _pendingModes.add(k);
@@ -3478,7 +3485,7 @@ const __fsMod = (() => {
       const generation = __vfsWriteGenerations[k];
       await __nimbusQueueVfsMutation(absPath, () => _ownMutation(
         absPath,
-        () => _fsRpc(_vfsOp({ type: "truncate", path: k, size }), "truncate", p, () => undefined),
+        () => _fsRpc(_vfsOp({ type: "truncate", path: k, size }), "truncate", p, _receiptOf),
         () => {
           if (__vfsWriteGenerations[k] === generation && localCell !== undefined) {
             _truncateLocalCell(absPath, size);
@@ -3526,7 +3533,7 @@ const __fsMod = (() => {
           ? _vfsOp({ type: "setattr", path: _strip(absPath), attrs: { atime: time.atimeMs, mtime: time.mtimeMs } })
           : __nimbusVfsCall("lutimes", absPath, () => supervisor.utimes(absPath, time.atimeMs, time.mtimeMs)),
         syscall, p,
-        () => undefined,
+        _receiptOf,
       ));
       if (_hasVfsMutationQueue()) await __nimbusQueueVfsMutation(absPath, leased);
       else await leased();
@@ -3600,7 +3607,7 @@ const __fsMod = (() => {
     await _flushLocalPathToSupervisor(absPath, supervisor, followSymlinks);
     await _ownMutation(
       absPath,
-      () => _fsRpc(_chownCall(supervisor, absPath, nextUid, nextGid, followSymlinks), syscall, p, () => undefined),
+      () => _fsRpc(_chownCall(supervisor, absPath, nextUid, nextGid, followSymlinks), syscall, p, _receiptOf),
       () => {
         const meta = _metadata(absPath);
         if (meta) { meta.uid = nextUid; meta.gid = nextGid; }
@@ -4569,7 +4576,7 @@ const __fsMod = (() => {
               "write", this._path,
               (answer) => {
                 if (this._flags.append && answer.receipt !== undefined) writeAt = answer.receipt.size - bytes.byteLength;
-                return undefined;
+                return answer.mutation;
               },
             ),
             () => {

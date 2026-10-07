@@ -158,7 +158,9 @@ assert.equal(typeof counter(), 'number',
   const beforeWrite = counter();
   const batchesBeforeWrite = batches.length;
   await batchedShims.fs.promises.writeFile(`/${mine}/written.txt`, 'w');
-  assert.ok(batches.length > batchesBeforeWrite, 'the write learned nothing, so this case proves nothing');
+  // Its stat comes back with it, in its call's receipt: no learn at all.
+  assert.equal(batches.length, batchesBeforeWrite, `an async write learned its stat by a round trip of its own: ${JSON.stringify(batches.slice(batchesBeforeWrite))}`);
+  assert.equal(batchedShims.fs.statSync(`/${mine}/written.txt`).size, 1, 'the write\'s stat is what the process sees');
   assert.equal(counter(), beforeWrite, 'an async write, which reads nothing, moved the read count');
 }
 
