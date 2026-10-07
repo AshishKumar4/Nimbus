@@ -676,11 +676,15 @@ endpoint is the path `/api/demo/anon-session`.
 Staging and production are each leased, one lane at a time: an exclusive
 `flock(2)` on `~/.local/state/nimbus/leases/<environment>.lock`, held from
 the upload through the checks that grade it (`scripts/ci/lib/lease.mjs`).
-Every lane runs on this machine, so every lane sees the lock. A lane that
-finds it held waits, naming the holder, and the kernel frees it when the
-holder's process ends. The version ids are read before and after the
-matrix (and the live checks), and a run whose environment changed under it
-is not graded. `release.mjs` seals `staged.json` with the digest of the
+Every entry point that writes them takes it (`release.mjs`, `promote.mjs`,
+`_staging-target.mjs up`), and every writer it starts (wrangler) holds it
+as its fd 3. A lane that finds it held waits, naming the holder, and the
+kernel frees it when the last holder's process ends. **The lease is local
+to this machine.** A deploy from a credentialed host elsewhere is not
+excluded by it; only the API brackets catch that. Before and after the
+matrix (and the live checks), the API's live version ids are compared with
+the upload's own receipt (the ids wrangler returned to that upload), and a
+run whose environment changed under it is not graded. `release.mjs` seals `staged.json` with the digest of the
 whole release manifest: the commit, every module, the docs, every asset.
 `promote.mjs` uploads only a release whose matrix was green and whose
 manifest still has that digest. It checks every file against the manifest

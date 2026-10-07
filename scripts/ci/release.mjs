@@ -27,7 +27,7 @@
 // Exit: 0, staged and the matrix green; 1, a red row or a failed upload;
 // 2, not graded.
 import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { HOSTED_DEMO_CHECKS } from '../../tests/behavioral/_probe-target-skips.mjs';
 import { assertInstalled } from './lib/installed.mjs';
@@ -85,16 +85,18 @@ try {
   notGraded(error.message);
 }
 
-/** What staging serves now, and what this machine's last upload verified (_staging-target status --json). */
+/** What staging serves now (_staging-target status --json). */
 function serving() {
   const status = spawnSync('bun', ['tests/behavioral/_staging-target.mjs', 'status', '--json'], { cwd: repo, encoding: 'utf8' });
   if (status.status !== 0) notGraded(`could not read what staging serves:\n${status.stderr}`);
   return JSON.parse(status.stdout);
 }
 
-// The upload holds the lease too (its fd 3), should this process die first.
-// Its exports (a token among them) are not wanted here.
-const up = spawnSync('bun', ['tests/behavioral/_staging-target.mjs', 'up', '--release', dir, ...(flags['rotate-secrets'] ? ['--rotate-secrets'] : [])], {
+// The upload holds the lease too (its fd 3, and its writers', should this
+// process die first), and writes its own receipt: the version ids wrangler
+// returned to this upload. Its exports (a token among them) are not wanted here.
+const receipt = join(dir, 'staging-receipt.json');
+const up = spawnSync('bun', ['tests/behavioral/_staging-target.mjs', 'up', '--release', dir, '--receipt', receipt, ...(flags['rotate-secrets'] ? ['--rotate-secrets'] : [])], {
   cwd: repo, stdio: ['ignore', 'ignore', 'inherit', leaseFd],
 });
 if (up.status !== 0) {
@@ -103,9 +105,10 @@ if (up.status !== 0) {
 }
 // Sealed with the whole manifest: promote.mjs promotes exactly what this matrix graded.
 const staged = { commit: sha, at: new Date().toISOString(), release: releaseDigest(release), versions: {}, matrix: null };
+const uploaded = JSON.parse(readFileSync(receipt, 'utf8'));
 for (const [name, row] of Object.entries(serving())) {
-  if (!row.deployed || row.live !== row.deployed) notGraded(`${name} serves ${row.live}, not this upload's ${row.deployed}`);
-  staged.versions[name] = { version: row.live, base: row.base };
+  if (!uploaded[name] || row.live !== uploaded[name]) notGraded(`${name} serves ${row.live}, not this upload's ${uploaded[name]}`);
+  staged.versions[name] = { version: uploaded[name], base: row.base };
 }
 console.log(`release: staging serves ${Object.entries(staged.versions).map(([name, { version }]) => `${name} ${version}`).join(', ')}, this upload`);
 

@@ -63,12 +63,16 @@ export function requireAccountPin() {
   return account;
 }
 
-export function wrangle(bin, args, { cwd, account, input, env = {}, allowFail = false }) {
+export function wrangle(bin, args, { cwd, account, input, env = {}, allowFail = false, leaseFd = null }) {
   const result = spawnSync(bin, args, {
     cwd,
     input,
     encoding: 'utf8',
     env: { ...process.env, ...env, CLOUDFLARE_ACCOUNT_ID: account },
+    // A writer to a leased environment holds the lease itself, as its fd 3
+    // (scripts/ci/lib/lease.mjs): killed, the caller frees nothing while
+    // the upload it started still writes.
+    ...(leaseFd === null ? {} : { stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe', leaseFd] }),
   });
   if (result.error) throw result.error;
   if (result.status !== 0 && !allowFail) {
@@ -105,11 +109,11 @@ export function activeVersionId(name, { cwd, account }) {
  *   - the id differs from the one served before (a no-op deploy is a
  *     stale deploy, and the whole point is to probe what was just built).
  */
-export function deployAndVerify({ cwd, account, name, envName = null, args = [] }) {
+export function deployAndVerify({ cwd, account, name, envName = null, args = [], leaseFd = null }) {
   const before = activeVersionId(name, { cwd, account });
 
   const deployArgs = ['deploy', ...(envName ? ['-e', envName] : []), ...args];
-  const result = wrangle(WRANGLER, deployArgs, { cwd, account, allowFail: true });
+  const result = wrangle(WRANGLER, deployArgs, { cwd, account, allowFail: true, leaseFd });
   const output = `${result.stdout || ''}${result.stderr || ''}`;
 
   const printed = output.match(new RegExp(`Current Version ID:\\s*(${UUID_RE.source})`))?.[1] ?? null;
@@ -148,8 +152,8 @@ export function workersDevSubdomain(base) {
   return base?.match(/^https:\/\/[^.]+\.([^.]+)\.workers\.dev$/)?.[1] ?? null;
 }
 
-export function putSecret({ cwd, account, name, key, value }) {
-  wrangle(WRANGLER, ['secret', 'put', key, '--name', name], { cwd, account, input: value });
+export function putSecret({ cwd, account, name, key, value, leaseFd = null }) {
+  wrangle(WRANGLER, ['secret', 'put', key, '--name', name], { cwd, account, input: value, leaseFd });
 }
 
 // ── Cloudflare API ───────────────────────────────────────────────────

@@ -48,9 +48,11 @@
 //   bun run staging:test                         # full suite against staging, from CI's containers
 //
 // COMMANDS
-//   up      --release <dir> [--rotate-secrets]   a release CI built for HEAD
-//           (scripts/ci/release.mjs staging makes one and runs this)
-//   status  [--json]   → what each Worker serves, and what this machine last deployed
+//   up      --release <dir> [--rotate-secrets] [--receipt <file>]   a release CI
+//           built for HEAD (scripts/ci/release.mjs staging makes one and runs
+//           this); --receipt writes the version ids this upload verified. Holds
+//           the staging lease (scripts/ci/lib/lease.mjs) while it writes.
+//   status  [--json]   → what each Worker serves now
 //   token   [--ttl-ms <ms>] [--json]   → the token, or JSON {base, token}
 //   session [--ttl-ms <ms>]   → JSON {base, sessionId, token}
 //
@@ -64,6 +66,7 @@
 //   suite was mid-run. `up` now refuses to replace the secret of a
 //   Worker that already exists unless `--rotate-secrets` says to.
 
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { mintProbeToken } from './_mint-probe-token.mjs';
@@ -92,6 +95,7 @@ const {
 } = await import('./_deploy-target.mjs');
 const { assertDeployIsolated, describeTarget } = await import('../../scripts/deploy-isolation.mjs');
 const { uploadConfig } = await import('../../scripts/ci/lib/release.mjs');
+const { holdLease } = await import('../../scripts/ci/lib/lease.mjs');
 
 const STATE_PATH = join(MACHINE_STATE_DIR, 'staging-target.json');
 
@@ -142,6 +146,10 @@ await run();
 
 async function up() {
   const account = requireAccountPin();
+  // Staging is leased while anything writes it (scripts/ci/lib/lease.mjs):
+  // taken here, or handed down by release.mjs, which holds it through its
+  // matrix. Read the state only once it is held.
+  const leaseFd = holdLease('staging', { what: { worktree: ROOT, command: 'up' }, log });
   const state = flags['rotate-secrets'] ? {} : (readState(STATE_PATH) ?? {});
 
   if (flags['rotate-secrets']) {
@@ -182,10 +190,16 @@ async function up() {
   const probeConfig = uploadConfig(flags.release, 'apps/probe', { root: ROOT, log });
   const demoConfig = uploadConfig(flags.release, `apps/hosted-demo:${TARGETS.demo.envName}`, { root: ROOT, log });
 
-  const probe = await deployTarget(TARGETS.probe, { account, state, config: probeConfig });
+  const probe = await deployTarget(TARGETS.probe, { account, state, config: probeConfig, leaseFd });
   const subdomain = workersDevSubdomain(probe.base);
   if (!subdomain) throw new Error(`could not read the workers.dev subdomain from ${probe.base}`);
-  const demo = await deployTarget(TARGETS.demo, { account, state, config: demoConfig });
+  const demo = await deployTarget(TARGETS.demo, { account, state, config: demoConfig, leaseFd });
+  // This upload's own receipt: the version ids wrangler returned to it, and
+  // verified served, for a caller to bracket its checks against (never the
+  // shared state, which the next upload rewrites).
+  if (flags.receipt) {
+    writeFileSync(flags.receipt, `${JSON.stringify({ [TARGETS.probe.name]: probe.versionId, [TARGETS.demo.name]: demo.versionId })}\n`);
+  }
 
   writeState(STATE_PATH, { ...state, subdomain, updatedAt: new Date().toISOString() });
 
@@ -202,17 +216,12 @@ async function up() {
   ].join('\n'));
 }
 
-/**
- * What each Worker serves now. --json: { "<worker>": { live, deployed, base } },
- * `deployed` being the version this machine's last `up` verified, so a
- * caller can tell whether staging still serves its upload.
- */
+/** What each Worker serves now. --json: { "<worker>": { live, base } }. */
 function status() {
   const account = requireAccountPin();
   const state = readState(STATE_PATH);
   const rows = Object.fromEntries(Object.values(TARGETS).map((target) => [target.name, {
     live: activeVersionId(target.name, { cwd: target.dir, account }),
-    deployed: state?.[keyOf(target)]?.versionId ?? null,
     base: state?.[keyOf(target)]?.base ?? null,
   }]));
   if (flags.json) {
@@ -242,7 +251,7 @@ async function session() {
  * signing secret is created on first deploy and reused afterwards, so
  * tokens minted earlier keep working across redeploys.
  */
-async function deployTarget(target, { account, state, config }) {
+async function deployTarget(target, { account, state, config, leaseFd }) {
   const key = keyOf(target);
   const secret = state[key]?.secret ?? randomSecret();
   const isNewSecret = !state[key]?.secret;
@@ -254,15 +263,16 @@ async function deployTarget(target, { account, state, config }) {
     name: target.name,
     envName: target.envName,
     args: ['--config', config, ...target.deployArgs],
+    leaseFd,
   });
   if (!base) throw new Error(`deploy of ${target.name} printed no workers.dev URL`);
   log(`${target.name} → version ${versionId} live at ${base}`);
 
   if (isNewSecret) {
     log(`setting JWT_SECRET on ${target.name}`);
-    putSecret({ cwd: target.dir, account, name: target.name, key: 'JWT_SECRET', value: secret });
+    putSecret({ cwd: target.dir, account, name: target.name, key: 'JWT_SECRET', value: secret, leaseFd });
   }
-  state[key] = { name: target.name, base, secret, versionId };
+  state[key] = { name: target.name, base, secret };
   writeState(STATE_PATH, state);
   return { base, versionId };
 }

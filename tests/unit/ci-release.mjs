@@ -11,8 +11,8 @@
 //     probe prints carries no live credential.
 
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { closeSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -72,6 +72,32 @@ try {
     const fd = holdLease('staging', { what: { commit: 'bbbb' }, dir, waitMs: 5000, log: () => {} });
     assert.ok(Number.isInteger(fd), 'a killed holder\'s lease is free at once: nothing to break');
     console.log('  ok  holdLease: a second lane waits and names the first, environments are separate, and a killed holder frees it');
+
+    // Handed down: a writer given the lease as its fd 3 holds it (holdLease
+    // returns at once, rather than waiting on its own parent), and keeps it
+    // after the process that took it lets go, until the writer ends.
+    const take = (wait) => `
+      const { holdLease } = await import(${JSON.stringify(lease)});
+      try { console.log('took', holdLease('staging', { what: {}, dir: ${JSON.stringify(dir)}, waitMs: ${wait}, log: () => {} })); }
+      catch (error) { console.log('refused', error.message); }`;
+    const run = (code, extra = []) => spawnSync(process.execPath, ['-e', code], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe', ...extra] });
+    assert.match(run(take(60_000), [fd]).stdout, /^took 3$/m, 'a child handed the lease holds it without waiting');
+    assert.match(run(take(500)).stdout, /^refused .*has been held/m, 'a process not handed it waits and gives up');
+    const writer = spawn(process.execPath, ['-e', `${take(60_000)}; require('node:fs').writeFileSync(${JSON.stringify(join(root, 'writing'))}, ''); setInterval(() => {}, 1000);`],
+      { stdio: ['ignore', 'ignore', 'ignore', fd] });
+    try {
+      for (const deadline = Date.now() + 30_000; !existsSync(join(root, 'writing'));) {
+        assert.ok(Date.now() < deadline, 'the writer started');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      closeSync(fd);
+      assert.match(run(take(500)).stdout, /^refused /m, 'the taker let go, and its writer still holds the lease');
+    } finally {
+      writer.kill('SIGKILL');
+      await new Promise((resolve) => writer.on('exit', resolve));
+    }
+    assert.match(run(take(5000)).stdout, /^took \d+$/m, 'once the writer ends, the lease is free');
+    console.log('  ok  holdLease: a writer handed the lease holds it at once, and keeps it after its taker lets go, until it ends');
   }
   {
     const url = 'https://nimbus-staging.example.workers.dev/s/calm-fox-1234/?nimbus_token=eyJhbGciOiJIUzI1NiJ9.abc.def&tab=1#token=frag';

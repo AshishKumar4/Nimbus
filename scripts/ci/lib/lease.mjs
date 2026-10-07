@@ -8,14 +8,41 @@
 // is what the version-id brackets (release.mjs, promote.mjs) catch.
 //
 // The lease is this process's: the kernel releases it when the process
-// ends, however it ends. release.mjs hands the descriptor holdLease returns
-// to its upload child as fd 3, so an upload left running by a killed
-// driver still holds it.
+// ends, however it ends. Every entry point that writes a leased environment
+// takes it (release.mjs, promote.mjs, _staging-target.mjs up), and hands
+// the descriptor to each writer it starts (wrangler) as fd 3, so a writer
+// left running by a killed driver still holds it. A child handed the lease
+// as fd 3 holds it already: holdLease sees that and takes it from there,
+// rather than waiting on itself.
+//
+// The lease is local to this machine. A deploy from a credentialed host
+// elsewhere is not excluded by it; the API's version ids, read before and
+// after each graded run (release.mjs, promote.mjs), are what catch that.
+import { spawnSync } from 'node:child_process';
+import { readlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { FlockError, holdFlock } from '../../lib/flock.mjs';
 
 export const LEASES = join(homedir(), '.local', 'state', 'nimbus', 'leases');
+
+/** The descriptor a writer is handed a lease on. */
+const INHERITED_FD = 3;
+
+/**
+ * Whether this process was handed `file`'s lease: its fd 3 is that file,
+ * and an exclusive flock on it succeeds at once, which it does only on the
+ * open file description that already holds it.
+ */
+function inherited(file) {
+  try {
+    if (readlinkSync(`/proc/self/fd/${INHERITED_FD}`) !== file) return false;
+  } catch {
+    return false;
+  }
+  const held = spawnSync('/usr/bin/flock', ['-x', '-n', String(INHERITED_FD)], { stdio: ['ignore', 'ignore', 'ignore', INHERITED_FD] });
+  return held.status === 0;
+}
 
 /** How long a lane waits for another's deploy and matrix on the same environment. */
 const LEASE_WAIT_MS = 90 * 60_000;
@@ -30,8 +57,13 @@ const LEASE_WAIT_MS = 90 * 60_000;
  * @param {{ what: Record<string, unknown>, log?: (line: string) => void, waitMs?: number, dir?: string }} options
  */
 export function holdLease(environment, { what, log = (line) => console.error(line), waitMs = LEASE_WAIT_MS, dir = LEASES }) {
+  const file = join(dir, `${environment}.lock`);
+  if (inherited(file)) {
+    log(`lease: holding ${environment}, handed down by the run that took it`);
+    return INHERITED_FD;
+  }
   try {
-    const fd = holdFlock(join(dir, `${environment}.lock`), {
+    const fd = holdFlock(file, {
       waitMs,
       describe: { environment, ...what },
       onWait: (holder) => log(`lease: waiting for ${environment}: ${holder} is deploying and verifying it`),

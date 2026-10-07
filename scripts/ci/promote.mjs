@@ -104,9 +104,10 @@ try {
 }
 // The production lease, from before the version it replaces is read
 // through the live checks; a dry run uploads nothing and takes none.
+let leaseFd = null;
 if (!flags['dry-run']) {
   try {
-    holdLease('production', { what: { commit: sha, worktree: repo } });
+    leaseFd = holdLease('production', { what: { commit: sha, worktree: repo } });
   } catch (error) {
     notGraded(error.message);
   }
@@ -124,7 +125,8 @@ if (flags['dry-run']) {
 // 3. The upload.
 let versionId;
 try {
-  ({ versionId } = deployAndVerify({ cwd, account, name: PRODUCTION.name, envName: PRODUCTION.env, args: ['--config', config] }));
+  // wrangler holds the lease too (its fd 3): killed, this process frees nothing while the upload still writes.
+  ({ versionId } = deployAndVerify({ cwd, account, name: PRODUCTION.name, envName: PRODUCTION.env, args: ['--config', config], leaseFd }));
 } catch (error) {
   console.log(`promote: the upload failed — ${error.message}\n  production may still serve ${before}; to be sure: ${rollback}`);
   process.exit(1);
