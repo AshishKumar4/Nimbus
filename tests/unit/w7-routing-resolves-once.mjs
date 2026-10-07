@@ -128,8 +128,13 @@ function atCommitOf(s, path, change) {
 // files were written to /real, under a name that now leads to /shared.
 {
   const s = aliasSession();
+  // Mounted over a directory the session's store has (as a mount often is):
+  // a SQLite write that follows the new link lands there, hidden.
+  s.kernel.mkdir('shared');
+  s.kernel.chown('shared', 1000, 1000);
   const shared = new MemoryVFS();
   s.files.vfs.mount('/shared', shared);
+  const hidden = () => s.engine.as(CRED_KERNEL).readdir('shared').length;
   const done = atCommitOf(s, 'home/user/repo/real/f200', () => {
     s.kernel.unlink('home/user/repo/alias');
     s.kernel.symlink('/shared', 'home/user/repo/alias');
@@ -138,6 +143,7 @@ function atCommitOf(s, path, change) {
   const before = done();
   assert.ok(before > 0 && before < FILES, `the repoint came between groups (${before} committed before it)`);
   assert.equal(s.real(), before, `${s.real() - before} files were written to /real after the alias led to /shared`);
+  assert.equal(hidden(), 0, `${hidden()} files were written to the store's /shared, under the mount`);
   // Refused (the name no longer lands where it was placed), or landed where the link leads now.
   if (result.ok) assert.equal(shared.readdir('/').length, FILES - before);
   else assert.ok(['ESTALE', 'ENOENT'].includes(result.error.errno), JSON.stringify(result.error));
