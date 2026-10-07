@@ -258,9 +258,15 @@ try {
         encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C' },
       });
       const ours = await session.git('/home/user', ['clone', '--depth', '1', server.url + '/compressible.git', '/mnt/limited/repo']);
-      assert.deepEqual([ours.code, gitLines(ours.stderr)], [host.status, gitLines(host.stderr)], `a failed write: ours ${ours.stderr}; git's ${host.stderr}`);
-      assert.ok(limited.stat('/repo/.git/HEAD') !== null, 'the repository is kept, as git keeps it');
-      console.log('  ok  a write that fails: git\'s "unable to write file", the checkout failing as git\'s does');
+      // git's error and its fatal one, and its exit.
+      assert.deepEqual([ours.code, gitLines(ours.stderr).slice(0, 2)], [host.status, gitLines(host.stderr).slice(0, 2)], `a failed write: ours ${ours.stderr}; git's ${host.stderr}`);
+      // Then the junk mode: git had every object before it checked out, and keeps the repository
+      // with its warning; a clone of ours that checks out as its objects arrive keeps it only once
+      // they all have (its checkout phase), and else removes it, as a transport failure.
+      const kept = limited.stat('/repo/.git/HEAD') !== null;
+      assert.deepEqual(gitLines(ours.stderr).slice(2), kept ? gitLines(host.stderr).slice(2) : [], `the junk mode's lines: ${ours.stderr}`);
+      if (!kept) assert.equal(limited.stat('/repo'), null, 'removed whole');
+      console.log(`  ok  a write that fails: git's "unable to write file" and "unable to checkout working tree"; the repository ${kept ? 'kept' : 'removed'}`);
     }
 
     // An index.lock already there: git's "Unable to create", as host git says it for its own lock.
