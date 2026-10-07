@@ -58,4 +58,12 @@ export declare function esModuleScopeTypeofs(code: string): string;
  * top-level `this` is undefined.
  */
 export declare function esModuleSource(source: string): string;
+/**
+ * Code that throws, when the process evaluates it, the SyntaxError an ES
+ * module's `source` at `url` has (acorn's, at its line and column), or null
+ * when it parses. Node reports a module's syntax error as it evaluates the
+ * entry, after `-r`'s modules have run and `--import`'s have loaded, so the
+ * process runs this in the module's place.
+ */
+export declare function esModuleSyntaxError(source: string, url: string): string | null;
 //# sourceMappingURL=module-format.d.ts.map

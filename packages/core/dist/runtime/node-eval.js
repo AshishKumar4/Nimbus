@@ -17,7 +17,7 @@
  * `finally` keeps the value it was entered with unless it breaks.
  *
  * Code Node runs as a module (`--input-type=module`, or its syntax: the
- * caller's `module`, module-format.ts isEsModuleInput) is not a script:
+ * caller's mode, module-format.ts isEsModuleInput) is not a script:
  * Node refuses to print it (ERR_EVAL_ESM_CANNOT_PRINT), which the code
  * becomes. Nor is code with a `return` at its top, which Node refuses to
  * compile.
@@ -32,17 +32,17 @@ import { applySourceEdits } from './javascript-ast.js';
  * wrapping code that names it (eval_string.js: the same test, the same
  * wrappers).
  */
-export function nodeEvalProgram(code, print, module = false) {
+export function nodeEvalProgram(code, print, mode) {
     const namesCrypto = /\bcrypto\b/.test(code);
     if (!print)
         return { code: namesCrypto ? `(crypto=>{{${code}}})(require('node:crypto'))` : code, refusedBeforeImports: false };
-    if (module)
+    if (mode === 'module')
         return ESM_CANNOT_PRINT;
-    return printedProgram(namesCrypto ? `let crypto=require("node:crypto");{${code}}` : code);
+    return printedProgram(namesCrypto ? `let crypto=require("node:crypto");{${code}}` : code, mode);
 }
 /** The entry code for `node -p` reading its code from stdin (eval_stdin.js: no `crypto` wrapper). */
-export function nodeStdinPrintProgram(source, module = false) {
-    return module ? ESM_CANNOT_PRINT : printedProgram(source);
+export function nodeStdinPrintProgram(source, mode) {
+    return mode === 'module' ? ESM_CANNOT_PRINT : printedProgram(source, mode);
 }
 /** Thrown as the program's first act, after its -r preloads, as Node throws it; its stack leads with the code, as a Node error's does. */
 const ESM_CANNOT_PRINT = {
@@ -59,15 +59,16 @@ function parsed(source, options) {
         return null;
     }
 }
-function printedProgram(source) {
+function printedProgram(source, mode) {
     const program = parsed(source, SCRIPT);
     if (program === null) {
+        const refusedBeforeImports = mode === 'default';
         // A return at the top compiles in the entry's function, not in Node's script.
         if (parsed(source, { ...SCRIPT, allowReturnOutsideFunction: true }) !== null) {
-            return { code: 'throw new SyntaxError("Illegal return statement");', refusedBeforeImports: true };
+            return { code: 'throw new SyntaxError("Illegal return statement");', refusedBeforeImports };
         }
         // Neither: it fails to compile in the process, as it does in Node.
-        return { code: source, refusedBeforeImports: true };
+        return { code: source, refusedBeforeImports };
     }
     const rewriter = new CompletionRewriter(source, freshNames(program));
     rewriter.process(program.body, 0);
