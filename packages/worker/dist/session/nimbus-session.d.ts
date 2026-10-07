@@ -370,7 +370,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         granted: number;
     }>;
     _rpcFsList(after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
-    _rpcWsOpen(url: string, protocols: string[], headers?: [string, string][] | null, pid?: number): Promise<any>;
+    _rpcWsOpen(url: string, protocols: string[], headers?: [string, string][] | null, refusalBody?: boolean | null, pid?: number): Promise<any>;
     _rpcWsPoll(id: number, waitMs: number, pid?: number): Promise<any>;
     _rpcWsSend(id: number, text: string | null, bytes: Uint8Array | null, pid?: number): Promise<void>;
     _rpcWsClose(id: number, code?: number, reason?: string, pid?: number): Promise<void>;

@@ -20,10 +20,16 @@
  * refuses. The socket speaks RFC 6455 to its client: the client's masked
  * frames are read (fragments joined, a ping answered, a close passed on) and
  * each message is sent on the relayed socket; each message the relay delivers
- * is written back as an unmasked frame, and its close as a close frame. No
- * extension is negotiated on this hop (no Sec-WebSocket-Extensions in the
- * 101), and Sec-WebSocket-Accept is computed for the client's key, so `ws`'s
- * handshake checks pass as against a server.
+ * is written back as an unmasked frame, and its close as a close frame. A
+ * frame the client should not have sent fails the connection as a server
+ * fails it (ws's Receiver): close 1007 for text or a close reason that is not
+ * UTF-8, 1002 for the rest. No extension is negotiated on this hop (no
+ * Sec-WebSocket-Extensions in the 101), and Sec-WebSocket-Accept is computed
+ * for the client's key, so `ws`'s handshake checks pass as against a server.
+ *
+ * A refusal is 'response' at once, its body read as it comes (the relay
+ * bounds it). The request's `signal` aborts it as Node's does, with
+ * AbortError, before or while it handshakes.
  *
  * Not here: a WebSocket server in the session. workerd's HTTP server emits
  * 'request', not 'upgrade', so `new WebSocketServer({ server })` never sees a
@@ -38,7 +44,10 @@ export const NODE_WS_UPGRADE_SOURCE = `
   /** RFC 6455 section 1.3: what the server appends to the client's key. */
   const ACCEPT_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
   const OPCODE = { continuation: 0x0, text: 0x1, binary: 0x2, close: 0x8, ping: 0x9, pong: 0xa };
-  const utf8 = new TextDecoder();
+  /** UTF-8, validated: text that is not fails the connection (RFC 6455 section 8.1). */
+  const utf8 = new TextDecoder("utf-8", { fatal: true });
+  /** Node's AbortError, for a request its signal aborted. */
+  const abortError = (reason) => Object.assign(new Error("The operation was aborted", { cause: reason }), { name: "AbortError", code: "ABORT_ERR" });
 
   /** A request's headers as Node takes them (an object, or the flat raw array), as [name, value] pairs. */
   function headerPairs(headers) {
@@ -83,8 +92,8 @@ export const NODE_WS_UPGRADE_SOURCE = `
     _read() {}
   }
 
-  /** A response head as Node's IncomingMessage has it: headers by lowercased name (set-cookie a list), and raw. */
-  function incoming(status, statusText, pairs, body) {
+  /** A response head as Node's IncomingMessage has it: headers by lowercased name (set-cookie a list), and raw. Its body is pushed by the caller. */
+  function incoming(status, statusText, pairs) {
     const res = new IncomingMessage();
     res.statusCode = status;
     res.statusMessage = statusText;
@@ -101,9 +110,7 @@ export const NODE_WS_UPGRADE_SOURCE = `
     }
     res.trailers = {};
     res.rawTrailers = [];
-    res.complete = true;
-    if (body && body.byteLength > 0) res.push(Buffer.from(body));
-    res.push(null);
+    res.complete = false;
     return res;
   }
 
@@ -137,9 +144,19 @@ export const NODE_WS_UPGRADE_SOURCE = `
     return out;
   }
 
-  function protocolError(message) {
-    return Object.assign(new Error("Nimbus: WebSocket protocol error from the client: " + message), { code: "ERR_NIMBUS_WEBSOCKET_PROTOCOL" });
+  /** A frame the client should not have sent: the connection fails with \`closeCode\` (1002, or 1007 for text that is not UTF-8). */
+  function protocolError(message, closeCode = 1002) {
+    return Object.assign(new Error("Nimbus: WebSocket protocol error from the client: " + message), { code: "ERR_NIMBUS_WEBSOCKET_PROTOCOL", closeCode });
   }
+
+  /** \`bytes\` as UTF-8 text, or the connection fails with 1007. */
+  function text(bytes) {
+    try { return utf8.decode(bytes); }
+    catch { throw protocolError("text that is not UTF-8", 1007); }
+  }
+
+  /** ws's isValidStatusCode: a close code a peer may send. */
+  const sendableCloseCode = (code) => (code >= 1000 && code <= 1014 && code !== 1004 && code !== 1005 && code !== 1006) || (code >= 3000 && code <= 4999);
 
   /**
    * The upgraded connection, as the client holds it: a Duplex whose writes
@@ -155,6 +172,8 @@ export const NODE_WS_UPGRADE_SOURCE = `
       /** The close payload the client sent, echoed when the relay's close follows it. */
       this._clientClose = null;
       this._ended = false;
+      /** The connection failed: nothing more the client writes is read. */
+      this._failed = false;
       this.remoteAddress = undefined;
       relay.addEventListener("message", (event) => {
         const data = event.data;
@@ -184,14 +203,33 @@ export const NODE_WS_UPGRADE_SOURCE = `
     _read() {}
 
     _write(chunk, encoding, callback) {
+      if (this._failed) {
+        callback();
+        return;
+      }
       const bytes = typeof chunk === "string" ? Buffer.from(chunk, encoding) : Buffer.from(chunk);
       this._pending = this._pending.length > 0 ? Buffer.concat([this._pending, bytes]) : bytes;
       try {
         this._parse();
-        callback();
       } catch (error) {
-        callback(error);
+        if (!(error && typeof error.closeCode === "number")) {
+          callback(error);
+          return;
+        }
+        this._fail(error.closeCode);
       }
+      callback();
+    }
+
+    /** Fail the connection as a server does: a close frame with \`code\`, the client's stream ended, the relayed socket closed. */
+    _fail(code) {
+      this._failed = true;
+      this._pending = Buffer.alloc(0);
+      if (this._ended) return;
+      this._deliver(frame(OPCODE.close, closePayload(code, "")));
+      this._ended = true;
+      this.push(null);
+      if (this._relay.readyState < 2) this._relay.close(code);
     }
 
     _final(callback) {
@@ -256,9 +294,11 @@ export const NODE_WS_UPGRADE_SOURCE = `
           else this._fragments = { type: opcode, parts: [payload] };
           return;
         case OPCODE.close: {
-          this._clientClose = payload;
+          if (payload.length === 1) throw protocolError("a close frame of one byte");
           const code = payload.length >= 2 ? payload.readUInt16BE(0) : undefined;
-          const reason = payload.length > 2 ? utf8.decode(payload.subarray(2)) : "";
+          if (code !== undefined && !sendableCloseCode(code)) throw protocolError("close code " + code);
+          const reason = payload.length > 2 ? text(payload.subarray(2)) : "";
+          this._clientClose = payload;
           if (this._relay.readyState < 2) {
             if (code === undefined) this._relay.close();
             else this._relay.close(code, reason);
@@ -276,8 +316,8 @@ export const NODE_WS_UPGRADE_SOURCE = `
     }
 
     _send(opcode, payload) {
-      if (this._relay.readyState !== 1) return;
-      this._relay.send(opcode === OPCODE.text ? utf8.decode(payload) : new Uint8Array(payload));
+      const message = opcode === OPCODE.text ? text(payload) : new Uint8Array(payload);
+      if (this._relay.readyState === 1) this._relay.send(message);
     }
 
     // net.Socket's tuning, which a relayed socket has no use for.
@@ -314,7 +354,17 @@ export const NODE_WS_UPGRADE_SOURCE = `
       }
       this._timeoutMs = options.timeout;
       this._relay = null;
+      this._refusal = null;
+      this._response = null;
+      this._closed = false;
       if (callback) this.once("response", callback);
+      // Node's addAbortSignal: aborted already, the request fails on the next turn; else when it aborts, until the request closes.
+      this._signal = options.signal;
+      this._onAbort = () => this.destroy(abortError(this._signal.reason));
+      if (this._signal) {
+        if (this._signal.aborted) queueMicrotask(this._onAbort);
+        else this._signal.addEventListener("abort", this._onAbort, { once: true });
+      }
     }
 
     setHeader(name, value) {
@@ -362,6 +412,7 @@ export const NODE_WS_UPGRADE_SOURCE = `
       this.finished = true;
       if (callback) this.once("finish", callback);
       queueMicrotask(() => {
+        if (this.destroyed) return;
         this.emit("finish");
         this._open();
       });
@@ -384,11 +435,21 @@ export const NODE_WS_UPGRADE_SOURCE = `
       this.destroyed = true;
       clearTimeout(this._timer);
       if (this._relay && this._relay.readyState < 2) this._relay.close(1001, "the request was aborted");
+      if (this._refusal) this._refusal.cancel();
+      if (this._response && !this._response.readableEnded) this._response.destroy(error);
       queueMicrotask(() => {
         if (aborted) this.emit("abort");
         if (error) this.emit("error", error);
-        this.emit("close");
+        this._emitClose();
       });
+    }
+
+    /** 'close', once: the request is over, and its signal no longer reaches it. */
+    _emitClose() {
+      if (this._closed) return;
+      this._closed = true;
+      if (this._signal) this._signal.removeEventListener("abort", this._onAbort);
+      this.emit("close");
     }
 
     _open() {
@@ -403,7 +464,8 @@ export const NODE_WS_UPGRADE_SOURCE = `
       const headers = [...this._headers.values()].flatMap(({ name, values }) => values.map((value) => [name, value]));
       let relay;
       try {
-        relay = new __NimbusRelayedWebSocket(url, { protocols, headers });
+        // A refusal's body is wanted: the 'response' a client gets carries it.
+        relay = new __NimbusRelayedWebSocket(url, { protocols, headers, [__NIMBUS_WS_REFUSAL_BODY]: true });
       } catch (error) {
         this.destroy(error);
         return;
@@ -438,27 +500,42 @@ export const NODE_WS_UPGRADE_SOURCE = `
       }
       if (relay.protocol) pairs.push(["Sec-WebSocket-Protocol", relay.protocol]);
       const res = incoming(101, "Switching Protocols", pairs);
+      res.complete = true;
+      res.push(null);
       const socket = new WebSocketBridge(relay);
+      // The socket is the client's now: closing the request no longer closes it.
+      this._relay = null;
       this.socket = socket;
       if (this.listenerCount("upgrade") === 0) {
         // Node closes an upgraded connection nobody took.
         socket.destroy();
-        return;
+      } else {
+        this.emit("upgrade", res, socket, Buffer.alloc(0));
       }
-      this.emit("upgrade", res, socket, Buffer.alloc(0));
+      // Node's request closes once it has handed its socket over.
+      this.destroyed = true;
+      this._emitClose();
     }
 
+    /** The destination's refusal, as Node's client hands a response over: at once, its body as it comes. */
     _refused(handshake) {
-      const res = incoming(handshake.status, handshake.statusText || "", handshake.headers || [], handshake.body);
-      // The relay hands over at most WS_RELAY_REFUSAL_BODY_MAX_BYTES of it.
-      res.complete = !handshake.truncated;
+      const res = incoming(handshake.status, handshake.statusText || "", handshake.headers || []);
+      this._refusal = handshake;
+      this._response = res;
+      // A body nobody reads any more is not read from the relay either.
+      res.once("close", () => handshake.cancel());
+      res.once("end", () => queueMicrotask(() => this._emitClose()));
+      handshake.read((bytes) => res.push(Buffer.from(bytes)), (complete) => {
+        // Complete only as the destination ended it: the relay bounds it by bytes and by time.
+        res.complete = complete;
+        res.push(null);
+      });
       if (this.listenerCount("response") === 0) {
+        // Node dumps a response nobody listens for.
         res.resume();
-        this.emit("close");
         return;
       }
       this.emit("response", res);
-      this.emit("close");
     }
   }
 

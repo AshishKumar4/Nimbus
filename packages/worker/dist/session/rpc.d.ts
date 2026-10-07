@@ -176,7 +176,7 @@ declare const FsAcquireArgsSchema: z.ZodObject<{
         }, z.core.$strict>>;
     }, z.core.$strict>>;
 }, z.core.$strip>;
-export declare function _rpcWsOpen(self: RpcHost, url: string, protocols: string[], headers?: WsRelayHeaders | null, pid?: number): Promise<WsRelayOpened>;
+export declare function _rpcWsOpen(self: RpcHost, url: string, protocols: string[], headers?: WsRelayHeaders | null, refusalBody?: boolean | null, pid?: number): Promise<WsRelayOpened>;
 export declare function _rpcWsPoll(self: RpcHost, id: number, waitMs: number, pid?: number): Promise<unknown[]>;
 export declare function _rpcWsSend(self: RpcHost, id: number, text: string | null, bytes: Uint8Array | null, pid?: number): Promise<void>;
 export declare function _rpcWsClose(self: RpcHost, id: number, code?: number, reason?: string, pid?: number): Promise<void>;

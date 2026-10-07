@@ -5544,10 +5544,71 @@ const __fsMod = (() => {
 // The second argument is Node's: subprotocols, or a WebSocketInit
 // \`{ protocols, headers }\` (undici's), whose headers the supervisor sends
 // with the upgrade. What the handshake answered (the upgrade's response
-// headers, or a refusal's status, headers and body) is kept on the socket
-// under __NIMBUS_WS_HANDSHAKE, for the \`ws\` package's upgrade path
-// (runtime/node-ws-upgrade.ts).
+// headers, or a refusal: __nimbusRefusal) is kept on the socket under
+// __NIMBUS_WS_HANDSHAKE, for the \`ws\` package's upgrade path
+// (runtime/node-ws-upgrade.ts), which asks for a refusal's body with
+// __NIMBUS_WS_REFUSAL_BODY in the init.
 const __NIMBUS_WS_HANDSHAKE = Symbol.for("nimbus.websocket.handshake");
+const __NIMBUS_WS_REFUSAL_BODY = Symbol.for("nimbus.websocket.refusal-body");
+
+// A refused upgrade, as the relay answered it (session/ws-relay.ts): its
+// head at once, and its body (when asked for) read from the relay as it
+// comes, for the one consumer that reads it, until it ends or is cancelled.
+// An open body holds the process, as a response's socket does in Node.
+function __nimbusRefusal(supervisor, refused) {
+  const pending = [];
+  let ended = refused.body === null ? true : null;
+  let consumer = null;
+  let cancelled = false;
+  const hold = refused.body === null ? null : __nimbusHoldSocket();
+  const finish = (complete) => {
+    if (ended !== null) return;
+    ended = complete;
+    if (hold) hold(false);
+    if (consumer) consumer.end(complete);
+  };
+  if (refused.body !== null) {
+    (async () => {
+      while (ended === null && !cancelled) {
+        let events;
+        try {
+          events = await __nimbusUseRpcResultUnref(supervisor.wsPoll(refused.body, 5000), (result) => result);
+        } catch { finish(false); return; }
+        if (!Array.isArray(events)) continue;
+        for (const event of events) {
+          if (cancelled) return;
+          // Its bytes are an inbound delivery, as a frame is.
+          await __nimbusInboundBarrier();
+          if (event.kind === "message" && event.bytes) {
+            if (consumer) consumer.chunk(event.bytes);
+            else pending.push(event.bytes);
+          } else if (event.kind === "close") {
+            finish(event.code === 1000);
+            return;
+          }
+        }
+      }
+    })();
+  }
+  return {
+    status: refused.status,
+    statusText: refused.statusText,
+    headers: refused.headers,
+    /** Its body to \`onChunk\`, then \`onEnd(complete)\`: whether it arrived whole. */
+    read(onChunk, onEnd) {
+      consumer = { chunk: onChunk, end: onEnd };
+      for (const chunk of pending.splice(0)) onChunk(chunk);
+      if (ended !== null) onEnd(ended);
+    },
+    /** The body is not wanted: the relay stops reading it. */
+    cancel() {
+      if (cancelled || ended !== null) return;
+      cancelled = true;
+      if (hold) hold(false);
+      __nimbusUseRpcResultUnref(supervisor.wsClose(refused.body), () => undefined).catch(() => {});
+    },
+  };
+}
 const __NimbusRelayedWebSocket = (() => {
   const CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3;
   /** A header list as the relay takes it: [name, value] pairs. */
@@ -5594,22 +5655,23 @@ const __NimbusRelayedWebSocket = (() => {
       const requested = protocols === undefined ? []
         : (Array.isArray(protocols) ? protocols.map(String) : [String(protocols)]);
       const headers = headerPairs(init.headers);
+      const refusalBody = init[__NIMBUS_WS_REFUSAL_BODY] === true;
       this[__NIMBUS_WS_HANDSHAKE] = null;
       // Open, or opening, until its close: a handle, as Node's WebSocket is.
       // Taken only once the socket exists, past every throw in this
       // constructor: a caught constructor failure holds nothing.
       this._hold = __nimbusHoldSocket();
-      this._ready = this._connect(supervisor, requested, headers);
+      this._ready = this._connect(supervisor, requested, headers, refusalBody);
     }
 
-    async _connect(supervisor, protocols, headers) {
+    async _connect(supervisor, protocols, headers, refusalBody) {
       try {
         const opened = await __nimbusUseRpcResultUnref(
-          supervisor.wsOpen(this.url, protocols, headers),
+          supervisor.wsOpen(this.url, protocols, headers, refusalBody),
           (result) => result,
         );
         if (opened.refused) {
-          this[__NIMBUS_WS_HANDSHAKE] = opened.refused;
+          this[__NIMBUS_WS_HANDSHAKE] = __nimbusRefusal(supervisor, opened.refused);
           throw new Error("websocket relay: " + this.url + " did not upgrade (HTTP " + opened.refused.status + ")");
         }
         this[__NIMBUS_WS_HANDSHAKE] = { status: 101, statusText: "Switching Protocols", headers: opened.headers || [] };

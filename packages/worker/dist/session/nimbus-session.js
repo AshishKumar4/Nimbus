@@ -764,8 +764,8 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcFsList(after, limit, pid) {
         return _rpc._rpcFsList(this, after, limit, pid);
     }
-    async _rpcWsOpen(url, protocols, headers, pid) {
-        return _rpc._rpcWsOpen(this, url, protocols, headers, pid);
+    async _rpcWsOpen(url, protocols, headers, refusalBody, pid) {
+        return _rpc._rpcWsOpen(this, url, protocols, headers, refusalBody, pid);
     }
     async _rpcWsPoll(id, waitMs, pid) {
         return _rpc._rpcWsPoll(this, id, waitMs, pid);
