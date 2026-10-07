@@ -274,6 +274,87 @@ export interface ParsedGitGlobals {
   subArgs: string[];
   /** The directory the subcommand runs in, after every `-C`. */
   dir: string;
+  /** `-c <name>=<value>`: each key (its section and name in lower case), its values in order. */
+  config: Map<string, string[]>;
+}
+
+/** A refusal of git's own options, in git's words, and the exit it takes. */
+export class GitGlobalsError extends Error {
+  constructor(readonly lines: string, readonly code: number) {
+    super(lines.trimEnd());
+    this.name = 'GitGlobalsError';
+  }
+}
+
+/** iskeychar: what a config section and variable name are made of. */
+const isKeyChar = (c: string) => /^[A-Za-z0-9-]$/.test(c);
+
+/**
+ * git_config_push_parameter and git_config_parse_key for one `-c` text: the
+ * key before the first '=' (a missing '=' is a boolean's true), its section
+ * and variable name in lower case, its subsection as written. An invalid one
+ * is git's error, then "unable to parse command-line config" (128).
+ */
+function configParameter(text: string): [string, string] {
+  const eq = text.indexOf('=');
+  const key = eq < 0 ? text : text.slice(0, eq);
+  const value = eq < 0 ? 'true' : text.slice(eq + 1);
+  const refuse = (error: string): never => {
+    throw new GitGlobalsError(`error: ${error}\nfatal: unable to parse command-line config\n`, 128);
+  };
+  if (key === '') refuse(`bogus config parameter: ${text}`);
+  const lastDot = key.lastIndexOf('.');
+  if (lastDot <= 0) refuse(`key does not contain a section: ${key}`);
+  if (lastDot === key.length - 1) refuse(`key does not contain variable name: ${key}`);
+  const firstDot = key.indexOf('.');
+  let stored = '';
+  for (let i = 0; i < key.length; i++) {
+    const c = key[i];
+    // The subsection, between the first dot and the last, is kept as written.
+    if (i > firstDot && i < lastDot) {
+      if (c === '\n') refuse(`invalid key (newline): ${key}`);
+      stored += c;
+      continue;
+    }
+    if (c === '.') { stored += c; continue; }
+    if (!isKeyChar(c) || (i === lastDot + 1 && !/^[A-Za-z]$/.test(c))) refuse(`invalid key: ${key}`);
+    stored += c.toLowerCase();
+  }
+  return [stored, value];
+}
+
+/** A config key as `-c` stores it: section and variable name in lower case, the subsection kept. */
+function configKey(path: string): string {
+  const first = path.indexOf('.');
+  const last = path.lastIndexOf('.');
+  if (first < 0) return path.toLowerCase();
+  return path.slice(0, first).toLowerCase() + path.slice(first, last) + path.slice(last).toLowerCase();
+}
+
+/**
+ * `git` with `-c`'s settings over every file's: a key `-c` set reads as its
+ * last value, and all of them follow the files' for one read whole, for this
+ * command only (nothing is written).
+ */
+function withConfigOverrides<G extends { getConfig(args: { path: string }): Promise<unknown> }>(git: G, overrides: Map<string, string[]>): G {
+  if (overrides.size === 0) return git;
+  return new Proxy(git, {
+    get(target, property, receiver) {
+      if (property === 'getConfig') {
+        return async (args: { path: string }) => {
+          const values = overrides.get(configKey(args.path));
+          return values !== undefined ? values[values.length - 1] : await target.getConfig(args);
+        };
+      }
+      if (property === 'getConfigAll') {
+        return async (args: { path: string }) => {
+          const base = await (target as unknown as { getConfigAll(args: { path: string }): Promise<unknown[]> }).getConfigAll(args);
+          return [...base, ...(overrides.get(configKey(args.path)) ?? [])];
+        };
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
 }
 
 /**
@@ -285,10 +366,16 @@ export interface ParsedGitGlobals {
  */
 export function parseGitGlobals(args: string[], cwd: string): ParsedGitGlobals {
   let dir = cwd;
+  const config = new Map<string, string[]>();
   let i = 0;
   for (; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '-C') {
+    if (arg === '-c') {
+      const text = args[++i];
+      if (text === undefined) throw new GitGlobalsError(`-c expects a configuration string\n${GIT_USAGE}\n`, 129);
+      const [key, value] = configParameter(text);
+      config.set(key, [...(config.get(key) ?? []), value]);
+    } else if (arg === '-C') {
       const path = args[++i];
       if (path === undefined) throw new Error("option '-C' requires a value");
       dir = path.startsWith('/') ? path : dir + '/' + path;
@@ -300,13 +387,15 @@ export function parseGitGlobals(args: string[], cwd: string): ParsedGitGlobals {
     } else if (arg === '--no-pager' || arg === '-P') {
       // no pager to disable
     } else if (arg.startsWith('-') && arg !== '--version' && arg !== '-v' && arg !== '--help' && arg !== '-h') {
-      throw new Error(`unknown option '${arg}'\nusage: git [-C <path>] [--no-pager] <command> [<args>]`);
+      throw new Error(`unknown option '${arg}'\n${GIT_USAGE}`);
     } else {
       break;
     }
   }
-  return { sub: args[i], subArgs: args.slice(i + 1), dir };
+  return { sub: args[i], subArgs: args.slice(i + 1), dir, config };
 }
+
+const GIT_USAGE = 'usage: git [-C <path>] [-c <name>=<value>] [--no-pager] <command> [<args>]';
 
 function getFlag(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
@@ -2535,6 +2624,10 @@ export async function runGitCommand(
   try {
     globals = parseGitGlobals(ctx.args, getDir(ctx));
   } catch (e: any) {
+    if (e instanceof GitGlobalsError) {
+      await ctx.stderr.write(e.lines);
+      return e.code;
+    }
     ctx.stderr.write(`git: ${e?.message}\n`);
     return 129;
   }
@@ -2569,7 +2662,8 @@ export async function runGitCommand(
   // This command's filesystem, once made: what its worktree work cost is kept by it.
   let commandFs: GitFs | null = null;
   try {
-    git = await getGit();
+    // `-c`'s settings over the files', for this command.
+    git = withConfigOverrides(await getGit(), globals.config);
   } catch (e: any) {
     ctx.stderr.write(`git: failed to load git module: ${e?.message}\n`);
     return 1;
@@ -2658,11 +2752,18 @@ export async function runGitCommand(
           if (!initArgs.quiet) ctx.stdout.write(`Reinitialized existing Git repository in ${gitDir}/\n`);
           return 0;
         }
-        if (initArgs.branch !== undefined && !isValidRefName(`refs/heads/${initArgs.branch}`)) {
-          ctx.stderr.write(`fatal: invalid initial branch name: '${initArgs.branch}'\n`);
+        // -b, or init.defaultBranch (from `-c`, read over the files'), or git's master.
+        let initialBranch = initArgs.branch;
+        if (initialBranch === undefined) {
+          let configured: unknown;
+          try { configured = await git.getConfig({ fs, dir: initDir, path: 'init.defaultBranch' }); } catch { configured = undefined; }
+          if (typeof configured === 'string') initialBranch = configured;
+        }
+        if (initialBranch !== undefined && !isValidRefName(`refs/heads/${initialBranch}`)) {
+          ctx.stderr.write(`fatal: invalid initial branch name: '${initialBranch}'\n`);
           return 128;
         }
-        await git.init({ fs, dir: initDir, bare: initArgs.bare, ...(initArgs.branch === undefined ? {} : { defaultBranch: initArgs.branch }) });
+        await git.init({ fs, dir: initDir, bare: initArgs.bare, ...(initialBranch === undefined ? {} : { defaultBranch: initialBranch }) });
         if (!initArgs.quiet) ctx.stdout.write(`Initialized empty Git repository in ${gitDir}/\n`);
         return 0;
       }
@@ -3041,10 +3142,11 @@ export async function runGitCommand(
           await git.setConfig({ fs, dir, path: key, value });
           ctx.stdout.write(`${key}=${value}\n`);
         } else if (key) {
-          try {
-            const val = await git.getConfig({ fs, dir, path: key });
-            ctx.stdout.write(`${val}\n`);
-          } catch { ctx.stderr.write(`config: key '${key}' not set\n`); return 1; }
+          // A key not set is git's exit 1, and nothing printed.
+          let val: unknown;
+          try { val = await git.getConfig({ fs, dir, path: key }); } catch { val = undefined; }
+          if (val === undefined) return 1;
+          ctx.stdout.write(`${val}\n`);
         } else {
           ctx.stderr.write('usage: git config <key> [value]\n');
           return 1;
