@@ -21,7 +21,7 @@ t.cmd('python');
 await t.waitFor((b) => /^>>> /m.test(b), 30_000, 'python repl prompt');
 
 // Send Ctrl-D (0x04). Note: no \r — single byte.
-const beforeExit = t.buf.length;
+const beforeExit = stripAnsi(t.buf).length;
 t.send('\x04');
 // A Python >>> prompt also ends in >. It is still in the buffer when EOT
 // is sent, so the generic prompt helper would accept it before exit runs.
