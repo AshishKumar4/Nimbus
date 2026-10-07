@@ -4,6 +4,12 @@
 
 # Nimbus
 
+Embedders on Cloudflare must set the hosting Worker's `limits.cpu_ms` to at
+least `300000`. Nimbus's explicit per-kind facet policy lives in
+`packages/fabric/src/facet-limits.ts`; config generation and deployment
+validation enforce the hosting-Worker constraint. Invocation resource limits
+are distinct from the filesystem write-delivery guarantees.
+
 > This is a hobby/research project to see how far can we push Cloudflare durable objects to. Although it works, there are several rough edges, and I only work on it in my spare time. This README is edited and maintained with Claude (AI) and presented as-is.
 
 **Give every agent its own computer.** Nimbus is a free and open-source, POSIX-like cloud OS that runs entirely on Cloudflare's network. A sandbox is a Worker isolate rather than a container, so it starts in about a second. Open a URL or call the SDK, and you get a real shell with `node` + `bun` (Cloudflare workerd `nodejs_compat` runtime), `npm`, `git`, real `python` (Pyodide-compiled CPython 3.13), real `ruby` (ruby.wasm 3.3), real `clang` (LLVM 8 → `wasm32-wasi-nimbus`), and 60+ Unix commands.

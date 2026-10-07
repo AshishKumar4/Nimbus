@@ -15,6 +15,7 @@
  */
 
 import { loaderOutbound, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { applyFacetLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -432,14 +433,14 @@ export class NimbusWrangler {
       // (inner-do-env.ts): the bundle's first import replaces it in the env
       // every handler, entrypoint and object of the isolate sees.
       const { mainModule, modules, classesEntrypoint } = innerWorkerModules(bundledCode, doBindings.map((b) => b.name));
-      const worker = this.loaderEnv.LOADER.load({
+      const worker = this.loaderEnv.LOADER.load(applyFacetLimits('worker', {
         compatibilityDate: wrangCompatDate,
         compatibilityFlags: wrangCompatFlags,
         mainModule,
         modules,
         env: this.buildInnerEnv(),
         ...loaderOutbound(this.network),
-      });
+      }));
       if (classesEntrypoint !== null && !(await this.registerDoClasses(worker, classesEntrypoint, doBindings))) return false;
       this.workerStub = worker.getEntrypoint();
 

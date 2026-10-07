@@ -31,6 +31,7 @@ import type { HostRoute } from './composition.js';
 import { hostNamespaceBinding, hostOpDispatch, type HostOpDispatch } from './host-dispatch.js';
 import { innerDoIdFromName } from './inner-do-env.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
+import { applyFacetLimits } from './facet-limits.js';
 import type { EntrypointLoopbackFactory } from './composition.js';
 import type { WorkerCode } from './vendor/types.js';
 
@@ -411,7 +412,7 @@ function _resolveStubInCurrentContext(
   if (key === undefined) return null;
   const code = _loadedCodesGet(key);
   if (!code) return null;
-  return outerLoader.get(key, async () => code);
+  return outerLoader.get(key, async () => applyFacetLimits('worker', code));
 }
 
 /** Props every Worker-Loader hop carries: how deep this Nimbus already is. */
@@ -456,7 +457,7 @@ export class NimbusLoaderRPC extends WorkerEntrypoint<NimbusLoaderShimEnv, Nimbu
     // Validate by loading once in THIS context (fails fast on bad code).
     // The stub is discarded; downstream calls re-load fresh in their
     // own context.
-    outerLoader.load(code);
+    outerLoader.load(applyFacetLimits('worker', code));
     const key = _genStubId();
     _loadedCodesPut(key, code);
     const ctxExports = shimCtxExports(this.ctx);
@@ -572,8 +573,8 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv
           (assembled as { modules?: Record<string, unknown> }).modules ?? {},
         );
         const supervisorBinding = await this._supervisorBinding(props);
-        if (!supervisorBinding) return assembled;
-        return { ...assembled, env: { SUPERVISOR: supervisorBinding } };
+        if (!supervisorBinding) return applyFacetLimits('process', assembled);
+        return applyFacetLimits('process', { ...assembled, env: { SUPERVISOR: supervisorBinding } });
       });
     } else {
       // No spec in props: resolve the ALREADY-LOADED worker. First the inner

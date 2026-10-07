@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Added explicit, evidence-based per-kind facet CPU and subrequest limits,
+  replacing the implicit 30-second Loader CPU default. Invocation budget
+  exhaustion is reported as a named process error with non-zero exit status;
+  this resource policy is separate from batched filesystem write delivery.
+
 - Fixed: `node` and `bun` with no script opened a REPL that evaluated
   nothing ("workerd CSP: cannot evaluate JS at request time"). The REPL is
   now a program the runtime runs, as Node's is, and each line compiles

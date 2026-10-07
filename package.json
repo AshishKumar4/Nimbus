@@ -35,6 +35,7 @@
     "staging:test": "bun tests/behavioral/_staging-target.mjs test",
     "staging:status": "bun tests/behavioral/_staging-target.mjs status",
     "lint": "./node_modules/.bin/biome lint",
+    "pretypecheck": "bun packages/config/scripts/generate-facet-limits.mjs",
     "typecheck": "./node_modules/.bin/tsc --noEmit && bun scripts/typecheck-js.mjs",
     "test:behavioral": "bun tests/behavioral/run-all.mjs",
     "test:unit": "bun tests/unit/run-all.mjs",
