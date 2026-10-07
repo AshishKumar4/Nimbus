@@ -46,15 +46,21 @@ function stagedGitBundle() {
   return readFileSync(new URL(name, dir), 'utf8');
 }
 
-/** `realGit`: the facet runs the staged cf-git bundle (fetch, pull, push), not a stub. */
-export async function createFacetSession(work, { realGit = false } = {}) {
+/**
+ * `realGit`: the facet runs the staged cf-git bundle (fetch, pull, push), not a stub.
+ * `asUser`: the facets' calls act as the session user, as a session's
+ * process does (SupervisorRPC), its permissions checked; by default as the
+ * kernel.
+ */
+export async function createFacetSession(work, { realGit = false, asUser = false } = {}) {
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = vfs.as(CRED_KERNEL);
   kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
   kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
   const files = new ProcessFiles(vfs);
-  const bridge = new SqliteRuntimeFsBridge(kernel, vfs);
+  const actor = asUser ? vfs.as(CRED_SESSION_USER) : kernel;
+  const bridge = new SqliteRuntimeFsBridge(actor, vfs);
   // failWaveAt: the 1-based write wave that fails, once, as a dropped session connection does.
   // hangPhaseAt: the 1-based facet call of that phase that never answers, once.
   // stallPhaseAt: the same, but the call runs on, its answer withheld: a late writer.
@@ -100,13 +106,17 @@ export async function createFacetSession(work, { realGit = false } = {}) {
       },
       // unlink carries no lease: the session's supervisor op has none for it either (supervisor-op.ts).
       async unlink(path) { return refused(async () => bridge.unlink(path)); },
+      async fsOpen(path, flags) { return refused(async () => bridge.open(path, flags)); },
+      async fsWrite(handle, offset, bytes) { return refused(async () => bridge.write(handle, offset, bytes)); },
+      async fsClose(handle) { return bridge.close(handle); },
+      async chmod(path, mode) { return refused(async () => bridge.chmod(path, mode)); },
       async writeBatchStream(stream) {
         if (++requests.waves === requests.failWaveAt) {
           await stream.cancel();
           throw new Error('Network connection lost.');
         }
         return refused(async () => {
-          const result = await kernel.writeStream(stream, lease);
+          const result = await actor.writeStream(stream, lease);
           if (result.ok === false) requests.refusals.push(String(result.error?.code ?? result.error?.message));
           return result;
         });
@@ -121,7 +131,11 @@ export async function createFacetSession(work, { realGit = false } = {}) {
   writeFileSync(join(tempDir, 'git-network-worker.mjs'), assembleGitNetworkFacetSource());
   writeFileSync(join(tempDir, 'git-bundle.js'), realGit ? stagedGitBundle() : 'export const git = {}; export const gitHttp = {};');
   const facet = await import(pathToFileURL(join(tempDir, 'git-network-worker.mjs')).href);
-  const doCtx = { id: { toString: () => 'facet-session-do' } };
+  // Work a command leaves running after it answers (a full clone's
+  // changed-path filters): `settled()` waits for all of it.
+  const background = [];
+  const doCtx = { id: { toString: () => 'facet-session-do' }, waitUntil(promise) { background.push(promise); } };
+  const settled = async () => { while (background.length > 0) await background.shift(); };
   const doEnv = {
     ASSETS: stagedAssets,
     LOADER: {
@@ -198,5 +212,5 @@ export async function createFacetSession(work, { realGit = false } = {}) {
     return { dir: out, objects: hostObjects(work, out) };
   }
 
-  return { vfs, kernel, git, requests, doCtx, doEnv, materialize, sessionObjects };
+  return { vfs, kernel, git, requests, doCtx, doEnv, materialize, sessionObjects, settled };
 }

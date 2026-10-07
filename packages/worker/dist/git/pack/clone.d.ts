@@ -233,7 +233,11 @@ export declare function cloneBatch(context: CloneContext, request: {
     /** A streamed clone's batch: its blobs are in the repository's pack already. */
     local?: boolean;
 }): Promise<CloneBatchResult>;
-/** The index, from the batches' shares; then the staging directory goes. */
+/**
+ * The index, from the batches' shares; then the staging directory goes. A
+ * full clone's commit records stay for its commit-graph, written after the
+ * clone answers (graph-filters.ts), unless one did not parse.
+ */
 export declare function cloneFinish(context: CloneContext, request: {
     shares: {
         name: string;
@@ -242,6 +246,11 @@ export declare function cloneFinish(context: CloneContext, request: {
     full?: boolean;
     cacheTreeBytes?: number;
     tags?: readonly CloneTag[];
+    /** A full clone's commit records (history.ts graphLists), or null when one did not parse: no graph. */
+    graph?: {
+        name: string;
+        bytes: number;
+    }[] | null;
 }): Promise<{
     indexEntries: number;
     indexBytes: number;
