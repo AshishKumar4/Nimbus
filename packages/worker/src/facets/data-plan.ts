@@ -20,11 +20,13 @@
  *                  under 256 KiB, or any size when the code reads it with
  *                  readFileSync (or a read-only openSync) by that path,
  *                  through any symlinks on it
- *   entries        the entry files the working dir's own dependencies name
- *                  (exports under every condition, module, main, browser),
- *                  under 256 KiB: a dev server reads them synchronously to
- *                  pre-bundle what the app imports (Vite's optimizer reads
- *                  each with readFileSync), and the process never loads them
+ *   entries        the entry files the working dir's dependencies, and
+ *                  their own dependencies, name (exports under every
+ *                  condition, module, main, browser), under 256 KiB: a dev
+ *                  server reads them synchronously to pre-bundle what the
+ *                  app imports and what a framework includes for itself
+ *                  (Vite's optimizer reads each with readFileSync), and the
+ *                  process never loads them
  *   learned        paths earlier launches of the same package versions missed
  *
  * Code the closure loads is in the module map already; the store adopts a
@@ -526,24 +528,49 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     }
   }
 
-  // The working dir's dependencies' entries, each the file Node's resolver
-  // loads for it (require-resolution.ts, as the module-map walk resolves): a
-  // `main` without its extension, or naming a directory with a package.json
-  // of its own.
+  // The entries of the working dir's dependencies and of theirs, each the
+  // file Node's resolver loads for it (require-resolution.ts, as the
+  // module-map walk resolves): a `main` without its extension, or naming a
+  // directory with a package.json of its own. A dev server pre-bundles what
+  // the app imports, and what a framework asks it to on its own behalf: its
+  // own dependencies, named `astro > aria-query` in Vite's
+  // optimizeDeps.include and found from where the framework is installed.
+  // Astro's dev toolbar includes aria-query, axobject-query and
+  // html-escaper; their entries were held only when an earlier session's
+  // miss had been learned for them, so a fresh or concurrent launch's
+  // optimizer read them synchronously and failed.
   const files = resolutionFs(source);
   const projectManifest = await readManifest(source, cwd, manifests);
-  const dependencies = new Set<string>();
-  for (const field of ['dependencies', 'devDependencies', 'optionalDependencies'] as const) {
-    const named = projectManifest?.[field];
-    if (named && typeof named === 'object') for (const name of Object.keys(named)) dependencies.add(name);
-  }
-  for (const name of dependencies) {
-    let pkgDir: string | null = null;
-    for (let d = cwd; pkgDir === null; d = parentOf(d)) {
-      if (packageRoots.has(joinKey(d, 'node_modules/' + name))) pkgDir = joinKey(d, 'node_modules/' + name);
-      if (d === '') break;
+  /** Where Node finds package \`name\` from \`from\`: its own node_modules, then each ancestor's. */
+  const installedFrom = (from: string, name: string): string | null => {
+    for (let d = from; ; d = parentOf(d)) {
+      if (baseOf(d) !== 'node_modules' && packageRoots.has(joinKey(d, 'node_modules/' + name))) return joinKey(d, 'node_modules/' + name);
+      if (d === '') return null;
     }
-    if (pkgDir === null) continue;
+  };
+  const declared = (manifest: Record<string, unknown> | null, fields: readonly string[]): string[] => {
+    const names: string[] = [];
+    for (const field of fields) {
+      const named = manifest?.[field];
+      if (named && typeof named === 'object') names.push(...Object.keys(named));
+    }
+    return names;
+  };
+  const dependencyDirs = new Set<string>();
+  for (const name of declared(projectManifest, ['dependencies', 'devDependencies', 'optionalDependencies'])) {
+    const pkgDir = installedFrom(cwd, name);
+    if (pkgDir !== null) dependencyDirs.add(pkgDir);
+  }
+  for (const pkgDir of [...dependencyDirs]) {
+    // Installed beside or below the package that names them; its dev
+    // dependencies are not installed at all.
+    const own = await readManifest(source, pkgDir, manifests);
+    for (const name of declared(own, ['dependencies', 'optionalDependencies', 'peerDependencies'])) {
+      const depDir = installedFrom(pkgDir, name);
+      if (depDir !== null) dependencyDirs.add(depDir);
+    }
+  }
+  for (const pkgDir of dependencyDirs) {
     const manifest = await readManifest(source, pkgDir, manifests);
     if (manifest === null) continue;
     for (const rel of entryTargets(manifest)) {

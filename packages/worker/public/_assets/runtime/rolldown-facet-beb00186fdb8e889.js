@@ -15914,14 +15914,10 @@ function resolveConditionValue(target, conditions) {
     return null;
   }
   if (typeof target !== "object") return null;
-  for (const cond of conditions) {
-    if (cond in target) {
-      const r3 = resolveConditionValue(target[cond], conditions);
-      if (r3) return r3;
-    }
-  }
-  if (!conditions.includes("default") && "default" in target) {
-    return resolveConditionValue(target.default, conditions);
+  for (const key of Object.keys(target)) {
+    if (key !== "default" && !conditions.includes(key)) continue;
+    const r3 = resolveConditionValue(target[key], conditions);
+    if (r3) return r3;
   }
   return null;
 }

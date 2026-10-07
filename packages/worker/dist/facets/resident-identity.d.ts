@@ -17,6 +17,17 @@
  * whether its first binder adopts an owner or must already match it.
  */
 export declare const DERIVED_OWNER_PREFIX = "auto:";
+/**
+ * A launch's whole argv after the runtime's name: a node program's options
+ * (its execArgv, `node -C development`) and then its own argv. What the user
+ * typed, so what the process table lists and the identity is derived from:
+ * `node -C development server.mjs` is not `node server.mjs`. The program's
+ * `process.argv` is its own.
+ */
+export declare function launchArgv(opts: {
+    execArgv?: readonly string[];
+    argv?: readonly string[];
+}): string[];
 /** `auto:` + the first 24 hex of sha256(cwd ++ NUL ++ argv.join(NUL)). */
 export declare function deriveResidentOwner(cwd: string, argv: readonly string[]): Promise<string>;
 //# sourceMappingURL=resident-identity.d.ts.map

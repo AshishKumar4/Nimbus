@@ -58,15 +58,16 @@ import {
   restoreReservedPortCapability,
   type PortVisibility,
 } from '../session/port-capability.js';
-import { deriveResidentOwner } from './resident-identity.js';
+import { deriveResidentOwner, launchArgv } from './resident-identity.js';
 import { z } from 'zod/v4';
 import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session/keys.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { sessionIdentity, unbindPublicPortCapability } from '../router/public-directory.js';
 import {
   prefetchForRequire, requireFsOverBridge, resolveDeferredImport, ClosureBoundExceededError,
-  type BridgeRequireFs, type DeferredImport, type RequiredModuleRoot,
+  type BridgeRequireFs, type DeferredImport, type PreloadModuleRoot, type RequiredModuleRoot,
 } from '@nimbus-sh/core/runtime/require-resolver.js';
+import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
 import type { ModuleScope, PackageType } from '@nimbus-sh/core/runtime/module-format.js';
@@ -106,12 +107,10 @@ import {
 import { TransformStore } from './transform-store.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import {
-  DEFAULT_CJS_CONDITIONS,
-  DEFAULT_ESM_CONDITIONS,
-  resolvePackageEntry,
   parseResolvablePackageJson,
   type ResolvablePackageJson,
 } from '@nimbus-sh/core/_shared/exports-resolver.js';
+import { requirePackageEntry } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { LaunchLearningStore, type LaunchLearning, type LaunchReport } from './launch-learning-store.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -942,7 +941,7 @@ class __ProcessExit extends Error {
 export default {
   async fetch(request, workerEnv, workerCtx) {
     const args = await request.json();
-    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan } = args;
+    const { argv, nodeCommandLine, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan } = args;
     const __nimbusProcessId = Number(args.pid || 1);
     // A pipe or redirect streams through this input channel (exec's
     // _pumpStdinPipe); node-shims' process.stdin and fd 0 read it.
@@ -1085,17 +1084,19 @@ ${RESIDENCY_MISS_REPORT}
 
     const mod = { exports: {} };
     Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta(filename || "/home/user/script.js") });
-    // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
-    __require.main = mod;
     try {
       await __nimbusPrepareStdin();
       // From here on the program runs: a stop is possible while stdin can
       // still come short of a read.
       __nimbusStopReplay.arm(__nimbusStdinCanStop());
+      // \`-r\` and \`--import\` modules first, before the entry is require.main.
+      await __nimbusPreload();
+      // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
+      __require.main = mod;
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
-      // the file, as Node does.
-      const __entryResult = ${entry.evaluate};
+      // the file, as Node does. \`-p\`'s returns the value it prints.
+      const __entryResult = __nimbusEntryOutcome(${entry.evaluate});
       const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs);
       __drainPasses = __drain.passes;
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
@@ -1311,6 +1312,8 @@ export async function generateLongRunningNodeCode(
   vfsState: FacetVfsState,
   opts: {
     argv?: string[];
+    /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
+    node?: NodeLaunch;
     env?: Record<string, string>;
     cwd?: string;
     filename?: string;
@@ -1329,6 +1332,7 @@ export async function generateLongRunningNodeCode(
   const entry = entryModule(userCode, opts.filename, opts.esModule);
   const safeArgs = JSON.stringify({
     argv: opts.argv || [],
+    nodeCommandLine: opts.node ?? null,
     env: opts.env || {},
     cwd: opts.cwd || '/home/user',
     filename: opts.filename || '<script>',
@@ -1446,7 +1450,7 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
   if (__nimbusStarting) return __nimbusStarting;
   __nimbusStarting = (async () => {
     const args = __NIMBUS_ARGS;
-    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, attachedTty, cred } = args;
+    const { argv, nodeCommandLine, env, cwd: _cwd, filename, dirname, stdin, captureOutput, attachedTty, cred } = args;
     const __nimbusProcessId = Number(__startArgs?.pid || env?.NIMBUS_CP_CHILD_PID || 1);
     // Every resident process has a live input channel on its pid.
     const __nimbusLiveInputPid = Number(__startArgs?.pid || env?.NIMBUS_CP_CHILD_PID || 0);
@@ -1609,13 +1613,12 @@ ${RESIDENCY_MISS_REPORT}
 
     const mod = { exports: {} };
     Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta(filename || "/home/user/script.js") });
-    __require.main = mod;
     let __attachedCompletion = null;
     let __attachedExplicitExit = false;
     // \`--watch\` and \`--inspect-brk\` hold a process that has no handle left
     // (it waits for a change, or for a debugger); nothing else does.
-    const __nimbusHeldWithoutHandles = Array.isArray(argv)
-      && argv.some((__arg) => __arg === "--watch" || __arg === "--inspect-brk");
+    const __nimbusHeldWithoutHandles = [...(nodeCommandLine?.execArgv ?? []), ...(Array.isArray(argv) ? argv : [])]
+      .some((__arg) => __arg === "--watch" || __arg === "--inspect-brk");
     let __nimbusEndedAtBoot = false;
     // A resident whose launcher writes its stdin takes what has arrived
     // before the entry runs, and a boot after a stop takes all of it (it has
@@ -1632,10 +1635,13 @@ ${RESIDENCY_MISS_REPORT}
         : "is a server started from the terminal, whose stdin nothing writes",
     );
     try {
+      // \`-r\` and \`--import\` modules first, before the entry is require.main.
+      await __nimbusPreload();
+      __require.main = mod;
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
-      // the file, as Node does.
-      const __entryResult = ${entry.evaluate};
+      // the file, as Node does. \`-p\`'s returns the value it prints.
+      const __entryResult = __nimbusEntryOutcome(${entry.evaluate});
       if (attachedTty) {
         // An attached entry owns the terminal until it returns, so its own
         // completion is awaited by the exit lifecycle below, never here.
@@ -1978,6 +1984,8 @@ interface ProcessBundleSpec {
   bundleProfile?: FacetBundleProfile;
   /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
   moduleScope?: ModuleScope;
+  /** The program's own conditions and preloads (`node -C`, `-r`, `--import`): the map is what it resolves and loads under them. */
+  node?: Pick<NodeLaunch, 'conditions' | 'require' | 'import'>;
 }
 
 /**
@@ -2707,7 +2715,7 @@ export async function greedyAddMainEntries(
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
   requiredPaths: ReadonlySet<string> = new Set(),
-  options: { maxBundleBytes?: number; pacer?: TurnBudget } = {},
+  options: { maxBundleBytes?: number; pacer?: TurnBudget; conditions?: readonly string[] } = {},
 ): Promise<{ added: number; groups: OptionalModuleGroup[] }> {
   let added = 0;
   const groups: OptionalModuleGroup[] = [];
@@ -2734,7 +2742,7 @@ export async function greedyAddMainEntries(
           purpose: 'dependency-closure', held: bundle,
           maxAdditionalBytes: Math.max(0, bound - rawBytes),
           maxAdditionalFiles: Math.max(0, VFS_BUNDLE_MAX_FILES - budgetState.fileCount),
-        });
+        }, undefined, options.conditions);
       if ('kind' in closure || closure.bundle[stripped] === undefined) return false;
       for (const deferral of closure.deferred ?? []) if (deferral.alternatives === 1) deferred.push(deferral);
       for (const [member, cell] of Object.entries(closure.bundle)) {
@@ -2838,8 +2846,8 @@ export async function greedyAddMainEntries(
     // `index.js`, which does not exist.
     const candidates: string[] = [];
     if (pkg) {
-      let entry = resolvePackageEntry(pkg, '.', DEFAULT_CJS_CONDITIONS);
-      if (entry === null && pkg.exports != null) entry = resolvePackageEntry(pkg, '.', DEFAULT_ESM_CONDITIONS);
+      // As require resolves it, under the program's conditions (require-resolution.ts requirePackageEntry).
+      const entry = requirePackageEntry(pkg, '.', options.conditions ?? []);
       if (entry !== null) candidates.push(entry);
       if (pkg.main !== undefined) candidates.push(pkg.main);
     }
@@ -2920,7 +2928,7 @@ export async function greedyAddMainEntries(
   const followed = new Set<string>();
   for (let i = 0; i < deferred.length; i++) {
     if (rawBytes >= bound || budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) break;
-    const target = await resolveDeferredImport(requireFsOverBridge(vfs), deferred[i]!, options.pacer?.spend.bind(options.pacer));
+    const target = await resolveDeferredImport(requireFsOverBridge(vfs), deferred[i]!, options.pacer?.spend.bind(options.pacer), options.conditions);
     // Its own package: where the deferral lands, not how it is spelled.
     const own = packageRootOf(deferred[i]!.fromDir.replace(/^\/+/, '') + '/_');
     if (target === null || own === null || packageRootOf(target) !== own || followed.has(target)) continue;
@@ -4024,6 +4032,10 @@ export interface PrefetchBundleOptions {
   executedModules?: readonly RequiredModuleRoot[];
   /** Where the launch's transform results are kept by content. */
   transformStore?: BundleCellResultStore;
+  /** The program's own conditions (`node --conditions`), as the process resolves under them. */
+  conditions?: readonly string[];
+  /** What the command line preloads (`node -r`, `--import`): required roots, walked first, as they run first. */
+  preloads?: readonly PreloadModuleRoot[];
 }
 
 /** A tool's config file: `<tool>.config.js|ts|mjs|cjs|mts|cts` (vite.config.ts, astro.config.mjs). */
@@ -4112,6 +4124,8 @@ async function _buildPrefetchBundle(
     learnedFor,
     executedModules,
     transformStore,
+    conditions = [],
+    preloads = [],
   }: PrefetchBundleOptions,
 ): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
@@ -4127,9 +4141,9 @@ async function _buildPrefetchBundle(
   // only READ are observed reads below: data, never roots, whatever their
   // extension (Tailwind scans .js/.ts content files as text). The tool's
   // configs ride along, as optional roots (RequiredModuleRoot.config).
-  const requiredRoots = [...await toolConfigRoots(vfs, cwd, scriptPath), ...executedModules ?? []];
+  const requiredRoots = [...preloads, ...await toolConfigRoots(vfs, cwd, scriptPath), ...executedModules ?? []];
   const prefetch = (await prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes,
-    pacer?.spend.bind(pacer), undefined, requiredRoots.length > 0 ? requiredRoots : undefined));
+    pacer?.spend.bind(pacer), undefined, requiredRoots.length > 0 ? requiredRoots : undefined, conditions));
   if ('kind' in prefetch) {
     // A required closure larger than the bound can never launch as a
     // snapshot. Surface it as the process's own failure rather than a
@@ -4184,7 +4198,7 @@ async function _buildPrefetchBundle(
   //    regex prefetch misses. Its budget is independent from the complete
   //    static require closure, which is correctness-critical.
   const independentBeforeGroups = new Set(Object.keys(bundle));
-  const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer }));
+  const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer, conditions }));
   await paceAfterPass();
   // What the passes so far staged to run. Every pass below stages files to
   // be read, and so do the observed reads above.
@@ -4635,6 +4649,8 @@ const DURABLE_ENSURE_BOOT_BUDGET_MS = 12_000;
 /** What `spawnNode` needs to build and boot one resident Node process. */
 export interface ResidentSpawnOptions {
   argv?: string[];
+  /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
+  node?: NodeLaunch;
   env?: Record<string, string>;
   cwd?: string;
   filename?: string;
@@ -5664,7 +5680,10 @@ export class FacetManager {
     const profile = spec.bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
     const moduleScope = spec.moduleScope ?? 'node';
     const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
-    const key = `${profile}\x00${moduleScope}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}`;
+    // The program's conditions choose what it resolves, and its preloads what
+    // it loads: a map walked under other ones is another map.
+    const launch = { conditions: spec.node?.conditions ?? [], require: spec.node?.require ?? [], import: spec.node?.import ?? [] };
+    const key = `${profile}\x00${moduleScope}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}\x00${JSON.stringify(launch)}`;
     const revision = (await vfs.revision());
     // An entry built at an older revision can never be SERVED again — the
     // lookup below requires an exact match — so from the first write after it
@@ -5722,6 +5741,11 @@ export class FacetManager {
       learnedFor,
       executedModules: executed,
       transformStore: this._transformStore(),
+      conditions: launch.conditions,
+      preloads: [
+        ...launch.require.map((specifier) => ({ preload: 'require' as const, specifier })),
+        ...launch.import.map((specifier) => ({ preload: 'import' as const, specifier })),
+      ],
     });
     if (offered.length > 0) {
       const staged: StagedProfileEntry[] = [];
@@ -6089,6 +6113,8 @@ export class FacetManager {
        * stopped at a synchronous read of it).
        */
       stdinFile?: { path: string; offset: number; syncRead: boolean };
+      /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
+      node?: NodeLaunch;
     },
   ): Promise<FacetExecResult> {
     const command = opts.command
@@ -6115,7 +6141,7 @@ export class FacetManager {
       // program's syscalls answer under the credential the table holds for
       // its pid. At the top of the table it ran as the session user whoever
       // started it.
-      entry = this.processes.spawn(command, opts.argv || [], opts.cwd || '/home/user', { parentPid: opts.invokerPid });
+      entry = this.processes.spawn(command, launchArgv({ execArgv: opts.node?.execArgv, argv: opts.argv }), opts.cwd || '/home/user', { parentPid: opts.invokerPid });
       // The command that ran it awaits it as that command's work (a shell
       // line's `node x`), until it ends: the session tells a shell doing
       // nothing but await its programs by it (SessionProcessSupervisor).
@@ -6153,7 +6179,7 @@ export class FacetManager {
     try {
       vfsState = await this._buildProcessBundle(
         entry,
-        { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope },
+        { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node },
         pacer,
       );
     } catch (err: unknown) {
@@ -6297,7 +6323,7 @@ export class FacetManager {
         if (vfsState.generatedSourcesReleased) {
           vfsState = await this._buildProcessBundle(
             entry,
-            { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope },
+            { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node },
             pacer,
           );
           dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
@@ -6863,6 +6889,7 @@ export class FacetManager {
     const body = JSON.stringify({
       pid: entry.pid,
       argv: opts.argv || [],
+      nodeCommandLine: opts.node ?? null,
       env: opts.env || {},
       cwd: opts.cwd || '/home/user',
       filename: opts.filename || '<eval>',
@@ -7680,7 +7707,7 @@ export class FacetManager {
     } else {
       // A child of its invoker, under its credential, as exec's. A re-drive has
       // no invoker (the journal never holds one): it runs as the row says.
-      entry = this.processes.spawn(command, opts.argv || [], cwd, { parentPid: opts.invokerPid, ...redriven });
+      entry = this.processes.spawn(command, launchArgv({ execArgv: opts.node?.execArgv, argv: opts.argv }), cwd, { parentPid: opts.invokerPid, ...redriven });
     }
     this.processes.setLongRunning(entry.pid);
     if (opts.attachedTty) this.processes.setAttachedTty(entry.pid);
@@ -7750,7 +7777,8 @@ export class FacetManager {
     // so the caller's pid goes with the instance that had it.
     //
     // Every resident has an identity from the moment it is spawned: derived
-    // from the working directory and argv (never the env), so the same
+    // from the working directory and the launch's argv, node's options
+    // included (launchArgv; never the env), so the same
     // `node server.js` from the same directory is the same application
     // across restarts and resets. A resident that declares a port at spawn
     // which an EXPLICIT reservation holds (an embedder's ensureDurableApp)
@@ -7763,7 +7791,7 @@ export class FacetManager {
     // reservation, and is not journalled, so nothing re-drives it and a
     // port it binds retires the previous occupant's capability like any
     // unrelated process would.
-    const derivedOwner = await deriveResidentOwner(cwd, opts.argv ?? []);
+    const derivedOwner = await deriveResidentOwner(cwd, launchArgv({ execArgv: opts.node?.execArgv, argv: opts.argv }));
     let owner = derivedOwner;
     if (opts.port !== undefined && opts.port > 0 && opts.port < 65536) {
       const declared = await readPortReservation(this.ctx, opts.port);
@@ -7783,9 +7811,23 @@ export class FacetManager {
       ...ranAs,
     };
     let duplicateOf: number | null;
+    let reservedPort: number | undefined;
+    let durableFacetName: string | undefined;
+    let launchEnv: Record<string, string> | undefined;
     try {
       duplicateOf = await this._claimResident(initial);
       this._assertLaunchStillOwned(entry.pid);
+      // The reservation the identity holds, if any: its port is what `$PORT`
+      // is set to and what the facet's durable slot is bound for, so the
+      // resident's `ctx.storage` persists across resets the way a durable
+      // worker's does. Taken inside the claim's cleanup: a slot whose ledger
+      // charge fails must not leave the claim held.
+      const held = duplicateOf !== null ? null : await readPortReservationByOwner(this.ctx, owner);
+      if (held !== null) {
+        durableFacetName = await acquireDurableFacetSlot(this.ctx, owner);
+        reservedPort = held.port;
+        launchEnv = { PORT: String(held.port), NIMBUS_APP: held.reservation.name ?? owner };
+      }
     } catch (e: unknown) {
       pacer.settle();
       await this._releaseResidentClaim(entry.pid);
@@ -7794,24 +7836,10 @@ export class FacetManager {
       throw e;
     }
     const ephemeral = duplicateOf !== null;
-    // The reservation the identity holds, if any: its port is what `$PORT`
-    // is set to and what the facet's durable slot is bound for, so the
-    // resident's `ctx.storage` persists across resets the way a durable
-    // worker's does.
-    const held = ephemeral ? null : await readPortReservationByOwner(this.ctx, owner);
-    let durableFacetName: string | undefined;
-    let launchEnv: Record<string, string> | undefined;
-    if (held !== null) {
-      durableFacetName = await acquireDurableFacetSlot(this.ctx, owner);
-      launchEnv = {
-        PORT: String(held.port),
-        NIMBUS_APP: held.reservation.name ?? owner,
-      };
-    }
     if (ephemeral) {
       this.ephemeralPids.set(entry.pid, owner);
       this.hooks.notify?.(
-        `\x1b[2m[nimbus: second instance of "${(opts.argv ?? []).join(' ') || command}" `
+        `\x1b[2m[nimbus: second instance of "${launchArgv({ execArgv: opts.node?.execArgv, argv: opts.argv }).join(' ') || command}" `
         + `is not the durable one — pid ${duplicateOf} keeps the identity]\x1b[0m\r\n`,
       );
     }
@@ -7822,7 +7850,7 @@ export class FacetManager {
       phase: 'starting',
       recipe,
       owner,
-      ...(held !== null ? { port: held.port, injectedPort: held.port } : {}),
+      ...(reservedPort !== undefined ? { port: reservedPort, injectedPort: reservedPort } : {}),
       restart: residentRestartPolicy(opts.env),
       ...ranAs,
     };
@@ -7876,7 +7904,7 @@ export class FacetManager {
     if (this.debugEnabled) this.processes.appendOutput(entry.pid, 'stderr', '[nimbus-debug] launch: building the module map\n');
     const vfsState = await this._buildProcessBundle(
       entry,
-      { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope },
+      { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node },
       pacer,
     );
     if (this.debugEnabled) {

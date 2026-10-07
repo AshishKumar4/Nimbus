@@ -206,7 +206,8 @@ export function isNimbusTenantSegment(value) {
 function isNimbusAgentOAuthCookie(value) {
     return NimbusAgentOAuthCookieSchema.safeParse(value).success;
 }
-function envString(env, key) {
+/** A var of the Worker's env, trimmed; '' when it is unset or not a string. */
+export function envString(env, key) {
     const value = env?.[key];
     return typeof value === 'string' ? value.trim() : '';
 }

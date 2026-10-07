@@ -264,6 +264,8 @@ interface WriteSpec<T> {
 
 interface Table {
   mounts: Map<string, Mount>;
+  /** Bumped by every mount and unmount: a placement made under an older table may be stale (mountGeneration). */
+  generation: number;
   /** observeWrites: who is told, and the mounts whose backends report their own writes, subscribed. */
   writes?: WriteWatches;
   /** Directory → names of mount points (or their missing ancestors) directly in it. */
@@ -470,7 +472,7 @@ export class CompositeVFS implements VFS {
       this.viewer = shared.principal;
       this.views = shared.views;
     } else {
-      this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, source: root, options, dev: null, inos: new Map() }]]), synthesized: new Map() };
+      this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, source: root, options, dev: null, inos: new Map() }]]), generation: 0, synthesized: new Map() };
       this.viewer = { cred: null };
       const refs = new Map<string, WeakRef<CompositeVFS>>();
       this.views = { refs, gone: new FinalizationRegistry((key: string) => {
@@ -742,8 +744,14 @@ export class CompositeVFS implements VFS {
     if (this.table.mounts.has(at)) throw syscallError('EBUSY', 'mount', point, { detail: 'something is already mounted there' });
     const mount: Mount = { point: at, source, options, dev: ANONYMOUS_DEV + ++this.nextDev, inos: new Map() };
     this.table.mounts.set(at, mount);
+    this.table.generation++;
     this.resynthesize();
     if (this.table.writes !== undefined) this.subscribeWrites(mount);
+  }
+
+  /** The mount table's generation: it moves with every mount and unmount, in every view of this namespace. */
+  mountGeneration(): number {
+    return this.table.generation;
   }
 
   unmount(point: string): void {
@@ -751,6 +759,7 @@ export class CompositeVFS implements VFS {
     const mount = this.table.mounts.get(at);
     if (at === ROOT_POINT || mount === undefined) throw syscallError('EINVAL', 'umount', point, { detail: 'nothing is mounted there' });
     this.table.mounts.delete(at);
+    this.table.generation++;
     this.table.writes?.subscribed.get(mount)?.();
     this.table.writes?.subscribed.delete(mount);
     this.resynthesize();
@@ -1001,6 +1010,33 @@ export class CompositeVFS implements VFS {
       // that its holder does not hold as one) is refused as an operation on it is.
       return then(this.reachable(at, false), () => ({ point: mount.point, source, path: relativeTo(mount.point, at) }));
     }));
+  }
+
+  /**
+   * Where a mutation of `path` lands: the namespace path its lookup resolves
+   * (links on the way followed, the last only with `follow`), the mount
+   * point it is on ('/' for the root), and whether that mount is read-only.
+   * The lookup is the mutations' own (onMutation's), so a writer that asks
+   * before it writes lands where the operation would. Rejects as that
+   * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO. Synchronous while
+   * the lookup stays on synchronous backends.
+   */
+  mutationRoute(path: string, options?: { follow?: boolean }): Awaitable<{ readonly path: string; readonly point: string; readonly readOnly: boolean }> {
+    return reported({ syscall: 'route', path }, () => then(this.resolve(path, options?.follow === true, false), (at) => {
+      this.present(at);
+      const { mount } = this.locate(at);
+      return { path: at, point: mount.point, readOnly: mount.options.readOnly === true };
+    }));
+  }
+
+  /**
+   * Whether `path` is a directory above a live mount point (not the root):
+   * one the namespace keeps a directory for its mounts, so removing it is
+   * EBUSY and a file at it EISDIR.
+   */
+  isAboveMount(path: string): boolean {
+    const at = normalizePath(path);
+    return at !== ROOT_POINT && !this.table.mounts.has(at) && this.isStructural(at);
   }
 
   /**

@@ -233,11 +233,19 @@ export interface CredentialedVfs {
         inodes: number;
         chunks: number;
     };
-    writeStream(stream: ReadableStream<Uint8Array>, options?: {
-        decodeDrainStartedAt?: number;
+    /**
+     * writeBatch where the namespace places it (setWaveRouter): one atomic
+     * batch when every record lands on this filesystem; else the same records
+     * as a wave, each applied where it lands, in order, refused as a whole
+     * call is (its error) at the first refusal.
+     */
+    writeBatchPlaced(payload: BatchWritePayload, options?: {
         signal?: AbortSignal;
-        mutationOwner?: string;
-    }): Promise<WriteBatchStreamResult>;
+    }): Promise<{
+        inodes: number;
+        chunks: number;
+    }>;
+    writeStream(stream: ReadableStream<Uint8Array>, options?: WriteStreamOptions): Promise<WriteBatchStreamResult>;
     mkdirBatch(paths: string[]): number;
     revision(path?: string): number;
     /**
@@ -301,6 +309,107 @@ export interface WriteStreamReceipt {
     gid: number;
     dev: number;
 }
+/** The longest target a routed symbolic link takes, in bytes: PATH_MAX, as symlink(2) bounds it. */
+export declare const ROUTED_LINK_TARGET_MAX = 4096;
+/**
+ * The largest file a wave writes to a mount. A routed file is one
+ * whole-file writeFile, its bytes held until that call under credit its
+ * record reserves whole when it is admitted (so an admitted record always
+ * finishes; at most the shared write credit, MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES,
+ * and half of it, so a held file never starves the wave); a larger one is
+ * refused (ENOTSUP, naming this) before anything is touched. A backend that
+ * declares an atomic streaming write could take more; none does yet.
+ */
+export declare const ROUTED_FILE_MAX: number;
+/**
+ * A wave's record that the namespace places on a mount (WaveRouter.apply),
+ * each the single call a program would make there. Paths are where the
+ * namespace's lookup placed them ('/'-rooted, the directory's links
+ * resolved). A link is made at `slot` beside its name first: a name the
+ * wave owns (its id and the record's index), renamed over the link's.
+ */
+export type RoutedWaveRecord = {
+    readonly type: 'delete';
+    readonly path: string;
+} | {
+    readonly type: 'directory';
+    readonly path: string;
+    readonly mode: number;
+} | {
+    readonly type: 'file';
+    readonly path: string;
+    readonly mode: number;
+    readonly bytes: Uint8Array;
+} | {
+    readonly type: 'symlink';
+    readonly path: string;
+    readonly target: string;
+    readonly slot: string;
+};
+/** A routed name's stat once published: what its receipt reports. */
+export interface RoutedStat {
+    readonly ino: number;
+    readonly mode: number;
+    readonly size: number;
+    readonly mtimeMs: number;
+    readonly ctimeMs: number;
+    readonly uid: number;
+    readonly gid: number;
+    readonly dev: number;
+}
+/**
+ * The namespace above this filesystem (SqliteVFS.setWaveRouter): every
+ * record of every wave, whoever streams it, is placed by its lookup, and one
+ * it places on a mount is applied there by its own operations. ProcessFiles
+ * installs its CompositeVFS.
+ */
+export interface WaveRouter {
+    /**
+     * The namespace path ('/'-rooted) directory `path` resolves to by the
+     * mutations' lookup (CompositeVFS.mutationRoute, links followed). A tail
+     * that does not exist yet is kept as named, after the nearest ancestor
+     * that resolves. Synchronous while the lookup stays on synchronous
+     * backends, so a commit can recheck a placement in its own turn.
+     */
+    resolveDirectory(path: string, cred: VfsCred, signal?: AbortSignal): string | Promise<string>;
+    /** The mount a mutation at resolved namespace path `path` lands on, or null when it is this filesystem's alone. */
+    placement(path: string): string | null;
+    /** The namespace's mount-table generation (CompositeVFS.mountGeneration): a placement made under another may be stale. */
+    mounts(): number;
+    /**
+     * Whether resolved namespace path `path` is a directory the namespace
+     * composes (one above a mount point): a removal of it is EBUSY and a file
+     * or link at it EISDIR, before anything commits.
+     */
+    composes(path: string): boolean;
+    /**
+     * Apply `record` on the namespace as `cred`; `guard` runs right before
+     * each call to the backend (the wave's admission and cancellation). A
+     * refusal throws its errno. Answers the published name's stat, for its
+     * receipt (null for a removal).
+     */
+    apply(record: RoutedWaveRecord, cred: VfsCred, guard: () => void): Promise<RoutedStat | null>;
+}
+/**
+ * How far an earlier attempt of the same fenced wave may have reached into
+ * mounted records (`prior`: the highest record index, -1 for none), and how
+ * this attempt notes its own (`note`, before the backend is called). A
+ * mounted record cannot be deduplicated, so one an earlier attempt may have
+ * applied is refused as outcome-unknown rather than applied again.
+ */
+export interface WaveMountReach {
+    readonly prior: number;
+    note(index: number): void;
+}
+/** How a wave is applied (writeStream): its cancellation, lease, timing, admission and mount reach. */
+export interface WriteStreamOptions {
+    decodeDrainStartedAt?: number;
+    signal?: AbortSignal;
+    mutationOwner?: string;
+    /** Right before each commit: the fenced wave is still admitted (SupervisorDeliveries.admitWave). */
+    admit?: () => void;
+    mountReach?: WaveMountReach;
+}
 export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
 export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
     ok: true;
@@ -310,6 +419,8 @@ export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
         code: 'ERR_WRITE_BATCH_STREAM';
         phase: WriteBatchStreamFailurePhase;
         message: string;
+        /** The refusal's errno (EACCES, EROFS, …) when the filesystem refused; absent otherwise. */
+        errno?: string;
     };
 });
 export declare const INODE_ROWS_PER_SQL_EXEC: number;
@@ -733,6 +844,8 @@ export declare class SqliteVFS {
      */
     private lastResolution;
     private resolutionEpoch;
+    /** A wave's watch for its own commit's publication (consumeStream's ownFiles): called once, at it. */
+    private publishWatch;
     private readonly sharedDirectories;
     /** Host-only, engine-local delegation; roots themselves retain ordinary POSIX semantics. */
     registerSharedDirectory(path: string): () => void;
@@ -1752,6 +1865,47 @@ export declare class SqliteVFS {
      * (ContentCutter holds at most one chunk of carry), so a streamed file is
      * stored exactly as the same bytes written any other way.
      */
+    private waveRouter;
+    /** The namespace that places every wave's records (ProcessFiles installs its CompositeVFS). */
+    setWaveRouter(router: WaveRouter | null): void;
+    /**
+     * Whether the namespace places every one of `names` (as `cred` names
+     * them) on this filesystem, by lookups made in this turn: false when one
+     * lands on a mount or (unless `aboveMounts`) is a directory above a mount
+     * point, when a lookup leaves the synchronous backends, or when it fails. A caller that writes in this same turn writes where the
+     * namespace would.
+     */
+    placesHere(names: readonly string[], cred?: VfsCred, options?: {
+        aboveMounts?: boolean;
+        follow?: boolean;
+    }): boolean;
+    /**
+     * `aboveMounts`: a directory above a mount point counts as this
+     * filesystem's, as a directory record there is (making, reading or
+     * owning the root's directory); else it is the namespace's to answer.
+     * `follow`: each name is looked up whole, a link at it followed, as an
+     * operation that follows its name's link (stat, chown, writeFile) is
+     * placed; else by its directory, the name itself not followed.
+     */
+    private placedHere;
+    /**
+     * writeBatch where the namespace places it. When every record is placed on
+     * this filesystem by lookups made in this turn, the batch commits here,
+     * atomic as before, in that same turn; otherwise (a record on a mount, or
+     * a lookup that left the synchronous backends) it goes as a wave, each
+     * record applied where it lands and rechecked at its commit. `signal`
+     * cancels it before anything commits.
+     */
+    private writeBatchPlaced;
+    /**
+     * Route `record` through `router` when the namespace places it on a mount,
+     * in its place in the wave: what the wave wrote here before it commits
+     * first (`at.settleBefore`), then the namespace's own operation, with its
+     * refusals (EROFS on a read-only mount, EACCES, ENOENT). A file's chunks
+     * are handed to the router as they arrive, each held by the wave's credit
+     * until the router has written it. True when the record was routed.
+     */
+    private routeRecord;
     private writeStream;
     private consumeStream;
     private _writeBatchWithRetry;
