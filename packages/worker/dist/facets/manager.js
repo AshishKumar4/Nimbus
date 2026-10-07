@@ -4251,7 +4251,7 @@ export class FacetManager {
         // backoff; a row that is gone is owed nothing.
         if (!(await this.launchJournal.rows()).has(key))
             return;
-        await this.launchJournal.drive(key, row);
+        await this.launchJournal.drive(key, row, { lostToReset: false });
     }
     /** Claim identity AND write its recovery row in one serializable storage transaction. */
     async _claimResident(record) {
@@ -7921,7 +7921,8 @@ export class FacetManager {
         const { promise: boundHit, resolve: markBound } = withResolvers();
         setTimeout(() => markBound(true), DURABLE_ENSURE_BOOT_BUDGET_MS);
         const failed = await Promise.race([
-            this.launchJournal.drive(rowKey, record),
+            // A previous instance's row: the session restarted under it.
+            this.launchJournal.drive(rowKey, record, { lostToReset: true }),
             boundHit,
         ]);
         if (failed)
