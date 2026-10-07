@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a file a process faulted in could stay unreadable for good when its
+  fetch completed without its bytes landing (a barrier spoiled the fill, or
+  the store refused it): the path counted as asked. It is now asked for again
+  by the next read that misses it, and an `import()`'s prefetch takes another
+  round for it (`astro dev`, now and then: "Cannot load module
+  '…/zod/v4/classic/index.js'").
 - Fixed: a process whose file store was at its storage budget could never
   read a file it had not staged: the fetch a refused read starts was declined
   for want of room, room was asked for only afterwards, and the fetch was not
