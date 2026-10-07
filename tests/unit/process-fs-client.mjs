@@ -547,12 +547,14 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
     },
   });
   s.files.vfs.mount('/slow', backend);
-  const c = processFsClient({ session: s.port, retry: { backoffMs: [], stallMs: 30, answerDeadlineMs: 30 } });
+  const c = processFsClient({ session: s.port, retry: { backoffMs: [], stallMs: 300, answerDeadlineMs: 300 } });
+  // The old write reaches the backend, and waits there past the writer's patience.
+  setTimeout(release, 1_000);
   await assert.rejects(c.submit({ type: 'call', call: { call: 'writeFile', path: 'slow/race', mode: 0o644, data: enc.encode('old') } }), (error) => error.code === 'EIO');
+  assert.equal(calls, 1, 'the given-up write never reached the backend');
   // The next write waits for the retirement, which waits for the old call.
-  const next = c.submit({ type: 'call', call: { call: 'writeFile', path: 'slow/race', mode: 0o644, data: enc.encode('new') } });
-  setTimeout(release, 100);
-  await next;
+  await c.submit({ type: 'call', call: { call: 'writeFile', path: 'slow/race', mode: 0o644, data: enc.encode('new') } });
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
   assert.equal(dec.decode(slow.readFile('/race')), 'new', 'the given-up wave\'s mounted write landed over the next epoch\'s');
 }
 
