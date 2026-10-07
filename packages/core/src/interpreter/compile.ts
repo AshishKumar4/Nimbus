@@ -2231,7 +2231,8 @@ export class Compiler {
       const ref = this.analysis.ref(target);
       const name = target.name;
       const objects = this.withObjects(ref);
-      const isGlobal = ref.binding === null;
+      // A unit's own Function is a binding, as a native cell's parameter is: not deletable.
+      const isGlobal = ref.binding === null && !(name === 'Function' && this.unit.host.functionBinding !== null);
       return syncCode((env) => {
         for (let i = 0; i < objects.length; i++) {
           const o = objects[i](env);
