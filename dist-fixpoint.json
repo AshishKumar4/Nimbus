@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "46e33bf1caa618d94266fde1cfd5871685fd031984b2ef534712ad0e64a879aa",
+  "fingerprint": "93b4c4d631870d679274bc216d4662529496601b1bb24ac0f56aba9554e6d890",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1920,8 +1920,8 @@
     "packages/worker/dist/git/promisor.d.ts.map": "50db413eb04f5986084678d54377235e6f475341aae8b5bc173679deaf58be55",
     "packages/worker/dist/git/promisor.js": "a06e9fa3591ba95678fbc8b195c765b13d2dcfdcd464d6342e8ad2a74491d287",
     "packages/worker/dist/git/sparse-checkout.d.ts": "26ee1851061e4fbdd1714833d6709d18a06e5956cd5ef8e631e921c19eddfecf",
-    "packages/worker/dist/git/sparse-checkout.d.ts.map": "05fab6cb739ed30c16758cc63fc85fc60f4bdb0f86af01ae266c9ee6a903c899",
-    "packages/worker/dist/git/sparse-checkout.js": "241b516d39e93d6f8461fc3870605c06813e8eb595c7db20ec6817ca4796e63b",
+    "packages/worker/dist/git/sparse-checkout.d.ts.map": "f676e22b3132a660c69bb8673fde0ed72e2cd2448a520411c9f18c03a4b1258a",
+    "packages/worker/dist/git/sparse-checkout.js": "13f9ce7fffdf20c2566fc4bb4dd72a68fdc657f0fc71411af02f21a01d62f580",
     "packages/worker/dist/git/unified-diff.d.ts": "1b076e6c073e00ccfa239d238c753c608d3d30ee375a3deba365148a674044be",
     "packages/worker/dist/git/unified-diff.d.ts.map": "37bdf28ce1f7a5253cae4a197baa7afd11ba32e3f4d26da13d32570fd4f672a6",
     "packages/worker/dist/git/unified-diff.js": "f7de2e96c26eeba82d294bf813cdcfcc6d485e87e4a2b0e963e100cf99d5e982",
@@ -2525,7 +2525,7 @@
     "packages/worker/src/git/pack/transport.ts": "de43e749596dba421dfba8aceced63e10df9719cc229eb87493c5f9d49355297",
     "packages/worker/src/git/pack/upload-pack.ts": "82deccd1815dc825553bee7db848ee9c5350c032a6e3f2c86082c967eb79ea28",
     "packages/worker/src/git/promisor.ts": "9a09de70bae901debd7e172a2623045212c2026b4c2c853ebefa7cbebf284029",
-    "packages/worker/src/git/sparse-checkout.ts": "07dd5afcc0fd9fa5f442477878d7bf82c436996bd204ee4e894cd15f006ff58a",
+    "packages/worker/src/git/sparse-checkout.ts": "6f110c4bc25942e2e694c4a13e26d413f89f69c156a327d92af71e867d04f6da",
     "packages/worker/src/git/unified-diff.ts": "14b4be79ac63cf630284072bfa80a621bacc4c85f238aaf91bb1927b02a02b70",
     "packages/worker/src/git/wave-bench.ts": "d3284da036e27716491613b01578da25cfa0cd90abf25b6d04202544a4743be3",
     "packages/worker/src/git/worktree/cachetree.ts": "e7055d3914be54838cd62c0cee8db663f16b55e2efe39856e48ee81e93f70a5d",
