@@ -1006,9 +1006,10 @@ export class CompositeVFS implements VFS {
    * point it is on ('/' for the root), and whether that mount is read-only.
    * The lookup is the mutations' own (onMutation's), so a writer that asks
    * before it writes lands where the operation would. Rejects as that
-   * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO.
+   * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO. Synchronous while
+   * the lookup stays on synchronous backends.
    */
-  async mutationRoute(path: string, options?: { follow?: boolean }): Promise<{ readonly path: string; readonly point: string; readonly readOnly: boolean }> {
+  mutationRoute(path: string, options?: { follow?: boolean }): Awaitable<{ readonly path: string; readonly point: string; readonly readOnly: boolean }> {
     return reported({ syscall: 'route', path }, () => then(this.resolve(path, options?.follow === true, false), (at) => {
       this.present(at);
       const { mount } = this.locate(at);

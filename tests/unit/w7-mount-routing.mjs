@@ -23,7 +23,9 @@ import { createSupervisorOpHandler } from '../../packages/core/src/workspace/sup
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createWaveWriter } from '../../packages/platform/src/wave-writer.ts';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
-import { HELD_FILE_BYTES } from '../../packages/core/src/runtime/wave-router.ts';
+import { HELD_FILE_BYTES, STAGED_LINK_STALE_MS } from '../../packages/core/src/runtime/wave-router.ts';
+import { seedBaseFilesystem } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { seedProject } from '../../packages/core/src/vfs/seed-project.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const enc = new TextEncoder();
@@ -218,19 +220,195 @@ function scripted(overrides) {
   assert.equal(s.inSqlite('home/user/after'), null, 'the wave went on past a removal it did not make');
 }
 
-// Admission and cancellation are checked right before the backend, after a routed file's chunks.
+// Admission and cancellation are checked right before each call to the backend.
 {
   const s = session();
-  let admits = 0;
   const big = new Uint8Array(150_000).fill(9);
-  const result = await s.engine.as(CRED_SESSION_USER).writeStream(encodeWriteBatchStream(wave(file('shared/late', big))), {
-    // Admitted while the file begins and its three chunks are written; overtaken at its publication (the rename).
-    admit: () => { if (++admits >= 6) throw Object.assign(new Error('ESTALE: overtaken'), { code: 'ESTALE' }); },
+  let admits = 0;
+  let firstRefused = 0;
+  // Overtaken right before its second chunk's write: what was written stays, nothing more is.
+  const result = await s.engine.as(CRED_SESSION_USER).writeStream(encodeWriteBatchStream(wave(file('shared/late', big), file('shared/after', 'a'))), {
+    admit: () => {
+      admits++;
+      if (s.inMount(s.shared, '/late') !== null && firstRefused++ === 0) throw Object.assign(new Error('ESTALE: overtaken'), { code: 'ESTALE' });
+      if (firstRefused > 0) throw Object.assign(new Error('ESTALE: overtaken'), { code: 'ESTALE' });
+    },
   });
   assert.equal(result.ok, false);
   assert.match(result.error.message, /ESTALE/);
-  assert.equal(s.inMount(s.shared, '/late'), null, 'an overtaken wave published its routed file');
-  assert.deepEqual(s.shared.readdir('/').map((entry) => entry.name).filter((name) => name.startsWith('.')), [], 'a staged name was left behind');
+  assert.ok(s.shared.readFile('/late').byteLength < big.byteLength, 'an overtaken wave went on writing its file');
+  assert.equal(s.inMount(s.shared, '/after'), null, 'an overtaken wave went on to its next record');
+}
+
+// A file is written as writeFile and range writes make it: the existing
+// file's inode, mode and owner kept, a link at its name followed, a file
+// writable in a directory that is not. Red before: a staged file renamed
+// over it (a fresh inode, 0644, the link replaced, EACCES on the rename).
+{
+  const s = session();
+  const body = new Uint8Array(200_000).map((_, index) => (index * 3) & 255);
+  s.shared.writeFile('/kept', enc.encode('old'));
+  s.shared.chmod('/kept', 0o600);
+  const inode = s.shared.stat('/kept').ino;
+  s.shared.mkdir('/real');
+  s.shared.writeFile('/real/target', enc.encode('old target'));
+  s.shared.symlink('real/target', '/via-link');
+  const result = await s.send(wave(file('shared/kept', body), file('shared/via-link', body)));
+  assert.equal(result.ok, true, JSON.stringify(result.error));
+  assert.equal(s.shared.stat('/kept').mode & 0o7777, 0o600, 'the file lost its mode');
+  assert.equal(s.shared.stat('/kept').ino, inode, 'the file was replaced by another inode');
+  assert.deepEqual(new Uint8Array(s.shared.readFile('/kept')), body);
+  assert.equal(s.shared.stat('/via-link', { follow: false }).type, 'symlink', 'the link at the name was replaced');
+  assert.deepEqual(new Uint8Array(s.shared.readFile('/real/target')), body, 'the link was not followed');
+}
+
+// Every call of a record lands where it was placed: an alias repointed
+// mid-file does not move the rest of the file, a directory that moves
+// refuses it, and a file replaced under it refuses it (ESTALE). Red
+// before: each range re-resolved the alias, and the rest of the file went
+// to the new target, zero-filled up to its offset.
+{
+  const s = session();
+  const body = new Uint8Array(200_000).map((_, index) => (index * 5) & 255);
+  let ranges = 0;
+  const pin = scripted({
+    writeRange(self, path, offset, data) {
+      if (++ranges === 1) {
+        // A peer repoints the alias after the first chunk.
+        s.engine.as(CRED_SESSION_USER).unlink('home/user/alias');
+        s.engine.as(CRED_SESSION_USER).symlink('/pin/B', 'home/user/alias');
+      }
+      return self.writeRange(path, offset, data);
+    },
+  });
+  s.files.vfs.mount('/pin', pin);
+  pin.mkdir('/A');
+  pin.mkdir('/B');
+  s.engine.as(CRED_SESSION_USER).symlink('/pin/A', 'home/user/alias');
+  const result = await s.send(wave(file('home/user/alias/f', body)));
+  assert.equal(result.ok, true, JSON.stringify(result.error));
+  assert.ok(ranges >= 1, 'the file was not written in ranges');
+  assert.deepEqual(new Uint8Array(pin.readFile('/A/f')), body, 'the file did not stay where it was placed');
+  assert.equal(s.inMount(pin, '/B/f'), null, 'part of the file went to the repointed alias');
+
+  // A directory that moves under a record refuses it.
+  const moving = scripted({
+    writeRange(self, path, offset, data) {
+      // After the first range lands, a peer moves the directory.
+      const written = self.writeRange(path, offset, data);
+      if (!self.__moved) { self.__moved = true; self.rename('/D', '/E'); }
+      return written;
+    },
+  });
+  s.files.vfs.mount('/moving', moving);
+  moving.mkdir('/D');
+  const moved = await s.send(wave(file('moving/D/f', body)));
+  assert.equal(moved.ok, false);
+  assert.equal(moved.error.errno, 'ESTALE', moved.error.message);
+  assert.equal(s.inMount(moving, '/D/f'), null, 'a range went to a new directory at the old name');
+}
+
+// A link's target is bounded as symlink(2) bounds it.
+{
+  const s = session();
+  const long = enc.encode('t'.repeat(5_000));
+  const result = await s.send({
+    inodes: [{ path: 'shared/long', parentPath: 'shared', kind: 'symlink', isDir: false, size: long.byteLength, mtime: 1, mode: 0o777, chunkCount: 1 }],
+    chunks: [{ path: 'shared/long', chunkId: 0, data: long }],
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error.errno, 'ENAMETOOLONG');
+  assert.equal(s.shared.stat('/long', { follow: false }), null);
+}
+
+// A staged link a crash left is removed: by the next wave making a link of
+// that name, or, once stale, by any wave making a link in its directory.
+{
+  const s = session();
+  s.shared.symlink('leftover', '/.tool.nimbus-wave');
+  s.shared.symlink('old', '/.other.nimbus-wave');
+  const target = enc.encode('bin/tool.js');
+  const link = (path) => ({
+    inodes: [{ path, parentPath: 'shared', kind: 'symlink', isDir: false, size: target.byteLength, mtime: 1, mode: 0o777, chunkCount: 1 }],
+    chunks: [{ path, chunkId: 0, data: target }],
+  });
+  assert.equal((await s.send(link('shared/tool'))).ok, true);
+  assert.equal(s.shared.readlink('/tool'), 'bin/tool.js');
+  assert.equal(s.shared.stat('/.tool.nimbus-wave', { follow: false }), null, 'the leftover of this name stayed');
+  assert.notEqual(s.shared.stat('/.other.nimbus-wave', { follow: false }), null, 'a fresh staged link of another name was swept');
+  const realNow = Date.now;
+  Date.now = () => realNow() + STAGED_LINK_STALE_MS + 1_000;
+  try {
+    assert.equal((await s.send(link('shared/tool2'))).ok, true);
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(s.shared.stat('/.other.nimbus-wave', { follow: false }), null, 'a stale staged link stayed');
+}
+
+// A name placed on SQLite is placed again right before its commit: a peer
+// that repoints its directory onto a mount in between refuses the wave
+// (ESTALE), and no row is written beneath the mount. Red before: the
+// cached placement committed the file to SQLite, hidden by the mount.
+{
+  const s = session();
+  s.engine.as(CRED_SESSION_USER).mkdir('home/user/real');
+  s.engine.as(CRED_SESSION_USER).symlink('real', 'home/user/alias');
+  const bytes = new Uint8Array(await new Response(encodeWriteBatchStream(wave(file('home/user/alias/a', new Uint8Array(300_000).fill(4)), file('home/user/alias/b', 'b')))).arrayBuffer());
+  const half = bytes.byteLength >> 1;
+  let pulls = 0;
+  const stream = new ReadableStream({
+    type: 'bytes',
+    async pull(controller) {
+      if (pulls++ === 0) { controller.enqueue(bytes.slice(0, half)); return; }
+      // The engine has placed the file by now; a peer repoints the alias onto the mount.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      s.engine.as(CRED_SESSION_USER).unlink('home/user/alias');
+      s.engine.as(CRED_SESSION_USER).symlink('/shared', 'home/user/alias');
+      controller.enqueue(bytes.slice(half));
+      controller.close();
+    },
+  });
+  const result = await s.op({ op: 'writeBatchStream', args: [], cred: CRED_SESSION_USER, stream });
+  assert.equal(result.ok, false, 'a placement a peer moved was committed');
+  assert.equal(result.error.errno, 'ESTALE', result.error.message);
+  assert.equal(s.inSqlite('home/user/real/a'), null);
+  assert.deepEqual(s.sqliteNames('shared'), []);
+}
+
+// writeBatch is cancelled with its process: released mid-batch, it publishes nothing more.
+{
+  const s = session();
+  let releaseHost;
+  const slow = scripted({
+    async writeFile(self, path, data, options) {
+      if (path === '/first') await releaseHost();
+      return self.writeFile(path, data, options);
+    },
+  });
+  s.files.vfs.mount('/slow', slow);
+  const host = s.files.openHost(CRED_SESSION_USER);
+  releaseHost = () => host.dispose();
+  await assert.rejects(Promise.resolve(host.fs.writeBatch(wave(file('slow/first', 'f'), file('slow/second', 's')))));
+  assert.equal(slow.stat('/second'), null, 'a released process published after its release');
+}
+
+// The seeds land where the namespace puts them: the base on a mount over /etc, and no starter project beneath a mount.
+{
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const files = new ProcessFiles(engine);
+  const etc = new MemoryVFS();
+  files.vfs.mount('/etc', etc);
+  await seedBaseFilesystem(files);
+  assert.match(dec.decode(etc.readFile('/passwd')), /^root:x:0:0/, '/etc/passwd did not reach the mount');
+  assert.equal(engine.as(CRED_KERNEL).exists('etc/passwd'), false, 'the seed wrote SQLite beneath /etc');
+  const home = new MemoryVFS();
+  engine.as(CRED_KERNEL).mkdir('home/user', { recursive: true });
+  files.vfs.mount('/home/user', home);
+  const seeded = seedProject(engine);
+  assert.equal(seeded.seeded, false);
+  assert.equal(engine.as(CRED_KERNEL).exists('home/user/example-app'), false, 'the starter project was written beneath a mount');
 }
 
 // A link replaces what is there only once the backend has made it.
@@ -256,7 +434,7 @@ function scripted(overrides) {
   const result = await s.send(wave(file('shared/large.bin', large)));
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.deepEqual(new Uint8Array(s.shared.readFile('/large.bin')), large);
-  // A backend that cannot write in place takes a file whole, up to HELD_FILE_BYTES.
+  // A backend that writes no ranges takes a file whole, up to HELD_FILE_BYTES.
   const whole = scripted({ writeRange: undefined });
   s.files.vfs.mount('/whole', whole);
   const small = await s.send(wave(file('whole/small', new Uint8Array(1024 * 1024).fill(1))));

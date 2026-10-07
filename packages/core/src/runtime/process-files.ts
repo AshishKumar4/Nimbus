@@ -227,7 +227,12 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     this.guard(); this.ownPid(pid);
     return this.target.acknowledgeAppend(pid, writerId, moduleId, operationId);
   }
-  writeBatch(payload: BatchWritePayload) { this.guard(); return this.target.writeBatch(payload); }
+  writeBatch(payload: BatchWritePayload, options?: { signal?: AbortSignal }): Promise<{ inodes: number; chunks: number }> {
+    this.guard();
+    // As writeStream: closing the scope cancels the commit.
+    const linked = linkedSignal([options?.signal, this.signal, this.scope.abort.signal]);
+    return Promise.resolve(this.target.writeBatch(payload, { signal: linked.signal })).finally(linked.dispose);
+  }
   writeStream(
     stream: ReadableStream<Uint8Array>,
     options?: WriteStreamOptions,
@@ -601,7 +606,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void {
     return this.bridge.acknowledgeAppend(pid, writerId, moduleId, operationId);
   }
-  writeBatch(payload: BatchWritePayload) { return this.bridge.writeBatch(payload); }
+  writeBatch(payload: BatchWritePayload, options?: { signal?: AbortSignal }) { return this.bridge.writeBatch(payload, options); }
   writeStream(
     stream: ReadableStream<Uint8Array>,
     options?: WriteStreamOptions,
