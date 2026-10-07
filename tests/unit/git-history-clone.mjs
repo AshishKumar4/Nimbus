@@ -9,8 +9,10 @@
 // invocations and resumed from its stored pack.
 //
 //   - the same objects as host git's clone, and git fsck --full clean;
-//   - its commit-graph, a chain of one layer, host git's for its clone byte
-//     for byte, and git commit-graph verify clean;
+//   - its commit-graph, written after it answers: a chain of one layer,
+//     host git's for its clone byte for byte, then that layer with its
+//     changed-path filters, host git's --changed-paths graph, and git
+//     commit-graph verify clean;
 //   - not shallow; HEAD, config, index and worktree as git's;
 //   - every pack's idx equal to git index-pack's for it;
 //   - one blobs request broken off mid-pack and one trees piece that never
@@ -108,6 +110,7 @@ try {
   let readsAtFinish = null;
   // The changed-path filters the clone leaves running wait until the clone's own checks are done.
   let readsAtFilters = null;
+  let baseLayer = null;
   let releaseFilters;
   const filtersReleased = new Promise((resolve) => { releaseFilters = resolve; });
   session.requests.onPhase = async (body) => {
@@ -115,6 +118,11 @@ try {
     if (body.op === 'graph-filters') {
       readsAtFilters ??= session.requests.rangeReads.length;
       await filtersReleased;
+      if (body.graphFilters?.step === 'piece' && baseLayer === null) {
+        const info = session.materialize('home/user/repo/.git/objects/info', join(work, 'base-layer'));
+        const chain = readFileSync(join(info, 'commit-graphs/commit-graph-chain'), 'utf8');
+        baseLayer = { chain, layer: new Uint8Array(readFileSync(join(info, `commit-graphs/graph-${chain.trim()}.graph`))) };
+      }
     }
   };
   try {
@@ -142,23 +150,26 @@ try {
     const out = session.materialize('home/user/repo', join(work, 'out'));
     assert.deepEqual(hostObjects(out), hostObjects(host), 'the objects git clone holds');
     hostGit(out, ['fsck', '--full', '--no-dangling']);
-    // The commit-graph, as one layer of a chain: host git's graph for its own clone, byte for byte.
-    const chain = readFileSync(join(out, '.git/objects/info/commit-graphs/commit-graph-chain'), 'utf8');
-    assert.match(chain, /^[0-9a-f]{40}\n$/, 'a chain of one layer');
-    const layer = new Uint8Array(readFileSync(join(out, `.git/objects/info/commit-graphs/graph-${chain.trim()}.graph`)));
-    assert.equal(diffGraphs(referenceGraph(host, { changedPaths: false }), layer), null, 'the commit-graph is host git\'s');
-    hostGit(out, ['commit-graph', 'verify']);
-    // After the clone has answered, its changed-path filters, in pieces (the
-    // clone ran with 4 commits a piece): the layer is host git's
-    // --changed-paths graph, the only one the chain names.
+    // The commit-graph is written after the clone answers (graph-filters.ts):
+    // none yet, its commits' records kept for it.
+    assert.equal(statSync(join(out, '.git/objects/info/commit-graphs/commit-graph-chain'), { throwIfNoEntry: false }), undefined, 'no graph before the clone answers');
+    assert.ok(readdirSync(join(out, '.git/objects/info/commit-graphs/tmp_records')).length > 0, 'the records are kept');
+    // Then, in the background: the base layer (host git's graph for its own
+    // clone, byte for byte, the chain's one layer), then its changed-path
+    // filters in pieces (4 commits a piece): host git's --changed-paths
+    // graph, the only layer the chain names, and git commit-graph verify clean.
     releaseFilters();
     await session.settled();
-    const filteredOut = session.materialize('home/user/repo/.git/objects/info', join(work, 'filtered'));
-    const filteredChain = readFileSync(join(filteredOut, 'commit-graphs/commit-graph-chain'), 'utf8');
-    assert.notEqual(filteredChain, chain, 'the chain names the filtered layer');
-    assert.deepEqual(readdirSync(join(filteredOut, 'commit-graphs')).sort(), ['commit-graph-chain', `graph-${filteredChain.trim()}.graph`], 'the old layer and the pieces are gone');
-    const filtered = new Uint8Array(readFileSync(join(filteredOut, `commit-graphs/graph-${filteredChain.trim()}.graph`)));
+    assert.ok(baseLayer !== null, 'the base layer was there when the first piece ran');
+    assert.match(baseLayer.chain, /^[0-9a-f]{40}\n$/, 'a chain of one layer');
+    assert.equal(diffGraphs(referenceGraph(host, { changedPaths: false }), baseLayer.layer), null, 'the base layer is host git\'s');
+    const after = session.materialize('home/user/repo', join(work, 'after'));
+    const filteredChain = readFileSync(join(after, '.git/objects/info/commit-graphs/commit-graph-chain'), 'utf8');
+    assert.notEqual(filteredChain, baseLayer.chain, 'the chain names the filtered layer');
+    assert.deepEqual(readdirSync(join(after, '.git/objects/info/commit-graphs')).sort(), ['commit-graph-chain', `graph-${filteredChain.trim()}.graph`], 'the base layer, the records and the pieces are gone');
+    const filtered = new Uint8Array(readFileSync(join(after, `.git/objects/info/commit-graphs/graph-${filteredChain.trim()}.graph`)));
     assert.equal(diffGraphs(referenceGraph(host), filtered), null, 'with its changed-path filters, host git\'s --changed-paths graph');
+    hostGit(after, ['commit-graph', 'verify']);
     const pieces = session.requests.phases.filter((phase) => phase === 'graph-filters').length;
     assert.ok(pieces > 4, 'the filters ran in pieces: ' + pieces);
     assert.equal(statSync(join(out, '.git/shallow'), { throwIfNoEntry: false }), undefined, 'not shallow');

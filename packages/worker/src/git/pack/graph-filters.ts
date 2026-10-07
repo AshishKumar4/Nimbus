@@ -1,10 +1,13 @@
 /**
- * git/pack/graph-filters.ts — a full clone's changed-path filters, computed
- * after the clone has answered, in pieces, and added to its commit-graph
- * layer (commit-graph.ts), as `git commit-graph write --changed-paths`
+ * git/pack/graph-filters.ts — a full clone's commit-graph (commit-graph.ts),
+ * written after the clone has answered, so nothing of it is on the way to
+ * the prompt: its base layer first, then its changed-path filters, computed
+ * in pieces and added to it, as `git commit-graph write --changed-paths`
  * would have written them.
  *
- *   plan      the chain's one layer, by name, and its commits
+ *   plan      the base layer from the commit records the clone's history left
+ *             (GRAPH_RECORDS_DIR), as the chain's one layer; its name and
+ *             commits
  *   piece     commits [from, to) of the layer in date order, newest first (a
  *             commit's first parent is most often the next one, and they
  *             share most of their trees): each one's first-parent tree diff,
@@ -23,8 +26,10 @@ import { ByteLru } from './byte-lru.js';
 import {
   COMMIT_GRAPHS_DIR,
   COMMIT_GRAPH_CHAIN,
+  GRAPH_RECORDS_DIR,
   bloomFilter,
   changedPaths,
+  cloneGraph,
   graphName,
   layerCommits,
   withFilters,
@@ -68,8 +73,58 @@ async function readLayer(context: CloneContext, name: string): Promise<Uint8Arra
   return file;
 }
 
-/** The layer to add filters to, if the chain is a clone's one layer without them. */
+/** A file whole, its length unknown: ranged reads until one comes back short. */
+async function readWhole(context: CloneContext, path: string): Promise<Uint8Array> {
+  const PIECE = 4 * 1024 * 1024;
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const piece = await context.supervisor.fsReadRange(path, size, PIECE);
+    if (piece === null) throw new PackFormatError(path + ' is missing');
+    parts.push(piece);
+    size += piece.byteLength;
+    if (piece.byteLength < PIECE) break;
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.byteLength;
+  }
+  return out;
+}
+
+/**
+ * A full clone's base layer, from the commit records its history left
+ * (GRAPH_RECORDS_DIR), as the chain's one layer; the records go. None when
+ * the repository has a graph already, or the records make none.
+ */
+async function writeBaseLayer(context: CloneContext): Promise<void> {
+  const names = await context.supervisor.readdir(join(context.dir, GRAPH_RECORDS_DIR));
+  if (names.length === 0) return;
+  const writer = context.writer();
+  if (await context.supervisor.fsReadRange(join(context.dir, COMMIT_GRAPH_CHAIN), 0, 1) === null) {
+    const lists: Uint8Array[] = [];
+    for (const name of names) lists.push(await readWhole(context, join(context.dir, GRAPH_RECORDS_DIR + '/' + name)));
+    const built = cloneGraph(lists);
+    if (built !== null) {
+      const name = graphName(built.file);
+      await writer.directory(COMMIT_GRAPHS_DIR);
+      await writer.file(COMMIT_GRAPHS_DIR + '/graph-' + name + '.graph', 0o444, built.file);
+      await writer.file(COMMIT_GRAPH_CHAIN, 0o444, encoder.encode(name + '\n'));
+    }
+  }
+  for (const name of names) await writer.remove(GRAPH_RECORDS_DIR + '/' + name);
+  await writer.remove(GRAPH_RECORDS_DIR, true);
+  await writer.flush();
+}
+
+/**
+ * The layer to add filters to: a full clone's base layer, written first
+ * from its records; or the chain's one layer, if it has no filters yet.
+ */
 export async function graphFiltersPlan(context: CloneContext): Promise<{ layer: string; commits: number } | null> {
+  await writeBaseLayer(context);
   const layer = await soleLayer(context);
   if (layer === null) return null;
   const file = await readLayer(context, layer);

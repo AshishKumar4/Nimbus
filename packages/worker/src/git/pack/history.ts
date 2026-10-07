@@ -22,7 +22,7 @@
  * clone fetches 137.16 MB in 3.
  */
 
-import { commitRecord } from './commit-graph.js';
+import { GRAPH_RECORDS_DIR, commitRecord } from './commit-graph.js';
 import { decodeBatch, parseTree, MODE_GITLINK, MODE_TREE } from './plan.js';
 import { OID_BYTES, oidToHex, PackFormatError } from './format.js';
 import {
@@ -73,9 +73,9 @@ export interface HistoryStepResult {
   /** Lists written (STAGE_DIR files): root trees for commits, blobs for trees. */
   lists: StagedFile[];
   /**
-   * commits: the commits' records for the commit-graph (STAGE_DIR files;
-   * commit-graph.ts commitRecord); null when one did not parse, which no
-   * graph is written for, as git writes none.
+   * commits: the commits' records for the commit-graph (GRAPH_RECORDS_DIR
+   * files; commit-graph.ts commitRecord); null when one did not parse, which
+   * no graph is written for, as git writes none.
    */
   graphLists?: StagedFile[] | null;
   /** Ids of the clone's tag interest this step's pack held (clone.ts TagWatch). */
@@ -97,6 +97,9 @@ class ListWriter {
   private readonly parts: Uint8Array[] = [];
   private size = 0;
 
+  /** `dir`: where its file goes, relative to the clone (the staging directory, unless the list outlives it). */
+  constructor(private readonly dir: string = STAGE_DIR) {}
+
   add(bytes: Uint8Array): void {
     this.parts.push(bytes);
     this.size += bytes.byteLength;
@@ -105,7 +108,8 @@ class ListWriter {
   async write(writer: CloneWriter, name: string): Promise<StagedFile[]> {
     if (this.size === 0 || this.refused) return [];
     const bytes = this.size;
-    await writer.file(STAGE_DIR + '/' + name, 0o644, concat(this.parts));
+    if (this.dir !== STAGE_DIR) await writer.directory(this.dir);
+    await writer.file(this.dir + '/' + name, 0o644, concat(this.parts));
     return [{ name, bytes }];
   }
 }
@@ -218,7 +222,8 @@ export async function historyStep(
   const response = await requestPack(transport(context), new Set(request.capabilities), { wants, filter });
   if (response.pack === null) throw new PackFormatError('the server sent no pack for history piece ' + request.piece);
   const list = new ListWriter();
-  const graph = new ListWriter();
+  // Kept past the clone, for its commit-graph (graph-filters.ts).
+  const graph = new ListWriter(GRAPH_RECORDS_DIR);
   const watch = new TagWatch(request.tagInterest ?? []);
   const stored = await storePackResumable(context, writer, response.pack, 'tmp_pack_' + request.jobId + '_' + request.piece, {
     cacheBytes: HISTORY_CACHE_BYTES,
@@ -245,7 +250,7 @@ export async function historyResume(
   const writer = context.writer();
   writer.setPin(context.marker.path, context.marker.text, true);
   const list = new ListWriter();
-  const graph = new ListWriter();
+  const graph = new ListWriter(GRAPH_RECORDS_DIR);
   const watch = new TagWatch(request.tagInterest ?? []);
   const listName = 'list-' + request.piece + '-' + request.part;
   let lists: StagedFile[] = [];

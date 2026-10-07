@@ -20,7 +20,7 @@ import { decodeBatch, encodeBatch, parseTree, CheckoutPlan, MODE_GITLINK, MODE_S
 import { ENTRY_BYTES, entryOffset } from './idx.js';
 import { installPack, RangedPackFile, readRange, resumeInstall, type PackFiles, type PackSummary } from './install.js';
 import { ByteLru } from './byte-lru.js';
-import { COMMIT_GRAPHS_DIR, COMMIT_GRAPH_CHAIN, cloneGraph, graphName } from './commit-graph.js';
+import { GRAPH_RECORDS_DIR } from './commit-graph.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';
 import { encodeIndexEntry, encodeIndexFile, splitIndexEntries, type EntryStat } from '../worktree/dircache.js';
 import { encodeNode, type BuiltSubtree } from '../worktree/cachetree.js';
@@ -961,13 +961,10 @@ export async function cloneBatch(
 }
 
 /**
- * A full clone's commit records past this many bytes are not made a graph
- * at the clone (about 130 bytes a commit in memory: ~250,000 commits);
- * `git commit-graph write` builds one for a history that large.
+ * The index, from the batches' shares; then the staging directory goes. A
+ * full clone's commit records stay for its commit-graph, written after the
+ * clone answers (graph-filters.ts), unless one did not parse.
  */
-const GRAPH_RECORD_BYTES_MAX = 16 * 1024 * 1024;
-
-/** The index, from the batches' shares; a full clone's commit-graph; then the staging directory goes. */
 export async function cloneFinish(
   context: CloneContext,
   request: {
@@ -975,10 +972,10 @@ export async function cloneFinish(
     full?: boolean;
     cacheTreeBytes?: number;
     tags?: readonly CloneTag[];
-    /** A full clone's commit records (history.ts graphLists), or null when one did not parse. */
+    /** A full clone's commit records (history.ts graphLists), or null when one did not parse: no graph. */
     graph?: { name: string; bytes: number }[] | null;
   },
-): Promise<{ indexEntries: number; indexBytes: number; tags: number; graphCommits: number }> {
+): Promise<{ indexEntries: number; indexBytes: number; tags: number }> {
   const entries: Uint8Array[] = [];
   for (const share of request.shares) {
     if (share.bytes === 0) continue;
@@ -1004,7 +1001,11 @@ export async function cloneFinish(
   // the annotated ones with their commits; tagsHeld), each a loose ref.
   for (const tag of request.tags ?? []) await writer.file('.git/' + tag.name, 0o644, encoder.encode(tag.oid + '\n'));
   const tags = request.tags?.length ?? 0;
-  const graphed = await writeCloneGraph(context, writer, request.graph ?? null);
+  if (request.graph === null) {
+    const records = await context.supervisor.readdir(join(context.dir, GRAPH_RECORDS_DIR));
+    for (const name of records) await writer.remove(GRAPH_RECORDS_DIR + '/' + name);
+    if (records.length > 0) await writer.remove(GRAPH_RECORDS_DIR, true);
+  }
   // The staged files one record each: a write group holds a bounded number
   // of rows, and one recursive delete of a full clone's staging (vscode:
   // ~200 files) passes it ("logicalRows limit: 326 > 256").
@@ -1013,30 +1014,7 @@ export async function cloneFinish(
   }
   await writer.remove(STAGE_DIR, true);
   await writer.flush();
-  return { indexEntries: entries.length, indexBytes, tags, graphCommits: graphed };
-}
-
-/**
- * A full clone's commit-graph (commit-graph.ts), as git writes one with
- * --split: a layer named for its hash, and the chain naming it, both 0444.
- * Returns its commits; 0 when there is none to write (a shallow clone, a
- * commit that did not parse, a parent not recorded, records past the bound).
- */
-async function writeCloneGraph(context: CloneContext, writer: CloneWriter, lists: readonly { name: string; bytes: number }[] | null): Promise<number> {
-  if (lists === null || lists.length === 0) return 0;
-  let total = 0;
-  for (const list of lists) total += list.bytes;
-  if (total > GRAPH_RECORD_BYTES_MAX) return 0;
-  const bytes: Uint8Array[] = [];
-  for (const list of lists) bytes.push(await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/' + list.name), 0, list.bytes));
-  const built = cloneGraph(bytes);
-  if (built === null) return 0;
-  const graph = built.file;
-  const name = graphName(graph);
-  await writer.directory(COMMIT_GRAPHS_DIR);
-  await writer.file(COMMIT_GRAPHS_DIR + '/graph-' + name + '.graph', 0o444, graph);
-  await writer.file(COMMIT_GRAPH_CHAIN, 0o444, encoder.encode(name + '\n'));
-  return built.commits;
+  return { indexEntries: entries.length, indexBytes, tags };
 }
 
 export { oidFromHex };
