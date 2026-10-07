@@ -74,6 +74,21 @@ export function overlayCommit(repo, sha, files, from = SELF_ROOT) {
 }
 
 /**
+ * The pinned armada client's directory, or a throw saying how to make it:
+ * a clean checkout of exactly ARMADA_CLIENT, at ARMADA_DIR.
+ */
+export function armadaClient() {
+  const dir = process.env.ARMADA_DIR || ARMADA_DIR;
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' });
+  const dirty = spawnSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' });
+  if (head.status !== 0 || head.stdout.trim() !== ARMADA_CLIENT || dirty.status !== 0 || dirty.stdout !== '') {
+    throw new Error(`the armada client must be a clean checkout of ${ARMADA_CLIENT} at ${dir}; it is ${head.status === 0 ? head.stdout.trim() : 'not a checkout'}${dirty.stdout ? ', with local changes' : ''}. `
+      + `Make one: git clone https://github.com/AshishKumar4/armada ${dir}, git -C ${dir} checkout --detach ${ARMADA_CLIENT}, then bun install --frozen-lockfile --production in it`);
+  }
+  return dir;
+}
+
+/**
  * Map `command` over `items` on `sha` (run from its repo), with `files`
  * laid over its tree. `setup`, a script path here, is appended to the
  * recipe's setup script for this job: an environment of its own (its key
@@ -92,21 +107,6 @@ export function overlayCommit(repo, sha, files, from = SELF_ROOT) {
  * @param {{ repo: string, sha: string, files: string[], setup?: string, items: unknown[], command: string[], env?: Record<string, string>,
  *   label: string, pool?: number, timeout?: number, log?: (line: string) => void }} options
  */
-/**
- * The pinned armada client's directory, or a throw saying how to make it:
- * a clean checkout of exactly ARMADA_CLIENT, at ARMADA_DIR.
- */
-export function armadaClient() {
-  const dir = process.env.ARMADA_DIR || ARMADA_DIR;
-  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' });
-  const dirty = spawnSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' });
-  if (head.status !== 0 || head.stdout.trim() !== ARMADA_CLIENT || dirty.status !== 0 || dirty.stdout !== '') {
-    throw new Error(`the armada client must be a clean checkout of ${ARMADA_CLIENT} at ${dir}; it is ${head.status === 0 ? head.stdout.trim() : 'not a checkout'}${dirty.stdout ? ', with local changes' : ''}. `
-      + `Make one: git clone https://github.com/AshishKumar4/armada ${dir}, git -C ${dir} checkout --detach ${ARMADA_CLIENT}, then bun install --frozen-lockfile --production in it`);
-  }
-  return dir;
-}
-
 export async function mapOnArmada({ repo, sha, files, setup, items, command, env = {}, label, pool = items.length, timeout = 3600, log = (line) => console.error(line) }) {
   const armadaDir = armadaClient();
   const { connect } = await import(join(armadaDir, 'src', 'sdk.ts'));
