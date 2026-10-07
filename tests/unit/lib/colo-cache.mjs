@@ -19,14 +19,16 @@ export function fakeColoCache() {
 
 /** Run `use(colo)` with a fresh colo cache as caches.default. */
 export async function withColoCache(use) {
-  const had = Object.hasOwn(globalThis, 'caches');
-  const original = globalThis.caches;
+  // workerd's CacheStorage (`caches.default`), which the DOM's type lacks.
+  const global = /** @type {any} */ (globalThis);
+  const had = Object.hasOwn(global, 'caches');
+  const original = global.caches;
   const colo = fakeColoCache();
-  globalThis.caches = { default: colo };
+  global.caches = { default: colo };
   try {
     return await use(colo);
   } finally {
-    if (had) globalThis.caches = original;
-    else delete globalThis.caches;
+    if (had) global.caches = original;
+    else delete global.caches;
   }
 }
