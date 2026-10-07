@@ -77,8 +77,10 @@ export interface GitNetworkOpts {
      * git's remove_junk does (builtin/clone.c).
      */
     cloneRootExisted?: boolean;
-    /** Clone-only tuning: one abort invocation's budget before it answers `more`. */
+    /** Clone-abort: one invocation's time budget before it answers `more` (the driver's CLONE_ABORT_PIECE_MS). */
     cloneAbortPieceMs?: number;
+    /** Clone-only verification knob: the entries one abort invocation removes before it answers `more` (else its time budget alone). */
+    cloneAbortPieceEntries?: number;
     /** Clone-only: normalized root covered by the exclusive mutation lease. */
     exclusiveMutationRoot?: string;
     /** Trusted supervisor-only lease owner; never sent to the dynamic worker. */

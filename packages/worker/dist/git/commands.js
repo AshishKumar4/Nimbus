@@ -2889,7 +2889,7 @@ network = ISOLATE_NETWORK) {
                             exclusiveDestination: true,
                             exclusiveMutationRoot: mutationLease.root,
                             cloneRootExisted,
-                            cloneAbortPieceMs: Number(ctx.env.NIMBUS_GIT_CLONE_ABORT_PIECE_MS) || undefined,
+                            cloneAbortPieceEntries: Number(ctx.env.NIMBUS_GIT_CLONE_ABORT_PIECE_ENTRIES) || undefined,
                             mutationOwner,
                             rotateMutationOwner: () => (mutationOwner = vfs.rotateExclusiveMutation(mutationOwner)),
                             // Verification/tuning knobs: smaller pieces make ordinary repos
@@ -2912,6 +2912,9 @@ network = ISOLATE_NETWORK) {
                         }
                         else {
                             ctx.stderr.write(`\n[git] clone failed: ${result.error}\n`);
+                            // What the failed clone wrote could not all be removed: say so, and where.
+                            if (result.cleanupError)
+                                ctx.stderr.write(`[git] could not remove the failed clone at '${dest}': ${result.cleanupError}\n`);
                         }
                         return result.success;
                     }

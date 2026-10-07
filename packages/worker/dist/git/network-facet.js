@@ -789,12 +789,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                             facets.fence?.();
                             // A piece at a time: a large worktree takes several.
                             for (let piece = 0;; piece++) {
-                                const abort = await invokeFacet(facets.entrypoint, 'clone-abort', crypto.randomUUID(), {
-                                    ...facetOpts,
-                                    jobId,
-                                    optionsHash,
-                                    cloneAbortPieceMs: positiveSafeInteger(facetOpts.cloneAbortPieceMs, CLONE_ABORT_PIECE_MS, 'clone abort piece'),
-                                }, Date.now() + CLONE_ABORT_TIMEOUT_MS, CLONE_ABORT_TIMEOUT_MS);
+                                const abort = await invokeFacet(facets.entrypoint, 'clone-abort', crypto.randomUUID(), { ...facetOpts, jobId, optionsHash, cloneAbortPieceMs: CLONE_ABORT_PIECE_MS }, Date.now() + CLONE_ABORT_TIMEOUT_MS, CLONE_ABORT_TIMEOUT_MS);
                                 phases.push(abort.diagnostic);
                                 accountResult(abort.result);
                                 if (!opts.quiet)
@@ -2193,9 +2188,10 @@ export default {
         const gitdir = root + '/.git';
         const markerPath = cloneJobMarkerPath(opts.dir);
         const stopAt = Date.now() + (Number(opts.cloneAbortPieceMs) || 20000);
+        const entries = Number(opts.cloneAbortPieceEntries) || Infinity;
         let removed = 0;
         let more = false;
-        const spent = () => removed > 0 && Date.now() >= stopAt;
+        const spent = () => removed > 0 && (Date.now() >= stopAt || removed >= entries);
         // Every directory below the destination, parents before children.
         const directories = [];
         const walk = async (dir) => {
