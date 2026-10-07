@@ -31,7 +31,8 @@ import { supervisorEntrypoint, hostRoute, type HostRoute } from './composition.j
 import { supervisorLoaderKey } from './supervisor-props.js';
 import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { hashBytes, serializeFunction, hashSource } from './vendor/serialize.js';
+import { serializeFunction, hashSource } from './vendor/serialize.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import {
   beginLoaderFetch,
   beginLoaderFetchWhenFree,
@@ -246,9 +247,9 @@ export interface IsolateCallOptions {
    * permitted. The bytes ride INSIDE the worker code blob; workerd
    * never crosses structured-clone, never executes user-eval.
    *
-   * Cache key impact: per-call bytes are fingerprinted as
-   * constructor bytes are (name, length, a hash of every byte) and
-   * folded into the loader cache key. Identical bytes on the same
+   * Cache key impact: per-call bytes are identified as constructor
+   * bytes are (name, length, SHA-256; wasmIdentity) and folded into
+   * the loader cache key. Identical bytes on the same
    * slot → warm reuse; different bytes → fresh isolate. The pool's
    * `wasmHash` field captures CONSTRUCTOR-time bytes only; per-call
    * bytes get their own fingerprint mixed into the slot id at dispatch.
@@ -413,13 +414,23 @@ export function assembleLoaderWorkerModuleSource(
   return lines.join('\n');
 }
 
+/** One image in a loader cache key: a host-compiled module's described identity, or bytes to digest. */
+type WasmKeyPart = string | { name: string; bytes: ArrayBuffer };
+
 /**
- * A wasm image's identity in a loader cache key: its name, its length and
- * a hash of every byte, so a warm slot never runs other bytes than the ones
- * it was built from.
+ * The images' part of a loader cache key: '0' for none, so a pool without
+ * wasm keeps one stable key, else the SHA-256 of every image's name and
+ * identity. Bytes are identified by their SHA-256, never by a short hash: a
+ * key two images share runs one image's module for the other. clang's ./a
+ * and ./b were both 7572 bytes with equal first and last bytes, differing
+ * only at offset 651, and a length+endpoints key ran ./a's module for ./b.
  */
-function wasmContentFingerprint(name: string, wasm: ArrayBuffer): string {
-  return `${name}:${wasm.byteLength}:${hashBytes(wasm).toString(36)}`;
+async function wasmIdentity(parts: readonly WasmKeyPart[]): Promise<string> {
+  if (parts.length === 0) return '0';
+  const described = await Promise.all(parts.map(async (part) => (typeof part === 'string'
+    ? part
+    : `${part.name}:${part.bytes.byteLength}:${await sha256Hex(part.bytes)}`)));
+  return sha256Hex(described.join('|'));
 }
 
 /**
@@ -480,12 +491,14 @@ export class IsolatePool {
     id: string;
     wasm: ArrayBuffer | WebAssembly.Module;
   }>;
-  /** Hash of every constructor-time wasm module, folded into the loader
-   *  cache key so changes invalidate warm slots: a compiled module by the
-   *  identity its host described, bytes by their content fingerprint,
-   *  computed once at construction. Bytes are not pinned at deploy time:
-   *  an interpreter image can be read from the filesystem. */
-  private readonly wasmHash: string;
+  /** Every constructor-time wasm module, as the loader cache key names it
+   *  (wasmIdentity), so a change invalidates warm slots: a compiled module
+   *  by the identity its host described, bytes by their SHA-256. Bytes are
+   *  not pinned at deploy time: an interpreter image can be read from the
+   *  filesystem. */
+  private readonly wasmKeyParts: WasmKeyPart[];
+  /** wasmIdentity of wasmKeyParts, digested on the first dispatch. */
+  #wasmHash: Promise<string> | null = null;
   /**
    * Short prefix of the owning DO's id, baked into the loader.get()
    * cache key so warm isolates are scoped to ONE session. Without this,
@@ -546,13 +559,13 @@ export class IsolatePool {
     // 'esbuild_wasm') are rejected loudly because the generated worker
     // would otherwise have duplicate imports. Order is preserved.
     const wasmEntries: Array<{ name: string; id: string; wasm: ArrayBuffer | WebAssembly.Module }> = [];
-    const fingerprints: string[] = [];
+    const keyParts: WasmKeyPart[] = [];
     const seenIds = new Set<string>();
     if (opts.wasmModules) {
       for (const [name, wasm] of Object.entries(opts.wasmModules)) {
-        let fingerprint: string;
+        let keyPart: WasmKeyPart;
         if (wasm instanceof ArrayBuffer) {
-          fingerprint = wasmContentFingerprint(name, wasm);
+          keyPart = { name, bytes: wasm };
         } else if (wasm instanceof WebAssembly.Module) {
           const identity = hostWasmIdentity(wasm);
           if (!identity) {
@@ -562,7 +575,7 @@ export class IsolatePool {
               'can be keyed by it and the code limit can count it.',
             );
           }
-          fingerprint = `${name}:host:${identity.id}:${identity.bytes}`;
+          keyPart = `${name}:host:${identity.id}:${identity.bytes}`;
         } else {
           // Reached only when a caller broke the declared option type, so the
           // value is whatever it really was rather than the union here.
@@ -581,11 +594,11 @@ export class IsolatePool {
         }
         seenIds.add(id);
         wasmEntries.push({ name, id, wasm });
-        fingerprints.push(fingerprint);
+        keyParts.push(keyPart);
       }
     }
     this.wasmModules = wasmEntries;
-    this.wasmHash = fingerprints.length === 0 ? '0' : hashSource(fingerprints.join('|'));
+    this.wasmKeyParts = keyParts;
 
     const bindings: Record<string, unknown> = { ...(opts.extraBindings ?? {}) };
     this.supervisorKey = 's-none';
@@ -679,20 +692,6 @@ export class IsolatePool {
       out.push({ name, id, wasm: bytes });
     }
     return out;
-  }
-
-  /**
-   * The per-call images' part of the loader cache key: '0' for none, so
-   * the common no-per-call-wasm dispatch keeps one stable key. Content
-   * sensitive, as the constructor's is: clang's ./a and ./b were both
-   * 7572 bytes with equal first and last bytes, differing only at offset
-   * 651, and a length+endpoints key ran ./a's module for ./b.
-   */
-  #fingerprintWasm(
-    entries: Array<{ name: string; wasm: ArrayBuffer }>,
-  ): string {
-    if (entries.length === 0) return '0';
-    return hashSource(entries.map((w) => wasmContentFingerprint(w.name, w.wasm)).join('|'));
   }
 
   /**
@@ -832,7 +831,11 @@ export class IsolatePool {
     // For the common case (no per-call wasm) the fingerprint is '0',
     // which is bytes-stable so warm reuse is unaffected.
     const perCallWasmEntries = this.#materialisePerCallWasm(perCallWasm);
-    const perCallWasmHash = this.#fingerprintWasm(perCallWasmEntries);
+    this.#wasmHash ??= wasmIdentity(this.wasmKeyParts);
+    const [wasmHash, perCallWasmHash] = await Promise.all([
+      this.#wasmHash,
+      wasmIdentity(perCallWasmEntries.map(({ name, wasm }) => ({ name, bytes: wasm }))),
+    ]);
 
     // Cache key includes the short DO id so warm isolates are scoped to
     // ONE session (see the doIdShort field comment), and the supervisor
@@ -840,7 +843,7 @@ export class IsolatePool {
     // worker whose SUPERVISOR binding still names the dead generation's
     // pid. See the supervisorKey field comment for the failure mode.
     const buildId = (generation: number): string =>
-      `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:${perCallWasmHash}:${this.supervisorKey}:slot-${slotIndex}:g${generation}${this.scope ? `:${this.scope}` : ''}${this.network?.id ? `:${this.network.id}` : ''}`;
+      `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${wasmHash}:${perCallWasmHash}:${this.supervisorKey}:slot-${slotIndex}:g${generation}${this.scope ? `:${this.scope}` : ''}${this.network?.id ? `:${this.network.id}` : ''}`;
     let id = buildId(this.slotGenerations.get(slotIndex) ?? 0);
     const code = this.#buildCode(fnSource, perCallWasmEntries);
 
