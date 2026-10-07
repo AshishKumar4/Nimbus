@@ -67,6 +67,38 @@ const learned = [{ path: `${NM}/one/index.js` }, { path: `${NM}/two/index.js` }]
   }
 }
 
+// Their emits can be what takes it past the bound, after a walk that fit:
+// the walk counts files, the map counts emits (nuxt dev's second run, "21068298
+// bytes staged, stopped at …/node-forge/lib/tls.js"). The same holds.
+{
+  // A lowering whose emit is half again its file, as a real one's CommonJS wrapper is.
+  const lowering = new EsbuildService(undefined, {
+    transformHost: async (requests) => requests.map(({ code }) => ({ code: code + '\n//' + '~'.repeat(code.length >> 1), map: '', warnings: [] })),
+  });
+  const typed = {
+    ...files,
+    [`${NM}/three/index.ts`]: `import "./part.ts";\nexport const three: string = "${'3'.repeat(30_000)}";\n`,
+    [`${NM}/three/part.ts`]: 'export const part: number = 3;\n',
+    [`${NM}/four/index.ts`]: `import "./part.ts";\nexport const four: string = "${'4'.repeat(30_000)}";\n`,
+    [`${NM}/four/part.ts`]: 'export const part: number = 4;\n',
+  };
+  const roots = [{ path: `${NM}/three/index.ts` }, { path: `${NM}/four/index.ts` }];
+  let state;
+  try {
+    state = await buildPrefetchBundle(launchFs(typed).fs, {
+      scriptPath: `${APP}/entry.js`, cwd: '/' + APP, entryCode: typed[`${APP}/entry.js`], esbuild: lowering,
+      executedModules: roots, maxBundleBytes: 80_000,
+    });
+  } catch (error) {
+    assert.fail(`the learned roots' emits failed the launch: ${error instanceof ClosureBoundExceededError ? 'closure-exceeds-bound' : error}`);
+  }
+  assert.equal(typeof state.bundle[`${APP}/small.js`], 'string', 'the launch starts with its own closure');
+  for (const pkg of ['three', 'four']) {
+    const parts = [`${NM}/${pkg}/index.ts`, `${NM}/${pkg}/part.ts`].map((path) => typeof state.bundle[path] === 'string');
+    assert.equal(parts[0], parts[1], `${pkg} is staged whole or not at all`);
+  }
+}
+
 // A closure past the bound by itself still fails, by name.
 await assert.rejects(build([], 10), (error) => error instanceof ClosureBoundExceededError);
 
