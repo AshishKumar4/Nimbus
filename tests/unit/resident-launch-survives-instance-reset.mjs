@@ -28,6 +28,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readSupervisorAllocationBudget } from '../../packages/platform/src/heavy-alloc-coord.ts';
 import { handleProcessesListRequest } from '../../packages/worker/src/runtime/process-logs-api.ts';
+import { RESIDENT_PROVEN_MS } from '../../packages/fabric/src/fenced-work.ts';
 import { launchManager, launchSession } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({
@@ -195,9 +196,18 @@ const settle = async (predicate, tries = 400) => {
   // The launch settled, but the RESIDENT is still running — and the resets
   // measured live strike exactly there, seconds after settle. A row therefore
   // outlives the launch: an instance that replaces gen2 owes the user the
-  // running process, with a fresh re-drive budget (its launch proved itself).
-  const gen3 = createInstance(session, 3, { pumpWhile: () => true });
-  await gen3.manager.pumpResidentLaunches();
+  // running process, with a fresh re-drive budget once it has run for
+  // RESIDENT_PROVEN_MS: then it proved itself, and this reset is not one it
+  // causes again in a loop.
+  const realNow = Date.now;
+  Date.now = () => realNow() + RESIDENT_PROVEN_MS;
+  let gen3;
+  try {
+    gen3 = createInstance(session, 3, { pumpWhile: () => true });
+    await gen3.manager.pumpResidentLaunches();
+  } finally {
+    Date.now = realNow;
+  }
   await settle(() => gen3.world.configs.size > 0);
   assert.equal(gen3.notices.length, 1, 'a running resident lost with its instance is reported');
   assert.match(
@@ -279,6 +289,48 @@ const settle = async (predicate, tries = 400) => {
   const gen4 = createInstance(session, 4, { pumpWhile: () => true });
   await gen4.manager.pumpResidentLaunches();
   assert.deepEqual(gen4.notices, [], 'and the journal is cleared, so the report is not repeated');
+}
+
+// ── 3. a restart that keeps recurring is stopped, and the user told why ─────
+//
+// A process whose new isolate has used about a second of CPU makes Cloudflare
+// restart the session (spike/isolate-move), and its re-drive is a new process
+// in a new isolate, which does it again: re-driven every time it boots, it
+// restarted the session forever. A running resident lost again before it has
+// run RESIDENT_PROVEN_MS is left stopped, with the reason.
+{
+  const session = createSession('reset-loop');
+
+  // Generation 1 boots the resident; the session restarts while it runs.
+  const gen1 = createInstance(session, 1, { pumpWhile: () => true, crashable: true });
+  const started = await gen1.manager.spawnNode("require('dep');", {
+    filename: '/home/user/run.js', cwd: '/home/user', command: 'node server.js', attachedTty: true,
+  });
+  await settle(() => gen1.world.configs.size > 0);
+  await gen1.ctx.storage.sync();
+  gen1.ctx.storage.crash();
+
+  // Generation 2 restarts it, and it boots; the session restarts again at once.
+  const gen2 = createInstance(session, 2, { pumpWhile: () => true, crashable: true });
+  await gen2.manager.pumpResidentLaunches();
+  await settle(() => gen2.world.configs.size > 0);
+  assert.equal(gen2.spawns.length, 1, 'the first restart re-drives it');
+  assert.equal(gen2.processes.get(gen2.spawns[0].pid)?.restartedFrom?.pid, started.pid);
+  await gen2.ctx.storage.sync();
+  gen2.ctx.storage.crash();
+
+  const gen3 = createInstance(session, 3, { pumpWhile: () => true });
+  await gen3.manager.pumpResidentLaunches();
+  await settle(() => gen3.notices.length > 0);
+  assert.deepEqual(gen3.spawns, [], 'the second restart within RESIDENT_PROVEN_MS is not re-driven');
+  assert.equal(gen3.notices.length, 1);
+  assert.match(
+    gen3.notices[0],
+    /the session restarted again \d+ s after restarting "node server\.js", so it is left stopped/,
+    'the notice says the restart recurred, and that the process is stopped, not coming back',
+  );
+  assert.match(gen3.notices[0], /about a second of CPU/, 'and names the cause the platform gives no other sign of');
+  assert.match(gen3.notices[0], /start it again with: node server\.js/, 'and how to start it again');
 }
 
 console.log('resident-launch-survives-instance-reset: OK');
