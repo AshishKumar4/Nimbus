@@ -302,7 +302,8 @@ function configParameter(text: string): [string, string] {
   const refuse = (error: string): never => {
     throw new GitGlobalsError(`error: ${error}\nfatal: unable to parse command-line config\n`, 128);
   };
-  if (key === '') refuse(`bogus config parameter: ${text}`);
+  // config_parse_pair, as git reads a split `-c` parameter back.
+  if (key === '') refuse('empty config key');
   const lastDot = key.lastIndexOf('.');
   if (lastDot <= 0) refuse(`key does not contain a section: ${key}`);
   if (lastDot === key.length - 1) refuse(`key does not contain variable name: ${key}`);
