@@ -124,9 +124,7 @@ Object.defineProperty(builtins, "http", {
         const ctx = activeContext;
         const [options, callback] = net._normalizeArgs(args);
         if (this.listening || owners.get(this)?.pending) {
-          const err = new Error("Listen method has been called more than once without closing.");
-          err.code = "ERR_SERVER_ALREADY_LISTEN";
-          throw err;
+          throw nodeError(Error, "ERR_SERVER_ALREADY_LISTEN", "Listen method has been called more than once without closing.");
         }
         const state = { ctx, pending: false, cancelled: false, port: null };
         owners.set(this, state);

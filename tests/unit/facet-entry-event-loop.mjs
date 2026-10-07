@@ -22,7 +22,7 @@ import { ENTRYPOINT_EVENT_LOOP } from '../../packages/worker/src/facets/manager.
 // Instantiate the generated loop exactly as a facet would, over the globals a
 // facet's shims maintain.
 const loop = new Function(
-  '__nimbusProcessExitPromise',
+  '__nimbusProcessExitPromise', '__nimbusUncaughtException',
   ENTRYPOINT_EVENT_LOOP + `
   return {
     runEventLoop: __nimbusRunEventLoop,
@@ -33,12 +33,15 @@ const loop = new Function(
   };`,
 );
 
+/** What the loop handed the shims' uncaught path (node-shims.ts __nimbusUncaughtException): [error, fromPromise]. */
+let uncaught = [];
 /** A fresh loop over a fresh, quiescent handle table. */
 function freshLoop({ exitPromise = new Promise(() => {}) } = {}) {
+  uncaught = [];
   globalThis.__nimbusPendingTimers = 0;
   globalThis.__nimbusPendingOps = 0;
   globalThis.__portRegistry = new Map();
-  return loop(exitPromise);
+  return loop(exitPromise, (error, fromPromise) => { uncaught.push([error, fromPromise]); return false; });
 }
 
 // These cases never time the loop. A loop that must not wait is given a
@@ -190,7 +193,7 @@ function returns(promise, what) {
 // program in Node. Its boot is bounded by the settle budget (requests routed
 // to the facet wait for boot, so an unbounded wait hung them all), a module
 // that finishes first is still waited for, and a rejection that lands after
-// the budget still surfaces as an uncaught error.
+// the budget is still uncaught, as an ES module's evaluation's rejection.
 {
   const l = freshLoop();
   globalThis.__portRegistry.set(5173, {});
@@ -205,11 +208,24 @@ function returns(promise, what) {
   assert.equal(evaluated, true, 'an evaluation that settles inside the budget is waited for');
 
   const l3 = freshLoop();
-  const uncaught = new Promise((resolve) => process.once('uncaughtException', resolve));
   let rejectLate;
   await l3.settleEntrypointStartup(new Promise((_, reject) => { rejectLate = reject; }), 50);
   rejectLate(new Error('listen EADDRINUSE'));
-  assert.equal((await uncaught).message, 'listen EADDRINUSE', 'a late rejection surfaces as an uncaught error');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(uncaught.map(([e, fromPromise]) => [e.message, fromPromise]), [['listen EADDRINUSE', true]], 'a late rejection is uncaught');
+}
+
+// ── 8. A one-shot entry's rejected evaluation is uncaught as it rejects ─────
+// As Node's loader rejects: the program ends there, or a handler takes it.
+{
+  const l = freshLoop();
+  globalThis.__nimbusPendingTimers = 1;
+  setTimeout(() => { globalThis.__nimbusPendingTimers = 0; }, 300);
+  const t0 = Date.now();
+  const failing = new Promise((_, reject) => setTimeout(() => reject(new Error('top-level await failed')), 50));
+  await returns(l.runEntrypointToExit(failing, NEVER), 'a rejected evaluation');
+  assert.deepEqual(uncaught.map(([e, fromPromise]) => [e.message, fromPromise]), [['top-level await failed', true]], 'the rejection is uncaught, once');
+  assert.ok(Date.now() - t0 >= 250, 'a handler may take it: the loop runs on while the program holds a handle');
 }
 
 globalThis.__nimbusPendingTimers = 0;

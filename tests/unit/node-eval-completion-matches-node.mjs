@@ -15,6 +15,7 @@ import { spawnSync } from 'node:child_process';
 
 import { nodeEvalProgram, nodeStdinPrintProgram } from '../../packages/core/src/runtime/node-eval.ts';
 import { isEsModuleInput } from '../../packages/core/src/runtime/module-format.ts';
+import { NODE_ERROR_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
 
 // Whether the code is a module is the runtime's decision (module-format.ts), as Node's is its syntax detection's.
 const nodeEvalCode = (code, print) => nodeEvalProgram(code, print, isEsModuleInput(code, undefined) ? 'module' : 'default').code;
@@ -56,9 +57,12 @@ const REFUSED = [
   ['return 1', 'SyntaxError: Illegal return statement'],
 ];
 
-// The rewritten code, run by host Node as an entry's body: each value as
-// console.log formats it, or the first line of what it throws, and what it logged.
+// The rewritten code, run by host Node as an entry's body, beside the shims'
+// Node errors: each value as console.log formats it, or the first line of
+// what it throws, and what it logged.
 const RUNNER = `
+${NODE_ERROR_PREAMBLE}
+globalThis.__nimbusNodeError = nodeError;
 const { format } = require('node:util');
 const codes = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
 process.stdout.write(JSON.stringify(codes.map((code) => {

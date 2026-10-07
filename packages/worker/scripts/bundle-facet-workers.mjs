@@ -120,7 +120,7 @@ function withoutComments(text) {
  * declarations and the aggregate `export { ... };` block so the
  * blob is inlinable into another module without re-export errors.
  */
-async function bundleAsPreamble(entryPath, label) {
+async function bundleAsPreamble(entryPath, label, { shared = [] } = {}) {
   const result = await build({
     entryPoints: [entryPath],
     bundle: true,
@@ -131,6 +131,14 @@ async function bundleAsPreamble(entryPath, label) {
     write: false,
     logLevel: 'warning',
     legalComments: 'none',
+    // A module the shims declare once for all the code they load (`shared`):
+    // left out, its import removed below, its names the shims' own.
+    plugins: shared.length === 0 ? [] : [{
+      name: 'shims-shared-modules',
+      setup(pluginBuild) {
+        pluginBuild.onResolve({ filter: /.*/ }, (args) => (shared.some((name) => args.path === `./${name}.js`) ? { path: args.path, external: true } : undefined));
+      },
+    }],
     // Strip TypeScript-only imports (e.g. `import type {…}`) — esbuild
     // already drops these, but leave the option default.
   });
@@ -138,6 +146,11 @@ async function bundleAsPreamble(entryPath, label) {
     throw new Error(`[bundle-facet-workers/${label}] esbuild produced no output`);
   }
   let stripped = withoutComments(result.outputFiles[0].text);
+  for (const name of shared) {
+    const before = stripped;
+    stripped = stripped.replace(new RegExp(`^import \\{[^}]*\\} from "\\./${name}\\.js";\\n`, 'm'), '');
+    if (stripped === before) throw new Error(`[bundle-facet-workers/${label}] expected an import of ./${name}.js to leave to the shims`);
+  }
   stripped = stripped.replace(/^export\s+(async\s+function|function|const|class)\b/gm, '$1');
   stripped = stripped.replace(/\n?export\s*\{[^}]*\}\s*;\s*$/g, '');
   return stripped;
@@ -676,28 +689,43 @@ async function main() {
     'w7-frame',
   );
 
-  // 3. Node's ESM resolver, which the node shims embed as source (their
+  // 3. Node's internal errors (nodeError, nodeSystemError, invalidArgType),
+  //    which the node shims declare first, for themselves and the modules
+  //    below, which leave them out of their own bundles.
+  const nodeErrors = await bundleAsPreamble(
+    join(coreRoot, 'src', '_shared', 'node-error.ts'),
+    'node-error',
+  );
+  for (const name of ['nodeError', 'nodeSystemError', 'invalidArgType', 'useNodeErrorInspect']) {
+    if (!new RegExp(`^function ${name}\\(`, 'm').test(nodeErrors)) {
+      throw new Error(`[bundle-facet-workers/node-error] the bundle no longer declares function ${name}`);
+    }
+  }
+
+  // 4. Node's ESM resolver, which the node shims embed as source (their
   //    process's import() loader). One compile of it, here, so the shims'
   //    copy is the same text whatever toolchain later evaluates the shims.
   const esmResolver = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'esm-resolver.ts'),
     'esm-resolver',
+    { shared: ['node-error'] },
   );
   if (!/^function createEsmResolver\(/m.test(esmResolver)) {
     throw new Error('[bundle-facet-workers/esm-resolver] the bundle no longer declares function createEsmResolver');
   }
 
-  // 4. node:http2, which the node shims embed as source, as the substrate's
+  // 5. node:http2, which the node shims embed as source, as the substrate's
   //    node-compat module map imports it: one module, both runtimes.
   const http2Module = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'http2-module.ts'),
     'http2-module',
+    { shared: ['node-error'] },
   );
   if (!/^function createHttp2Module\(/m.test(http2Module)) {
     throw new Error('[bundle-facet-workers/http2-module] the bundle no longer declares function createHttp2Module');
   }
 
-  // 5. Exports/imports resolution, the TypeScript specifier fallbacks and
+  // 6. Exports/imports resolution, the TypeScript specifier fallbacks and
   //    the AI credential rule, which the node shims embed as source: one
   //    compile of the core code, so the shims carry no copy of it.
   const shimResolution = await bundleAsPreamble(
@@ -729,6 +757,7 @@ async function main() {
     ' *   - @nimbus-sh/core src/_shared/tarball-stream.ts (streaming tar primitives)',
     ' *   - @nimbus-sh/platform src/w7-frame.ts (W7 streaming bulk-write encoder)',
     ' *   - @nimbus-sh/platform src/wave-writer.ts (the W7 wave writer, as an IIFE)',
+    ' *   - @nimbus-sh/core src/_shared/node-error.ts (Node\'s internal errors, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node\'s ESM resolver, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/node-shim-resolution.ts (resolution and credential rules, for the node shims)',
@@ -753,6 +782,15 @@ async function main() {
     '',
     '/** Binds `__nimbusWaveWriter` (createWaveWriter, WaveFailure, …) in the module that splices it. */',
     `export const WAVE_WRITER_PREAMBLE: string = ${JSON.stringify(waveWriter)};`,
+    '',
+    '/**',
+    ' * Declares `function nodeError(Base, code, message, props)`,',
+    ' * `function nodeSystemError(code, prefix, context)`,',
+    ' * `function invalidArgType(name, expected, actual)` and',
+    ' * `function useNodeErrorInspect(inspect)`: the node shims declare them',
+    ' * first, for themselves and the preambles below, which use them by name.',
+    ' */',
+    `export const NODE_ERROR_PREAMBLE: string = ${JSON.stringify(nodeErrors)};`,
     '',
     '/** Declares `function createEsmResolver(host)`; the node shims call it. */',
     `export const ESM_RESOLVER_PREAMBLE: string = ${JSON.stringify(esmResolver)};`,

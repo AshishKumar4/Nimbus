@@ -546,26 +546,24 @@ function __nimbusReportBlockedState() {
 // module whose top-level await waits on a child's close is blocked on that
 // child as much as a callback would be. Once the evaluation settles, the
 // loop gives a settling chain its warm-up turns again; a rejected
-// evaluation is thrown once the loop ends.
+// evaluation is uncaught as it rejects.
 async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
   let __evaluating = Boolean(__entryResult) && typeof __entryResult.then === "function";
-  let __failure = null;
   let __grace = 0;
   if (__evaluating) {
+    // A rejected evaluation is uncaught as it happens, as Node's loader
+    // rejects: the program ends there, or its handler takes it.
     __entryResult.then(
       () => { __evaluating = false; __grace = 4; },
-      (error) => { __evaluating = false; __failure = { error }; },
+      (error) => { __evaluating = false; __nimbusUncaughtException(error, true); },
     );
   }
   const __count = () => {
-    if (__failure) return 0;
     if (__evaluating) return 1 + __nimbusLiveHandles();
     if (__grace > 0) { __grace--; return 1 + __nimbusLiveHandles(); }
     return __nimbusLiveHandles();
   };
-  const __drain = await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
-  if (__failure && (typeof __nimbusProcessExitCode === "undefined" || __nimbusProcessExitCode === null)) throw __failure.error;
-  return __drain;
+  return await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
 }
 
 // Whether the program holds no live handle once a settling chain has had the
@@ -622,14 +620,15 @@ async function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {
     const __exit = {};
     const __late = {};
     let __timer = null;
+    // Its rejection is uncaught when it lands, during the budget or after it.
+    const __settled = __entryResult.then(() => null, (__error) => { __nimbusUncaughtException(__error, true); return null; });
     const __raced = await Promise.race([
-      __entryResult.then(() => null),
+      __settled,
       __nimbusProcessExitPromise.then(() => __exit, () => __exit),
       new Promise((resolve) => { __timer = __rawSetTimeout(() => resolve(__late), __deadlineMs); }),
     ]).finally(() => { try { __rawClearTimeout(__timer); } catch {} });
     if (__raced === __exit) return { passes: 0, pending: 0 };
     if (__raced === __late) {
-      __entryResult.then(undefined, (__error) => { queueMicrotask(() => { throw __error; }); });
       return { passes: 0, pending: __nimbusPendingStartupWork() };
     }
   }
@@ -883,14 +882,18 @@ function interpreterModules(sources: NodeFacetSources): Record<string, string> {
  * how the runner evaluates it: an ES entry's require is its static imports,
  * and what escapes it is explained as Node's loader explains it.
  */
-function entryModule(userCode: string, filename: string | undefined, esModule: boolean | undefined): { name: string; text: string; evaluate: string } {
+function entryModule(userCode: string, filename: string | undefined, esModule: boolean | undefined): { name: string; esModule: boolean; text: string; evaluate: string; stackEntry: string } {
   const code = rewriteProvidedCommonJsModules(userCode);
   const name = commonJsEntryModuleName(filename || '[eval]');
   const path = 'filename || "/home/user/script.js"';
+  const wrapped = wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function');
   return {
     name,
-    text: wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function').text,
-    evaluate: `__nimbusEvaluateEntry(__nimbusEntryWrapper(${JSON.stringify(name)}, ${path}), mod, ${path}, dirname || "/home/user", ${esModule === true})`,
+    esModule: esModule === true,
+    text: wrapped.text,
+    evaluate: `__nimbusEvaluateEntry(__nimbusEntryWrapper(${JSON.stringify(name)}), mod, ${path}, dirname || "/home/user", ${esModule === true})`,
+    // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
+    stackEntry: JSON.stringify([name, filename || '<eval>', wrapped.head, esModule === true ? 1 : 0]),
   };
 }
 
@@ -928,6 +931,7 @@ ${STOP_REPLAY_SOURCE}
 // The process's code: a module per cell, compiled when first required.
 const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
 const __NIMBUS_RUNTIME_CODE = ${bundleSource.runtimeCode};
+const __NIMBUS_STACK_ENTRY = ${entry.stackEntry};
 ${COMMONJS_CELL_RUNTIME_SOURCE}
 
 // The module bundle, at module level (startup time); the code cells the store
@@ -1060,6 +1064,17 @@ ${RESIDENCY_MISS_REPORT}
       __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
       __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
     }
+    // A fatal report goes to fd 2 as Node's does: past any write a program
+    // installs, after what the program wrote, and not program output that
+    // a stopped run's replay retraces (runtime/stop-replay.ts).
+    __nimbusFatalStderr = (__text) => {
+      stderr += __text;
+      if (!__supervisor || captureOutput) return;
+      const __bytes = __nimbusOutEnc.encode(__text);
+      const __task = __rpcWriteChain.then(() => __supervisor.stderr(__bytes)).catch((e) => __onRpcDrop(__bytes.byteLength, e));
+      __rpcWriteChain = __task.then(() => {}, () => {});
+      __pendingIO.push(__task);
+    };
 
     try { globalThis.console = __consoleMod; } catch {}
     try { globalThis.process = __processMod; } catch {}
@@ -1090,8 +1105,16 @@ ${RESIDENCY_MISS_REPORT}
       __require.main = mod;
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
-      // the file, as Node does. \`-p\`'s returns the value it prints.
-      const __entryResult = __nimbusEntryOutcome(${entry.evaluate});
+      // where it is, as Node does. \`-p\`'s returns the value it prints.
+      // What it throws is uncaught, as in Node: an ES module's as its
+      // evaluation's rejection.
+      let __entryResult;
+      try {
+        __entryResult = __nimbusEntryOutcome(${entry.evaluate});
+      } catch (__thrown) {
+        if (__thrown instanceof __ProcessExit) throw __thrown;
+        __nimbusUncaughtException(__thrown, ${entry.esModule});
+      }
       const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs);
       __drainPasses = __drain.passes;
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
@@ -1104,17 +1127,14 @@ ${RESIDENCY_MISS_REPORT}
     } catch (e) {
       if (e instanceof __ProcessExit) { exitCode = e.code; }
       else {
-        const trace = (e && e.stack) || (e && e.message) || String(e);
-        stderr += trace + "\\n";
-        exitCode = 1;
-        if (__supervisor && !captureOutput) {
-          try { const __traceBytes = __nimbusOutEnc.encode(trace + "\\n"); __pendingIO.push(__supervisor.stderr(__traceBytes).catch((e2) => __onRpcDrop(__traceBytes.byteLength, e2))); } catch {}
-        }
+        // The runtime's own failure (a preload, the loop): reported as one.
+        __nimbusUncaughtException(e, false);
+        if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
       }
     }
     // A program that ended without process.exit still gets its 'exit' event.
     if (__nimbusProcessExitCode === null) {
-      __nimbusEmitExit(exitCode);
+      exitCode = __nimbusExitAtEnd();
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
       __nimbusProgramStopped = true;
     }
@@ -1360,6 +1380,7 @@ ${STOP_REPLAY_SOURCE}
 // module evaluation, which compiled the whole closure before the program ran.
 const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
 const __NIMBUS_RUNTIME_CODE = ${bundleSource.runtimeCode};
+const __NIMBUS_STACK_ENTRY = ${entry.stackEntry};
 ${COMMONJS_CELL_RUNTIME_SOURCE}
 
 // \`let\`, not \`const\`, so the parsed bundle can be dropped once the store has
@@ -1582,6 +1603,17 @@ ${RESIDENCY_MISS_REPORT}
       __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
       __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
     }
+    // A fatal report goes to fd 2 as Node's does: past any write a program
+    // installs, after what the program wrote, and not program output that
+    // a stopped run's replay retraces (runtime/stop-replay.ts).
+    __nimbusFatalStderr = (__text) => {
+      stderr += __text;
+      if (!__supervisor || captureOutput) return;
+      const __bytes = __nimbusOutEnc.encode(__text);
+      const __task = __rpcWriteChain.then(() => __supervisor.stderr(__bytes)).catch((e) => __onRpcDrop(__bytes.byteLength, e));
+      __rpcWriteChain = __task.then(() => {}, () => {});
+      __pendingIO.push(__task);
+    };
 
     try { globalThis.console = __consoleMod; } catch {}
     try { globalThis.process = __processMod; } catch {}
@@ -1631,8 +1663,16 @@ ${RESIDENCY_MISS_REPORT}
       __require.main = mod;
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
-      // the file, as Node does. \`-p\`'s returns the value it prints.
-      const __entryResult = __nimbusEntryOutcome(${entry.evaluate});
+      // where it is, as Node does. \`-p\`'s returns the value it prints.
+      // What it throws is uncaught, as in Node: an ES module's as its
+      // evaluation's rejection.
+      let __entryResult;
+      try {
+        __entryResult = __nimbusEntryOutcome(${entry.evaluate});
+      } catch (__thrown) {
+        if (__thrown instanceof __ProcessExit) throw __thrown;
+        __nimbusUncaughtException(__thrown, ${entry.esModule});
+      }
       if (attachedTty) {
         // An attached entry owns the terminal until it returns, so its own
         // completion is awaited by the exit lifecycle below, never here.
@@ -1654,12 +1694,9 @@ ${RESIDENCY_MISS_REPORT}
         __attachedExplicitExit = true;
         exitCode = e.code;
       } else {
-        const trace = (e && e.stack) || (e && e.message) || String(e);
-        stderr += trace + "\\n";
-        exitCode = 1;
-        if (__supervisor && !captureOutput) {
-          try { const __traceBytes = __nimbusOutEnc.encode(trace + "\\n"); __pendingIO.push(__supervisor.stderr(__traceBytes).catch((e2) => __onRpcDrop(__traceBytes.byteLength, e2))); } catch {}
-        }
+        // The runtime's own failure (a preload, the loop): reported as one.
+        __nimbusUncaughtException(e, false);
+        if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
       }
     }
 
@@ -1725,7 +1762,7 @@ ${RESIDENCY_MISS_REPORT}
           finalCode = Number(await Promise.race([__nimbusProcessExitPromise, __nimbusNaturalExit().then(() => 0)]));
         }
         if (__nimbusProcessExitCode === null) {
-          __nimbusEmitExit(finalCode);
+          finalCode = __nimbusExitAtEnd();
           if (__nimbusProcessExitCode !== null) finalCode = __nimbusProcessExitCode;
           __nimbusProgramStopped = true;
         }

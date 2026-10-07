@@ -21,6 +21,8 @@
  */
 
 /** What the runtime embedding the module supplies. */
+import { invalidArgType, nodeError } from './node-error.js';
+
 export interface Http2ModuleHost {
   EventEmitter: new () => { emit(event: string, ...args: unknown[]): boolean };
   /** Node's Http2ServerRequest is a Readable. */
@@ -46,38 +48,10 @@ export interface Http2Settings {
 }
 
 export function createHttp2Module(host: Http2ModuleHost) {
-  type ErrorClass = new (message: string) => Error;
-  const nodeError = (Base: ErrorClass, code: string, message: string, props: Record<string, unknown> = {}): Error =>
-    Object.assign(new Base(message), { code }, props);
   const notSupported = (op: string) =>
     nodeError(Error, 'ERR_HTTP2_NOT_SUPPORTED', `http2.${op}: not implemented in Nimbus. Use fetch() or HTTP/1.1.`);
 
-  // Node's ERR_INVALID_ARG_TYPE (lib/internal/errors.js), for the three
-  // expectations these functions state.
-  const describe = (value: unknown): string => {
-    if (value === null) return 'null';
-    if (value === undefined) return 'undefined';
-    switch (typeof value) {
-      case 'bigint': return `type bigint (${value}n)`;
-      case 'number':
-        if (Object.is(value, -0)) return 'type number (-0)';
-        return `type number (${value})`;
-      case 'boolean': return `type boolean (${value})`;
-      case 'symbol': return `type symbol (${String(value)})`;
-      case 'function': return `function ${value.name}`;
-      case 'string': {
-        const shown = value.length > 28 ? `${value.slice(0, 25)}...` : value;
-        return shown.includes("'") ? `type string (${JSON.stringify(shown)})` : `type string ('${shown}')`;
-      }
-      default: {
-        const ctor: unknown = Reflect.get(Object(value), 'constructor');
-        return typeof ctor === 'function' && ctor.name ? `an instance of ${ctor.name}` : String(value);
-      }
-    }
-  };
-  const invalidArgType = (name: string, expected: string, value: unknown) =>
-    nodeError(TypeError, 'ERR_INVALID_ARG_TYPE', `The "${name}" argument must be ${expected}. Received ${describe(value)}`);
-  const invalidSetting = (Base: ErrorClass, name: string, actual: unknown, min?: number, max?: number) =>
+  const invalidSetting = (Base: new (message?: string) => Error, name: string, actual: unknown, min?: number, max?: number) =>
     nodeError(Base, 'ERR_HTTP2_INVALID_SETTING_VALUE', `Invalid value for setting "${name}": ${String(actual)}`,
       min === undefined ? { actual } : { actual, min, max });
 
@@ -101,7 +75,7 @@ export function createHttp2Module(host: Http2ModuleHost) {
   };
   const validate = (settings: Http2Settings | undefined) => {
     if (settings === undefined) return;
-    if (!isObjectArg(settings.customSettings)) throw invalidArgType('customSettings', 'an instance of Number', settings.customSettings);
+    if (!isObjectArg(settings.customSettings)) throw invalidArgType('customSettings', 'Number', settings.customSettings);
     if (settings.customSettings) {
       const entries = Object.entries(settings.customSettings);
       if (entries.length > MAX_ADDITIONAL_SETTINGS) {
@@ -144,7 +118,7 @@ export function createHttp2Module(host: Http2ModuleHost) {
    * as Node returns it.
    */
   function getPackedSettings(settings?: Http2Settings) {
-    if (!isObjectArg(settings)) throw invalidArgType('settings', 'of type object', settings);
+    if (!isObjectArg(settings)) throw invalidArgType('settings', 'object', settings);
     validate(settings);
     const given: Http2Settings = { ...settings };
     // Node's settings buffer, by its slots: a custom identifier below 7 names
@@ -215,7 +189,7 @@ export function createHttp2Module(host: Http2ModuleHost) {
   /** A SETTINGS frame payload read back into a settings object (Node reads elements, as Buffer's readUInt*BE do). */
   function getUnpackedSettings(buf: ArrayLike<number>, options: { validate?: boolean } | null = {}) {
     if (!ArrayBuffer.isView(buf) || Reflect.get(buf, 'length') === undefined) {
-      throw invalidArgType('buf', 'an instance of Buffer or TypedArray', buf);
+      throw invalidArgType('buf', ['Buffer', 'TypedArray'], buf);
     }
     if (buf.length % 6 !== 0) {
       throw nodeError(RangeError, 'ERR_HTTP2_INVALID_PACKED_SETTINGS_LENGTH', 'Packed settings length must be a multiple of six');

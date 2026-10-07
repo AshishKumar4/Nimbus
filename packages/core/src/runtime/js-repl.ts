@@ -132,9 +132,9 @@ async function __replLine(line) {
     __replRunning = () => {
       // The line goes on unawaited: what it ends with is no one's now.
       running.catch(() => {});
-      const error = new Error("Script execution was interrupted by \`SIGINT\`");
-      error.code = "ERR_SCRIPT_EXECUTION_INTERRUPTED";
-      error.stack = "Error [ERR_SCRIPT_EXECUTION_INTERRUPTED]: " + error.message;
+      const error = __nimbusNodeError(Error, "ERR_SCRIPT_EXECUTION_INTERRUPTED", "Script execution was interrupted by \`SIGINT\`");
+      // Node's REPL reports the interrupt with no frames.
+      error.stack = String(error);
       reject(error);
     };
   });

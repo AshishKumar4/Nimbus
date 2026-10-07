@@ -492,10 +492,17 @@ const __nimbusCodeCells = new Map(__NIMBUS_CODE_CELLS.map((__row) => [__row[0], 
 // Where node:fs shows the map's modules: beside this main module, /bundle/.
 const __NIMBUS_BUNDLE_FILES = decodeURIComponent(new URL("./", import.meta.url).pathname);
 // The wrapper function of the cell at a VFS key, compiled by the registry the
-// first time it is asked for; null when the launch's map has no such cell.
+// first time it is asked for; null when the launch's map has no such cell. A
+// cell that does not compile leads its SyntaxError's stack with where.
 function __nimbusModuleCell(key) {
   const __row = __nimbusCodeCells.get(key);
-  return __row ? __nimbusRegistryRequire("./" + __row[1]) : null;
+  if (!__row) return null;
+  try {
+    return __nimbusRegistryRequire("./" + __row[1]);
+  } catch (e) {
+    __nimbusDecorateSyntaxError(e, __row[1]);
+    throw e;
+  }
 }
 // Whether the cell at a VFS key is an ES module the launch lowered (CommonJsCellRow).
 function __nimbusModuleCellIsEsModule(key) {
@@ -504,14 +511,67 @@ function __nimbusModuleCellIsEsModule(key) {
 }
 // The entry's wrapper function. A SyntaxError from compiling it carries no
 // location (the registry compiles on require, and V8 reports the requiring
-// frame), so its stack leads with the file, as Node's report does.
-function __nimbusEntryWrapper(name, filename) {
+// frame), so its stack leads with where it is, as Node's does
+// (__nimbusDecorateSyntaxError).
+function __nimbusEntryWrapper(name) {
   try {
     return __nimbusRegistryRequire("./" + name);
   } catch (e) {
-    if (e instanceof SyntaxError && typeof e.stack === "string") e.stack = filename + "\\n\\n" + e.stack;
+    __nimbusDecorateSyntaxError(e, name);
     throw e;
   }
+}
+// ── Frames, as Node's fatal report places them (node-shims.ts __nimbusFatalArrow) ──
+// The launch's entry: [moduleName, the name Node gives it (its path, an ES
+// module's file: URL, [eval], [stdin]), the wrapper's head, 1 for an ES module].
+const __nimbusStackEntry = typeof __NIMBUS_STACK_ENTRY === "undefined" ? null : __NIMBUS_STACK_ENTRY;
+const __NIMBUS_BUNDLE_URL = new URL("./", import.meta.url).href;
+let __nimbusCellsByName = null;
+// A stack frame's module, by its URL in the map: the cell's VFS path (or the
+// entry's name), whether it is an ES module, the wrapper's head on its first
+// line, and whether its first line was a shebang. Null for a frame of
+// anything else: this runner, the shims, a builtin.
+function __nimbusFrameModule(url) {
+  if (typeof url !== "string" || !url.startsWith(__NIMBUS_BUNDLE_URL)) return null;
+  return __nimbusModuleNamed(url.slice(__NIMBUS_BUNDLE_URL.length));
+}
+function __nimbusModuleNamed(name) {
+  if (__nimbusStackEntry !== null && name === __nimbusStackEntry[0]) {
+    return { name, path: null, file: __nimbusStackEntry[1], head: __nimbusStackEntry[2], esModule: __nimbusStackEntry[3] === 1, hashbang: false };
+  }
+  __nimbusCellsByName ??= new Map(__NIMBUS_CODE_CELLS.map((row) => [row[1], row]));
+  const row = __nimbusCellsByName.get(name);
+  return row === undefined ? null
+    : { name, path: "/" + row[0], file: null, head: row[2], esModule: row[6] === 1, hashbang: row[4] === 1 };
+}
+// A frame module's text as the registry compiled it, or null.
+function __nimbusFrameModuleText(module) {
+  try {
+    return __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + module.name, "utf8");
+  } catch {
+    return null;
+  }
+}
+// Where V8 would report a throw at offset \`offset\` of a module's text, or the
+// syntax error that stops its compile (offset -1): the interpreter's parser
+// (core interpreter fatalLocation), loaded only for a report.
+function __nimbusFatalLocation(text, goal, offset) {
+  try {
+    return __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").fatalLocation(text, goal, offset);
+  } catch {
+    return null;
+  }
+}
+// What Node's stack carries for a module that does not compile: where
+// (decorateErrorStack: the arrow, then the stack), so its report prints it
+// once (node-shims.ts __nimbusFatalReport).
+const __nimbusDecorated = new WeakSet();
+function __nimbusDecorateSyntaxError(e, name) {
+  if (!(e instanceof SyntaxError) || typeof e.stack !== "string" || __nimbusDecorated.has(e)) return;
+  const arrow = typeof globalThis.__nimbusSyntaxErrorArrow === "function" ? globalThis.__nimbusSyntaxErrorArrow(__nimbusModuleNamed(name)) : null;
+  if (arrow === null) return;
+  e.stack = arrow + "\\n" + e.stack;
+  __nimbusDecorated.add(e);
 }
 // The cell's own text, read back from the module map under its module name.
 function __nimbusModuleCellSource(row) {
@@ -633,10 +693,7 @@ function __nimbusRuntimeCodeCompile(entry, describe) {
     return __interpreter.compileFunction(entry.kind, entry.params, entry.body);
   } catch (e) {
     if (!e || e.code !== "${INTERPRETER_UNSUPPORTED}") throw e;
-    const __err = new EvalError(describe + " was produced after this launch started, and a Worker compiles code only from the module map it was launched with; it is staged, and the next launch of this command compiles it. (" + e.message + ")");
-    __err.code = "ERR_NIMBUS_CODE_NEXT_LAUNCH";
-    __err.key = __id.key;
-    throw __err;
+    throw __nimbusNodeError(EvalError, "ERR_NIMBUS_CODE_NEXT_LAUNCH", describe + " was produced after this launch started, and a Worker compiles code only from the module map it was launched with; it is staged, and the next launch of this command compiles it. (" + e.message + ")", { key: __id.key });
   }
 }
 // The wrapper function of a file that is not one of the launch's cells.

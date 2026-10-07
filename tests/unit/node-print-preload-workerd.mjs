@@ -81,7 +81,7 @@ const COMMANDS = [
 // names (or a pattern the line matches). Which error a run ends on shows
 // what ran first: a preload that does not resolve fails the run only if it
 // is loaded before the code is compiled.
-const MISSING_IMPORT = /^Error( \[ERR_MODULE_NOT_FOUND\])?: Cannot find module '[^']*\/missing\.mjs'/;
+const MISSING_IMPORT = /^Error \[ERR_MODULE_NOT_FOUND\]: Cannot find module '[^']*\/missing\.mjs' imported from /;
 const REFUSED = [
   [`node -p 'import fs from "fs"; 1'`, 1, 'Error [ERR_EVAL_ESM_CANNOT_PRINT]: --print cannot be used with ESM input'],
   [`node -p 'return 1'`, 1, 'SyntaxError: Illegal return statement'],
@@ -89,8 +89,7 @@ const REFUSED = [
   [`node -r ./pre.cjs --import ./missing.mjs -p 'export default 1'`, 1, 'Error [ERR_EVAL_ESM_CANNOT_PRINT]: --print cannot be used with ESM input'],
   // By default Node compiles a script before --import's modules load
   // (evalTypeScript); --input-type=commonjs compiles it as it runs, after
-  // (evalScript). (Node heads its internal error `Error [ERR_MODULE_NOT_FOUND]:`;
-  // the session's resolver errors carry the code, not yet the header.)
+  // (evalScript).
   [`node --import ./missing.mjs -p 'return 1'`, 1, 'SyntaxError: Illegal return statement'],
   [`node --input-type=commonjs --import ./missing.mjs -p 'return 1'`, 1, MISSING_IMPORT],
   // A module's syntax error is Node's as it evaluates the entry: after -r's

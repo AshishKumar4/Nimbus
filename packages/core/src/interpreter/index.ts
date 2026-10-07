@@ -226,6 +226,56 @@ export function moduleRequests(path: string, text: string): ModuleRequest[] {
   return requests;
 }
 
+/**
+ * Where V8 would place a fatal error's report in `text`, a module's whole
+ * text (a `{ cjs }` cell's wrapper included) as `goal` parses it, for the
+ * process's fatal report (node-shims.ts __nimbusFatalArrow), which has a
+ * frame's offset and not V8's message:
+ *   - `offset` given: the innermost `throw` statement whose argument holds
+ *     it, as [start, start + 1], V8's location of a throw; null for none;
+ *   - `offset` -1: the syntax error that stops the parse, as [start, end]
+ *     of the token it stops at; null when the text parses.
+ */
+export function fatalLocation(text: string, goal: 'script' | 'module', offset: number): [number, number] | null {
+  const options = goal === 'module' ? MODULE_OPTIONS : COMMONJS_OPTIONS;
+  let program: Program;
+  try {
+    program = parse(text, options);
+  } catch (error) {
+    if (offset !== -1 || !isObject(error)) return null;
+    const at = reflectGet(error, 'pos');
+    const end = reflectGet(error, 'raisedAt');
+    if (typeof at !== 'number') return null;
+    return [at, typeof end === 'number' && end > at ? end : at + 1];
+  }
+  if (offset === -1) return null;
+  let found: [number, number] | null = null;
+  const pending: unknown[] = [program];
+  while (pending.length > 0) {
+    const node = pending[pending.length - 1];
+    pending.length -= 1;
+    if (typeof node !== 'object' || node === null) continue;
+    if (arrayIsArray(node)) {
+      for (let i = 0; i < node.length; i++) pending[pending.length] = node[i];
+      continue;
+    }
+    const start = reflectGet(node, 'start');
+    const end = reflectGet(node, 'end');
+    if (typeof start !== 'number' || typeof end !== 'number' || offset < start || offset >= end) continue;
+    if (reflectGet(node, 'type') === 'ThrowStatement') {
+      const argument = reflectGet(node, 'argument');
+      const from = isObject(argument) ? reflectGet(argument, 'start') : undefined;
+      if (typeof from === 'number' && offset >= from) found = [start, start + 1];
+    }
+    const keys = objectKeys(node);
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (key !== 'type' && key !== 'start' && key !== 'end' && key !== 'loc' && key !== 'range') pending[pending.length] = reflectGet(node, key);
+    }
+  }
+  return found;
+}
+
 /** Whether a module's top level has import or export declarations. */
 function hasModuleSyntax(program: Program): boolean {
   return someItem(program.body, (s) => s.type === 'ImportDeclaration' || s.type === 'ExportNamedDeclaration'
