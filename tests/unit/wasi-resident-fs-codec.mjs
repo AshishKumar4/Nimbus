@@ -23,7 +23,7 @@ if (!canPark) {
 }
 
 const MiB = 1024 * 1024;
-const ENOSPC = 51;
+const EACCES = 2;
 let passed = 0;
 let index = 0;
 /** ONLY=<n> runs the n-th check alone (1-based). */
@@ -65,24 +65,19 @@ await check('descriptors pin one buffer per revision, within the store\'s budget
   await guest.dispose();
 });
 
-await check('a refusal met by another operation\'s flush is the answer of a later fsync, through any descriptor', async () => {
-  const guest = await residentGuest({ refuse: (path) => /refused(-again)?\.bin$/.test(path) });
+await check('a write through the client the session refuses is the answer of the next fsync, through any descriptor', async () => {
+  const guest = await residentGuest();
   const writer = await guest.open('home/user/refused.bin', { create: true, truncate: true, write: true });
-  assert.equal(await guest.write(writer, 'lost bytes'), 0);
-  // A path change flushes what is held; the session refuses the write.
-  assert.equal(await guest.mkdir('home/user/elsewhere'), 0);
-  // A reader's fsync (the codec's own copy of the file) reports it.
+  // Taken from the process after its open: the session refuses its write.
+  guest.kernel.chown('home/user/refused.bin', 0, 0);
+  guest.kernel.chmod('home/user/refused.bin', 0o444);
+  assert.equal(await guest.write(writer, 'lost bytes'), 0, 'a write is acknowledged as it is logged');
+  // A reader's fsync (the codec's own copy of the file) reports it, once, for the process.
   const reader = await guest.open('home/user/refused.bin');
-  assert.equal(await guest.sync(reader), ENOSPC, 'fsync through a reader');
-  assert.equal(await guest.sync(reader), ENOSPC, 'and again: the reader does not consume the writer\'s error');
+  assert.equal(await guest.sync(reader), EACCES, 'fsync through a reader');
+  assert.equal(await guest.sync(reader), 0, 'reported once');
   assert.equal(await guest.close(reader), 0);
-  assert.equal(await guest.close(writer), ENOSPC, 'the writer\'s close reports it');
-  // The writer's own fsync reports it once, as Linux does per descriptor; its close then has nothing left to say.
-  const second = await guest.open('home/user/refused-again.bin', { create: true, truncate: true, write: true });
-  assert.equal(await guest.write(second, 'lost too'), 0);
-  assert.equal(await guest.mkdir('home/user/elsewhere-too'), 0);
-  assert.equal(await guest.sync(second), ENOSPC, 'fsync through the writer');
-  assert.equal(await guest.close(second), 0);
+  assert.equal(await guest.close(writer), 0);
   assert.equal(await guest.P.__wasiSettleWrites(), null, 'every refusal was reported to the program');
   await guest.dispose();
 });

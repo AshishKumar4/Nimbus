@@ -67,6 +67,13 @@ export async function residentGuest({ refuse = () => false } = {}) {
   }
   // What session/rpc.ts answers itself rather than through the op table.
   supervisor.fsAcquire = async (epoch, cursor, options) => own.acquire(epoch, cursor, options);
+  // The process's waves (its filesystem client's): in process, unfenced, as a session that loses no call.
+  supervisor.openWaveWriter = async () => null;
+  supervisor.retireWaveWriter = async () => {};
+  supervisor.writeBatchStream = async (stream, _fence, owner) => {
+    try { return await dispatch({ op: 'writeBatchStream', args: [], pid, stream, ...(owner === undefined ? {} : { mutationOwner: owner }) }); }
+    catch (error) { throw acrossRpc(error); }
+  };
   supervisor.fsList = async (...args) => own.list(...args);
   supervisor.fsReadBatch = async (requests) => {
     const out = [];

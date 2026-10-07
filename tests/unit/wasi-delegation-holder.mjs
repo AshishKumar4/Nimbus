@@ -361,7 +361,7 @@ async function create(fs, path, text) {
   s.kernel.chown('home/user/ro.txt', 0, 0);
   s.kernel.chmod('home/user/ro.txt', 0o444);
   await s.fs.write(fd.id, 0, enc.encode('XX'));
-  await assert.rejects(async () => s.fs.fsync(fd.id), /refused/, 'a refused write through was not reported');
+  await assert.rejects(async () => s.fs.fsync(fd.id), { code: 'EACCES' }, 'a refused write through was not reported, with its errno');
   await s.fs.close(fd.id);
 }
 
