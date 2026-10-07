@@ -150,6 +150,22 @@ Object.defineProperty(taggedIterator, Symbol.toStringTag, { get() { tagReads += 
 util.inspect(Tagged.resolve(1));
 util.inspect(taggedIterator, { showHidden: true });
 console.log('holder tag reads', tagReads);
+// A holder's class with its own instanceof check, or a name getter, which
+// constructor discovery runs: as often as in node (what the slot shows is
+// the named limit, so only the counts are compared).
+let checks = 0;
+class Checking extends Promise { static [Symbol.hasInstance](value) { checks += 1; return true; } }
+util.inspect(Checking.resolve(42));
+let nameReads = 0;
+class Named extends Promise { static get name() { nameReads += 1; return 'Named'; } }
+util.inspect(Named.resolve(42));
+class Inheriting extends Checking {}
+util.inspect(Inheriting.resolve(42), { showHidden: true });
+const iterator = new Set([1]).values();
+class IteratorKind { static [Symbol.hasInstance]() { checks += 1; return false; } }
+Object.setPrototypeOf(iterator, Object.create(Object.getPrototypeOf(iterator), { constructor: { value: IteratorKind } }));
+util.inspect(iterator);
+console.log('constructor checks', checks, nameReads);
 // No program's callback is handed anything but its own objects: a custom
 // inspect's this, a trap's receiver, a getter's this, for a proxy in a slot,
 // nested or not, whatever showProxy and getters say.
