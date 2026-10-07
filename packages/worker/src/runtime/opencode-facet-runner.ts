@@ -860,7 +860,8 @@ let __ocLoadError = null;
 const __ocMode = ${JSON.stringify(mode)};
 const __ocAttachedTty = __ocMode === "attached";
 // Resident modes (attached TUI + headless serve) stream stdout/stderr LIVE to
-// the supervisor and stay alive on ctx.waitUntil; one-shot buffers and returns.
+// the supervisor and stay alive on ctx.waitUntil. One-shot returns an explicit,
+// bounded text-result capture, not another live process-log store.
 const __ocResident = __ocMode === "attached" || __ocMode === "server";
 
 // Live-stream RPC chain for the attached-TTY TUI: serialize SUPERVISOR.stdout/
@@ -907,6 +908,29 @@ const __ocTail = (buf, s) => {
   const merged = buf + s;
   return merged.length > __ocTailCap ? merged.slice(merged.length - __ocTailCap) : merged;
 };
+// The one-shot JSON API necessarily materializes its requested result. Refuse
+// an oversized result before retaining the write; never silently truncate it
+// or grow a whole-output collector until the facet runs out of memory.
+const __ocCaptureCap = 1024 * 1024;
+const __ocCapturedBytes = { stdout: 0, stderr: 0 };
+let __ocCaptureError = null;
+const __ocCapture = (which, bytes) => {
+  if (__ocCaptureError) throw __ocCaptureError;
+  if (bytes.byteLength > __ocCaptureCap - __ocCapturedBytes[which]) {
+    __ocCaptureError = Object.assign(new Error("EFBIG: opencode one-shot " + which + " result exceeds " + __ocCaptureCap + " bytes"), { code: "EFBIG" });
+    if (exitCode === 0) exitCode = 1;
+    throw __ocCaptureError;
+  }
+  __ocCapturedBytes[which] += bytes.byteLength;
+  const text = __nimbusOutText(which, bytes);
+  if (which === "stdout") stdout += text;
+  else stderr += text;
+};
+const __ocAppendDiagnostic = (text) => {
+  // Error reporting has its own bounded tail and remains visible even if the
+  // requested result exhausted the capture allowance.
+  stderr = __ocTail(stderr, String(text));
+};
 
 // process state seeding (argv/env/cwd) + stdout/stderr/exit capture.
 try { process.argv = argv; } catch {}
@@ -947,13 +971,13 @@ if (__ocResident) {
 } else {
   process.stdout.write = (d, enc, cb) => {
     if (typeof enc === "function") cb = enc;
-    stdout += __nimbusOutText("stdout", __nimbusOutBytes(d, enc));
+    __ocCapture("stdout", __nimbusOutBytes(d, enc));
     if (typeof cb === "function") queueMicrotask(cb);
     return true;
   };
   process.stderr.write = (d, enc, cb) => {
     if (typeof enc === "function") cb = enc;
-    stderr += __nimbusOutText("stderr", __nimbusOutBytes(d, enc));
+    __ocCapture("stderr", __nimbusOutBytes(d, enc));
     if (typeof cb === "function") queueMicrotask(cb);
     return true;
   };
@@ -971,8 +995,8 @@ if (__ocResident) {
   console.log = (...a) => { const s = __ocFmt(...a) + "\\n"; stdout = __ocTail(stdout, s); __queueRpcWrite("stdout", __nimbusOutEnc.encode(s)); };
   console.error = (...a) => { const s = __ocFmt(...a) + "\\n"; stderr = __ocTail(stderr, s); __queueRpcWrite("stderr", __nimbusOutEnc.encode(s)); };
 } else {
-  console.log = (...a) => { stdout += __ocFmt(...a) + "\\n"; };
-  console.error = (...a) => { stderr += __ocFmt(...a) + "\\n"; };
+  console.log = (...a) => process.stdout.write(__ocFmt(...a) + "\\n");
+  console.error = (...a) => process.stderr.write(__ocFmt(...a) + "\\n");
 }
 console.info = console.log;
 console.debug = console.log;
@@ -1005,7 +1029,7 @@ async function __ocDrainVfsWrites() {
   } catch (e) {
     const trace = (e && e.stack) || (e && e.message) || String(e);
     __ocLoadError = trace;
-    stderr += trace + "\\n";
+    __ocAppendDiagnostic(trace + "\\n");
     exitCode = 1;
     if (__ocResident) {
       try { await __supervisor.stderr(new TextEncoder().encode(trace + "\\n")); } catch {}
@@ -1221,7 +1245,7 @@ async function __ocRunAttachedTui() {
       else if (e && e.__ocProcessExit) { exitCode = e.code; __ocExited = true; }
       else {
         __ocLoadError = (e && e.stack) || (e && e.message) || String(e);
-        stderr += __ocLoadError + "\\n";
+        __ocAppendDiagnostic(__ocLoadError + "\\n");
         if (exitCode === 0) exitCode = 1;
       }
     }
@@ -1337,7 +1361,7 @@ async function __ocRunServe() {
       else if (e && e.__ocProcessExit) { exitCode = e.code; __ocExited = true; }
       else {
         __ocLoadError = (e && e.stack) || (e && e.message) || String(e);
-        stderr += __ocLoadError + "\\n";
+        __ocAppendDiagnostic(__ocLoadError + "\\n");
         if (exitCode === 0) exitCode = 1;
       }
     }
@@ -1390,14 +1414,14 @@ async function __ocOneShotFetch(request, workerEnv) {
         const __tsRoot = __tsTree && __tsTree.rootNode;
         if (!__tsRoot) throw new Error("tree-sitter bash parse returned no tree");
         const __tsOk = __tsRoot.type === "program" && !__tsRoot.hasError;
-        stdout += JSON.stringify({
+        process.stdout.write(JSON.stringify({
           ok: __tsOk,
           command: __tsCommand,
           rootType: __tsRoot.type,
           childCount: __tsRoot.childCount,
           sexpr: __tsRoot.toString(),
           powershellLoaded: !!__tsPsLang,
-        }) + "\\n";
+        }) + "\\n");
         if (!__tsOk) exitCode = 1;
       } else {
         if (typeof __ocBundle.nimbusMain !== "function") {
@@ -1416,8 +1440,9 @@ async function __ocOneShotFetch(request, workerEnv) {
       if (e && e.__ocProcessExit) { exitCode = e.code; }
       else { __ocLoadError = (e && e.stack) || (e && e.message) || String(e); }
     }
+    if (__ocCaptureError && !__ocLoadError) __ocLoadError = __ocCaptureError.message;
     if (__ocLoadError) {
-      stderr += __ocLoadError + "\\n";
+      __ocAppendDiagnostic(__ocLoadError + "\\n");
       if (exitCode === 0) exitCode = 1;
     }
     await __drainPendingIO();
