@@ -70,6 +70,14 @@ console.count();
 console.countReset();
 console.count();
 console.debug('debug', 1);
+console.table([{ a: 1, b: 'x' }, { a: 2, c: true }]);
+console.table({ r1: { c1: 1 }, r2: { c2: [1, 2, 3, 4], c3: { d: { e: 1 } } } });
+console.table([1, 'two', { three: 3 }]);
+console.table(new Map([['k', { v: 1 }], [2, 'two']]));
+console.table(new Set(['s', 1]));
+console.table([{ a: 1, b: 2 }, { a: 3 }], ['a', 'b']);
+console.table('not tabular');
+console.table([{ wide: '日本語', ascii: 'abc' }]);
 `;
 
 // Colours where Node's console would use them: FORCE_COLOR forces them for
