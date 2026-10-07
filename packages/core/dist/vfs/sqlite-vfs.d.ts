@@ -426,9 +426,10 @@ export interface WaveRouter {
      * The namespace path ('/'-rooted) directory `path` resolves to by the
      * mutations' lookup (CompositeVFS.mutationRoute, links followed). A tail
      * that does not exist yet is kept as named, after the nearest ancestor
-     * that resolves.
+     * that resolves. Synchronous while the lookup stays on this filesystem,
+     * so it reads as the wave's holder does (SqliteVFS.withHolds).
      */
-    resolveDirectory(path: string, cred: VfsCred, signal?: AbortSignal): Promise<string>;
+    resolveDirectory(path: string, cred: VfsCred, signal?: AbortSignal): string | Promise<string>;
     /** The mount a mutation at resolved namespace path `path` lands on, or null when it is this filesystem's alone. */
     placement(path: string): string | null;
     /**
