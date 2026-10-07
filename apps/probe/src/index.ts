@@ -72,8 +72,12 @@ async function readRequestLine(readable: ReadableStream<Uint8Array>): Promise<st
 
 /**
  * A recording egress for tests (NIMBUS_TEST_EGRESS=1): it answers
- * EGRESS_TEST_HOST itself (HTTP, WebSocket upgrades, plain TCP on port 7,
- * plain HTTP over TCP on port 80) and PyPI's metadata for its canary project
+ * EGRESS_TEST_HOST itself (HTTP, encoded bodies at /encoded-<gzip|br|deflate>,
+ * WebSocket upgrades and an echo server at /ws-echo, a refused upgrade at
+ * /ws-refused (and held open at /ws-refused-open, /ws-refused-64k, and after
+ * 2 s at /ws-refused-slow), an
+ * echo answered after 2 s at /ws-slow, plain TCP on port 7, plain
+ * HTTP over TCP on port 80) and PyPI's metadata for its canary project
  * (egress-canary.ts), and sends everything else on to the network, so a
  * session under it can still install packages. What an embedder supplies is
  * the same shape: a Fetcher, minted per session with its identity in props.
@@ -85,9 +89,42 @@ export class TestEgress extends WorkerEntrypoint {
       return Response.json(canaryPypiJson(`http://${EGRESS_TEST_HOST}/${CANARY_WHEEL}`));
     }
     if (url.hostname !== EGRESS_TEST_HOST) return fetch(request);
+    const encoding = /^\/encoded-(gzip|br|deflate)$/.exec(url.pathname)?.[1];
+    if (encoding !== undefined) {
+      // As a server compresses: the body encoded, sent as it is (encodeBody 'manual').
+      const zlib = await import('node:zlib');
+      const json = JSON.stringify({ encoding, accepted: request.headers.get('accept-encoding') });
+      const body = encoding === 'gzip' ? zlib.gzipSync(json) : encoding === 'br' ? zlib.brotliCompressSync(json) : zlib.deflateSync(json);
+      return new Response(body, { headers: { 'content-type': 'application/json', 'content-encoding': encoding }, encodeBody: 'manual' });
+    }
+    if (url.pathname === '/ws-refused') {
+      return Response.json({ error: 'unauthorized' }, { status: 401, headers: { 'www-authenticate': 'Bearer' } });
+    }
+    // A refusal whose body is sent and then held open: a short one, or exactly 64 KiB, or a short one after 2 s.
+    if (url.pathname === '/ws-refused-slow') await new Promise((resolve) => setTimeout(resolve, 2000));
+    if (url.pathname === '/ws-refused-open' || url.pathname === '/ws-refused-64k' || url.pathname === '/ws-refused-slow') {
+      const body = url.pathname === '/ws-refused-64k' ? new Uint8Array(65536).fill(97) : new TextEncoder().encode('partial');
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(body); } }),
+        { status: 401, statusText: 'Unauthorized', headers: { 'content-type': 'text/plain' } });
+    }
+    // An upgrade answered after 2 s.
+    if (url.pathname === '/ws-slow') await new Promise((resolve) => setTimeout(resolve, 2000));
     if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
       const pair = new WebSocketPair();
       pair[1].accept();
+      pair[1].binaryType = 'arraybuffer';
+      if (url.pathname === '/ws-echo' || url.pathname === '/ws-slow') {
+        // An echo server, as a test's host-side twin answers: a message back
+        // as it came; 'headers' answers with the upgrade's Authorization and
+        // Origin; 'close' closes 4001 'bye'; the first subprotocol offered.
+        pair[1].addEventListener('message', (event) => {
+          if (event.data === 'headers') pair[1].send(JSON.stringify({ authorization: request.headers.get('authorization'), origin: request.headers.get('origin') }));
+          else if (event.data === 'close') pair[1].close(4001, 'bye');
+          else pair[1].send(event.data);
+        });
+        const protocol = request.headers.get('sec-websocket-protocol')?.split(',')[0]?.trim();
+        return new Response(null, { status: 101, webSocket: pair[0], headers: protocol ? { 'sec-websocket-protocol': protocol } : {} });
+      }
       pair[1].addEventListener('message', (event) => pair[1].send(`via-egress:${String(event.data)}`));
       return new Response(null, { status: 101, webSocket: pair[0] });
     }

@@ -94,8 +94,12 @@ export function namedImportSignature(pkgName, names) {
  * (parsedImportView). The lexer reads ~77 MB/s where Oxc's transform,
  * in-process, reads ~26 MB/s and costs a transform-facet hop besides, so
  * the parser is the exception, not the path.
+ *
+ * With a `budget`, the walk reads at most what it allows, checked with a
+ * stat before each read: a file past the per-file or the remaining total
+ * bytes is skipped, and the walk ends after `files` candidate files.
  */
-export async function scanProjectImports(vfs, projDir, parse) {
+export async function scanProjectImports(vfs, projDir, parse, budget) {
     const bare = new Set();
     const namedImports = new Map();
     const scanExts = new Set(['.ts', '.tsx', '.jsx', '.js', '.mjs']);
@@ -118,6 +122,9 @@ export async function scanProjectImports(vfs, projDir, parse) {
     };
     // Files the lexer cannot decide, read with the parser once the walk is done.
     const undecided = [];
+    // What the budget has left.
+    let filesLeft = budget?.files ?? Infinity;
+    let bytesLeft = budget?.totalBytes ?? Infinity;
     const scan = (code, ext) => {
         for (const specifier of importedSpecifiers(code)) {
             if (specifier.startsWith('.') || specifier.startsWith('/'))
@@ -151,7 +158,7 @@ export async function scanProjectImports(vfs, projDir, parse) {
         }
     };
     const walk = (dir, depth) => {
-        if (depth > 6)
+        if (depth > 6 || filesLeft <= 0)
             return;
         let entries;
         try {
@@ -177,6 +184,21 @@ export async function scanProjectImports(vfs, projDir, parse) {
             const ext = entry.name.substring(dot);
             if (!scanExts.has(ext))
                 continue;
+            if (budget) {
+                if (filesLeft <= 0)
+                    return;
+                filesLeft--;
+                let size;
+                try {
+                    size = vfs.stat(path).size;
+                }
+                catch {
+                    continue;
+                }
+                if (size > budget.fileBytes || size > bytesLeft)
+                    continue;
+                bytesLeft -= size;
+            }
             let source;
             try {
                 source = vfs.readFileString(path);

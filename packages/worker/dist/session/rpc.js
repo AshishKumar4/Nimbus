@@ -411,10 +411,10 @@ const FsListArgsSchema = z.object({
  * session/ws-relay.ts for why mediating the transport is not enough.
  *
  * The URL is untrusted input, so it is parsed rather than pattern-matched and
- * only the two WebSocket schemes are accepted. Nothing else about the request
- * comes from the facet — no facet-supplied header is forwarded, so the
- * supervisor cannot be induced to attach its own ambient credentials to a
- * destination the facet chose.
+ * only the two WebSocket schemes are accepted. The facet's request headers
+ * are bounded here and filtered by the relay (ws-relay.ts open): the
+ * supervisor sends what the program could have sent itself, and nothing of
+ * its own.
  */
 const WsOpenArgsSchema = z.object({
     url: z.string().max(2048).refine((value) => {
@@ -428,10 +428,12 @@ const WsOpenArgsSchema = z.object({
         return parsed.protocol === 'ws:' || parsed.protocol === 'wss:';
     }, { message: 'a relayed socket needs a ws: or wss: URL' }),
     protocols: z.array(z.string().max(64)).max(8),
+    headers: z.array(z.tuple([z.string().min(1).max(256), z.string().max(8192)])).max(64),
+    refusalBody: z.boolean(),
 });
-export async function _rpcWsOpen(self, url, protocols, pid) {
-    const args = WsOpenArgsSchema.parse({ url, protocols: protocols ?? [] });
-    return self._ensureWebSocketRelay().open(processPid(pid), args.url, args.protocols);
+export async function _rpcWsOpen(self, url, protocols, headers, refusalBody, pid) {
+    const args = WsOpenArgsSchema.parse({ url, protocols: protocols ?? [], headers: headers ?? [], refusalBody: refusalBody ?? false });
+    return self._ensureWebSocketRelay().open(processPid(pid), args.url, args.protocols, args.headers, args.refusalBody);
 }
 export async function _rpcWsPoll(self, id, waitMs, pid) {
     return self._ensureWebSocketRelay().poll(processPid(pid), Number(id), Number(waitMs) || 0);
