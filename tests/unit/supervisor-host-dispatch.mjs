@@ -154,6 +154,7 @@ const INPUTS = {
   writeBatch: [payload],
   writeBatchStream: [stream],
   openWaveWriter: [],
+  retireWaveWriter: ['00000000-0000-4000-8000-000000000000'],
   putRegistryEntries: [entries],
   stdout: [data],
   stderr: [data],
@@ -436,6 +437,7 @@ const nativeAssert = {
   },
   writeBatchStream: (r) => assert.ok(r && typeof r === 'object', 'writeBatchStream returned its result'),
   openWaveWriter: (r) => assert.match(r, /^[0-9a-f-]{36}$/, 'openWaveWriter answered an epoch'),
+  retireWaveWriter: (r) => assert.equal(r, undefined, 'retireWaveWriter answers nothing'),
   stdout: () => assert.deepEqual(delegateCalls.at(-1), ['_rpcStdout', pid, data], 'stdout delegate args'),
   stderr: () => assert.deepEqual(delegateCalls.at(-1), ['_rpcStderr', pid, data], 'stderr delegate args'),
 };
@@ -471,7 +473,7 @@ for (const [op, route] of cases) {
   try {
     if (!droveDirect) {
       // An epoch is issued only through a binding that names its host instance.
-      if (op === 'openWaveWriter') supervisor.ctx.props.hostIncarnation = host.supervisorDeliveries.incarnation;
+      if (op === 'openWaveWriter' || op === 'retireWaveWriter') supervisor.ctx.props.hostIncarnation = host.supervisorDeliveries.incarnation;
       result = await supervisor[op](...input);
       delete supervisor.ctx.props.hostIncarnation;
       assert.equal(receivedEnvelope.op, op);

@@ -538,8 +538,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     for (const entry of entries) {
       if (entry.seq !== 0) continue;
       if (current.numbering === null) {
-        current.numbering = { writer: current.writer, seq: 1, jid: entry.jid };
-        journal.number(current.numbering);
+        // Recorded first: a numbering the journal did not take is not the epoch's.
+        const numbering = { writer: current.writer, seq: 1, jid: entry.jid };
+        journal.number(numbering);
+        current.numbering = numbering;
       }
       entry.seq = current.numbering.seq + (entry.jid - current.numbering.jid);
     }
@@ -594,6 +596,13 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       const errno = typeof code === 'string' && /^E[A-Z0-9]+$/.test(code) ? code : 'EIO';
       for (const entry of entries) fail(entry, errno, `this write could not be sent: ${error instanceof Error ? error.message : String(error)}`);
       journal.dropThrough(entries[entries.length - 1]!.jid);
+      // Numbers given to what was never sent would be a gap the session
+      // refuses: what follows is numbered under a new epoch (nothing of
+      // this wave left, so the old one has nothing to retire).
+      if (entries.some((entry) => entry.seq !== 0)) {
+        epoch = null;
+        for (const entry of queue) entry.seq = 0;
+      }
       return;
     }
     const firstSeq = entries[0]!.seq;
