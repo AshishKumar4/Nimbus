@@ -229,23 +229,24 @@ function setup({ doId = 'durable-do', storage = new Map() } = {}) {
   await Promise.all([other.done, running.done]);
 }
 
-// ── 6. the ledger counts durable mints, not durable releases ────────────────
+// ── 6. the ledger counts durable mints, not durable relaunches or releases ─
 {
   const { ctx, fm } = setup();
   const before = await facetNameCountDurable(ctx);
-  await fm.spawnWorker('export default {}', 'durable app', '/app', {
+  const first = await fm.spawnWorker('export default {}', 'durable app', '/app', {
     durable: { owner: 'A', image: { runner: 'r-a', application: 'app-a' } },
   });
   assert.equal(await facetNameCountDurable(ctx), before + 1,
     'minting a durable slot burns one facet ID');
-  const spawned = await fm.spawnWorker('export default {}', 'durable app', '/app', {
+  fm.kill(first.pid);
+  assert.equal(await facetNameCountDurable(ctx), before + 1,
+    'a kill does not mint or refund a durable name');
+  const relaunched = await fm.spawnWorker('export default {}', 'durable app', '/app', {
     durable: { owner: 'A', image: { runner: 'r-a', application: 'app-a' } },
   });
   assert.equal(await facetNameCountDurable(ctx), before + 1,
     'a relaunch on the same slot mints nothing new');
-  fm.kill(spawned.pid);
-  assert.equal(await facetNameCountDurable(ctx), before + 1,
-    'a kill does not mint or refund a durable name');
+  fm.kill(relaunched.pid);
 }
 
 resetProcessFacetStorage();

@@ -942,13 +942,16 @@ const facetNameLedgers = new WeakMap<object, FacetNameLedger>();
 function facetNameLedger(ctx: FacetNameLedgerStorage): FacetNameLedger {
   let ledger = facetNameLedgers.get(ctx);
   if (!ledger) {
-    const read = (key: string): Promise<number> => Promise.resolve(ctx.storage.get(key))
-      .then((value) => (typeof value === 'number' ? value : 0), () => 0);
+    const read = (key: string): Promise<number | undefined> => Promise.resolve(ctx.storage.get(key))
+      .then((value) => (typeof value === 'number' ? value : undefined), () => undefined);
     const created: FacetNameLedger = { chain: Promise.resolve({ names: 0, slots: 0 }), names: 0, minted: new Set() };
     created.chain = Promise.all([read(FACET_NAME_HIGH_WATER_KEY), read(FACET_SLOT_HIGH_WATER_KEY)])
-      .then(([names, slots]) => {
+      .then(([names = 0, slots]) => {
         created.names = names;
-        return { names, slots };
+        // A ledger persisted before the slot high-water existed kept slots
+        // and names in one count. That count bounds the slots, so no slot
+        // under it is charged twice.
+        return { names, slots: slots ?? names };
       });
     ledger = created;
     facetNameLedgers.set(ctx, ledger);
