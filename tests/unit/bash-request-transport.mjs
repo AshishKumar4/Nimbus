@@ -78,10 +78,14 @@ try {
   // ── Classic submit transport over the same serialized preamble ────────────
   {
     const { bindings, evaluate } = submit;
+    const written = [];
+    const release = submit.processes.subscribeOutputBytes(submit.pid, chunk => { if(chunk.stream==='stdout')written.push(chunk.data); });
     const scopedFacetStep = evaluate(`(${bashFacetStep.toString()})`);
     const slice = await scopedFacetStep(bootArgs(submit, 'printf "submit-ok\\n"'), bindings);
     assert.equal(slice.state, 'exited', JSON.stringify(slice));
-    assert.equal(slice.stdout, 'submit-ok\n');
+    release();
+    assert.equal(slice.stdout, '', 'classic submit does not return a second stored output copy');
+    assert.equal(Buffer.concat(written).toString(), 'submit-ok\n');
   }
 
   // ── No preamble installed: the step reports, it does not throw ────────────
