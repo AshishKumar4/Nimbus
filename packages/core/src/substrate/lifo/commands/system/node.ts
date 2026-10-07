@@ -3,7 +3,8 @@ import type { ProcessView } from '../../../../runtime/process-files.js';
 import type { Command } from '../types.js';
 import { resolve, dirname, join, extname } from '../../utils/path.js';
 import { ProcessExitError } from '../../node-compat/index.js';
-import { createCjsLoader, declaredPackageType, moduleWrapper, stripShebang, treatAsEsm, type PackageType } from '../../node-compat/cjs-loader.js';
+import { createCjsLoader, moduleWrapper, stripShebang } from '../../node-compat/cjs-loader.js';
+import { declaredPackageType, isEsModuleFile, type PackageType } from '../../../../runtime/module-format.js';
 import type { NodeContext } from '../../node-compat/index.js';
 import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
@@ -132,7 +133,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			return 1;
 		}
 
-		const mainType = extname(filename) === '.js' ? await mainPackageType(filename, ctx.vfs) : null;
+		const mainType = extname(filename) === '.js' || extname(filename) === '' ? await mainPackageType(filename, ctx.vfs) : null;
 		const kernel = kernelOrPortRegistry instanceof Map ? { portRegistry: kernelOrPortRegistry } : kernelOrPortRegistry;
 		// The program runs in a realm of its own (a worker per run), never the
 		// host's: its globals and intrinsics are its own (node-realm.ts).
@@ -210,7 +211,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 		const main = scope();
 		const module = { exports: {} as Record<string, unknown> };
 		const cleanMainSource = stripShebang(source);
-		const isEsm = treatAsEsm(cleanMainSource, filename, () => mainType);
+		const isEsm = isEsModuleFile(filename, cleanMainSource, () => mainType);
 		// The realm is the program's: npm bundles that reach globalThis.process
 		// (not the wrapper param) find the program's, and the bundlers' interop
 		// helpers are its globals too.

@@ -66,7 +66,7 @@ try {
       const [binding] = records[0].bindings;
       process.stdout.write(JSON.stringify({ kinds: records.map((r) => r.kind), local: binding.local, uses: binding.references.length }));
     } else if (step === 'bin') {
-      process.stdout.write(JSON.stringify(looksLikeEsm('/home/user/node_modules/.bin/tool', source)));
+      process.stdout.write(JSON.stringify(looksLikeEsm('/home/user/node_modules/.bin/tool', source, null)));
     } else {
       const wrapped = moduleWrapper(source + "\\nexport const url = import.meta.url; export const later = () => import('./dep.mjs');", true);
       process.stdout.write(JSON.stringify({ meta: wrapped.includes('import.meta'), dynamic: /\\bimport\\(/.test(wrapped) }));

@@ -537,6 +537,10 @@ export function createEsmResolver(host, options = {}) {
         },
         resolveSync: (specifier, parentUrl) => runSync(importTarget(specifier, parentUrl)),
         metaResolveSync: (specifier, parentUrl) => runSync(metaResolve(specifier, parentUrl)),
+        packageScopeSync(url) {
+            const { pjsonPath, type } = runSync(packageScopeConfig(new URL(url)));
+            return { pjsonPath, type };
+        },
         validateAttributes(url, format, attributes) {
             for (const key of Object.keys(attributes)) {
                 if (key !== 'type') {

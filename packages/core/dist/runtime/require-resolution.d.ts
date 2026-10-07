@@ -11,6 +11,7 @@
  */
 import type { Awaitable, RuntimeFsBridge, RuntimeVfsStat } from './os-contracts.js';
 import { type ResolvablePackageJson } from '../_shared/exports-resolver.js';
+import { type PackageType } from './module-format.js';
 /**
  * The filesystem questions resolution needs; held-cell reuse can additionally
  * check current read authority without rereading bytes. A missing path is
@@ -93,4 +94,16 @@ export interface ResolveSubpathResult {
 export declare function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress, 
 /** The program's own conditions (`node --conditions`), beside require's. */
 conditions?: readonly string[]): Promise<ResolveSubpathResult | null>;
+/**
+ * Whether a package.json is at `path` for a package scope walk. One the
+ * user may not look up is none, as Node's lookup reads it: a device mount
+ * shows nothing above the directory its user consented to.
+ */
+export declare function packageJsonVisible(vfs: RequireFs, path: string): Promise<boolean>;
+/**
+ * The "type" of the package scope a file in `dir` belongs to
+ * (module-format.ts PackageType): what Node reads, through the same
+ * lookup, to tell a .js or extensionless file's module format.
+ */
+export declare function packageScopeType(vfs: RequireFs, dir: string, progress?: WalkProgress): Promise<PackageType>;
 //# sourceMappingURL=require-resolution.d.ts.map

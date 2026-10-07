@@ -53,10 +53,14 @@ import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
+import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
+import { ES_MODULE_SCOPE_GLOBAL } from '@nimbus-sh/core/runtime/module-format.js';
 import { FACET_PROVIDED_PACKAGES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS, VFS_CAPACITY, } from '@nimbus-sh/core/constants.js';
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
 import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
+import { NODE_INSPECT_HOST_SOURCE, WORKERD_SLOTS_SOURCE } from './node-inspect-host.js';
+import { EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_INSPECT_SOURCE, NODE_PRIMORDIALS_SOURCE } from './node-inspect-source.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
 import { RUNTIME_INTERPRETER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
@@ -128,45 +132,6 @@ if (__nimbusReplay && typeof __real_net !== "undefined") {
     } });
   }
 }
-// ═══════════════════════════════════════════════════════════════════════
-// ──  Format helper ──────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════
-function __isErrorValue(v) {
-  return v instanceof Error || Object.prototype.toString.call(v) === "[object Error]";
-}
-// Node's util.inspect(err); JSON.stringify drops non-enumerable name/message/stack.
-function __fmtError(e, seen) {
-  if (seen.has(e)) return "[Circular *]";
-  seen.add(e);
-  let text;
-  try { text = typeof e.stack === "string" && e.stack ? e.stack : Error.prototype.toString.call(e); }
-  catch { text = String(e); }
-  const fields = [];
-  for (const key of Object.keys(e)) {
-    if (key === "cause") continue;
-    let value;
-    try { value = e[key]; } catch { continue; }
-    fields.push(key + ": " + __fmtField(value, seen));
-  }
-  if (Object.prototype.hasOwnProperty.call(e, "cause")) fields.push("[cause]: " + __fmtField(e.cause, seen));
-  if (fields.length === 0) return text;
-  return text + " {\\n" + fields.map((f) => "  " + f.split("\\n").join("\\n  ")).join(",\\n") + "\\n}";
-}
-function __fmtField(v, seen) {
-  if (typeof v === "string") return JSON.stringify(v);
-  if (v !== null && typeof v === "object" && __isErrorValue(v)) return __fmtError(v, seen);
-  return __fmt(v);
-}
-function __fmt(v) {
-  if (v === null) return "null";
-  if (v === undefined) return "undefined";
-  if (typeof v === "object") {
-    if (__isErrorValue(v)) return __fmtError(v, new Set());
-    try { return JSON.stringify(v); } catch { return String(v); }
-  }
-  return String(v);
-}
-
 function __nimbusDisposeRpcResult(value) {
   if ((typeof value !== "object" && typeof value !== "function") || value === null) return;
   const dispose = value[Symbol.dispose];
@@ -2652,8 +2617,16 @@ const __fsMod = (() => {
     // when the client disconnects — and counting it as an in-flight operation
     // would make a resident facet's drain wait for it, which buffers an open
     // response body. The window that needs holding is exactly the round trip.
+    // What the callback throws is an uncaught exception, as a timer's is in
+    // Node, not the rejection of the chain it runs on.
     const _barriered = (cb, args) => {
-      __nimbusTrackOp(_resumptionAcquire()).then(() => cb(...args));
+      __nimbusTrackOp(_resumptionAcquire()).then(() => {
+        try {
+          cb(...args);
+        } catch (error) {
+          __nimbusUncaughtException(error);
+        }
+      });
     };
     if (typeof _setTimeout === "function") {
       globalThis.setTimeout = function setTimeout(cb, ms, ...args) {
@@ -6729,36 +6702,75 @@ ${UNDICI_SHIM_CODE}
 // ═══════════════════════════════════════════════════════════════════════
 // ──  util module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
+// util.inspect, format and formatWithOptions are Node v22.22.3's own
+// lib/internal/util/inspect.js (node-inspect-source.ts), evaluated the first
+// time a program formats a value, over what node-inspect-host.ts gives it in
+// place of Node's internals: what a program prints of a value, through util
+// or console, is what Node prints (node-inspect-matches-node,
+// console-format-matches-node-workerd). workerd's own node:util gives
+// util.types, and reads what only V8's internals hold (a promise's state,
+// a proxy's target) as values, through its inspect. consola's FancyReporter
+// calls formatWithOptions directly (nuxi init).
+const __realUtil = typeof __real_util !== "undefined"
+  ? (__real_util.default ?? __real_util) : globalThis.process.getBuiltinModule("util");
+let __nimbusNodeInspectExports = null;
+function __nimbusNodeInspect() {
+  if (__nimbusNodeInspectExports !== null) return __nimbusNodeInspectExports;
+  // The East Asian Wide and Fullwidth ranges, ascending: [first, last] pairs.
+  const wide = ${JSON.stringify(EAST_ASIAN_WIDE_RANGES)}.split(",").flatMap((range) => {
+    const [first, last = first] = range.split("-");
+    return [parseInt(first, 16), parseInt(last, 16)];
+  });
+  __nimbusNodeInspectExports = (${NODE_INSPECT_HOST_SOURCE})({
+    util: __realUtil,
+    // V8's slots, as workerd's inspect reaches them (node-inspect-host.ts THE BINDING).
+    slots: (${WORKERD_SLOTS_SOURCE})(__realUtil),
+    Buffer: __BufferMod,
+    url: { pathToFileURL: __urlMod.pathToFileURL, URL: __urlMod.URL },
+    process: __processMod,
+    builtinModules: __NodeModule.builtinModules,
+    builtinObjects: ${JSON.stringify(NODE_BUILTIN_OBJECTS)},
+    eastAsianWide(code) {
+      let low = 0;
+      let high = wide.length / 2 - 1;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (code < wide[2 * mid]) high = mid - 1;
+        else if (code > wide[2 * mid + 1]) low = mid + 1;
+        else return true;
+      }
+      return false;
+    },
+    primordialsOf: function (primordials, globalThis) {
+${NODE_PRIMORDIALS_SOURCE}
+    },
+    inspectOf: function (exports, require, module, process, internalBinding, primordials) {
+${NODE_INSPECT_SOURCE}
+    },
+  });
+  return __nimbusNodeInspectExports;
+}
+// util.inspect, which loads Node's the first time it formats: its custom
+// symbol is Node's registered one, its options and styles Node's own.
+function __nimbusInspect(value, options) {
+  return Reflect.apply(__nimbusNodeInspect().inspect, this, arguments);
+}
+Object.defineProperties(__nimbusInspect, {
+  name: { value: "inspect" },
+  custom: { value: Symbol.for("nodejs.util.inspect.custom"), writable: true, enumerable: true, configurable: true },
+  defaultOptions: {
+    get() { return __nimbusNodeInspect().inspect.defaultOptions; },
+    set(options) { __nimbusNodeInspect().inspect.defaultOptions = options; },
+    enumerable: true, configurable: true,
+  },
+  colors: { get() { return __nimbusNodeInspect().inspect.colors; }, set(value) { __nimbusNodeInspect().inspect.colors = value; }, enumerable: true, configurable: true },
+  styles: { get() { return __nimbusNodeInspect().inspect.styles; }, set(value) { __nimbusNodeInspect().inspect.styles = value; }, enumerable: true, configurable: true },
+});
 const __utilMod = {
-  inspect: (o, opts) => {
-    if (o !== null && typeof o === "object" && __isErrorValue(o)) return __fmtError(o, new Set());
-    try { return JSON.stringify(o, null, 2); } catch { return String(o); }
-  },
-  format: (...args) => {
-    if (args.length === 0) return "";
-    const [fmt, ...a] = args;
-    if (typeof fmt !== "string") return args.map(__fmt).join(" ");
-    let i = 0;
-    return fmt.replace(/%[sdifjoO%]/g, (m) => {
-      if (m === "%%") return "%";
-      if (i >= a.length) return m;
-      const v = a[i++];
-      if (m === "%s") return String(v);
-      if (m === "%d" || m === "%i" || m === "%f") return Number(v).toString();
-      if (m === "%j") { try { return JSON.stringify(v); } catch { return "[Circular]"; } }
-      if (m === "%o" || m === "%O") return __utilMod.inspect(v);
-      return String(v);
-    }) + (i < a.length ? " " + a.slice(i).map(__fmt).join(" ") : "");
-  },
-  // util.formatWithOptions(inspectOptions, format[, ...args]) — identical
-  // to format() but takes inspect options as the first argument. consola's
-  // FancyReporter calls this directly (FancyReporter.formatArgs); its
-  // absence crashed every consola-based CLI under Nimbus with
-  // "(0 , import_node_util.formatWithOptions) is not a function" (nuxi init,
-  // at its first consola.error after "Welcome to Nuxt!"). This shim's
-  // inspect() ignores color/depth options, so dropping them and delegating
-  // to format() is behaviourally exact for what the shim can render.
-  formatWithOptions: (_inspectOptions, ...a) => __utilMod.format(...a),
+  inspect: __nimbusInspect,
+  format: function format(...args) { return __nimbusNodeInspect().format(...args); },
+  formatWithOptions: function formatWithOptions(options, ...args) { return __nimbusNodeInspect().formatWithOptions(options, ...args); },
+  stripVTControlCharacters: function stripVTControlCharacters(str) { return __nimbusNodeInspect().stripVTControlCharacters(str); },
   promisify: (fn) => (...a) => new Promise((res, rej) => fn(...a, (e, r) => e ? rej(e) : res(r))),
   callbackify: (fn) => (...a) => { const cb = a.pop(); fn(...a).then(r => cb(null, r), e => cb(e)); },
   // X.5-Q: util.types polyfill expansion. The pre-X.5-Q 3-method shape
@@ -6805,22 +6817,6 @@ const __utilMod = {
   isDeepStrictEqual: (a, b) => JSON.stringify(a) === JSON.stringify(b),
   TextEncoder: globalThis.TextEncoder,
   TextDecoder: globalThis.TextDecoder,
-  // util.stripVTControlCharacters(str) — Node 16.11+. Strips ANSI
-  // escape sequences from a string. Used by sv (svelte CLI), modern
-  // log libraries, and any CLI that wants to measure displayed-width
-  // independent of color codes. Pre-fix, sv's engine module imported
-  // this from 'node:util' and crashed at module-init with
-  // "stripVTControlCharacters is not a function".
-  //
-  // Real-Node impl strips C0/C1 ANSI escapes via a single regex.
-  // Standard CSI sequence pattern: ESC + '[' + parameter bytes + final byte.
-  stripVTControlCharacters: (str) => {
-    if (typeof str !== "string") return str;
-    // Covers most common ANSI sequences: CSI (\x1b[...m, \x1b[...K, etc.),
-    // OSC, simple ESC sequences. Mirrors the regex Node's lib/internal/
-    // util/inspect.js uses (slightly relaxed).
-    return str.replace(/\\x1b\\[[0-9;?]*[A-Za-z]|\\x1b[\\(\\)\\*\\+][AB012]|\\x1b\\][^\\x07\\x1b]*[\\x07\\x1b]|\\x1b[=>]/g, "");
-  },
   // util.styleText(format, text [, opts]) — Node 20.12+. Returns text
   // wrapped in ANSI escape sequences for terminal styling. Used by
   // create-vite and many modern CLIs.
@@ -7035,7 +7031,9 @@ const __utilMod = {
 // these strings; the constructor now agrees with it.
 (() => {
   const _Orig = globalThis.URL;
-  class _Shim extends _Orig {
+  const inspectCustom = Symbol.for("nodejs.util.inspect.custom");
+  // Named URL, as Node's class is: its name is what inspect and errors print.
+  class URL extends _Orig {
     constructor(input, base) {
       if (arguments.length >= 2 && base == null && typeof input === "string") {
         try { super(input); return; }
@@ -7053,17 +7051,62 @@ const __utilMod = {
       }
       super(input, base);
     }
-  }
-  for (const k of Object.getOwnPropertyNames(_Orig)) {
-    if (typeof _Orig[k] === "function" && !(k in _Shim)) {
-      try { _Shim[k] = _Orig[k].bind(_Orig); } catch (_e) {}
+    // Node's (lib/internal/url.js, v22.22.3), but for showHidden's internal
+    // context, which workerd's URL has none of.
+    [inspectCustom](depth, opts) {
+      if (typeof depth === "number" && depth < 0) return this;
+      let constructor = URL;
+      for (let proto = this; proto; proto = Object.getPrototypeOf(proto)) {
+        const descriptor = Object.getOwnPropertyDescriptor(proto, "constructor");
+        if (descriptor !== undefined && typeof descriptor.value === "function" && descriptor.value.name !== "") {
+          constructor = descriptor.value;
+          break;
+        }
+      }
+      const obj = { __proto__: { constructor } };
+      obj.href = this.href;
+      obj.origin = this.origin;
+      obj.protocol = this.protocol;
+      obj.username = this.username;
+      obj.password = this.password;
+      obj.host = this.host;
+      obj.hostname = this.hostname;
+      obj.port = this.port;
+      obj.pathname = this.pathname;
+      obj.search = this.search;
+      obj.searchParams = this.searchParams;
+      obj.hash = this.hash;
+      return constructor.name + " " + __utilMod.inspect(obj, opts);
     }
   }
-  // NOTE: cannot reassign _Shim.prototype = _Orig.prototype — workerd treats
+  for (const k of Object.getOwnPropertyNames(_Orig)) {
+    if (typeof _Orig[k] === "function" && !(k in URL)) {
+      try { URL[k] = _Orig[k].bind(_Orig); } catch (_e) {}
+    }
+  }
+  // NOTE: cannot reassign URL.prototype = _Orig.prototype — workerd treats
   // class.prototype as read-only. Inheritance via "extends _Orig" is enough:
-  // _Shim instances are instanceof _Orig, and _Shim.prototype's __proto__ is
+  // URL instances are instanceof _Orig, and URL.prototype's __proto__ is
   // _Orig.prototype (so all native URL methods are reachable via the chain).
-  globalThis.URL = _Shim;
+  globalThis.URL = URL;
+  // URLSearchParams prints as Node's does (lib/internal/url.js, v22.22.3).
+  Object.defineProperty(globalThis.URLSearchParams.prototype, inspectCustom, {
+    value: function (recurseTimes, ctx) {
+      if (typeof recurseTimes === "number" && recurseTimes < 0) return ctx.stylize("[Object]", "special");
+      const separator = ", ";
+      const innerOpts = { ...ctx };
+      if (recurseTimes !== null) innerOpts.depth = recurseTimes - 1;
+      const innerInspect = (v) => __utilMod.inspect(v, innerOpts);
+      const output = [];
+      for (const [name, value] of this) output.push(innerInspect(name) + " => " + innerInspect(value));
+      let length = -separator.length;
+      for (let i = 0; i < output.length; i++) length += output[i].replace(/\\u001b\\[\\d\\d?m/g, "").length + separator.length;
+      if (length > ctx.breakLength) return this.constructor.name + " {\\n  " + output.join(",\\n  ") + " }";
+      if (output.length) return this.constructor.name + " { " + output.join(separator) + " }";
+      return this.constructor.name + " {}";
+    },
+    writable: true, configurable: true,
+  });
 })();
 // The legacy API (parse/format/resolve/resolveObject/Url) and the rest of the
 // module are workerd's own node:url (see core/_shared/real-node-imports.ts).
@@ -7733,9 +7776,9 @@ const __assertMod = Object.assign(
   (v, m) => { if (!v) { const e = new Error(m || "AssertionError"); e.code = "ERR_ASSERTION"; throw e; } },
   {
     ok: (v, m) => { if (!v) { const e = new Error(m || "The expression evaluated to a falsy value"); e.code = "ERR_ASSERTION"; throw e; } },
-    equal: (a, b, m) => { if (a != b) { const e = new Error(m || __fmt(a) + " != " + __fmt(b)); e.code = "ERR_ASSERTION"; throw e; } },
-    notEqual: (a, b, m) => { if (a == b) { const e = new Error(m || __fmt(a) + " == " + __fmt(b)); e.code = "ERR_ASSERTION"; throw e; } },
-    strictEqual: (a, b, m) => { if (a !== b) { const e = new Error(m || __fmt(a) + " !== " + __fmt(b)); e.code = "ERR_ASSERTION"; throw e; } },
+    equal: (a, b, m) => { if (a != b) { const e = new Error(m || __utilMod.inspect(a) + " != " + __utilMod.inspect(b)); e.code = "ERR_ASSERTION"; throw e; } },
+    notEqual: (a, b, m) => { if (a == b) { const e = new Error(m || __utilMod.inspect(a) + " == " + __utilMod.inspect(b)); e.code = "ERR_ASSERTION"; throw e; } },
+    strictEqual: (a, b, m) => { if (a !== b) { const e = new Error(m || __utilMod.inspect(a) + " !== " + __utilMod.inspect(b)); e.code = "ERR_ASSERTION"; throw e; } },
     notStrictEqual: (a, b, m) => { if (a === b) { const e = new Error(m || "Values are strictly equal"); e.code = "ERR_ASSERTION"; throw e; } },
     deepEqual: (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { const e = new Error(m || "deepEqual failed"); e.code = "ERR_ASSERTION"; throw e; } },
     deepStrictEqual: (a, b, m) => __assertMod.deepEqual(a, b, m),
@@ -8709,58 +8752,367 @@ const __childProcessMod = (() => {
 })();
 
 // ═══════════════════════════════════════════════════════════════════════
-// ──  console shim ───────────────────────────────────────────────────
+// ──  console ────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-// The Console constructor workerd's node:console does not implement (it throws
-// "The Console method is not implemented"). OpenTUI's console capture
-// (setupConsoleCapture) constructs \`new Console({ stdout, stderr, ... })\` to
-// redirect console output into a captured stream; without a working
-// constructor the TUI renderer setup throws and the program exits before its
-// first frame. This shim writes to the supplied streams via util.format /
-// inspect — the Node Console contract OpenTUI relies on.
-class __NimbusConsole {
-  constructor(options, stderrArg) {
-    let out, err, inspectOptions;
-    if (options && typeof options === "object" && !options.write) {
-      out = options.stdout; err = options.stderr || options.stdout; inspectOptions = options.inspectOptions;
-    } else {
-      out = options; err = stderrArg || options;
-    }
-    const fmt = (a) => a.map((x) => typeof x === "string" ? x : __utilMod.inspect(x, inspectOptions)).join(" ");
-    const write = (stream, s) => { try { if (stream && typeof stream.write === "function") stream.write(s); } catch {} };
-    this.log = (...a) => write(out, fmt(a) + "\\n");
-    this.info = (...a) => write(out, fmt(a) + "\\n");
-    this.debug = (...a) => write(out, fmt(a) + "\\n");
-    this.dir = (o, opts) => write(out, __utilMod.inspect(o, opts || inspectOptions) + "\\n");
-    this.error = (...a) => write(err, fmt(a) + "\\n");
-    this.warn = (...a) => write(err, fmt(a) + "\\n");
-    this.trace = (...a) => write(err, "Trace: " + fmt(a) + "\\n");
-    this.assert = (c, ...a) => { if (!c) write(err, "Assertion failed: " + fmt(a) + "\\n"); };
-    this.table = (d) => write(out, __utilMod.inspect(d, inspectOptions) + "\\n");
-    this.group = (...a) => { if (a.length) write(out, fmt(a) + "\\n"); };
-    this.groupCollapsed = this.group;
-    this.time = () => {}; this.timeEnd = () => {}; this.timeLog = () => {}; this.timeStamp = () => {};
-    this.clear = () => {}; this.count = () => {}; this.countReset = () => {}; this.groupEnd = () => {};
-    this.Console = __NimbusConsole;
+// Node's Console (lib/internal/console/constructor.js), the one console:
+// each method formats its arguments with util.formatWithOptions, in colour
+// for a stream that is a terminal with colours (Node's shouldColorize),
+// indents the line by its group and writes it through the stream's own
+// write. The process's console is one over process.stdout and
+// process.stderr, so what it prints is theirs: captured, streamed live,
+// nothing once the program stopped. workerd's node:console has no Console
+// constructor ("The Console method is not implemented"), which OpenTUI's
+// console capture calls over streams of its own.
+// Node's colour policy (lib/internal/tty.js getColorDepth and hasColors,
+// lib/internal/util/colors.js shouldColorize, v22.22.3), for its platform
+// (Nimbus is linux): FORCE_COLOR first, then NODE_DISABLE_COLORS, NO_COLOR and
+// TERM=dumb, then the CI and terminal variables. Each stream decides for
+// itself: a terminal's getColorDepth reads the env it is given.
+const __NIMBUS_TERM_ENVS = {
+  eterm: 4, cons25: 4, console: 4, cygwin: 4, dtterm: 4, gnome: 4, hurd: 4, jfbterm: 4, konsole: 4, kterm: 4,
+  mlterm: 4, mosh: 24, putty: 4, st: 4, "rxvt-unicode-24bit": 24, terminator: 24, "xterm-kitty": 24,
+};
+const __NIMBUS_CI_ENVS = [["APPVEYOR", 8], ["BUILDKITE", 8], ["CIRCLECI", 24], ["DRONE", 8], ["GITEA_ACTIONS", 24], ["GITHUB_ACTIONS", 24], ["GITLAB_CI", 8], ["TRAVIS", 8]];
+const __NIMBUS_TERM_ENVS_REG_EXP = [/ansi/, /color/, /linux/, /direct/, /^con[0-9]*x[0-9]/, /^rxvt/, /^screen/, /^xterm/, /^vt100/, /^vt220/];
+let __nimbusColorWarned = false;
+// The warnings Node's console and colour policy emit: process.emitWarning.
+function __nimbusEmitWarning(...args) {
+  return Reflect.apply(__processMod.emitWarning, __processMod, args);
+}
+function __nimbusWarnOnDeactivatedColors(env) {
+  if (__nimbusColorWarned) return;
+  let name = "";
+  if (env.NODE_DISABLE_COLORS !== undefined) name = "NODE_DISABLE_COLORS";
+  if (env.NO_COLOR !== undefined) {
+    if (name !== "") name += "' and '";
+    name += "NO_COLOR";
+  }
+  if (name !== "") {
+    __nimbusEmitWarning("The '" + name + "' env is ignored due to the 'FORCE_COLOR' env being set.", "Warning");
+    __nimbusColorWarned = true;
   }
 }
-// The captured form (a program whose output is a pipe, a file, a shell
-// line's result): nothing after process.exit(), as the live form and the
-// process streams (stopped programs write nothing).
-const __consoleMod = {
-  log: (...a) => { if (!__nimbusProgramStopped) stdout += __utilMod.format(...a) + "\\n"; },
-  error: (...a) => { if (!__nimbusProgramStopped) stderr += __utilMod.format(...a) + "\\n"; },
-  warn: (...a) => { if (!__nimbusProgramStopped) stderr += __utilMod.format(...a) + "\\n"; },
-  info: (...a) => { if (!__nimbusProgramStopped) stdout += __utilMod.format(...a) + "\\n"; },
-  debug: (...a) => { if (!__nimbusProgramStopped) stdout += __utilMod.format(...a) + "\\n"; },
-  dir: (o, opts) => { if (!__nimbusProgramStopped) stdout += __utilMod.inspect(o, opts) + "\\n"; },
-  trace: (...a) => { if (!__nimbusProgramStopped) stderr += "Trace: " + __utilMod.format(...a) + "\\n"; },
-  assert: (c, ...a) => { if (!c && !__nimbusProgramStopped) stderr += "Assertion failed: " + __utilMod.format(...a) + "\\n"; },
-  time: () => {}, timeEnd: () => {}, timeLog: () => {}, clear: () => {},
-  count: () => {}, countReset: () => {}, group: () => {}, groupEnd: () => {},
-  table: (d) => { if (!__nimbusProgramStopped) stdout += __utilMod.inspect(d) + "\\n"; },
-  Console: __NimbusConsole,
-};
+function __nimbusColorDepth(env = __processMod.env) {
+  const hasOwn = (name) => Object.prototype.hasOwnProperty.call(env, name);
+  if (env.FORCE_COLOR !== undefined) {
+    switch (env.FORCE_COLOR) {
+      case "":
+      case "1":
+      case "true":
+        __nimbusWarnOnDeactivatedColors(env);
+        return 4;
+      case "2":
+        __nimbusWarnOnDeactivatedColors(env);
+        return 8;
+      case "3":
+        __nimbusWarnOnDeactivatedColors(env);
+        return 24;
+      default:
+        return 1;
+    }
+  }
+  if (env.NODE_DISABLE_COLORS !== undefined || env.NO_COLOR !== undefined || env.TERM === "dumb") return 1;
+  if (env.TMUX) return 24;
+  if (hasOwn("TF_BUILD") && hasOwn("AGENT_NAME")) return 4;
+  if (hasOwn("CI")) {
+    for (const [name, colors] of __NIMBUS_CI_ENVS) if (hasOwn(name)) return colors;
+    if (env.CI_NAME === "codeship") return 8;
+    return 1;
+  }
+  if ("TEAMCITY_VERSION" in env) return /^(9\\.(0*[1-9]\\d*)\\.|\\d{2,}\\.)/.exec(env.TEAMCITY_VERSION) !== null ? 4 : 1;
+  switch (env.TERM_PROGRAM) {
+    case "iTerm.app":
+      if (!env.TERM_PROGRAM_VERSION || /^[0-2]\\./.exec(env.TERM_PROGRAM_VERSION) !== null) return 8;
+      return 24;
+    case "HyperTerm":
+    case "MacTerm":
+      return 24;
+    case "Apple_Terminal":
+      return 8;
+  }
+  if (env.COLORTERM === "truecolor" || env.COLORTERM === "24bit") return 24;
+  if (env.TERM) {
+    if (/truecolor/.exec(env.TERM) !== null) return 24;
+    if (/^xterm-256/.exec(env.TERM) !== null) return 8;
+    const termEnv = env.TERM.toLowerCase();
+    if (__NIMBUS_TERM_ENVS[termEnv]) return __NIMBUS_TERM_ENVS[termEnv];
+    if (__NIMBUS_TERM_ENVS_REG_EXP.some((term) => term.exec(termEnv) !== null)) return 4;
+  }
+  if (env.COLORTERM) return 4;
+  return 1;
+}
+function __nimbusHasColors(count, env) {
+  if (env === undefined && (count === undefined || (typeof count === "object" && count !== null))) {
+    env = count;
+    count = 16;
+  } else if (typeof count !== "number") {
+    throw Object.assign(new TypeError("The \\"count\\" argument must be of type number." + __nimbusReceived(count)), { code: "ERR_INVALID_ARG_TYPE" });
+  } else if (!Number.isInteger(count) || count < 2 || count > Number.MAX_SAFE_INTEGER) {
+    const range = Number.isInteger(count) ? ">= 2 && <= 9007199254740991" : "an integer";
+    throw Object.assign(new RangeError("The value of \\"count\\" is out of range. It must be " + range + ". Received " + __utilMod.inspect(count)), { code: "ERR_OUT_OF_RANGE" });
+  }
+  return count <= 2 ** __nimbusColorDepth(env);
+}
+function __nimbusReceived(value) {
+  if (value === null || value === undefined) return " Received " + value;
+  if (typeof value === "function") return " Received function " + value.name;
+  if (typeof value === "object") return value.constructor?.name ? " Received an instance of " + value.constructor.name : " Received " + __utilMod.inspect(value, { depth: -1 });
+  let shown = __utilMod.inspect(value, { colors: false });
+  if (shown.length > 28) shown = shown.slice(0, 25) + "...";
+  return " Received type " + typeof value + " (" + shown + ")";
+}
+function __nimbusShouldColorize(stream) {
+  if (__processMod.env.FORCE_COLOR !== undefined) return __nimbusColorDepth() > 2;
+  return Boolean(stream?.isTTY) && (typeof stream.getColorDepth === "function" ? stream.getColorDepth() > 2 : true);
+}
+// Node's formatTime (lib/internal/util/debuglog.js), for console.time.
+function __nimbusFormatTime(ms) {
+  let hours = 0;
+  let minutes = 0;
+  let seconds = 0;
+  if (ms >= 1000) {
+    if (ms >= 60000) {
+      if (ms >= 3600000) {
+        hours = Math.floor(ms / 3600000);
+        ms = ms % 3600000;
+      }
+      minutes = Math.floor(ms / 60000);
+      ms = ms % 60000;
+    }
+    seconds = ms / 1000;
+  }
+  if (hours !== 0 || minutes !== 0) {
+    const [whole, fraction] = seconds.toFixed(3).split(".");
+    const pad = (n) => String(n).padStart(2, "0");
+    const res = hours !== 0 ? hours + ":" + pad(minutes) : minutes;
+    return res + ":" + pad(whole) + "." + fraction + " (" + (hours !== 0 ? "h:m" : "") + "m:ss.mmm)";
+  }
+  if (seconds !== 0) return seconds.toFixed(3) + "s";
+  return Number(ms.toFixed(3)) + "ms";
+}
+// Node's lib/internal/cli_table.js: the head and the columns of cell text, drawn.
+function __nimbusTable(head, columns) {
+  const renderRow = (row, widths) => {
+    let out = "│ ";
+    for (let i = 0; i < row.length; i++) {
+      out += row[i] + " ".repeat(Math.ceil(widths[i] - __nimbusNodeInspect().getStringWidth(row[i])));
+      if (i !== row.length - 1) out += " │ ";
+    }
+    return out + " │";
+  };
+  const rows = [];
+  const widths = head.map((h) => __nimbusNodeInspect().getStringWidth(h));
+  const longest = Math.max(...columns.map((column) => column.length));
+  for (let i = 0; i < head.length; i++) {
+    const column = columns[i];
+    for (let j = 0; j < longest; j++) {
+      rows[j] ??= [];
+      const value = rows[j][i] = Object.prototype.hasOwnProperty.call(column, j) ? column[j] : "";
+      widths[i] = Math.max(widths[i] || 0, __nimbusNodeInspect().getStringWidth(value));
+    }
+  }
+  const divider = widths.map((w) => "─".repeat(w + 2));
+  let result = "┌" + divider.join("┬") + "┐\\n" + renderRow(head, widths) + "\\n" + "├" + divider.join("┼") + "┤\\n";
+  for (const row of rows) result += renderRow(row, widths) + "\\n";
+  return result + "└" + divider.join("┴") + "┘";
+}
+class __NimbusConsole {
+  #stdout;
+  #stderr;
+  #ignoreErrors;
+  #colorMode;
+  #inspectOptions;
+  #groupIndentation;
+  #groupIndent = "";
+  #counts = new Map();
+  #timers = new Map();
+  constructor(options, stderr, ignoreErrors) {
+    if (!options || typeof options.write === "function") options = { stdout: options, stderr, ignoreErrors };
+    const { stdout: out, stderr: err = out, ignoreErrors: ignore = true, colorMode = "auto", inspectOptions, groupIndentation = 2 } = options;
+    for (const [name, stream] of [["stdout", out], ["stderr", err]]) {
+      if (!stream || typeof stream.write !== "function") {
+        const e = new TypeError("The \\"" + name + "\\" argument must be an instance of a writable stream.");
+        e.code = "ERR_CONSOLE_WRITABLE_STREAM";
+        throw e;
+      }
+    }
+    this.#stdout = () => out;
+    this.#stderr = () => err;
+    this.#ignoreErrors = ignore;
+    this.#colorMode = colorMode;
+    this.#inspectOptions = inspectOptions;
+    this.#groupIndentation = groupIndentation;
+    // Node binds every method to its console, so a method taken off it works.
+    for (const key of Object.getOwnPropertyNames(__NimbusConsole.prototype)) {
+      if (key !== "constructor" && typeof this[key] === "function") this[key] = this[key].bind(this);
+    }
+  }
+  // The process's console: over whatever process.stdout and process.stderr are when it writes.
+  static forProcess(stdout, stderr) {
+    const console = new __NimbusConsole({ write() {} });
+    console.#stdout = stdout;
+    console.#stderr = stderr;
+    return console;
+  }
+  #optionsFor(stream) {
+    const color = this.#colorMode === "auto" ? __nimbusShouldColorize(stream) : this.#colorMode;
+    const options = this.#inspectOptions;
+    if (options) return options.colors === undefined ? { ...options, colors: color } : options;
+    return color ? { colors: true } : {};
+  }
+  #format(stream, args) {
+    // Strings with no format directive are joined as formatWithOptions
+    // joins them, without loading Node's inspect for a line it never needs.
+    if (args.every((arg) => typeof arg === "string") && (args.length < 2 || !args[0].includes("%"))) return args.join(" ");
+    return __utilMod.formatWithOptions(this.#optionsFor(stream), ...args);
+  }
+  #write(stream, string) {
+    const indent = this.#groupIndent;
+    if (indent.length !== 0) {
+      if (string.includes("\\n")) string = string.replace(/\\n/g, "\\n" + indent);
+      string = indent + string;
+    }
+    try {
+      stream.write(string + "\\n");
+    } catch (e) {
+      if (!this.#ignoreErrors) throw e;
+    }
+  }
+  log(...args) { const out = this.#stdout(); this.#write(out, this.#format(out, args)); }
+  info(...args) { const out = this.#stdout(); this.#write(out, this.#format(out, args)); }
+  debug(...args) { const out = this.#stdout(); this.#write(out, this.#format(out, args)); }
+  dirxml(...args) { const out = this.#stdout(); this.#write(out, this.#format(out, args)); }
+  warn(...args) { const err = this.#stderr(); this.#write(err, this.#format(err, args)); }
+  error(...args) { const err = this.#stderr(); this.#write(err, this.#format(err, args)); }
+  dir(object, options) {
+    const out = this.#stdout();
+    this.#write(out, __utilMod.inspect(object, { customInspect: false, ...this.#optionsFor(out), ...options }));
+  }
+  trace(...args) {
+    const err = { name: "Trace", message: this.#format(this.#stderr(), args) };
+    Error.captureStackTrace(err, __NimbusConsole.prototype.trace);
+    this.error(err.stack);
+  }
+  assert(expression, ...args) {
+    if (expression) return;
+    args[0] = "Assertion failed" + (args.length === 0 ? "" : ": " + args[0]);
+    Reflect.apply(this.warn, this, args);
+  }
+  clear() {
+    const out = this.#stdout();
+    if (!out.isTTY || __processMod.env.TERM === "dumb") return;
+    if (typeof out.cursorTo === "function") out.cursorTo(0, 0);
+    if (typeof out.clearScreenDown === "function") out.clearScreenDown();
+  }
+  count(label = "default") {
+    label = String(label);
+    const count = (this.#counts.get(label) ?? 0) + 1;
+    this.#counts.set(label, count);
+    this.log(label + ": " + count);
+  }
+  countReset(label = "default") {
+    label = String(label);
+    if (!this.#counts.has(label)) {
+      __nimbusEmitWarning("Count for '" + label + "' does not exist");
+      return;
+    }
+    this.#counts.delete(label);
+  }
+  group(...data) {
+    if (data.length > 0) Reflect.apply(this.log, this, data);
+    this.#groupIndent += " ".repeat(this.#groupIndentation);
+  }
+  groupCollapsed(...data) { Reflect.apply(this.group, this, data); }
+  groupEnd() {
+    this.#groupIndent = this.#groupIndent.slice(0, this.#groupIndent.length - this.#groupIndentation);
+  }
+  time(label = "default") {
+    label = String(label);
+    if (this.#timers.has(label)) {
+      __nimbusEmitWarning("Label '" + label + "' already exists for console.time()");
+      return;
+    }
+    this.#timers.set(label, performance.now());
+  }
+  timeEnd(label = "default") {
+    label = String(label);
+    if (this.#timeLog("timeEnd", label, [])) this.#timers.delete(label);
+  }
+  timeLog(label = "default", ...data) {
+    this.#timeLog("timeLog", String(label), data);
+  }
+  #timeLog(name, label, data) {
+    const start = this.#timers.get(label);
+    if (start === undefined) {
+      __nimbusEmitWarning("No such label '" + label + "' for console." + name + "()");
+      return false;
+    }
+    Reflect.apply(this.log, this, ["%s: %s", label, __nimbusFormatTime(performance.now() - start), ...data]);
+    return true;
+  }
+  // Node's console.table and lib/internal/cli_table.js. A Map or Set
+  // iterator is tabled as the object it is: Node previews one without
+  // consuming it, which only its internals can.
+  table(data, properties) {
+    if (properties !== undefined && !Array.isArray(properties)) {
+      const e = new TypeError("The \\"properties\\" argument must be an instance of Array.");
+      e.code = "ERR_INVALID_ARG_TYPE";
+      throw e;
+    }
+    if (data === null || typeof data !== "object") return this.log(data);
+    const options = this.#optionsFor(this.#stdout());
+    const show = (v) => __utilMod.inspect(v, {
+      depth: v !== null && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length > 2 ? -1 : 0,
+      maxArrayLength: 3,
+      breakLength: Infinity,
+      ...options,
+    });
+    const indexes = (length) => Array.from({ length }, (_, i) => show(i));
+    const render = (head, columns) => this.log(__nimbusTable(head, columns));
+    if (__realUtil.types.isMap(data)) {
+      const keys = [];
+      const values = [];
+      for (const [k, v] of data) { keys.push(show(k)); values.push(show(v)); }
+      return render(["(iteration index)", "Key", "Values"], [indexes(keys.length), keys, values]);
+    }
+    if (__realUtil.types.isSet(data)) {
+      const values = [];
+      for (const v of data) values.push(show(v));
+      return render(["(iteration index)", "Values"], [indexes(values.length), values]);
+    }
+    const map = Object.create(null);
+    let hasPrimitives = false;
+    const primitives = [];
+    const indexKeys = Object.keys(data);
+    for (let i = 0; i < indexKeys.length; i++) {
+      const item = data[indexKeys[i]];
+      const primitive = item === null || (typeof item !== "function" && typeof item !== "object");
+      if (properties === undefined && primitive) {
+        hasPrimitives = true;
+        primitives[i] = show(item);
+      } else {
+        for (const key of properties || Object.keys(item)) {
+          map[key] ??= [];
+          map[key][i] = (primitive && properties) || !Object.prototype.hasOwnProperty.call(item, key) ? "" : show(item[key]);
+        }
+      }
+    }
+    const keys = Object.keys(map);
+    const values = Object.values(map);
+    if (hasPrimitives) {
+      keys.push("Values");
+      values.push(primitives);
+    }
+    keys.unshift("(index)");
+    values.unshift(indexKeys);
+    return render(keys, values);
+  }
+  timeStamp() {}
+  profile() {}
+  profileEnd() {}
+}
+const __consoleMod = __NimbusConsole.forProcess(() => __processMod.stdout, () => __processMod.stderr);
+__consoleMod.Console = __NimbusConsole;
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  process shim ───────────────────────────────────────────────────
@@ -9374,8 +9726,9 @@ function __makeProcessOutputStream(streamName) {
       if (typeof cb === "function") queueMicrotask(cb);
       return true;
     },
-    getColorDepth: () => __nimbusAttachedTty ? 24 : 1,
-    hasColors: () => __nimbusAttachedTty,
+    // A terminal's colours are Node's policy; a pipe's, none.
+    getColorDepth: (env) => __nimbusAttachedTty ? __nimbusColorDepth(env) : 1,
+    hasColors: (count, env) => __nimbusAttachedTty ? __nimbusHasColors(count, env) : false,
     clearLine(dir, cb) { return __nimbusClearLine(stream, dir, cb); },
     clearScreenDown(cb) { return __nimbusClearScreenDown(stream, cb); },
     cursorTo(x, y, cb) { return __nimbusCursorTo(stream, x, y, cb); },
@@ -9445,6 +9798,71 @@ function __nimbusSignalSelf(signal) {
 }
 
 const __processEvents = new __eventsMod();
+// Node's process.emitWarning and the 'warning' listener it installs unless
+// told not to (lib/internal/process/warning.js, lib/internal/process/
+// pre_execution.js setupWarningHandler, v22.22.3): the warning is an Error
+// named for its type, emitted on the next tick; the listener prints
+// "(node:<pid>) <Type>: <message>" to stderr, the first time with how to
+// trace it. --disable-warning and --redirect-warnings are not read.
+let __nimbusTraceWarningHelperShown = false;
+function __nimbusOnWarning(warning) {
+  if (!(warning instanceof Error)) return;
+  const isDeprecation = warning.name === "DeprecationWarning";
+  if (isDeprecation && __processMod.noDeprecation) return;
+  const trace = __processMod.traceProcessWarnings || (isDeprecation && __processMod.traceDeprecation);
+  let msg = "(node:" + __processMod.pid + ") ";
+  if (warning.code) msg += "[" + warning.code + "] ";
+  if (trace && warning.stack) msg += warning.stack;
+  else msg += typeof warning.toString === "function" ? String(warning.toString()) : Error.prototype.toString.call(warning);
+  if (typeof warning.detail === "string") msg += "\\n" + warning.detail;
+  if (!trace && !__nimbusTraceWarningHelperShown) {
+    const flag = isDeprecation ? "--trace-deprecation" : "--trace-warnings";
+    const argv0 = __pathMod.basename(__processMod.argv0 || "node", ".exe");
+    msg += "\\n(Use \`" + argv0 + " " + flag + " ...\` to show where the warning was created)";
+    __nimbusTraceWarningHelperShown = true;
+  }
+  __consoleMod.error(msg);
+}
+function __nimbusProcessEmitWarning(warning, type, code, ctor) {
+  if (__processMod.noDeprecation && type === "DeprecationWarning") return;
+  let detail;
+  if (type !== null && typeof type === "object" && !Array.isArray(type)) {
+    ctor = type.ctor;
+    code = type.code;
+    if (typeof type.detail === "string") detail = type.detail;
+    type = type.type || "Warning";
+  } else if (typeof type === "function") {
+    ctor = type;
+    code = undefined;
+    type = "Warning";
+  }
+  const invalid = (name, expected, value) => Object.assign(
+    new TypeError("The \\"" + name + "\\" argument must be " + expected + "." + __nimbusReceived(value)), { code: "ERR_INVALID_ARG_TYPE" });
+  if (type !== undefined && typeof type !== "string") throw invalid("type", "of type string", type);
+  if (typeof code === "function") {
+    ctor = code;
+    code = undefined;
+  } else if (code !== undefined && typeof code !== "string") {
+    throw invalid("code", "of type string", code);
+  }
+  if (typeof warning === "string") {
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 0;
+    warning = new Error(warning);
+    Error.stackTraceLimit = limit;
+    warning.name = String(type || "Warning");
+    if (code !== undefined) warning.code = code;
+    if (detail !== undefined) warning.detail = detail;
+    Error.captureStackTrace(warning, ctor || __processMod.emitWarning);
+  } else if (!(warning instanceof Error)) {
+    throw invalid("warning", "of type string or an instance of Error", warning);
+  }
+  if (warning.name === "DeprecationWarning") {
+    if (__processMod.noDeprecation) return;
+    if (__processMod.throwDeprecation) return __processMod.nextTick(() => { throw warning; });
+  }
+  __processMod.nextTick(() => __processEvents.emit("warning", warning));
+}
 let __processUmask = Number(cred.umask) & 0o777;
 // Node's command line, as core runtime/node-cli.ts read it: the options
 // before the program are process.execArgv (argv is the program's own), the
@@ -9499,6 +9917,7 @@ const __processMod = {
   ),
   memoryUsage: () => ({ rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 }),
   nextTick: (fn, ...a) => queueMicrotask(() => fn(...a)),
+  emitWarning: __nimbusProcessEmitWarning,
   on: (name, listener) => { __processEvents.on(name, listener); return __processMod; },
   addListener: (name, listener) => { __processEvents.on(name, listener); return __processMod; },
   prependListener: (name, listener) => { __processEvents.prependListener(name, listener); return __processMod; },
@@ -9580,6 +9999,10 @@ const __processMod = {
     throw err;
   },
 };
+// The 'warning' listener Node installs (setupWarningHandler), unless warnings are off.
+if (__processMod.env.NODE_NO_WARNINGS !== "1" && !String(__processMod.env.NODE_OPTIONS || "").split(/\\s+/).includes("--no-warnings")) {
+  __processEvents.on("warning", __nimbusOnWarning);
+}
 // Node's process reads as one: Object.prototype.toString gives "[object
 // process]", which axios (utils.kindOf) and others test to pick their Node
 // paths (axios: its http adapter rather than its fetch one). As Node defines
@@ -9619,12 +10042,17 @@ if (typeof globalThis.addEventListener === "function") {
     try { event.preventDefault?.(); } catch {}
   });
   globalThis.addEventListener("error", (event) => {
-    const error = event && typeof event === "object" && "error" in event ? event.error : event;
-    let handled = false;
-    try { handled = __processEvents.emit("uncaughtException", error); } catch {}
-    if (!handled) __nimbusFailUnhandledAsync(error, "exception");
+    __nimbusUncaughtException(event && typeof event === "object" && "error" in event ? event.error : event);
     try { event.preventDefault?.(); } catch {}
   });
+}
+
+// An exception no code caught: the process's 'uncaughtException' listeners
+// have it, or it ends the program.
+function __nimbusUncaughtException(error) {
+  let handled = false;
+  try { handled = __processEvents.emit("uncaughtException", error); } catch {}
+  if (!handled) __nimbusFailUnhandledAsync(error, "exception");
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -9786,8 +10214,8 @@ builtins.tty = {
     constructor() { super(); this.isTTY = __nimbusAttachedTty; }
     get columns() { return __nimbusTtyColumns; }
     get rows() { return __nimbusTtyRows; }
-    getColorDepth() { return __nimbusAttachedTty ? 24 : 1; }
-    hasColors() { return __nimbusAttachedTty; }
+    getColorDepth(env) { return __nimbusColorDepth(env); }
+    hasColors(count, env) { return __nimbusHasColors(count, env); }
     clearLine(dir, cb) { return __nimbusClearLine(this, dir, cb); }
     clearScreenDown(cb) { return __nimbusClearScreenDown(this, cb); }
     cursorTo(x, y, cb) { return __nimbusCursorTo(this, x, y, cb); }
@@ -10665,6 +11093,60 @@ const __moduleEvaluations = new Map();
 // package → why the package ABI policy says it cannot run here (wasm-swap-registry.ts).
 const __nimbusAbiAdvisories = new Map(${ABI_ADVISORIES_LITERAL});
 
+// An ES module's scope binds none of CommonJS's names (module-format.ts
+// ES_MODULE_UNBOUND_NAMES): a lowered ES module reads, calls and assigns each
+// of them through this object's accessors, which throw the ReferenceError V8
+// throws for a name bound nowhere, from the module's own frame. \`typeof\` of
+// one is lowered to 'undefined', as V8's is.
+const __nimbusCommonJSGlobalLike = ${JSON.stringify([...COMMONJS_WRAPPER_NAMES])};
+Object.defineProperty(globalThis, ${JSON.stringify(ES_MODULE_SCOPE_GLOBAL)}, { configurable: true, value: Object.freeze(Object.create(null, Object.fromEntries(
+  __nimbusCommonJSGlobalLike.map((name) => {
+    const unbound = function () {
+      const error = new ReferenceError(name + " is not defined");
+      Error.captureStackTrace(error, unbound);
+      throw error;
+    };
+    return [name, { get: unbound, set: unbound }];
+  }),
+))) });
+
+// The errors __nimbusExplainCommonJSGlobalLike has explained.
+const __nimbusExplained = new WeakSet();
+function __nimbusIsCommonJSGlobalLikeError(e) {
+  return e !== null && typeof e === "object" && (__nimbusExplained.has(e)
+    || (e.name === "ReferenceError" && __nimbusCommonJSGlobalLike.some((name) => e.message === name + " is not defined")));
+}
+
+// Node's explainCommonJSGlobalLikeNotDefinedError (lib/internal/modules/esm/
+// module_job.js, v22.22.3): what a ReferenceError for a CommonJS name says
+// once it escapes the evaluation of an ES module job the loader ran: a
+// program's ES entry, an import(), a require() of an ES module. \`url\` and
+// \`hasTopLevelAwait\` are the job's module's. Thrown anywhere else (in a
+// callback, or caught inside the module) it says what V8 says.
+function __nimbusExplainCommonJSGlobalLike(e, url, hasTopLevelAwait) {
+  if (e?.name === "ReferenceError" && __nimbusCommonJSGlobalLike.some((name) => e.message === name + " is not defined")) {
+    __nimbusExplained.add(e);
+    // The stack Node's error prints was formatted after this, with the
+    // message as it ends; one formatted already leads with it too.
+    const header = e.name + ": " + e.message;
+    const stack = e.stack;
+    if (hasTopLevelAwait) {
+      e.message = "Cannot determine intended module format because both require() and top-level await are present. If the code is intended to be CommonJS, wrap await in an async function. If the code is intended to be an ES module, replace require() with import.";
+      e.code = "ERR_AMBIGUOUS_MODULE_SYNTAX";
+    } else {
+      e.message += " in ES module scope";
+      if (e.message.startsWith("require ")) e.message += ", you can use import instead";
+      const packageConfig = url.startsWith("file://") && /\\.js(\\?[^#]*)?(#.*)?$/.exec(url) !== null
+        && __esmResolver.packageScopeSync(url);
+      if (packageConfig.type === "module") {
+        e.message += "\\nThis file is being treated as an ES module because it has a '.js' file extension and '"
+          + packageConfig.pjsonPath + "' contains \\"type\\": \\"module\\". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.";
+      }
+    }
+    if (typeof stack === "string" && stack.startsWith(header)) e.stack = e.name + ": " + e.message + stack.slice(header.length);
+  }
+}
+
 /**
  * Direct VFS bundle access for module resolution.
  * These bypass the fs shim's _resolve() (which prepends cwd)
@@ -11062,7 +11544,9 @@ function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filen
   });
 }
 
-function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
+// \`required\`: loaded by a require() call, not by an ES module's static
+// import, which the lowering makes a call of the module's own require.
+function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true) {
   if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\\/+/, ""));
   if (__moduleCache.has(evaluationKey)) return __moduleCache.get(evaluationKey);
 
@@ -11080,7 +11564,10 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
 
   // JS — the cell's wrapper, called with a scoped require
   const modDir = resolvedPath.includes("/") ? resolvedPath.substring(0, resolvedPath.lastIndexOf("/")) : ".";
-  const scopedRequire = (id) => __requireFrom(id, modDir);
+  // A lowered ES module calls its require for its static imports only: it
+  // has no require of its own (module-format.ts ES_MODULE_UNBOUND_NAMES).
+  const esModule = __nimbusModuleCellIsEsModule(resolvedPath.replace(/^\\/+/, ""));
+  const scopedRequire = (id) => __requireFrom(id, modDir, !esModule);
   scopedRequire.resolve = (id) => {
     const r = __resolveFrom(id, modDir);
     if (!r) throw new Error("Cannot resolve '" + id + "'");
@@ -11124,6 +11611,13 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
     if (evaluation && typeof evaluation.then === "function") __moduleEvaluations.set(evaluationKey, evaluation);
   } catch (e) {
     __moduleCache.delete(evaluationKey);
+    // A ReferenceError for a CommonJS name is the module loader's to explain
+    // where it leaves an ES module's job, and nothing else's: a require() of
+    // an ES module is that module's job (Node's ModuleJobSync).
+    if (__nimbusIsCommonJSGlobalLikeError(e)) {
+      if (required && esModule) __nimbusExplainCommonJSGlobalLike(e, moduleUrl, false);
+      throw e;
+    }
     if (e && typeof e === "object" && !e.__nimbusModulePath) {
       try {
         Object.defineProperty(e, "__nimbusModulePath", { value: resolvedPath, configurable: true, writable: true });
@@ -11295,10 +11789,20 @@ function __esmLoad(resolution) {
         if (resolved.path) return __loadModule(resolved.path.replace(/^\\/+/, ""), resolved.url);
         throw Object.assign(new Error("Synchronous nested data-module import is unsupported"), { code: "ERR_REQUIRE_ASYNC_MODULE" });
       };
-      const result = cell(mod.exports, requireData, mod, undefined, undefined);
+      let result;
+      try {
+        result = cell(mod.exports, requireData, mod, undefined, undefined);
+      } catch (e) {
+        __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
+        throw e;
+      }
       const namespace = () => __esmNamespaceOf(Object.keys(mod.exports).filter((n) => n !== "__esModule"), (n) => mod.exports[n]);
       if (result && typeof result.then === "function") {
-        const pending = result.then(namespace, (error) => { __esmNamespaces.delete(resolution.url); throw error; });
+        const pending = result.then(namespace, (error) => {
+          __esmNamespaces.delete(resolution.url);
+          __nimbusExplainCommonJSGlobalLike(error, resolution.url, true);
+          throw error;
+        });
         __esmNamespaces.set(resolution.url, pending);
         return pending;
       }
@@ -11308,13 +11812,22 @@ function __esmLoad(resolution) {
     }
   } else {
     const key = resolution.path.replace(/^\\/+/, "");
+    // A typeless .js is the ES module the launch lowered, by its syntax.
     const esm = resolution.format === "module"
-      || (resolution.format === "detect" && globalThis.__nimbusEsmModules && globalThis.__nimbusEsmModules.has(key));
+      || (resolution.format === "detect" && __nimbusModuleCellIsEsModule(key));
     // Canonical queryless ESM shares evaluation with require() and static
     // imports lowered to require(). Queries/fragments are distinct jobs.
     const variant = esm && (resolution.url.includes("?") || resolution.url.includes("#"));
     const evaluationKey = variant ? resolution.url : key;
-    const exports = __loadModule(key, evaluationKey);
+    // The import is the module's job: what escapes its evaluation is
+    // explained as Node's loader explains it.
+    let exports;
+    try {
+      exports = __loadModule(key, evaluationKey, false);
+    } catch (e) {
+      __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
+      throw e;
+    }
     const namespace = () => {
       if (resolution.format === "json") return __esmNamespaceOf(["default"], () => exports);
       if (esm) {
@@ -11333,7 +11846,11 @@ function __esmLoad(resolution) {
     // completes, and rejects with what it throws.
     const evaluation = __moduleEvaluations.get(evaluationKey);
     if (evaluation !== undefined) {
-      const pending = evaluation.then(namespace, (error) => { __esmNamespaces.delete(resolution.url); throw error; });
+      const pending = evaluation.then(namespace, (error) => {
+        __esmNamespaces.delete(resolution.url);
+        __nimbusExplainCommonJSGlobalLike(error, resolution.url, true);
+        throw error;
+      });
       __esmNamespaces.set(resolution.url, pending);
       return pending;
     }
@@ -11342,6 +11859,11 @@ function __esmLoad(resolution) {
   __esmNamespaces.set(resolution.url, ns);
   return ns;
 }
+// A bundled copy of a package the runtime provides, bound to the runtime's
+// (esbuild-service.ts rewriteProvidedCommonJsModules, PROVIDED_PACKAGE_HOOK):
+// what require() serves for it, from any module, an ES module included.
+globalThis.__nimbusProvidedPackage = (name) => __require(name);
+
 // import() may reach installed files the launch did not stage. A launch's
 // store holds its closure and its data plan; anything else on disk is named
 // by the namespace but not held, and the synchronous load that import()
@@ -11674,7 +12196,7 @@ function __loadStagedBinding(entry, fromDir) {
  * require() from a specific directory context.
  * This is what each loaded module gets as its require function.
  */
-function __requireFrom(id, fromDir) {
+function __requireFrom(id, fromDir, required = true) {
   // Check builtins first (always takes priority)
   if (builtins[id]) return builtins[id];
   if (id.startsWith("node:")) {
@@ -11689,7 +12211,7 @@ function __requireFrom(id, fromDir) {
   const resolved = __resolveFrom(id, fromDir);
   if (!resolved) throw new Error("Cannot find module '" + id + "' (from " + fromDir + ")");
 
-  return __loadModule(resolved);
+  return __loadModule(resolved, resolved, required);
 }
 
 function __requireBaseDir(specifier) {
@@ -11722,6 +12244,29 @@ function __makeRequire(fromDir) {
  */
 function __require(id) {
   return __requireFrom(id, dirname || cwd || "/home/user");
+}
+// An ES entry's own require: its static imports, part of its job.
+function __nimbusEntryImport(id) {
+  return __requireFrom(id, dirname || cwd || "/home/user", false);
+}
+// The program's entry evaluated as Node's loader runs it (manager.ts
+// entryModule): a CommonJS entry with require(); an ES entry as a job of its
+// own, its require its static imports, and what escapes its evaluation
+// explained (__nimbusExplainCommonJSGlobalLike).
+function __nimbusEvaluateEntry(wrapper, mod, filename, dirname, esModule) {
+  if (!esModule) return wrapper(mod.exports, __require, mod, filename, dirname);
+  const url = builtins.url.pathToFileURL(filename).href;
+  let result;
+  try {
+    result = wrapper(mod.exports, __nimbusEntryImport, mod, filename, dirname);
+  } catch (e) {
+    __nimbusExplainCommonJSGlobalLike(e, url, false);
+    throw e;
+  }
+  if (result && typeof result.then === "function") {
+    return result.then(undefined, (e) => { __nimbusExplainCommonJSGlobalLike(e, url, true); throw e; });
+  }
+  return result;
 }
 __require.resolve = (id) => {
   if (__stagedBinding(id)) return id;

@@ -26,7 +26,7 @@
  * legacy `buildVfsBundle` walked every file in node_modules. W2.6a
  * de-quarantines it as the primary content-bundle source.
  */
-import { METADATA_CANDIDATE_WORK, resolveRequireEx, } from './require-resolution.js';
+import { METADATA_CANDIDATE_WORK, packageJsonVisible, resolveRequireEx, } from './require-resolution.js';
 import { FACET_PROVIDED_PACKAGES, VFS_BUNDLE_MAX_BYTES } from '../constants.js';
 import { stripLeadingSlashes } from '../vfs/path.js';
 import { isNativeBinPath } from './os-contracts.js';
@@ -391,15 +391,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                     break; // already shipped, stop walking
                 if (progress)
                     await progress(METADATA_CANDIDATE_WORK + dirPkgJson.length);
-                // A package.json the user may not look up is no package scope, as
-                // Node's lookup reads it: a device mount shows nothing above the
-                // directory its user consented to.
-                const held = await (async () => vfs.exists(dirPkgJson))().catch((error) => {
-                    if (error && typeof error === 'object' && 'code' in error && error.code === 'EACCES')
-                        return false;
-                    throw error;
-                });
-                if (held && !(await vfs.isDirectory(dirPkgJson))) {
+                if ((await packageJsonVisible(vfs, dirPkgJson)) && !(await vfs.isDirectory(dirPkgJson))) {
                     visited.add(dirPkgJson);
                     await stageCell(dirPkgJson, 'metadata');
                 }

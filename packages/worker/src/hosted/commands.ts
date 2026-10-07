@@ -438,6 +438,8 @@ const bunSpec: RuntimeSpec = {
   run: (code, opts) => runBunScript(facetMgr, code, opts),
   supportsBinSpawn: true,
   routesServers: true,
+  // Bun binds require, __filename and __dirname in an ES module.
+  moduleScope: 'bun',
   repl: jsReplProgram(`Welcome to Bun v${BUN_VERSION}\nType ".help" for more information.\n`),
   subcommands: {
     // bun install / i / add → npm install (same VFS, same R2 caches).
@@ -1201,9 +1203,10 @@ registry.register('npm', async (ctx: any) => {
       return 1;
     }
     const name = cwd.split('/').pop() || 'project';
+    // No "type", as npm 10's init writes none: a .js in the project runs as
+    // Node detects it, its CommonJS as CommonJS.
     const pkg = {
       name, version: '1.0.0', description: '', main: 'index.js',
-      type: 'module',
       scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview', test: 'echo "no test"' },
       keywords: [], author: '', license: 'MIT', dependencies: {}, devDependencies: {},
     };

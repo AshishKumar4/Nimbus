@@ -27,6 +27,7 @@ import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type PortVisibility } from '../session/port-capability.js';
 import { type PreloadModuleRoot, type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
 import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
+import type { ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -173,7 +174,7 @@ interface GeneratedNodeFacetCode {
  * Generate one-shot runtime code with a plain fetch handler. `filename`
  * names the entry's module, and so its stack frames.
  */
-export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string): Promise<GeneratedNodeFacetCode>;
+export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string, esModule?: boolean): Promise<GeneratedNodeFacetCode>;
 /** One wasm image the generated main module imports from the module map. */
 export interface FacetWasmImport {
     /** The module-map name the boot spec carries the image under. */
@@ -223,6 +224,7 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
     cwd?: string;
     filename?: string;
     dirname?: string;
+    esModule?: boolean;
     stdin?: string;
     attachedTty?: boolean;
     cred: ProcessEntry['cred'];
@@ -740,6 +742,8 @@ export interface PrefetchBundleOptions {
     /** The ESM→CJS pass's transform host; absent, ESM cells stage as diagnostics. */
     esbuild?: EsbuildService;
     bundleProfile?: FacetBundleProfile;
+    /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
+    moduleScope?: ModuleScope;
     /** Paths earlier runs of the same entry read synchronously and missed. */
     observedReads?: ReadonlySet<string>;
     /** The launch's pacer; a build without one runs in the caller's turn. */
@@ -963,6 +967,10 @@ export interface ResidentSpawnOptions {
     cwd?: string;
     filename?: string;
     dirname?: string;
+    /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+    esModule?: boolean;
+    /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
+    moduleScope?: ModuleScope;
     command?: string;
     port?: number;
     attachedTty?: boolean;
@@ -1509,6 +1517,10 @@ export declare class FacetManager {
         callerPid?: number;
         /** The process whose command runs the program: its parent, whose credential and exec id it takes. */
         invokerPid?: number;
+        /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+        esModule?: boolean;
+        /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
+        moduleScope?: ModuleScope;
         bundleProfile?: FacetBundleProfile;
         /** Return stdout/stderr in the result while keeping supervisor RPC
          *  available for VFS and child_process operations. */
