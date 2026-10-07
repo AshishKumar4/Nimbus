@@ -46,7 +46,7 @@ try {
     assert.equal(JSON.parse(line), MODULE, 'fs.readFileSync of a module cell is the file, not its lowered code');
     // And a program that writes back what it read leaves a module the next launch runs.
     await t.run(`cd /home/user/lowered && node -e "const fs=require('fs'); fs.writeFileSync('m.mjs', fs.readFileSync('m.mjs','utf8') + '// patched\\n')"`, 120_000);
-    const after = await t.run(`cd /home/user/lowered && node --input-type=module -e "import { where } from './m.mjs'; console.log('WHERE=' + where)"`, 120_000);
+    const after = await t.run(`cd /home/user/lowered && node -e "import('./m.mjs').then((m) => console.log('WHERE=' + m.where))"`, 120_000);
     assert.match(stripAnsi(after.output), /WHERE=\/a\/b/, stripAnsi(after.output).slice(-600));
   } finally {
     await t.close();
