@@ -5,6 +5,27 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `node` and `bun` with no script opened a REPL that evaluated
+  nothing ("workerd CSP: cannot evaluate JS at request time"). The REPL is
+  now a program the runtime runs, as Node's is, and each line compiles
+  through the same runtime-code path as a program's `eval`: top-level
+  `let`/`const`/`class`/`function` persist across lines, top-level `await`
+  works, `_` and `_error` hold the last value and error, `import()`
+  resolves from the working directory, and an unhandled rejection or
+  timer error is printed without ending the session. Ctrl-C cancels a
+  pending block. `.editor`, `.load`, `.save`, completion and history are
+  not supported. `echo code | node` runs its input as a program, as Node
+  does.
+- A job started with `&` gets `/dev/null` as its default standard input
+  and does not own the terminal's modes, as in a shell without job
+  control; it can still open `/dev/tty` explicitly.
+- `git add -A` writes its objects in batches through the workspace's
+  write waves: at 96,000 files it took 18 s instead of 53 s, or 23 s
+  instead of 80 s with every file changed. A symlinked `.git/objects` is
+  written through, never replaced. `git init -b` refuses a name git
+  refuses, and short options can be grouped (`-qb main`).
+- A write wave never turns an existing symlink into a directory; a wave
+  that would is refused whole with ENOTDIR.
 - Faster installs and clones: a write wave whose files are all in memory is
   encoded once and sent to the session in 1 MiB pieces, instead of being
   pulled a few kilobytes at a time. Markflow's `npm install` went from about
