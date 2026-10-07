@@ -22,7 +22,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { overlayCommit } from '../../scripts/ci/lib/armada.mjs';
+import { armadaClient, overlayCommit } from '../../scripts/ci/lib/armada.mjs';
 import { applyPatch } from '../../scripts/ci/remote-build.mjs';
 
 const BUILD = join(import.meta.dirname, '..', '..', 'scripts', 'ci', 'build.mjs');
@@ -205,6 +205,32 @@ if (import.meta.main && existsSync('pkg/dist/old.bin')) { renameSync('pkg/dist/o
     assert.equal(git(dir, 'rev-parse', 'HEAD'), sha, 'no branch moved');
     assert.equal(git(dir, 'status', '--porcelain'), '', 'the worktree and its index are untouched');
     console.log('  ok  overlayCommit: the lane\'s tree with the overlay\'s bytes and modes, on no branch, new each time');
+  }
+  {
+    // The pinned client: a clean checkout of the pin, and the pin on its repository's main.
+    const upstream = join(root, 'armada.git');
+    const seed = join(root, 'armada-seed');
+    git(root, 'init', '-q', '--bare', '-b', 'main', upstream);
+    git(root, 'init', '-q', '-b', 'main', seed);
+    writeFileSync(join(seed, 'cli.ts'), '// a client\n');
+    git(seed, 'add', '-A');
+    git(seed, 'commit', '-qm', 'client');
+    const pin = git(seed, 'rev-parse', 'HEAD');
+    git(seed, 'push', '-q', upstream, 'main');
+    const client = join(root, 'armada-client');
+    git(root, 'clone', '-q', upstream, client);
+    assert.equal(armadaClient({ dir: client, repo: upstream, pin }), client, 'a clean checkout of a pin on main is the client');
+    writeFileSync(join(client, 'cli.ts'), '// edited\n');
+    assert.throws(() => armadaClient({ dir: client, repo: upstream, pin }), /must be a clean checkout .* with local changes/);
+    git(client, 'checkout', '-q', '--', 'cli.ts');
+    // Main rewritten under the pin: a new root commit, force-pushed.
+    git(seed, 'checkout', '-q', '--orphan', 'rewritten');
+    writeFileSync(join(seed, 'cli.ts'), '// rewritten\n');
+    git(seed, 'add', '-A');
+    git(seed, 'commit', '-qm', 'rewritten');
+    git(seed, 'push', '-q', '--force', upstream, 'rewritten:main');
+    assert.throws(() => armadaClient({ dir: client, repo: upstream, pin }), /is not on main of .*: its history was rewritten under the pin/);
+    console.log('  ok  the armada client is a clean checkout of the pin, and the pin must still be on its repository\'s main');
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

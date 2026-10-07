@@ -12,13 +12,15 @@ import { fileURLToPath } from 'node:url';
 
 const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
-// The armada client, pinned: exactly ARMADA_CLIENT of
-// https://github.com/AshishKumar4/armada, a clean checkout of it at
-// ARMADA_DIR with its node_modules from `bun install --frozen-lockfile
-// --production`, or the run is refused. The pin is the client the deployed
-// Worker is proven with: move both together.
+// The armada client, pinned: exactly ARMADA_CLIENT, a commit on main of
+// ARMADA_REPO, as a clean checkout at ARMADA_DIR with its node_modules from
+// `bun install --frozen-lockfile --production`, or the run is refused. The
+// pin is checked against that main on every run, so a history rewritten
+// under it fails loudly rather than running a client no one can fetch. The
+// pin is the client the deployed Worker is proven with: move both together.
 const ARMADA_DIR = '/mnt/local/nimbus/armada-client';
-export const ARMADA_CLIENT = '5601a06f2a70cae0c2697107bced2466087f57fc';
+export const ARMADA_REPO = 'https://github.com/AshishKumar4/armada';
+export const ARMADA_CLIENT = 'e6af56a8963c0654d2351bd6e5b00fcaf56ee330';
 
 /**
  * A file laid over a commit's tree: a path whose bytes and executable bit
@@ -74,16 +76,24 @@ export function overlayCommit(repo, sha, files, from = SELF_ROOT) {
 }
 
 /**
- * The pinned armada client's directory, or a throw saying how to make it:
- * a clean checkout of exactly ARMADA_CLIENT, at ARMADA_DIR.
+ * The pinned armada client's directory, or a throw saying what is wrong:
+ * a clean checkout of exactly ARMADA_CLIENT at ARMADA_DIR, and
+ * ARMADA_CLIENT on main of ARMADA_REPO as that repository has it now.
+ *
+ * @param {{ dir?: string, repo?: string, pin?: string }} [where] what to check instead (a test's)
  */
-export function armadaClient() {
-  const dir = process.env.ARMADA_DIR || ARMADA_DIR;
-  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' });
-  const dirty = spawnSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' });
-  if (head.status !== 0 || head.stdout.trim() !== ARMADA_CLIENT || dirty.status !== 0 || dirty.stdout !== '') {
-    throw new Error(`the armada client must be a clean checkout of ${ARMADA_CLIENT} at ${dir}; it is ${head.status === 0 ? head.stdout.trim() : 'not a checkout'}${dirty.stdout ? ', with local changes' : ''}. `
-      + `Make one: git clone https://github.com/AshishKumar4/armada ${dir}, git -C ${dir} checkout --detach ${ARMADA_CLIENT}, then bun install --frozen-lockfile --production in it`);
+export function armadaClient({ dir = process.env.ARMADA_DIR || ARMADA_DIR, repo = ARMADA_REPO, pin = ARMADA_CLIENT } = {}) {
+  const run = (args) => spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+  const head = run(['rev-parse', 'HEAD']);
+  const dirty = run(['status', '--porcelain']);
+  if (head.status !== 0 || head.stdout.trim() !== pin || dirty.status !== 0 || dirty.stdout !== '') {
+    throw new Error(`the armada client must be a clean checkout of ${pin} at ${dir}; it is ${head.status === 0 ? head.stdout.trim() : 'not a checkout'}${dirty.stdout ? ', with local changes' : ''}. `
+      + `Make one: git clone ${repo} ${dir}, git -C ${dir} checkout --detach ${pin}, then bun install --frozen-lockfile --production in it`);
+  }
+  const fetched = run(['fetch', '--quiet', repo, 'main']);
+  if (fetched.status !== 0) throw new Error(`could not fetch main of ${repo} to check the pin: ${fetched.stderr.trim()}`);
+  if (run(['merge-base', '--is-ancestor', pin, 'FETCH_HEAD']).status !== 0) {
+    throw new Error(`the pinned armada client ${pin} is not on main of ${repo} (now ${run(['rev-parse', 'FETCH_HEAD']).stdout.trim()}): its history was rewritten under the pin. Re-pin ARMADA_CLIENT in scripts/ci/lib/armada.mjs to a commit on that main`);
   }
   return dir;
 }

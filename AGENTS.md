@@ -390,7 +390,8 @@ again.
   github.com/AshishKumar4/armada (`ARMADA_CLIENT` in
   `scripts/ci/lib/armada.mjs`): a clean checkout at
   `/mnt/local/nimbus/armada-client`, or at `ARMADA_DIR`. A run on any other
-  client is refused, with the commands that make one. The connection is
+  client is refused, with the commands that make one, and so is a pin no
+  longer on that repository's main (a rewritten history). The connection is
   `~/.config/armada/connection.json`, or `ARMADA_URL` and `ARMADA_TOKEN`
   (the GitHub unit job reads both from repo secrets).
 
