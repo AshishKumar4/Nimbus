@@ -5912,6 +5912,40 @@ error: the Oxc transform crashed (${reason})`);
     return Parser.tokenizer(input, options);
   }
 
+  var MODULE_PARSE_OPTIONS = { ecmaVersion: "latest", sourceType: "module", allowHashBang: true };
+  var AcornParserClass = Parser;
+  var FUNCTION_TYPES =   new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
+  var StatementParser = class extends AcornParserClass {
+    hooks = {};
+    parseTopLevel(node) {
+      const exports =   Object.create(null);
+      while (this.type !== types$1.eof) {
+        const statement = this.parseStatement(null, true, exports);
+        if (isAstNode(statement)) this.hooks.onStatement?.(statement);
+      }
+      if (this.inModule) {
+        for (const name of Object.keys(this.undefinedExports)) this.raiseRecoverable(this.undefinedExports[name].start, `Export '${name}' is not defined`);
+      }
+      this.next();
+      return this.finishNode(node, "Program");
+    }
+    finishNode(node, type) {
+      const finished = super.finishNode(node, type);
+      if (isAstNode(finished)) {
+        this.hooks.onNode?.(finished);
+        if (FUNCTION_TYPES.has(type)) {
+          const body = finished.body;
+          if (isAstNode(body) && body.type === "BlockStatement") Reflect.set(body, "body", []);
+        }
+      }
+      return finished;
+    }
+  };
+  function parseStatements(source, options, hooks) {
+    const parser = new StatementParser(options, source);
+    parser.hooks = hooks;
+    parser.parse();
+  }
   function applySourceEdits(source, edits) {
     const ordered = [...edits].sort((a, b) => a.start - b.start || a.end - b.end);
     const parts = [];
@@ -9065,7 +9099,9 @@ const ${binding} = arguments[2];
       const fields = Object.keys(item);
       for (let i = fields.length - 1; i >= 0; i--) {
         const name = fields[i];
-        if (name !== "parent") stack.push([item[name], inner, isFunction && name === "body", item, name]);
+        if (name === "parent") continue;
+        const fieldScope = item.type === "SwitchStatement" && name === "discriminant" ? at2 : inner;
+        stack.push([item[name], fieldScope, isFunction && name === "body", item, name]);
       }
     }
   }
@@ -9107,35 +9143,6 @@ const ${binding} = arguments[2];
   function lowerAsyncModule(esm) {
     return emitCommonJs(esm, readEsmRecords(esm), { body: "async" });
   }
-  var AcornParserClass = Parser;
-  var FUNCTION_TYPES =   new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
-  var StatementParser = class extends AcornParserClass {
-    onStatement = () => {
-    };
-    onFunction = () => {
-    };
-    onIdentifier = () => {
-    };
-    parseTopLevel(node) {
-      const exports =   Object.create(null);
-      while (this.type !== types$1.eof) this.onStatement(this.parseStatement(null, true, exports));
-      if (this.inModule) {
-        for (const name of Object.keys(this.undefinedExports)) this.raiseRecoverable(this.undefinedExports[name].start, `Export '${name}' is not defined`);
-      }
-      this.next();
-      return this.finishNode(node, "Program");
-    }
-    finishNode(node, type) {
-      const finished = super.finishNode(node, type);
-      if (type === "Identifier" && isNode(finished)) this.onIdentifier(finished);
-      if (FUNCTION_TYPES.has(type) && isNode(finished)) {
-        this.onFunction(finished);
-        const body = finished.body;
-        if (isNode(body) && body.type === "BlockStatement") Reflect.set(body, "body", []);
-      }
-      return finished;
-    }
-  };
   function readEsmRecords(source) {
     const first = readModule(source, null);
     return first.importsAfterCode ? readModule(source, first.imported).records : first.records;
@@ -9180,18 +9187,14 @@ const ${binding} = arguments[2];
       }
       return free;
     };
-    const parser = new StatementParser({ ecmaVersion: "latest", sourceType: "module", allowHashBang: true }, source);
-    parser.onFunction = (fn) => {
-      freeIn.set(fn, freeUses(fn));
-    };
-    parser.onIdentifier = (identifier) => {
+    const onIdentifier = (identifier) => {
       const name = stringOf(identifier, "name");
       if (name === null || !imported.has(name)) return;
       let at2 = mentions.length;
       while (at2 > 0 && mentions[at2 - 1] > identifier.start) at2--;
       mentions.splice(at2, 0, identifier.start);
     };
-    parser.onStatement = (node) => {
+    const onStatement = (node) => {
       if (node.type !== "ImportDeclaration") {
         for (const { name, start, end, use } of freeUses(node)) {
           const found = uses.get(name) ?? [];
@@ -9277,7 +9280,13 @@ const ${binding} = arguments[2];
       }
       code = true;
     };
-    parser.parse();
+    parseStatements(source, MODULE_PARSE_OPTIONS, {
+      onStatement: (statement) => onStatement(statement),
+      onNode: (node) => {
+        if (node.type === "Identifier") onIdentifier(node);
+        else if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") freeIn.set(node, freeUses(node));
+      }
+    });
     const withUses = records.map((record) => record.kind !== "import" ? record : {
       ...record,
       bindings: record.bindings.map((binding) => binding.kind === "namespace" ? binding : { ...binding, references: uses.get(binding.local) ?? [] })

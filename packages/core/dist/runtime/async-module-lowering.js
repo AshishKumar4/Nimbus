@@ -1,46 +1,5 @@
-/**
- * ES module to CommonJS: the one emitter of the import/export interop every
- * Nimbus lowering shares, and its two module readers.
- *
- * A module's imports and exports are read into records (readEsmRecords, by
- * acorn's module parse, a statement at a time: no tree of the whole module
- * is held, so a multi-MiB bundle reads in bounded memory), and emitCommonJs
- * writes the CommonJS for them, as esbuild's and TypeScript's CommonJS
- * output behave:
- *   - every module the source requests is required in source order, before
- *     the body; an import's bindings are read off its module at each use, so
- *     they are live as Node's are (an `export let` its module reassigns later
- *     reads as reassigned): a default import through `__esModule` interop, a
- *     call with `this` undefined, and a namespace of a module not marked
- *     `__esModule` with that module as its `default`;
- *   - `__esModule` is a non-enumerable `true`, and each export is a live,
- *     enumerable getter installed in name order before the body runs, so a
- *     binding the body assigns later (`export let db; db = await connect()`)
- *     reads as assigned; and before the modules it requests are required, as
- *     esbuild installs them, so a module in a cycle with it finds them (a
- *     function it declares is there while the cycle evaluates, as Node
- *     hoists it); `export default <expression>` evaluates where it stands,
- *     into a binding its getter reads;
- *   - `export *` copies the source module's names after the module's own,
- *     skipping `default` and any name already exported: the module's own
- *     names, and an earlier `export *`'s, win.
- *
- * Two bodies: `async` runs the module in an async IIFE, the body the
- * CommonJS cell gives a module with top-level await (the transform refuses
- * `format: 'cjs'` for it, so it emits ESM and this lowers that); `sync` is
- * the module's own statements at the wrapper's top level.
- *
- * Acorn's parse gives the declarations: esbuild prints an import or export
- * clause across several lines when it is long (serve 14's `import {\n
- * resolve as resolvePath, ... } from "node:path"`), so no line or text
- * pattern can stand in for it.
- *
- * Runs in the transform facet (installed by oxc-facet/preamble.ts), in
- * esbuild-service.ts, and in the shell's `node` command.
- */
-import { Parser, tokTypes } from 'acorn';
-import { applySourceEdits } from './javascript-ast.js';
-import { bindingScope, isNode, list, namesBinding, scoped, stringOf } from './javascript-scope.js';
+import { applySourceEdits, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
+import { bindingScope, list, namesBinding, scoped, stringOf } from './javascript-scope.js';
 /**
  * Names for code generated around `source`: a prefix its text does not hold
  * anywhere, then a number, so no binding of the source is one of them.
@@ -55,44 +14,6 @@ export function generatedNames(source) {
 /** `esm` lowered to the CommonJS function body of an async module. */
 export function lowerAsyncModule(esm) {
     return emitCommonJs(esm, readEsmRecords(esm), { body: 'async' });
-}
-const AcornParserClass = Parser;
-const FUNCTION_TYPES = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
-/**
- * Acorn's module parse with no tree of the whole module: each top-level
- * statement goes to `onStatement` as it is parsed and is not kept, and each
- * function goes to `onFunction` as it is finished, after which its body is
- * dropped (its parameters stay, which acorn checks after). What is held at
- * once is the chain of functions being parsed and their code outside
- * functions: a bundle's 3.5 MB statement of nested functions included.
- */
-class StatementParser extends AcornParserClass {
-    onStatement = () => { };
-    onFunction = () => { };
-    onIdentifier = () => { };
-    parseTopLevel(node) {
-        const exports = Object.create(null);
-        while (this.type !== tokTypes.eof)
-            this.onStatement(this.parseStatement(null, true, exports));
-        if (this.inModule) {
-            for (const name of Object.keys(this.undefinedExports))
-                this.raiseRecoverable(this.undefinedExports[name].start, `Export '${name}' is not defined`);
-        }
-        this.next();
-        return this.finishNode(node, 'Program');
-    }
-    finishNode(node, type) {
-        const finished = super.finishNode(node, type);
-        if (type === 'Identifier' && isNode(finished))
-            this.onIdentifier(finished);
-        if (FUNCTION_TYPES.has(type) && isNode(finished)) {
-            this.onFunction(finished);
-            const body = finished.body;
-            if (isNode(body) && body.type === 'BlockStatement')
-                Reflect.set(body, 'body', []);
-        }
-        return finished;
-    }
 }
 /**
  * The import and export declarations of ES module `source`, in source order,
@@ -167,9 +88,7 @@ function readModule(source, known) {
         }
         return free;
     };
-    const parser = new StatementParser({ ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true }, source);
-    parser.onFunction = (fn) => { freeIn.set(fn, freeUses(fn)); };
-    parser.onIdentifier = (identifier) => {
+    const onIdentifier = (identifier) => {
         const name = stringOf(identifier, 'name');
         if (name === null || !imported.has(name))
             return;
@@ -179,7 +98,7 @@ function readModule(source, known) {
             at--;
         mentions.splice(at, 0, identifier.start);
     };
-    parser.onStatement = (node) => {
+    const onStatement = (node) => {
         if (node.type !== 'ImportDeclaration') {
             // A top-level statement's free uses are its imports' (none redeclares one).
             for (const { name, start, end, use } of freeUses(node)) {
@@ -257,7 +176,16 @@ function readModule(source, known) {
         }
         code = true;
     };
-    parser.parse();
+    parseStatements(source, MODULE_PARSE_OPTIONS, {
+        onStatement: (statement) => onStatement(statement),
+        onNode: (node) => {
+            if (node.type === 'Identifier')
+                onIdentifier(node);
+            // A function, once finished: its free uses, before its body is dropped.
+            else if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression')
+                freeIn.set(node, freeUses(node));
+        },
+    });
     const withUses = records.map((record) => record.kind !== 'import' ? record : {
         ...record,
         bindings: record.bindings.map((binding) => binding.kind === 'namespace' ? binding : { ...binding, references: uses.get(binding.local) ?? [] }),

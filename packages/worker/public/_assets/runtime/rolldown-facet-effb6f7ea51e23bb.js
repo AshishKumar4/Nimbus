@@ -14642,7 +14642,9 @@ function* scoped(value, scope, sloppy, functionBody = false, parent = null, key 
     const fields = Object.keys(item);
     for (let i2 = fields.length - 1; i2 >= 0; i2--) {
       const name50 = fields[i2];
-      if (name50 !== "parent") stack.push([item[name50], inner, isFunction && name50 === "body", item, name50]);
+      if (name50 === "parent") continue;
+      const fieldScope = item.type === "SwitchStatement" && name50 === "discriminant" ? at : inner;
+      stack.push([item[name50], fieldScope, isFunction && name50 === "body", item, name50]);
     }
   }
 }
