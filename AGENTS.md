@@ -124,8 +124,9 @@ it. Nothing per-process chooses:
 no spawn site, program name, mode or payload size reaches the selection, and an
 unrecognised value is refused rather than defaulted. Flip it on a target with
 `bun tests/behavioral/_throwaway-target.mjs up --var NIMBUS_PROCESS_HOST:peer`,
-and read back where a process actually landed by also setting
-`--var NIMBUS_DEBUG:1` and watching the process log.
+and read back where a process actually landed in the process log: every
+probe target, each throwaway included, is deployed with `NIMBUS_DEBUG=1`
+(`PROBE_TARGET_VARS` in `tests/behavioral/_deploy-target.mjs`).
 
 The Runtime OS target and honest support matrix are tracked in
 `docs/architecture/nimbus-os-runtime-spec.md`. Keep docs and UI claims within
@@ -429,7 +430,7 @@ with that deployment's secret.
 Two kinds exist, for two different jobs.
 
 **Staging** is the persistent one, and the right answer for "does this change
-work". Run `bun run staging:deploy` then `bun run staging:test`. See
+work". Run `bun run staging:deploy`, which runs the matrix too. See
 § Staging And Promote.
 
 **A throwaway** is for a one-off question. No shared secret needed, and gone
@@ -545,14 +546,14 @@ Agent-specific probes:
 
 | Task | Command |
 |---|---|
-| Install deps | `bun install` |
+| Install deps on the workstation (no build) | `bun install --frozen-lockfile --ignore-scripts` |
 | Bundle worker assets | `bun run bundle` |
 | Dev server | `bun run dev` |
 | Deploy the dev stack (`nimbus-dev`) | `bun run deploy` |
-| Deploy staging (`nimbus-staging` + `nimbus-probe-staging`) | `bun run staging:deploy` |
-| Behavioral suite against staging | `bun run staging:test` |
+| Deploy staging (`nimbus-staging` + `nimbus-probe-staging`) and run its matrix | `bun run staging:deploy` (`scripts/ci/release.mjs staging`) |
+| Behavioral suite against staging, from containers | `bun run staging:test` |
 | What staging is serving right now | `bun run staging:status` |
-| Deploy production (`nimbus`) | `bun run deploy:production` |
+| Promote a staged release to production (`nimbus`) | `bun run deploy:production <commit>` (`scripts/ci/promote.mjs`) |
 | Dry-run production deploy | `bun run --cwd apps/hosted-demo wrangler deploy -e production --dry-run --outdir /tmp/wrangler-build` |
 | Check deploy isolation | `bun scripts/deploy-isolation.mjs` |
 | Check dist matches src | `bun scripts/dist-integrity.mjs` |
@@ -561,18 +562,24 @@ Agent-specific probes:
 The root `predev` script regenerates worker bundles.
 
 **Lanes do not build on the workstation.** No typecheck, tsc, bundling or
-`dist-integrity` runs there: `remote-build` and `remote-probes --deploy` do
-that work on CI (Tests § CI).
+`dist-integrity` runs there: `remote-build`, `remote-probes --deploy`,
+`release.mjs staging` and `promote.mjs` do that work on CI (Tests § CI) and
+only upload from here. Install a worktree's dependencies with
+`bun install --frozen-lockfile --ignore-scripts`. A plain `bun install` runs
+the root postinstall, which bundles. The upload and release scripts need
+only the `--ignore-scripts` install, and refuse with that command when it
+is missing (`scripts/ci/lib/installed.mjs`).
 
-Every deploy path (`predeploy`, `deploy:production`, the throwaway and
-staging targets) runs `scripts/dist-integrity.mjs` instead of a build. It
-compiles `src` → `dist`, bundles (which reads `dist`), rebuilds so the
-regenerated artifacts reach `dist`, and refuses the deploy if any of that
-changed a file. `dist` is tracked and wrangler ships `dist`, so a commit
+Every deploy's bundle is built behind `scripts/dist-integrity.mjs`, instead
+of a plain build: on CI for staging, production and the throwaways
+(`scripts/ci/bundle.mjs`), and in `predeploy` for the dev stack. It compiles
+`src` → `dist`, bundles (which reads `dist`), rebuilds so the regenerated
+artifacts reach `dist`, and refuses the deploy if any of that changed a
+file. `dist` is tracked and wrangler ships `dist`, so a commit
 whose `dist` predates its `src` deploys a Worker missing changes its own
 source contains. The gate makes that a refusal rather than a silent no-op
-deploy. It adds ~6s. When it refuses, the tree it refused has already been
-rebuilt: review the diff, commit it, deploy again.
+deploy. When it refuses, `bun scripts/ci/remote-build.mjs` returns the
+patch: review it, commit it, deploy again.
 
 Publishing works the same way. No package builds at pack time; every
 published package's `prepublishOnly` is `bun ../../scripts/dist-integrity.mjs
@@ -595,7 +602,7 @@ database, rate-limit namespace and Worker:
 |---|---|---|---|
 | top-level (development) | `nimbus-dev` | `nimbus-demo-dev` | `bun run deploy`, and any `--name` override |
 | `env.staging` | `nimbus-staging` | `nimbus-demo-staging` | `bun run staging:deploy` |
-| `env.production` | `nimbus` | `nimbus-demo` | `bun run deploy:production` |
+| `env.production` | `nimbus` | `nimbus-demo` | `bun run deploy:production <commit>` (a staged release) |
 
 That split is load-bearing. `wrangler deploy --name foo` overrides ONLY the
 name, and every binding still comes from the block being deployed. Two
@@ -621,8 +628,9 @@ not mean the script is absent.
 
 ## Staging And Promote
 
-Staging is two Workers, deployed from one `dist` by one command, because
-production is two surfaces and verifying one does not verify the other:
+Staging is two Workers, deployed from one release CI built by one command,
+because production is two surfaces and verifying one does not verify the
+other:
 
 - **`nimbus-staging`** — `apps/hosted-demo`, `env.staging`. The product
   mirror: same `main`, same `dist/assets` (shell + `/docs`), same inherited
@@ -648,19 +656,42 @@ them either.
 
 ```bash
 export CLOUDFLARE_ACCOUNT_ID=<account>
+# In a clean worktree at the commit, after `bun scripts/ci/remote-build.mjs`
+# left nothing to commit:
 
-bun run staging:deploy          # build → deploy both → assert version ids
-bun run staging:test --no-retry # the full suite, CI-strict
-# browser-check https://nimbus-staging.<subdomain>.workers.dev — login,
-# /docs terminal, a session — for anything touching apps/hosted-demo/src
-
-git commit && git push          # dist is tracked; commit what the build changed
-bun run deploy:production
-bun run --cwd apps/hosted-demo wrangler deployments status --name nimbus
+bun run staging:deploy            # CI builds the release; upload both; verify version ids;
+                                  # the matrix from containers: the suite, the repeats,
+                                  # and the hosted-demo checks (/try, the docs terminal)
+bun run deploy:production <commit> # the bytes staging verified; verify the version id;
+                                  # the live checks against nimbus-os.dev
 ```
 
-Rollback is `wrangler versions deploy --name nimbus <previous-version-id>`;
-`wrangler deployments list --name nimbus` has the ids.
+A release is built once, on CI (`scripts/ci/lib/release.mjs`): the dist
+gate, the demo's assets, and the modules of `apps/probe` and of
+`apps/hosted-demo` for `env.staging` and `env.production`. The env blocks
+must produce the same module bytes, and the release is refused if they do
+not. The docs are built once and serve every origin: the docs terminal's
+endpoint is the path `/api/demo/anon-session`.
+
+Staging and production are each leased, one lane at a time: an exclusive
+`flock(2)` on `~/.local/state/nimbus/leases/<environment>.lock`, held from
+the upload through the checks that grade it (`scripts/ci/lib/lease.mjs`).
+Every entry point that writes them takes it (`release.mjs`, `promote.mjs`,
+`_staging-target.mjs up`), and every writer it starts (wrangler) holds it
+as its fd 3. A lane that finds it held waits, naming the holder, and the
+kernel frees it when the last holder's process ends. **The lease is local
+to this machine.** A deploy from a credentialed host elsewhere is not
+excluded by it; only the API brackets catch that. Before and after the
+matrix (and the live checks), the API's live version ids are compared with
+the upload's own receipt (the ids wrangler returned to that upload), and a
+run whose environment changed under it is not graded. `release.mjs` seals `staged.json` with the digest of the
+whole release manifest: the commit, every module, the docs, every asset.
+`promote.mjs` uploads only a release whose matrix was green and whose
+manifest still has that digest. It checks every file against the manifest
+and runs deploy-isolation's preflight first. On a failed
+check it prints the rollback:
+`bun run --cwd apps/hosted-demo wrangler versions deploy --name nimbus <previous-version-id>@100% -e production`.
+`--dry-run` stops before the upload.
 
 **The hazard is the deploy target, never the hostname.** `wrangler versions
 upload -e production` and `wrangler deploy -e production` both act on the

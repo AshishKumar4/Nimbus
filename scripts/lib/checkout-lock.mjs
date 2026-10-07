@@ -10,9 +10,7 @@
 // another process takes a new one; what it holds only describes the holder,
 // for the waiting message.
 //
-// flock(1) takes the lock on this process's descriptor, passed as its fd 3:
-// the lock then belongs to the description both share, and stays with this
-// process when flock exits. A lock that ended with this process would free
+// The lock is scripts/lib/flock.mjs's. A lock that ended with this process would free
 // the checkout while a build step it started (an orphan, once this process
 // is killed) still wrote. So a build step runs in a PID namespace that dies
 // with this process (dist-integrity.mjs, stepSandbox), and is handed the
@@ -21,15 +19,13 @@
 // files close-on-exec).
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { spawnSync } from 'node:child_process';
-import { closeSync, ftruncateSync, openSync, readFileSync, writeSync } from 'node:fs';
-import { hostname } from 'node:os';
+import { closeSync } from 'node:fs';
 import { join } from 'node:path';
+import { FlockError, holdFlock } from './flock.mjs';
 import { BuildFailure } from './output-transaction.mjs';
 
 /** How long a gate waits for another gate on the same checkout. */
 const CHECKOUT_LOCK_WAIT_MS = 30 * 60_000;
-/** flock(1)'s exit status when the lock is taken (-n) or the wait ran out (-w). */
-const TAKEN = 75;
 const lockScope = new AsyncLocalStorage();
 /** The lock files this process holds, and the descriptor holding each. */
 const heldHere = new Map();
@@ -99,50 +95,21 @@ export function withCheckoutLock(root, fn, { log = () => {}, waitMs = CHECKOUT_L
   return result;
 }
 
-/** Who holds the lock, as the holder wrote it: a description, never a test of liveness. */
-function holder(file) {
-  try {
-    const { pid, host, since } = JSON.parse(readFileSync(file, 'utf8'));
-    return `pid ${pid} on ${host}, since ${since}`;
-  } catch {
-    return 'it wrote no description';
-  }
-}
-
-/** Take the lock on a descriptor of `file`, waiting up to `waitMs`; the descriptor holds it. */
+/** Take the checkout lock on a descriptor of `file`, waiting up to `waitMs`; the descriptor holds it. */
 function acquire(file, root, log, waitMs) {
-  let fd;
   try {
-    fd = openSync(file, 'a+');
+    return holdFlock(file, {
+      waitMs,
+      describe: { root },
+      onWait: (holder) => log(`waiting for the checkout lock: another dist-integrity (${holder}) is building ${root}`),
+    });
   } catch (error) {
-    throw new BuildFailure(`refusing to build — could not open the checkout lock ${file}: ${error.message}`);
+    if (!(error instanceof FlockError)) throw error;
+    throw new BuildFailure(error.kind === 'timeout'
+      ? `refusing to build — another dist-integrity (${error.holder}) has held the checkout lock on ${root} `
+        + `for longer than ${Math.round(waitMs / 1000)} s. Wait for it to finish: the lock is released when that process ends, however it ends.`
+      : error.kind === 'describe'
+        ? `refusing to build — could not describe the holder in the checkout lock ${file}: ${error.message}`
+        : `refusing to build — ${error.message}`);
   }
-  const flock = (...args) => spawnSync('/usr/bin/flock', ['-x', '-E', String(TAKEN), ...args, '3'], {
-    stdio: ['ignore', 'ignore', 'pipe', fd], encoding: 'utf8',
-  });
-  let taken = flock('-n');
-  if (taken.status === TAKEN) {
-    log(`waiting for the checkout lock: another dist-integrity (${holder(file)}) is building ${root}`);
-    taken = flock('-w', String(waitMs / 1000));
-    if (taken.status === TAKEN) {
-      closeSync(fd);
-      throw new BuildFailure(
-        `refusing to build — another dist-integrity (${holder(file)}) has held the checkout lock on ${root} `
-        + `for longer than ${Math.round(waitMs / 1000)} s. Wait for it to finish: the lock is released when that process ends, however it ends.`,
-      );
-    }
-  }
-  if (taken.status !== 0) {
-    closeSync(fd);
-    throw new BuildFailure(`refusing to build — could not take the checkout lock ${file}: ${taken.error?.message ?? (taken.stderr.trim() || `flock exited ${taken.status}`)}`);
-  }
-  try {
-    ftruncateSync(fd, 0);
-    writeSync(fd, JSON.stringify({ pid: process.pid, host: hostname(), root, since: new Date().toISOString() }));
-  } catch (error) {
-    // Closed, the descriptor releases the lock it just took.
-    closeSync(fd);
-    throw new BuildFailure(`refusing to build — could not describe the holder in the checkout lock ${file}: ${error.message}`);
-  }
-  return fd;
 }
