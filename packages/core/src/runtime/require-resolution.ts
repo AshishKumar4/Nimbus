@@ -320,6 +320,20 @@ export async function resolveRequireEx(vfs: RequireFs, id: string, fromDir: stri
 }
 
 /**
+ * Whether a package.json is at `path` for a package scope walk. One the
+ * user may not look up is none, as Node's lookup reads it: a device mount
+ * shows nothing above the directory its user consented to.
+ */
+export async function packageJsonVisible(vfs: RequireFs, path: string): Promise<boolean> {
+  try {
+    return await vfs.exists(path);
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'EACCES') return false;
+    throw error;
+  }
+}
+
+/**
  * Node's "package scope" of a directory (`readPackageScope`): the nearest
  * enclosing package.json walking up from `fromDir`. The FIRST one found is
  * the scope, even when it lacks the field the caller wants — the imports
@@ -341,7 +355,7 @@ async function nearestPackageScope(
     if (dir === 'node_modules' || dir.endsWith('/node_modules')) return null;
     const pkgJsonPath = (dir ? dir + '/' : '') + 'package.json';
     if (progress) await progress(METADATA_CANDIDATE_WORK + pkgJsonPath.length);
-    if ((await vfs.exists(pkgJsonPath)) && !(await vfs.isDirectory(pkgJsonPath))) {
+    if ((await packageJsonVisible(vfs, pkgJsonPath)) && !(await vfs.isDirectory(pkgJsonPath))) {
       let pkg: (ResolvablePackageJson & SelfReferencingPackageJson) | null = null;
       const text = sink ? await sink(pkgJsonPath) : await packageText(vfs, pkgJsonPath, progress);
       try { pkg = JSON.parse(text ?? ''); } catch { /* malformed */ }
