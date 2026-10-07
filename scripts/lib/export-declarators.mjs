@@ -2,8 +2,9 @@
 // more than one name. rolldown 1.0.0–1.1.3 with `output.keepNames` (vite
 // 8.0's bundler) keeps `export` only on the first declarator of
 // `export const a = 1, b = 2`, so a consumer's build fails with
-// MISSING_EXPORT for every later name (Ask 21;
-// /mnt/local/nimbus/spike/vite8-multidecl/README.md). tsc emits the
+// MISSING_EXPORT for every later name. Fixed in rolldown 1.1.4
+// (https://github.com/rolldown/rolldown/pull/9974), which vite 8.1 and
+// later bundle; a consumer on vite 8.0 still has the bug. tsc emits the
 // statement as written, so the rule is checked in source, where the fix is
 // made, and the build gate (scripts/dist-integrity.mjs) refuses a tree that
 // breaks it.
