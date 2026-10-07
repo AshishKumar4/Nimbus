@@ -22,6 +22,7 @@ import { bundlerConditions, createBundlerResolver } from './bundler-resolution.j
 import { emitCommonJs, lowerAsyncModule, readEsmRecords, type EsmRecord } from './async-module-lowering.js';
 import {
   applySourceEdits,
+  hasUnscopedAwait,
   nodeList,
   nodeName,
   nodeProp,
@@ -165,135 +166,19 @@ interface ModuleDeclarationRange {
 function topLevelModuleDeclarationRanges(source: string): ModuleDeclarationRange[] | null {
   const ranges: ModuleDeclarationRange[] = [];
   let active: Omit<ModuleDeclarationRange, 'end'> | null = null;
-  const walked = walkTopLevelModuleTokens(source, (token, declaration, topLevel) => {
+  const walked = walkTopLevelModuleTokens(source, (token, syntax, topLevel) => {
     if (active) {
       if (token.type === tokTypes.semi && topLevel) {
         ranges.push({ ...active, end: token.end });
         active = null;
       }
-    } else if (declaration) {
-      active = { start: token.start, kind: declaration };
+    } else if (syntax === 'import' || syntax === 'export') {
+      active = { start: token.start, kind: syntax };
     }
     return false;
   });
   return walked === null || active ? null : ranges;
 }
-
-function hasUnscopedAwait(source: string): boolean {
-  try {
-    const tokens = tokenizer(source, {
-      ecmaVersion: 'latest',
-      sourceType: 'module',
-      allowHashBang: true,
-    });
-    const functionBraces: boolean[] = [];
-    const functionParenDepths: number[] = [];
-    const methodParenCandidates: boolean[] = [];
-    const arrowExpressions: Array<{ parens: number; braces: number; brackets: number }> = [];
-    let bracketDepth = 0;
-    let pendingMethodBody = false;
-    let pendingArrowBody = false;
-    let pendingFunctionKeyword = false;
-    let previous = tokTypes.eof;
-    let previousEnd = 0;
-
-    while (true) {
-      const token = tokens.getToken();
-      const type = token.type;
-      if (type === tokTypes.eof) return false;
-
-      if (pendingMethodBody && type !== tokTypes.braceL) pendingMethodBody = false;
-      if (pendingArrowBody && type !== tokTypes.braceL) {
-        arrowExpressions.push({
-          parens: methodParenCandidates.length,
-          braces: functionBraces.length,
-          brackets: bracketDepth,
-        });
-        pendingArrowBody = false;
-      }
-
-      if (pendingFunctionKeyword) {
-        if (
-          type === tokTypes.colon || type === tokTypes.comma || type === tokTypes.braceR
-          || type === tokTypes.parenR || type === tokTypes.bracketR || type === tokTypes.eq
-        ) functionParenDepths.pop();
-        pendingFunctionKeyword = false;
-      }
-
-      if (source.slice(previousEnd, token.start).includes('\n')) {
-        while (arrowExpressions.length > 0) {
-          const arrow = arrowExpressions[arrowExpressions.length - 1];
-          if (
-            methodParenCandidates.length !== arrow.parens
-            || functionBraces.length !== arrow.braces
-            || bracketDepth !== arrow.brackets
-          ) break;
-          arrowExpressions.pop();
-        }
-      }
-
-      while (arrowExpressions.length > 0) {
-        const arrow = arrowExpressions[arrowExpressions.length - 1];
-        const delimited = (type === tokTypes.semi || type === tokTypes.comma)
-          && methodParenCandidates.length === arrow.parens
-          && functionBraces.length === arrow.braces
-          && bracketDepth === arrow.brackets;
-        const closed = (type === tokTypes.parenR && methodParenCandidates.length === arrow.parens)
-          || (type === tokTypes.bracketR && bracketDepth === arrow.brackets)
-          || (type === tokTypes.braceR && functionBraces.length === arrow.braces);
-        if (!delimited && !closed) break;
-        arrowExpressions.pop();
-      }
-
-      if (
-        type === tokTypes.name
-        && source.slice(token.start, token.end) === 'await'
-        && !functionBraces.includes(true)
-        && arrowExpressions.length === 0
-      ) return true;
-
-      if (type === tokTypes._function || type === tokTypes._class) {
-        if (previous !== tokTypes.dot && previous !== tokTypes.questionDot) {
-          functionParenDepths.push(methodParenCandidates.length);
-          pendingFunctionKeyword = true;
-        }
-      } else if (type === tokTypes.arrow) {
-        pendingArrowBody = true;
-      } else if (type === tokTypes.parenL) {
-        methodParenCandidates.push(
-          functionBraces.length > 0
-            && (previous === tokTypes.name || previous === tokTypes.string
-              || previous === tokTypes.num || previous === tokTypes.bracketR),
-        );
-      } else if (type === tokTypes.parenR) {
-        pendingMethodBody = methodParenCandidates.pop() === true;
-      } else if (type === tokTypes.bracketL) {
-        bracketDepth++;
-      } else if (type === tokTypes.bracketR) {
-        bracketDepth = Math.max(0, bracketDepth - 1);
-      } else if (type === tokTypes.dollarBraceL) {
-        functionBraces.push(false);
-      } else if (type === tokTypes.braceL) {
-        const functionBody = pendingArrowBody
-          || pendingMethodBody
-          || functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length;
-        if (functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length) {
-          functionParenDepths.pop();
-        }
-        functionBraces.push(functionBody);
-        pendingArrowBody = false;
-        pendingMethodBody = false;
-      } else if (type === tokTypes.braceR) {
-        functionBraces.pop();
-      }
-      previousEnd = token.end;
-      previous = type;
-    }
-  } catch {
-    return true;
-  }
-}
-
 
 function importMetaEdits(source: string, absoluteUrl: string, moduleFactory: boolean): SourceEdit[] | null {
   // A module factory's import.meta is the module's metadata object, bound by

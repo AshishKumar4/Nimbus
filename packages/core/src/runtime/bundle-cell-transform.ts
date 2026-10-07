@@ -30,7 +30,7 @@ import {
   type EsbuildTransformOutcome,
   type EsbuildTransformRequest,
 } from './esbuild-service.js';
-import { hasTopLevelModuleSyntax, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
+import { containsModuleSyntax, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
 
 /**
  * Bundled ESM this large is lowered in the session (esbuild-service.ts
@@ -88,9 +88,14 @@ export function isTypescriptDeclarationFile(path: string): boolean {
   return /\.d\.[mc]?ts$/.test(base);
 }
 
-/** Whether a JavaScript file is an ES module: module syntax, and for an extensionless file, a parse. */
+/**
+ * Whether a staged JavaScript file is an ES module, by its syntax as Node's
+ * detection reads it (containsModuleSyntax), and for an extensionless file a
+ * parse. Its package's "type" is not read: a module is lowered for what its
+ * syntax needs, which a file without module syntax does not.
+ */
 export function looksLikeEsm(path: string, src: string): boolean {
-  if (!hasTopLevelModuleSyntax(src)) return false;
+  if (!containsModuleSyntax(src)) return false;
   if (vfsPathExtension(path) !== '') return true;
   // No extension: a bin script, or data such as a LICENSE whose prose says "import". Only a parse
   // tells them apart: one keeping no tree, as a bin can be a multi-MiB bundle.
