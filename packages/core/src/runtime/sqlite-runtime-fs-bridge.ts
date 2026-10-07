@@ -949,6 +949,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (located === null) throw callError('ELOOP', typeof call === 'string' ? { syscall: call, path } : call);
     // And the name it reaches, on a mount as on SQLite.
     this.leaseAllows(located.path, owner);
+    // The namespace's own guard, which each mount call meets, is presented the lease too.
+    if (located.mount && owner !== undefined) return { ...located, mount: this.namespace!.scoped(() => {}, owner).sync };
     return located;
   }
 

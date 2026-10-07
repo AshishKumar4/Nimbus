@@ -607,16 +607,16 @@ function scripted(overrides) {
   const lease = s.engine.as(CRED_SESSION_USER).acquireExclusiveMutation('shared/held');
   const owned = await s.op({
     op: 'writeBatchStream', args: [], cred: CRED_SESSION_USER, mutationOwner: lease.owner,
-    stream: encodeWriteBatchStream({ inodes: [{ path: 'shared/held/a.txt', isDir: false, mode: 0o644 }], chunks: [{ path: 'shared/held/a.txt', data: enc.encode('mine') }] }),
+    stream: encodeWriteBatchStream({ inodes: [{ path: 'shared/held/a.txt', parentPath: 'shared/held', isDir: false, size: 'mine'.length, mtime: 1, mode: 0o644, chunkCount: 1 }], chunks: [{ path: 'shared/held/a.txt', chunkId: 0, data: enc.encode('mine') }] }),
   });
   assert.equal(owned.ok, true, `the lease holder's wave lands: ${JSON.stringify(owned.error)}`);
   assert.equal(s.inMount(s.shared, '/held/a.txt'), 'mine');
-  const other = await s.send({ inodes: [{ path: 'shared/held/b.txt', isDir: false, mode: 0o644 }], chunks: [{ path: 'shared/held/b.txt', data: enc.encode('theirs') }] });
+  const other = await s.send({ inodes: [{ path: 'shared/held/b.txt', parentPath: 'shared/held', isDir: false, size: 'theirs'.length, mtime: 1, mode: 0o644, chunkCount: 1 }], chunks: [{ path: 'shared/held/b.txt', chunkId: 0, data: enc.encode('theirs') }] });
   assert.equal(other.ok, false, 'a wave with no lease is refused there');
   assert.match(other.error.message, /EBUSY/);
   const outside = await s.op({
     op: 'writeBatchStream', args: [], cred: CRED_SESSION_USER, mutationOwner: lease.owner,
-    stream: encodeWriteBatchStream({ inodes: [{ path: 'shared/elsewhere.txt', isDir: false, mode: 0o644 }], chunks: [{ path: 'shared/elsewhere.txt', data: enc.encode('x') }] }),
+    stream: encodeWriteBatchStream({ inodes: [{ path: 'shared/elsewhere.txt', parentPath: 'shared', isDir: false, size: 'x'.length, mtime: 1, mode: 0o644, chunkCount: 1 }], chunks: [{ path: 'shared/elsewhere.txt', chunkId: 0, data: enc.encode('x') }] }),
   });
   assert.equal(outside.ok, false, 'a routed record outside its own lease root');
   assert.match(outside.error.message, /EPERM/);
