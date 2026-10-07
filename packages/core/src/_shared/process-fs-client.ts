@@ -126,6 +126,8 @@ export interface ProcessFsClientOptions {
   readonly grantAfter?: number;
   /** A grant unused this long is given back (GRANT_IDLE_MS). */
   readonly grantIdleMs?: number;
+  /** Inode numbers a first grant of a subtree reserves (GRANT_INOS); each renewal doubles it. */
+  readonly grantInos?: number;
   /** How long one recall poll waits before asking again. */
   readonly recallPollMs?: number;
   /** Every key that is a home directory itself: never taken. */
@@ -216,6 +218,7 @@ export interface ProcessFsStats {
   recalls: number;
   released: number;
   widened: number;
+  renewed: number;
 }
 
 /** A synchronous loop's bytes held at once, at most (ProcessFsClientOptions.syncCapBytes). */
@@ -256,6 +259,8 @@ interface Grant extends ProcessFsGrant {
   readonly inos: number;
   bytesLeft: number;
   shared: boolean;
+  /** Being given back (idle, renewed, widened, settled): nothing more is decided under it. */
+  closing: boolean;
   ended: boolean;
   lastUsed: number;
 }
@@ -380,7 +385,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   };
   const counters: ProcessFsStats = {
     ops: 0, waves: 0, resends: 0, epochs: 0, refused: 0, lost: 0, maxWaveOps: 0,
-    grants: 0, grantsRefused: 0, recalls: 0, released: 0, widened: 0,
+    grants: 0, grantsRefused: 0, recalls: 0, released: 0, widened: 0, renewed: 0,
   };
   const grantAfter = options.grantAfter ?? GRANT_AFTER;
   const grantIdleMs = options.grantIdleMs ?? GRANT_IDLE_MS;
@@ -603,7 +608,18 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
 
   const allowedRoot = (root: string): boolean => root !== '' && !(options.isHomeRoot?.(root) ?? false);
 
-  /** Give `grant` back: its log sent first (the caller flushed), then released. */
+  /**
+   * Give `grant` back: nothing more is decided under it from now, what was
+   * (numbered from its range) is sent, then it is released, so no op names a
+   * number of a lease the session no longer holds.
+   */
+  const close = async (grant: Grant): Promise<void> => {
+    grant.closing = true;
+    await client.flush();
+    await end(grant);
+  };
+
+  /** Release `grant` (its log already sent: close). */
   const end = async (grant: Grant): Promise<void> => {
     if (grant.ended) return;
     grant.ended = true;
@@ -665,12 +681,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     if (idleTimer !== null || live().length === 0) return;
     idleTimer = timers.setTimeout(() => {
       idleTimer = null;
-      const idle = live().filter((grant) => now() - grant.lastUsed >= grantIdleMs);
+      const idle = live().filter((grant) => !grant.closing && now() - grant.lastUsed >= grantIdleMs);
       if (idle.length === 0 || settling) { armIdle(); return; }
-      void client.flush().then(async () => {
-        for (const grant of idle) if (now() - grant.lastUsed >= grantIdleMs) await end(grant);
-        armIdle();
-      });
+      void Promise.all(idle.map(close)).then(armIdle);
     }, grantIdleMs);
   };
 
@@ -696,17 +709,18 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         target = best;
       }
       // What the process holds under the new root is given back first: a lease never overlaps another of its own.
+      // Its own grant of the same root among them: a renewal, with a range twice as large.
       const covered = live().filter((grant) => within(grant.root, target));
       if (covered.length > 0) {
-        await client.flush();
-        for (const grant of covered) await end(grant);
-        counters.widened++;
+        await Promise.all(covered.map(close));
+        if (covered.some((grant) => grant.root !== target)) counters.widened++;
+        else counters.renewed++;
       }
       // What was logged lands first (the directory may be one of its own mkdirs).
       await client.flush();
       paused = true;
       await quiet();
-      const inos = (rangeOf.get(target) ?? GRANT_INOS / 2) * 2;
+      const inos = rangeOf.has(target) ? rangeOf.get(target)! * 2 : (options.grantInos ?? GRANT_INOS);
       let granted: ExclusiveMutationGrant;
       try {
         charge('fsAcquireExclusiveMutation');
@@ -728,6 +742,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         inos,
         bytesLeft: granted.bytes ?? 0,
         shared: false,
+        closing: false,
         ended: false,
         lastUsed: now(),
       };
@@ -744,7 +759,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   };
 
   const heldGrant = (key: string): Grant | undefined =>
-    grants.find((grant) => !grant.ended && !grant.shared && within(key, grant.root));
+    grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root));
 
   const client: ProcessFsClient = {
     holder(key) {
@@ -775,7 +790,11 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     },
     number(grant) {
       const held = grant as Grant;
-      if (held.ended || held.nextIno >= held.endIno) return undefined;
+      if (held.ended || held.closing || held.nextIno >= held.endIno) return undefined;
+      // A quarter of its range left: renewed (given back and taken again,
+      // its range doubled) while the rest is used. Asked once this turn's
+      // decision has its name (its maker logs it before the grant closes).
+      if (held.endIno - held.nextIno <= held.inos / 4) queueMicrotask(() => claim(held.root));
       return held.nextIno++;
     },
     draw(grant, bytes) {
@@ -851,7 +870,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         while (answered < logged) await client.flush();
       } finally {
         if (idleTimer !== null) { timers.clearTimeout(idleTimer); idleTimer = null; }
-        for (const grant of live()) await end(grant);
+        for (const grant of live()) await close(grant);
         settling = false;
       }
       const taken = client.takeFailures();

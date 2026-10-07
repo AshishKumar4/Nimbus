@@ -368,4 +368,25 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   assert.equal(s.text(`home/user/b/f${DECIDED_BACKLOG_OPS - 1}`), 'x');
 }
 
+// ── A grant whose range runs low is renewed, and nothing numbered from it is sent after it ends ──
+{
+  const s = session();
+  s.kernel.mkdir('home/user/r', { mode: 0o755 });
+  s.kernel.chown('home/user/r', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const c = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 100, grantInos: 8 });
+  c.holder('home/user/r/x');
+  await until(() => c.holder('home/user/r/x'), 'the grant');
+  for (let i = 0; i < 60; i++) {
+    const key = `home/user/r/f${i}`;
+    const grant = c.holder(key);
+    // A holder numbers a name, then logs it, in the same turn.
+    const ino = grant === undefined ? undefined : c.number(grant);
+    c.submit({ type: 'call', call: { call: 'writeFile', path: key, mode: 0o644, ...(ino === undefined ? {} : { ino }), data: enc.encode(`${i}`) } }, { acknowledged: true });
+    if (i % 7 === 6) await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  await c.settle();
+  assert.ok(c.stats().renewed >= 1, `never renewed: ${JSON.stringify(c.stats())}`);
+  assert.equal(s.text('home/user/r/f59'), '59');
+}
+
 console.log('process-fs-client: ok');

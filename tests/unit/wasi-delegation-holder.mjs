@@ -26,7 +26,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
-function session() {
+function session({ grantInos } = {}) {
   const harness = createSqliteVfsTestHarness();
   const engine = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = engine.as(CRED_KERNEL);
@@ -89,6 +89,7 @@ function session() {
   const fs = residentFilesystem(bridge, store, {
     session: processSession,
     grantAfter: 1,
+    ...(grantInos === undefined ? {} : { grantInos }),
     isHomeRoot: (key) => key.startsWith('home/') && !key.slice(5).includes('/'),
   });
   return { engine, kernel, filesystem, fs, waves };
@@ -124,6 +125,24 @@ async function create(fs, path, text) {
   assert.equal(stored.uid, 1000);
   assert.equal(stored.mode & 0o777, 0o644);
   assert.equal(dec.decode(s.kernel.readFile('home/user/proj/out/f3.txt')), 'file 3\n');
+}
+
+// ── A grant renewed mid-run (its range spent): every file lands, grown or not ──
+{
+  const s = session({ grantInos: 8 });
+  await s.fs.mkdir('/home/user/proj/many', { mode: 0o755 });
+  const big = 'y'.repeat(6000);
+  for (let index = 0; index < 48; index++) {
+    const handle = await s.fs.open(`/home/user/proj/many/f${index}.txt`, { write: true, create: true, truncate: true, mode: 0o644 });
+    await s.fs.write(handle.id, null, enc.encode(`head ${index}\n`));
+    // Grown past its first buffer while its grant may be closing.
+    await s.fs.write(handle.id, null, enc.encode(big));
+    await s.fs.close(handle.id);
+  }
+  await s.fs.settle();
+  for (const index of [0, 7, 8, 31, 47]) {
+    assert.equal(dec.decode(s.kernel.readFile(`home/user/proj/many/f${index}.txt`)), `head ${index}\n${big}`);
+  }
 }
 
 // ── Another caller's read waits for the holder (share), its write for the

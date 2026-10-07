@@ -286,6 +286,8 @@ export interface ResidentDelegation {
   readonly session: ProcessFsSession;
   /** Mutations in a subtree before it is taken (the client's GRANT_AFTER). */
   readonly grantAfter?: number;
+  /** Inode numbers a first grant reserves (the client's GRANT_INOS). */
+  readonly grantInos?: number;
   readonly isHomeRoot?: (key: string) => boolean;
 }
 
@@ -346,6 +348,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       },
       isHomeRoot: delegation.isHomeRoot,
       ...(delegation.grantAfter === undefined ? {} : { grantAfter: delegation.grantAfter }),
+      ...(delegation.grantInos === undefined ? {} : { grantInos: delegation.grantInos }),
       // What it sent changed the session: the store catches up before it answers next.
       sent: () => { owed = true; },
     });
