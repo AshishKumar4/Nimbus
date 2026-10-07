@@ -25,7 +25,7 @@
  */
 import { DURABLE_SLOT_KEY_PREFIX } from '../session/keys.js';
 import { DURABLE_FACET_NAME_PREFIX } from '@nimbus-sh/fabric/workerd-facet-host.js';
-import { facetNameCountDurable, recordFacetNameMinted } from '@nimbus-sh/fabric/budgets.js';
+import { chargeFacetName } from '@nimbus-sh/fabric/budgets.js';
 const NEXT_KEY = `${DURABLE_SLOT_KEY_PREFIX}next`;
 const FREE_KEY = `${DURABLE_SLOT_KEY_PREFIX}free`;
 const ownerKey = (owner) => `${DURABLE_SLOT_KEY_PREFIX}${owner}`;
@@ -39,9 +39,8 @@ export function durableFacetName(slot) {
  * transaction, so a concurrent spawn cannot split the claim, and a re-read
  * after a reset — or after eviction — answers the same name.
  *
- * A fresh name records the mint against the lifetime facet-ID ledger so the
- * budget a durable spawn consumes is counted the same way an ephemeral one's
- * is.
+ * A fresh name is charged to the lifetime facet-ID ledger, which every
+ * facet name on this DO shares, and is refused there at the wall.
  */
 export async function acquireDurableFacetSlot(ctx, owner) {
     let minted = false;
@@ -65,13 +64,10 @@ export async function acquireDurableFacetSlot(ctx, owner) {
         minted = true;
         return slot;
     });
-    if (minted) {
-        // The ledger counts EVERY name ever minted on this DO; the durable slot
-        // number alone is not that count (proc-slot names share the budget), so
-        // the record is the adopted total advanced by one — never an undercount.
-        recordFacetNameMinted(ctx, await facetNameCountDurable(ctx) + 1);
-    }
-    return durableFacetName(slot);
+    const name = durableFacetName(slot);
+    if (minted)
+        await chargeFacetName(ctx, name);
+    return name;
 }
 /**
  * Hand the owner's slot back to the free list and drop its pin — the last

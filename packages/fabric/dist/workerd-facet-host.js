@@ -15,7 +15,7 @@
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { getCtxExports, stagedBootAssembler, supervisorEntrypoint, supervisorEntrypointName, } from './composition.js';
-import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, facetNameCount, facetNameCountDurable, recordFacetNameMinted, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
+import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, facetNameCount, facetNameCountDurable, chargeFacetSlot, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
 import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
 import { supervisorLoaderKey, mintProcessSupervisor } from './supervisor-props.js';
 export function getNimbusCtxExports() {
@@ -168,7 +168,7 @@ function acquireSlot(ctx, pid) {
     // A fresh name is a permanently consumed facet ID; the durable count lives
     // in the budgets ledger (see budgets.ts).
     if (!reused)
-        recordFacetNameMinted(ctx, book.next);
+        chargeFacetSlot(ctx, slot);
     return { slot, minted: !reused };
 }
 /** Return `pid`'s slot to the free list. */

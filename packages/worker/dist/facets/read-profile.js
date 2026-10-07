@@ -47,6 +47,7 @@
 import { packageRootOf } from './data-plan.js';
 import { ANONYMOUS_TENANT } from '../_shared/session-router.js';
 import { ID_COMPONENT_RE } from '../auth/types.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 /**
  * Profiles live in the npm tarball cache bucket (NPM_TARBALL_CACHE), per
  * package version like the tarballs, under their own prefix: tarball keys are
@@ -111,8 +112,7 @@ export function profilePrincipal(tenantSegment) {
 }
 /** A principal's tag in a profile: never the principal itself. */
 export async function principalTag(principal) {
-    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(principal)));
-    return Array.from(digest.subarray(0, 8), (b) => b.toString(16).padStart(2, '0')).join('');
+    return (await sha256Hex(principal)).slice(0, 16);
 }
 /**
  * The misses worth recording: those in `reported` (what the program says it

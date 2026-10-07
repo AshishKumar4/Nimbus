@@ -25,10 +25,10 @@
  *     in-memory facet state is never safe to assume between two RPCs.
  *   - 65,536 facet ids per DO lifetime (`do.facet.count`), append-only and
  *     never reclaimed — the binding constraint for the leak, reached an
- *     order of magnitude before the byte quota. The pool counts first-use
- *     names in the durable ledger (budgets.ts) and refuses a NEW name at the
- *     wall by name, instead of letting the platform fail opaquely. Refusal
- *     at the wall is exact, not a threshold: the ledger never overcounts.
+ *     order of magnitude before the byte quota. The pool charges each name's
+ *     first use to the durable ledger (budgets.ts), which refuses a NEW name
+ *     at the wall by name, instead of letting the platform fail opaquely.
+ *     The refusal compares against the budget itself, not a threshold.
  *
  * A failed reclaim stays loud (facet-spawn's `runOnceAndReclaim`): storage
  * that was not given back is a permanent charge against the root's quota,
@@ -39,7 +39,7 @@
  * the same assumption from the other side — it owns facet naming and runs
  * its own cleanup — so the two are mutually exclusive on one actor:
  * whichever acts second aborts or retires facets the other still tracks,
- * and the facet-id ledger here counts only the names this pool minted.
+ * and the facet-id ledger counts only the names fabric minted.
  */
 import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
 /** `ctx.facets`, as the pool drives it — same surface the facet host uses. */

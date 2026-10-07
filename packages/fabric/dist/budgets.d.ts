@@ -332,15 +332,21 @@ interface FacetNameLedgerStorage {
     };
 }
 /**
- * Advance the durable ledger to this incarnation's name count, if it is a new
- * lifetime high. Chained behind adoption so the comparison is always against
- * the real persisted value; a failed write leaves the old link's count and the
- * next mint tries again — the ledger may transiently undercount, never over.
+ * Charge the slot book's `slot`. A fresh incarnation restarts the book at
+ * zero and issues the same `proc-slot-` names again, so only a slot past the
+ * slot high-water is a name never minted before.
  */
-export declare function recordFacetNameMinted(ctx: FacetNameLedgerStorage, count: number): void;
-/** The best count available without awaiting storage: minted or adopted. */
+export declare function chargeFacetSlot(ctx: FacetNameLedgerStorage, slot: number): void;
+/**
+ * Charge an explicit facet name before its facet is created: its first use
+ * ever consumes one lifetime ID, and any later use, in this incarnation or
+ * another, costs nothing. A first use at the wall is refused, so nothing is
+ * created. Resolves with the count after the charge.
+ */
+export declare function chargeFacetName(ctx: FacetNameLedgerStorage, name: string): Promise<number>;
+/** The best count available without awaiting storage. */
 export declare function facetNameCount(ctx: FacetNameLedgerStorage): number;
-/** The count with adoption awaited, for a first failure on a fresh boot. */
+/** The count with every charge so far applied, for a first failure on a fresh boot. */
 export declare function facetNameCountDurable(ctx: FacetNameLedgerStorage): Promise<number>;
 /**
  * The lifetime facet-ID ledger: how many facet names this fabric has ever

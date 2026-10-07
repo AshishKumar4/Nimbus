@@ -5,7 +5,7 @@
  *
  *   <project>/
  *   ├── package.json       — deps: @nimbus-sh/sdk, @nimbus-sh/worker
- *   ├── wrangler.jsonc     — the canonical 28-LOC embedder snippet
+ *   ├── wrangler.jsonc     — built by @nimbus-sh/config's buildNimbusWranglerConfig
  *   ├── src/
  *   │   └── index.ts       — 6 LOC default-export
  *   ├── README.md          — install + deploy instructions
