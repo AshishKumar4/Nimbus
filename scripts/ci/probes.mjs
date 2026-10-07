@@ -70,12 +70,13 @@ function scrubbing(write) {
   };
 }
 
-/** Run a command here, its output passed through scrubbed; resolves to its exit code. */
+/** Run a command here, its output passed through scrubbed; resolves to its exit code and its stderr's scrubbed tail. */
 function run(command, args, env) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
+    let tail = '';
     const out = scrubbing((text) => process.stdout.write(text));
-    const err = scrubbing((text) => process.stderr.write(text));
+    const err = scrubbing((text) => { process.stderr.write(text); tail = (tail + text).slice(-4096); });
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (text) => out.push(text));
@@ -84,7 +85,7 @@ function run(command, args, env) {
     child.on('close', (code) => {
       out.end();
       err.end();
-      resolve({ code: code ?? 1 });
+      resolve({ code: code ?? 1, tail });
     });
   });
 }
@@ -105,12 +106,12 @@ try {
   const args = ['tests/behavioral/run-all.mjs', '--no-retry', '--ledger', join(scratch, 'ledger.jsonl'), '--json', report];
   if (flags.part) args.push('--part', flags.part);
   if (flags.jobs) args.push('--jobs', flags.jobs);
-  const { code } = await run('bun', args, { ...process.env, BASE: flags.base, NIMBUS_PROBE_ONLY: flags.only ?? '', NIMBUS_PROBE_SKIP: flags.skip ?? '' });
+  const { code, tail } = await run('bun', args, { ...process.env, BASE: flags.base, NIMBUS_PROBE_ONLY: flags.only ?? '', NIMBUS_PROBE_SKIP: flags.skip ?? '' });
   let verdict;
   try {
     verdict = JSON.parse(readFileSync(report, 'utf8'));
   } catch (error) {
-    notGraded(`run-all exited ${code} without a verdict: ${error.message}`);
+    notGraded(`run-all exited ${code} without a verdict (${error.message}):\n${tail}`);
   }
   rows.push(...verdict.probes.map((probe) => ({
     name: `tests/behavioral/${probe.probe}`, exitCode: probe.code ?? 1, seconds: probe.elapsed, output: scrub(probe.output ?? ''),

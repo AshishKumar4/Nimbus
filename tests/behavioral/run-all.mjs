@@ -313,8 +313,10 @@ function isProbeFile(leaf) {
 const PROBES = walk(__dirname, isProbeFile)
   .map((abs) => relative(__dirname, abs));
 
-const only = (process.env.NIMBUS_PROBE_ONLY || '').split(',').filter(Boolean);
-const skip = new Set((process.env.NIMBUS_PROBE_SKIP || '').split(',').filter(Boolean));
+// A name may be given as its file, with `.mjs` or a `tests/behavioral/` prefix.
+const names = (list) => (list || '').split(',').filter(Boolean).map((name) => name.replace(/^(\.\/)?(tests\/behavioral\/)?/, '').replace(/\.mjs$/, ''));
+const only = names(process.env.NIMBUS_PROBE_ONLY);
+const skip = new Set(names(process.env.NIMBUS_PROBE_SKIP));
 
 function probeName(relPath) {
   // Strip .mjs; keep subdirectory prefix so operator can correlate
@@ -335,11 +337,18 @@ function matchAny(collection, relPath) {
   return collection.has(full) || collection.has(leaf);
 }
 
-const targets = PROBES.filter((p) => {
+const selected = PROBES.filter((p) => {
   if (only.length > 0 && !matchAny(only, p)) return false;
   if (skip.size > 0 && matchAny(skip, p)) return false;
   return true;
-}).filter((_, i) => PART === null || i % PART.n === PART.k - 1);
+});
+// A selection that names probes and finds none ran nothing: never a pass.
+const unmatched = only.filter((name) => !PROBES.some((p) => matchAny([name], p)));
+if (unmatched.length > 0) {
+  console.error(`FATAL: NIMBUS_PROBE_ONLY names no probe for: ${unmatched.join(', ')} (a name is a path under tests/behavioral, with or without .mjs, or a file's own name)`);
+  process.exit(2);
+}
+const targets = selected.filter((_, i) => PART === null || i % PART.n === PART.k - 1);
 
 console.log(`behavioral/run-all — ${targets.length} probe${targets.length === 1 ? '' : 's'} discovered (recursive) (jobs ${JOBS})${PART ? ` (part ${PART.k}/${PART.n})` : ''}`);
 console.log(`BASE=${process.env.BASE}${NO_RETRY ? '  [--no-retry]' : ''}`);

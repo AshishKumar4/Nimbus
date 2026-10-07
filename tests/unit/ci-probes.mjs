@@ -70,7 +70,13 @@ try {
   {
     const verdict = await probes(['--base', base, '--only', 'c', '--skip', '']);
     assert.deepEqual(rows(verdict), [['tests/behavioral/c.mjs', 0], ['session-ledger', 0]]);
-    console.log('  ok  --only selects as run-all does, and an empty --skip skips nothing');
+    for (const named of ['c.mjs', 'tests/behavioral/c.mjs']) {
+      assert.deepEqual(rows(await probes(['--base', base, '--only', named])), [['tests/behavioral/c.mjs', 0], ['session-ledger', 0]], `--only ${named}`);
+    }
+    const none = await probes(['--base', base, '--only', 'c,nothing-by-this-name']);
+    assert.equal(none.status, 2, 'a selection naming a probe that does not exist ran nothing it was asked to: never green');
+    assert.match(none.rows[0].output, /names no probe for: nothing-by-this-name/);
+    console.log('  ok  --only selects as run-all does, by name or file, an empty --skip skips nothing, and a name that matches no probe is not graded');
   }
   {
     const verdict = await probes(['--base', base], { NIMBUS_PROBE_TOKEN: '' });
