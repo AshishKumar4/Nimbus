@@ -64,6 +64,7 @@ import {
   buildSyntheticEntry,
   buildScopedSliceForSynthetic,
   syntheticEntryPath,
+  PROJECT_SCAN,
   type ScanBudget,
 } from '../runtime/barrel-synthesizer.js';
 import type { SliceEntry } from '../npm/pre-bundle-facet.js';
@@ -453,18 +454,16 @@ function isWellFormedUnicode(text: string): boolean {
 }
 
 /**
- * What the scans of a module that could not be bundled read, at most: the
- * package's exports (files followed through `export *` and CommonJS
- * reexports) and the project's named imports (PROJECT_SCAN, which bounds
- * the barrel request's scan of them too). They run in the session's
- * isolate on a path that has already failed (a package past its slice cap
- * among them); es-module-lexer's buffer is twice a source's length rounded
- * up to a power of two, and the project scan keeps each file it cannot lex
- * until its walk ends. A file past a bound adds no names rather than its
- * size.
+ * What the scan of a package's exports, for a module that could not be
+ * bundled, reads at most: files followed through `export *` and CommonJS
+ * reexports. The project's named imports are scanned within PROJECT_SCAN,
+ * as for a barrel. Both run in the session's isolate on a path that has
+ * already failed (a package past its slice cap among them);
+ * es-module-lexer's buffer is twice a source's length rounded up to a
+ * power of two, and the project scan keeps each file it cannot lex until
+ * its walk ends. A file past a bound adds no names rather than its size.
  */
 const EXPORT_SCAN: ScanBudget = { files: 64, fileBytes: 1024 * 1024, totalBytes: 4 * 1024 * 1024 };
-const PROJECT_SCAN: ScanBudget = { files: 2048, fileBytes: 1024 * 1024, totalBytes: 16 * 1024 * 1024 };
 
 /**
  * The names the module at `entry` exports, as far as its source and the

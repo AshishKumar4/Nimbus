@@ -10603,6 +10603,16 @@ export class SqliteVFS {
     return { size: view.limit, used: view.used, available: Math.max(0, view.limit - this.ledger.kernelReserve - view.used) };
   }
 
+  /**
+   * Whether this filesystem's store has been deleted under it: its tables
+   * gone from the database (the Durable Object's storage deleted, as a
+   * session's destroy does). Read from the database itself, where this
+   * instance's caches would still answer lookups.
+   */
+  storeDeleted(): boolean {
+    return [...this.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vfs_inodes'")].length === 0;
+  }
+
   getStats() {
     this.settleAppends();
     // B3: O(1) — read the running counters. Previously three passes

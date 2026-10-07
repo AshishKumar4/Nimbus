@@ -105,6 +105,7 @@ import {
   buildSyntheticEntry,
   buildScopedSliceForSynthetic,
   syntheticEntryPath,
+  PROJECT_SCAN,
 } from '../runtime/barrel-synthesizer.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import {
@@ -1998,7 +1999,16 @@ export class NpmInstaller {
     };
 
     const parse = transformParser(this.esbuild);
-    const { bareSpecifiers: usedSpecifiers, namedImports } = await scanProjectImports(fs, projDir, parse);
+    // Within PROJECT_SCAN, as the dev server scans it: the same decision for
+    // the same project, so one bundle row per specifier serves both. A scan
+    // that left files unread synthesizes no barrel (each is pre-bundled
+    // whole, as the dev server then serves it); the specifiers it found are
+    // pre-bundled, and any it missed are bundled on demand.
+    const projectScan = await scanProjectImports(fs, projDir, parse, PROJECT_SCAN);
+    const { bareSpecifiers: usedSpecifiers, namedImports } = projectScan;
+    if (projectScan.unread !== null) {
+      progress(`  the scan of the project for its imports left ${projectScan.unread} unread: barrel packages are pre-bundled whole, not from the names it found`);
+    }
 
     // Vite plugins / postcss plugins / build-time tools NEVER ship to the
     // browser — they're invoked server-side by vite's own plugin
@@ -2099,7 +2109,7 @@ export class NpmInstaller {
       const fileCount = countPackageFiles(fs, nmDir + '/' + pkgName);
       const isBarrel = fileCount > BARREL_PKG_FILE_THRESHOLD;
 
-      if (isBarrel && specifier === pkgName) {
+      if (isBarrel && specifier === pkgName && projectScan.unread === null) {
         // Top-level barrel import. Synthesize.
         const names = namedImports.get(pkgName);
         const inputHash = namedImportSignature(pkgName, names);
@@ -2273,12 +2283,16 @@ export class NpmInstaller {
     let abandoned = 0;
     const nodeModulesGone = (): boolean => {
       // Listed, not looked up: a lookup can be answered from the VFS's
-      // cache of the store, a listing reads the store.
+      // cache of the store, a listing reads the store. Gone only when it
+      // is confirmed so: node_modules not there (ENOENT), or the store
+      // itself deleted. Any other failure (a node_modules that may be
+      // searched but not listed, mode 0311) is not a disappearance: each
+      // pre-bundle goes on, and fails with its own error if it must.
       try {
         fs.readdir(nmDir);
         return false;
-      } catch {
-        return true;
+      } catch (error) {
+        return Reflect.get(Object(error), 'code') === 'ENOENT' || this.store.storeDeleted();
       }
     };
     const abandonRest = (current: number): void => {

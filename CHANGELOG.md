@@ -9,12 +9,17 @@ published independently in the `@nimbus-sh` npm scope.
   from a barrel package (one of over 1500 files) is bounded. It ran on every
   request for a barrel and read every source file whole. It now reads at most
   2048 files, none over 1 MiB, and 16 MiB in all, checking each file's size
-  before reading it. A scan that left files unread may miss a name one of
-  them imports, so the server says what it left unread and bundles that
-  barrel whole, as it bundles any package, rather than from an entry
-  synthesized from the names it found. A bundle synthesized earlier from
-  other names is never served in its place: a cached bundle synthesized from
-  some names answers only a barrel request for exactly those names.
+  before reading it. A scan that left files unread may miss a name one of them
+  imports, so the server says what it left unread and bundles that barrel
+  whole, as it bundles any package, rather than from an entry synthesized from
+  the names it found. A bundle synthesized earlier from other names is never
+  served in its place: a cached bundle synthesized from some names answers
+  only a barrel request for exactly those names. The installer scans the
+  project within the same budget and by the same rule, so for an unchanged
+  project both reach one decision and share one bundle row; before, an
+  over-budget project had the install write a synthesized row and the preview
+  a whole one, each rebuilding the barrel every time (install, serve, install,
+  serve: four bundles, now one).
 - Fixed: an install's background pre-bundle stops when its session is
   destroyed. A client that destroys the session while pre-bundles are still
   queued deletes the storage under them. Each remaining pre-bundle then walked
@@ -22,12 +27,14 @@ published independently in the `@nimbus-sh` npm scope.
   either threw "no such table: vfs_inodes" or sent the bundler an empty slice,
   which rolldown reported as 'Entry module "…" cannot be external'. On
   2026-10-06 that was 470 logged failures (clsx, tailwind-merge, hono/* and
-  others), every one after its session had closed. The phase now checks
-  before each pre-bundle that node_modules can still be listed, stops with one
-  line saying how many were not pre-bundled, and counts them as stopped. The
-  slice walk passes over only a file removed under it (ENOENT); any other
-  read failure fails that pre-bundle with its error. A slice without its entry
-  fails, naming the entry, before the bundler runs.
+  others), every one after its session had closed. The phase now stops, with
+  one line saying how many were not pre-bundled, once node_modules is
+  confirmed gone: not there (ENOENT) or its filesystem's store deleted
+  (SqliteVFS.storeDeleted). Any other failure to list it (a node_modules its
+  principal may search but not list) stops nothing. The slice walk passes over
+  only a file removed under it (ENOENT); any other read failure fails that
+  pre-bundle with its error. A slice without its entry fails, naming the
+  entry, before the bundler runs.
 - axios works in a node child, with its http adapter (its Node default)
   and its fetch adapter: the child's `process` is tagged as Node's
   (`[object process]`, the same `Symbol.toStringTag` descriptor), which is

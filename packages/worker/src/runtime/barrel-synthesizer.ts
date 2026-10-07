@@ -246,6 +246,16 @@ export async function scanProjectImports(vfs: CredentialedVfs, projDir: string, 
   return { bareSpecifiers: [...bare], namedImports, unread: unread || null };
 }
 
+/**
+ * What every scan of a project for a barrel's names reads, at most: the
+ * installer's (pre-bundling a barrel from a synthesized entry) and the Vite
+ * dev server's (serving one) alike, so that both reach one decision for an
+ * unchanged project, and one bundle row serves both. A scan that leaves
+ * files unread (`unread`) synthesizes nothing: every barrel is bundled
+ * whole, from its own entry.
+ */
+export const PROJECT_SCAN: ScanBudget = { files: 2048, fileBytes: 1024 * 1024, totalBytes: 16 * 1024 * 1024 };
+
 /** What a source scan may read, at most. */
 export interface ScanBudget {
   /** Files considered (each stat'd, then read or skipped). */

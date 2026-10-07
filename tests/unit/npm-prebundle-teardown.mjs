@@ -14,11 +14,17 @@
  * node_modules is gone and how many were not pre-bundled (the one in flight
  * among them: there is nowhere left to keep it), the summary counts them as
  * stopped, and no pre-bundle fails.
+ *
+ * Gone means confirmed gone: node_modules not there, or the store deleted.
+ * A node_modules its principal may search but not list (mode 0311) is
+ * neither: every pre-bundle goes on, as the package directories in it are
+ * read by name.
  */
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { kernelInstaller } from './npm-fanout-test-env.mjs';
@@ -114,5 +120,56 @@ assert.equal(stopped.length, 1, `one line says why the phase stopped:\n${lines}`
 // The one in flight bundled, but there is nowhere left to keep it: stopped too.
 assert.match(stopped[0], /5 not pre-bundled/, stopped[0]);
 assert.match(lines, /Pre-bundle complete: 0\/0 succeeded, 5 stopped/, lines);
+
+// ── A node_modules that may be searched but not listed ─────────────────────
+{
+  const harness = createSqliteVfsTestHarness(new Database(':memory:'));
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const root = vfs.as(CRED_KERNEL);
+  const owned = (path, write) => {
+    write();
+    root.chown(path, USER.uid, USER.gid);
+  };
+  for (const dir of ['app', 'app/src', 'app/node_modules', 'app/node_modules/pkg']) owned(dir, () => root.mkdir(dir, { recursive: true }));
+  owned('app/package.json', () => root.writeFile('app/package.json', JSON.stringify({ name: 'app', dependencies: { pkg: '1.0.0' } })));
+  owned('app/node_modules/pkg/package.json', () => root.writeFile('app/node_modules/pkg/package.json', JSON.stringify({ name: 'pkg', version: '1.0.0', main: 'index.js' })));
+  owned('app/node_modules/pkg/index.js', () => root.writeFile('app/node_modules/pkg/index.js', 'export const x = 1;\n'));
+  for (const name of subpaths) owned(`app/node_modules/pkg/${name}.js`, () => root.writeFile(`app/node_modules/pkg/${name}.js`, `export const ${name} = 1;\n`));
+  owned('app/src/main.js', () => root.writeFile('app/src/main.js', [
+    "import { x } from 'pkg';",
+    ...subpaths.map((name) => `import { ${name} } from 'pkg/${name}.js';`),
+  ].join('\n') + '\n'));
+  root.chmod('app/node_modules', 0o311);
+  const user = vfs.as(USER);
+  let listing;
+  try {
+    listing = `listed ${user.readdir('app/node_modules').length}`;
+  } catch (error) {
+    listing = error.code;
+  }
+  assert.equal(listing, 'EACCES', 'the user may not list node_modules');
+  assert.ok(user.exists('app/node_modules/pkg/package.json'), 'but may search it');
+
+  const sent = [];
+  const installer = kernelInstaller(vfs, harness.sql, {
+    env,
+    ctx: { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage },
+    esbuild: new EsbuildService(undefined, {}),
+    bundlePool: {
+      acquire: async () => ({
+        prebundle: async (spec) => {
+          sent.push(spec.specifier);
+          return { specifier: spec.specifier, ok: true, esmCode: 'export const x = 1;', elapsed: 0, warnings: [] };
+        },
+      }),
+    },
+  });
+  const said = [];
+  await installer.prebundleUsedModules('app', new Map([['pkg', resolved.pkg]]), user, (msg) => said.push(msg));
+  const lines = said.join('\n');
+  assert.ok(!/stopped|is gone/.test(lines), `a node_modules that cannot be listed is not gone:\n${lines}`);
+  assert.equal(sent.length, 5, `every pre-bundle goes on (sent: ${sent.join(', ')}):\n${lines}`);
+  assert.match(lines, /Pre-bundle complete: \d\/5 succeeded\./, lines);
+}
 
 console.log('npm-prebundle-teardown: ok');

@@ -1995,6 +1995,13 @@ export declare class SqliteVFS {
         used: number;
         available: number;
     };
+    /**
+     * Whether this filesystem's store has been deleted under it: its tables
+     * gone from the database (the Durable Object's storage deleted, as a
+     * session's destroy does). Read from the database itself, where this
+     * instance's caches would still answer lookups.
+     */
+    storeDeleted(): boolean;
     getStats(): {
         files: number;
         directories: number;

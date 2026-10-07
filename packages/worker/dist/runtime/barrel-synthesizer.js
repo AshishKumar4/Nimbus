@@ -236,6 +236,15 @@ export async function scanProjectImports(vfs, projDir, parse, budget) {
     ].filter(Boolean).join('; ');
     return { bareSpecifiers: [...bare], namedImports, unread: unread || null };
 }
+/**
+ * What every scan of a project for a barrel's names reads, at most: the
+ * installer's (pre-bundling a barrel from a synthesized entry) and the Vite
+ * dev server's (serving one) alike, so that both reach one decision for an
+ * unchanged project, and one bundle row serves both. A scan that leaves
+ * files unread (`unread`) synthesizes nothing: every barrel is bundled
+ * whole, from its own entry.
+ */
+export const PROJECT_SCAN = { files: 2048, fileBytes: 1024 * 1024, totalBytes: 16 * 1024 * 1024 };
 /** A SourceParser over a transform service: `.tsx`/`.ts` as TypeScript, anything else as JavaScript with JSX. */
 export function transformParser(service) {
     return async (path, source) => {
