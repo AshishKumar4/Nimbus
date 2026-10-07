@@ -41,21 +41,43 @@ export declare function parseStatements(source: string, options: Options, hooks:
 export declare function unwrapCallee(node: AnyNode): AnyNode;
 /** The name of the function a call reaches: `f`, `x.f`, `x['f']`, through {@link unwrapCallee}. */
 export declare function calleeName(callee: AnyNode): string | null;
-/** Whether `source` holds a top-level `import` or `export` declaration. */
-export declare function hasTopLevelModuleSyntax(source: string): boolean;
+/** The module syntax a token opens: a top-level declaration, or `import.meta` anywhere. */
+export type ModuleSyntaxToken = 'import' | 'export' | 'import.meta';
+/**
+ * Whether `source` holds syntax only an ES module can, as Node's syntax
+ * detection defines it (doc/api/packages.md "Syntax detection", on by
+ * default from v22.7.0): syntax that throws when evaluated as CommonJS. That
+ * is an `import` or `export` declaration, `import.meta`, `await` at the top
+ * level, or a top-level lexical declaration of a name the CommonJS wrapper
+ * binds (`const __dirname = …`). `import()` is valid in both.
+ *
+ * A declaration or `import.meta` is read off the tokens. The other two are
+ * read off them as candidates (an `await` outside every function body, a
+ * `let`, `const` or `class` of a wrapper name) and settled as Node settles
+ * every case: the source fails to compile in the wrapper and parses as a
+ * module. A source that does not tokenize as a module is not one.
+ */
+export declare function containsModuleSyntax(source: string): boolean;
+/**
+ * Whether `source` may hold an `await` outside every function body (a
+ * top-level await), read off its tokens: true when one is found, or when the
+ * source does not tokenize, so a false answer is certain.
+ */
+export declare function hasUnscopedAwait(source: string): boolean;
 /**
  * Walk `source`'s tokens tracking brace, paren and bracket depth, without
  * building an AST (a multi-MiB bundle chunk must fit a 48 MiB heap). `visit`
- * sees each token with whether it sits at top level and, for a top-level
- * `import` or `export` keyword, which declaration it opens: not `import(`,
- * not `import.meta`, and not a member named so (after `.` or `?.`). The token
- * after an `import` keyword is read to decide that and not visited. `visit`
- * returns true to stop the walk.
+ * sees each token with whether it sits at top level and the module syntax
+ * it opens: for a top-level `import` or `export` keyword, the declaration
+ * (not `import(`), and for an `import` anywhere, `import.meta`; never for a
+ * member named so (after `.` or `?.`). The token after an `import` keyword
+ * is read to decide that and not visited. `visit` returns true to stop the
+ * walk.
  *
  * Returns true when `visit` stopped it, false at the end of the source, and
  * null when the source does not tokenize.
  */
-export declare function walkTopLevelModuleTokens(source: string, visit: (token: Token, declaration: 'import' | 'export' | null, topLevel: boolean) => boolean): boolean | null;
+export declare function walkTopLevelModuleTokens(source: string, visit: (token: Token, syntax: ModuleSyntaxToken | null, topLevel: boolean) => boolean): boolean | null;
 /** A replacement of source text `[start, end)` by `text`. */
 export interface SourceEdit {
     start: number;

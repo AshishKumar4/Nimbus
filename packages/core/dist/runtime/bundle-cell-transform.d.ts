@@ -63,7 +63,12 @@ export declare function isBundleModuleCandidate(path: string): boolean;
 export declare function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | null;
 /** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */
 export declare function isTypescriptDeclarationFile(path: string): boolean;
-/** Whether a JavaScript file is an ES module: module syntax, and for an extensionless file, a parse. */
+/**
+ * Whether a staged JavaScript file is an ES module, by its syntax as Node's
+ * detection reads it (containsModuleSyntax), and for an extensionless file a
+ * parse. Its package's "type" is not read: a module is lowered for what its
+ * syntax needs, which a file without module syntax does not.
+ */
 export declare function looksLikeEsm(path: string, src: string): boolean;
 /**
  * Whether the staged cell at `path` goes through the pipeline at all: an ES

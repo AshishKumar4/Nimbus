@@ -104,18 +104,188 @@ export function calleeName(callee) {
         return at.property.name;
     return at.property.type === 'Literal' && typeof at.property.value === 'string' ? at.property.value : null;
 }
-/** Whether `source` holds a top-level `import` or `export` declaration. */
-export function hasTopLevelModuleSyntax(source) {
-    return walkTopLevelModuleTokens(source, (_token, declaration) => declaration !== null) === true;
+/** The names Node's CommonJS wrapper binds, which a module's top level may not redeclare lexically. */
+const COMMONJS_WRAPPER_NAMES = new Set(['exports', 'require', 'module', '__filename', '__dirname']);
+/**
+ * Whether `source` holds syntax only an ES module can, as Node's syntax
+ * detection defines it (doc/api/packages.md "Syntax detection", on by
+ * default from v22.7.0): syntax that throws when evaluated as CommonJS. That
+ * is an `import` or `export` declaration, `import.meta`, `await` at the top
+ * level, or a top-level lexical declaration of a name the CommonJS wrapper
+ * binds (`const __dirname = …`). `import()` is valid in both.
+ *
+ * A declaration or `import.meta` is read off the tokens. The other two are
+ * read off them as candidates (an `await` outside every function body, a
+ * `let`, `const` or `class` of a wrapper name) and settled as Node settles
+ * every case: the source fails to compile in the wrapper and parses as a
+ * module. A source that does not tokenize as a module is not one.
+ */
+export function containsModuleSyntax(source) {
+    let previous = tokTypes.eof;
+    let lexical = false;
+    let candidate = false;
+    let awaits = false;
+    const found = walkTopLevelModuleTokens(source, (token, syntax, topLevel) => {
+        if (syntax !== null)
+            return true;
+        const member = previous === tokTypes.dot || previous === tokTypes.questionDot;
+        const name = token.type === tokTypes.name ? source.slice(token.start, token.end) : null;
+        if (lexical && name !== null && COMMONJS_WRAPPER_NAMES.has(name))
+            candidate = true;
+        if (!member && name === 'await')
+            awaits = true;
+        lexical = topLevel && !member && (token.type === tokTypes._const || token.type === tokTypes._class || name === 'let');
+        previous = token.type;
+        return false;
+    });
+    if (found !== false)
+        return found === true;
+    if (!candidate && !(awaits && hasUnscopedAwait(source)))
+        return false;
+    return !compilesAsCommonJs(source) && parses(source, MODULE_PARSE_OPTIONS);
+}
+/** Whether `source` compiles as Node compiles a CommonJS module: the body of its wrapper function. */
+function compilesAsCommonJs(source) {
+    const body = source.startsWith('#!') ? '//' + source.slice(2) : source;
+    return parses(`(function (exports, require, module, __filename, __dirname) {${body}\n})`, { ecmaVersion: 'latest', sourceType: 'script' });
+}
+function parses(source, options) {
+    try {
+        parseStatements(source, options, {});
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * Whether `source` may hold an `await` outside every function body (a
+ * top-level await), read off its tokens: true when one is found, or when the
+ * source does not tokenize, so a false answer is certain.
+ */
+export function hasUnscopedAwait(source) {
+    try {
+        const tokens = tokenizer(source, {
+            ecmaVersion: 'latest',
+            sourceType: 'module',
+            allowHashBang: true,
+        });
+        const functionBraces = [];
+        const functionParenDepths = [];
+        const methodParenCandidates = [];
+        const arrowExpressions = [];
+        let bracketDepth = 0;
+        let pendingMethodBody = false;
+        let pendingArrowBody = false;
+        let pendingFunctionKeyword = false;
+        let previous = tokTypes.eof;
+        let previousEnd = 0;
+        while (true) {
+            const token = tokens.getToken();
+            const type = token.type;
+            if (type === tokTypes.eof)
+                return false;
+            if (pendingMethodBody && type !== tokTypes.braceL)
+                pendingMethodBody = false;
+            if (pendingArrowBody && type !== tokTypes.braceL) {
+                arrowExpressions.push({
+                    parens: methodParenCandidates.length,
+                    braces: functionBraces.length,
+                    brackets: bracketDepth,
+                });
+                pendingArrowBody = false;
+            }
+            if (pendingFunctionKeyword) {
+                if (type === tokTypes.colon || type === tokTypes.comma || type === tokTypes.braceR
+                    || type === tokTypes.parenR || type === tokTypes.bracketR || type === tokTypes.eq)
+                    functionParenDepths.pop();
+                pendingFunctionKeyword = false;
+            }
+            if (source.slice(previousEnd, token.start).includes('\n')) {
+                while (arrowExpressions.length > 0) {
+                    const arrow = arrowExpressions[arrowExpressions.length - 1];
+                    if (methodParenCandidates.length !== arrow.parens
+                        || functionBraces.length !== arrow.braces
+                        || bracketDepth !== arrow.brackets)
+                        break;
+                    arrowExpressions.pop();
+                }
+            }
+            while (arrowExpressions.length > 0) {
+                const arrow = arrowExpressions[arrowExpressions.length - 1];
+                const delimited = (type === tokTypes.semi || type === tokTypes.comma)
+                    && methodParenCandidates.length === arrow.parens
+                    && functionBraces.length === arrow.braces
+                    && bracketDepth === arrow.brackets;
+                const closed = (type === tokTypes.parenR && methodParenCandidates.length === arrow.parens)
+                    || (type === tokTypes.bracketR && bracketDepth === arrow.brackets)
+                    || (type === tokTypes.braceR && functionBraces.length === arrow.braces);
+                if (!delimited && !closed)
+                    break;
+                arrowExpressions.pop();
+            }
+            if (type === tokTypes.name
+                && source.slice(token.start, token.end) === 'await'
+                && !functionBraces.includes(true)
+                && arrowExpressions.length === 0)
+                return true;
+            if (type === tokTypes._function || type === tokTypes._class) {
+                if (previous !== tokTypes.dot && previous !== tokTypes.questionDot) {
+                    functionParenDepths.push(methodParenCandidates.length);
+                    pendingFunctionKeyword = true;
+                }
+            }
+            else if (type === tokTypes.arrow) {
+                pendingArrowBody = true;
+            }
+            else if (type === tokTypes.parenL) {
+                methodParenCandidates.push(functionBraces.length > 0
+                    && (previous === tokTypes.name || previous === tokTypes.string
+                        || previous === tokTypes.num || previous === tokTypes.bracketR));
+            }
+            else if (type === tokTypes.parenR) {
+                pendingMethodBody = methodParenCandidates.pop() === true;
+            }
+            else if (type === tokTypes.bracketL) {
+                bracketDepth++;
+            }
+            else if (type === tokTypes.bracketR) {
+                bracketDepth = Math.max(0, bracketDepth - 1);
+            }
+            else if (type === tokTypes.dollarBraceL) {
+                functionBraces.push(false);
+            }
+            else if (type === tokTypes.braceL) {
+                const functionBody = pendingArrowBody
+                    || pendingMethodBody
+                    || functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length;
+                if (functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length) {
+                    functionParenDepths.pop();
+                }
+                functionBraces.push(functionBody);
+                pendingArrowBody = false;
+                pendingMethodBody = false;
+            }
+            else if (type === tokTypes.braceR) {
+                functionBraces.pop();
+            }
+            previousEnd = token.end;
+            previous = type;
+        }
+    }
+    catch {
+        return true;
+    }
 }
 /**
  * Walk `source`'s tokens tracking brace, paren and bracket depth, without
  * building an AST (a multi-MiB bundle chunk must fit a 48 MiB heap). `visit`
- * sees each token with whether it sits at top level and, for a top-level
- * `import` or `export` keyword, which declaration it opens: not `import(`,
- * not `import.meta`, and not a member named so (after `.` or `?.`). The token
- * after an `import` keyword is read to decide that and not visited. `visit`
- * returns true to stop the walk.
+ * sees each token with whether it sits at top level and the module syntax
+ * it opens: for a top-level `import` or `export` keyword, the declaration
+ * (not `import(`), and for an `import` anywhere, `import.meta`; never for a
+ * member named so (after `.` or `?.`). The token after an `import` keyword
+ * is read to decide that and not visited. `visit` returns true to stop the
+ * walk.
  *
  * Returns true when `visit` stopped it, false at the end of the source, and
  * null when the source does not tokenize.
@@ -147,23 +317,25 @@ export function walkTopLevelModuleTokens(source, visit) {
             if (type === tokTypes.eof)
                 return false;
             const topLevel = braces === 0 && parens === 0 && brackets === 0;
-            const keyword = topLevel && previous !== tokTypes.dot && previous !== tokTypes.questionDot;
+            const keyword = previous !== tokTypes.dot && previous !== tokTypes.questionDot;
             previous = type;
-            let declaration = null;
-            if (keyword && type === tokTypes._export) {
-                declaration = 'export';
+            let syntax = null;
+            if (keyword && topLevel && type === tokTypes._export) {
+                syntax = 'export';
             }
             else if (keyword && type === tokTypes._import) {
                 const next = tokens.getToken();
                 previous = next.type;
                 updateDepth(next.type);
-                if (next.type !== tokTypes.parenL && next.type !== tokTypes.dot)
-                    declaration = 'import';
+                if (next.type === tokTypes.dot)
+                    syntax = 'import.meta';
+                else if (topLevel && next.type !== tokTypes.parenL)
+                    syntax = 'import';
             }
             else {
                 updateDepth(type);
             }
-            if (visit(token, declaration, topLevel))
+            if (visit(token, syntax, topLevel))
                 return true;
         }
     }

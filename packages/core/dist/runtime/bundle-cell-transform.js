@@ -23,7 +23,7 @@ import { errorText } from '../_shared/error-text.js';
 import { vfsPathExtension } from '../vfs/path.js';
 import { mayHaveDynamicImport } from './dynamic-import-rewrite.js';
 import { rewriteBundledEsmToCjs, rewriteProvidedCommonJsModules, transformSlices, } from './esbuild-service.js';
-import { hasTopLevelModuleSyntax, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
+import { containsModuleSyntax, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
 /**
  * Bundled ESM this large is lowered in the session (esbuild-service.ts
  * rewriteBundledEsmToCjs) rather than by the transform host, whose memory
@@ -76,9 +76,14 @@ export function isTypescriptDeclarationFile(path) {
     const base = path.slice(path.lastIndexOf('/') + 1);
     return /\.d\.[mc]?ts$/.test(base);
 }
-/** Whether a JavaScript file is an ES module: module syntax, and for an extensionless file, a parse. */
+/**
+ * Whether a staged JavaScript file is an ES module, by its syntax as Node's
+ * detection reads it (containsModuleSyntax), and for an extensionless file a
+ * parse. Its package's "type" is not read: a module is lowered for what its
+ * syntax needs, which a file without module syntax does not.
+ */
 export function looksLikeEsm(path, src) {
-    if (!hasTopLevelModuleSyntax(src))
+    if (!containsModuleSyntax(src))
         return false;
     if (vfsPathExtension(path) !== '')
         return true;
