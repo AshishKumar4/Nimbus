@@ -130,7 +130,8 @@ const learned = [{ path: `${NM}/one/index.js` }, { path: `${NM}/two/index.js` }]
   const grouped = {
     ...files,
     [`${NM}/r/index.ts`]: 'import "./dep.ts";\nexport const r: number = 1;\n',
-    [`${NM}/r/dep.ts`]: `export const dep: string = "${'d'.repeat(40_000)}";\n`,
+    // Its file fits the walk's bound; its emit (half again) does not.
+    [`${NM}/r/dep.ts`]: `export const dep: string = "${'d'.repeat(50_000)}";\n`,
   };
   const state = await buildPrefetchBundle(launchFs(grouped).fs, {
     scriptPath: `${APP}/entry.js`, cwd: '/' + APP, entryCode: grouped[`${APP}/entry.js`], esbuild: lowering,
