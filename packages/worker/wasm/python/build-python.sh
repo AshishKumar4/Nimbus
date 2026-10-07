@@ -77,6 +77,18 @@ NUMPY_SHA=483a201202b73495f00dbc83796c6ae63137a9bdade074f7648b3e32613412dd
 
 PYSRC="$WORK/Python-$PYTHON_VERSION"
 
+# Every stamp the build leaves is fixed, so two builds of one tree are the same
+# bytes. The values are the published 3.13.14 build's own: its OpenSSL "built
+# on" and its CPython buildinfo (__DATE__ __TIME__) came from two moments of
+# one run, and keeping both makes a rebuild that build, byte for byte. Each is
+# handed to its stage as SOURCE_DATE_EPOCH; the zips' entries carry the second.
+# The stdlib zip's stage runs without it: py_compile reads it as an order for
+# hash-based .pyc files, and these are timestamp-based (their source mtimes are
+# the tarball's).
+OPENSSL_SOURCE_DATE_EPOCH=1786128611   # Fri Aug  7 18:50:11 2026 UTC
+CPYTHON_SOURCE_DATE_EPOCH=1786112021   # Aug  7 2026 14:13:41 (UTC)
+export TZ=UTC
+
 log() { printf '\n=== %s ===\n' "$*"; }
 
 fetch_one() {
@@ -191,7 +203,7 @@ stage_deps() {
 	    no-asm no-shared no-dso no-engine no-tests no-apps no-docs no-afalgeng \
 	    no-ui-console no-legacy no-module no-autoload-config no-quic no-thread-pool \
 	    --with-rand-seed=getrandom --prefix="$DEPS" --openssldir="$DEPS/ssl" >/dev/null
-	  make -j"$(nproc)" build_libs >/dev/null
+	  SOURCE_DATE_EPOCH=$OPENSSL_SOURCE_DATE_EPOCH make -j"$(nproc)" build_libs >/dev/null
 	  make install_dev >/dev/null )
 }
 
@@ -229,6 +241,13 @@ stage_wasi() {
 	  # autoconf accepts a list; ours refines CPython's rather than forking it.
 	  export CONFIG_SITE="$PYSRC/Tools/wasm/config.site-wasm32-wasi $HERE/config.site-nimbus-wasi"
 	  export PKG_CONFIG_LIBDIR="$DEPS/lib/pkgconfig" PKG_CONFIG_PATH="$DEPS/lib/pkgconfig"
+	  # What write_pc's .pc files say, given directly: PKG_CHECK_MODULES takes
+	  # these over pkg-config, whose output spacing is the host tool's and
+	  # ends up in _sysconfigdata.
+	  export ZLIB_CFLAGS="-I$DEPS/include" ZLIB_LIBS="-L$DEPS/lib -lz" \
+	    BZIP2_CFLAGS="-I$DEPS/include" BZIP2_LIBS="-L$DEPS/lib -lbz2" \
+	    LIBLZMA_CFLAGS="-I$DEPS/include" LIBLZMA_LIBS="-L$DEPS/lib -llzma" \
+	    LIBSQLITE3_CFLAGS="-I$DEPS/include" LIBSQLITE3_LIBS="-L$DEPS/lib -lsqlite3"
 	  export CC="$CC --sysroot=$SYSROOT" CPP="$WASI_SDK/bin/clang-cpp --sysroot=$SYSROOT"
 	  export AR RANLIB
 	  # -D_GNU_SOURCE ahead of the forced includes: pyconfig.h sets it too, but
@@ -249,7 +268,7 @@ stage_wasi() {
 	    --with-build-python="$PYSRC/build-host/python" \
 	    --with-openssl="$DEPS" --with-ensurepip=no \
 	    --disable-test-modules --disable-ipv6 >/dev/null
-	  make -j"$(nproc)" >/dev/null )
+	  SOURCE_DATE_EPOCH=$CPYTHON_SOURCE_DATE_EPOCH make -j"$(nproc)" >/dev/null )
 	stage_reactor
 }
 
@@ -521,6 +540,25 @@ stage_sci() {
 	  -lc-printscan-long-double -lc++ -lc++abi
 }
 
+# A zip as `src` holds it, rewritten to `dest` with its entries sorted by name and
+# dated CPYTHON_SOURCE_DATE_EPOCH: wasm_assets.py writes the stdlib's in the
+# order it walks and dates each entry by its .pyc file's build-time mtime.
+normalize_zip() {
+	"$PYSRC/build-host/python" - "$1" "$2" "$CPYTHON_SOURCE_DATE_EPOCH" <<-'PYEOF'
+	import sys
+	import time
+	import zipfile
+
+	stamp = time.gmtime(int(sys.argv[3]))[:6]
+	with zipfile.ZipFile(sys.argv[1]) as source, zipfile.ZipFile(sys.argv[2], 'w') as dest:
+	    for info in sorted(source.infolist(), key=lambda i: i.filename):
+	        entry = zipfile.ZipInfo(info.filename, stamp)
+	        entry.compress_type = info.compress_type
+	        entry.external_attr = info.external_attr
+	        dest.writestr(entry, source.read(info))
+	PYEOF
+}
+
 stage_assets() {
 	log "assets"
 	# wasm_assets.py reads sysconfig from whichever interpreter runs it, and the
@@ -531,7 +569,7 @@ stage_assets() {
 	  "$PYSRC/build-host/python" "$PYSRC/Tools/wasm/wasm_assets.py" \
 	    --buildroot . --prefix /usr/local )
 	"$STRIP" "$PYSRC/build-wasi/python.reactor.wasm" -o "$HERE/python.wasm"
-	cp "$PYSRC/build-wasi/usr/local/lib/python$PYTHON_XY.zip" "$HERE/python$PYTHON_XY.zip"
+	normalize_zip "$PYSRC/build-wasi/usr/local/lib/python$PYTHON_XY.zip" "$HERE/python$PYTHON_XY.zip"
 	cp "$PYSRC/Lib/ensurepip/_bundled"/pip-*.whl "$HERE/"
 
 	# The sci variant's Python half. Its compiled half is inside python-sci.wasm,
@@ -542,15 +580,20 @@ stage_assets() {
 	find "$NUMPY_SITE" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 	# <<- strips EVERY leading tab, so the body's own indentation is spaces:
 	# written with tabs it arrived flush-left and Python refused to parse it.
-	( cd "$NUMPY_SITE" && "$BUILD/buildenv/bin/python" - "$HERE/sci-packages.zip" <<-'PYEOF'
+	( cd "$NUMPY_SITE" && "$BUILD/buildenv/bin/python" - "$HERE/sci-packages.zip" "$CPYTHON_SOURCE_DATE_EPOCH" <<-'PYEOF'
 	import pathlib
 	import sys
+	import time
 	import zipfile
 
+	stamp = time.gmtime(int(sys.argv[2]))[:6]
 	with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
 	    for path in sorted(pathlib.Path('.').rglob('*')):
 	        if path.is_file():
-	            archive.write(path, path.as_posix())
+	            info = zipfile.ZipInfo.from_file(path, path.as_posix())
+	            info.date_time = stamp
+	            info.compress_type = zipfile.ZIP_DEFLATED
+	            archive.writestr(info, path.read_bytes(), compresslevel=9)
 	PYEOF
 	)
 	log "built"
