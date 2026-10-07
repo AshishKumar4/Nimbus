@@ -55,9 +55,11 @@ try {
   await op('unlink', `${path}/link`);
   await op('unlink', `${path}/b`);
   await op('rmdir', path);
-  await op('stdout', 'progress');
-  await op('stderr', 'warning');
-  assert.deepEqual(output, [['stdout', proc.pid, 'progress'], ['stderr', proc.pid, 'warning']]);
+  const rawOutput = new Uint8Array([255,254,0,128]);
+  await op('stdout', rawOutput);
+  await op('stderr', new TextEncoder().encode('warning'));
+  assert.deepEqual(output, [['stdout', proc.pid, rawOutput], ['stderr', proc.pid, new TextEncoder().encode('warning')]]);
+  assert.throws(() => op('stdout', 'progress'), /must be bytes/, 'the workspace rejects text at the byte authority edge');
   assert.equal(await op('status'), 'healthy');
   for (const name of ['missing', 'constructor', 'toString', '__proto__']) {
     await assert.rejects(op(name), /not served/);

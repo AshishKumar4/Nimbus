@@ -104,7 +104,7 @@ export interface SupervisorOpDeps {
   readonly filesystem?: NimbusFilesystemAuthority;
   /** Absent a process table, operations use the unprivileged session user. */
   readonly processes?: SessionProcessSupervisor;
-  readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
+  readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: Uint8Array) => void | Promise<void>;
   /**
    * The host's `_rpc*` surface for ops beyond the native set — an in-process
    * workspace's dispatch record, or the session itself for
@@ -282,7 +282,7 @@ export interface SupervisorOpTools {
   readonly bridge: (pid?: number, cred?: VfsCred) => RuntimeFsBridge;
   readonly vfs: SqliteVFS;
   readonly cred: (pid?: number, cred?: VfsCred) => VfsCred;
-  readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: string) => void | Promise<void>;
+  readonly output?: (stream: 'stdout' | 'stderr', pid: number, data: Uint8Array) => void | Promise<void>;
   readonly readLease: NonNullable<SupervisorOpDeps['readLease']>;
   /** N17: resolves once `path`'s bytes are hydrated out of a lazy import. */
   readonly hydrated: (path: string) => Promise<void>;
@@ -498,8 +498,8 @@ const NATIVE_OPS = {
     t.bridge(e.pid, e.cred);
     return { writer: t.deliveries.openWaveWriter(e.pid, WAVE_EPOCH_TTL_MS), hostIncarnation: t.deliveries.incarnation };
   },
-  stdout: (e, t) => t.output?.('stdout', e.pid ?? 0, stringArg(e, 0)),
-  stderr: (e, t) => t.output?.('stderr', e.pid ?? 0, stringArg(e, 0)),
+  stdout: (e, t) => t.output?.('stdout', e.pid ?? 0, bytesArg(e, 0)),
+  stderr: (e, t) => t.output?.('stderr', e.pid ?? 0, bytesArg(e, 0)),
 } satisfies Partial<Record<SupervisorOpName, SupervisorOpHandler>>;
 
 /** The ops {@link NATIVE_OPS} defines — the route table covers the rest. */

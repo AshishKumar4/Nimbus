@@ -3,6 +3,7 @@ import type { ProcessSignalName } from './process-io-protocol.js';
 interface InputWaiter {
   pid: number;
   resolve: (packet: ProcessInputPacket) => void;
+  reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -27,6 +28,7 @@ interface InputState {
   columns: number;
   rows: number;
   writes: Promise<void>;
+  failure?: Error;
 }
 
 export interface ProcessInputStoreOptions {
@@ -67,13 +69,24 @@ export class ProcessInputStore {
         if (!(await this.writeBytesWait(pid, piece)).ok) return;
       }
     })();
-    done.catch(() => { if (!stopped) this.close(pid); });
+    done.catch(error => { if (!stopped) this.fail(pid, error); });
     return { done, stop: () => { stopped = true; if (opened) this.close(pid); } };
   }
 
   open(pid: number): void {
     if (!isValidPid(pid) || this.pids.has(pid)) return;
     const state = this.createState(); state.owners.add(pid); this.pids.set(pid, state);
+  }
+
+  /** Queued bytes stay readable; after them, every read reports the failure. */
+  fail(pid: number, cause: unknown): void {
+    const state = this.pids.get(pid);
+    if (!state || state.failure) return;
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    state.failure = Object.assign(new Error(`EIO: stdin read failed: ${reason}`), { code: 'EIO' });
+    state.closed = true;
+    for (const waiter of state.waiters.splice(0)) { clearTimeout(waiter.timer); waiter.reject(state.failure); }
+    for (const wake of state.drained.splice(0)) wake();
   }
 
   /** dup/inherit fd 0: one consuming channel, including queued bytes and future EOF. */
@@ -288,11 +301,13 @@ export class ProcessInputStore {
       for (const wake of state.drained.splice(0)) wake();
       return next;
     }
+    if (state.failure) throw state.failure;
     if (state.closed) return { data: '', ended: true };
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const waiter: InputWaiter = {
         pid,
+        reject,
         resolve: packet => {
           if (maxBytes === undefined || !packet.data.length) { resolve(packet); return; }
           const bytes = typeof packet.data === 'string' ? encoder.encode(packet.data) : packet.data;

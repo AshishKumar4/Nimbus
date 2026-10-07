@@ -663,19 +663,20 @@ export function makeWasmRunner(deps: {
       (opts.filename || '').replace(/^\/+/, '/') +
       ' ' +
       argv.join(' ');
-    const procEntry = deps.processes.spawn(
+    const brokerPid = opts.stdinPid;
+    const owned = brokerPid === undefined;
+    const procEntry = owned ? deps.processes.spawn(
       cmdLabel.trim(),
       ['wasm-runner', ...argv],
       opts.cwd || '/home/user',
       { parentPid: opts.invokerPid, cred },
-    );
+    ) : deps.processes.get(brokerPid);
+    if (!procEntry || procEntry.state !== 'running') throw new Error('WASI broker process is not running');
     const pid = procEntry.pid;
     const killed = new AbortController();
     const runSignal = opts.signal ? AbortSignal.any([opts.signal,killed.signal]) : killed.signal;
     deps.processes.setTerminator(pid, () => killed.abort());
-    const inputPump = opts.stdinPid !== undefined
-      ? (deps.processes.inheritInput(pid, opts.stdinPid), null)
-      : opts.stdin ? deps.processes.pumpInput(pid, stdinBytesOf(opts.stdin)) : null;
+    const inputPump = !owned ? null : opts.stdin ? deps.processes.pumpInput(pid, stdinBytesOf(opts.stdin)) : null;
     if (!deps.processes.hasInput(pid)) { deps.processes.openInput(pid); deps.processes.endInput(pid); }
     const releaseOutput = opts.output
       ? deps.processes.subscribeOutputBytes(pid, chunk => opts.output!(chunk.stream, chunk.data)) : null;
@@ -827,10 +828,6 @@ export function makeWasmRunner(deps: {
     } catch {}
 
     const streamed = 'streamedOutput' in outcome && outcome.streamedOutput === true;
-    if (streamed && !opts.output) {
-      const stored = deps.processes.allLogs(pid);
-      return { exitCode, stdout: stored.filter(chunk => chunk.stream === 'stdout').map(chunk => chunk.data).join(''), stderr: stored.filter(chunk => chunk.stream === 'stderr').map(chunk => chunk.data).join('') + stderr };
-    }
     return { exitCode, stdout: streamed ? '' : stdout, stderr };
   };
 }

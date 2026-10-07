@@ -28,6 +28,18 @@ assert.deepEqual([...((await short).data)], [9]);
 assert.deepEqual([...((await input.read(11,0,8)).data)], [8,7]);
 input.close(11); input.close(12);
 
+input.open(13);
+let sourceReads=0;
+const failedPump=input.pump(13,{async readBytes(){ if(sourceReads++===0)return new Uint8Array([255,0,254]);throw new Error('source broke'); }});
+await assert.rejects(failedPump.done,/source broke/);
+assert.deepEqual((await input.read(13,0)).data,new Uint8Array([255,0,254]),'queued bytes survive a pump failure');
+await assert.rejects(input.read(13,0),{code:'EIO'},'the next read is EIO, not clean EOF');
+input.open(14);
+const waitingFailure=input.read(14,1000);
+input.fail(14,new Error('empty source broke'));
+await assert.rejects(waitingFailure,{code:'EIO'},'a waiting empty reader sees the failure too');
+input.close(13);input.close(14);
+
 input.open(10);
 let finished = false;
 const data = new Uint8Array(25).map((_, i) => i);
