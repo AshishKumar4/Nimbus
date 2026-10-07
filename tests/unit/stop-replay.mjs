@@ -268,6 +268,28 @@ const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [] };
   assert.notEqual(callKey('fsRead', [3, 0, 4]), callKey('fsRead', [3, 4, 4]), 'a read at another offset is another call');
 }
 
+// Cache-sizing availability may move while stdin waits; the granted
+// reservation and every other reply field remain observable and checked.
+{
+  const replayGrant = async (before, after) => {
+    const j = new ReplayJournal(() => {}, 300);
+    try {
+      j.start('first');
+      await j.handle('fsStorageGrant', ['proc-slot-0', 0, 4096], 'first', async () => before);
+      j.stopped(); j.start('replay');
+      return await j.handle('fsStorageGrant', ['proc-slot-1', 0, 4096], 'replay', async () => after);
+    } finally { j.close(); }
+  };
+  assert.deepEqual(await replayGrant({ granted: 0, available: 1000 }, { granted: 0, available: 700 }),
+    { granted: 0, available: 700 }, 'a cache sizing hint changes without changing the granted answer');
+  await assert.rejects(replayGrant({ granted: 0, available: 1000 }, { granted: 4096, available: 700 }),
+    /fsStorageGrant.*answered differently/, 'a different grant still refuses replay');
+  await assert.rejects(replayGrant({ granted: 0, available: 1000, future: 1 }, { granted: 0, available: 700, future: 2 }),
+    /fsStorageGrant.*answered differently/, 'unknown fields are still checked');
+  await assert.rejects(replayGrant({ granted: 0, extra: { available: 1000 } }, { granted: 0, extra: { available: 700 } }),
+    /fsStorageGrant.*answered differently/, 'available is not omitted by name from other objects');
+}
+
 // ── The guest ──────────────────────────────────────────────────────────────
 // One run per process: `script` runs with the module-private
 // __nimbusStopReplay in scope, `abort` records the string a real ctx.abort is
