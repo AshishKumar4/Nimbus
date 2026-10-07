@@ -11,8 +11,9 @@
 //     list names the cone; add widens it; set run from a subdirectory takes
 //     its directories below it.
 //   - What set leaves: a changed file outside the cone (named, kept); a
-//     directory outside the cone with untracked or ignored files in it
-//     (named, kept), and one with nothing but empty directories (removed).
+//     directory outside the cone with untracked files in it (named, kept);
+//     one with only ignored files and empty directories (removed, with
+//     them).
 //   - reapply after the file is edited by hand; disable: every file back,
 //     sparse checkout off; init: the top's files only.
 //   - Refused as git refuses them: a leading slash, a pattern, a '!', a
@@ -92,7 +93,7 @@ try {
     p.write('c/e/build.log', null);
     await p.run(['sparse-checkout', 'reapply']);
     p.same('reapply, once nothing untracked is left');
-    console.log('  ok  set and reapply: a changed file and directories with untracked or ignored files named and kept; emptied ones removed');
+    console.log('  ok  set and reapply: a changed file and a directory with untracked files named and kept; one with only ignored files removed');
   }
 
   {

@@ -199,7 +199,9 @@ function sparseDirectories(dc: DirCache, sparse: SparseMatcher): string[] {
 /**
  * clean_tracked_sparse_directories: each directory outside the cone that
  * the index holds only skip-worktree entries below, and the worktree still
- * has, removed; one holding untracked or ignored files is named and kept.
+ * has, removed with what is in it; one holding untracked files is named and
+ * kept. Ignored files do not keep one (fill_directory puts them in
+ * dir.ignored, not dir.entries): they go with it.
  */
 async function cleanSparseDirectories(ctx: SparseCheckoutContext, sparse: SparseMatcher): Promise<void> {
   const { wrepo, writer, root } = ctx;
@@ -208,12 +210,12 @@ async function cleanSparseDirectories(ctx: SparseCheckoutContext, sparse: Sparse
   const excludes = await wrepo.excludes(dc);
   for (const dir of sparseDirectories(dc, sparse)) {
     if (await tree.fs.lstat(dir) === null) continue;
-    const scan = await scanWorktree(tree, dc, { specs: [dir], untracked: 'all', excludes, ignoredToo: true });
+    const scan = await scanWorktree(tree, dc, { specs: [dir], untracked: 'all', excludes });
     if (scan.untracked.length > 0) {
       await ctx.stderr(`warning: directory '${dir}/' contains untracked files, but is not in the sparse-checkout cone\n`);
       continue;
     }
-    // remove_dir_recursively: what is left is directories only (and nothing tracked).
+    // remove_dir_recursively: what is left is ignored files and directories (nothing tracked).
     const remove = async (path: string): Promise<void> => {
       for (const { name, type } of await tree.fs.list(path)) {
         const child = `${path}/${name}`;
