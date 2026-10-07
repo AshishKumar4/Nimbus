@@ -31,7 +31,7 @@
     "dev": "bun run --cwd apps/hosted-demo dev",
     "deploy": "bun run --cwd apps/hosted-demo deploy",
     "deploy:production": "bun run --cwd apps/hosted-demo deploy:production",
-    "staging:deploy": "bun tests/behavioral/_staging-target.mjs up",
+    "staging:deploy": "bun scripts/ci/release.mjs staging",
     "staging:test": "bun tests/behavioral/_staging-target.mjs test",
     "staging:status": "bun tests/behavioral/_staging-target.mjs status",
     "lint": "./node_modules/.bin/biome lint",

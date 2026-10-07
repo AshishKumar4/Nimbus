@@ -8,7 +8,8 @@
 //   repeatedly, against a deployment shaped like the one users hit.
 //
 // WHAT IT DEPLOYS
-//   Two Workers, from one `dist`, in one command — because production is
+//   Two Workers, from one release CI built (scripts/ci/lib/release.mjs),
+//   in one command — because production is
 //   two things and staging is only useful if it covers both:
 //
 //     nimbus-staging        apps/hosted-demo, env.staging. The product
@@ -43,11 +44,12 @@
 //
 // USAGE
 //   export CLOUDFLARE_ACCOUNT_ID=<account>       # account pin, required
-//   bun run staging:deploy                       # build + deploy + verify
+//   bun run staging:deploy                       # CI builds, this machine uploads + verifies
 //   bun run staging:test                         # full suite against staging
 //
 // COMMANDS
-//   up      [--no-build] [--rotate-secrets]
+//   up      --release <dir> [--rotate-secrets]   a release CI built for HEAD
+//           (scripts/ci/release.mjs staging makes one and runs this)
 //   test    [--ttl-ms <ms>] [...run-all.mjs flags]
 //   status
 //   token   [--ttl-ms <ms>] [--json]   → the token, or JSON {base, token}
@@ -69,7 +71,7 @@ import { spawnSync } from 'node:child_process';
 import { mintProbeToken } from './_mint-probe-token.mjs';
 import { PROBE_TARGET_SKIPS } from './_probe-target-skips.mjs';
 import { assertDeployIsolated, describeTarget } from '../../scripts/deploy-isolation.mjs';
-import { assertDistMatchesSource } from '../../scripts/dist-integrity.mjs';
+import { uploadConfig } from '../../scripts/ci/lib/release.mjs';
 import {
   MACHINE_STATE_DIR,
   PROBE_TARGET_VARS,
@@ -85,7 +87,6 @@ import {
   requireAccountPin,
   waitForTarget,
   workersDevSubdomain,
-  wrangle,
   writeState,
 } from './_deploy-target.mjs';
 
@@ -171,24 +172,17 @@ async function up() {
     });
   }
 
-  if (flags.build !== false) await assertDistMatchesSource({ root: ROOT, log });
+  // A release CI built for this commit, the dist gate and the demo's assets
+  // included (scripts/ci/release.mjs staging, scripts/ci/lib/release.mjs):
+  // this machine only uploads it, and checks every byte against CI's.
+  if (!flags.release) throw new Error('staging deploys a release CI built for this commit: run `bun scripts/ci/release.mjs staging`');
+  const probeConfig = uploadConfig(flags.release, 'apps/probe', { root: ROOT, log });
+  const demoConfig = uploadConfig(flags.release, `apps/hosted-demo:${TARGETS.demo.envName}`, { root: ROOT, log });
 
-  // The probe target first, and not only because it is cheaper: its
-  // deploy prints the account's workers.dev subdomain, which is what the
-  // demo's docs bundle needs baked in as NIMBUS_DOCS_ORIGIN before it can
-  // be built. One pass, no guessing at hostnames.
-  const probe = await deployTarget(TARGETS.probe, { account, state });
+  const probe = await deployTarget(TARGETS.probe, { account, state, config: probeConfig });
   const subdomain = workersDevSubdomain(probe.base);
   if (!subdomain) throw new Error(`could not read the workers.dev subdomain from ${probe.base}`);
-
-  const demoOrigin = `https://${TARGETS.demo.name}.${subdomain}.workers.dev`;
-  log(`building hosted-demo assets for ${demoOrigin}`);
-  wrangle('bun', ['run', '--cwd', 'apps/hosted-demo', 'build:assets'], {
-    cwd: ROOT,
-    account,
-    env: { NIMBUS_DOCS_ORIGIN: demoOrigin },
-  });
-  const demo = await deployTarget(TARGETS.demo, { account, state });
+  const demo = await deployTarget(TARGETS.demo, { account, state, config: demoConfig });
 
   writeState(STATE_PATH, { ...state, subdomain, updatedAt: new Date().toISOString() });
 
@@ -260,7 +254,7 @@ async function session() {
  * signing secret is created on first deploy and reused afterwards, so
  * tokens minted earlier keep working across redeploys.
  */
-async function deployTarget(target, { account, state }) {
+async function deployTarget(target, { account, state, config }) {
   const key = keyOf(target);
   const secret = state[key]?.secret ?? randomSecret();
   const isNewSecret = !state[key]?.secret;
@@ -271,7 +265,7 @@ async function deployTarget(target, { account, state }) {
     account,
     name: target.name,
     envName: target.envName,
-    args: target.deployArgs,
+    args: ['--config', config, ...target.deployArgs],
   });
   if (!base) throw new Error(`deploy of ${target.name} printed no workers.dev URL`);
   log(`${target.name} → version ${versionId} live at ${base}`);

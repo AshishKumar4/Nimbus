@@ -46,7 +46,7 @@
 //     BASE=<url> NIMBUS_PROBE_TOKEN=<jwt> bun tests/behavioral/run-all.mjs
 //
 // COMMANDS
-//   up      [--name <n>] [--no-build | --bundle <dir>] [--ttl-ms <ms>] [--rotate-secrets]
+//   up      [--name <n>] [--no-build | --bundle <release dir>] [--ttl-ms <ms>] [--rotate-secrets]
 //           [--var KEY:VALUE ...]  override a config var for this deploy —
 //           how one build is stood up twice to compare two settings of it.
 //           Every throwaway is deployed with the suite's target vars
@@ -71,14 +71,13 @@
 //   session, which is how the shared anon pool got exhausted. Self-minted
 //   tokens make that failure mode structurally impossible.
 
-import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, resolve as resolvePath } from 'node:path';
+import { join } from 'node:path';
 
 import { mintProbeToken } from './_mint-probe-token.mjs';
-import { assertDeployIsolated, loadConfig } from '../../scripts/deploy-isolation.mjs';
+import { assertDeployIsolated } from '../../scripts/deploy-isolation.mjs';
+import { uploadConfig } from '../../scripts/ci/lib/release.mjs';
 import { assertDistMatchesSource } from '../../scripts/dist-integrity.mjs';
 import {
   PROBE_TARGET_VARS,
@@ -183,9 +182,9 @@ async function up() {
     rotate: Boolean(flags['rotate-secrets']),
   });
 
-  // --bundle: the bundle was built, and the dist gate run, on CI for this
-  // commit (scripts/ci/bundle.mjs); this machine only uploads it.
-  const bundle = flags.bundle ? bundleConfig(flags.bundle) : null;
+  // --bundle: a release CI built for this commit, the dist gate included
+  // (scripts/ci/lib/release.mjs); this machine only uploads it.
+  const bundle = flags.bundle ? uploadConfig(flags.bundle, 'apps/probe', { root: ROOT, preview: true, log }) : null;
   if (!bundle && flags.build !== false) await assertDistMatchesSource({ root: ROOT, log });
 
   await ensurePreviewParent({ account, token });
@@ -351,36 +350,6 @@ async function deployPreview({ account, token, preview, secret, before, config =
   const base = workersDevUrlOf(printed.preview?.urls);
   if (!base) throw new Error(`Preview ${preview} has no workers.dev URL (urls: ${JSON.stringify(printed.preview?.urls)})`);
   return { base, deploymentId, startupMs: latest.startup_time_ms };
-}
-
-/**
- * A wrangler config that uploads the bundle in `dir` as it is
- * (scripts/ci/remote-probes.mjs --deploy wrote it there: the module and
- * bundle.json, its commit and sha256), with apps/probe's settings
- * otherwise. Refused unless that commit is HEAD, the files a deploy reads
- * from the checkout (apps/probe and the staged assets) are as HEAD has
- * them, the module is the bytes CI built, and nothing builds a Preview
- * differently from the `wrangler deploy` that built it.
- */
-function bundleConfig(dir) {
-  const manifest = JSON.parse(readFileSync(join(dir, 'bundle.json'), 'utf8'));
-  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).stdout.trim();
-  if (manifest.commit !== head) throw new Error(`the bundle in ${dir} is of ${manifest.commit}, and this checkout is at ${head}`);
-  const local = spawnSync('git', ['status', '--porcelain', '--untracked-files=all', '--', 'apps/probe', 'packages/worker/public'], { cwd: ROOT, encoding: 'utf8' }).stdout;
-  if (local) throw new Error(`the deploy reads these from the checkout, and they differ from ${head}:\n${local}`);
-  const main = join(dir, manifest.main);
-  const sha256 = createHash('sha256').update(readFileSync(main)).digest('hex');
-  if (sha256 !== manifest.sha256) throw new Error(`${main} is not the bundle CI built (sha256 ${sha256}, not ${manifest.sha256})`);
-  const config = loadConfig('apps/probe/wrangler.jsonc', ROOT);
-  if (JSON.stringify(config.previews?.define) !== JSON.stringify(config.define)) {
-    throw new Error('apps/probe defines differently for a Preview than for the deploy that built the bundle; it cannot be uploaded as built');
-  }
-  const { $schema, alias, ...settings } = config;
-  const absolute = (path) => (isAbsolute(path) ? path : resolvePath(PROBE_APP, path));
-  const path = join(dir, 'wrangler.json');
-  writeFileSync(path, JSON.stringify({ ...settings, main, no_bundle: true, assets: { ...settings.assets, directory: absolute(settings.assets.directory) } }, null, 2));
-  log(`uploading ${manifest.main} as CI built it for ${head.slice(0, 12)} (sha256 ${sha256.slice(0, 16)}…), without bundling`);
-  return path;
 }
 
 /** The workers.dev URL among a Preview's URLs, without a trailing slash. */

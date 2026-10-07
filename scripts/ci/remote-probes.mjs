@@ -16,7 +16,7 @@
 //
 // --deploy first deploys <commit> (HEAD, clean where a deploy reads it) to
 // the throwaway <name>, then probes it as --target throwaway:<name> does.
-// The dist gate and wrangler's bundle run on CI (scripts/ci/bundle.mjs);
+// The dist gate and wrangler's bundle run on CI (scripts/ci/lib/release.mjs);
 // this machine only uploads the bundle, as built, with its own wrangler
 // login (_throwaway-target.mjs up --bundle), and checks the deployment by
 // its id. No Cloudflare credential leaves this machine. Tear the throwaway
@@ -40,6 +40,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PROBE_TARGET_SKIPS } from '../../tests/behavioral/_probe-target-skips.mjs';
 import { mapOnArmada } from './lib/armada.mjs';
+import { fetchRelease } from './lib/release.mjs';
 
 /** A task's limit on armada, and so the job's: every part runs at once. */
 const TASK_TIMEOUT_S = 30 * 60;
@@ -119,31 +120,15 @@ const items = [
 console.error(`remote-probes: ${items.length} tasks against ${base}, probes of ${sha.slice(0, 12)}`);
 
 /**
- * Deploy `sha` to the throwaway `name`: the bundle from CI, uploaded from
+ * Deploy `sha` to the throwaway `name`: a release from CI, uploaded from
  * here. Throws, saying why, when it could not.
  */
 async function deploy(name) {
   if (git(repo, ['rev-parse', 'HEAD']) !== sha) throw new Error(`--deploy deploys this worktree's HEAD, and ${sha.slice(0, 12)} is not it`);
-  const mapped = await mapOnArmada({
-    repo, sha, files: ['scripts/ci/bundle.mjs'], items: [1], label: `bundle ${sha.slice(0, 12)} for ${name}`,
-    command: ['bun', 'scripts/ci/bundle.mjs', '--out', '{out}', '--app', 'apps/probe'],
-  });
-  const [outcome] = mapped.outcomes;
-  if (outcome?.kind !== 'exited' || mapped.outputs[0] === null) throw new Error(`armada could not bundle ${sha.slice(0, 12)} (job ${mapped.jobId}):\n${outcome?.tail ?? 'no outcome'}`);
-  const verdict = JSON.parse(mapped.outputs[0]);
-  if (verdict.head !== mapped.commit) throw new Error(`the bundle is of ${verdict.head}, not ${mapped.commit} (job ${mapped.jobId})`);
-  if (verdict.bundle === null) {
-    const red = verdict.rows.filter((row) => row.exitCode !== 0);
-    throw new Error(`no bundle (job ${mapped.jobId}):\n${red.map((row) => `${row.name} exit ${row.exitCode}\n${row.output.trimEnd().split('\n').slice(-40).join('\n')}`).join('\n')}`);
-  }
-  const dir = join(homedir(), '.local', 'state', 'nimbus', 'remote-bundles', `${sha.slice(0, 12)}-${mapped.jobId}`);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, verdict.bundle.main), Buffer.from(verdict.bundle.base64, 'base64'));
-  writeFileSync(join(dir, 'bundle.json'), `${JSON.stringify({ commit: sha, main: verdict.bundle.main, sha256: verdict.bundle.sha256, job: mapped.jobId })}\n`);
-  console.error(`remote-probes: bundled on CI (job ${mapped.jobId}, sha256 ${verdict.bundle.sha256.slice(0, 16)}…); uploading from here`);
+  const { dir } = await fetchRelease({ repo, sha, targets: ['apps/probe'] });
   // Its exports (a token among them) are not wanted: probes get their own, below.
   const up = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'up', '--name', name, '--bundle', dir], { cwd: repo, stdio: ['ignore', 'ignore', 'inherit'] });
-  if (up.status !== 0) throw new Error(`the upload of the bundle to ${name} failed (exit ${up.status}); the bundle is in ${dir}`);
+  if (up.status !== 0) throw new Error(`the upload of the release to ${name} failed (exit ${up.status}); the release is in ${dir}`);
 }
 
 let mapped;
