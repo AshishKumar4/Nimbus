@@ -604,6 +604,7 @@ function scripted(overrides) {
 // a wave under its own lease was EBUSY on the mount it held.)
 {
   const s = session();
+  await s.op({ op: 'mkdir', args: ['/shared/held'], cred: CRED_SESSION_USER });
   const lease = s.engine.as(CRED_SESSION_USER).acquireExclusiveMutation('shared/held');
   const owned = await s.op({
     op: 'writeBatchStream', args: [], cred: CRED_SESSION_USER, mutationOwner: lease.owner,
