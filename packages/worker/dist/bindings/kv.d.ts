@@ -74,7 +74,5 @@ export declare class KvEmulator {
     private _readResolved;
     private _readMeta;
     private _lazyDelete;
-    private _encodeCursor;
-    private _decodeCursor;
 }
 //# sourceMappingURL=kv.d.ts.map

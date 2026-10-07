@@ -23,24 +23,11 @@
  * Test seam: `_setKvNow(() => ts)` replaces the wall clock (Date.now/1000)
  * for TTL probes. Production reads Date.now() / 1000.
  */
-import { coerceBindingBody, ensureBindingDir } from './body.js';
+import { bodyStream, coerceBindingBody, ensureBindingDir } from './body.js';
+import { cursorPage, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles } from './object-store.js';
 // ── Test seam: clock ────────────────────────────────────────────────────
 let _kvNow = () => Math.floor(Date.now() / 1000);
 export function _setKvNow(fn) { _kvNow = fn; }
-// ── Path helpers ────────────────────────────────────────────────────────
-function encKey(key) {
-    // Match KV's accepted key alphabet: any UTF-8 string up to 512 bytes. We
-    // URL-encode to make every key VFS-path-safe.
-    return encodeURIComponent(key);
-}
-function decKey(encoded) {
-    try {
-        return decodeURIComponent(encoded);
-    }
-    catch {
-        return encoded;
-    }
-}
 // ── KvEmulator ─────────────────────────────────────────────────────────
 export class KvEmulator {
     vfs;
@@ -49,8 +36,7 @@ export class KvEmulator {
     onLog;
     constructor(opts) {
         this.vfs = opts.vfs;
-        const root = String(opts.root).replace(/^\/+/, '').replace(/\/+$/, '');
-        this.dir = (root ? root + '/' : '') + '.nimbus/kv/' + opts.binding;
+        this.dir = objectStoreDir(opts.root, 'kv', opts.binding);
         this.onLog = opts.onLog || (() => { });
     }
     // ── public API ────────────────────────────────────────────────────────
@@ -70,7 +56,7 @@ export class KvEmulator {
         return { value, metadata: (r.meta?.meta ?? null), cacheStatus: null };
     }
     async put(key, value, options) {
-        const enc = encKey(key);
+        const enc = objectFileName(key);
         const bodyBlob = await coerceBindingBody(value);
         ensureBindingDir(this.vfs, this.dir);
         this.vfs.writeFile(this.dir + '/' + enc, bodyBlob);
@@ -99,65 +85,32 @@ export class KvEmulator {
         }
     }
     async delete(key) {
-        const enc = encKey(key);
-        const bp = this.dir + '/' + enc;
-        const mp = bp + '.meta';
-        try {
-            if (this.vfs.exists(bp))
-                this.vfs.unlink(bp);
-        }
-        catch { }
-        try {
-            if (this.vfs.exists(mp))
-                this.vfs.unlink(mp);
-        }
-        catch { }
-        this.metaCache.delete(enc);
+        this._lazyDelete(objectFileName(key));
     }
     async list(options) {
-        const prefix = options?.prefix || '';
-        const limit = options?.limit ?? 1000;
-        const cursorOff = options?.cursor ? this._decodeCursor(options.cursor) : 0;
-        let entries = [];
-        try {
-            const dirents = this.vfs.readdir(this.dir);
-            for (const e of dirents) {
-                if (e.type === 'directory')
-                    continue;
-                if (e.name.endsWith('.meta'))
-                    continue;
-                const decoded = decKey(e.name);
-                if (!decoded.startsWith(prefix))
-                    continue;
-                const meta = this._readMeta(e.name);
-                // Skip expired
-                if (meta?.exp != null && meta.exp <= _kvNow()) {
-                    this._lazyDelete(e.name);
-                    continue;
-                }
-                const out = { name: decoded };
-                if (meta?.exp != null)
-                    out.expiration = meta.exp;
-                if (meta?.meta !== undefined)
-                    out.metadata = meta.meta;
-                entries.push(out);
+        const entries = [];
+        for (const { key, fileName } of listObjectFiles(this.vfs, this.dir, options?.prefix || '')) {
+            const meta = this._readMeta(fileName);
+            // Skip expired
+            if (meta?.exp != null && meta.exp <= _kvNow()) {
+                this._lazyDelete(fileName);
+                continue;
             }
+            const out = { name: key };
+            if (meta?.exp != null)
+                out.expiration = meta.exp;
+            if (meta?.meta !== undefined)
+                out.metadata = meta.meta;
+            entries.push(out);
         }
-        catch {
-            // Empty dir: no keys
-            entries = [];
-        }
-        entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
-        const slice = entries.slice(cursorOff, cursorOff + limit);
-        const next = cursorOff + slice.length;
-        const list_complete = next >= entries.length;
+        const { page, next } = cursorPage(entries, options?.cursor, options?.limit ?? 1000);
         const out = {
-            keys: slice,
-            list_complete,
+            keys: page,
+            list_complete: next === undefined,
             cacheStatus: null,
         };
-        if (!list_complete)
-            out.cursor = this._encodeCursor(next);
+        if (next !== undefined)
+            out.cursor = next;
         return out;
     }
     // ── internals ─────────────────────────────────────────────────────────
@@ -175,20 +128,12 @@ export class KvEmulator {
             new Uint8Array(ab).set(body);
             return ab;
         }
-        if (t === 'stream') {
-            const u = body;
-            return new ReadableStream({
-                type: 'bytes',
-                start(controller) {
-                    controller.enqueue(u);
-                    controller.close();
-                },
-            });
-        }
+        if (t === 'stream')
+            return bodyStream(body);
         return new TextDecoder().decode(body);
     }
     async _readResolved(key) {
-        const enc = encKey(key);
+        const enc = objectFileName(key);
         const path = this.dir + '/' + enc;
         if (!this.vfs.exists(path))
             return null;
@@ -218,34 +163,7 @@ export class KvEmulator {
         }
     }
     _lazyDelete(encName) {
-        const bp = this.dir + '/' + encName;
-        const mp = bp + '.meta';
-        try {
-            if (this.vfs.exists(bp))
-                this.vfs.unlink(bp);
-        }
-        catch { }
-        try {
-            if (this.vfs.exists(mp))
-                this.vfs.unlink(mp);
-        }
-        catch { }
+        removeObjectFiles(this.vfs, this.dir, encName);
         this.metaCache.delete(encName);
-    }
-    _encodeCursor(off) {
-        // base64url-encode the offset record. We use btoa (Web Standard,
-        // available in workerd and Bun) and patch base64 → base64url.
-        const b64 = btoa(JSON.stringify({ off }));
-        return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    }
-    _decodeCursor(c) {
-        try {
-            const b64 = String(c).replace(/-/g, '+').replace(/_/g, '/');
-            const j = JSON.parse(atob(b64));
-            return Number(j.off) || 0;
-        }
-        catch {
-            return 0;
-        }
     }
 }

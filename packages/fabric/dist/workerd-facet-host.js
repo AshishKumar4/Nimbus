@@ -15,7 +15,7 @@
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { getCtxExports, stagedBootAssembler, supervisorEntrypoint, supervisorEntrypointName, } from './composition.js';
-import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, facetNameCount, facetNameCountDurable, recordFacetNameMinted, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
+import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, facetNameCount, facetNameCountDurable, chargeFacetSlot, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
 import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
 import { supervisorLoaderKey, mintProcessSupervisor } from './supervisor-props.js';
 export function getNimbusCtxExports() {
@@ -155,7 +155,8 @@ function slotBook(ctx) {
 /**
  * Take a slot for `pid`, reusing a returned one before minting a new name.
  * `minted` names may still hold storage a previous incarnation of this actor
- * left there, so the caller deletes it before the first get.
+ * left there, so the caller deletes it before the first get. The caller
+ * charges the slot (chargeFacetSlot) before its facet is created.
  */
 function acquireSlot(ctx, pid) {
     const book = slotBook(ctx);
@@ -165,10 +166,6 @@ function acquireSlot(ctx, pid) {
     const reused = book.free.length > 0;
     const slot = reused ? book.free.shift() : book.next++;
     book.held.set(pid, slot);
-    // A fresh name is a permanently consumed facet ID; the durable count lives
-    // in the budgets ledger (see budgets.ts).
-    if (!reused)
-        recordFacetNameMinted(ctx, book.next);
     return { slot, minted: !reused };
 }
 /** Return `pid`'s slot to the free list. */
@@ -275,6 +272,12 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         }
         catch { /* nothing stored under this name */ }
     }
+    // A slot's name is a lifetime facet ID the first time it is created, so it
+    // is charged, durably, before the first call creates the facet. Charged on
+    // every use: a slot whose charge failed is reused uncharged otherwise, and
+    // one already counted costs nothing. An explicit name was charged when it
+    // was allocated (acquireDurableFacetSlot).
+    const charged = slot === undefined ? Promise.resolve() : chargeFacetSlot(ctx, slot);
     // The start callback is the ONLY way this facet is ever created, and it
     // fires AT MOST ONCE. Every later use goes through the stub below, so the
     // callback running a second time means the facet was released or died —
@@ -361,7 +364,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         const startArgs = ledger !== null && params.storageBytes !== undefined && params.startArgs !== null && typeof params.startArgs === 'object'
             ? { ...params.startArgs, storage: { facet: name, grant: params.storageBytes } }
             : params.startArgs;
-        started = facet.startProcess(startArgs);
+        started = charged.then(() => facet.startProcess(startArgs));
     }
     catch (error) {
         void release();
@@ -383,7 +386,9 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             ledger.reportSize(name, row);
         return payload;
     }, async (error) => {
-        throw withFacetBudgetNamed(await facetNameCountDurable(ctx), error);
+        // The count is read only to name the budget: a count storage cannot answer names nothing.
+        const consumed = await facetNameCountDurable(ctx).catch(() => null);
+        throw consumed === null ? error : withFacetBudgetNamed(consumed, error);
     });
     // A caller reads whichever of `started` and the lifecycle it needs, so keep
     // the runtime from reporting the other as an unhandled rejection.
@@ -393,8 +398,9 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         // A facet cannot die without taking its Durable Object — and this object —
         // with it, so there is no independent death to report.
         lost: new Promise(() => { }),
-        handleHttpRequest: (request) => facet.handleHttpRequest(request),
-        handleWebSocketRequest: (request) => facet.fetch(request),
+        // A request can arrive before the boot call; it creates the facet as that call would.
+        handleHttpRequest: (request) => charged.then(() => facet.handleHttpRequest(request)),
+        handleWebSocketRequest: (request) => charged.then(() => facet.fetch(request)),
         release,
         name,
         slot,

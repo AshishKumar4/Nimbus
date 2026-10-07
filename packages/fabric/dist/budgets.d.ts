@@ -334,23 +334,39 @@ export declare function assertModuleMapWithinCodeLimit(modules: Record<string, u
 export declare const FACET_ID_LIFETIME_BUDGET = 65536;
 /** Where the ledger persists the count of facet names ever minted. */
 export declare const FACET_NAME_HIGH_WATER_KEY = "fabric_facet_name_high_water";
-/** The slice of storage the facet-name ledger persists through. */
+/**
+ * The slice of storage the facet-name ledger persists through. A multi-key
+ * put is one atomic write, as Durable Object storage's is: a charge's counts
+ * and its name's row land together or not at all.
+ */
 interface FacetNameLedgerStorage {
     storage: {
         get(key: string): Promise<unknown> | unknown;
-        put(key: string, value: unknown): Promise<void>;
+        put(entries: Record<string, unknown>): Promise<void>;
     };
 }
 /**
- * Advance the durable ledger to this incarnation's name count, if it is a new
- * lifetime high. Chained behind adoption so the comparison is always against
- * the real persisted value; a failed write leaves the old link's count and the
- * next mint tries again — the ledger may transiently undercount, never over.
+ * Charge the slot book's `slot` before its facet is created. A fresh
+ * incarnation restarts the book at zero and issues the same `proc-slot-`
+ * names again, so only a slot past the slot high-water is a name never
+ * minted before; any other costs nothing, so a slot may be charged on every
+ * use. Resolves once the charge is durable.
  */
-export declare function recordFacetNameMinted(ctx: FacetNameLedgerStorage, count: number): void;
-/** The best count available without awaiting storage: minted or adopted. */
+export declare function chargeFacetSlot(ctx: FacetNameLedgerStorage, slot: number): Promise<void>;
+/**
+ * Charge an explicit facet name before its facet is created: its first use
+ * ever consumes one lifetime ID, and any later use, in this incarnation or
+ * another, costs nothing, so a caller may charge a name on every use.
+ * `refuseAtWall` refuses a first use at the wall; without it the platform's
+ * own failure at creation is what stops it, named by the ledger
+ * (withFacetBudgetNamed). Resolves with the count once the charge is durable.
+ */
+export declare function chargeFacetName(ctx: FacetNameLedgerStorage, name: string, { refuseAtWall }: {
+    refuseAtWall: boolean;
+}): Promise<number>;
+/** The count as last read or charged, without awaiting storage: 0 before the first read. */
 export declare function facetNameCount(ctx: FacetNameLedgerStorage): number;
-/** The count with adoption awaited, for a first failure on a fresh boot. */
+/** The count once every charge so far has settled, read from storage if no read has yet succeeded. */
 export declare function facetNameCountDurable(ctx: FacetNameLedgerStorage): Promise<number>;
 /**
  * The lifetime facet-ID ledger: how many facet names this fabric has ever

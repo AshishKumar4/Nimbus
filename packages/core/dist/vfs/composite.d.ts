@@ -20,7 +20,7 @@
  * removeRecursive, which is walked. Nothing is emulated where the emulation
  * would change what the operation means.
  */
-import type { Principal, SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsWriteObserver } from './vfs.js';
+import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsWriteObserver } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { type VfsErrorCode } from './vfs-error.js';
 /**
@@ -339,6 +339,28 @@ export declare class CompositeVFS implements VFS {
     route(path: string, options?: {
         follow?: boolean;
     }): Promise<VfsRoute>;
+    /**
+     * Where a mutation of `path` lands: the namespace path its lookup resolves
+     * (links on the way followed, the last only with `follow`), the mount
+     * point it is on ('/' for the root), and whether that mount is read-only.
+     * The lookup is the mutations' own (onMutation's), so a writer that asks
+     * before it writes lands where the operation would. Rejects as that
+     * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO. Synchronous while
+     * the lookup stays on synchronous backends.
+     */
+    mutationRoute(path: string, options?: {
+        follow?: boolean;
+    }): Awaitable<{
+        readonly path: string;
+        readonly point: string;
+        readonly readOnly: boolean;
+    }>;
+    /**
+     * Whether `path` is a directory above a live mount point (not the root):
+     * one the namespace keeps a directory for its mounts, so removing it is
+     * EBUSY and a file at it EISDIR.
+     */
+    isAboveMount(path: string): boolean;
     /**
      * Whether the namespace answers `path` itself rather than the root
      * backend alone: a path on another mount, a directory above a mount point

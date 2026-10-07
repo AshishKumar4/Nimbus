@@ -49,6 +49,8 @@ import { errorText } from '../_shared/error-text.js';
 import { SinkWriter } from '../_shared/byte-stream.js';
 import { exists } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerLaunchHost } from './server-launch.js';
+import { parseNodeCommandLine, type NodeCommandLine, type NodeLaunch } from './node-cli.js';
+import { nodeEvalProgram, nodeStdinPrintProgram } from './node-eval.js';
 
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
@@ -103,6 +105,12 @@ export interface RuntimeRunOpts {
   /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */
   signal?: AbortSignal;
   /**
+   * A Node program's command line (RuntimeSpec.nodeCommandLine): its options
+   * (`process.execArgv`), its conditions, what it preloads, and its `-e`
+   * code; with `print`, the program's code returns the value to print.
+   */
+  node?: NodeLaunch;
+  /**
    * The pipe or redirect the program's stdin is (`echo hi | node x.js`,
    * `node x.js < in.txt`); absent when stdin is the terminal. A runner
    * delivers its bytes as they arrive, never holding the program for the
@@ -154,6 +162,39 @@ export interface ScriptResolutionFs {
  * candidates, so `bun ./tools` finds `tools/index.js` the way real bun does
  * rather than trying to read the directory as source.
  */
+/**
+ * Another runtime's command line, as the registry has always read it:
+ * flags up to the program (a bare `-` is the program, read from stdin), the
+ * first `-e`/`--eval` taking its code; `-v`/`--version` and `-h`/`--help`
+ * among them.
+ */
+function genericCommandLine(name: string, args: readonly string[]): NodeCommandLine | { error: string; exitCode: number } {
+  let span = 0;
+  let evalCode: string | undefined;
+  let evalFlag = false;
+  while (span < args.length && args[span].startsWith('-') && args[span] !== '-') {
+    const flag = args[span++];
+    if (flag === '-e' || flag === '--eval') {
+      if (!evalFlag) evalCode = args[span];
+      evalFlag = true;
+      if (span < args.length) span++;
+    }
+  }
+  const flags = args.slice(0, span);
+  if (evalFlag && !evalCode) return { error: `${name}: -e requires an argument\n`, exitCode: 1 };
+  return {
+    execArgv: [],
+    programIndex: span,
+    conditions: [],
+    require: [],
+    import: [],
+    ...(evalCode !== undefined ? { eval: evalCode } : {}),
+    print: false,
+    version: flags.includes('-v') || flags.includes('--version'),
+    help: flags.includes('--help') || flags.includes('-h'),
+  };
+}
+
 export async function resolveRuntimeScriptPath(
   fs: ScriptResolutionFs,
   cwd: string,
@@ -232,6 +273,12 @@ export interface RuntimeSpec {
    * iff they share the runFresh contract.
    */
   supportsBinSpawn?: boolean;
+  /**
+   * The command line is Node's (node-cli.ts): its options take their values
+   * as Node's table says, NODE_OPTIONS is read (and refused as Node refuses
+   * it), and the program's conditions and execArgv go to the run.
+   */
+  nodeCommandLine?: boolean;
   /**
    * The runner routes a program that starts a server to a resident process
    * (node-runner.ts runFresh), so the handler reports whether it does
@@ -374,6 +421,26 @@ export function buildRuntimeHandler(
         ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
         : { stdin: pipedStdin }),
     };
+    // ── Flag-span computation (primitive #1) ──
+    //
+    // Real-Node only treats args UP TO the first non-flag token as
+    // CLI flags. Pre-refactor, version/help/eval scanned the entire
+    // args array, breaking `node /path/to/tsc --version` (the user's
+    // --version was misinterpreted as a node flag).
+    // The command line: Node's own reading of it (node-cli.ts) for node, the
+    // one parser its options, execArgv, conditions and program come from;
+    // for the other runtimes, flags up to the program, `-e` taking its code.
+    const line = spec.nodeCommandLine ? parseNodeCommandLine(args, ctx.env?.NODE_OPTIONS ?? '') : genericCommandLine(name, args);
+    if ('error' in line) {
+      ctx.stderr.write(line.error);
+      return line.exitCode;
+    }
+    const flagSpan = line.programIndex;
+    // What a node run takes of its command line (RuntimeRunOpts.node).
+    const { programIndex: _programIndex, version: _version, help: _help, print, ...launch } = line;
+    // A node program's argv is its own: Node's options are execArgv. Another runtime's carries its flags.
+    const leadingFlags = spec.nodeCommandLine ? [] : args.slice(0, flagSpan);
+
     /**
      * Run `code` as this invocation's program, whichever way the arguments
      * named it (-e, the REPL, stdin, a file): what the program is (its argv,
@@ -389,6 +456,10 @@ export function buildRuntimeHandler(
       stdin?: Pick<RuntimeRunOpts, 'stdin' | 'stdinFile' | 'output' | 'stdinPid'>;
       reserved?: boolean;
       launchesServer?: boolean;
+      /** The code returns the value `node -p` prints (node-eval.ts): Node prints only an eval's, not a file's. */
+      print?: boolean;
+      /** Node refuses the code before it loads `--import`'s modules (NodeEvalProgram.refusedBeforeImports): none load. */
+      refusedBeforeImports?: boolean;
     }): Promise<number> => {
       let result: RuntimeRunResult;
       try {
@@ -403,6 +474,9 @@ export function buildRuntimeHandler(
           dirname: program.dirname,
           command: program.command,
           output: programStdin.output,
+          ...(spec.nodeCommandLine
+            ? { node: { ...launch, print: program.print === true, ...(program.refusedBeforeImports ? { import: [] } : {}) } }
+            : {}),
           ...program.stdin,
           ...(program.reserved === false ? {} : reservedProcess),
           ...(captureOutput ? { captureOutput: true } : {}),
@@ -420,55 +494,34 @@ export function buildRuntimeHandler(
       return result.exitCode;
     };
 
-    // ── Flag-span computation (primitive #1) ──
-    //
-    // Real-Node only treats args UP TO the first non-flag token as
-    // CLI flags. Pre-refactor, version/help/eval scanned the entire
-    // args array, breaking `node /path/to/tsc --version` (the user's
-    // --version was misinterpreted as a node flag).
-    let flagSpan = 0;
-    // A bare `-` is not a flag: it is the program itself, read from stdin
-    // (`node - a b <<'EOF' ... EOF`, as installers pipe their helper scripts).
-    while (flagSpan < args.length && args[flagSpan].startsWith('-') && args[flagSpan] !== '-') {
-      flagSpan++;
-      const prev = args[flagSpan - 1];
-      // -e / --eval consumes one value; advance past it.
-      if ((prev === '-e' || prev === '--eval') && flagSpan < args.length) {
-        flagSpan++;
-      }
-    }
-    const flagSlice = args.slice(0, flagSpan);
-
     // ── --version ──
-    if (flagSlice.includes('-v') || flagSlice.includes('--version')) {
+    if (line.version) {
       ctx.stdout.write(spec.version + '\n');
       return 0;
     }
 
     // ── --help ──
-    if (flagSlice.includes('--help') || flagSlice.includes('-h')) {
+    if (line.help) {
       ctx.stdout.write(spec.helpText);
       if (!spec.helpText.endsWith('\n')) ctx.stdout.write('\n');
       return 0;
     }
 
-    // ── -e / --eval ──
-    const evalIdx = flagSlice.indexOf('-e') !== -1
-      ? flagSlice.indexOf('-e')
-      : flagSlice.indexOf('--eval');
-    if (evalIdx !== -1) {
-      const code = args[evalIdx + 1];
-      if (!code) {
-        ctx.stderr.write(`${name}: -e requires an argument\n`);
-        return 1;
-      }
+    // ── -e / --eval, and -p / --print ──
+    // Node's eval code as Node prepares it (node-eval.ts); `-p`'s returns
+    // the value the process prints when it exits.
+    if (line.eval !== undefined) {
+      const { code, refusedBeforeImports } = spec.nodeCommandLine ? nodeEvalProgram(line.eval, print) : { code: line.eval, refusedBeforeImports: false };
+      const programArgs = args.slice(flagSpan);
       return runProgram(code, {
-        argv: args.slice(evalIdx + 2),
+        print,
+        refusedBeforeImports,
+        argv: programArgs,
         filename: '<eval>',
         dirname: ctx.cwd || '/home/user',
         command: binSpawn?.command || `${name} -e ...`,
         stdin: programStdin,
-        launchesServer: await launches(code, null, ctx.cwd || '/home/user', args.slice(evalIdx + 2)),
+        launchesServer: await launches(code, null, ctx.cwd || '/home/user', programArgs),
       });
     }
 
@@ -484,7 +537,7 @@ export function buildRuntimeHandler(
       terminal.signalKeys = false;
       try {
         return await runProgram(spec.repl, {
-          argv: args.slice(0, scriptIdx),
+          argv: leadingFlags,
           filename: '<repl>',
           dirname: ctx.cwd || '/home/user',
           command: binSpawn?.command || name,
@@ -509,9 +562,13 @@ export function buildRuntimeHandler(
     // `process.argv[2]`, where a program written for real Node looks. The
     // program's own stdin is what is left after the read: nothing.
     if (scriptPath === '-') {
-      const code = ctx.stdin ? (await ctx.stdin.readAll()) : '';
+      const input = ctx.stdin ? (await ctx.stdin.readAll()) : '';
+      // `-p` prints the value of the code it read (eval_stdin.js).
+      const { code, refusedBeforeImports } = spec.nodeCommandLine && print ? nodeStdinPrintProgram(input) : { code: input, refusedBeforeImports: false };
       return runProgram(code, {
-        argv: [...args.slice(0, scriptIdx), '-', ...args.slice(scriptIdx + 1)],
+        print,
+        refusedBeforeImports,
+        argv: [...leadingFlags, '-', ...args.slice(scriptIdx + 1)],
         filename: '[stdin]',
         dirname: ctx.cwd || '/home/user',
         command: binSpawn?.command || `${name} -`,
@@ -647,7 +704,7 @@ export function buildRuntimeHandler(
       ? filename.substring(0, filename.lastIndexOf('/'))
       : '/';
     return runProgram(code, {
-      argv: [...args.slice(0, scriptIdx), filename, ...args.slice(scriptIdx + 1)],
+      argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
       filename,
       dirname,
       command: binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,

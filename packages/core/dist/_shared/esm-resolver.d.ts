@@ -12,7 +12,8 @@
  *   - `#name` resolves through the package scope's `imports`, a bare name
  *     through the package's own name (self-reference), then node_modules,
  *     then `exports` (conditions `node`, `import`, `module-sync`, `default`,
- *     taken in the map's own key order) or the legacy main;
+ *     and the program's own from `--conditions`, taken in the map's own key
+ *     order) or the legacy main;
  *   - `file:`, `node:` and `data:` URLs; every other scheme is refused.
  *
  * The node shims embed it as source (scripts/bundle-facet-workers.mjs
@@ -58,6 +59,11 @@ export interface EsmResolver {
     /** Node's import-attribute check, for the format a resolution loads as. */
     validateAttributes(url: string, format: EsmFormat, attributes: Record<string, unknown>): void;
 }
-export declare function createEsmResolver(host: EsmResolverHost): EsmResolver;
+/** What a resolver is created with beyond its host. */
+export interface EsmResolverOptions {
+    /** The program's own conditions (`node --conditions`, `-C`, NODE_OPTIONS'), beside Node's defaults. */
+    conditions?: readonly string[];
+}
+export declare function createEsmResolver(host: EsmResolverHost, options?: EsmResolverOptions): EsmResolver;
 export {};
 //# sourceMappingURL=esm-resolver.d.ts.map

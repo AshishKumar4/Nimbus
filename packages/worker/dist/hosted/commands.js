@@ -344,6 +344,7 @@ export async function registerHostedCommands(self, workspace) {
         run: (code, opts) => runFresh(facetMgr, code, opts),
         supportsBinSpawn: true,
         routesServers: true,
+        nodeCommandLine: true,
         repl: jsReplProgram(`Welcome to Node.js ${NODE_VERSION}.\nType ".help" for more information.\n`),
     };
     {

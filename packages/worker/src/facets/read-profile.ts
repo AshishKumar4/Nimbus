@@ -47,6 +47,7 @@
 import { packageRootOf } from './data-plan.js';
 import { ANONYMOUS_TENANT } from '../_shared/session-router.js';
 import { ID_COMPONENT_RE } from '../auth/types.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 
 /** The R2 surface this needs. */
 export interface ReadProfileBucket {
@@ -123,8 +124,7 @@ export function profilePrincipal(tenantSegment: string | null | undefined): stri
 
 /** A principal's tag in a profile: never the principal itself. */
 export async function principalTag(principal: string): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(principal)));
-  return Array.from(digest.subarray(0, 8), (b) => b.toString(16).padStart(2, '0')).join('');
+  return (await sha256Hex(principal)).slice(0, 16);
 }
 
 /** One miss the supervisor can vouch for: a regular file in a package, and its size. */

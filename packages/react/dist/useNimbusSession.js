@@ -25,6 +25,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { NimbusTerminalError, } from './types.js';
+import { nimbusAttachUrl } from './NimbusTerminal.js';
 /**
  * Headless hook returning the same state `<NimbusTerminal />` exposes.
  */
@@ -32,13 +33,7 @@ export function useNimbusSession(opts) {
     const { endpoint, token, sessionId } = opts;
     const [ready, setReady] = useState(false);
     const [error, setError] = useState(null);
-    const attachUrl = useMemo(() => {
-        if (!endpoint || !token)
-            return null;
-        const base = endpoint.replace(/\/+$/, '');
-        const path = sessionId ? `/s/${encodeURIComponent(sessionId)}/` : '/new';
-        return `${base}${path}?nimbus_token=${encodeURIComponent(token)}`;
-    }, [endpoint, token, sessionId]);
+    const attachUrl = useMemo(() => (endpoint && token ? nimbusAttachUrl(endpoint, token, sessionId) : null), [endpoint, token, sessionId]);
     useEffect(() => {
         if (!endpoint)
             return;

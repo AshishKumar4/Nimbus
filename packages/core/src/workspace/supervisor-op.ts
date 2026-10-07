@@ -1,4 +1,4 @@
-import { isPendingChunkError, type SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { isPendingChunkError, type SqliteVFS, type WaveMountReach } from '../vfs/sqlite-vfs.js';
 import { z } from 'zod';
 import { traced, type SpanRecorder } from '@nimbus-sh/platform/tracing.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
@@ -477,6 +477,7 @@ const NATIVE_OPS = {
     if (!e.stream) throw new Error('supervisor op writeBatchStream: no stream');
     const fence = e.waveFence;
     let admit: (() => void) | undefined;
+    let mountReach: WaveMountReach | undefined;
     if (fence !== undefined) {
       if (t.deliveries === undefined || fence.hostIncarnation !== t.deliveries.incarnation || e.pid === undefined) {
         throw Object.assign(
@@ -485,9 +486,11 @@ const NATIVE_OPS = {
         );
       }
       t.bridge(e.pid, e.cred);
-      admit = t.deliveries.admitWave(e.pid, fence.writer, fence.wave, fence.attempt).check;
+      const admission = t.deliveries.admitWave(e.pid, fence.writer, fence.wave, fence.attempt);
+      admit = admission.check;
+      mountReach = admission.reach;
     }
-    return fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit });
+    return fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit, mountReach });
   },
   // A write-wave epoch for the live process that asks, on this instance:
   // the only writer identity a fenced writeBatchStream is admitted under.

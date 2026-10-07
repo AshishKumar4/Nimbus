@@ -1,5 +1,7 @@
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError } from './vfs-error.js';
 import { normalizeVfsPath } from './path.js';
+import { DIRENT_TYPES } from './dirent-type.js';
+import { S_IFMT } from './vfs.js';
 /** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
 export function comparePaths(a, b) {
     const n = Math.min(a.length, b.length);
@@ -57,8 +59,9 @@ const SYNTH_RUNTIME_STAT = {
  * SQLite revision.
  */
 export function runtimeStatOf(stat) {
-    const typeBits = stat.type === 'directory' ? 0o040000 : stat.type === 'symlink' ? 0o120000 : 0o100000;
-    const mode = stat.mode === undefined ? typeBits | (stat.type === 'directory' ? 0o755 : 0o644) : (stat.mode & 0o170000 ? stat.mode : typeBits | stat.mode);
+    // Format bits the backend's mode leaves out are its coarse type's (dirent-type.ts).
+    const typeBits = DIRENT_TYPES[stat.type].format;
+    const mode = stat.mode === undefined ? typeBits | (stat.type === 'directory' ? 0o755 : 0o644) : (stat.mode & S_IFMT ? stat.mode : typeBits | stat.mode);
     return {
         dev: stat.dev ?? 0, ino: stat.ino ?? 0, nlink: stat.nlink ?? 1, type: stat.type, size: stat.size,
         ctime: stat.ctimeMs ?? stat.mtimeMs, atime: stat.atimeMs ?? stat.mtimeMs, mtime: stat.mtimeMs,
@@ -788,6 +791,31 @@ export class CompositeVFS {
             // that its holder does not hold as one) is refused as an operation on it is.
             return then(this.reachable(at, false), () => ({ point: mount.point, source, path: relativeTo(mount.point, at) }));
         }));
+    }
+    /**
+     * Where a mutation of `path` lands: the namespace path its lookup resolves
+     * (links on the way followed, the last only with `follow`), the mount
+     * point it is on ('/' for the root), and whether that mount is read-only.
+     * The lookup is the mutations' own (onMutation's), so a writer that asks
+     * before it writes lands where the operation would. Rejects as that
+     * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO. Synchronous while
+     * the lookup stays on synchronous backends.
+     */
+    mutationRoute(path, options) {
+        return reported({ syscall: 'route', path }, () => then(this.resolve(path, options?.follow === true, false), (at) => {
+            this.present(at);
+            const { mount } = this.locate(at);
+            return { path: at, point: mount.point, readOnly: mount.options.readOnly === true };
+        }));
+    }
+    /**
+     * Whether `path` is a directory above a live mount point (not the root):
+     * one the namespace keeps a directory for its mounts, so removing it is
+     * EBUSY and a file at it EISDIR.
+     */
+    isAboveMount(path) {
+        const at = normalizePath(path);
+        return at !== ROOT_POINT && !this.table.mounts.has(at) && this.isStructural(at);
     }
     /**
      * Whether the namespace answers `path` itself rather than the root

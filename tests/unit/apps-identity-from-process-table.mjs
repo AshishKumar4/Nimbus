@@ -93,7 +93,7 @@ function fakeSessionFs(root) {
     readFileString: (p) => files.get(p),
     readFile: (p) => new TextEncoder().encode(files.get(p) ?? ''),
   };
-  return { as: () => view, events: { on: () => () => {} } };
+  return { as: () => view, events: { on: () => () => {} }, setWaveRouter() {} };
 }
 
 function setup({ storage = new Map(), world, directory = fakeDirectory(), notices = [], sessionFs = null } = {}) {
