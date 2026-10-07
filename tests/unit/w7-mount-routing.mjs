@@ -181,7 +181,7 @@ function wave(...parts) {
 
 // ── Review: receipts, removal reports, guards, links, spooling, re-sends, writeBatch ──
 
-/** A MemoryVFS whose chosen operations refuse or report as `overrides` says. */
+/** A MemoryVFS whose chosen operations refuse or report as `overrides` says (each called with the VFS, then its arguments). */
 function scripted(overrides) {
   const inner = new MemoryVFS();
   return new Proxy(inner, {
@@ -208,7 +208,7 @@ function scripted(overrides) {
 {
   const s = session();
   const stubborn = scripted({
-    removeRecursive: (_self, _target, path) => ({ removed: [], kept: [path + '/locked'], failures: [] }),
+    removeRecursive: (_self, path) => ({ removed: [], kept: [path + '/locked'], failures: [] }),
   });
   s.files.vfs.mount('/stubborn', stubborn);
   stubborn.mkdir('/d');
