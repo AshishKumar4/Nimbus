@@ -1941,9 +1941,11 @@ function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure, unseen) 
     try {
       value = await mutation(snapshot.content, snapshot);
     } catch (error) {
-      // A verdict is the authority's answer; anything else (a lost RPC) may
-      // have landed, and the parked bytes stay until that is known.
-      if (!__nimbusIsDurabilityFailure(error)) throw __nimbusRefuseParkedWrite(snapshot, error, unseen);
+      // A verdict is the authority's answer; anything else (the client could
+      // not get one) may have landed. A whole write's parked bytes stay (sent
+      // again, they replace the same file); an append's go, as refused: sent
+      // again under a new number, it could land twice.
+      if (!__nimbusIsDurabilityFailure(error) || snapshot.append) throw __nimbusRefuseParkedWrite(snapshot, error, unseen);
       throw error;
     }
     if (__vfsWriteGenerations[snapshot.key] === snapshot.generation) {
@@ -2346,24 +2348,16 @@ function __nimbusScheduleVfsWriteBack() {
 async function __nimbusDrainVfsWrites(supervisor) {
   const paths = Object.keys(__vfsWrites);
   const outcomes = await Promise.allSettled([
-    ...paths.map(async (path) => {
-      const persist = () => __nimbusFlushVfsWrite(
-        path,
-        (content, snapshot) =>
-          __nimbusPersistVfsWrite(supervisor, path, content, snapshot),
-        false,
-        true,
-      );
-      try {
-        await persist();
-      } catch (error) {
-        // The authority may have committed before the RPC response was lost.
-        // One retry is safe: full writes are idempotent, while appends retain
-        // the same module/operation identity and are deduplicated by authority.
-        if (error && typeof error.code === "string") throw error;
-        await persist();
-      }
-    }),
+    // Each sent once: the process's client re-sends a write whose answer was
+    // lost (under its number, so it applies once), and what it could not
+    // send is a failure, not another attempt.
+    ...paths.map((path) => __nimbusFlushVfsWrite(
+      path,
+      (content, snapshot) =>
+        __nimbusPersistVfsWrite(supervisor, path, content, snapshot),
+      false,
+      true,
+    )),
     __nimbusDrainVfsMutations(),
   ]);
   const failure = outcomes.find((outcome) => outcome.status === "rejected");

@@ -1487,7 +1487,8 @@ const __fsMod = (() => {
     const declared = error && typeof error === "object" && typeof error.code === "string" ? error.code : undefined;
     const known = declared !== undefined && Number.isInteger(Number(__constantsMod[declared]));
     const mapped = _fsErr(known ? declared : "EIO", syscall, p, dest);
-    if (!known && message) mapped.message += " — " + message;
+    // An I/O failure says what failed (the client's write the session did not answer, a lost call).
+    if ((!known || declared === "EIO") && message) mapped.message += " — " + message;
     return mapped;
   }
 
