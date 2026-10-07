@@ -4161,7 +4161,22 @@ export async function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundle
   const lease = await acquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
   prefetchBundleStart(VFS_BUNDLE_MAX_BYTES);
   try {
-    return await _buildPrefetchBundle(vfs, options);
+    try {
+      return await _buildPrefetchBundle(vfs, options);
+    } catch (error) {
+      // The modules earlier runs executed are what an earlier run got through
+      // without; they must not stop this one starting. A launch they (or
+      // their emits, which the walk does not count) take past the bound is
+      // built again with them as optional roots (RequiredModuleRoot.optional):
+      // each staged whole as far as the bound allows, and what does not fit
+      // loads late, as the run that learned it loaded it. Only a launch that
+      // overflows pays the second build.
+      const learned = options.executedModules ?? [];
+      if (!(error instanceof ClosureBoundExceededError) || learned.length === 0 || learned.every((root) => root.optional)) throw error;
+      console.warn(`[facet-manager] the modules earlier runs executed take ${options.scriptPath ?? 'the entry code'}'s map past `
+        + `its ${options.maxBundleBytes ?? VFS_BUNDLE_MAX_BYTES}-byte bound (${error.outcome.lastPath}); they are staged as optional roots, as far as the bound allows`);
+      return await _buildPrefetchBundle(vfs, { ...options, executedModules: learned.map((root) => ({ ...root, optional: true })) });
+    }
   } finally {
     prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
     lease.release();
@@ -4202,16 +4217,8 @@ async function _buildPrefetchBundle(
   const configRoots = [...preloads, ...await toolConfigRoots(vfs, cwd, scriptPath)];
   const walkRoots = (roots: Array<RequiredModuleRoot | PreloadModuleRoot>) => prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath,
     maxBundleBytes, pacer?.spend.bind(pacer), undefined, roots.length > 0 ? roots : undefined, conditions);
-  let prefetch = await walkRoots([...configRoots, ...executedModules ?? []]);
-  // But a launch they would take past the bound walks them again as optional
-  // roots (RequiredModuleRoot.optional): what fits is staged, and what does
-  // not loads late, as the run that learned them loaded it. They are what an
-  // earlier run got through without; they must not stop this one starting.
-  if ('kind' in prefetch && prefetch.kind === 'closure-exceeds-bound' && (executedModules?.length ?? 0) > 0) {
-    console.warn(`[facet-manager] the modules earlier runs executed take ${scriptPath ?? 'the entry code'}'s required closure past `
-      + `its ${maxBundleBytes}-byte bound; they are staged as optional roots, as far as the bound allows`);
-    prefetch = await walkRoots([...configRoots, ...executedModules!.map((root) => ({ ...root, optional: true }))]);
-  }
+  // A launch they take past the bound is built again with them optional (buildPrefetchBundle).
+  const prefetch = await walkRoots([...configRoots, ...executedModules ?? []]);
   if ('kind' in prefetch) {
     // A required closure larger than the bound can never launch as a
     // snapshot. Surface it as the process's own failure rather than a
