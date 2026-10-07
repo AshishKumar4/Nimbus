@@ -279,6 +279,13 @@ export declare class WaveWriter<Meta = undefined> {
     private ownPath;
     /** collectDirectoryPaths' chain from `path` upward, to the first directory already owned. */
     private walkChain;
+    /**
+     * Send what is buffered when a removal of `path` is pending in it: a wave
+     * names a path once, and what is made there must land after the removal,
+     * as rm then create does (the directory's permission decides, not the old
+     * file's mode).
+     */
+    private afterRemoval;
     /** Cut waves until `path` (with its chain) and `bytes` fit beside what is buffered. */
     private admit;
     private buffer;
