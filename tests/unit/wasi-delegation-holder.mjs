@@ -507,6 +507,23 @@ async function until(ready, what) {
   assert.equal(dec.decode(s.kernel.readFile('home/user/proj/acc/ro')), 'mine+too');
 }
 
+// ── Merged gate: a file written through reads back what it was given, at once ──
+// Red before (live, python): written through (a shared directory is never
+// held), closed, then stat'd and read by name, the file was what the session
+// had before its write was sent: size 0, no bytes.
+{
+  const s = session();
+  const fd = await s.fs.open('/tmp/through.txt', { write: true, create: true, truncate: true, mode: 0o644 });
+  assert.equal(s.fs.through?.(fd.id) ?? true, true);
+  await s.fs.write(fd.id, null, enc.encode('abc'));
+  await s.fs.close(fd.id);
+  assert.equal((await s.fs.stat('/tmp/through.txt')).size, 3, 'a stat after the close missed the write');
+  const again = await s.fs.open('/tmp/through.txt', { read: true });
+  assert.equal(dec.decode(await s.fs.read(again.id, 0, 10)), 'abc', 'a read after the close missed the write');
+  await s.fs.close(again.id);
+  await s.fs.settle();
+}
+
 // ── Review D8 (race): what a description writes while its grant's recall is sent goes through ──
 // Red before: the description went on deciding while the recall's flush
 // waited, and the drain after it replayed the whole file over the peer's write.

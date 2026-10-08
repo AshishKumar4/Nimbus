@@ -463,6 +463,9 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * first when one is owed, then `local`, whose DELEGATE hands the call on.
    */
   const answer = <T>(name: string, local: () => T | Delegate | Promise<T | Delegate>, remote: () => T | Promise<T>): T | Promise<T> => {
+    // What this process wrote through is the session's before the store
+    // answers for it: sent first (and the barrier owed), so it reads its own writes.
+    if (holder !== null && holder.throughPending()) return holder.send().then(() => answer(name, local, remote));
     const settle = (value: T | Delegate): T | Promise<T> => {
       if (value !== DELEGATE) { counts.local++; return value; }
       delegated(name);

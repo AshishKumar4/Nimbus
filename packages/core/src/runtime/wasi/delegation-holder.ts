@@ -147,6 +147,13 @@ export interface DelegationHolder {
   /** A refusal the session has made of what this process logged, thrown now (with its errno), not waiting for anything: what a close reports. */
   reportRecorded(): void;
   /**
+   * Whether a change written through (no subtree held decides it: its bytes
+   * are the session's, not held here) was logged since the store last
+   * caught up: what the store answers waits for it to be sent (send), so the
+   * process reads its own writes.
+   */
+  throughPending(): boolean;
+  /**
    * The process is about to change a name or an access at or above `keys`
    * (anywhere, when absent) by a route not decided here (a call of the
    * session's, or a change by name the client logs): each file it holds
@@ -232,6 +239,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
 
   /** Whether anything was logged since the store was last told the session changed (sent). */
   let unsent = false;
+  /** Of that, a change written through (a write, truncate or close of a description): the store answers for it only once it is sent (throughPending). */
+  let throughUnsent = false;
 
   /**
    * `file` stops being decided here (its grant is shared, recalled or gone,
@@ -363,6 +372,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
 
   /** The store owes a barrier only once something this process decided reached the session. */
   const sentSome = (): void => {
+    throughUnsent = false;
     if (!unsent) return;
     unsent = false;
     options.sent?.();
@@ -625,6 +635,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
           if (offset === null) handle.position = at + bytes.byteLength;
         }
         unsent = true;
+        throughUnsent = true;
         return bytes.byteLength;
       }
       const start = offset ?? handle.position;
@@ -655,6 +666,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         client.submit({ type: 'call', call: { call: 'ftruncate', path: file.key, ino: file.through.ino, ...(handle.description === undefined ? {} : { description: handle.description }), size } }, { acknowledged: true });
         file.length = size;
         unsent = true;
+        throughUnsent = true;
         return;
       }
       if (!room(file, size)) throw fsError('ENOSPC', 'ftruncate', handle.path);
@@ -684,6 +696,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       for (const other of handles.values()) if (other === handle) return;
       client.submit({ type: 'call', call: { call: 'close', path: handle.file.key, description: handle.description } }, { acknowledged: true });
       unsent = true;
+      throughUnsent = true;
     },
 
     keyOf: (handleId) => handleOf(handleId).file.key,
@@ -802,6 +815,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       sentSome();
     },
     reportRecorded: () => failed(),
+
+    throughPending: () => throughUnsent,
 
     changing: (keys) => throughAt(keys),
     settle: async () => {
