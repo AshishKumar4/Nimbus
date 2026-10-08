@@ -93,6 +93,9 @@ export interface DelegationStats {
         readonly granted: number;
         readonly answered: number;
         readonly expired: number;
+        /** What writers waited on recalls of them, in all and at the longest (ms). */
+        readonly waitMs: number;
+        readonly longestWaitMs: number;
     };
 }
 export declare class Delegations {

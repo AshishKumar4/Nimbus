@@ -64,7 +64,10 @@ const NONE = new Set();
 export class Delegations {
     options;
     held = new Map();
-    counts = { grants: 0, share: 0, revoke: 0, timedOut: 0, readGranted: 0, readAnswered: 0, readExpired: 0 };
+    counts = {
+        grants: 0, share: 0, revoke: 0, timedOut: 0,
+        readGranted: 0, readAnswered: 0, readExpired: 0, readWaitMs: 0, readLongestWaitMs: 0,
+    };
     /** Each holder's leases. */
     byPid = new Map();
     /**
@@ -257,7 +260,10 @@ export class Delegations {
             grants: this.counts.grants,
             recalls: { share: this.counts.share, revoke: this.counts.revoke },
             timedOut: this.counts.timedOut,
-            reads: { granted: this.counts.readGranted, answered: this.counts.readAnswered, expired: this.counts.readExpired },
+            reads: {
+                granted: this.counts.readGranted, answered: this.counts.readAnswered, expired: this.counts.readExpired,
+                waitMs: this.counts.readWaitMs, longestWaitMs: this.counts.readLongestWaitMs,
+            },
         };
     }
     recall(held, kind) {
@@ -309,7 +315,12 @@ export class Delegations {
             held.waiter('revoke');
         else
             held.asked.push('revoke');
-        return promise;
+        const asked = Date.now();
+        return promise.then(() => {
+            const waited = Date.now() - asked;
+            this.counts.readWaitMs += waited;
+            this.counts.readLongestWaitMs = Math.max(this.counts.readLongestWaitMs, waited);
+        });
     }
     forget(held) {
         if (this.held.get(held.owner) !== held)
