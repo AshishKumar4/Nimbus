@@ -5485,6 +5485,16 @@ const __fsMod = (() => {
     return readdirSync(p, opts);
   }
 
+  // fs.promises.copyFile, and fs.promises.cp of a file: the source read as
+  // fs.promises.readFile reads it, the copy written as writeFile writes it.
+  async function _copyFileAsync(src, dest, mode) {
+    if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && await _existsAsync(dest)) {
+      throw _fsErr("EEXIST", "copyfile", src, dest);
+    }
+    try { await _writeFileAsync(dest, await _readFileAsync(src)); }
+    catch (error) { throw _asCallError(error, "copyfile", src, dest); }
+  }
+
   async function _existsAsync(p) {
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.exists === "function") {
@@ -7999,8 +8009,11 @@ const __fsMod = (() => {
       const srcAbs = _resolve(src);
       const srcK = _strip(srcAbs);
       const destK = _strip(_resolve(dest));
-      const content = _bundleLookup(srcAbs);
-      if (content !== undefined) { await _writeFileAsync(dest, content); return; }
+      // A file is copied as copyFile copies it: read through the read that
+      // judges it (the session's, or readFileSync's), never from the cell
+      // held under its name, which may be a write-only file's bytes or the
+      // session's denial of the read.
+      if (_bundleLookup(srcAbs) !== undefined) { await _copyFileAsync(src, dest); return; }
       if (!o.recursive) {
         const err = new Error("EISDIR: cp without recursive on directory: " + src);
         err.code = "EISDIR"; throw err;
@@ -8030,13 +8043,7 @@ const __fsMod = (() => {
       };
       await walk("");
     },
-    copyFile: async (src, dest, mode) => {
-      if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && await _existsAsync(dest)) {
-        throw _fsErr("EEXIST", "copyfile", src, dest);
-      }
-      try { await _writeFileAsync(dest, await _readFileAsync(src)); }
-      catch (error) { throw _asCallError(error, "copyfile", src, dest); }
-    },
+    copyFile: (src, dest, mode) => _copyFileAsync(src, dest, mode),
     rename: async (oldP, newP) => { await _renameAsync(oldP, newP); },
     rmdir: async (p) => { await _rmdirAsync(p); },
     realpath: async (p) => __pathMod.resolve(String(p)),
