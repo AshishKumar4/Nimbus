@@ -31,7 +31,7 @@ import type { NodeTypeScript } from '@nimbus-sh/core/runtime/typescript-strip.js
 import type { ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
-import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type BundleCellResultStore, type BundleCellTransformStats } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
 import { StdinTaken } from '../runtime/stop-replay-host.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
@@ -278,10 +278,10 @@ interface FacetVfsState {
     /**
      * The cells lowered from ESM or compiled from TypeScript
      * (transformEsmInBundle), whose module wraps them in the block scope
-     * (commonjs-cell.ts, THE WRAPPER). Every other code cell is CommonJS as
-     * Node would run it.
+     * (commonjs-cell.ts, THE WRAPPER), each true where it is an ES module.
+     * Every other code cell is CommonJS as Node would run it.
      */
-    lowered?: Set<string>;
+    lowered?: Map<string, boolean>;
     /**
      * The files staged only to run whose module is an emit: the map carries the
      * emit and not the file, which no read asked for. A synchronous read of one
@@ -475,8 +475,8 @@ export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceS
     emits?: ReadonlyMap<string, string>;
     /** FacetVfsState.columnMaps. */
     columnMaps?: ReadonlyMap<string, string>;
-    /** Cells lowered from ESM or compiled from TypeScript, wrapped in the block scope. */
-    lowered?: ReadonlySet<string>;
+    /** FacetVfsState.lowered. */
+    lowered?: ReadonlyMap<string, boolean>;
     /** Files whose emit the map carries and not the file (FacetVfsState.codeOnly). */
     codeOnly?: ReadonlySet<string>;
     /** Runtime code staged for this launch: `{ cjs }` module text by key. */

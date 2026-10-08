@@ -6501,6 +6501,9 @@ error: the Oxc transform crashed (${reason})`);
     lineBreakG,
     nonASCIIwhitespace
   };
+  function parse3(input, options) {
+    return Parser.parse(input, options);
+  }
   function parseExpressionAt2(input, pos, options) {
     return Parser.parseExpressionAt(input, pos, options);
   }
@@ -6509,6 +6512,11 @@ error: the Oxc transform crashed (${reason})`);
   }
 
   var MODULE_PARSE_OPTIONS = { ecmaVersion: "latest", sourceType: "module", allowHashBang: true };
+  function parseJavaScriptModule(source) {
+    const program = parse3(source, MODULE_PARSE_OPTIONS);
+    if (!isAstNode(program)) throw new TypeError(`acorn parsed a ${program.type}, not a node`);
+    return program;
+  }
   var AcornParserClass = Parser;
   var FUNCTION_TYPES =   new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
   var StatementParser = class extends AcornParserClass {
@@ -6770,6 +6778,28 @@ error: the Oxc transform crashed (${reason})`);
     }
     parts.push(source.slice(at2));
     return parts.join("");
+  }
+  function nodeList(node, key) {
+    const value = node[key];
+    if (!Array.isArray(value)) return [];
+    return value.filter(isAstNode);
+  }
+  function nodeProp(node, key) {
+    if (!node) return void 0;
+    const value = node[key];
+    return isAstNode(value) ? value : void 0;
+  }
+  function nodeName(node) {
+    if (node?.type !== "Identifier" && node?.type !== "Literal") return void 0;
+    if (node.type === "Identifier") return stringField(node, "name");
+    return literalStringValue(node);
+  }
+  function stringField(node, key) {
+    const value = node[key];
+    return typeof value === "string" ? value : void 0;
+  }
+  function literalStringValue(node) {
+    return node?.type === "Literal" && typeof node.value === "string" ? node.value : void 0;
   }
   var NODE_TYPES = new Set(Object.keys({
     ArrayExpression: true,
@@ -9976,11 +10006,11 @@ error: the Oxc transform crashed (${reason})`);
     return typescriptLoader(path) === "ts" && !isTypescriptDeclarationFile(path);
   }
 
-  function typeScriptFormat(path, packageType, stripped) {
+  function typeScriptFormat(path, packageType, stripped, asJavaScript = false) {
     if (!stripsTypeScript(path)) return null;
     const ext = vfsPathExtension(path);
-    if (ext === ".mts") return "module";
-    if (ext === ".cts") return "commonjs";
+    if (ext === ".mts" && !asJavaScript) return "module";
+    if (ext === ".cts" && !asJavaScript) return "commonjs";
     const type = packageType();
     if (type !== null) return type;
     return containsModuleSyntax(stripped()) ? "module" : "commonjs";
@@ -10028,19 +10058,20 @@ error: the Oxc transform crashed (${reason})`);
     const unbound = [];
     if (scope === "node") for (const [name, references] of wrapperUses) {
       const to = ES_MODULE_UNBOUND_NAMES[name];
-      for (const { start, end, use } of references) {
-        unbound.push({ start, end, text: use === "typeof" ? "(void 0)" : use === "shorthand" ? `${name}: ${to}` : to });
+      for (const { start, end: end2, use } of references) {
+        unbound.push({ start, end: end2, text: use === "typeof" ? "(void 0)" : use === "shorthand" ? `${name}: ${to}` : to });
       }
     }
-    const { code, head, columns } = emitModule(module, records, {
+    const { code, head, end, columns } = emitModule(module, records, {
       body: topLevelAwait ? "async" : "sync",
       names: generatedNames(module, names),
       exportsObject: "arguments[2].exports",
       requireFunction: "arguments[1]",
       edits: unbound,
-      bind: { metadata: "arguments[2].__nimbusImportMeta", parentUrl, metas, dynamicImports }
+      bind: { metadata: "arguments[2].__nimbusImportMeta", parentUrl, metas, dynamicImports },
+      sourceLength: source.length
     });
-    const map = { head, columns };
+    const map = { head, tail: code.length - end, columns };
     return { code, map: JSON.stringify(map), warnings: [] };
   }
   function readEsmRecords(source) {
@@ -10279,10 +10310,10 @@ error: the Oxc transform crashed (${reason})`);
         if (binding.kind === "namespace") continue;
         const read = binding.imported === "default" ? `${interop}.default` : `${mod}${key(binding.imported)}`;
         reads.set(binding.local, read);
-        for (const { start, end, use } of binding.references) {
+        for (const { start, end: end2, use } of binding.references) {
           if (use === "write") continue;
           const callee = use === "call" ? `(0, ${read})` : use === "leading-call" ? `void 0, (0, ${read})` : null;
-          uses.push(callee === null ? { start, end, text: use === "shorthand" ? `${binding.local}: ${read}` : read } : { start, end, text: callee, call: true });
+          uses.push(callee === null ? { start, end: end2, text: use === "shorthand" ? `${binding.local}: ${read}` : read } : { start, end: end2, text: callee, call: true });
         }
       }
     }
@@ -10293,7 +10324,7 @@ error: the Oxc transform crashed (${reason})`);
     const edits = [...options.edits ?? []];
     let exportsAnything = false;
     if (source.startsWith("#!")) edits.push({ start: 0, end: 2, text: "//" });
-    const remove = (start, end) => edits.push({ start, end, text: ";" + blank(source.slice(start + 1, end)) });
+    const remove = (start, end2) => edits.push({ start, end: end2, text: ";" + blank(source.slice(start + 1, end2)) });
     for (const record of records) {
       switch (record.kind) {
         case "import": {
@@ -10333,11 +10364,11 @@ error: the Oxc transform crashed (${reason})`);
         case "export-default": {
           exportsAnything = true;
           const value = temp();
-          const { start, end } = record.expression;
+          const { start, end: end2 } = record.expression;
           const keyword = blank(source.slice(record.start, start));
           const lineBreak2 = keyword.search(/[\n\r\u2028\u2029]/);
           edits.push({ start: record.start, end: start, text: `var ${value} = ({ default: (` + (lineBreak2 === -1 ? "" : keyword.slice(lineBreak2)) });
-          edits.push({ start: end, end: record.end, text: ") }).default;" + blank(source.slice(end, record.end)) });
+          edits.push({ start: end2, end: record.end, text: ") }).default;" + blank(source.slice(end2, record.end)) });
           getters.push(["default", value]);
           break;
         }
@@ -10368,7 +10399,7 @@ error: the Oxc transform crashed (${reason})`);
     if (bind && bind.metas.length > 0) {
       const meta = temp();
       header.push(`const ${meta} = ${bind.metadata};`);
-      for (const { start, end } of bind.metas) edits.push({ start, end, text: meta + blank(source.slice(start, end)).replace(/ /g, "") });
+      for (const { start, end: end2 } of bind.metas) edits.push({ start, end: end2, text: meta + blank(source.slice(start, end2)).replace(/ /g, "") });
     }
     if (bind && bind.dynamicImports.length > 0) {
       const load = temp();
@@ -10380,7 +10411,10 @@ error: the Oxc transform crashed (${reason})`);
     const prologue = [...installed, ...requires, ...imported, ...stars].join(" ");
     const lead = options.body === "async" ? `"use strict";${header.join(" ")} return (async () => { ${prologue}` : `"use strict";${header.join(" ")} ${prologue}`;
     const code = lead + applySourceEdits(source, allEdits) + (options.body === "async" ? "\n})();\n" : "\n");
-    return { code, head: lead.length, columns: columnMap(source, allEdits) };
+    const sourceLength = options.sourceLength ?? source.length;
+    let end = lead.length + sourceLength;
+    for (const edit of allEdits) if (edit.end <= sourceLength) end += edit.text.length - (edit.end - edit.start);
+    return { code, head: lead.length, end, columns: columnMap(source, allEdits) };
   }
   var LINE_BREAK = /\r\n|[\n\r\u2028\u2029]/;
   function columnMap(source, edits) {
@@ -10436,6 +10470,121 @@ error: the Oxc transform crashed (${reason})`);
     return names;
   }
 
+  var NODE_RELEASE = "22.22.3";
+  var NODE_VERSION = `v${NODE_RELEASE}`;
+  var VFS_CAPACITY = 10 * 1024 * 1024 * 1024;
+  var FS_READ_BATCH_REQUEST_BYTES = 4 * 1024 * 1024;
+  var VFS_DELIVERY_RETRY_WINDOW_MS = 5e3;
+  var VFS_DELIVERY_RECEIPT_RETENTION_MS = 3 * VFS_DELIVERY_RETRY_WINDOW_MS;
+  var VFS_DELIVERY_TOMBSTONE_RETENTION_MS = 10 * 6e4;
+  var BUNDLE_MAX_ENCODED_BYTES = 22 * 1024 * 1024;
+  var PREFETCH_CACHE_MAX_BYTES = 10 * 1024 * 1024;
+  var TRANSFORM_STORE_MAX_BYTES = 64 * 1024 * 1024;
+  var TRANSFORM_STORE_MAX_ENTRY_BYTES = TRANSFORM_STORE_MAX_BYTES / 8;
+  var CWD_SNAPSHOT_MAX_FILE_BYTES = 2 * 1024 * 1024;
+  var WASI_RESIDENT_FILE_CAP_BYTES = 8 * 1024 * 1024;
+  var DEFAULT_HOME = "/home/user";
+  function defaultPath(home) {
+    return `/usr/local/bin:/usr/bin:/bin:${home}/.local/bin:${home}/.gem/bin`;
+  }
+  var DEFAULT_PATH = defaultPath(DEFAULT_HOME);
+  var FACET_PROVIDED_PACKAGE_ENTRYPOINTS = Object.freeze({ undici: "index.js" });
+  var FACET_PROVIDED_PACKAGES = Object.freeze(Object.keys(FACET_PROVIDED_PACKAGE_ENTRYPOINTS));
+
+  function topLevelModuleDeclarationRanges(source) {
+    const ranges = [];
+    let active = null;
+    const walked = walkTopLevelModuleTokens(source, (token, syntax, topLevel) => {
+      if (active) {
+        if (token.type === types$1.semi && topLevel) {
+          ranges.push({ ...active, end: token.end });
+          active = null;
+        }
+      } else if (syntax === "import" || syntax === "export") {
+        active = { start: token.start, kind: syntax };
+      }
+      return false;
+    });
+    return walked === null || active ? null : ranges;
+  }
+  var PROVIDED_PACKAGE_HOOK = "__nimbusProvidedPackage";
+  function rewriteProvidedCommonJsModules(source) {
+    if (!source.includes("__commonJS")) return source;
+    const helpers =   new Set(["__commonJS"]);
+    const declarations = topLevelModuleDeclarationRanges(source);
+    if (!declarations) return source;
+    for (const range of declarations) {
+      const declaration = source.slice(range.start, range.end);
+      if (tokenizer2(declaration, { ecmaVersion: "latest", sourceType: "module" }).getToken().type !== types$1._import) continue;
+      const parsed = parseJavaScriptModule(declaration);
+      for (const statement of nodeList(parsed, "body")) {
+        if (statement.type !== "ImportDeclaration") continue;
+        for (const specifier of nodeList(statement, "specifiers")) {
+          if (nodeName(nodeProp(specifier, "imported")) !== "__commonJS") continue;
+          const local = nodeName(nodeProp(specifier, "local"));
+          if (local) helpers.add(local);
+        }
+      }
+    }
+    const tokens = tokenizer2(source, { ecmaVersion: "latest", sourceType: "module", allowHashBang: true });
+    let a = tokens.getToken();
+    let b = tokens.getToken();
+    let c = tokens.getToken();
+    let d = tokens.getToken();
+    let e = tokens.getToken();
+    let previous = types$1.eof;
+    const edits = [];
+    while (a.type !== types$1.eof) {
+      const labelValue = "value" in d ? d.value : void 0;
+      const helperValue = "value" in a ? a.value : void 0;
+      const label = d.type === types$1.string && typeof labelValue === "string" ? labelValue : null;
+      const entry = label === null ? void 0 : Object.entries(FACET_PROVIDED_PACKAGE_ENTRYPOINTS).find(([name, path]) => {
+        const suffix = "node_modules/" + name + "/" + path;
+        return label === suffix || label.endsWith("/" + suffix);
+      });
+      if (a.type === types$1.name && typeof helperValue === "string" && helpers.has(helperValue) && previous !== types$1.dot && previous !== types$1.questionDot && b.type === types$1.parenL && c.type === types$1.braceL && entry && e.type === types$1.parenL) {
+        let parens = 2;
+        let braces = 1;
+        let singleModule = true;
+        let bodySeen = false;
+        let last = e;
+        let pendingComma = false;
+        while (parens > 0) {
+          const token = tokens.getToken();
+          if (token.type === types$1.eof) return source;
+          if (pendingComma && token.type !== types$1.braceR) singleModule = false;
+          pendingComma = false;
+          if (token.type === types$1.braceL || token.type === types$1.dollarBraceL) {
+            if (braces === 1 && parens === 1) bodySeen = true;
+            braces++;
+          } else if (token.type === types$1.braceR) braces--;
+          if (token.type === types$1.parenL) parens++;
+          else if (token.type === types$1.parenR) parens--;
+          if (braces === 1 && parens === 1 && token.type === types$1.comma) pendingComma = true;
+          if (braces === 0 && parens === 1 && token.type !== types$1.braceR) singleModule = false;
+          last = token;
+        }
+        if (singleModule && bodySeen && braces === 0) {
+          edits.push({ start: a.start, end: last.end, text: `(() => ${PROVIDED_PACKAGE_HOOK}(${JSON.stringify(entry[0])}))` });
+        }
+        previous = last.type;
+        a = tokens.getToken();
+        b = tokens.getToken();
+        c = tokens.getToken();
+        d = tokens.getToken();
+        e = tokens.getToken();
+        continue;
+      }
+      previous = a.type;
+      a = b;
+      b = c;
+      c = d;
+      d = e;
+      e = tokens.getToken();
+    }
+    return edits.length === 0 ? source : applySourceEdits(source, edits);
+  }
+
   var amaro = null;
   async function stripTypeScript(code, filename, { mode, sourceMap }, packageType) {
     const { transformSync } = await (amaro ??= Promise.resolve().then(() => __toESM(require_dist(), 1)));
@@ -10469,11 +10618,9 @@ error: the Oxc transform crashed (${reason})`);
     return btoa(binary);
   }
 
+  var runtime = { rewriteDynamicImports, lowerAsyncModule, lowerEsModule, rewriteProvidedCommonJsModules, stripTypeScript };
   Object.assign(globalThis, {
     __nimbusCreateOxcTransform: createOxcTransform,
-    __nimbusRewriteDynamicImports: rewriteDynamicImports,
-    __nimbusLowerAsyncModule: lowerAsyncModule,
-    __nimbusLowerEsModule: lowerEsModule,
-    __nimbusStripTypeScript: stripTypeScript
+    __nimbusTransformRuntime: runtime
   });
 })();

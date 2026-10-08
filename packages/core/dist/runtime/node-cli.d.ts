@@ -65,7 +65,11 @@ export interface NodeCommandLineError {
 }
 /** NODE_OPTIONS split as Node splits it (ParseNodeOptionsEnvVar): spaces part, double quotes group, `\` escapes inside them. */
 export declare function splitNodeOptions(text: string): string[] | NodeCommandLineError;
-/** How Node's loader takes a TypeScript file under these options: stripped, or as JavaScript (`--no-experimental-strip-types`). */
+/**
+ * How Node's loaders take a TypeScript file under these options: by the
+ * strip flag as the options leave it, transformed or stripped, else as
+ * JavaScript (`--no-experimental-strip-types`).
+ */
 export declare function typeScriptStripOptions(launch: Pick<NodeLaunch, 'stripTypes' | 'transformTypes' | 'enableSourceMaps'>): NodeTypeScript;
 /** node's `args` (after `node` itself) and its NODE_OPTIONS, read as Node reads them. */
 export declare function parseNodeCommandLine(args: readonly string[], nodeOptions?: string): NodeCommandLine | NodeCommandLineError;

@@ -30,14 +30,18 @@ export function isEsModuleFile(path, source, packageType) {
     const type = ext === '.js' || ext === '' ? packageType() : null;
     return type === null ? containsModuleSyntax(source) : type === 'module';
 }
-/** Node 22.22.3's get_format.js for TypeScript; `stripped` is read only for a typeless `.ts`. */
-export function typeScriptFormat(path, packageType, stripped) {
+/**
+ * Node 22.22.3's get_format.js for TypeScript; `stripped` is read only where
+ * the package type does not decide. As JavaScript (`--no-experimental-strip-types`),
+ * `.mts` and `.cts` say nothing either: the file is as a `.js` file is.
+ */
+export function typeScriptFormat(path, packageType, stripped, asJavaScript = false) {
     if (!stripsTypeScript(path))
         return null;
     const ext = vfsPathExtension(path);
-    if (ext === '.mts')
+    if (ext === '.mts' && !asJavaScript)
         return 'module';
-    if (ext === '.cts')
+    if (ext === '.cts' && !asJavaScript)
         return 'commonjs';
     const type = packageType();
     if (type !== null)

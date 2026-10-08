@@ -158,10 +158,13 @@ function readOptions(tokens, env) {
             case '--experimental-strip-types':
                 read.stripTypes = !negation;
                 break;
+            // Node applies an option's implications as it reads it (node_options.cc Implies).
             case '--experimental-transform-types':
                 read.transformTypes = !negation;
-                if (!negation)
+                if (!negation) {
+                    read.stripTypes = true;
                     read.enableSourceMaps = true;
+                }
                 break;
             case '--enable-source-maps':
                 read.enableSourceMaps = !negation;
@@ -182,11 +185,15 @@ function readOptions(tokens, env) {
     read.end = i;
     return read;
 }
-/** How Node's loader takes a TypeScript file under these options: stripped, or as JavaScript (`--no-experimental-strip-types`). */
+/**
+ * How Node's loaders take a TypeScript file under these options: by the
+ * strip flag as the options leave it, transformed or stripped, else as
+ * JavaScript (`--no-experimental-strip-types`).
+ */
 export function typeScriptStripOptions(launch) {
-    if (launch.transformTypes)
-        return { mode: 'transform', sourceMap: launch.enableSourceMaps === true };
-    return launch.stripTypes === false ? 'javascript' : { mode: 'strip-only', sourceMap: launch.enableSourceMaps === true };
+    if (launch.stripTypes === false)
+        return 'javascript';
+    return { mode: launch.transformTypes ? 'transform' : 'strip-only', sourceMap: launch.enableSourceMaps === true };
 }
 /** node's `args` (after `node` itself) and its NODE_OPTIONS, read as Node reads them. */
 export function parseNodeCommandLine(args, nodeOptions = '') {

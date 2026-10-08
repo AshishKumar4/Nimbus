@@ -24,7 +24,8 @@ import { vfsPathExtension } from '../vfs/path.js';
 import { mayHaveDynamicImport } from './dynamic-import-rewrite.js';
 import { moduleImporterUrl } from '../_shared/module-importer.js';
 import { lowerEsModule } from './async-module-lowering.js';
-import { rewriteProvidedCommonJsModules, transformSlices, } from './esbuild-service.js';
+import { transformSlices } from './esbuild-service.js';
+import { rewriteProvidedCommonJsModules } from './provided-packages.js';
 import { MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
 import { isEsModuleFile, typeScriptFormat, typeScriptUnderNodeModules } from './module-format.js';
 import { nodeModulesRefusal, typeScriptRefusalShim } from './typescript-refusal.js';
@@ -146,7 +147,7 @@ export function prepareBundleCell(path, source, packageType, scope, stripTypes =
     // scope (module-format.ts): strict, `this` undefined at the top, and no
     // CommonJS wrapper name; in Bun's, with CommonJS's names. TypeScript keeps
     // CommonJS's names, as tsx and ts-node give them.
-    const esm = javaScript ? typeScriptFormat(path, () => packageType, () => source) === 'module' : !typescript && looksLikeEsm(path, source, packageType);
+    const esm = javaScript ? typeScriptFormat(path, () => packageType, () => source, true) === 'module' : !typescript && looksLikeEsm(path, source, packageType);
     // Source is transformed once per path; import.meta reads metadata from
     // each evaluation's module object, including its query and fragment.
     // The source URL still supplies the static parent for rewritten dynamic
@@ -177,7 +178,7 @@ export function prepareBundleCell(path, source, packageType, scope, stripTypes =
     const cell = { path, typescript, lowered: !rewriteOnly, absUrl };
     if (esm && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
         try {
-            return { ...cell, outcome: lowerEsModule(src, scope, absUrl) };
+            return { ...cell, outcome: { ...lowerEsModule(src, scope, absUrl), esModule: scope } };
         }
         catch (e) {
             // Nested past this stack: the host's, then its engine's (runTransformRequest).
@@ -199,9 +200,10 @@ export function settleBundleCell(cell, outcome) {
         if (outcome.transient)
             throw new Error(`esbuild transform unavailable for ${cell.path}: ${outcome.error}`);
         const code = 'typescript' in outcome ? typeScriptRefusalShim(outcome.typescript) : esbuildDiagnosticShim(cell.path, outcome.error);
-        return { code, map: '', lowered: cell.lowered, failed: true };
+        return { code, map: '', lowered: cell.lowered, esModule: false, failed: true };
     }
-    return { code: outcome.code, map: outcome.map, lowered: cell.lowered || outcome.esModule !== undefined, failed: false };
+    const esModule = outcome.esModule !== undefined;
+    return { code: outcome.code, map: outcome.map, lowered: cell.lowered || esModule, esModule, failed: false };
 }
 /**
  * The entry script as the facet compiles it: each dynamic `import()` routed to
@@ -245,7 +247,7 @@ export async function transformBundleCells(cells, { host, store, pacer, scope, s
         stats.transformed++;
         if (!store || key === undefined || !spend)
             return;
-        const refused = await store.put(key, { code: result.code, map: result.map, lowered: result.lowered }, spend);
+        const refused = await store.put(key, { code: result.code, map: result.map, lowered: result.lowered, esModule: result.esModule }, spend);
         if (refused === null)
             return;
         stats.storeErrors++;
@@ -312,7 +314,7 @@ export async function transformEntryScript(code, parentUrl, { host, store, pacer
     if ('error' in outcome)
         throw new Error(`entry dynamic import transform failed: ${outcome.error}`);
     if (store && key !== undefined) {
-        await store.put(key, { code: outcome.code, map: outcome.map, lowered: false }, pacer ? (bytes) => pacer.spend(bytes) : undefined);
+        await store.put(key, { code: outcome.code, map: outcome.map, lowered: false, esModule: false }, pacer ? (bytes) => pacer.spend(bytes) : undefined);
     }
     return outcome.code;
 }

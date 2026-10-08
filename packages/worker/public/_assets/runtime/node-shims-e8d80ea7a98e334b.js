@@ -17930,7 +17930,7 @@ const __nimbusNodeCommandLine = typeof nodeCommandLine === "undefined" ? undefin
 const __nimbusExecArgv = Array.isArray(__nimbusNodeCommandLine?.execArgv) ? __nimbusNodeCommandLine.execArgv.map(String) : [];
 // --no-experimental-strip-types: TypeScript is JavaScript to the CommonJS
 // loader, and has no format to the ES loader.
-const __nimbusTypeScriptAsJavaScript = __nimbusNodeCommandLine?.stripTypes === false && __nimbusNodeCommandLine?.transformTypes !== true;
+const __nimbusTypeScriptAsJavaScript = __nimbusNodeCommandLine?.stripTypes === false;
 // Node defines EventSource only with --experimental-eventsource; workerd's
 // lives on the global scope's prototype.
 if (__nimbusNodeCommandLine !== undefined && __nimbusNodeCommandLine !== null && __nimbusNodeCommandLine.experimentalEventSource !== true) {
@@ -18647,42 +18647,49 @@ __processMod.setSourceMapsEnabled = function setSourceMapsEnabled(val) {
 function __nimbusUnderNodeModules(file) {
   return /[\\/]node_modules[\\/]/.test(file);
 }
-// Node reads a module's map when it compiles it: the launch's modules at its
-// start, a CommonJS module when it is first required. By path, whether it did.
-const __nimbusSourceMapsAtCompile = new Map();
-function __nimbusCompiling(path) {
-  if (__nimbusSourceMapsAtCompile.has(path)) return;
-  const support = __nimbusSourceMapsSupport;
-  __nimbusSourceMapsAtCompile.set(path, support.enabled && (support.nodeModules || !__nimbusUnderNodeModules(path)));
-}
+// Node's source map cache (source_map_cache.js maybeCacheSourceMap): a
+// module's map is read when the module compiles while source maps are on,
+// kept by its file's URL and by its sourceURL, and only looked up after.
 const __nimbusSourceMapEntries = new Map();
+function __nimbusReferrerUrl(name) {
+  if (typeof name !== "string") return undefined;
+  if (__pathMod.isAbsolute(name)) return __urlMod.pathToFileURL(name).href;
+  return name.startsWith("file://") || URL.canParse(name) ? name : undefined;
+}
+function __nimbusMagicComment(content, name) {
+  const magic = new RegExp("\/[*/]#\s+" + name + "=(?<value>[^\s]+)", "g");
+  let last = null;
+  for (let match; (match = magic.exec(content)) !== null;) last = match;
+  return last === null ? null : last.groups.value;
+}
+// A module compiling: `file` its path or URL, `source` a function of its text.
+function __nimbusCompiling(file, source) {
+  const support = __nimbusSourceMapsSupport;
+  if (!support.enabled) return;
+  const filename = __nimbusReferrerUrl(file);
+  if (filename === undefined || (!support.nodeModules && __nimbusUnderNodeModules(filename))) return;
+  const content = source();
+  if (typeof content !== "string") return;
+  const sourceMappingURL = __nimbusMagicComment(content, "sourceMappingURL");
+  if (sourceMappingURL === null) return;
+  let sourceURL = __nimbusMagicComment(content, "sourceURL");
+  if (sourceURL !== null && !/^\w+:\/\//.test(sourceURL)) sourceURL = __urlMod.pathToFileURL(sourceURL).href;
+  const entry = { data: __nimbusSourceMapData(filename, sourceMappingURL), lineLengths: __nimbusLineLengths(content), sourceMap: undefined };
+  __nimbusSourceMapEntries.set(filename, entry);
+  const alias = __nimbusReferrerUrl(sourceURL);
+  if (alias !== undefined) __nimbusSourceMapEntries.set(alias, entry);
+}
 function __nimbusFindSourceMap(sourceURL) {
   if (typeof sourceURL !== "string" || sourceURL.startsWith("node:")) return undefined;
   if (!__nimbusSourceMapsSupport.nodeModules && __nimbusUnderNodeModules(sourceURL)) return undefined;
   try {
-    const url = /^\w+:\/\//.test(sourceURL) ? sourceURL : __urlMod.pathToFileURL(sourceURL).href;
-    let entry = __nimbusSourceMapEntries.get(url);
-    if (entry === undefined) __nimbusSourceMapEntries.set(url, (entry = __nimbusSourceMapEntry(url)));
-    if (entry === null || entry.data == null) return undefined;
+    const entry = __nimbusSourceMapEntries.get(/^\w+:\/\//.test(sourceURL) ? sourceURL : __urlMod.pathToFileURL(sourceURL).href);
+    if (entry?.data == null) return undefined;
     entry.sourceMap ??= new __NimbusSourceMap(entry.data, { lineLengths: entry.lineLengths });
     return entry.sourceMap;
   } catch {
     return undefined;
   }
-}
-function __nimbusSourceMapEntry(url) {
-  if (typeof __nimbusModuleOfFile !== "function") return null;
-  const module = __nimbusModuleOfFile(url) ?? (url.startsWith("file:") ? __nimbusModuleOfFile(builtins.url.fileURLToPath(url)) : null);
-  if (module === null) return null;
-  const compiled = !module.esModule && module.path !== null ? __nimbusSourceMapsAtCompile.get(module.path) : undefined;
-  if (!(compiled ?? __nimbusSourceMapsAtLaunch)) return null;
-  const content = __nimbusModuleSourceText(module);
-  if (content === null) return null;
-  const magic = /\/[*/]#\s+sourceMappingURL=(?<sourceMappingURL>[^\s]+)/g;
-  let last = null;
-  for (let match; (match = magic.exec(content)) !== null;) last = match;
-  if (last === null) return null;
-  return { data: __nimbusSourceMapData(url, last.groups.sourceMappingURL), lineLengths: __nimbusLineLengths(content) };
 }
 function __nimbusSourceMapData(sourceURL, sourceMappingURL) {
   let url = null;
@@ -21591,9 +21598,9 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta("/" + resolvedPath, moduleUrl) });
   try {
     const normalizedPath = resolvedPath.replace(/^\/+/, "");
-    __nimbusCompiling("/" + normalizedPath);
     __nimbusLoadsTypeScript(normalizedPath);
     let cell = __nimbusModuleCell(normalizedPath);
+    let compiledText = null;
     if (!cell) {
       // Not in the launch's map: written after it started, or not reached by
       // its closure. Kept apart from the read ledger, which settles reads. By
@@ -21606,8 +21613,10 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
       const text = __readFileOr(resolvedPath, null);
       if (text === null) throw new Error("Cannot load module '" + resolvedPath + "': it was not in this launch's module map; the next launch of the same command stages it.");
       cell = __nimbusRuntimeModule(normalizedPath, text);
+      compiledText = text;
       globalThis.__nimbusModuleMisses.delete(normalizedPath);
     }
+    __nimbusCompiling("/" + normalizedPath, () => compiledText ?? __nimbusModuleSourceText(__nimbusModuleAtPath(normalizedPath)));
     // A CommonJS module's `this` is its exports, as Node calls its wrapper.
     const evaluation = __nimbusReflectApply(cell, esModule ? undefined : mod.exports, [mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir]);
     // A module with top-level await completes later. require() returns its
@@ -22269,11 +22278,14 @@ function __esmNamespaceOf(names, read) {
   Object.defineProperty(ns, Symbol.toStringTag, { value: "Module" });
   return Object.preventExtensions(ns);
 }
+// Node's defaultLoad: a module the ES loader does not have yet must have a format.
+function __nimbusAssertLoadable(resolution) {
+  if (!__esmNamespaces.has(resolution.url) && !__nimbusEsmJobCached(resolution.path)) __esmResolver.assertLoadable(resolution);
+}
 function __esmLoad(resolution) {
   const cached = __esmNamespaces.get(resolution.url);
   if (cached) return cached;
-  // What require() loaded, Node's loader has: it is not loaded again.
-  if (!__moduleCache.has(String(resolution.path).replace(/^\/+/, ""))) __esmResolver.assertLoadable(resolution);
+  __nimbusAssertLoadable(resolution);
   let ns;
   if (resolution.format === "builtin") {
     const mod = __requireFrom("node:" + resolution.builtin, "");
@@ -22379,7 +22391,7 @@ function __esmLoad(resolution) {
   return ns;
 }
 // A bundled copy of a package the runtime provides, bound to the runtime's
-// (esbuild-service.ts rewriteProvidedCommonJsModules, PROVIDED_PACKAGE_HOOK):
+// (provided-packages.ts rewriteProvidedCommonJsModules, PROVIDED_PACKAGE_HOOK):
 // what require() serves for it, from any module, an ES module included.
 globalThis.__nimbusProvidedPackage = (name) => __require(name);
 
@@ -22593,6 +22605,8 @@ globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, spe
     // Counted as the program's own work: a floating import(...).then(...) keeps
     // the process while it fetches, as Node's loader keeps it while it reads.
     const resolution = await __nimbusTrackOp(__nimbusStageImport(text, parentUrl));
+    // Loaded, then checked against its attributes, as Node's loader does.
+    __nimbusAssertLoadable(resolution);
     __esmResolver.validateAttributes(resolution.url, resolution.format, attributes);
     return __esmLoad(resolution);
   });
@@ -22712,6 +22726,13 @@ function __loadStagedBinding(entry, fromDir) {
  * require() from a specific directory context.
  * This is what each loaded module gets as its require function.
  */
+// Whether the ES loader has the module at `path`: an ES module require() loaded
+// (require(esm)), whose job it keeps. A CommonJS module require() loaded is no job of its.
+function __nimbusEsmJobCached(path) {
+  if (typeof path !== "string") return false;
+  const key = path.replace(/^\/+/, "");
+  return __moduleCache.has(key) && __nimbusModuleCellIsEsModule(key);
+}
 function __requireFrom(id, fromDir, required = true) {
   // Check builtins first (always takes priority)
   if (builtins[id]) return builtins[id];
@@ -22727,7 +22748,7 @@ function __requireFrom(id, fromDir, required = true) {
   const resolved = __resolveFrom(id, fromDir);
   if (!resolved) throw new Error("Cannot find module '" + id + "' (from " + fromDir + ")");
   // An ES module's static import is the ES loader's, which refuses it before the importer runs: no arrow of the importer's.
-  if (!required && __nimbusTypeScriptAsJavaScript && stripsTypeScript(resolved)) {
+  if (!required && __nimbusTypeScriptAsJavaScript && stripsTypeScript(resolved) && !__nimbusEsmJobCached(resolved)) {
     try {
       __esmResolver.assertLoadable({ format: "unknown", path: "/" + String(resolved).replace(/^\/+/, "") });
     } catch (error) {
@@ -22779,6 +22800,7 @@ function __nimbusEntryImport(id) {
 // explained (__nimbusExplainCommonJSGlobalLike).
 function __nimbusEvaluateEntry(wrapper, mod, filename, dirname, esModule) {
   __nimbusLoadsTypeScript(filename);
+  __nimbusCompiling(filename, () => __nimbusModuleSourceText(__nimbusEntryModule()));
   // A file's `this` is its exports, as Node's wrapper is called; -e and
   // stdin code is a script, whose `this` is the global object.
   if (!esModule) {

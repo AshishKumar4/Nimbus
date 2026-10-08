@@ -11,7 +11,7 @@
  */
 import type { Awaitable } from '../vfs/vfs.js';
 import { type ModuleScope, type PackageType } from './module-format.js';
-import type { TypeScriptStripOptions } from './typescript-strip.js';
+import type { StrippedTypeScript, TypeScriptStripOptions } from './typescript-strip.js';
 import type { TypeScriptRefusal } from './typescript-refusal.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
@@ -70,14 +70,6 @@ export declare const BUNDLER_VERSION = "v12";
  * doesn't need it).
  */
 export declare function getSharedRuntimeExternals(specifier: string): string[];
-/**
- * The runtime's function a bound record calls for its package: the one the
- * module system serves (node-shims.ts), named apart from the module's own
- * `require`, which an ES module does not have (module-format.ts).
- */
-export declare const PROVIDED_PACKAGE_HOOK = "__nimbusProvidedPackage";
-/** Bind canonical esbuild/Bun CommonJS records to the runtime's provided packages. */
-export declare function rewriteProvidedCommonJsModules(source: string): string;
 import type * as esbuild from 'esbuild-wasm/esm/browser.js';
 /** What an in-isolate engine offers: esbuild's transform and build, ready to call. */
 export type EsbuildEngine = Pick<typeof esbuild, 'transform' | 'build'>;
@@ -166,6 +158,19 @@ export interface BuildResult {
 }
 type EsbuildBuildApi = Pick<typeof esbuild, 'build'>;
 /**
+ * What a transform request runs besides its engine: the functions the
+ * transform facet's preamble installs (oxc-facet/preamble.ts), passed in
+ * because runTransformRequest is serialized into the facet. Only the
+ * transform facet strips TypeScript.
+ */
+export interface TransformRuntime {
+    rewriteDynamicImports(code: string, parentUrl: string, moduleMetadata?: boolean, routeImports?: boolean): string;
+    lowerAsyncModule(esm: string): string;
+    lowerEsModule(source: string, scope: ModuleScope, parentUrl: string): TransformResult;
+    rewriteProvidedCommonJsModules(source: string): string;
+    stripTypeScript?(code: string, filename: string, options: TypeScriptStripOptions, packageType: PackageType): Promise<StrippedTypeScript>;
+}
+/**
  * One esbuild build in which `plugin` resolves and loads every module: an
  * EsbuildService without a build host builds this way in its own isolate,
  * the esbuild facet so for a build whose rolldown binding died (serialized
@@ -187,16 +192,12 @@ export interface EsbuildTransformRequest {
     options?: EsbuildTransformOptions;
 }
 /**
- * A host's answer for one request: the output, or why esbuild rejected the
- * module. A `transient` error is no verdict on the source: the host could not
- * run the transform this time.
- */
-/**
  * A transform's answer. `transient` marks a failure that is no verdict on the
  * source (retry); `stackExhausted` one where the engine ran out of native
  * stack on the module's nesting, which another engine may still answer
  * (oxc-transform.ts's driver sets it from the RangeError it caught, never
- * from message text).
+ * from message text), with `retry` the request that engine should run where
+ * it differs (stripped TypeScript); `typescript` Node's refusal of a TypeScript file.
  */
 export type EsbuildTransformOutcome = TransformResult | {
     error: string;
@@ -275,6 +276,8 @@ export interface EsbuildServiceOptions {
      * such a call rejects.
      */
     engine?: () => Promise<EsbuildEngine>;
+    /** The type strip a call without a host runs, beside `engine` (a test's amaro): the transform facet's. */
+    stripTypeScript?: TransformRuntime['stripTypeScript'];
     /**
      * The transform host's code identity, given with the host: equal ids
      * transform equal requests to equal outcomes. It is what lets a launch keep
@@ -324,6 +327,8 @@ export declare class EsbuildService {
     /** The in-isolate engine, populated by ensureInit() from `engine`. */
     private _esbuild;
     private readonly engine;
+    /** What an in-isolate transform runs besides its engine. */
+    private readonly runtime;
     /** Build reads use the caller-supplied view, or the one a build names; omit it for transform-only use. */
     constructor(vfs?: EsbuildReadFs, options?: EsbuildServiceOptions);
     /** Whether transforms run in this isolate (on its engine): true unless a transform host was given. */

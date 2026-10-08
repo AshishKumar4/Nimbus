@@ -52,42 +52,49 @@ __processMod.setSourceMapsEnabled = function setSourceMapsEnabled(val) {
 function __nimbusUnderNodeModules(file) {
   return /[\\\\/]node_modules[\\\\/]/.test(file);
 }
-// Node reads a module's map when it compiles it: the launch's modules at its
-// start, a CommonJS module when it is first required. By path, whether it did.
-const __nimbusSourceMapsAtCompile = new Map();
-function __nimbusCompiling(path) {
-  if (__nimbusSourceMapsAtCompile.has(path)) return;
-  const support = __nimbusSourceMapsSupport;
-  __nimbusSourceMapsAtCompile.set(path, support.enabled && (support.nodeModules || !__nimbusUnderNodeModules(path)));
-}
+// Node's source map cache (source_map_cache.js maybeCacheSourceMap): a
+// module's map is read when the module compiles while source maps are on,
+// kept by its file's URL and by its sourceURL, and only looked up after.
 const __nimbusSourceMapEntries = new Map();
+function __nimbusReferrerUrl(name) {
+  if (typeof name !== "string") return undefined;
+  if (__pathMod.isAbsolute(name)) return __urlMod.pathToFileURL(name).href;
+  return name.startsWith("file://") || URL.canParse(name) ? name : undefined;
+}
+function __nimbusMagicComment(content, name) {
+  const magic = new RegExp("\\/[*/]#\\s+" + name + "=(?<value>[^\\s]+)", "g");
+  let last = null;
+  for (let match; (match = magic.exec(content)) !== null;) last = match;
+  return last === null ? null : last.groups.value;
+}
+// A module compiling: \`file\` its path or URL, \`source\` a function of its text.
+function __nimbusCompiling(file, source) {
+  const support = __nimbusSourceMapsSupport;
+  if (!support.enabled) return;
+  const filename = __nimbusReferrerUrl(file);
+  if (filename === undefined || (!support.nodeModules && __nimbusUnderNodeModules(filename))) return;
+  const content = source();
+  if (typeof content !== "string") return;
+  const sourceMappingURL = __nimbusMagicComment(content, "sourceMappingURL");
+  if (sourceMappingURL === null) return;
+  let sourceURL = __nimbusMagicComment(content, "sourceURL");
+  if (sourceURL !== null && !/^\\w+:\\/\\//.test(sourceURL)) sourceURL = __urlMod.pathToFileURL(sourceURL).href;
+  const entry = { data: __nimbusSourceMapData(filename, sourceMappingURL), lineLengths: __nimbusLineLengths(content), sourceMap: undefined };
+  __nimbusSourceMapEntries.set(filename, entry);
+  const alias = __nimbusReferrerUrl(sourceURL);
+  if (alias !== undefined) __nimbusSourceMapEntries.set(alias, entry);
+}
 function __nimbusFindSourceMap(sourceURL) {
   if (typeof sourceURL !== "string" || sourceURL.startsWith("node:")) return undefined;
   if (!__nimbusSourceMapsSupport.nodeModules && __nimbusUnderNodeModules(sourceURL)) return undefined;
   try {
-    const url = /^\\w+:\\/\\//.test(sourceURL) ? sourceURL : __urlMod.pathToFileURL(sourceURL).href;
-    let entry = __nimbusSourceMapEntries.get(url);
-    if (entry === undefined) __nimbusSourceMapEntries.set(url, (entry = __nimbusSourceMapEntry(url)));
-    if (entry === null || entry.data == null) return undefined;
+    const entry = __nimbusSourceMapEntries.get(/^\\w+:\\/\\//.test(sourceURL) ? sourceURL : __urlMod.pathToFileURL(sourceURL).href);
+    if (entry?.data == null) return undefined;
     entry.sourceMap ??= new __NimbusSourceMap(entry.data, { lineLengths: entry.lineLengths });
     return entry.sourceMap;
   } catch {
     return undefined;
   }
-}
-function __nimbusSourceMapEntry(url) {
-  if (typeof __nimbusModuleOfFile !== "function") return null;
-  const module = __nimbusModuleOfFile(url) ?? (url.startsWith("file:") ? __nimbusModuleOfFile(builtins.url.fileURLToPath(url)) : null);
-  if (module === null) return null;
-  const compiled = !module.esModule && module.path !== null ? __nimbusSourceMapsAtCompile.get(module.path) : undefined;
-  if (!(compiled ?? __nimbusSourceMapsAtLaunch)) return null;
-  const content = __nimbusModuleSourceText(module);
-  if (content === null) return null;
-  const magic = /\\/[*/]#\\s+sourceMappingURL=(?<sourceMappingURL>[^\\s]+)/g;
-  let last = null;
-  for (let match; (match = magic.exec(content)) !== null;) last = match;
-  if (last === null) return null;
-  return { data: __nimbusSourceMapData(url, last.groups.sourceMappingURL), lineLengths: __nimbusLineLengths(content) };
 }
 function __nimbusSourceMapData(sourceURL, sourceMappingURL) {
   let url = null;

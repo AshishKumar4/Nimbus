@@ -11,8 +11,12 @@ export declare function declaredPackageType(packageJson: string): PackageType;
  * (containsModuleSyntax), in node_modules as anywhere.
  */
 export declare function isEsModuleFile(path: string, source: string, packageType: () => PackageType): boolean;
-/** Node 22.22.3's get_format.js for TypeScript; `stripped` is read only for a typeless `.ts`. */
-export declare function typeScriptFormat(path: string, packageType: () => PackageType, stripped: () => string): 'module' | 'commonjs' | null;
+/**
+ * Node 22.22.3's get_format.js for TypeScript; `stripped` is read only where
+ * the package type does not decide. As JavaScript (`--no-experimental-strip-types`),
+ * `.mts` and `.cts` say nothing either: the file is as a `.js` file is.
+ */
+export declare function typeScriptFormat(path: string, packageType: () => PackageType, stripped: () => string, asJavaScript?: boolean): 'module' | 'commonjs' | null;
 /** Node refuses to strip a file under node_modules (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING). */
 export declare function typeScriptUnderNodeModules(path: string): boolean;
 /**

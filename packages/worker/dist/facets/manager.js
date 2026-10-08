@@ -51,7 +51,7 @@ import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus
 import { onColdStart } from '@nimbus-sh/fabric/generation.js';
 import { isDynamicWorkerDeadlock, suspendLaunchAdmission } from '@nimbus-sh/fabric/budgets.js';
 import { FencedWork, FENCED_WORK_KEY_PREFIX, RESIDENT_PROVEN_MS, } from '@nimbus-sh/fabric/fenced-work.js';
-import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/provided-packages.js';
 import { bundleTypescriptLoader, esbuildDiagnosticShim, isBundleModuleCandidate, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
 import { TransformStore } from './transform-store.js';
 import { parseResolvablePackageJson, } from '@nimbus-sh/core/_shared/exports-resolver.js';
@@ -639,7 +639,7 @@ function entryModule(userCode, filename, cwd, esModule, esModuleMap) {
     const code = map ? userCode : rewriteProvidedCommonJsModules(userCode);
     const name = commonJsEntryModuleName(filename || '[eval]');
     const path = 'filename || "/home/user/script.js"';
-    const wrapped = wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function', map?.head);
+    const wrapped = wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function', map?.head, map?.tail);
     return {
         name,
         esModule: esModule === true,
@@ -659,7 +659,8 @@ function esModuleMapOf(map) {
 /** A data: URL module as a launch stages it: always an ES module to Node, in the runtime's scope. */
 export async function stagedDataUrlModule(text, moduleScope, esbuild) {
     const result = await esbuild.transform(text, { esModule: moduleScope, moduleMetadata: true, dynamicImportParent: 'data:text/javascript,' });
-    return wrapCommonJsCell(result.code, 'block', esModuleMapOf(result.map)?.head).text;
+    const map = esModuleMapOf(result.map);
+    return wrapCommonJsCell(result.code, 'block', map?.head, map?.tail).text;
 }
 /** What Node's stack names the entry's file: its path, an ES module's file: URL; -e and stdin are [eval] and [stdin], as an ES module [eval1] in the launch's directory. */
 function entryFrameFile(filename, cwd, esModule) {
@@ -1777,7 +1778,7 @@ function retainedVfsStateBytes(state) {
         bytes += path.length + emit.length;
     for (const [path, map] of state.columnMaps ?? [])
         bytes += path.length + map.length;
-    for (const path of state.lowered ?? [])
+    for (const path of state.lowered?.keys() ?? [])
         bytes += path.length;
     for (const path of state.codeOnly ?? [])
         bytes += path.length;
@@ -2099,11 +2100,9 @@ export async function buildFacetVfsBundleSource(bundle, forceSideModules = false
         const code = emit ?? (typeof cell === 'string' && isCodeCellPath(path) ? cell : undefined);
         const adopt = code !== undefined && emit === undefined && commonJsCellReadsBack(path);
         if (code !== undefined) {
-            // TypeScript is lowered too, and keeps CommonJS's names (bundle-cell-transform.ts).
             const esModuleMap = emit === undefined ? null : esModuleMapOf(columnMaps?.get(path));
-            // An ES module the runtime lowered: JavaScript, or TypeScript Node strips (which has its map).
-            const esModule = lowered?.has(path) === true && (bundleTypescriptLoader(path) === null || esModuleMap !== null);
-            const wrapped = wrapCommonJsCell(code, lowered?.has(path) ? 'block' : 'function', esModuleMap?.head);
+            const esModule = lowered?.get(path) === true;
+            const wrapped = wrapCommonJsCell(code, lowered?.has(path) ? 'block' : 'function', esModuleMap?.head, esModuleMap?.tail);
             const name = commonJsCellModuleName(path);
             codeModules[name] = wrapped.text;
             if (esModuleMap !== null && esModuleMap.columns.length > 0)
@@ -3663,8 +3662,9 @@ async function cellPackageTypes(vfs, paths) {
  * sources; a script patching an installed ES module and writing it back).
  *
  * Every cell lowered from ESM or compiled from TypeScript is added to
- * `lowered` (its module's block scope, commonjs-cell.ts THE WRAPPER). An ES
- * module is lowered in the launch's runtime's module `scope`.
+ * `lowered` (its module's block scope, commonjs-cell.ts THE WRAPPER), true
+ * where it is an ES module. An ES module is lowered in the launch's
+ * runtime's module `scope`.
  */
 async function transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, scope, stripTypes, esbuild, pacer, store) {
     // Snapshot the cells first — transforms await; never iterate-and-mutate.
@@ -3679,7 +3679,7 @@ async function transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, s
     return transformBundleCells(cells, { host: esbuild, store, pacer, scope, stripTypes }, (path, result) => {
         placeEmit(path, result.code, result.map);
         if (result.lowered)
-            lowered.add(path);
+            lowered.set(path, result.esModule);
     });
 }
 /** A tool's config file: `<tool>.config.js|ts|mjs|cjs|mts|cts` (vite.config.ts, astro.config.mjs). */
@@ -3944,7 +3944,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     //     cannot take the ES module itself).
     const emits = new Map();
     const columnMaps = new Map();
-    const lowered = new Set();
+    const lowered = new Map();
     // A file staged only to run carries its emit and not itself
     // (FacetVfsState.codeOnly): installed code is most of a map, and each ES
     // module carried twice would halve the closure the bound admits. One staged
@@ -3988,7 +3988,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
         const cell = bundle[path];
         const code = emits.get(path) ?? (isBundleModuleCandidate(path) && bundleTypescriptLoader(path) === null ? cell : undefined);
         // A lowered ES module was bound before it was lowered (esbuild-service.ts preparedTransformSource).
-        if (typeof code !== 'string' || columnMaps.has(path))
+        if (typeof code !== 'string' || lowered.get(path) === true)
             continue;
         await pacer?.spend(code.length);
         let bound;
@@ -5421,26 +5421,30 @@ export class FacetManager {
             const path = entry.path.replace(/^\/+/, '');
             const file = { [path]: entry.text };
             const emits = new Map();
-            let head;
+            const maps = new Map();
             const placeEmit = (at, code, map) => {
                 emits.set(at, code);
-                head = esModuleMapOf(map)?.head;
+                maps.set(at, map);
             };
-            const lowered = new Set();
+            const lowered = new Map();
             const packageTypeOf = await cellPackageTypes(vfs, [path]);
             if (this.esbuild)
                 await transformEsmInBundle(file, placeEmit, lowered, packageTypeOf, moduleScope, stripTypes, this.esbuild, pacer, this._transformStore());
             else
                 _markBundleEsmAsFailed(file, placeEmit, packageTypeOf, 'no esbuild service was given to this launch');
             let code = emits.get(path) ?? file[path];
-            try {
-                code = rewriteProvidedCommonJsModules(code);
+            // A lowered ES module was bound before it was lowered (core esbuild-service.ts preparedTransformSource).
+            if (lowered.get(path) !== true) {
+                try {
+                    code = rewriteProvidedCommonJsModules(code);
+                }
+                catch {
+                    // Unparseable: it stays as written, and requiring it says why.
+                }
             }
-            catch {
-                // Unparseable: it stays as written, and requiring it says why.
-            }
+            const map = esModuleMapOf(maps.get(path));
             const scope = lowered.has(path) || declaresWrapperBinding(code) ? 'block' : 'function';
-            modules.set(codeKey, wrapCommonJsCell(code, scope, head).text);
+            modules.set(codeKey, wrapCommonJsCell(code, scope, map?.head, map?.tail).text);
         }
         return modules.size > 0 ? modules : undefined;
     }

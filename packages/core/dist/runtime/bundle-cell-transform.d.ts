@@ -107,6 +107,8 @@ export interface BundleCellResult {
     /** A lowered ES module's EsModuleMap (async-module-lowering.ts), as JSON; '' for any other. */
     readonly map: string;
     readonly lowered: boolean;
+    /** An ES module lowered for the runtime (lowered too): Node's ES module semantics, whatever its map. */
+    readonly esModule: boolean;
     /**
      * esbuild's verdict was a rejection, and `code` is the shim that reports it.
      * Never stored: a host can report a crash as a rejection, and a stored shim
@@ -141,6 +143,7 @@ export interface StoredBundleCell {
     readonly code: string;
     readonly map: string;
     readonly lowered: boolean;
+    readonly esModule: boolean;
 }
 /**
  * Transform results kept across launches, by content: the worker's
