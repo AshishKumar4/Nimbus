@@ -26,8 +26,8 @@ const BEHAVIORAL = join(import.meta.dirname, '..', 'behavioral');
   const good = { probe: 'frameworks/nuxt-real', assertion: 'a', failure: { status: 503, title: 't' }, reason: 'r', approved: 'user, 2026-10-07', owner: 'o', tracking: 't' };
   for (const [entry, refused] of [
     [{ ...good, assertion: '' }, /assertion is required/],
-    [{ ...good, failure: undefined }, /failure \{ status, title \} is required/],
-    [{ ...good, failure: { status: 503 } }, /failure \{ status, title \} is required/],
+    [{ ...good, failure: undefined }, /failure \{ status, title \} or \{ detail \} is required/],
+    [{ ...good, failure: { status: 503 } }, /failure \{ status, title \} or \{ detail \} is required/],
     [{ ...good, approved: 'main, 2026-10-07' }, /approved must be the user's, dated/],
     [{ ...good, approved: 'user' }, /approved must be the user's, dated/],
     [{ ...good, probe: 'frameworks/no-such-probe' }, /no such probe/],
@@ -79,6 +79,7 @@ const ledger = row('session-ledger', 0);
     output([...checks, [false, 'another assertion', detail]]),
     output(checks, false),
     output(checks).replace('2 pass / 1 fail', '2 pass / 2 fail'),
+    output([...checks, [false, assertion, detail]]).replace('2 pass / 2 fail', '2 pass / 1 fail'),
   ]) {
     const result = grade(text);
     assert.equal(result.exitCode, 1, `mismatch, incomplete probe or extra failure remains red: ${text}`);

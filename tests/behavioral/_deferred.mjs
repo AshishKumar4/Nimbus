@@ -26,13 +26,18 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { HOSTED_DEMO_CHECKS, PRODUCTION_ONLY_CHECKS } from './_probe-target-skips.mjs';
+import { z } from 'zod/v4';
+
+const approvedFailure = z.union([
+  z.object({ status: z.number().int(), title: z.string().trim().min(1) }).strict(),
+  z.object({ detail: z.string().trim().min(1) }).strict(),
+]);
 
 /**
  * @typedef {object} Deferral
  * @property {string} probe      the probe, as run-all names it: its path under tests/behavioral, without .mjs
  * @property {string} assertion  the one assertion that may fail, its exact label (makeAsserter's check name)
- * @property {{ status: number, title: string }} failure  how it may fail: its ✗ detail is `HTTP <status>: <page>`
- *   (_framework-dev.mjs's last response), and the page's <title> is exactly `title`
+ * @property {{ status: number, title: string } | { detail: string }} failure  an exact HTTP status/page title or exact substring of the ✗ detail
  * @property {string} reason     what fails, and why it may ship anyway
  * @property {string} approved   "user, YYYY-MM-DD"
  * @property {string} owner      who fixes it
@@ -58,8 +63,8 @@ export function validateDeferrals(entries) {
     for (const field of ['probe', 'assertion', 'reason', 'approved', 'owner', 'tracking']) {
       if (typeof entry?.[field] !== 'string' || !entry[field].trim()) throw new Error(`_deferred.mjs: ${name}: ${field} is required`);
     }
-    if (!Number.isInteger(entry.failure?.status) || typeof entry.failure?.title !== 'string' || !entry.failure.title.trim()) {
-      throw new Error(`_deferred.mjs: ${name}: failure { status, title } is required: the approved failure itself, not only where it happens`);
+    if (!approvedFailure.safeParse(entry.failure).success) {
+      throw new Error(`_deferred.mjs: ${name}: failure { status, title } or { detail } is required: the approved failure itself, not only where it happens`);
     }
     if (NEVER_DEFERRED.has(entry.probe)) throw new Error(`_deferred.mjs: ${entry.probe} can never be deferred`);
     if (!/^user, \d{4}-\d{2}-\d{2}$/.test(entry.approved)) throw new Error(`_deferred.mjs: ${entry.probe}: approved must be the user's, dated ("user, YYYY-MM-DD"), not ${JSON.stringify(entry.approved)}`);
