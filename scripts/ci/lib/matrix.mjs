@@ -41,10 +41,14 @@ function beyondDeferral(row, entry) {
   const others = outcome.failed.filter((check) => check.label !== entry.assertion);
   if (others.length > 0) return `other assertions failed: ${others.map((check) => `✗ ${check.label}`).join('; ')}`;
   const pinned = outcome.failed.find((check) => check.label === entry.assertion);
-  if (outcome.fail !== 1 || !pinned) {
+  if (outcome.fail !== 1 || outcome.failed.length !== 1 || !pinned) {
     return `its summary says ${outcome.fail} failed, and the one deferrable is ✗ ${entry.assertion}${outcome.failed.length ? '' : ' (no ✗ line found)'}`;
   }
-  // The approved failure itself: `HTTP <status>: <page>`, the page titled as approved.
+  if ('detail' in entry.failure) {
+    const fragments = [entry.failure.detail].flat();
+    return fragments.every((fragment) => pinned.detail.includes(fragment)) ? null
+      : `it failed with ${JSON.stringify(pinned.detail.slice(0, 120))}, not the approved detail containing every fragment ${JSON.stringify(fragments)}`;
+  }
   const http = /^HTTP (\d{3}): (.*)$/.exec(pinned.detail);
   const title = http ? /<title[^>]*>([^<]*)<\/title>/i.exec(http[2])?.[1] : undefined;
   if (Number(http?.[1]) !== entry.failure.status || title !== entry.failure.title) {
