@@ -125,8 +125,8 @@ if (process.env.NIMBUS_GLOBAL_SCOPE_EVAL_CHILD) {
     const detail = (violations[0] ?? evalError);
     realStderrWrite(`MODULE-EVAL FAILED: ${detail?.message}\n${detail?.stack}\n`);
     realProcess.exitCode = 1;
-  } else if (typeof entrypoint !== 'function') {
-    realStderrWrite('MODULE-EVAL FAILED: module did not evaluate to an entrypoint class\n');
+  } else if (typeof entrypoint?.fetch !== 'function') {
+    realStderrWrite('MODULE-EVAL FAILED: module did not evaluate to its program (a default export with fetch)\n');
     realProcess.exitCode = 1;
   } else {
     realStdoutWrite('MODULE-EVAL CLEAN\n');

@@ -101,6 +101,11 @@ const ABI_ADVISORIES_LITERAL = JSON.stringify(PACKAGE_ABI_POLICY.rejects.map(
 
 export function generateShimsCode(): string {
   return `
+// What process.exit throws to end the program where it stands; its host
+// catches it as the exit.
+class __ProcessExit extends Error {
+  constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
+}
 // Node's internal errors (core _shared/node-error.ts), first: the shims, the
 // preambles below and the code they load make them by name, and the cell
 // runtime and generated code reach them as __nimbusNodeError and

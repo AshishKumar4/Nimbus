@@ -16,12 +16,9 @@ function makePump(cpReadStdin, reportExit) {
   };
   const code = generateShimsCode();
   const factory = new Function(
-    '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', '__ProcessExit',
+    '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     '"use strict";let stdout = ""; let stderr = "";' + code + '\n;return { process: __processMod };'
   );
-  class ProcessExit extends Error {
-    constructor(codeArg) { super(`process.exit(${codeArg})`); this.code = codeArg; }
-  }
   const sandbox = factory(
     {},
     {},
@@ -33,7 +30,6 @@ function makePump(cpReadStdin, reportExit) {
     { NIMBUS_ATTACHED_TTY: '1', NIMBUS_CP_CHILD_PID: '42' },
     '/home/user/main.mjs',
     '/home/user',
-    ProcessExit,
   );
   return sandbox.process;
 }

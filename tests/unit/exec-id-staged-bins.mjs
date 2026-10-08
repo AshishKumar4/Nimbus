@@ -36,7 +36,7 @@ Date.now = () => realNow() + skew;
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
   NimbusLoadedEntrypoint: () => ({
-    async fetch() { return Response.json({ exitCode: 0, stdout: 'opencode 0.0.0\n', stderr: '' }); },
+    async run() { return Response.json({ exitCode: 0, stdout: 'opencode 0.0.0\n', stderr: '' }); },
     async startProcess() { return { ok: true }; },
     async handleHttpRequest() { return new Response('ok'); },
   }),

@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { mock } from 'bun:test';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '../../packages/core/src/runtime/stdin-read.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import {
   beginLoaderFetch,
   beginLoaderFetchWhenFree,
@@ -54,6 +55,10 @@ function launch({ stops = 1, signal, ctx = {}, processes = new SessionProcessSup
     _staticReadPlan: async () => ({}),
     _recordLaunchLearning: async () => {},
     _w5RecordTermination: () => {},
+    // How a run's end is recorded (_end): no ports, writers or residents here.
+    portRegistry: new PortRegistry(), processRpcResources: new Map(),
+    journalDraining: new Set(), endsAfterDrain: new Map(), _pairedServeFacet: new Map(),
+    revokeProcessVfsWriters: () => {},
     _execViaLoader: async (_code, opts) => {
       runs.push(held());
       assert.deepEqual(held(), [entry.pid], 'preparation and the relaunch own exactly one admission hold');

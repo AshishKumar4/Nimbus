@@ -26,6 +26,7 @@ import {
   beginLoaderFetch,
   DO_DYNAMIC_WORKER_LIMIT,
   dynamicWorkerHeadroom,
+  launchWorkerKey,
   loaderLedgerStats,
   withLaunchAdmission,
 } from '../../packages/fabric/src/budgets.ts';
@@ -84,7 +85,7 @@ function oneShotHost(doId) {
       request: new Request('https://run/', { method: 'POST', body: JSON.stringify({ writerId }), signal }),
       onWriterActivated() {},
     }, (response) => response.text());
-    return { writerId, done };
+    return { writerId, pid, done };
   };
   /** End every run that has started; how many that was. */
   const finishStarted = () => {
@@ -99,10 +100,10 @@ function oneShotHost(doId) {
 // ── (1) with room: at once, and the slot comes back ─────────────────────────
 {
   const h = oneShotHost('admission-room');
-  const { writerId, done } = h.run();
+  const { writerId, pid, done } = h.run();
   await tick();
   assert.equal(h.log.running, 1, 'a run with room starts at once');
-  assert.deepEqual(loaderLedgerStats(h.ctx).inFlightWorkers, [`one-shot:${writerId}`]);
+  assert.deepEqual(loaderLedgerStats(h.ctx).inFlightWorkers, [launchWorkerKey(pid)], 'as its process\'s one worker');
   h.finish.get(writerId)();
   assert.equal(await done, `ran ${writerId}`);
   assert.equal(dynamicWorkerHeadroom(h.ctx), DO_DYNAMIC_WORKER_LIMIT, 'its slot is given back when it ends');

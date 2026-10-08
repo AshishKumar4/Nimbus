@@ -564,6 +564,13 @@ export interface OneShotCodeSpec {
 }
 
 /**
+ * A one-shot's program: its module map, or a stage the composed assembler
+ * (stagedBootAssembler) turns into one in a stateless isolate, on that
+ * loader's miss, so a map as large as opencode's is never built in the host.
+ */
+export type OneShotCode = OneShotCodeSpec | { stage: unknown };
+
+/**
  * Everything a host needs to run one program to completion.
  *
  * Separate from {@link ProcessHostParams} because the two differ in whether
@@ -590,7 +597,7 @@ export interface OneShotParams {
    * of the caller's frame, which would otherwise hold a second full copy of the
    * program for as long as the program runs.
    */
-  code(): Promise<OneShotCodeSpec>;
+  code(): Promise<OneShotCode>;
   /** The invocation. Its body carries argv/env/cwd; its signal bounds the run. */
   request: Request;
   /**

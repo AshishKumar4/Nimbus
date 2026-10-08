@@ -23,6 +23,7 @@ import {
   beginLoaderFetch,
   DO_DYNAMIC_WORKER_LIMIT,
   dynamicWorkerHeadroom,
+  launchWorkerKey,
   loaderLedgerStats,
 } from '../../packages/fabric/src/budgets.ts';
 import { classifyMessage } from '../../packages/platform/src/oom-classify.ts';
@@ -163,7 +164,7 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
   await handle.booted();
   const resident = loaderLedgerStats(ctx).inFlightWorkers;
   assert.equal(resident.length, 1, 'a booted resident process holds one worker, idle or not');
-  assert.ok(resident[0].startsWith('nimbus-process:resident-ledger-do:7'), 'keyed by its loader id');
+  assert.deepEqual(resident, [launchWorkerKey(7)], 'keyed as its process\'s one worker');
   assert.equal(dynamicWorkerHeadroom(ctx), DO_DYNAMIC_WORKER_LIMIT - 1);
   handle.kill();
   await handle.done;

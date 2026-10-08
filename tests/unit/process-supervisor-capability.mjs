@@ -23,7 +23,9 @@ const { adoptCtxExports, composeFabric } = await import('../../packages/fabric/s
 
 const PROPS = { doId: 'session-do', pid: 7, writerId: 'run-1', bindingKind: 'process' };
 composeFabric({ supervisorEntrypoint: 'SupervisorRPC' });
-adoptCtxExports({ SupervisorRPC: ({ props }) => ({ binding: props }) });
+/** The stateless hop a staged run goes through (NimbusLoadedEntrypoint): set by the case that expects one. */
+let stagedHop = () => { throw new Error('no staged run expected'); };
+adoptCtxExports({ SupervisorRPC: ({ props }) => ({ binding: props }), NimbusLoadedEntrypoint: (options) => stagedHop(options) });
 
 // ── 1. Answered by the host's own supervisorOp, as the process, once ───────
 {
@@ -107,6 +109,28 @@ const params = (request) => ({
   const unheard = new Promise((resolve) => setTimeout(() => resolve('still reading'), 2000));
   await assert.rejects(Promise.race([running, unheard]), /killed mid-body/);
   assert.match(await loaded.args[2](), /killed mid-body/);
+}
+
+{
+  // A staged program (opencode) is assembled in the stateless hop, never
+  // here, and run the same way: by `run`, with the capability.
+  const hops = [];
+  stagedHop = ({ props }) => {
+    const hop = { props, async run(...args) { hop.args = args; return Response.json({ exitCode: 0 }); } };
+    hops.push(hop);
+    return hop;
+  };
+  const capability = { capability: 'staged' };
+  const env = { LOADER: { load() { throw new Error('a staged program is never loaded here'); } } };
+  const result = await processes(ctx, env).run(PROPS, () => capability, {
+    ...params(new Request('http://run.local/', { method: 'POST' })),
+    code: async () => ({ stage: { argv: ['opencode', '--version'] } }),
+  }, (response) => response.json());
+  assert.deepEqual(result, { exitCode: 0 });
+  assert.equal(hops.length, 1);
+  assert.deepEqual(hops[0].props.stage, { argv: ['opencode', '--version'] }, 'its stage goes to the hop');
+  assert.equal(hops[0].props.key, 'nimbus-run:session-do:7:run-1', 'keyed by its run');
+  assert.equal(hops[0].args[1], capability, 'and its run gets its host\'s capability');
 }
 
 // ── 3. A run the platform refused is sent again; one the program failed, never ──

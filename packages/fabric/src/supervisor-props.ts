@@ -76,8 +76,9 @@ export function mintProcessSupervisor<T>(mint: (options: { props: SupervisorBind
 
 /**
  * A process's SUPERVISOR as its binding, minted through the composed
- * entrypoint: what a host that answers none in-process hands its one-shots
- * (Supervise). Each call on it is a request to the host.
+ * entrypoint: a resident's, a run's network (its globalOutbound), and what a
+ * host that answers none in-process hands its one-shots (Supervise). Each
+ * call on it is a request to the host.
  */
 export function bindingSupervisor(props: SupervisorBindingProps): object {
   const mint = supervisorEntrypoint(undefined, props.route?.supervisorEntrypoint);

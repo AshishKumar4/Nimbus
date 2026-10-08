@@ -91,7 +91,7 @@ import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { generation, onColdStart } from '@nimbus-sh/fabric/generation.js';
-import { isDynamicWorkerDeadlock, suspendLaunchAdmission } from '@nimbus-sh/fabric/budgets.js';
+import { isDynamicWorkerDeadlock, suspendLaunchAdmission, withLaunchAdmission } from '@nimbus-sh/fabric/budgets.js';
 import {
   FencedWork,
   FENCED_WORK_KEY_PREFIX,
@@ -162,8 +162,6 @@ import {
   type Supervise,
 } from '@nimbus-sh/fabric/process-fabric.js';
 import {
-  createLoadedWorkerEntrypoint,
-  getNimbusCtxExports,
   deleteFacetStorage,
   facetJournal,
   reservedFacetNames,
@@ -411,6 +409,22 @@ interface FacetManagerEnv {
 interface ProcessRpcResources {
   readonly resources: unknown[];
   readonly releaseOnReportExit: boolean;
+}
+
+/** How a process ended: the one record of its end (FacetManager._end). */
+interface ProcessEnding {
+  /** Its exit status. */
+  code: number;
+  /**
+   * Why, when it did not end by its own exit (a signal, a kill, a lost host,
+   * a launch or boot that failed): marked on the table, recorded, and told
+   * to the host (onExternalExit). Its resources go at once.
+   */
+  cause?: string;
+  /** Ended by a kill: the table records it killed, and its terminator runs. */
+  killed?: boolean;
+  /** What a request to one of its ports is told from now on (PortRegistry.ended). */
+  portEnding?: string;
 }
 
 function errorMessage(error: unknown): string {
@@ -1014,10 +1028,6 @@ ${COMMONJS_CELL_RUNTIME_SOURCE}
 // adopts are getters over the map's own text.
 const __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
 
-class __ProcessExit extends Error {
-  constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
-}
-
 export default {
   async fetch(request, workerEnv, workerCtx) {
     const args = await request.json();
@@ -1488,10 +1498,6 @@ ${COMMONJS_CELL_RUNTIME_SOURCE}
 let __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
 
 ${sources.residentStore}
-
-class __ProcessExit extends Error {
-  constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
-}
 
 let __nimbusStarted = false;
 let __nimbusStarting = null;
@@ -5473,32 +5479,55 @@ export class FacetManager {
    * or already booted (its resources are released like a kill).
    */
   private _endBySignal(pid: number, code: number, signal: string): void {
-    this._endFromOutside(pid, code, signal);
+    this._end(pid, { code, cause: signal });
   }
 
   /**
-   * End a running process from outside it (a signal, a lost host): its ports,
-   * RPC resources and writers go, it exits with `code` and `reason`, and the
-   * host hears of it. `portEnding` is what a request to one of its ports is
-   * told from then on (PortRegistry.ended).
+   * The process is over: its ports, writers and RPC resources go, and its
+   * end is recorded, once. Every way a process ends comes here: its own exit
+   * (reportExit, a run's answer), a signal, a kill, a lost host, a launch or
+   * boot that failed.
    */
-  private _endFromOutside(pid: number, code: number, reason: string, portEnding?: string): void {
+  private _end(pid: number, ending: ProcessEnding): void {
     if (this.processes.get(pid)?.state !== 'running' || this.endsAfterDrain.has(pid)) return;
-    this.portRegistry.unregisterByPid(pid, portEnding);
-    this.releaseProcessRpcResources(pid);
-    this.revokeProcessVfsWriters(pid);
-    const end = () => {
+    this.portRegistry.unregisterByPid(pid, ending.portEnding);
+    // A lifetime run reports its own exit before its call ends: its
+    // resources and writers go as that call does (_watchLifetime).
+    if (ending.cause !== undefined || this.processRpcResources.get(pid)?.releaseOnReportExit !== false) {
+      this.releaseProcessRpcResources(pid);
+      this.revokeProcessVfsWriters(pid);
+    }
+    const record = () => {
       if (this.processes.get(pid)?.state !== 'running') return;
-      this.processes.exit(pid, code);
-      this.processes.markExit(pid, code, reason);
-      this.processes.closeInput(pid);
-      try { this.hooks.onExternalExit?.(pid, code, reason); } catch {}
+      if (ending.killed) this.processes.kill(pid, ending.code);
+      else this.processes.exit(pid, ending.code);
+      if (ending.cause !== undefined) {
+        this.processes.markExit(pid, ending.code, ending.cause);
+        this.processes.closeInput(pid);
+        this._w5RecordTermination(pid, ending.code, 'facet', ending.cause);
+        try { this.hooks.onExternalExit?.(pid, ending.code, ending.cause); } catch {}
+      }
       this._teardownPairedServeFacet(pid);
     };
-    // A resident's release drains its write log: its exit is told after,
-    // so what reads its files next (the next prompt, its parent) sees them.
-    if (this.journalDraining.has(pid)) this.endsAfterDrain.set(pid, end);
-    else end();
+    // A resident's release drains its write log: an end from outside it is
+    // told after, so what reads its files next (the next prompt, its parent)
+    // sees them. A kill is recorded at once.
+    if (ending.cause !== undefined && !ending.killed && this.journalDraining.has(pid)) this.endsAfterDrain.set(pid, record);
+    else record();
+  }
+
+  /**
+   * A lifetime run (its start call held open for its life): when that call
+   * ends, so do its resources; one that fails while the process still runs
+   * ends it, as `what` failing. One already over (its own exit, a kill)
+   * rejects the call as an echo of that end, which records nothing again.
+   */
+  private _watchLifetime(pid: number, handle: { done: Promise<unknown> }, what: string): void {
+    this.ctx.waitUntil(
+      handle.done
+        .catch((e: unknown) => this._end(pid, { code: 1, cause: `${what} failed: ${errorMessage(e)}` }))
+        .finally(() => this.releaseProcessRpcResources(pid)),
+    );
   }
 
   /**
@@ -5522,8 +5551,7 @@ export class FacetManager {
     if (entry?.state !== 'running') return;
     console.warn(`[facet-manager] pid ${pid} ("${entry.command}") ended: ${lost.message}`);
     this.hostLosses.set(pid, lost);
-    this._w5RecordTermination(pid, HOST_LOST_EXIT_CODE, 'facet', lost.message);
-    this._endFromOutside(pid, HOST_LOST_EXIT_CODE, lost.message, `"${entry.command}" (pid ${pid}) ended: ${lost.message}`);
+    this._end(pid, { code: HOST_LOST_EXIT_CODE, cause: lost.message, portEnding: `"${entry.command}" (pid ${pid}) ended: ${lost.message}` });
   }
 
   /**
@@ -6564,16 +6592,7 @@ export class FacetManager {
         }
       })().catch(() => undefined));
     }
-    this.portRegistry.unregisterByPid(pid);
-    this.processes.exit(pid, exitCode);
-    const tracked = this.processRpcResources.get(pid);
-    if (tracked?.releaseOnReportExit) {
-      this.releaseProcessRpcResources(pid);
-      this.revokeProcessVfsWriters(pid);
-    } else if (!tracked) {
-      this.revokeProcessVfsWriters(pid);
-    }
-    this._teardownPairedServeFacet(pid);
+    this._end(pid, { code: exitCode });
   }
 
   /**
@@ -6690,70 +6709,6 @@ export class FacetManager {
     // (node-shims.ts, __nimbusPrepareStdin).
     const stdinPump = opts.stdinPipe ? this._pumpStdinPipe(entry.pid, opts.stdinPipe) : null;
 
-    const diagOn = isExecDiagEnabled();
-    const __bundleStart = diagOn ? Date.now() : 0;
-    // Paced like a resident launch: a tree too large for one turn costs
-    // turns, and the pacer's stillWanted check ends a build whose process was
-    // killed while it was suspended. The invocation that granted the last
-    // chunk awaits `chunkEnded` (PacedWork.pump), so it owns the launch until
-    // the pacer settles: once the program is loaded and about to be entered
-    // (_execViaLoader's onLoaded), as a resident launch settles once its
-    // process has booted, and in the finally below for a launch that ends
-    // sooner. Not at the end of the build, which would release that turn
-    // with the module map still to assemble and load on it; and not at the
-    // end of the run, which held the session's launch alarm for as long as
-    // the program ran, so a child it launched and waited on, needing a turn
-    // of its own, never got one.
-    const pacer = this._launchPacer(entry.pid);
-    let vfsState: FacetVfsState;
-    try {
-      vfsState = await this._buildProcessBundle(
-        entry,
-        { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node },
-        pacer,
-      );
-    } catch (err: unknown) {
-      // The require closure that cannot fit the snapshot bound is the
-      // process's own answer, not a build failure: exit 1 with a stderr
-      // that names the entry, the staged bytes at the stop, the bound,
-      // and the remedy — the same shape the got/next guards print.
-      pacer.settle();
-      stdinPump?.stop();
-      if (err instanceof ClosureBoundExceededError) {
-        const o = err.outcome;
-        const mib = (n: number) => `${(n / 1048576).toFixed(1)} MiB`;
-        const stderr =
-          `require closure for ${o.entry} exceeds the snapshot bound: ` +
-          `${mib(o.bytesSeen)} staged when ${o.lastPath} crossed the ` +
-          `${mib(o.bound)} bound; the process was not started.\n` +
-          `Run it as a server or split the entry; there is no flag to bypass.`;
-        if (this.processes.get(entry.pid)?.state === 'running') {
-          this._failLaunch(entry.pid, stderr);
-        }
-        return { exitCode: 1, stdout: '', stderr };
-      }
-      // A failed build is thrown to the caller exactly as before. What must
-      // not be left behind is the process entry: it was spawned above and
-      // would otherwise sit 'running' forever for a process that never
-      // started. A build ended by a kill finds its entry already exited and
-      // reports nothing twice.
-      if (this.processes.get(entry.pid)?.state === 'running') {
-        this._failLaunch(
-          entry.pid,
-          `assembling the filesystem bundle for \`${command}\` failed: ${errorMessage(err)}`,
-        );
-      }
-      throw err;
-    }
-    // Where the one-shot's listing of its namespace walks mounts: what its
-    // launch names, the literal paths of its own code included.
-    const cwd = opts.cwd || '/home/user';
-    this.filesystem?.nameLaunch?.(entry, () => launchNames(cwd, opts.filename, opts.argv ?? [], vfsState.bundlePaths ?? [],
-      [findStaticFsReferences(code, opts.filename?.startsWith('/') ? opts.filename : `${cwd}/[eval]`)]));
-    const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
-    const diagSink: ExecDiagSink | undefined = diagOn
-      ? { loadMs: 0, runMs: 0, moduleMapBytes: 0, bundleBytes: 0 }
-      : undefined;
     const abortController = new AbortController();
     // Ctrl-C / kill on a user program has to end the in-flight run, not just
     // mark the table row: the runOnce request carries this signal.
@@ -6762,175 +6717,246 @@ export class FacetManager {
     // same kill, forwarded onto the controller the runOnce request carries.
     const onShellAbort = () => abortController.abort();
     opts.signal?.addEventListener('abort', onShellAbort, { once: true });
-    // A process whose stdin a read could find short can stop at that read and
-    // run again (runtime/stop-replay.ts): its input channel, if it has one,
-    // and the gate that delivers its output once across its runs.
-    const inputChannel = opts.stdinPipe ? entry.pid : Number(opts.env?.NIMBUS_CP_CHILD_PID || 0);
-    const stoppable = inputChannel > 0 || opts.stdinFile !== undefined;
-    const held = this.stdinReadAhead.open();
-    // A run after a stop that strays is ended here, as a kill ends one, but
-    // it is not a kill: the process fails, naming how it strayed.
-    const divergence = new AbortController();
-    if (stoppable) {
-      this.outputGates.set(entry.pid, new ReplayOutputGate());
-      this.journals.set(entry.pid, new ReplayJournal(() => {
-        this.outputGates.get(entry.pid)?.close();
-        divergence.abort();
-      }));
-      if (opts.stdinFile) this.journals.get(entry.pid)!.bindStdinFile({ path: opts.stdinFile.path, offset: opts.stdinFile.offset, limit: STDIN_SYNC_READ_BYTES });
-    }
-    if (inputChannel > 0) this.stdinTaken.set(inputChannel, new StdinTaken(held, STDIN_SYNC_READ_BYTES));
-    // Each run starts from the umask the process started with: a umask the
-    // program set is its run's own.
-    const startUmask = entry.cred.umask;
-    const runSignal = AbortSignal.any([abortController.signal, divergence.signal]);
+    // Let in once on the ledger, as its launch, before its preparation: the
+    // run claims that admission (runOneShot), and a burst of programs builds
+    // no more maps at once than may run. Killed or refused while it waits, it
+    // never ran.
+    let admitted = false;
     try {
-      // A one-shot holds its module map and what it was seen to read (both in
-      // the bundle), and plans no listing of the namespace (§2.8: the
-      // principal's image is where that comes from). What its closure reads
-      // synchronously by a path its code spells out needs no listing, and is
-      // its data plan.
-      let dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
-      // A stoppable run's network goes through the session (SupervisorRPC's
-      // fetch and connect), which records what it answers; its code is
-      // digested, so a run after a stop that would load other code does not.
-      let launch: ExecLaunchOpts = {
-        ...opts,
-        stopNonce: crypto.randomUUID(),
-        ...(stoppable ? { outbound: true, codeDigest: { value: undefined } } : {}),
-      };
-      let result: FacetExecResult;
-      // What the session has of a captured run's output: the last stopped
-      // run's, until a run after it gets past the read it stopped at (N8).
-      let acceptedCapture: { stdout: string; stderr: string } = { stdout: '', stderr: '' };
-      const journal = this.journals.get(entry.pid);
-      for (let stops = 0; ; stops++) {
-        let outcome: FacetExecResult | { stop: StopRecord };
+      return await withLaunchAdmission(this.ctx, { pid: entry.pid }, abortController.signal, async () => {
+        admitted = true;
+        const diagOn = isExecDiagEnabled();
+        const __bundleStart = diagOn ? Date.now() : 0;
+        // Paced like a resident launch: a tree too large for one turn costs
+        // turns, and the pacer's stillWanted check ends a build whose process was
+        // killed while it was suspended. The invocation that granted the last
+        // chunk awaits `chunkEnded` (PacedWork.pump), so it owns the launch until
+        // the pacer settles: once the program is loaded and about to be entered
+        // (_execViaLoader's onLoaded), as a resident launch settles once its
+        // process has booted, and in the finally below for a launch that ends
+        // sooner. Not at the end of the build, which would release that turn
+        // with the module map still to assemble and load on it; and not at the
+        // end of the run, which held the session's launch alarm for as long as
+        // the program ran, so a child it launched and waited on, needing a turn
+        // of its own, never got one.
+        const pacer = this._launchPacer(entry.pid);
+        let vfsState: FacetVfsState;
         try {
-          outcome = await this._execViaLoader(code, launch, entry, vfsState, dataPlan, runSignal, pacer, diagSink);
-        } catch (error) {
-          const changed = error instanceof ReplayCodeChanged;
-          if (!changed && (!divergence.signal.aborted || abortController.signal.aborted)) throw error;
-          outcome = { stop: { v: 3, kind: 'diverged', run: launch.replay?.run ?? 1, out: [], why: changed ? error.message : journal?.diverged ?? errorMessage(error) } };
-        }
-        if (!('stop' in outcome) && journal?.diverged) {
-          outcome = { stop: { v: 3, kind: 'diverged', run: launch.replay?.run ?? 1, out: [], why: journal.diverged } };
-        }
-        if (!('stop' in outcome)) { result = outcome; break; }
-        // The session decides whether the run may go again: what it did
-        // outside itself is counted here, whatever the guest counted.
-        const refused = outcome.stop.kind === 'stdin' && journal ? journal.unreplayable : null;
-        if (outcome.stop.kind === 'stdin' && outcome.stop.captured) acceptedCapture = outcome.stop.captured;
-        journal?.stopped();
-        // runOneShot released the stopped Worker's nested hold. The child's
-        // outer launch admission must go too: only the session waits on its
-        // stdin now, and keeping that slot could prevent the parent starting
-        // the child whose exit tells it to close this stdin.
-        const resumeAdmission = suspendLaunchAdmission(this.ctx);
-        // The stopped run's descriptors go with it: the next run opens its
-        // own, numbered as the stopped run's were.
-        await this.hooks.rewindProcessFiles?.(entry.pid);
-        const resumed = await this._resumeStoppedRun(entry, outcome.stop, stops, inputChannel, launch, abortController.signal, held, { accepted: acceptedCapture, refused });
-        if ('exit' in resumed) { result = resumed.exit; break; }
-        // The replay is a new Worker in flight. Rejoin the admission queue
-        // before rebuilding its module map or asking a preparation helper.
-        try {
-          await resumeAdmission?.(abortController.signal);
-        } catch (error) {
-          if (abortController.signal.aborted || !isDynamicWorkerDeadlock(error)) throw error;
-          // This program already ran and printed before its read. A refusal
-          // to run it AGAIN ends that existing process, never its spawn.
-          const message = `node: could not resume after waiting for stdin (${error.code}): ${error.message}\n`;
-          if (!launch.captureOutput) await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(message));
-          result = { exitCode: 1, stdout: acceptedCapture.stdout, stderr: launch.captureOutput ? acceptedCapture.stderr + message : '' };
-          break;
-        }
-        this.processes.setUmask(entry.pid, startUmask);
-        launch = { ...launch, ...resumed.next, stopNonce: crypto.randomUUID() };
-        // The stopped run's module map was released once it loaded, unless
-        // the prefetch cache keeps it: the next run builds it again, a hit
-        // when nothing it holds has changed since.
-        if (vfsState.generatedSourcesReleased) {
           vfsState = await this._buildProcessBundle(
             entry,
-            { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node },
+            { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node },
             pacer,
           );
-          dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+        } catch (err: unknown) {
+          // The require closure that cannot fit the snapshot bound is the
+          // process's own answer, not a build failure: exit 1 with a stderr
+          // that names the entry, the staged bytes at the stop, the bound,
+          // and the remedy — the same shape the got/next guards print.
+          pacer.settle();
+          stdinPump?.stop();
+          if (err instanceof ClosureBoundExceededError) {
+            const o = err.outcome;
+            const mib = (n: number) => `${(n / 1048576).toFixed(1)} MiB`;
+            const stderr =
+              `require closure for ${o.entry} exceeds the snapshot bound: ` +
+              `${mib(o.bytesSeen)} staged when ${o.lastPath} crossed the ` +
+              `${mib(o.bound)} bound; the process was not started.\n` +
+              `Run it as a server or split the entry; there is no flag to bypass.`;
+            this._end(entry.pid, { code: 1, cause: stderr });
+            return { exitCode: 1, stdout: '', stderr };
+          }
+          // A failed build is thrown to the caller exactly as before. What must
+          // not be left behind is the process entry: it was spawned above and
+          // would otherwise sit 'running' forever for a process that never
+          // started. A build ended by a kill finds its entry already exited and
+          // reports nothing twice.
+          this._end(entry.pid, { code: 1, cause: `assembling the filesystem bundle for \`${command}\` failed: ${errorMessage(err)}` });
+          throw err;
         }
-      }
-      await this._recordLaunchLearning(vfsState.bundleKey, {
-        code: result.runtimeCode, executedModules: result.moduleMisses, dataReads: result.residencyMisses,
-      }).catch((error) => this._learningLost(entry.pid, error));
-      this.processes.exit(entry.pid, result.exitCode);
-      if (result.exitCode !== 0) {
-        this._w5RecordTermination(
-          entry.pid, result.exitCode, 'runtime-worker',
-          result.stderr || `exit ${result.exitCode}`,
-        );
-      }
-      if (diagOn && diagSink) {
-        recordExecTelemetry({
-          command,
-          bundleMs,
-          loadMs: diagSink.loadMs,
-          runMs: diagSink.runMs,
-          drainPasses: result.diag?.drainPasses ?? 0,
-          moduleMapBytes: diagSink.moduleMapBytes,
-          bundleBytes: diagSink.bundleBytes,
-          namespaceRefusals: result.diag?.namespaceRefusals ?? 0,
-          rpcWrites: result.diag?.rpcWrites ?? 0,
-          fsRpcReads: result.diag?.fsRpcReads ?? 0,
-          cacheHit: vfsState.cacheHit ?? false,
-          turns: pacer.chunks,
-          exitCode: result.exitCode,
-          at: Date.now(),
-        });
-      }
-      return result;
+        // Where the one-shot's listing of its namespace walks mounts: what its
+        // launch names, the literal paths of its own code included.
+        const cwd = opts.cwd || '/home/user';
+        this.filesystem?.nameLaunch?.(entry, () => launchNames(cwd, opts.filename, opts.argv ?? [], vfsState.bundlePaths ?? [],
+          [findStaticFsReferences(code, opts.filename?.startsWith('/') ? opts.filename : `${cwd}/[eval]`)]));
+        const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
+        const diagSink: ExecDiagSink | undefined = diagOn
+          ? { loadMs: 0, runMs: 0, moduleMapBytes: 0, bundleBytes: 0 }
+          : undefined;
+        // A process whose stdin a read could find short can stop at that read and
+        // run again (runtime/stop-replay.ts): its input channel, if it has one,
+        // and the gate that delivers its output once across its runs.
+        const inputChannel = opts.stdinPipe ? entry.pid : Number(opts.env?.NIMBUS_CP_CHILD_PID || 0);
+        const stoppable = inputChannel > 0 || opts.stdinFile !== undefined;
+        const held = this.stdinReadAhead.open();
+        // A run after a stop that strays is ended here, as a kill ends one, but
+        // it is not a kill: the process fails, naming how it strayed.
+        const divergence = new AbortController();
+        if (stoppable) {
+          this.outputGates.set(entry.pid, new ReplayOutputGate());
+          this.journals.set(entry.pid, new ReplayJournal(() => {
+            this.outputGates.get(entry.pid)?.close();
+            divergence.abort();
+          }));
+          if (opts.stdinFile) this.journals.get(entry.pid)!.bindStdinFile({ path: opts.stdinFile.path, offset: opts.stdinFile.offset, limit: STDIN_SYNC_READ_BYTES });
+        }
+        if (inputChannel > 0) this.stdinTaken.set(inputChannel, new StdinTaken(held, STDIN_SYNC_READ_BYTES));
+        // Each run starts from the umask the process started with: a umask the
+        // program set is its run's own.
+        const startUmask = entry.cred.umask;
+        const runSignal = AbortSignal.any([abortController.signal, divergence.signal]);
+        try {
+          // A one-shot holds its module map and what it was seen to read (both in
+          // the bundle), and plans no listing of the namespace (§2.8: the
+          // principal's image is where that comes from). What its closure reads
+          // synchronously by a path its code spells out needs no listing, and is
+          // its data plan.
+          let dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+          // A stoppable run's network goes through the session (SupervisorRPC's
+          // fetch and connect), which records what it answers; its code is
+          // digested, so a run after a stop that would load other code does not.
+          let launch: ExecLaunchOpts = {
+            ...opts,
+            stopNonce: crypto.randomUUID(),
+            ...(stoppable ? { outbound: true, codeDigest: { value: undefined } } : {}),
+          };
+          let result: FacetExecResult;
+          // What the session has of a captured run's output: the last stopped
+          // run's, until a run after it gets past the read it stopped at (N8).
+          let acceptedCapture: { stdout: string; stderr: string } = { stdout: '', stderr: '' };
+          const journal = this.journals.get(entry.pid);
+          for (let stops = 0; ; stops++) {
+            let outcome: FacetExecResult | { stop: StopRecord };
+            try {
+              outcome = await this._execViaLoader(code, launch, entry, vfsState, dataPlan, runSignal, pacer, diagSink);
+            } catch (error) {
+              const changed = error instanceof ReplayCodeChanged;
+              if (!changed && (!divergence.signal.aborted || abortController.signal.aborted)) throw error;
+              outcome = { stop: { v: 3, kind: 'diverged', run: launch.replay?.run ?? 1, out: [], why: changed ? error.message : journal?.diverged ?? errorMessage(error) } };
+            }
+            if (!('stop' in outcome) && journal?.diverged) {
+              outcome = { stop: { v: 3, kind: 'diverged', run: launch.replay?.run ?? 1, out: [], why: journal.diverged } };
+            }
+            if (!('stop' in outcome)) { result = outcome; break; }
+            // The session decides whether the run may go again: what it did
+            // outside itself is counted here, whatever the guest counted.
+            const refused = outcome.stop.kind === 'stdin' && journal ? journal.unreplayable : null;
+            if (outcome.stop.kind === 'stdin' && outcome.stop.captured) acceptedCapture = outcome.stop.captured;
+            journal?.stopped();
+            // runOneShot released the stopped Worker's nested hold. The child's
+            // outer launch admission must go too: only the session waits on its
+            // stdin now, and keeping that slot could prevent the parent starting
+            // the child whose exit tells it to close this stdin.
+            const resumeAdmission = suspendLaunchAdmission(this.ctx);
+            // The stopped run's descriptors go with it: the next run opens its
+            // own, numbered as the stopped run's were.
+            await this.hooks.rewindProcessFiles?.(entry.pid);
+            const resumed = await this._resumeStoppedRun(entry, outcome.stop, stops, inputChannel, launch, abortController.signal, held, { accepted: acceptedCapture, refused });
+            if ('exit' in resumed) { result = resumed.exit; break; }
+            // The replay is a new Worker in flight. Rejoin the admission queue
+            // before rebuilding its module map or asking a preparation helper.
+            try {
+              await resumeAdmission?.(abortController.signal);
+            } catch (error) {
+              if (abortController.signal.aborted || !isDynamicWorkerDeadlock(error)) throw error;
+              // This program already ran and printed before its read. A refusal
+              // to run it AGAIN ends that existing process, never its spawn.
+              const message = `node: could not resume after waiting for stdin (${error.code}): ${error.message}\n`;
+              if (!launch.captureOutput) await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(message));
+              result = { exitCode: 1, stdout: acceptedCapture.stdout, stderr: launch.captureOutput ? acceptedCapture.stderr + message : '' };
+              break;
+            }
+            this.processes.setUmask(entry.pid, startUmask);
+            launch = { ...launch, ...resumed.next, stopNonce: crypto.randomUUID() };
+            // The stopped run's module map was released once it loaded, unless
+            // the prefetch cache keeps it: the next run builds it again, a hit
+            // when nothing it holds has changed since.
+            if (vfsState.generatedSourcesReleased) {
+              vfsState = await this._buildProcessBundle(
+                entry,
+                { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node },
+                pacer,
+              );
+              dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+            }
+          }
+          await this._recordLaunchLearning(vfsState.bundleKey, {
+            code: result.runtimeCode, executedModules: result.moduleMisses, dataReads: result.residencyMisses,
+          }).catch((error) => this._learningLost(entry.pid, error));
+          if (result.exitCode !== 0 && this.processes.get(entry.pid)?.state === 'running') {
+            this._w5RecordTermination(
+              entry.pid, result.exitCode, 'runtime-worker',
+              result.stderr || `exit ${result.exitCode}`,
+            );
+          }
+          this._end(entry.pid, { code: result.exitCode });
+          if (diagOn && diagSink) {
+            recordExecTelemetry({
+              command,
+              bundleMs,
+              loadMs: diagSink.loadMs,
+              runMs: diagSink.runMs,
+              drainPasses: result.diag?.drainPasses ?? 0,
+              moduleMapBytes: diagSink.moduleMapBytes,
+              bundleBytes: diagSink.bundleBytes,
+              namespaceRefusals: result.diag?.namespaceRefusals ?? 0,
+              rpcWrites: result.diag?.rpcWrites ?? 0,
+              fsRpcReads: result.diag?.fsRpcReads ?? 0,
+              cacheHit: vfsState.cacheHit ?? false,
+              turns: pacer.chunks,
+              exitCode: result.exitCode,
+              at: Date.now(),
+            });
+          }
+          return result;
+        } catch (err: unknown) {
+          // The abort controller firing means this run ended BY a kill — the
+          // shell's Ctrl+C or `kill <pid>`. The process was not a crash and the
+          // abort text is not its stderr: mark it killed and hand back 130 (the
+          // shell's signalled status) with nothing for the terminal to print.
+          // A one-shot that ended abnormally may have lost writes it
+          // acknowledged and never sent: said, with the bound, every time (the
+          // session cannot know whether there were any: they never left).
+          const unsettled = `${UNSETTLED_END_NOTE}\n`;
+          if (abortController.signal.aborted) {
+            this._end(entry.pid, { code: 137, killed: true });
+            if (!opts.captureOutput) await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(unsettled));
+            return { exitCode: 130, stdout: '', stderr: opts.captureOutput ? unsettled : '' };
+          }
+          // The ledger refused to start it (EAGAIN): it never ran. That is its
+          // spawn failing, for whoever spawned it to report: a child_process
+          // parent as an 'error' event. A pid the caller allocated is the
+          // caller's to mark; one spawned here ends with status 1.
+          if (isDynamicWorkerDeadlock(err)) {
+            if (!opts.skipSpawn) this._end(entry.pid, { code: 1 });
+            throw err;
+          }
+          this._end(entry.pid, { code: 1, cause: `runtime worker error: ${errorMessage(err)}` });
+          return { exitCode: 1, stdout: '', stderr: `${errorMessage(err)}\n${unsettled}` };
+        } finally {
+          pacer.settle();
+          stdinPump?.stop();
+          if (inputChannel > 0) this.stdinTaken.get(inputChannel)?.release();
+          this.stdinTaken.delete(inputChannel);
+          held.give();
+          if (stoppable) {
+            this.outputGates.delete(entry.pid);
+            this.journals.get(entry.pid)?.close();
+            this.journals.delete(entry.pid);
+            this._dropNetTargets(entry.pid);
+          }
+        }
+      });
     } catch (err: unknown) {
-      // The abort controller firing means this run ended BY a kill — the
-      // shell's Ctrl+C or `kill <pid>`. The process was not a crash and the
-      // abort text is not its stderr: mark it killed and hand back 130 (the
-      // shell's signalled status) with nothing for the terminal to print.
-      // A one-shot that ended abnormally may have lost writes it
-      // acknowledged and never sent: said, with the bound, every time (the
-      // session cannot know whether there were any: they never left).
-      const unsettled = `${UNSETTLED_END_NOTE}\n`;
+      if (admitted) throw err;
+      stdinPump?.stop();
       if (abortController.signal.aborted) {
-        this.processes.kill(entry.pid);
-        if (unsettled && !opts.captureOutput) await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(unsettled));
-        return { exitCode: 130, stdout: '', stderr: opts.captureOutput ? unsettled : '' };
+        this._end(entry.pid, { code: 137, killed: true });
+        return { exitCode: 130, stdout: '', stderr: '' };
       }
-      // The ledger refused to start it (EAGAIN): it never ran. That is its
-      // spawn failing, for whoever spawned it to report: a child_process
-      // parent as an 'error' event. A pid the caller allocated is the
-      // caller's to mark; one spawned here ends with status 1.
-      if (isDynamicWorkerDeadlock(err)) {
-        if (!opts.skipSpawn) this.processes.exit(entry.pid, 1);
-        throw err;
-      }
-      const exitCode = 1;
-      const reason = `runtime worker error: ${errorMessage(err)}`;
-      this.processes.exit(entry.pid, exitCode);
-      this._w5RecordTermination(entry.pid, exitCode, 'runtime-worker', reason);
-      try {
-        this.hooks.onExternalExit?.(entry.pid, exitCode, reason);
-      } catch {}
-      return { exitCode, stdout: '', stderr: `${errorMessage(err)}${unsettled ? `\n${unsettled}` : ''}` };
+      if (isDynamicWorkerDeadlock(err) && !opts.skipSpawn) this._end(entry.pid, { code: 1 });
+      throw err;
     } finally {
       opts.signal?.removeEventListener('abort', onShellAbort);
-      pacer.settle();
-      stdinPump?.stop();
-      if (inputChannel > 0) this.stdinTaken.get(inputChannel)?.release();
-      this.stdinTaken.delete(inputChannel);
-      held.give();
-      if (stoppable) {
-        this.outputGates.delete(entry.pid);
-        this.journals.get(entry.pid)?.close();
-        this.journals.delete(entry.pid);
-        this._dropNetTargets(entry.pid);
-      }
     }
   }
 
@@ -7011,7 +7037,7 @@ export class FacetManager {
     if (before === null) return fail(full);
     const input = await this._awaitStoppedInput(channel, stop.until === 'data' ? 'data' : 'end', signal, held, before.bytes);
     if ('aborted' in input) {
-      this.processes.kill(pid);
+      this._end(pid, { code: 137, killed: true });
       return ends(130);
     }
     if ('signal' in input) return ends(input.signal === 'SIGINT' ? 130 : input.signal === 'SIGKILL' ? 137 : 143);
@@ -7575,41 +7601,29 @@ export class FacetManager {
     const mode: OpencodeRunnerMode = opts.attachedTty === true ? 'attached' : 'oneshot';
     const staged = await this._stageOpencodeFacet(artifact, opts, mode);
 
-    if (mode === 'attached') {
-      return await this._execStagedArtifactAttached(staged.pid, staged.command, staged.stageSpec);
-    }
+    if (mode === 'attached') return await this._startStagedResident(staged);
 
-    // One-shot: run through a keyed, stage-carrying NimbusLoadedEntrypoint —
-    // the ~23 MB module map is assembled inside the stateless entrypoint on
-    // the Worker-Loader cache-miss path (with SUPERVISOR bound to THIS call's
-    // context, which stays open for the whole run), never in this DO.
+    // One-shot: a run like every other (runOneShot), whose ~23 MB module map
+    // is assembled from its stage in a stateless isolate, never in this DO.
     const writerId = crypto.randomUUID();
-    const supervisor = supervisorBindingProps(this.ctx, staged.pid, { writerId, network: this.network() });
-    const ctxExports = getNimbusCtxExports();
-    let entrypoint: LoadedWorkerEntrypointStub | undefined;
     let writerActivated = false;
     try {
-      this._activateProcessVfsWriter(staged.pid, writerId);
-      writerActivated = true;
-      entrypoint = await createLoadedWorkerEntrypoint(ctxExports, supervisor, staged.stageSpec);
-      if (typeof entrypoint.fetch !== 'function') {
-        throw new Error('Nimbus: opencode runner entrypoint has no fetch method');
-      }
-      const response = await entrypoint.fetch(
-        new Request('http://nimbus-runtime.local/run', { method: 'POST' }),
-      );
-      try {
-        const result = await response.json() as FacetExecResult;
-        this.processes.exit(staged.pid, result.exitCode);
-        return { ...result, pid: staged.pid };
-      } finally {
-        disposeRpcResource(response);
-      }
+      const result = await this.processHost.runOnce({
+        pid: staged.pid,
+        writerId,
+        code: async () => ({ stage: staged.stageSpec }),
+        request: new Request('http://nimbus-runtime.local/run', { method: 'POST' }),
+        onWriterActivated: (id) => {
+          this._activateProcessVfsWriter(staged.pid, id);
+          writerActivated = true;
+        },
+      }, async (response) => await response.json() as FacetExecResult);
+      this._end(staged.pid, { code: result.exitCode });
+      return { ...result, pid: staged.pid };
     } catch (e) {
-      this.processes.exit(staged.pid, 1);
+      this._end(staged.pid, { code: 1 });
       throw e;
     } finally {
-      disposeRpcResource(entrypoint);
       if (writerActivated) this.revokeProcessVfsWriters(staged.pid, writerId);
     }
   }
@@ -7627,7 +7641,7 @@ export class FacetManager {
     artifact: string,
     opts: { argv: string[]; env: Record<string, string>; cwd: string; stdin?: string; command?: string; invokerPid?: number },
     mode: OpencodeRunnerMode,
-  ): Promise<{ pid: number; command: string; stageSpec: OpencodeStageSpec }> {
+  ): Promise<{ pid: number; stageSpec: OpencodeStageSpec }> {
     if (artifact !== 'opencode') {
       throw new Error(`Nimbus: unknown staged artifact '${artifact}'`);
     }
@@ -7689,71 +7703,7 @@ export class FacetManager {
       vfsCursor: serializeFacetVfsCursor(vfsState.cursor),
     };
 
-    return { pid, command, stageSpec };
-  }
-
-  /**
-   * Attached-TTY staged-artifact lifecycle (the interactive opencode TUI). Boots
-   * the runner's startProcess() — which holds the facet open via ctx.waitUntil
-   * while opencode's createCliRenderer loop streams ANSI frames to the terminal
-   * RPC and the live stdin pump feeds keystrokes — and returns immediately with
-   * the pid. The facet reports its own exit via SUPERVISOR.reportExit; resources
-   * release on report-exit, the same contract the long-running node path uses.
-   */
-  private async _execStagedArtifactAttached(
-    pid: number,
-    command: string,
-    stageSpec: OpencodeStageSpec,
-  ): Promise<StagedArtifactExecResult> {
-    let handle: ResidentProcessHandle | undefined;
-    try {
-      // The opencode runner holds its startProcess open for the process's
-      // whole life, so that one call IS the lifecycle.
-      const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
-      handle = await this.processFabric.startResidentProcess({
-        startContract: 'lifetime',
-        journaled: true,
-        pid,
-        workerKey,
-        boot: { kind: 'staged', stage: stageSpec },
-        onWriterActivated: (writerId) => {
-          this._activateProcessVfsWriter(pid, writerId);
-        },
-        onWriterRetired: (writerId) => {
-          this.revokeProcessVfsWriters(pid, writerId);
-        },
-      });
-      this._watchHost(pid, handle, false);
-      this.trackProcessRpcResources(
-        pid,
-        [handle],
-        { releaseOnReportExit: false },
-      );
-      this.ctx.waitUntil(
-        handle.done
-          .catch((e: unknown) => {
-            // A pid that is already terminal (killed by session teardown, or
-            // exited via its own reportExit) rejects the held-open call as a
-            // teardown ECHO — recording it again would double-count the
-            // termination with a misleading code-1 entry.
-            const entry = this.processes.get(pid);
-            if (!entry || entry.state !== 'running') return;
-            const reason = 'opencode TUI process failed: ' + errorMessage(e);
-            try { this.processes.exit(pid, 1); } catch {}
-            try { this._w5RecordTermination(pid, 1, 'facet', reason); } catch {}
-            try { this.hooks.onExternalExit?.(pid, 1, reason); } catch {}
-          })
-          .finally(() => {
-            this.releaseProcessRpcResources(pid);
-          }),
-      );
-      return { pid, exitCode: 0, stdout: '', stderr: '' };
-    } catch (e) {
-      this.releaseProcessRpcResources(pid);
-      handle?.kill();
-      this.processes.exit(pid, 1);
-      throw e;
-    }
+    return { pid, stageSpec };
   }
 
   /**
@@ -7777,7 +7727,7 @@ export class FacetManager {
       ? opts.argv
       : [...opts.argv, '--port', String(port)];
     const staged = await this._stageOpencodeFacet(artifact, { ...opts, argv }, 'server');
-    const result = await this._runOpencodeServerFacet(staged, port);
+    const result = await this._startStagedResident(staged, port);
     return { ...result, port };
   }
 
@@ -7808,7 +7758,7 @@ export class FacetManager {
     );
     const servePid = serveStaged.pid;
     try {
-      await this._runOpencodeServerFacet(serveStaged, port);
+      await this._startStagedResident(serveStaged, port);
       // (b) health-gate: wait for the server to answer /doc through the loopback
       // router (fail loud with the server's log tail on timeout / early exit).
       await this._awaitOpencodeServerReady(servePid, port);
@@ -7842,22 +7792,27 @@ export class FacetManager {
     return attach;
   }
 
-  private async _runOpencodeServerFacet(
-    staged: { pid: number; command: string; stageSpec: OpencodeStageSpec },
-    port: number,
+  /**
+   * A staged opencode resident: the attached TUI, or with `port` a headless
+   * serve routed on it. Its runner holds startProcess open for the process's
+   * whole life, so that one call is the lifecycle; it reports its own exit.
+   * The module map is assembled on the Worker-Loader cache-miss path, so the
+   * artifact sources exist only while this facet is loading.
+   */
+  private async _startStagedResident(
+    staged: { pid: number; stageSpec: OpencodeStageSpec },
+    port?: number,
   ): Promise<StagedArtifactExecResult> {
     const { pid, stageSpec } = staged;
+    const what = port === undefined ? 'opencode TUI' : 'opencode serve';
     let handle: ResidentProcessHandle | undefined;
     let resourcesTracked = false;
     try {
-      const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
-      // The module map is assembled on the Worker-Loader cache-miss path, so
-      // the artifact sources exist only while this facet is loading.
       handle = await this.processFabric.startResidentProcess({
         startContract: 'lifetime',
         journaled: true,
         pid,
-        workerKey,
+        workerKey: `nimbus-process:${this.ctx.id.toString()}:${pid}`,
         boot: { kind: 'staged', stage: stageSpec },
         onWriterActivated: (writerId) => {
           this._activateProcessVfsWriter(pid, writerId);
@@ -7867,38 +7822,21 @@ export class FacetManager {
         },
       });
       this._watchHost(pid, handle, false);
-      // The handle's route target resolves the RUNNING facet wherever it is
-      // hosted; binding it for the pid before the port is announced is what
-      // lets the shim's listen()→SUPERVISOR.registerPort back-fill.
-      // The opencode runner dispatches through node-shims' __nimbusServeHttp, which strips the ACQUIRE.
-      this.portRegistry.bindFacetStub(pid, handle.routeTarget, { deliversAcquire: true });
+      // Bound before the port is announced, so the shim's
+      // listen()→SUPERVISOR.registerPort back-fills it. The opencode runner
+      // dispatches through node-shims' __nimbusServeHttp, which strips the ACQUIRE.
+      if (port !== undefined) this.portRegistry.bindFacetStub(pid, handle.routeTarget, { deliversAcquire: true });
       this.trackProcessRpcResources(pid, [handle], { releaseOnReportExit: false });
       resourcesTracked = true;
-      this.ctx.waitUntil(
-        handle.done
-          .catch((e: unknown) => {
-            const current = this.processes.get(pid);
-            if (!current || current.state !== 'running') return;
-            const reason = 'opencode serve process failed: ' + errorMessage(e);
-            try { this.processes.exit(pid, 1); } catch {}
-            try { this._w5RecordTermination(pid, 1, 'facet', reason); } catch {}
-            try { this.hooks.onExternalExit?.(pid, 1, reason); } catch {}
-          })
-          .finally(() => {
-            this.releaseProcessRpcResources(pid);
-          }),
-      );
-      await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, port);
-      this.portRegistry.register(port, pid);
+      this._watchLifetime(pid, handle, `${what} process`);
+      if (port !== undefined) {
+        await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, port);
+        this.portRegistry.register(port, pid);
+      }
       return { pid, exitCode: 0, stdout: '', stderr: '' };
     } catch (e) {
-      this.portRegistry.unregisterByPid(pid);
-      if (resourcesTracked) this.releaseProcessRpcResources(pid);
-      else handle?.kill();
-      this.processes.exit(pid, 1);
-      const reason = 'opencode serve boot failed: ' + errorMessage(e);
-      this._w5RecordTermination(pid, 1, 'facet', reason);
-      try { this.hooks.onExternalExit?.(pid, 1, reason); } catch {}
+      if (!resourcesTracked) handle?.kill();
+      this._end(pid, { code: 1, cause: `${what} launch failed: ${errorMessage(e)}` });
       throw e;
     }
   }
@@ -8005,10 +7943,7 @@ export class FacetManager {
     if (this.processes.get(pid)?.state !== 'running') return;
     const reason = `resident process died: ${errorMessage(error)}`;
     this.processes.appendOutput(pid, 'stderr', `[nimbus] ${reason}\n`);
-    try { this.processes.exit(pid, 1); } catch {}
-    try { this._w5RecordTermination(pid, 1, 'facet', reason); } catch {}
-    try { this.hooks.onExternalExit?.(pid, 1, reason); } catch {}
-    this.releaseProcessRpcResources(pid);
+    this._end(pid, { code: 1, cause: reason });
   }
 
   private _activateProcessVfsWriter(pid: number, writerId: string): void {
@@ -8167,19 +8102,6 @@ export class FacetManager {
     } catch {
       return '(no output captured)';
     }
-  }
-
-  /**
-   * A launch that fails before its process is running reports the same way
-   * regardless of which phase failed: the pid is exited, the terminal event
-   * recorded, and the session notified. Callers do their phase-specific
-   * cleanup (ports, tracked RPC resources) first and pass a reason that names
-   * the phase.
-   */
-  private _failLaunch(pid: number, reason: string): void {
-    this.processes.exit(pid, 1);
-    this._w5RecordTermination(pid, 1, 'facet', reason);
-    try { this.hooks.onExternalExit?.(pid, 1, reason); } catch {}
   }
 
   /**
@@ -8430,7 +8352,7 @@ export class FacetManager {
       pacer.settle();
       await this._releaseResidentClaim(entry.pid);
       await this.launchJournal.release(entry.pid);
-      this._failLaunch(entry.pid, 'long-running node launch failed: ' + errorMessage(e));
+      this._end(entry.pid, { code: 1, cause: 'long-running node launch failed: ' + errorMessage(e) });
       throw e;
     }
     const ephemeral = duplicateOf !== null;
@@ -8458,7 +8380,7 @@ export class FacetManager {
       // A resident that cannot be journalled does not start; the failure is
       // reported the way a boot failure is.
       pacer.settle();
-      this._failLaunch(entry.pid, 'long-running node launch failed: ' + errorMessage(e));
+      this._end(entry.pid, { code: 1, cause: 'long-running node launch failed: ' + errorMessage(e) });
       throw e;
     }
     try {
@@ -8469,7 +8391,7 @@ export class FacetManager {
       // rejecting our background task alone leaves that pid running forever.
       pacer.settle();
       if (entry.exitCode === null) {
-        this._failLaunch(entry.pid, "long-running node launch failed: " + errorMessage(e));
+        this._end(entry.pid, { code: 1, cause: "long-running node launch failed: " + errorMessage(e) });
       }
       await this.launchJournal.release(entry.pid);
       throw e;
@@ -8729,24 +8651,7 @@ export class FacetManager {
       this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget, { deliversAcquire: true });
 
       if (opts.attachedTty) {
-        this.ctx.waitUntil(
-          handle.done
-            .catch((e: unknown) => {
-              // Teardown echo guard (same as the staged-artifact path): a pid
-              // that is already terminal rejects the held-open call as an
-              // ECHO of its own kill — don't double-record it as a code-1
-              // failure.
-              const current = this.processes.get(entry.pid);
-              if (!current || current.state !== 'running') return;
-              const reason = 'long-running node process failed: ' + errorMessage(e);
-              try { this.processes.exit(entry.pid, 1); } catch {}
-              try { this._w5RecordTermination(entry.pid, 1, 'facet', reason); } catch {}
-              try { this.hooks.onExternalExit?.(entry.pid, 1, reason); } catch {}
-            })
-            .finally(() => {
-              this.releaseProcessRpcResources(entry.pid);
-            }),
-        );
+        this._watchLifetime(entry.pid, handle, 'long-running node process');
       } else {
         await handle.booted();
       }
@@ -8773,10 +8678,7 @@ export class FacetManager {
         const resumed = await this._resumeStoppedRun(entry, stop, stops, entry.pid, {}, waiting.signal, heldStdin,
           { accepted: { stdout: '', stderr: '' }, refused });
         if ('exit' in resumed) {
-          if (this.processes.get(entry.pid)?.state === 'running') {
-            this.processes.exit(entry.pid, resumed.exit.exitCode);
-            try { this.hooks.onExternalExit?.(entry.pid, resumed.exit.exitCode, 'stopped at a synchronous read of stdin'); } catch {}
-          }
+          this._end(entry.pid, { code: resumed.exit.exitCode, cause: 'stopped at a synchronous read of stdin' });
           return;
         }
         this.processes.setUmask(entry.pid, startUmask);
@@ -8811,7 +8713,7 @@ export class FacetManager {
       if (resourcesTracked) this.releaseProcessRpcResources(entry.pid);
       if (this.processExitCode(entry.pid) !== null) return;
       handle?.kill();
-      this._failLaunch(entry.pid, 'long-running node boot failed: ' + errorMessage(e));
+      this._end(entry.pid, { code: 1, cause: 'long-running node boot failed: ' + errorMessage(e) });
       throw e;
     }
   }
@@ -9059,7 +8961,7 @@ export class FacetManager {
       if (resourcesTracked) this.releaseProcessRpcResources(entry.pid);
       else handle?.kill();
       // An interrupt already killed the process; it did not fail.
-      if (!opts.foreground?.signal.aborted) this._failLaunch(entry.pid, 'long-running worker boot failed: ' + errorMessage(e));
+      if (!opts.foreground?.signal.aborted) this._end(entry.pid, { code: 1, cause: 'long-running worker boot failed: ' + errorMessage(e) });
       throw e;
     } finally {
       foreground?.release();
@@ -9316,15 +9218,7 @@ export class FacetManager {
   }
 
   finishProcess(pid: number, exitCode: number, reason = 'exited'): void {
-    this.portRegistry.unregisterByPid(pid);
-    this.processes.exit(pid, exitCode);
-    this.releaseProcessRpcResources(pid);
-    this.revokeProcessVfsWriters(pid);
-    this._teardownPairedServeFacet(pid);
-    if (exitCode !== 0) {
-      this._w5RecordTermination(pid, exitCode, 'facet', reason);
-      try { this.hooks.onExternalExit?.(pid, exitCode, reason); } catch {}
-    }
+    this._end(pid, { code: exitCode, ...(exitCode !== 0 ? { cause: reason } : {}) });
   }
 
   /**
@@ -9335,16 +9229,8 @@ export class FacetManager {
   kill(pid: number, signal?: string): boolean {
     const entry = this.processes.get(pid);
     if (!entry || entry.state !== 'running') return false;
-    const code = signal === undefined ? 137 : exitCodeForSignal(signal);
-    this.portRegistry.unregisterByPid(pid);
-    this.releaseProcessRpcResources(pid);
-    this.revokeProcessVfsWriters(pid);
-    const result = this.processes.kill(pid, code);
-    if (result) {
-      try { this.hooks.onExternalExit?.(pid, code, signal === undefined ? 'killed' : `SIG${signal}`); } catch {}
-    }
-    this._teardownPairedServeFacet(pid);
-    return result;
+    this._end(pid, { code: signal === undefined ? 137 : exitCodeForSignal(signal), cause: signal === undefined ? 'killed' : `SIG${signal}`, killed: true });
+    return true;
   }
 
   /**
