@@ -38,7 +38,7 @@ async function scenario(name, exercise) {
     });
     box.shell.printPrompt();
     await client.waitForPrompt(1000);
-    await exercise({ client, box, gate });
+    await exercise({ client, box, gate, terminal });
     console.log(`PASS ${name}`);
   } catch (error) {
     failures.push(`${name}: ${error.message}`);
@@ -126,6 +126,27 @@ try {
     await client.waitFor((text) => text.includes('INTERRUPTIBLE'), 1000, 'interruptible start');
     client.ws.send(JSON.stringify({ type: 'input', data: '\x03' }));
     assert.equal((await pending).exitCode, 130);
+  });
+
+  await scenario('a tagged REPL input returns immediately and awaits its foreground owner', async ({ client, box, gate, terminal }) => {
+    const exit = gate();
+    let detach;
+    box.commands.registry.register('repl', async (ctx) => {
+      detach = terminal.attachRepl((data) => ctx.stdout.write('REPL_INPUT ' + data));
+      await ctx.stdout.write('REPL_READY\n');
+      await exit.promise;
+      detach();
+      return 5;
+    });
+    const pending = client.run('repl', 1000);
+    await client.waitFor((text) => text.includes('REPL_READY'), 1000, 'REPL start');
+    client.cmd('answer');
+    const input = client.submission;
+    await client.waitFor((text) => text.includes('REPL_INPUT answer'), 1000, 'REPL input');
+    exit.resolve();
+    assert.equal((await pending).exitCode, 5);
+    await client.waitForPrompt(1000);
+    assert.equal(input.exitCode, 5);
   });
 
   for (const command of ['echo "unfinished', "cat > /home/user/incomplete <<'EOF'"]) {
