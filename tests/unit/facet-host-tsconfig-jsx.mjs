@@ -28,7 +28,8 @@ kernel.writeFile('b.ts', "const seen: string[] = [];\nfunction dec(t: any, k?: s
 const { BuildFacet, cleanup } = await buildHarness.freshFacetClass();
 const build = buildHarness.durableObject(BuildFacet);
 const transform = oxcHarness.durableObject(await oxcHarness.freshFacetClass());
-const own = (name) => (name.startsWith('nimbus-oxc:') ? transform : build);
+// A facet's name is its raw id; its Loader id is the same id under its kind's policy (facetLoaderKey).
+const own = (name) => (/(^|\/)nimbus-oxc:/.test(name) ? transform : build);
 const ctx = {
   id: { toString: () => 'kinu-do' },
   facets: {
