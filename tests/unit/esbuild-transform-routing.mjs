@@ -116,3 +116,14 @@ console.log('esbuild-transform-routing: ok');
   assert.equal(loads, 1);
 }
 console.log('esbuild-transform-routing: deep ES modules load the engine');
+
+// A data: URL module nested past the lowering stages from the engine's emit, which has no map.
+{
+  const { stagedDataUrlModule } = await import('../../packages/worker/src/facets/manager.ts');
+  const service = new EsbuildService(undefined, {
+    engine: async () => ({ transform: async () => ({ code: 'module.exports.x = 1;', map: '', warnings: [] }) }),
+  });
+  const staged = await stagedDataUrlModule(`export const x = ${'['.repeat(7000)}1${']'.repeat(7000)};`, 'node', service);
+  assert.match(staged, /module\.exports\.x = 1;/);
+}
+console.log('esbuild-transform-routing: a deep data: module stages');
