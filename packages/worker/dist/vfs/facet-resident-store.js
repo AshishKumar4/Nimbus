@@ -342,22 +342,69 @@ function __residentNamespaceOverlayDelta(bytes) {
 const __residentReservations = new Map();
 let __residentReservedBytes = 0;
 
+/**
+ * Reservations waiting for room, in the order they were asked for. Room that
+ * comes is held for them in that order as it comes, and one ask covers what
+ * they all still need: when each ask was for its asker's own room, and a
+ * waiter that saw room free took it without holding it, a grant served one
+ * fill of a batch, and the batch's tail gave up with the ledger granting
+ * every byte asked (astro dev: a hundred of zod's locales at once).
+ */
+const __residentReserveQueue = [];
+let __residentReserveServing = false;
+
 /** Reserve room for a fill of \`path\` before its bytes arrive: true once it is held for it. */
-async function __residentReserve(path, bytes) {
+function __residentReserve(path, bytes) {
   __residentRelease(path);
-  if (__residentCap === null) return true;
-  for (let asks = 0; ; asks++) {
-    if (__residentDbBytes() + __residentReservedBytes + bytes <= __residentCap) {
-      __residentReservations.set(path, bytes);
-      __residentReservedBytes += bytes;
-      return true;
+  if (__residentCap === null) return Promise.resolve(true);
+  if (__residentReserveQueue.length === 0 && __residentHoldRoom(path, bytes)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    __residentReserveQueue.push({ path, bytes, resolve });
+    void __residentServeReserves();
+  });
+}
+
+/** Hold room for \`path\` if \`bytes\` fit now: true once it is held. */
+function __residentHoldRoom(path, bytes) {
+  if (__residentDbBytes() + __residentReservedBytes + bytes > __residentCap) return false;
+  // A second fill of the path in line holds the room the first held, not twice it.
+  __residentRelease(path);
+  __residentReservations.set(path, bytes);
+  __residentReservedBytes += bytes;
+  return true;
+}
+
+/**
+ * The waiting reservations' one asker. It holds room for those that fit, in
+ * order, then asks the ledger for what the rest need, until none waits. An
+ * ask that raises the cap not at all is the ledger's refusal (it admits a
+ * fill whole or not at all): the reservations still waiting are refused, and
+ * their fills are not fetched. Rounds whose room others took are bounded.
+ */
+async function __residentServeReserves() {
+  if (__residentReserveServing) return;
+  __residentReserveServing = true;
+  try {
+    for (let idle = 0; ; ) {
+      const waiting = __residentReserveQueue.length;
+      while (__residentReserveQueue.length > 0 && __residentHoldRoom(__residentReserveQueue[0].path, __residentReserveQueue[0].bytes)) {
+        __residentReserveQueue.shift().resolve(true);
+      }
+      if (__residentReserveQueue.length === 0) return;
+      idle = __residentReserveQueue.length < waiting ? 0 : idle + 1;
+      const cap = __residentCap;
+      if (idle <= 8) {
+        let need = 0;
+        for (const reservation of __residentReserveQueue) need += reservation.bytes;
+        await __residentAskGrant(need);
+      }
+      if (__residentCap === cap) {
+        for (const reservation of __residentReserveQueue.splice(0)) reservation.resolve(false);
+        return;
+      }
     }
-    // Each ask is for what is short now, and others may reserve while it is
-    // out; only an ask after which there is no more room than before ends it.
-    if (asks === 8) return false;
-    const cap = __residentCap;
-    await __residentAskGrant(bytes);
-    if (__residentCap === cap) return false;
+  } finally {
+    __residentReserveServing = false;
   }
 }
 

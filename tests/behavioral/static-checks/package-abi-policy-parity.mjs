@@ -2,7 +2,7 @@
 // static-checks/package-abi-policy-parity — the supervisor's package ABI
 // policy and the policy injected into resolver facet preambles must stay
 // equivalent. The preamble is GENERATED from PACKAGE_ABI_POLICY, so this
-// check compiles the injected preamble, extracts the policy + policy
+// check evaluates the injected preamble as the facet does, extracts the policy + policy
 // functions, and asserts full parity: the policy object itself plus the
 // behavior of every decision function across the whole policy surface.
 
@@ -13,18 +13,16 @@ import {
   lookupReject,
   isOptionalNativeBinding,
 } from '../../../packages/worker/src/facets/wasm-swap-registry.ts';
-import { NPM_RESOLVE_PREAMBLE } from '../../../packages/worker/src/loaders/npm-resolve-preamble.ts';
+import { importResolvePreamble } from '../../unit/lib/npm-resolve-preamble-module.mjs';
 
 const a = makeAsserter('static-checks/package-abi-policy-parity');
 
-const facet = new Function(`${NPM_RESOLVE_PREAMBLE}
-return {
-  POLICY: __NIMBUS_PACKAGE_ABI_POLICY,
-  SHOULD_SWAP,
-  SHOULD_REJECT_FAIL,
-  NATIVE_EXECUTABLE_REJECT,
-  IS_OPTIONAL_NATIVE_BINDING,
-};`)();
+// The preamble as the resolver facet's module evaluates it: an ES module,
+// its builtin imports included (tests/unit/lib/npm-resolve-preamble-module.mjs).
+const preamble = await importResolvePreamble([
+  '__NIMBUS_PACKAGE_ABI_POLICY', 'SHOULD_SWAP', 'SHOULD_REJECT_FAIL', 'NATIVE_EXECUTABLE_REJECT', 'IS_OPTIONAL_NATIVE_BINDING',
+]);
+const facet = { ...preamble, POLICY: preamble.__NIMBUS_PACKAGE_ABI_POLICY };
 
 // 1. The injected policy object IS the supervisor policy object.
 a.check(

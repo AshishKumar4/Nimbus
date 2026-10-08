@@ -2,8 +2,10 @@
 // the proven asyncify-native setjmp/longjmp + nimbus_proc process driver. This
 // is the local acid test: real bash executing over the Nimbus fork/exec/pipe/
 // setjmp layer, before the worker integration. `bash -c '<script>'`.
+//   node run-bash-local.mjs <bash.async.wasm> ['<script>']
 import { readFileSync } from 'node:fs';
-const WASM = process.argv[2] || '/tmp/claude-1000/-home-mrwhite0racle-Nimbus/0b47f917-3635-4376-b32a-9347497a44f5/scratchpad/bashwork/bash.async.wasm';
+const WASM = process.argv[2];
+if (!WASM) { console.error("usage: node run-bash-local.mjs <bash.async.wasm> ['<script>']"); process.exit(2); }
 const SCRIPT = process.argv[3] ?? 'echo hi';
 const bytes = readFileSync(WASM);
 const mod = new WebAssembly.Module(bytes);

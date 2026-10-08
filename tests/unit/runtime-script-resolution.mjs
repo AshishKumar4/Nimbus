@@ -34,6 +34,7 @@ function makeFs(files) {
   return {
     isFile: (p) => Object.hasOwn(files, p),
     exists: (p) => Object.hasOwn(files, p) || dirs.has(p),
+    stat: (p) => (Object.hasOwn(files, p) ? { type: 'file', size: files[p].length } : dirs.has(p) ? { type: 'directory', size: 0 } : null),
     readFileString: (p) => {
       if (!Object.hasOwn(files, p)) throw new Error(`ENOENT: ${p}`);
       return files[p];

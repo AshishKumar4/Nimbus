@@ -31,7 +31,7 @@ const result = await box.exec('npm test', {
 
 await box.runCode('print(2 + 2)', { language: 'python', install: 'ifMissing' });
 
-const proc = await box.startProcess('node --watch server.js');
+const proc = await box.startProcess('node --watch server.cjs');
 // NimbusExecResult & { pid, process, ports }
 ```
 
@@ -57,8 +57,8 @@ with the cancel reason. `exec` reads this same stream to the end.
 Read and change files through the sandbox VFS.
 
 ```ts
-await box.files.write('/home/user/example-app/server.js', code);   // string | Uint8Array
-const text  = await box.files.read('/home/user/example-app/server.js');
+await box.files.write('/home/user/example-app/server.cjs', code);   // string | Uint8Array
+const text  = await box.files.read('/home/user/example-app/server.cjs');
 const bytes = await box.files.readBytes('/home/user/data.bin');
 const list  = await box.files.list('/home/user');          // { name, type }[]
 await box.files.stat(path); await box.files.mkdir(path);

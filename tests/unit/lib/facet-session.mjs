@@ -18,6 +18,8 @@ import { runGitCommand } from '../../../packages/worker/src/git/commands.ts';
 import { assembleGitNetworkFacetSource } from '../../../packages/worker/src/git/network-facet.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { stagedAssets } from './staged-assets.mjs';
+import { memoryStorage } from './do-storage.mjs';
+
 
 export function hostGitEnv(home) {
   return {
@@ -46,21 +48,33 @@ function stagedGitBundle() {
   return readFileSync(new URL(name, dir), 'utf8');
 }
 
-/** `realGit`: the facet runs the staged cf-git bundle (fetch, pull, push), not a stub. */
-export async function createFacetSession(work, { realGit = false } = {}) {
+/**
+ * `realGit`: the facet runs the staged cf-git bundle (fetch, pull, push), not a stub.
+ * `asUser`: the facets' calls act as the session user, as a session's
+ * process does (SupervisorRPC), its permissions checked; by default as the
+ * kernel.
+ * `mounts`: backends mounted in the session's namespace, by mount point; the
+ * facets' supervisor then reaches the namespace as the session's does (a
+ * host bridge of the session's ProcessFiles), mounts and their guard
+ * included, as the session user.
+ */
+export async function createFacetSession(work, { realGit = false, asUser = false, mounts = {} } = {}) {
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = vfs.as(CRED_KERNEL);
   kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
   kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
   const files = new ProcessFiles(vfs);
-  const bridge = new SqliteRuntimeFsBridge(kernel, vfs);
+  for (const [point, backend] of Object.entries(mounts)) files.vfs.mount(point, backend);
+  const mounted = Object.keys(mounts).length > 0;
+  const actor = asUser || mounted ? vfs.as(CRED_SESSION_USER) : kernel;
+  const bridge = mounted ? files.openHost(CRED_SESSION_USER).fs : new SqliteRuntimeFsBridge(actor, vfs);
   // failWaveAt: the 1-based write wave that fails, once, as a dropped session connection does.
   // hangPhaseAt: the 1-based facet call of that phase that never answers, once.
   // stallPhaseAt: the same, but the call runs on, its answer withheld: a late writer.
   // refusals: the facets' mutations the session refused, with why.
   const requests = {
-    fetchObjects: 0, phases: [], attempts: [], rangeReads: [], rangeWrites: [], waves: 0,
+    fetchObjects: 0, phases: [], attempts: [], rangeReads: [], rangeWrites: [], waves: 0, fileApi: 0,
     failWaveAt: 0, hangPhaseAt: null, stallPhaseAt: null, stalled: [], refusals: [], loads: 0,
     // calls: every facet call's phase, attempt and batch; withhold: resumed packs whose step's answer is lost.
     calls: [], withhold: new Set(),
@@ -92,21 +106,28 @@ export async function createFacetSession(work, { realGit = false } = {}) {
         return refused(async () => bridge.writeRange(path, offset, bytes, { createParents: true, ...lease }));
       },
       async fsTruncate(path, size) { return refused(async () => bridge.truncate(path, size, lease)); },
+      // The session's file API: a mkdir and an open for writing present the lease (supervisor-op.ts).
+      async mkdir(path, options) { return refused(async () => bridge.mkdir(path, { ...options, ...lease })); },
+      async fsOpen(path, flags) { requests.fileApi++; return refused(async () => bridge.open(path, { ...flags, sync: true }, lease)); },
+      async fsWrite(id, offset, bytes) { requests.fileApi++; return refused(async () => bridge.write(id, offset, bytes)); },
+      async fsFstat(id) { return bridge.fstat(id); },
+      async fsClose(id) { return bridge.close(id); },
       async rename(from, to) {
         const result = await refused(async () => bridge.rename(from, to, lease));
         // loseRename: the step that made this rename never answers (its tmp pack's name goes to withhold).
         if (requests.loseRename?.(from, to)) requests.withhold.add(from.slice(from.lastIndexOf('/') + 1));
         return result;
       },
-      // unlink carries no lease: the session's supervisor op has none for it either (supervisor-op.ts).
-      async unlink(path) { return refused(async () => bridge.unlink(path)); },
+      // unlink presents the lease, as the session's supervisor op does (supervisor-op.ts).
+      async unlink(path) { return refused(async () => bridge.unlink(path, lease)); },
+      async chmod(path, mode) { return refused(async () => bridge.chmod(path, mode)); },
       async writeBatchStream(stream) {
         if (++requests.waves === requests.failWaveAt) {
           await stream.cancel();
           throw new Error('Network connection lost.');
         }
         return refused(async () => {
-          const result = await kernel.writeStream(stream, lease);
+          const result = await actor.writeStream(stream, lease);
           if (result.ok === false) requests.refusals.push(String(result.error?.code ?? result.error?.message));
           return result;
         });
@@ -121,7 +142,12 @@ export async function createFacetSession(work, { realGit = false } = {}) {
   writeFileSync(join(tempDir, 'git-network-worker.mjs'), assembleGitNetworkFacetSource());
   writeFileSync(join(tempDir, 'git-bundle.js'), realGit ? stagedGitBundle() : 'export const git = {}; export const gitHttp = {};');
   const facet = await import(pathToFileURL(join(tempDir, 'git-network-worker.mjs')).href);
-  const doCtx = { id: { toString: () => 'facet-session-do' } };
+  // Work a command leaves running after it answers (a full clone's
+  // changed-path filters): `settled()` waits for all of it. The DO's
+  // storage, as a clone's job records use it (git/clone-job.ts).
+  const background = [];
+  const doCtx = { id: { toString: () => 'facet-session-do' }, storage: memoryStorage(), waitUntil(promise) { background.push(promise); } };
+  const settled = async () => { while (background.length > 0) await background.shift(); };
   const doEnv = {
     ASSETS: stagedAssets,
     LOADER: {
@@ -171,8 +197,26 @@ export async function createFacetSession(work, { realGit = false } = {}) {
       stdout: { write(s) { stdout += s; } },
       stderr: { write(s) { stderr += s; } },
       vfs: files.view({ pid: 7, cred: CRED_SESSION_USER }),
-    }, vfs, doCtx, doEnv);
+    }, vfs, doCtx, doEnv, undefined, files);
     return { code, stdout: stdout.replace(/\x1b\[[0-9;]*m/g, ''), stderr };
+  }
+
+  /** Copy a session directory, through the namespace as the session user (a mount's included), to `out` on disk. */
+  async function materializeAt(root, out) {
+    const view = files.view({ pid: 7, cred: CRED_SESSION_USER });
+    const copy = async (path) => {
+      for (const entry of await view.readdir(path)) {
+        const child = path + '/' + entry.name;
+        const target = join(out, child.slice(root.length));
+        const stat = await view.stat(child, { follow: false });
+        if (stat.type === 'directory') { mkdirSync(target, { recursive: true }); await copy(child); }
+        else if (stat.type === 'file') writeFileSync(target, await view.readFile(child), { mode: stat.mode & 0o777 });
+        else if (stat.type === 'symlink') symlinkSync(await view.readlink(child), target);
+      }
+    };
+    mkdirSync(out, { recursive: true });
+    await copy(root);
+    return out;
   }
 
   /** Copy a session directory (engine path) to `out` on disk. */
@@ -198,5 +242,5 @@ export async function createFacetSession(work, { realGit = false } = {}) {
     return { dir: out, objects: hostObjects(work, out) };
   }
 
-  return { vfs, kernel, git, requests, doCtx, doEnv, materialize, sessionObjects };
+  return { vfs, kernel, files, git, requests, doCtx, doEnv, materialize, materializeAt, sessionObjects, settled };
 }

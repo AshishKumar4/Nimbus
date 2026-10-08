@@ -86,7 +86,7 @@ function stageRuntime(name, work) {
   return { name, version, entry, puts };
 }
 
-async function putObjects(puts, persist, work) {
+async function putObjects(puts, persist, work, wrangler) {
   // One at a time: each is a wrangler process with its own workerd over the
   // same local store, and two at once crash it.
   const queue = [...puts];
@@ -98,7 +98,7 @@ async function putObjects(puts, persist, work) {
         const args = ['r2', 'object', 'put', `${BUCKET}/${key}`, '--file', file, '--local', '--persist-to', persist];
         if (contentType) args.push('--content-type', contentType);
         // wrangler writes its own files (an update check) under TMPDIR: the harness's, which stop() removes.
-        const child = spawn(WRANGLER, args, { cwd: PROBE_APP, stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, TMPDIR: work } });
+        const child = spawn(wrangler, args, { cwd: PROBE_APP, stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, TMPDIR: work } });
         let err = '';
         child.stderr.on('data', (d) => { err += d; });
         child.on('close', (code) => (code === 0 ? done() : fail(new Error(`r2 put ${key}: ${err.slice(-600)}`))));
@@ -110,10 +110,10 @@ async function putObjects(puts, persist, work) {
 
 /**
  * Boot apps/probe on workerd with `runtimes` installable, and `vars` over
- * its config vars (`wrangler dev --var`).
+ * its config vars (`wrangler dev --var`). `wrangler` may be a test stand-in.
  * @returns {Promise<{ base: string, token: string, stop: () => Promise<void>, log: () => string, pid: number, inspectorBase: string | null }>}
  */
-export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180_000, vars = {}, inspector = false } = {}) {
+export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180_000, vars = {}, inspector = false, wrangler = WRANGLER } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'workerd-probe-'));
   const persist = join(work, 'state');
   let child = null;
@@ -155,7 +155,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
     // The worker reads the catalog its NIMBUS_RUNTIME_CATALOG_SHA256 var
     // names, by that digest: this one, staged under it and passed below.
     const catalogSha256 = createHash('sha256').update(readFileSync(catalogPath)).digest('hex');
-    await putObjects([...staged.flatMap((s) => s.puts), { key: `catalog/sha256/${catalogSha256}.json`, file: catalogPath, contentType: 'application/json' }], persist, work);
+    await putObjects([...staged.flatMap((s) => s.puts), { key: `catalog/sha256/${catalogSha256}.json`, file: catalogPath, contentType: 'application/json' }], persist, work, wrangler);
 
     const secret = randomBytes(24).toString('hex');
     const deadline = Date.now() + bootTimeoutMs;
@@ -172,7 +172,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
       inspectorBase = inspectorPort===null?null:`http://127.0.0.1:${inspectorPort}`;
       console.log('workerd-probe: starting wrangler dev');
       log = '';
-      child = spawn(WRANGLER, [
+      child = spawn(wrangler, [
         'dev', '--local', '--ip', '127.0.0.1', '--port', String(port), '--persist-to', persist,
         '--show-interactive-dev-session=false', '--var', `JWT_SECRET:${secret}`,
         '--var', `NIMBUS_RUNTIME_CATALOG_SHA256:${catalogSha256}`,

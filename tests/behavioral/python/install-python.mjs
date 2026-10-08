@@ -21,7 +21,7 @@ if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit
 const a = makeAsserter('python/install-python');
 console.log(`python/install-python — ${process.env.BASE}`);
 
-const RUNTIME_ROOT = '~/.nimbus/runtimes/cpython/3.13.14';
+const RUNTIME_ROOT = '~/.nimbus/runtimes/cpython/3.13.14-1';
 
 const sid = await mintSession();
 console.log(`SID: ${sid}`);
@@ -55,8 +55,8 @@ await t.waitForPrompt(60_000);
   a.check('manifest.json parses + name === "cpython"',
     parsed != null && parsed.name === 'cpython',
     parsed ? `name=${parsed.name}` : JSON.stringify(stripped.slice(0, 300)));
-  a.check('manifest.json version === "3.13.14"',
-    parsed != null && parsed.version === '3.13.14',
+  a.check('manifest.json version === "3.13.14-1"',
+    parsed != null && parsed.version === '3.13.14-1',
     parsed ? `version=${parsed.version}` : '');
 }
 
@@ -65,10 +65,10 @@ await t.waitForPrompt(60_000);
 //    packages live in a second interpreter that the runner selects from what the
 //    session installed (see packages/worker/wasm/python/EXTENSIONS.md).
 const EXPECTED_SIZES = {
-  'share/cpython/python.wasm': 11125000,
-  'share/cpython/python-sci.wasm': 19306220,
-  'lib/python313.zip': 3845898,
-  'lib/sci-packages.zip': 1269909,
+  'share/cpython/python.wasm': 11124344,
+  'share/cpython/python-sci.wasm': 19296940,
+  'lib/python313.zip': 3824681,
+  'lib/sci-packages.zip': 1269854,
 };
 {
   const { output: shareOut } = await t.run(`ls -la ${RUNTIME_ROOT}/share/cpython/ ${RUNTIME_ROOT}/lib/`, 15_000);
@@ -121,7 +121,7 @@ const EXPECTED_SIZES = {
   const { output } = await t.run('nimbus install --list', 10_000);
   const stripped = stripAnsi(output);
   a.check('nimbus install --list shows cpython@3.13.14',
-    /cpython@3\.13\.14/.test(stripped),
+    /cpython@3\.13\.14-1/.test(stripped),
     JSON.stringify(stripped.slice(-300)));
 }
 

@@ -72,8 +72,14 @@ for (const code of [
     const __nimbusOutBytes = value => value instanceof Uint8Array ? value : __nimbusOutEnc.encode(value);
     const __nimbusOutText = (_which, bytes) => new TextDecoder().decode(bytes);
     const outputStream = () => ({ writableLength: 0, writableHighWaterMark: 16 * 1024, emit() {} });
-    const __consoleMod = {}, __processMod = { stdout: outputStream(), stderr: outputStream() };
+    const __processMod = { stdout: outputStream(), stderr: outputStream() };
     const __utilMod = { format: (...a) => a.join(' ') };
+    // The canonical Console routes to its configured streams; the manager
+    // deliberately no longer replaces its formatting methods.
+    const __consoleMod = {
+      log: (...a) => __processMod.stdout.write(__utilMod.format(...a) + '\\n'),
+      error: (...a) => __processMod.stderr.write(__utilMod.format(...a) + '\\n'),
+    };
     ${shims.slice(helperStart, helperEnd)}
     ${code.slice(start, end)}
     __consoleMod.log('L'.repeat(256 * 1024));

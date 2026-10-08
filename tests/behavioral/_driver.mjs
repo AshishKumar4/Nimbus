@@ -175,22 +175,15 @@ function nameMintedOnFailure(code) {
   for (const { sid, at } of minted) console.error(`  ${sid}  minted ${at}${undeleted.has(sid) ? '' : '  (deleted by the probe)'}`);
 }
 
-// 'exit' listeners must be synchronous, so a child of the same runtime runs the fetches.
-// Each DELETE is read through deletionResult: only the destroy result confirms a deletion.
+// 'exit' listeners must be synchronous, so a child of the same runtime runs
+// the DELETEs (_ledger.mjs deleteSessions: what is retried, and how long).
+const DELETE_TRIES = 4;
+const DELETE_BUDGET_MS = 30_000;
 const DELETE_SESSIONS = `
-(async () => {
-  const { deletionResult } = await import(${JSON.stringify(new URL('./_ledger.mjs', import.meta.url).href)});
-  const { base, sessions } = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-  const results = await Promise.all(sessions.map(async ([sid, headers]) => {
-    try {
-      const result = await deletionResult(await fetch(base + '/s/' + encodeURIComponent(sid) + '/', { method: 'DELETE', headers }));
-      return { status: result.status, confirmed: result.ok };
-    } catch (error) {
-      return { status: 'error: ' + error.message, confirmed: false };
-    }
-  }));
-  process.stdout.write(JSON.stringify(results));
-})().catch((error) => { console.error(error); process.exitCode = 1; });
+import(${JSON.stringify(new URL('./_ledger.mjs', import.meta.url).href)})
+  .then(({ deleteSessions }) => deleteSessions(JSON.parse(require('fs').readFileSync(0, 'utf8'))))
+  .then((results) => process.stdout.write(JSON.stringify(results)))
+  .catch((error) => { console.error(error); process.exitCode = 1; });
 `;
 
 function deleteUndeletedSync() {
@@ -200,7 +193,7 @@ function deleteUndeletedSync() {
   let statuses;
   try {
     statuses = JSON.parse(execFileSync(process.execPath, ['-e', DELETE_SESSIONS], {
-      input: JSON.stringify({ base: BASE, sessions }),
+      input: JSON.stringify({ base: BASE, sessions, tries: DELETE_TRIES, budgetMs: DELETE_BUDGET_MS }),
       encoding: 'utf8',
       timeout: 60_000,
     }));
@@ -209,8 +202,9 @@ function deleteUndeletedSync() {
   }
   sessions.forEach(([sid], i) => {
     const result = statuses[i];
-    console.log(`deleteSession (exit hook): ${sid} → ${result.status} confirmed=${result.confirmed === true}`);
-    ledger('exit-delete', sid, result.status, { confirmed: result.confirmed === true });
+    const tries = result.attempts > 1 ? ` after ${result.attempts} tries` : '';
+    console.log(`deleteSession (exit hook): ${sid} → ${result.status} confirmed=${result.confirmed === true}${tries}`);
+    ledger('exit-delete', sid, result.status, { confirmed: result.confirmed === true, attempts: result.attempts });
   });
 }
 

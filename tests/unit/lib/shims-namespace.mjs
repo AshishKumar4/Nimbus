@@ -131,6 +131,10 @@ function __nimbusModuleCell(key) {
   }
   return __nimbusTestCells.get(key);
 }
+// Its cells are the store's text: none is an ES module a launch lowered.
+function __nimbusModuleCellIsEsModule() {
+  return false;
+}
 // No runtime code is staged in a standalone factory.
 function __nimbusRuntimeModule(path) {
   const err = new EvalError("Module '/" + path + "' was produced after this launch started.");

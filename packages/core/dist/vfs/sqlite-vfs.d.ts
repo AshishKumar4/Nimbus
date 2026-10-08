@@ -386,9 +386,11 @@ export interface WaveRouter {
      * Apply `record` on the namespace as `cred`; `guard` runs right before
      * each call to the backend (the wave's admission and cancellation). A
      * refusal throws its errno. Answers the published name's stat, for its
-     * receipt (null for a removal).
+     * receipt (null for a removal). `owner`, the wave's exclusive-mutation
+     * lease, is presented to the namespace's lease check, as a group commit
+     * presents it here.
      */
-    apply(record: RoutedWaveRecord, cred: VfsCred, guard: () => void): Promise<RoutedStat | null>;
+    apply(record: RoutedWaveRecord, cred: VfsCred, guard: () => void, owner?: string): Promise<RoutedStat | null>;
 }
 /**
  * How far an earlier attempt of the same fenced wave may have reached into
@@ -620,6 +622,8 @@ export declare class SqliteVFS {
      */
     rotateIncarnation(): string;
     private readonly exclusiveMutationLeases;
+    /** Why a lease holds what it holds, where its holder said: what a write it refuses is told. */
+    private readonly exclusiveMutationReasons;
     private activeMutationOwner;
     /** Shared by every concurrent stream targeting this session's VFS. */
     private readonly writeStreamCredits;
@@ -771,7 +775,9 @@ export declare class SqliteVFS {
         read: boolean;
         write: boolean;
         sync?: boolean;
-    }, principal?: Principal): VfsOpenDescription;
+    }, principal?: Principal, 
+    /** The exclusive-mutation lease the open presented: the description's own mutations (write, truncate, chmod, chown, utimes) present it too. */
+    mutationOwner?: string): VfsOpenDescription;
     /**
      * Hold `bytes`, written through `opened` at `offset`, in its file's
      * AppendRun when they extend the file (an O_APPEND write is at `end()`): a
@@ -1141,7 +1147,11 @@ export declare class SqliteVFS {
      */
     acquireExclusiveMutation(path: string, options?: ExclusiveMutationOptions): ExclusiveMutationLease;
     private acquireExclusiveMutationAt;
-    acquireGlobalExclusiveMutation(): ExclusiveMutationLease;
+    /**
+     * Hold the whole session for one owner. `reason`, when given, is what a
+     * write it refuses is told (EBUSY's detail), instead of the lease's root.
+     */
+    acquireGlobalExclusiveMutation(reason?: string): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
     /**
      * Hand `owner`'s lease, root unchanged, to a new owner in one step: from
@@ -1162,7 +1172,12 @@ export declare class SqliteVFS {
      * mutations are refused with; a namespace that lays other filesystems over
      * this one asks it before it mutates one of them (CompositeVFS.guardMutations).
      */
-    mutationRefusal(path: string, cred: VfsCred): MutationRefusal | null;
+    mutationRefusal(path: string, cred: VfsCred, owner?: string): MutationRefusal | null;
+    /**
+     * `owner`: the lease the mutation presents (null for none). A routed or
+     * awaited mutation passes its own; a synchronous one inside
+     * withMutationOwner is presented by activeMutationOwner, the default.
+     */
     private refusalAt;
     private assertMutationsAllowed;
     private mkdir;

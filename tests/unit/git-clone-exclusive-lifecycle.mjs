@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { stagedAssets } from './lib/staged-assets.mjs';
+import { memoryStorage } from './lib/do-storage.mjs';
+
 
 function registerCloneHarness() {
   let gitCommand;
@@ -20,6 +22,8 @@ function registerCloneHarness() {
   const vfs = {
     deviceId: 1,
     as: () => ({
+      // The destinations here do not exist before their clones.
+      exists: () => false,
       acquireExclusiveMutation(path, options) {
         const owner = `owner-${acquiredRoots.length + 1}`;
         acquiredRoots.push(path);
@@ -35,6 +39,7 @@ function registerCloneHarness() {
   };
   const waitUntilPromises = [];
   const doCtx = {
+    storage: memoryStorage(),
     waitUntil(promise) {
       waitUntilPromises.push(promise);
     },
@@ -66,6 +71,8 @@ function commandContext(args) {
     vfs: {
       async realpath(path) { return path; },
       async stat() { return { type: 'directory', size: 0, mtimeMs: 0, dev: 1 }; },
+      // Each directory is empty: a destination is one a clone may take.
+      async readdir() { return []; },
     },
   };
 }
@@ -135,13 +142,14 @@ function commandContext(args) {
   const branchVfs = {
     deviceId: 1,
     as: () => ({
+      exists: () => false,
       acquireExclusiveMutation(path) {
         return { root: path.replace(/^\/+/, ''), owner: 'owner-branch' };
       },
     }),
     releaseExclusiveMutation() {},
   };
-  const branchCtx = { id: { toString: () => 'do-branch-test' }, waitUntil() {} };
+  const branchCtx = { id: { toString: () => 'do-branch-test' }, waitUntil() {}, storage: memoryStorage() };
   registry.register('git', (ctx) => runGitCommand(ctx, branchVfs, branchCtx, env));
   const exitCode = await registry.gitCommand(commandContext([
     'clone',

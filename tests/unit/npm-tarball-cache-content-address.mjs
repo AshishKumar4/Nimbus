@@ -25,6 +25,7 @@ import {
   R2CacheClient,
   parseTarballAddress,
   tarballKey,
+  tarballL2Url,
 } from '../../packages/worker/src/npm/r2-cache.ts';
 import {
   readableStreamToAsyncIterable,
@@ -36,6 +37,7 @@ import {
   encodeWriteBatchStream,
 } from '../../packages/platform/src/w7-frame.ts';
 import { packageTarball, sriOf } from './lib/tarball-fixture.mjs';
+import { withColoCache } from './lib/colo-cache.mjs';
 import './lib/install-facet-scope.mjs';
 
 
@@ -254,6 +256,28 @@ function stubFetch(byUrl) {
     assert.equal(parseTarballAddress(`${algo}-${btoa('x'.repeat(bytes - 1))}`), null, `${algo} of ${bytes - 1} bytes is not addressable`);
   }
 }
+
+// ── 5. Stored bytes fill the colo cache as well as R2: the next reader in
+//       the colo answers from L2. A fill of R2 alone (a tarball fetched from
+//       the registry) sent the next session to R2 for it (5 of 5 such
+//       tarballs on a throwaway). Refused bytes reach neither. ────────────
+await withColoCache(async (colo) => {
+  const bucket = fakeBucket();
+  assert.equal(await new R2CacheClient(bucket, null).putTarball(GOOD_SRI, EVIL), false);
+  assert.equal(colo.entries.size, 0, 'bytes that do not hash to their address never reach the colo cache');
+
+  assert.equal(await new R2CacheClient(bucket, null).putTarball(GOOD_SRI, GOOD), true);
+  const filled = colo.entries.get(tarballL2Url(parseTarballAddress(GOOD_SRI)));
+  assert.ok(filled, 'the stored tarball reached the colo cache');
+  assert.deepEqual([...filled.body], [...GOOD], 'byte for byte');
+  assert.equal(filled.headers['cache-control'], 'public, max-age=31536000, immutable', 'immutable, as its content address is');
+
+  // Another session in the colo, over an R2 that has nothing: the colo answers.
+  const reader = new R2CacheClient(fakeBucket(), null);
+  const got = await reader.getTarball(GOOD_SRI);
+  assert.deepEqual([...got], [...GOOD]);
+  assert.deepEqual(reader.stats(), { l2HitsPackument: 0, l3GetsPackument: 0, l2HitsTarball: 1, l3GetsTarball: 0 });
+});
 
 globalThis.fetch = originalFetch;
 console.log('npm-tarball-cache-content-address: ok');

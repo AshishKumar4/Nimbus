@@ -71,6 +71,12 @@ export interface EsmResolver {
   metaResolveSync(specifier: string, parentUrl: string): string;
   /** Node's import-attribute check, for the format a resolution loads as. */
   validateAttributes(url: string, format: EsmFormat, attributes: Record<string, unknown>): void;
+  /**
+   * Node's getPackageScopeConfig for a file: URL, over a host whose every
+   * answer is immediate: the package.json path its scope reads, and the
+   * "type" it declares.
+   */
+  packageScopeSync(url: string): { pjsonPath: string; type: 'module' | 'commonjs' | 'none' };
 }
 
 /** What a resolver is created with beyond its host. */
@@ -606,6 +612,10 @@ export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOpt
     },
     resolveSync: (specifier, parentUrl) => runSync(importTarget(specifier, parentUrl)),
     metaResolveSync: (specifier, parentUrl) => runSync(metaResolve(specifier, parentUrl)),
+    packageScopeSync(url) {
+      const { pjsonPath, type } = runSync(packageScopeConfig(new URL(url)));
+      return { pjsonPath, type };
+    },
     validateAttributes(url, format, attributes) {
       for (const key of Object.keys(attributes)) {
         if (key !== 'type') {

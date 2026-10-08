@@ -1,5 +1,5 @@
-import { applySourceEdits, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
-import { bindingScope, list, namesBinding, scoped, stringOf } from './javascript-scope.js';
+import { applySourceEdits, COMMONJS_WRAPPER_NAMES, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
+import { bindingScope, list, namesBinding, programNames, scoped, stringOf } from './javascript-scope.js';
 /**
  * Names for code generated around `source`: a prefix its text does not hold
  * anywhere, then a number, so no binding of the source is one of them.
@@ -30,13 +30,28 @@ export function lowerAsyncModule(esm) {
  * a name after code that may use it is parsed again, every name known.
  */
 export function readEsmRecords(source) {
+    return readEsmModule(source).records;
+}
+/**
+ * readEsmRecords, and where the module uses a name the CommonJS wrapper
+ * binds (`require`, `module`, `exports`, `__filename`, `__dirname`) that
+ * neither its top level nor any scope around the use declares: no binding
+ * at all in an ES module's scope, which a lowering to CommonJS must keep so
+ * (module-format.ts ES_MODULE_UNBOUND_NAMES).
+ */
+export function readEsmModule(source) {
     const first = readModule(source, null);
-    return first.importsAfterCode ? readModule(source, first.imported).records : first.records;
+    const read = first.importsAfterCode ? readModule(source, first.imported) : first;
+    return { records: read.records, wrapperUses: read.wrapperUses };
 }
 function readModule(source, known) {
     // ModuleExportName: an identifier, or a string such as `export { a as "b-c" }`.
     const nameOf = (node) => node.type === 'Identifier' ? String(node.name) : String(node.value);
     const imported = new Set(known ?? []);
+    // Their uses are tracked as an import's are; a top-level declaration of
+    // one (Vite's `const require = createRequire(import.meta.url)`) binds it.
+    const tracked = new Set([...imported, ...COMMONJS_WRAPPER_NAMES]);
+    const declared = new Set();
     const records = [];
     const uses = new Map();
     let code = false;
@@ -80,7 +95,7 @@ function readModule(source, known) {
                 for (const property of list(node, 'properties'))
                     patternProperties.add(property);
             const name = node.type === 'Identifier' ? stringOf(node, 'name') : null;
-            if (name === null || !imported.has(name) || parent === null || !namesBinding(parent, key))
+            if (name === null || !tracked.has(name) || parent === null || !namesBinding(parent, key))
                 continue;
             if (bindingScope(scope, name) !== null)
                 continue;
@@ -90,7 +105,7 @@ function readModule(source, known) {
     };
     const onIdentifier = (identifier) => {
         const name = stringOf(identifier, 'name');
-        if (name === null || !imported.has(name))
+        if (name === null || !tracked.has(name))
             return;
         // Identifiers finish in source order; one out of it is put in its place.
         let at = mentions.length;
@@ -99,6 +114,8 @@ function readModule(source, known) {
         mentions.splice(at, 0, identifier.start);
     };
     const onStatement = (node) => {
+        for (const name of programNames(node))
+            declared.add(name);
         if (node.type !== 'ImportDeclaration') {
             // A top-level statement's free uses are its imports' (none redeclares one).
             for (const { name, start, end, use } of freeUses(node)) {
@@ -115,6 +132,7 @@ function readModule(source, known) {
                     if (code && !imported.has(specifier.local.name))
                         importsAfterCode = true;
                     imported.add(specifier.local.name);
+                    tracked.add(specifier.local.name);
                 }
                 records.push({
                     kind: 'import', start: node.start, end: node.end, source: String(node.source.value),
@@ -190,7 +208,13 @@ function readModule(source, known) {
         ...record,
         bindings: record.bindings.map((binding) => binding.kind === 'namespace' ? binding : { ...binding, references: uses.get(binding.local) ?? [] }),
     });
-    return { records: withUses, imported, importsAfterCode };
+    const wrapperUses = new Map();
+    for (const name of COMMONJS_WRAPPER_NAMES) {
+        const found = uses.get(name);
+        if (found && !declared.has(name))
+            wrapperUses.set(name, found);
+    }
+    return { records: withUses, imported, importsAfterCode, wrapperUses };
 }
 /** How an identifier under `parent` by `key` uses the binding it names. */
 function useOf(parent, key, patternProperties) {
@@ -371,8 +395,11 @@ export function emitCommonJs(source, records, options) {
         .map(([exported, value]) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`);
     const prologue = [...installed, ...requires, ...imported, ...stars].join(' ');
     const body = applySourceEdits(source, [...edits, ...uses.filter((use) => !defaultExpressionUses.has(use))]);
+    // An ES module is strict. A sync body keeps the source's own directive at
+    // the top; an async one moves the source into the function, so the
+    // directive opens the header, where the wrapper finds it (commonjs-cell.ts).
     return options.body === 'async'
-        ? `${header.join('\n')}\nreturn (async () => { ${prologue}\n${body}\n})();\n`
+        ? `"use strict";${header.join('\n')}\nreturn (async () => { ${prologue}\n${body}\n})();\n`
         : `${header.join('\n')}\n${prologue}\n${body}\n`;
 }
 /** The bindings an exported declaration introduces. */

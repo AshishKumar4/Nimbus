@@ -1,7 +1,7 @@
 {
   "name": "@nimbus-sh/core",
   "version": "0.15.1",
-  "description": "Backend-agnostic half of Nimbus \u2014 the durable filesystem, the shell, and the OS/process contracts, over a host-supplied SQL port.",
+  "description": "Backend-agnostic half of Nimbus — the durable filesystem, the shell, and the OS/process contracts, over a host-supplied SQL port.",
   "keywords": [
     "filesystem",
     "shell",
@@ -56,13 +56,21 @@
   },
   "dependencies": {
     "@nimbus-sh/platform": "^0.7.2",
+    "@npmcli/config": "9.0.0",
     "@renovatebot/pep440": "^5.0.0",
     "acorn": "^8.15.0",
     "acorn-walk": "^8.3.5",
     "css-tree": "3.2.1",
     "esbuild-wasm": "0.24.2",
+    "hosted-git-info": "8.1.0",
+    "ini": "5.0.0",
     "magic-string": "^0.30.21",
+    "nopt": "8.1.0",
+    "npm-package-arg": "12.0.2",
     "pip-requirements-js": "^1.0.3",
+    "semver": "^7.7.4",
+    "validate-npm-package-license": "3.0.4",
+    "validate-npm-package-name": "6.0.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { rewriteBundledEsmToCjs, rewriteProvidedCommonJsModules } from '../../packages/core/src/runtime/esbuild-service.ts';
+import { PROVIDED_PACKAGE_HOOK, rewriteBundledEsmToCjs, rewriteProvidedCommonJsModules } from '../../packages/core/src/runtime/esbuild-service.ts';
 
 const commonJs = `const __commonJS = init => {
   let cached;
@@ -12,13 +12,17 @@ const commonJs = `const __commonJS = init => {
   };
 };`;
 const provided = { transport: 'provided' };
+// A bound record calls the runtime's hook, not the module's require (an ES
+// module has none): the shims' hook is require's answer for the package.
+let calls = [];
+globalThis[PROVIDED_PACKAGE_HOOK] = (name) => {
+  calls.push(name);
+  assert.equal(name, 'undici');
+  return provided;
+};
 function execute(source) {
-  const calls = [];
-  const require = name => {
-    calls.push(name);
-    assert.equal(name, 'undici');
-    return provided;
-  };
+  calls = [];
+  const require = () => { throw new Error('a bound record does not call the module\'s require'); };
   const module = { exports: {}, require };
   new Function('module', 'exports', 'require', source)(module, module.exports, require);
   return { exports: module.exports, calls };
@@ -62,7 +66,10 @@ for (const source of [
   const bound = rewriteProvidedCommonJsModules(source);
   const transformed = rewriteBundledEsmToCjs(bound, 'file:///app/bundle.js');
   assert.ok(transformed);
-  const require = name => name === './helper.js' ? { __commonJS() { throw new Error('factory was not externalized'); } } : provided;
+  const require = (name) => {
+    assert.equal(name, './helper.js');
+    return { __commonJS() { throw new Error('factory was not externalized'); } };
+  };
   const module = { exports: {}, require };
   new Function('module', 'exports', 'require', transformed.code)(module, module.exports, require);
   assert.equal(module.exports.load(), provided, 'an imported helper alias uses the same package binding');

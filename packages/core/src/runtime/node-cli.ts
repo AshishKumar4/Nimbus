@@ -48,6 +48,8 @@ export interface NodeLaunch {
 export interface NodeCommandLine extends NodeLaunch {
   /** Where the program's own arguments start: its script (or `-`), or, for `-e`, its arguments; their end when there are none. */
   programIndex: number;
+  /** `--input-type`: what `-e` code and stdin are (`module`, `commonjs`), the command line's over NODE_OPTIONS'. */
+  inputType?: string;
   version: boolean;
   help: boolean;
 }
@@ -105,6 +107,7 @@ interface ReadOptions {
   eval?: string;
   /** A boolean the last of its options set (`--print`, or `--no-print`). */
   print?: boolean;
+  inputType?: string;
   version: boolean;
   help: boolean;
   /** Where they end in `tokens` (past a `--`). */
@@ -175,6 +178,7 @@ function readOptions(tokens: readonly string[], env: boolean): ReadOptions | Nod
       case '--require': read.require.push(value); break;
       case '--import': read.import.push(value); break;
       case '--eval': read.eval = value; break;
+      case '--input-type': read.inputType = value; break;
       case '--print': read.print = !negation; break;
       case '--version': read.version = !negation; break;
       case '--help': read.help = !negation; break;
@@ -203,6 +207,7 @@ export function parseNodeCommandLine(args: readonly string[], nodeOptions = ''):
     import: [...fromEnv.import, ...fromArgs.import],
     ...(fromArgs.eval !== undefined ? { eval: fromArgs.eval } : {}),
     print: fromArgs.print ?? fromEnv.print ?? false,
+    ...(fromArgs.inputType ?? fromEnv.inputType) !== undefined ? { inputType: fromArgs.inputType ?? fromEnv.inputType } : {},
     version: fromArgs.version,
     help: fromArgs.help,
   };
