@@ -10097,9 +10097,9 @@ function __nimbusNoSideEffectsToString(value) {
   // A data property, own or inherited, never a getter.
   const dataProperty = (key) => {
     for (let o = value; o !== null; o = Object.getPrototypeOf(o)) {
+      if (__utilMod.types.isProxy(o)) return undefined;
       const d = Object.getOwnPropertyDescriptor(o, key);
       if (d) return "value" in d ? d.value : undefined;
-      if (__utilMod.types.isProxy(o)) return undefined;
     }
     return undefined;
   };
