@@ -241,9 +241,14 @@ export interface ProcessFsClient {
   /** A barrier's ACQUIRE asking for the read lease too (VfsAcquireOptions.lease), now; null when it takes none. */
   readLeaseAsk(): ReadLeaseAsk | null;
   /**
-   * The barrier that asked with `ask` applied an answer carrying `lease`
-   * (VfsAcquireResult.readLease): trusted until `ask.at + lease.trustMs`
-   * while the process logs nothing more, and its recalls answered from now on.
+   * An answer to such an ACQUIRE carried `lease` (VfsAcquireResult.readLease),
+   * whether or not the barrier applies it: the process holds it, answers its
+   * recalls from now on, and gives it back. Trusted only once applied (readLeased).
+   */
+  readLeaseAnswered(lease: { owner: string }): void;
+  /**
+   * The barrier that asked with `ask` applied the answer carrying `lease`:
+   * trusted until `ask.at + lease.trustMs` while the process logs nothing more.
    */
   readLeased(lease: { owner: string; trustMs: number }, ask: ReadLeaseAsk): void;
   stats(): ProcessFsStats;
@@ -867,8 +872,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   };
 
   /**
-   * The read lease (readLeased): its owner, until when it is trusted, when
-   * a barrier last confirmed it, and the log that barrier asked at.
+   * The read lease (readLeaseAnswered): its owner, until when it is trusted
+   * (readLeased), when an answer last confirmed it, and the log the barrier
+   * that applied one asked at.
    * Untrusted the moment its recall arrives, before the session is told
    * (answerReadRecalls), and while the process has logged since.
    */
@@ -1182,22 +1188,28 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       if (session.grants === undefined || runEnded) return null;
       return { at: now(), logged: answered === logged ? logged : -1 };
     },
-    readLeased(lease, ask) {
+    readLeaseAnswered(lease) {
       if (session.grants === undefined || endedReadLeases.has(lease.owner)) return;
+      if (readLease?.owner === lease.owner) {
+        readLease.confirmedAt = now();
+        return;
+      }
+      // Granted to a barrier asked before the run ended: given back too.
       if (runEnded) {
         const back = giveBackReadLease(lease.owner);
         givingBack.add(back);
         void back.finally(() => givingBack.delete(back));
         return;
       }
-      const confirmed = readLease?.owner === lease.owner;
-      readLease = { owner: lease.owner, until: ask.at + lease.trustMs, confirmedAt: now(), logged: ask.logged };
-      if (confirmed) {
-        counters.readConfirms++;
-        return;
-      }
+      readLease = { owner: lease.owner, until: 0, confirmedAt: now(), logged: -1 };
       counters.readLeases++;
       void answerReadRecalls(lease.owner);
+    },
+    readLeased(lease, ask) {
+      if (readLease?.owner !== lease.owner) return;
+      readLease.until = ask.at + lease.trustMs;
+      readLease.logged = ask.logged;
+      counters.readConfirms++;
     },
     takeFailuresError() {
       const taken = failures.splice(0, failures.length);
