@@ -8,7 +8,7 @@
  * facet module source. wasi-instance.ts appends the wasi-threads scheduler
  * and re-exports the result as WASI_INSTANCE_PREAMBLE_SRC.
  *
- * Size: 242.01 KiB
+ * Size: 241.96 KiB
  */
 export declare const WASI_INSTANCE_BODY_SRC: string;
 //# sourceMappingURL=wasi-instance.generated.d.ts.map

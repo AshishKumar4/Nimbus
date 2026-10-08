@@ -1,4 +1,4 @@
-import { after, filesystemErrno, installAuthorityFilesystem } from '../wasi/filesystem.js';
+import { after, installAuthorityFilesystem, processGoneMessage, refusalErrno } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
@@ -78,7 +78,7 @@ function newSession(args) {
     if (!filesystem)
         throw new Error('bash requires a process filesystem capability');
     const cwd = args.cwd;
-    return {
+    const session = {
         mod, coreutils, coreutilsRoot: norm(args.coreutilsRoot), fs: filesystem, cwd, cred: args.cred, parking: args.parking, pipeBudget: pipeBudget(args.memoryBudgetBytes), pending: new Set(),
         argv: args.argv, environ: args.environ,
         stdinTty: !!args.stdinTty,
@@ -89,7 +89,10 @@ function newSession(args) {
         missingWasi: new Set(),
         stats: { instances: 0, reused: 0, memPeak: 0, mainHi: 0, slotHi: 0 },
         error: null,
+        processGone: null,
+        gone: (refusal) => { session.processGone ??= refusal; },
     };
+    return session;
 }
 function initStdinQueued(s) { s.stdin.queued = s.stdin.chunks.reduce((a, c) => a + c.length, 0); }
 function newPipe(s) { const id = s.pipeNext++; s.pipes.set(id, { chunks: [], queued: 0, readers: 1, writers: 1, readW: [], writeW: [] }); return id; }
@@ -377,7 +380,7 @@ function makeWasiFs(s, proc, DV, U8, io, memory, synchronous = false, resident) 
             crypto.getRandomValues(U8().subarray(p + i, p + Math.min(i + 65536, n))); return 0; },
         proc_exit(code) { throw new Exit(code); },
     };
-    installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, resident });
+    installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, resident, processGone: s.gone });
     installPreopenRehoming(proc, imports);
     return imports;
 }
@@ -624,7 +627,7 @@ function makeProc(s, pid, ppid, fds) {
             if (!(result instanceof Promise))
                 return result;
             const pending = { name, settled: false, value: 0, promise: Promise.resolve() };
-            pending.promise = result.then(value => { pending.value = value; pending.settled = true; }, error => { pending.value = filesystemErrno(error); pending.settled = true; });
+            pending.promise = result.then(value => { pending.value = value; pending.settled = true; }, error => { pending.value = refusalErrno(error, s.gone); pending.settled = true; });
             proc.pendingFs = pending;
             c.reason = 'filesystem';
             initHdr(proc.MAIN_BUF, MAIN_SIZE);
@@ -857,7 +860,7 @@ function makeProc(s, pid, ppid, fds) {
             return 0;
         },
         // nimbus-proc.c reads these two as `errno = -r` on a negative return, so a
-        // failure has to arrive negated; filesystemErrno's positive value would be
+        // failure has to arrive negated; refusalErrno's positive value would be
         // handed back to bash as a live descriptor.
         dup: suspend('dup', async (o) => {
             const e = proc.fds.get(o);
@@ -871,7 +874,7 @@ function makeProc(s, pid, ppid, fds) {
                 return nf;
             }
             catch (error) {
-                return -filesystemErrno(error);
+                return -refusalErrno(error, s.gone);
             }
         }),
         dup2: suspend('dup2', async (o, n) => {
@@ -905,7 +908,7 @@ function makeProc(s, pid, ppid, fds) {
                 return n;
             }
             catch (error) {
-                return -filesystemErrno(error);
+                return -refusalErrno(error, s.gone);
             }
         }),
         kill: (pid, signal) => signalProc(s, proc, pid, signal),
@@ -1218,7 +1221,7 @@ async function doExec(s, proc) {
             proc.ctx.resume = -45;
         }
         catch (error) {
-            proc.ctx.resume = -filesystemErrno(error);
+            proc.ctx.resume = -refusalErrno(error, s.gone);
         }
         resumeProc(proc);
         return;
@@ -1378,10 +1381,10 @@ async function doExec(s, proc) {
     const result = (produce, finish) => {
         try {
             const next = after(produce(), finish);
-            return next instanceof Promise ? next.catch(filesystemErrno) : next;
+            return next instanceof Promise ? next.catch((error) => refusalErrno(error, s.gone)) : next;
         }
         catch (error) {
-            return filesystemErrno(error);
+            return refusalErrno(error, s.gone);
         }
     };
     const native = {
@@ -1700,6 +1703,8 @@ async function pump(s) {
         const code = s.rootExit === null ? 0 : s.rootExit;
         await Promise.all(s.pending);
         S = null;
+        if (s.processGone !== null)
+            return { state: 'error', exitCode: code || 1, stdout: out, stderr: err, error: processGoneMessage(s.processGone), stats };
         return { state: 'exited', exitCode: code, stdout: out, stderr: err, stats };
     }
     if (s.stdin.waiters.length > 0) {

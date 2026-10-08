@@ -1,4 +1,4 @@
-import { installAuthorityFilesystem, WASI_ACCEPTED_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_TCP_PATH_PREFIX, } from '@nimbus-sh/core/runtime/wasi/filesystem.js';
+import { installAuthorityFilesystem, processGoneMessage, WASI_ACCEPTED_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_TCP_PATH_PREFIX, } from '@nimbus-sh/core/runtime/wasi/filesystem.js';
 import { answeringSupervisor, supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 import { residentFilesystem, } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
@@ -1845,7 +1845,7 @@ async function __wasiSettled(result) {
         failed = e?.message ?? String(e);
     }
     if (__wasiProcessGone !== null) {
-        const gone = `the session no longer holds this process (${__wasiProcessGone}): it restarted, or ended the process, while the program ran, so every filesystem call since answered ESRCH`;
+        const gone = processGoneMessage(__wasiProcessGone);
         failed = failed === null ? gone : `${gone}; ${failed}`;
     }
     if (failed === null)
