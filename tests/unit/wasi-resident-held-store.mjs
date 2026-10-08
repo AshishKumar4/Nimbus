@@ -17,6 +17,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { residentFilesystem } from '../../packages/core/src/runtime/wasi/resident-filesystem.ts';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { WASI_RESIDENT_STORE_BYTES } from '../../packages/platform/src/limits.ts';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -25,12 +26,11 @@ const ROOT = 'home/user';
 const beneath = (path) => ({ root: ROOT, path, beneath: true });
 const k = (p) => `/${ROOT}/${p}`;
 
-/** A session with `seed` (path -> text) written as the user's, and a process over the real store that holds what it writes. */
-async function processOver(seed = {}) {
+/** A session with `seed` (path -> text) written as the user's. */
+async function sessionWith(seed = {}) {
   const harness = createSqliteVfsTestHarness();
   const files = new ProcessFiles(new SqliteVFS(harness.sql, harness.ctx));
   const kernel = files.bind({ pid: 1, cred: CRED_KERNEL });
-  const authority = files.bind({ pid: 2, cred: USER });
   for (const dir of ['/home', `/${ROOT}`]) await kernel.mkdir(dir, { recursive: true });
   await kernel.chown(`/${ROOT}`, 1000, 1000);
   for (const [path, text] of Object.entries(seed)) {
@@ -39,11 +39,17 @@ async function processOver(seed = {}) {
     await kernel.writeFile(k(path), enc.encode(text));
     await kernel.chown(k(path), 1000, 1000);
   }
+  return { files, kernel, next: 2 };
+}
+
+/** A process of `session` (its own pid) over its own real store, holding what it writes. */
+async function processOf(session) {
+  const authority = session.files.bind({ pid: session.next++, cred: USER });
   const storeSource = new Function(
     FACET_RESIDENT_STORE_SOURCE
       + '\nreturn { __residentBindInMemory, __residentSetStorage, __residentBootLazy, __residentNamespaceView };',
   )();
-  storeSource.__residentBindInMemory(64 * 1024 * 1024);
+  storeSource.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
   const supervisor = {
     fsAcquire: (...args) => authority.acquire(...args),
     fsList: (...args) => authority.list(...args),
@@ -65,7 +71,7 @@ async function processOver(seed = {}) {
   assert.equal(await storeSource.__residentBootLazy(supervisor), true);
   const device = (await authority.stat('/')).dev;
   const view = storeSource.__residentNamespaceView(supervisor, device, USER);
-  const session = {
+  const port = {
     openWriter: async () => null,
     writeBatchStream: (stream, _fence, owner) => authority.writeStream(stream, owner === undefined ? {} : { mutationOwner: owner }),
     grants: {
@@ -77,10 +83,15 @@ async function processOver(seed = {}) {
   };
   // The grant comes as it does live (GRANT_AFTER): after the first changes went to the session.
   const fs = residentFilesystem(authority, view, {
-    session,
+    session: port,
     isHomeRoot: (key) => key.startsWith('home/') && !key.slice(5).includes('/'),
   });
-  return { fs, kernel, authority };
+  return { fs, kernel: session.kernel, authority };
+}
+
+/** A session with `seed`, and one process of it. */
+async function processOver(seed = {}) {
+  return processOf(await sessionWith(seed));
 }
 
 /** Python's open(name, 'w') and one write of `bytes`. */
@@ -123,6 +134,25 @@ async function readWhole(fs, name) {
   assert.equal(dec.decode(await readWhole(fs, 'many/f0001.txt')), '1'.repeat(1000));
   await fs.settle();
   assert.equal((await authority.readdir(beneath('many'))).length, N);
+}
+
+// ── As live: a first process makes them under its grant, a second rewrites them without listing first ──
+// Red before (live, python: `os.makedirs(d, exist_ok=True)`, then open(…, 'w') of
+// each, then os.listdir): the second run listed the directory as empty and
+// every file it had just written as missing.
+{
+  const N = 20;
+  const session = await sessionWith();
+  const names = Array.from({ length: N }, (_, i) => `d/f${String(i).padStart(4, '0')}.txt`);
+  for (let run = 1; run <= 2; run++) {
+    const { fs } = await processOf(session);
+    await fs.mkdir(beneath('d'), { mode: 0o777 }).catch((error) => { if (error.code !== 'EEXIST') throw error; });
+    for (const [i, name] of names.entries()) await rewrite(fs, name, enc.encode(String(i).repeat(10)));
+    const listed = await fs.readdir(beneath('d'));
+    assert.equal(listed.length, N, `run ${run}: the directory it rewrote listed ${listed.length} of ${N}`);
+    for (const name of [names[0], names[1], names[N - 1]]) assert.notEqual(await fs.stat(beneath(name)), null, `run ${run}: ${name}, just written, was stat'd as missing`);
+    await fs.settle();
+  }
 }
 
 // ── A file of a few MiB reads back what was written, at once ──
