@@ -403,6 +403,9 @@ function nameOf(op: ProcessFsOp): string {
 function fsError(errno: string, message: string, path: string): Error & { code: string; path: string } {
   return Object.assign(new Error(message), { code: errno, path });
 }
+function isProcessGone(error: Error): error is Error & { code: 'ESRCH' } {
+  return 'code' in error && error.code === 'ESRCH';
+}
 
 /** The open description a call writes through (W7Call description), if any. */
 function descriptionOf(call: W7Call): string | undefined {
@@ -553,7 +556,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     while (retiring.length > 0) {
       try { await session.retireWriter?.(retiring[0]!); }
       catch (error) {
-        if (processGone === null || !(error instanceof Error) || !('code' in error) || error.code !== 'ESRCH') throw error;
+        if (processGone === null || !(error instanceof Error) || !isProcessGone(error)) throw error;
       }
       retiring.shift();
     }
@@ -617,7 +620,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     try {
       writer = await writerFor(entries);
     } catch (error) {
-      if (error instanceof Error && 'code' in error && error.code === 'ESRCH') {
+      if (error instanceof Error && isProcessGone(error)) {
         endedProcess(entries, error, epoch?.writer ?? null);
         return;
       }
@@ -668,7 +671,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       });
     } catch (error) {
       // Lost past every re-send, or refused before any op (the epoch gone): their fate is unknown.
-      if (error instanceof Error && 'code' in error && error.code === 'ESRCH') {
+      if (error instanceof Error && isProcessGone(error)) {
         endedProcess(entries, error, writer);
         return;
       }

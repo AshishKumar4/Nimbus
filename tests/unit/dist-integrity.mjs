@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   BuildFailure,
+  BUILD_FIXPOINT,
   assertDistMatchesSource,
   checkStagedAssets,
   fingerprintBuildInputs,
@@ -96,6 +97,34 @@ const STEPS = [
   { cwd: 'packages/worker', script: 'build', why: 'carry the pointer into dist' },
 ];
 const ROOTS = ['packages/worker'];
+
+{
+  const root = mkdtempSync(join(tmpdir(), 'generated-client-order-'));
+  const core = join(root, 'packages/core');
+  const worker = join(root, 'packages/worker');
+  try {
+    mkdirSync(join(core, 'src'), { recursive: true });
+    mkdirSync(join(core, 'dist'), { recursive: true });
+    mkdirSync(join(worker, 'public'), { recursive: true });
+    writeFileSync(join(core, 'src/input'), 'new client');
+    writeFileSync(join(core, 'src/generated'), 'old client');
+    writeFileSync(join(core, 'dist/generated'), 'old client');
+    writeFileSync(join(worker, 'public/client'), 'old client');
+    writeFileSync(join(core, 'build.mjs'), `import {copyFileSync} from 'node:fs'; copyFileSync('src/generated','dist/generated');`);
+    writeFileSync(join(worker, 'produce.mjs'), `import {copyFileSync} from 'node:fs'; copyFileSync('../core/src/input','../core/src/generated');`);
+    writeFileSync(join(worker, 'consume.mjs'), `import {copyFileSync} from 'node:fs'; copyFileSync('../core/dist/generated','public/client');`);
+    writeFileSync(join(core, 'package.json'), JSON.stringify({ scripts: { build: 'node build.mjs' } }));
+    writeFileSync(join(worker, 'package.json'), JSON.stringify({ scripts: {
+      build: 'node -e ""', 'bundle:facets': 'node produce.mjs', bundle: 'node produce.mjs && node consume.mjs',
+    } }));
+    const steps = BUILD_FIXPOINT.filter((step) => step.cwd === 'packages/core' || step.cwd === 'packages/worker');
+    runBuildFixpoint({ root, steps });
+    assert.equal(readFileSync(join(worker, 'public/client'), 'utf8'), 'new client', 'the asset consumer staged the pre-generation compiled client');
+    assert.deepEqual(rebuildDrift({ root, steps, roots: ['packages/core', 'packages/worker'] }), [], 'a generated client change took another rebuild to reach its fixpoint');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 
 /** A fixture already at the fixpoint, so any later drift is the test's doing. */
 async function fixtureAtFixpoint(payload = 'export const PAYLOAD = 1;\n') {
