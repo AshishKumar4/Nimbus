@@ -255,16 +255,7 @@ for (const mode of PROCESS_HOST_MODES) {
     }
     assert.equal(world.boots.length, 1, '20 routed requests booted nothing');
 
-    // A facet lost to a platform reset is reported, not silently replaced.
-    world.lose(residentFacetName(0));
-    await assert.rejects(
-      handle.routeTarget.handleHttpRequest(new Request('http://x/after')),
-      /no longer loaded/,
-      'a lost facet fails loud',
-    );
-    assert.equal(world.boots.length, 1, 'a lost facet booted NO replacement');
-
-    // And so is a released one — with the SAME message on both substrates. A
+    // A released one fails loud with the SAME message on both substrates. A
     // peer keeps its hosted record past the kill precisely so this request
     // reaches the released facet instead of timing out on a missing record.
     handle.kill();
@@ -275,6 +266,22 @@ for (const mode of PROCESS_HOST_MODES) {
       'a killed process fails loud, and says the same thing wherever it ran',
     );
     assert.equal(world.boots.length, 1);
+
+    // A facet lost to a platform reset is reported, not silently replaced,
+    // and its process is over.
+    const second = await fabric.startResidentProcess({
+      ...WRITER_LIFECYCLE,
+      startContract: 'boot', pid: 46, workerKey: 'k46', boot: CODE_BOOT,
+    });
+    await second.booted();
+    world.lose(world.boots.at(-1).facetName);
+    await assert.rejects(
+      second.routeTarget.handleHttpRequest(new Request('http://x/after')),
+      /no longer loaded/,
+      'a lost facet fails loud',
+    );
+    await assert.rejects(second.done, /no longer loaded/, 'and its process ends with the loss');
+    assert.equal(world.boots.length, 2, 'a lost facet booted NO replacement');
     console.log(`  [${mode}] case5: one evaluation per process; a lost or killed facet never re-boots`);
   }
 

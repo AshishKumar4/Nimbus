@@ -90,7 +90,7 @@ assert.equal(processes.get(spawned.pid)?.exitCode, 137);
 // ── 3b. under restart on-failure, a lost facet's process is restarted ──────
 {
   const crashy = await fm.spawnNode('http.createServer(...).listen(3001)', {
-    command: 'node crashy.js', filename: '/home/user/crashy.js', cwd: '/home/user', port: 3001,
+    command: 'node crashy.js', filename: '/home/user/crashy.js', argv: ['/home/user/crashy.js'], cwd: '/home/user', port: 3001,
     env: { NIMBUS_RESTART: 'on-failure' },
   });
   const boots = world.boots.length;
@@ -104,6 +104,9 @@ assert.equal(processes.get(spawned.pid)?.exitCode, 137);
   }
   assert.ok(restarted, 'a new process takes the lost one\'s place');
   assert.deepEqual(processes.get(restarted.pid).restartedFrom, { pid: crashy.pid, cause: 'host-reset' });
+  for (let i = 0; i < 300 && portRegistry.get(3001)?.pid !== restarted.pid; i++) await new Promise((r) => setTimeout(r, 20));
+  const served = await portRegistry.routeRequest(3001, new Request('http://s/port/3001/ping'), '/ping');
+  assert.equal(served.status, 200, 'the new process serves the port');
   assert.equal(world.boots.length, boots + 1, 'booted once, as the new process');
 }
 
