@@ -127,18 +127,9 @@ async function awaitSocketOpen(ws, timeoutMs, what) {
   throw new Error(`${what} did not open: ${why}`);
 }
 
-/**
- * How often a probe's WebSocket pings while it is open. One that carries
- * nothing either way for about 270 s is dropped on the way to the session
- * (close 1006 with no close frame; the session itself is untouched), so a
- * probe waiting on a command that prints nothing for that long lost its
- * terminal and read it as a reset. A ping every 60 s, or any frame, kept one
- * open through a silent 330 s command. The browser terminal sends its own
- * liveness frame every few seconds.
- */
+// A WebSocket silent both ways for ~270 s is dropped before the session (1006, no close frame).
 const SOCKET_KEEPALIVE_MS = 30_000;
 
-/** Pings `ws` every `everyMs` while it is open, until it closes. */
 function keepSocketAlive(ws, everyMs = SOCKET_KEEPALIVE_MS) {
   const timer = setInterval(() => {
     if (ws.readyState !== WebSocket.OPEN) return;
