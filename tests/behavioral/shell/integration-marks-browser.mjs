@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { mintSession, deleteSession, makeAsserter, BASE } from '../_driver.mjs';
+import { mintSession, deleteSession, makeAsserter, stripAnsi, BASE } from '../_driver.mjs';
 import {
   launchBrowser, applyProbeCookies, exchangeAttachCookie,
   sessionTerminalText, waitForSessionTerminalText,
@@ -40,13 +40,21 @@ try {
   await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await waitForSessionTerminalText(page, /user@nimbus:/, 60_000);
   a.check('a real shell prompt carries A and B', marks(raw).includes('A') && marks(raw).includes('B'), JSON.stringify(marks(raw)));
+  await page.evaluate(() => {
+    globalThis.shellProbeRaw = '';
+    ws.addEventListener('message', (event) => {
+      const frame = JSON.parse(event.data);
+      if (frame.type === 'output') globalThis.shellProbeRaw += frame.data;
+    });
+  });
+  const readRaw = () => page.evaluate(() => globalThis.shellProbeRaw);
 
   const echo = await execute('echo SHELL_IMAGE');
   a.check('a command produces one execution, one status and one prompt',
     JSON.stringify(marks(echo)) === JSON.stringify(['C', 'D;0', 'A', 'B']), JSON.stringify(marks(echo)));
   const repeated = await execute('!!');
   a.check('history expansion repeats the user command, without a driver sentinel',
-    /\r?\nSHELL_IMAGE\r?\n/.test(repeated) && marks(repeated).includes('D;0'), repeated);
+    /\r?\nSHELL_IMAGE\r?\n/.test(stripAnsi(repeated)) && marks(repeated).includes('D;0'), repeated);
 
   await page.evaluate(() => new Promise((resolve) => {
     term.options.cursorBlink = false;
@@ -66,20 +74,22 @@ try {
   console.log(`SCREENSHOT_BEFORE ${before.toString('base64')}`);
   console.log(`SCREENSHOT_AFTER ${after.toString('base64')}`);
 
-  let cursor = raw.length;
+  let cursor = (await readRaw()).length;
   await page.setViewport({ width: 1100, height: 720 });
   await execute('echo RESIZED');
+  const resized = (await readRaw()).slice(cursor);
   a.check('resize adds no command-end mark',
-    marks(raw.slice(cursor)).filter((mark) => mark.startsWith('D')).length === 1, JSON.stringify(marks(raw.slice(cursor))));
+    marks(resized).filter((mark) => mark.startsWith('D')).length === 1, JSON.stringify(marks(resized)));
 
-  cursor = raw.length;
+  cursor = (await readRaw()).length;
   await page.evaluate(() => ws.send(JSON.stringify({ type: 'input', data: '\x0c' })));
   await execute('echo CLEARED');
+  const cleared = (await readRaw()).slice(cursor);
   a.check('Ctrl-L adds no command-end mark',
-    marks(raw.slice(cursor)).filter((mark) => mark.startsWith('D')).length === 1, JSON.stringify(marks(raw.slice(cursor))));
+    marks(cleared).filter((mark) => mark.startsWith('D')).length === 1, JSON.stringify(marks(cleared)));
 
   await execute('sleep 0.1 &');
-  const notice = await execute('wait');
+  const notice = await execute('sleep 1');
   a.check('a background-job notice appears without an extra command-end mark',
     /\[\d+\] Done\s+sleep 0\.1/.test(notice)
       && JSON.stringify(marks(notice)) === JSON.stringify(['C', 'D;0', 'A', 'B']), notice);
