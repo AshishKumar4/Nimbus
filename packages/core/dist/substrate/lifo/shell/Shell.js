@@ -114,8 +114,10 @@ export class Shell {
     lineSubmission;
     activeInput;
     lineInputs = [];
-    primaryPrompt = false;
+    promptMode = 'unprinted';
     exitNotices = new Map();
+    exitNoticeSource;
+    renderExitNotice;
     /**
      * Accepted lines that do not form a complete command yet: an unclosed
      * quote or a trailing `\` keeps the shell reading under PS2, as bash
@@ -554,8 +556,7 @@ export class Shell {
     }
     printPrompt() {
         if (this.pendingLine !== null) {
-            this.primaryPrompt = false;
-            this.terminal.write(CONTINUATION_PROMPT);
+            this.printContinuationPrompt();
             return;
         }
         // Report the jobs that finished, then reap their processes (and any other zombie).
@@ -563,11 +564,16 @@ export class Shell {
             this.writeToTerminal(`[${job.id}] Done    ${job.command}\n`);
         }
         this.processRegistry.collectZombies();
-        for (const notice of this.exitNotices.values())
-            this.writeToTerminal(notice);
+        const source = this.exitNoticeSource;
+        if (source) {
+            for (const notice of this.exitNotices.values()) {
+                if (source.retainsLogs(notice.pid))
+                    this.writeToTerminal(this.renderExitNotice?.(notice, source) ?? '');
+            }
+        }
         this.exitNotices.clear();
         this.terminal.write(PROMPT_START + formatShellPrompt(this.env, this.cwd) + PROMPT_END);
-        this.primaryPrompt = true;
+        this.promptMode = 'primary';
         this.announcePrompt();
         const submission = this.lineSubmission;
         this.lineSubmission = undefined;
@@ -579,12 +585,23 @@ export class Shell {
     }
     /** A newly attached client learns current readiness, never a replayed completion. */
     announcePrompt() {
-        if (!this.running && this.primaryPrompt)
+        if (!this.running && this.promptMode === 'primary')
             this.terminal.shellIntegration?.({ type: 'shell-integration', event: 'prompt' });
     }
-    queueProcessExitNotice(pid, text) {
-        if (!this.exitNotices.has(pid))
-            this.exitNotices.set(pid, text);
+    printContinuationPrompt() {
+        this.promptMode = 'continuation';
+        this.terminal.write(CONTINUATION_PROMPT);
+    }
+    queueProcessExitNotice(notice, source, render) {
+        this.exitNoticeSource = source;
+        this.renderExitNotice = render;
+        for (const pid of this.exitNotices.keys())
+            if (!source.retainsLogs(pid))
+                this.exitNotices.delete(pid);
+        if (this.exitNotices.has(notice.pid))
+            return false;
+        this.exitNotices.set(notice.pid, notice);
+        return true;
     }
     async handleInput(data, submission) {
         // Raw mode: bypass all shell line editing, deliver keypresses directly
@@ -913,7 +930,7 @@ export class Shell {
         this.redrawLine();
     }
     getPromptWidth() {
-        if (this.pendingLine !== null)
+        if (this.promptMode === 'continuation')
             return CONTINUATION_PROMPT.length;
         const { displayPath, user, host } = shellPromptParts(this.env, this.cwd);
         // "user@host:path$ " — count visible chars only (no ANSI codes)
@@ -948,7 +965,7 @@ export class Shell {
         // Clear from here to end of screen
         this.terminal.write('\x1b[J');
         // Rewrite prompt + buffer
-        this.terminal.write(this.pendingLine === null ? formatShellPrompt(this.env, this.cwd) : CONTINUATION_PROMPT);
+        this.terminal.write(this.promptMode === 'continuation' ? CONTINUATION_PROMPT : formatShellPrompt(this.env, this.cwd));
         this.terminal.write(this.lineBuffer);
         // After writing all content, figure out which row the cursor is on.
         // If content exactly fills N rows, the terminal auto-wraps cursor to the next row.
@@ -1079,7 +1096,7 @@ export class Shell {
      * both characters; a quoted join keeps the newline in the string.
      */
     async acceptLine(rawLine, submission) {
-        this.primaryPrompt = false;
+        this.promptMode = 'unprinted';
         submission?.leavePrompt();
         if (!this.lineSubmission)
             this.lineSubmission = submission;
@@ -1107,7 +1124,7 @@ export class Shell {
         (await this.executeLine(command, this.lineSubmission ?? submission));
     }
     async executeLine(line, submission = this.lineSubmission) {
-        this.primaryPrompt = false;
+        this.promptMode = 'unprinted';
         const release = submission?.retain();
         this.lineSubmission = undefined;
         this.running = true;

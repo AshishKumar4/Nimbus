@@ -472,6 +472,7 @@ export class SessionProcessSupervisor {
     hasLogs(pid) {
         return this.logs.has(pid);
     }
+    retainsLogs(pid) { return this.logs.retains(pid); }
     logSize(pid) {
         return this.logs.size(pid);
     }

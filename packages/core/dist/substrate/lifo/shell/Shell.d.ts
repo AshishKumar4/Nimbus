@@ -10,6 +10,7 @@ import { JobTable } from './jobs.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
 import { type HostProcessSignals } from '../commands/system/kill.js';
 import { ShellInputSubmission, type ShellQueuedInput } from '../../../shell/input-submission.js';
+import type { ProcessExitNotice, ProcessExitNoticeSource } from '../../../runtime/process-exit-notices.js';
 export declare function formatShellPrompt(env: Record<string, string>, cwd: string): string;
 export interface ExecuteOptions {
     cwd?: string;
@@ -98,8 +99,10 @@ export declare class Shell {
     private lineSubmission;
     private activeInput;
     private lineInputs;
-    private primaryPrompt;
+    private promptMode;
     private readonly exitNotices;
+    private exitNoticeSource;
+    private renderExitNotice;
     /**
      * Accepted lines that do not form a complete command yet: an unclosed
      * quote or a trailing `\` keeps the shell reading under PS2, as bash
@@ -193,7 +196,8 @@ export declare class Shell {
     printPrompt(): void;
     /** A newly attached client learns current readiness, never a replayed completion. */
     announcePrompt(): void;
-    queueProcessExitNotice(pid: number, text: string): void;
+    printContinuationPrompt(): void;
+    queueProcessExitNotice(notice: ProcessExitNotice, source: ProcessExitNoticeSource, render: (notice: ProcessExitNotice, source: ProcessExitNoticeSource) => string): boolean;
     handleInput(data: string, submission?: ShellInputSubmission): Promise<void>;
     private handleTab;
     private handleStdinInput;
