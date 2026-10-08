@@ -10,12 +10,7 @@ export class ShellInputSubmission {
   private atPrompt = false;
   private status: number | null = null;
   private ended = false;
-  private resolveCompletion: (status: number | null) => void = () => {};
-  readonly completion: Promise<number | null>;
-
-  constructor(readonly id: string, private readonly publish: (event: ShellIntegrationEvent) => void) {
-    this.completion = new Promise((resolve) => { this.resolveCompletion = resolve; });
-  }
+  constructor(readonly id: string, private readonly publish: (event: ShellIntegrationEvent) => void) {}
 
   retain(): () => void {
     this.pending++;
@@ -27,20 +22,18 @@ export class ShellInputSubmission {
     if (this.pending === 0 && this.atPrompt) this.end(this.status);
   }
 
-  bind(owner: ShellInputSubmission): void {
-    if (owner === this) return;
-    void owner.completion.then((status) => this.end(status));
-  }
-
-  start(): void {
+  start(): ShellInputExecution {
     this.atPrompt = false;
     this.publish({ type: 'shell-integration', event: 'start', submissionId: this.id });
+    return new ShellInputExecution(this);
   }
 
   finish(status: number | null): void {
     this.status = status;
     this.publish({ type: 'shell-integration', event: 'finish', submissionId: this.id, exitCode: status });
   }
+
+  inherit(status: number | null): void { this.status = status; }
 
   prompt(): void {
     this.atPrompt = true;
@@ -51,7 +44,31 @@ export class ShellInputSubmission {
     if (this.ended) return;
     this.ended = true;
     this.publish({ type: 'shell-integration', event: 'end', submissionId: this.id, exitCode: status });
-    this.resolveCompletion(status);
+  }
+}
+
+/** A foreground execution finishes its stdin users before its batch's next line. */
+export class ShellInputExecution {
+  private status: number | null = null;
+  private readonly inputs: Array<{ submission: ShellInputSubmission; release: () => void }> = [];
+
+  constructor(readonly owner: ShellInputSubmission) {}
+
+  bind(submission: ShellInputSubmission): void {
+    if (submission !== this.owner) this.inputs.push({ submission, release: submission.retain() });
+  }
+
+  finish(status: number | null): void {
+    this.status = status;
+    this.owner.finish(status);
+  }
+
+  prompt(): void {
+    for (const { submission, release } of this.inputs) {
+      submission.inherit(this.status);
+      submission.prompt();
+      release();
+    }
   }
 }
 

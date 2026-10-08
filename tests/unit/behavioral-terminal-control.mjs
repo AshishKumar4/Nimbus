@@ -144,6 +144,14 @@ try {
     assert.match((await client.run('fd-kind < /home/user/stdin-file', 1000)).output, /TTY false/);
   });
 
+  await scenario('a continuation tail retains its own later commands and status', async ({ client }) => {
+    const initial = client.run('echo "open', 1000);
+    await client.waitFor((text) => text.endsWith('> '), 1000, 'pending quote');
+    const tail = client.run('close"\nfalse', 1000);
+    assert.equal((await initial).exitCode, 0, 'the initial submission owns only the completed echo');
+    assert.equal((await tail).exitCode, 1, 'the tail owns its separate false');
+  });
+
   await scenario('queued submissions own distinct completion and status', async ({ client, box, gate }) => {
     const first = gate(), second = gate();
     box.commands.registry.register('first', async (ctx) => { await ctx.stdout.write('FIRST_STARTED\n'); await first.promise; return 3; });
@@ -209,6 +217,22 @@ try {
     assert.equal(result.exitCode, 9);
     assert.match(result.output, /READ true/);
     assert.equal((await input).exitCode, 9, 'stdin belongs to its foreground command, not a shell true');
+  });
+
+  await scenario('stdin-only input owns the reader status, not its batch\'s later status', async ({ client, box, terminal }) => {
+    const read = Promise.withResolvers();
+    box.commands.registry.register('reader', async (ctx) => {
+      const detach = terminal.attachRepl((data) => { void ctx.stdout.write('READ ' + data); read.resolve(); });
+      await ctx.stdout.write('READER_READY\n');
+      await read.promise;
+      detach();
+      return 9;
+    });
+    const batch = client.run('reader\ntrue', 1000);
+    await client.waitFor((text) => text.includes('READER_READY'), 1000, 'reader start');
+    const input = client.run('payload', 1000);
+    assert.equal((await input).exitCode, 9, 'stdin gets its foreground execution\'s status');
+    assert.equal((await batch).exitCode, 0, 'the batch gets its last true status');
   });
 
   for (const command of ['echo "unfinished', "cat > /home/user/incomplete <<'EOF'"]) {
