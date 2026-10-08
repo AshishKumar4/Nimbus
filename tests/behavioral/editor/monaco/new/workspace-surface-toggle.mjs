@@ -1,5 +1,6 @@
 // R — Desktop Editor/Agent buttons replace only the center surface at
 // /s/<sid>/. The explorer, terminal, preview and file palette remain usable.
+import { join } from 'node:path';
 import { BASE, deleteSession, makeAsserter, mintSession } from '../../../_driver.mjs';
 import { launchBrowser, openPage } from '../../../_runtime-behavioral-template.mjs';
 import { waitForWorkspace, workspaceState } from '../_workspace-browser.mjs';
@@ -9,11 +10,11 @@ const label = 'editor/monaco/new/workspace-surface-toggle';
 const a = makeAsserter(label);
 console.log(`${label} — ${BASE}`);
 const sid = await mintSession();
-let browser;
+let browser, ctx, page;
 try {
   browser = await launchBrowser({ webSecurity: true });
-  const ctx = await openPage(browser, sid);
-  const page = ctx.page;
+  ctx = await openPage(browser, sid);
+  page = ctx.page;
   await page.setViewport({ width: 1440, height: 900 });
   await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await waitForWorkspace(page, 'editor');
@@ -43,6 +44,21 @@ try {
     restored.editorButton.active && restored.editor.visible && !restored.agent.visible && restored.tab === editor.tab,
     JSON.stringify(restored));
 
+  // Paste in the same turn that opens the uncached palette, before fs-list can return.
+  await page.evaluate(async () => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, bubbles: true }));
+    await Promise.resolve();
+    const input = document.getElementById('paletteInput');
+    input.value = 'hello.js';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.waitForSelector('.palette-item', { visible: true, timeout: 15_000 });
+  const earlyMatches = await page.$$eval('.palette-item', (items) => items.map((item) => item.textContent));
+  a.check('a query entered while files load remains applied to the loaded results',
+    earlyMatches.length > 0 && earlyMatches.every((path) => path.includes('hello.js')), JSON.stringify(earlyMatches));
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.getElementById('paletteOverlay').classList.contains('active'), { timeout: 15_000 });
+
   await page.keyboard.down('Control');
   await page.keyboard.press('p');
   await page.keyboard.up('Control');
@@ -56,6 +72,22 @@ try {
   a.check('choosing a palette result opens its file in Monaco',
     await page.evaluate(() => window.__nimbusMonacoEditor.getValue().length > 0));
   a.check('surface switching and file selection cause no browser errors', ctx.pageErrors.length === 0, JSON.stringify(ctx.pageErrors));
+} catch (error) {
+  if (page) {
+    console.error('[workspace-toggle] failure', JSON.stringify(await page.evaluate(() => ({
+      tab: document.getElementById('editorTab').textContent,
+      status: document.getElementById('editorStatus').textContent,
+      paletteOpen: document.getElementById('paletteOverlay').classList.contains('active'),
+      paletteInput: document.getElementById('paletteInput').value,
+      selected: document.querySelector('.palette-item.active')?.textContent,
+      focused: document.activeElement?.id,
+      unsavedPath: Editor.unsavedPath(),
+      content: window.__nimbusMonacoEditor.getValue(),
+    }))));
+    console.error('[workspace-toggle] console', JSON.stringify(ctx.consoleMessages));
+    if (process.env.NIMBUS_PROBE_SCREENSHOTS) await page.screenshot({ path: join(process.env.NIMBUS_PROBE_SCREENSHOTS, 'workspace-toggle-failure.png') });
+  }
+  throw error;
 } finally {
   try { await browser?.close(); }
   finally { await deleteSession(sid); }
