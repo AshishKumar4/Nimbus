@@ -583,16 +583,15 @@ function spawnResident(
   // A facet's isolate dies on its own (out of memory, out of CPU) and this
   // object goes on (measured: the journal probe, 2026-10-07). A journaling
   // resident's class holds held() open while its isolate lives: its
-  // rejection, unless this release ended it, is the process lost. Any
-  // other class's death is not seen here.
-  const lost: Promise<never> = params.journal ? started.then(() => facet.held()).then(
-    () => { throw new Error(`Nimbus: resident process ${params.pid}'s held() returned`); },
-    (error: unknown) => {
-      if (released) return new Promise<never>(() => {});
-      throw new Error(`Nimbus: resident process ${params.pid} died: ${error instanceof Error ? error.message : String(error)}`);
-    },
-  ) : new Promise<never>(() => {});
-  lost.catch(() => {});
+  // rejection, unless this release ended it, is the process lost too.
+  if (params.journal) {
+    void started.then(() => facet.held()).then(
+      () => markLost(new Error(`Nimbus: resident process ${params.pid}'s held() returned`)),
+      (error: unknown) => {
+        if (!released) markLost(new Error(`Nimbus: resident process ${params.pid} died: ${error instanceof Error ? error.message : String(error)}`));
+      },
+    );
+  }
   return {
     started,
     lost,
