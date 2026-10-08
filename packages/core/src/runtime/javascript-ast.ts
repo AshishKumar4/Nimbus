@@ -50,12 +50,12 @@ export interface StatementHooks {
 }
 
 /** The parts of acorn's Parser a plugin uses (acorn's plugin API, which its declarations leave out). */
-interface AcornParser {
+export interface AcornParser {
   type: unknown;
   inModule: boolean;
   undefinedExports: Record<string, { start: number }>;
   parse(): Program;
-  parseStatement(context: null, topLevel: boolean, exports: object): unknown;
+  parseStatement(context: null, topLevel?: boolean, exports?: object): unknown;
   finishNode<T>(node: T, type: string): T;
   raiseRecoverable(pos: number, message: string): void;
   next(): void;

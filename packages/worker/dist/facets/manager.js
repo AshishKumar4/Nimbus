@@ -67,10 +67,7 @@ import { sqliteWasmModuleEntry } from './opencode-staging.js';
 import { FACET_IMAGE_WRITE_SLICE_BYTES, ImageStore, } from '@nimbus-sh/fabric/image-store.js';
 import { fetchStagedBindingAsset, NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_LOADER_MODULE, STAGED_BINDING_TRAMPOLINE_MODULE, stagedBinding, stagedBindingsFacetImport, stagedBindingsRequiredBy, stagedBindingsDeclaredBy, STAGED_BINDINGS, } from '../runtime/staged-bindings.js';
 import { encodeCommonJsPack, ProcessFabric, ProcessHostLost, } from '@nimbus-sh/fabric/process-fabric.js';
-import { createLoadedWorkerEntrypoint, getNimbusCtxExports, deleteFacetStorage, facetJournal, reservedFacetNames, } from '@nimbus-sh/fabric/workerd-facet-host.js';
-import { drainProcessFsJournal, UNSETTLED_END_NOTE } from '@nimbus-sh/core/_shared/process-fs-client.js';
-import { journalDrainSession } from '@nimbus-sh/core/workspace/supervisor-op.js';
-import { ProcessJournals } from '../session/process-journals.js';
+import { createLoadedWorkerEntrypoint, getNimbusCtxExports, deleteFacetStorage, } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { acquireDurableFacetSlot, freeDurableFacetSlot, } from './durable-slots.js';
 import { persistDurableWorkerImage, purgeDurableWorkerImages, } from './durable-images.js';
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
@@ -304,26 +301,24 @@ function __nimbusReportBlockedState() {
 // module whose top-level await waits on a child's close is blocked on that
 // child as much as a callback would be. Once the evaluation settles, the
 // loop gives a settling chain its warm-up turns again; a rejected
-// evaluation is thrown once the loop ends.
+// evaluation is uncaught as it rejects.
 async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
   let __evaluating = Boolean(__entryResult) && typeof __entryResult.then === "function";
-  let __failure = null;
   let __grace = 0;
   if (__evaluating) {
+    // A rejected evaluation is uncaught as it happens, as Node's loader
+    // rejects: the program ends there, or its handler takes it.
     __entryResult.then(
       () => { __evaluating = false; __grace = 4; },
-      (error) => { __evaluating = false; __failure = { error }; },
+      (error) => { __evaluating = false; __nimbusUncaughtException(error, true); },
     );
   }
   const __count = () => {
-    if (__failure) return 0;
     if (__evaluating) return 1 + __nimbusLiveHandles();
     if (__grace > 0) { __grace--; return 1 + __nimbusLiveHandles(); }
     return __nimbusLiveHandles();
   };
-  const __drain = await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
-  if (__failure && (typeof __nimbusProcessExitCode === "undefined" || __nimbusProcessExitCode === null)) throw __failure.error;
-  return __drain;
+  return await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
 }
 
 // Whether the program holds no live handle once a settling chain has had the
@@ -380,14 +375,15 @@ async function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {
     const __exit = {};
     const __late = {};
     let __timer = null;
+    // Its rejection is uncaught when it lands, during the budget or after it.
+    const __settled = __entryResult.then(() => null, (__error) => { __nimbusUncaughtException(__error, true); return null; });
     const __raced = await Promise.race([
-      __entryResult.then(() => null),
+      __settled,
       __nimbusProcessExitPromise.then(() => __exit, () => __exit),
       new Promise((resolve) => { __timer = __rawSetTimeout(() => resolve(__late), __deadlineMs); }),
     ]).finally(() => { try { __rawClearTimeout(__timer); } catch {} });
     if (__raced === __exit) return { passes: 0, pending: 0 };
     if (__raced === __late) {
-      __entryResult.then(undefined, (__error) => { queueMicrotask(() => { throw __error; }); });
       return { passes: 0, pending: __nimbusPendingStartupWork() };
     }
   }
@@ -638,10 +634,14 @@ function entryModule(userCode, filename, importer, esModule) {
     const code = rewriteProvidedCommonJsModules(userCode);
     const name = commonJsEntryModuleName(filename || '[eval]');
     const path = 'filename || "/home/user/script.js"';
+    const wrapped = wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function');
     return {
         name,
-        text: wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function').text,
-        evaluate: `__nimbusEvaluateEntry(__nimbusEntryWrapper(${JSON.stringify(name)}, ${path}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user", ${esModule === true})`,
+        esModule: esModule === true,
+        text: wrapped.text,
+        evaluate: `__nimbusEvaluateEntry(__nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user", ${esModule === true})`,
+        // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
+        stackEntry: JSON.stringify([name, filename || '<eval>', wrapped.head, esModule === true ? 1 : 0]),
     };
 }
 /**
@@ -671,6 +671,7 @@ ${STOP_REPLAY_SOURCE}
 // The process's code: a module per cell, compiled when first required.
 const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
 const __NIMBUS_RUNTIME_CODE = ${bundleSource.runtimeCode};
+const __NIMBUS_STACK_ENTRY = ${entry.stackEntry};
 ${COMMONJS_CELL_RUNTIME_SOURCE}
 
 // The module bundle, at module level (startup time); the code cells the store
@@ -778,11 +779,7 @@ ${sources.residentStore}
       const __chunk = __nimbusStopReplay.write(method, bytes);
       if (__chunk === null) return;
       __rpcWriteCount++;
-      // Released at the filesystem client's gate, taken now: once every
-      // change logged ahead of it is answered (ProcessFsClient.effect).
-      const __gate = __nimbusOutputGate();
       const __task = __rpcWriteChain
-        .then(() => __gate)
         .then(() => __supervisor[method](__chunk.b, __chunk.at, __chunk.run))
         .then(() => __nimbusStopReplay.acked(__chunk))
         .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
@@ -807,6 +804,17 @@ ${RESIDENCY_MISS_REPORT}
       __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
       __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
     }
+    // A fatal report goes to fd 2 as Node's does: past any write a program
+    // installs, after what the program wrote, and not program output that
+    // a stopped run's replay retraces (runtime/stop-replay.ts).
+    __nimbusFatalStderr = (__text) => {
+      stderr += __text;
+      if (!__supervisor || captureOutput) return;
+      const __bytes = __nimbusOutEnc.encode(__text);
+      const __task = __rpcWriteChain.then(() => __supervisor.stderr(__bytes)).catch((e) => __onRpcDrop(__bytes.byteLength, e));
+      __rpcWriteChain = __task.then(() => {}, () => {});
+      __pendingIO.push(__task);
+    };
 
     try { globalThis.console = __consoleMod; } catch {}
     try { globalThis.process = __processMod; } catch {}
@@ -837,8 +845,16 @@ ${RESIDENCY_MISS_REPORT}
       __require.main = mod;
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
-      // the file, as Node does. \`-p\`'s returns the value it prints.
-      const __entryResult = __nimbusEntryOutcome(${entry.evaluate});
+      // where it is, as Node does. \`-p\`'s returns the value it prints.
+      // What it throws is uncaught, as in Node: an ES module's as its
+      // evaluation's rejection.
+      let __entryResult;
+      try {
+        __entryResult = __nimbusEntryOutcome(${entry.evaluate});
+      } catch (__thrown) {
+        if (__thrown instanceof __ProcessExit) throw __thrown;
+        __nimbusUncaughtException(__thrown, ${entry.esModule});
+      }
       const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs);
       __drainPasses = __drain.passes;
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
@@ -851,15 +867,14 @@ ${RESIDENCY_MISS_REPORT}
     } catch (e) {
       if (e instanceof __ProcessExit) { exitCode = e.code; }
       else {
-        const trace = (e && e.stack) || (e && e.message) || String(e);
-        stderr += trace + "\\n";
-        exitCode = 1;
-        if (__supervisor && !captureOutput) __nimbusReleaseStderr(trace + "\\n");
+        // The runtime's own failure (a preload, the loop): reported as one.
+        __nimbusUncaughtException(e, false);
+        if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
       }
     }
     // A program that ended without process.exit still gets its 'exit' event.
     if (__nimbusProcessExitCode === null) {
-      __nimbusEmitExit(exitCode);
+      exitCode = __nimbusExitAtEnd();
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
       __nimbusProgramStopped = true;
     }
@@ -894,7 +909,10 @@ ${RESIDENCY_MISS_REPORT}
     if (__replayShort) {
       stderr += __replayShort;
       exitCode = 1;
-      if (__supervisor && !captureOutput) __nimbusReleaseStderr(__replayShort);
+      if (__supervisor && !captureOutput) {
+        const __shortBytes = __nimbusOutEnc.encode(__replayShort);
+        __pendingIO.push(__supervisor.stderr(__shortBytes).catch((e) => __onRpcDrop(__shortBytes.byteLength, e)));
+      }
     }
     await __drainPendingIO();
 
@@ -905,7 +923,11 @@ ${RESIDENCY_MISS_REPORT}
         const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
         exitCode = 1;
-        if (!captureOutput) await __nimbusReleaseStderr(trace + "\\n");
+        if (!captureOutput) {
+          try {
+            await __supervisor.stderr(__nimbusOutEnc.encode(trace + "\\n"));
+          } catch {}
+        }
       }
     }
 
@@ -1079,6 +1101,7 @@ ${STOP_REPLAY_SOURCE}
 // module evaluation, which compiled the whole closure before the program ran.
 const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
 const __NIMBUS_RUNTIME_CODE = ${bundleSource.runtimeCode};
+const __NIMBUS_STACK_ENTRY = ${entry.stackEntry};
 ${COMMONJS_CELL_RUNTIME_SOURCE}
 
 // \`let\`, not \`const\`, so the parsed bundle can be dropped once the store has
@@ -1113,9 +1136,6 @@ const __nimbusPlatformSetTimeout = setTimeout;
 // guidance it would otherwise contradict is printed.
 async function __nimbusReportLearningFailure(supervisor, error) {
   try {
-    // At the process's output gate, as every diagnostic of a process is.
-    const gate = typeof __nimbusOutputGate === "function" ? __nimbusOutputGate() : null;
-    if (gate !== null) await gate;
     if (supervisor) await supervisor.stderr(new TextEncoder().encode("Nimbus: runtime code persistence failed: " + String(error?.message || error) + "\\n"));
   } catch {}
 }
@@ -1124,12 +1144,19 @@ async function __nimbusFlushRuntime() {
   const rt = __nimbusRuntime;
   if (!rt) return;
   const __pendingDrain = rt.pendingDrainChain.then(async () => {
-    // Every change the program made is in its client's log already: the
-    // flush waits for their answers (the parked cells' claims among them).
+    const __vfsTasks = [];
+    if (rt.supervisor && Object.keys(rt.vfsWrites).length > 0) {
+      for (const path of Object.keys(rt.vfsWrites)) {
+        __vfsTasks.push(rt.flushVfsWrite(
+          path,
+          (content, snapshot) =>
+            rt.persistVfsWrite(rt.supervisor, path, content, snapshot),
+        ));
+      }
+    }
     const __vfsOutcomes = await Promise.allSettled([
-      ...(rt.supervisor ? Object.keys(rt.vfsWrites).map((path) => rt.flushVfsWrite(path)) : []),
+      ...__vfsTasks,
       rt.drainVfsMutations(),
-      ...(globalThis.__nimbusProcessFs ? [globalThis.__nimbusProcessFs.flush()] : []),
     ]);
     for (let pass = 0; pass < 12; pass++) {
       const turn = Promise.withResolvers();
@@ -1150,10 +1177,6 @@ async function __nimbusFlushRuntime() {
     if (__learning.status === "rejected") await __nimbusReportLearningFailure(rt.supervisor, __learning.reason);
     const __vfsFailure = __vfsOutcomes.find((outcome) => outcome.status === "rejected");
     if (__vfsFailure) throw __vfsFailure.reason;
-    // A change the program was told succeeded that the session refused or
-    // never answered: this boundary (a response, the exit) reports it.
-    const __fsFailure = globalThis.__nimbusProcessFs ? globalThis.__nimbusProcessFs.takeFailuresError() : null;
-    if (__fsFailure) throw __fsFailure;
   });
   rt.pendingDrainChain = __pendingDrain.catch(() => {});
   await __pendingDrain;
@@ -1280,11 +1303,7 @@ ${VFS_CURSOR_SEED_SOURCE}
       const __chunk = __nimbusStopReplay.write(method, bytes);
       if (__chunk === null) return;
       __rpcWriteCount++;
-      // Released at the filesystem client's gate, taken now: once every
-      // change logged ahead of it is answered (ProcessFsClient.effect).
-      const __gate = __nimbusOutputGate();
       const __task = __rpcWriteChain
-        .then(() => __gate)
         .then(() => __supervisor[method](__chunk.b, __chunk.at, __chunk.run))
         .then(() => __nimbusStopReplay.acked(__chunk))
         .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
@@ -1309,6 +1328,17 @@ ${RESIDENCY_MISS_REPORT}
       __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
       __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
     }
+    // A fatal report goes to fd 2 as Node's does: past any write a program
+    // installs, after what the program wrote, and not program output that
+    // a stopped run's replay retraces (runtime/stop-replay.ts).
+    __nimbusFatalStderr = (__text) => {
+      stderr += __text;
+      if (!__supervisor || captureOutput) return;
+      const __bytes = __nimbusOutEnc.encode(__text);
+      const __task = __rpcWriteChain.then(() => __supervisor.stderr(__bytes)).catch((e) => __onRpcDrop(__bytes.byteLength, e));
+      __rpcWriteChain = __task.then(() => {}, () => {});
+      __pendingIO.push(__task);
+    };
 
     try { globalThis.console = __consoleMod; } catch {}
     try { globalThis.process = __processMod; } catch {}
@@ -1358,8 +1388,16 @@ ${RESIDENCY_MISS_REPORT}
       __require.main = mod;
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
-      // the file, as Node does. \`-p\`'s returns the value it prints.
-      const __entryResult = __nimbusEntryOutcome(${entry.evaluate});
+      // where it is, as Node does. \`-p\`'s returns the value it prints.
+      // What it throws is uncaught, as in Node: an ES module's as its
+      // evaluation's rejection.
+      let __entryResult;
+      try {
+        __entryResult = __nimbusEntryOutcome(${entry.evaluate});
+      } catch (__thrown) {
+        if (__thrown instanceof __ProcessExit) throw __thrown;
+        __nimbusUncaughtException(__thrown, ${entry.esModule});
+      }
       if (attachedTty) {
         // An attached entry owns the terminal until it returns, so its own
         // completion is awaited by the exit lifecycle below, never here.
@@ -1381,10 +1419,9 @@ ${RESIDENCY_MISS_REPORT}
         __attachedExplicitExit = true;
         exitCode = e.code;
       } else {
-        const trace = (e && e.stack) || (e && e.message) || String(e);
-        stderr += trace + "\\n";
-        exitCode = 1;
-        if (__supervisor && !captureOutput) __nimbusReleaseStderr(trace + "\\n");
+        // The runtime's own failure (a preload, the loop): reported as one.
+        __nimbusUncaughtException(e, false);
+        if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
       }
     }
 
@@ -1395,6 +1432,7 @@ ${RESIDENCY_MISS_REPORT}
       settledIO: 0,
       vfsWrites: __vfsWrites,
       flushVfsWrite: __nimbusFlushVfsWrite,
+      persistVfsWrite: __nimbusPersistVfsWrite,
       drainVfsMutations: __nimbusDrainVfsMutations,
       pendingDrainChain: Promise.resolve(),
     };
@@ -1411,7 +1449,7 @@ ${RESIDENCY_MISS_REPORT}
       if (__residencyReport) {
         stderr += __residencyReport;
         if (Number(code ?? 0) === 0) code = 1;
-        await __nimbusReleaseStderr(__residencyReport);
+        try { await __supervisor.stderr(__nimbusOutEnc.encode(__residencyReport)); } catch {}
       }
       await __supervisor.reportExit(code, reason || "", __nimbusDataReadMisses(), [...(globalThis.__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger(), __nimbusExecutedModuleMisses());
       __nimbusProcessExitReported = true;
@@ -1420,7 +1458,7 @@ ${RESIDENCY_MISS_REPORT}
       const trace = (e && e.stack) || (e && e.message) || String(e);
       stderr += trace + "\\n";
       if (__supervisor) {
-        await __nimbusReleaseStderr(trace + "\\n");
+        try { await __supervisor.stderr(__nimbusOutEnc.encode(trace + "\\n")); } catch {}
         await __nimbusReportFinalExit(1, trace + "\\n");
       }
     };
@@ -1449,7 +1487,7 @@ ${RESIDENCY_MISS_REPORT}
           finalCode = Number(await Promise.race([__nimbusProcessExitPromise, __nimbusNaturalExit().then(() => 0)]));
         }
         if (__nimbusProcessExitCode === null) {
-          __nimbusEmitExit(finalCode);
+          finalCode = __nimbusExitAtEnd();
           if (__nimbusProcessExitCode !== null) finalCode = __nimbusProcessExitCode;
           __nimbusProgramStopped = true;
         }
@@ -1480,7 +1518,7 @@ ${RESIDENCY_MISS_REPORT}
       const tail = "[orphan output: " + __rpcDrops + " dropped RPC write(s), ~" +
         __rpcDropBytes + " bytes lost" +
         (__rpcLastError ? "; last error: " + __rpcLastError : "") + "]\\n";
-      await __nimbusReleaseStderr(tail);
+      try { await __supervisor.stderr(__nimbusOutEnc.encode(tail)); } catch {}
     }
     if (exitCode !== 0) {
       await __nimbusReportFinalExit(exitCode, stderr || ("exit " + exitCode + "\\n"));
@@ -1513,18 +1551,6 @@ async function __nimbusDispatchHttp(req, workerEnv, workerCtx) {
 let __nimbusStartArgs = null;
 
 export class NimbusProcess extends DurableObject {
-  constructor(ctx, env) {
-    super(ctx, env);
-    // Its write log is kept in its own store (process-fs-journal.ts).
-    globalThis.__nimbusFsJournalSql = ctx.storage.sql;
-  }
-  // Pending while this isolate lives: the coordinator learns of its death
-  // (out of memory, out of CPU) by this call's rejection. Its resolver is
-  // kept on the object, so a collection never finds the promise unsettleable
-  // (which the runtime answers by rejecting it: "Promise will never complete").
-  held() {
-    return new Promise((resolve) => { (this.__nimbusHeld ??= []).push(resolve); });
-  }
   async startProcess(startArgs) {
     // Held so an HTTP-first entry (a restart re-entered by a routed request)
     // starts from the same payload startProcess would have used.
@@ -4225,12 +4251,6 @@ export class FacetManager {
      * workerd process a facet landed in.
      */
     processFabric;
-    /** The residents whose write log may still hold changes (process-journals.ts). */
-    processJournals;
-    /** Residents whose log is being drained as their facet is released. */
-    journalDraining = new Set();
-    /** An exit a signal decided, told once its process's log is drained (`_endBySignal`). */
-    endsAfterDrain = new Map();
     /**
      * The same substrate the fabric runs residents on, held directly because a
      * one-shot has no lifecycle for the fabric to own — it is started, read and
@@ -4387,31 +4407,7 @@ export class FacetManager {
         // The workspace's network (FacetManagerHooks.network); a manager no workspace composed uses the isolate's.
         this.network = hooks.network ?? (() => ISOLATE_NETWORK);
         this.processHost = host(ctx, env, () => this._residentDisk(), this.network);
-        this.processJournals = new ProcessJournals(() => this.ctx.storage.sql);
-        // Every resident logs its changes in its facet's store: the session
-        // books the store when it opens, and drains it when the process is
-        // released, before its exit is told (process-fs-journal.ts).
-        this.processFabric = new ProcessFabric(this.processHost, {
-            journalFor: (pid) => ({
-                opened: (facet) => {
-                    const cred = this.processes.get(pid)?.cred;
-                    if (cred !== undefined)
-                        this.processJournals.opened(facet, pid, cred);
-                },
-                drain: async (journal) => {
-                    this.journalDraining.add(pid);
-                    try {
-                        await this._drainProcessJournal(pid, journal);
-                    }
-                    finally {
-                        this.journalDraining.delete(pid);
-                        const end = this.endsAfterDrain.get(pid);
-                        this.endsAfterDrain.delete(pid);
-                        end?.();
-                    }
-                },
-            }),
-        });
+        this.processFabric = new ProcessFabric(this.processHost);
         const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
             ? Reflect.get(env, 'NIMBUS_DEBUG')
             : undefined;
@@ -4448,22 +4444,7 @@ export class FacetManager {
         });
         // A reset that killed a resident launch left journal rows behind; the
         // first pump after the reset drains this reconciliation before any
-        // waiter resumes, OFF the constructor's init gate. Before it: the write
-        // logs a previous incarnation's residents left undrained (their names
-        // reserved from minting until then). One that cannot be read is said in
-        // the worker's log and on the terminal, and kept.
-        onColdStart(ctx, () => this.processJournals.drainPending({
-            reserved: reservedFacetNames(this.ctx),
-            drain: async (row) => {
-                await this._drainJournalAs(row.pid, row.cred, facetJournal(this.ctx, this.env, row.facet));
-                this.vfs?.forgetSequences(row.pid);
-                deleteFacetStorage(this.ctx, row.facet);
-            },
-            log: (message) => {
-                console.error(message);
-                this.hooks.notify?.(`\x1b[31m${message}\x1b[0m\r\n`);
-            },
-        }));
+        // waiter resumes, OFF the constructor's init gate.
         onColdStart(ctx, () => this.launchJournal.recoverInterrupted());
         // The journal row of a resident lives for the PROCESS's lifetime, so its
         // release belongs on the one seam every end-of-life passes through —
@@ -4473,10 +4454,6 @@ export class FacetManager {
         this.processes.setOnTerminal((pid) => {
             this.residentBundleKeys.delete(pid);
             this.residentProfileOffers.delete(pid);
-            // Its writers' cursors go with it, unless its log is still to be
-            // drained (which numbers against them, and forgets them after).
-            if (this.processJournals.of(pid) === undefined)
-                this.vfs?.forgetSequences(pid);
             this.ctx.waitUntil(this.trackLaunchTask(this._onResidentTerminal(pid)));
         });
         this.processes.setDefaultSignalAction((pid, code, signal) => this._endBySignal(pid, code, signal));
@@ -4496,29 +4473,19 @@ export class FacetManager {
      * told from then on (PortRegistry.ended).
      */
     _endFromOutside(pid, code, reason, portEnding) {
-        if (this.processes.get(pid)?.state !== 'running' || this.endsAfterDrain.has(pid))
+        if (this.processes.get(pid)?.state !== 'running')
             return;
         this.portRegistry.unregisterByPid(pid, portEnding);
         this.releaseProcessRpcResources(pid);
         this.revokeProcessVfsWriters(pid);
-        const end = () => {
-            if (this.processes.get(pid)?.state !== 'running')
-                return;
-            this.processes.exit(pid, code);
-            this.processes.markExit(pid, code, reason);
-            this.processes.closeInput(pid);
-            try {
-                this.hooks.onExternalExit?.(pid, code, reason);
-            }
-            catch { }
-            this._teardownPairedServeFacet(pid);
-        };
-        // A resident's release drains its write log: its exit is told after,
-        // so what reads its files next (the next prompt, its parent) sees them.
-        if (this.journalDraining.has(pid))
-            this.endsAfterDrain.set(pid, end);
-        else
-            end();
+        this.processes.exit(pid, code);
+        this.processes.markExit(pid, code, reason);
+        this.processes.closeInput(pid);
+        try {
+            this.hooks.onExternalExit?.(pid, code, reason);
+        }
+        catch { }
+        this._teardownPairedServeFacet(pid);
     }
     /**
      * The actor hosting `workerKey` reports, from its own next incarnation,
@@ -4671,35 +4638,6 @@ export class FacetManager {
      *  manager credentials its processes through that one rather than a second
      *  authority over the same disk. */
     setVfs(vfs, filesystem) { this.vfs = vfs; this.filesystem = filesystem; }
-    /**
-     * Send what a released resident's write log still holds (it was killed,
-     * ran out of memory or CPU, or ended before its log was answered), as the
-     * process would have: under the numbers it gave each change, so the
-     * session's cursor answers what already landed and applies the rest once.
-     * A change the session refuses is said in the process's own output, named.
-     */
-    async _drainProcessJournal(pid, journal) {
-        const pending = this.processJournals.of(pid);
-        if (pending === undefined)
-            return;
-        await this._drainJournalAs(pending.pid, pending.cred, journal);
-        this.vfs?.forgetSequences(pid);
-        this.processJournals.settled(pid);
-    }
-    /** Drain `journal` into the session as process `pid` (with its credential) would have sent it. */
-    async _drainJournalAs(pid, cred, journal) {
-        if (!this.filesystem)
-            throw new Error('Process filesystem authority is not initialized');
-        // Under the process's credential, numbered as its own waves were.
-        const lease = this.filesystem.openHost(cred);
-        const drained = await drainProcessFsJournal({ journal, session: journalDrainSession(lease.fs, pid) }).finally(() => lease.dispose());
-        if (drained.landed > 0 || drained.failures.length > 0) {
-            const refused = drained.failures.map((failure) => `  ${failure.op} /${failure.path}: ${failure.errno}: ${failure.message}\n`).join('');
-            this.processes.appendOutput(pid, 'stderr', `[nimbus] process ${pid} ended with ${drained.landed + drained.failures.length} change${drained.landed + drained.failures.length === 1 ? '' : 's'} not yet in the session: `
-                + `${drained.landed} landed after it ended`
-                + (drained.failures.length === 0 ? '\n' : `, ${drained.failures.length} refused:\n${refused}`));
-        }
-    }
     /**
      * What every loader-backed runtime builds its facet pools from: the env and
      * ctx a pool is constructed over, and the workspace's network its facets go
@@ -5521,6 +5459,10 @@ export class FacetManager {
     }
     revokeProcessVfsWriters(pid, writerId) {
         openSupervisorDeliveries(this.ctx).endReadRun(pid, writerId);
+        if (writerId === undefined)
+            this.vfs?.revokeAppendWriters(pid);
+        else
+            this.vfs?.revokeAppendWriter(pid, writerId);
     }
     /**
      * True while a resident facet holds this pid — it was adopted through the
@@ -5855,15 +5797,9 @@ export class FacetManager {
             // shell's Ctrl+C or `kill <pid>`. The process was not a crash and the
             // abort text is not its stderr: mark it killed and hand back 130 (the
             // shell's signalled status) with nothing for the terminal to print.
-            // A one-shot that ended abnormally may have lost writes it
-            // acknowledged and never sent: said, with the bound, every time (the
-            // session cannot know whether there were any: they never left).
-            const unsettled = `${UNSETTLED_END_NOTE}\n`;
             if (abortController.signal.aborted) {
                 this.processes.kill(entry.pid);
-                if (unsettled && !opts.captureOutput)
-                    await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(unsettled));
-                return { exitCode: 130, stdout: '', stderr: opts.captureOutput ? unsettled : '' };
+                return { exitCode: 130, stdout: '', stderr: '' };
             }
             // The ledger refused to start it (EAGAIN): it never ran. That is its
             // spawn failing, for whoever spawned it to report: a child_process
@@ -5882,7 +5818,7 @@ export class FacetManager {
                 this.hooks.onExternalExit?.(entry.pid, exitCode, reason);
             }
             catch { }
-            return { exitCode, stdout: '', stderr: `${errorMessage(err)}${unsettled ? `\n${unsettled}` : ''}` };
+            return { exitCode, stdout: '', stderr: errorMessage(err) };
         }
         finally {
             opts.signal?.removeEventListener('abort', onShellAbort);
@@ -6688,7 +6624,6 @@ export class FacetManager {
             const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
             handle = await this.processFabric.startResidentProcess({
                 startContract: 'lifetime',
-                journaled: true,
                 pid,
                 workerKey,
                 boot: { kind: 'staged', stage: stageSpec },
@@ -6699,7 +6634,7 @@ export class FacetManager {
                     this.revokeProcessVfsWriters(pid, writerId);
                 },
             });
-            this._watchHost(pid, handle, false);
+            this._watchHost(pid, handle);
             this.trackProcessRpcResources(pid, [handle], { releaseOnReportExit: false });
             this.ctx.waitUntil(handle.done
                 .catch((e) => {
@@ -6826,7 +6761,6 @@ export class FacetManager {
             // the artifact sources exist only while this facet is loading.
             handle = await this.processFabric.startResidentProcess({
                 startContract: 'lifetime',
-                journaled: true,
                 pid,
                 workerKey,
                 boot: { kind: 'staged', stage: stageSpec },
@@ -6837,7 +6771,7 @@ export class FacetManager {
                     this.revokeProcessVfsWriters(pid, writerId);
                 },
             });
-            this._watchHost(pid, handle, false);
+            this._watchHost(pid, handle);
             // The handle's route target resolves the RUNNING facet wherever it is
             // hosted; binding it for the pid before the port is announced is what
             // lets the shim's listen()→SUPERVISOR.registerPort back-fill.
@@ -6898,22 +6832,10 @@ export class FacetManager {
      * before any caller's own `done` handler, so the process has ended by name
      * when they look. The placement goes to the process log under NIMBUS_DEBUG.
      */
-    /**
-     * The one watcher of a hosted process's lifecycle: a lost host ends it
-     * (ProcessHostLost), and `diesAlone`, a booted resident that logs its
-     * changes, dying on its own (out of memory, out of CPU) ends it too, its
-     * log drained as it is released and only then its exit told. A boot that
-     * fails or stops (to wait for stdin) is its launcher's to handle; a
-     * lifetime resident's caller watches its lifecycle itself.
-     */
-    _watchHost(pid, handle, diesAlone) {
+    _watchHost(pid, handle) {
         handle.done.catch((error) => {
-            if (error instanceof ProcessHostLost) {
+            if (error instanceof ProcessHostLost)
                 this._endByHostLoss(pid, error);
-                return;
-            }
-            if (diesAlone)
-                void handle.booted().then(() => this._residentDied(pid, error), () => { });
         });
         if (!this.debugEnabled)
             return;
@@ -6971,28 +6893,8 @@ export class FacetManager {
             },
             ...process,
         });
-        this._watchHost(pid, handle, spec.startContract === 'boot' && spec.journaled === true);
+        this._watchHost(pid, handle);
         return handle;
-    }
-    /** A booted resident died without anyone ending it: it exits 1, its reason on its stderr. */
-    _residentDied(pid, error) {
-        if (this.processes.get(pid)?.state !== 'running')
-            return;
-        const reason = `resident process died: ${errorMessage(error)}`;
-        this.processes.appendOutput(pid, 'stderr', `[nimbus] ${reason}\n`);
-        try {
-            this.processes.exit(pid, 1);
-        }
-        catch { }
-        try {
-            this._w5RecordTermination(pid, 1, 'facet', reason);
-        }
-        catch { }
-        try {
-            this.hooks.onExternalExit?.(pid, 1, reason);
-        }
-        catch { }
-        this.releaseProcessRpcResources(pid);
     }
     _activateProcessVfsWriter(pid, writerId) {
         // The run this writer is reads the process's stdin, and no run before it,
@@ -7011,6 +6913,9 @@ export class FacetManager {
                 recording: () => journal.recording,
                 disqualify: (why) => journal.disqualify(why + ` (REPLAY_JOURNAL_MAX_ENTRIES=${REPLAY_JOURNAL_MAX_ENTRIES}; REPLAY_READ_RECEIPT_MAX_BYTES=${REPLAY_READ_RECEIPT_MAX_BYTES})`),
             });
+        // ProcessTable PIDs are monotonic within a generation and generation-strided
+        // across resets, so this live entry is the sole positive authority root.
+        this.vfs?.activateAppendWriter(pid, writerId);
     }
     /**
      * Grant every suspended launch a chunk of this turn — the session's alarm
@@ -7582,7 +7487,6 @@ export class FacetManager {
                             // The attached-TTY runner holds startProcess open for the process's
                             // life; the server/watch runner returns once it is up.
                             startContract: opts.attachedTty ? 'lifetime' : 'boot',
-                            journaled: true,
                             startArgs: {
                                 pid: entry.pid, vfsCursor, dataPlan,
                                 ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
@@ -7926,9 +7830,6 @@ export class FacetManager {
                 // These runners answer startProcess with a boot payload (listening
                 // port, or a completed non-server run) and stay resident after it.
                 startContract: 'boot',
-                // A python or ruby resident logs its changes in its store; an
-                // application's own class keeps its store to itself.
-                journaled: opts.resident !== undefined,
                 startArgs: opts.resident && opts.startArgs && typeof opts.startArgs === 'object'
                     ? { ...opts.startArgs, supervisorPid: entry.pid,
                         ...(launchEnv ? { userEnv: { ...z.record(z.string(), z.unknown()).parse(Reflect.get(opts.startArgs, 'userEnv') ?? {}), ...launchEnv } } : {}) }

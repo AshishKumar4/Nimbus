@@ -22,13 +22,13 @@ console.log(`SID: ${sid}`);
 const box = Nimbus.connect({ endpoint: BASE, ...(AUTH_TOKEN ? { token: AUTH_TOKEN } : {}) }).sandbox(sid);
 const t = new Terminal(sid);
 
-/** A command, timed; its exit code from the last RC=. */
+/** A command, timed. */
 async function step(label, command, timeoutMs = 300_000) {
   const started = Date.now();
-  const r = await t.run(`${command}; echo RC=$?`, timeoutMs);
+  const r = await t.run(command, timeoutMs);
   const out = stripAnsi(r.output);
   console.log(`  [${((Date.now() - started) / 1000).toFixed(2)}s] ${label}`);
-  return { out, ok: [...out.matchAll(/RC=(\d+)/g)].pop()?.[1] === '0' };
+  return { out, ok: r.exitCode === 0 };
 }
 
 try {

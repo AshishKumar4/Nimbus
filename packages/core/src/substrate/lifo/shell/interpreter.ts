@@ -226,6 +226,10 @@ type ExecutionIo = {
   openFiles?: ReadonlyMap<CommandInputStream | CommandOutputStream, OpenFile>;
 };
 
+function terminalStdinFd(io: ExecutionIo, stdin = io.stdin): boolean {
+  return io.terminalFds?.stdin ?? ((!stdin || stdin === io.terminalStdin) && Boolean(io.terminalStdin));
+}
+
 /** A shell's function definitions, by name. */
 export type FunctionTable = ReadonlyMap<string, CompoundCommandNode>;
 
@@ -495,7 +499,7 @@ export class Interpreter {
       // controlling terminal for `/dev/tty`, but only the foreground job
       // owns the terminal's modes: a background REPL (`node &`) never takes
       // the Ctrl-C meant for the foreground.
-      if (io.terminalFds?.stdin ?? (!io.stdin && Boolean(io.terminalStdin))) {
+      if (terminalStdinFd(io)) {
         backgroundIo.stdin = this.createEmptyReader();
         backgroundIo.terminalFds = { ...io.terminalFds, stdin: false };
       }
@@ -1432,6 +1436,7 @@ export class Interpreter {
   ): ExecutionIo {
     const io: ExecutionIo = {};
     if (stdin) io.stdin = stdin;
+    else if (terminalStdin && !scriptMode) io.stdin = terminalStdin;
     if (terminalStdin) io.terminalStdin = terminalStdin;
     if (terminalFds) io.terminalFds = terminalFds;
     if (scriptMode) io.scriptMode = true;
@@ -1561,7 +1566,7 @@ export class Interpreter {
     setMembership(
       terminalInputFds,
       0,
-      io.terminalFds?.stdin ?? (!stdin && Boolean(io.terminalStdin)),
+      terminalStdinFd(io, stdin),
     );
     if (io.terminalStdin) {
       for (const fd of terminalInputFds) {

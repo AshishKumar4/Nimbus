@@ -21,7 +21,7 @@
  * an ordinary call of the global eval, which a Worker refuses at request time
  * natively too.
  */
-import { parse } from 'acorn';
+import { Parser, parse, tokTypes } from 'acorn';
 import { expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, scriptExpression, } from '../_shared/runtime-function-source.js';
 import { Compiler } from './compile.js';
 import { moduleCell } from './modules.js';
@@ -29,7 +29,7 @@ import { ROOT_ENV, frameTemplate, installHost, isObject, makeFunction } from './
 import { analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
 import { ownFunctionExpression, ownProgram } from './tree.js';
 import { own } from './parser-realm.js';
-import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, arrayIsArray, charCodeAt, isWhitespaceCode, objectKeys, reflectGet, reflectGetOwnPropertyDescriptor, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
+import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, arrayIsArray, charCodeAt, isWhitespaceCode, objectCreate, objectKeys, reflectGet, reflectGetOwnPropertyDescriptor, reflectSet, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
@@ -180,6 +180,88 @@ export function moduleRequests(path, text) {
         }
     }
     return requests;
+}
+const AcornParserClass = Parser;
+const FOUND = objectCreate(null);
+/**
+ * acorn keeping no statement once parsed, at the top level or in a block (a
+ * fatal error may come from a multi-MiB bundle, and acorn's tree is 17 to 24
+ * times its source): what is held is the chain of open nodes. It stops at the
+ * innermost throw whose argument holds `offset`, which finishes before any
+ * throw around it.
+ */
+class ThrowFinder extends AcornParserClass {
+    offset = -1;
+    found = null;
+    parseTopLevel(node) {
+        const exports = objectCreate(null);
+        while (this.type !== tokTypes.eof)
+            this.parseStatement(null, true, exports);
+        if (this.inModule) {
+            const names = objectKeys(this.undefinedExports);
+            for (let i = 0; i < names.length; i++) {
+                const name = names[i];
+                this.raiseRecoverable(this.undefinedExports[name].start, "Export '" + name + "' is not defined");
+            }
+        }
+        this.next();
+        return this.finishNode(node, 'Program');
+    }
+    parseBlock(createNewLexicalScope = true, node = this.startNode(), exitStrict = false) {
+        reflectSet(node, 'body', []);
+        this.expect(tokTypes.braceL);
+        if (createNewLexicalScope)
+            this.enterScope(0);
+        while (this.type !== tokTypes.braceR)
+            this.parseStatement(null);
+        if (exitStrict)
+            this.strict = false;
+        this.next();
+        if (createNewLexicalScope)
+            this.exitScope();
+        return this.finishNode(node, 'BlockStatement');
+    }
+    finishNode(node, type) {
+        const finished = super.finishNode(node, type);
+        if (type === 'ThrowStatement') {
+            const argument = reflectGet(finished, 'argument');
+            if (this.offset >= reflectGet(argument, 'start') && this.offset < reflectGet(finished, 'end')) {
+                const start = reflectGet(finished, 'start');
+                this.found = [start, start + 1];
+                throw FOUND;
+            }
+        }
+        return finished;
+    }
+}
+/**
+ * Where V8 would place a fatal error's report in `text`, a module's whole
+ * text (a `{ cjs }` cell's wrapper included) as `goal` parses it, for the
+ * process's fatal report (node-shims.ts __nimbusFatalArrow), which has a
+ * frame's offset and not V8's message:
+ *   - `offset` given: the innermost `throw` statement whose argument holds
+ *     it, as [start, start + 1], V8's location of a throw; null for none;
+ *   - `offset` -1: the syntax error that stops the parse, as [start, end]
+ *     of the token it stops at; null when the text parses.
+ */
+export function fatalLocation(text, goal, offset) {
+    const finder = new ThrowFinder(goal === 'module' ? MODULE_OPTIONS : COMMONJS_OPTIONS, text);
+    finder.offset = offset;
+    try {
+        finder.parse();
+    }
+    catch (error) {
+        if (error === FOUND)
+            return finder.found;
+        if (offset !== -1 || !isObject(error))
+            return null;
+        const at = reflectGet(error, 'pos');
+        const end = reflectGet(error, 'raisedAt');
+        if (typeof at !== 'number')
+            return null;
+        return [at, typeof end === 'number' && end > at ? end : at + 1];
+    }
+    return null;
 }
 /** Whether a module's top level has import or export declarations. */
 function hasModuleSyntax(program) {

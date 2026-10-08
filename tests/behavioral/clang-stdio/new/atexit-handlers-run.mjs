@@ -33,7 +33,7 @@ await t.run('nimbus install clang', 300_000);
 await t.run(heredocCommand('a.c', CSRC), 10_000);
 await t.run('clang a.c -o a', 240_000);
 
-const rr = await t.run('./a ; echo RUN_EXIT=$?', 30_000);
+const rr = await t.run('./a', 30_000);
 const out = stripAnsi(rr.output);
 
 a.check('MAIN_START printed', /MAIN_START/.test(out), JSON.stringify(out.slice(-400)));
@@ -48,7 +48,7 @@ const idxSecond = out.indexOf('ATEXIT_SECOND');
 a.check('atexit LIFO order (SECOND fires before FIRST)',
   idxSecond > -1 && idxFirst > -1 && idxSecond < idxFirst,
   `idxFirst=${idxFirst} idxSecond=${idxSecond}`);
-a.check('exit code 0', /RUN_EXIT=0/.test(out), JSON.stringify(out.slice(-200)));
+a.check('exit code 0', rr.exitCode === 0, JSON.stringify(out.slice(-200)));
 
 await t.close();
 const sum = a.summary();

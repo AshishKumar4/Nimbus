@@ -81,7 +81,7 @@ try {
     a.check('installer offers to start pi on the terminal', true, '');
     const offerAt = stripAnsi(t.buf).lastIndexOf('Start pi now?');
     t.send('n\r');
-    await t.waitForNewPrompt(30_000);
+    await t.waitForPrompt(30_000);
     const afterAnswer = stripAnsi(t.buf).slice(offerAt);
     a.check('declining the offer returns the shell without starting pi',
       !/\[bin started|command not found/.test(afterAnswer),

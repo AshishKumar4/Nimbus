@@ -26,14 +26,6 @@ if (!process.env.BASE) { console.error('FATAL: BASE required'); process.exit(2);
 const a = makeAsserter('frameworks/personal-website-real');
 const PORT = 3000;
 
-// Terminal.run() waits for the prompt to return; appending an exit
-// sentinel keeps the exit code inside the returned output.
-async function run(t, cmd, timeoutMs) {
-  const r = await t.run(`${cmd}; echo __EXIT__$?`, timeoutMs);
-  const m = r.output.match(/__EXIT__(\d+)/);
-  return { exit: m ? Number(m[1]) : null, output: r.output };
-}
-
 const sid = await mintSession();
 console.log(`[personal-website-real] sid=${sid} BASE=${BASE}`);
 
@@ -47,16 +39,16 @@ try {
   await t.waitForPrompt(60_000);
 
   // ── 1. clone ────────────────────────────────────────────────────────
-  const cl = await run(t, 'cd /home/user && git clone https://github.com/AshishKumar4/personal-website site', 300_000);
-  console.log('[clone] exit=' + cl.exit);
-  a.check('git clone exits 0', cl.exit === 0, cl.output.slice(-400));
-  if (cl.exit !== 0) throw new Error('clone failed; nothing to install or serve');
+  const cl = await t.run('cd /home/user && git clone https://github.com/AshishKumar4/personal-website site', 300_000);
+  console.log('[clone] exit=' + cl.exitCode);
+  a.check('git clone exits 0', cl.exitCode === 0, cl.output.slice(-400));
+  if (cl.exitCode !== 0) throw new Error('clone failed; nothing to install or serve');
 
   // ── 2. install ──────────────────────────────────────────────────────
-  const ins = await run(t, 'cd /home/user/site && npm install', 900_000);
-  console.log('[install] exit=' + ins.exit);
+  const ins = await t.run('cd /home/user/site && npm install', 900_000);
+  console.log('[install] exit=' + ins.exitCode);
   console.log(ins.output.split('\n').filter(l => l.trim()).slice(-15).join('\n'));
-  a.check('npm install exits 0', ins.exit === 0, ins.output.slice(-800));
+  a.check('npm install exits 0', ins.exitCode === 0, ins.output.slice(-800));
   a.check('npm install prints the added-packages summary', /added \d+ packages?/.test(ins.output), ins.output.slice(-400));
   // A failed install still leaves whatever resolved; keep going — the dev
   // probe below is more signal with partial node_modules than none.

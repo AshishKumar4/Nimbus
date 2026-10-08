@@ -32,22 +32,22 @@ await t.run(heredocCommand('a.c',
   '#include <stdio.h>\nint main(void){printf("LINE1\\n");printf("LINE2\\n");fflush(stdout);return 0;}\n'),
   10_000);
 await t.run('clang a.c -o a', 240_000);
-const ra = await t.run('./a ; echo RUN_EXIT=$?', 30_000);
+const ra = await t.run('./a', 30_000);
 const outA = stripAnsi(ra.output);
 a.check('with fflush: LINE1 printed', /LINE1/.test(outA), JSON.stringify(outA.slice(-300)));
 a.check('with fflush: LINE2 printed', /LINE2/.test(outA), JSON.stringify(outA.slice(-300)));
-a.check('with fflush: exits 0', /RUN_EXIT=0/.test(outA), JSON.stringify(outA.slice(-200)));
+a.check('with fflush: exits 0', ra.exitCode === 0, JSON.stringify(outA.slice(-200)));
 
 // Case B: known-limitation — without fflush only first line appears.
 await t.run(heredocCommand('b.c',
   '#include <stdio.h>\nint main(void){printf("L1_NO_FLUSH\\n");printf("L2_NO_FLUSH\\n");return 0;}\n'),
   10_000);
 await t.run('clang b.c -o b', 240_000);
-const rb = await t.run('./b ; echo RUN_EXIT=$?', 30_000);
+const rb = await t.run('./b', 30_000);
 const outB = stripAnsi(rb.output);
 a.check('no fflush: first line printed (line-buffered first \\n flush)', /L1_NO_FLUSH/.test(outB),
   JSON.stringify(outB.slice(-300)));
-a.check('no fflush: exits 0 (graceful, just buffered tail lost)', /RUN_EXIT=0/.test(outB),
+a.check('no fflush: exits 0 (graceful, just buffered tail lost)', rb.exitCode === 0,
   JSON.stringify(outB.slice(-200)));
 // Document the known-limitation: second line is lost. NOT asserted as
 // pass-or-fail because the desired long-term behaviour is for L2 to

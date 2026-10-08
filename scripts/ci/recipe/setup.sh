@@ -7,8 +7,8 @@
 # PID 1 of a namespace), the en_US.UTF-8 locale the GNU fixture recorder
 # runs its tools under, and GNU coreutils under the `gnu` prefix Ubuntu's
 # gnu-coreutils gives them (gnurealpath next to the default realpath). Then
-# the workstation's node 22 and bun 1.4.0 (the version .github/workflows
-# pins), ahead of the base image's node on PATH.
+# the workstation's node 22 and bun 1.4.0, ahead of the base image's node
+# on PATH.
 set -eu
 # root's PATH: armada runs setup under its tasks' PATH, which lacks sbin.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

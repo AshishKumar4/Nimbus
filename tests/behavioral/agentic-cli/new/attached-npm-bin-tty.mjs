@@ -255,7 +255,7 @@ try {
     /Process \d+ \(async-attached-crash\) exited with code 1/.test(crashTerminalOut)
       && /ASYNC_ATTACHED_CRASH/.test(crashTerminalOut),
     JSON.stringify(crashTerminalOut.slice(-1000)));
-  t.send('\r');
+  t.cmd('');
   await t.waitForPrompt(30_000);
   a.check('terminal remains responsive after an attached async startup crash',
     /[$#>]\s*$/.test(stripAnsi(t.buf).trimEnd().slice(-3)),
