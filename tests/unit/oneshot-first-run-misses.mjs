@@ -269,8 +269,14 @@ for (const name of process.env.NAMES.split(',')) {
 }
 console.log(JSON.stringify(out));
 `;
-const revoked = async (name, revoke) => {
-  revoke(`${PROJECT}/node_modules/${name}/package.json`);
+// Each case gives the read back when it ends: a manifest still revoked is
+// (rightly) asked of the session by every later launch.
+const revoked = async (name, revoke, restore) => {
+  const path = `${PROJECT}/node_modules/${name}/package.json`;
+  revoke(path);
+  try { await revokedRun(name); } finally { restore(path); }
+};
+const revokedRun = async (name) => {
   const result = await runManifests(['alpha', name], REVOKED_PROGRAM);
   assert.equal(result.exitCode, 0, `the program handles the refusal itself: ${JSON.stringify(result)}`);
   assert.deepEqual(
@@ -284,13 +290,23 @@ const revoked = async (name, revoke) => {
 };
 
 await check('a manifest whose read a chmod revoked is refused, though the copies hold it', () =>
-  revoked('@scope/beta', (path) => kfs.chmod(path, 0o000)));
+  revoked('@scope/beta', (path) => kfs.chmod(path, 0o000), (path) => kfs.chmod(path, 0o644)));
 
 await check('a manifest whose read a chown revoked is refused, though the copies hold it', () =>
   revoked('alpha/node_modules/gamma', (path) => {
     kfs.chmod(path, 0o600);
     authority.rawVfs.as(CRED_KERNEL).chown(path, 0, 0);
+  }, (path) => {
+    authority.rawVfs.as(CRED_KERNEL).chown(path, 1000, 1000);
+    kfs.chmod(path, 0o644);
   }));
+
+await check('a manifest whose read is given back comes from the copies again', async () => {
+  const result = await runManifests(['alpha', '@scope/beta', 'alpha/node_modules/gamma']);
+  assert.equal(result.exitCode, 0, JSON.stringify(result));
+  assert.deepEqual(JSON.parse(result.stdout.trim()), { alpha: 'alpha-v2', '@scope/beta': '@scope/beta', 'alpha/node_modules/gamma': 'gamma' });
+  assert.deepEqual(manifestReads(), [], 'every manifest comes with the launch');
+});
 
 if (failures.length > 0) {
   console.log(`oneshot-first-run-misses: ${failures.length} failed`);
