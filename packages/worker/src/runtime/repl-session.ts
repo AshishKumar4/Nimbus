@@ -26,6 +26,8 @@ export interface ReplAdapter {
   /** Called once when the session starts. Returns the banner to print
    *  before the first prompt. */
   banner(): string;
+  /** Boot the runtime and its driver before the first prompt; startup failures reject. */
+  initialize?(): Promise<{ stdout: string; stderr: string }>;
   /** Send a complete line of user input. Returns:
    *    - kind === 'output': normal eval result; resume reading at prompt.
    *    - kind === 'incomplete': need more input (multi-line block).
@@ -86,6 +88,7 @@ export class ReplSession {
   private closedPromise: Promise<void>;
   private pendingInterrupt: Promise<InterruptOutcome> | null = null;
   private activePush: Promise<ReplPushResult> | null = null;
+  private initializing: Promise<{ stdout: string; stderr: string }> | null = null;
   private ending: Promise<void> | null = null;
 
   /** Exit code captured from adapter's last 'exit' return. */
@@ -127,13 +130,20 @@ export class ReplSession {
     if (banner) this.terminal.write(banner);
     if (banner && !banner.endsWith('\n')) this.terminal.write('\r\n');
 
-    // 2. Print primary prompt.
-    this.terminal.write(this.adapter.ps1);
+    const initialize = this.adapter.initialize;
+    if (initialize) this.initializing = Promise.resolve().then(() => this.ending
+      ? { stdout: '', stderr: '' }
+      : initialize.call(this.adapter));
 
-    // 3. Install the input handler.
+    // Install the lifetime/input hook before asynchronous startup.
     // REPL-A1b: per-frame data appended to inputQueue; single drain
     // task ensures serial processing across multiple WS frames.
     this.detachRepl = this.terminal.attachRepl((data: string) => {
+      if (this.initializing) {
+        if (data.includes('\x03')) void this.endSession(130).catch(() => {});
+        else if (!this.ending) this.inputQueue += data;
+        return;
+      }
       // Ctrl-C is the one input byte that must not queue behind a busy
       // push: it is the user's abort, and it only works if it runs now.
       if (this.busy && data.includes('\x03')) {
@@ -150,9 +160,28 @@ export class ReplSession {
       }
     }, () => this.endSession(this.exitCode));
 
+    if (this.initializing) {
+      try {
+        const output = await this.initializing;
+        if (!this.ending) {
+          if (output.stdout) this.terminal.write(normalizeTerminalNewlines(output.stdout));
+          if (output.stderr) this.terminal.write(normalizeTerminalNewlines(output.stderr));
+        }
+      } catch (error) {
+        if (!this.ending) {
+          this.terminal.write('[repl] startup failed: ' + errorText(error) + '\r\n');
+          try { await this.endSession(1); } catch { /* cleanup records exit 1 */ }
+        }
+      } finally {
+        this.initializing = null;
+      }
+    }
+    if (this.ending) { await this.closedPromise; return this.exitCode; }
+    this.terminal.write(this.adapter.ps1);
+
     const queued = this.shellRef?.takeQueuedInput() ?? [];
-    if (queued.length > 0) {
-      this.inputQueue += queued.join('\r') + '\r';
+    if (queued.length > 0) this.inputQueue += queued.join('\r') + '\r';
+    if (this.inputQueue.length > 0) {
       if (!this.draining) { this.draining = true; void this.drainInput(); }
     }
 
@@ -404,6 +433,7 @@ export class ReplSession {
         this.terminal.write('[repl] cleanup failed: ' + failure.message + '\r\n');
         this.terminal.flushNow();
       }
+      if (this.initializing) await this.initializing.catch(() => {});
       if (this.activePush) await this.activePush.catch(() => {});
       if (this.pendingInterrupt) await this.pendingInterrupt;
       this.detachRepl?.();

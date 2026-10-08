@@ -77,7 +77,7 @@ const baseAdapter = { ps1: '>>> ', ps2: '... ', banner: () => '', close: async (
   let closes = 0;
   const run = new ReplSession({
     ...baseAdapter,
-    initialize: async () => ({ kind: 'error', stderr: 'interpreter bootstrap failed\n' }),
+    initialize: async () => { throw new Error('interpreter bootstrap failed'); },
     push: async () => { throw new Error('input reached an unready interpreter'); },
     close: async () => { closes++; },
   }, view.terminal).run();
