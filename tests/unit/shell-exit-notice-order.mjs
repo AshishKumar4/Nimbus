@@ -37,6 +37,12 @@ await scenario('a normal foreground exit is silent even in debug mode', async ({
   box.shell.printPrompt();
   assert.ok(!/exited/.test(text()));
   reset();
+  const attached = processes.spawn('pi -p attached', [], '/home/user', { longRunning: true, attachedTty: true });
+  await _rpcReportExit(host, attached.pid, 0, '');
+  _emitShellExecDone(host, attached.pid, attached.command, 0, 100);
+  box.shell.printPrompt();
+  assert.ok(!/exited/.test(text()), 'a normally completed attached CLI is silent on the parent shell');
+  reset();
   const late = processes.spawn('node -e ok', [], '/home/user');
   await box.shell.executeLine('echo LATER');
   const before = text();

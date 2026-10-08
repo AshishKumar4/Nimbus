@@ -192,6 +192,7 @@ export class Shell {
   private activeInput: ShellInputExecution | undefined;
   private lineInputs: Array<{ submission: ShellInputSubmission; release: () => void }> = [];
   private primaryPrompt = false;
+  private readonly exitNotices = new Map<number, string>();
 
   /**
    * Accepted lines that do not form a complete command yet: an unclosed
@@ -684,6 +685,9 @@ export class Shell {
     }
     this.processRegistry.collectZombies();
 
+    for (const notice of this.exitNotices.values()) this.writeToTerminal(notice);
+    this.exitNotices.clear();
+
     this.terminal.write(PROMPT_START + formatShellPrompt(this.env, this.cwd) + PROMPT_END);
     this.primaryPrompt = true;
     this.announcePrompt();
@@ -699,6 +703,10 @@ export class Shell {
   /** A newly attached client learns current readiness, never a replayed completion. */
   announcePrompt(): void {
     if (!this.running && this.primaryPrompt) this.terminal.shellIntegration?.({ type: 'shell-integration', event: 'prompt' });
+  }
+
+  queueProcessExitNotice(pid: number, text: string): void {
+    if (!this.exitNotices.has(pid)) this.exitNotices.set(pid, text);
   }
 
   async handleInput(data: string, submission?: ShellInputSubmission): Promise<void> {
