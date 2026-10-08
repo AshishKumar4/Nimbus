@@ -116,7 +116,10 @@ function varNames(value: unknown, sloppy: boolean, top = true, names: string[] =
   if (value.type === 'VariableDeclaration' && value.kind === 'var') {
     for (const declarator of list(value, 'declarations')) names.push(...patternNames(child(declarator, 'id')));
   }
-  for (const key in value) if (key !== 'parent') varNames(value[key], sloppy, false, names);
+  for (const key in value) {
+    const field = value[key];
+    if (field !== null && typeof field === 'object' && key !== 'parent') varNames(field, sloppy, false, names);
+  }
   return names;
 }
 
@@ -196,10 +199,11 @@ export function* scoped(
     const fields = Object.keys(item);
     for (let i = fields.length - 1; i >= 0; i--) {
       const name = fields[i]!;
-      if (name === 'parent') continue;
+      const child = item[name];
+      if (child === null || typeof child !== 'object' || name === 'parent') continue;
       // A switch's discriminant is evaluated before its cases' scope exists.
       const fieldScope = item.type === 'SwitchStatement' && name === 'discriminant' ? at : inner;
-      stack.push([item[name], fieldScope, isFunction && name === 'body', item, name]);
+      stack.push([child, fieldScope, isFunction && name === 'body', item, name]);
     }
   }
 }

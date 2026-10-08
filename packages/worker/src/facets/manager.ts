@@ -919,7 +919,7 @@ function entryModule(userCode: string, filename: string | undefined, importer: s
   const code = rewriteProvidedCommonJsModules(userCode);
   const name = commonJsEntryModuleName(filename || '[eval]');
   const path = 'filename || "/home/user/script.js"';
-  const wrapped = wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function');
+  const wrapped = wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function', esModule === true);
   return {
     name,
     esModule: esModule === true,
@@ -2590,10 +2590,10 @@ export async function buildFacetVfsBundleSource(
     const code = emit ?? (typeof cell === 'string' && isCodeCellPath(path) ? cell : undefined);
     const adopt = code !== undefined && emit === undefined && commonJsCellReadsBack(path);
     if (code !== undefined) {
-      const wrapped = wrapCommonJsCell(code, lowered?.has(path) ? 'block' : 'function');
-      const name = commonJsCellModuleName(path);
       // TypeScript is lowered too, and keeps CommonJS's names (bundle-cell-transform.ts).
       const esModule = lowered?.has(path) === true && bundleTypescriptLoader(path) === null;
+      const wrapped = wrapCommonJsCell(code, lowered?.has(path) ? 'block' : 'function', esModule);
+      const name = commonJsCellModuleName(path);
       codeModules[name] = wrapped.text;
       rows.push([path, name, wrapped.head, wrapped.tail, wrapped.hashbang ? 1 : 0, adopt ? 1 : 0, esModule ? 1 : 0]);
       if (pacer) await pacer.spend(code.length);
@@ -6235,10 +6235,9 @@ export class FacetManager {
         if (!this.esbuild) throw new Error('No transformer for a staged data URL module');
         // A data: URL is always an ES module to Node, in the runtime's scope.
         const result = await this.esbuild.transform(entry.text, {
-          loader: 'js', format: 'cjs', target: 'esnext',
-          moduleMetadata: true, dynamicImportParent: 'data:text/javascript,', ...(moduleScope === 'node' ? { esModuleScope: true } : {}),
+          esModule: moduleScope, moduleMetadata: true, dynamicImportParent: 'data:text/javascript,',
         });
-        modules.set(codeKey, wrapCommonJsCell(result.code, 'block').text);
+        modules.set(codeKey, wrapCommonJsCell(result.code, 'block', true).text);
         continue;
       }
       const path = entry.path.replace(/^\/+/, '');
@@ -6256,7 +6255,7 @@ export class FacetManager {
         // Unparseable: it stays as written, and requiring it says why.
       }
       const scope = lowered.has(path) || declaresWrapperBinding(code) ? 'block' : 'function';
-      modules.set(codeKey, wrapCommonJsCell(code, scope).text);
+      modules.set(codeKey, wrapCommonJsCell(code, scope, lowered.has(path)).text);
     }
     return modules.size > 0 ? modules : undefined;
   }

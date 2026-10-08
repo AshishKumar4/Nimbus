@@ -15,10 +15,15 @@ resetEsbuilds();
 const EsbuildFacet = await freshFacetClass();
 const facet = new EsbuildFacet({}, {});
 // Arrays 5,000 deep: past Oxc's passes on V8's stack (585); esbuild's wasm grows to 76 MiB for it.
-const [deep, tla] = structuredClone(await facet.transformMany(structuredClone([
+// An ES module as a session sends it is lowered by async-module-lowering.ts,
+// whose parse runs out of stack here too: esbuild's CommonJS takes it.
+const [deep, tla, deepModule] = structuredClone(await facet.transformMany(structuredClone([
   { code: `export const x = ${'['.repeat(5000)}"bottom"${']'.repeat(5000)};`, options: { loader: 'js', format: 'cjs', target: 'esnext' } },
   { code: 'export let db; db = await Promise.resolve(7);', options: { loader: 'js', format: 'cjs', target: 'esnext' } },
+  { code: `export const y = ${'['.repeat(5000)}"deep"${']'.repeat(5000)};`, options: { esModule: 'node', dynamicImportParent: 'file:///deep.mjs', moduleMetadata: true } },
 ])));
+assert.equal(deepModule.error, undefined, deepModule.error);
+assert.match(deepModule.code, /"deep"/);
 assert.equal(deep.error, undefined, deep.error);
 assert.match(deep.code, /"bottom"/);
 assert.equal(tla.error, undefined, tla.error);

@@ -509,9 +509,9 @@ export function buildRuntimeHandler(
     async function lowerToCommonJs(code: string, loader: 'js' | 'jsx' | 'ts' | 'tsx', url: string, what: string, esm: boolean): Promise<string | null> {
       try {
         const eb = await getEsbuild();
-        // An ES module keeps Node's scope (module-format.ts ModuleScope): strict, no CommonJS wrapper name.
+        // An ES module keeps its runtime's scope (module-format.ts ModuleScope).
         return (await eb.transform(code, {
-          loader, format: 'cjs', dynamicImportParent: url, moduleMetadata: true, ...(esm && moduleScope === 'node' ? { esModuleScope: true } : {}),
+          ...(esm && loader === 'js' ? { esModule: moduleScope } : { loader, format: 'cjs' }), dynamicImportParent: url, moduleMetadata: true,
         })).code;
       } catch (e) {
         const syntaxError = esm && loader === 'js' ? esModuleSyntaxError(code, url) : null;

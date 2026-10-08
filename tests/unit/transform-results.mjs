@@ -20,7 +20,6 @@ import { join } from 'node:path';
 import { buildPrefetchBundle } from '../../packages/worker/src/facets/manager.ts';
 import { EsbuildService, TRANSFORM_SLICE_SOURCE_BYTES } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { transformEntryScript } from '../../packages/core/src/runtime/bundle-cell-transform.ts';
-import { esModuleSource } from '../../packages/core/src/runtime/module-format.ts';
 import { TransformStore, transformStoreStats } from '../../packages/worker/src/facets/transform-store.ts';
 import { TRANSFORM_PIPELINE_ID } from '../../packages/core/src/runtime/transform-pipeline.generated.ts';
 import { LEDGER_ROW_BYTES, StorageLedger } from '../../packages/core/src/runtime/storage-ledger.ts';
@@ -165,8 +164,8 @@ try {
   assert.match(cold.cells[`${APP}/broken.mjs`], /esbuild transform failed for .*broken\.mjs: Unexpected/);
 
   const warm = await build(program(), storeOver(new Database(dbPath)).store);
-  // An ES module reaches the host as one (module-format.ts esModuleSource).
-  assert.deepEqual(warm.calls.flat(), [esModuleSource(program()[`${APP}/broken.mjs`])], 'a warm launch sends the host only the rejected module');
+  // An ES module reaches the host as written; the host lowers it as one (async-module-lowering.ts lowerEsModule).
+  assert.deepEqual(warm.calls.flat(), [program()[`${APP}/broken.mjs`]], 'a warm launch sends the host only the rejected module');
   assert.equal(warm.stats.stored, cold.stats.cells - 1, 'every other cell is answered from the store');
   assert.deepEqual(warm.cells, cold.cells, 'a hit stages byte-identical cells');
   assert.deepEqual(warm.emits, cold.emits, 'and byte-identical emits');
@@ -184,7 +183,7 @@ try {
   const child = Bun.spawnSync([process.execPath, import.meta.path, '--restarted', dbPath, outPath], { stdout: 'inherit', stderr: 'inherit' });
   assert.equal(child.exitCode, 0, 'the restarted session object ran');
   const restarted = JSON.parse(readFileSync(outPath, 'utf8'));
-  assert.deepEqual(restarted.calls.flat(), [esModuleSource(program()[`${APP}/broken.mjs`])], 'a restarted session object transforms nothing its predecessor stored');
+  assert.deepEqual(restarted.calls.flat(), [program()[`${APP}/broken.mjs`]], 'a restarted session object transforms nothing its predecessor stored');
   assert.deepEqual(restarted.cells, cold.cells, 'and stages the same bytes');
   assert.deepEqual(restarted.emits, cold.emits);
   assert.deepEqual(restarted.lowered, cold.lowered);
@@ -214,7 +213,7 @@ try {
 
     // Through a launch: an edited module is transformed, alone.
     const edited = await build(program('export const lib = 2;\n'), storeOver(new Database(dbPath)).store);
-    assert.deepEqual(edited.calls.flat().sort(), [esModuleSource('export const lib = 2;\n'), esModuleSource(program()[`${APP}/broken.mjs`])].sort(),
+    assert.deepEqual(edited.calls.flat().sort(), ['export const lib = 2;\n', program()[`${APP}/broken.mjs`]].sort(),
       'only the edited module (and the rejected one) is transformed');
     assert.match(edited.cells[`${APP}/lib.mjs`], /exports\.const lib = 2/);
     // Another transform host, or another pipeline: a deploy that changed

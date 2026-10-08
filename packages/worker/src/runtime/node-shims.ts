@@ -10090,7 +10090,7 @@ function __nimbusExitAtEnd() {
 // JavaScript cannot: here it is read off the error's stack, as V8 places
 // it — for a rejection, its first frame; for an exception, the innermost
 // \`throw\` statement around one of its frames, else its first frame — in a
-// module of the program (__nimbusFrameModule), from the text the module was
+// module of the program (__nimbusModuleOfFile), from the text the module was
 // compiled from. Named limits (fine-print capabilities): an error thrown
 // inside a builtin, which Node reports at its own library's source line,
 // and a value that is not an error or an error thrown away from where it
@@ -10161,16 +10161,6 @@ function __nimbusFrameAt(line) {
   const place = /^(.*):(\\d+):(\\d+)$/.exec(at);
   return place === null ? null : [place[1], Number(place[2]), Number(place[3])];
 }
-// What a frame module's file is called in a report: Node's name for it.
-function __nimbusFrameFile(module) {
-  if (module.path !== null) return module.esModule ? builtins.url.pathToFileURL(module.path).href : module.path;
-  const named = module.file;
-  if (named === "<eval>" || named === "[stdin]") {
-    return module.esModule ? builtins.url.pathToFileURL(__pathMod.resolve(String(cwd || "/home/user"), "[eval1]")).href
-      : named === "<eval>" ? "[eval]" : "[stdin]";
-  }
-  return module.esModule ? builtins.url.pathToFileURL(named).href : named;
-}
 // GetErrorSource: \`file:line\`, the line, and under it the place, \`^\` from
 // start to end. As Node does, the columns, which are V8's (UTF-16), count
 // the line's UTF-8 bytes.
@@ -10193,6 +10183,12 @@ function __nimbusArrowOf(module, text, start, end) {
     if (module.hashbang && source.startsWith("//")) source = "#!" + source.slice(2);
     from -= module.head;
     to -= module.head;
+  }
+  // A lowered ES module's line reads its import uses rewritten; Node shows the file's.
+  if (module.esModule && module.path !== null) {
+    const file = __readFileOr(module.path, null);
+    const own = typeof file === "string" ? file.split(/\\r\\n|[\\n\\r\\u2028\\u2029]/)[line - 1] : undefined;
+    if (own !== undefined) source = own;
   }
   let arrow = __nimbusFrameFile(module) + ":" + line + "\\n" + source + "\\n";
   const bytes = new TextEncoder().encode(source);
@@ -10218,7 +10214,7 @@ function __nimbusFatalArrow(error, fromPromise) {
   if (error instanceof __NimbusUnhandledPromiseRejection) {
     return "node:internal/process/promises:392\\n      new UnhandledPromiseRejection(reason);\\n      ^\\n";
   }
-  if (typeof __nimbusFrameModule !== "function") return null;
+  if (typeof __nimbusModuleOfFile !== "function") return null;
   if (error === null || (typeof error !== "object" && typeof error !== "function")) return null;
   let stack;
   try { stack = error.stack; } catch { return null; }
@@ -10229,7 +10225,7 @@ function __nimbusFatalArrow(error, fromPromise) {
     if (frame !== null) frames.push(frame);
   }
   // Thrown by the program, or by a builtin it called: its first frame with a place.
-  const top = frames.length === 0 ? null : __nimbusFrameModule(frames[0][0]);
+  const top = frames.length === 0 ? null : __nimbusModuleOfFile(frames[0][0]);
   if (top === null) return null;
   const texts = new Map();
   const textOf = (module) => {
@@ -10237,18 +10233,19 @@ function __nimbusFatalArrow(error, fromPromise) {
     return texts.get(module.name);
   };
   if (!fromPromise) {
-    for (const [url, line, column] of frames) {
-      const module = __nimbusFrameModule(url);
+    for (const [file, line, column] of frames) {
+      const module = __nimbusModuleOfFile(file);
       const text = module === null ? null : textOf(module);
       if (text === null) continue;
-      const offset = __nimbusTextOffset(text, line, column);
+      const offset = __nimbusTextOffset(text, line, line === 1 ? column + module.head : column);
       const thrown = offset < 0 ? null : __nimbusFatalLocation(text, "script", offset);
       if (thrown !== null) return __nimbusArrowOf(module, text, thrown[0], thrown[1]);
     }
   }
   const text = textOf(top);
   if (text === null) return null;
-  const offset = __nimbusTextOffset(text, frames[0][1], frames[0][2]);
+  const [, line, column] = frames[0];
+  const offset = __nimbusTextOffset(text, line, line === 1 ? column + top.head : column);
   return offset < 0 ? null : __nimbusArrowOf(top, text, offset, offset + 1);
 }
 // Where a module that does not compile stops, for its stack (commonjs-cell.ts
