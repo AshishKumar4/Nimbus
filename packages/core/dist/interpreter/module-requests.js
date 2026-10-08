@@ -175,7 +175,8 @@ export class RequestCollector {
     }
     /** The requests, once every node is read: the program's, and the specifiers a require wrapper's calls name. */
     finish() {
-        const isRequire = (name) => name === 'require' || this.made[name] === true;
+        const made = this.made;
+        const isRequire = (name) => name === 'require' || made[name] === true;
         const wrappers = objectCreate(null);
         for (let i = 0; i < this.candidates.length; i++) {
             const { name, facts } = this.candidates[i];
