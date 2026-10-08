@@ -116,13 +116,14 @@ assert.equal(processes.get(spawned.pid)?.exitCode, 137);
 // second server started in a session takes over the first one's port.
 {
   const { runFresh } = await import('../../packages/worker/src/runtime/node-runner.ts');
-  const owner = portRegistry.get(3000)?.pid;
+  const owner = portRegistry.get(3001)?.pid;
   await runFresh(fm, 'http.createServer(...).listen(4200)', {
-    argv: [], env: { PORT: '3000' }, cwd: '/home/user', filename: '/home/user/c.js',
+    argv: [], env: { PORT: '3001' }, cwd: '/home/user', filename: '/home/user/c.js',
     command: 'node c.js', forceLongRunning: true,
   });
-  assert.equal(portRegistry.get(3000)?.pid, owner,
-    'a spawn that merely inherited $PORT did not seize port 3000');
+  assert.ok(owner !== undefined, 'port 3001 has its owner, the restarted process');
+  assert.equal(portRegistry.get(3001)?.pid, owner,
+    'a spawn that merely inherited $PORT did not seize port 3001');
 }
 
 // ── 4. a spawn never claims a port it was not asked for ────────────────────
@@ -132,15 +133,15 @@ assert.equal(processes.get(spawned.pid)?.exitCode, 137);
 // the user started kept running, unreachable. A port a program really binds
 // arrives through the http shim's listen() -> SUPERVISOR.registerPort.
 {
+  const owner = portRegistry.get(3001)?.pid;
   const before = portRegistry.getAll().map((e) => `${e.port}:${e.pid}`).sort();
   const second = await fm.spawnNode('http.createServer(...).listen(4200)', {
     command: 'node b.js', filename: '/home/user/b.js', cwd: '/home/user',
   });
   const after = portRegistry.getAll().map((e) => `${e.port}:${e.pid}`).sort();
   assert.deepEqual(after, before, 'a spawn with no requested port reserves nothing');
-  const stillA = portRegistry.get(3000);
-  assert.ok(stillA && stillA.pid === spawned.pid,
-    "port 3000 still belongs to the process that asked for it, not the newest spawn");
+  assert.ok(owner !== undefined && portRegistry.get(3001)?.pid === owner,
+    'port 3001 still belongs to the process that asked for it, not the newest spawn');
   assert.notEqual(second.pid, spawned.pid);
 }
 
