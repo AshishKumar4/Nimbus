@@ -14,7 +14,7 @@ const sha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8
 const hash = (algorithm, bytes) => createHash(algorithm).update(bytes).digest(algorithm === 'sha512' ? 'base64' : 'hex');
 const receipt = (name, version) => {
   const bytes = Buffer.from(name + '@' + version);
-  return { name, version, file: name.replace(/^@/, '').replaceAll('/', '-') + '-' + version + '.tgz', sha256: hash('sha256', bytes), shasum: hash('sha1', bytes), integrity: 'sha512-' + hash('sha512', bytes), bytes: [...bytes] };
+  return { name, version, file: name.replace(/^@/, '').replaceAll('/', '-') + '-' + version + '.tgz', sha256: hash('sha256', bytes), shasum: hash('sha1', bytes), integrity: 'sha512-' + hash('sha512', bytes), bytes: bytes.length, data: [...bytes] };
 };
 const runtime = receipt('@nimbus-sh/runtime-cpython', '3.13.14-1');
 const packages = publishPackages(repo).map((pkg) => receipt(pkg.name, pkg.version));
@@ -46,7 +46,7 @@ if(cmd==='bun') {
   if(s.failGate) {console.error('FAIL runtime-packages');process.exit(1);}
   const dir=path.join(process.env.NIMBUS_PUBLISH_ARTIFACTS,args[1]);fs.mkdirSync(dir,{recursive:true});
   const rows=[f.runtime,...f.packages];
-  for(const p of rows) fs.writeFileSync(path.join(dir,p.file),Buffer.from(p.bytes));
+  for(const p of rows) fs.writeFileSync(path.join(dir,p.file),Buffer.from(p.data));
   if(s.corrupt) fs.appendFileSync(path.join(dir,rows[0].file),'changed');
   fs.writeFileSync(path.join(dir,'publish.json'),JSON.stringify({commit:args[1],job:'fixture-job',rows:[{exitCode:0}],tarballs:rows}));process.exit(0);
 }
@@ -75,7 +75,7 @@ throw new Error('unexpected npm command '+args.join(' '));
   const prepared = () => {
     const dir = join(root, 'artifacts', sha);
     mkdirSync(dir, { recursive: true });
-    for (const artifact of [runtime, ...packages]) writeFileSync(join(dir, artifact.file), Buffer.from(artifact.bytes));
+    for (const artifact of [runtime, ...packages]) writeFileSync(join(dir, artifact.file), Buffer.from(artifact.data));
     writeFileSync(join(dir, 'publish.json'), JSON.stringify({ commit: sha, job: 'fixture-job', rows: [{ exitCode: 0 }], tarballs: [runtime, ...packages] }));
   };
 

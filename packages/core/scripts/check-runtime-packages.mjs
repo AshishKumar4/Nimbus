@@ -27,7 +27,7 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { Readable } from 'node:stream';
+import { createGunzip } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -100,8 +100,10 @@ export async function checkRuntimePackage({ name, version, dir, registry, runThr
 async function unpackRuntime(tarball) {
   const dir = mkdtempSync(join(tmpdir(), 'nimbus-runtime-tarball-'));
   try {
-    const tar = Readable.toWeb(createReadStream(tarball)).pipeThrough(new DecompressionStream('gzip'));
-    for await (const entry of streamPackageEntries(readableStreamToAsyncIterable(tar))) {
+    const tar = async function* () {
+      for await (const chunk of createReadStream(tarball).pipe(createGunzip())) yield new Uint8Array(chunk);
+    };
+    for await (const entry of streamPackageEntries(tar())) {
       const path = join(dir, entry.name);
       mkdirSync(join(path, '..'), { recursive: true });
       writeFileSync(path, entry.data);
