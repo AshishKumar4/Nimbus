@@ -6804,34 +6804,7 @@ const __utilMod = {
   stripVTControlCharacters: function stripVTControlCharacters(str) { return __nimbusNodeInspect().stripVTControlCharacters(str); },
   promisify: (fn) => (...a) => new Promise((res, rej) => fn(...a, (e, r) => e ? rej(e) : res(r))),
   callbackify: (fn) => (...a) => { const cb = a.pop(); fn(...a).then(r => cb(null, r), e => cb(e)); },
-  // X.5-Q: util.types polyfill expansion. The pre-X.5-Q 3-method shape
-  // (isDate, isRegExp, isPromise) was insufficient for jsdom's bundled
-  // undici, which dereferences isUint8Array (lib/web/fetch/util.js +
-  // body.js), isArrayBuffer (lib/web/websocket/websocket.js), and
-  // util.types.isProxy (lib/web/fetch/headers.js). Expanding to the
-  // 17-method shape below mirrors Node.js's util.types surface for the
-  // common cases; isProxy returns false (no userland Proxy detection).
-  types: {
-    isDate: (v) => v instanceof Date,
-    isRegExp: (v) => v instanceof RegExp,
-    isPromise: (v) => v instanceof Promise,
-    isUint8Array: (v) => v instanceof Uint8Array,
-    isArrayBuffer: (v) => v instanceof ArrayBuffer,
-    isAnyArrayBuffer: (v) => v instanceof ArrayBuffer
-      || (typeof SharedArrayBuffer !== "undefined" && v instanceof SharedArrayBuffer),
-    isArrayBufferView: (v) => ArrayBuffer.isView(v),
-    isTypedArray: (v) => ArrayBuffer.isView(v) && !(v instanceof DataView),
-    isMap: (v) => v instanceof Map,
-    isSet: (v) => v instanceof Set,
-    isWeakMap: (v) => v instanceof WeakMap,
-    isWeakSet: (v) => v instanceof WeakSet,
-    isNativeError: (v) => v instanceof Error,
-    isAsyncFunction: (v) => v && v.constructor && v.constructor.name === "AsyncFunction",
-    isGeneratorFunction: (v) => v && v.constructor && v.constructor.name === "GeneratorFunction",
-    isProxy: (v) => false,
-    isBoxedPrimitive: (v) => v instanceof Boolean || v instanceof Number
-      || v instanceof String || (typeof v === "object" && v !== null && (v.constructor === Symbol || v.constructor === BigInt)),
-  },
+  types: __realUtil.types,
   inherits: (c, s) => {
     // X.5-Z5 Defect-B fix: guard against null/undefined superCtor or a
     // superCtor whose .prototype is null/undefined. Without this guard,
@@ -11393,14 +11366,6 @@ builtins["node:timers/promises"] = builtins["timers/promises"];
 builtins["dns/promises"] = builtins.dns.promises;
 builtins["node:dns/promises"] = builtins["dns/promises"];
 
-// X.5-Q: util/types subpath registration for jsdom's bundled undici.
-// undici@7.x calls require('node:util/types').{isUint8Array,isArrayBuffer}
-// directly from lib/web/fetch/util.js + body.js + websocket/websocket.js.
-// __requireFrom matches keys exactly; pre-fix the only exposure was
-// builtins.util.types (object property of parent util shim), so the
-// subpath missed. Mirror the dns/promises (M-2) pattern. The
-// builtins.util.types object is the X.5-Q-expanded 17-method polyfill
-// (see line 707), sufficient for undici@7.25.0 + undici@8.2.0.
 builtins["util/types"] = builtins.util.types;
 builtins["node:util/types"] = builtins["util/types"];
 

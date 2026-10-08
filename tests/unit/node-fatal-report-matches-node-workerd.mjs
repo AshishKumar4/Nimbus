@@ -36,6 +36,9 @@ const FILES = {
   'rejstr.cjs': "Promise.reject('just a string');\n",
   'rejundef.cjs': 'Promise.reject();\n',
   'rejobj.cjs': 'Promise.reject({ a: 1 });\n',
+  // Node reads the reason's own stack, and nothing else, through its traps.
+  'rejproxy.cjs': "const traced = (trap) => (...args) => { console.error(trap, String(args[1] ?? '')); return Reflect[trap](...args); };\n"
+    + "Promise.reject(new Proxy({}, { getPrototypeOf: traced('getPrototypeOf'), getOwnPropertyDescriptor: traced('getOwnPropertyDescriptor'), get: traced('get'), has: traced('has') }));\n",
   'timer.cjs': 'setTimeout(() => {\n  null.x;\n}, 1);\n',
   'handler.cjs': "process.on('exit', (c) => { console.error('exit handler', c); });\nprocess.on('uncaughtException', () => { throw new TypeError('in handler'); });\nthrow new Error('first');\n",
   'exitcode.cjs': "process.on('exit', (c) => { console.error('exit handler', c, process.exitCode); process.exitCode = 9; });\nthrow new Error('x');\n",
