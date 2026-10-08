@@ -39,6 +39,9 @@ const FILES = {
   // Node reads the reason's own stack, and nothing else, through its traps.
   'rejproxy.cjs': "const traced = (trap) => (...args) => { console.error(trap, String(args[1] ?? '')); return Reflect[trap](...args); };\n"
     + "Promise.reject(new Proxy({}, { getPrototypeOf: traced('getPrototypeOf'), getOwnPropertyDescriptor: traced('getOwnPropertyDescriptor'), get: traced('get'), has: traced('has') }));\n",
+  // Nor of a proxy it inherits from.
+  'rejproto.cjs': "const traced = (trap) => (...args) => { console.error(trap, String(args[1] ?? '')); return Reflect[trap](...args); };\n"
+    + "Promise.reject(Object.create(new Proxy({}, { getPrototypeOf: traced('getPrototypeOf'), getOwnPropertyDescriptor: traced('getOwnPropertyDescriptor'), get: traced('get'), has: traced('has') })));\n",
   'timer.cjs': 'setTimeout(() => {\n  null.x;\n}, 1);\n',
   'handler.cjs': "process.on('exit', (c) => { console.error('exit handler', c); });\nprocess.on('uncaughtException', () => { throw new TypeError('in handler'); });\nthrow new Error('first');\n",
   'exitcode.cjs': "process.on('exit', (c) => { console.error('exit handler', c, process.exitCode); process.exitCode = 9; });\nthrow new Error('x');\n",
@@ -59,7 +62,7 @@ const FILES = {
   'input.js': 'throw new Error("in")\n',
 };
 const COMMANDS = [
-  'node sync.cjs', 'node rej.cjs', 'node rejstr.cjs', 'node rejundef.cjs', 'node rejobj.cjs', 'node rejproxy.cjs', 'node timer.cjs',
+  'node sync.cjs', 'node rej.cjs', 'node rejstr.cjs', 'node rejundef.cjs', 'node rejobj.cjs', 'node rejproxy.cjs', 'node rejproto.cjs', 'node timer.cjs',
   'node handler.cjs', 'node exitcode.cjs', 'node handled.cjs', 'node rejhandled.cjs', 'node cause.cjs',
   'node minified.cjs', 'node noname.cjs', 'node tab.cjs', 'node uni.cjs', 'node multi.cjs', 'node fnthrow.cjs',
   'node this.cjs', 'node bad.cjs', 'node req.cjs', 'node code3.cjs', 'node code4.cjs',
