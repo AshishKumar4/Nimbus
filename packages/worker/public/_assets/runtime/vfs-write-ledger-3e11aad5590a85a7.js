@@ -1615,12 +1615,12 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       if (endedReadLeases.size > 64) endedReadLeases.delete(endedReadLeases.values().next().value);
       if (readLease?.owner === owner) readLease = null;
     };
-    const releaseReadLease = () => {
+    const releaseReadLease = async () => {
       const lease = readLease;
       if (lease === null) return;
       endReadLease(lease.owner);
       counters.readReleased++;
-      void session.grants?.release(lease.owner).catch(() => {
+      await session.grants?.release(lease.owner).catch(() => {
       });
     };
     const answerReadRecalls = async (owner) => {
@@ -1636,8 +1636,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         }
         if (readLease?.owner !== owner) return;
         if (kind === null) {
-          if (readLease.confirmedAt < polled) releaseReadLease();
-          if (readLease === null) return;
+          if (readLease.confirmedAt < polled) {
+            await releaseReadLease();
+            return;
+          }
           continue;
         }
         endReadLease(owner);
@@ -1846,7 +1848,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       },
       async settle() {
         settling = true;
-        releaseReadLease();
+        await releaseReadLease();
         if (claiming !== null) await claiming;
         try {
           while (answered < logged) await client.flush();
@@ -1865,15 +1867,16 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         return failures.splice(0, failures.length);
       },
       readTrusted() {
-        return readLease !== null && now() < readLease.until;
+        return readLease !== null && readLease.logged === logged && now() < readLease.until;
       },
-      readLeaseWanted() {
-        return session.grants !== void 0 && !settling;
+      readLeaseAsk() {
+        if (session.grants === void 0 || settling) return null;
+        return { at: now(), logged: answered === logged ? logged : -1 };
       },
-      readLeased(lease, askedAt) {
+      readLeased(lease, ask) {
         if (session.grants === void 0 || settling || endedReadLeases.has(lease.owner)) return;
         const confirmed = readLease?.owner === lease.owner;
-        readLease = { owner: lease.owner, until: askedAt + lease.trustMs, confirmedAt: now() };
+        readLease = { owner: lease.owner, until: ask.at + lease.trustMs, confirmedAt: now(), logged: ask.logged };
         if (confirmed) {
           counters.readConfirms++;
           return;
@@ -2066,6 +2069,8 @@ function __nimbusVfsPathKey(path) {
 let __nimbusProcessUmaskOf = () => undefined;
 const __nimbusRawTimer = globalThis.setTimeout;
 const __nimbusRawClearTimer = globalThis.clearTimeout;
+// And its clock, before a run that can stop tapes Date (stop-replay.ts): a read lease's trust is real time.
+const __nimbusRawNow = Date.now;
 let __nimbusProcessFsInstance = null;
 function __nimbusProcessFs() {
   if (__nimbusProcessFsInstance !== null) return __nimbusProcessFsInstance;
@@ -2100,6 +2105,7 @@ function __nimbusProcessFs() {
     // Home directories themselves are never held: the shell and the editor live there.
     isHomeRoot: (key) => (key.startsWith("home/") && key.length > 5 && !key.includes("/", 5)) || key === "root",
     timers: { setTimeout: __nimbusRawTimer, clearTimeout: __nimbusRawClearTimer },
+    now: __nimbusRawNow,
     // The process's umask as each create is logged (process.umask moves it;
     // its setUmask to the session is not ordered with the waves).
     umask: () => __nimbusProcessUmaskOf(),

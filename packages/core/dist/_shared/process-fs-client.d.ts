@@ -248,23 +248,33 @@ export interface ProcessFsClient {
     pending(): boolean;
     /**
      * Whether the process's read lease is held and trusted now: nothing it
-     * covers has changed since the barrier that last confirmed it, or the
-     * change waits for this process to have answered its recall. A
-     * resumption's barrier need not ask the session.
+     * covers has changed since the barrier that last confirmed it (another's
+     * change waits for this process to have answered its recall, and it has
+     * logged nothing of its own since), so a resumption's barrier need not
+     * ask the session.
      */
     readTrusted(): boolean;
-    /** Whether a barrier's ACQUIRE asks for the read lease too (VfsAcquireOptions.lease). */
-    readLeaseWanted(): boolean;
+    /** A barrier's ACQUIRE asking for the read lease too (VfsAcquireOptions.lease), now; null when it takes none. */
+    readLeaseAsk(): ReadLeaseAsk | null;
     /**
-     * The barrier that asked at `askedAt` (this client's clock) applied an
-     * answer carrying `lease` (VfsAcquireResult.readLease): trusted until
-     * `askedAt + lease.trustMs`, and its recalls answered from now on.
+     * The barrier that asked with `ask` applied an answer carrying `lease`
+     * (VfsAcquireResult.readLease): trusted until `ask.at + lease.trustMs`
+     * while the process logs nothing more, and its recalls answered from now on.
      */
     readLeased(lease: {
         owner: string;
         trustMs: number;
-    }, askedAt: number): void;
+    }, ask: ReadLeaseAsk): void;
     stats(): ProcessFsStats;
+}
+/**
+ * When a barrier asked for the read lease (the client's clock), and the log
+ * then: what it logged, when every change of its was answered by that ask
+ * (its own changes are in what the answer brings), or -1.
+ */
+export interface ReadLeaseAsk {
+    readonly at: number;
+    readonly logged: number;
 }
 export interface ProcessFsStats {
     ops: number;

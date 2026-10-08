@@ -71,6 +71,18 @@ await runScenarios(import.meta.path, {
     assert.equal(probe.read(F), 'v2', 'the timer after another\'s change read the old bytes');
   },
 
+  async 'after its own write, the next timer asks'() {
+    const { probe, log } = await boot();
+    await probe.resume();
+    await probe.resume();
+    assert.ok(globalThis.__nimbusProcessFs.readTrusted(), 'the barrier took no lease');
+    probe.fs.writeFileSync(F, 'mine');
+    assert.equal(globalThis.__nimbusProcessFs.readTrusted(), false, 'its own write left the lease trusted');
+    const before = asked(log);
+    await probe.resume();
+    assert.equal(asked(log), before + 1, 'the timer after its own write asked nothing');
+  },
+
   async 'past its trust, the next timer asks again'() {
     const { probe, log } = await boot();
     await probe.resume();

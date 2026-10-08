@@ -602,9 +602,10 @@ export function processFsClient(options) {
         }
     };
     /**
-     * The read lease (readLeased): its owner, until when it is trusted, and
-     * when a barrier last confirmed it. Untrusted the moment its recall
-     * arrives, before the session is told (answerReadRecalls).
+     * The read lease (readLeased): its owner, until when it is trusted, when
+     * a barrier last confirmed it, and the log that barrier asked at.
+     * Untrusted the moment its recall arrives, before the session is told
+     * (answerReadRecalls), and while the process has logged since.
      */
     let readLease = null;
     /**
@@ -623,13 +624,13 @@ export function processFsClient(options) {
             readLease = null;
     };
     /** Give the read lease back (idle, or the process settling): the session's recall of it waits on no one. */
-    const releaseReadLease = () => {
+    const releaseReadLease = async () => {
         const lease = readLease;
         if (lease === null)
             return;
         endReadLease(lease.owner);
         counters.readReleased++;
-        void session.grants?.release(lease.owner).catch(() => { });
+        await session.grants?.release(lease.owner).catch(() => { });
     };
     /**
      * The read lease's recalls, for as long as it is the process's: each poll
@@ -652,10 +653,10 @@ export function processFsClient(options) {
             if (readLease?.owner !== owner)
                 return;
             if (kind === null) {
-                if (readLease.confirmedAt < polled)
-                    releaseReadLease();
-                if (readLease === null)
+                if (readLease.confirmedAt < polled) {
+                    await releaseReadLease();
                     return;
+                }
                 continue;
             }
             // Untrusted first: a barrier from now on asks, and only then is the
@@ -918,7 +919,8 @@ export function processFsClient(options) {
         },
         async settle() {
             settling = true;
-            releaseReadLease();
+            // Given back before the process is over: a writer after it never waits on its trust.
+            await releaseReadLease();
             if (claiming !== null)
                 await claiming;
             try {
@@ -943,16 +945,18 @@ export function processFsClient(options) {
             return failures.splice(0, failures.length);
         },
         readTrusted() {
-            return readLease !== null && now() < readLease.until;
+            return readLease !== null && readLease.logged === logged && now() < readLease.until;
         },
-        readLeaseWanted() {
-            return session.grants !== undefined && !settling;
+        readLeaseAsk() {
+            if (session.grants === undefined || settling)
+                return null;
+            return { at: now(), logged: answered === logged ? logged : -1 };
         },
-        readLeased(lease, askedAt) {
+        readLeased(lease, ask) {
             if (session.grants === undefined || settling || endedReadLeases.has(lease.owner))
                 return;
             const confirmed = readLease?.owner === lease.owner;
-            readLease = { owner: lease.owner, until: askedAt + lease.trustMs, confirmedAt: now() };
+            readLease = { owner: lease.owner, until: ask.at + lease.trustMs, confirmedAt: now(), logged: ask.logged };
             if (confirmed) {
                 counters.readConfirms++;
                 return;

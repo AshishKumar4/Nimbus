@@ -2398,8 +2398,8 @@ const __fsMod = (() => {
       _nsRetire(begin);
       // The read lease this answer carried, from the moment it was asked:
       // what it vouches for is this answer, applied now.
-      if (!fromDelivery && result.readLease && typeof result.askedAt === "number") {
-        __nimbusProcessFs().readLeased(result.readLease, result.askedAt);
+      if (!fromDelivery && result.readLease && result.ask) {
+        __nimbusProcessFs().readLeased(result.readLease, result.ask);
       }
       _stats.invalidations += applied.dropped.length;
       _stats.selfWrites += applied.kept;
@@ -2475,9 +2475,11 @@ const __fsMod = (() => {
     try {
       const args = _acquireArgs();
       // Asked of this barrier only, never of a long poll's delivery: its
-      // trust runs from the moment this asks.
-      const options = __nimbusProcessFs().readLeaseWanted() ? { ...(args.options || {}), lease: true } : args.options;
-      const askedAt = Date.now();
+      // trust runs from the moment this asks. A run that can stop and run
+      // again takes none: when it asks, and what it is answered, are the
+      // run before's (stop-replay.ts).
+      const ask = __nimbusReplay && !__nimbusReplay.final ? null : __nimbusProcessFs().readLeaseAsk();
+      const options = ask ? { ...(args.options || {}), lease: true } : args.options;
       const result = await __nimbusUseRpcResult(
         options ? supervisor.fsAcquire(args.epoch, args.cursor, options) : supervisor.fsAcquire(args.epoch, args.cursor),
         (r) => r,
@@ -2485,7 +2487,7 @@ const __fsMod = (() => {
       if (!result || typeof result.rev !== "number" || typeof result.epoch !== "string") {
         throw new Error("fsAcquire answered without a cursor");
       }
-      return { ..._currentAnswer(result), askedAt };
+      return { ..._currentAnswer(result), ask };
     } catch (error) {
       _stats.barrierFailures++;
       _stats.lastBarrierFailure = (error && error.message) || String(error);

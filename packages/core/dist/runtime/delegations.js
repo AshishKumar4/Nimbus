@@ -41,6 +41,12 @@ export const DELEGATION_RECALL_TIMEOUT_MS = 5_000;
  * one is not delegated (EPERM).
  */
 export const SESSION_KERNEL_ROOTS = ['.nimbus', 'var/lib/nimbus'];
+/**
+ * The session's own timers, taken when this module is evaluated: a program
+ * that shares the realm (a resident body run in-process) wraps the global
+ * ones as its own resumptions, and a recall's wait is not one of them.
+ */
+const sessionTimers = { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout };
 /** How long one awaitRecall waits before it answers that nothing is asked (the holder asks again). */
 export const DELEGATION_RECALL_POLL_MS = 25_000;
 /**
@@ -185,12 +191,12 @@ export class Delegations {
         // The executor form: core's TypeScript lib (ES2022) has no Promise.withResolvers.
         return new Promise((resolve) => {
             const answer = (kind) => {
-                clearTimeout(timer);
+                sessionTimers.clearTimeout(timer);
                 if (held.waiter === answer)
                     held.waiter = null;
                 resolve(kind);
             };
-            const timer = setTimeout(() => answer(null), Math.max(0, waitMs));
+            const timer = sessionTimers.setTimeout(() => answer(null), Math.max(0, waitMs));
             held.waiter = answer;
         });
     }
@@ -239,7 +245,7 @@ export class Delegations {
         this.counts[kind]++;
         let resolve;
         const promise = new Promise((settle) => { resolve = settle; });
-        const timer = setTimeout(() => {
+        const timer = sessionTimers.setTimeout(() => {
             // Unanswered: revoked, its lease ended (its later writes are ESTALE),
             // and the caller that recalled it goes on.
             held.pending = null;
@@ -248,7 +254,7 @@ export class Delegations {
             this.options.revoked?.({ pid: held.pid, root: held.root, kind, reason: `no answer to a ${kind} recall within ${this.recallTimeoutMs} ms` });
             resolve();
         }, this.recallTimeoutMs);
-        held.pending = { kind, done: resolve, cancel: () => clearTimeout(timer) };
+        held.pending = { kind, done: resolve, cancel: () => sessionTimers.clearTimeout(timer) };
         if (held.waiter !== null)
             held.waiter(kind);
         else
@@ -270,13 +276,13 @@ export class Delegations {
         }
         let resolve;
         const promise = new Promise((settle) => { resolve = settle; });
-        const timer = setTimeout(() => {
+        const timer = sessionTimers.setTimeout(() => {
             held.pending = null;
             this.counts.readExpired++;
             held.end();
             resolve();
         }, trustLeft);
-        held.pending = { kind: 'revoke', done: resolve, cancel: () => clearTimeout(timer) };
+        held.pending = { kind: 'revoke', done: resolve, cancel: () => sessionTimers.clearTimeout(timer) };
         if (held.waiter !== null)
             held.waiter('revoke');
         else

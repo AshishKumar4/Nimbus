@@ -164,5 +164,19 @@ function barrier(s, bridge, from) {
   assert.equal(s.engine.readLeaseStats().broken, 0);
 }
 
+// ── A lease the engine ends without waiting (a new incarnation) is recalled: its holder is told ──
+{
+  const s = session();
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const { readLease } = barrier(s, reader);
+  const before = s.engine.epoch;
+  s.engine.rotateIncarnation();
+  assert.equal(await reader.awaitRecall(readLease.owner, 200), 'revoke', 'the holder of a lease the new clock ended was not told');
+  assert.equal(s.engine.readLeaseStats().broken, 1);
+  reader.recalled(readLease.owner, 'revoke');
+  assert.equal(reader.acquire(before, s.engine.revision(), { lease: true }).poison, true);
+  assert.notEqual(barrier(s, reader).readLease?.owner, readLease.owner, 'the ended lease was confirmed again');
+}
+
 console.log('read-lease: ok');
 process.exit(0);

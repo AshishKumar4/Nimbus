@@ -799,7 +799,7 @@ export declare class SqliteVFS {
     private readonly exclusiveMutationLeases;
     /** Read leases (acquireReadLease), by owner. */
     private readonly readLeases;
-    /** Read leases a publication found unrecalled and ended (a writer that skipped refusalAt): its staleness is the holder's trust window. */
+    /** Read leases ended without waiting for their holders (breakReadLease). */
     private readLeasesBroken;
     private activeMutationOwner;
     /**
@@ -1279,10 +1279,15 @@ export declare class SqliteVFS {
     private bumpRevision;
     /**
      * A publication a read lease covers, by a writer that did not recall it
-     * (one that skipped refusalAt): the lease ends here, untold, and its
-     * holder's copy is stale for what remains of its trust (Delegations). Counted, and said.
+     * (one that skipped refusalAt): the lease is broken. Said.
      */
     private breakUnrecalledReadLeases;
+    /**
+     * End a read lease without waiting for its holder, which is told (its
+     * recall, asked now): until it hears, its copy is stale for what remains
+     * of its trust (Delegations). Counted.
+     */
+    private breakReadLease;
     /** Commit a generation that writes nothing, so a publication has a tick of its own. */
     private advanceGeneration;
     /** UTF-16 payload plus a flat allowance for the entry object itself. */
