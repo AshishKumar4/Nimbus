@@ -24,7 +24,7 @@ export type { FilesystemSupervisor } from './filesystem-methods.js';
 /** The calls node's shims make that the bridge does not name. */
 const NODE_SHIM_RPC_METHODS = [
   'readFile', 'writeFileStat', 'lstat', 'exists', 'hasLegacySymlinkUnder', 'setUmask', 'fsAcquired',
-  'fsStorageGrant', 'fsReadRangeUncached', 'fsReadBatch',
+  'fsStorageGrant', 'fsReadRangeUncached', 'fsReadBatch', 'fsSnapshot',
 ] as const;
 
 /**

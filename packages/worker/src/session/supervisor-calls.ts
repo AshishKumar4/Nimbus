@@ -65,7 +65,7 @@ import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counter
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsSnapshot, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   isSupervisorAnsweredMethod,
   supervisorAnswer,
@@ -468,6 +468,11 @@ export function supervisorCalls<Base extends Class>(base: Base) {
 
     async fsList(after?: string | null, limit?: number | null): Promise<VfsListPage> {
       return this._call(this._fsRead('fsList', [after ?? null, limit ?? null]));
+    }
+
+    /** Everything beneath directory `root`, in one page and one revision; E2BIG past `maxEntries` (session/rpc.ts _rpcFsSnapshot). */
+    async fsSnapshot(root: string, maxEntries: number): Promise<VfsSnapshot> {
+      return this._call(this._fsRead('fsSnapshot', [root, maxEntries]));
     }
 
     /**
