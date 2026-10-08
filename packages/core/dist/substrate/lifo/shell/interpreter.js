@@ -74,6 +74,9 @@ function redirectionDiagnostic(error) {
                     : error.message;
     return `sh: ${error.target}: ${reason}\n`;
 }
+function terminalStdinFd(io, stdin = io.stdin) {
+    return io.terminalFds?.stdin ?? ((!stdin || stdin === io.terminalStdin) && Boolean(io.terminalStdin));
+}
 function exited(status) {
     return { status, signal: null };
 }
@@ -242,7 +245,7 @@ export class Interpreter {
             // controlling terminal for `/dev/tty`, but only the foreground job
             // owns the terminal's modes: a background REPL (`node &`) never takes
             // the Ctrl-C meant for the foreground.
-            if (io.terminalFds?.stdin ?? (!io.stdin && Boolean(io.terminalStdin))) {
+            if (terminalStdinFd(io)) {
                 backgroundIo.stdin = this.createEmptyReader();
                 backgroundIo.terminalFds = { ...io.terminalFds, stdin: false };
             }
@@ -1268,7 +1271,7 @@ export class Interpreter {
         setMembership(terminalOutputFds, 1, io.terminalFds?.stdout ?? !io.stdout);
         setMembership(terminalOutputFds, 2, io.terminalFds?.stderr ?? !io.stderr);
         const terminalInputFds = new Set(this.persistentTerminalInputFds);
-        setMembership(terminalInputFds, 0, io.terminalFds?.stdin ?? ((!stdin || stdin === io.terminalStdin) && Boolean(io.terminalStdin)));
+        setMembership(terminalInputFds, 0, terminalStdinFd(io, stdin));
         if (io.terminalStdin) {
             for (const fd of terminalInputFds) {
                 inputFds.set(fd, io.terminalStdin);

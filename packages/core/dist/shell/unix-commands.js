@@ -65,8 +65,7 @@ async function stdinText(ctx) {
  * standard input as the byte stream it is, not a decoded string.
  */
 function textCommand(command) {
-    const execute = withInvocationVfs(() => command);
-    return async (ctx) => await execute(ctx);
+    return wrap(withInvocationVfs(() => command), 'stream');
 }
 /** `factory`'s command over the invocation's own view, once the call carries a credential. */
 function withInvocationVfs(factory) {
@@ -5017,11 +5016,11 @@ function mkXxd() {
  * to every command and closes it only after the command returns, so its
  * already-typed text is taken in place, without awaiting its end.
  */
-function wrap(fn) {
+function wrap(fn, terminalInput = 'drain') {
     return async (ctx) => {
         try {
             const stdin = ctx.stdin;
-            if (stdin && typeof stdin !== 'string' && typeof stdin.feed === 'function') {
+            if (terminalInput === 'drain' && stdin && typeof stdin !== 'string' && typeof stdin.feed === 'function') {
                 const drainable = stdin;
                 ctx.stdin = typeof drainable.drainBuffered === 'function' ? drainable.drainBuffered() : '';
             }
