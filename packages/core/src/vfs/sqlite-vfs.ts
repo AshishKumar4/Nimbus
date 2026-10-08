@@ -264,8 +264,8 @@ interface Pipeline {
   readonly rows: Map<string, OwnGeneration>;
   /** The leases holding what it changed, by root. */
   readonly roots: Map<string, string>;
-  /** Its writer, by the delegations it presents: its later calls pass what it holds. None for a writer that presents none. */
-  readonly writer: ReadonlySet<string> | null;
+  /** Its writer, by the delegations it presents (as its first held commit presents them): its later calls pass what it holds. None for a writer that presents none. */
+  writer: ReadonlySet<string> | null;
   /** Settled once published. */
   readonly published: Promise<void>;
   readonly settle: () => void;
@@ -4196,6 +4196,7 @@ export class SqliteVFS {
   private hold(pipeline: Pipeline, paths: readonly string[], structural: ReadonlyMap<string, StructuralChange>): Publication {
     if (pipeline.publication === null) {
       pipeline.publication = { paths: new Set(), events: [], structural: new Map(), removedDirectories: [] };
+      pipeline.writer ??= this.activeHolds;
       this.heldPipelines++;
     }
     const publication = pipeline.publication;
@@ -9288,7 +9289,7 @@ export class SqliteVFS {
     const delegatedWave = options.mutationOwner !== undefined && (this.exclusiveMutationLeases.get(options.mutationOwner)?.delegation ?? null) !== null;
     // Each group commits in its own turn, as the stream's caller (its lease, its principal).
     // As the stream's writer: the delegations it holds, and what it commits ahead of a reader's recall (`pipeline`).
-    const asWriter = <T>(fn: () => T): T => this.inPipeline(pipeline, () => asWriter(fn));
+    const asWriter = <T>(fn: () => T): T => this.inPipeline(pipeline, () => this.withHolds(holds, fn));
     // As the stream's caller: its origin and the lease it writes under, too.
     const asCaller = <T>(fn: () => T): T => this.asOrigin(origin, () => this.withMutationOwner(options.mutationOwner, () => asWriter(fn)));
     const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();
