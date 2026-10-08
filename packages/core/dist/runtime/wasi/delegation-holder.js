@@ -90,21 +90,18 @@ export function delegationHolder(options) {
         const bytes = file.bytes.subarray(0, file.length);
         file.bytes = new Uint8Array(0);
         dirty.delete(file);
-        let making = made;
-        for (const handle of new Set(handles.values())) {
-            if (handle.file !== file || handle.description !== undefined)
-                continue;
-            handle.description = descriptionId();
-            const creating = making === undefined ? {} : {
-                create: true, exclusive: true, ino: making, ...(file.umask === undefined ? {} : { umask: file.umask }),
-            };
-            const answer = client.submit({ type: 'call', call: { call: 'open', path: file.key, mode: file.mode, ...creating, ...(handle.readable ? { read: true } : {}), description: handle.description } }, { acknowledged: true });
+        const opened = [...new Set(handles.values())].filter((handle) => handle.file === file && handle.description === undefined);
+        opened.forEach((handle, at) => {
+            const description = handle.description = descriptionId();
+            // The first makes the file when it is not made yet: the creating open, and the bytes written through it.
+            const creating = made !== undefined && at === 0;
+            const making = creating ? { create: true, exclusive: true, ino: made, ...(file.umask === undefined ? {} : { umask: file.umask }) } : {};
+            const answer = client.submit({ type: 'call', call: { call: 'open', path: file.key, mode: file.mode, ...making, ...(handle.readable ? { read: true } : {}), description } }, { acknowledged: true });
             handle.session = answer.then((answered) => answered.receipt?.handle, () => undefined);
-            if (making !== undefined && bytes.byteLength > 0) {
-                client.submit({ type: 'call', call: { call: 'write', path: file.key, ino, description: handle.description, offset: 0, data: bytes.slice() } }, { acknowledged: true });
+            if (creating && bytes.byteLength > 0) {
+                client.submit({ type: 'call', call: { call: 'write', path: file.key, ino, description, offset: 0, data: bytes.slice() } }, { acknowledged: true });
             }
-            making = undefined;
-        }
+        });
     };
     /** Whether a description of `file` is open here. */
     const isOpen = (file) => {
