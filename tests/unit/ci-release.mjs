@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -29,24 +29,20 @@ try {
     const installed = new URL('../../scripts/ci/lib/installed.mjs', import.meta.url).href;
     const bundles = new URL('../../scripts/ci/lib/release.mjs', import.meta.url).href;
     const lease = new URL('../../scripts/ci/lib/lease.mjs', import.meta.url).href;
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
     for (const exit of [2, 1]) {
+      writeFileSync(join(bin, 'bun'), `#!/bin/sh\n[ "$1" = tests/behavioral/_staging-target.mjs ] && [ "$2" = up ] || exit 99\necho 'upload readiness returned ${exit}' >&2\nexit ${exit}\n`);
+      chmodSync(join(bin, 'bun'), 0o700);
       const check = spawnSync(process.execPath, ['-e', `
         import { mock } from 'bun:test';
-        mock.module('node:child_process', () => ({ spawnSync(command, args) {
-          if (command === 'git') return { status: 0, stdout: args.includes('--show-toplevel') ? '/fixture/release\\n' : 'c0ffee\\n', stderr: '' };
-          if (command === 'bun' && args[0] === 'tests/behavioral/_staging-target.mjs' && args[1] === 'up') {
-            console.log('upload readiness returned ${exit}');
-            return { status: ${exit} };
-          }
-          throw new Error('unexpected release step: ' + command + ' ' + args.join(' '));
-        } }));
         mock.module(${JSON.stringify(installed)}, () => ({ assertInstalled() {} }));
         mock.module(${JSON.stringify(bundles)}, () => ({ fetchRelease: async () => ({ dir: '/fixture/bundle', release: {} }), releaseDigest() { throw new Error('an ungraded upload must not be sealed'); } }));
         mock.module(${JSON.stringify(lease)}, () => ({ holdLease: () => 3 }));
         process.env.CLOUDFLARE_ACCOUNT_ID = 'fixture-account';
         process.argv = ['bun', 'release.mjs', 'staging'];
         await import(${JSON.stringify(entry)});
-      `], { encoding: 'utf8', timeout: 10_000 });
+      `], { encoding: 'utf8', timeout: 10_000, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
       assert.equal(check.status, exit, `release propagates upload status ${exit}: ${check.stdout}\n${check.stderr}`);
       if (exit === 2) assert.match(check.stderr, /NOT GRADED/, 'ungraded readiness remains ungraded at the release boundary');
       else assert.match(check.stdout, /upload to staging failed/, 'a real upload failure remains red');
