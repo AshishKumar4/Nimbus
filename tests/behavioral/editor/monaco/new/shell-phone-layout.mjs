@@ -100,7 +100,7 @@ try {
   await page.click('#btnPreview');
   await pane('#previewPanel');
   await page.waitForFunction(() => document.getElementById('preview-frame').src.includes('/port/3000/'), { timeout: 30_000 });
-  const frame = page.frames().find((candidate) => candidate.url().includes('/port/3000/'));
+  const frame = await (await page.$('#preview-frame')).contentFrame();
   if (!frame) throw new Error('the preview frame never reached the port app');
   await frame.waitForSelector('#counter', { visible: true, timeout: 30_000 });
   await frame.click('#counter');
