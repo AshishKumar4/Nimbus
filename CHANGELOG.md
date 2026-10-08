@@ -12,6 +12,37 @@ published independently in the `@nimbus-sh` npm scope.
   Worker, `subarray` refuses a begin past the 128 MiB an ArrayBuffer may
   have; the WASI hosts and the napi-wasm loader (its emnapi included) now view
   guest memory by offset instead.
+- The probe driver pings its terminal and process-log WebSockets every 30 s.
+  A socket that carried nothing either way for about 270 s was dropped on the
+  way to the session (close 1006, no close frame; the session was not reset),
+  so a probe waiting on a command that printed nothing for that long failed
+  as if its session had reset.
+- Breaking for Cloudflare embedders: the hosting Worker must explicitly set
+  `"limits": { "cpu_ms": 300000, "subrequests": 10000000 }` in its Wrangler
+  configuration. A facet's limits only lower its parent's, and under the
+  plan's 10,000 subrequests a dev server's filesystem calls ran out within
+  minutes ("Too many subrequests by single Worker invocation"). Omitting
+  either or configuring less is refused by deployment validation.
+  `@nimbus-sh/config` emits the required block automatically.
+
+- Added explicit, evidence-based per-kind facet CPU and subrequest limits,
+  replacing the implicit 30-second Loader CPU default. Resident filesystem
+  transport retains its invocation budget across incoming HTTP requests, so
+  processes receive a deliberately generous finite lifetime ceiling. This
+  resource policy is separate from batched filesystem write delivery.
+- Fixed: a process no longer has a wall-time deadline. A wasm program, WASI
+  included, was killed at 30 s ("Task exceeded 30000ms deadline"), which
+  ended clang over 10,000 files under load at 9,199. CPython was killed at
+  120 s, clang, Ruby and bash steps at 300 s, and a Python or Ruby REPL
+  evaluation at 60 s. A process now runs until it exits or is killed (kill,
+  Ctrl-C), and on Cloudflare the CPU limit ends a runaway one. Only a direct
+  compute call (a build, a transform, a git network step, a fan-out task)
+  still has a deadline.
+- Breaking for embedders running `@nimbus-sh/core` off Cloudflare:
+  `localFacetHost` no longer takes `defaultTimeoutMs`, and a facet call
+  given no `timeoutMs` has no deadline. Off Cloudflare there is no CPU
+  limit, so a program that never ends runs until it is killed, as it would
+  under Node. Pass `timeoutMs` to bound a call of your own.
 - Fixed: a command's second run could fail before it started, where its
   first had got further: what the first run executed and the launch lacked
   is learned and rooted in the next launch's required closure, and on `nuxt
@@ -61,6 +92,42 @@ published independently in the `@nimbus-sh` npm scope.
   after eight. Waiting fills now get room in the order they asked, and one ask
   covers them all (`astro dev`: "import() prefetch: could not fetch
   …/zod/v4/locales/…; its fetches did not land").
+- Added: a git repository on a mounted filesystem. `git clone` onto a mount
+  (before: "writes a repository only on the workspace filesystem"), and
+  `git fetch`, `pull` and `push` in a repository there. A file over a wave's
+  4 MiB mount limit is written through the session's file API (open, write,
+  close), the index through `index.lock`. A failed or interrupted clone
+  there is cleaned up as on the session's own filesystem. A mount backend
+  without `rename`, `writeRange` or `truncate` fails the clone with the
+  namespace's refusal naming the call (EXDEV for a rename, ENOTSUP for the
+  others), and the destination is removed.
+- Fixed: a write wave routed onto a mount, and a lease holder's `mkdir`,
+  `open` for writing, `unlink` and `rmdir`, did not present the caller's
+  exclusive-mutation lease: under its own lease a holder was refused EBUSY
+  there. A file opened under a lease now writes and truncates under it.
+- Changed: what a process's writes survive. A resident (node, python,
+  ruby or opencode in a SQLite-backed facet) logs every change in its own
+  store before the program is told it succeeded. When the process is
+  killed or runs out of memory, the session drains that log, and only then
+  reports its exit status: 5,000 of 5,000 files after an OOM or a `kill -9`.
+  One limit remains: a resident that dies of CPU or memory partway through
+  one unbroken synchronous stretch loses what that stretch logged (958 of
+  5,000 in a live CPU-death run). No output ever gets ahead of it.
+  A one-shot (node, python, ruby or a WASI program run once) releases no
+  output, exit status or outbound message until every change it made
+  before it is in the session. A one-shot that ends abnormally (out of
+  memory or CPU, or killed) can lose an unknown number of the changes it
+  made since it last produced output or flushed. It always exits non-zero
+  and says so in its output, naming any subtree it held. No count is
+  promised: the session never saw the changes the process acknowledged and
+  never sent.
+- Fixed: a WASI program run with `./prog.wasm`, and ruby, ran without its
+  credential, so every file call was a round trip to the session. A C
+  program writing 10,000 files now takes 14.7 s, where before it stopped at
+  the 30 s limit with about 3,000 written.
+- Fixed: a resident that died on its own after it started (out of memory
+  or CPU) stayed listed as running, and its writes were never recovered.
+
 - Fixed: a write wave ignored mounts. A W7 wave (`writeBatchStream`, which
   `git clone`, `git checkout` and `npm install` use) wrote every record to
   the session's SQLite store, even under a mount. A file under a mount
@@ -159,6 +226,17 @@ published independently in the `@nimbus-sh` npm scope.
   read stays in the program's exit report. A floating `import(...).then(...)`
   keeps the process while it fetches, and an `import()` of a module already
   loaded fetches nothing.
+- A full clone (`git clone --no-shallow`) leaves a commit-graph with
+  changed-path filters, as `git commit-graph write --reachable
+  --changed-paths` writes it (generation data v2, filters version 2), byte
+  for byte. It is written after the clone answers, so the clone takes no
+  longer: on vscode (167,136 commits) the clone's finish took 1.1 s as
+  before, and the graph was complete about five minutes later. It is one
+  layer of a commit-graph chain, so the layers a later `git fetch` writes
+  stack on it as git's do. A history that does not parse as git parses it
+  gets no graph rather than a failed clone.
+- Reading objects from a repository with many packs (a full clone has
+  scores) searches the pack the last object came from first, as git does.
 - Fixed: `node` and `bun` with no script opened a REPL that evaluated
   nothing ("workerd CSP: cannot evaluate JS at request time"). The REPL is
   now a program the runtime runs, as Node's is, and each line compiles
@@ -323,6 +401,16 @@ published independently in the `@nimbus-sh` npm scope.
   dev server again exposes every key of a CommonJS `module.exports = {...}`
   literal as a named export (for example `color-name`'s `red`), checked
   against Vite 7.3.6.
+- Removed the legacy synchronous filesystem methods on `NimbusSession`
+  (`vfsReadFile`, `vfsReadFileString`, `vfsStat`, `vfsExists`, `vfsReaddir`,
+  `vfsWriteFile`) and their functions in `@nimbus-sh/worker/session/rpc`.
+  They always acted as the kernel, stripped leading slashes and turned every
+  error into `null` or an empty answer; nothing in Nimbus called them. Use
+  the session's files API (`files.read`, `files.write`, and the rest) or the
+  credentialed `_rpc*` methods, which act as a process's credential and
+  report errors. A breaking change to a published API: `@nimbus-sh/worker`
+  moves to 0.14.0, and `@nimbus-sh/sdk` to its next minor, since its
+  `@nimbus-sh/sdk/worker` entry re-exports `NimbusSession`.
 - Fixed: `create-nimbus-app` wrote a `wrangler.jsonc` without
   `limits.cpu_ms`, so a scaffolded session ran under the 30 s default CPU
   limit. The scaffold now writes the config that `@nimbus-sh/config`
@@ -351,17 +439,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 These need a minor version of fabric and of platform at the next publish.
 
-- fabric: `recordFacetNameMinted` is removed. Its callers set a facet-name
-  count of their own, and three such counters drifted apart, so the
-  lifetime facet-ID count could miss names. Charge a name with
-  `chargeFacetName(ctx, name, { refuseAtWall })`. It counts a name's
-  first use once, in this incarnation or any later one. The slot book
-  charges its own names.
-- fabric: a `FacetPoolContext`'s `storage.put` takes one object of
-  entries, Durable Object storage's atomic multi-key form, in place of
-  `put(key, value)`. The facet-name ledger writes a charge's counts and
-  its name's mark in that one put. A `DurableObjectState` already
-  provides it.
+- fabric: the facet-ID ledger is removed: `FACET_ID_LIFETIME_BUDGET`,
+  `FACET_NAME_HIGH_WATER_KEY`, `recordFacetNameMinted`, `facetNameCount`,
+  `facetNameCountDurable`, `facetIdBudget` and `withFacetBudgetNamed`.
+  Cloudflare does not bound the facet names an object uses: one object
+  created 70,000, deleting each after use, and none failed. It bounds
+  facets kept: with none deleted, one object failed at 32,240
+  (2026-10-07). `facetPool` no longer refuses a new name past 65,536, and
+  a start failure is no longer called permanent for the object. A
+  `FacetPoolContext`'s `storage` needs only `sql`. The session
+  diagnostics no longer report `facet.idBudget`. The rows the ledger
+  wrote stay in storage, unread.
 - platform: `SQLITE_MAX_BOUND_PARAMETERS` is removed. It was a second name
   for the same measured bound as `SQL_MAX_BOUND_PARAMETERS`, which every
   caller uses. Use `SQL_MAX_BOUND_PARAMETERS`.

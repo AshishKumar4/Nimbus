@@ -34,11 +34,11 @@ const rc = await t.run('clang -O0 -o /home/user/o /home/user/o.c', 240_000);
 const compileOK = !/error:|Assertion failed/.test(stripAnsi(rc.output));
 a.check('clang compiles', compileOK, compileOK ? '' : JSON.stringify(stripAnsi(rc.output).slice(-400)));
 
-const rr = await t.run('/home/user/o ; echo RUN_EXIT=$?', 60_000);
+const rr = await t.run('/home/user/o', 60_000);
 const out = stripAnsi(rr.output);
 a.check('no host /etc/passwd LEAK', !/LEAK/.test(out), JSON.stringify(out.slice(-300)));
 a.check('EXPECTED_ABSENT printed', /EXPECTED_ABSENT/.test(out), JSON.stringify(out.slice(-300)));
-a.check('exit code 0', /RUN_EXIT=0/.test(out), JSON.stringify(out.slice(-200)));
+a.check('exit code 0', rr.exitCode === 0, JSON.stringify(out.slice(-200)));
 
 await t.close();
 const sum = a.summary();

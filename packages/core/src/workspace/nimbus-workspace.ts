@@ -36,7 +36,7 @@ import { workspaceNetwork, type WorkspaceEgress, type WorkspaceNetwork } from '.
 import { runCommand, type CommandResult, type RunOptions } from '../substrate/lifo/sandbox/run-command.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
-import { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { SqliteVFS, STORE_TABLES } from '../vfs/sqlite-vfs.js';
 import {
   DEFAULT_HOME, DEFAULT_HOSTNAME, defaultPath, SEEDED_TOP_LEVEL_DIRS,
   DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION,
@@ -660,19 +660,9 @@ export class NimbusWorkspace {
   }
 }
 
-/**
- * Open the durable filesystem for a host that has not opened one itself.
- *
- * The revocation is here rather than in `create` because it is the act of
- * OPENING that carries it: pids at or below this generation's floor belong to
- * an instance that is gone, and their append capabilities must stop being
- * honoured before the first read. A host that opened the filesystem itself has
- * already done this, at the same seam, for the same reason.
- */
+/** Open the durable filesystem for a host that has not opened one itself. */
 function openFilesystem(options: NimbusWorkspaceOptions): SqliteVFS {
-  const vfs = new SqliteVFS(options.sql, options.transactions, options.filesystemNamespace);
-  vfs.revokeAppendWritersThrough((options.generation ?? 1) * PID_GEN_STRIDE);
-  return vfs;
+  return new SqliteVFS(options.sql, options.transactions, options.filesystemNamespace);
 }
 
 /**
@@ -874,27 +864,8 @@ function once<T>(make: () => Promise<T>): () => Promise<T> {
  * drops them itself, and only once their columns prove they are its own.
  */
 const WORKSPACE_TABLES = [
-  'vfs_append_receipts_v2',
-  'vfs_append_writer_state_v2',
-  'vfs_append_module_state_v2',
-  'vfs_append_pid_revocations_v2',
-  'vfs_append_acked_gaps_v2',
-  'vfs_state',
-  'vfs_inodes',
-  'vfs_chunks',
-  'vfs_contents',
-  'vfs_content_chunks',
-  'vfs_inode_history',
-  'vfs_gc_queue',
-  'vfs_jobs',
-  'vfs_snapshots',
-  'vfs_tombstones',
-  'vfs_cold_trash',
-  'vfs_append_receipts',
-  'vfs_append_writer_state',
-  'vfs_append_module_state',
-  'vfs_append_pid_revocations',
-  'vfs_append_acked_gaps',
+  // The store's own, as it keeps them.
+  ...STORE_TABLES,
   SHELLS_TABLE,
 ] as const;
 

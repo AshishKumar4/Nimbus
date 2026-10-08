@@ -1,7 +1,7 @@
 /**
  * budgets.ts — per-DO accounting for the platform budgets the fabric spends:
- * the Durable Object's Dynamic Worker concurrency limit, the facet-ID
- * lifetime budget, and the dynamic-worker module-map ceiling.
+ * the Durable Object's Dynamic Worker concurrency limit and the
+ * dynamic-worker module-map ceiling.
  *
  * The Dynamic Worker model is Cloudflare's documented one
  * ({@link DO_DYNAMIC_WORKER_LIMIT}): a Durable Object may have a fixed number
@@ -196,6 +196,29 @@ export declare function beginLoaderFetchWhenFree(ctx: object, workerKey: string,
     process?: LedgerProcess;
 }): Promise<EndLoaderFetch>;
 /**
+ * How long one call waits, in all, on the ledger after the platform first
+ * refused it before the refusal surfaces ({@link readmitRefused}). A deployed
+ * Durable Object admitted a refused batch after a 6 s pause; 15 s bounds a
+ * call that would never be admitted.
+ */
+export declare const REFUSED_CALL_WAIT_MS = 15000;
+/**
+ * The hold to send a call again on, after the platform refused it ("Dynamic
+ * worker concurrency limit exceeded"): it refuses a call before the call
+ * starts, so nothing ran. It still counts workers the ledger has given back
+ * (one called over RPC stays counted until its session has closed, which no
+ * release here can show), so `refused`, the call's hold, ended with that
+ * refusal, paused admission. The new hold is taken on the same terms (key,
+ * claim, process; a launch's run is that launch's run again), once the
+ * ledger lets it in: after the pause, even when its key is still in flight,
+ * and when there is room. Undefined once `signal` aborts or the call's first
+ * refusal (`since`) is {@link REFUSED_CALL_WAIT_MS} old.
+ */
+export declare function readmitRefused(refused: EndLoaderFetch, options: {
+    since: number;
+    signal?: AbortSignal;
+}): Promise<EndLoaderFetch | undefined>;
+/**
  * Run a launch admitted once on the ledger. It waits, as
  * {@link beginLoaderFetchWhenFree} with its process does, for one Dynamic
  * Worker, and holds it until `body` settles. Everything the launch puts in
@@ -266,6 +289,8 @@ export declare function loaderLedgerStats(ctx: object): {
     claimed: number;
     headroom: number;
     peak: number;
+    /** Calls the platform refused that were let in again. */
+    readmitted: number;
     /** Waits not yet admitted. */
     waiting: number;
     /** Length of the pause a limit refusal started, while it lasts; 0 when admitting. */
@@ -315,69 +340,4 @@ export declare const DYNAMIC_WORKER_CODE_LIMIT_BYTES = 67108864;
  * then, sorted so the biggest lever is first.
  */
 export declare function assertModuleMapWithinCodeLimit(modules: Record<string, unknown>): void;
-/**
- * Facet IDs a Durable Object is granted over its LIFETIME. Append-only and
- * never reclaimed, so crossing it is unrecoverable for the object — which is
- * why the ledger below counts consumption durably instead of leaving the
- * bound as prose the slot book merely respects.
- */
-export declare const FACET_ID_LIFETIME_BUDGET = 65536;
-/** Where the ledger persists the count of facet names ever minted. */
-export declare const FACET_NAME_HIGH_WATER_KEY = "fabric_facet_name_high_water";
-/**
- * The slice of storage the facet-name ledger persists through. A multi-key
- * put is one atomic write, as Durable Object storage's is: a charge's counts
- * and its name's row land together or not at all.
- */
-interface FacetNameLedgerStorage {
-    storage: {
-        get(key: string): Promise<unknown> | unknown;
-        put(entries: Record<string, unknown>): Promise<void>;
-    };
-}
-/**
- * Charge the slot book's `slot` before its facet is created. A fresh
- * incarnation restarts the book at zero and issues the same `proc-slot-`
- * names again, so only a slot past the slot high-water is a name never
- * minted before; any other costs nothing, so a slot may be charged on every
- * use. Resolves once the charge is durable.
- */
-export declare function chargeFacetSlot(ctx: FacetNameLedgerStorage, slot: number): Promise<void>;
-/**
- * Charge an explicit facet name before its facet is created: its first use
- * ever consumes one lifetime ID, and any later use, in this incarnation or
- * another, costs nothing, so a caller may charge a name on every use.
- * `refuseAtWall` refuses a first use at the wall; without it the platform's
- * own failure at creation is what stops it, named by the ledger
- * (withFacetBudgetNamed). Resolves with the count once the charge is durable.
- */
-export declare function chargeFacetName(ctx: FacetNameLedgerStorage, name: string, { refuseAtWall }: {
-    refuseAtWall: boolean;
-}): Promise<number>;
-/** The count as last read or charged, without awaiting storage: 0 before the first read. */
-export declare function facetNameCount(ctx: FacetNameLedgerStorage): number;
-/** The count once every charge so far has settled, read from storage if no read has yet succeeded. */
-export declare function facetNameCountDurable(ctx: FacetNameLedgerStorage): Promise<number>;
-/**
- * The lifetime facet-ID ledger: how many facet names this fabric has ever
- * minted on the Durable Object, against the 65,536 the platform will ever
- * grant it. `consumed` only ever counts FIRST uses — a reused name, in this
- * incarnation or any earlier one, cost no new ID, which is the slot book's
- * whole reason to exist. Surfaced so an operator can see proximity to a wall
- * whose crossing is unrecoverable, instead of discovering it from the
- * platform's opaque failure.
- */
-export declare function facetIdBudget(ctx: FacetNameLedgerStorage): Promise<{
-    consumed: number;
-    budget: number;
-}>;
-/**
- * Name the facet-ID budget on a creation failure at the wall; below it, hand
- * the error back untouched. Exhaustion is the one failure here the platform
- * reports opaquely AND that no teardown, retry or reset can undo, so the
- * ledger — the only witness to the real cause — does the naming. Not a
- * threshold: the comparison is against the budget itself.
- */
-export declare function withFacetBudgetNamed(consumed: number, error: unknown): unknown;
-export {};
 //# sourceMappingURL=budgets.d.ts.map

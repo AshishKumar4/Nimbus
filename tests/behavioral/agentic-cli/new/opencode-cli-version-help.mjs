@@ -38,22 +38,22 @@ try {
     /nimbus staged artifact: nimbus-staged:opencode/.test(shimOut),
     JSON.stringify(shimOut.slice(-300)));
 
-  const version = await t.run('opencode --version; echo EXIT=$?', 120_000);
+  const version = await t.run('opencode --version', 120_000);
   const versionOut = stripAnsi(version.output);
   a.check('opencode --version prints 1.16.2 and exits 0',
-    hasOutputLine(versionOut, '1.16.2') && hasOutputLine(versionOut, 'EXIT=0'),
+    hasOutputLine(versionOut, '1.16.2') && version.exitCode === 0,
     JSON.stringify(versionOut.slice(-500)));
   a.check('opencode --version produces no global-scope / createRequire error',
     !/Disallowed operation called within global scope|createRequire|operation not permitted|does not provide an export/.test(versionOut),
     JSON.stringify(versionOut.slice(-500)));
 
-  const help = await t.run('opencode --help; echo EXIT=$?', 120_000);
+  const help = await t.run('opencode --help', 120_000);
   const helpOut = stripAnsi(help.output);
   a.check('opencode --help renders the CLI option help and exits 0',
     /model to use in the format of provider\/model/.test(helpOut)
       && /continue the last session/.test(helpOut)
       && /prompt to use/.test(helpOut)
-      && /EXIT=0/.test(helpOut),
+      && help.exitCode === 0,
     JSON.stringify(helpOut.slice(-700)));
 } finally {
   await t.close();

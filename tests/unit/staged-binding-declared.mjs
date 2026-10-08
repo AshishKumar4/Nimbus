@@ -27,6 +27,8 @@ const decoder = new TextDecoder();
 const APP = 'home/user/app';
 const version = (name) => STAGED_BINDINGS.find((b) => b.name === name).version;
 const ROLLDOWN = version('rolldown');
+/** The key of the build a tree with rolldown at ROLLDOWN carries. */
+const RD = `rolldown@${ROLLDOWN}`;
 
 /** A tree of package.json files ({ dir: manifest }) and links ({ link: target }), as the walk's fs. */
 function tree(packages, links = {}) {
@@ -68,8 +70,8 @@ const NM = `${APP}/node_modules`;
     [`${NM}/picomatch`]: pkg('picomatch', '4.0.0'),
     [`${NM}/rolldown`]: pkg('rolldown', ROLLDOWN),
   }, { [`${NM}/.bin/nuxt`]: '../nuxt/index.js' });
-  assert.deepEqual(await stagedBindingsDeclaredBy(fs, `/${NM}/.bin/nuxt`), ['rolldown'], 'nuxt carries rolldown through its builder');
-  assert.deepEqual(await stagedBindingsDeclaredBy(fs, `/${NM}/nuxt/index.js`), ['rolldown']);
+  assert.deepEqual(await stagedBindingsDeclaredBy(fs, `/${NM}/.bin/nuxt`), [RD], 'nuxt carries rolldown through its builder');
+  assert.deepEqual(await stagedBindingsDeclaredBy(fs, `/${NM}/nuxt/index.js`), [RD]);
 }
 
 // ── the version is the one the requiring package would load: nested before hoisted ──
@@ -83,9 +85,23 @@ const NM = `${APP}/node_modules`;
   assert.deepEqual(await stagedBindingsDeclaredBy(tree(packages).fs, `/${NM}/nuxt/index.js`), [],
     "vite loads its own nested rolldown, not the staged build's version");
   delete packages[`${NM}/vite/node_modules/rolldown`];
-  assert.deepEqual(await stagedBindingsDeclaredBy(tree(packages).fs, `/${NM}/nuxt/index.js`), ['rolldown'], 'without it, the hoisted one');
+  assert.deepEqual(await stagedBindingsDeclaredBy(tree(packages).fs, `/${NM}/nuxt/index.js`), [RD], 'without it, the hoisted one');
   packages[`${NM}/rolldown`] = pkg('rolldown', '1.2.12');
   assert.deepEqual(await stagedBindingsDeclaredBy(tree(packages).fs, `/${NM}/nuxt/index.js`), [], 'another version is not the staged build');
+}
+
+// ── each staged rolldown version is its own build: vite 8.3.4's ~1.2.12 resolves 1.2.13 ──
+{
+  const builds = STAGED_BINDINGS.filter((b) => b.name === 'rolldown');
+  assert.ok(builds.some((b) => b.version === '1.2.13'), `rolldown 1.2.13 is staged: ${builds.map((b) => b.key).join(', ')}`);
+  for (const build of builds) {
+    const { fs } = tree({
+      [`${NM}/nuxt`]: pkg('nuxt', '4.6.0', { vite: '^8' }),
+      [`${NM}/vite`]: pkg('vite', '8.3.4', { rolldown: '*' }),
+      [`${NM}/rolldown`]: pkg('rolldown', build.version),
+    });
+    assert.deepEqual(await stagedBindingsDeclaredBy(fs, `/${NM}/nuxt/index.js`), [build.key], `rolldown ${build.version} carries its own build`);
+  }
 }
 
 // ── from a nested package, ancestors' node_modules in Node's order ──
@@ -96,7 +112,7 @@ const NM = `${APP}/node_modules`;
     [`${NM}/a/node_modules/rolldown`]: pkg('rolldown', ROLLDOWN),
     [`${NM}/rolldown`]: pkg('rolldown', '0.9.0'),
   });
-  assert.deepEqual(await stagedBindingsDeclaredBy(fs, `/${NM}/a/index.js`), ['rolldown'], "b finds a's copy before the top level's");
+  assert.deepEqual(await stagedBindingsDeclaredBy(fs, `/${NM}/a/index.js`), [RD], "b finds a's copy before the top level's");
 }
 
 // ── peers are installed beside the package that declares them (react-router dev) ──
@@ -106,7 +122,7 @@ const NM = `${APP}/node_modules`;
     [`${NM}/vite`]: pkg('vite', '8.3.3', { rolldown: `~${ROLLDOWN}` }),
     [`${NM}/rolldown`]: pkg('rolldown', ROLLDOWN),
   });
-  assert.deepEqual(await stagedBindingsDeclaredBy(fs, `/${NM}/@react-router/dev/index.js`), ['rolldown']);
+  assert.deepEqual(await stagedBindingsDeclaredBy(fs, `/${NM}/@react-router/dev/index.js`), [RD]);
 }
 
 // ── every binding the tree installs, in table order (astro) ──
@@ -120,7 +136,7 @@ const NM = `${APP}/node_modules`;
     [`${NM}/satteri`]: pkg('satteri', version('satteri')),
     [`${NM}/@astrojs/compiler-binding`]: pkg('@astrojs/compiler-binding', version('astro-compiler')),
   });
-  assert.deepEqual(await stagedBindingsDeclaredBy(fs, `/${NM}/astro/index.js`), STAGED_BINDINGS.map((b) => b.name));
+  assert.deepEqual(await stagedBindingsDeclaredBy(fs, `/${NM}/astro/index.js`), [RD, `satteri@${version('satteri')}`, `astro-compiler@${version('astro-compiler')}`]);
 }
 
 // ── a program of the user's own declares nothing, whatever the project installs ──
@@ -142,7 +158,7 @@ const NM = `${APP}/node_modules`;
     [`${NM}/c`]: pkg('c', '1.0.0', { rolldown: '*' }),
     [`${NM}/rolldown`]: pkg('rolldown', ROLLDOWN),
   };
-  assert.deepEqual(await stagedBindingsDeclaredBy(tree(packages).fs, `/${NM}/a/index.js`), ['rolldown'], 'a cycle on the way is walked once');
+  assert.deepEqual(await stagedBindingsDeclaredBy(tree(packages).fs, `/${NM}/a/index.js`), [RD], 'a cycle on the way is walked once');
   const bounded = tree(packages);
   assert.deepEqual(await stagedBindingsDeclaredBy(bounded.fs, `/${NM}/a/index.js`, 3), [], 'past the bound, nothing');
   assert.ok(bounded.questions() <= 3, `the bound is on questions asked (${bounded.questions()})`);

@@ -34,7 +34,26 @@ export interface ProcessEntry {
     attachedTty?: boolean;
     /** Output is owned by the command that launched it, until its launch returns. */
     foreground?: boolean;
+    /**
+     * The process this one restarts, when it is one: a resident started again
+     * under a new pid because the session object itself restarted while it
+     * ran, or, under restart 'on-failure', because it exited with a non-zero
+     * code or the platform reset the host it ran on. Absent otherwise.
+     */
+    restartedFrom?: ProcessRestart;
 }
+/** Which process a restart replaced, and why it was restarted. */
+export type ProcessRestart = {
+    pid: number;
+    cause: 'session-restart';
+} | {
+    pid: number;
+    cause: 'exited';
+    exitCode: number;
+} | {
+    pid: number;
+    cause: 'host-reset';
+};
 export interface ProcessTableSpawnOptions {
     cred?: VfsCred;
     parentPid?: number;
@@ -44,6 +63,8 @@ export interface ProcessTableSpawnOptions {
      * inherited.
      */
     execId?: string;
+    /** The process this one restarts (ProcessEntry.restartedFrom). */
+    restartedFrom?: ProcessRestart;
 }
 /** An exec id from a caller, or an error that names the rule it broke. */
 export declare function parseExecId(value: unknown): string;
@@ -69,6 +90,7 @@ export declare class ProcessTable {
     private nextPid;
     private base;
     private processes;
+    private onStride;
     /**
      * Move the pid space onto this instance generation's range. Called once at
      * DO boot (before any event runs) with `isolateGen * PID_GEN_STRIDE`.
@@ -77,6 +99,12 @@ export declare class ProcessTable {
     setPidBase(base: number): void;
     /** The current generation's pid floor: pids <= base are prior-generation. */
     get pidBase(): number;
+    /**
+     * Told the stride (pid / PID_GEN_STRIDE) a pid minted here enters past its
+     * generation's own: the next generation must start beyond it, or its pids
+     * would repeat this one's.
+     */
+    onPidStride(listener: (stride: number) => void): void;
     /** Allocate a PID and register a new process. */
     spawn(command: string, argv: string[], cwd: string, options?: ProcessTableSpawnOptions): ProcessEntry;
     credOf(pid: number): VfsCred;

@@ -74,10 +74,9 @@ const env = {
       loaded.push(config);
       const file = writeModuleSet(join(runnerDir, `runner-${runnerN++}`), config.modules, 'runner.js');
       const module = import(pathToFileURL(file).href);
-      const supervisor = config.env?.SUPERVISOR;
       return {
         getEntrypoint: () => ({
-          async fetch(request) { return (await module).default.fetch(request, { SUPERVISOR: supervisor }); },
+          async run(request, supervisor) { return (await module).default.fetch(request, { SUPERVISOR: supervisor }); },
           [Symbol.dispose]() {},
         }),
         [Symbol.dispose]() {},
@@ -109,7 +108,7 @@ const PROGRAM = `
 const fs = require('fs');
 const out = [];
 try {
-  const add = globalThis.__nimbusRuntimeCode.compileFunction('async', ['a', 'b'], 'return a + b + (typeof module);');
+  const add = globalThis.__nimbusRuntimeCode.compileFunction('async', ['a', 'b'], 'return a + b + (typeof module);', globalThis.__nimbusUnboundOrigin);
   out.push('fn=' + add.name + ':' + add.constructor.name);
   add(2, 3).then((v) => console.log('async=' + v));
 } catch (e) { out.push('fn-error=' + e.code); }

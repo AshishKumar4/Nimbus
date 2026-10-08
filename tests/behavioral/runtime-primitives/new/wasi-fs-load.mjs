@@ -14,7 +14,7 @@ const step = async (label, cmd, timeout = 900_000) => {
   const r = await t.run(cmd, timeout);
   const out = stripAnsi(r.output).replace(/\s+$/, '');
   console.log(JSON.stringify({ label, wallMs: Date.now() - started, out: out.slice(-300) }));
-  return out;
+  return { ...r, output: out };
 };
 const FILES = Number(process.env.FILES ?? 800);
 const script = `
@@ -39,11 +39,11 @@ try {
   await step('write load.py', `cat > load.py <<'EOF'\n${script}\nEOF`);
   const expectedChars = Array.from({ length: FILES }, (_, i) => String(i).length * 1000).reduce((x, y) => x + y, 0);
   for (let i = 1; i <= 2; i++) {
-    const out = await step(`python load.py #${i}`, 'python3 load.py; echo RC=$?');
-    a.check(`load.py #${i} answered right`, out.includes(`modules 16 files ${FILES} chars ${expectedChars} big-ok True`) && out.includes('RC=0'), out.slice(-300));
+    const result = await step(`python load.py #${i}`, 'python3 load.py');
+    a.check(`load.py #${i} answered right`, result.output.includes(`modules 16 files ${FILES} chars ${expectedChars} big-ok True`) && result.exitCode === 0, result.output.slice(-300));
   }
   const last = `many/f${String(FILES - 1).padStart(4, '0')}.txt`;
-  const counted = await step('shell sees the files', `find many -type f | wc -l; wc -c < ${last}; wc -c < big.bin`);
+  const { output: counted } = await step('shell sees the files', `find many -type f | wc -l; wc -c < ${last}; wc -c < big.bin`);
   a.check('the shell sees every file the run wrote', new RegExp(`\\b${FILES}\\b`).test(counted) && counted.includes(String(String(FILES - 1).length * 1000)) && counted.includes('6291456'), counted);
 } finally {
   await t.close().catch(() => {});

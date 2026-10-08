@@ -92,28 +92,33 @@ const STAGED_ARTIFACTS = [
             'Nimbus runs the prebuilt opencode JS bundle instead.',
     },
     // ── Threadless napi-rs bindings (rolldown, satteri, Astro's compiler) ─
-    // One staged build answers each binding's owner and every package name
+    // The staged builds answer each binding's owner and every package name
     // the owner requires it by: the owner's JS installs as published minus its
     // platform shards, and its `require` of the binding (a native shard or the
     // `-wasm32-wasi` package) is answered by the node runtime with the
-    // single-threaded wasm32-wasip1 build (scripts/napi-wasm/,
-    // public/_assets/napi-wasm/<name>/<version>/).
-    ...STAGED_BINDING_ARTIFACTS.flatMap((binding) => [
-        {
-            kind: 'binding',
-            from: binding.owner,
-            artifact: binding.name,
-            version: binding.version,
-            reason: `${binding.owner} loads a native N-API binding; Nimbus runs a single-threaded wasm32-wasip1 build of that binding instead of its platform shards.`,
-        },
-        ...binding.requiredAs.map((id) => ({
-            kind: 'binding',
-            from: id,
-            artifact: binding.name,
-            version: binding.version,
-            reason: 'the published package is the wasm32-wasip1-threads build (shared memory, wasi threads); Nimbus answers its require with the single-threaded build.',
-        })),
-    ]),
+    // single-threaded wasm32-wasip1 build of the owner's version
+    // (scripts/napi-wasm/, public/_assets/napi-wasm/<name>/<version>/).
+    ...[...new Set(STAGED_BINDING_ARTIFACTS.map((binding) => binding.name))].flatMap((name) => {
+        const builds = STAGED_BINDING_ARTIFACTS.filter((binding) => binding.name === name);
+        const { owner, requiredAs } = builds[0];
+        const versions = builds.map((binding) => binding.version);
+        return [
+            {
+                kind: 'binding',
+                from: owner,
+                artifact: name,
+                versions,
+                reason: `${owner} loads a native N-API binding; Nimbus runs a single-threaded wasm32-wasip1 build of that binding instead of its platform shards.`,
+            },
+            ...requiredAs.map((id) => ({
+                kind: 'binding',
+                from: id,
+                artifact: name,
+                versions,
+                reason: 'the published package is the wasm32-wasip1-threads build (shared memory, wasi threads); Nimbus answers its require with the single-threaded build.',
+            })),
+        ];
+    }),
 ];
 const REJECTS = [
     // ── Same-require-name natives that crash at load time ────────────────

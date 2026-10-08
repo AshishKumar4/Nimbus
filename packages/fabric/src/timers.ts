@@ -54,6 +54,9 @@ export interface TimerContext {
  */
 export const TIMER_REASONS_KEY = 'w1_next_alarm_reasons';
 
+/** How many times {@link Timers.arm} asks before it gives up and throws. */
+const TIMER_ARM_ATTEMPTS = 3;
+
 /**
  * The host instance carrying the per-instance timer chain. The field lives on
  * the embedder's DO instance so one chain serializes every timer-map
@@ -185,9 +188,12 @@ export class Timers {
           written = ctx.storage.put(TIMER_REASONS_KEY, map);
         }
         // Issued in the turn the epoch was checked in: a reset after this
-        // point wipes and disarms after these, never before.
-        setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)));
-        await written;
+        // point wipes and disarms after these, never before. Awaited after
+        // that: an alarm write that failed is a timer not armed, and the
+        // caller is told so.
+        const armed = setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)));
+        // Joined: either failing is the one failure, and neither is left unhandled.
+        await Promise.all([written, armed]);
         return true;
       } catch (e) {
         console.warn('[nimbus/W1] timers.schedule threw:', errorText(e));
@@ -197,6 +203,19 @@ export class Timers {
     const chained = (host._timerChain ?? Promise.resolve()).then(run, run);
     host._timerChain = chained;
     return chained;
+  }
+
+  /**
+   * {@link schedule}, for a caller that cannot go on unarmed: a refused arm
+   * is retried, up to TIMER_ARM_ATTEMPTS in all, and one still refused
+   * throws, naming the reason. A false from schedule is a timer that will not
+   * fire, so a caller that ignored it would wait forever.
+   */
+  async arm(reason: string, whenMs: number): Promise<void> {
+    for (let attempt = 0; attempt < TIMER_ARM_ATTEMPTS; attempt++) {
+      if (await this.schedule(reason, whenMs)) return;
+    }
+    throw new Error(`Nimbus: the '${reason}' timer could not be armed (${TIMER_ARM_ATTEMPTS} attempts)`);
   }
 
   /**
@@ -315,10 +334,11 @@ async function dispatchBody(
     const setAlarmFn = ctx?.storage?.setAlarm;
     if (Object.keys(map).length > 0) {
       const written = ctx.storage.put(TIMER_REASONS_KEY, map);
-      if (typeof setAlarmFn === 'function') {
-        setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)));
-      }
-      await written;
+      const armed = typeof setAlarmFn === 'function'
+        ? setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)))
+        : undefined;
+      // Joined: a failed write or re-arm surfaces here, in the one warning below.
+      await Promise.all([written, armed]);
     } else if (hadMap) {
       try { await ctx.storage.delete(TIMER_REASONS_KEY); } catch {}
       // No remaining reasons → no setAlarm call → DO becomes

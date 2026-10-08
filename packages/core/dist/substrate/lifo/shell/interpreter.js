@@ -1,6 +1,7 @@
 import { bindProcessView } from '../../../runtime/process-files.js';
 import { resolveContext } from '../commands/registry.js';
 import { syscallError } from '../../../vfs/vfs-error.js';
+import { withRecall } from '../../../vfs/recall.js';
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
 import { expandWords, expandWord, evaluateSubscript, ExpansionError, } from './expander.js';
@@ -73,6 +74,9 @@ function redirectionDiagnostic(error) {
                     ? 'Is a directory'
                     : error.message;
     return `sh: ${error.target}: ${reason}\n`;
+}
+function terminalStdinFd(io, stdin = io.stdin) {
+    return io.terminalFds?.stdin ?? ((!stdin || stdin === io.terminalStdin) && Boolean(io.terminalStdin));
 }
 function exited(status) {
     return { status, signal: null };
@@ -242,7 +246,7 @@ export class Interpreter {
             // controlling terminal for `/dev/tty`, but only the foreground job
             // owns the terminal's modes: a background REPL (`node &`) never takes
             // the Ctrl-C meant for the foreground.
-            if (io.terminalFds?.stdin ?? (!io.stdin && Boolean(io.terminalStdin))) {
+            if (terminalStdinFd(io)) {
                 backgroundIo.stdin = this.createEmptyReader();
                 backgroundIo.terminalFds = { ...io.terminalFds, stdin: false };
             }
@@ -1137,6 +1141,8 @@ export class Interpreter {
         const io = {};
         if (stdin)
             io.stdin = stdin;
+        else if (terminalStdin && !scriptMode)
+            io.stdin = terminalStdin;
         if (terminalStdin)
             io.terminalStdin = terminalStdin;
         if (terminalFds)
@@ -1266,7 +1272,7 @@ export class Interpreter {
         setMembership(terminalOutputFds, 1, io.terminalFds?.stdout ?? !io.stdout);
         setMembership(terminalOutputFds, 2, io.terminalFds?.stderr ?? !io.stderr);
         const terminalInputFds = new Set(this.persistentTerminalInputFds);
-        setMembership(terminalInputFds, 0, io.terminalFds?.stdin ?? (!stdin && Boolean(io.terminalStdin)));
+        setMembership(terminalInputFds, 0, terminalStdinFd(io, stdin));
         if (io.terminalStdin) {
             for (const fd of terminalInputFds) {
                 inputFds.set(fd, io.terminalStdin);
@@ -1488,12 +1494,15 @@ export class Interpreter {
         const targetPath = resolve(this.config.getCwd(), target);
         const vfs = io.vfs ?? this.config.vfs;
         try {
+            // Each call is made again once a delegation it meets is recalled
+            // (withRecall): a redirection into a subtree a process holds waits for
+            // it, as any caller that can wait does.
             const bridge = vfs.process;
-            const handle = await bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' });
+            const handle = await withRecall(() => bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' }));
             const push = async (bytes) => {
                 let offset = 0;
                 while (offset < bytes.length) {
-                    const written = await bridge.write(handle.id, null, bytes.subarray(offset));
+                    const written = await withRecall(() => bridge.write(handle.id, null, bytes.subarray(offset)));
                     if (written <= 0 || written > bytes.length - offset)
                         throw new Error('EIO: invalid redirection write length');
                     offset += written;
@@ -1504,7 +1513,7 @@ export class Interpreter {
                 stream,
                 // What the VFS still holds for the file is written as the command
                 // whose redirection opened it ends (flushFds), and a failure is its.
-                flush: async () => { await bridge.fsync(handle.id); },
+                flush: async () => { await withRecall(() => bridge.fsync(handle.id)); },
                 close: async () => { await bridge.close(handle.id); },
                 refs: 1,
             });
@@ -1535,8 +1544,8 @@ export class Interpreter {
             }
             await vfs.access(targetPath, 0o4);
             const bridge = vfs.process;
-            const handle = await bridge.open(targetPath, { read: true });
-            const stream = this.createFileReader(vfs, targetPath, (offset, length) => Promise.resolve(bridge.read(handle.id, offset, length)), true);
+            const handle = await withRecall(() => bridge.open(targetPath, { read: true }));
+            const stream = this.createFileReader(vfs, targetPath, (offset, length) => withRecall(() => bridge.read(handle.id, offset, length)), true);
             fds.opened.set(stream, { stream, close: async () => { await bridge.close(handle.id); }, refs: 1 });
             return { stream, terminal: false };
         }

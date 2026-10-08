@@ -1,4 +1,8 @@
-import { isPendingChunkError, type SqliteVFS, type WaveMountReach } from '../vfs/sqlite-vfs.js';
+import { isPendingChunkError, type SqliteVFS, type WaveMountReach, type WaveSequence } from '../vfs/sqlite-vfs.js';
+import type { ProcessFsSession } from '../_shared/process-fs-client.js';
+import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
+import { withRecall } from '../vfs/recall.js';
+import { SUPERVISOR_OPS, type SupervisorOpName } from './supervisor-ops.js';
 import { z } from 'zod';
 import { traced, type SpanRecorder } from '@nimbus-sh/platform/tracing.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
@@ -85,6 +89,9 @@ export interface SupervisorWaveFence {
   readonly wave: number;
   readonly attempt: number;
   readonly hostIncarnation: string;
+  /** A sequenced writer's wave: its first op's number, and the cursor it has had answered (WaveSequence). */
+  readonly seq?: number;
+  readonly ack?: number;
 }
 
 /**
@@ -131,6 +138,7 @@ export interface SupervisorOpDeps {
    * predates delivery does not, and mints no binding that would send one.
    */
   readonly deliveries?: SupervisorDeliveries;
+  readonly turn?: () => Promise<void>;
   /**
    * Observe one logical answer, after transport read attempts have joined or
    * delivered mutations have found their receipt. A repeated pending read
@@ -247,30 +255,10 @@ export interface SupervisorOpHost {
  *
  * An op absent here is not served, on any host. The one other name an
  * envelope may carry is SUPERVISOR_DELIVER_OP (supervisor-delivery.ts): a
- * wrapper around one of these, which the handler unwraps.
+ * wrapper around one of these, which the handler unwraps. The names, and
+ * how a resend of each is met, are SUPERVISOR_OP_TABLE (supervisor-ops.ts).
  */
-export const SUPERVISOR_OPS = [
-  'readFile', 'readFileBytes', 'writeFile', 'writeFileStat', 'stat', 'lstat',
-  'hasLegacySymlinkUnder', 'utimes', 'chmod', 'access', 'chown', 'setUmask',
-  'readdir', 'exists', 'mkdir', 'rmdir', 'rename', 'unlink', 'readlink', 'fsLinkLeadsTo',
-  'symlink', 'fsAcquire', 'fsAcquired', 'fsRevision', 'fsList', 'fsStorageGrant', 'wsOpen', 'wsPoll',
-  'wsSend', 'wsClose', 'fsOpen', 'fsRead', 'fsWrite', 'fsClose',
-  'fsReadRange', 'fsReadRangeUncached', 'fsReadBatch', 'fsWriteRange',
-  'fsAppend', 'fsAppendAck', 'fsTruncate', 'writeBatch', 'writeBatchStream', 'openWaveWriter',
-  'putRegistryEntries', 'stdout', 'stderr', 'prefetch', 'registerPort', 'allocatePort',
-  'unregisterPort', 'reportExit', 'routeLoopback', 'transform', 'cpSpawn',
-  'reportRuntimeCode',
-  'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput',
-  'cpDrainOutput', 'cpKill', 'cpWait', 'cpBlocked',
-  'fsFstat', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsReaddirHandle', 'fsFtruncate', 'fsFchmod', 'fsFchown', 'fsFutimes', 'fsSync', 'fsRealpath', 'fsRemove', 'fsCopyFile', 'fsCopyTree', 'fsAcquireExclusiveMutation', 'fsReleaseExclusiveMutation',
-  'innerDoFetch', 'innerDoCall', 'fanoutExecute', 'processHostProbe', 'hostProcess',
-  'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay', 'hmrNextEvent',
-  'replayBoundary', 'netTls', 'outbound', 'stdinFileRead', 'stdinPrepared',
-  'getCachedTarball', 'putCachedTarball', 'getPackument',
-  'cacheResult',
-] as const;
-
-export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
+export { SUPERVISOR_OPS, type SupervisorOpName };
 
 /**
  * What the shared handler hands a host override: the pid-keyed bridge and
@@ -288,6 +276,7 @@ export interface SupervisorOpTools {
   readonly hydrated: (path: string) => Promise<void>;
   /** The host instance's delivery store, absent on a host that applies nothing once. */
   readonly deliveries?: SupervisorDeliveries;
+  readonly turn?: () => Promise<void>;
 }
 
 /**
@@ -322,8 +311,6 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   wsSend: { method: '_rpcWsSend', args: [0,1,2,'pid'] },
   wsClose: { method: '_rpcWsClose', args: [0,1,2,'pid'] },
   fsReadBatch: { method: '_rpcFsReadBatch', args: [0,'pid'] },
-  fsAppend: { method: '_rpcFsAppend', args: [0,'writerId',1,2,3,'pid'] },
-  fsAppendAck: { method: '_rpcFsAppendAck', args: ['writerId',0,1,'pid'] },
   writeBatch: { method: '_rpcWriteBatch', args: [0,'pid'] },
   putRegistryEntries: { method: '_rpcPutRegistryEntries', args: [0] },
   prefetch: { method: '_rpcPrefetch', args: [0,1] },
@@ -358,6 +345,7 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   awaitHostedBoot: { method: '_rpcAwaitHostedBoot', args: [0] },
   routeHostedHttp: { method: '_rpcRouteHostedHttp', args: [0,1] },
   cancelHostProcess: { method: '_rpcCancelHostProcess', args: [0] },
+  hostLost: { method: '_rpcHostLost', args: [0, 1] },
   hmrRelay: { method: '_rpcHmrRelay', args: [0,1] },
   hmrNextEvent: { method: '_rpcHmrNextEvent', args: [0] },
   // A process that can stop at a read of stdin (worker runtime/stop-replay.ts).
@@ -405,7 +393,7 @@ const NATIVE_OPS = {
   // A process's descriptors are O_SYNC here: each write is answered with what
   // the store did (SqliteVFS holds none of its appends), so a refusal is that
   // write's, and a delivered write's receipt records its outcome.
-  fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), { ...OpenOptions.parse(e.args?.[1]), sync: true }),
+  fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), { ...OpenOptions.parse(e.args?.[1]), sync: true }, leaseOf(e)),
   fsRead: (e, t) => {
     const length = numberArg(e, 2);
     return readHydrating(t.hydrated, () => t.readLease(length, () => Promise.resolve(fsFor(e, t).read(numberArg(e, 0), nullableNumberArg(e, 1), length))));
@@ -426,8 +414,18 @@ const NATIVE_OPS = {
   fsRemove: (e, t) => fsFor(e, t).remove(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), force: z.boolean().optional() }).optional().parse(e.args?.[1])),
   fsCopyFile: (e, t) => fsFor(e, t).copyFile(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1])),
   fsCopyTree: (e, t) => fsFor(e, t).copyTree(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), z.object({ preserve: z.boolean().optional() }).optional().parse(e.args?.[2])),
-  fsAcquireExclusiveMutation: (e, t) => fsFor(e, t).acquireExclusiveMutation(FsPath.parse(e.args?.[0]), z.object({ includeMissingAncestors: z.boolean().optional() }).optional().parse(e.args?.[1])),
+  fsAcquireExclusiveMutation: (e, t) => fsFor(e, t).acquireExclusiveMutation(FsPath.parse(e.args?.[0]), z.object({
+    includeMissingAncestors: z.boolean().optional(),
+    delegate: z.object({
+      reads: z.boolean(),
+      inos: z.number().int().nonnegative().optional(),
+      bytes: z.number().int().nonnegative().optional(),
+    }).optional(),
+  }).optional().parse(e.args?.[1])),
   fsReleaseExclusiveMutation: (e, t) => fsFor(e, t).releaseExclusiveMutation(stringArg(e, 0)),
+  // A delegation's holder: its next recall (a long poll), and its answer to one.
+  fsAwaitRecall: (e, t) => fsFor(e, t).awaitRecall(stringArg(e, 0), z.number().int().nonnegative().optional().parse(e.args?.[1])),
+  fsRecalled: (e, t) => fsFor(e, t).recalled(stringArg(e, 0), z.enum(['share', 'revoke']).parse(e.args?.[1])),
   readFileBytes: (e, t) => readWholeFile(e, t, FsPath.parse(e.args?.[0])),
   stat: (e, t) => fsFor(e, t).stat(FsPath.parse(e.args?.[0]), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[1])),
   lstat: (e, t) => fsFor(e, t).stat(stringArg(e, 0), { followSymlinks: false }),
@@ -457,9 +455,12 @@ const NATIVE_OPS = {
       return { revision };
     }
   },
-  mkdir: (e, t) => fsFor(e, t).mkdir(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional() }).default({ recursive: true }).parse(e.args?.[1])),
-  rmdir: (e, t) => fsFor(e, t).rmdir(FsPath.parse(e.args?.[0])),
-  unlink: (e, t) => fsFor(e, t).unlink(FsPath.parse(e.args?.[0])),
+  mkdir: (e, t) => fsFor(e, t).mkdir(FsPath.parse(e.args?.[0]), {
+    ...z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional() }).default({ recursive: true }).parse(e.args?.[1]),
+    ...leaseOf(e),
+  }),
+  rmdir: (e, t) => fsFor(e, t).rmdir(FsPath.parse(e.args?.[0]), leaseOf(e)),
+  unlink: (e, t) => fsFor(e, t).unlink(FsPath.parse(e.args?.[0]), leaseOf(e)),
   rename: (e, t) => fsFor(e, t).rename(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), leaseOf(e)),
   symlink: (e, t) => fsFor(e, t).symlink(stringArg(e, 0), FsPath.parse(e.args?.[1])),
   access: (e, t) => fsFor(e, t).access(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
@@ -490,13 +491,24 @@ const NATIVE_OPS = {
       admit = admission.check;
       mountReach = admission.reach;
     }
-    return fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit, mountReach });
+    const sequence = fence === undefined || e.pid === undefined ? undefined : processWaveSequence(e.pid, fence);
+    const applying = Promise.resolve(fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit, mountReach, sequence, turn: t.turn }));
+    // A fenced wave is its epoch's until it settles: retiring the epoch waits for it.
+    return fence === undefined || t.deliveries === undefined || e.pid === undefined ? applying : t.deliveries.applyingWave(e.pid, fence.writer, applying);
   },
   // A write-wave epoch for the live process that asks, on this instance:
   // the only writer identity a fenced writeBatchStream is admitted under.
   // Repeating it is harmless: an unused epoch admits nothing and expires.
+  // A writer gave a wave of an epoch up: the epoch admits nothing more. Repeating it is harmless.
+  retireWaveWriter: (e, t) => {
+    if (t.deliveries === undefined) return;
+    if (e.pid === undefined) throw new Error('supervisor op: retireWaveWriter names no process');
+    t.bridge(e.pid, e.cred);
+    return t.deliveries.retireWaveWriter(e.pid, stringArg(e, 0));
+  },
   openWaveWriter: (e, t) => {
-    if (t.deliveries === undefined) throw new Error("supervisor op: 'openWaveWriter' is not served by this host");
+    // A host that delivers in process fences nothing: no epoch (null), and waves go unfenced.
+    if (t.deliveries === undefined) return { writer: null };
     if (e.pid === undefined) throw new Error('supervisor op: openWaveWriter names no process');
     t.bridge(e.pid, e.cred);
     return { writer: t.deliveries.openWaveWriter(e.pid, WAVE_EPOCH_TTL_MS), hostIncarnation: t.deliveries.incarnation };
@@ -504,6 +516,33 @@ const NATIVE_OPS = {
   stdout: (e, t) => t.output?.('stdout', e.pid ?? 0, stringArg(e, 0)),
   stderr: (e, t) => t.output?.('stderr', e.pid ?? 0, stringArg(e, 0)),
 } satisfies Partial<Record<SupervisorOpName, SupervisorOpHandler>>;
+
+/**
+ * A sequenced wave's numbering, under the key its process's writer is kept
+ * by: `${pid}:${writer}`. A sequenced writer is its process's epoch: its
+ * cursor answers a re-sent op, never applies it twice, and a drain of the
+ * process's log after it is gone (journalDrainSession) numbers against the
+ * same cursor its own waves moved.
+ */
+export function processWaveSequence(pid: number, fence: Pick<WaveFence, 'writer' | 'seq' | 'ack'>): WaveSequence | undefined {
+  return fence.seq === undefined ? undefined : { writer: `${pid}:${fence.writer}`, first: fence.seq, ack: fence.ack ?? 0, pid };
+}
+
+/**
+ * The session a gone process's write log (process-fs-journal.ts) is drained
+ * into, in the session itself: `fs` is its credential's bridge, and with no
+ * transport between there is no fence; each wave is numbered under the
+ * writer the process gave it.
+ */
+export function journalDrainSession(fs: RuntimeFsBridge, pid: number): ProcessFsSession {
+  return {
+    openWriter: async () => crypto.randomUUID(),
+    writeBatchStream: (stream, fence) => {
+      const sequence = fence === undefined ? undefined : processWaveSequence(pid, fence);
+      return fs.writeStream(stream, sequence === undefined ? {} : { sequence });
+    },
+  };
+}
 
 /** The ops {@link NATIVE_OPS} defines — the route table covers the rest. */
 export type NativeOpName = keyof typeof NATIVE_OPS;
@@ -533,7 +572,7 @@ export interface SupervisorOpBridgeStore {
 
 /**
  * Exported so the session's `supervisorBridge` — used by RPC bodies the
- * envelope delegates back to (fsOpen, fsAppend, writeBatch, …) — is the
+ * envelope delegates back to (fsOpen, writeBatch, …) — is the
  * same cache the handler's native ops serve from, never a second one.
  */
 export function createSupervisorBridgeStore(
@@ -575,6 +614,7 @@ export function createSupervisorOpHandler(
     readLease: deps.readLease ?? ((_bytes, read) => read()),
     hydrated: (path) => (deps.filesystem instanceof ProcessFiles ? deps.filesystem.hydrated(path) : Promise.resolve()),
     deliveries: deps.deliveries,
+    turn: deps.turn,
   };
   const extend = deps.extend ?? {};
   const perform = (op: SupervisorOpName, envelope: SupervisorOpEnvelope): unknown => {
@@ -600,8 +640,11 @@ export function createSupervisorOpHandler(
     const args = route.args.map((slot) => typeof slot === 'number' ? envelope.args?.[slot] : envelope[slot]);
     return Reflect.apply(method, host, args);
   };
+  // A process's call that meets another holder's delegation waits for its
+  // recall and runs again (withRecall): this dispatch is asynchronous, so no
+  // process call is refused for one.
   const serve = (op: SupervisorOpName, envelope: SupervisorOpEnvelope): unknown => deps.observe
-    ? deps.observe(envelope, async () => perform(op, envelope)) : perform(op, envelope);
+    ? deps.observe(envelope, () => withRecall(() => perform(op, envelope))) : withRecall(() => perform(op, envelope));
   /**
    * A mutation delivered exactly once (supervisor-delivery.ts), checked in
    * the order that makes a repeat safe: the delivery was minted for THIS

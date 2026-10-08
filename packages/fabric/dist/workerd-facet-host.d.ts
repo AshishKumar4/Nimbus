@@ -12,7 +12,9 @@
  * that is not a Durable Object implements `ProcessHost` against the same
  * `HostedProcess` and never imports this file.
  */
-import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps } from './process-fabric.js';
+import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps, type Supervise } from './process-fabric.js';
+import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
+import { type FacetResourceLimits } from './facet-limits.js';
 /** Structural surface of a NimbusLoadedEntrypoint RPC stub. */
 export interface LoadedWorkerEntrypointStub {
     handleHttpRequest?: (request: Request) => Promise<Response>;
@@ -39,7 +41,10 @@ export declare function getNimbusCtxExports(): NimbusCtxExports;
 export declare function createLoadedWorkerEntrypoint(ctxExports: NimbusCtxExports, supervisor: ResidentSupervisorProps, stage: unknown, name?: string | null): Promise<LoadedWorkerEntrypointStub>;
 /** What an unkeyed `LOADER.load` hands back. */
 interface LoadedWorkerStub {
-    getEntrypoint(): LoadedWorkerEntrypointStub;
+    getEntrypoint(name?: string, opts?: {
+        limits: FacetResourceLimits;
+    }): LoadedWorkerEntrypointStub;
+    getDurableObjectClass(name: string): unknown;
 }
 /**
  * `env.LOADER` — the Worker Loader binding, as used from inside a DO.
@@ -57,7 +62,9 @@ interface LoadedWorkerStub {
  */
 interface WorkerLoaderBinding {
     get(id: string | null, code: () => unknown): {
-        getDurableObjectClass(name: string): unknown;
+        getDurableObjectClass(name: string, opts?: {
+            limits: FacetResourceLimits;
+        }): unknown;
     };
     load(code: unknown): LoadedWorkerStub;
 }
@@ -92,8 +99,7 @@ export interface ResidentFacetEnv {
  * The primitive itself, measured: a reflink, 18–31 ms for a 45.73 MB corpus
  * and 34–54 ms for 1 GB — flat, because nothing is copied — with the data
  * visible from the destination's constructor. Same-Durable-Object only.
- * Quiesce and await writes to the source first; the destination name consumes
- * a facet ID on first use like any other facet name; and the shared ~10 GiB
+ * Quiesce and await writes to the source first; and the shared ~10 GiB
  * storage budget grants no copy-on-write credit — crossing it resets the
  * object rather than raising an error.
  */
@@ -103,28 +109,36 @@ export declare function cloneStorage(ctx: DurableObjectState, clone: {
     populated(name: string): boolean | Promise<boolean>;
 }): Promise<void>;
 /**
- * The facet name for an ephemeral slot. Reused, and that is the entire point.
+ * The facet name for an ephemeral slot.
  *
- * A Durable Object admits 65,536 facets over its LIFETIME: the IDs are
- * append-only and are never reclaimed, so the bound is on facets ever CREATED,
- * not facets alive at once. Naming a facet after its pid, when pids never
- * repeat, therefore burned one of those IDs on every spawn — a long-lived
- * session would eventually exhaust its facet index with no way back, and the
- * failure is unrecoverable rather than merely slow.
+ * On Cloudflare a name costs nothing once its facet is deleted: one object
+ * created 70,000 names, deleting each after use, and none failed. Facets
+ * kept are what is bounded: with none deleted, the object failed at 32,240
+ * (2026-10-07). Local workerd's on-disk facet index allows 65,535 names over
+ * the object's lifetime (facet-tree-index.c++). Either wall answers
+ * "internal error; reference = …", which startFailure names.
  *
- * Reusing a NAME costs no new ID. So the name comes from a free list and the
- * pid stays what it always was: the process identity in the ProcessTable. The
- * two were only ever conflated because one of them happened to be handy.
+ * A released name is not handed to a later process of the same incarnation.
+ * Getting a name a just-released process held, with the next process's
+ * class, failed on Cloudflare: the next process's first call answered
+ * "internal error; reference = …" with durableObjectReset. That was vite8
+ * after vinext, 7 of 7 on a throwaway, while 4 of 4 started on a fresh name
+ * (2026-10-07). An earlier reuse, of a released name's kept store, reset the
+ * whole object (82894375b). The platform gives no signal that a released
+ * facet is gone, so no reuse can be timed to follow it. The pid stays what
+ * it always was: the process identity in the ProcessTable.
  *
- * The book shares the facet-ID space with one other namespace: durable
- * applications, which mint `app-slot-<n>` names of their own (one ID per app,
- * ever). The prefixes are disjoint BY CONSTRUCTION, and that disjointness is
- * load-bearing — a proc-slot name reissued onto a durable app's retained
- * storage would boot the wrong process into someone else's disk.
+ * The book shares the facet namespace with durable applications, which mint
+ * `app-slot-<n>` names of their own (one per app, ever). The prefixes are
+ * disjoint BY CONSTRUCTION, and that disjointness is load-bearing — a
+ * proc-slot name reissued onto a durable app's retained storage would boot
+ * the wrong process into someone else's disk.
  */
 export declare function residentFacetName(slot: number): string;
 /** The prefix every durable application's facet name carries. */
 export declare const DURABLE_FACET_NAME_PREFIX = "app-slot-";
+/** The facet names this actor's session keeps for an undrained write log (process-fs-journal.ts). */
+export declare function reservedFacetNames(ctx: DurableObjectState): Set<string>;
 /** The facet a running resident process `pid` lives in on this actor, for its storage ledger row. */
 export declare function residentFacetOf(ctx: DurableObjectState, pid: number): string | undefined;
 export declare function deleteFacetStorage(ctx: DurableObjectState, name: string): void;
@@ -172,7 +186,26 @@ export declare class Processes {
      * map across a sibling hop would meet the 32 MiB RPC ceiling that by-path
      * boot specs exist to avoid — for a run that gains nothing by moving.
      */
-    run<T>(supervisor: ResidentSupervisorProps, params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
+    run<T>(supervisor: ResidentSupervisorProps, supervise: Supervise, params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
+}
+/**
+ * The write log a process left in its facet's store (process-fs-journal.ts),
+ * read through the journal reader class the facet is opened with now, over
+ * the same SQLite. The name is aborted first: a get with a new class of a
+ * facet still running (a previous incarnation's) would reset this object.
+ */
+export declare function facetJournal(ctx: DurableObjectState, env: JournalReaderEnv, name: string): ProcessFsJournalSource;
+/** What facetJournal loads its reader with: the Worker Loader's unkeyed load. */
+export interface JournalReaderEnv {
+    LOADER?: {
+        load(code: {
+            compatibilityDate: string;
+            mainModule: string;
+            modules: Record<string, string>;
+        }): {
+            getDurableObjectClass(name: string): unknown;
+        };
+    };
 }
 /**
  * The WorkerCode the loader callback returns for one resident boot: the

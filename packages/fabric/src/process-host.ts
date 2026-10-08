@@ -69,7 +69,9 @@ import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch, type HostNamespaceBinding } from './host-dispatch.js';
 import { z } from 'zod/v4';
+import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 import {
+  ProcessHostLost,
   type HostedProcess,
   type OneShotParams,
   type ProcessHost,
@@ -78,6 +80,7 @@ import {
   type ResidentBootSpec,
   type ResidentDiskReader,
   type ResidentSupervisorProps,
+  type Supervise,
 } from './process-fabric.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import { BindingError } from './vendor/errors.js';
@@ -86,7 +89,7 @@ import {
   type ResidentFacetEnv,
 } from './workerd-facet-host.js';
 import type { HostRoute } from './composition.js';
-import { supervisorBindingProps } from './supervisor-props.js';
+import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 
 /** The substrates this deployment can be configured for. */
 export type ProcessHostMode = 'facet' | 'peer';
@@ -106,10 +109,11 @@ export function createProcessHost(
   disk: () => ResidentDiskReader,
   /** The workspace's network: every process's binding carries it, and with it its egress. */
   network: () => WorkspaceNetwork,
+  supervise: Supervise = bindingSupervisor,
 ): ProcessHost {
   return mode === 'peer'
-    ? new PeerProcessHost(ctx, env, network)
-    : new FacetProcessHost(ctx, env, disk, network);
+    ? new PeerProcessHost(ctx, env, network, supervise)
+    : new FacetProcessHost(ctx, env, disk, network, supervise);
 }
 
 // ── facet: the process is a child of the user's own session DO ──────────────
@@ -135,24 +139,35 @@ class FacetProcessHost implements ProcessHost {
     env: unknown,
     private readonly disk: () => ResidentDiskReader,
     private readonly network: () => WorkspaceNetwork,
+    private readonly supervise: Supervise,
   ) {
     this.env = (env ?? {}) as ResidentFacetEnv;
     this.coordDoId = ctx.id.toString();
   }
 
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
-    return processes(this.ctx, this.env).run(
-      supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() }),
-      params,
-      consume,
-    );
+    const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
+    return processes(this.ctx, this.env).run(supervisor, this.supervise, params, consume);
   }
 
   async open(params: ProcessHostParams): Promise<HostedProcess> {
     const supervisor: ResidentSupervisorProps = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
     const { name, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
+    // The platform can kill or reset the process's own facet (its memory or
+    // CPU limit, measured with astro dev on 2026-10-08) with the session left
+    // standing; the next call to the facet is what shows it. Its boot is left
+    // as the facet answers it: a run's own start and stop (a boot waiting on
+    // stdin is replayed) are not the host's to judge.
+    const loss = new HostLoss(facet.lost);
     return {
       ...facet,
+      lost: loss.signal,
+      handleHttpRequest: (request: Request) => loss.route(() => facet.handleHttpRequest(request)),
+      handleWebSocketRequest: (request: Request) => loss.route(() => facet.handleWebSocketRequest(request)),
+      release: () => {
+        loss.release();
+        return facet.release();
+      },
       describe: () =>
         `facet '${name}' (pid ${params.pid})`
         + ` of session ${this.coordDoId.slice(-12)}`
@@ -341,8 +356,15 @@ class PeerProcessHost implements ProcessHost {
   private readonly coordDoId: string;
   /** pid → the isolate token of the peer currently hosting that process. */
   private readonly tokensInUse = new Map<number, string>();
+  /** workerKey → how to end an open process whose host reports its reset (hostLost). */
+  private readonly opens = new Map<string, { capability: string; lose: (cause: unknown) => void }>();
 
-  constructor(private readonly ctx: DurableObjectState, env: unknown, private readonly network: () => WorkspaceNetwork) {
+  constructor(
+    private readonly ctx: DurableObjectState,
+    env: unknown,
+    private readonly network: () => WorkspaceNetwork,
+    private readonly supervise: Supervise,
+  ) {
     if (env === null || (typeof env !== 'object' && typeof env !== 'function')) {
       throw new BindingError('ProcessFabric: a peer host requires environment bindings');
     }
@@ -360,11 +382,8 @@ class PeerProcessHost implements ProcessHost {
    * worker of the coordinator here exactly as it does on `facet`.
    */
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
-    return processes(this.ctx, this.env).run(
-      supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() }),
-      params,
-      consume,
-    );
+    const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
+    return processes(this.ctx, this.env).run(supervisor, this.supervise, params, consume);
   }
   async open(params: ProcessHostParams): Promise<HostedProcess> {
     if (params.facet) {
@@ -402,14 +421,17 @@ class PeerProcessHost implements ProcessHost {
       startArgs: params.startArgs,
     });
     hostLeg.catch(() => {});
+    // The held leg failing is one way the peer's loss shows (a coordinator's
+    // own release settles it cleanly); the peer's next incarnation reporting
+    // it (hostLost) from its own alarm is another.
+    const loss = new HostLoss(hostLeg);
+    this.opens.set(params.workerKey, { capability: webSocketCapability, lose: (error) => loss.lose(error) });
     // The peer starts the runner as part of hosting it; this reads back that
     // one boot payload without re-running anything, so `started` means exactly
     // what it means on a facet. Racing the host leg is what turns a peer that
     // died before the boot landed into a rejection rather than a hang — the
     // peer that would have answered is the thing that is gone.
-    const booted = placement.stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload);
-    booted.catch(() => {});
-    const started = Promise.race([booted, hostLeg.then(() => booted)]);
+    const started = loss.route(() => placement.stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload));
     started.catch(() => {});
     // Do not return a handle for a process that was never opened. Opening a
     // facet of one's own DO either throws or does not, before any handle
@@ -421,6 +443,7 @@ class PeerProcessHost implements ProcessHost {
       ]);
     } catch (error) {
       this.tokensInUse.delete(params.pid);
+      this.opens.delete(params.workerKey);
       // Awaited, not fired off: a spawn that rejects must mean nothing was
       // left running, which is what a throw from `processes().spawn` means on
       // the other substrate.
@@ -432,18 +455,20 @@ class PeerProcessHost implements ProcessHost {
     let released = false;
     return {
       started,
-      // The held leg IS the process's residency here. It settles cleanly when
-      // the coordinator releases; anything else is the host going away under a
-      // process that was up, and the fabric ends the process on it.
-      lost: hostLeg.then(() => new Promise<never>(() => {})),
+      // The held leg IS the process's residency here, and it settles cleanly
+      // when the coordinator releases. The host going away under a process
+      // that was up rejects this, and the fabric ends the process on it.
+      lost: loss.signal,
       handleHttpRequest: (request: Request) =>
-        routeThroughPeer(placement.stub, params.workerKey, request),
+        loss.route(() => routeThroughPeer(placement.stub, params.workerKey, request)),
       handleWebSocketRequest: (request: Request) =>
-        routeWebSocketThroughPeer(placement.stub, params.workerKey, webSocketCapability, request),
+        loss.route(() => routeWebSocketThroughPeer(placement.stub, params.workerKey, webSocketCapability, request)),
       release: async () => {
         if (released) return;
         released = true;
+        loss.release();
         this.tokensInUse.delete(params.pid);
+        this.opens.delete(params.workerKey);
         try {
           await this._cancel(params.workerKey, placement.peerName);
         } finally {
@@ -454,6 +479,13 @@ class PeerProcessHost implements ProcessHost {
         `peer '${placement.peerName}' (isolate ${placement.isolateToken.slice(0, 8)})`
         + `; ${describeImageDelivery(this.imageDelivery)}`,
     };
+  }
+
+  hostLost(workerKey: string, capability: string): boolean {
+    const open = this.opens.get(workerKey);
+    if (open === undefined || open.capability !== capability) return false;
+    open.lose(new Error('the host restarted without it'));
+    return true;
   }
 
   /**
@@ -537,6 +569,57 @@ class PeerProcessHost implements ProcessHost {
       .finally(() => disposeRpcResource(stub));
     this.ctx.waitUntil(cancelled);
     return cancelled;
+  }
+}
+
+/**
+ * One open process's host loss: the platform reset or killed the actor it
+ * runs in (its facet, or a peer), and the process is over. Fired once, by
+ * whichever shows it first: `held` (a leg the host holds for the process's
+ * life) failing, or a call to the host failing with a reset's own words
+ * (isHostReset). From then on every leg answers with the one
+ * ProcessHostLost: `signal` rejects with it, and a route fails at once.
+ *
+ * Measured on Cloudflare: a peer reset under a CPU-bound process left the
+ * held leg open, and only the next call failed, after about 10 s, with
+ * "Durable Object reset because its code was updated." (2026-10-07); a facet
+ * killed by its memory limit answered the next call, after about 60 s, with
+ * "Durable Object's isolate exceeded its memory limit and was reset."
+ * (2026-10-08). A call in flight when the loss shows fails then, not when
+ * the platform's own answer arrives.
+ */
+class HostLoss {
+  private gone: ProcessHostLost | null = null;
+  /** Nimbus released the process itself (a kill, a stop): what fails after that is no loss. */
+  private released = false;
+  private reject: (lost: ProcessHostLost) => void = () => {};
+  readonly signal = new Promise<never>((_, reject) => { this.reject = reject; });
+
+  constructor(held?: Promise<unknown>) {
+    this.signal.catch(() => {});
+    held?.then(() => undefined, (error: unknown) => { if (!this.released) this.lose(error); });
+  }
+
+  lose(error: unknown): ProcessHostLost {
+    if (this.gone === null) {
+      this.gone = new ProcessHostLost(error);
+      this.reject(this.gone);
+    }
+    return this.gone;
+  }
+
+  /** The host is being released on purpose: the facet or peer ending now is that, not a loss. */
+  release(): void {
+    this.released = true;
+  }
+
+  /** A call to the host, which fails by the loss's name once the host is gone. */
+  route<T>(leg: () => Promise<T>): Promise<T> {
+    if (this.gone !== null) return Promise.reject(this.gone);
+    const call = leg().catch((error: unknown) => {
+      throw this.gone ?? (!this.released && isHostReset(error) ? this.lose(error) : error);
+    });
+    return Promise.race([call, this.signal]);
   }
 }
 

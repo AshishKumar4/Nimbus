@@ -30,7 +30,6 @@ const TW_FILES = {
   'src/App.jsx': `import { useState } from 'react';\nexport default function App() { const [n] = useState(0); return <h1 className="text-[#123456] underline">${MARKER} {n}</h1>; }\n`,
 };
 function tail(s, n = 20) { return stripAnsi(s).split(/\r?\n/).filter(Boolean).slice(-n).join('\n'); }
-async function run(t, cmd, timeout) { const r = await t.run(cmd + '; echo "___EXIT=$?___"', timeout); return { code: Number(r.output.match(/___EXIT=(\d+)___/)?.[1] ?? -1), output: stripAnsi(r.output) }; }
 async function get(sid, path) {
   const r = await fetch(`${BASE}/s/${sid}/port/${PORT}/${path}`, { headers: requestHeaders(), signal: AbortSignal.timeout(60_000) });
   return { status: r.status, body: await r.text() };
@@ -42,16 +41,16 @@ try {
 
   await t.run(`mkdir -p ${V4}`, 10_000);
   await t.run(heredocCommand(`${V4}/package.json`, JSON.stringify({ name: 'vite4-app', private: true, devDependencies: { vite: '^4.5.0' } })), 10_000);
-  const v4 = await run(t, `cd ${V4} && npm install 2>&1`, 400_000);
-  a.check('a Vite 4 app installs', v4.code === 0, tail(v4.output));
-  const rollup = await run(t, `cd ${V4} && node -e "const p=require('./node_modules/rollup/package.json');console.log('ROLLUP',p.name,p.version)"`, 60_000);
+  const v4 = await t.run( `cd ${V4} && npm install 2>&1`, 400_000);
+  a.check('a Vite 4 app installs', v4.exitCode === 0, tail(v4.output));
+  const rollup = await t.run( `cd ${V4} && node -e "const p=require('./node_modules/rollup/package.json');console.log('ROLLUP',p.name,p.version)"`, 60_000);
   a.check('Vite 4 gets the rollup 3 it asked for, not @rollup/wasm-node 4.x', /ROLLUP rollup 3\.\d+\.\d+/.test(rollup.output), tail(rollup.output));
 
   await t.run(`mkdir -p ${TW}/src`, 10_000);
   for (const [name, text] of Object.entries(TW_FILES)) await t.run(heredocCommand(`${TW}/${name}`, text), 10_000);
-  const installed = await run(t, `cd ${TW} && npm install 2>&1`, 400_000);
-  a.check('a Vite + Tailwind v3 app installs', installed.code === 0, tail(installed.output));
-  if (installed.code !== 0) throw new Error('install failed');
+  const installed = await t.run( `cd ${TW} && npm install 2>&1`, 400_000);
+  a.check('a Vite + Tailwind v3 app installs', installed.exitCode === 0, tail(installed.output));
+  if (installed.exitCode !== 0) throw new Error('install failed');
   for (const launch of [1, 2]) {
     const dev = await launchFrameworkDev({
       terminal: t, sid, cwd: TW, command: `./node_modules/.bin/vite --host 0.0.0.0 --port ${PORT}`, port: PORT,

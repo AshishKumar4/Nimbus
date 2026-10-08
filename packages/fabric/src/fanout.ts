@@ -137,7 +137,7 @@ export interface FanoutOptions {
    */
   tag: string;
   /**
-   * Per-task timeout in ms. Default 60_000. Forwarded to the in-DO
+   * Per-task wall timeout in ms. Defaults to the fanout kind's call deadline. Forwarded to the in-DO
    * IsolatePool's submit calls and to the peer-DO RPC's own
    * IsolatePool.
    */
@@ -313,6 +313,7 @@ export class Fanout {
     // One slot — one Dynamic Worker — per task; submitMany has claimed
     // that width on the ledger, and the pool's dispatches are held inside it.
     const pool = new IsolatePool(this.env, this.ctx, {
+      facetKind: 'fanout',
       concurrency: tasks.length,
       claim,
       timeoutMs: this.opts.timeoutMs,

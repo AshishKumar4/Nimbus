@@ -283,7 +283,10 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      * it arrives as a new invocation, so the chunk runs against a fresh CPU
      * budget rather than the one the launch has already been spending.
      */
+    /** A launch's next turn; one that cannot be armed throws, and fails the launch waiting on it (PacedWork). */
     private _scheduleLaunchTurn;
+    /** The hosting alarm (session/rpc.ts armHostingWatch), on this session's timer mux. */
+    scheduleHostingWatch(at: number): Promise<void>;
     /**
      * Convenience: the full URL prefix for the Vite dev server inside this
      * session (e.g. `/s/nimble-otter-4271/preview`). Falls back to the
@@ -342,6 +345,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     /** Drop a dead pid's supervisor bridge — its credential stops being valid. */
     supervisorForgetBridge(pid: number): void;
     supervisorRewindBridge(pid: number): Promise<void>;
+    waveTurn(): Promise<void>;
     supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
     /** `envelope` answered, for the session itself: a call inside another answer (session/rpc.ts _rpcFsAcquired). */
     serveSupervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
@@ -377,8 +381,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcFsReadRange(path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
     _rpcFsReadBatch(requests: _rpc.FsReadBatchRequest[], pid?: number): Promise<_rpc.FsReadBatchEntry[]>;
     _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<VfsMutationReceipt>;
-    _rpcFsAppend(path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
-    _rpcFsAppendAck(writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
     _rpcHmrRelay(clientId: string | null, msg: string): Promise<void>;
     _rpcHmrNextEvent(timeoutMs: number): Promise<HmrEvent[]>;
     _rpcReplayBoundary(pid?: number, run?: string): Promise<void>;
@@ -454,6 +456,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         payload: unknown;
     }>;
     _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): Promise<HostedHttpResponse>;
+    _rpcHostLost(workerKey: string, capability: string): Promise<boolean>;
     _rpcCancelHostProcess(workerKey: string): Promise<{
         cancelled: boolean;
     }>;
@@ -609,22 +612,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     /** Colocated embedders only (DO stub); not on the remote dispatcher. See `rpcSpawnWorker`. */
     _rpcSpawnWorker(workerCode: string, command: string, cwd: string, opts?: import('../facets/manager.js').LongRunningWorkerSpawnOptions): Promise<import("../facets/manager.js").SpawnedWorker>;
     _rpcDestroy(options?: _programmatic.ProgrammaticDestroyOptions): Promise<_programmatic.ProgrammaticDestroyResult>;
-    vfsReadFile(path: string): ArrayBuffer | null;
-    vfsReadFileString(path: string): string | null;
-    vfsStat(path: string): {
-        type: string;
-        size: number;
-        atime: number;
-        ctime: number;
-        mtime: number;
-        mode: number;
-    } | null;
-    vfsExists(path: string): boolean;
-    vfsReaddir(path: string): {
-        name: string;
-        type: string;
-    }[];
-    vfsWriteFile(path: string, data: ArrayBuffer): void;
     fetch(request: Request): Promise<Response>;
     _handleFetch(request: Request): Promise<Response>;
     /**
@@ -655,6 +642,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     } | null;
     _diagSampleMemory(): void;
     ensureSqliteFs(): SqliteVFS;
+    /** The recovery of clones an earlier generation ran, discovered as this one began (git/clone-job.ts). */
+    private cloneRecovery;
     /** Track when we last persisted to avoid redundant writes. */
     _w5LastPersistAt: number;
     /** Track ring size at last persist; skip write if unchanged. */

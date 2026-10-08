@@ -25,7 +25,6 @@ import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
-import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -104,7 +103,7 @@ import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/rou
 import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState as _w12GetReplicaState } from './replica-routes.js';
 import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, ensureResidentKeepalive as _w1EnsureResidentKeepalive, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose, noteClientActivity } from './hibernation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
-import { adoptGeneration, generation } from '@nimbus-sh/fabric/generation.js';
+import { generation } from '@nimbus-sh/fabric/generation.js';
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 import { initSession as _w11InitSession, type InitSessionOptions } from './init.js';
@@ -135,6 +134,7 @@ import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 // S10: heap probe + W5 OOM-ring persistence extracted.
 import * as _diag from './diag.js';
 import { ServedReads } from '../facets/read-profile.js';
+import { CloneRecovery, bridgeCleanupFs } from '../git/clone-job.js';
 
 /** The ops whose non-null answer is a file's content served to a process. */
 const SERVED_READ_OPS: ReadonlySet<string> = new Set(['readFile', 'readFileBytes', 'fsReadRange', 'fsReadRangeUncached']);
@@ -303,7 +303,12 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
 
   async routeLoopback(port: number, request: Request): Promise<Response | null> {
-    return routeSessionLoopback({ ctx: this.ctx, env: this.env, portRegistry: this.portRegistry }, port, request);
+    return routeSessionLoopback({
+      ctx: this.ctx,
+      env: this.env,
+      portRegistry: this.portRegistry,
+      ensureDurableAppOnPort: (dark) => this.ensureDurableAppOnPort(dark),
+    }, port, request);
   }
 
   async ensureRuntimeReady(): Promise<void> {
@@ -385,7 +390,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    * terminal input, output rings, and exit records, behind one facade.
    * Every sibling module routes process operations through this field.
    */
-  processes: SessionProcessSupervisor = new SessionProcessSupervisor();
+  processes: SessionProcessSupervisor = _programmatic.sessionProcesses(this.ctx);
   portRegistry: PortRegistry;
   /** W1: the retention deadline this instance armed the log-janitor alarm
    *  for, or null (hibernation.ts ensureLogJanitor). Replaces the pre-W1
@@ -511,13 +516,14 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
       ctx,
       env,
       notify: (line) => this._notifySession(line),
-      requestLaunchTurn: async (at) => { await this._scheduleLaunchTurn(at); },
+      requestLaunchTurn: (at) => this._scheduleLaunchTurn(at),
       armResidentKeepalive: () => _w1EnsureResidentKeepalive(this, ctx),
       filesystem: () => this.getFilesystemAuthority(),
       // The workspace's network is its egress's (workspaceNetwork: one per
       // egress), so it is there before the workspace is: a launch re-driven
       // by a cold alarm, or by the reconnect's recovery, goes out through it.
       network: () => workspaceNetwork(this.egressForWorkspace()),
+      supervisorOp: (envelope) => this.supervisorOp(envelope),
     });
     // In `wrangler dev`, the outer Worker and this DO share a single
     // workerd process, so the `adoptCtxExports(ctx.exports)` call in the
@@ -543,12 +549,16 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     // refused/attributed accordingly (see session/rpc.ts). One storage
     // read+write per instance boot; fail-soft (replicas cannot put).
     ctx.blockConcurrencyWhile(async () => {
-      await adoptGeneration(ctx);
-      this.processes.setPidBase(generation(ctx) * PID_GEN_STRIDE);
+      await _programmatic.reserveSessionProcesses(ctx, this.processes);
       try {
         this._w1SessionDestroyed =
           (await ctx.storage.get(SESSION_DESTROYED_KEY)) !== undefined;
       } catch { /* storage unavailable — treat as live */ }
+      // Clones an earlier generation ran were cut short: their records are
+      // listed now, and their destinations reserved before the filesystem
+      // serves a write (ensureSqliteFs), or every write held if they could not be.
+      this.cloneRecovery = new CloneRecovery(ctx.storage, generation(ctx));
+      await this.cloneRecovery.discover();
     });
     // W1: the log-janitor alarm is armed on log ACTIVITY (see
     // hibernation.ts ensureLogJanitor), NOT here. Arming it in the
@@ -632,6 +642,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
       this.ctx,
       () => this._pumpResidentLaunches(),
       alarmInfo,
+      () => _rpc.hostingWatchFired(this),
     );
   }
 
@@ -674,8 +685,14 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    * it arrives as a new invocation, so the chunk runs against a fresh CPU
    * budget rather than the one the launch has already been spending.
    */
-  private _scheduleLaunchTurn(notBefore = 0): Promise<boolean> {
-    return timers(this, this.ctx).schedule('resident-launch', Math.max(Date.now(), notBefore));
+  /** A launch's next turn; one that cannot be armed throws, and fails the launch waiting on it (PacedWork). */
+  private _scheduleLaunchTurn(notBefore = 0): Promise<void> {
+    return timers(this, this.ctx).arm('resident-launch', Math.max(Date.now(), notBefore));
+  }
+
+  /** The hosting alarm (session/rpc.ts armHostingWatch), on this session's timer mux. */
+  scheduleHostingWatch(at: number): Promise<void> {
+    return timers(this, this.ctx).arm(_rpc.HOSTING_WATCH_REASON, at);
   }
 
   /**
@@ -787,7 +804,23 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   getFilesystemAuthority(): ProcessFiles {
     this.ensureSqliteFs();
     if (!this.sqliteFs) throw new Error('Filesystem is not initialized');
-    return this.processFiles ??= new ProcessFiles(this.sqliteFs);
+    return this.processFiles ??= new ProcessFiles(this.sqliteFs, {
+      // A delegation's holder that did not answer a recall in time is stopped
+      // (SIGKILL): its later writes are refused already (its lease ended), and
+      // a process that kept running on a subtree it no longer holds would read
+      // a view of it that is no longer true.
+      delegationRevoked: ({ pid, root, reason }) => {
+        console.warn(`[delegation] pid ${pid} lost /${root}: ${reason}; stopping it`);
+        if (!this.facetManager?.kill(pid, 'KILL')) this.processes.kill(pid, 137);
+      },
+      // A holder that ended still holding a subtree (killed mid-run): what it
+      // had decided there and not yet sent is lost, at most what it logged
+      // after its last wave. Said in its own output, naming the subtree.
+      delegationOrphaned: ({ pid, root }) => {
+        console.warn(`[delegation] pid ${pid} ended holding /${root}`);
+        this.processes.appendOutput(pid, 'stderr', `[nimbus] process ${pid} ended holding /${root}: changes it made there after its last write wave reached the session are lost\n`);
+      },
+    });
   }
 
   private supervisorOps(): SessionSupervisorOps {
@@ -806,6 +839,12 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
 
   supervisorRewindBridge(pid: number): Promise<void> { return this._supervisorOps?.rewind(pid) ?? Promise.resolve(); }
+
+  // A storage wait: its input gate keeps this session's events out while the isolate's other objects run.
+  // (A timer under blockConcurrencyWhile never fires: the gate holds timers too, and the object resets.)
+  waveTurn(): Promise<void> {
+    return this.ctx.storage.sync();
+  }
   // Supervisor RPC (file/log/HMR/batch): what host stubs call, so an answer
   // leaves the session here and is counted (answerSupervisorOp).
   supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown> {
@@ -881,24 +920,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<VfsMutationReceipt> {
     return _rpc._rpcFsWriteRange(this as any, path, offset, bytes, pid);
   }
-  async _rpcFsAppend(
-    path: string,
-    writerId: string,
-    moduleId: string,
-    operationId: string,
-    bytes: Uint8Array | ArrayBuffer | number[],
-    pid?: number,
-  ): Promise<number> {
-    return _rpc._rpcFsAppend(this as any, path, writerId, moduleId, operationId, bytes, pid);
-  }
-  async _rpcFsAppendAck(
-    writerId: string,
-    moduleId: string,
-    operationId: string,
-    pid?: number,
-  ): Promise<void> {
-    return _rpc._rpcFsAppendAck(this as any, writerId, moduleId, operationId, pid);
-  }
   async _rpcHmrRelay(clientId: string | null, msg: string): Promise<void> { return _rpc._rpcHmrRelay(this as any, clientId, msg); }
   async _rpcHmrNextEvent(timeoutMs: number): Promise<HmrEvent[]> { return _rpc._rpcHmrNextEvent(this, timeoutMs); }
   async _rpcReplayBoundary(pid?: number, run?: string): Promise<void> { return _rpc._rpcReplayBoundary(this as any, pid, run); }
@@ -966,6 +987,17 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
   async _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): Promise<HostedHttpResponse> {
     return _rpc._rpcRouteHostedHttp(this as any, workerKey, request);
+  }
+  async _rpcHostLost(workerKey: string, capability: string): Promise<boolean> {
+    // The host asks until it gets an answer; a session that cannot stand up
+    // to act on the report holds no process of that host, and says so.
+    try {
+      this.ensureSqliteFs();
+      this.ensureFacetManager();
+    } catch {
+      return false;
+    }
+    return _rpc._rpcHostLost(this as any, workerKey, capability);
   }
   async _rpcCancelHostProcess(workerKey: string): Promise<{ cancelled: boolean }> {
     return _rpc._rpcCancelHostProcess(this as any, workerKey);
@@ -1068,14 +1100,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
   async _rpcDestroy(options?: _programmatic.ProgrammaticDestroyOptions) { return _programmatic.rpcDestroy(this as any, options); }
 
-  // Legacy VFS (direct method calls)
-  vfsReadFile(path: string): ArrayBuffer | null { return _rpc.vfsReadFile(this as any, path); }
-  vfsReadFileString(path: string): string | null { return _rpc.vfsReadFileString(this as any, path); }
-  vfsStat(path: string): { type: string; size: number; atime: number; ctime: number; mtime: number; mode: number } | null { return _rpc.vfsStat(this as any, path); }
-  vfsExists(path: string): boolean { return _rpc.vfsExists(this as any, path); }
-  vfsReaddir(path: string): { name: string; type: string }[] { return _rpc.vfsReaddir(this as any, path); }
-  vfsWriteFile(path: string, data: ArrayBuffer): void { return _rpc.vfsWriteFile(this as any, path, data); }
-
 
   // ── HTTP handler ──────────────────────────────────────────────────────
 
@@ -1141,10 +1165,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   ensureSqliteFs(): SqliteVFS {
     if (!this.sqliteFs) {
       this.sqliteFs = new SqliteVFS(this.ctx.storage.sql, this.ctx);
-      // A fresh coordinator generation cannot trust capabilities issued by
-      // prior generations. Their PIDs are at or below this generation's base;
-      // remove their positive append authority before serving any event.
-      this.sqliteFs.revokeAppendWritersThrough(this.processes.pidBase);
       // Shrink the disposable LRU while the shared transient-allocation
       // budget is active. Edge-triggered observer callbacks keep nested and
       // concurrent reservations from restoring the cache prematurely.
@@ -1168,9 +1188,29 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
       this._w5RehydrateRingFromStorage().catch((e: any) => {
         console.warn('[nimbus/W5] ring rehydrate failed:', e?.message);
       });
+      // Clones an earlier generation left were cut short: their destinations
+      // are reserved before anything can write there, and cleaned up
+      // (git/clone-job.ts) in the background, a slice at a time. Records not
+      // listed (yet) hold every write instead: none is served on a guess.
+      const engine = this.sqliteFs;
+      (this.cloneRecovery ??= new CloneRecovery(this.ctx.storage, generation(this.ctx))).start({
+        as: (cred, options) => engine.as(cred, options),
+        releaseExclusiveMutation: (owner) => engine.releaseExclusiveMutation(owner),
+        acquireGlobalExclusiveMutation: (reason) => engine.acquireGlobalExclusiveMutation(reason),
+        // A clone on a mount, through the namespace (a host bridge presenting its lease).
+        namespace: (cred, owner) => {
+          const host = this.getFilesystemAuthority().openHost(cred);
+          const bridge = host.fs.synchronous;
+          if (bridge === undefined) throw new Error('the host bridge has no synchronous face');
+          return { fs: bridgeCleanupFs(bridge, owner), dispose: () => host.dispose() };
+        },
+      }, (task) => this.ctx.waitUntil(task));
     }
     return this.sqliteFs;
   }
+
+  /** The recovery of clones an earlier generation ran, discovered as this one began (git/clone-job.ts). */
+  private cloneRecovery: CloneRecovery | null = null;
 
   // ── W5 Lever 5: ring buffer persistence on DO storage ─────────────────
   // Storage key W5_RING_STORAGE_KEY lives in ./keys.ts (S5).

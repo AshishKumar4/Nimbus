@@ -1,8 +1,12 @@
+import type { ShellInputSubmission, ShellQueuedInput } from './input-submission.js';
 interface ShellLike {
-    executeLine(line: string): Promise<void>;
+    executeLine(line: string, submission?: ShellInputSubmission): Promise<void>;
     printPrompt(): void;
-    handleInput(data: string): void;
-    drainPasteQueue(): void;
+    printContinuationPrompt(): void;
+    handleInput(data: string, submission?: ShellInputSubmission): void | Promise<void>;
+    drainPasteQueue(): void | Promise<void>;
+    queuePasteInput(data: string, submission?: ShellInputSubmission): void;
+    rejectQueuedInput(): void;
     redrawLine(): void;
     running: boolean;
     readonly history: readonly string[];
@@ -10,7 +14,7 @@ interface ShellLike {
     cursorPos: number;
     screenCursorRow: number;
     historyIndex: number;
-    pasteQueue: string[];
+    pasteQueue: ShellQueuedInput[];
 }
 interface TerminalLike {
     write(data: string): void;
@@ -29,6 +33,7 @@ export declare class HeredocHandler {
     private originalExecuteLine;
     private originalPrintPrompt;
     private originalHandleInput;
+    private submission;
     private active;
     private heredocInfo;
     private currentHeredocIndex;

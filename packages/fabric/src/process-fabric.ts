@@ -74,10 +74,13 @@
  * `ResidentDiskReader` it was given.
  */
 
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SupervisorBindingProps } from './supervisor-props.js';
 import { z } from 'zod/v4';
 import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import type { ServiceStub } from './vendor/types.js';
 
 /**
@@ -392,8 +395,8 @@ export interface ProcessHostParams {
   /**
    * Set only by the coordinator's durable-application path: an explicit facet
    * name (`app-slot-<n>`) allocated from DO storage, plus the release split
-   * that keeps its SQLite across aborts. Absent, the host allocates an
-   * ephemeral `proc-slot-<n>` name from its in-memory free list and deletes
+   * that keeps its SQLite across aborts. Absent, the host takes the next
+   * ephemeral `proc-slot-<n>` name from its in-memory slot book and deletes
    * the store on release.
    */
   facet?: { name: string; durable: boolean };
@@ -404,6 +407,31 @@ export interface ProcessHostParams {
    * the storage limit.
    */
   storageBytes?: number;
+  /**
+   * The process logs its changes in its facet's store (process-fs-journal.ts):
+   * the session is told the facet's name when it opens (`opened`), and
+   * `drain` is handed the store's journal when the process is released,
+   * before the store goes. A drain that throws keeps the store and its name.
+   * Its class holds `held()` open while its isolate lives, so a death after
+   * its boot (out of memory, CPU) is the process's `lost`.
+   */
+  journal?: {
+    opened(facet: string): void;
+    drain(journal: ProcessFsJournalSource): Promise<void>;
+  };
+}
+
+/**
+ * The platform reset the Durable Object a running process was hosted on, and
+ * the process ended with it. Only a host that is not the coordinator can
+ * report this (process-host.ts `peer`); the platform's own words, which may
+ * name a cause that did not happen ("its code was updated"), are the cause.
+ */
+export class ProcessHostLost extends Error {
+  constructor(cause: unknown) {
+    super(`its host was reset by the platform (${errorText(cause)})`, { cause });
+    this.name = 'ProcessHostLost';
+  }
 }
 
 /**
@@ -416,12 +444,13 @@ export interface HostedProcess {
    * The runner's startProcess payload. The runner is started as part of
    * opening the host, so this is a handle on that one boot — awaiting it twice
    * is safe and never re-starts anything. A `lifetime` runner settles it at
-   * exit; a host that dies before then rejects it.
+   * exit; a host that dies before then rejects it with {@link ProcessHostLost}.
    */
   readonly started: Promise<unknown>;
   /**
-   * Rejects if the HOST dies under a process that is already up — the one
-   * failure a substrate can suffer that the process itself never reports.
+   * Rejects, with {@link ProcessHostLost}, if the HOST dies under a process
+   * that is already up — the one failure a substrate can suffer that the
+   * process itself never reports.
    *
    * It is not symmetric, and pretending otherwise is what leaks a process. A
    * facet dies only with the Durable Object that owns it, which takes the
@@ -604,6 +633,14 @@ export interface ProcessHost {
    */
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
   open(params: ProcessHostParams): Promise<HostedProcess>;
+  /**
+   * The actor hosting `workerKey` found, in a new incarnation, that it no
+   * longer holds the process (a peer's own alarm, `hostLost` op), and proved
+   * it hosted it with the capability minted for that open. The process is
+   * lost ({@link ProcessHostLost}). False when this host has no such open.
+   * A facet's host is the coordinator itself, so it never hears this.
+   */
+  hostLost?(workerKey: string, capability: string): boolean;
 }
 
 /**
@@ -625,7 +662,18 @@ export type ProcessHostFactory = (
   env: unknown,
   disk: () => ResidentDiskReader,
   network: () => WorkspaceNetwork,
+  supervise?: Supervise,
 ) => ProcessHost;
+
+/**
+ * The host's own SUPERVISOR for a one-shot, minted with its binding's props:
+ * a capability the program is handed in the call that runs it, answered
+ * inside the host (the worker's ProcessSupervisor). Calls on it are not
+ * requests to the host, so they never become the host's front request, whose
+ * subrequest depth every later call of the host inherits. A host that
+ * supplies none hands each one-shot its binding (bindingSupervisor).
+ */
+export type Supervise = (props: SupervisorBindingProps) => object;
 
 // ── Handle ──────────────────────────────────────────────────────────────────
 
@@ -637,7 +685,8 @@ export type ProcessHostFactory = (
  *
  * `done` settles when the process ends: for a `lifetime` runner that is its
  * held-open startProcess settling (resolve on exit, reject on host death);
- * for a `boot` runner it is the kill that releases the host.
+ * for a `boot` runner it is the kill that releases the host. A host that
+ * dies under either rejects it with {@link ProcessHostLost}.
  *
  * The handle is disposable so FacetManager's existing per-pid resource
  * tracking tears a process down exactly the way it releases any other
@@ -725,6 +774,13 @@ export interface ResidentProcessSpawn {
   /** See {@link ProcessHostParams.storageBytes}. */
   storageBytes?: number;
   /**
+   * A Nimbus runtime's process (node, python, ruby, opencode), whose class
+   * logs its changes in its facet's store and holds `held()` open while its
+   * isolate lives (ProcessHostParams.journal). Never an application's own
+   * class, whose store is its own.
+   */
+  journaled?: boolean;
+  /**
    * Called before any concrete host capability can expose this writer.
    * A spawn must not proceed unless the supervisor accepts the authority.
    */
@@ -741,7 +797,15 @@ function heldUntilKilled(): { promise: Promise<void>; release: () => void } {
 }
 
 export class ProcessFabric {
-  constructor(private readonly host: ProcessHost) {}
+  /**
+   * `journalFor`: the write-log hooks of a resident process's facet
+   * (ProcessHostParams.journal), when its coordinator keeps them: every
+   * resident it starts logs its changes in its facet's store.
+   */
+  constructor(
+    private readonly host: ProcessHost,
+    private readonly options: { journalFor?: (pid: number) => ProcessHostParams['journal'] } = {},
+  ) {}
 
   /**
    * Boot a resident process on this deployment's substrate and return its
@@ -758,6 +822,7 @@ export class ProcessFabric {
     // after the host is released; a later incarnation must use a fresh one.
     const writerId = crypto.randomUUID();
     spawn.onWriterActivated(writerId);
+    const journal = spawn.journaled ? this.options.journalFor?.(spawn.pid) : undefined;
 
     let hosted: HostedProcess;
     try {
@@ -769,6 +834,7 @@ export class ProcessFabric {
         startArgs: spawn.startArgs,
         ...(spawn.facet !== undefined ? { facet: spawn.facet } : {}),
         ...(spawn.storageBytes !== undefined ? { storageBytes: spawn.storageBytes } : {}),
+        ...(journal !== undefined ? { journal } : {}),
       });
     } catch (error) {
       spawn.onWriterRetired(writerId);
@@ -795,7 +861,9 @@ export class ProcessFabric {
     // on its host, so residency ends at a kill — or at the host dying, which
     // is the same thing happening to the process without anyone asking for it.
     const done = (spawn.startContract === 'lifetime'
-      ? hosted.started.then(() => undefined)
+      // A lifetime run ends with its start: a platform reset, said by the
+      // start or by the host, is its host lost; its own stop is not one.
+      ? Promise.race([hosted.started.then(() => undefined, (error: unknown) => { throw isHostReset(error) ? new ProcessHostLost(error) : error; }), hosted.lost])
       : hosted.started.then(() => Promise.race([held.promise, hosted.lost]))
     ).finally(() => release());
     done.catch(() => {});

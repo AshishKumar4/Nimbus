@@ -13,11 +13,17 @@
  * `HostedProcess` and never imports this file.
  */
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { classifyError, describeError, isHostReset, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { getCtxExports, stagedBootAssembler, supervisorEntrypoint, supervisorEntrypointName, } from './composition.js';
-import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, facetNameCount, facetNameCountDurable, chargeFacetSlot, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
+import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, readmitRefused, withDynamicWorkerCapNamed, } from './budgets.js';
 import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
 import { supervisorLoaderKey, mintProcessSupervisor } from './supervisor-props.js';
+import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
+import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/process-fs-journal-reader-source.generated.js';
+import { applyFacetLimits, facetLimits, facetLoaderKey } from './facet-limits.js';
+import { withResolvers } from './turn-budget.js';
 export function getNimbusCtxExports() {
     const ctxExports = getCtxExports();
     if (!ctxExports || typeof ctxExports !== 'object') {
@@ -78,8 +84,7 @@ function facetContainer(ctx) {
  * The primitive itself, measured: a reflink, 18–31 ms for a 45.73 MB corpus
  * and 34–54 ms for 1 GB — flat, because nothing is copied — with the data
  * visible from the destination's constructor. Same-Durable-Object only.
- * Quiesce and await writes to the source first; the destination name consumes
- * a facet ID on first use like any other facet name; and the shared ~10 GiB
+ * Quiesce and await writes to the source first; and the shared ~10 GiB
  * storage budget grants no copy-on-write credit — crossing it resets the
  * object rather than raising an error.
  */
@@ -102,24 +107,30 @@ export async function cloneStorage(ctx, clone) {
     }
 }
 /**
- * The facet name for an ephemeral slot. Reused, and that is the entire point.
+ * The facet name for an ephemeral slot.
  *
- * A Durable Object admits 65,536 facets over its LIFETIME: the IDs are
- * append-only and are never reclaimed, so the bound is on facets ever CREATED,
- * not facets alive at once. Naming a facet after its pid, when pids never
- * repeat, therefore burned one of those IDs on every spawn — a long-lived
- * session would eventually exhaust its facet index with no way back, and the
- * failure is unrecoverable rather than merely slow.
+ * On Cloudflare a name costs nothing once its facet is deleted: one object
+ * created 70,000 names, deleting each after use, and none failed. Facets
+ * kept are what is bounded: with none deleted, the object failed at 32,240
+ * (2026-10-07). Local workerd's on-disk facet index allows 65,535 names over
+ * the object's lifetime (facet-tree-index.c++). Either wall answers
+ * "internal error; reference = …", which startFailure names.
  *
- * Reusing a NAME costs no new ID. So the name comes from a free list and the
- * pid stays what it always was: the process identity in the ProcessTable. The
- * two were only ever conflated because one of them happened to be handy.
+ * A released name is not handed to a later process of the same incarnation.
+ * Getting a name a just-released process held, with the next process's
+ * class, failed on Cloudflare: the next process's first call answered
+ * "internal error; reference = …" with durableObjectReset. That was vite8
+ * after vinext, 7 of 7 on a throwaway, while 4 of 4 started on a fresh name
+ * (2026-10-07). An earlier reuse, of a released name's kept store, reset the
+ * whole object (82894375b). The platform gives no signal that a released
+ * facet is gone, so no reuse can be timed to follow it. The pid stays what
+ * it always was: the process identity in the ProcessTable.
  *
- * The book shares the facet-ID space with one other namespace: durable
- * applications, which mint `app-slot-<n>` names of their own (one ID per app,
- * ever). The prefixes are disjoint BY CONSTRUCTION, and that disjointness is
- * load-bearing — a proc-slot name reissued onto a durable app's retained
- * storage would boot the wrong process into someone else's disk.
+ * The book shares the facet namespace with durable applications, which mint
+ * `app-slot-<n>` names of their own (one per app, ever). The prefixes are
+ * disjoint BY CONSTRUCTION, and that disjointness is load-bearing — a
+ * proc-slot name reissued onto a durable app's retained storage would boot
+ * the wrong process into someone else's disk.
  */
 export function residentFacetName(slot) {
     return `proc-slot-${slot}`;
@@ -140,43 +151,50 @@ export const DURABLE_FACET_NAME_PREFIX = 'app-slot-';
  *
  * The book allocates only the `proc-slot-` space. Durable `app-slot-` names
  * are allocated against DO storage instead (their owner survives a reset), so
- * a fresh incarnation's `next` starting at 0 can never collide with them even
- * before the durable ledger is adopted.
+ * a fresh incarnation's `next` starting at 0 can never collide with them.
  */
 const slotBooks = new WeakMap();
 function slotBook(ctx) {
     let book = slotBooks.get(ctx);
     if (!book) {
-        book = { free: [], next: 0, held: new Map(), live: new Set() };
+        book = { next: 0, held: new Map(), live: new Set() };
         slotBooks.set(ctx, book);
     }
     return book;
 }
 /**
- * Take a slot for `pid`, reusing a returned one before minting a new name.
- * `minted` names may still hold storage a previous incarnation of this actor
- * left there, so the caller deletes it before the first get. The caller
- * charges the slot (chargeFacetSlot) before its facet is created.
+ * Take the next slot for `pid` (residentFacetName: never one a released
+ * process held), or the one it holds. A `minted` name may still hold storage
+ * a previous incarnation of this actor left there, so the caller deletes it
+ * before the first get.
  */
 function acquireSlot(ctx, pid) {
     const book = slotBook(ctx);
     const existing = book.held.get(pid);
     if (existing !== undefined)
         return { slot: existing, minted: false };
-    const reused = book.free.length > 0;
-    const slot = reused ? book.free.shift() : book.next++;
+    // A name whose store still holds an undrained write log is never minted
+    // (minting deletes what a name stored): the session drains it first.
+    const reserved = reservedFacetNames(ctx);
+    while (reserved.has(residentFacetName(book.next)))
+        book.next++;
+    const slot = book.next++;
     book.held.set(pid, slot);
-    return { slot, minted: !reused };
+    return { slot, minted: true };
 }
-/** Return `pid`'s slot to the free list. */
+const reservedNames = new WeakMap();
+/** The facet names this actor's session keeps for an undrained write log (process-fs-journal.ts). */
+export function reservedFacetNames(ctx) {
+    let names = reservedNames.get(ctx);
+    if (!names) {
+        names = new Set();
+        reservedNames.set(ctx, names);
+    }
+    return names;
+}
+/** `pid` holds no slot from here on; its name is never handed out again. */
 function releaseSlot(ctx, pid) {
-    const book = slotBook(ctx);
-    const slot = book.held.get(pid);
-    if (slot === undefined)
-        return;
-    book.held.delete(pid);
-    book.free.push(slot);
-    book.free.sort((a, b) => a - b);
+    slotBook(ctx).held.delete(pid);
 }
 /**
  * Drop one facet's SQLite by name, and its row in the session's storage
@@ -246,8 +264,8 @@ export class Processes {
      * map across a sibling hop would meet the 32 MiB RPC ceiling that by-path
      * boot specs exist to avoid — for a run that gains nothing by moving.
      */
-    run(supervisor, params, consume) {
-        return runOneShot(this.ctx, this.env, supervisor, params, consume);
+    run(supervisor, supervise, params, consume) {
+        return runOneShot(this.ctx, this.env, supervisor, supervise, params, consume);
     }
 }
 function spawnResident(ctx, env, disk, supervisor, params) {
@@ -272,12 +290,6 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         }
         catch { /* nothing stored under this name */ }
     }
-    // A slot's name is a lifetime facet ID the first time it is created, so it
-    // is charged, durably, before the first call creates the facet. Charged on
-    // every use: a slot whose charge failed is reused uncharged otherwise, and
-    // one already counted costs nothing. An explicit name was charged when it
-    // was allocated (acquireDurableFacetSlot).
-    const charged = slot === undefined ? Promise.resolve() : chargeFacetSlot(ctx, slot);
     // The start callback is the ONLY way this facet is ever created, and it
     // fires AT MOST ONCE. Every later use goes through the stub below, so the
     // callback running a second time means the facet was released or died —
@@ -286,13 +298,17 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     // is gone. Both cases are reported instead.
     let evaluated = false;
     let released = false;
+    let markLost = () => { };
+    const lost = new Promise((_, reject) => { markLost = reject; });
+    lost.catch(() => { });
     const start = async () => {
         if (released) {
             throw new Error(`Nimbus: resident process ${params.pid} is no longer running`);
         }
         if (evaluated) {
-            throw new Error(`Nimbus: resident process ${params.pid} is no longer loaded (its facet was lost); `
-                + 'it is not restarted');
+            const gone = new Error(`Nimbus: resident process ${params.pid} is no longer loaded (its facet was lost)`);
+            markLost(gone);
+            throw gone;
         }
         evaluated = true;
         return { class: residentProcessClass(env, disk, supervisor, params, loaderKey) };
@@ -317,10 +333,12 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     catch (error) {
         if (slot !== undefined)
             releaseSlot(ctx, params.pid);
-        throw withFacetBudgetNamed(facetNameCount(ctx), error);
+        throw error;
     }
     if (explicit)
         book.live.add(name);
+    // A journaling process: the session holds its facet's name until its log is drained.
+    params.journal?.opened(name);
     // The facet's worker is one Dynamic Worker in flight for as long as the
     // process is resident, not only while a call is open: its WebSockets and
     // streamed responses outlive the calls the ledger could bracket, and a
@@ -342,19 +360,29 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         catch { /* already gone */ }
         if (explicit)
             book.live.delete(name);
-        // The two release classes: an ephemeral facet's SQLite is slot-reuse
-        // hygiene — the name is handed out again, so the store must not be — and
-        // a durable one's is the application itself: abort ends the process, the
-        // data stays for the next boot, and only removeDurableApp's explicit
-        // deleteFacetStorage call ever drops it.
+        // What the process logged and the session never answered is in its
+        // facet's store: drained before the store goes, and before the release
+        // settles (its exit is reported after). A drain that fails keeps the
+        // store, for the session's next drain of that name.
+        if (params.journal) {
+            try {
+                await params.journal.drain(facetJournal(ctx, env, name));
+            }
+            catch (error) {
+                console.error(`[nimbus] the write log of pid ${params.pid} (facet '${name}') was not drained: ${error instanceof Error ? error.message : String(error)}`);
+                return;
+            }
+        }
+        // The two release classes: an ephemeral facet's SQLite is the process's
+        // alone, so it goes with it, and a durable one's is the application
+        // itself: abort ends the process, the data stays for the next boot, and
+        // only removeDurableApp's explicit deleteFacetStorage call ever drops it.
         if (!explicit?.durable) {
             try {
                 deleteFacetStorage(ctx, name);
             }
             catch { /* already gone */ }
         }
-        // Only after the facet is gone. A slot handed out while its previous
-        // tenant were still being torn down would have two processes on one name.
         if (slot !== undefined)
             releaseSlot(ctx, params.pid);
     };
@@ -364,16 +392,12 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         const startArgs = ledger !== null && params.storageBytes !== undefined && params.startArgs !== null && typeof params.startArgs === 'object'
             ? { ...params.startArgs, storage: { facet: name, grant: params.storageBytes } }
             : params.startArgs;
-        started = charged.then(() => facet.startProcess(startArgs));
+        started = facet.startProcess(startArgs);
     }
     catch (error) {
         void release();
-        throw withFacetBudgetNamed(facetNameCount(ctx), error);
+        throw error;
     }
-    // The rejection that carries the platform's failure at ID exhaustion is
-    // this one, and it is annotated AFTER awaiting the ledger — the first
-    // failure of a fresh incarnation must compare against the persisted count,
-    // not the zero its adoption read has not yet replaced.
     started = started.then((payload) => {
         // Once the facet is up (N18) its row is the cap its store keeps under
         // (what it measures plus what it may still grow into), or what it
@@ -385,26 +409,55 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         if (ledger !== null && row !== null)
             ledger.reportSize(name, row);
         return payload;
-    }, async (error) => {
-        // The count is read only to name the budget: a count storage cannot answer names nothing.
-        const consumed = await facetNameCountDurable(ctx).catch(() => null);
-        throw consumed === null ? error : withFacetBudgetNamed(consumed, error);
+    }, (error) => {
+        // A start that rejects after its release is the process ending or being
+        // ended as it booted (json-server --version), not a failure to start.
+        throw released ? error : startFailure(error, name, params.pid);
     });
     // A caller reads whichever of `started` and the lifecycle it needs, so keep
     // the runtime from reporting the other as an unhandled rejection.
     started.catch(() => { });
+    // A facet's isolate dies on its own (out of memory, out of CPU) and this
+    // object goes on (measured: the journal probe, 2026-10-07). A journaling
+    // resident's class holds held() open while its isolate lives, from its
+    // creation (a lifetime run is watched while it runs): a platform reset of
+    // it is the process lost too. Anything else that ends the call is not: a
+    // run's own stop aborts the facet with its stop record, and a release ends it.
+    if (params.journal) {
+        Promise.resolve().then(() => facet.held()).catch((error) => {
+            if (!released && isHostReset(error))
+                markLost(error instanceof Error ? error : new Error(String(error)));
+        });
+    }
     return {
         started,
-        // A facet cannot die without taking its Durable Object — and this object —
-        // with it, so there is no independent death to report.
-        lost: new Promise(() => { }),
+        lost,
         // A request can arrive before the boot call; it creates the facet as that call would.
-        handleHttpRequest: (request) => charged.then(() => facet.handleHttpRequest(request)),
-        handleWebSocketRequest: (request) => charged.then(() => facet.fetch(request)),
+        handleHttpRequest: (request) => facet.handleHttpRequest(request),
+        handleWebSocketRequest: (request) => facet.fetch(request),
         release,
         name,
         slot,
     };
+}
+/**
+ * A resident's failed start, logged to the session's log with the facet and
+ * process it was, and answered as the error the user sees. A failure the
+ * platform does not explain (isUnexplainedPlatformError) is named for them:
+ * which facet, which process, whether the platform reset it, and its
+ * reference. Any other failure already says what went wrong and stands.
+ */
+function startFailure(error, name, pid) {
+    const reset = typeof error === 'object' && error !== null && Reflect.get(error, 'durableObjectReset') === true;
+    console.error(`Nimbus: process ${pid} failed to start in facet '${name}'${reset ? ', which the platform reset' : ''}: ${describeError(error)}`);
+    if (!isUnexplainedPlatformError(error))
+        return error;
+    const what = reset
+        ? `reset facet '${name}' as it started process ${pid}`
+        : `failed to start process ${pid} in facet '${name}'`;
+    const named = new Error(`Nimbus: Cloudflare ${what}, and gave no cause (${errorText(error)})`, { cause: error });
+    // The platform's own reset flag, kept on the error it is answered as: the lifecycle reads it there (isHostReset).
+    return reset ? Object.assign(named, { durableObjectReset: true }) : named;
 }
 /**
  * The dynamic worker's Durable Object class, minted in the caller's request
@@ -419,10 +472,10 @@ function residentProcessClass(env, disk, supervisor, params, loaderKey) {
             + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.');
     }
     return loader
-        .get(loaderKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
-        .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
+        .get(facetLoaderKey('process', loaderKey), async () => applyFacetLimits('process', await residentWorkerConfig(env, disk, supervisor, params.boot)))
+        .getDurableObjectClass(RESIDENT_PROCESS_CLASS, { limits: facetLimits('process') });
 }
-async function runOneShot(ctx, env, supervisor, params, consume) {
+async function runOneShot(ctx, env, supervisor, supervise, params, consume) {
     const loader = env.LOADER;
     if (!loader || typeof loader.load !== 'function') {
         throw new Error('Nimbus: env.LOADER binding missing or invalid. Running a program requires '
@@ -444,10 +497,11 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
     // the pipelined-`fetch.call` note below for its sibling.
     // A run inside an admitted launch (withLaunchAdmission) is that launch's
     // worker, already let in (claimAdmission), whatever pid it runs as.
-    const endFetch = claimAdmission(ctx, params.pid) ?? await beginLoaderFetchWhenFree(ctx, `one-shot:${params.writerId}`, {
+    let endFetch = claimAdmission(ctx, params.pid) ?? await beginLoaderFetchWhenFree(ctx, `one-shot:${params.writerId}`, {
         signal: params.request.signal,
         process: { pid: params.pid },
     });
+    let capability;
     let supervisorBinding;
     let worker;
     let entrypoint;
@@ -457,58 +511,167 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
         // assemble should not have granted append authority on its way out.
         let spec = await params.code();
         assertModuleMapWithinCodeLimit(spec.modules);
-        if (supervisorRpc) {
-            params.onWriterActivated(params.writerId);
+        params.onWriterActivated(params.writerId);
+        capability = supervise(supervisor);
+        // A network the session answers (SupervisorRPC.fetch/connect) is the
+        // binding's: a globalOutbound is a service binding, never a capability.
+        if (supervisorRpc && params.outbound)
             supervisorBinding = mintProcessSupervisor(supervisorRpc, supervisor);
-        }
-        worker = loader.load({
+        worker = loader.load(applyFacetLimits('process', {
             compatibilityDate: spec.compatibilityDate,
             compatibilityFlags: spec.compatibilityFlags,
-            mainModule: spec.mainModule,
-            modules: spec.modules,
-            ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding, ...egressMarker(supervisor) } } : {}),
-            // The same binding answers its network (SupervisorRPC.fetch/connect), which goes out
-            // through the workspace's egress; else the egress itself, when there is one.
-            ...(supervisorBinding && params.outbound
+            mainModule: ONE_SHOT_ENTRY,
+            modules: { ...spec.modules, [ONE_SHOT_ENTRY]: oneShotEntry(spec.mainModule) },
+            env: egressMarker(supervisor),
+            // Else out through the workspace's egress, when there is one.
+            ...(supervisorBinding
                 ? { globalOutbound: supervisorBinding }
                 : supervisor.egress !== undefined ? { globalOutbound: supervisor.egress } : {}),
-        });
+        }));
         // The loader has taken the map; holding it here would keep a second full
         // copy of the program alive for as long as the program runs.
         spec = undefined;
-        entrypoint = worker.getEntrypoint();
+        entrypoint = worker.getEntrypoint(undefined, { limits: facetLimits('process') });
         // Narrowed by the runtime check; kept as a property call on the stub —
         // extracting the method builds a pipelined `fetch.call` path workerd
         // refuses for dynamically-loaded workers.
         const ep = entrypoint;
-        if (typeof ep.fetch !== 'function') {
-            throw new Error('Nimbus: one-shot runtime entrypoint has no fetch method');
+        if (typeof ep.run !== 'function') {
+            throw new Error('Nimbus: one-shot runtime entrypoint has no run method');
         }
         params.onLoaded?.();
-        try {
-            const response = await ep.fetch(params.request);
+        let firstRefusal;
+        for (;;) {
+            let started = false;
             try {
-                return await consume(response);
+                // The request crosses without its signal, which no RPC value carries;
+                // the run hears it until its response is consumed, as a fetch would.
+                // A clone each time: a refused run is sent again with the same body.
+                const request = new Request(params.request.clone(), { signal: null });
+                return await untilEnded(params.request.signal, async (ended) => {
+                    const response = await ep.run(request, capability, ended);
+                    started = true;
+                    try {
+                        return await consume(response);
+                    }
+                    finally {
+                        disposeRpcResource(response);
+                    }
+                });
             }
-            finally {
-                disposeRpcResource(response);
+            catch (error) {
+                if (started || Reflect.get(Object(error), RUN_ENTERED) === true || classifyError(error) !== 'dynamic_worker_cap')
+                    throw error;
+                // Refused before it was entered: an RPC-invoked worker stays counted until its session tears down, and workerd gives no signal for that.
+                // The ledger learns the refusal from the hold it ends.
+                endFetch(error);
+                firstRefusal ??= Date.now();
+                const readmitted = await readmitRefused(endFetch, { since: firstRefusal, signal: params.request.signal });
+                if (readmitted === undefined)
+                    throw error;
+                endFetch = readmitted;
             }
-        }
-        catch (error) {
-            // A limit refusal pauses the ledger's admissions (beginLoaderFetchWhenFree).
-            endFetch(error);
-            throw error;
         }
     }
     catch (error) {
         throw withDynamicWorkerCapNamed(ctx, error);
     }
     finally {
-        endFetch();
+        // The run's session closes as these go, and the platform counts its
+        // worker until then: they go before the hold, which lets the next one in.
         disposeRpcResource(entrypoint);
         disposeRpcResource(worker);
+        disposeRpcResource(capability);
         disposeRpcResource(supervisorBinding);
+        endFetch();
     }
+}
+const ONE_SHOT_ENTRY = 'nimbus-one-shot.js';
+/**
+ * Set on whatever a one-shot's program throws, once its run was entered
+ * (carried across by enhanced_error_serialization): the platform refuses a
+ * run before entering it, so only an error without it can be a refusal.
+ */
+const RUN_ENTERED = 'nimbusRunEntered';
+/**
+ * A one-shot, entered by `run`: its SUPERVISOR is the call's capability, and
+ * a run its host ended (untilEnded) aborts itself where it stands.
+ */
+function oneShotEntry(mainModule) {
+    return `import { WorkerEntrypoint } from "cloudflare:workers";
+import program from ${JSON.stringify(`./${mainModule}`)};
+export default class extends WorkerEntrypoint {
+  async run(request, supervisor, ended) {
+    ended().then((reason) => { if (reason !== null) this.ctx.abort(reason); }, () => {});
+    try {
+      return await program.fetch(request, { ...this.env, SUPERVISOR: supervisor }, this.ctx);
+    } catch (error) {
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { ${RUN_ENTERED}: true });
+    }
+  }
+}
+`;
+}
+/**
+ * `start`'s call, ended as a fetch carrying `signal` would be: rejected with
+ * the signal's reason the moment it aborts. A signal does not cross an RPC
+ * call, so the run asks how it ends (`ended`) and is answered with that
+ * reason, to abort itself, or with null once its call is over.
+ */
+async function untilEnded(signal, start) {
+    if (signal.aborted)
+        throw signal.reason;
+    const reason = withResolvers();
+    const aborted = withResolvers();
+    const abort = () => {
+        reason.resolve(String(signal.reason));
+        aborted.resolve();
+    };
+    signal.addEventListener('abort', abort, { once: true });
+    try {
+        const outcome = await Promise.race([start(() => reason.promise).then((value) => ({ value })), aborted.promise]);
+        if (!outcome)
+            throw signal.reason;
+        return outcome.value;
+    }
+    finally {
+        signal.removeEventListener('abort', abort);
+        reason.resolve(null);
+    }
+}
+/**
+ * The write log a process left in its facet's store (process-fs-journal.ts),
+ * read through the journal reader class the facet is opened with now, over
+ * the same SQLite. The name is aborted first: a get with a new class of a
+ * facet still running (a previous incarnation's) would reset this object.
+ */
+export function facetJournal(ctx, env, name) {
+    const loader = env.LOADER;
+    if (!loader)
+        throw new Error('Nimbus: env.LOADER is missing: a process\'s write log cannot be read');
+    const facets = facetContainer(ctx);
+    let reader;
+    const open = () => {
+        if (reader)
+            return reader;
+        try {
+            facets.abort(name, new Error('Nimbus: its write log is drained'));
+        }
+        catch { /* not running */ }
+        const worker = loader.load({
+            compatibilityDate: CF_COMPAT_DATE,
+            mainModule: 'reader.js',
+            modules: { 'reader.js': PROCESS_FS_JOURNAL_READER_SOURCE },
+        });
+        reader = facets.get(name, async () => ({ class: worker.getDurableObjectClass('NimbusFsJournalReader') }));
+        return reader;
+    };
+    return {
+        numberings: () => open().numberings(),
+        number: (numbering) => open().number(numbering),
+        readAfter: (after, maxBytes) => open().readAfter(after, maxBytes),
+        dropThrough: (jid) => open().dropThrough(jid),
+    };
 }
 /**
  * The WorkerCode the loader callback returns for one resident boot: the
@@ -536,6 +699,7 @@ export async function residentWorkerConfig(env, disk, supervisor, boot) {
     if (!supervisorRpc) {
         throw new Error(`Nimbus: ctx.exports.${supervisor.route?.supervisorEntrypoint ?? supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`);
     }
+    // The binding, not its host's capability (Supervise): a resident's calls each go one hop below its own request, at a fixed depth.
     return { ...workspaceOutbound(config, supervisor), env: { SUPERVISOR: mintProcessSupervisor(supervisorRpc, supervisor), ...egressMarker(supervisor) } };
 }
 /**

@@ -3,14 +3,16 @@
  * build.mjs — build napi-rs bindings for single-threaded wasm32-wasip1 from
  * pinned upstream source, reproducibly, with the shared loader they run on.
  *
- *   bun packages/worker/scripts/napi-wasm/build.mjs --work <dir> --out <dir> [--spec rolldown,satteri]
+ *   bun packages/worker/scripts/napi-wasm/build.mjs --work <dir> --out <dir> [--spec rolldown@1.2.13,satteri]
  *
- * `--spec none` builds the loader alone (no Rust toolchain needed).
+ * A spec is `<name>@<version>` (specs.mjs), or a name for every version of
+ * it. `--spec none` builds the loader alone (no Rust toolchain needed). On
+ * armada: scripts/ci/remote-napi-binding.mjs.
  *
  * Keep this Bun orchestrator at <=4 GiB. If Cargo needs a separate 16 GiB
- * cgroup, name the bounded runner explicitly; builds remain serial:
- *   NIMBUS_CARGO_RUNNER=/mnt/scratch/nimbus/run-bounded \
- *   NIMBUS_TEST_MEMORY_MAX=4G NIMBUS_TEST_TIMEOUT=3600 run-bounded bun .../build.mjs ...
+ * cgroup, NIMBUS_CARGO_RUNNER names a command that runs its arguments
+ * bounded (`<runner> cargo build …`, with NIMBUS_TEST_MEMORY_MAX=16G and
+ * NIMBUS_TEST_TIMEOUT=3600 in its environment); builds remain serial.
  *
  * specs.mjs holds every pin. For each spec, failing loudly at the first
  * mismatch:
@@ -18,9 +20,11 @@
  *   2. Resolves the exact toolchain upstream's rust-toolchain.toml pins (from
  *      rustup, or the rustc on PATH) with the wasm32-wasip1 target.
  *   3. Builds the cdylib with `cargo --locked`: in upstream's workspace, or in
- *      our wrapper workspace for a binding that needs the event-loop runtime.
- *      A lockfile other than upstream's is either upstream's pruned (every
- *      version checked against it) or a committed pin. A seam is an exact
+ *      our wrapper workspace for a binding that needs the event-loop runtime
+ *      (written for the spec's upstream directory and version). A lockfile
+ *      other than upstream's is either upstream's pruned (every version
+ *      checked against it; committed, or pruned by cargo at build time) or a
+ *      committed pin. A seam is an exact
  *      edit to one upstream line, applied only if that line occurs once.
  *   4. Checks the binary is threadless (no shared memory, no thread-spawn).
  * Then it bundles the one loader every binding runs on (emnapi pinned by
@@ -31,7 +35,8 @@
  * made by link-wasm.sh (see its header for why and for its exact-match check).
  *
  * Output (--out):
- *   <spec>/<spec>.wasm, <spec>/provenance.json            one per spec
+ *   <name>/<version>/<name>.wasm, provenance.json         one per spec
+ *   <name>/<version>/Cargo.lock                           a lockfile pruned at build time
  *   napi-wasm/napi-wasm-loader.mjs, wasi-trampoline.wasm, provenance.json
  * Stage it into the worker with
  *   NIMBUS_NAPI_WASM_ARTIFACTS=<out> node packages/worker/scripts/bundle-napi-wasm.mjs
@@ -63,8 +68,12 @@ function arg(name, required = true) {
 const WORK = path.resolve(arg('--work'));
 const OUT = path.resolve(arg('--out'));
 const specArg = arg('--spec', false) ?? Object.keys(SPECS).join(',');
-const SELECTED = specArg === 'none' ? [] : specArg.split(',');
-for (const name of SELECTED) if (!SPECS[name]) throw new Error(`napi-wasm: no spec named ${name}`);
+/** The selected specs' keys: each `<name>@<version>`, a name meaning every version of it. */
+const SELECTED = specArg === 'none' ? [] : specArg.split(',').flatMap((wanted) => {
+  const keys = wanted.includes('@', 1) ? [wanted] : Object.keys(SPECS).filter((key) => SPECS[key].name === wanted);
+  if (keys.length === 0 || !keys.every((key) => SPECS[key])) throw new Error(`napi-wasm: no spec ${wanted} (specs: ${Object.keys(SPECS).join(', ')})`);
+  return keys;
+});
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const sha512b64 = (bytes) => createHash('sha512').update(bytes).digest('base64');
@@ -180,7 +189,7 @@ async function applySeams(spec, sourceDir) {
 }
 
 async function buildSpec(spec, npmDir) {
-  const root = path.join(WORK, spec.name);
+  const root = path.join(WORK, `${spec.name}-${spec.version}`);
   await fs.mkdir(root, { recursive: true });
   const sourceDir = await extractSource(spec, root);
   const toolchain = toolchainFor(spec, sourceDir);
@@ -193,18 +202,41 @@ async function buildSpec(spec, npmDir) {
   if (spec.build.mode === 'wrapper') {
     // Our workspace holds the wrapper and upstream's tree side by side (see
     // <wrapper>/Cargo.toml for why that makes the build path-independent).
+    // The wrapper as committed names one upstream directory and version;
+    // it is written for this spec's.
     const wrapperDir = path.join(HERE, spec.build.wrapper);
     await fs.rm(path.join(root, 'binding'), { recursive: true, force: true });
     await fs.cp(path.join(wrapperDir, 'binding'), path.join(root, 'binding'), { recursive: true });
-    for (const file of ['Cargo.toml', 'Cargo.lock']) await fs.copyFile(path.join(wrapperDir, file), path.join(root, file));
-    const workspace = await fs.readFile(path.join(root, 'Cargo.toml'), 'utf8');
-    const manifest = await fs.readFile(path.join(root, 'binding', 'Cargo.toml'), 'utf8');
-    if (!workspace.includes(`exclude = ["${spec.source.dir}"]`) || !manifest.includes(`path = "../${spec.source.dir}/`)) {
-      throw new Error(`napi-wasm: ${spec.build.wrapper}/Cargo.toml and binding/Cargo.toml must name ${spec.source.dir}`);
+    const workspace = await fs.readFile(path.join(wrapperDir, 'Cargo.toml'), 'utf8');
+    const manifest = await fs.readFile(path.join(wrapperDir, 'binding', 'Cargo.toml'), 'utf8');
+    const committed = workspace.match(/^exclude = \["([^"]+)"\]$/m)?.[1];
+    if (!committed || !manifest.includes(`path = "../${committed}/`) || !/^version = ".*"$/m.test(manifest)) {
+      throw new Error(`napi-wasm: ${spec.build.wrapper}/Cargo.toml must exclude one upstream directory, which binding/Cargo.toml's path dependency names`);
+    }
+    await fs.writeFile(path.join(root, 'Cargo.toml'), workspace.replaceAll(committed, spec.source.dir));
+    await fs.writeFile(path.join(root, 'binding', 'Cargo.toml'), manifest
+      .replaceAll(`../${committed}/`, `../${spec.source.dir}/`)
+      .replace(/^version = ".*"$/m, `version = "${spec.version}"`));
+    let origin;
+    if (spec.build.lockfile) {
+      await fs.copyFile(path.join(HERE, spec.build.lockfile), path.join(root, 'Cargo.lock'));
+      origin = `scripts/napi-wasm/${spec.build.lockfile} (upstream's, pruned to this build)`;
+    } else {
+      // Upstream's, pruned by cargo's own resolve (which keeps every pin it
+      // can and drops what the wrapper's graph does not reach), then checked
+      // below to only drop packages from upstream's.
+      await fs.copyFile(path.join(sourceDir, 'Cargo.lock'), path.join(root, 'Cargo.lock'));
+      const cargo = run('cargo', ['--version'], { capture: true, env: toolchain.env }).trim();
+      const resolved = spawnSync('cargo', ['metadata', '--format-version', '1', '--manifest-path', path.join(root, 'Cargo.toml')], { stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8', env: toolchain.env });
+      if (resolved.status !== 0) throw new Error(`napi-wasm: cargo metadata (pruning upstream's lockfile) exited ${resolved.status}\n${resolved.stderr}`);
+      origin = `upstream's Cargo.lock (${spec.source.dir}), pruned to this build by ${cargo}`;
     }
     const lockText = await fs.readFile(path.join(root, 'Cargo.lock'), 'utf8');
+    if (lockText.includes(`name = "${crate}"`) && !lockText.includes(`name = "${crate}"\nversion = "${spec.version}"`)) {
+      throw new Error(`napi-wasm: ${spec.build.wrapper}'s lockfile pins ${crate} at another version than ${spec.version}`);
+    }
     lock = {
-      origin: `scripts/napi-wasm/${spec.build.lockfile} (upstream's, pruned to this build)`,
+      origin,
       sha256: sha256(lockText),
       ...(spec.build.checkAgainstUpstreamLock ? await checkAgainstUpstream(sourceDir, lockText, crate) : { packages: lockPackages(lockText).size }),
     };
@@ -263,10 +295,11 @@ async function buildSpec(spec, npmDir) {
     throw new Error(`napi-wasm: ${spec.name} ${pumped ? 'exports' : 'lacks'} nimbus_napi_pump, but its build mode is ${spec.build.mode}`);
   }
 
-  const outDir = path.join(OUT, spec.name);
+  const outDir = path.join(OUT, spec.name, spec.version);
   await fs.mkdir(outDir, { recursive: true });
   const file = `${spec.name}.wasm`;
   await fs.writeFile(path.join(outDir, file), wasm);
+  if (spec.build.mode === 'wrapper' && !spec.build.lockfile) await fs.copyFile(path.join(root, 'Cargo.lock'), path.join(outDir, 'Cargo.lock'));
   const provenance = {
     artifact: spec.name,
     version: spec.version,
@@ -424,6 +457,6 @@ await fs.mkdir(WORK, { recursive: true });
 await fs.mkdir(OUT, { recursive: true });
 const emnapi = await fetchEmnapi();
 const results = {};
-for (const name of SELECTED) results[name] = (await buildSpec(SPECS[name], emnapi.npmDir)).outputs;
+for (const key of SELECTED) results[key] = (await buildSpec(SPECS[key], emnapi.npmDir)).outputs;
 results['napi-wasm'] = (await buildLoader(emnapi)).outputs;
 console.log(JSON.stringify(results, null, 2));

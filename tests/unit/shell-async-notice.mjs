@@ -64,7 +64,7 @@ assert.equal(output, '[nimbus: during]\r\n');
 releaseGate();
 await settle();
 await settle();
-assert.ok(plain(output).endsWith(PROMPT));
+assert.ok(plain(output).endsWith(`${PROMPT}\x1b]133;B\x07`));
 
 console.log('shell-async-notice: ok');
 process.exit(0);

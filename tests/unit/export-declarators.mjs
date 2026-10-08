@@ -22,6 +22,9 @@ try {
     'packages/a/src/later.ts': 'import x from "y";\n\nexport let g, h;\nexport var i = 1;\n',
     'packages/b/src/view.tsx': 'export const A = () => <b>a</b>, B = () => <i>b</i>;\n',
     'packages/b/src/plain.mjs': 'export const p = 1, q = 2;\n',
+    // Comments between `export` and the keyword: legal, and no pattern over
+    // the text (`export\s+const`) sees them.
+    'packages/b/src/commented.ts': 'export/*c*/const j = 1, k = 2;\nexport // c\nconst l = 1, m = 2;\nexport\n/* a\n   comment */\nlet n, o;\n',
     // Must not be found:
     'packages/a/src/generated.ts': 'export const PREAMBLE: string = "export const a = 1, b = 2;";\n',
     'packages/a/src/ambient.ts': 'export declare const c: number, d: number;\n',
@@ -40,13 +43,16 @@ try {
   assert.deepEqual(found, [
     { file: 'packages/a/src/later.ts', line: 3, names: ['g', 'h'] },
     { file: 'packages/a/src/modes.ts', line: 2, names: ['F_OK', 'X_OK', 'W_OK', 'R_OK'] },
+    { file: 'packages/b/src/commented.ts', line: 1, names: ['j', 'k'] },
+    { file: 'packages/b/src/commented.ts', line: 2, names: ['l', 'm'] },
+    { file: 'packages/b/src/commented.ts', line: 4, names: ['n', 'o'] },
     { file: 'packages/b/src/plain.mjs', line: 1, names: ['p', 'q'] },
     { file: 'packages/b/src/view.tsx', line: 1, names: ['A', 'B'] },
   ]);
   const reason = multiDeclaratorReason(found);
   assert.match(reason, /packages\/a\/src\/modes\.ts:2 {2}export … F_OK, X_OK, W_OK, R_OK/);
   assert.match(reason, /Declare each name in its own `export const` statement/);
-  console.log('  ok  every multi-declarator export under packages/*/src is found, by file, line and names; strings, ambient declarations, .d.ts, export lists, inner declarations and files outside src are not');
+  console.log('  ok  every multi-declarator export under packages/*/src is found, by file, line and names, comments between export and its keyword too; strings, ambient declarations, .d.ts, export lists, inner declarations and files outside src are not');
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

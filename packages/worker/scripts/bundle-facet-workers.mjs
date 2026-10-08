@@ -46,6 +46,10 @@
  *       WASI_INSTANCE_BODY_SRC: string
  *   @nimbus-sh/core src/runtime/bash-runner.generated.ts — exports
  *       BASH_RUNNER_BODY_SRC: string
+ *   @nimbus-sh/core src/_shared/process-fs-client-source.generated.ts — exports
+ *       PROCESS_FS_CLIENT_SOURCE: string
+ *   @nimbus-sh/core src/_shared/process-fs-journal-reader-source.generated.ts — exports
+ *       PROCESS_FS_JOURNAL_READER_SOURCE: string
  *   public/_assets/runtime/esbuild-cli-<buildId>.js — the `esbuild` command's
  *       runner, which only the session's esbuild facet evaluates. Staged as an
  *       asset rather than a string in the Worker bundle, like the esbuild
@@ -57,17 +61,20 @@
  *       src/oxc-facet-artifact.generated.ts exports OXC_FACET_ASSET_PATH,
  *       OXC_FACET_BUILD_ID, OXC_FACET_SHA256.
  *
- * Runs as a postinstall + predev + predeploy step via package.json.
+ * Runs through the "bundle:facets" package script.
  */
 
 import { build } from 'esbuild';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 // core's own parser dependency, reached through the workspace hoist; the
-// script runs under plain node at postinstall, so nothing here is TypeScript.
+// script runs under plain node, so nothing here is TypeScript.
 import { parse } from 'acorn';
 
+import { amaroFacetDriver } from './amaro-driver.mjs';
+import { FACET_GLOBALS, freeNames } from './free-names.mjs';
 import { resolvePackageDir } from './resolve-package-dir.mjs';
 import { stageRuntimeAsset } from './stage-asset.mjs';
 
@@ -120,7 +127,7 @@ function withoutComments(text) {
  * declarations and the aggregate `export { ... };` block so the
  * blob is inlinable into another module without re-export errors.
  */
-async function bundleAsPreamble(entryPath, label) {
+async function bundleAsPreamble(entryPath, label, { shared = [] } = {}) {
   const result = await build({
     entryPoints: [entryPath],
     bundle: true,
@@ -131,6 +138,14 @@ async function bundleAsPreamble(entryPath, label) {
     write: false,
     logLevel: 'warning',
     legalComments: 'none',
+    // A module the shims declare once for all the code they load (`shared`):
+    // left out, its import removed below, its names the shims' own.
+    plugins: shared.length === 0 ? [] : [{
+      name: 'shims-shared-modules',
+      setup(pluginBuild) {
+        pluginBuild.onResolve({ filter: /.*/ }, (args) => (shared.some((name) => args.path === `./${name}.js`) ? { path: args.path, external: true } : undefined));
+      },
+    }],
     // Strip TypeScript-only imports (e.g. `import type {…}`) — esbuild
     // already drops these, but leave the option default.
   });
@@ -138,6 +153,11 @@ async function bundleAsPreamble(entryPath, label) {
     throw new Error(`[bundle-facet-workers/${label}] esbuild produced no output`);
   }
   let stripped = withoutComments(result.outputFiles[0].text);
+  for (const name of shared) {
+    const before = stripped;
+    stripped = stripped.replace(new RegExp(`^import \\{[^}]*\\} from "\\./${name}\\.js";\\n`, 'm'), '');
+    if (stripped === before) throw new Error(`[bundle-facet-workers/${label}] expected an import of ./${name}.js to leave to the shims`);
+  }
   stripped = stripped.replace(/^export\s+(async\s+function|function|const|class)\b/gm, '$1');
   stripped = stripped.replace(/\n?export\s*\{[^}]*\}\s*;\s*$/g, '');
   return stripped;
@@ -207,6 +227,63 @@ async function bundleWaveWriter() {
 }
 
 /**
+ * A process's filesystem client (@nimbus-sh/core src/_shared/process-fs-client.ts)
+ * as an IIFE bound to `__nimbusProcessFsModule`: core's write ledger
+ * (VFS_WRITE_LEDGER_SOURCE) carries it ahead of its own text, so every node
+ * facet that splices the ledger makes its process's client from it.
+ */
+async function bundleProcessFsClient() {
+  const result = await build({
+    entryPoints: [join(coreRoot, 'src', '_shared', 'process-fs-client.ts')],
+    bundle: true,
+    format: 'iife',
+    globalName: '__nimbusProcessFsModule',
+    target: 'esnext',
+    platform: 'neutral',
+    absWorkingDir: root,
+    write: false,
+    logLevel: 'warning',
+    legalComments: 'none',
+  });
+  if (!result.outputFiles || result.outputFiles.length === 0) {
+    throw new Error('[bundle-facet-workers/process-fs-client] esbuild produced no output');
+  }
+  const src = withoutComments(result.outputFiles[0].text);
+  if (!/^var __nimbusProcessFsModule = /m.test(src)) {
+    throw new Error('[bundle-facet-workers/process-fs-client] the bundle no longer binds __nimbusProcessFsModule');
+  }
+  return src;
+}
+
+/**
+ * The class a dead process's facet is opened with to hand over its journal
+ * (@nimbus-sh/core src/_shared/process-fs-journal-reader.ts), as the ES
+ * module the session loads for it (LOADER.load), cloudflare:workers external.
+ */
+async function bundleProcessFsJournalReader() {
+  const result = await build({
+    entryPoints: [join(coreRoot, 'src', '_shared', 'process-fs-journal-reader.ts')],
+    bundle: true,
+    format: 'esm',
+    target: 'esnext',
+    platform: 'neutral',
+    external: ['cloudflare:workers'],
+    absWorkingDir: root,
+    write: false,
+    logLevel: 'warning',
+    legalComments: 'none',
+  });
+  if (!result.outputFiles || result.outputFiles.length === 0) {
+    throw new Error('[bundle-facet-workers/process-fs-journal-reader] esbuild produced no output');
+  }
+  const src = withoutComments(result.outputFiles[0].text);
+  if (!/export\s*\{[^}]*NimbusFsJournalReader/.test(src)) {
+    throw new Error('[bundle-facet-workers/process-fs-journal-reader] the bundle no longer exports NimbusFsJournalReader');
+  }
+  return src;
+}
+
+/**
  * The git pack layer (src/git/pack/facet.ts) as an IIFE bound to the
  * module-local `__nimbusGitPack`, spliced into the git network facet beside
  * the wave writer. Its node:crypto and node:zlib imports resolve to the
@@ -246,6 +323,85 @@ async function bundleGitPack() {
   const src = withoutComments(result.outputFiles[0].text);
   if (!/^var __nimbusGitPack = /m.test(src)) {
     throw new Error('[bundle-facet-workers/git-pack] the bundle no longer binds __nimbusGitPack');
+  }
+  return src;
+}
+
+/**
+ * The node builtins npm's libraries require, each a namespace import the
+ * resolver facet's module makes (NPM_RESOLVE_NODE_IMPORTS), which an IIFE
+ * cannot make itself. `node:path/win32` is npm-package-arg's on Windows only.
+ */
+const NPM_RESOLVE_BUILTINS = {
+  'node:path': '__nimbusNodePath',
+  'node:path/win32': '__nimbusNodePath',
+  'node:os': '__nimbusNodeOs',
+  'node:url': '__nimbusNodeUrl',
+  url: '__nimbusNodeUrl',
+  'node:module': '__nimbusNodeModule',
+  module: '__nimbusNodeModule',
+};
+const NPM_RESOLVE_NODE_IMPORTS = [
+  "import * as __nimbusNodePath from 'node:path';",
+  "import * as __nimbusNodeOs from 'node:os';",
+  "import * as __nimbusNodeUrl from 'node:url';",
+  "import * as __nimbusNodeModule from 'node:module';",
+].join('\n');
+
+/**
+ * Versions and specs as npm reads them (@nimbus-sh/core _shared/npm-semver.ts
+ * and npm-spec.ts, over npm's own semver and npm-package-arg) as an IIFE
+ * bound to the module-local `__nimbusNpmResolve`, spliced into the resolver
+ * facets' preamble (loaders/npm-resolve-preamble.ts) after
+ * NPM_RESOLVE_NODE_IMPORTS. Its free names are checked: only the imports
+ * and a facet's own globals.
+ */
+async function bundleNpmResolve() {
+  const result = await build({
+    stdin: {
+      contents: [
+        "export { compareSemver, isSemverRange, parseSemver, pickPackumentVersion, resolveVersion, satisfiesRange } from './src/_shared/npm-semver.ts';",
+        "export { parseRegistryRequest } from './src/_shared/npm-spec.ts';",
+      ].join('\n'),
+      resolveDir: coreRoot,
+      loader: 'ts',
+    },
+    bundle: true,
+    format: 'iife',
+    globalName: '__nimbusNpmResolve',
+    target: 'esnext',
+    platform: 'neutral',
+    mainFields: ['main'],
+    // Minified: npm's libraries are a third of a resolver facet's module, and
+    // nothing reads this bundle's text or names but its one binding, which
+    // the check below holds (and the free-name guard after it).
+    minify: true,
+    absWorkingDir: root,
+    write: false,
+    logLevel: 'warning',
+    legalComments: 'none',
+    plugins: [{
+      name: 'facet-node-builtins',
+      setup(pluginBuild) {
+        pluginBuild.onResolve({ filter: /^(node:)?(path|path\/win32|os|url|module)$/ }, (args) => ({ path: args.path, namespace: 'facet-node-builtin' }));
+        pluginBuild.onLoad({ filter: /.*/, namespace: 'facet-node-builtin' }, (args) => {
+          const binding = NPM_RESOLVE_BUILTINS[args.path] ?? NPM_RESOLVE_BUILTINS[`node:${args.path}`];
+          return { contents: `module.exports = ${binding};`, loader: 'js' };
+        });
+      },
+    }],
+  });
+  if (!result.outputFiles || result.outputFiles.length === 0) {
+    throw new Error('[bundle-facet-workers/npm-resolve] esbuild produced no output');
+  }
+  const src = result.outputFiles[0].text;
+  if (!/^var __nimbusNpmResolve=/m.test(src)) {
+    throw new Error('[bundle-facet-workers/npm-resolve] the bundle no longer binds __nimbusNpmResolve');
+  }
+  const allowed = new Set([...FACET_GLOBALS, ...Object.values(NPM_RESOLVE_BUILTINS)]);
+  const stray = [...freeNames(src)].filter((name) => !allowed.has(name) && name !== '__nimbusNpmResolve');
+  if (stray.length > 0) {
+    throw new Error(`[bundle-facet-workers/npm-resolve] the bundle reads ${stray.join(', ')}, which a facet does not have: a ReferenceError inside the resolver`);
   }
   return src;
 }
@@ -536,6 +692,18 @@ function stageEsbuildCli(src) {
  * top-level-await lowering, installed as globals the facet's class reads.
  */
 async function bundleOxcFacet() {
+  const amaroDriverPath = createRequire(join(coreRoot, 'package.json')).resolve('amaro');
+  const amaro = {
+    name: 'nimbus-amaro',
+    setup(context) {
+      context.onResolve({ filter: /^amaro$/ }, () => ({ path: amaroDriverPath }));
+      context.onLoad({ filter: /amaro[\\/]dist[\\/]index\.js$/ }, () => ({
+        contents: amaroFacetDriver(readFileSync(amaroDriverPath, 'utf8')),
+        loader: 'js',
+        resolveDir: dirname(amaroDriverPath),
+      }));
+    },
+  };
   const result = await build({
     entryPoints: [join(coreRoot, 'src', 'runtime', 'oxc-facet', 'preamble.ts')],
     bundle: true,
@@ -546,12 +714,13 @@ async function bundleOxcFacet() {
     write: false,
     logLevel: 'warning',
     legalComments: 'none',
+    plugins: [amaro],
   });
   if (!result.outputFiles || result.outputFiles.length === 0) {
     throw new Error('[bundle-facet-workers/oxc-facet] esbuild produced no output');
   }
   const runtime = withoutComments(result.outputFiles[0].text);
-  for (const global of ['__nimbusCreateOxcTransform', '__nimbusRewriteDynamicImports', '__nimbusLowerAsyncModule']) {
+  for (const global of ['__nimbusCreateOxcTransform', '__nimbusTransformRuntime']) {
     if (!runtime.includes(global)) {
       throw new Error(`[bundle-facet-workers/oxc-facet] the bundle no longer installs globalThis.${global}`);
     }
@@ -574,9 +743,9 @@ async function bundleRolldownFacet() {
   const shims = join(root, 'scripts', 'rolldown-facet', 'shims.mjs');
   const rolldownPkg = JSON.parse(readFileSync(join(root, 'node_modules', 'rolldown', 'package.json'), 'utf8'));
   const artifacts = readFileSync(join(root, 'src', 'napi-wasm-artifacts.generated.ts'), 'utf8');
-  const stagedVersion = /"name": "rolldown",\s*"version": "([^"]+)"/.exec(artifacts)?.[1];
+  const stagedVersion = /^export const OWN_ROLLDOWN_VERSION: string = "([^"]+)";$/m.exec(artifacts)?.[1];
   if (rolldownPkg.version !== stagedVersion) {
-    throw new Error(`[bundle-facet-workers/rolldown-facet] rolldown ${rolldownPkg.version} is installed; the staged binding is ${stagedVersion}`);
+    throw new Error(`[bundle-facet-workers/rolldown-facet] rolldown ${rolldownPkg.version} is installed; the build facet's staged binding is ${stagedVersion}`);
   }
   const result = await build({
     entryPoints: [join(root, 'scripts', 'rolldown-facet', 'entry.mjs')],
@@ -676,35 +845,50 @@ async function main() {
     'w7-frame',
   );
 
-  // 3. Node's ESM resolver, which the node shims embed as source (their
+  // 3. Node's internal errors (nodeError, nodeSystemError, invalidArgType),
+  //    which the node shims declare first, for themselves and the modules
+  //    below, which leave them out of their own bundles.
+  const nodeErrors = await bundleAsPreamble(
+    join(coreRoot, 'src', '_shared', 'node-error.ts'),
+    'node-error',
+  );
+  for (const name of ['nodeError', 'nodeSystemError', 'invalidArgType', 'useNodeErrorInspect']) {
+    if (!new RegExp(`^function ${name}\\(`, 'm').test(nodeErrors)) {
+      throw new Error(`[bundle-facet-workers/node-error] the bundle no longer declares function ${name}`);
+    }
+  }
+
+  // 4. Node's ESM resolver, which the node shims embed as source (their
   //    process's import() loader). One compile of it, here, so the shims'
   //    copy is the same text whatever toolchain later evaluates the shims.
   const esmResolver = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'esm-resolver.ts'),
     'esm-resolver',
+    { shared: ['node-error'] },
   );
   if (!/^function createEsmResolver\(/m.test(esmResolver)) {
     throw new Error('[bundle-facet-workers/esm-resolver] the bundle no longer declares function createEsmResolver');
   }
 
-  // 4. node:http2, which the node shims embed as source, as the substrate's
+  // 5. node:http2, which the node shims embed as source, as the substrate's
   //    node-compat module map imports it: one module, both runtimes.
   const http2Module = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'http2-module.ts'),
     'http2-module',
+    { shared: ['node-error'] },
   );
   if (!/^function createHttp2Module\(/m.test(http2Module)) {
     throw new Error('[bundle-facet-workers/http2-module] the bundle no longer declares function createHttp2Module');
   }
 
-  // 5. Exports/imports resolution, the TypeScript specifier fallbacks and
+  // 6. Exports/imports resolution, the TypeScript specifier fallbacks and
   //    the AI credential rule, which the node shims embed as source: one
   //    compile of the core code, so the shims carry no copy of it.
   const shimResolution = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'node-shim-resolution.ts'),
     'node-shim-resolution',
   );
-  for (const name of ['resolveExports', 'resolvePackageEntry', 'packageSelfReferenceSubpath', 'typescriptFallbackCandidates', 'presentedCredential']) {
+  for (const name of ['resolveExports', 'resolvePackageEntry', 'packageSelfReferenceSubpath', 'typescriptFallbackCandidates', 'stripsTypeScript', 'presentedCredential']) {
     if (!new RegExp(`^function ${name}\\(`, 'm').test(shimResolution)) {
       throw new Error(`[bundle-facet-workers/node-shim-resolution] the bundle no longer declares function ${name}`);
     }
@@ -729,6 +913,7 @@ async function main() {
     ' *   - @nimbus-sh/core src/_shared/tarball-stream.ts (streaming tar primitives)',
     ' *   - @nimbus-sh/platform src/w7-frame.ts (W7 streaming bulk-write encoder)',
     ' *   - @nimbus-sh/platform src/wave-writer.ts (the W7 wave writer, as an IIFE)',
+    ' *   - @nimbus-sh/core src/_shared/node-error.ts (Node\'s internal errors, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node\'s ESM resolver, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/node-shim-resolution.ts (resolution and credential rules, for the node shims)',
@@ -754,6 +939,15 @@ async function main() {
     '/** Binds `__nimbusWaveWriter` (createWaveWriter, WaveFailure, …) in the module that splices it. */',
     `export const WAVE_WRITER_PREAMBLE: string = ${JSON.stringify(waveWriter)};`,
     '',
+    '/**',
+    ' * Declares `function nodeError(Base, code, message, props)`,',
+    ' * `function nodeSystemError(code, prefix, context)`,',
+    ' * `function invalidArgType(name, expected, actual)` and',
+    ' * `function useNodeErrorInspect(inspect)`: the node shims declare them',
+    ' * first, for themselves and the preambles below, which use them by name.',
+    ' */',
+    `export const NODE_ERROR_PREAMBLE: string = ${JSON.stringify(nodeErrors)};`,
+    '',
     '/** Declares `function createEsmResolver(host)`; the node shims call it. */',
     `export const ESM_RESOLVER_PREAMBLE: string = ${JSON.stringify(esmResolver)};`,
     '',
@@ -762,7 +956,7 @@ async function main() {
     '',
     '/**',
     ' * Declares resolveExports, resolvePackageEntry, packageSelfReferenceSubpath,',
-    ' * DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates,',
+    ' * DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates, stripsTypeScript,',
     ' * TYPESCRIPT_INDEX_CANDIDATES and presentedCredential; the node shims call them.',
     ' */',
     `export const NODE_SHIM_RESOLUTION_PREAMBLE: string = ${JSON.stringify(shimResolution)};`,
@@ -859,6 +1053,67 @@ async function main() {
     '',
   ].join('\n'));
 
+  const processFsSrc = await bundleProcessFsClient();
+  const processFsOutPath = join(coreRoot, 'src', '_shared', 'process-fs-client-source.generated.ts');
+  writeFileSync(processFsOutPath, [
+    '/**',
+    ' * process-fs-client-source.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
+    ' *',
+    ' * Produced by scripts/bundle-facet-workers.mjs (@nimbus-sh/worker) from:',
+    ' *   - src/_shared/process-fs-client.ts',
+    ' *',
+    ' * A process\'s filesystem client as an IIFE binding __nimbusProcessFsModule,',
+    ' * which the write ledger (vfs-write-ledger.ts) carries ahead of its text.',
+    ' *',
+    ` * Size: ${(processFsSrc.length / 1024).toFixed(2)} KiB`,
+    ' */',
+    '',
+    `export const PROCESS_FS_CLIENT_SOURCE: string = ${JSON.stringify(processFsSrc)};`,
+    '',
+  ].join('\n'));
+
+  const readerSrc = await bundleProcessFsJournalReader();
+  const readerOutPath = join(coreRoot, 'src', '_shared', 'process-fs-journal-reader-source.generated.ts');
+  writeFileSync(readerOutPath, [
+    '/**',
+    ' * process-fs-journal-reader-source.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
+    ' *',
+    ' * Produced by scripts/bundle-facet-workers.mjs (@nimbus-sh/worker) from:',
+    ' *   - src/_shared/process-fs-journal-reader.ts',
+    ' *',
+    ' * The module (export class NimbusFsJournalReader) a dead process\'s facet',
+    ' * is opened with to hand its journal to the session\'s drain.',
+    ' */',
+    '',
+    `export const PROCESS_FS_JOURNAL_READER_SOURCE: string = ${JSON.stringify(readerSrc)};`,
+    '',
+  ].join('\n'));
+  console.log(`[bundle-facet-workers] wrote ${readerOutPath} (process-fs-journal-reader=${(readerSrc.length / 1024).toFixed(2)} KiB)`);
+
+  const npmResolveSrc = await bundleNpmResolve();
+  const npmResolveOutPath = join(root, 'src', 'npm', 'resolve-libs.generated.ts');
+  writeFileSync(npmResolveOutPath, [
+    '/**',
+    ' * resolve-libs.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
+    ' *',
+    ' * Produced by scripts/bundle-facet-workers.mjs from:',
+    ' *   - @nimbus-sh/core src/_shared/npm-semver.ts (over semver)',
+    ' *   - @nimbus-sh/core src/_shared/npm-spec.ts (over npm-package-arg)',
+    ' *',
+    ' * An IIFE binding `__nimbusNpmResolve` in the module that splices it, the',
+    ' * resolver facets\' preamble (loaders/npm-resolve-preamble.ts), after',
+    ' * NPM_RESOLVE_NODE_IMPORTS. Its free names are those imports and a facet\'s',
+    ' * globals (scripts/free-names.mjs).',
+    ' *',
+    ` * Size: ${(npmResolveSrc.length / 1024).toFixed(2)} KiB`,
+    ' */',
+    '',
+    `export const NPM_RESOLVE_NODE_IMPORTS: string = ${JSON.stringify(NPM_RESOLVE_NODE_IMPORTS)};`,
+    '',
+    `export const NPM_RESOLVE_SRC: string = ${JSON.stringify(npmResolveSrc)};`,
+    '',
+  ].join('\n'));
+
   const bashSrc = await bundleBashRunner();
   const bashOutPath = join(coreRoot, 'src', 'runtime', 'bash-runner.generated.ts');
   writeFileSync(bashOutPath, [
@@ -893,6 +1148,10 @@ async function main() {
   console.log(
     `[bundle-facet-workers] wrote ${wasiOutPath} ` +
     `(wasi=${(wasiSrc.length / 1024).toFixed(2)} KiB)`,
+  );
+  console.log(
+    `[bundle-facet-workers] wrote ${processFsOutPath} ` +
+    `(process-fs-client=${(processFsSrc.length / 1024).toFixed(2)} KiB)`,
   );
   console.log(
     `[bundle-facet-workers] wrote ${bashOutPath} ` +

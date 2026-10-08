@@ -120,6 +120,11 @@ async function dispatch(bytes, argv) {
   assert.equal(submitted[0]?.mode, 'wasi');
   assert.equal(submitted[0]?.wasiAbi, 'preview0', 'the import decides the ABI, not a string in the data');
   assert.equal(submitted[0]?.wasiNamespace, 'wasi_unstable');
+  // Its credential rides with its filesystem: with it, the facet answers from
+  // its resident store and sends changes as waves (initFS cred). Red before:
+  // none was passed, and every file call was a round trip (clang 10k: about
+  // 100 ms a file).
+  assert.deepEqual(submitted[0]?.wasiFs?.cred, { uid: 1000, gid: 1000, groups: [1000] });
 }
 {
   const { submitted } = await dispatch(both, []);

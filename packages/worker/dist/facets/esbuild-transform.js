@@ -41,7 +41,7 @@ const ESBUILD_FACET_BODY = [
     '      const outcomes = [];',
     '      for (const { code, options } of requests) {',
     '        try {',
-    '          outcomes.push(await runTransformRequest(own, code, options, globalThis.__nimbusRewriteDynamicImports, globalThis.__nimbusLowerAsyncModule));',
+    '          outcomes.push(await runTransformRequest(own, code, options, globalThis.__nimbusTransformRuntime));',
     '        } catch (e) {',
     '          outcomes.push({ error: String((e && e.message) || e) });',
     '        }',
@@ -105,9 +105,10 @@ export function esbuildFacetWorkerCode(wasm, jsFnBody, cliRunner, transformRunti
  * stub, so a caller that starts while another is still loading it (fetching
  * and verifying its staged adapter and runner) waits on that load.
  */
-const esbuildFacet = new SharedHelperFacet({
+const esbuildFacetSpec = {
     id: ESBUILD_FACET_WORKER_ID,
     className: 'EsbuildFacet',
+    kind: 'esbuild',
     what: 'the esbuild facet',
     async code(assets) {
         const [wasm, jsFnBody, cliRunner, transformRuntime] = await Promise.all([
@@ -118,6 +119,19 @@ const esbuildFacet = new SharedHelperFacet({
         ]);
         return esbuildFacetWorkerCode(wasm, jsFnBody, cliRunner, transformRuntime);
     },
+};
+/** transformMany and build: compute calls, bounded by the esbuild kind's call deadline. */
+const esbuildFacet = new SharedHelperFacet(esbuildFacetSpec);
+/**
+ * `esbuild` the command, a process: the same worker as a second actor, so a
+ * compute call that expires (and aborts its facet) never ends a running
+ * command, and the command has no wall deadline.
+ */
+const esbuildCliFacet = new SharedHelperFacet({
+    ...esbuildFacetSpec,
+    facetName: `${ESBUILD_FACET_WORKER_ID}:cli`,
+    what: 'the esbuild command\'s facet',
+    runsProcesses: true,
 });
 /**
  * One call on the shared facet; a call that throws drops the stub it used.
@@ -125,14 +139,14 @@ const esbuildFacet = new SharedHelperFacet({
  * call's duration — bracketed, never wrapped (see beginLoaderFetch) — and
  * admitted as a helper's is (beginHelperFetch).
  */
-async function onEsbuildFacet(ctx, env, call) {
-    const stub = esbuildFacet.stub(ctx, env);
+async function onEsbuildFacet(ctx, env, call, shared = esbuildFacet) {
+    const stub = shared.stub(ctx, env);
     const endFetch = await beginHelperFetch(ctx, ESBUILD_FACET_WORKER_ID);
     try {
         return await call(await stub);
     }
     catch (error) {
-        esbuildFacet.forget(ctx, stub);
+        shared.forget(ctx, stub);
         throw error;
     }
     finally {
@@ -168,7 +182,7 @@ export async function runEsbuildCli(ctx, env, pid, args, output) {
         // The esbuild facet has no network (its loader denies one): nothing to route.
         props: supervisorBindingProps(ctx, pid, { writerId: crypto.randomUUID(), network: ISOLATE_NETWORK }),
     });
-    return onEsbuildFacet(ctx, env, (facet) => facet.cli(args, supervisor, output));
+    return onEsbuildFacet(ctx, env, (facet) => facet.cli(args, supervisor, output), esbuildCliFacet);
 }
 /**
  * What a transform from supervisorEsbuildService's host is a function of:

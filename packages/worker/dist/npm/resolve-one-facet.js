@@ -25,6 +25,7 @@
  *       PARSE_SEMVER(v) → [maj, min, patch] | null
  *       COMPARE_SEMVER(a, b) → number
  *       RESOLVE_VERSION(versions, range) → string | null
+ *       PARSE_REGISTRY_REQUEST(name, range) → the registry request a spec makes
  *
  * What the task does NOT do (supervisor responsibility)
  * ─────────────────────────────────────────────────────
@@ -49,7 +50,6 @@
  *   7. Return {pkg, deps, peerDeps, optionalDeps, cacheWrites, messages,
  *      events, packumentBytesDecoded, packumentSource, error?}.
  */
-import { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 /**
  * Per-package fanout task body. Serialised via fn.toString() and
  * dispatched by Fanout.submitMany — see installer.ts
@@ -66,7 +66,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     const messages = [];
     const events = [];
     const cacheWrites = [];
-    const request = parseRegistryRequest(spec.name, spec.range);
+    const request = PARSE_REGISTRY_REQUEST(spec.name, spec.range);
     // cache-obs-2: per-resolve cache events. Filled by the L2/L3 path
     // (spliced from supervisor RPC return.events) and the L4 path
     // (post-network-fetch). Threaded through `out()` into the result.
@@ -99,17 +99,18 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             ctx: 'transitive',
         });
     };
-    // A staged binding is built from one upstream version; any other version's
-    // JavaScript would load a binding it was not written against, and the
-    // runtime refuses it. Say so at install time, where it can be pinned.
+    // Each staged build of a binding is of one upstream version; another
+    // version's JavaScript would load a binding it was not written against,
+    // and the runtime refuses it. Say so at install time, where it can be pinned.
     const adviseStagedBindingVersion = (pkg) => {
         const staged = STAGED_ARTIFACT(pkg.name);
-        if (staged?.kind !== 'binding' || staged.version === pkg.version)
+        if (staged?.kind !== 'binding' || staged.versions.includes(pkg.version))
             return;
+        const newest = staged.versions[staged.versions.length - 1];
         emitAdvisory({
             from: pkg.name,
-            reason: `Nimbus runs ${staged.from}'s binding from a staged ${staged.version} build, and ${pkg.name}@${pkg.version} will refuse to load it.`,
-            suggest: `${staged.from}@${staged.version}`,
+            reason: `Nimbus runs ${staged.from}'s binding from staged builds of ${staged.versions.join(', ')}, and ${pkg.name}@${pkg.version} has none: it will refuse to load.`,
+            suggest: `${staged.from}@${newest}`,
         });
     };
     const outNativeExecutableReject = (pkg, bytes, source) => {
@@ -186,17 +187,18 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         if (__fail)
             emitAdvisory(__fail);
     }
-    // A package whose binding Nimbus stages runs only at the staged version, so
-    // when the range admits that version it is the one installed, not the
-    // newest the registry has: rolldown ~1.2.9 installs the staged 1.2.11 even
-    // after 1.2.12 is published. A range that excludes it keeps its own pick,
-    // and the install says why it will not load.
+    // A package whose binding Nimbus stages runs only at a staged version, so
+    // when the range admits one, the newest it admits is the one installed,
+    // not the newest the registry has: vite 8.3.4's rolldown ~1.2.12 installs
+    // the staged 1.2.13 after 1.2.14 is published, and ~1.2.9 a staged 1.2.11
+    // when nothing newer is staged. A range that admits none keeps its own
+    // pick, and the install says why it will not load.
     const stagedBindingVersion = () => {
         const staged = STAGED_ARTIFACT(request.registryName);
-        if (staged?.kind !== 'binding')
+        if (staged?.kind !== 'binding' || staged.versions.length === 0)
             return null;
         const open = !request.range || ['latest', '*', 'x', 'X'].includes(String(request.range).trim());
-        return open || RESOLVE_VERSION([staged.version], request.range) === staged.version ? staged.version : null;
+        return open ? staged.versions[staged.versions.length - 1] ?? null : RESOLVE_VERSION([...staged.versions], request.range);
     };
     // 2. cachedHit fast-path. The pick over the cached versions is the same
     //    RESOLVE_VERSION the packument path uses — a range is never reduced

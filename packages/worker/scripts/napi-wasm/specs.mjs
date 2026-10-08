@@ -1,6 +1,7 @@
 /**
  * specs.mjs — the napi-rs bindings Nimbus builds for single-threaded
- * wasm32-wasip1, one entry each, all built by build.mjs.
+ * wasm32-wasip1, one entry per binding and upstream version
+ * (`<name>@<version>`), each built by build.mjs.
  *
  * Every one of them publishes only platform `.node` shards plus a
  * wasm32-wasip1-threads build (shared memory, wasi thread-spawn), which a
@@ -13,8 +14,9 @@
  *                wrapper    our cdylib in scripts/napi-wasm/<wrapper>/ linking
  *                           upstream's crate (a binding whose async fns need
  *                           an event-loop-driven runtime)
- *              lockfile     'upstream' (the archive's Cargo.lock, --locked) or
- *                           a committed file under scripts/napi-wasm/
+ *              lockfile     'upstream' (the archive's Cargo.lock, --locked), a
+ *                           committed file under scripts/napi-wasm/, or (a
+ *                           wrapper) null: upstream's, pruned at build time
  *   rustflags  as upstream builds its wasm target, minus the threads
  *   seams      exact-match edits to upstream files, each with its reason; the
  *              build fails unless each `from` occurs exactly once
@@ -24,17 +26,25 @@
  *              it requires the binding by
  */
 
-export const SPECS = {
-  rolldown: {
+/**
+ * rolldown at one upstream version: its tag archive's digest, the toolchain
+ * that tag's rust-toolchain.toml pins, and the lockfile the wrapper builds
+ * with. `null` derives it at build time from the tag's own Cargo.lock, pruned
+ * to the wrapper's graph by cargo and checked to only drop packages from it
+ * (provenance records its digest), so supporting a new rolldown is a spec
+ * line and a build run (scripts/ci/remote-napi-binding.mjs).
+ */
+function rolldown(version, sha256, toolchain, lockfile = null) {
+  return {
     name: 'rolldown',
-    version: '1.2.11',
+    version,
     source: {
-      url: 'https://github.com/rolldown/rolldown/archive/refs/tags/v1.2.11.tar.gz',
-      sha256: 'fb6def184441b75eaf4f5ac24f99d46a29686f61e29af1bc137705f4da018403',
-      dir: 'rolldown-1.2.11',
+      url: `https://github.com/rolldown/rolldown/archive/refs/tags/v${version}.tar.gz`,
+      sha256,
+      dir: `rolldown-${version}`,
     },
-    toolchain: '1.98.1',
-    build: { mode: 'wrapper', wrapper: 'rolldown', lockfile: 'rolldown/Cargo.lock', checkAgainstUpstreamLock: true },
+    toolchain,
+    build: { mode: 'wrapper', wrapper: 'rolldown', lockfile, checkAgainstUpstreamLock: true },
     rustflags: [
       // rolldown_plugin_utils enables tokio's `fs` feature, which tokio only
       // compiles for wasm under tokio_unstable; upstream sets the same cfg for
@@ -45,11 +55,22 @@ export const SPECS = {
     seams: [],
     output: 'nimbus_rolldown_binding.wasm',
     npm: { owner: 'rolldown', requiredAs: ['@rolldown/binding-wasm32-wasi'] },
-  },
+  };
+}
+
+/**
+ * Every build, by `<name>@<version>`. A binding is built from one upstream
+ * version and loads only under its owner at that version, so each version a
+ * project may install is a build of its own: vite 8.3.4 asks for rolldown
+ * ~1.2.12, and projects made before it pin 1.2.11.
+ */
+export const SPECS = {
+  'rolldown@1.2.11': rolldown('1.2.11', 'fb6def184441b75eaf4f5ac24f99d46a29686f61e29af1bc137705f4da018403', '1.98.1', 'rolldown/Cargo.lock'),
+  'rolldown@1.2.13': rolldown('1.2.13', 'f22d36d1dc3fc068274149b5e699058657a3f7da1802aee42e7e667f3a31cf04', '1.99.0'),
 
   // Astro 7's Markdown engine (@astrojs/markdown-satteri). Its binding has
   // no async fns and no tokio: upstream's own crate, workspace and lockfile.
-  satteri: {
+  'satteri@0.10.5': {
     name: 'satteri',
     version: '0.10.5',
     source: {
@@ -71,7 +92,7 @@ export const SPECS = {
   // only uses napi AsyncTask (emnapi's JS async-work plugin), so it builds in
   // upstream's workspace. Upstream commits no Cargo.lock: the committed
   // astro-compiler/Cargo.lock is this build's pin (generated at v0.5.1).
-  'astro-compiler': {
+  'astro-compiler@0.5.1': {
     name: 'astro-compiler',
     version: '0.5.1',
     source: {
@@ -102,7 +123,7 @@ export const SPECS = {
 export const EMNAPI = {
   // Integrity as recorded in rolldown v1.2.11's pnpm-lock.yaml (the rolldown
   // source archive is the record); every binding links this one emnapi.
-  lockfileFrom: 'rolldown',
+  lockfileFrom: 'rolldown@1.2.11',
   packages: [
     { name: 'emnapi', version: '2.0.0-alpha.5' },
     { name: '@emnapi/core', version: '2.0.0-alpha.5' },

@@ -4,12 +4,12 @@
  * consumer turns one into another by (find, Node's Dirent in the substrate,
  * and the Worker's Node shim, which embeds it).
  */
-import { S_IFMT } from './vfs.js';
+import { S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG } from './vfs.js';
 export const DIRENT_TYPES = {
-    file: { format: 0o100000, node: 'isFile' },
-    directory: { format: 0o040000, node: 'isDirectory' },
-    symlink: { format: 0o120000, node: 'isSymbolicLink' },
-    character: { format: 0o020000, node: 'isCharacterDevice' },
+    file: { format: S_IFREG, node: 'isFile' },
+    directory: { format: S_IFDIR, node: 'isDirectory' },
+    symlink: { format: S_IFLNK, node: 'isSymbolicLink' },
+    character: { format: S_IFCHR, node: 'isCharacterDevice' },
     block: { format: 0o060000, node: 'isBlockDevice' },
     fifo: { format: 0o010000, node: 'isFIFO' },
     socket: { format: 0o140000, node: 'isSocket' },

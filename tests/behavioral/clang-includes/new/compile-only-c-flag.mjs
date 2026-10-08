@@ -43,10 +43,10 @@ const out3 = stripAnsi(rl.output);
 a.check('link drv.c + foo.o succeeds', !/error:/i.test(out3) && !/undefined symbol/i.test(out3),
   JSON.stringify(out3.slice(-400)));
 
-const rr = await t.run('./drv ; echo RUN_EXIT=$?', 30_000);
+const rr = await t.run('./drv', 30_000);
 const out4 = stripAnsi(rr.output);
 a.check('./drv prints R=42', /R=42/.test(out4), JSON.stringify(out4.slice(-300)));
-a.check('./drv exits 0', /RUN_EXIT=0/.test(out4), JSON.stringify(out4.slice(-200)));
+a.check('./drv exits 0', rr.exitCode === 0, JSON.stringify(out4.slice(-200)));
 
 await t.close();
 const sum = a.summary();

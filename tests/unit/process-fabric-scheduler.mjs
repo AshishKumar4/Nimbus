@@ -27,6 +27,7 @@
 // Behavior is asserted through the public ProcessFabric surface only.
 
 import assert from 'node:assert/strict';
+import { facetLoaderKey } from '../../packages/fabric/src/facet-limits.ts';
 import {
   ProcessFabric,
   ResidentProcessHandle,
@@ -140,12 +141,11 @@ for (const mode of PROCESS_HOST_MODES) {
 
     assert.equal(world.boots.length, 1, "the user's program evaluated exactly once");
     const [boot] = world.boots;
-    // The facet is named for its SLOT, not its pid: a Durable Object never
-    // reclaims a facet ID, so names have to be reusable and a pid never is.
-    // One process in a fresh host, so it holds the first slot.
+    // The facet is named for its slot, not its pid. One process in a fresh
+    // host, so it holds the first slot.
     assert.equal(boot.facetName, residentFacetName(0), 'the facet is named for its slot');
     assert.equal(boot.className, RESIDENT_PROCESS_CLASS, 'one class name for every runtime');
-    assert.equal(boot.loaderId, 'nimbus-process:coord-do-id:42', 'the loader id is the process key');
+    assert.equal(boot.loaderId, facetLoaderKey('process', 'nimbus-process:coord-do-id:42'), 'the loader id is the process key, under the process policy');
     // (2) syscalls route to the coordinator, whatever the process is and
     // wherever it runs — a peer mints the binding for the COORDINATOR's doId.
     const supervisor = boot.config.env.SUPERVISOR;
@@ -178,7 +178,7 @@ for (const mode of PROCESS_HOST_MODES) {
     assert.match(host.hostIncarnation, /^[0-9a-f-]{36}$/);
     assert.equal(boot.config.env.SUPERVISOR.props.hostIncarnation, host.hostIncarnation,
       'the binding does not name the coordinator instance');
-    assert.equal(boot.loaderId, `nimbus-process:coord-do-id:44:${host.hostIncarnation}`,
+    assert.equal(boot.loaderId, facetLoaderKey('process', `nimbus-process:coord-do-id:44:${host.hostIncarnation}`),
       'the loader key does not name the coordinator instance');
     console.log(`  [${mode}] case1b: a delivering coordinator's instance rides the binding and the loader key`);
   }
@@ -256,16 +256,7 @@ for (const mode of PROCESS_HOST_MODES) {
     }
     assert.equal(world.boots.length, 1, '20 routed requests booted nothing');
 
-    // A facet lost to a platform reset is reported, not silently replaced.
-    world.lose(residentFacetName(0));
-    await assert.rejects(
-      handle.routeTarget.handleHttpRequest(new Request('http://x/after')),
-      /no longer loaded/,
-      'a lost facet fails loud',
-    );
-    assert.equal(world.boots.length, 1, 'a lost facet booted NO replacement');
-
-    // And so is a released one — with the SAME message on both substrates. A
+    // A released one fails loud with the SAME message on both substrates. A
     // peer keeps its hosted record past the kill precisely so this request
     // reaches the released facet instead of timing out on a missing record.
     handle.kill();
@@ -276,6 +267,22 @@ for (const mode of PROCESS_HOST_MODES) {
       'a killed process fails loud, and says the same thing wherever it ran',
     );
     assert.equal(world.boots.length, 1);
+
+    // A facet lost to a platform reset is reported, not silently replaced,
+    // and its process is over.
+    const second = await fabric.startResidentProcess({
+      ...WRITER_LIFECYCLE,
+      startContract: 'boot', pid: 46, workerKey: 'k46', boot: CODE_BOOT,
+    });
+    await second.booted();
+    world.lose(world.boots.at(-1).facetName);
+    await assert.rejects(
+      second.routeTarget.handleHttpRequest(new Request('http://x/after')),
+      /no longer loaded/,
+      'a lost facet fails loud',
+    );
+    await assert.rejects(second.done, /no longer loaded/, 'and its process ends with the loss');
+    assert.equal(world.boots.length, 2, 'a lost facet booted NO replacement');
     console.log(`  [${mode}] case5: one evaluation per process; a lost or killed facet never re-boots`);
   }
 
@@ -496,6 +503,9 @@ for (const mode of PROCESS_HOST_MODES) {
     _hostedProcesses: new Map(),
     _hostedProcessWaiters: new Map(),
   };
+  // A host arms the alarm that reports its own reset before it hosts anything.
+  peer.ctx.storage.setAlarm = async () => {};
+  peer.scheduleHostingWatch = async () => {};
   const goodOpts = {
     coordinatorDoId: 'coord-do-id', pid: 62, writerId: crypto.randomUUID(), workerKey: 'k62',
     webSocketCapability: crypto.randomUUID(),

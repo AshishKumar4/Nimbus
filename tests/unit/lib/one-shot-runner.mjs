@@ -11,18 +11,19 @@ import { pathToFileURL } from 'node:url';
 import { FacetManager } from '../../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../../packages/core/src/runtime/port-registry.ts';
-import { adoptCtxExports } from '../../../packages/fabric/src/composition.ts';
+import { adoptCtxExports, supervisorEntrypoint } from '../../../packages/fabric/src/composition.ts';
 import { createFacetCtx, createFacetWorld } from '../facet-host-harness.mjs';
 import { writeModuleSet } from './module-map-bundle.mjs';
 import { processFiles } from './process-bridge.mjs';
 import { stagedAssets } from './staged-assets.mjs';
-import { supervisorDouble } from './supervisor-double.mjs';
+import { opSender, supervisorDouble } from './supervisor-double.mjs';
 
 /**
  * The Worker Loader as a one-shot exec uses it: each load writes the
  * generated runner (after `rewrite`, when given) to a fresh directory under
- * one tmpdir, removed at exit, and serves its fetch with the config's
- * SUPERVISOR. `get` is the keyed path, which a one-shot never takes.
+ * one tmpdir, removed at exit, and serves its run as the entry module does,
+ * with the capability it is handed as SUPERVISOR. `get` is the keyed path,
+ * which a one-shot never takes.
  *
  * @param {string} name
  * @param {{ rewrite?: (config: any) => any, get?: (...args: any[]) => any }} [options]
@@ -36,10 +37,9 @@ export function runnerLoader(name, { rewrite = (config) => config, get } = {}) {
       config = rewrite(config);
       const file = writeModuleSet(join(dir, `runner-${loads++}`), config.modules, 'runner.js');
       const loaded = import(pathToFileURL(file).href);
-      const supervisor = config.env?.SUPERVISOR;
       return {
         getEntrypoint: () => ({
-          async fetch(request) { return (await loaded).default.fetch(request, { SUPERVISOR: supervisor }); },
+          async run(request, supervisor) { return (await loaded).default.fetch(request, { SUPERVISOR: supervisor }); },
           [Symbol.dispose]() {},
         }),
         [Symbol.dispose]() {},
@@ -50,19 +50,22 @@ export function runnerLoader(name, { rewrite = (config) => config, get } = {}) {
 }
 
 /**
- * SUPERVISOR as the session serves it: every op for the process's own pid
- * through `host`'s supervisor-op handler; stdout and stderr go to `onOutput`
- * as text, and reportExit is dropped.
+ * SUPERVISOR as the session serves it, as binding and capability alike:
+ * every op for the process's own pid through `host`'s supervisor-op handler;
+ * stdout and stderr go to `onOutput` as text, and reportExit is dropped.
  */
 export function adoptSessionSupervisor(host, onOutput) {
   const dec = new TextDecoder();
   adoptCtxExports({
     // The binding's factory is generic over its stub; this one answers every op.
-    SupervisorRPC: /** @type {any} */ (({ props }) => supervisorDouble(async (op, args) => {
-      if (op === 'stdout' || op === 'stderr') { onOutput(dec.decode(/** @type {Uint8Array} */ (args[0]))); return; }
-      if (op === 'reportExit') return;
-      return host.supervisorOp({ op, args, pid: props?.pid });
-    })),
+    SupervisorRPC: /** @type {any} */ (({ props }) => {
+      const send = opSender((envelope) => host.supervisorOp({ ...envelope, pid: props?.pid }));
+      return supervisorDouble(async (op, args) => {
+        if (op === 'stdout' || op === 'stderr') { onOutput(dec.decode(/** @type {Uint8Array} */ (args[0]))); return; }
+        if (op === 'reportExit') return;
+        return send(op, args);
+      });
+    }),
   });
 }
 
@@ -70,7 +73,8 @@ export function adoptSessionSupervisor(host, onOutput) {
 export function oneShotManager(name, { host, rawVfs, loader }) {
   const manager = new FacetManager(
     createFacetCtx(createFacetWorld(() => ({})), name),
-    { LOADER: loader, ASSETS: stagedAssets }, host.processes, new PortRegistry(), processHostFor, {},
+    { LOADER: loader, ASSETS: stagedAssets }, host.processes, new PortRegistry(), processHostFor,
+    { supervise: (props) => supervisorEntrypoint()({ props }) },
   );
   manager.setVfs(rawVfs, processFiles(rawVfs));
   return manager;

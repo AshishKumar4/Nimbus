@@ -34,6 +34,8 @@ import {
 } from '@nimbus-sh/worker/auth';
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import { MemoryVFS } from '@nimbus-sh/core/vfs/memory.js';
+import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { CANARY_PROJECT, CANARY_WHEEL, canaryPypiJson, canaryWheel } from './egress-canary.js';
 
 /**
@@ -159,6 +161,25 @@ export class TestEgress extends WorkerEntrypoint {
  * egress would write it.
  */
 export class NimbusSession extends SdkNimbusSession {
+  /** The embedder mount at /mnt/data, made once per instance with its filesystem. */
+  #dataMounted = false;
+
+  /**
+   * The session's filesystem, with the embedder-mount surface the probes
+   * exercise: a MemoryVFS at /mnt/data, as an embedder mounts its own
+   * filesystem (CompositeVFS.mount). Its limits are the probe's, not a
+   * mount's: it is not durable (an isolate reset empties it) and it lives
+   * in the session DO's heap, so only small repositories and files go there.
+   */
+  override getFilesystemAuthority() {
+    const files = super.getFilesystemAuthority();
+    if (!this.#dataMounted) {
+      files.vfs.mount('/mnt/data', new MemoryVFS({ uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid }));
+      this.#dataMounted = true;
+    }
+    return files;
+  }
+
   protected override workspaceEgress() {
     if ((this.env as { NIMBUS_TEST_EGRESS?: string }).NIMBUS_TEST_EGRESS !== '1') return super.workspaceEgress();
     return (this.ctx as unknown as { exports: { TestEgress(options: { props: object }): Fetcher } })
@@ -184,14 +205,25 @@ const nimbus = createNimbusHandler({
 });
 
 const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/spawn-worker$/;
+type ProbeEnv = Parameters<typeof nimbus.fetch>[1] & { CF_VERSION_METADATA?: { id: string } };
 
 export default {
-  async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
-    if (request.method === 'POST') {
-      const match = EMBEDDER_WORKER_RE.exec(new URL(request.url).pathname);
-      if (match) return spawnEmbedderWorker(request, env, match[1]);
-    }
-    return nimbus.fetch(request, env, ctx);
+  async fetch(request: Request, env: ProbeEnv, ctx: ExecutionContext): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    const match = request.method === 'POST' ? EMBEDDER_WORKER_RE.exec(path) : null;
+    const response = match ? await spawnEmbedderWorker(request, env, match[1]) : await nimbus.fetch(request, env, ctx);
+    const versionId = env.CF_VERSION_METADATA?.id;
+    // Stamp the three readiness replies, including 101; leave encoded asset
+    // and port responses intact instead of rebuilding their body metadata.
+    const readiness = (request.method === 'POST' && path === '/new')
+      || (request.method === 'GET' && /^\/s\/[^/]+\/ws$/.test(path))
+      || (request.method === 'DELETE' && /^\/s\/[^/]+\/$/.test(path));
+    if (!versionId || !readiness) return response;
+    const headers = new Headers(response.headers);
+    headers.set('x-nimbus-probe-version', versionId);
+    return new Response(response.body, {
+      status: response.status, statusText: response.statusText, headers, webSocket: response.webSocket,
+    });
   },
 };
 

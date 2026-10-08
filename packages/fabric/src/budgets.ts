@@ -1,7 +1,7 @@
 /**
  * budgets.ts — per-DO accounting for the platform budgets the fabric spends:
- * the Durable Object's Dynamic Worker concurrency limit, the facet-ID
- * lifetime budget, and the dynamic-worker module-map ceiling.
+ * the Durable Object's Dynamic Worker concurrency limit and the
+ * dynamic-worker module-map ceiling.
  *
  * The Dynamic Worker model is Cloudflare's documented one
  * ({@link DO_DYNAMIC_WORKER_LIMIT}): a Durable Object may have a fixed number
@@ -31,6 +31,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { hostWasmIdentity } from './host-wasm.js';
+import { withResolvers } from './turn-budget.js';
 
 /**
  * Distinct Dynamic Workers one Durable Object may have with in-flight
@@ -104,6 +105,8 @@ interface Waiter {
   key: string;
   claim: ClaimEntry | undefined;
   process: LedgerProcess | undefined;
+  /** A call the platform refused: let in only once no pause is on, even onto a key already in flight. */
+  refused: boolean;
   admit(end: EndLoaderFetch): void;
   refuse(error: DynamicWorkerDeadlockError): void;
 }
@@ -126,6 +129,8 @@ interface LoaderLedger {
   claims: Set<ClaimEntry>;
   /** The most distinct workers (holds plus claims) ever counted at once. */
   peak: number;
+  /** Calls the platform refused that were let in again (readmitRefused): rare, or holds end before their workers do. */
+  readmitted: number;
   /** Waits not yet admitted, in the order they asked. */
   waiters: Waiter[];
   /** Length of the pause a refusal started, while it lasts; 0 when admitting. */
@@ -154,7 +159,7 @@ function ledger(ctx: object): LoaderLedger {
     entry = {
       inFlight: new Map(), holders: new Map(), processHolds: new Map(), news: new Map(), graph: undefined,
       schedule: decideOnALaterTurn, deciding: false,
-      claims: new Set(), peak: 0,
+      claims: new Set(), peak: 0, readmitted: 0,
       waiters: [], pauseMs: 0, pauseTimer: undefined, epoch: 0, refusals: 0,
     };
     ledgers.set(ctx, entry);
@@ -204,7 +209,7 @@ function hold(entry: LoaderLedger, workerKey: string, claim: ClaimEntry | undefi
   entry.peak = Math.max(entry.peak, inUse(entry));
   const epoch = entry.epoch;
   let ended = false;
-  return (failure) => {
+  const end: EndLoaderFetch = (failure) => {
     if (ended) return;
     ended = true;
     count(entry.inFlight, workerKey, -1);
@@ -224,7 +229,19 @@ function hold(entry: LoaderLedger, workerKey: string, claim: ClaimEntry | undefi
     else if (epoch === entry.epoch && entry.pauseMs === 0) entry.refusals = 0;
     admitWaiters(entry);
   };
+  holdTerms.set(end, { entry, key: workerKey, claim, holder });
+  return end;
 }
+
+/** What each hold was taken on, so a refused call is let in again on the same (readmitRefused). */
+const holdTerms = new WeakMap<EndLoaderFetch, {
+  entry: LoaderLedger;
+  key: string;
+  claim: ClaimEntry | undefined;
+  holder: number | null;
+  /** A launch's run (claimAdmission): let in again, it is that launch's run again. */
+  admission?: Admission;
+}>();
 
 /**
  * The platform refused a worker this ledger counted room for: it still
@@ -248,8 +265,9 @@ function refused(entry: LoaderLedger, epoch: number): void {
 }
 
 function admissible(entry: LoaderLedger, waiter: Waiter): boolean {
-  // Requests to a worker already in flight count once, even while paused.
-  if (entry.inFlight.has(waiter.key)) return true;
+  // Requests to a worker already in flight count once, even while paused;
+  // a call the platform refused waits the pause out all the same.
+  if (entry.inFlight.has(waiter.key) && !(waiter.refused && entry.pauseMs > 0)) return true;
   if (entry.pauseMs > 0) return false;
   if (waiter.claim && entry.claims.has(waiter.claim) && waiter.claim.keys.size < waiter.claim.width) return true;
   return inUse(entry) < DO_DYNAMIC_WORKER_LIMIT;
@@ -566,36 +584,99 @@ export function beginLoaderFetchWhenFree(
   workerKey: string,
   options: { signal?: AbortSignal; claim?: DynamicWorkerClaim; process?: LedgerProcess } = {},
 ): Promise<EndLoaderFetch> {
-  const { signal } = options;
-  return new Promise<EndLoaderFetch>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(signal.reason);
-      return;
+  return queue(ledger(ctx), workerKey, claimOf(ctx, options.claim), options.process, false, options.signal);
+}
+
+/** Wait on `entry` for a hold of `key`, in the order asked: see {@link beginLoaderFetchWhenFree}. */
+function queue(
+  entry: LoaderLedger,
+  key: string,
+  claim: ClaimEntry | undefined,
+  process: LedgerProcess | undefined,
+  refused: boolean,
+  signal: AbortSignal | undefined,
+): Promise<EndLoaderFetch> {
+  const { promise, resolve, reject } = withResolvers<EndLoaderFetch>();
+  if (signal?.aborted) {
+    reject(signal.reason);
+    return promise;
+  }
+  const abandon = () => {
+    const at = entry.waiters.indexOf(waiter);
+    if (at < 0) return;
+    entry.waiters.splice(at, 1);
+    reject(signal?.reason);
+  };
+  const waiter: Waiter = {
+    key,
+    claim,
+    process,
+    refused,
+    admit(end) {
+      signal?.removeEventListener('abort', abandon);
+      resolve(end);
+    },
+    refuse(error) {
+      signal?.removeEventListener('abort', abandon);
+      reject(error);
+    },
+  };
+  entry.waiters.push(waiter);
+  signal?.addEventListener('abort', abandon, { once: true });
+  admitWaiters(entry);
+  return promise;
+}
+
+/**
+ * How long one call waits, in all, on the ledger after the platform first
+ * refused it before the refusal surfaces ({@link readmitRefused}). A deployed
+ * Durable Object admitted a refused batch after a 6 s pause; 15 s bounds a
+ * call that would never be admitted.
+ */
+export const REFUSED_CALL_WAIT_MS = 15_000;
+
+/** Names a launch's run readmitted as a worker of its own, each distinct. */
+let ownRuns = 0;
+
+/**
+ * The hold to send a call again on, after the platform refused it ("Dynamic
+ * worker concurrency limit exceeded"): it refuses a call before the call
+ * starts, so nothing ran. It still counts workers the ledger has given back
+ * (one called over RPC stays counted until its session has closed, which no
+ * release here can show), so `refused`, the call's hold, ended with that
+ * refusal, paused admission. The new hold is taken on the same terms (key,
+ * claim, process; a launch's run is that launch's run again), once the
+ * ledger lets it in: after the pause, even when its key is still in flight,
+ * and when there is room. Undefined once `signal` aborts or the call's first
+ * refusal (`since`) is {@link REFUSED_CALL_WAIT_MS} old.
+ */
+export async function readmitRefused(
+  refused: EndLoaderFetch,
+  options: { since: number; signal?: AbortSignal },
+): Promise<EndLoaderFetch | undefined> {
+  const terms = holdTerms.get(refused);
+  if (terms === undefined) throw new Error('Nimbus: only a hold the Dynamic Worker ledger gave can be readmitted');
+  const remainingMs = options.since + REFUSED_CALL_WAIT_MS - Date.now();
+  if (remainingMs <= 0 || options.signal?.aborted) return undefined;
+  // Cleared once the wait settles: a pending timer keeps the hosting object from hibernating.
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), remainingMs);
+  const signal = options.signal ? AbortSignal.any([deadline.signal, options.signal]) : deadline.signal;
+  const process = terms.holder === null ? undefined : { pid: terms.holder };
+  const wait = (key: string) => queue(terms.entry, key, terms.claim, process, true, signal).catch(() => undefined);
+  let end = await wait(terms.key);
+  const admission = terms.admission;
+  if (end !== undefined && admission !== undefined && !admission.closed) {
+    if (!admission.claimed) end = claimed(admission, end);
+    else {
+      // Another run of the launch claimed its worker while this one waited: this run is a worker of its own.
+      end();
+      end = await wait(`${terms.key}:run-${++ownRuns}`);
     }
-    const entry = ledger(ctx);
-    const abandon = () => {
-      const at = entry.waiters.indexOf(waiter);
-      if (at < 0) return;
-      entry.waiters.splice(at, 1);
-      reject(signal?.reason);
-    };
-    const waiter: Waiter = {
-      key: workerKey,
-      claim: claimOf(ctx, options.claim),
-      process: options.process,
-      admit(end) {
-        signal?.removeEventListener('abort', abandon);
-        resolve(end);
-      },
-      refuse(error) {
-        signal?.removeEventListener('abort', abandon);
-        reject(error);
-      },
-    };
-    entry.waiters.push(waiter);
-    signal?.addEventListener('abort', abandon, { once: true });
-    admitWaiters(entry);
-  });
+  }
+  clearTimeout(timer);
+  if (end !== undefined) terms.entry.readmitted++;
+  return end;
 }
 
 /**
@@ -708,15 +789,22 @@ export function beginAdmittedFetch(ctx: object): EndLoaderFetch | undefined {
 export function claimAdmission(ctx: object, pid?: number): EndLoaderFetch | undefined {
   const admission = launchAdmission.getStore();
   if (admission?.ctx !== ctx || admission.end === undefined || admission.claimed) return undefined;
+  return claimed(admission, beginLoaderFetch(ctx, `launch:${admission.process.pid}`, undefined, pid ?? admission.process.pid));
+}
+
+/** `runner`, a hold on `admission`'s worker, as that launch's run: claimed until it ends. */
+function claimed(admission: Admission, runner: EndLoaderFetch): EndLoaderFetch {
   admission.claimed = true;
-  const runner = beginLoaderFetch(ctx, `launch:${admission.process.pid}`, undefined, pid ?? admission.process.pid);
   let ended = false;
-  return (failure) => {
+  const end: EndLoaderFetch = (failure) => {
     if (ended) return;
     ended = true;
     admission.claimed = false;
     runner(failure);
   };
+  const terms = holdTerms.get(runner);
+  if (terms) holdTerms.set(end, { ...terms, admission });
+  return end;
 }
 
 /**
@@ -768,6 +856,8 @@ export function loaderLedgerStats(ctx: object): {
   claimed: number;
   headroom: number;
   peak: number;
+  /** Calls the platform refused that were let in again. */
+  readmitted: number;
   /** Waits not yet admitted. */
   waiting: number;
   /** Length of the pause a limit refusal started, while it lasts; 0 when admitting. */
@@ -789,6 +879,7 @@ export function loaderLedgerStats(ctx: object): {
     claimed: claimedWidth(entry),
     headroom: headroom(entry),
     peak: entry.peak,
+    readmitted: entry.readmitted,
     waiting: entry.waiters.length,
     pauseMs: entry.pauseMs,
   };
@@ -888,213 +979,4 @@ function memberBytes(content: unknown, encoder: TextEncoder | null): number {
     }
   }
   return 0;
-}
-
-// ── Facet-ID lifetime budget ────────────────────────────────────────────────
-
-/**
- * Facet IDs a Durable Object is granted over its LIFETIME. Append-only and
- * never reclaimed, so crossing it is unrecoverable for the object — which is
- * why the ledger below counts consumption durably instead of leaving the
- * bound as prose the slot book merely respects.
- */
-export const FACET_ID_LIFETIME_BUDGET = 65_536;
-
-/** Where the ledger persists the count of facet names ever minted. */
-export const FACET_NAME_HIGH_WATER_KEY = 'fabric_facet_name_high_water';
-
-/** Where it persists how many `proc-slot-` names the slot book has ever minted. */
-const FACET_SLOT_HIGH_WATER_KEY = 'fabric_facet_slot_high_water';
-
-/** The row that marks one explicit facet name (a lease's, a durable application's) as minted. */
-const mintedNameKey = (name: string): string => `fabric_facet_name_minted:${name}`;
-
-/**
- * The slice of storage the facet-name ledger persists through. A multi-key
- * put is one atomic write, as Durable Object storage's is: a charge's counts
- * and its name's row land together or not at all.
- */
-interface FacetNameLedgerStorage {
-  storage: {
-    get(key: string): Promise<unknown> | unknown;
-    put(entries: Record<string, unknown>): Promise<void>;
-  };
-}
-
-/** Every facet name ever minted, and how many of them are the slot book's `proc-slot-` names. */
-interface FacetNameCounts {
-  names: number;
-  slots: number;
-}
-
-/**
- * One hosting actor's facet-name ledger. Its charges run one at a time, in
- * order, each against what storage holds: a charge is acknowledged only once
- * the write that records it has landed, and a read that fails fails the
- * charge, never counts as nothing stored. A failed charge changes nothing and
- * the next one runs.
- */
-interface FacetNameLedger {
-  /** The counts storage holds, once a read of both has succeeded. */
-  counts: FacetNameCounts | null;
-  /** The last charge, settled or not: the next one runs after it. */
-  queue: Promise<unknown>;
-  /** Explicit names storage marks minted. */
-  minted: Set<string>;
-}
-
-const facetNameLedgers = new WeakMap<object, FacetNameLedger>();
-
-function facetNameLedger(ctx: FacetNameLedgerStorage): FacetNameLedger {
-  let ledger = facetNameLedgers.get(ctx);
-  if (!ledger) {
-    ledger = { counts: null, queue: Promise.resolve(), minted: new Set() };
-    facetNameLedgers.set(ctx, ledger);
-  }
-  return ledger;
-}
-
-/** A stored value, read inside a charge: a failure, thrown at once or later, rejects. */
-function readStored(ctx: FacetNameLedgerStorage, key: string): Promise<unknown> {
-  return Promise.resolve().then(() => ctx.storage.get(key));
-}
-
-/** What one charge does: the counts it leaves, the explicit name it mints, and what it answers. */
-interface FacetNameCharge<T> {
-  counts: FacetNameCounts;
-  minted?: string;
-  answer: T;
-}
-
-/**
- * Run one charge on the ledger, after the charges before it: read the counts
- * if no read has yet succeeded, apply `charge`, and write what changed (the
- * counts, and the minted name's mark) in one put. Answers once that put has
- * landed; a failed read, a refusal or a failed put rejects, and the ledger
- * stays as storage holds it.
- */
-function runCharge<T>(
-  ctx: FacetNameLedgerStorage,
-  charge: (counts: FacetNameCounts) => Promise<FacetNameCharge<T>>,
-): Promise<T> {
-  const ledger = facetNameLedger(ctx);
-  const run = ledger.queue.then(async () => {
-    if (ledger.counts === null) {
-      const [names, slots] = await Promise.all([
-        readStored(ctx, FACET_NAME_HIGH_WATER_KEY),
-        readStored(ctx, FACET_SLOT_HIGH_WATER_KEY),
-      ]);
-      const total = typeof names === 'number' ? names : 0;
-      // A ledger persisted before the slot high-water existed kept slots and
-      // names in one count. That count bounds the slots, so no slot under it
-      // is charged twice.
-      ledger.counts = { names: total, slots: typeof slots === 'number' ? slots : total };
-    }
-    const before = ledger.counts;
-    const after = await charge(before);
-    if (after.counts.names !== before.names || after.counts.slots !== before.slots) {
-      await ctx.storage.put({
-        [FACET_NAME_HIGH_WATER_KEY]: after.counts.names,
-        [FACET_SLOT_HIGH_WATER_KEY]: after.counts.slots,
-        ...(after.minted !== undefined && { [mintedNameKey(after.minted)]: true }),
-      });
-    }
-    ledger.counts = after.counts;
-    if (after.minted !== undefined) ledger.minted.add(after.minted);
-    return after.answer;
-  });
-  ledger.queue = run.catch(() => undefined);
-  return run;
-}
-
-/**
- * Charge the slot book's `slot` before its facet is created. A fresh
- * incarnation restarts the book at zero and issues the same `proc-slot-`
- * names again, so only a slot past the slot high-water is a name never
- * minted before; any other costs nothing, so a slot may be charged on every
- * use. Resolves once the charge is durable.
- */
-export function chargeFacetSlot(ctx: FacetNameLedgerStorage, slot: number): Promise<void> {
-  return runCharge(ctx, async (counts) => ({
-    counts: slot < counts.slots ? counts : { names: counts.names + slot + 1 - counts.slots, slots: slot + 1 },
-    answer: undefined,
-  }));
-}
-
-/**
- * Charge an explicit facet name before its facet is created: its first use
- * ever consumes one lifetime ID, and any later use, in this incarnation or
- * another, costs nothing, so a caller may charge a name on every use.
- * `refuseAtWall` refuses a first use at the wall; without it the platform's
- * own failure at creation is what stops it, named by the ledger
- * (withFacetBudgetNamed). Resolves with the count once the charge is durable.
- */
-export function chargeFacetName(
-  ctx: FacetNameLedgerStorage,
-  name: string,
-  { refuseAtWall }: { refuseAtWall: boolean },
-): Promise<number> {
-  const ledger = facetNameLedger(ctx);
-  return runCharge(ctx, async (counts) => {
-    if (ledger.minted.has(name)) return { counts, answer: counts.names };
-    if (await readStored(ctx, mintedNameKey(name)) === true) {
-      ledger.minted.add(name);
-      return { counts, answer: counts.names };
-    }
-    if (refuseAtWall && counts.names >= FACET_ID_LIFETIME_BUDGET) {
-      throw withFacetBudgetNamed(
-        counts.names,
-        new Error(`facet '${name}' refused before creation: no lifetime ids remain`),
-      );
-    }
-    const after = { names: counts.names + 1, slots: counts.slots };
-    return { counts: after, minted: name, answer: after.names };
-  });
-}
-
-/** The count as last read or charged, without awaiting storage: 0 before the first read. */
-export function facetNameCount(ctx: FacetNameLedgerStorage): number {
-  return facetNameLedger(ctx).counts?.names ?? 0;
-}
-
-/** The count once every charge so far has settled, read from storage if no read has yet succeeded. */
-export function facetNameCountDurable(ctx: FacetNameLedgerStorage): Promise<number> {
-  return runCharge(ctx, async (counts) => ({ counts, answer: counts.names }));
-}
-
-/**
- * The lifetime facet-ID ledger: how many facet names this fabric has ever
- * minted on the Durable Object, against the 65,536 the platform will ever
- * grant it. `consumed` only ever counts FIRST uses — a reused name, in this
- * incarnation or any earlier one, cost no new ID, which is the slot book's
- * whole reason to exist. Surfaced so an operator can see proximity to a wall
- * whose crossing is unrecoverable, instead of discovering it from the
- * platform's opaque failure.
- */
-export async function facetIdBudget(
-  ctx: FacetNameLedgerStorage,
-): Promise<{ consumed: number; budget: number }> {
-  return {
-    consumed: await facetNameCountDurable(ctx),
-    budget: FACET_ID_LIFETIME_BUDGET,
-  };
-}
-
-/**
- * Name the facet-ID budget on a creation failure at the wall; below it, hand
- * the error back untouched. Exhaustion is the one failure here the platform
- * reports opaquely AND that no teardown, retry or reset can undo, so the
- * ledger — the only witness to the real cause — does the naming. Not a
- * threshold: the comparison is against the budget itself.
- */
-export function withFacetBudgetNamed(consumed: number, error: unknown): unknown {
-  if (consumed < FACET_ID_LIFETIME_BUDGET) return error;
-  const platform = error instanceof Error ? error.message : String(error);
-  return new Error(
-    `Nimbus: facet creation failed with this Durable Object's `
-      + `${FACET_ID_LIFETIME_BUDGET.toLocaleString('en-US')} facet-ID lifetime budget consumed `
-      + `(${consumed} facet names ever created). Facet IDs are append-only and never reclaimed, `
-      + `so this failure is permanent for the object: ${platform}`,
-    { cause: error },
-  );
 }

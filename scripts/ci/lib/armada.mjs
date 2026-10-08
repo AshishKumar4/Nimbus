@@ -18,24 +18,21 @@ const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'
 // pin is checked against that main on every run, so a history rewritten
 // under it fails loudly rather than running a client no one can fetch. The
 // pin is the client the deployed Worker is proven with: move both together.
-const ARMADA_DIR = '/mnt/local/nimbus/armada-client';
+const ARMADA_DIR = join(homedir(), '.local/share/nimbus/armada-client');
 export const ARMADA_REPO = 'https://github.com/AshishKumar4/armada';
 export const ARMADA_CLIENT = 'f46fb8c74c893854f1e8c46993048bdc33d6a8a0';
 
 // Nimbus's own armada deployment (`nimbus-armada`, its own Worker, bucket
 // and fleet cap): every Nimbus script reaches it, and only it, through here.
-// ARMADA_URL and ARMADA_TOKEN override it (the GitHub unit job has them as
-// secrets); otherwise ARMADA_CONNECTION, defaulting to its connection file.
+// ARMADA_CONNECTION overrides the default connection file.
 // The token is in that file and is never printed.
 export const ARMADA_CONNECTION = join(homedir(), '.config', 'armada', 'nimbus-armada.json');
 
 /**
  * The environment an armada client (the SDK here, or the CLI a script
- * spawns) connects with: Nimbus's armada, unless ARMADA_URL and
- * ARMADA_TOKEN name another.
+ * spawns) connects with: Nimbus's armada connection file.
  */
 export function armadaEnv(env = process.env) {
-  if (env.ARMADA_URL && env.ARMADA_TOKEN) return env;
   return { ...env, ARMADA_CONNECTION: env.ARMADA_CONNECTION || ARMADA_CONNECTION };
 }
 
@@ -46,7 +43,7 @@ export function armadaEnv(env = process.env) {
  */
 
 /** The armada recipe every task needs, whatever the lane's commit has. */
-export const RECIPE = ['.armada.json', 'scripts/ci/recipe/setup.sh', 'scripts/ci/recipe/install.sh'];
+export const RECIPE = ['.armada.json', 'scripts/ci/recipe/setup.sh', 'scripts/ci/recipe/install.sh', 'scripts/install-deps.mjs'];
 
 const git = (cwd, args, options = {}) => {
   const done = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1 << 30, ...options });
@@ -130,11 +127,12 @@ export function armadaClient({ dir = process.env.ARMADA_DIR || ARMADA_DIR, repo 
 
 /**
  * Map `command` over `items` on `sha` (run from its repo), with `files`
- * laid over its tree. `setup`, a script path here, is appended to the
- * recipe's setup script for this job: an environment of its own (its key
- * is the setup text), so what only some tasks need is not in every
- * container. armada runs setup before it checks the commit out, so the
- * script cannot be run from the checkout; it is joined here.
+ * laid over its tree. `setup`, a script path here (or a script's name and
+ * text, for one written for the job), is appended to the recipe's setup
+ * script for this job: an environment of its own (its key is the setup
+ * text), so what only some tasks need is not in every container. armada
+ * runs setup before it checks the commit out, so the script cannot be run
+ * from the checkout; it is joined here.
  * `env` joins the recipe's for this job only: armada
  * keeps a job's spec while the job lives, so a credential put here must be
  * one minted for this run and short-lived. Interrupting the process cancels
@@ -144,7 +142,7 @@ export function armadaClient({ dir = process.env.ARMADA_DIR || ARMADA_DIR, repo 
  * each task's {out} text (null when it wrote none); throws when the job
  * could not be started.
  *
- * @param {{ repo: string, sha: string, files: string[], setup?: string, items: unknown[], command: string[], env?: Record<string, string>,
+ * @param {{ repo: string, sha: string, files: string[], setup?: string | { name: string, text: string }, items: unknown[], command: string[], env?: Record<string, string>,
  *   label: string, pool?: number, timeout?: number, log?: (line: string) => void }} options
  */
 export async function mapOnArmada({ repo, sha, files, setup, items, command, env = {}, label, pool = items.length, timeout = 3600, log = (line) => console.error(line) }) {
@@ -159,8 +157,9 @@ export async function mapOnArmada({ repo, sha, files, setup, items, command, env
     // The commit's .armada.json names the environment armada packs for: one
     // whose setup is the recipe's with `setup` after it.
     const config = JSON.parse(readFileSync(join(SELF_ROOT, '.armada.json'), 'utf8'));
-    const joined = `${config.environment.setup.replace(/\.sh$/, '')}+${setup.split('/').at(-1)}`;
-    const text = `${readFileSync(join(SELF_ROOT, config.environment.setup), 'utf8')}\n${readFileSync(join(SELF_ROOT, setup), 'utf8')}`;
+    const name = typeof setup === 'string' ? setup.split('/').at(-1) : setup.name;
+    const joined = `${config.environment.setup.replace(/\.sh$/, '')}+${name}`;
+    const text = `${readFileSync(join(SELF_ROOT, config.environment.setup), 'utf8')}\n${typeof setup === 'string' ? readFileSync(join(SELF_ROOT, setup), 'utf8') : setup.text}`;
     overlay.splice(0, 1,
       { path: '.armada.json', bytes: `${JSON.stringify({ ...config, environment: { ...config.environment, setup: joined } }, null, 2)}\n` },
       { path: joined, bytes: text });

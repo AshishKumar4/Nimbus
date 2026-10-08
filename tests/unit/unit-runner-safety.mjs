@@ -15,16 +15,10 @@ mkdirSync(join(unit, 'lib'), { recursive: true });
 mkdirSync(helper, { recursive: true });
 for (const file of ['run-all.mjs', 'lib/partition.mjs']) copyFileSync(join(repo, 'tests/unit', file), join(unit, file));
 copyFileSync(join(repo, 'scripts/lib/bounded-process.mjs'), join(helper, 'bounded-process.mjs'));
-copyFileSync(join(repo, 'scripts/lib/subprocess-entry.mjs'), join(helper, 'subprocess-entry.mjs'));
 const delay = () => new Promise((resolve) => setTimeout(resolve, 10));
 async function until(predicate, label) {
   for (let i = 0; i < 500; i++) { if (predicate()) return; await delay(); }
   assert.fail(`safety handshake never completed: ${label}`);
-}
-function populated(group) {
-  try {
-    return /populated 1/.test(readFileSync(`/sys/fs/cgroup${group}/cgroup.events`, 'utf8'));
-  } catch { return false; }
 }
 function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
@@ -86,18 +80,10 @@ try {
       assert.equal(result.code, 1);
       assert.match(result.stdout, mode === 'timeout' ? /exceeded --timeout 500ms/ : /exit code=17/);
     }
-    const [pid, cgroup] = readFileSync(pidFile, 'utf8').trim().split('\n');
-    if (process.env.NIMBUS_TEST_PID_ISOLATION === '1') {
-      // Isolated: each case has a cgroup of its own, which must empty. The
-      // pid is the descendant's in its own PID namespace, not this one's.
-      const group = cgroup.split('::')[1];
-      await until(() => !populated(group), `${mode}: ${group}`);
-      assert.equal(populated(group), false, `${mode}: descendant cgroup remained populated`);
-    } else {
-      // Portable (CI): the case shares the host's cgroup, which stays
-      // populated by everything else on it; the descendant itself must end.
-      await until(() => !alive(Number(pid)), `${mode}: pid ${pid}`);
-    }
+    const [pid] = readFileSync(pidFile, 'utf8').trim().split('\n');
+    // The descendant itself must end: the case's cgroup, where it has one,
+    // stays populated by nothing else, and the host's by everything.
+    await until(() => !alive(Number(pid)), `${mode}: pid ${pid}`);
   }
   const binary = await runBoundedProcess(process.execPath, ['-e', 'process.stdout.write(Buffer.from([0,255,128])); process.exit(7)'], { encoding: null });
   assert.equal(binary.reason, '', 'normal nonzero is not infrastructure failure');

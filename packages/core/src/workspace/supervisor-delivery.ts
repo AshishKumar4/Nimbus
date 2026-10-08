@@ -32,31 +32,17 @@ import {
   VFS_DELIVERY_TOMBSTONE_LIMIT,
   VFS_DELIVERY_TOMBSTONE_RETENTION_MS,
 } from '../constants.js';
-import type { SupervisorOpDispatch, SupervisorOpName } from './supervisor-op.js';
+import type { SupervisorOpDispatch } from './supervisor-op.js';
+import {
+  SUPERVISOR_DELIVERED_OPS,
+  SUPERVISOR_JOINED_READ_OPS,
+  type SupervisorDeliveredOpName,
+  type SupervisorJoinedReadOpName,
+} from './supervisor-ops.js';
 import type { WaveMountReach } from '../vfs/sqlite-vfs.js';
+import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 
-/**
- * The filesystem mutations a process's supervisor delivers exactly once.
- *
- * Not here, so sent once: `writeBatchStream` (its stream is consumed by the
- * first delivery: its writer re-sends a lost wave re-encoded, under a newer
- * fence in an epoch the host issued — {@link SupervisorDeliveries.admitWave}),
- * the descriptor read `fsRead` (it advances the position and
- * answers bytes a receipt would have to hold), `fsAppend`/`fsAppendAck` (the
- * append ledger's own writer/module/operation identity already makes them
- * repeatable), and the process, socket and storage-grant ops.
- */
-export const SUPERVISOR_DELIVERED_OPS = [
-  'writeFile', 'writeFileStat', 'fsWrite', 'fsWriteRange', 'fsTruncate', 'writeBatch',
-  'mkdir', 'rmdir', 'unlink', 'rename', 'symlink',
-  'utimes', 'chmod', 'chown',
-  'fsOpen', 'fsClose', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsSync',
-  'fsFtruncate', 'fsFchmod', 'fsFchown', 'fsFutimes',
-  'fsRemove', 'fsCopyFile', 'fsCopyTree',
-  'fsAcquireExclusiveMutation', 'fsReleaseExclusiveMutation',
-] as const satisfies readonly SupervisorOpName[];
-
-export type SupervisorDeliveredOpName = (typeof SUPERVISOR_DELIVERED_OPS)[number];
+export type { SupervisorDeliveredOpName, SupervisorJoinedReadOpName };
 
 const DELIVERED_OP_NAMES = new Map<string, SupervisorDeliveredOpName>(SUPERVISOR_DELIVERED_OPS.map((op) => [op, op]));
 
@@ -71,25 +57,6 @@ export function supervisorDeliveredOp(op: string): SupervisorDeliveredOpName | u
 
 /** The op a delivered mutation travels under; the mutation's own op rides in {@link SupervisorDelivery}. */
 export const SUPERVISOR_DELIVER_OP = 'deliverOnce';
-
-/**
- * The filesystem reads a process's supervisor may send more than once — it
- * re-sends a dropped one and hedges an unanswered one — each attempt under
- * the one read id it minted for the read (the envelope's `readId`). A repeat
- * that reaches the host while the read is still being served joins it
- * ({@link SupervisorDeliveries.joinRead}): the host reads once, and every
- * attempt carries that answer. A journaled run also keeps settled replies:
- * a lost response must not turn a resend into another program observation.
- * Ordinary runs keep only reads in flight; a host that joins nothing serves
- * each attempt.
- */
-export const SUPERVISOR_JOINED_READ_OPS = [
-  'access', 'exists', 'stat', 'lstat', 'readdir', 'readlink', 'fsLinkLeadsTo', 'readFile', 'readFileBytes',
-  'fsRealpath', 'fsRevision', 'fsList', 'fsAcquire', 'fsAcquired', 'fsFstat', 'fsReaddirHandle',
-  'fsReadRange', 'fsReadRangeUncached', 'fsReadBatch', 'hasLegacySymlinkUnder',
-] as const satisfies readonly SupervisorOpName[];
-
-export type SupervisorJoinedReadOpName = (typeof SUPERVISOR_JOINED_READ_OPS)[number];
 
 const JOINED_READ_OP_NAMES = new Map<string, SupervisorJoinedReadOpName>(SUPERVISOR_JOINED_READ_OPS.map((op) => [op, op]));
 
@@ -314,6 +281,8 @@ export class SupervisorDeliveries {
   private readonly reads = new Map<number, ReadScope>();
   /** Open write-wave epochs, by `${pid}:${writer}`: the newest attempt admitted under each. */
   private readonly waveEpochs = new Map<string, WaveEpoch>();
+  /** Each epoch's waves being applied now: a retirement waits for them (retireWaveWriter). */
+  private readonly activeWaves = new Map<string, Set<Promise<unknown>>>();
   private tombstones = new Set<number>();
   private olderTombstones = new Set<number>();
   private tombstonesSince = Number.NEGATIVE_INFINITY;
@@ -570,6 +539,36 @@ export class SupervisorDeliveries {
     return bytes;
   }
 
+  /**
+   * Retire process `pid`'s write-wave epoch `writer`: from now on it admits
+   * nothing, and an attempt of it already admitted is refused at its next
+   * commit (admitWave's check). Answered once every wave of the epoch being
+   * applied has settled: a mount's call it already made lands (or fails)
+   * before the writer sends anything under its next epoch. How a writer
+   * that gave a wave up (its fate unknown) keeps a late attempt of it from
+   * landing after what it sends next.
+   */
+  async retireWaveWriter(pid: number, writer: string): Promise<void> {
+    const key = `${pid}:${writer}`;
+    this.waveEpochs.delete(key);
+    const active = this.activeWaves.get(key);
+    if (active !== undefined) await Promise.allSettled([...active]);
+  }
+
+  /** `applying` is a wave of process `pid`'s epoch `writer` being applied: a retirement of the epoch waits for it. */
+  applyingWave<T>(pid: number, writer: string, applying: Promise<T>): Promise<T> {
+    const key = `${pid}:${writer}`;
+    let active = this.activeWaves.get(key);
+    if (active === undefined) this.activeWaves.set(key, active = new Set());
+    active.add(applying);
+    const done = (): void => {
+      active!.delete(applying);
+      if (active!.size === 0 && this.activeWaves.get(key) === active) this.activeWaves.delete(key);
+    };
+    applying.then(done, done);
+    return applying;
+  }
+
   /** A process ended: its receipts answer nothing more, their ids stay refused, and its wave epochs close. */
   forget(pid: number): void {
     const prefix = `${pid}:`;
@@ -643,9 +642,15 @@ export function openSupervisorDeliveries(ctx: object): SupervisorDeliveries {
  * What to spread into the props of a SUPERVISOR binding minted for a process
  * of the instance whose state `ctx` is: its `hostIncarnation`, or nothing
  * when that host applies nothing once — and then the binding sends each
- * mutation once.
+ * mutation once. For process `pid`, a write-wave epoch minted with it
+ * (`waveWriter`, at `waveWriterMintedAt`): the process's first wave needs no
+ * round trip for one (SupervisorRPC.openWaveWriter).
  */
-export function supervisorDeliveryProps(ctx: object): { hostIncarnation?: string } {
+export function supervisorDeliveryProps(ctx: object, pid = 0): { hostIncarnation?: string; waveWriter?: string; waveWriterMintedAt?: number } {
   const deliveries = hosts.get(ctx);
-  return deliveries === undefined ? {} : { hostIncarnation: deliveries.incarnation };
+  if (deliveries === undefined) return {};
+  return {
+    hostIncarnation: deliveries.incarnation,
+    ...(pid > 0 ? { waveWriter: deliveries.openWaveWriter(pid, WAVE_EPOCH_TTL_MS), waveWriterMintedAt: Date.now() } : {}),
+  };
 }

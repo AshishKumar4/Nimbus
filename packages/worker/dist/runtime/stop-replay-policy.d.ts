@@ -140,12 +140,6 @@ export declare const REPLAY_OPERATION_POLICY: {
     fsWriteRange: {
         readonly kind: "effect";
     };
-    fsAppend: {
-        readonly kind: "effect";
-    };
-    fsAppendAck: {
-        readonly kind: "effect";
-    };
     fsTruncate: {
         readonly kind: "effect";
     };
@@ -156,6 +150,9 @@ export declare const REPLAY_OPERATION_POLICY: {
         readonly kind: "effect";
     };
     openWaveWriter: {
+        readonly kind: "effect";
+    };
+    retireWaveWriter: {
         readonly kind: "effect";
     };
     putRegistryEntries: {
@@ -290,6 +287,12 @@ export declare const REPLAY_OPERATION_POLICY: {
     fsReleaseExclusiveMutation: {
         readonly kind: "effect";
     };
+    fsAwaitRecall: {
+        kind: "input";
+    };
+    fsRecalled: {
+        readonly kind: "effect";
+    };
     innerDoFetch: {
         readonly kind: "effect";
     };
@@ -315,6 +318,9 @@ export declare const REPLAY_OPERATION_POLICY: {
         readonly kind: "effect";
     };
     cancelHostProcess: {
+        readonly kind: "effect";
+    };
+    hostLost: {
         readonly kind: "effect";
     };
     hmrRelay: {

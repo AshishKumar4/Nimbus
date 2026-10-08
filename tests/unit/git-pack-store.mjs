@@ -139,6 +139,61 @@ try {
     assert.equal(object?.type, type, oid);
     assert.deepEqual(Buffer.from(object.data), git(thinGitdir, ['cat-file', type, oid]), oid + ' (thin)');
   }
+
+  // Many packs (a full clone has scores): the pack an object was last found
+  // in is searched first, as git's packed_git_mru, so a run of neighbours
+  // reads no other pack's idx once the first is found. Eight packs of 2,000
+  // blobs (every fanout bucket of each in use), idx pages uncached.
+  const many = join(work, 'many.git');
+  git(work, ['init', '-q', '--bare', many]);
+  for (let p = 0; p < 8; p++) {
+    let stream = '';
+    for (let b = 0; b < 2000; b++) {
+      const data = `pack ${p} blob ${b}\n`;
+      stream += `blob\ndata ${data.length}\n${data}\n`;
+    }
+    git(many, ['fast-import', '--quiet'], stream);
+  }
+  const idxNames = readdirSync(join(many, 'objects/pack')).filter((name) => name.endsWith('.idx')).sort();
+  assert.equal(idxNames.length, 8);
+  const last = idxNames.at(-1);
+  const lastIds = git(many, ['show-index'], readFileSync(join(many, 'objects/pack', last))).toString().trim().split('\n').map((line) => line.split(' ')[1]);
+  const idxReads = [];
+  const counting = { ...nodeFs(), async readRange(path, offset, length) { if (path.endsWith('.idx')) idxReads.push(path); return nodeFs().readRange(path, offset, length); } };
+  const manyStore = new PackObjectStore(counting, many, { pageCacheBytes: 1 });
+  assert.ok(await manyStore.read(lastIds[0]));
+  const before = idxReads.length;
+  for (const oid of lastIds.slice(1, 201)) assert.ok(await manyStore.read(oid), oid);
+  const others = idxReads.slice(before).filter((path) => !path.endsWith(last));
+  assert.deepEqual(others, [], 'after the first hit, no other pack\'s idx is read');
+  console.log('  ok  200 neighbours in the last of 8 packs: no other idx read after the first');
+
+  // Concurrent searches promote the packs they hit while others are part way
+  // through the order: none skips a pack, so none misses an object the
+  // repository has (a miss re-lists the packs, which a search that skipped
+  // one did: counted here) and has() still finds every pack's objects. Reads
+  // finish in a shuffled order (seeded), idx pages uncached.
+  let shuffle = 7;
+  const jitter = () => new Promise((resolve) => setTimeout(resolve, (shuffle = (shuffle * 1103515245 + 12345) >>> 0) % 3));
+  let listings = 0;
+  const slow = {
+    ...nodeFs(),
+    async readRange(path, offset, length) { await jitter(); return nodeFs().readRange(path, offset, length); },
+    async readdir(dir) { listings++; return nodeFs().readdir(dir); },
+  };
+  const concurrent = new PackObjectStore(slow, many, { pageCacheBytes: 1 });
+  const idsOf = (name) => git(many, ['show-index'], readFileSync(join(many, 'objects/pack', name))).toString().trim().split('\n').map((line) => line.split(' ')[1]);
+  const perPack = idxNames.map(idsOf);
+  const wanted = [];
+  for (let round = 0; round < 40; round++) for (let p = idxNames.length - 1; p >= 0; p--) wanted.push(perPack[p][round]);
+  // Listed once, before the searches race.
+  assert.ok(await concurrent.read(perPack[0][1999]));
+  listings = 0;
+  await Promise.all(wanted.map(async (oid) => assert.ok(await concurrent.read(oid), oid)));
+  assert.equal(listings, 0, 'no search missed an object it should have found (each miss re-lists the packs)');
+  for (const [p, ids] of perPack.entries()) assert.equal(await concurrent.has(ids[1000]), true, `pack ${p} is still searched after concurrent promotions`);
+  console.log(`  ok  ${wanted.length} concurrent searches across 8 packs: every pack still searched`);
+
   console.log('git-pack-store: ok');
 } finally {
   rmSync(work, { recursive: true, force: true });

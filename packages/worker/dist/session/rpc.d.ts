@@ -49,7 +49,7 @@ export declare function _rpcCacheResult(self: RpcHost, ticket: string, result: {
 export declare function _rpcStdinPrepared(self: RpcHost, pid?: number, run?: string): Promise<void>;
 type ProcessRpcHost = Pick<NimbusSession, 'processes'>;
 type ReportRpcHost = ProcessRpcHost & Pick<NimbusSession, 'facetManager'>;
-type ExitRpcHost = ReportRpcHost & Pick<NimbusSession, 'terminal' | 'webSocketRelay' | 'supervisorForgetBridge' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'facetProcessManager'>;
+type ExitRpcHost = ReportRpcHost & Pick<NimbusSession, 'terminal' | 'shell' | 'webSocketRelay' | 'supervisorForgetBridge' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'facetProcessManager'>;
 export declare function checkedReadPayloadBytes(bytes: number): number;
 export declare function withReadAllocation<T>(bytes: number, read: () => Promise<T>): Promise<T>;
 /**
@@ -168,6 +168,7 @@ export type FsReadBatchEntry =
 declare const FsAcquireArgsSchema: z.ZodObject<{
     epoch: z.ZodNullable<z.ZodString>;
     cursor: z.ZodNumber;
+    begin: z.ZodOptional<z.ZodNumber>;
     options: z.ZodOptional<z.ZodObject<{
         namespace: z.ZodOptional<z.ZodBoolean>;
         push: z.ZodOptional<z.ZodObject<{
@@ -298,8 +299,6 @@ export declare function _rpcStdinFileRead(self: RpcHost, path: string, offset: n
  */
 export declare function _rpcFsReadBatch(self: RpcHost, requests: unknown, pid?: number): Promise<FsReadBatchEntry[]>;
 export declare function _rpcFsWriteRange(self: RpcHost, path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<VfsMutationReceipt>;
-export declare function _rpcFsAppend(self: RpcHost, path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
-export declare function _rpcFsAppendAck(self: RpcHost, writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
 /**
  * Called by CirrusHmrRPC.hmrSend. Runs in the DO's own context so
  * we can legally write to hibernatable WS sockets owned by this
@@ -383,30 +382,7 @@ export declare function _rpcReportExit(self: ExitRpcHost, pid: number, code: num
  *     log buffer still has everything, so `logs <pid>` recovers it.
  */
 export declare function _emitExitDump(self: RpcHost, pid: number, code: number): void;
-/**
- * Fix 3 + Fix 4 + Fix 5: finalizer for shellExecuteTracked.
- *
- * Runs after a tracked shell.execute finishes (any path). Chooses when
- * to emit the exit-dump banner and when to log the debug trace.
- *
- * Dump policy (Fix 4):
- *   - Non-zero exit AND any buffered output → always dump.
- *   - Zero exit AND buffered output has >0 bytes → dump anyway. Rationale:
- *     an npm run that returned "success" while the ring buffer still has
- *     a traceback is the exact "clean-but-silent failure" we're hunting.
- *     The replay is unique information the user didn't see live (e.g.
- *     because the terminal was reconnected after the fact).
- *   - Zero exit AND empty buffer → nothing to say. Skip.
- *
- * Trace policy (Fix 5):
- *   - NIMBUS_DEBUG=1: always print `[exited pid=N code=C duration=Xms]`.
- *   - Default: print only for non-zero OR long-running scripts (the
- *     cmd-start banner makes them expect an exit marker).
- *
- * Called with the already-marked pid (processes.exit + processes.markExit
- * ran in shellExecuteTracked's finally).
- */
-export declare function _emitShellExecDone(self: RpcHost, pid: number, cmd: string, code: number, durationMs: number): void;
+export declare function _emitShellExecDone(self: RpcHost, pid: number, _cmd: string, code: number, durationMs: number): void;
 /**
  * External-exit path: invoked by FacetManager when a process is killed
  * outside the facet's own try/finally (timeout, explicit abort, or the
@@ -466,28 +442,6 @@ export declare function _rpcCpKill(self: RpcHost, childPid: number, signal: stri
  */
 export declare function _rpcCpBlocked(self: RpcHost, pid: number, report: unknown): Promise<void>;
 export declare function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean): Promise<any>;
-/** RPC: Read a file from the VFS. Returns ArrayBuffer or null. */
-export declare function vfsReadFile(self: RpcHost, path: string): ArrayBuffer | null;
-/** RPC: Read a file as string. Returns string or null. */
-export declare function vfsReadFileString(self: RpcHost, path: string): string | null;
-/** RPC: Stat a path. Returns file metadata or null. */
-export declare function vfsStat(self: RpcHost, path: string): {
-    type: string;
-    size: number;
-    atime: number;
-    ctime: number;
-    mtime: number;
-    mode: number;
-} | null;
-/** RPC: Check if path exists. */
-export declare function vfsExists(self: RpcHost, path: string): boolean;
-/** RPC: List directory contents. Returns array of { name, type }. */
-export declare function vfsReaddir(self: RpcHost, path: string): {
-    name: string;
-    type: string;
-}[];
-/** RPC: Write a file to the VFS. */
-export declare function vfsWriteFile(self: RpcHost, path: string, data: ArrayBuffer): void;
 /**
  * RPC: peer-DO execute leg of Fanout's peer-DO fanout topology.
  *
@@ -589,6 +543,32 @@ export declare function _rpcProcessHostProbe(_self: RpcHost): {
 export declare function _rpcHostProcess(self: RpcHost, boot: unknown, opts: unknown): Promise<{
     ok: boolean;
 }>;
+/** The timer reason a hosting peer's alarm carries (session/hibernation.ts AlarmReason). */
+export declare const HOSTING_WATCH_REASON = "hosting-watch";
+/**
+ * How often a host holding a process looks for its own reset: the resident
+ * keep-alive's cadence, so the session learns of it within one cadence.
+ */
+export declare const HOSTING_WATCH_MS = 5000;
+/**
+ * The hosting alarm. A row whose process this incarnation does not hold is
+ * one the platform reset this object under (a new incarnation remembers
+ * nothing of the processes it held, and the held leg that would have said so
+ * may stay open, measured 2026-10-07): the session is told at once, and the
+ * row is dropped once the session has answered, whatever it answered. A row
+ * the session did not hear about is kept, and so is the watch: the next
+ * alarm tells it again. A failure to read or drop the rows is retried the
+ * same way, since the dispatcher forgets a reason whose handler throws.
+ * Answers when to look again, or null when nothing is left to watch.
+ */
+export declare function hostingWatchFired(self: RpcHost): Promise<number | null>;
+/**
+ * RPC: the actor that hosted `workerKey` for this session reports, from a new
+ * incarnation, that the platform reset it under the process. The capability
+ * proves it hosted it. True when the process was this session's and is now
+ * ended.
+ */
+export declare function _rpcHostLost(self: RpcHost, workerKey: string, capability: string): boolean;
 /**
  * RPC: settle once the process is OPEN on this peer, or reject with whatever
  * stopped it from opening.

@@ -29,6 +29,7 @@ import type {
 } from '../commands/types.js';
 import type { VfsCred } from '../../../runtime/os-contracts.js';
 import { syscallError } from '../../../vfs/vfs-error.js';
+import { withRecall } from '../../../vfs/recall.js';
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
 import {
@@ -224,6 +225,10 @@ type ExecutionIo = {
   /** Files the enclosing redirections hold open, by their stream. */
   openFiles?: ReadonlyMap<CommandInputStream | CommandOutputStream, OpenFile>;
 };
+
+function terminalStdinFd(io: ExecutionIo, stdin = io.stdin): boolean {
+  return io.terminalFds?.stdin ?? ((!stdin || stdin === io.terminalStdin) && Boolean(io.terminalStdin));
+}
 
 /** A shell's function definitions, by name. */
 export type FunctionTable = ReadonlyMap<string, CompoundCommandNode>;
@@ -494,7 +499,7 @@ export class Interpreter {
       // controlling terminal for `/dev/tty`, but only the foreground job
       // owns the terminal's modes: a background REPL (`node &`) never takes
       // the Ctrl-C meant for the foreground.
-      if (io.terminalFds?.stdin ?? (!io.stdin && Boolean(io.terminalStdin))) {
+      if (terminalStdinFd(io)) {
         backgroundIo.stdin = this.createEmptyReader();
         backgroundIo.terminalFds = { ...io.terminalFds, stdin: false };
       }
@@ -1431,6 +1436,7 @@ export class Interpreter {
   ): ExecutionIo {
     const io: ExecutionIo = {};
     if (stdin) io.stdin = stdin;
+    else if (terminalStdin && !scriptMode) io.stdin = terminalStdin;
     if (terminalStdin) io.terminalStdin = terminalStdin;
     if (terminalFds) io.terminalFds = terminalFds;
     if (scriptMode) io.scriptMode = true;
@@ -1560,7 +1566,7 @@ export class Interpreter {
     setMembership(
       terminalInputFds,
       0,
-      io.terminalFds?.stdin ?? (!stdin && Boolean(io.terminalStdin)),
+      terminalStdinFd(io, stdin),
     );
     if (io.terminalStdin) {
       for (const fd of terminalInputFds) {
@@ -1802,12 +1808,15 @@ export class Interpreter {
     const targetPath = resolve(this.config.getCwd(), target);
     const vfs = io.vfs ?? this.config.vfs;
     try {
+      // Each call is made again once a delegation it meets is recalled
+      // (withRecall): a redirection into a subtree a process holds waits for
+      // it, as any caller that can wait does.
       const bridge = vfs.process;
-      const handle = await bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' });
+      const handle = await withRecall(() => bridge.open(targetPath, { write: true, create: true, append: mode === 'append', truncate: mode === 'write' }));
       const push = async (bytes: Uint8Array) => {
         let offset = 0;
         while (offset < bytes.length) {
-          const written = await bridge.write(handle.id, null, bytes.subarray(offset));
+          const written = await withRecall(() => bridge.write(handle.id, null, bytes.subarray(offset)));
           if (written <= 0 || written > bytes.length - offset) throw new Error('EIO: invalid redirection write length');
           offset += written;
         }
@@ -1817,7 +1826,7 @@ export class Interpreter {
         stream,
         // What the VFS still holds for the file is written as the command
         // whose redirection opened it ends (flushFds), and a failure is its.
-        flush: async () => { await bridge.fsync(handle.id); },
+        flush: async () => { await withRecall(() => bridge.fsync(handle.id)); },
         close: async () => { await bridge.close(handle.id); },
         refs: 1,
       });
@@ -1850,8 +1859,8 @@ export class Interpreter {
       }
       await vfs.access(targetPath, 0o4);
       const bridge = vfs.process;
-      const handle = await bridge.open(targetPath, { read: true });
-      const stream = this.createFileReader(vfs, targetPath, (offset, length) => Promise.resolve(bridge.read(handle.id, offset, length)), true);
+      const handle = await withRecall(() => bridge.open(targetPath, { read: true }));
+      const stream = this.createFileReader(vfs, targetPath, (offset, length) => withRecall(() => bridge.read(handle.id, offset, length)), true);
       fds.opened.set(stream, { stream, close: async () => { await bridge.close(handle.id); }, refs: 1 });
       return { stream, terminal: false };
     } catch (error) {

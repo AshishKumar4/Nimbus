@@ -28,12 +28,16 @@ export interface WrappedCommonJsCell {
     hashbang: boolean;
 }
 /**
- * Wrap a CommonJS cell as a `{ cjs }` module whose export is Node's module
- * wrapper function, in the given scope (THE WRAPPER). A leading shebang
- * becomes a line comment of the same length (Node strips it too; `#!` is not
- * valid inside a function).
+ * Wrap a CommonJS cell as a `{ cjs }` module whose export, given the
+ * module's `Function`, is Node's module wrapper function, in the given scope
+ * (THE WRAPPER). A leading shebang becomes a line comment of the same length
+ * (Node strips it too; `#!` is not valid inside a function). `loweredHead`
+ * and `loweredTail` are a lowered ES module's (EsModuleMap): its own code
+ * around the module's text, which a frame counts as wrapper.
  */
-export declare function wrapCommonJsCell(cell: string, scope?: CommonJsCellScope): WrappedCommonJsCell;
+export declare function wrapCommonJsCell(cell: string, scope?: CommonJsCellScope, loweredHead?: number, loweredTail?: number): WrappedCommonJsCell;
+/** The module beside a code module that holds its emit's ColumnMap (core async-module-lowering.ts), read by its frames. */
+export declare function columnMapModuleName(name: string): string;
 /**
  * Whether a script declares one of the wrapper's five names lexically at its
  * top level (`const`, `let` or `class`) — the one thing that needs the block
@@ -54,12 +58,14 @@ export declare function declaresWrapperBinding(source: string): boolean;
 export declare function opensWithUseStrict(source: string): boolean;
 /**
  * One row of the table a launch's main module carries for its cells:
- * `[key, moduleName, head, tail, hashbang, adopt]`. `adopt` is 1 when the
- * process's store takes the cell's file content from the module text (read
- * back from the bundle filesystem) rather than from a data cell: the store's
- * one copy of that file, and the map's only.
+ * `[key, moduleName, head, tail, hashbang, adopt, esModule]`. `adopt` is 1
+ * when the process's store takes the cell's file content from the module text
+ * (read back from the bundle filesystem) rather than from a data cell: the
+ * store's one copy of that file, and the map's only. `esModule` is 1 for an
+ * ES module lowered to CommonJS (module-format.ts): its require is its static
+ * imports only, and an import() of it is its namespace.
  */
-export type CommonJsCellRow = [key: string, moduleName: string, head: number, tail: number, hashbang: 0 | 1, adopt: 0 | 1];
+export type CommonJsCellRow = [key: string, moduleName: string, head: number, tail: number, hashbang: 0 | 1, adopt: 0 | 1, esModule: 0 | 1];
 /** Bytes of runtime code one launch records, and the supervisor keeps. */
 export declare const RUNTIME_CODE_MAX_BYTES: number;
 /** Pieces of runtime code one launch records, and the supervisor keeps. */
@@ -128,25 +134,32 @@ export declare function runtimeCodeModuleName(key: string): string;
 /** A ledger entry as the supervisor receives it: shape-checked, or null. */
 export declare function parseRuntimeCodeEntry(value: unknown): RuntimeCodeEntry | null;
 /**
- * The `{ cjs }` module text for a Function-constructor call: it exports the
- * function V8 builds for `new <Kind>Function(...params, body)` — named
- * `anonymous`, its source `<head> anonymous(<params>\n) {\n<body>\n}`, the body
- * from line 3 — or, for arguments the constructor refuses
- * (runtimeFunctionSyntaxError), throws the SyntaxError it would. A
- * constructor's function closes over the global scope, where a CommonJS
- * module's body would see workerd's five CommonJS names
+ * The `{ cjs }` module text for a Function-constructor call: it exports a
+ * factory of the code's origin (RUNTIME CODE), its import() and its
+ * `Function`, that builds the function V8 builds for `new
+ * <Kind>Function(...params, body)`. The function is named `anonymous`, its
+ * source is `<head> anonymous(<params>\n) {\n<body>\n}` (the body from line
+ * 3), and its import() calls are the origin's, through a parameter whose name
+ * no identifier of the code uses; a function so rewritten carries its own
+ * source as the export's `source`, which the guest gives
+ * Function.prototype.toString. Code that names `Function` also exports
+ * `unbound`, the same factory without that parameter, for an origin whose
+ * code reads and writes the global's. For arguments the constructor refuses
+ * (parseRuntimeFunction) the factory throws the SyntaxError the constructor
+ * would. A constructor's function closes over the global scope, where a
+ * CommonJS module's body would see workerd's five CommonJS names
  * (src/workerd/api/commonjs.h CommonJsModuleContext: require, module,
- * exports, __filename, __dirname), so an enclosing function rebinds those five
- * to the global object's.
+ * exports, __filename, __dirname), so an enclosing function rebinds those
+ * five to the global object's.
  */
 export declare function runtimeFunctionModule(kind: RuntimeFunctionKind, params: readonly string[], body: string): string;
 /**
- * The `{ cjs }` module text for vm.runInThisContext's code: it exports a
- * function returning the value of the one expression the script is (after
- * its directive prologue, which the function keeps), in the global scope as
- * a constructor's function is (runtimeFunctionModule), which node-shims
- * calls with the global object as `this`, a script's own; or
- * it throws the SyntaxError V8 would, or, for a script of another shape,
+ * The `{ cjs }` module text for vm.runInThisContext's code: a factory of its
+ * origin, as a constructor's is (runtimeFunctionModule), of a function
+ * returning the value of the one expression the script is (after its
+ * directive prologue, which the function keeps), which node-shims calls
+ * with the global object as `this`, a script's own. For code V8 refuses the
+ * factory throws the SyntaxError V8 would, and for a script of another shape
  * the error the interpreter answers it with in the first launch.
  */
 export declare function runtimeExpressionModule(code: string): string;

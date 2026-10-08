@@ -62,12 +62,12 @@ int main(void) {
   }
 
   {
-    const r = await t.run('./abi ; echo RUN_EXIT=$?', 60_000);
+    const r = await t.run('./abi', 60_000);
     const out = stripAnsi(r.output);
     a.check('WASI env exposes NIMBUS_OS=nimbus', hasLine(out, 'OS=nimbus'), JSON.stringify(out.slice(-500)));
     a.check('WASI env exposes NIMBUS_ABI=wasm32-wasi-nimbus', hasLine(out, 'ABI=wasm32-wasi-nimbus'), JSON.stringify(out.slice(-500)));
     a.check('WASI env exposes NIMBUS_ABI_TARGET=wasm32-wasi-nimbus', hasLine(out, 'TARGET=wasm32-wasi-nimbus'), JSON.stringify(out.slice(-500)));
-    a.check('ABI fixture exits 0', hasLine(out, 'RUN_EXIT=0'), JSON.stringify(out.slice(-300)));
+    a.check('ABI fixture exits 0', r.exitCode === 0, JSON.stringify(out.slice(-300)));
   }
 } finally {
   await t.close();

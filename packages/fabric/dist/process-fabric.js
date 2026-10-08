@@ -73,6 +73,8 @@
  * bytes, and the host reads them off the coordinator's own disk through the
  * `ResidentDiskReader` it was given.
  */
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 import { z } from 'zod/v4';
 /**
  * The class every generated resident runner exports. One name for every
@@ -303,6 +305,18 @@ async function readFacetImage(disk, path) {
     }
     return new TextDecoder().decode(bytes);
 }
+/**
+ * The platform reset the Durable Object a running process was hosted on, and
+ * the process ended with it. Only a host that is not the coordinator can
+ * report this (process-host.ts `peer`); the platform's own words, which may
+ * name a cause that did not happen ("its code was updated"), are the cause.
+ */
+export class ProcessHostLost extends Error {
+    constructor(cause) {
+        super(`its host was reset by the platform (${errorText(cause)})`, { cause });
+        this.name = 'ProcessHostLost';
+    }
+}
 // ── Handle ──────────────────────────────────────────────────────────────────
 /**
  * Resource handle for one resident process — the whole surface the kernel
@@ -312,7 +326,8 @@ async function readFacetImage(disk, path) {
  *
  * `done` settles when the process ends: for a `lifetime` runner that is its
  * held-open startProcess settling (resolve on exit, reject on host death);
- * for a `boot` runner it is the kill that releases the host.
+ * for a `boot` runner it is the kill that releases the host. A host that
+ * dies under either rejects it with {@link ProcessHostLost}.
  *
  * The handle is disposable so FacetManager's existing per-pid resource
  * tracking tears a process down exactly the way it releases any other
@@ -378,8 +393,15 @@ function heldUntilKilled() {
 }
 export class ProcessFabric {
     host;
-    constructor(host) {
+    options;
+    /**
+     * `journalFor`: the write-log hooks of a resident process's facet
+     * (ProcessHostParams.journal), when its coordinator keeps them: every
+     * resident it starts logs its changes in its facet's store.
+     */
+    constructor(host, options = {}) {
         this.host = host;
+        this.options = options;
     }
     /**
      * Boot a resident process on this deployment's substrate and return its
@@ -396,6 +418,7 @@ export class ProcessFabric {
         // after the host is released; a later incarnation must use a fresh one.
         const writerId = crypto.randomUUID();
         spawn.onWriterActivated(writerId);
+        const journal = spawn.journaled ? this.options.journalFor?.(spawn.pid) : undefined;
         let hosted;
         try {
             hosted = await this.host.open({
@@ -406,6 +429,7 @@ export class ProcessFabric {
                 startArgs: spawn.startArgs,
                 ...(spawn.facet !== undefined ? { facet: spawn.facet } : {}),
                 ...(spawn.storageBytes !== undefined ? { storageBytes: spawn.storageBytes } : {}),
+                ...(journal !== undefined ? { journal } : {}),
             });
         }
         catch (error) {
@@ -437,7 +461,9 @@ export class ProcessFabric {
         // on its host, so residency ends at a kill — or at the host dying, which
         // is the same thing happening to the process without anyone asking for it.
         const done = (spawn.startContract === 'lifetime'
-            ? hosted.started.then(() => undefined)
+            // A lifetime run ends with its start: a platform reset, said by the
+            // start or by the host, is its host lost; its own stop is not one.
+            ? Promise.race([hosted.started.then(() => undefined, (error) => { throw isHostReset(error) ? new ProcessHostLost(error) : error; }), hosted.lost])
             : hosted.started.then(() => Promise.race([held.promise, hosted.lost]))).finally(() => release());
         done.catch(() => { });
         return new ResidentProcessHandle({

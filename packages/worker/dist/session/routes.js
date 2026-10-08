@@ -49,7 +49,7 @@ import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { dynamicWorkerHeadroom, facetIdBudget, loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
+import { dynamicWorkerHeadroom, loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
 import { HOSTED_WEBSOCKET_CAPABILITY_HEADER, HOSTED_WEBSOCKET_KEY_HEADER, } from '@nimbus-sh/fabric/process-host.js';
 import { routeHostedWebSocket } from './rpc.js';
 import { isCirrusHmrPath, readPortCapability, normalizeForwardedHttpPath, readPortReservationByName, readoptCapability, routeToSessionPort, } from './port-capability.js';
@@ -67,6 +67,7 @@ import { Fanout, MAX_PEER_FANOUT } from '@nimbus-sh/fabric/fanout.js';
 import { runWaveBench } from '../git/wave-bench.js';
 import { decodeWriteBatchStream, encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
 import { z } from 'zod/v4';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 // `SessionPortHost`, `routeToSessionPort` and `routeCapabilityPort` live in
 // session/port-capability.ts so the composed manager's `apps` surface can
 // call the one implementation without importing this file (which reaches
@@ -716,6 +717,8 @@ async function routeFetch(self, request) {
             ts: Date.now(),
             // ── v2 / W5 additions (preserved) ─────────────────────────
             lastFailures,
+            // Subtrees processes hold, and the recalls asked of them (runtime/delegations.ts).
+            delegations: self.processFiles?.delegations.stats() ?? null,
             vfsDetail: {
                 lruBytes: cacheStats.hotBytes ?? 0,
                 lruMaxEntries: cacheStats.maxEntries ?? LRU_MAX_ENTRIES,
@@ -752,10 +755,6 @@ async function routeFetch(self, request) {
                 lastDispatch: getLastFacetId(),
                 // Null until the first terminal attaches: the manager is built by initSession.
                 prefetchCache: self.facetManager?.prefetchCacheDiag() ?? null,
-                // Facet IDs consumed over this DO's LIFETIME against the 65,536 the
-                // platform will ever grant it. Append-only and never reclaimed;
-                // crossing the wall is unrecoverable for the object.
-                idBudget: await facetIdBudget(self.ctx),
             },
             // ── v3 / C' observability foundation ──────────────────────
             heap,
@@ -1218,14 +1217,17 @@ async function routeFetch(self, request) {
             const vfs = self.sqliteFs.as(CRED_KERNEL);
             const body = await parseJsonBody(request, WriteFileBodySchema);
             const path = body.path.replace(/^\/+/, '');
-            // Ensure parent dirs
-            const parts = path.split('/');
-            for (let i = 1; i < parts.length; i++) {
-                const dir = parts.slice(0, i).join('/');
-                if (dir && !vfs.exists(dir))
-                    vfs.mkdir(dir, { recursive: true });
-            }
-            vfs.writeFile(path, body.content);
+            // A delegation it meets is recalled first; the whole write is repeatable.
+            await withRecall(() => {
+                // Ensure parent dirs
+                const parts = path.split('/');
+                for (let i = 1; i < parts.length; i++) {
+                    const dir = parts.slice(0, i).join('/');
+                    if (dir && !vfs.exists(dir))
+                        vfs.mkdir(dir, { recursive: true });
+                }
+                vfs.writeFile(path, body.content);
+            });
             return Response.json({ ok: true, path });
         }
         catch (e) {
@@ -1237,7 +1239,7 @@ async function routeFetch(self, request) {
         try {
             const body = await parseJsonBody(request, MkdirBodySchema);
             const path = body.path.replace(/^\/+/, '');
-            self.sqliteFs.as(CRED_KERNEL).mkdir(path, { recursive: true });
+            await withRecall(() => self.sqliteFs.as(CRED_KERNEL).mkdir(path, { recursive: true }));
             return Response.json({ ok: true, path });
         }
         catch (e) {
@@ -1395,16 +1397,10 @@ async function routeFetch(self, request) {
         }
         // Polished placeholder — auto-reloads when vite starts.
         // Checks the VFS for the starter app so we can offer a context-aware hint.
-        const hasSeed = (() => {
-            try {
-                const vfs = self.sqliteFs.as(CRED_KERNEL);
-                return vfs.exists(SEED_PROJECT_DIR) &&
-                    vfs.exists(SEED_PROJECT_DIR + '/package.json');
-            }
-            catch {
-                return false;
-            }
-        })();
+        const hasSeed = await withRecall(() => {
+            const vfs = self.sqliteFs.as(CRED_KERNEL);
+            return vfs.exists(SEED_PROJECT_DIR) && vfs.exists(SEED_PROJECT_DIR + '/package.json');
+        }).catch(() => false);
         const hint = hasSeed
             ? `cd ${SEED_PROJECT_NAME} &amp;&amp; npm install &amp;&amp; npm run dev`
             : 'vite';
@@ -1434,18 +1430,13 @@ async function routeFetch(self, request) {
             // nimbus-wrangler starts. The placeholder references BOTH command
             // names so users coming from either `wrangler dev` or
             // `nimbus-wrangler dev` see a familiar hint.
-            const hasWranglerConfig = (() => {
-                try {
-                    self.ensureSqliteFs();
-                    const vfs = self.sqliteFs.as(CRED_KERNEL);
-                    return vfs.exists('home/user/wrangler.jsonc') ||
-                        vfs.exists('home/user/wrangler.json') ||
-                        vfs.exists('home/user/wrangler.toml');
-                }
-                catch {
-                    return false;
-                }
-            })();
+            const hasWranglerConfig = await withRecall(() => {
+                self.ensureSqliteFs();
+                const vfs = self.sqliteFs.as(CRED_KERNEL);
+                return vfs.exists('home/user/wrangler.jsonc') ||
+                    vfs.exists('home/user/wrangler.json') ||
+                    vfs.exists('home/user/wrangler.toml');
+            }).catch(() => false);
             const hint = hasWranglerConfig
                 ? 'npm run dev'
                 : 'wrangler dev';
@@ -1656,8 +1647,9 @@ async function handleCacheTestEndpoint(self, url, request) {
             bin += String.fromCharCode(digest[i]);
         const integrity = `sha512-${btoa(bin)}`;
         const address = parseTarballAddress(integrity);
-        await purgeL2(tarballL2Url(address));
+        // putTarball fills L2 as well: purge after it, so the bench starts from L3 cold.
         const ok = await r2.putTarball(integrity, bytes);
+        await purgeL2(tarballL2Url(address));
         return Response.json({ seeded: ok, integrity, sizeBytes: bytes.length });
     }
     if (path === '/api/_test/cache/tarball/bench' && request.method === 'GET') {

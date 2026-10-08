@@ -34,8 +34,24 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
   const live = new Map();
 
   const loader = {
-    load() {
-      throw new Error('a resident process is never loaded through LOADER.load');
+    // The one unkeyed load: the journal reader a released resident's store
+    // is opened with (process-fs-journal-reader.ts), over that facet's store.
+    load(code) {
+      if (!code?.modules?.['reader.js']) throw new Error('a resident process is never loaded through LOADER.load');
+      return {
+        getDurableObjectClass: (className) => ({
+          className,
+          async instantiate(facetName) {
+            const journal = sqlJournal(createProcessFacetCtx(facetName).storage.sql);
+            return {
+              numberings: () => journal.numberings(),
+              number: (numbering) => journal.number(numbering),
+              readAfter: (after, maxBytes) => journal.readAfter(after, maxBytes),
+              dropThrough: (jid) => journal.dropThrough(jid),
+            };
+          },
+        }),
+      };
     },
     get(loaderId, config) {
       return {
@@ -66,18 +82,44 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
     return instance;
   };
 
+  /** facetName → its isolate's death, which a runtime resident's held() call hears. */
+  const deaths = new Map();
+  const deathOf = (name) => {
+    let death = deaths.get(name);
+    if (!death) {
+      let reject;
+      death = { promise: new Promise((_, r) => { reject = r; }), reject };
+      death.promise.catch(() => {});
+      deaths.set(name, death);
+    }
+    return death;
+  };
+  const die = (name, error) => {
+    deaths.get(name)?.reject(error);
+    deaths.delete(name);
+  };
+
   const facets = {
     get(name, start) {
       return {
         async startProcess(args) { return (await ensure(name, start)).startProcess(args); },
         async handleHttpRequest(request) { return (await ensure(name, start)).handleHttpRequest(request); },
+        // A runtime resident's class holds this open while its isolate lives.
+        held() { return deathOf(name).promise; },
+        // The journal reader's (LOADER.load above).
+        async numberings() { return (await ensure(name, start)).numberings(); },
+        async number(numbering) { return (await ensure(name, start)).number(numbering); },
+        async readAfter(after, maxBytes) { return (await ensure(name, start)).readAfter(after, maxBytes); },
+        async dropThrough(jid) { return (await ensure(name, start)).dropThrough(jid); },
       };
     },
     // abort ends the process; the store stays. delete is the only call that
     // drops a facet's SQLite — mirroring workerd's split, which is what the
     // durable release relies on.
-    abort(name) { live.delete(name); },
-    delete(name) { live.delete(name); resetProcessFacetStorage(name); },
+    // Whoever aborts or deletes a facet ended it, and what held it open
+    // hears nothing (a release ignores it; a previous incarnation is gone).
+    abort(name) { live.delete(name); deaths.delete(name); },
+    delete(name) { live.delete(name); deaths.delete(name); resetProcessFacetStorage(name); },
   };
 
   return {
@@ -89,6 +131,8 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
     liveFacets: () => [...live.keys()],
     /** Drop a running facet the way a platform reset would, without releasing it. */
     lose: (name) => live.delete(name),
+    /** The facet's isolate dies on its own (out of memory, out of CPU): its held() call rejects with `error`. */
+    die: (name, error = new Error('Worker exceeded memory limit.')) => { live.delete(name); die(name, error); },
   };
 }
 
@@ -214,8 +258,10 @@ import {
   isolateToken,
 } from '../../packages/fabric/src/process-host.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
+import { timers } from '../../packages/fabric/src/timers.ts';
 import { composeFabric } from '../../packages/fabric/src/composition.ts';
 import { openSupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
+import { sqlJournal } from '../../packages/core/src/_shared/process-fs-journal.ts';
 import { missingAssets } from './lib/staged-assets.mjs';
 
 // The harness plays the embedder: its ctx.exports (createCtxExports below)
@@ -242,8 +288,6 @@ export const PROCESS_HOST_MODES = ['facet', 'peer'];
 export function createProcessHost(mode, world, disk, {
   env, coordDoId = 'coord-do-id', colocated = false, peerWithoutFacets = false, deliveries = false,
 } = {}) {
-  const calls = [];
-  const stubs = [];
   const hostEnv = env ?? {
     LOADER: world.loader,
     ASSETS: missingAssets,
@@ -255,6 +299,34 @@ export function createProcessHost(mode, world, disk, {
     host.hostIncarnation = hostIncarnation;
     return host;
   }
+  const { ns, peers, calls, stubs } = createPeerNamespace(world, hostEnv, { colocated, peerWithoutFacets });
+  const host = processHostFor(
+    coordinator,
+    { NIMBUS_SESSION: ns, NIMBUS_PROCESS_HOST: 'peer' },
+    () => disk,
+  );
+  host.peers = peers;
+  host.namesResolved = calls;
+  host.stubs = stubs;
+  host.hostIncarnation = hostIncarnation;
+  return host;
+}
+
+/**
+ * A fake `NIMBUS_SESSION` namespace whose sibling sessions host processes
+ * through the REAL `_rpc*` host legs, over `world`'s facets. `peers` maps each
+ * sibling's name to its state; `peer.die(error)` severs its held host leg
+ * exactly as a Durable Object reset severs an inbound call.
+ *
+ * `colocated: true` makes every peer report the COORDINATOR's isolate;
+ * `peerWithoutFacets: true` gives each peer no `ctx.facets`. `coordinator`
+ * (`{ doId, supervisorOp }`) is the session a peer reaches back to through
+ * the same namespace. Each peer's storage records the alarm it arms
+ * (`ctx.storage.alarmAt`). `onPeer(peer)` sees each peer as it is made.
+ */
+export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, coordinator, onPeer } = {}) {
+  const calls = [];
+  const stubs = [];
   // Every `ns.get()` for one name reaches one peer, exactly as a DO namespace
   // does; a second stub for the same name must see the same hosted records.
   const peers = new Map();
@@ -265,9 +337,11 @@ export function createProcessHost(mode, world, disk, {
       // A hosting sibling that cannot host: the failure a peer suffers where a
       // coordinator would have thrown before any handle existed.
       if (peerWithoutFacets) delete ctx.facets;
+      ctx.storage.alarmAt = null;
+      ctx.storage.setAlarm = async (at) => { ctx.storage.alarmAt = at; };
       peer = {
         ctx,
-        env: hostEnv,
+        env: { ...hostEnv, NIMBUS_SESSION: ns },
         _hostedProcesses: new Map(),
         _hostedProcessWaiters: new Map(),
         // A peer is a DIFFERENT Durable Object, so it reports a different
@@ -282,6 +356,14 @@ export function createProcessHost(mode, world, disk, {
       // Durable Object reset severs an inbound call.
       peer.death = new Promise((_, reject) => { peer.die = reject; });
       peer.death.catch(() => {});
+      // `reset(error)` is the reset Cloudflare was measured doing (2026-10-07):
+      // the held leg stays open, and every later call to the peer fails with
+      // `error`.
+      peer.resetBy = null;
+      peer.reset = (error) => { peer.resetBy = error; };
+      // A session arms its hosting watch on its own timer mux (NimbusSession.scheduleHostingWatch).
+      peer.scheduleHostingWatch = (at) => timers(peer, ctx).arm('hosting-watch', at);
+      onPeer?.(peer);
       peers.set(name, peer);
     }
     return peer;
@@ -290,6 +372,9 @@ export function createProcessHost(mode, world, disk, {
     idFromName: (name) => name,
     idFromString: (id) => id,
     get(name) {
+      if (coordinator !== undefined && name === coordinator.doId) {
+        return { supervisorOp: (envelope) => Promise.resolve().then(() => coordinator.supervisorOp(envelope)) };
+      }
       const peer = peerFor(name);
       calls.push(name);
       // Stubs carry a disposer, as RPC stubs do, so a leg that forgets to
@@ -301,6 +386,7 @@ export function createProcessHost(mode, world, disk, {
         // The upgrade leg is a service-binding fetch on the peer — route it
         // to the same real handler the production entrypoint calls.
         async fetch(request) {
+          if (peer.resetBy) throw peer.resetBy;
           const headers = request.headers;
           return routeHostedWebSocket(
             peer,
@@ -314,6 +400,7 @@ export function createProcessHost(mode, world, disk, {
         // supervisorOp first, exactly as the shipped host does.
         supervisorOp(envelope) {
           const { op, args } = envelope;
+          if (peer.resetBy && op !== 'hostProcess') return Promise.reject(peer.resetBy);
           switch (op) {
             case 'processHostProbe': return Promise.resolve({ isolateToken: peer.isolateToken });
             case 'hostProcess': return Promise.race([_rpcHostProcess(peer, args[0], args[1]), peer.death]);
@@ -327,16 +414,7 @@ export function createProcessHost(mode, world, disk, {
       };
     },
   };
-  const host = processHostFor(
-    coordinator,
-    { NIMBUS_SESSION: ns, NIMBUS_PROCESS_HOST: 'peer' },
-    () => disk,
-  );
-  host.peers = peers;
-  host.namesResolved = calls;
-  host.stubs = stubs;
-  host.hostIncarnation = hostIncarnation;
-  return host;
+  return { ns, peers, calls, stubs };
 }
 
 /**

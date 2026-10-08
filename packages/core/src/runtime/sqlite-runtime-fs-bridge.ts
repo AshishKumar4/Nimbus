@@ -1,4 +1,4 @@
-import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
+import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription, type WaveDescriptions } from '../vfs/sqlite-vfs.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
 import { readDeclaredSource, readRangeOrWhole, type SyncVFS, type VfsRemoval, type VfsStat } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
@@ -21,6 +21,8 @@ import type {
   VfsListPage,
   VfsMutationReceipt,
   RuntimeMutationOwner,
+  ExclusiveMutationGrant,
+  ExclusiveMutationRequest,
 } from './os-contracts.js';
 
 interface OpenDescription {
@@ -32,6 +34,8 @@ interface OpenDescription {
 export interface SqliteDescriptorScope {
   nextId: number;
   handles: Map<number, OpenDescription>;
+  /** The process's open descriptions its waves name (W7Call description), by the id it chose: descriptors of its own. */
+  waveDescriptions: Map<string, number>;
   closed: boolean;
   /** Aborted when the scope closes; cancels in-flight stream commits. */
   abort: AbortController;
@@ -39,7 +43,7 @@ export interface SqliteDescriptorScope {
 }
 
 export function createSqliteDescriptorScope(): SqliteDescriptorScope {
-  return { nextId: 1, handles: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set() };
+  return { nextId: 1, handles: new Map(), waveDescriptions: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set() };
 }
 
 /**
@@ -77,6 +81,7 @@ export function closeDescriptions(scope: SqliteDescriptorScope): unknown[] {
     }
   }
   scope.handles.clear();
+  scope.waveDescriptions.clear();
   return lost;
 }
 
@@ -383,30 +388,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   /** This caller's view, presenting `owner`'s exclusive mutation lease when it names one. */
   private owned(owner: string | undefined): CredentialedVfs {
-    return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner, actor: this.vfs.principal.actor });
-  }
-
-  appendOnce(
-    path: RuntimeFsPath,
-    pid: number,
-    writerId: string,
-    moduleId: string,
-    operationId: number,
-    digest: string,
-    bytes: Uint8Array,
-  ): number {
-    return called({ syscall: 'append', path }, () => {
-      return this.vfs.appendOnce(this.sqlitePath(path, true, 'append'), pid, writerId, moduleId, operationId, digest, bytes);
-    });
-  }
-
-  acknowledgeAppend(
-    pid: number,
-    writerId: string,
-    moduleId: string,
-    operationId: number,
-  ): void {
-    this.vfs.acknowledgeAppend(pid, writerId, moduleId, operationId);
+    return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner, actor: this.vfs.principal.actor, holds: this.vfs.holds });
   }
 
   truncate(
@@ -490,13 +472,15 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  open(path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeFileHandle {
+  /** `options.mutationOwner`: the exclusive-mutation lease an open for writing presents (a read-only open presents none). */
+  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options: RuntimeMutationOwner = {}): RuntimeFileHandle {
     return called({ syscall: 'open', path }, () => {
       const normalizedFlags = normalizeOpenFlags(flags);
       const mutates = normalizedFlags.write || normalizedFlags.create ||
         normalizedFlags.truncate || normalizedFlags.append;
+      const owner = mutates ? options.mutationOwner : undefined;
       const located = mutates
-        ? this.locateMutation(path, normalizedFlags.followSymlinks, 'open')
+        ? this.locateMutation(path, normalizedFlags.followSymlinks, 'open', owner)
         : this.locate(path, normalizedFlags.followSymlinks);
       if (located === null) throw fsError('ELOOP', 'open', path);
       if (located.mount) return this.openMount(located.mount, located.path, path, normalizedFlags, flags.mode, flags.sync === true);
@@ -519,13 +503,13 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (exists && this.vfs.isDirectory(p) && (normalizedFlags.truncate || normalizedFlags.append)) throw fsError('EISDIR', 'open', path);
       if (exists) this.vfs.access(p, (normalizedFlags.read ? 4 : 0) | (normalizedFlags.write && !this.vfs.isDirectory(p) ? 2 : 0));
       if (!exists) {
-        this.vfs.writeFile(p, new Uint8Array(0), { mode: flags.mode });
+        this.owned(owner).writeFile(p, new Uint8Array(0), { mode: flags.mode });
       } else if (normalizedFlags.truncate) {
-        this.vfs.truncate(p, 0);
+        this.owned(owner).truncate(p, 0);
       }
 
       const stat = this.vfs.stat(p);
-      const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal);
+      const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds, owner);
       const handle: RuntimeFileHandle = {
         id: this.scope.nextId++,
         path: p,
@@ -594,9 +578,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  mkdir(path: RuntimeFsPath, options: { recursive?: boolean; mode?: number } = {}): void {
+  mkdir(path: RuntimeFsPath, options: { recursive?: boolean; mode?: number } & RuntimeMutationOwner = {}): void {
     return called({ syscall: 'mkdir', path }, () => {
-      const located = this.locateMutation(path, false, 'mkdir');
+      const located = this.locateMutation(path, false, 'mkdir', options.mutationOwner);
       if (located.mount) { located.mount.mkdir(located.path, { recursive: !!options.recursive, mode: options.mode }); return; }
       const p = located.path;
       // `/` has no row (stat answers it with rootStat), but it exists: mkdir of
@@ -608,20 +592,20 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         if (options.recursive && this.stat(path)?.type === 'directory') return;
         throw fsError('EEXIST', 'mkdir', path);
       }
-      this.vfs.mkdir(p, { recursive: !!options.recursive, mode: options.mode });
+      this.owned(options.mutationOwner).mkdir(p, { recursive: !!options.recursive, mode: options.mode });
     });
   }
 
-  unlink(path: RuntimeFsPath): void {
+  unlink(path: RuntimeFsPath, options: RuntimeMutationOwner = {}): void {
     return called({ syscall: 'unlink', path }, () => {
-      const located = this.locateMutation(path, false, 'unlink');
+      const located = this.locateMutation(path, false, 'unlink', options.mutationOwner);
       if (located.mount) { located.mount.unlink(located.path); return; }
       const p = located.path;
       const key = this.legacyKey(p);
       if (this.vfs.exists(p)) {
         const staleLegacy = this.legacySymlinks.isSymlink(key);
         if (staleLegacy) this.legacySymlinks.assertMutable(key);
-        this.vfs.unlink(p);
+        this.owned(options.mutationOwner).unlink(p);
         if (staleLegacy) this.legacySymlinks.delete(key);
         return;
       }
@@ -631,15 +615,15 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  rmdir(path: RuntimeFsPath): void {
+  rmdir(path: RuntimeFsPath, options: RuntimeMutationOwner = {}): void {
     return called({ syscall: 'rmdir', path }, () => {
-      const located = this.locateMutation(path, false, 'rmdir');
+      const located = this.locateMutation(path, false, 'rmdir', options.mutationOwner);
       if (located.mount) { mountOp(located.mount.rmdir, 'rmdir', path)(located.path); return; }
       const p = located.path;
       // rmdir(2): a missing path is ENOENT, anything but a directory (a file, a link) ENOTDIR.
       if (!this.vfs.exists(p) && !this.legacySymlinks.isSymlink(this.legacyKey(p))) throw fsError('ENOENT', 'rmdir', path);
       if (!this.vfs.isDirectory(p)) throw fsError('ENOTDIR', 'rmdir', path);
-      this.vfs.rmdir(p);
+      this.owned(options.mutationOwner).rmdir(p);
     });
   }
 
@@ -804,19 +788,71 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   writeStream(stream: ReadableStream<Uint8Array>, options?: Parameters<CredentialedVfs['writeStream']>[1]) {
-    return this.vfs.writeStream(stream, options);
+    return this.vfs.writeStream(stream, { ...options, descriptions: this.waveDescriptions });
   }
 
-  acquireExclusiveMutation(path: RuntimeFsPath, options?: { includeMissingAncestors?: boolean }) {
+  /**
+   * The open descriptions a process's waves name (WaveDescriptions): each one
+   * this binding's descriptor, so the process reads, stats and closes it as
+   * any of its own; its access decided at its open (SqliteVFS.describeInode),
+   * and its file alive until its close.
+   */
+  private readonly waveDescriptions: WaveDescriptions = {
+    adopt: (id, ino, rights, path, cred) => {
+      const node = this.rawVfs.describeInode(ino, path, cred, rights, this.vfs.principal, this.vfs.holds);
+      if (node === null) return null;
+      const handle: RuntimeFileHandle = {
+        id: this.scope.nextId++, path, flags: Object.freeze(normalizeOpenFlags({ read: rights.read, write: rights.write })), position: 0, closed: false,
+      };
+      this.scope.handles.set(handle.id, { handle, node, refs: 1 });
+      // The same id opened again (an open re-sent after its answer was lost is answered, not applied): the newer is it.
+      const prior = this.scope.waveDescriptions.get(id);
+      if (prior !== undefined && this.scope.handles.has(prior)) this.close(prior);
+      this.scope.waveDescriptions.set(id, handle.id);
+      return handle.id;
+    },
+    node: (id) => {
+      const handleId = this.scope.waveDescriptions.get(id);
+      return handleId === undefined ? undefined : this.scope.handles.get(handleId)?.node;
+    },
+    handle: (id) => {
+      const handleId = this.scope.waveDescriptions.get(id);
+      return handleId !== undefined && this.scope.handles.has(handleId) ? handleId : undefined;
+    },
+    close: (id) => {
+      const handleId = this.scope.waveDescriptions.get(id);
+      if (handleId === undefined) return;
+      this.scope.waveDescriptions.delete(id);
+      if (this.scope.handles.has(handleId)) this.close(handleId);
+    },
+  };
+
+  /**
+   * A lease, or with `terms` a delegation (made by the process that holds
+   * it: ProcessFiles' bridge, which answers its recalls). This bridge serves
+   * no process, so it delegates nothing itself (`delegate`: EINVAL).
+   */
+  acquireExclusiveMutation(path: RuntimeFsPath, options?: ExclusiveMutationRequest, terms?: DelegationTerms): ExclusiveMutationGrant {
     return called({ syscall: 'acquireExclusiveMutation', path }, () => {
+      if (options?.delegate !== undefined && terms === undefined) throw fsError('EINVAL', 'acquireExclusiveMutation', path);
       const p = this.sqlitePath(path, false, 'acquireExclusiveMutation');
       const parent = parentVfsPath(p);
       if (parent && !(options?.includeMissingAncestors && !this.vfs.exists(parent))) this.vfs.access(parent, 0o3);
-      return this.vfs.acquireExclusiveMutation(p, options);
+      const lease = this.vfs.acquireExclusiveMutation(p, { includeMissingAncestors: options?.includeMissingAncestors, delegation: terms });
+      return terms === undefined ? lease : { ...lease, umask: this.vfs.cred.umask };
     });
   }
 
   releaseExclusiveMutation(owner: string): void { this.rawVfs.releaseExclusiveMutation(owner); }
+
+  /** No process, so no delegation: whatever `owner` names is not one of this bridge's (ESTALE). */
+  awaitRecall(owner: string): never {
+    throw fsError('ESTALE', 'awaitRecall', owner, undefined, { detail: 'no delegation of this process under that lease' });
+  }
+
+  recalled(owner: string): never {
+    throw fsError('ESTALE', 'recalled', owner, undefined, { detail: 'no delegation of this process under that lease' });
+  }
 
   private pathArgument(path: RuntimeFsPath): string {
     if (typeof path === 'string') return path;
@@ -947,6 +983,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (located === null) throw callError('ELOOP', typeof call === 'string' ? { syscall: call, path } : call);
     // And the name it reaches, on a mount as on SQLite.
     this.leaseAllows(located.path, owner);
+    // The namespace's own guard, which each mount call meets, is presented the lease too.
+    if (located.mount && owner !== undefined) return { ...located, mount: this.namespace!.scoped(() => {}, owner).sync };
     return located;
   }
 
@@ -957,7 +995,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
    * confined caller's /tmp/x is its private file, not the shared tmp/x.
    */
   private leaseAllows(path: string, owner?: string): void {
-    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)), owner);
+    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)), owner, this.vfs.holds);
   }
 
 

@@ -54,7 +54,7 @@ function recordingHost(calls, { reject = (code) => code.includes('BROKEN') } = {
     return requests.map(({ code, options }) => {
       if (reject(code)) return { error: 'Unexpected ";"' };
       if (options?.rewriteOnly) return { code: `/* rewritten */\n${code}`, map: '', warnings: [] };
-      return { code: `/* cjs ${options?.loader} */\n${code.replace(/^export (const|default) /gm, 'exports.$1 ')}`, map: '', warnings: [] };
+      return { code: `/* cjs ${options?.loader} */\n${code.replace(/(^|;)export (const|default) /gm, '$1exports.$2 ')}`, map: '', warnings: [] };
     });
   };
 }
@@ -83,7 +83,7 @@ async function build(files, store, { calls = [], host = recordingHost(calls), pa
     cells: Object.fromEntries(Object.keys(state.bundle).filter((path) => path.startsWith(APP)).sort()
       .map((path) => [path, state.emits?.get(path) ?? state.bundle[path]])),
     emits: Object.fromEntries([...(state.emits ?? new Map())].sort()),
-    lowered: [...(state.lowered ?? new Set())].sort(),
+    lowered: [...(state.lowered?.keys() ?? [])].sort(),
   };
 }
 
@@ -164,6 +164,7 @@ try {
   assert.match(cold.cells[`${APP}/broken.mjs`], /esbuild transform failed for .*broken\.mjs: Unexpected/);
 
   const warm = await build(program(), storeOver(new Database(dbPath)).store);
+  // An ES module reaches the host as written; the host lowers it as one (async-module-lowering.ts lowerEsModule).
   assert.deepEqual(warm.calls.flat(), [program()[`${APP}/broken.mjs`]], 'a warm launch sends the host only the rejected module');
   assert.equal(warm.stats.stored, cold.stats.cells - 1, 'every other cell is answered from the store');
   assert.deepEqual(warm.cells, cold.cells, 'a hit stages byte-identical cells');
@@ -200,6 +201,8 @@ try {
       source: await store.key('cell', `${APP}/lib.mjs`, 'export const a = 2;\n'),
       path: await store.key('cell', `${APP}/lib2.mjs`, 'export const a = 1;\n'),
       kind: await store.key('entry', `${APP}/lib.mjs`, 'export const a = 1;\n'),
+      // Its package scope's "type" decides whether a .js file is an ES module.
+      packageType: await store.key('cell', `${APP}/lib.mjs`, 'export const a = 1;\n', 'module'),
       host: await storeOver(new Database(':memory:'), { host: 'test-host/2' }).store.key('cell', `${APP}/lib.mjs`, 'export const a = 1;\n'),
       pipeline: await storeOver(new Database(':memory:'), { pipeline: `${TRANSFORM_PIPELINE_ID}-next` }).store.key('cell', `${APP}/lib.mjs`, 'export const a = 1;\n'),
       // A field boundary cannot be moved to make two inputs one.
@@ -287,7 +290,7 @@ try {
     const db = new Database(':memory:');
     const maxBytes = 64 * 1024;
     const { store } = storeOver(db, { maxBytes, maxEntryBytes: 16 * 1024 });
-    const result = (i, bytes = 4096) => ({ code: String(i).padEnd(bytes, '.'), lowered: i % 2 === 0 });
+    const result = (i, bytes = 4096) => ({ code: String(i).padEnd(bytes, '.'), map: i % 3 === 0 ? '{"head":1,"columns":[]}' : '', lowered: i % 2 === 0, esModule: i % 4 === 0 });
     const keys = [];
     for (let i = 0; i < 40; i++) {
       keys.push(await store.key('cell', `m${i}.mjs`, String(i)));
@@ -319,7 +322,7 @@ try {
     const key = await store.key('cell', 'big.mjs', 'source');
     const spent = [];
     // A launch killed while the result is being written stops the write.
-    await assert.rejects(store.put(key, { code, lowered: true }, async (n) => { spent.push(n); throw new Error('process gone'); }), /process gone/);
+    await assert.rejects(store.put(key, { code, map: '', lowered: true, esModule: false }, async (n) => { spent.push(n); throw new Error('process gone'); }), /process gone/);
     assert.equal(store.getMany([key]).size, 0, 'a write cut short is no result');
     assert.equal(partsOf(db), 0, 'and leaves no parts behind');
     assert.equal(chargeOf(db), 0, 'and no charge');
@@ -329,12 +332,12 @@ try {
     spent.length = 0;
     let release;
     const gate = new Promise((resolve) => { release = resolve; });
-    const slow = store.put(key, { code, lowered: true }, async (n) => { spent.push(n); await gate; });
-    assert.equal(await store.put(key, { code, lowered: true }, async (n) => { spent.push(n); }), null);
-    assert.deepEqual(store.getMany([key]).get(key), { code, lowered: true }, 'the first to finish is read back exactly');
+    const slow = store.put(key, { code, map: '', lowered: true, esModule: false }, async (n) => { spent.push(n); await gate; });
+    assert.equal(await store.put(key, { code, map: '', lowered: true, esModule: false }, async (n) => { spent.push(n); }), null);
+    assert.deepEqual(store.getMany([key]).get(key), { code, map: '', lowered: true, esModule: false }, 'the first to finish is read back exactly');
     release();
     assert.equal(await slow, null);
-    assert.deepEqual(store.getMany([key]).get(key), { code, lowered: true }, 'and survives the second finishing');
+    assert.deepEqual(store.getMany([key]).get(key), { code, map: '', lowered: true, esModule: false }, 'and survives the second finishing');
     assert.equal(partsOf(db), Math.ceil(bytes / MAX_TX_BLOB_BYTES), 'only the result\'s own parts remain');
     assert.ok(spent.every((n) => n <= MAX_TX_BLOB_BYTES), `written in parts of at most ${MAX_TX_BLOB_BYTES} bytes`);
 
@@ -354,7 +357,8 @@ try {
     const code = 'import("./x.mjs");\n';
     const spent = [];
     const first = await transformEntryScript(code, 'file:///home/user/[eval]', { host, store, pacer: { spend: async (n) => { spent.push(n); } } });
-    assert.deepEqual(spent, [new TextEncoder().encode(first).byteLength], 'its write is accounted to the launch pacer, like a cell\'s');
+    // The stored payload: the (empty) map's line, then the code.
+    assert.deepEqual(spent, [new TextEncoder().encode(`\n${first}`).byteLength], 'its write is accounted to the launch pacer, like a cell\'s');
     assert.equal(await transformEntryScript(code, 'file:///home/user/[eval]', { host, store }), first);
     assert.equal(calls.length, 1, 'the second run is read back');
     const broken = new EsbuildService(undefined, { transformHost: recordingHost([], { reject: () => true }) });

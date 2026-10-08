@@ -46,7 +46,9 @@ import { generateSqliteShimCode } from './sqlite-shim.js';
 import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
 import { CHILD_NEWS_SOURCE } from './child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
-import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE } from '../loaders/generated-workers.js';
+import {
+  ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE,
+} from '../loaders/generated-workers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { LOOPBACK_HOSTNAMES } from '@nimbus-sh/core/_shared/loopback.js';
@@ -54,6 +56,8 @@ import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
+import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
+import { ES_MODULE_SCOPE_GLOBAL } from '@nimbus-sh/core/runtime/module-format.js';
 import {
   FACET_PROVIDED_PACKAGES,
   FS_READ_BATCH_PATH_LIMIT,
@@ -66,6 +70,9 @@ import {
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
 import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
+import { NODE_INSPECT_HOST_SOURCE, WORKERD_SLOTS_SOURCE } from './node-inspect-host.js';
+import { EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_INSPECT_SOURCE, NODE_PRIMORDIALS_SOURCE } from './node-inspect-source.js';
+import { NODE_SOURCE_MAPS_SOURCE } from './node-source-maps.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
 import { RUNTIME_INTERPRETER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
@@ -94,6 +101,29 @@ const ABI_ADVISORIES_LITERAL = JSON.stringify(PACKAGE_ABI_POLICY.rejects.map(
 
 export function generateShimsCode(): string {
   return `
+// Node's internal errors (core _shared/node-error.ts), first: the shims, the
+// preambles below and the code they load make them by name, and the cell
+// runtime and generated code reach them as __nimbusNodeError and
+// __nimbusNodeSystemError.
+${NODE_ERROR_PREAMBLE}
+Object.defineProperties(globalThis, {
+  __nimbusNodeError: { value: __nimbusGeneratedNodeError, configurable: true },
+  __nimbusNodeSystemError: { value: nodeSystemError, configurable: true },
+});
+// Generated code's: a \`decoration\` (null for none) marks the error as one whose
+// report has no arrow of the generated code, the decoration before its stack
+// where Node shows the source there (decorateErrorStack).
+function __nimbusGeneratedNodeError(Base, code, message, props, decoration) {
+  const error = nodeError(Base, code, message, props, __nimbusGeneratedNodeError);
+  if (decoration !== undefined) {
+    if (decoration !== null) error.stack = decoration + "\\n" + error.stack;
+    __nimbusDecorated.add(error);
+  }
+  return error;
+}
+// What the shims call a program's functions with, captured before any
+// program runs: a program may replace Reflect's.
+const __nimbusReflectApply = Reflect.apply;
 // The runner's stop and replay (runtime/stop-replay.ts), private to its
 // module: null in a runner without one.
 const __nimbusReplay = typeof __nimbusStopReplay !== "undefined" ? __nimbusStopReplay : null;
@@ -142,45 +172,6 @@ if (__nimbusReplay && typeof __real_net !== "undefined") {
     } });
   }
 }
-// ═══════════════════════════════════════════════════════════════════════
-// ──  Format helper ──────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════
-function __isErrorValue(v) {
-  return v instanceof Error || Object.prototype.toString.call(v) === "[object Error]";
-}
-// Node's util.inspect(err); JSON.stringify drops non-enumerable name/message/stack.
-function __fmtError(e, seen) {
-  if (seen.has(e)) return "[Circular *]";
-  seen.add(e);
-  let text;
-  try { text = typeof e.stack === "string" && e.stack ? e.stack : Error.prototype.toString.call(e); }
-  catch { text = String(e); }
-  const fields = [];
-  for (const key of Object.keys(e)) {
-    if (key === "cause") continue;
-    let value;
-    try { value = e[key]; } catch { continue; }
-    fields.push(key + ": " + __fmtField(value, seen));
-  }
-  if (Object.prototype.hasOwnProperty.call(e, "cause")) fields.push("[cause]: " + __fmtField(e.cause, seen));
-  if (fields.length === 0) return text;
-  return text + " {\\n" + fields.map((f) => "  " + f.split("\\n").join("\\n  ")).join(",\\n") + "\\n}";
-}
-function __fmtField(v, seen) {
-  if (typeof v === "string") return JSON.stringify(v);
-  if (v !== null && typeof v === "object" && __isErrorValue(v)) return __fmtError(v, seen);
-  return __fmt(v);
-}
-function __fmt(v) {
-  if (v === null) return "null";
-  if (v === undefined) return "undefined";
-  if (typeof v === "object") {
-    if (__isErrorValue(v)) return __fmtError(v, new Set());
-    try { return JSON.stringify(v); } catch { return String(v); }
-  }
-  return String(v);
-}
-
 function __nimbusDisposeRpcResult(value) {
   if ((typeof value !== "object" && typeof value !== "function") || value === null) return;
   const dispose = value[Symbol.dispose];
@@ -895,6 +886,13 @@ const __fsMod = (() => {
     if (typeof v === "string") return v;
     if (_isBytes(v)) return _dec.decode(v);
     return "";
+  }
+  // A file's content as the string an \`encoding\` option asks for: UTF-8
+  // text, or its bytes in base64, hex, latin1, … (Buffer#toString).
+  function _decodeAs(v, encoding) {
+    const name = String(encoding).toLowerCase();
+    if (name === "utf8" || name === "utf-8") return _asString(v);
+    return __BufferMod.from(_isBytes(v) ? v : _asString(v)).toString(encoding);
   }
 
   // ── helpers ──
@@ -1685,7 +1683,8 @@ const __fsMod = (() => {
     const declared = error && typeof error === "object" && typeof error.code === "string" ? error.code : undefined;
     const known = declared !== undefined && Number.isInteger(Number(__constantsMod[declared]));
     const mapped = _fsErr(known ? declared : "EIO", syscall, p, dest);
-    if (!known && message) mapped.message += " — " + message;
+    // An I/O failure says what failed (the client's write the session did not answer, a lost call).
+    if ((!known || declared === "EIO") && message) mapped.message += " — " + message;
     return mapped;
   }
 
@@ -1789,6 +1788,39 @@ const __fsMod = (() => {
   function _supervisor() {
     try { return typeof __supervisor !== "undefined" ? __supervisor : null; }
     catch { return null; }
+  }
+
+  // A mutation this process makes reaches the session as the call of that
+  // name, logged in its filesystem client (the ledger's __nimbusSubmitVfs):
+  // numbered in its waves, in the order it was logged, applied once.
+  function _vfsCall(call) {
+    return __nimbusSubmitVfs({ type: "call", call });
+  }
+  function _vfsOp(op) {
+    return __nimbusSubmitVfs(op);
+  }
+  // A change the program just made to the parked cell at \`absPath\` (its
+  // sync view already shows it): logged in the client now, in program order,
+  // and the cell claimed by its answer (the ledger's __nimbusLogVfsWrite).
+  // Nothing without a supervisor: the view is all there is.
+  function _logParked(absPath, op, options) {
+    if (!_supervisor()) return null;
+    return __nimbusLogVfsWrite(absPath, op, options);
+  }
+  // Parked cells that are not the file's whole content (an append to a file
+  // this view never held): by generation, as the cell is.
+  const _parkedPartial = new Map();
+  // What dates an own mutation's cell (__nimbusEndOwnMutation): a logged
+  // op's mutation receipt, or what a call made in its place answered.
+  function _receiptOf(answer) {
+    return answer && answer.mutation !== undefined ? answer.mutation : answer;
+  }
+  // The stat a data call's receipt answers, as a live stat describes the path.
+  function _receiptStat(receipt) {
+    return {
+      type: "file", size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid,
+      atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs, ino: receipt.ino, dev: receipt.dev, nlink: 1,
+    };
   }
 
   function _writtenCell(absPath) {
@@ -2406,30 +2438,25 @@ const __fsMod = (() => {
    * \`__nimbusVfsAcquireArgs\`) is exactly what fsAcquire would be asked.
    */
   function _acquireArgs() {
-    // Every build is the start of an answer the overlay may retire against.
+    // Every build is the start of an answer the overlay may retire against:
+    // its begin travels with it, and the answer to it comes back with it.
     const begin = ++_barrierBegins;
-    const key = _cursor.epoch + "@" + _cursor.rev;
-    if (!_argsBegins.has(key)) _argsBegins.set(key, begin);
     const options = _residentStorePresent() && typeof __residentAcquireOptions === "function"
       ? __residentAcquireOptions() : undefined;
     return options
-      ? { epoch: _cursor.epoch, cursor: _cursor.rev, options }
-      : { epoch: _cursor.epoch, cursor: _cursor.rev };
+      ? { epoch: _cursor.epoch, cursor: _cursor.rev, begin, options }
+      : { epoch: _cursor.epoch, cursor: _cursor.rev, begin };
   }
   /**
-   * The earliest begin of any arguments built at a cursor: a delivered answer
-   * may answer any of them, and retiring against the earliest is the one
-   * that is never too late. Cursors left behind are forgotten.
+   * When the arguments a delivered answer answers were built (_acquireArgs):
+   * what settled before then, the session had when it answered. Arguments
+   * this process did not build (a routed request's, the session's own)
+   * vouch for nothing it settled: 0. Keyed by the build itself, never by
+   * its cursor: two builds at one cursor are asked at different times, and
+   * an answer to the later one has what settled between them.
    */
-  const _argsBegins = new Map();
   function _argsBegin(args) {
-    const key = args.epoch + "@" + args.cursor;
-    const begin = _argsBegins.get(key) ?? 0;
-    for (const k of [..._argsBegins.keys()]) {
-      const [epoch, rev] = [k.slice(0, k.lastIndexOf("@")), Number(k.slice(k.lastIndexOf("@") + 1))];
-      if (epoch !== _cursor.epoch || rev < _cursor.rev) _argsBegins.delete(k);
-    }
-    return begin;
+    return typeof args.begin === "number" ? args.begin : 0;
   }
 
   /**
@@ -2629,7 +2656,9 @@ const __fsMod = (() => {
    * than merely linearizability.
    */
   async function _resumptionRelease() {
-    await __nimbusFlushVfsWriteBack(_supervisor());
+    // Everything logged before the effect (the structural changes, the
+    // descriptor writes), marked now: what is logged after it is not waited for.
+    await globalThis.__nimbusProcessFs?.flush();
   }
 
   // Every untrusted resumption — a facet-local timer, an outbound fetch
@@ -2666,8 +2695,16 @@ const __fsMod = (() => {
     // when the client disconnects — and counting it as an in-flight operation
     // would make a resident facet's drain wait for it, which buffers an open
     // response body. The window that needs holding is exactly the round trip.
+    // What the callback throws is an uncaught exception, as a timer's is in
+    // Node, not the rejection of the chain it runs on.
     const _barriered = (cb, args) => {
-      __nimbusTrackOp(_resumptionAcquire()).then(() => cb(...args));
+      __nimbusTrackOp(_resumptionAcquire()).then(() => {
+        try {
+          cb(...args);
+        } catch (error) {
+          __nimbusUncaughtException(error);
+        }
+      });
     };
     if (typeof _setTimeout === "function") {
       globalThis.setTimeout = function setTimeout(cb, ms, ...args) {
@@ -2706,7 +2743,7 @@ const __fsMod = (() => {
   // queue would be answered for a tree the program has already changed.
   async function _announceLocalDirs(absPath, supervisor) {
     await _awaitStructuralOrder(absPath);
-    if (!__vfsDirs || typeof supervisor.mkdir !== "function") return;
+    if (!__vfsDirs) return;
     const pending = [];
     let key = "";
     for (const segment of _strip(absPath).split("/")) {
@@ -2716,7 +2753,9 @@ const __fsMod = (() => {
     }
     if (pending.length === 0) return;
     const deepest = "/" + pending[pending.length - 1];
-    await _fsRpc(supervisor.mkdir(deepest), "mkdir", deepest, () => undefined);
+    // Each one, shallowest first, as mkdir -p makes them.
+    const made = pending.map((dir) => _vfsCall({ call: "mkdir", path: dir, mode: _localModes[dir] ?? 0o777, existing: "ok" }));
+    await _fsRpc(Promise.all(made), "mkdir", deepest, () => undefined);
     for (const dir of pending) _announcedDirs.add(dir);
     _markVfsStale();
   }
@@ -2743,39 +2782,33 @@ const __fsMod = (() => {
    * "w")\` — once per extracted entry — was answered ENOENT by an authority
    * that had never heard of \`dir\`; that is create-astro's template copy.
    *
-   * The sync effect stays exactly as it was. What is added is the same RPC
-   * the asynchronous form of the call issues, queued through the write
-   * ledger so it registers with the exit drain, is ordered behind pending
-   * mutations of its ancestors (the ledger does that for every queued
-   * mutation), and — for the two that act on a subtree — behind pending
-   * mutations beneath it. The async forms are that same queued call, awaited.
+   * The sync effect stays exactly as it was. What is added is the call the
+   * asynchronous form makes, logged in the process's client NOW, in the
+   * order the program made it: the client's log is the order every change
+   * reaches the session in, so nothing waits for its ancestors' or its
+   * subtree's changes to land before it is sent (they were logged first).
+   * Its answer is then queued through the write ledger, so it registers with
+   * the exit drain and a later change of the path settles after it. The
+   * async forms are that same call, awaited.
    *
    * \`null\` when there is no authority to tell: standalone and unit contexts
-   * keep today's local-only behaviour. Without a ledger the RPC is issued
-   * directly, which is what the async forms did before they were queued.
+   * keep today's local-only behaviour.
    */
-  // \`method\` names the supervisor RPC when it differs from the syscall the
-  // caller reports (lchown rides \`chown\`, rm rides \`fsRemove\`).
-  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after, method, dest) {
+  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after, dest) {
+    void after;
     const settle = _nsTakeFresh();
     const supervisor = _supervisor();
-    if (!supervisor || typeof supervisor[method || syscall] !== "function") { settle(); return null; }
-    const queued = _hasVfsMutationQueue();
-    const before = queued && after ? after() : null;
-    const run = async () => {
-      if (before) await before;
-      // Only chown answers with a receipt. The rest (mkdir, unlink, rmdir,
-      // rename, rm) have already dropped the path's cell and stamp in their
-      // synchronous half, so no lease is taken at all; where one is — the
-      // stamp unlink leaves behind — an absent receipt retires it, which is
-      // what an unstamped cell already costs.
-      await _ownMutation(
-        absPath,
-        () => _fsRpc(rpc(supervisor), syscall, displayPath, (result) => result, dest),
-      );
-      _markVfsStale();
-    };
-    const out = queued ? __nimbusQueueVfsMutation(absPath, run) : run();
+    if (!supervisor) { settle(); return null; }
+    // Logged in this turn (the lease's work runs to its first await, and the
+    // call is made before it): only chown answers with a receipt; the rest
+    // (mkdir, unlink, rmdir, rename, rm) dropped the path's cell and stamp
+    // in their synchronous half, so no lease is taken at all.
+    const sent = _ownMutation(
+      absPath,
+      () => _fsRpc(rpc(supervisor), syscall, displayPath, _receiptOf, dest),
+    ).then(() => { _markVfsStale(); });
+    sent.catch(() => {});
+    const out = _hasVfsMutationQueue() ? __nimbusQueueVfsMutation(absPath, () => sent) : sent;
     // Settled either way: a failed mutation leaves the authority as it was,
     // which the next barrier's table shows.
     Promise.resolve(out).then(settle, settle);
@@ -2821,12 +2854,26 @@ const __fsMod = (() => {
     });
   }
 
-  // A sync caller has no frame to receive the outcome. The ledger already
-  // marks a queued result handled and retains what the exit drain must
-  // report; this only keeps a ledger-less embedding from raising an
-  // unhandled rejection for a verdict nobody could catch.
-  function _detachStructuralMutation(mutation) {
-    if (mutation) mutation.then(undefined, () => undefined);
+  // A sync caller (or an async one decided here) has no frame to receive the
+  // outcome: the program was told it succeeded. A refusal or an unknown fate
+  // is reported as the process's client reports its own, at the next effect
+  // and when it settles (__nimbusAcknowledged); \`syscall\` and \`p\` name it.
+  // Without a ledger, a verdict nobody could catch is not an unhandled rejection.
+  //
+  // A removal whose name the session no longer has (ENOENT) reached what it
+  // was for: a file this process made and removed before its write was ever
+  // sent is one, and nothing is lost.
+  function _detachStructuralMutation(mutation, syscall, p) {
+    if (!mutation) return;
+    const removal = syscall === "unlink" || syscall === "rmdir" || syscall === "rm";
+    const work = removal ? mutation.then(undefined, (error) => { if (!error || error.code !== "ENOENT") throw error; }) : mutation;
+    if (syscall !== undefined && typeof __nimbusAcknowledged === "function") __nimbusAcknowledged(work, syscall, _resolve(p));
+    else work.then(undefined, () => undefined);
+  }
+
+  /** Whether an async change at \`absPath\` of \`bytes\` is decided here (the ledger's __nimbusDecidedHere). */
+  function _decidedHere(absPath, bytes = 0) {
+    return typeof __nimbusDecidedHere === "function" && __nimbusDecidedHere(absPath, bytes);
   }
 
   // A rename lives at two names. Its mutation is queued under the source;
@@ -2843,19 +2890,11 @@ const __fsMod = (() => {
   // on the same tail right after this call is ordered behind the flush.
   function _flushParkedWrite(absPath, supervisor) {
     const k = _strip(absPath);
-    if (!__vfsWrites || !(k in __vfsWrites) || typeof supervisor.writeFile !== "function") {
+    if (!__vfsWrites || !(k in __vfsWrites)) {
       return Promise.resolve(undefined);
     }
-    return __nimbusFlushVfsWrite(
-      absPath,
-      (content, snapshot) => _fsRpc(
-        __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
-        "write", absPath,
-        (result) => result,
-      ),
-      true,
-      true,
-    );
+    void supervisor;
+    return __nimbusFlushVfsWrite(absPath);
   }
 
   /**
@@ -2875,17 +2914,17 @@ const __fsMod = (() => {
   async function _flushHeld(absPath, supervisor) {
     const k = _strip(absPath);
     await _announceLocalDirs(absPath, supervisor);
-    if (__vfsWrites && k in __vfsWrites && typeof supervisor.writeFile === "function") {
+    if (__vfsWrites && k in __vfsWrites) {
       await _flushParkedWrite(absPath, supervisor);
       _markVfsStale();
     }
     // A pending sync chmod rides along with the next flush of the same path.
-    if (_pendingModes.has(k) && typeof supervisor.chmod === "function") {
+    if (_pendingModes.has(k)) {
       _pendingModes.delete(k);
       try {
         await _ownMutation(
           absPath,
-          () => _fsRpc(supervisor.chmod(absPath, _localModes[k]), "chmod", absPath, (result) => result),
+          () => _fsRpc(_vfsOp({ type: "setattr", path: k, attrs: { mode: _localModes[k] } }), "chmod", absPath, _receiptOf),
         );
       } catch (error) {
         _pendingModes.add(k);
@@ -2910,7 +2949,7 @@ const __fsMod = (() => {
       next = new Uint8Array(size);
       next.set(buf, 0);
     }
-    if (__vfsWrites && k in __vfsWrites) __vfsWrites[k] = next;
+    if (__vfsWrites && k in __vfsWrites) __nimbusReplaceParkedCell(k, next);
     if (__vfsBundle && k in __vfsBundle) __vfsBundle[k] = next;
   }
 
@@ -2967,7 +3006,7 @@ const __fsMod = (() => {
     if (cell === undefined) return;
     _ownWriteTimes[k] = Date.now();
     const next = _spliceCell(_asBytes(cell), pos, bytes);
-    if (__vfsWrites && k in __vfsWrites) __vfsWrites[k] = next;
+    if (__vfsWrites && k in __vfsWrites) __nimbusReplaceParkedCell(k, next);
     if (__vfsBundle && k in __vfsBundle) __vfsBundle[k] = next;
   }
 
@@ -3262,7 +3301,7 @@ const __fsMod = (() => {
         if (typeof reached === "string" && _nsLandingKey(asked) !== _strip(reached)) await _acquireBarrier(supervisor);
         const kept = first !== null && first.stat !== undefined && total <= READ_STREAM_CHUNK_BYTES && _noteLearnedStat(absPath, first.stat, fill);
         if (!kept) await _learnLive(absPath, supervisor);
-        return encoding ? _asString(bytes) : __BufferMod.from(bytes);
+        return encoding ? _decodeAs(bytes, encoding) : __BufferMod.from(bytes);
       }
 
       if (typeof supervisor.readFile === "function") {
@@ -3271,7 +3310,7 @@ const __fsMod = (() => {
         if (text !== null && text !== undefined) {
           _installResident(absPath, text, fill);
           await _learnLive(absPath, supervisor);
-          return encoding ? _asString(text) : __BufferMod.from(text);
+          return encoding ? _decodeAs(text, encoding) : __BufferMod.from(text);
         }
       }
     } finally {
@@ -3326,7 +3365,7 @@ const __fsMod = (() => {
    * ops replaced, from then on. An RPC stub answers \`typeof "function"\` for
    * any method, so only the refusal can tell.
    */
-  const _served = { fsAcquired: true, writeFileStat: true };
+  const _served = { fsAcquired: true };
   /** The refusal of \`op\` by an entrypoint without the method, a host without the op, or one that refuses its envelope. */
   function _unserved(error, op) {
     const message = error && typeof error.message === "string" ? error.message : "";
@@ -3473,11 +3512,11 @@ const __fsMod = (() => {
 
   async function _symlinkAsync(target, path) {
     const supervisor = _supervisor();
-    if (supervisor && typeof supervisor.symlink === "function") {
+    if (supervisor) {
       const absPath = _resolve(path);
       await _awaitStructuralOrder(absPath);
       // Node names the target, then the link: "symlink 'target' -> 'link'".
-      await _fsRpc(supervisor.symlink(String(target), absPath), "symlink", String(target), () => undefined, path);
+      await _fsRpc(_vfsCall({ call: "symlink", path: _strip(absPath), target: String(target) }), "symlink", String(target), () => undefined, path);
       _markVfsStale();
       return;
     }
@@ -3491,9 +3530,17 @@ const __fsMod = (() => {
     // list it) is the authority's to answer for, as the async rename's
     // destination is: parked and written back like any other write, and
     // refused (and the parked bytes dropped) if the authority refuses it.
-    _parkWholeWrite(p, data, supervisor && typeof supervisor.writeFile === "function");
-    if (supervisor && typeof supervisor.writeFile === "function") {
-      await _announceLocalDirs(absPath, supervisor);
+    const k = _parkWholeWrite(p, data, !!supervisor);
+    if (!supervisor) return;
+    const bytes = __nimbusVfsCellBytes(__vfsWrites[k]).slice();
+    const decided = _decidedHere(absPath, bytes.byteLength);
+    // Logged now, in program order; decided here, it is answered once logged.
+    const logged = _logParked(absPath, { type: "call", call: { call: "writeFile", path: k, mode: 0o666, data: bytes } }, { acknowledged: decided });
+    if (decided) {
+      _detachStructuralMutation(__nimbusDecided(logged.claimed, bytes.byteLength), "write", p);
+      return;
+    }
+    {
       // The revision comes back so the ledger can stamp the cell: an async
       // whole write is the facet's own as much as a parked sync one is.
       // The authority's stat comes back with the write where it can, and is
@@ -3504,21 +3551,12 @@ const __fsMod = (() => {
       let kept = false;
       const ticket = _beginFill(_strip(absPath));
       try {
-        await __nimbusFlushVfsWrite(absPath, async (content) => {
-          if (_served.writeFileStat && typeof supervisor.writeFileStat === "function") {
-            try {
-              const answer = await __nimbusUseRpcResult(supervisor.writeFileStat(absPath, content), (result) => result);
-              learned = answer.stat;
-              written = answer.revision;
-              return answer.revision;
-            } catch (error) {
-              if (!_unserved(error, "writeFileStat")) throw _mapSupervisorError(error, "write", p);
-              _served.writeFileStat = false;
-            }
-          }
-          written = await _fsRpc(supervisor.writeFile(absPath, content), "write", p, (result) => result);
-          return written;
-        });
+        const answer = await _fsRpc(logged.answer, "write", p, (result) => result);
+        await logged.claimed;
+        if (answer.receipt !== undefined) {
+          learned = _receiptStat(answer.receipt);
+          written = answer.receipt.revision;
+        }
         _markVfsStale();
         if (typeof written !== "number") written = undefined;
         if (learned !== undefined) kept = _noteLearnedStat(absPath, learned, ticket, written);
@@ -3531,18 +3569,18 @@ const __fsMod = (() => {
 
   async function _appendFileAsync(p, data, opts) {
     const absPath = _resolveFollow(p, "open");
-    appendFileSync(p, data, opts);
     const supervisor = _supervisor();
-    if (!supervisor || typeof supervisor.writeFile !== "function") return;
-    await _announceLocalDirs(absPath, supervisor);
-    await __nimbusFlushVfsWrite(
-      absPath,
-      (content, snapshot) => _fsRpc(
-        __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
-        "write", p,
-        (result) => result,
-      ),
-    );
+    const appended = typeof data === "string" ? data.length : (data.byteLength ?? 0);
+    const decided = !!supervisor && _decidedHere(absPath, appended);
+    const logged = _appendLocal(p, data, opts, decided);
+    if (!supervisor) return;
+    if (decided) {
+      // Decided here: answered once logged.
+      _detachStructuralMutation(__nimbusDecided(logged.claimed, appended), "write", p);
+      return;
+    }
+    await _fsRpc(logged.answer, "write", p, (result) => result);
+    await logged.claimed;
     _markVfsStale();
     await _learnLive(absPath, supervisor);
   }
@@ -3550,60 +3588,65 @@ const __fsMod = (() => {
   // The async structural calls ARE the sync ones, awaited: the same local
   // effect and the same queued authority RPC, so the two forms cannot
   // disagree about order, and a program mixing them sees one sequence.
-  async function _mkdirAsync(p, opts) { await _mkdirQueued(p, opts); }
-  async function _unlinkAsync(p) { await _unlinkQueued(p); }
-  async function _rmdirAsync(p) { await _rmdirQueued(p); }
-  async function _renameAsync(oldP, newP) { await _renameQueued(oldP, newP, true); }
+  // In a subtree the process holds, the change is decided here: answered
+  // once logged, the session's answer reported if it refuses.
+  // Answered once logged where a held subtree decides it and this view judged
+  // it (\`judged\`: the name it changes is one this view lists); what only
+  // the authority can answer is its answer, awaited.
+  async function _structuralAsync(queue, syscall, p, judged = true) {
+    const decided = judged && _decidedHere(_resolve(p));
+    const queued = queue();
+    if (decided) _detachStructuralMutation(__nimbusDecided(queued), syscall, p);
+    else await queued;
+  }
+  async function _mkdirAsync(p, opts) { await _structuralAsync(() => _mkdirQueued(p, opts), "mkdir", p); }
+  async function _unlinkAsync(p) { await _structuralAsync(() => _unlinkQueued(p), "unlink", p); }
+  async function _rmdirAsync(p) { await _structuralAsync(() => _rmdirQueued(p), "rmdir", p); }
+  // A directory's move is the session's to answer: what it holds moves with
+  // it there, and only that answer shows its names where they went.
+  async function _renameAsync(oldP, newP) {
+    const source = _statLadder(_resolve(oldP), true);
+    await _structuralAsync(() => _renameQueued(oldP, newP, true), "rename", oldP, source !== undefined && !source.isDirectory());
+  }
 
   async function _truncateAsync(p, len) {
     const absPath = _resolveFollow(p, "open");
     const size = Math.max(0, Math.trunc(Number(len) || 0));
     const supervisor = _supervisor();
     const localCell = _bundleLookup(absPath);
-    if (supervisor && typeof supervisor.fsTruncate === "function") {
+    if (supervisor) {
       await _announceLocalDirs(absPath, supervisor);
       const k = _strip(absPath);
       if (__vfsWrites && k in __vfsWrites) {
-        const append = __nimbusCapturePendingVfsAppend(k);
-        if (append) {
-          const flush = __nimbusFlushVfsWrite(
-            absPath,
-            (content, snapshot) =>
-              __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
-          );
-          // Persisting the append drops the resident cell (the ledger
-          // refetches it on the next live read), so there is no cell to
-          // trim or stamp behind this truncate.
-          await __nimbusQueueVfsMutation(absPath, async () => {
-            await flush;
-            await _fsRpc(
-              supervisor.fsTruncate(absPath, size),
-              "truncate", p,
-              () => undefined,
-            );
-          });
-          _markVfsStale();
-          return;
-        }
-        // Unflushed sync writes: trim locally, then flush the pending
-        // cell whole (it was going to flush whole anyway).
+        // A parked cell: the truncate is logged now, in program order, and
+        // the cell trimmed as its view (or dropped when it was not the
+        // file's whole content: the session's answer is the file then).
         if (localCell === undefined) throw _fsErr("ENOENT", "truncate", p);
-        _truncateLocalCell(absPath, size);
-        await _flushLocalPathToSupervisor(absPath, supervisor);
+        const partial = _parkedPartial.get(k) === __vfsWriteGenerations[k];
+        if (!partial) {
+          _truncateLocalCell(absPath, size);
+          _parkWrite(k, __vfsWrites[k]);
+        }
+        const logged = _logParked(absPath, { type: "truncate", path: k, size }, { partial });
+        await _fsRpc(logged.answer, "truncate", p, () => undefined);
+        await logged.claimed;
+        _markVfsStale();
         return;
       }
       // Live file is the source of truth — supervisor trims only the
-      // boundary chunk; ENOENT propagates when it does not exist.
+      // boundary chunk; ENOENT propagates when it does not exist. Logged now.
       const generation = __vfsWriteGenerations[k];
-      await __nimbusQueueVfsMutation(absPath, () => _ownMutation(
+      const sent = _ownMutation(
         absPath,
-        () => _fsRpc(supervisor.fsTruncate(absPath, size), "truncate", p, (result) => result),
+        () => _fsRpc(_vfsOp({ type: "truncate", path: k, size }), "truncate", p, _receiptOf),
         () => {
           if (__vfsWriteGenerations[k] === generation && localCell !== undefined) {
             _truncateLocalCell(absPath, size);
           }
         },
-      ));
+      );
+      sent.catch(() => {});
+      await __nimbusQueueVfsMutation(absPath, () => sent);
       _markVfsStale();
       return;
     }
@@ -3630,19 +3673,22 @@ const __fsMod = (() => {
     const supervisor = _supervisor();
     let localExists = false;
     try { localExists = existsSync(p); } catch {}
-    if (!localExists && (!supervisor || typeof supervisor.utimes !== "function")) {
+    if (!localExists && !supervisor) {
       throw _fsErr("ENOENT", syscall, p);
     }
     const time = _recordLocalTimes(absPath, atime, mtime, syscall, p);
-    if (supervisor && typeof supervisor.utimes === "function") {
+    if (supervisor) {
       await _flushLocalPathToSupervisor(absPath, supervisor, followSymlinks);
       // Ordered behind the path's pending mutations: an fd write queued a
       // moment ago (modern-tar writes, then futimes, then closes) would
       // otherwise land AFTER the timestamp and reset it to "now".
+      // A link's own times (lutimes): the call of that name, not an attribute record (which follows the link).
       const leased = () => _ownMutation(absPath, () => _fsRpc(
-        supervisor.utimes(absPath, time.atimeMs, time.mtimeMs),
+        followSymlinks
+          ? _vfsOp({ type: "setattr", path: _strip(absPath), attrs: { atime: time.atimeMs, mtime: time.mtimeMs } })
+          : _vfsCall({ call: "lutimes", path: _strip(absPath), atime: time.atimeMs, mtime: time.mtimeMs }),
         syscall, p,
-        (result) => result,
+        _receiptOf,
       ));
       if (_hasVfsMutationQueue()) await __nimbusQueueVfsMutation(absPath, leased);
       else await leased();
@@ -3681,14 +3727,14 @@ const __fsMod = (() => {
     const supervisor = _supervisor();
     let localExists = false;
     try { localExists = existsSync(p); } catch {}
-    if (!localExists && (!supervisor || typeof supervisor.chmod !== "function")) {
+    if (!localExists && !supervisor) {
       throw _fsErr("ENOENT", "chmod", p);
     }
     const m = _coerceMode(mode, "chmod", p);
     if (localExists) _ensureModeOwner(absPath, "chmod", p);
     _localModes[_strip(absPath)] = m;
     _pendingModes.add(_strip(absPath));
-    if (supervisor && typeof supervisor.chmod === "function") {
+    if (supervisor) {
       await _flushLocalPathToSupervisor(absPath, supervisor);
       _markVfsStale();
       return;
@@ -3716,7 +3762,7 @@ const __fsMod = (() => {
     await _flushLocalPathToSupervisor(absPath, supervisor, followSymlinks);
     await _ownMutation(
       absPath,
-      () => _fsRpc(supervisor.chown(absPath, nextUid, nextGid, opts), syscall, p, (result) => result),
+      () => _fsRpc(_chownCall(supervisor, absPath, nextUid, nextGid, followSymlinks), syscall, p, _receiptOf),
       () => {
         const meta = _metadata(absPath);
         if (meta) { meta.uid = nextUid; meta.gid = nextGid; }
@@ -3758,13 +3804,20 @@ const __fsMod = (() => {
     // and wait on itself), so it is the synchronous-registering flush.
     return _queueStructuralMutation(
       absPath, syscall, p,
-      (s) => s.chown(absPath, nextUid, nextGid, followSymlinks ? undefined : { followSymlinks: false }),
+      (s) => _chownCall(s, absPath, nextUid, nextGid, followSymlinks),
       () => _flushParkedWrite(absPath, supervisor),
-      "chown",
     );
   }
-  function chownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, undefined, "chown")); }
-  function lchownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, { followSymlinks: false }, "lchown")); }
+
+  // chown follows the name's link, as an attribute record does; lchown's is
+  // no record's, so that call is made in its place in the log.
+  function _chownCall(supervisor, absPath, uid, gid, followSymlinks) {
+    return followSymlinks
+      ? _vfsOp({ type: "setattr", path: _strip(absPath), attrs: { uid, gid } })
+      : _vfsCall({ call: "lchown", path: _strip(absPath), uid, gid });
+  }
+  function chownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, undefined, "chown"), "chown", p); }
+  function lchownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, { followSymlinks: false }, "lchown"), "lchown", p); }
   function lchmodSync(p, mode) { chmodSync(p, mode); }
 
   /**
@@ -3898,8 +3951,8 @@ const __fsMod = (() => {
     _residencySatisfied(absPath);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     if (encoding) {
-      // text encoding requested — produce a string regardless of cell shape.
-      return _asString(content);
+      // An encoding requested: a string, whatever the cell's shape.
+      return _decodeAs(content, encoding);
     }
     // No encoding requested — produce a Buffer-shaped Uint8Array.
     const bytes = __BufferMod.from(content);
@@ -3918,7 +3971,8 @@ const __fsMod = (() => {
   // (the hot path for source code / package.json / user JS).
   // Anything else is stringified (Node's behaviour for e.g. numbers).
   function writeFileSync(p, data, opts) {
-    _parkWholeWrite(p, data, false);
+    const k = _parkWholeWrite(p, data, false);
+    _logParked("/" + k, { type: "call", call: { call: "writeFile", path: k, mode: 0o666, data: __nimbusVfsCellBytes(__vfsWrites[k]).slice() } }, { acknowledged: true });
   }
 
   /**
@@ -3935,6 +3989,8 @@ const __fsMod = (() => {
     else if (typeof data === "string") cell = data;
     else cell = String(data);
     _parkWrite(k, cell);
+    _parkedPartial.delete(k);
+    return k;
   }
 
   // ── appendFileSync ──
@@ -3942,11 +3998,18 @@ const __fsMod = (() => {
   // combined cell is bytes (lossless for both). When both are strings,
   // stay string (avoids re-encoding ASCII through TextEncoder).
   function appendFileSync(p, data, opts) {
+    _appendLocal(p, data, opts, true);
+  }
+
+  // The append's local effect, and the append itself logged now (acknowledged:
+  // the program was told it succeeded). The cell is the file's whole content
+  // only when it extends a parked cell of this process's that was whole.
+  function _appendLocal(p, data, opts, acknowledged) {
     const absPath = _resolveFollow(p, "open");
     _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
-    const previousAppend = __nimbusCapturePendingVfsAppend(k);
     const hadPendingWrite = Object.prototype.hasOwnProperty.call(__vfsWrites, k);
+    const wholeBefore = hadPendingWrite && _parkedPartial.get(k) !== __vfsWriteGenerations[k];
     const existing = _bundleLookup(absPath);
     const existingDefined = existing !== undefined;
     const dataIsBytes = data instanceof Uint8Array;
@@ -3971,14 +4034,12 @@ const __fsMod = (() => {
       cell = existing + (typeof data === "string" ? data : String(data));
     }
     _parkWrite(k, cell);
-    // Bundle content is only a sync-view cache and may be stale. It can supply
-    // the local display fragment, but only a pending full write owns its prefix.
-    if (!hadPendingWrite || previousAppend) {
-      const appended = _asBytes(
-        dataIsBytes ? data : (typeof data === "string" ? data : String(data)),
-      );
-      __nimbusRecordVfsAppend(k, appended, _asBytes(cell), previousAppend);
-    }
+    // Bundle content is only a sync-view cache and may be stale: only a
+    // pending whole write of this process's owns the cell's prefix.
+    if (wholeBefore) _parkedPartial.delete(k);
+    else _parkedPartial.set(k, __vfsWriteGenerations[k]);
+    const appended = _asBytes(dataIsBytes ? data : (typeof data === "string" ? data : String(data))).slice();
+    return _logParked(absPath, { type: "call", call: { call: "appendFile", path: k, mode: 0o666, data: appended } }, { acknowledged, partial: !wholeBefore });
   }
 
   // ── existsSync ──
@@ -4093,17 +4154,27 @@ const __fsMod = (() => {
       __vfsDirs[k] = true;
       created.push(k);
     }
+    // A directory the view already shows (the namespace's, or one this
+    // process made, whose mkdir is ahead in the log) is not made again.
+    const known = new Set();
     for (const dir of created) {
       const was = _nsMeta(dir, true);
       if (was === "absent") _nsOwnSet(dir, "dir", { hide: true });
+      else if (was && typeof was === "object" && was.type === "directory") known.add(dir);
     }
-    const queued = _queueStructuralMutation(absPath, "mkdir", p, (supervisor) => supervisor.mkdir(absPath));
+    // Each directory this call makes, shallowest first, as mkdir -p takes
+    // them: one already there (or made by another) answers success.
+    const mode = opts?.mode === undefined ? 0o777 : _coerceMode(opts.mode, "mkdir", p);
+    const made = created.filter((dir) => !known.has(dir)).map((dir) => ({ dir, mode }));
+    const queued = _queueStructuralMutation(absPath, "mkdir", p, () => Promise.all(
+      made.map(({ dir, mode }) => _vfsCall({ call: "mkdir", path: dir, mode, existing: "ok" })),
+    ));
     // Told, not merely known locally: _announceLocalDirs must not issue a
     // second mkdir for a directory whose own RPC is already in the queue.
     if (queued) for (const dir of created) _announcedDirs.add(dir);
     return queued;
   }
-  function mkdirSync(p, opts) { _detachStructuralMutation(_mkdirQueued(p, opts)); }
+  function mkdirSync(p, opts) { _detachStructuralMutation(_mkdirQueued(p, opts), "mkdir", p); }
 
   // ── unlinkSync ──
   /**
@@ -4133,9 +4204,9 @@ const __fsMod = (() => {
     if (__vfsBundle) delete __vfsBundle[k];
     if (__vfsWrites) delete __vfsWrites[k];
     _forgetSyncPath(k);
-    return _queueStructuralMutation(absPath, "unlink", p, (supervisor) => supervisor.unlink(absPath));
+    return _queueStructuralMutation(absPath, "unlink", p, () => _vfsCall({ call: "unlink", path: k }));
   }
-  function unlinkSync(p) { _detachStructuralMutation(_unlinkQueued(p)); }
+  function unlinkSync(p) { _detachStructuralMutation(_unlinkQueued(p), "unlink", p); }
 
   // ── rmdirSync ──
   function _rmdirQueued(p) {
@@ -4146,11 +4217,11 @@ const __fsMod = (() => {
     _forgetSyncPath(k);
     return _queueStructuralMutation(
       absPath, "rmdir", p,
-      (supervisor) => supervisor.rmdir(absPath),
+      () => _vfsCall({ call: "rmdir", path: k }),
       () => __nimbusAwaitSubtreeMutations(absPath),
     );
   }
-  function rmdirSync(p) { _detachStructuralMutation(_rmdirQueued(p)); }
+  function rmdirSync(p) { _detachStructuralMutation(_rmdirQueued(p), "rmdir", p); }
 
   // ── renameSync ──
   /** \`live\`: the async form, which the authority answers for a destination the namespace cannot judge. */
@@ -4167,13 +4238,13 @@ const __fsMod = (() => {
     const oldK = _strip(oldAbs);
     const newK = _strip(newAbs);
     const source = _statLadder(oldAbs, true);
-    // A name renamed to itself is left as it is, as rename(2) leaves it, once
-    // it is known to exist; a name this view does not list is the authority's
-    // to answer for.
+    // A source the namespace knows is not there is ENOENT here for a sync call (it has no other verdict) and where
+    // this process decides (a subtree it holds); an async one elsewhere asks the session, which a peer may have changed.
+    if (source === undefined && (!live || _decidedHere(oldAbs)) && _nsUnlisted(oldAbs, false, false) === null) throw _fsErr("ENOENT", "rename", oldP, newP);
+    // A name renamed to itself is left as it is, as rename(2) leaves it.
     if (oldK === newK) {
       if (source !== undefined) return null;
-      if (_nsUnlisted(oldAbs, false, false) === null) throw _fsErr("ENOENT", "rename", oldP, newP);
-      return _queueStructuralMutation(oldAbs, "rename", oldP, (supervisor) => supervisor.rename(oldAbs, newAbs), undefined, undefined, newP);
+      return _queueStructuralMutation(oldAbs, "rename", oldP, () => _vfsOp({ type: "rename", from: oldK, to: newK }), undefined, newP);
     }
     // What rename(2) refuses before it moves anything, refused here before
     // the local tables move: the sync view applies a rename at once and the
@@ -4201,12 +4272,19 @@ const __fsMod = (() => {
       .filter((key) => key === oldK || key.startsWith(oldPrefix))
       .map((key) => newK + key.slice(oldK.length));
     const content = __vfsBundle?.[oldK] ?? __vfsWrites?.[oldK];
+    // The file's own cell moves with its name (retired once the move is
+    // answered, below); one that is only an append's bytes cannot stand for
+    // the file, and its new name reads from the authority once the move lands.
+    const movedFile = [];
     if (content !== undefined) {
-      _parkWrite(newK, content);
+      const partial = _parkedPartial.get(oldK) === __vfsWriteGenerations[oldK];
+      const landed = _supervisor() ? _flushParkedWrite("/" + oldK, _supervisor()) : null;
+      if (!partial) _parkWrite(newK, content);
       if (__vfsBundle) delete __vfsBundle[oldK];
       delete __vfsBundleRevisions[oldK];
       delete __vfsWrites[oldK];
       _forgetSyncPath(oldK);
+      if (!partial && landed) movedFile.push([newK, landed, __vfsWriteGenerations[newK]]);
     } else if (__vfsDirs && oldK in __vfsDirs) {
       // A directory this process made travels under its new name, so the
       // sync view stops listing the old one and _announceLocalDirs cannot
@@ -4239,13 +4317,13 @@ const __fsMod = (() => {
     // With no authority the process's own tables are the filesystem, and the
     // cells move with the name.
     const supervisor = _supervisor();
-    const movedWrites = [];
+    const movedWrites = movedFile;
     for (const k of Object.keys(__vfsWrites)) {
       if (!k.startsWith(oldPrefix)) continue;
       const moved = newK + k.slice(oldK.length);
       const content = __vfsWrites[k];
       const writtenAt = _ownWriteTimes[k];
-      const append = !!supervisor && __nimbusCapturePendingVfsAppend(k) !== null;
+      const append = !!supervisor && _parkedPartial.get(k) === __vfsWriteGenerations[k];
       const landed = supervisor ? _flushParkedWrite("/" + k, supervisor) : null;
       if (__vfsBundle) delete __vfsBundle[k];
       delete __vfsWrites[k];
@@ -4270,12 +4348,11 @@ const __fsMod = (() => {
     _nsOwnSet(oldK, "absentTree");
     const queued = _queueStructuralMutation(
       oldAbs, "rename", oldP,
-      (supervisor) => supervisor.rename(oldAbs, newAbs),
+      () => _vfsOp({ type: "rename", from: oldK, to: newK }),
       // The queue orders the move behind the source's ancestors; the move
       // also needs the destination's ancestors to exist and every pending
       // mutation beneath the source to have landed under the old name.
       () => Promise.all([__nimbusAwaitAncestorMutations(newAbs), __nimbusAwaitSubtreeMutations(oldAbs)]),
-      undefined,
       newP,
     );
     _fenceVfsMutation(newAbs, queued);
@@ -4293,7 +4370,7 @@ const __fsMod = (() => {
         }
         return undefined;
       };
-      _detachStructuralMutation(__nimbusFlushVfsWrite(
+      _detachStructuralMutation(__nimbusClaimVfsWrite(
         "/" + moved,
         () => landed.then((revision) => queued.then(() => revision, refused)),
         false,
@@ -4301,7 +4378,7 @@ const __fsMod = (() => {
     }
     return queued;
   }
-  function renameSync(oldP, newP) { _detachStructuralMutation(_renameQueued(oldP, newP)); }
+  function renameSync(oldP, newP) { _detachStructuralMutation(_renameQueued(oldP, newP), "rename", oldP); }
 
   // ── copyFileSync ──
   // Bytes, not utf8: a utf8 round trip replaces every byte ≥ 0x80 with
@@ -4329,10 +4406,9 @@ const __fsMod = (() => {
 
   // ── rmSync / rm ──
   // The local tables are edited at once (the same retraction unlinkSync and
-  // rmdirSync perform, over the whole subtree when recursive) and ONE
-  // authority RPC — fsRemove, which the bridge serves as unlink or a bounded
-  // recursive removal — is queued behind every pending mutation beneath the
-  // path. ENOENT under \`force\` is the authority's to swallow; locally an
+  // rmdirSync perform, over the whole subtree when recursive) and ONE call,
+  // rm (an unlink, or the tree when recursive), is logged behind every
+  // pending mutation beneath the path. ENOENT under \`force\` is the authority's to swallow; locally an
   // unknown path may still exist live, so it is asked rather than answered.
   function _rmQueued(p, opts, sync) {
     const o = opts || {};
@@ -4345,7 +4421,8 @@ const __fsMod = (() => {
       if (sync || error?.code !== "EAGAIN") throw error;
     }
     const supervisor = _supervisor();
-    const canRemove = !!supervisor && typeof supervisor.fsRemove === "function";
+    // Every session takes rm as a call in the process's log.
+    const canRemove = !!supervisor;
     if (st === undefined) {
       if (!canRemove) {
         if (o.force) return null;
@@ -4359,7 +4436,7 @@ const __fsMod = (() => {
       if (sync && !o.force) throw _fsErr("ENOENT", "rm", p);
     }
     if (st !== undefined && st.isDirectory() && !o.recursive) {
-      throw _fsErr("ERR_FS_EISDIR", "rm", p);
+      throw nodeSystemError("ERR_FS_EISDIR", "Path is a directory", { code: "EISDIR", message: "is a directory", path: String(p), syscall: "rm", errno: Number(__constantsMod.EISDIR) });
     }
     const prefix = k + "/";
     // A parked write is content the authority may never have seen: the
@@ -4383,21 +4460,15 @@ const __fsMod = (() => {
       }
     }
     if (o.recursive) _forgetSyncTree(k); else _forgetSyncPath(k);
-    if (!canRemove) {
-      // No fsRemove: a plain file still has the unlink RPC.
-      if (st !== undefined && !st.isDirectory()) {
-        return _queueStructuralMutation(absPath, "rm", p, (s) => s.unlink(absPath), undefined, "unlink");
-      }
-      return null;
-    }
+    if (!canRemove) return null;
     return _queueStructuralMutation(
       absPath, "rm", p,
-      (s) => s.fsRemove(absPath, { recursive: !!o.recursive, force: !!o.force || parked }),
+      // fs.rm as one call: the tree with it when recursive, an absent name no refusal when forced.
+      () => _vfsCall({ call: "rm", path: k, ...(o.recursive ? { recursive: true } : {}), ...(o.force || parked ? { force: true } : {}) }),
       () => __nimbusAwaitSubtreeMutations(absPath),
-      "fsRemove",
     );
   }
-  function rmSync(p, opts) { _detachStructuralMutation(_rmQueued(p, opts, true)); }
+  function rmSync(p, opts) { _detachStructuralMutation(_rmQueued(p, opts, true), "rm", p); }
   async function _rmAsync(p, opts) { await _rmQueued(p, opts, false); }
 
   // ── cpSync ──
@@ -4412,13 +4483,19 @@ const __fsMod = (() => {
       const destSt = statSync(dest, { throwIfNoEntry: false });
       if (destSt !== undefined) {
         if (destSt.isDirectory()) throw _fsErr("EISDIR", "cp", dest);
-        if (o.errorOnExist) throw _fsErr("ERR_FS_CP_EEXIST", "cp", dest);
+        if (o.errorOnExist) {
+          throw nodeSystemError("ERR_FS_CP_EEXIST", "Target already exists", { message: String(dest) + " already exists", path: String(dest), syscall: "cp", errno: Number(__constantsMod.EEXIST), code: "EEXIST" });
+        }
         if (o.force === false) return;
       }
       copyFileSync(src, dest);
       return;
     }
-    if (!o.recursive) throw _fsErr("ERR_FS_EISDIR", "cp", src);
+    // Node's cpSync refuses this in C++: a plain Error with the code.
+    if (!o.recursive) {
+      const named = String(src).endsWith("/") ? String(src) : String(src) + "/";
+      throw Object.assign(new Error("Recursive option not enabled, cannot copy a directory: " + named), { code: "ERR_FS_EISDIR" });
+    }
     mkdirSync(dest, { recursive: true });
     for (const ent of readdirSync(src, { withFileTypes: true })) {
       cpSync(__pathMod.join(String(src), ent.name), __pathMod.join(String(dest), ent.name), o);
@@ -4462,7 +4539,10 @@ const __fsMod = (() => {
     const base = _residentWriteBase(absPath, p, "truncate");
     const next = new Uint8Array(size);
     next.set(base.subarray(0, Math.min(size, base.byteLength)), 0);
-    _parkWrite(_strip(absPath), next);
+    const k = _strip(absPath);
+    _parkWrite(k, next);
+    _parkedPartial.delete(k);
+    _logParked(absPath, { type: "truncate", path: k, size }, { acknowledged: true });
     _markVfsStale();
   }
 
@@ -4578,11 +4658,30 @@ const __fsMod = (() => {
     return new Uint8Array(0);
   }
 
-  async function _fsyncAsync(absPath, p) {
+  // A change the program was told succeeded that the session has refused
+  // since (its client's recorded refusals, each reported once): what a sync
+  // or a close of a descriptor reports, with the session's errno, as
+  // fsync(2) and close(2) report a deferred write's failure (and a WASI
+  // process's do).
+  function _recordedRefusal(syscall, p) {
+    if (!_supervisor()) return;
+    const taken = __nimbusProcessFs().takeFailures();
+    if (taken.length === 0) return;
+    const error = _fsErr(taken[0].errno, syscall, p);
+    error.message += " (the session refused what this process wrote: " + taken.map((failure) => failure.op + " " + failure.path + ": " + failure.message).join("; ") + ")";
+    throw error;
+  }
+
+  // Synced means in the session: the path's own writes sent, everything the
+  // process logged before it answered, and what the session refused of it
+  // reported here.
+  async function _fsyncAsync(absPath, p, syscall = "fsync") {
     const supervisor = _supervisor();
     if (supervisor) {
       await _flushLocalPathToSupervisor(absPath, supervisor);
       await _awaitStructuralOrder(absPath);
+      await __nimbusProcessFs().flush();
+      _recordedRefusal(syscall, p);
     }
     _markVfsStale();
   }
@@ -4641,42 +4740,50 @@ const __fsMod = (() => {
       }
       let writeAt = at;
       const supervisor = _supervisor();
-      if (supervisor && typeof supervisor.fsWriteRange === "function") {
-        const pendingSnapshot = __nimbusCaptureVfsWrite(this._abs);
-        const overlayGeneration = pendingSnapshot
-          ? pendingSnapshot.generation + 1
-          : __vfsWriteGenerations[_strip(this._abs)];
-        const flush = __nimbusFlushVfsWrite(
+      const parkedKey = _strip(this._abs);
+      if (supervisor && Object.prototype.hasOwnProperty.call(__vfsWrites, parkedKey) &&
+          _parkedPartial.get(parkedKey) !== __vfsWriteGenerations[parkedKey]) {
+        // The file's whole bytes are a parked cell of this process's (its
+        // changes logged, not yet answered): the write lands on it now and
+        // is logged after them, as writeSync's does, and answered in turn.
+        const base = _asBytes(__vfsWrites[parkedKey]);
+        writeAt = this._flags.append ? base.byteLength : at;
+        _parkWrite(parkedKey, _spliceCell(base, writeAt, bytes));
+        _parkedPartial.delete(parkedKey);
+        const logged = _logParked(this._abs, this._flags.append
+          ? { type: "call", call: { call: "append", path: parkedKey, data: bytes.slice() } }
+          : { type: "call", call: { call: "write", path: parkedKey, offset: writeAt, data: bytes.slice() } });
+        await _fsRpc(logged.answer, "write", this._path, () => undefined);
+        await logged.claimed;
+        _markVfsStale();
+      } else if (supervisor) {
+        const overlayGeneration = __vfsWriteGenerations[_strip(this._abs)];
+        const key = _strip(this._abs);
+        // The description's write, as write(2) makes it, logged now: at its
+        // offset, or (O_APPEND) at the file's end as it is when the write
+        // lands, which the receipt's size says.
+        const sent = _ownMutation(
           this._abs,
-          (content, snapshot) =>
-            __nimbusPersistVfsWrite(supervisor, this._abs, content, snapshot),
-        );
-        await __nimbusQueueVfsMutation(this._abs, async () => {
-          await flush;
-          if (this._flags.append && typeof supervisor.stat === "function") {
-            const meta = await _fsRpc(
-              supervisor.stat(this._abs),
-              "stat", this._path,
-              (result) => result,
-            );
-            if (meta && meta.type === "file") writeAt = Number(meta.size) || 0;
-          }
-          await _ownMutation(
-            this._abs,
-            () => _fsRpc(
-              supervisor.fsWriteRange(this._abs, writeAt, bytes),
-              "write", this._path,
-              (result) => result,
-            ),
-            () => {
-              const key = _strip(this._abs);
-              if (!Object.prototype.hasOwnProperty.call(__vfsWrites, key) &&
-                  __vfsWriteGenerations[key] === overlayGeneration) {
-                _overlayLocalCell(this._abs, writeAt, bytes);
-              }
+          () => _fsRpc(
+            _vfsCall(this._flags.append
+              ? { call: "append", path: key, data: bytes.slice() }
+              : { call: "write", path: key, offset: writeAt, data: bytes.slice() }),
+            "write", this._path,
+            (answer) => {
+              if (this._flags.append && answer.receipt !== undefined) writeAt = answer.receipt.size - bytes.byteLength;
+              return answer.mutation;
             },
-          );
-        });
+          ),
+          () => {
+            const key = _strip(this._abs);
+            if (!Object.prototype.hasOwnProperty.call(__vfsWrites, key) &&
+                __vfsWriteGenerations[key] === overlayGeneration) {
+              _overlayLocalCell(this._abs, writeAt, bytes);
+            }
+          },
+        );
+        sent.catch(() => {});
+        await __nimbusQueueVfsMutation(this._abs, () => sent);
         _markVfsStale();
       } else {
         const cell = _writtenCell(this._abs);
@@ -4732,8 +4839,12 @@ const __fsMod = (() => {
       return bytes;
     }
     _writeBase(syscall) { return _residentWriteBase(this._abs, this._path, syscall); }
-    _commit(next) {
-      _parkWrite(_strip(this._abs), next);
+    // \`op\`: the change, logged now (acknowledged: a sync call returned).
+    _commit(next, op) {
+      const k = _strip(this._abs);
+      _parkWrite(k, next);
+      _parkedPartial.delete(k);
+      if (op) _logParked(this._abs, op, { acknowledged: true });
       _markVfsStale();
       this._size = next.byteLength;
     }
@@ -4764,7 +4875,10 @@ const __fsMod = (() => {
       const at = this._flags.append
         ? base.byteLength
         : (pos === null ? this._position : pos);
-      this._commit(_spliceCell(base, at, bytes));
+      const key = _strip(this._abs);
+      this._commit(_spliceCell(base, at, bytes), this._flags.append
+        ? { type: "call", call: { call: "append", path: key, data: bytes.slice() } }
+        : { type: "call", call: { call: "write", path: key, offset: at, data: bytes.slice() } });
       if (pos === null || this._flags.append) this._position = at + bytes.byteLength;
       return bytes.byteLength;
     }
@@ -4776,7 +4890,7 @@ const __fsMod = (() => {
       const base = this._writeBase("ftruncate");
       const next = new Uint8Array(size);
       next.set(base.subarray(0, Math.min(size, base.byteLength)), 0);
-      this._commit(next);
+      this._commit(next, { type: "call", call: { call: "ftruncate", path: _strip(this._abs), size } });
       if (this._position > size) this._position = size;
     }
     async chmod(mode) { this._assertOpen("fchmod"); await _chmodAsync(this._path, mode); }
@@ -4785,8 +4899,8 @@ const __fsMod = (() => {
     // Durability here means: every byte parked for this path has reached
     // the authority and every mutation queued for it has landed. The bridge
     // itself is synchronously durable, so no further RPC is owed.
-    async sync() { this._assertOpen("fsync"); await _fsyncAsync(this._abs, this._path); }
-    async datasync() { this._assertOpen("fdatasync"); await _fsyncAsync(this._abs, this._path); }
+    async sync() { this._assertOpen("fsync"); await _fsyncAsync(this._abs, this._path, "fsync"); }
+    async datasync() { this._assertOpen("fdatasync"); await _fsyncAsync(this._abs, this._path, "fdatasync"); }
     // Scatter/gather over the ranged read/write: one sequential pass per
     // buffer, stopping at the first short read, positions advanced by hand
     // when an explicit one was given so the file position stays untouched.
@@ -4813,7 +4927,7 @@ const __fsMod = (() => {
       }
       return { bytesWritten, buffers };
     }
-    async close() { this._assertOpen("close"); this._closed = true; __fileHandles.delete(this.fd); }
+    async close() { this._assertOpen("close"); this._closed = true; __fileHandles.delete(this.fd); _recordedRefusal("close", this._path); }
     [Symbol.asyncDispose]() { return this.close(); }
   }
 
@@ -4942,6 +5056,8 @@ const __fsMod = (() => {
     const handle = _fdHandle(fd, "close");
     handle._closed = true;
     __fileHandles.delete(handle.fd);
+    // Closed either way; a refusal recorded since is close's to report.
+    _recordedRefusal("close", handle._path);
   }
 
   function readSync(fd, buffer, offsetOrOptions, length, position) {
@@ -4982,8 +5098,9 @@ const __fsMod = (() => {
   // Sync writes buffer into __vfsWrites and are drained by the existing
   // VFS write-back path — a facet cannot block on durability, so these
   // validate the fd and mark the VFS stale rather than pretending to sync.
-  function fsyncSync(fd) { if (!_isStdioFd(fd)) _fdHandle(fd, "fsync"); _markVfsStale(); }
-  function fdatasyncSync(fd) { if (!_isStdioFd(fd)) _fdHandle(fd, "fdatasync"); _markVfsStale(); }
+  // A sync form cannot wait for the session: it reports what it refused already.
+  function fsyncSync(fd) { if (!_isStdioFd(fd)) _recordedRefusal("fsync", _fdHandle(fd, "fsync")._path); _markVfsStale(); }
+  function fdatasyncSync(fd) { if (!_isStdioFd(fd)) _recordedRefusal("fdatasync", _fdHandle(fd, "fdatasync")._path); _markVfsStale(); }
 
   // Descriptor metadata, sync: the path forms on the handle's path, so the
   // local overlay (times, modes, ownership) and the parked write-through are
@@ -5004,7 +5121,7 @@ const __fsMod = (() => {
   function fchownSync(fd, uid, gid) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchown", fd);
     const handle = _fdHandle(fd, "fchown");
-    _detachStructuralMutation(_chownQueued(handle._path, uid, gid, undefined, "fchown"));
+    _detachStructuralMutation(_chownQueued(handle._path, uid, gid, undefined, "fchown"), "fchown", handle._path);
   }
 
   // Scatter/gather, sync: readSync/writeSync per buffer; stdio fds keep the
@@ -5128,7 +5245,7 @@ const __fsMod = (() => {
     // it here rather than let an EBADF vanish.
     if (typeof cb !== "function") { if (err) throw err; _markVfsStale(); return; }
     if (err || !handle) { _markVfsStale(); queueMicrotask(() => cb(err)); return; }
-    _fsyncAsync(handle._abs, handle._path).then(() => cb(null)).catch((e) => cb(e));
+    _fsyncAsync(handle._abs, handle._path, syscall).then(() => cb(null)).catch((e) => cb(e));
   }
   function fsync(fd, cb) { _fsyncCb(fd, "fsync", cb); }
   function fdatasync(fd, cb) { _fsyncCb(fd, "fdatasync", cb); }
@@ -5193,9 +5310,7 @@ const __fsMod = (() => {
     }
     _assertOpen() {
       if (this._closed) {
-        const err = new Error("Directory handle was closed");
-        err.code = "ERR_DIR_CLOSED";
-        throw err;
+        throw nodeError(Error, "ERR_DIR_CLOSED", "Directory handle was closed");
       }
     }
     readSync() {
@@ -5313,24 +5428,13 @@ const __fsMod = (() => {
   // Glob, ported from lib/internal/fs/glob.js (v22.22.3; the Linux paths),
   // matching with the minimatch Node vendors (node-minimatch-source.ts),
   // which is evaluated the first time a program globs.
-  // Node's ERR_INVALID_ARG_TYPE, as its validators word it.
-  function _argTypeError(name, expected, value) {
-    const got = value === undefined || value === null ? String(value)
-      : typeof value === "function" ? "function " + (value.name || "<anonymous>")
-      : typeof value === "object" ? "an instance of " + ((value.constructor && value.constructor.name) || "Object")
-      : "type " + typeof value + " (" + (typeof value === "string" ? "'" + value + "'" : String(value)) + ")";
-    const e = new TypeError('The "' + name + '" ' + (name.includes(".") ? "property" : "argument") + " must be " + expected + ". Received " + got);
-    e.code = "ERR_INVALID_ARG_TYPE";
-    return e;
-  }
   const _Glob = (() => {
     let minimatch = null;
     const mm = () => minimatch ??= __nimbusMinimatch();
     const { join, resolve, basename, isAbsolute, dirname } = __pathMod;
-    const argType = _argTypeError;
     const validateStringArray = (value, name) => {
-      if (!Array.isArray(value)) throw argType(name, "an instance of Array", value);
-      for (let i = 0; i < value.length; i++) if (typeof value[i] !== "string") throw argType(name + "[" + i + "]", "of type string", value[i]);
+      if (!Array.isArray(value)) throw invalidArgType(name, "Array", value);
+      for (let i = 0; i < value.length; i++) if (typeof value[i] !== "string") throw invalidArgType(name + "[" + i + "]", "string", value[i]);
     };
     const createMatcher = (pattern) => new (mm().Minimatch)(pattern, {
       __proto__: null, nocase: false, windowsPathsNoEscape: true, nonegate: true, nocomment: true,
@@ -5457,19 +5561,19 @@ const __fsMod = (() => {
       #isExcluded = () => false;
       constructor(pattern, options) {
         if (options === undefined) options = {};
-        if (options === null || typeof options !== "object" || Array.isArray(options)) throw argType("options", "of type object", options);
+        if (options === null || typeof options !== "object" || Array.isArray(options)) throw invalidArgType("options", "object", options);
         const { exclude, cwd, withFileTypes } = options;
         this.#root = (cwd && typeof cwd === "object" && typeof cwd.href === "string" && typeof cwd.protocol === "string")
           ? builtins.url.fileURLToPath(cwd) : (cwd ?? ".");
         this.#withFileTypes = !!withFileTypes;
         if (exclude != null) {
           if (Array.isArray(exclude)) {
-            for (let i = 0; i < exclude.length; i++) if (typeof exclude[i] !== "string") throw argType("options.exclude[" + i + "]", "of type string", exclude[i]);
+            for (let i = 0; i < exclude.length; i++) if (typeof exclude[i] !== "string") throw invalidArgType("options.exclude[" + i + "]", "string", exclude[i]);
             const matchers = exclude.map((p) => resolve(this.#root, p)).map((p) => createMatcher(p));
             this.#isExcluded = (value) => matchers.some((matcher) => matcher.match(value));
             this.#results.setup(this.#root, this.#isExcluded);
           } else if (typeof exclude !== "function") {
-            throw argType("options.exclude", "of type function or string[]", exclude);
+            throw invalidArgType("options.exclude", ["function", "string[]"], exclude);
           } else {
             this.#exclude = exclude;
           }
@@ -5479,7 +5583,7 @@ const __fsMod = (() => {
           validateStringArray(pattern, "patterns");
           patterns = pattern;
         } else {
-          if (typeof pattern !== "string") throw argType("patterns", "of type string", pattern);
+          if (typeof pattern !== "string") throw invalidArgType("patterns", "string", pattern);
           patterns = [pattern];
         }
         this.matchers = patterns.map((p) => createMatcher(p));
@@ -5853,7 +5957,7 @@ const __fsMod = (() => {
       callback = options;
       options = undefined;
     }
-    if (typeof callback !== "function") throw _argTypeError("cb", "of type function", callback);
+    if (typeof callback !== "function") throw invalidArgType("cb", "function", callback);
     (async () => {
       try {
         const res = [];
@@ -6743,66 +6847,81 @@ ${UNDICI_SHIM_CODE}
 // ═══════════════════════════════════════════════════════════════════════
 // ──  util module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
+// util.inspect, format and formatWithOptions are Node v22.22.3's own
+// lib/internal/util/inspect.js (node-inspect-source.ts), evaluated the first
+// time a program formats a value, over what node-inspect-host.ts gives it in
+// place of Node's internals: what a program prints of a value, through util
+// or console, is what Node prints (node-inspect-matches-node,
+// console-format-matches-node-workerd). workerd's own node:util gives
+// util.types, and reads what only V8's internals hold (a promise's state,
+// a proxy's target) as values, through its inspect. consola's FancyReporter
+// calls formatWithOptions directly (nuxi init).
+const __realUtil = typeof __real_util !== "undefined"
+  ? (__real_util.default ?? __real_util) : globalThis.process.getBuiltinModule("util");
+let __nimbusNodeInspectExports = null;
+function __nimbusNodeInspect() {
+  if (__nimbusNodeInspectExports !== null) return __nimbusNodeInspectExports;
+  // The East Asian Wide and Fullwidth ranges, ascending: [first, last] pairs.
+  const wide = ${JSON.stringify(EAST_ASIAN_WIDE_RANGES)}.split(",").flatMap((range) => {
+    const [first, last = first] = range.split("-");
+    return [parseInt(first, 16), parseInt(last, 16)];
+  });
+  __nimbusNodeInspectExports = (${NODE_INSPECT_HOST_SOURCE})({
+    util: __realUtil,
+    // V8's slots, as workerd's inspect reaches them (node-inspect-host.ts THE BINDING).
+    slots: (${WORKERD_SLOTS_SOURCE})(__realUtil),
+    Buffer: __BufferMod,
+    url: { pathToFileURL: __urlMod.pathToFileURL, URL: __urlMod.URL },
+    process: __processMod,
+    builtinModules: __NodeModule.builtinModules,
+    builtinObjects: ${JSON.stringify(NODE_BUILTIN_OBJECTS)},
+    eastAsianWide(code) {
+      let low = 0;
+      let high = wide.length / 2 - 1;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (code < wide[2 * mid]) high = mid - 1;
+        else if (code > wide[2 * mid + 1]) low = mid + 1;
+        else return true;
+      }
+      return false;
+    },
+    primordialsOf: function (primordials, globalThis) {
+${NODE_PRIMORDIALS_SOURCE}
+    },
+    inspectOf: function (exports, require, module, process, internalBinding, primordials) {
+${NODE_INSPECT_SOURCE}
+    },
+  });
+  return __nimbusNodeInspectExports;
+}
+// Node's errors describe a value only inspect can (a null-prototype
+// object) with it, as Node's do.
+useNodeErrorInspect((value, options) => __nimbusNodeInspect().inspect(value, options));
+// util.inspect, which loads Node's the first time it formats: its custom
+// symbol is Node's registered one, its options and styles Node's own.
+function __nimbusInspect(value, options) {
+  return Reflect.apply(__nimbusNodeInspect().inspect, this, arguments);
+}
+Object.defineProperties(__nimbusInspect, {
+  name: { value: "inspect" },
+  custom: { value: Symbol.for("nodejs.util.inspect.custom"), writable: true, enumerable: true, configurable: true },
+  defaultOptions: {
+    get() { return __nimbusNodeInspect().inspect.defaultOptions; },
+    set(options) { __nimbusNodeInspect().inspect.defaultOptions = options; },
+    enumerable: true, configurable: true,
+  },
+  colors: { get() { return __nimbusNodeInspect().inspect.colors; }, set(value) { __nimbusNodeInspect().inspect.colors = value; }, enumerable: true, configurable: true },
+  styles: { get() { return __nimbusNodeInspect().inspect.styles; }, set(value) { __nimbusNodeInspect().inspect.styles = value; }, enumerable: true, configurable: true },
+});
 const __utilMod = {
-  inspect: (o, opts) => {
-    if (o !== null && typeof o === "object" && __isErrorValue(o)) return __fmtError(o, new Set());
-    try { return JSON.stringify(o, null, 2); } catch { return String(o); }
-  },
-  format: (...args) => {
-    if (args.length === 0) return "";
-    const [fmt, ...a] = args;
-    if (typeof fmt !== "string") return args.map(__fmt).join(" ");
-    let i = 0;
-    return fmt.replace(/%[sdifjoO%]/g, (m) => {
-      if (m === "%%") return "%";
-      if (i >= a.length) return m;
-      const v = a[i++];
-      if (m === "%s") return String(v);
-      if (m === "%d" || m === "%i" || m === "%f") return Number(v).toString();
-      if (m === "%j") { try { return JSON.stringify(v); } catch { return "[Circular]"; } }
-      if (m === "%o" || m === "%O") return __utilMod.inspect(v);
-      return String(v);
-    }) + (i < a.length ? " " + a.slice(i).map(__fmt).join(" ") : "");
-  },
-  // util.formatWithOptions(inspectOptions, format[, ...args]) — identical
-  // to format() but takes inspect options as the first argument. consola's
-  // FancyReporter calls this directly (FancyReporter.formatArgs); its
-  // absence crashed every consola-based CLI under Nimbus with
-  // "(0 , import_node_util.formatWithOptions) is not a function" (nuxi init,
-  // at its first consola.error after "Welcome to Nuxt!"). This shim's
-  // inspect() ignores color/depth options, so dropping them and delegating
-  // to format() is behaviourally exact for what the shim can render.
-  formatWithOptions: (_inspectOptions, ...a) => __utilMod.format(...a),
+  inspect: __nimbusInspect,
+  format: function format(...args) { return __nimbusNodeInspect().format(...args); },
+  formatWithOptions: function formatWithOptions(options, ...args) { return __nimbusNodeInspect().formatWithOptions(options, ...args); },
+  stripVTControlCharacters: function stripVTControlCharacters(str) { return __nimbusNodeInspect().stripVTControlCharacters(str); },
   promisify: (fn) => (...a) => new Promise((res, rej) => fn(...a, (e, r) => e ? rej(e) : res(r))),
   callbackify: (fn) => (...a) => { const cb = a.pop(); fn(...a).then(r => cb(null, r), e => cb(e)); },
-  // X.5-Q: util.types polyfill expansion. The pre-X.5-Q 3-method shape
-  // (isDate, isRegExp, isPromise) was insufficient for jsdom's bundled
-  // undici, which dereferences isUint8Array (lib/web/fetch/util.js +
-  // body.js), isArrayBuffer (lib/web/websocket/websocket.js), and
-  // util.types.isProxy (lib/web/fetch/headers.js). Expanding to the
-  // 17-method shape below mirrors Node.js's util.types surface for the
-  // common cases; isProxy returns false (no userland Proxy detection).
-  types: {
-    isDate: (v) => v instanceof Date,
-    isRegExp: (v) => v instanceof RegExp,
-    isPromise: (v) => v instanceof Promise,
-    isUint8Array: (v) => v instanceof Uint8Array,
-    isArrayBuffer: (v) => v instanceof ArrayBuffer,
-    isAnyArrayBuffer: (v) => v instanceof ArrayBuffer
-      || (typeof SharedArrayBuffer !== "undefined" && v instanceof SharedArrayBuffer),
-    isArrayBufferView: (v) => ArrayBuffer.isView(v),
-    isTypedArray: (v) => ArrayBuffer.isView(v) && !(v instanceof DataView),
-    isMap: (v) => v instanceof Map,
-    isSet: (v) => v instanceof Set,
-    isWeakMap: (v) => v instanceof WeakMap,
-    isWeakSet: (v) => v instanceof WeakSet,
-    isNativeError: (v) => v instanceof Error,
-    isAsyncFunction: (v) => v && v.constructor && v.constructor.name === "AsyncFunction",
-    isGeneratorFunction: (v) => v && v.constructor && v.constructor.name === "GeneratorFunction",
-    isProxy: (v) => false,
-    isBoxedPrimitive: (v) => v instanceof Boolean || v instanceof Number
-      || v instanceof String || (typeof v === "object" && v !== null && (v.constructor === Symbol || v.constructor === BigInt)),
-  },
+  types: __realUtil.types,
   inherits: (c, s) => {
     // X.5-Z5 Defect-B fix: guard against null/undefined superCtor or a
     // superCtor whose .prototype is null/undefined. Without this guard,
@@ -6819,22 +6938,6 @@ const __utilMod = {
   isDeepStrictEqual: (a, b) => JSON.stringify(a) === JSON.stringify(b),
   TextEncoder: globalThis.TextEncoder,
   TextDecoder: globalThis.TextDecoder,
-  // util.stripVTControlCharacters(str) — Node 16.11+. Strips ANSI
-  // escape sequences from a string. Used by sv (svelte CLI), modern
-  // log libraries, and any CLI that wants to measure displayed-width
-  // independent of color codes. Pre-fix, sv's engine module imported
-  // this from 'node:util' and crashed at module-init with
-  // "stripVTControlCharacters is not a function".
-  //
-  // Real-Node impl strips C0/C1 ANSI escapes via a single regex.
-  // Standard CSI sequence pattern: ESC + '[' + parameter bytes + final byte.
-  stripVTControlCharacters: (str) => {
-    if (typeof str !== "string") return str;
-    // Covers most common ANSI sequences: CSI (\x1b[...m, \x1b[...K, etc.),
-    // OSC, simple ESC sequences. Mirrors the regex Node's lib/internal/
-    // util/inspect.js uses (slightly relaxed).
-    return str.replace(/\\x1b\\[[0-9;?]*[A-Za-z]|\\x1b[\\(\\)\\*\\+][AB012]|\\x1b\\][^\\x07\\x1b]*[\\x07\\x1b]|\\x1b[=>]/g, "");
-  },
   // util.styleText(format, text [, opts]) — Node 20.12+. Returns text
   // wrapped in ANSI escape sequences for terminal styling. Used by
   // create-vite and many modern CLIs.
@@ -6910,12 +7013,12 @@ const __utilMod = {
     const allowNegative = !!cfg.allowNegative;
     const values = {};
     const positionals = [];
-    const err = (code, message) => { const e = new TypeError(message); e.code = code; return e; };
+    const err = (code, message) => nodeError(TypeError, code, message);
     const shortToLong = {};
     for (const [name, spec] of Object.entries(options)) {
-      if (!spec || (spec.type !== "string" && spec.type !== "boolean")) {
-        throw err("ERR_INVALID_ARG_TYPE", "The \\"options." + name + ".type\\" property must be one of: 'string', 'boolean'.");
-      }
+      if (spec === null || typeof spec !== "object" || Array.isArray(spec)) throw invalidArgType("options." + name, "object", spec);
+      const type = Object.hasOwn(spec, "type") ? spec.type : undefined;
+      if (type !== "string" && type !== "boolean") throw invalidArgType("options." + name + ".type", "('string|boolean')", type);
       if (spec.short) shortToLong[spec.short] = name;
       if (spec.default !== undefined) values[name] = spec.default;
     }
@@ -6931,7 +7034,7 @@ const __utilMod = {
     const optionValue = (name, inlineValue, next, raw) => {
       const spec = options[name];
       if (!spec) {
-        if (strict) throw err("ERR_PARSE_ARGS_UNKNOWN_OPTION", "Unknown option '" + raw + "'." + (allowPositionals ? " To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- \\"" + raw + "\\"'." : ""));
+        if (strict) throw err("ERR_PARSE_ARGS_UNKNOWN_OPTION", "Unknown option '" + raw + "'" + (allowPositionals ? ". To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- " + JSON.stringify(raw) : ""));
         if (inlineValue !== undefined) return { value: inlineValue, consumed: 0 };
         return { value: true, consumed: 0 };
       }
@@ -7049,7 +7152,9 @@ const __utilMod = {
 // these strings; the constructor now agrees with it.
 (() => {
   const _Orig = globalThis.URL;
-  class _Shim extends _Orig {
+  const inspectCustom = Symbol.for("nodejs.util.inspect.custom");
+  // Named URL, as Node's class is: its name is what inspect and errors print.
+  class URL extends _Orig {
     constructor(input, base) {
       if (arguments.length >= 2 && base == null && typeof input === "string") {
         try { super(input); return; }
@@ -7067,17 +7172,62 @@ const __utilMod = {
       }
       super(input, base);
     }
-  }
-  for (const k of Object.getOwnPropertyNames(_Orig)) {
-    if (typeof _Orig[k] === "function" && !(k in _Shim)) {
-      try { _Shim[k] = _Orig[k].bind(_Orig); } catch (_e) {}
+    // Node's (lib/internal/url.js, v22.22.3), but for showHidden's internal
+    // context, which workerd's URL has none of.
+    [inspectCustom](depth, opts) {
+      if (typeof depth === "number" && depth < 0) return this;
+      let constructor = URL;
+      for (let proto = this; proto; proto = Object.getPrototypeOf(proto)) {
+        const descriptor = Object.getOwnPropertyDescriptor(proto, "constructor");
+        if (descriptor !== undefined && typeof descriptor.value === "function" && descriptor.value.name !== "") {
+          constructor = descriptor.value;
+          break;
+        }
+      }
+      const obj = { __proto__: { constructor } };
+      obj.href = this.href;
+      obj.origin = this.origin;
+      obj.protocol = this.protocol;
+      obj.username = this.username;
+      obj.password = this.password;
+      obj.host = this.host;
+      obj.hostname = this.hostname;
+      obj.port = this.port;
+      obj.pathname = this.pathname;
+      obj.search = this.search;
+      obj.searchParams = this.searchParams;
+      obj.hash = this.hash;
+      return constructor.name + " " + __utilMod.inspect(obj, opts);
     }
   }
-  // NOTE: cannot reassign _Shim.prototype = _Orig.prototype — workerd treats
+  for (const k of Object.getOwnPropertyNames(_Orig)) {
+    if (typeof _Orig[k] === "function" && !(k in URL)) {
+      try { URL[k] = _Orig[k].bind(_Orig); } catch (_e) {}
+    }
+  }
+  // NOTE: cannot reassign URL.prototype = _Orig.prototype — workerd treats
   // class.prototype as read-only. Inheritance via "extends _Orig" is enough:
-  // _Shim instances are instanceof _Orig, and _Shim.prototype's __proto__ is
+  // URL instances are instanceof _Orig, and URL.prototype's __proto__ is
   // _Orig.prototype (so all native URL methods are reachable via the chain).
-  globalThis.URL = _Shim;
+  globalThis.URL = URL;
+  // URLSearchParams prints as Node's does (lib/internal/url.js, v22.22.3).
+  Object.defineProperty(globalThis.URLSearchParams.prototype, inspectCustom, {
+    value: function (recurseTimes, ctx) {
+      if (typeof recurseTimes === "number" && recurseTimes < 0) return ctx.stylize("[Object]", "special");
+      const separator = ", ";
+      const innerOpts = { ...ctx };
+      if (recurseTimes !== null) innerOpts.depth = recurseTimes - 1;
+      const innerInspect = (v) => __utilMod.inspect(v, innerOpts);
+      const output = [];
+      for (const [name, value] of this) output.push(innerInspect(name) + " => " + innerInspect(value));
+      let length = -separator.length;
+      for (let i = 0; i < output.length; i++) length += output[i].replace(/\\u001b\\[\\d\\d?m/g, "").length + separator.length;
+      if (length > ctx.breakLength) return this.constructor.name + " {\\n  " + output.join(",\\n  ") + " }";
+      if (output.length) return this.constructor.name + " { " + output.join(separator) + " }";
+      return this.constructor.name + " {}";
+    },
+    writable: true, configurable: true,
+  });
 })();
 // The legacy API (parse/format/resolve/resolveObject/Url) and the rest of the
 // module are workerd's own node:url (see core/_shared/real-node-imports.ts).
@@ -7135,9 +7285,7 @@ const __cryptoMod = (() => {
   // randomUUID throws a NIMBUS-flavoured error.
   function _unavail(name) {
     return () => {
-      const e = new Error('crypto.' + name + ': workerd node:crypto not available. Check facet compat date >= 2025-04-08.');
-      e.code = 'ERR_CRYPTO_UNAVAILABLE';
-      throw e;
+      throw nodeError(Error, 'ERR_CRYPTO_UNAVAILABLE', 'crypto.' + name + ': workerd node:crypto not available. Check facet compat date >= 2025-04-08.');
     };
   }
   return {
@@ -7255,8 +7403,10 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
     }
     return found;
   };
-  for (const [kind, Native] of kinds) {
-    if (Native.__nimbusNative) continue;
+  // A constructor routed to the runtime-code service, for code of \`kind\`
+  // from \`origin()\` (commonjs-cell.ts, RUNTIME CODE): native first, so a
+  // context that may compile does.
+  const routedConstructor = (kind, Native, origin) => {
     const routed = function (...args) {
       try {
         return new.target === undefined ? Reflect.apply(Native, undefined, args) : Reflect.construct(Native, args, new.target);
@@ -7266,7 +7416,7 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
         const params = args.slice(0, -1).map(String);
         const body = args.length > 0 ? String(args[args.length - 1]) : "";
         try {
-          const fn = service.compileFunction(kind, params, body);
+          const fn = service.compileFunction(kind, params, body, origin());
           // A subclass's \`new\` (\`class F extends Function\`) makes an instance of the subclass.
           if (new.target !== undefined && new.target !== routed) {
             const proto = new.target.prototype;
@@ -7298,9 +7448,42 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
     Object.defineProperty(routed, "__nimbusNative", { value: Native });
     Object.defineProperty(routed, "toString", { value: () => Reflect.apply(nativeToString, Native, []), configurable: true, writable: true });
     Object.setPrototypeOf(routed, Object.getPrototypeOf(Native));
+    return routed;
+  };
+  const nativeFunction = Function.__nimbusNative ?? Function;
+  for (const [kind, Native] of kinds) {
+    if (Native.__nimbusNative) continue;
+    const routed = routedConstructor(kind, Native, () => unbound);
     Object.defineProperty(Native.prototype, "constructor", { value: routed, writable: true, configurable: true, enumerable: false });
     if (kind === "function") globalThis.Function = routed;
   }
+  // A refusing origin: code whose import() Node refuses (vm's), or whose
+  // importer only its module's own Function carries. Its Function is
+  // undefined, its own property, so its code reads and assigns the global's.
+  const refusingOrigin = (code, message) => Object.freeze({
+    import: () => Promise.reject(Object.assign(new TypeError(message), { code })),
+    Function: undefined,
+  });
+  const unbound = refusingOrigin("ERR_NIMBUS_IMPORT_NO_IMPORTER",
+    "import() in code built by a function constructor that is not its module's own Function (one reached through a "
+    + "prototype, such as AsyncFunction, or through globalThis) has no importer here: Node resolves it against the "
+    + "module that called the constructor, which only that module's own Function carries in a Worker. Build the "
+    + "code with the module's Function, or import outside it.");
+  // Each module's origin (THE WRAPPER): import() against its URL, and a
+  // Function of its own whose code keeps the origin. One per URL, so a
+  // module's Function is one object for as long as the process runs.
+  const origins = new Map();
+  globalThis.__nimbusCodeOrigin = (importer) => {
+    let origin = origins.get(importer);
+    if (origin === undefined) {
+      const Bound = routedConstructor("function", nativeFunction, () => origin);
+      origin = Object.freeze({ import: (specifier, options) => globalThis.__nimbusDynamicImport(importer, specifier, options), Function: Bound });
+      origins.set(importer, origin);
+    }
+    return origin;
+  };
+  globalThis.__nimbusUnboundOrigin = unbound;
+  globalThis.__nimbusVmOrigin = refusingOrigin("ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING", "A dynamic import callback was not specified.");
 })();
 
 const __vmMod = (() => {
@@ -7311,13 +7494,10 @@ const __vmMod = (() => {
   const apply = Reflect.apply;
   const scriptThis = globalThis;
   function honestError(method, originalErr) {
-    const e = new Error(
-      'vm.' + method + ': workerd does not implement runtime eval. ' +
+    const e = nodeError(Error, 'ERR_VM_DYNAMIC_EVAL_DISALLOWED', 'vm.' + method + ': workerd does not implement runtime eval. ' +
       'Pre-bundle vm-using scripts at install time, or wait for W3.5 ' +
       'parser-based fallback. (Original: ' +
-      ((originalErr && originalErr.message) || 'no underlying error') + ')'
-    );
-    e.code = 'ERR_VM_DYNAMIC_EVAL_DISALLOWED';
+      ((originalErr && originalErr.message) || 'no underlying error') + ')');
     return e;
   }
   function wrapRuntimeEval(method) {
@@ -7363,7 +7543,8 @@ const __vmMod = (() => {
         if (e?.code !== 'ERR_VM_DYNAMIC_EVAL_DISALLOWED' || !service
           || options?.timeout !== undefined || options?.breakOnSigint
           || options?.importModuleDynamically || options?.cachedData) throw e;
-        return apply(service.compileExpression(String(code)), scriptThis, []);
+        // vm's code has no importer: Node refuses its import() (globalThis.__nimbusVmOrigin).
+        return apply(service.compileExpression(String(code), globalThis.__nimbusVmOrigin), scriptThis, []);
       }
     },
     // A function of \`params\` and \`code\` is what the Function constructor
@@ -7377,7 +7558,7 @@ const __vmMod = (() => {
         const refused = e && e.code === 'ERR_VM_DYNAMIC_EVAL_DISALLOWED';
         const plain = !options || (!options.contextExtensions?.length && !options.parsingContext);
         if (!refused || !service || !plain) throw e;
-        return service.compileFunction("function", Array.from(params, String), String(code));
+        return service.compileFunction("function", Array.from(params, String), String(code), globalThis.__nimbusVmOrigin);
       }
     },
     Script: real?.Script ?? class { constructor() { throw honestError('Script', null); } },
@@ -7506,9 +7687,7 @@ const __tlsMod = (() => {
   const notes = new WeakMap();
   let startTlsPatched = false;
   const notImplemented = (option, why) => {
-    const e = new Error('The ' + option + ' option is not implemented: ' + why);
-    e.code = 'ERR_OPTION_NOT_IMPLEMENTED';
-    return e;
+    return nodeError(Error, 'ERR_OPTION_NOT_IMPLEMENTED', 'The ' + option + ' option is not implemented: ' + why);
   };
   const patchStartTls = (native) => {
     if (startTlsPatched || !native) return;
@@ -7628,8 +7807,7 @@ const __tlsMod = (() => {
     // around it. The refusal names the limit; HTTPS by fetch is unaffected.
     if (globalThis.__nimbusEgress === true) {
       const refused = realNet ? new realNet.Socket() : null;
-      const error = new Error(${JSON.stringify(EGRESS_TLS_REFUSAL)});
-      error.code = 'ERR_NIMBUS_EGRESS_TLS';
+      const error = nodeError(Error, 'ERR_NIMBUS_EGRESS_TLS', ${JSON.stringify(EGRESS_TLS_REFUSAL)});
       if (!refused) throw error;
       queueMicrotask(() => refused.destroy(error));
       return refused;
@@ -7664,9 +7842,7 @@ const __tlsMod = (() => {
       if (p === 'connect') return connect;
       if (p === 'createServer') {
         return () => {
-          const e = new Error('tls.createServer: not supported in Nimbus facet. Use http.createServer for routing.');
-          e.code = 'ERR_NET_SERVER_NOT_AVAILABLE';
-          throw e;
+          throw nodeError(Error, 'ERR_NET_SERVER_NOT_AVAILABLE', 'tls.createServer: not supported in Nimbus facet. Use http.createServer for routing.');
         };
       }
       const value = t[p];
@@ -7676,9 +7852,7 @@ const __tlsMod = (() => {
           apply(target, self, args) { __nimbusReplay?.effect('tls.' + p); return Reflect.apply(target, self, args); },
           construct(target, args, newTarget) {
             if (globalThis.__nimbusEgress === true) {
-              const error = new Error(${JSON.stringify(EGRESS_TLS_REFUSAL)});
-              error.code = 'ERR_NIMBUS_EGRESS_TLS';
-              throw error;
+              throw nodeError(Error, 'ERR_NIMBUS_EGRESS_TLS', ${JSON.stringify(EGRESS_TLS_REFUSAL)});
             }
             if (__nimbusReplay && __nimbusReplay.outbound) {
               throw notImplemented('tls.' + p, 'a TLS socket the program builds itself is not made in a program whose network goes through Nimbus (one started with its stdin open); use tls.connect');
@@ -7747,9 +7921,9 @@ const __assertMod = Object.assign(
   (v, m) => { if (!v) { const e = new Error(m || "AssertionError"); e.code = "ERR_ASSERTION"; throw e; } },
   {
     ok: (v, m) => { if (!v) { const e = new Error(m || "The expression evaluated to a falsy value"); e.code = "ERR_ASSERTION"; throw e; } },
-    equal: (a, b, m) => { if (a != b) { const e = new Error(m || __fmt(a) + " != " + __fmt(b)); e.code = "ERR_ASSERTION"; throw e; } },
-    notEqual: (a, b, m) => { if (a == b) { const e = new Error(m || __fmt(a) + " == " + __fmt(b)); e.code = "ERR_ASSERTION"; throw e; } },
-    strictEqual: (a, b, m) => { if (a !== b) { const e = new Error(m || __fmt(a) + " !== " + __fmt(b)); e.code = "ERR_ASSERTION"; throw e; } },
+    equal: (a, b, m) => { if (a != b) { const e = new Error(m || __utilMod.inspect(a) + " != " + __utilMod.inspect(b)); e.code = "ERR_ASSERTION"; throw e; } },
+    notEqual: (a, b, m) => { if (a == b) { const e = new Error(m || __utilMod.inspect(a) + " == " + __utilMod.inspect(b)); e.code = "ERR_ASSERTION"; throw e; } },
+    strictEqual: (a, b, m) => { if (a !== b) { const e = new Error(m || __utilMod.inspect(a) + " !== " + __utilMod.inspect(b)); e.code = "ERR_ASSERTION"; throw e; } },
     notStrictEqual: (a, b, m) => { if (a === b) { const e = new Error(m || "Values are strictly equal"); e.code = "ERR_ASSERTION"; throw e; } },
     deepEqual: (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { const e = new Error(m || "deepEqual failed"); e.code = "ERR_ASSERTION"; throw e; } },
     deepStrictEqual: (a, b, m) => __assertMod.deepEqual(a, b, m),
@@ -7870,7 +8044,7 @@ const __childProcessMod = (() => {
       child._pendingStdin.push(data);
       return Promise.resolve();
     }
-    if (!HAS_SUPERVISOR) return Promise.reject(new Error("ERR_CHILD_PROCESS_UNAVAILABLE"));
+    if (!HAS_SUPERVISOR) return Promise.reject(nodeError(Error, "ERR_CHILD_PROCESS_UNAVAILABLE", "child_process: no supervisor runs this process's children"));
     const prior = child._stdinChain || Promise.resolve();
     const next = prior.then(_releaseToChild).then(() => _writeStdinWhenRoom(child, data));
     child._stdinChain = next.catch(() => {});
@@ -8318,9 +8492,7 @@ const __childProcessMod = (() => {
 
     if (!HAS_SUPERVISOR) {
       queueMicrotask(() => {
-        const err = Object.assign(new Error("ERR_CHILD_PROCESS_UNAVAILABLE"), {
-          code: "ERR_CHILD_PROCESS_UNAVAILABLE", cmd,
-        });
+        const err = nodeError(Error, "ERR_CHILD_PROCESS_UNAVAILABLE", "child_process: no supervisor runs this process's children", { cmd });
         try { child.emit("error", err); } catch {}
         child._exitFired = true;
         try { child.emit("exit", 1, null); } catch {}
@@ -8568,14 +8740,11 @@ const __childProcessMod = (() => {
    * only honest answer left.
    */
   function _refuseSyncExec(api, command) {
-    const err = new Error(
-      "child_process." + api + " is not supported in a Nimbus node facet: a facet " +
+    const err = nodeError(Error, "ERR_NIMBUS_SYNC_CHILD_PROCESS", "child_process." + api + " is not supported in a Nimbus node facet: a facet " +
       "has no synchronous I/O primitive, so a child process cannot be run to completion " +
       "without yielding to the event loop. Returning early would report success for a " +
       "command that has not run. Use the asynchronous form instead — exec/execFile/spawn, " +
-      "or await util.promisify(child_process.exec)(...). Command: " + command,
-    );
-    err.code = "ERR_NIMBUS_SYNC_CHILD_PROCESS";
+      "or await util.promisify(child_process.exec)(...). Command: " + command,);
     err.command = command;
     throw err;
   }
@@ -8723,58 +8892,355 @@ const __childProcessMod = (() => {
 })();
 
 // ═══════════════════════════════════════════════════════════════════════
-// ──  console shim ───────────────────────────────────────────────────
+// ──  console ────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-// The Console constructor workerd's node:console does not implement (it throws
-// "The Console method is not implemented"). OpenTUI's console capture
-// (setupConsoleCapture) constructs \`new Console({ stdout, stderr, ... })\` to
-// redirect console output into a captured stream; without a working
-// constructor the TUI renderer setup throws and the program exits before its
-// first frame. This shim writes to the supplied streams via util.format /
-// inspect — the Node Console contract OpenTUI relies on.
-class __NimbusConsole {
-  constructor(options, stderrArg) {
-    let out, err, inspectOptions;
-    if (options && typeof options === "object" && !options.write) {
-      out = options.stdout; err = options.stderr || options.stdout; inspectOptions = options.inspectOptions;
-    } else {
-      out = options; err = stderrArg || options;
-    }
-    const fmt = (a) => a.map((x) => typeof x === "string" ? x : __utilMod.inspect(x, inspectOptions)).join(" ");
-    const write = (stream, s) => { try { if (stream && typeof stream.write === "function") stream.write(s); } catch {} };
-    this.log = (...a) => write(out, fmt(a) + "\\n");
-    this.info = (...a) => write(out, fmt(a) + "\\n");
-    this.debug = (...a) => write(out, fmt(a) + "\\n");
-    this.dir = (o, opts) => write(out, __utilMod.inspect(o, opts || inspectOptions) + "\\n");
-    this.error = (...a) => write(err, fmt(a) + "\\n");
-    this.warn = (...a) => write(err, fmt(a) + "\\n");
-    this.trace = (...a) => write(err, "Trace: " + fmt(a) + "\\n");
-    this.assert = (c, ...a) => { if (!c) write(err, "Assertion failed: " + fmt(a) + "\\n"); };
-    this.table = (d) => write(out, __utilMod.inspect(d, inspectOptions) + "\\n");
-    this.group = (...a) => { if (a.length) write(out, fmt(a) + "\\n"); };
-    this.groupCollapsed = this.group;
-    this.time = () => {}; this.timeEnd = () => {}; this.timeLog = () => {}; this.timeStamp = () => {};
-    this.clear = () => {}; this.count = () => {}; this.countReset = () => {}; this.groupEnd = () => {};
-    this.Console = __NimbusConsole;
+// Node's Console (lib/internal/console/constructor.js), the one console:
+// each method formats its arguments with util.formatWithOptions, in colour
+// for a stream that is a terminal with colours (Node's shouldColorize),
+// indents the line by its group and writes it through the stream's own
+// write. The process's console is one over process.stdout and
+// process.stderr, so what it prints is theirs: captured, streamed live,
+// nothing once the program stopped. workerd's node:console has no Console
+// constructor ("The Console method is not implemented"), which OpenTUI's
+// console capture calls over streams of its own.
+// Node's colour policy (lib/internal/tty.js getColorDepth and hasColors,
+// lib/internal/util/colors.js shouldColorize, v22.22.3), for its platform
+// (Nimbus is linux): FORCE_COLOR first, then NODE_DISABLE_COLORS, NO_COLOR and
+// TERM=dumb, then the CI and terminal variables. Each stream decides for
+// itself: a terminal's getColorDepth reads the env it is given.
+const __NIMBUS_TERM_ENVS = {
+  eterm: 4, cons25: 4, console: 4, cygwin: 4, dtterm: 4, gnome: 4, hurd: 4, jfbterm: 4, konsole: 4, kterm: 4,
+  mlterm: 4, mosh: 24, putty: 4, st: 4, "rxvt-unicode-24bit": 24, terminator: 24, "xterm-kitty": 24,
+};
+const __NIMBUS_CI_ENVS = [["APPVEYOR", 8], ["BUILDKITE", 8], ["CIRCLECI", 24], ["DRONE", 8], ["GITEA_ACTIONS", 24], ["GITHUB_ACTIONS", 24], ["GITLAB_CI", 8], ["TRAVIS", 8]];
+const __NIMBUS_TERM_ENVS_REG_EXP = [/ansi/, /color/, /linux/, /direct/, /^con[0-9]*x[0-9]/, /^rxvt/, /^screen/, /^xterm/, /^vt100/, /^vt220/];
+let __nimbusColorWarned = false;
+// The warnings Node's console and colour policy emit: process.emitWarning.
+function __nimbusEmitWarning(...args) {
+  return Reflect.apply(__processMod.emitWarning, __processMod, args);
+}
+function __nimbusWarnOnDeactivatedColors(env) {
+  if (__nimbusColorWarned) return;
+  let name = "";
+  if (env.NODE_DISABLE_COLORS !== undefined) name = "NODE_DISABLE_COLORS";
+  if (env.NO_COLOR !== undefined) {
+    if (name !== "") name += "' and '";
+    name += "NO_COLOR";
+  }
+  if (name !== "") {
+    __nimbusEmitWarning("The '" + name + "' env is ignored due to the 'FORCE_COLOR' env being set.", "Warning");
+    __nimbusColorWarned = true;
   }
 }
-// The captured form (a program whose output is a pipe, a file, a shell
-// line's result): nothing after process.exit(), as the live form and the
-// process streams (stopped programs write nothing).
-const __consoleMod = {
-  log: (...a) => { if (!__nimbusProgramStopped) stdout += __utilMod.format(...a) + "\\n"; },
-  error: (...a) => { if (!__nimbusProgramStopped) stderr += __utilMod.format(...a) + "\\n"; },
-  warn: (...a) => { if (!__nimbusProgramStopped) stderr += __utilMod.format(...a) + "\\n"; },
-  info: (...a) => { if (!__nimbusProgramStopped) stdout += __utilMod.format(...a) + "\\n"; },
-  debug: (...a) => { if (!__nimbusProgramStopped) stdout += __utilMod.format(...a) + "\\n"; },
-  dir: (o, opts) => { if (!__nimbusProgramStopped) stdout += __utilMod.inspect(o, opts) + "\\n"; },
-  trace: (...a) => { if (!__nimbusProgramStopped) stderr += "Trace: " + __utilMod.format(...a) + "\\n"; },
-  assert: (c, ...a) => { if (!c && !__nimbusProgramStopped) stderr += "Assertion failed: " + __utilMod.format(...a) + "\\n"; },
-  time: () => {}, timeEnd: () => {}, timeLog: () => {}, clear: () => {},
-  count: () => {}, countReset: () => {}, group: () => {}, groupEnd: () => {},
-  table: (d) => { if (!__nimbusProgramStopped) stdout += __utilMod.inspect(d) + "\\n"; },
-  Console: __NimbusConsole,
-};
+function __nimbusColorDepth(env = __processMod.env) {
+  const hasOwn = (name) => Object.prototype.hasOwnProperty.call(env, name);
+  if (env.FORCE_COLOR !== undefined) {
+    switch (env.FORCE_COLOR) {
+      case "":
+      case "1":
+      case "true":
+        __nimbusWarnOnDeactivatedColors(env);
+        return 4;
+      case "2":
+        __nimbusWarnOnDeactivatedColors(env);
+        return 8;
+      case "3":
+        __nimbusWarnOnDeactivatedColors(env);
+        return 24;
+      default:
+        return 1;
+    }
+  }
+  if (env.NODE_DISABLE_COLORS !== undefined || env.NO_COLOR !== undefined || env.TERM === "dumb") return 1;
+  if (env.TMUX) return 24;
+  if (hasOwn("TF_BUILD") && hasOwn("AGENT_NAME")) return 4;
+  if (hasOwn("CI")) {
+    for (const [name, colors] of __NIMBUS_CI_ENVS) if (hasOwn(name)) return colors;
+    if (env.CI_NAME === "codeship") return 8;
+    return 1;
+  }
+  if ("TEAMCITY_VERSION" in env) return /^(9\\.(0*[1-9]\\d*)\\.|\\d{2,}\\.)/.exec(env.TEAMCITY_VERSION) !== null ? 4 : 1;
+  switch (env.TERM_PROGRAM) {
+    case "iTerm.app":
+      if (!env.TERM_PROGRAM_VERSION || /^[0-2]\\./.exec(env.TERM_PROGRAM_VERSION) !== null) return 8;
+      return 24;
+    case "HyperTerm":
+    case "MacTerm":
+      return 24;
+    case "Apple_Terminal":
+      return 8;
+  }
+  if (env.COLORTERM === "truecolor" || env.COLORTERM === "24bit") return 24;
+  if (env.TERM) {
+    if (/truecolor/.exec(env.TERM) !== null) return 24;
+    if (/^xterm-256/.exec(env.TERM) !== null) return 8;
+    const termEnv = env.TERM.toLowerCase();
+    if (__NIMBUS_TERM_ENVS[termEnv]) return __NIMBUS_TERM_ENVS[termEnv];
+    if (__NIMBUS_TERM_ENVS_REG_EXP.some((term) => term.exec(termEnv) !== null)) return 4;
+  }
+  if (env.COLORTERM) return 4;
+  return 1;
+}
+function __nimbusHasColors(count, env) {
+  if (env === undefined && (count === undefined || (typeof count === "object" && count !== null))) {
+    env = count;
+    count = 16;
+  } else if (typeof count !== "number") {
+    throw invalidArgType("count", "number", count);
+  } else if (!Number.isInteger(count) || count < 2 || count > Number.MAX_SAFE_INTEGER) {
+    const range = Number.isInteger(count) ? ">= 2 && <= 9007199254740991" : "an integer";
+    throw nodeError(RangeError, "ERR_OUT_OF_RANGE", "The value of \\"count\\" is out of range. It must be " + range + ". Received " + __utilMod.inspect(count));
+  }
+  return count <= 2 ** __nimbusColorDepth(env);
+}
+function __nimbusShouldColorize(stream) {
+  if (__processMod.env.FORCE_COLOR !== undefined) return __nimbusColorDepth() > 2;
+  return Boolean(stream?.isTTY) && (typeof stream.getColorDepth === "function" ? stream.getColorDepth() > 2 : true);
+}
+// Node's formatTime (lib/internal/util/debuglog.js), for console.time.
+function __nimbusFormatTime(ms) {
+  let hours = 0;
+  let minutes = 0;
+  let seconds = 0;
+  if (ms >= 1000) {
+    if (ms >= 60000) {
+      if (ms >= 3600000) {
+        hours = Math.floor(ms / 3600000);
+        ms = ms % 3600000;
+      }
+      minutes = Math.floor(ms / 60000);
+      ms = ms % 60000;
+    }
+    seconds = ms / 1000;
+  }
+  if (hours !== 0 || minutes !== 0) {
+    const [whole, fraction] = seconds.toFixed(3).split(".");
+    const pad = (n) => String(n).padStart(2, "0");
+    const res = hours !== 0 ? hours + ":" + pad(minutes) : minutes;
+    return res + ":" + pad(whole) + "." + fraction + " (" + (hours !== 0 ? "h:m" : "") + "m:ss.mmm)";
+  }
+  if (seconds !== 0) return seconds.toFixed(3) + "s";
+  return Number(ms.toFixed(3)) + "ms";
+}
+// Node's lib/internal/cli_table.js: the head and the columns of cell text, drawn.
+function __nimbusTable(head, columns) {
+  const renderRow = (row, widths) => {
+    let out = "│ ";
+    for (let i = 0; i < row.length; i++) {
+      out += row[i] + " ".repeat(Math.ceil(widths[i] - __nimbusNodeInspect().getStringWidth(row[i])));
+      if (i !== row.length - 1) out += " │ ";
+    }
+    return out + " │";
+  };
+  const rows = [];
+  const widths = head.map((h) => __nimbusNodeInspect().getStringWidth(h));
+  const longest = Math.max(...columns.map((column) => column.length));
+  for (let i = 0; i < head.length; i++) {
+    const column = columns[i];
+    for (let j = 0; j < longest; j++) {
+      rows[j] ??= [];
+      const value = rows[j][i] = Object.prototype.hasOwnProperty.call(column, j) ? column[j] : "";
+      widths[i] = Math.max(widths[i] || 0, __nimbusNodeInspect().getStringWidth(value));
+    }
+  }
+  const divider = widths.map((w) => "─".repeat(w + 2));
+  let result = "┌" + divider.join("┬") + "┐\\n" + renderRow(head, widths) + "\\n" + "├" + divider.join("┼") + "┤\\n";
+  for (const row of rows) result += renderRow(row, widths) + "\\n";
+  return result + "└" + divider.join("┴") + "┘";
+}
+class __NimbusConsole {
+  #stdout;
+  #stderr;
+  #ignoreErrors;
+  #colorMode;
+  #inspectOptions;
+  #groupIndentation;
+  #groupIndent = "";
+  #counts = new Map();
+  #timers = new Map();
+  constructor(options, stderr, ignoreErrors) {
+    if (!options || typeof options.write === "function") options = { stdout: options, stderr, ignoreErrors };
+    const { stdout: out, stderr: err = out, ignoreErrors: ignore = true, colorMode = "auto", inspectOptions, groupIndentation = 2 } = options;
+    for (const [name, stream] of [["stdout", out], ["stderr", err]]) {
+      if (!stream || typeof stream.write !== "function") {
+        throw nodeError(TypeError, "ERR_CONSOLE_WRITABLE_STREAM", "Console expects a writable stream instance for " + name);
+      }
+    }
+    this.#stdout = () => out;
+    this.#stderr = () => err;
+    this.#ignoreErrors = ignore;
+    this.#colorMode = colorMode;
+    this.#inspectOptions = inspectOptions;
+    this.#groupIndentation = groupIndentation;
+    // Node binds every method to its console, so a method taken off it works.
+    for (const key of Object.getOwnPropertyNames(__NimbusConsole.prototype)) {
+      if (key !== "constructor" && typeof this[key] === "function") this[key] = this[key].bind(this);
+    }
+  }
+  // The process's console: over whatever process.stdout and process.stderr are when it writes.
+  static forProcess(stdout, stderr) {
+    const console = new __NimbusConsole({ write() {} });
+    console.#stdout = stdout;
+    console.#stderr = stderr;
+    return console;
+  }
+  #optionsFor(stream) {
+    const color = this.#colorMode === "auto" ? __nimbusShouldColorize(stream) : this.#colorMode;
+    const options = this.#inspectOptions;
+    if (options) return options.colors === undefined ? { ...options, colors: color } : options;
+    return color ? { colors: true } : {};
+  }
+  #format(stream, args) {
+    // Strings with no format directive are joined as formatWithOptions
+    // joins them, without loading Node's inspect for a line it never needs.
+    if (args.every((arg) => typeof arg === "string") && (args.length < 2 || !args[0].includes("%"))) return args.join(" ");
+    return __utilMod.formatWithOptions(this.#optionsFor(stream), ...args);
+  }
+  #write(stream, string) {
+    const indent = this.#groupIndent;
+    if (indent.length !== 0) {
+      if (string.includes("\\n")) string = string.replace(/\\n/g, "\\n" + indent);
+      string = indent + string;
+    }
+    try {
+      stream.write(string + "\\n");
+    } catch (e) {
+      if (!this.#ignoreErrors) throw e;
+    }
+  }
+  log(...args) { const out = this.#stdout(); this.#write(out, this.#format(out, args)); }
+  info(...args) { const out = this.#stdout(); this.#write(out, this.#format(out, args)); }
+  debug(...args) { const out = this.#stdout(); this.#write(out, this.#format(out, args)); }
+  dirxml(...args) { const out = this.#stdout(); this.#write(out, this.#format(out, args)); }
+  warn(...args) { const err = this.#stderr(); this.#write(err, this.#format(err, args)); }
+  error(...args) { const err = this.#stderr(); this.#write(err, this.#format(err, args)); }
+  dir(object, options) {
+    const out = this.#stdout();
+    this.#write(out, __utilMod.inspect(object, { customInspect: false, ...this.#optionsFor(out), ...options }));
+  }
+  trace(...args) {
+    const err = { name: "Trace", message: this.#format(this.#stderr(), args) };
+    Error.captureStackTrace(err, __NimbusConsole.prototype.trace);
+    this.error(err.stack);
+  }
+  assert(expression, ...args) {
+    if (expression) return;
+    args[0] = "Assertion failed" + (args.length === 0 ? "" : ": " + args[0]);
+    Reflect.apply(this.warn, this, args);
+  }
+  clear() {
+    const out = this.#stdout();
+    if (!out.isTTY || __processMod.env.TERM === "dumb") return;
+    if (typeof out.cursorTo === "function") out.cursorTo(0, 0);
+    if (typeof out.clearScreenDown === "function") out.clearScreenDown();
+  }
+  count(label = "default") {
+    label = String(label);
+    const count = (this.#counts.get(label) ?? 0) + 1;
+    this.#counts.set(label, count);
+    this.log(label + ": " + count);
+  }
+  countReset(label = "default") {
+    label = String(label);
+    if (!this.#counts.has(label)) {
+      __nimbusEmitWarning("Count for '" + label + "' does not exist");
+      return;
+    }
+    this.#counts.delete(label);
+  }
+  group(...data) {
+    if (data.length > 0) Reflect.apply(this.log, this, data);
+    this.#groupIndent += " ".repeat(this.#groupIndentation);
+  }
+  groupCollapsed(...data) { Reflect.apply(this.group, this, data); }
+  groupEnd() {
+    this.#groupIndent = this.#groupIndent.slice(0, this.#groupIndent.length - this.#groupIndentation);
+  }
+  time(label = "default") {
+    label = String(label);
+    if (this.#timers.has(label)) {
+      __nimbusEmitWarning("Label '" + label + "' already exists for console.time()");
+      return;
+    }
+    this.#timers.set(label, performance.now());
+  }
+  timeEnd(label = "default") {
+    label = String(label);
+    if (this.#timeLog("timeEnd", label, [])) this.#timers.delete(label);
+  }
+  timeLog(label = "default", ...data) {
+    this.#timeLog("timeLog", String(label), data);
+  }
+  #timeLog(name, label, data) {
+    const start = this.#timers.get(label);
+    if (start === undefined) {
+      __nimbusEmitWarning("No such label '" + label + "' for console." + name + "()");
+      return false;
+    }
+    Reflect.apply(this.log, this, ["%s: %s", label, __nimbusFormatTime(performance.now() - start), ...data]);
+    return true;
+  }
+  // Node's console.table and lib/internal/cli_table.js. A Map or Set
+  // iterator is tabled as the object it is: Node previews one without
+  // consuming it, which only its internals can.
+  table(data, properties) {
+    if (properties !== undefined && !Array.isArray(properties)) {
+      throw invalidArgType("properties", "Array", properties);
+    }
+    if (data === null || typeof data !== "object") return this.log(data);
+    const options = this.#optionsFor(this.#stdout());
+    const show = (v) => __utilMod.inspect(v, {
+      depth: v !== null && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length > 2 ? -1 : 0,
+      maxArrayLength: 3,
+      breakLength: Infinity,
+      ...options,
+    });
+    const indexes = (length) => Array.from({ length }, (_, i) => show(i));
+    const render = (head, columns) => this.log(__nimbusTable(head, columns));
+    if (__realUtil.types.isMap(data)) {
+      const keys = [];
+      const values = [];
+      for (const [k, v] of data) { keys.push(show(k)); values.push(show(v)); }
+      return render(["(iteration index)", "Key", "Values"], [indexes(keys.length), keys, values]);
+    }
+    if (__realUtil.types.isSet(data)) {
+      const values = [];
+      for (const v of data) values.push(show(v));
+      return render(["(iteration index)", "Values"], [indexes(values.length), values]);
+    }
+    const map = Object.create(null);
+    let hasPrimitives = false;
+    const primitives = [];
+    const indexKeys = Object.keys(data);
+    for (let i = 0; i < indexKeys.length; i++) {
+      const item = data[indexKeys[i]];
+      const primitive = item === null || (typeof item !== "function" && typeof item !== "object");
+      if (properties === undefined && primitive) {
+        hasPrimitives = true;
+        primitives[i] = show(item);
+      } else {
+        for (const key of properties || Object.keys(item)) {
+          map[key] ??= [];
+          map[key][i] = (primitive && properties) || !Object.prototype.hasOwnProperty.call(item, key) ? "" : show(item[key]);
+        }
+      }
+    }
+    const keys = Object.keys(map);
+    const values = Object.values(map);
+    if (hasPrimitives) {
+      keys.push("Values");
+      values.push(primitives);
+    }
+    keys.unshift("(index)");
+    values.unshift(indexKeys);
+    return render(keys, values);
+  }
+  timeStamp() {}
+  profile() {}
+  profileEnd() {}
+}
+const __consoleMod = __NimbusConsole.forProcess(() => __processMod.stdout, () => __processMod.stderr);
+__consoleMod.Console = __NimbusConsole;
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  process shim ───────────────────────────────────────────────────
@@ -8942,10 +9408,9 @@ function __nimbusSyncStdinError(api, why) {
   // The whole message before the Error is built: its stack, which is what an
   // uncaught error prints, captures the message at construction.
   const file = __nimbusStdinFileSource();
-  const err = new Error(file !== null && __nimbusQueuedStdin !== null && !__nimbusQueuedStdin.ended
-    ? "ERR_NIMBUS_SYNC_STDIN: stdin is a file larger than ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB, and synchronous reads of it are served from its first ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB only, so a large redirect is never held whole. Read process.stdin, which streams the file"
-    : "ERR_NIMBUS_SYNC_STDIN: fs." + api + "(0) has to wait for stdin, which is still open. Nimbus waits by running the program again from its start once the input is there, but this program " + why + ". Read process.stdin instead: it takes the input as it arrives");
-  err.code = "ERR_NIMBUS_SYNC_STDIN";
+  const err = nodeError(Error, "ERR_NIMBUS_SYNC_STDIN", file !== null && __nimbusQueuedStdin !== null && !__nimbusQueuedStdin.ended
+    ? "stdin is a file larger than ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB, and synchronous reads of it are served from its first ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB only, so a large redirect is never held whole. Read process.stdin, which streams the file"
+    : "fs." + api + "(0) has to wait for stdin, which is still open. Nimbus waits by running the program again from its start once the input is there, but this program " + why + ". Read process.stdin instead: it takes the input as it arrives");
   err.syscall = "read";
   return err;
 }
@@ -9280,8 +9745,9 @@ function __makeProcessStdin() {
         }
         const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
-        try { __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(trace + "\\n")), () => undefined).catch(() => {}); } catch {}
-        try { __nimbusUseRpcResult(__supervisor.reportExit(1, trace + "\\n"), () => undefined).catch(() => {}); } catch {}
+        __nimbusReleaseStderr(trace + "\\n");
+        const exitGate = __nimbusOutputGate();
+        try { Promise.resolve(exitGate).then(() => __nimbusUseRpcResult(__supervisor.reportExit(1, trace + "\\n"), () => undefined)).catch(() => {}); } catch {}
         try { r.end(); } catch {}
       });
       __nimbusLiveStdinPump = pump;
@@ -9388,8 +9854,9 @@ function __makeProcessOutputStream(streamName) {
       if (typeof cb === "function") queueMicrotask(cb);
       return true;
     },
-    getColorDepth: () => __nimbusAttachedTty ? 24 : 1,
-    hasColors: () => __nimbusAttachedTty,
+    // A terminal's colours are Node's policy; a pipe's, none.
+    getColorDepth: (env) => __nimbusAttachedTty ? __nimbusColorDepth(env) : 1,
+    hasColors: (count, env) => __nimbusAttachedTty ? __nimbusHasColors(count, env) : false,
     clearLine(dir, cb) { return __nimbusClearLine(stream, dir, cb); },
     clearScreenDown(cb) { return __nimbusClearScreenDown(stream, cb); },
     cursorTo(x, y, cb) { return __nimbusCursorTo(stream, x, y, cb); },
@@ -9421,6 +9888,27 @@ function __makeProcessOutputStream(streamName) {
   Object.defineProperty(stream, "rows", { enumerable: true, get() { return __nimbusTtyRows; } });
   __nimbusTerminalOutputStreams.push(stream);
   return stream;
+}
+
+// The gate an output or exit leaving the process is released at, taken when
+// it is made (ProcessFsClient.effect): null when nothing it logged waits.
+function __nimbusOutputGate() {
+  const client = globalThis.__nimbusProcessFs;
+  return client ? client.effect() : null;
+}
+
+// Send a line to the session's stderr for this process, at its gate: every
+// diagnostic Nimbus prints for a process, as its own output is. Answers once
+// sent (never rejects); the run's pending writes wait for it too.
+function __nimbusReleaseStderr(line) {
+  if (!__supervisor || typeof __supervisor.stderr !== "function") return Promise.resolve();
+  const send = () => __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(line)), () => undefined);
+  const gate = __nimbusOutputGate();
+  let task;
+  try { task = gate === null ? send() : gate.then(send); } catch { return Promise.resolve(); }
+  task = Promise.resolve(task).catch(() => {});
+  if (typeof __pendingIO !== "undefined" && Array.isArray(__pendingIO)) __pendingIO.push(task);
+  return task;
 }
 
 function __nimbusReportProcessExit(code, reason) {
@@ -9459,13 +9947,88 @@ function __nimbusSignalSelf(signal) {
 }
 
 const __processEvents = new __eventsMod();
+// Node's process.emitWarning and the 'warning' listener it installs unless
+// told not to (lib/internal/process/warning.js, lib/internal/process/
+// pre_execution.js setupWarningHandler, v22.22.3): the warning is an Error
+// named for its type, emitted on the next tick; the listener prints
+// "(node:<pid>) <Type>: <message>" to stderr, the first time with how to
+// trace it. --disable-warning and --redirect-warnings are not read.
+let __nimbusTraceWarningHelperShown = false;
+function __nimbusOnWarning(warning) {
+  if (!(warning instanceof Error)) return;
+  const isDeprecation = warning.name === "DeprecationWarning";
+  if (isDeprecation && __processMod.noDeprecation) return;
+  const trace = __processMod.traceProcessWarnings || (isDeprecation && __processMod.traceDeprecation);
+  let msg = "(node:" + __processMod.pid + ") ";
+  if (warning.code) msg += "[" + warning.code + "] ";
+  if (trace && warning.stack) msg += warning.stack;
+  else msg += typeof warning.toString === "function" ? String(warning.toString()) : Error.prototype.toString.call(warning);
+  if (typeof warning.detail === "string") msg += "\\n" + warning.detail;
+  if (!trace && !__nimbusTraceWarningHelperShown) {
+    const flag = isDeprecation ? "--trace-deprecation" : "--trace-warnings";
+    const argv0 = __pathMod.basename(__processMod.argv0 || "node", ".exe");
+    msg += "\\n(Use \`" + argv0 + " " + flag + " ...\` to show where the warning was created)";
+    __nimbusTraceWarningHelperShown = true;
+  }
+  __consoleMod.error(msg);
+}
+function __nimbusProcessEmitWarning(warning, type, code, ctor) {
+  if (__processMod.noDeprecation && type === "DeprecationWarning") return;
+  let detail;
+  if (type !== null && typeof type === "object" && !Array.isArray(type)) {
+    ctor = type.ctor;
+    code = type.code;
+    if (typeof type.detail === "string") detail = type.detail;
+    type = type.type || "Warning";
+  } else if (typeof type === "function") {
+    ctor = type;
+    code = undefined;
+    type = "Warning";
+  }
+  if (type !== undefined && typeof type !== "string") throw invalidArgType("type", "string", type);
+  if (typeof code === "function") {
+    ctor = code;
+    code = undefined;
+  } else if (code !== undefined && typeof code !== "string") {
+    throw invalidArgType("code", "string", code);
+  }
+  if (typeof warning === "string") {
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 0;
+    warning = new Error(warning);
+    Error.stackTraceLimit = limit;
+    warning.name = String(type || "Warning");
+    if (code !== undefined) warning.code = code;
+    if (detail !== undefined) warning.detail = detail;
+    Error.captureStackTrace(warning, ctor || __processMod.emitWarning);
+  } else if (!(warning instanceof Error)) {
+    throw invalidArgType("warning", ["string", "Error"], warning);
+  }
+  if (warning.name === "DeprecationWarning") {
+    if (__processMod.noDeprecation) return;
+    if (__processMod.throwDeprecation) return __processMod.nextTick(() => { throw warning; });
+  }
+  __processMod.nextTick(() => __processEvents.emit("warning", warning));
+}
 let __processUmask = Number(cred.umask) & 0o777;
+// What the process's filesystem client stamps on each create it logs (W7Call umask): the ledger's, in this scope, not a global.
+if (typeof __nimbusProcessUmaskOf !== "undefined") __nimbusProcessUmaskOf = () => __processUmask;
 // Node's command line, as core runtime/node-cli.ts read it: the options
 // before the program are process.execArgv (argv is the program's own), the
 // program's own conditions are its resolvers', and -e's code is
 // process._eval. A host that passes none runs without them.
 const __nimbusNodeCommandLine = typeof nodeCommandLine === "undefined" ? undefined : nodeCommandLine;
 const __nimbusExecArgv = Array.isArray(__nimbusNodeCommandLine?.execArgv) ? __nimbusNodeCommandLine.execArgv.map(String) : [];
+// --no-experimental-strip-types: TypeScript is JavaScript to the CommonJS
+// loader, and has no format to the ES loader.
+const __nimbusTypeScriptAsJavaScript = __nimbusNodeCommandLine?.stripTypes === false;
+// Node defines EventSource only with --experimental-eventsource; workerd's
+// lives on the global scope's prototype.
+if (__nimbusNodeCommandLine !== undefined && __nimbusNodeCommandLine !== null && __nimbusNodeCommandLine.experimentalEventSource !== true) {
+  for (let scope = globalThis; scope !== null && scope !== Object.prototype; scope = Object.getPrototypeOf(scope)) {
+    if (Object.hasOwn(scope, "EventSource")) delete scope.EventSource;
+  }
+}
 const __nimbusConditions = Array.isArray(__nimbusNodeCommandLine?.conditions) ? __nimbusNodeCommandLine.conditions.map(String) : [];
 const __nimbusEval = typeof __nimbusNodeCommandLine?.eval === "string" ? __nimbusNodeCommandLine.eval : undefined;
 const __processMod = {
@@ -9473,12 +10036,19 @@ const __processMod = {
   env: env || {},
   cwd: () => cwd || "/home/user",
   chdir: (d) => { cwd = __pathMod.resolve(cwd || "/home/user", d); },
-  exit: (code) => {
-    exitCode = code ?? 0;
-    __nimbusEmitExit(exitCode);
+  // Node's: the code given (or process.exitCode), 'exit' once, with it,
+  // and whatever code its listeners leave.
+  exit: function exit(code) {
+    if (arguments.length !== 0) __processMod.exitCode = code;
+    if (!__processMod._exiting) {
+      __processMod._exiting = true;
+      __nimbusEmitExit(__processMod.exitCode || 0);
+    }
+    exitCode = __processMod.exitCode || 0;
     __nimbusReportProcessExit(exitCode, "");
     throw new __ProcessExit(exitCode);
   },
+  _exiting: false,
   platform: "linux", arch: "x64",
   version: ${NODE_VERSION_LITERAL}, versions: ${NODE_VERSIONS_LITERAL},
   features: Object.freeze({
@@ -9491,6 +10061,7 @@ const __processMod = {
     tls_ocsp: false,
     tls: true,
     openssl_is_boringssl: true,
+    ...(__nimbusNodeCommandLine ? { typescript: __nimbusNodeCommandLine.transformTypes ? "transform" : __nimbusNodeCommandLine.stripTypes !== false && "strip" } : {}),
   }),
   getBuiltinModule: (specifier) => {
     const key = String(specifier).replace(/^node:/, "");
@@ -9513,6 +10084,7 @@ const __processMod = {
   ),
   memoryUsage: () => ({ rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 }),
   nextTick: (fn, ...a) => queueMicrotask(() => fn(...a)),
+  emitWarning: __nimbusProcessEmitWarning,
   on: (name, listener) => { __processEvents.on(name, listener); return __processMod; },
   addListener: (name, listener) => { __processEvents.on(name, listener); return __processMod; },
   prependListener: (name, listener) => { __processEvents.prependListener(name, listener); return __processMod; },
@@ -9568,8 +10140,7 @@ const __processMod = {
     if (mask === undefined) return previous;
     const next = typeof mask === "string" ? parseInt(mask, 8) : Number(mask);
     if (!Number.isInteger(next) || next < 0 || next > 0o777) {
-      const error = new TypeError("The value of mask is out of range");
-      error.code = "ERR_INVALID_ARG_VALUE";
+      const error = nodeError(TypeError, "ERR_INVALID_ARG_VALUE", "The value of mask is out of range");
       throw error;
     }
     __processUmask = next;
@@ -9589,54 +10160,383 @@ const __processMod = {
     if (name === "constants") {
       return { fs: __constantsMod, os: { errno: __constantsMod, signals: __constantsMod }, crypto: {} };
     }
+    // Node's process.binding names no code.
     const err = new Error("No such module: " + name);
-    err.code = "ERR_UNKNOWN_BUILTIN_MODULE";
     throw err;
   },
 };
+// The 'warning' listener Node installs (setupWarningHandler), unless warnings are off.
+if (__processMod.env.NODE_NO_WARNINGS !== "1" && !String(__processMod.env.NODE_OPTIONS || "").split(/\\s+/).includes("--no-warnings")) {
+  __processEvents.on("warning", __nimbusOnWarning);
+}
 // Node's process reads as one: Object.prototype.toString gives "[object
 // process]", which axios (utils.kindOf) and others test to pick their Node
 // paths (axios: its http adapter rather than its fetch one). As Node defines
 // it: an own property, writable, not enumerable, not configurable.
 Object.defineProperty(__processMod, Symbol.toStringTag, { value: "process", writable: true, enumerable: false, configurable: false });
-
-function __nimbusRuntimeErrorTrace(error) {
-  if (error && typeof error === "object") {
-    return error.stack || error.message || String(error);
+// process.exitCode as Node keeps it (lib/internal/bootstrap/node.js): a
+// safe integer, or a string whose number is one, held as the int32 the
+// process exits with; null and undefined unset it.
+let __nimbusExitCodeField;
+Object.defineProperty(__processMod, "exitCode", {
+  get() { return __nimbusExitCodeField; },
+  set(code) {
+    if (code === null || code === undefined) {
+      __nimbusExitCodeField = undefined;
+      return;
+    }
+    // A non-empty string is its number, unless that is NaN; then
+    // validateInteger(value, "code") on what there is.
+    let value = code;
+    if (typeof code === "string" && code !== "" && Number.isNaN((value = Number(code)))) value = code;
+    if (typeof value !== "number") throw invalidArgType("code", "number", value);
+    if (!Number.isInteger(value)) throw __nimbusOutOfRange("code", "an integer", value);
+    if (value < Number.MIN_SAFE_INTEGER || value > Number.MAX_SAFE_INTEGER) {
+      throw __nimbusOutOfRange("code", ">= " + Number.MIN_SAFE_INTEGER + " && <= " + Number.MAX_SAFE_INTEGER, value);
+    }
+    __nimbusExitCodeField = value | 0;
+  },
+  enumerable: true,
+  configurable: false,
+});
+// Node's ERR_OUT_OF_RANGE for \`name\` (lib/internal/errors.js): an integer
+// past 2 ** 32 with its digits grouped, anything else as inspect shows it.
+function __nimbusOutOfRange(name, range, input) {
+  let received;
+  if (Number.isInteger(input) && Math.abs(input) > 2 ** 32) {
+    const digits = String(input);
+    const start = digits[0] === "-" ? 1 : 0;
+    let grouped = "";
+    let i = digits.length;
+    for (; i >= start + 4; i -= 3) grouped = "_" + digits.slice(i - 3, i) + grouped;
+    received = digits.slice(0, i) + grouped;
+  } else {
+    received = __utilMod.inspect(input);
   }
-  return String(error);
+  return nodeError(RangeError, "ERR_OUT_OF_RANGE", "The value of \\"" + name + "\\" is out of range. It must be " + range + ". Received " + received);
+}
+// The natural end: 'exit' with process.exitCode, once, and the code its
+// listeners leave (Node's EmitProcessExit).
+function __nimbusExitAtEnd() {
+  if (!__processMod._exiting) {
+    __processMod._exiting = true;
+    __nimbusEmitExit(__processMod.exitCode || 0);
+  }
+  return __processMod.exitCode || 0;
 }
 
-function __nimbusFailUnhandledAsync(error, kind) {
+// ── What nothing caught ──
+// Node 22.22.3's fatal exception (lib/internal/process/execution.js
+// createOnGlobalUncaughtException; lib/internal/process/promises.js
+// throwUnhandledRejectionsMode; src/node_errors.cc TriggerUncaughtException,
+// ReportFatalException, GetErrorSource): 'uncaughtExceptionMonitor' sees it,
+// an 'uncaughtException' listener may take it and the program goes on;
+// otherwise 'exit' is emitted with process.exitCode 1, the report goes to
+// fd 2 — where it was thrown, the error as util.inspect shows it, Node's
+// version — and the process exits with process.exitCode. What an
+// 'uncaughtException' listener throws is reported as it is, its stack, and
+// the process exits 7. A rejection nothing handles is one, with its reason,
+// or Node's UnhandledPromiseRejection for a reason that is not an error.
+//
+// Where it was thrown is V8's message, which Node reads and a Worker's
+// JavaScript cannot: here it is read off the error's stack, as V8 places
+// it — for a rejection, its first frame; for an exception, the innermost
+// \`throw\` statement around one of its frames, else its first frame — in a
+// module of the program (__nimbusModuleOfFile), from the text the module was
+// compiled from. Named limits (fine-print capabilities): an error thrown
+// inside a builtin, which Node reports at its own library's source line,
+// and a value that is not an error or an error thrown away from where it
+// was made (\`throw e\`), have no such line or the line it was made at.
+let __nimbusFatalStderr = null;
+// Node writes its report to fd 2 itself, past whatever a program put in
+// process.stderr.write's place: the write the runner installed.
+function __nimbusWriteFatal(text) {
+  try { (__nimbusFatalStderr ?? ((t) => __processMod.stderr.write(t)))(text); } catch {}
+}
+// V8's NoSideEffectsToString (objects.cc), for the reason Node names.
+function __nimbusNoSideEffectsToString(value) {
+  if (typeof value === "string") return value;
+  if (typeof value === "symbol") return value.toString();
+  if (typeof value === "function") {
+    try { return Function.prototype.toString.call(value); } catch { return "function () { [native code] }"; }
+  }
+  if (value === null || typeof value !== "object") return String(value);
+  if (__utilMod.types.isProxy(value)) return "#<Object>";
+  // A data property, own or inherited, never a getter.
+  const dataProperty = (key) => {
+    for (let o = value; o !== null; o = Object.getPrototypeOf(o)) {
+      if (__utilMod.types.isProxy(o)) return undefined;
+      const d = Object.getOwnPropertyDescriptor(o, key);
+      if (d) return "value" in d ? d.value : undefined;
+    }
+    return undefined;
+  };
+  const toString = dataProperty("toString");
+  if (__utilMod.types.isNativeError(value) || toString === Error.prototype.toString) {
+    const name = dataProperty("name");
+    const message = dataProperty("message");
+    const n = typeof name === "string" ? name : "Error";
+    const m = typeof message === "string" ? message : "";
+    return n === "" ? m : m === "" ? n : n + ": " + m;
+  }
+  if (toString === Object.prototype.toString) {
+    const ctor = dataProperty("constructor");
+    if (typeof ctor === "function" && typeof ctor.name === "string" && ctor.name !== "") return "#<" + ctor.name + ">";
+  }
+  const types = __utilMod.types;
+  const builtin = Array.isArray(value) ? "Array" : types.isArgumentsObject(value) ? "Arguments"
+    : types.isNativeError(value) ? "Error" : types.isDate(value) ? "Date" : types.isRegExp(value) ? "RegExp"
+    : types.isBooleanObject(value) ? "Boolean" : types.isNumberObject(value) ? "Number"
+    : types.isStringObject(value) ? "String" : "Object";
+  const tag = dataProperty(Symbol.toStringTag);
+  return "[object " + (typeof tag === "string" ? tag : builtin) + "]";
+}
+const __NimbusUnhandledPromiseRejection = class UnhandledPromiseRejection extends Error {
+  code = "ERR_UNHANDLED_REJECTION";
+  constructor(reason) {
+    super("This error originated either by throwing inside of an async function without a catch block, or by rejecting a promise which was not handled with .catch(). The promise rejected with the reason \\"" + __nimbusNoSideEffectsToString(reason) + "\\".");
+    this.name = "UnhandledPromiseRejection";
+  }
+};
+// A frame of a stack's text: [url, line, column], or null for one without a
+// place (a builtin's).
+${NODE_SOURCE_MAPS_SOURCE}
+// Node's "Transform Types" warning, once, when its loader first parses
+// TypeScript: the entry's, or a module's as it is required (an ES module's
+// imports are required before its body, as Node links them first).
+let __nimbusTransformTypesWarned = __nimbusNodeCommandLine?.transformTypes !== true;
+function __nimbusLoadsTypeScript(path) {
+  if (__nimbusTransformTypesWarned || !stripsTypeScript(path) || __nimbusUnderNodeModules(path)) return;
+  __nimbusTransformTypesWarned = true;
+  __processMod.emitWarning("Transform Types is an experimental feature and might change at any time", "ExperimentalWarning");
+}
+function __nimbusFrameAt(line) {
+  if (!line.startsWith("    at ")) return null;
+  let at = line.slice(7);
+  if (at.endsWith(")")) {
+    const open = at.indexOf(" (");
+    if (open !== -1) at = at.slice(open + 2, -1);
+  }
+  // eval code: \`eval at f (url:1:2), <anonymous>:1:1\`.
+  const comma = at.lastIndexOf(", ");
+  if (comma !== -1) at = at.slice(comma + 2);
+  const place = /^(.*):(\\d+):(\\d+)$/.exec(at);
+  return place === null ? null : [place[1], Number(place[2]), Number(place[3])];
+}
+// Where a frame's column (the source's, past the wrapper's head) is in the module's text.
+function __nimbusEmittedColumn(module, line, column) {
+  const emitted = __nimbusGeneratedColumn(module, line, column);
+  return line === 1 ? emitted + module.head : emitted;
+}
+// GetErrorSource: \`file:line\`, the line, and under it the place, \`^\` from
+// start to end. As Node does, the columns, which are V8's (UTF-16), count
+// the line's UTF-8 bytes.
+function __nimbusArrowOf(module, text, start, end) {
+  let lineStart = 0;
+  let line = 1;
+  for (;;) {
+    const next = text.slice(lineStart).search(/\\r\\n|[\\n\\r\\u2028\\u2029]/);
+    if (next === -1 || lineStart + next >= start) break;
+    lineStart += next + (text.startsWith("\\r\\n", lineStart + next) ? 2 : 1);
+    line++;
+  }
+  const rest = text.slice(lineStart);
+  const lineEnd = rest.search(/[\\n\\r\\u2028\\u2029]/);
+  let source = lineEnd === -1 ? rest : rest.slice(0, lineEnd);
+  let from = start - lineStart;
+  let to = end - lineStart;
+  if (line === 1) {
+    source = source.slice(module.head);
+    if (module.hashbang && source.startsWith("//")) source = "#!" + source.slice(2);
+    from -= module.head;
+    to -= module.head;
+  }
+  // A lowered ES module's line and places as its source has them.
+  if (to > from) to = __nimbusSourceColumn(module, line, to);
+  from = __nimbusSourceColumn(module, line, from + 1) - 1;
+  if (to <= from) to = from + 1;
+  source = __nimbusSourceLine(module, line, source);
+  let arrow = __nimbusFrameFile(module) + ":" + line + "\\n" + source + "\\n";
+  const bytes = new TextEncoder().encode(source);
+  if (from > to || from < 0 || to > bytes.length) return arrow;
+  let underline = "";
+  for (let i = 0; i < from; i++) underline += bytes[i] === 9 ? "\\t" : " ";
+  for (let i = from; i < to; i++) underline += "^";
+  return arrow + underline + "\\n";
+}
+// The offset of 1-based (line, column) in a module's text.
+function __nimbusTextOffset(text, line, column) {
+  let offset = 0;
+  for (let n = 1; n < line; n++) {
+    const next = text.slice(offset).search(/\\r\\n|[\\n\\r\\u2028\\u2029]/);
+    if (next === -1) return -1;
+    offset += next + (text.startsWith("\\r\\n", offset + next) ? 2 : 1);
+  }
+  return offset + column - 1;
+}
+// Where V8 places what was thrown, as Node prints it above the error, or null.
+function __nimbusFatalArrow(error, fromPromise) {
+  // Node's own error for a reason that is not one: its library's line.
+  if (error instanceof __NimbusUnhandledPromiseRejection) {
+    return "node:internal/process/promises:392\\n      new UnhandledPromiseRejection(reason);\\n      ^\\n";
+  }
+  if (typeof __nimbusModuleOfFile !== "function") return null;
+  if (error === null || (typeof error !== "object" && typeof error !== "function")) return null;
+  let stack;
+  try { stack = error.stack; } catch { return null; }
+  if (typeof stack !== "string") return null;
+  // A source-mapped stack reads original places; its frames are kept apart.
+  const frames = __nimbusGeneratedFrames.get(error)?.filter((frame) => frame[1] !== null) ?? [];
+  if (!__nimbusGeneratedFrames.has(error)) {
+    for (const line of stack.split("\\n")) {
+      const frame = __nimbusFrameAt(line);
+      if (frame !== null) frames.push(frame);
+    }
+  }
+  // Thrown by the program, or by a builtin it called: its first frame with a place.
+  const top = frames.length === 0 ? null : __nimbusModuleOfFile(frames[0][0]);
+  if (top === null) return null;
+  const texts = new Map();
+  const textOf = (module) => {
+    if (!texts.has(module.name)) texts.set(module.name, __nimbusFrameModuleText(module));
+    return texts.get(module.name);
+  };
+  if (!fromPromise) {
+    for (const [file, line, column] of frames) {
+      const module = __nimbusModuleOfFile(file);
+      const text = module === null ? null : textOf(module);
+      if (text === null) continue;
+      const offset = __nimbusTextOffset(text, line, __nimbusEmittedColumn(module, line, column));
+      const thrown = offset < 0 ? null : __nimbusFatalLocation(text, "script", offset);
+      if (thrown !== null) return __nimbusSourceMappedArrow(module, text, thrown[0]) ?? __nimbusArrowOf(module, text, thrown[0], thrown[1]);
+    }
+  }
+  const text = textOf(top);
+  if (text === null) return null;
+  const [, line, column] = frames[0];
+  const offset = __nimbusTextOffset(text, line, __nimbusEmittedColumn(top, line, column));
+  return offset < 0 ? null : __nimbusSourceMappedArrow(top, text, offset) ?? __nimbusArrowOf(top, text, offset, offset + 1);
+}
+// Where a module that does not compile stops, for its stack (commonjs-cell.ts
+// __nimbusDecorateSyntaxError), or null.
+globalThis.__nimbusSyntaxErrorArrow = function __nimbusSyntaxErrorArrow(module) {
+  const text = module === null ? null : __nimbusFrameModuleText(module);
+  const place = text === null ? null : __nimbusFatalLocation(text, "script", -1);
+  return place === null ? null : __nimbusArrowOf(module, text, place[0], place[1]);
+};
+// ReportFatalException: the text Node prints for \`error\`. \`enhance\`: the
+// error as inspect shows it (an 'uncaughtException' listener's error is its
+// stack).
+function __nimbusFatalReport(error, fromPromise, enhance) {
+  const isObject = error !== null && (typeof error === "object" || typeof error === "function");
+  const decorated = isObject && typeof __nimbusDecorated !== "undefined" && __nimbusDecorated.has(error);
+  const arrow = decorated ? null : __nimbusFatalArrow(error, fromPromise);
+  let report = "";
+  let attached = null;
+  // AppendExceptionLine: an error keeps its arrow for below; for anything
+  // else it is printed at once.
+  if (arrow !== null) {
+    if (isObject && __utilMod.types.isNativeError(error)) attached = arrow;
+    else report += "\\n" + arrow;
+  }
+  let trace;
+  if (isObject) {
+    try { trace = error.stack; } catch {}
+    if (enhance) {
+      try {
+        const inspect = __utilMod.inspect;
+        const colors = __nimbusShouldColorize(__processMod.stderr) || inspect.defaultOptions.colors;
+        trace = inspect(error, { colors, customInspect: false, depth: Math.max(inspect.defaultOptions.depth, 5) });
+      } catch {}
+    }
+  }
+  let text = "";
+  if (trace !== undefined) {
+    try { text = String(trace); } catch {}
+  }
+  if (text.length > 0) {
+    report += attached === null ? text + "\\n" : attached + "\\n" + text + "\\n";
+  } else {
+    let message;
+    let name;
+    if (isObject) {
+      try { message = error.message; } catch {}
+      try { name = error.name; } catch {}
+    }
+    if (message === undefined || name === undefined) {
+      let shown = "";
+      try { shown = String(error); } catch {}
+      report += shown + "\\n";
+    } else {
+      let shownName = "";
+      let shownMessage = "";
+      try { shownName = String(name); } catch {}
+      try { shownMessage = String(message); } catch {}
+      report += (attached === null ? "" : attached + "\\n") + shownName + ": " + shownMessage + "\\n";
+    }
+    const argv0 = __pathMod.basename(String(__processMod.argv[0] || "node")).replace(/(.)\\.[^.]*$/, "$1");
+    report += "(Use \`" + argv0 + " --trace-uncaught ...\` to show where the exception was thrown)\\n";
+  }
+  return report + "\\nNode.js " + __processMod.version + "\\n";
+}
+// An exception nothing caught (\`fromPromise\`: a rejection, or an ES
+// module's evaluation): whether a listener took it.
+function __nimbusUncaughtException(error, fromPromise = false) {
   if (error instanceof __ProcessExit) {
     __nimbusReportProcessExit(error.code, "");
+    return true;
+  }
+  const type = fromPromise ? "unhandledRejection" : "uncaughtException";
+  try {
+    __processEvents.emit("uncaughtExceptionMonitor", error, type);
+    if (__processEvents.emit("uncaughtException", error, type)) return true;
+  } catch (thrown) {
+    if (thrown instanceof __ProcessExit) {
+      __nimbusReportProcessExit(thrown.code, "");
+      return true;
+    }
+    const report = __nimbusFatalReport(thrown, false, false);
+    __nimbusWriteFatal(report);
+    __nimbusReportProcessExit(7, report);
+    return false;
+  }
+  try {
+    if (!__processMod._exiting) {
+      __processMod._exiting = true;
+      __processMod.exitCode = 1;
+      __nimbusEmitExit(1);
+    }
+  } catch {}
+  const report = __nimbusFatalReport(error, fromPromise, true);
+  __nimbusWriteFatal(report);
+  __nimbusReportProcessExit(__processMod.exitCode ?? 1, report);
+  return false;
+}
+// A rejection nothing handles: 'unhandledRejection', then, unhandled, an
+// uncaught exception: the reason if it is an error (it has its own stack),
+// else Node's UnhandledPromiseRejection.
+function __nimbusUnhandledRejection(reason, promise) {
+  let handled;
+  try {
+    handled = __processEvents.emit("unhandledRejection", reason, promise);
+  } catch (thrown) {
+    __nimbusUncaughtException(thrown, false);
     return;
   }
-  const label = kind === "rejection"
-    ? "Unhandled promise rejection: "
-    : "Uncaught exception: ";
-  const line = label + __nimbusRuntimeErrorTrace(error) + "\\n";
-  stderr += line;
-  if (__supervisor && typeof __supervisor.stderr === "function") {
-    try { __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(line)), () => undefined).catch(() => {}); } catch {}
-  }
-  __nimbusReportProcessExit(1, line);
+  if (handled) return;
+  const errorLike = typeof reason === "object" && reason !== null && Object.hasOwn(reason, "stack");
+  __nimbusUncaughtException(errorLike ? reason : new __NimbusUnhandledPromiseRejection(reason), true);
 }
 
 if (typeof globalThis.addEventListener === "function") {
   globalThis.addEventListener("unhandledrejection", (event) => {
     const reason = event && typeof event === "object" && "reason" in event ? event.reason : event;
     const promise = event && typeof event === "object" && "promise" in event ? event.promise : undefined;
-    let handled = false;
-    try { handled = __processEvents.emit("unhandledRejection", reason, promise); } catch {}
-    if (!handled) __nimbusFailUnhandledAsync(reason, "rejection");
+    __nimbusUnhandledRejection(reason, promise);
     try { event.preventDefault?.(); } catch {}
   });
   globalThis.addEventListener("error", (event) => {
-    const error = event && typeof event === "object" && "error" in event ? event.error : event;
-    let handled = false;
-    try { handled = __processEvents.emit("uncaughtException", error); } catch {}
-    if (!handled) __nimbusFailUnhandledAsync(error, "exception");
+    __nimbusUncaughtException(event && typeof event === "object" && "error" in event ? event.error : event);
     try { event.preventDefault?.(); } catch {}
   });
 }
@@ -9722,11 +10622,8 @@ builtins.net = (() => {
       this.remotePort = port;
       const self = this;
       queueMicrotask(() => {
-        const err = new Error(
-          "net.Socket: outbound TCP from Nimbus facet not yet supported. " +
-          "Use fetch() for HTTP/HTTPS. (W8 will route via supervisor RPC.)"
-        );
-        err.code = "ERR_NET_SOCKET_NOT_AVAILABLE";
+        const err = nodeError(Error, "ERR_NET_SOCKET_NOT_AVAILABLE", "net.Socket: outbound TCP from Nimbus facet not yet supported. " +
+          "Use fetch() for HTTP/HTTPS. (W8 will route via supervisor RPC.)");
         self.destroyed = true;
         self.emit("error", err);
         if (cb) cb(err);
@@ -9768,8 +10665,7 @@ builtins.dgram = (() => {
   class Socket extends __eventsMod {
     constructor(opts) { super(); this.type = (opts && opts.type) || (typeof opts === "string" ? opts : "udp4"); }
     bind(_port, _addr, cb) {
-      const err = new Error("UDP sockets are not supported in this runtime");
-      err.code = "ERR_SOCKET_BAD_PORT";
+      const err = nodeError(Error, "ERR_SOCKET_BAD_PORT", "UDP sockets are not supported in this runtime");
       queueMicrotask(() => this.emit("error", err));
       if (typeof cb === "function") queueMicrotask(cb);
       return this;
@@ -9800,8 +10696,8 @@ builtins.tty = {
     constructor() { super(); this.isTTY = __nimbusAttachedTty; }
     get columns() { return __nimbusTtyColumns; }
     get rows() { return __nimbusTtyRows; }
-    getColorDepth() { return __nimbusAttachedTty ? 24 : 1; }
-    hasColors() { return __nimbusAttachedTty; }
+    getColorDepth(env) { return __nimbusColorDepth(env); }
+    hasColors(count, env) { return __nimbusHasColors(count, env); }
     clearLine(dir, cb) { return __nimbusClearLine(this, dir, cb); }
     clearScreenDown(cb) { return __nimbusClearScreenDown(this, cb); }
     cursorTo(x, y, cb) { return __nimbusCursorTo(this, x, y, cb); }
@@ -9838,9 +10734,9 @@ function __NodeModule(id = "", parent) {
 }
 __NodeModule.prototype.require = function require(request) {
   if (typeof request !== "string" || request === "") {
-    const e = new TypeError('The "id" argument must be of type string. Received ' + (request === "" ? "''" : typeof request));
-    e.code = request === "" ? "ERR_INVALID_ARG_VALUE" : "ERR_INVALID_ARG_TYPE";
-    throw e;
+    throw request === ""
+      ? nodeError(TypeError, "ERR_INVALID_ARG_VALUE", "The argument 'id' must be a non-empty string. Received ''")
+      : invalidArgType("id", "string", request);
   }
   return __requireFrom(request, __pathMod.dirname(this.filename || this.id || (cwd || "/home/user") + "/[module]").replace(/^\\/+/, ""));
 };
@@ -9857,8 +10753,7 @@ __NodeModule.prototype._compile = function _compile(content, filename) {
       wrapper = Function("exports", "require", "module", "__filename", "__dirname", text);
     } catch (e) {
       if (__nimbusIsCodegenRefusal(e)) {
-        const err = new Error("Nimbus: Module._compile(" + file + "): a Worker compiles code only while a launch's modules load, and this text arrived after launch.");
-        err.code = "ERR_NIMBUS_CODE_NEXT_LAUNCH";
+        const err = nodeError(Error, "ERR_NIMBUS_CODE_NEXT_LAUNCH", "Nimbus: Module._compile(" + file + "): a Worker compiles code only while a launch's modules load, and this text arrived after launch.");
         throw err;
       }
       throw e;
@@ -9918,6 +10813,10 @@ __NodeModule._resolveFilename = (request, parent) => {
 };
 __NodeModule._load = (request, parent) => (parent instanceof __NodeModule ? parent.require(request) : __require(request));
 __NodeModule.Module = __NodeModule;
+__NodeModule.SourceMap = __NimbusSourceMap;
+__NodeModule.findSourceMap = function findSourceMap(sourceURL) { return __nimbusFindSourceMap(sourceURL); };
+__NodeModule.getSourceMapsSupport = function getSourceMapsSupport() { return __nimbusSourceMapsSupport; };
+__NodeModule.setSourceMapsSupport = function setSourceMapsSupport(enabled, options = {}) { __nimbusSetSourceMapsSupport(enabled, options); };
 Object.defineProperty(__NodeModule, "name", { value: "Module" });
 builtins.module = __NodeModule;
 // Bind to globalThis: workerd's timer globals throw "Illegal invocation"
@@ -9978,8 +10877,7 @@ builtins.zlib = (() => {
     return __BufferMod.from(_concat(chunks));
   }
   function _syncRefusal(name, asyncName) {
-    const e = new Error("zlib." + name + ": synchronous compression is not available on this runtime (no native node:zlib in scope). Use the async zlib." + asyncName + "(data, callback) form.");
-    e.code = "ERR_ZLIB_SYNC_UNAVAILABLE";
+    const e = nodeError(Error, "ERR_ZLIB_SYNC_UNAVAILABLE", "zlib." + name + ": synchronous compression is not available on this runtime (no native node:zlib in scope). Use the async zlib." + asyncName + "(data, callback) form.");
     throw e;
   }
   // Node accepts strings, ArrayBuffers, and any ArrayBufferView; one funnel
@@ -10017,19 +10915,7 @@ builtins.zlib = (() => {
   }
   function _decompressFailure(e) { return _isUnexpectedEnd(e) ? _zbuf(e) : _zdata(e); }
   function _destroyedWrite() {
-    const e = new Error("Cannot call write after a stream was destroyed");
-    e.code = "ERR_STREAM_DESTROYED";
-    return e;
-  }
-  // Node throws synchronously rather than deferring a callback that is not
-  // there; this surface has no promise form to fall back on.
-  function _invalidCallback(v) {
-    const got = v === undefined ? "undefined"
-      : v === null ? "null"
-      : typeof v === "object" ? "an instance of " + ((v.constructor && v.constructor.name) || "Object")
-      : "type " + typeof v + " (" + String(v) + ")";
-    const e = new TypeError('The "callback" argument must be of type function. Received ' + got);
-    e.code = "ERR_INVALID_ARG_TYPE";
+    const e = nodeError(Error, "ERR_STREAM_DESTROYED", "Cannot call write after a stream was destroyed");
     return e;
   }
   // Node's Unzip contract sniffs the wrapper itself: gzip magic or zlib.
@@ -10049,7 +10935,9 @@ builtins.zlib = (() => {
   function _async(mode, fmt) {
     return (d, o, cb) => {
       const callback = typeof o === "function" ? o : cb;
-      if (typeof callback !== "function") throw _invalidCallback(callback);
+      // Node throws synchronously rather than deferring a callback that is
+      // not there; this surface has no promise form to fall back on.
+      if (typeof callback !== "function") throw invalidArgType("callback", "function", callback);
       // Two arms, not .then().catch(): a callback that throws on success must
       // not be handed its own exception as a second, failed invocation.
       _process(mode, fmt, _u8(d)).then(
@@ -10403,15 +11291,13 @@ const __BroadcastChannel = (() => {
   const open = new Map();
   const state = new WeakMap();
   const missing = (name) => {
-    const error = new TypeError('The "' + name + '" argument must be specified');
-    error.code = "ERR_MISSING_ARGS";
+    const error = nodeError(TypeError, "ERR_MISSING_ARGS", 'The "' + name + '" argument must be specified');
     return error;
   };
   const own = (channel) => {
     const s = state.get(channel);
     if (s === undefined) {
-      const error = new TypeError('Value of "this" must be of type BroadcastChannel');
-      error.code = "ERR_INVALID_THIS";
+      const error = nodeError(TypeError, "ERR_INVALID_THIS", 'Value of "this" must be of type BroadcastChannel');
       throw error;
     }
     return s;
@@ -10650,14 +11536,6 @@ builtins["node:timers/promises"] = builtins["timers/promises"];
 builtins["dns/promises"] = builtins.dns.promises;
 builtins["node:dns/promises"] = builtins["dns/promises"];
 
-// X.5-Q: util/types subpath registration for jsdom's bundled undici.
-// undici@7.x calls require('node:util/types').{isUint8Array,isArrayBuffer}
-// directly from lib/web/fetch/util.js + body.js + websocket/websocket.js.
-// __requireFrom matches keys exactly; pre-fix the only exposure was
-// builtins.util.types (object property of parent util shim), so the
-// subpath missed. Mirror the dns/promises (M-2) pattern. The
-// builtins.util.types object is the X.5-Q-expanded 17-method polyfill
-// (see line 707), sufficient for undici@7.25.0 + undici@8.2.0.
 builtins["util/types"] = builtins.util.types;
 builtins["node:util/types"] = builtins["util/types"];
 
@@ -10669,6 +11547,113 @@ builtins["node:util/types"] = builtins["util/types"];
 // skips it via the same FACET_PROVIDED_PACKAGES list.
 builtins.undici = __undiciMod;
 
+// ── The builtins workerd provides: their errors, Node's ──
+// workerd's own builtins (src/node/internal/internal_errors.ts) fail with
+// its NodeError: an error with its code and its name as own properties, a
+// toString of its own (TypeError, RangeError) or its class's, and a stack
+// headed \`TypeError: …\`, not Node's \`TypeError [CODE]: …\`. Where such an
+// error leaves a builtin — thrown, a rejection, a callback's first argument
+// — it takes Node's shape in place (node-error.ts reshapeAsNodeError):
+// Node's class for its base and code, \`code\` its one own enumerable
+// property, its stack headed with the code. What the builtins say and which
+// they throw is theirs (node-builtin-errors-match-node-workerd records
+// where that differs from Node). Named limit: the methods of a Buffer, an
+// EventEmitter or an AsyncLocalStorage, hot paths a wrapper would slow
+// (measured 9x on readUInt8), keep workerd's shape.
+function __nimbusIsWorkerdNodeError(e) {
+  if (e === null || typeof e !== "object" || !__realUtil.types.isNativeError(e)) return false;
+  const code = Object.getOwnPropertyDescriptor(e, "code");
+  const name = Object.getOwnPropertyDescriptor(e, "name");
+  if (!code || !name || typeof code.value !== "string" || typeof name.value !== "string") return false;
+  for (let o = e; o !== null && o !== Error.prototype; o = Object.getPrototypeOf(o)) {
+    const toString = Object.getOwnPropertyDescriptor(o, "toString");
+    if (!toString || typeof toString.value !== "function") continue;
+    const text = Function.prototype.toString.call(toString.value);
+    return text.includes("this.code") && text.includes("this.name");
+  }
+  return false;
+}
+function __nimbusNodeShaped(e) {
+  if (!__nimbusIsWorkerdNodeError(e)) return e;
+  const Base = e instanceof TypeError ? TypeError : e instanceof RangeError ? RangeError
+    : e instanceof SyntaxError ? SyntaxError : e instanceof URIError ? URIError : Error;
+  return reshapeAsNodeError(e, Base, e.code);
+}
+// \`fn\`, its errors Node's; \`callbacks\`: a last function argument is a
+// callback, whose first argument is the error.
+function __nimbusNodeErrorsOf(fn, callbacks) {
+  const shaped = function (...args) {
+    const last = args.length - 1;
+    if (callbacks && last >= 0 && typeof args[last] === "function") {
+      const callback = args[last];
+      args[last] = function (...results) {
+        if (results.length > 0) __nimbusNodeShaped(results[0]);
+        return __nimbusReflectApply(callback, this, results);
+      };
+    }
+    let result;
+    try {
+      result = __nimbusReflectApply(fn, this, args);
+    } catch (e) {
+      throw __nimbusNodeShaped(e);
+    }
+    return result instanceof Promise ? result.then(undefined, (e) => { throw __nimbusNodeShaped(e); }) : result;
+  };
+  Object.defineProperty(shaped, "name", { value: fn.name, configurable: true });
+  Object.defineProperty(shaped, "length", { value: fn.length, configurable: true });
+  return shaped;
+}
+// A class, its constructor's errors Node's (its statics and prototype
+// reached through, so \`instanceof\` and subclassing hold), and with
+// \`prototypes\` its methods'.
+function __nimbusNodeErrorsOfClass(C, prototypes) {
+  if (prototypes && C.prototype) {
+    for (const key of Object.getOwnPropertyNames(C.prototype)) {
+      const d = Object.getOwnPropertyDescriptor(C.prototype, key);
+      if (key === "constructor" || !d || typeof d.value !== "function" || !d.configurable) continue;
+      Object.defineProperty(C.prototype, key, { ...d, value: __nimbusNodeErrorsOf(d.value, false) });
+    }
+  }
+  const construct = Reflect.construct;
+  return new Proxy(C, {
+    construct(target, args, newTarget) {
+      try { return construct(target, args, newTarget); } catch (e) { throw __nimbusNodeShaped(e); }
+    },
+    apply(target, self, args) {
+      try { return __nimbusReflectApply(target, self, args); } catch (e) { throw __nimbusNodeShaped(e); }
+    },
+  });
+}
+// A module's functions and classes with their errors Node's: a copy of it,
+// or with \`inPlace\` (a class that is the module) its own functions
+// replaced. A global (URL, Blob, Buffer) stays itself.
+function __nimbusNodeErrorsAt(mod, { callbacks = false, prototypes = false, inPlace = false } = {}) {
+  if (mod === null || (typeof mod !== "object" && typeof mod !== "function")) return mod;
+  const target = inPlace ? mod : Object.create(Object.getPrototypeOf(mod));
+  for (const key of Reflect.ownKeys(mod)) {
+    const d = Object.getOwnPropertyDescriptor(mod, key);
+    if (!d) continue;
+    const v = d.value;
+    if (v === mod && !inPlace) {
+      // A module that names itself (default, posix) names its copy.
+      Object.defineProperty(target, key, { ...d, value: target });
+    } else if (typeof key === "string" && typeof v === "function" && globalThis[key] !== v && v !== mod) {
+      const isClass = /^[A-Z]/.test(key) && typeof v.prototype === "object" && v.prototype !== null;
+      if (isClass && inPlace) continue;
+      if (inPlace && !d.configurable && !d.writable) continue;
+      Object.defineProperty(target, key, { ...d, value: isClass ? __nimbusNodeErrorsOfClass(v, prototypes) : __nimbusNodeErrorsOf(v, callbacks) });
+    } else if (!inPlace) {
+      Object.defineProperty(target, key, d);
+    }
+  }
+  return target;
+}
+// Those whose functions throw workerd's NodeError (node-builtin-errors-match-node-workerd).
+for (const name of ["zlib", "crypto"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name], { callbacks: true, prototypes: true });
+for (const name of ["url", "path", "vm"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name]);
+__nimbusNodeErrorsAt(builtins.events, { inPlace: true });
+__nimbusNodeErrorsAt(__BufferMod, { inPlace: true });
+
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────
 // ═══════════════════════════════════════════════════════════════════════
@@ -10678,6 +11663,60 @@ const __moduleCache = new Map();
 const __moduleEvaluations = new Map();
 // package → why the package ABI policy says it cannot run here (wasm-swap-registry.ts).
 const __nimbusAbiAdvisories = new Map(${ABI_ADVISORIES_LITERAL});
+
+// An ES module's scope binds none of CommonJS's names (module-format.ts
+// ES_MODULE_UNBOUND_NAMES): a lowered ES module reads, calls and assigns each
+// of them through this object's accessors, which throw the ReferenceError V8
+// throws for a name bound nowhere, from the module's own frame. \`typeof\` of
+// one is lowered to 'undefined', as V8's is.
+const __nimbusCommonJSGlobalLike = ${JSON.stringify([...COMMONJS_WRAPPER_NAMES])};
+Object.defineProperty(globalThis, ${JSON.stringify(ES_MODULE_SCOPE_GLOBAL)}, { configurable: true, value: Object.freeze(Object.create(null, Object.fromEntries(
+  __nimbusCommonJSGlobalLike.map((name) => {
+    const unbound = function () {
+      const error = new ReferenceError(name + " is not defined");
+      Error.captureStackTrace(error, unbound);
+      throw error;
+    };
+    return [name, { get: unbound, set: unbound }];
+  }),
+))) });
+
+// The errors __nimbusExplainCommonJSGlobalLike has explained.
+const __nimbusExplained = new WeakSet();
+function __nimbusIsCommonJSGlobalLikeError(e) {
+  return e !== null && typeof e === "object" && (__nimbusExplained.has(e)
+    || (e.name === "ReferenceError" && __nimbusCommonJSGlobalLike.some((name) => e.message === name + " is not defined")));
+}
+
+// Node's explainCommonJSGlobalLikeNotDefinedError (lib/internal/modules/esm/
+// module_job.js, v22.22.3): what a ReferenceError for a CommonJS name says
+// once it escapes the evaluation of an ES module job the loader ran: a
+// program's ES entry, an import(), a require() of an ES module. \`url\` and
+// \`hasTopLevelAwait\` are the job's module's. Thrown anywhere else (in a
+// callback, or caught inside the module) it says what V8 says.
+function __nimbusExplainCommonJSGlobalLike(e, url, hasTopLevelAwait) {
+  if (e?.name === "ReferenceError" && __nimbusCommonJSGlobalLike.some((name) => e.message === name + " is not defined")) {
+    __nimbusExplained.add(e);
+    // The stack Node's error prints was formatted after this, with the
+    // message as it ends; one formatted already leads with it too.
+    const header = e.name + ": " + e.message;
+    const stack = e.stack;
+    if (hasTopLevelAwait) {
+      e.message = "Cannot determine intended module format because both require() and top-level await are present. If the code is intended to be CommonJS, wrap await in an async function. If the code is intended to be an ES module, replace require() with import.";
+      e.code = "ERR_AMBIGUOUS_MODULE_SYNTAX";
+    } else {
+      e.message += " in ES module scope";
+      if (e.message.startsWith("require ")) e.message += ", you can use import instead";
+      const packageConfig = url.startsWith("file://") && /\\.js(\\?[^#]*)?(#.*)?$/.exec(url) !== null
+        && __esmResolver.packageScopeSync(url);
+      if (packageConfig.type === "module") {
+        e.message += "\\nThis file is being treated as an ES module because it has a '.js' file extension and '"
+          + packageConfig.pjsonPath + "' contains \\"type\\": \\"module\\". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.";
+      }
+    }
+    if (typeof stack === "string" && stack.startsWith(header)) e.stack = e.name + ": " + e.message + stack.slice(header.length);
+  }
+}
 
 /**
  * Direct VFS bundle access for module resolution.
@@ -11076,7 +12115,11 @@ function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filen
   });
 }
 
-function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
+// Errors a known Workers-incompatible package's load threw, advised once.
+const __nimbusAdvised = new WeakSet();
+// \`required\`: loaded by a require() call, not by an ES module's static
+// import, which the lowering makes a call of the module's own require.
+function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true) {
   if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\\/+/, ""));
   if (__moduleCache.has(evaluationKey)) return __moduleCache.get(evaluationKey);
 
@@ -11094,7 +12137,10 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
 
   // JS — the cell's wrapper, called with a scoped require
   const modDir = resolvedPath.includes("/") ? resolvedPath.substring(0, resolvedPath.lastIndexOf("/")) : ".";
-  const scopedRequire = (id) => __requireFrom(id, modDir);
+  // A lowered ES module calls its require for its static imports only: it
+  // has no require of its own (module-format.ts ES_MODULE_UNBOUND_NAMES).
+  const esModule = __nimbusModuleCellIsEsModule(resolvedPath.replace(/^\\/+/, ""));
+  const scopedRequire = (id) => __requireFrom(id, modDir, !esModule);
   scopedRequire.resolve = (id) => {
     const r = __resolveFrom(id, modDir);
     if (!r) throw new Error("Cannot resolve '" + id + "'");
@@ -11116,7 +12162,9 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
   Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta("/" + resolvedPath, moduleUrl) });
   try {
     const normalizedPath = resolvedPath.replace(/^\\/+/, "");
+    __nimbusLoadsTypeScript(normalizedPath);
     let cell = __nimbusModuleCell(normalizedPath);
+    let compiledText = null;
     if (!cell) {
       // Not in the launch's map: written after it started, or not reached by
       // its closure. Kept apart from the read ledger, which settles reads. By
@@ -11129,26 +12177,39 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
       const text = __readFileOr(resolvedPath, null);
       if (text === null) throw new Error("Cannot load module '" + resolvedPath + "': it was not in this launch's module map; the next launch of the same command stages it.");
       cell = __nimbusRuntimeModule(normalizedPath, text);
+      compiledText = text;
       globalThis.__nimbusModuleMisses.delete(normalizedPath);
     }
-    const evaluation = cell(mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir);
+    __nimbusCompiling("/" + normalizedPath, () => compiledText ?? __nimbusModuleSourceText(__nimbusModuleAtPath(normalizedPath)));
+    // A CommonJS module's \`this\` is its exports, as Node calls its wrapper.
+    const evaluation = __nimbusReflectApply(cell, esModule ? undefined : mod.exports, [mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir]);
     // A module with top-level await completes later. require() returns its
     // exports now (static imports lowered to require cannot wait); import()
     // waits for it (__esmLoad).
     if (evaluation && typeof evaluation.then === "function") __moduleEvaluations.set(evaluationKey, evaluation);
   } catch (e) {
     __moduleCache.delete(evaluationKey);
-    if (e && typeof e === "object" && !e.__nimbusModulePath) {
+    // A ReferenceError for a CommonJS name is the module loader's to explain
+    // where it leaves an ES module's job, and nothing else's: a require() of
+    // an ES module is that module's job (Node's ModuleJobSync).
+    if (__nimbusIsCommonJSGlobalLikeError(e)) {
+      if (required && esModule) __nimbusExplainCommonJSGlobalLike(e, moduleUrl, false);
+      throw e;
+    }
+    // What escapes a module is the program's own error, as Node leaves it;
+    // only a package Nimbus knows has no Workers build says so, once.
+    if (e && typeof e === "object" && !__nimbusAdvised.has(e)) {
       try {
-        Object.defineProperty(e, "__nimbusModulePath", { value: resolvedPath, configurable: true, writable: true });
         const at = resolvedPath.lastIndexOf("node_modules/");
         const parts = at < 0 ? [] : resolvedPath.slice(at + 13).split("/");
         const pkg = parts[0] && parts[0].startsWith("@") ? parts[0] + "/" + parts[1] : parts[0];
         const advisory = pkg ? __nimbusAbiAdvisories.get(pkg) : undefined;
-        const note = "\\nNimbus module: " + resolvedPath
-          + (advisory ? "\\nNimbus: " + pkg + " has no Workers-compatible build: " + advisory : "");
-        if (typeof e.message === "string") e.message += note;
-        if (typeof e.stack === "string" && !e.stack.includes("Nimbus module:")) e.stack += note;
+        if (advisory) {
+          __nimbusAdvised.add(e);
+          const note = "\\nNimbus: " + pkg + " has no Workers-compatible build: " + advisory;
+          if (typeof e.message === "string") e.message += note;
+          if (typeof e.stack === "string") e.stack += note;
+        }
       } catch {}
     }
     throw e;
@@ -11262,7 +12323,7 @@ const __esmResolver = createEsmResolver({
       return found ? "/" + String(found).replace(/^\\/+/, "") : null;
     } catch { return null; }
   },
-}, { conditions: __nimbusConditions });
+}, { conditions: __nimbusConditions, stripTypes: !__nimbusTypeScriptAsJavaScript });
 const __esmNamespaces = new Map();
 /** A module namespace: its names sorted, read through to the exports. */
 function __esmNamespaceOf(names, read) {
@@ -11272,6 +12333,13 @@ function __esmNamespaceOf(names, read) {
   }
   Object.defineProperty(ns, Symbol.toStringTag, { value: "Module" });
   return Object.preventExtensions(ns);
+}
+// Node's defaultLoad: a module the ES loader has no job for must have a format.
+// Its jobs are keyed by URL and attribute type; only an implicit-type one can
+// have been loaded without a format (by require(esm)).
+function __nimbusAssertLoadable(resolution, type) {
+  if (type === undefined && (__esmNamespaces.has(resolution.url) || __nimbusEsmJobCached(resolution.path))) return;
+  __esmResolver.assertLoadable(resolution);
 }
 function __esmLoad(resolution) {
   const cached = __esmNamespaces.get(resolution.url);
@@ -11305,30 +12373,50 @@ function __esmLoad(resolution) {
       } });
       const requireData = (id) => {
         const resolved = __esmResolver.resolveSync(String(id), resolution.url);
+        __esmResolver.assertLoadable(resolved);
         if (resolved.format === "builtin") return __requireFrom("node:" + resolved.builtin, "");
         if (resolved.path) return __loadModule(resolved.path.replace(/^\\/+/, ""), resolved.url);
-        throw Object.assign(new Error("Synchronous nested data-module import is unsupported"), { code: "ERR_REQUIRE_ASYNC_MODULE" });
+        throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "Synchronous nested data-module import is unsupported");
       };
-      const result = cell(mod.exports, requireData, mod, undefined, undefined);
+      let result;
+      try {
+        result = cell(mod.exports, requireData, mod, undefined, undefined);
+      } catch (e) {
+        __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
+        throw e;
+      }
       const namespace = () => __esmNamespaceOf(Object.keys(mod.exports).filter((n) => n !== "__esModule"), (n) => mod.exports[n]);
       if (result && typeof result.then === "function") {
-        const pending = result.then(namespace, (error) => { __esmNamespaces.delete(resolution.url); throw error; });
+        const pending = result.then(namespace, (error) => {
+          __esmNamespaces.delete(resolution.url);
+          __nimbusExplainCommonJSGlobalLike(error, resolution.url, true);
+          throw error;
+        });
         __esmNamespaces.set(resolution.url, pending);
         return pending;
       }
       ns = namespace();
     } else {
-      throw Object.assign(new TypeError("Unsupported data module MIME type: " + mediaType), { code: "ERR_UNKNOWN_MODULE_FORMAT" });
+      throw nodeError(TypeError, "ERR_UNKNOWN_MODULE_FORMAT", "Unsupported data module MIME type: " + mediaType);
     }
   } else {
     const key = resolution.path.replace(/^\\/+/, "");
+    // A typeless .js is the ES module the launch lowered, by its syntax.
     const esm = resolution.format === "module"
-      || (resolution.format === "detect" && globalThis.__nimbusEsmModules && globalThis.__nimbusEsmModules.has(key));
+      || (resolution.format === "detect" && __nimbusModuleCellIsEsModule(key));
     // Canonical queryless ESM shares evaluation with require() and static
     // imports lowered to require(). Queries/fragments are distinct jobs.
     const variant = esm && (resolution.url.includes("?") || resolution.url.includes("#"));
     const evaluationKey = variant ? resolution.url : key;
-    const exports = __loadModule(key, evaluationKey);
+    // The import is the module's job: what escapes its evaluation is
+    // explained as Node's loader explains it.
+    let exports;
+    try {
+      exports = __loadModule(key, evaluationKey, false);
+    } catch (e) {
+      __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
+      throw e;
+    }
     const namespace = () => {
       if (resolution.format === "json") return __esmNamespaceOf(["default"], () => exports);
       if (esm) {
@@ -11347,7 +12435,11 @@ function __esmLoad(resolution) {
     // completes, and rejects with what it throws.
     const evaluation = __moduleEvaluations.get(evaluationKey);
     if (evaluation !== undefined) {
-      const pending = evaluation.then(namespace, (error) => { __esmNamespaces.delete(resolution.url); throw error; });
+      const pending = evaluation.then(namespace, (error) => {
+        __esmNamespaces.delete(resolution.url);
+        __nimbusExplainCommonJSGlobalLike(error, resolution.url, true);
+        throw error;
+      });
       __esmNamespaces.set(resolution.url, pending);
       return pending;
     }
@@ -11356,6 +12448,11 @@ function __esmLoad(resolution) {
   __esmNamespaces.set(resolution.url, ns);
   return ns;
 }
+// A bundled copy of a package the runtime provides, bound to the runtime's
+// (provided-packages.ts rewriteProvidedCommonJsModules, PROVIDED_PACKAGE_HOOK):
+// what require() serves for it, from any module, an ES module included.
+globalThis.__nimbusProvidedPackage = (name) => __require(name);
+
 // import() may reach installed files the launch did not stage. A launch's
 // store holds its closure and its data plan; anything else on disk is named
 // by the namespace but not held, and the synchronous load that import()
@@ -11387,9 +12484,8 @@ function __nimbusPrefetchQuota(specifier, limits) {
   let bytes = 0;
   let error = null;
   const exceed = (what) => {
-    error = new Error("import() of '" + specifier + "' would fetch more than " + what
+    error = nodeError(Error, "ERR_NIMBUS_PREFETCH_BOUND", "import() of '" + specifier + "' would fetch more than " + what
       + " ahead (the bound on one import()'s prefetch); it is not loaded on a closure fetched in part");
-    error.code = "ERR_NIMBUS_PREFETCH_BOUND";
     return false;
   };
   return {
@@ -11438,15 +12534,13 @@ async function __nimbusHydrated(step, quota) {
     }
     const given = [...speculation.misses].filter((k) => !speculation.issued.has(k));
     if (given.length > 0) {
-      const unread = new Error("import() prefetch: could not fetch " + given.slice(0, 3).map((k) => "/" + k).join(", ")
+      const unread = nodeError(Error, "ERR_NIMBUS_PREFETCH_UNREADABLE", "import() prefetch: could not fetch " + given.slice(0, 3).map((k) => "/" + k).join(", ")
         + (given.length > 3 ? " and " + (given.length - 3) + " more" : "") + "; its fetches did not land");
-      unread.code = "ERR_NIMBUS_PREFETCH_UNREADABLE";
       throw unread;
     }
     if (round >= __IMPORT_HYDRATE_ROUNDS) {
-      const bound = new Error("import() prefetch: a resolution still misses after " + __IMPORT_HYDRATE_ROUNDS + " rounds of fetching ("
+      const bound = nodeError(Error, "ERR_NIMBUS_PREFETCH_BOUND", "import() prefetch: a resolution still misses after " + __IMPORT_HYDRATE_ROUNDS + " rounds of fetching ("
         + [...speculation.misses].slice(0, 3).join(", ") + ")");
-      bound.code = "ERR_NIMBUS_PREFETCH_BOUND";
       throw bound;
     }
   }
@@ -11569,6 +12663,8 @@ globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, spe
     // Counted as the program's own work: a floating import(...).then(...) keeps
     // the process while it fetches, as Node's loader keeps it while it reads.
     const resolution = await __nimbusTrackOp(__nimbusStageImport(text, parentUrl));
+    // Loaded, then checked against its attributes, as Node's loader does.
+    __nimbusAssertLoadable(resolution, attributes.type);
     __esmResolver.validateAttributes(resolution.url, resolution.format, attributes);
     return __esmLoad(resolution);
   });
@@ -11609,11 +12705,12 @@ globalThis.__nimbusImportMetaResolve = function __nimbusImportMetaResolve(specif
 /**
  * Staged N-API bindings (PACKAGE_ABI_POLICY stagedArtifacts of kind
  * "binding"). A launch whose closure requires one carries the staged wasm
- * build in its module map and registers it on globalThis.__nimbusStagedBindings
- * under the package name the binding is required by. require() answers that
- * name from the registry ahead of node_modules: the published package of that
- * name (rolldown's wasm32-wasip1-threads build, or a platform shard) cannot
- * run in a Worker isolate.
+ * builds of the versions installed in its module map and registers them on
+ * globalThis.__nimbusStagedBindings under the package name the binding is
+ * required by, by version. require() answers that name from the registry
+ * ahead of node_modules, with the build its owner's version names: the
+ * published package of that name (rolldown's wasm32-wasip1-threads build, or
+ * a platform shard) cannot run in a Worker isolate.
  */
 function __stagedBinding(id) {
   const registry = globalThis.__nimbusStagedBindings;
@@ -11621,11 +12718,42 @@ function __stagedBinding(id) {
 }
 
 /**
- * Every binding Nimbus stages, carried or not: a launch registers only those
- * its closure names (staged-bindings.ts stagedBindingsRequiredBy).
+ * Every binding build Nimbus stages, carried or not: a launch registers only
+ * those its closure names (staged-bindings.ts stagedBindingsRequiredBy).
  */
 const __NIMBUS_STAGED_BINDINGS = ${JSON.stringify(STAGED_BINDING_ARTIFACTS.map(({ name, owner, version, requiredAs }) => ({ name, owner, version, requiredAs })))};
 const __stagedBindingsNamed = new Set();
+
+// The version of \`owner\` a require from \`fromDir\` comes from, and its
+// package.json: the installed package \`fromDir\` is in, when its package.json
+// names \`owner\`, whatever its folder is called (an alias,
+// \`rd@npm:rolldown@1.2.13\`, installs rolldown as node_modules/rd). A require
+// from outside the owner has none.
+function __stagedOwnerVersion(owner, fromDir) {
+  const dir = fromDir + "/";
+  const at = dir.lastIndexOf("node_modules/");
+  if (at < 0) return { version: null, manifest: null };
+  const parts = dir.slice(at + "node_modules/".length).split("/");
+  const depth = parts[0].startsWith("@") ? 2 : 1;
+  if (parts.length <= depth || parts[depth - 1] === "") return { version: null, manifest: null };
+  const manifest = "/" + dir.slice(0, at) + "node_modules/" + parts.slice(0, depth).join("/") + "/package.json";
+  let found = null;
+  try { found = JSON.parse(builtins.fs.readFileSync(manifest, "utf8")); } catch {}
+  if (!found || found.name !== owner || typeof found.version !== "string") return { version: null, manifest: null };
+  return { version: found.version, manifest };
+}
+
+// What a require of \`owner\`'s binding from \`owner\`@\`version\` (read from
+// \`manifest\`) has to do when Nimbus stages no build of that version: which
+// versions it does, and how to install one.
+function __stagedVersionUnbuilt(owner, version, manifest) {
+  const versions = __NIMBUS_STAGED_BINDINGS.filter((b) => b.owner === owner).map((b) => b.version);
+  const newest = versions[versions.length - 1];
+  return Object.assign(new Error("Nimbus runs " + owner + "'s N-API binding from staged wasm builds of " + versions.join(", ")
+    + ", and this process loaded " + owner + "@" + version + " (" + manifest + "), which has none yet; no native build loads in a"
+    + " Worker. Install a version Nimbus builds: npm install " + owner + "@" + newest + ", or where another package requires "
+    + owner + ", pin it in package.json (" + '"overrides": { "' + owner + '": "' + newest + '" }' + ")."), { code: "ERR_NIMBUS_BINDING_VERSION" });
+}
 
 /**
  * A require of a staged binding's package (its wasm32-wasi build, or a
@@ -11640,10 +12768,16 @@ const __stagedBindingsNamed = new Set();
 function __stagedBindingNotCarried(id, fromDir) {
   for (const binding of __NIMBUS_STAGED_BINDINGS) {
     const shard = binding.requiredAs.some((wasi) => id === wasi || id.startsWith(wasi.replace(/wasm32-wasi$/, "")));
-    const native = id.endsWith(".node") && ("/" + fromDir + "/").includes("/node_modules/" + binding.owner + "/");
+    const native = id.endsWith(".node") && __stagedOwnerVersion(binding.owner, fromDir).version !== null;
     if (!shard && !native) continue;
     if (binding.requiredAs.some((wasi) => __stagedBinding(wasi))) return null;
-    const message = "Nimbus runs " + binding.owner + "'s N-API binding from a staged " + binding.version + " build, and this launch"
+    // A version with no staged build is the version's to fix, not the launch's.
+    const loaded = __stagedOwnerVersion(binding.owner, fromDir);
+    if (loaded.version !== null && !__NIMBUS_STAGED_BINDINGS.some((b) => b.owner === binding.owner && b.version === loaded.version)) {
+      return __stagedVersionUnbuilt(binding.owner, loaded.version, loaded.manifest);
+    }
+    const versions = __NIMBUS_STAGED_BINDINGS.filter((b) => b.name === binding.name).map((b) => b.version).join(", ");
+    const message = "Nimbus runs " + binding.owner + "'s N-API binding from staged builds of " + versions + ", and this launch"
       + " does not carry it: no module the launch staged names " + binding.requiredAs[0] + " (the package was loaded by a name"
       + " its code computes), so " + id + " was asked for instead, and no native build loads in a Worker. The next launch of"
       + " this command, which learns the modules this one loaded, carries it.";
@@ -11656,25 +12790,28 @@ function __stagedBindingNotCarried(id, fromDir) {
   return null;
 }
 
-function __loadStagedBinding(entry, fromDir) {
-  if (entry.exports !== undefined) return entry.exports;
-  // The binding is built from one upstream version. The package requiring it
-  // must be that version, or its JavaScript and the binding disagree about
-  // every class and option; a require from anywhere else has no version to
-  // check against.
-  const marker = "node_modules/" + entry.owner + "/";
-  const dir = fromDir + "/";
-  const at = dir.lastIndexOf(marker);
-  if (at >= 0) {
-    const manifest = "/" + dir.slice(0, at + marker.length) + "package.json";
-    let version = null;
-    try { version = JSON.parse(builtins.fs.readFileSync(manifest, "utf8")).version; } catch {}
-    if (version !== entry.version) {
-      throw new Error("Nimbus runs " + entry.owner + "'s N-API binding from a staged " + entry.version
-        + " build; this process loaded " + entry.owner + "@" + version + " (" + manifest + "), which it"
-        + " does not match. Install " + entry.owner + "@" + entry.version + ".");
+function __loadStagedBinding(builds, fromDir) {
+  // A build is of one upstream version: the package requiring it must be
+  // that version, or its JavaScript and the binding disagree about every
+  // class and option. So the owner's own package.json picks the build; a
+  // require from outside the owner has no version, and takes the one build
+  // the launch carries.
+  const first = builds.values().next().value;
+  const loaded = __stagedOwnerVersion(first.owner, fromDir);
+  const entry = loaded.version !== null ? builds.get(loaded.version) : builds.size === 1 ? first : undefined;
+  if (entry === undefined) {
+    if (loaded.version === null) {
+      throw new Error("Nimbus carries " + first.owner + "'s N-API binding at " + [...builds.keys()].join(", ")
+        + ", and this require of it comes from outside " + first.owner + " (" + fromDir + "), so no version says which.");
     }
+    if (!__NIMBUS_STAGED_BINDINGS.some((b) => b.owner === first.owner && b.version === loaded.version)) {
+      throw __stagedVersionUnbuilt(first.owner, loaded.version, loaded.manifest);
+    }
+    throw new Error("Nimbus runs " + first.owner + "'s N-API binding from staged builds, and this launch carries "
+      + [...builds.keys()].join(", ") + ", not " + loaded.version + ", which this process loaded (" + loaded.manifest
+      + "). The next launch of this command, which learns the modules this one loaded, carries it.");
   }
+  if (entry.exports !== undefined) return entry.exports;
   entry.exports = entry.create({
     fs: builtins.fs,
     env: builtins.process.env,
@@ -11688,7 +12825,14 @@ function __loadStagedBinding(entry, fromDir) {
  * require() from a specific directory context.
  * This is what each loaded module gets as its require function.
  */
-function __requireFrom(id, fromDir) {
+// Whether the ES loader has the module at \`path\`: an ES module require() loaded
+// (require(esm)), whose job it keeps. A CommonJS module require() loaded is no job of its.
+function __nimbusEsmJobCached(path) {
+  if (typeof path !== "string") return false;
+  const key = path.replace(/^\\/+/, "");
+  return __moduleCache.has(key) && __nimbusModuleCellIsEsModule(key);
+}
+function __requireFrom(id, fromDir, required = true) {
   // Check builtins first (always takes priority)
   if (builtins[id]) return builtins[id];
   if (id.startsWith("node:")) {
@@ -11702,8 +12846,16 @@ function __requireFrom(id, fromDir) {
 
   const resolved = __resolveFrom(id, fromDir);
   if (!resolved) throw new Error("Cannot find module '" + id + "' (from " + fromDir + ")");
-
-  return __loadModule(resolved);
+  // An ES module's static import is the ES loader's, which refuses it before the importer runs: no arrow of the importer's.
+  if (!required && __nimbusTypeScriptAsJavaScript && stripsTypeScript(resolved) && !__nimbusEsmJobCached(resolved)) {
+    try {
+      __esmResolver.assertLoadable({ format: "unknown", path: "/" + String(resolved).replace(/^\\/+/, "") });
+    } catch (error) {
+      __nimbusDecorated.add(error);
+      throw error;
+    }
+  }
+  return __loadModule(resolved, resolved, required);
 }
 
 function __requireBaseDir(specifier) {
@@ -11736,6 +12888,36 @@ function __makeRequire(fromDir) {
  */
 function __require(id) {
   return __requireFrom(id, dirname || cwd || "/home/user");
+}
+// An ES entry's own require: its static imports, part of its job.
+function __nimbusEntryImport(id) {
+  return __requireFrom(id, dirname || cwd || "/home/user", false);
+}
+// The program's entry evaluated as Node's loader runs it (manager.ts
+// entryModule): a CommonJS entry with require(); an ES entry as a job of its
+// own, its require its static imports, and what escapes its evaluation
+// explained (__nimbusExplainCommonJSGlobalLike).
+function __nimbusEvaluateEntry(wrapper, mod, filename, dirname, esModule) {
+  __nimbusLoadsTypeScript(filename);
+  __nimbusCompiling(filename, () => __nimbusModuleSourceText(__nimbusEntryModule()));
+  // A file's \`this\` is its exports, as Node's wrapper is called; -e and
+  // stdin code is a script, whose \`this\` is the global object.
+  if (!esModule) {
+    const self = filename === "<eval>" || filename === "[stdin]" ? globalThis : mod.exports;
+    return __nimbusReflectApply(wrapper, self, [mod.exports, __require, mod, filename, dirname]);
+  }
+  const url = builtins.url.pathToFileURL(filename).href;
+  let result;
+  try {
+    result = wrapper(mod.exports, __nimbusEntryImport, mod, filename, dirname);
+  } catch (e) {
+    __nimbusExplainCommonJSGlobalLike(e, url, false);
+    throw e;
+  }
+  if (result && typeof result.then === "function") {
+    return result.then(undefined, (e) => { __nimbusExplainCommonJSGlobalLike(e, url, true); throw e; });
+  }
+  return result;
 }
 __require.resolve = (id) => {
   if (__stagedBinding(id)) return id;

@@ -39,8 +39,7 @@
 //                           time, for wrangler to drift.
 //
 //   Neither is `nimbus-probe`, the long-lived probe target, nor `nimbus`.
-//   CI deploys its own `nimbus-tw-ci-*` throwaway per run and grades that,
-//   so nothing here is a target a branch should land on.
+//   Use `remote-probes --deploy` for a branch's isolated throwaway.
 //
 // USAGE
 //   export CLOUDFLARE_ACCOUNT_ID=<account>       # account pin, required
@@ -89,6 +88,7 @@ const {
   randomSecret,
   readState,
   requireAccountPin,
+  TargetNotReadyError,
   waitForTarget,
   workersDevSubdomain,
   writeState,
@@ -140,7 +140,13 @@ if (!run) {
   console.error(`usage: bun tests/behavioral/_staging-target.mjs <${Object.keys(COMMANDS).join('|')}> [flags]`);
   process.exit(2);
 }
-await run();
+try {
+  await run();
+} catch (error) {
+  if (!(error instanceof TargetNotReadyError)) throw error;
+  console.error(`readiness: NOT GRADED — ${error.message}`);
+  process.exitCode = error.exitCode;
+}
 
 // ── Commands ─────────────────────────────────────────────────────────
 
@@ -206,7 +212,7 @@ async function up() {
   // The probe target is the one the suite drives, so readiness means "it
   // authenticates", not "it answers".
   const jwt = await mintProbeToken(state.probe.secret, ttlMs());
-  await waitForTarget(probe.base, jwt);
+  await waitForTarget(probe.base, jwt, undefined, probe.versionId);
 
   log(`ready — ${TARGETS.demo.name} ${demo.versionId} / ${TARGETS.probe.name} ${probe.versionId}`);
   process.stdout.write([

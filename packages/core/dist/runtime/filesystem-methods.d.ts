@@ -178,14 +178,6 @@ export declare const FILESYSTEM_METHODS: {
         readonly rpc: "fsFutimes";
         readonly answer: "value";
     };
-    readonly appendOnce: {
-        readonly rpc: "fsAppend";
-        readonly answer: "value";
-    };
-    readonly acknowledgeAppend: {
-        readonly rpc: "fsAppendAck";
-        readonly answer: "value";
-    };
     readonly writeBatch: {
         readonly rpc: "writeBatch";
         readonly answer: "value";
@@ -200,6 +192,14 @@ export declare const FILESYSTEM_METHODS: {
     };
     readonly releaseExclusiveMutation: {
         readonly rpc: "fsReleaseExclusiveMutation";
+        readonly answer: "value";
+    };
+    readonly awaitRecall: {
+        readonly rpc: "fsAwaitRecall";
+        readonly answer: "value";
+    };
+    readonly recalled: {
+        readonly rpc: "fsRecalled";
         readonly answer: "value";
     };
 };

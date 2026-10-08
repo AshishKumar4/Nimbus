@@ -9,6 +9,10 @@
 // invocations and resumed from its stored pack.
 //
 //   - the same objects as host git's clone, and git fsck --full clean;
+//   - its commit-graph, written after it answers: a chain of one layer,
+//     host git's for its clone byte for byte, then that layer with its
+//     changed-path filters, host git's --changed-paths graph, and git
+//     commit-graph verify clean;
 //   - not shallow; HEAD, config, index and worktree as git's;
 //   - every pack's idx equal to git index-pack's for it;
 //   - one blobs request broken off mid-pack and one trees piece that never
@@ -24,11 +28,13 @@ import { join } from 'node:path';
 
 import { startGitHttpServer } from './lib/git-http-server.mjs';
 import { createFacetSession, hostGit as hostGitIn, hostObjects as hostObjectsIn } from './lib/facet-session.mjs';
+import { diffGraphs, referenceGraph } from './lib/commit-graph-reference.mjs';
 
 const work = mkdtempSync(join(tmpdir(), 'nimbus-history-'));
 const hostGit = (cwd, args) => hostGitIn(work, cwd, args);
 const hostObjects = (dir) => hostObjectsIn(work, dir);
-const session = await createFacetSession(work);
+// As the session user: the commit-graph's files are read-only to it, as git makes them.
+const session = await createFacetSession(work, { asUser: true });
 
 try {
   const source = join(work, 'source');
@@ -103,13 +109,34 @@ try {
   // Finish reads only its staged files: no pack or idx (on vscode, ~90 packs, tag lookups there
   // passed the facet's subrequest limit).
   let readsAtFinish = null;
-  session.requests.onPhase = (body) => { if (body.phase === 'clone-finish') readsAtFinish = session.requests.rangeReads.length; };
+  // The changed-path filters the clone leaves running wait until the clone's own checks are done.
+  let readsAtFilters = null;
+  let loadsAtFilters = null;
+  let baseLayer = null;
+  let releaseFilters;
+  const filtersReleased = new Promise((resolve) => { releaseFilters = resolve; });
+  session.requests.onPhase = async (body) => {
+    if (body.phase === 'clone-finish') readsAtFinish = session.requests.rangeReads.length;
+    if (body.op === 'graph-filters') {
+      if (readsAtFilters === null) {
+        readsAtFilters = session.requests.rangeReads.length;
+        loadsAtFilters = session.requests.loads;
+      }
+      await filtersReleased;
+      if (body.graphFilters?.step === 'piece' && baseLayer === null) {
+        const info = session.materialize('home/user/repo/.git/objects/info', join(work, 'base-layer'));
+        const chain = readFileSync(join(info, 'commit-graphs/commit-graph-chain'), 'utf8');
+        baseLayer = { chain, layer: new Uint8Array(readFileSync(join(info, `commit-graphs/graph-${chain.trim()}.graph`))) };
+      }
+    }
+  };
   try {
     const cloned = await session.git('/home/user', ['clone', '--no-shallow', server.url + '/repo.git', 'repo'], {
       NIMBUS_GIT_HISTORY_COMMITS_PER_CHUNK: '7',
       NIMBUS_GIT_HISTORY_BLOBS_PER_BATCH: '15',
       NIMBUS_GIT_HISTORY_BUDGET_UNITS: '200000',
       NIMBUS_GIT_PIECE_TIMEOUT_MS: '2000',
+      NIMBUS_GIT_GRAPH_FILTER_PIECE_COMMITS: '4',
     });
     assert.equal(cloned.code, 0, cloned.stderr);
     const phases = session.requests.phases;
@@ -128,12 +155,37 @@ try {
     const out = session.materialize('home/user/repo', join(work, 'out'));
     assert.deepEqual(hostObjects(out), hostObjects(host), 'the objects git clone holds');
     hostGit(out, ['fsck', '--full', '--no-dangling']);
+    // The commit-graph is written after the clone answers (graph-filters.ts):
+    // none yet, its commits' records kept for it.
+    assert.equal(statSync(join(out, '.git/objects/info/commit-graphs/commit-graph-chain'), { throwIfNoEntry: false }), undefined, 'no graph before the clone answers');
+    assert.ok(readdirSync(join(out, '.git/objects/info/commit-graphs/tmp_records')).length > 0, 'the records are kept');
+    // Then, in the background: the base layer (host git's graph for its own
+    // clone, byte for byte, the chain's one layer), then its changed-path
+    // filters in pieces (4 commits a piece): host git's --changed-paths
+    // graph, the only layer the chain names, and git commit-graph verify clean.
+    releaseFilters();
+    await session.settled();
+    assert.ok(baseLayer !== null, 'the base layer was there when the first piece ran');
+    assert.match(baseLayer.chain, /^[0-9a-f]{40}\n$/, 'a chain of one layer');
+    assert.equal(diffGraphs(referenceGraph(host, { changedPaths: false }), baseLayer.layer), null, 'the base layer is host git\'s');
+    const after = session.materialize('home/user/repo', join(work, 'after'));
+    const filteredChain = readFileSync(join(after, '.git/objects/info/commit-graphs/commit-graph-chain'), 'utf8');
+    assert.notEqual(filteredChain, baseLayer.chain, 'the chain names the filtered layer');
+    assert.deepEqual(readdirSync(join(after, '.git/objects/info/commit-graphs')).sort(), ['commit-graph-chain', `graph-${filteredChain.trim()}.graph`], 'the base layer, the records and the pieces are gone');
+    const filtered = new Uint8Array(readFileSync(join(after, `.git/objects/info/commit-graphs/graph-${filteredChain.trim()}.graph`)));
+    assert.equal(diffGraphs(referenceGraph(host), filtered), null, 'with its changed-path filters, host git\'s --changed-paths graph');
+    hostGit(after, ['commit-graph', 'verify']);
+    const pieces = session.requests.phases.filter((phase) => phase === 'graph-filters').length;
+    assert.ok(pieces > 4, 'the filters ran in pieces: ' + pieces);
+    // One facet for the whole pass: a facet loaded a step deepened each
+    // step's subrequests until the runtime refused one (vscode's fourteenth).
+    assert.equal(session.requests.loads - loadsAtFilters, 0, 'no facet was loaded after the pass\'s first step');
     assert.equal(statSync(join(out, '.git/shallow'), { throwIfNoEntry: false }), undefined, 'not shallow');
     assert.ok(!readdirSync(join(out, '.git')).includes('nimbus-clone'), 'staging removed');
     assert.equal(hostGit(out, ['rev-parse', 'HEAD', 'origin/main']), hostGit(host, ['rev-parse', 'HEAD', 'origin/main']));
     assert.equal(hostGit(out, ['rev-list', '--count', 'HEAD']), hostGit(host, ['rev-list', '--count', 'HEAD']));
     assert.equal(hostGit(out, ['show-ref', '--tags']), hostGit(host, ['show-ref', '--tags']), 'tags');
-    const finishReads = session.requests.rangeReads.slice(readsAtFinish).filter((read) => read.path.includes('/objects/pack/'));
+    const finishReads = session.requests.rangeReads.slice(readsAtFinish, readsAtFilters ?? undefined).filter((read) => read.path.includes('/objects/pack/'));
     assert.deepEqual(finishReads.map((read) => read.path), [], 'finish read packs');
     assert.equal(hostGit(out, ['ls-files', '-s']), hostGit(host, ['ls-files', '-s']));
     const configOf = (dir) => readFileSync(join(dir, '.git/config'), 'utf8').replace(/url = .*/, 'url = X');

@@ -83,6 +83,11 @@ export interface Scope {
 
 const FUNCTIONS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
 
+/** The names a program's top-level statement binds in its scope: its `var`s and its lexical declarations. */
+export function programNames(statement: EsNode): string[] {
+  return [...varNames([statement], false), ...lexicalNames([statement])];
+}
+
 /** The names a list of statements binds lexically: let, const, class, function and import. */
 function* lexicalNames(statements: EsNode[]): Generator<string> {
   for (const statement of statements) {
@@ -111,14 +116,18 @@ function varNames(value: unknown, sloppy: boolean, top = true, names: string[] =
   if (value.type === 'VariableDeclaration' && value.kind === 'var') {
     for (const declarator of list(value, 'declarations')) names.push(...patternNames(child(declarator, 'id')));
   }
-  for (const key in value) if (key !== 'parent') varNames(value[key], sloppy, false, names);
+  for (const key in value) {
+    const field = value[key];
+    if (field !== null && typeof field === 'object' && key !== 'parent') varNames(field, sloppy, false, names);
+  }
   return names;
 }
 
 /**
  * The scope `node`'s children are in, given the one it is in. A function's
- * parameters are in a scope of their own, its body's `var`s in its body's
- * (a parameter's default value does not see them).
+ * parameters are in a scope of their own, with `arguments` unless it is an
+ * arrow, its body's `var`s in its body's (a parameter's default value does
+ * not see them).
  */
 function scopeOf(node: EsNode, scope: Scope, sloppy: boolean, functionBody: boolean): Scope {
   const within = (names: Iterable<string>): Scope => ({ names: new Set(names), parent: scope });
@@ -131,6 +140,7 @@ function scopeOf(node: EsNode, scope: Scope, sloppy: boolean, functionBody: bool
     case 'ArrowFunctionExpression':
       return within([
         ...(node.type === 'FunctionExpression' ? patternNames(child(node, 'id')) : []),
+        ...(node.type === 'ArrowFunctionExpression' ? [] : ['arguments']),
         ...list(node, 'params').flatMap((parameter) => [...patternNames(parameter)]),
       ]);
     case 'BlockStatement':
@@ -189,10 +199,11 @@ export function* scoped(
     const fields = Object.keys(item);
     for (let i = fields.length - 1; i >= 0; i--) {
       const name = fields[i]!;
-      if (name === 'parent') continue;
+      const child = item[name];
+      if (child === null || typeof child !== 'object' || name === 'parent') continue;
       // A switch's discriminant is evaluated before its cases' scope exists.
       const fieldScope = item.type === 'SwitchStatement' && name === 'discriminant' ? at : inner;
-      stack.push([item[name], fieldScope, isFunction && name === 'body', item, name]);
+      stack.push([child, fieldScope, isFunction && name === 'body', item, name]);
     }
   }
 }

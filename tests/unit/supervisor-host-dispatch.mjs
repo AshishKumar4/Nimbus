@@ -8,7 +8,8 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { dec } from '../../packages/core/src/_shared/bytes.ts';
-import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
+import { SupervisorDeliveries, supervisorDeliveredOp, supervisorJoinedReadOp } from '../../packages/core/src/workspace/supervisor-delivery.ts';
+import { SUPERVISOR_OP_TABLE } from '../../packages/core/src/workspace/supervisor-ops.ts';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 // The entrypoint and composeFabric in one graph, so the bundle's composition
@@ -38,28 +39,31 @@ const processes = new SessionProcessSupervisor();
 const pid = processes.spawn('probe', ['probe'], '/').pid;
 const writerId = 'writer';
 // The fs ops mutate, so every one gets its own path — a shared fixture would
-// make the table's order load-bearing.
+// make the table's order load-bearing. Every op presents the lease on
+// home/user/owned; one that presents it to its mutation (rename, mkdir,
+// rmdir, unlink, an open for writing and its descriptor's mutations, the
+// ranged writes) acts inside that root, which bounds a lease holder's work.
 const path = '/home/user/file', from = '/home/user/owned/ren', to = '/home/user/owned/ren2';
 const target = '/home/user/file', symlinkPath = '/home/user/link2';
-const wPath = '/home/user/w', dirPath = '/home/user/dir', delPath = '/home/user/del';
+const wPath = '/home/user/w', dirPath = '/home/user/owned/dir', delPath = '/home/user/owned/del';
 const linkPath = '/home/user/link';
 const chmodPath = '/home/user/chmod', utimesPath = '/home/user/utimes', truncPath = '/home/user/owned/trunc';
 const rangePath = '/home/user/owned/range';
 // The descriptor ops all act on one open file, plus a directory for
 // readdirHandle; remove/copy/mutation each get their own subject.
-const handlePath = '/home/user/handle', handleDir = '/home/user/hdir';
+const handlePath = '/home/user/owned/handle', handleDir = '/home/user/hdir';
 const removePath = '/home/user/rm', copyPath = '/home/user/copy', mutationPath = '/home/user/mut';
 const handleContent = 'handle-bytes';
 const sessionFs = rawVfs.as(CRED_SESSION_USER);
 sessionFs.mkdir('home/user/owned');
 sessionFs.writeFile('home/user/owned/ren', 'x');
-sessionFs.writeFile('home/user/del', 'x');
+sessionFs.writeFile('home/user/owned/del', 'x');
 sessionFs.writeFile('home/user/chmod', 'x');
 sessionFs.writeFile('home/user/utimes', 'x');
 sessionFs.writeFile('home/user/owned/trunc', 'truncate me');
 sessionFs.writeFile('home/user/owned/range', 'xxxxxx');
 sessionFs.writeFile('home/user/file', 'seeded\n');
-sessionFs.writeFile('home/user/handle', handleContent);
+sessionFs.writeFile('home/user/owned/handle', handleContent);
 sessionFs.mkdir('home/user/hdir', { recursive: true });
 sessionFs.writeFile('home/user/hdir/child', 'c');
 sessionFs.mkdir('home/user/rm/inner', { recursive: true });
@@ -78,7 +82,7 @@ const options = { followSymlinks: false }, epoch = 'epoch', cursor = 9, after = 
 const url = 'https://remote.test/', protocols = ['protocol'], id = 7, waitMs = 25, text = 'text';
 const wsHeaders = [['Authorization', 'Bearer t']];
 const code = 0, reason = 'closed', offset = 0, length = 3;
-const requests = [{ path, offset, length }], moduleId = 'module', operationId = 'operation';
+const requests = [{ path, offset, length }];
 const payload = { inodes: [], chunks: [] }, stream = encodeWriteBatchStream({ inodes: [], chunks: [] });
 const entries = [], data = new TextEncoder().encode('output'), tail = 'tail', cwd = '/cwd', entryCode = 'export {}', port = 8080;
 const request = new Request('https://loopback.test/'), loader = 'js', req = { parentPid: 999, command: 'cat' };
@@ -87,7 +91,7 @@ const childPid = 42, fd = 1, sinceSeq = 3, signal = 'SIGTERM', kind = 'pure-buil
 // that act on a descriptor, a thunk the loop resolves once the op that mints
 // the handle has run. `fsOpen` is that op, and the canonical list orders it
 // ahead of every op that needs one.
-let fileHandle = null, mutationLease = null;
+let fileHandle = null, mutationLease = null, delegation = null;
 const openHandle = (subject, openFlags) => ops.dispatch({ op: 'fsOpen', args: [subject, openFlags], pid });
 const INPUTS = {
   readFile: [path],
@@ -137,6 +141,9 @@ const INPUTS = {
   fsCopyTree: ['/home/user/tree-src', '/home/user/tree-copy'],
   fsAcquireExclusiveMutation: [mutationPath],
   fsReleaseExclusiveMutation: () => [mutationLease.owner],
+  // A delegation the release's check grants: nothing recalls it, so the poll answers null at once.
+  fsAwaitRecall: () => [delegation.owner, 0],
+  fsRecalled: () => [delegation.owner, 'share'],
   fsRead: () => [fileHandle.id, offset, length],
   fsWrite: () => [fileHandle.id, offset, bytes],
   // Closes a handle of its own: the shared one stays open for the descriptor
@@ -146,12 +153,11 @@ const INPUTS = {
   fsReadRangeUncached: [path, offset, length],
   fsReadBatch: [requests],
   fsWriteRange: [rangePath, 2, bytes],
-  fsAppend: [path, moduleId, operationId, bytes],
-  fsAppendAck: [moduleId, operationId],
   fsTruncate: [truncPath, size],
   writeBatch: [payload],
   writeBatchStream: [stream],
   openWaveWriter: [],
+  retireWaveWriter: ['00000000-0000-4000-8000-000000000000'],
   putRegistryEntries: [entries],
   stdout: [data],
   stderr: [data],
@@ -187,6 +193,7 @@ const INPUTS = {
   awaitHostedBoot: ['wk'],
   routeHostedHttp: ['wk', { method: 'GET', url: 'https://hosted.test/' }],
   cancelHostProcess: ['wk'],
+  hostLost: ['wk', '00000000-0000-4000-8000-000000000000'],
   hmrRelay: ['client-1', 'hmr-message'],
   hmrNextEvent: [25_000],
   replayBoundary: [],
@@ -211,6 +218,14 @@ assert.deepEqual(Object.keys(INPUTS).sort(), [...SUPERVISOR_OPS].sort(),
 // an _rpc* method, never both and never neither.
 assert.deepEqual([...SUPERVISOR_NATIVE_OPS, ...Object.keys(SUPERVISOR_OP_ROUTES)].sort(), [...SUPERVISOR_OPS].sort(),
   'the native table and the route table partition SUPERVISOR_OPS');
+
+// How a resend of each op is met is its entry in the one op table: the
+// delivery store applies exactly the 'once' ops once, and joins exactly the
+// 'joined' reads, so no op can be added without saying which it is.
+for (const op of SUPERVISOR_OPS) {
+  assert.equal(supervisorDeliveredOp(op) !== undefined, SUPERVISOR_OP_TABLE[op] === 'once', `${op}: delivered once disagrees with the op table`);
+  assert.equal(supervisorJoinedReadOp(op) !== undefined, SUPERVISOR_OP_TABLE[op] === 'joined', `${op}: joined read disagrees with the op table`);
+}
 
 // The session's supervisor handler, on the session's real filesystem. The
 // host delegates — _rpcStdout/_rpcStderr and every routed non-fs op — are
@@ -336,9 +351,9 @@ const nativeAssert = {
   exists: (r) => assert.equal(r, true, 'exists'),
   readdir: (r) => assert.ok(r.some((e) => e.name === 'file'), 'readdir sees the fixture'),
   rename: async () => assert.equal(dec.decode(kernelVfs.readFile('home/user/owned/ren2')), 'x', 'rename moved'),
-  mkdir: async () => assert.equal(kernelVfs.isDirectory('home/user/dir'), true, 'mkdir created'),
-  rmdir: async () => assert.equal(kernelVfs.exists('home/user/dir'), false, 'rmdir removed'),
-  unlink: async () => assert.equal(kernelVfs.exists('home/user/del'), false, 'unlink removed'),
+  mkdir: async () => assert.equal(kernelVfs.isDirectory('home/user/owned/dir'), true, 'mkdir created'),
+  rmdir: async () => assert.equal(kernelVfs.exists('home/user/owned/dir'), false, 'rmdir removed'),
+  unlink: async () => assert.equal(kernelVfs.exists('home/user/owned/del'), false, 'unlink removed'),
   readlink: (r) => assert.equal(r, 'file', 'readlink resolves the link'),
   symlink: async () => assert.equal(dec.decode(kernelVfs.readFile('home/user/link2')), 'seeded\n', 'symlink target reads'),
   fsReadRange: (r) => assert.deepEqual(Array.from(r), Array.from(new TextEncoder().encode('see')), 'fsReadRange'),
@@ -356,7 +371,7 @@ const nativeAssert = {
   // mints the handle every one of them addresses.
   fsOpen: (r) => {
     fileHandle = r;
-    assert.equal(r.path, 'home/user/handle', 'fsOpen names the file it opened');
+    assert.equal(r.path, 'home/user/owned/handle', 'fsOpen names the file it opened');
     assert.deepEqual([r.flags.read, r.flags.write, r.closed], [true, true, false], 'fsOpen honoured the flags');
   },
   fsFstat: (r) => {
@@ -370,7 +385,7 @@ const nativeAssert = {
   fsRead: (r) => assert.equal(dec.decode(r), handleContent.slice(offset, offset + length), 'fsRead returns the bytes at the offset'),
   fsWrite: (r) => {
     assert.equal(r, bytes.length, 'fsWrite returns the count written');
-    assert.deepEqual([...kernelVfs.readFile('home/user/handle').subarray(0, 3)], [...bytes], 'fsWrite landed through the descriptor');
+    assert.deepEqual([...kernelVfs.readFile('home/user/owned/handle').subarray(0, 3)], [...bytes], 'fsWrite landed through the descriptor');
   },
   fsClose: async (r) => {
     assert.equal(r, undefined, 'fsClose');
@@ -384,10 +399,10 @@ const nativeAssert = {
     assert.equal(duplicate.flags.append, true, 'fsSetStatus set append on the open descriptor');
   },
   fsReaddirHandle: (r) => assert.deepEqual(r.map((e) => e.name), ['child'], 'fsReaddirHandle lists the directory handle'),
-  fsFtruncate: () => assert.equal(kernelVfs.stat('home/user/handle').size, size, 'fsFtruncate sized the open file'),
-  fsFchmod: () => assert.equal(kernelVfs.stat('home/user/handle').mode & 0o777, mode, 'fsFchmod applied'),
+  fsFtruncate: () => assert.equal(kernelVfs.stat('home/user/owned/handle').size, size, 'fsFtruncate sized the open file'),
+  fsFchmod: () => assert.equal(kernelVfs.stat('home/user/owned/handle').mode & 0o777, mode, 'fsFchmod applied'),
   fsFutimes: () => {
-    const stat = kernelVfs.stat('home/user/handle');
+    const stat = kernelVfs.stat('home/user/owned/handle');
     assert.deepEqual([stat.atime, stat.mtime], [atimeMs, mtimeMs], 'fsFutimes applied');
   },
   fsSync: async (r) => {
@@ -414,9 +429,19 @@ const nativeAssert = {
     const relet = await ops.dispatch({ op: 'fsAcquireExclusiveMutation', args: [mutationPath], pid });
     assert.notEqual(relet.owner, mutationLease.owner, 'the released root leases again');
     await ops.dispatch({ op: 'fsReleaseExclusiveMutation', args: [relet.owner], pid });
+    delegation = await ops.dispatch({ op: 'fsAcquireExclusiveMutation', args: [mutationPath, { delegate: { reads: true } }], pid });
+    assert.equal(typeof delegation.recallTimeoutMs, 'number', 'a delegation says how long a recall waits');
+  },
+  fsAwaitRecall: (r) => assert.equal(r, null, 'fsAwaitRecall answers null when nothing is recalled'),
+  fsRecalled: async (r) => {
+    assert.equal(r, undefined, 'fsRecalled');
+    await ops.dispatch({ op: 'fsReleaseExclusiveMutation', args: [delegation.owner], pid });
+    const relet = await ops.dispatch({ op: 'fsAcquireExclusiveMutation', args: [mutationPath], pid });
+    await ops.dispatch({ op: 'fsReleaseExclusiveMutation', args: [relet.owner], pid });
   },
   writeBatchStream: (r) => assert.ok(r && typeof r === 'object', 'writeBatchStream returned its result'),
   openWaveWriter: (r) => assert.match(r, /^[0-9a-f-]{36}$/, 'openWaveWriter answered an epoch'),
+  retireWaveWriter: (r) => assert.equal(r, undefined, 'retireWaveWriter answers nothing'),
   stdout: () => assert.deepEqual(delegateCalls.at(-1), ['_rpcStdout', pid, data], 'stdout delegate args'),
   stderr: () => assert.deepEqual(delegateCalls.at(-1), ['_rpcStderr', pid, data], 'stderr delegate args'),
 };
@@ -452,7 +477,7 @@ for (const [op, route] of cases) {
   try {
     if (!droveDirect) {
       // An epoch is issued only through a binding that names its host instance.
-      if (op === 'openWaveWriter') supervisor.ctx.props.hostIncarnation = host.supervisorDeliveries.incarnation;
+      if (op === 'openWaveWriter' || op === 'retireWaveWriter') supervisor.ctx.props.hostIncarnation = host.supervisorDeliveries.incarnation;
       result = await supervisor[op](...input);
       delete supervisor.ctx.props.hostIncarnation;
       assert.equal(receivedEnvelope.op, op);
@@ -497,9 +522,6 @@ supervisor.ctx.props.pid = 0;
 await assert.rejects(supervisor.writeFile('/a', 'bad'), /invalid process pid/);
 await assert.rejects(supervisor.cpSpawn({ parentPid: 999 }), /invalid process pid/);
 supervisor.ctx.props.pid = pid;
-supervisor.ctx.props.writerId = '';
-await assert.rejects(supervisor.fsAppend('/a', 'm', 'op', bytes), /writer incarnation|requires a run/);
-supervisor.ctx.props.writerId = writerId;
 supervisor.ctx.props.doId = '';
 await assert.rejects(supervisor.readFile('/a'), /missing doId/);
 supervisor.ctx.props.doId = 'host-id';
