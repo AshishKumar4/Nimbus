@@ -149,7 +149,7 @@ const type = (shell, text) => { for (const ch of text) shell.handleInput(ch); };
 
   shell.handleInput('\x03');
   assert.ok(output().includes('^C'), 'the cancel is acknowledged');
-  assert.ok(output().endsWith('$ '), 'back at the primary prompt');
+  assert.ok(output().endsWith('$ \x1b]133;B\x07'), 'back at the primary prompt');
 
   type(shell, 'mark clean');
   shell.handleInput('\r');
@@ -170,7 +170,7 @@ const type = (shell, text) => { for (const ch of text) shell.handleInput(ch); };
   assert.equal(shell.running, false, 'nothing is executing');
 
   shell.handleInput('\x03');
-  assert.ok(output().endsWith('$ '), 'Ctrl+C recovers the primary prompt');
+  assert.ok(output().endsWith('$ \x1b]133;B\x07'), 'Ctrl+C recovers the primary prompt');
 }
 
 // ── the reported repro: a WS chunk ending in \r takes the paste path ──────
