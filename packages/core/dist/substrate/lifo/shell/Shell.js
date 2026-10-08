@@ -115,6 +115,7 @@ export class Shell {
     activeInput;
     lineInputs = [];
     primaryPrompt = false;
+    exitNotices = new Map();
     /**
      * Accepted lines that do not form a complete command yet: an unclosed
      * quote or a trailing `\` keeps the shell reading under PS2, as bash
@@ -562,6 +563,9 @@ export class Shell {
             this.writeToTerminal(`[${job.id}] Done    ${job.command}\n`);
         }
         this.processRegistry.collectZombies();
+        for (const notice of this.exitNotices.values())
+            this.writeToTerminal(notice);
+        this.exitNotices.clear();
         this.terminal.write(PROMPT_START + formatShellPrompt(this.env, this.cwd) + PROMPT_END);
         this.primaryPrompt = true;
         this.announcePrompt();
@@ -577,6 +581,10 @@ export class Shell {
     announcePrompt() {
         if (!this.running && this.primaryPrompt)
             this.terminal.shellIntegration?.({ type: 'shell-integration', event: 'prompt' });
+    }
+    queueProcessExitNotice(pid, text) {
+        if (!this.exitNotices.has(pid))
+            this.exitNotices.set(pid, text);
     }
     async handleInput(data, submission) {
         // Raw mode: bypass all shell line editing, deliver keypresses directly

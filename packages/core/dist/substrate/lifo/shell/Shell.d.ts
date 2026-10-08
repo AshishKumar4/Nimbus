@@ -99,6 +99,7 @@ export declare class Shell {
     private activeInput;
     private lineInputs;
     private primaryPrompt;
+    private readonly exitNotices;
     /**
      * Accepted lines that do not form a complete command yet: an unclosed
      * quote or a trailing `\` keeps the shell reading under PS2, as bash
@@ -192,6 +193,7 @@ export declare class Shell {
     printPrompt(): void;
     /** A newly attached client learns current readiness, never a replayed completion. */
     announcePrompt(): void;
+    queueProcessExitNotice(pid: number, text: string): void;
     handleInput(data: string, submission?: ShellInputSubmission): Promise<void>;
     private handleTab;
     private handleStdinInput;
