@@ -257,9 +257,16 @@ export interface ProcessFsClient {
     /** A barrier's ACQUIRE asking for the read lease too (VfsAcquireOptions.lease), now; null when it takes none. */
     readLeaseAsk(): ReadLeaseAsk | null;
     /**
-     * The barrier that asked with `ask` applied an answer carrying `lease`
-     * (VfsAcquireResult.readLease): trusted until `ask.at + lease.trustMs`
-     * while the process logs nothing more, and its recalls answered from now on.
+     * An answer to such an ACQUIRE carried `lease` (VfsAcquireResult.readLease),
+     * whether or not the barrier applies it: the process holds it, answers its
+     * recalls from now on, and gives it back. Trusted only once applied (readLeased).
+     */
+    readLeaseAnswered(lease: {
+        owner: string;
+    }): void;
+    /**
+     * The barrier that asked with `ask` applied the answer carrying `lease`:
+     * trusted until `ask.at + lease.trustMs` while the process logs nothing more.
      */
     readLeased(lease: {
         owner: string;

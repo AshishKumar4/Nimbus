@@ -602,8 +602,9 @@ export function processFsClient(options) {
         }
     };
     /**
-     * The read lease (readLeased): its owner, until when it is trusted, when
-     * a barrier last confirmed it, and the log that barrier asked at.
+     * The read lease (readLeaseAnswered): its owner, until when it is trusted
+     * (readLeased), when an answer last confirmed it, and the log the barrier
+     * that applied one asked at.
      * Untrusted the moment its recall arrives, before the session is told
      * (answerReadRecalls), and while the process has logged since.
      */
@@ -956,23 +957,30 @@ export function processFsClient(options) {
                 return null;
             return { at: now(), logged: answered === logged ? logged : -1 };
         },
-        readLeased(lease, ask) {
+        readLeaseAnswered(lease) {
             if (session.grants === undefined || endedReadLeases.has(lease.owner))
                 return;
+            if (readLease?.owner === lease.owner) {
+                readLease.confirmedAt = now();
+                return;
+            }
+            // Granted to a barrier asked before the run ended: given back too.
             if (runEnded) {
                 const back = giveBackReadLease(lease.owner);
                 givingBack.add(back);
                 void back.finally(() => givingBack.delete(back));
                 return;
             }
-            const confirmed = readLease?.owner === lease.owner;
-            readLease = { owner: lease.owner, until: ask.at + lease.trustMs, confirmedAt: now(), logged: ask.logged };
-            if (confirmed) {
-                counters.readConfirms++;
-                return;
-            }
+            readLease = { owner: lease.owner, until: 0, confirmedAt: now(), logged: -1 };
             counters.readLeases++;
             void answerReadRecalls(lease.owner);
+        },
+        readLeased(lease, ask) {
+            if (readLease?.owner !== lease.owner)
+                return;
+            readLease.until = ask.at + lease.trustMs;
+            readLease.logged = ask.logged;
+            counters.readConfirms++;
         },
         takeFailuresError() {
             const taken = failures.splice(0, failures.length);

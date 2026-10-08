@@ -2487,6 +2487,8 @@ const __fsMod = (() => {
       if (!result || typeof result.rev !== "number" || typeof result.epoch !== "string") {
         throw new Error("fsAcquire answered without a cursor");
       }
+      // Held from now, whatever this barrier does with the answer: its recalls are this process's to answer.
+      if (ask && result.readLease) __nimbusProcessFs().readLeaseAnswered(result.readLease);
       return { ..._currentAnswer(result), ask };
     } catch (error) {
       _stats.barrierFailures++;
