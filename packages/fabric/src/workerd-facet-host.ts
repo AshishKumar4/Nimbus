@@ -617,7 +617,9 @@ function startFailure(error: unknown, name: string, pid: number): unknown {
   const what = reset
     ? `reset facet '${name}' as it started process ${pid}`
     : `failed to start process ${pid} in facet '${name}'`;
-  return new Error(`Nimbus: Cloudflare ${what}, and gave no cause (${errorText(error)})`, { cause: error });
+  const named = new Error(`Nimbus: Cloudflare ${what}, and gave no cause (${errorText(error)})`, { cause: error });
+  // The platform's own reset flag, kept on the error it is answered as: the lifecycle reads it there (isHostReset).
+  return reset ? Object.assign(named, { durableObjectReset: true }) : named;
 }
 
 /**
