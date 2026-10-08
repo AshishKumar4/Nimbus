@@ -18088,9 +18088,9 @@ if (__processMod.env.NODE_NO_WARNINGS !== "1" && !String(__processMod.env.NODE_O
 // paths (axios: its http adapter rather than its fetch one). As Node defines
 // it: an own property, writable, not enumerable, not configurable.
 Object.defineProperty(__processMod, Symbol.toStringTag, { value: "process", writable: true, enumerable: false, configurable: false });
-// process.exitCode as Node keeps it (lib/internal/bootstrap/node.js): an
-// integer, or a string of one, held as the int32 the process exits with;
-// null and undefined unset it.
+// process.exitCode as Node keeps it (lib/internal/bootstrap/node.js): a
+// safe integer, or a string whose number is one, held as the int32 the
+// process exits with; null and undefined unset it.
 let __nimbusExitCodeField;
 Object.defineProperty(__processMod, "exitCode", {
   get() { return __nimbusExitCodeField; },
@@ -18099,15 +18099,16 @@ Object.defineProperty(__processMod, "exitCode", {
       __nimbusExitCodeField = undefined;
       return;
     }
-    if (!(typeof code === "string" && code !== "" && Number.isInteger(+code))) {
-      // validateInteger(code, "code")
-      if (typeof code !== "number") throw invalidArgType("code", "number", code);
-      if (!Number.isInteger(code)) throw __nimbusOutOfRange("code", "an integer", code);
-      if (code < Number.MIN_SAFE_INTEGER || code > Number.MAX_SAFE_INTEGER) {
-        throw __nimbusOutOfRange("code", ">= " + Number.MIN_SAFE_INTEGER + " && <= " + Number.MAX_SAFE_INTEGER, code);
-      }
+    // A non-empty string is its number, unless that is NaN; then
+    // validateInteger(value, "code") on what there is.
+    let value = code;
+    if (typeof code === "string" && code !== "" && Number.isNaN((value = Number(code)))) value = code;
+    if (typeof value !== "number") throw invalidArgType("code", "number", value);
+    if (!Number.isInteger(value)) throw __nimbusOutOfRange("code", "an integer", value);
+    if (value < Number.MIN_SAFE_INTEGER || value > Number.MAX_SAFE_INTEGER) {
+      throw __nimbusOutOfRange("code", ">= " + Number.MIN_SAFE_INTEGER + " && <= " + Number.MAX_SAFE_INTEGER, value);
     }
-    __nimbusExitCodeField = Number(code) | 0;
+    __nimbusExitCodeField = value | 0;
   },
   enumerable: true,
   configurable: false,
