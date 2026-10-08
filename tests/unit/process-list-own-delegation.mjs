@@ -17,6 +17,8 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
+import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
@@ -58,6 +60,22 @@ assert.equal(recall ?? null, null, `listing its own subtree recalled the process
 
 const other = files.bind({ pid: 8, cred: USER });
 await assert.rejects(async () => listed(other), (error) => error.code === 'EAGAIN', 'another process\'s listing took the held names as absent');
+
+// P4b recheck 3: through a mount whose backend is itself a namespace over the same engine
+// (an alias), the process's lookups still carry its holds. Red before: the
+// nested namespace's as() took the credential and the actor only, and its
+// view recalled the process's own delegation.
+{
+  const alias = new CompositeVFS(sqliteFiles(engine, CRED_KERNEL));
+  files.vfs.mount('/alias', alias);
+  const recalled = [];
+  const watching = (async () => { const kind = await holder.awaitRecall(grant.owner, 200); if (kind) recalled.push(kind); })();
+  const seen = await holder.stat('/alias/home/user/d/a.txt');
+  assert.notEqual(seen, null);
+  assert.equal((await holder.readdir('/alias/home/user/d')).length, 3);
+  await watching;
+  assert.deepEqual(recalled, [], 'a lookup through the alias namespace recalled the process\'s own delegation');
+}
 
 console.log('process-list-own-delegation: ok');
 process.exit(0);

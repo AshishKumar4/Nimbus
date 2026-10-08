@@ -1194,8 +1194,14 @@ export class CompositeVFS implements VFS {
     });
   }
 
-  as(cred: VfsCred, actor?: string): CompositeVFS {
+  as(cred: VfsCred, actor?: string, options?: { holds?: () => ReadonlySet<string> }): CompositeVFS {
     const principal: Principal = actor === undefined ? { cred } : { cred, actor };
+    // A process's view (its holds) is its own, never the cached one.
+    if (options?.holds !== undefined) {
+      return new CompositeVFS(this.table.mounts.get(ROOT_POINT)!.source, undefined, {
+        table: this.table, principal, views: this.views, viewed: new WeakMap(), holds: options.holds,
+      });
+    }
     const key = principalKey(principal);
     let view = this.views.refs.get(key)?.deref();
     if (view === undefined) {
