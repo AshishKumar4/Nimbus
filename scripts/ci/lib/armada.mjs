@@ -43,7 +43,7 @@ export function armadaEnv(env = process.env) {
  */
 
 /** The armada recipe every task needs, whatever the lane's commit has. */
-export const RECIPE = ['.armada.json', 'scripts/ci/recipe/setup.sh', 'scripts/ci/recipe/install.sh'];
+export const RECIPE = ['.armada.json', 'scripts/ci/recipe/setup.sh', 'scripts/ci/recipe/install.sh', 'scripts/install-deps.mjs'];
 
 const git = (cwd, args, options = {}) => {
   const done = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1 << 30, ...options });

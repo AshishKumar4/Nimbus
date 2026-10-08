@@ -2,13 +2,12 @@
 // needs it is imported: the upload (wrangler), the config parser
 // deploy-isolation uses (packages/worker's jsonc-parser), and the workspace
 // links the apps' assets are read through. All of it comes from
-// `bun install --frozen-lockfile --ignore-scripts`: the root postinstall
-// bundles, and this machine builds nothing (AGENTS.md, Tests § CI). This
+// scripts/install-deps.mjs: lifecycle scripts are skipped, then only the
+// keyed dependency patches run. This machine builds nothing. This
 // module imports nothing outside node, so it runs in a bare checkout.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-
-export const INSTALL = 'bun install --frozen-lockfile --ignore-scripts';
+import { INSTALL } from '../../install-deps.mjs';
 
 /** Exit 2, saying what is missing and the install that provides it, unless `root` has it. */
 export function assertInstalled(root, who = 'this command') {
@@ -24,6 +23,6 @@ export function assertInstalled(root, who = 'this command') {
   }
   if (missing.length === 0) return;
   console.error(`${who}: node_modules is missing or incomplete here (${missing.join(', ')}). Run, in ${root}:\n  ${INSTALL}\n`
-    + '(--ignore-scripts: the root postinstall bundles, and this machine builds nothing.)');
+    + '(dependencies and keyed patches only; this machine builds nothing.)');
   process.exit(2);
 }
