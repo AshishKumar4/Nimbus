@@ -26,8 +26,8 @@ const BEHAVIORAL = join(import.meta.dirname, '..', 'behavioral');
   const good = { probe: 'frameworks/nuxt-real', assertion: 'a', failure: { status: 503, title: 't' }, reason: 'r', approved: 'user, 2026-10-07', owner: 'o', tracking: 't' };
   for (const [entry, refused] of [
     [{ ...good, assertion: '' }, /assertion is required/],
-    [{ ...good, failure: undefined }, /failure \{ status, title \} is required/],
-    [{ ...good, failure: { status: 503 } }, /failure \{ status, title \} is required/],
+    [{ ...good, failure: undefined }, /failure \{ status, title \} or \{ detail \} is required/],
+    [{ ...good, failure: { status: 503 } }, /failure \{ status, title \} or \{ detail \} is required/],
     [{ ...good, approved: 'main, 2026-10-07' }, /approved must be the user's, dated/],
     [{ ...good, approved: 'user' }, /approved must be the user's, dated/],
     [{ ...good, probe: 'frameworks/no-such-probe' }, /no such probe/],
@@ -56,6 +56,49 @@ const withPinned = (detail) => nuxt([[true, 'nuxi creates the real minimal proje
 const asApproved = withPinned(NITRO_503);
 const verdict = (...tasks) => ({ tasks: tasks.map((rows, i) => ({ task: `part ${i + 1}/${tasks.length}`, outcome: { kind: 'exited' }, rows })) });
 const ledger = row('session-ledger', 0);
+
+{
+  const assertion = 'boundary: only this launch failure';
+  const detail = '"last":"no resident process was launched"';
+  const entry = { ...deferral, probe: 'frameworks/remix-real', assertion, failure: { detail } };
+  assert.deepEqual(validateDeferrals([entry]), [entry], 'an exact approved detail is a valid failure form');
+  for (const failure of [{ detail: '' }, { detail: ' ' }, { detail: 7 }, { detail, status: 503, title: 't' }, { detail, typo: true }, { status: 503, title: 't', detail }]) {
+    assert.throws(() => validateDeferrals([{ ...entry, failure }]), /failure/, `invalid or mixed form ${JSON.stringify(failure)}`);
+  }
+  const output = (checks, finished = true) => [
+    ...checks.map(([ok, label, text]) => `  ${ok ? '✓' : '✗'} ${label}${text ? ` — ${text}` : ''}`),
+    ...(finished ? [`  ──── [frameworks/remix-real] ${checks.filter(([ok]) => ok).length} pass / ${checks.filter(([ok]) => !ok).length} fail`] : []),
+  ].join('\n');
+  const checks = [[true, 'setup'], [false, assertion, `prefix {${detail}} suffix`], [true, 'cleanup']];
+  const grade = (text, exitCode = 1) => gradeMatrix([verdict([row(entry.probe, exitCode, text), ledger])], [entry]);
+  assert.equal(grade(output(checks)).exitCode, 0, 'the exact substring on the one failed assertion matches');
+  for (const text of [
+    output([[true, 'setup'], [false, assertion, 'different failure'], [true, 'cleanup']]),
+    output([[true, 'setup'], [false, assertion, 'no resident process was launched'], [true, 'cleanup']]),
+    output([[true, 'setup'], [false, assertion, 'different failure'], [true, 'cleanup', detail]]),
+    output([...checks, [false, 'another assertion', detail]]),
+    output(checks, false),
+    output(checks).replace('2 pass / 1 fail', '2 pass / 2 fail'),
+    output([...checks, [false, assertion, detail]]).replace('2 pass / 2 fail', '2 pass / 1 fail'),
+  ]) {
+    const result = grade(text);
+    assert.equal(result.exitCode, 1, `mismatch, incomplete probe or extra failure remains red: ${text}`);
+    assert.deepEqual(result.applied, []);
+  }
+  assert.equal(grade(output([[true, 'setup'], [true, assertion], [true, 'cleanup']]), 0).exitCode, 1, 'passing requires removing the approved detail deferral');
+  assert.equal(gradeMatrix([verdict([ledger])], [entry]).exitCode, 1, 'a missing detail-deferred row cannot grade green');
+  const relaunch = '[restart] Relaunching with --conditions=development';
+  const compound = { ...entry, failure: { detail: [detail, relaunch] } };
+  assert.deepEqual(validateDeferrals([compound]), [compound], 'every exact fragment is part of the approved failure');
+  const compoundGrade = (actual) => gradeMatrix([verdict([row(entry.probe, 1, output([[true, 'setup'], [false, assertion, actual], [true, 'cleanup']])), ledger])], [compound]);
+  assert.equal(compoundGrade(`{${detail},"dev":"${relaunch}"}`).exitCode, 0, 'both required fragments match');
+  assert.equal(compoundGrade(`{${detail}}`).exitCode, 1, 'a different no-resident failure without the approved relaunch is red');
+  assert.equal(compoundGrade(relaunch).exitCode, 1, 'relaunch alone without the approved launch failure is red');
+  for (const failure of [{ detail: [] }, { detail: [''] }, { detail: [detail, ' '] }, { detail: [detail, 7] }]) {
+    assert.throws(() => validateDeferrals([{ ...entry, failure }]), /failure/, `invalid fragment list ${JSON.stringify(failure)}`);
+  }
+  console.log('  ok  exact detail approval shares strict completed-probe/one-failure/pass-removes rules with HTTP approval');
+}
 
 {
   const graded = gradeMatrix([verdict([row('git-local', 0), row('frameworks/nuxt-real', 1, asApproved), ledger])], [deferral]);
