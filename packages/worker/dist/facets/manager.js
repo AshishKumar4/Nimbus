@@ -4499,6 +4499,7 @@ export class FacetManager {
         // the worker's log and on the terminal, and kept.
         onColdStart(ctx, () => this.processJournals.drainPending({
             reserved: reservedFacetNames(this.ctx),
+            current: (pid) => pid > this.processes.pidBase,
             drain: async (row) => {
                 await this._drainJournalAs(row.pid, row.cred, facetJournal(this.ctx, this.env, row.facet));
                 this.vfs?.forgetSequences(row.pid);

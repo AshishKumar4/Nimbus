@@ -44,6 +44,8 @@ export declare class ProcessJournals {
      */
     drainPending(io: {
         reserved: Set<string>;
+        /** Whether `pid` is this incarnation's: its row is a running process's log, never a previous one's to drain. */
+        current(pid: number): boolean;
         drain(row: PendingJournal): Promise<void>;
         log(message: string): void;
     }): Promise<void>;

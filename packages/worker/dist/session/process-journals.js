@@ -64,7 +64,7 @@ export class ProcessJournals {
      * and kept, reserved, for the next start.
      */
     async drainPending(io) {
-        const pending = this.pending();
+        const pending = this.pending().filter((row) => !io.current(row.pid));
         for (const row of pending)
             io.reserved.add(row.facet);
         for (const row of pending) {
