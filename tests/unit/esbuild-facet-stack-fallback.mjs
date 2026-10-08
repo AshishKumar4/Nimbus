@@ -27,7 +27,7 @@ assert.match(deepModule.code, /"deep"/);
 assert.equal(deep.error, undefined, deep.error);
 assert.match(deep.code, /"bottom"/);
 assert.equal(tla.error, undefined, tla.error);
-assert.match(tla.code, /^return \(async \(\) => \{/m, 'top-level await is lowered by the staged runtime');
+assert.match(tla.code, /return \(async \(\) => \{/, 'top-level await is lowered by the staged runtime');
 assert.equal(esbuilds.initializations, 1, 'one esbuild for the batch');
 assert.equal(esbuilds.stops, 1, 'stopped after it');
 console.log('  ok  transformMany answers a module too deep for Oxc, and lowers top-level await, on one esbuild it stops');

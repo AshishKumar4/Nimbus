@@ -14,6 +14,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { lowerEsModule } from '../../packages/core/src/runtime/async-module-lowering.ts';
 import { buildPrefetchBundle } from '../../packages/worker/src/facets/manager.ts';
 import {
   EsbuildService,
@@ -150,7 +151,7 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
 
 }
 
-// A cell the pre-pass cannot parse fails alone; the rest of the launch still transforms.
+// A cell that does not parse fails alone, with the lowering's reason; the rest of the launch still transforms.
 {
   const root = 'home/user/node_modules/prepass-esm';
   const prepassFiles = {
@@ -164,7 +165,14 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
   const host = new EsbuildService(undefined, {
     transformHost: async (requests) => {
       sent.push(...requests.map(({ code }) => code));
-      return requests.map(() => ({ code: '/* hosted-cjs */\n', map: '', warnings: [] }));
+      return requests.map(({ code, options }) => {
+        try {
+          lowerEsModule(code, options.esModule);
+        } catch (e) {
+          return { error: e.message };
+        }
+        return { code: '/* hosted-cjs */\n', map: '', warnings: [] };
+      });
     },
   });
   const state = await buildPrefetchBundle(
@@ -176,7 +184,6 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
   assert.throws(() => new Function(moduleOf(state, `${root}/unreadable.js`))(),
     /esbuild transform failed for .*unreadable\.js: Unexpected token/,
     'the unreadable cell throws its own reason when required');
-  assert.ok(!sent.some((code) => code.includes('and otherwise')), 'the unreadable cell never reaches the host');
 }
 
 
