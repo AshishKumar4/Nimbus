@@ -248,6 +248,7 @@ export declare class SessionProcessSupervisor {
     markExit(pid: number, code: number, reason?: string): void;
     getExit(pid: number): ProcessExitInfo | null;
     hasLogs(pid: number): boolean;
+    retainsLogs(pid: number): boolean;
     logSize(pid: number): number;
     readLogs(pid: number, opts?: ProcessLogReadOptions): {
         chunks: SequencedLogChunk[];

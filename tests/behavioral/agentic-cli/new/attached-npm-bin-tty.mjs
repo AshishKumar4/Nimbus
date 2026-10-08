@@ -251,12 +251,17 @@ try {
     crashPid > 0,
     JSON.stringify(crashTerminalOut.slice(-800)));
 
-  a.check('unawaited async npm-bin crash is surfaced with an exit code and stack',
-    /Process \d+ \(async-attached-crash\) exited with code 1/.test(crashTerminalOut)
-      && /ASYNC_ATTACHED_CRASH/.test(crashTerminalOut),
+  a.check('the async crash diagnostic appears before another input, without an unordered status notice',
+    /ASYNC_ATTACHED_CRASH/.test(crashTerminalOut)
+      && !/Process \d+ \(async-attached-crash\) exited with code/.test(crashTerminalOut),
     JSON.stringify(crashTerminalOut.slice(-1000)));
   t.cmd('');
   await t.waitForPrompt(30_000);
+  const reported = stripAnsi(t.buf);
+  const status = /Process \d+ \(async-attached-crash\) exited with code 1/.exec(reported);
+  a.check('unawaited async npm-bin crash is surfaced with an exit code and stack before the next prompt',
+    status !== null && /ASYNC_ATTACHED_CRASH/.test(reported) && status.index < reported.lastIndexOf('user@nimbus:'),
+    JSON.stringify(reported.slice(-1000)));
   a.check('terminal remains responsive after an attached async startup crash',
     /[$#>]\s*$/.test(stripAnsi(t.buf).trimEnd().slice(-3)),
     JSON.stringify(stripAnsi(t.buf).slice(-1000)));

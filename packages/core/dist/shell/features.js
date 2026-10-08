@@ -109,7 +109,7 @@ export class HeredocHandler {
                         (await this._finishHeredoc());
                     }
                     else if (!isDelim) {
-                        this.terminal.write('> ');
+                        this.shell.printContinuationPrompt();
                         (await this._drainPasteQueue());
                     }
                 }
@@ -127,7 +127,7 @@ export class HeredocHandler {
                     (await this._finishHeredoc());
                 }
                 else if (!isDelim) {
-                    this.terminal.write('> ');
+                    this.shell.printContinuationPrompt();
                 }
                 return;
             }
@@ -180,7 +180,7 @@ export class HeredocHandler {
         this.heredocInfo = info;
         this.currentHeredocIndex = 0;
         this.bodies = info.delimiters.map(() => []);
-        this.terminal.write('> ');
+        this.shell.printContinuationPrompt();
         await this._drainPasteQueue();
     }
     /**
@@ -220,7 +220,7 @@ export class HeredocHandler {
             await this._finishHeredoc();
             return;
         }
-        this.terminal.write('> ');
+        this.shell.printContinuationPrompt();
     }
     /**
      * Drain the Shell's pasteQueue during heredoc accumulation.
@@ -245,7 +245,7 @@ export class HeredocHandler {
                 await this._finishHeredoc();
                 return;
             }
-            this.terminal.write('> ');
+            this.shell.printContinuationPrompt();
         }
     }
     async _finishHeredoc() {

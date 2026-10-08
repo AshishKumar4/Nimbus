@@ -20,7 +20,10 @@ function createHost() {
     host: {
       processes,
       terminal: { write: (data) => writes.push(data) },
-      shell: { queueProcessExitNotice(_pid, text) { notices.push(text); } },
+      shell: {
+        queueProcessExitNotice(notice, source, render) { notices.push(() => render(notice, source)); return true; },
+        writeNotice(data) { writes.push(data); },
+      },
       nimbusDebug: false,
     },
   };
@@ -64,10 +67,11 @@ function createHost() {
 
   _emitExitDump(host, entry.pid, 1);
 
-  assert.deepEqual(writes, [], 'exit dumps are queued for the shell\'s next primary prompt');
+  assert.ok(writes.includes('first\r\nsecond\r\n'), 'actual program diagnostics are immediate and use terminal line endings');
   assert.equal(notices.length, 1);
-  assert.ok(notices[0].includes('first\r\nsecond\r\n'), 'queued exit-dump chunks use terminal line endings');
-  assert.ok(!/(^|[^\r])\n/.test(notices[0]), 'the entire notice has no bare line feed');
+  const notice = notices[0]();
+  assert.ok(!notice.includes('first'), 'the queued status does not retain or replay diagnostics');
+  assert.ok(!/(^|[^\r])\n/.test(notice), 'the entire notice has no bare line feed');
   assert.equal(host.processes.allLogs(entry.pid)[0].data, 'first\nsecond\n');
 }
 

@@ -67,9 +67,21 @@ export async function _rpcStdinPrepared(self, pid, run) {
     if (pid !== undefined)
         self.facetManager?.stdinPrepared(pid, run);
 }
-function queueExitNotice(self, pid, text) {
-    if (self.terminal)
-        self.shell?.queueProcessExitNotice(pid, text);
+function queueExitNotice(self, notice) {
+    return Boolean(self.terminal && self.shell?.queueProcessExitNotice(notice, self.processes, renderExitNotice));
+}
+function renderExitNotice(notice, source) {
+    const { pid, code } = notice;
+    const cmd = source.get(pid)?.command || `pid ${pid}`;
+    if (notice.kind === 'facet')
+        return `${code === 0 ? '\x1b[2m' : '\x1b[2;31m'}[facet exited: pid=${pid} code=${code} cmd="${cmd}"]\x1b[0m\r\n`;
+    if (notice.kind === 'shell')
+        return `\x1b[2;31m[shell exited: pid=${pid} code=${code} duration=${notice.durationMs}ms]\x1b[0m\r\n`;
+    if (notice.kind === 'killed')
+        return `[process killed: pid=${pid} code=${code}]\r\n`;
+    const sep = '─'.repeat(60);
+    const color = code === 0 ? '\x1b[2;33m' : '\x1b[31m';
+    return `\r\n${color}${sep}\r\nProcess ${pid} (${cmd}) exited with code ${code}\r\n${sep}\x1b[0m\r\n`;
 }
 const WriteBatchInodeSchema = z.object({
     path: z.string(),
@@ -1034,9 +1046,7 @@ export async function _rpcReportExit(self, pid, code, tail, dataReads, profileUn
         self._emitExitDump(pid, code);
     }
     if (!normalForeground && (self.nimbusDebug || code !== 0)) {
-        const cmd = entry?.command || `pid ${pid}`;
-        const colorExit = code === 0 ? '\x1b[2m' : '\x1b[2;31m';
-        queueExitNotice(self, pid, `${colorExit}[facet exited: pid=${pid} code=${code} cmd="${cmd}"]\x1b[0m\r\n`);
+        queueExitNotice(self, { pid, code, kind: 'facet' });
     }
 }
 /**
@@ -1052,23 +1062,14 @@ export async function _rpcReportExit(self, pid, code, tail, dataReads, profileUn
  *     log buffer still has everything, so `logs <pid>` recovers it.
  */
 export function _emitExitDump(self, pid, code) {
-    if (!self.terminal)
+    if (!queueExitNotice(self, { pid, code, kind: 'dump' }))
         return;
-    const entry = self.processes.get(pid);
-    const cmd = entry?.command || `pid ${pid}`;
-    const chunks = self.processes.tailLogs(pid, { lines: 30 });
-    const sep = '─'.repeat(60);
-    const color = code === 0 ? '\x1b[2;33m' : '\x1b[31m'; // yellow-dim for clean-silent
-    let notice = `\r\n${color}${sep}\r\n` +
-        `Process ${pid} (${cmd}) exited with code ${code}\r\n` +
-        `${sep}\x1b[0m\r\n`;
-    for (const c of chunks) {
-        const terminalData = normalizeTerminalNewlines(c.data);
-        const painted = c.stream === 'stderr' ? `\x1b[31m${terminalData}\x1b[0m` : terminalData;
-        notice += painted;
+    let diagnostics = '';
+    for (const chunk of self.processes.tailLogs(pid, { lines: 30 })) {
+        const data = normalizeTerminalNewlines(chunk.data);
+        diagnostics += chunk.stream === 'stderr' ? `\x1b[31m${data}\x1b[0m` : data;
     }
-    notice += `${color}${sep}\x1b[0m\r\n`;
-    queueExitNotice(self, pid, notice);
+    self.shell?.writeNotice(diagnostics);
 }
 export function _emitShellExecDone(self, pid, _cmd, code, durationMs) {
     if (code === 0)
@@ -1076,7 +1077,7 @@ export function _emitShellExecDone(self, pid, _cmd, code, durationMs) {
     if (self.processes.logSize(pid) > 0) {
         self._emitExitDump(pid, code);
     }
-    queueExitNotice(self, pid, `\x1b[2;31m[shell exited: pid=${pid} code=${code} duration=${durationMs}ms]\x1b[0m\r\n`);
+    queueExitNotice(self, { pid, code, kind: 'shell', durationMs });
 }
 /**
  * External-exit path: invoked by FacetManager when a process is killed
@@ -1112,7 +1113,7 @@ export function _reportExternalExit(self, pid, code, reason) {
             self._emitExitDump(pid, code);
         }
         else if (code !== 0) {
-            queueExitNotice(self, pid, `[process killed: pid=${pid} code=${code}]\r\n`);
+            queueExitNotice(self, { pid, code, kind: 'killed' });
         }
     }
     // W5 Lever 5: ring entry for every external exit with a non-zero

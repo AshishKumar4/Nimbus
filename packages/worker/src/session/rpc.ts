@@ -25,6 +25,7 @@
 import { ISOLATE_NETWORK, workspaceNetwork, type WorkspaceEgress, type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { enc, dec, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
+import type { ProcessExitNotice, ProcessExitNoticeSource } from '@nimbus-sh/core/runtime/process-exit-notices.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { getInnerDoClass, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
 import type { InnerDoFetchAnswer } from '@nimbus-sh/fabric/bindings.js';
@@ -125,8 +126,19 @@ type ExitRpcHost = ReportRpcHost & Pick<NimbusSession,
   'terminal' | 'shell' | 'webSocketRelay' | 'supervisorForgetBridge' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'facetProcessManager'
 >;
 
-function queueExitNotice(self: Pick<NimbusSession, 'terminal' | 'shell'>, pid: number, text: string): void {
-  if (self.terminal) self.shell?.queueProcessExitNotice(pid, text);
+function queueExitNotice(self: Pick<NimbusSession, 'terminal' | 'shell' | 'processes'>, notice: ProcessExitNotice): boolean {
+  return Boolean(self.terminal && self.shell?.queueProcessExitNotice(notice, self.processes, renderExitNotice));
+}
+
+function renderExitNotice(notice: ProcessExitNotice, source: ProcessExitNoticeSource): string {
+  const { pid, code } = notice;
+  const cmd = source.get(pid)?.command || `pid ${pid}`;
+  if (notice.kind === 'facet') return `${code === 0 ? '\x1b[2m' : '\x1b[2;31m'}[facet exited: pid=${pid} code=${code} cmd="${cmd}"]\x1b[0m\r\n`;
+  if (notice.kind === 'shell') return `\x1b[2;31m[shell exited: pid=${pid} code=${code} duration=${notice.durationMs}ms]\x1b[0m\r\n`;
+  if (notice.kind === 'killed') return `[process killed: pid=${pid} code=${code}]\r\n`;
+  const sep = '─'.repeat(60);
+  const color = code === 0 ? '\x1b[2;33m' : '\x1b[31m';
+  return `\r\n${color}${sep}\r\nProcess ${pid} (${cmd}) exited with code ${code}\r\n${sep}\x1b[0m\r\n`;
 }
 
 const WriteBatchInodeSchema: z.ZodType<BatchInodeEntry> = z.object({
@@ -1265,11 +1277,7 @@ export async function _rpcReportExit(
     }
 
     if (!normalForeground && (self.nimbusDebug || code !== 0)) {
-      const cmd = entry?.command || `pid ${pid}`;
-      const colorExit = code === 0 ? '\x1b[2m' : '\x1b[2;31m';
-      queueExitNotice(self, pid,
-        `${colorExit}[facet exited: pid=${pid} code=${code} cmd="${cmd}"]\x1b[0m\r\n`,
-      );
+      queueExitNotice(self, { pid, code, kind: 'facet' });
     }
 }
 
@@ -1286,23 +1294,13 @@ export async function _rpcReportExit(
    *     log buffer still has everything, so `logs <pid>` recovers it.
    */
 export function _emitExitDump(self: RpcHost, pid: number, code: number): void {
-    if (!self.terminal) return;
-    const entry = self.processes.get(pid);
-    const cmd = entry?.command || `pid ${pid}`;
-    const chunks = self.processes.tailLogs(pid, { lines: 30 });
-    const sep = '─'.repeat(60);
-    const color = code === 0 ? '\x1b[2;33m' : '\x1b[31m'; // yellow-dim for clean-silent
-    let notice =
-      `\r\n${color}${sep}\r\n` +
-      `Process ${pid} (${cmd}) exited with code ${code}\r\n` +
-      `${sep}\x1b[0m\r\n`;
-    for (const c of chunks) {
-      const terminalData = normalizeTerminalNewlines(c.data);
-      const painted = c.stream === 'stderr' ? `\x1b[31m${terminalData}\x1b[0m` : terminalData;
-      notice += painted;
+    if (!queueExitNotice(self, { pid, code, kind: 'dump' })) return;
+    let diagnostics = '';
+    for (const chunk of self.processes.tailLogs(pid, { lines: 30 })) {
+      const data = normalizeTerminalNewlines(chunk.data);
+      diagnostics += chunk.stream === 'stderr' ? `\x1b[31m${data}\x1b[0m` : data;
     }
-    notice += `${color}${sep}\x1b[0m\r\n`;
-    queueExitNotice(self, pid, notice);
+    self.shell?.writeNotice(diagnostics);
 }
 
 export function _emitShellExecDone(self: RpcHost, pid: number, _cmd: string, code: number, durationMs: number): void {
@@ -1310,7 +1308,7 @@ export function _emitShellExecDone(self: RpcHost, pid: number, _cmd: string, cod
     if (self.processes.logSize(pid) > 0) {
       self._emitExitDump(pid, code);
     }
-    queueExitNotice(self, pid, `\x1b[2;31m[shell exited: pid=${pid} code=${code} duration=${durationMs}ms]\x1b[0m\r\n`);
+    queueExitNotice(self, { pid, code, kind: 'shell', durationMs });
 }
 
   /**
@@ -1339,7 +1337,7 @@ export function _reportExternalExit(self: RpcHost, pid: number, code: number, re
       if (self.terminal && self.processes.logSize(pid) > 0) {
         self._emitExitDump(pid, code);
       } else if (code !== 0) {
-        queueExitNotice(self, pid, `[process killed: pid=${pid} code=${code}]\r\n`);
+        queueExitNotice(self, { pid, code, kind: 'killed' });
       }
     }
     // W5 Lever 5: ring entry for every external exit with a non-zero
