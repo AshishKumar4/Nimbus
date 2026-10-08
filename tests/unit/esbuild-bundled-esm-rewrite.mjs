@@ -115,9 +115,16 @@ for (const [source, async] of [
   assert.ok(lines[wanted.length - 1].startsWith('console.log('), 'the last line is the last line');
   assert.equal(code.slice(0, code.indexOf(MODULE_BODY_MARK)).includes('\n'), false, 'the lowering adds no line');
   assert.equal(lines[0], '//' + wanted[0].slice(2), 'the hashbang, a comment');
-  for (const at of [1, 2, 3, 4, 10]) assert.equal(lines[at].trim(), '', `a removed declaration leaves its line: ${wanted[at]}`);
-  assert.equal(lines[5], '       const a = 1;', 'export keywords leave spaces');
+  // A removed declaration leaves its lines, a `;` where it began.
+  for (const at of [1, 2, 3, 4, 10]) assert.match(lines[at], /^;? *$/, wanted[at]);
+  assert.equal(lines[5], ';      const a = 1;', 'export keywords leave their columns');
   assert.ok(lines[7].startsWith('  throw new Error("x " + typeof '), 'the throw keeps its column; the import it reads is rewritten');
-  assert.equal(lines[9], '               class Thing {}', 'a default class keeps its column');
+  assert.equal(lines[9], ';              class Thing {}', 'a default class keeps its column');
 }
+// A free CommonJS name in a default export's expression is unbound as anywhere else.
+{
+  const { module } = run(lowered('export default typeof require + typeof module'), noRequire);
+  assert.equal(module.exports.default, 'undefinedundefined');
+}
+
 console.log('esbuild-bundled-esm-rewrite: ok');

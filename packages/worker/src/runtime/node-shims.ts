@@ -10161,6 +10161,11 @@ function __nimbusFrameAt(line) {
   const place = /^(.*):(\\d+):(\\d+)$/.exec(at);
   return place === null ? null : [place[1], Number(place[2]), Number(place[3])];
 }
+// Where a frame's column (the source's, past the wrapper's head) is in the module's text.
+function __nimbusEmittedColumn(module, line, column) {
+  const emitted = __nimbusGeneratedColumn(module, line, column);
+  return line === 1 ? emitted + module.head : emitted;
+}
 // GetErrorSource: \`file:line\`, the line, and under it the place, \`^\` from
 // start to end. As Node does, the columns, which are V8's (UTF-16), count
 // the line's UTF-8 bytes.
@@ -10184,13 +10189,11 @@ function __nimbusArrowOf(module, text, start, end) {
     from -= module.head;
     to -= module.head;
   }
-  // A lowered ES module's line reads its import uses rewritten; Node shows the file's.
-  const path = module.path ?? (module.file.startsWith("/") ? module.file : null);
-  if (module.esModule && path !== null) {
-    const file = __readFileOr(path, null);
-    const own = typeof file === "string" ? file.split(/\\r\\n|[\\n\\r\\u2028\\u2029]/)[line - 1] : undefined;
-    if (own !== undefined) source = own;
-  }
+  // A lowered ES module's line and places as its source has them.
+  if (to > from) to = __nimbusSourceColumn(module, line, to);
+  from = __nimbusSourceColumn(module, line, from + 1) - 1;
+  if (to <= from) to = from + 1;
+  source = __nimbusSourceLine(module, line, source);
   let arrow = __nimbusFrameFile(module) + ":" + line + "\\n" + source + "\\n";
   const bytes = new TextEncoder().encode(source);
   if (from > to || from < 0 || to > bytes.length) return arrow;
@@ -10238,7 +10241,7 @@ function __nimbusFatalArrow(error, fromPromise) {
       const module = __nimbusModuleOfFile(file);
       const text = module === null ? null : textOf(module);
       if (text === null) continue;
-      const offset = __nimbusTextOffset(text, line, line === 1 ? column + module.head : column);
+      const offset = __nimbusTextOffset(text, line, __nimbusEmittedColumn(module, line, column));
       const thrown = offset < 0 ? null : __nimbusFatalLocation(text, "script", offset);
       if (thrown !== null) return __nimbusArrowOf(module, text, thrown[0], thrown[1]);
     }
@@ -10246,7 +10249,7 @@ function __nimbusFatalArrow(error, fromPromise) {
   const text = textOf(top);
   if (text === null) return null;
   const [, line, column] = frames[0];
-  const offset = __nimbusTextOffset(text, line, line === 1 ? column + top.head : column);
+  const offset = __nimbusTextOffset(text, line, __nimbusEmittedColumn(top, line, column));
   return offset < 0 ? null : __nimbusArrowOf(top, text, offset, offset + 1);
 }
 // Where a module that does not compile stops, for its stack (commonjs-cell.ts

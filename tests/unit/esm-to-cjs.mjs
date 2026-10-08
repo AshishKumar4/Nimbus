@@ -136,6 +136,7 @@ for (const [label, source] of Object.entries(CASES)) {
     const dep = 'export const log = []\nexport function note(x) { log.push([x, this === undefined]); return Promise.resolve(x) }\n'
       + 'export function tag(strings, n) { log.push(strings[0] + n); return () => "tagged" }\n';
     const source = 'import { note, tag, log } from "./dep.mjs"\nconst first = [1]\nnote("a").then(() => {})\nnote("b")\nlet t = 0\ntag`n${t}`\n'
+      + 'const pair = [2]\nimport { log as again } from "./dep.mjs"\n[3].forEach((n) => note(n))\n'
       + 'if (first.length) note("c")\nif (!first.length) note("never")\nfor (const x of first) note(x)\nconst f = () =>\n  note("arrow")\nf()\nexport const seen = log.slice()\n';
     writeFileSync(join(dir, 'dep.mjs'), dep);
     writeFileSync(join(dir, 'main.mjs'), source);

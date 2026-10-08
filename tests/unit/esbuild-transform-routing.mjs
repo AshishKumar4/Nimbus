@@ -96,3 +96,22 @@ for (const hosted of [true, false]) {
 }
 
 console.log('esbuild-transform-routing: ok');
+
+// An ES module is lowered without the engine; one nested past the lowering's
+// parse loads it, for the engine's CommonJS.
+{
+  let loads = 0;
+  const service = new EsbuildService(undefined, {
+    engine: async () => {
+      loads++;
+      return { transform: async (code, options) => ({ code: `ENGINE(${options.format})`, map: '', warnings: [] }) };
+    },
+  });
+  const shallow = await service.transform('export const a = 1;', { esModule: 'node' });
+  assert.match(shallow.code, /__esModule/);
+  assert.equal(loads, 0, 'a lowered ES module loads no engine');
+  const deep = await service.transform(`export const x = ${'['.repeat(7000)}1${']'.repeat(7000)};`, { esModule: 'node' });
+  assert.equal(deep.code, 'ENGINE(cjs)', 'one nested past the lowering is the engine\'s');
+  assert.equal(loads, 1);
+}
+console.log('esbuild-transform-routing: deep ES modules load the engine');

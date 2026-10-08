@@ -208,6 +208,8 @@ export function prepareBundleCell(path: string, source: string, packageType: Pac
     try {
       lowered = lowerEsModule(src, scope);
     } catch (e) {
+      // Nested past this stack: the host's, then its engine's (runTransformRequest).
+      if (e instanceof RangeError) return { ...cell, request: request(src, false) };
       return { ...cell, outcome: { error: errorText(e) } };
     }
     // Its declarations are CommonJS now; what import() and import.meta remain go to the host like any cell's.

@@ -151,6 +151,33 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
 
 }
 
+// A large module nested past the session's parse goes to the host as an ES
+// module, which lowers it or hands it to its engine.
+{
+  const root = 'home/user/node_modules/deep-large';
+  const deep = `export const x = ${'['.repeat(7000)}"${'y'.repeat(600_000)}"${']'.repeat(7000)};\n`;
+  const files = {
+    'home/user/package.json': JSON.stringify({ name: 'deep-large-test' }),
+    [`${root}/package.json`]: JSON.stringify({ name: 'deep-large', type: 'module' }),
+    [`${root}/cli.js`]: 'import "./deep.js";\n',
+    [`${root}/deep.js`]: deep,
+  };
+  const sent = [];
+  const host = new EsbuildService(undefined, {
+    transformHost: async (requests) => {
+      sent.push(...requests);
+      return requests.map(() => ({ code: '/* hosted-cjs */\n', map: '', warnings: [] }));
+    },
+  });
+  const state = await buildPrefetchBundle(
+    launchFs(files).fs, { scriptPath: `/${root}/cli.js`, cwd: 'home/user', entryCode: files[`${root}/cli.js`], esbuild: host },
+  );
+  const request = sent.find(({ code }) => code === deep);
+  assert.ok(request, 'the deep module reaches the host');
+  assert.equal(request.options.esModule, 'node');
+  assert.equal(moduleOf(state, `${root}/deep.js`), '/* hosted-cjs */\n');
+}
+
 // A cell that does not parse fails alone, with the lowering's reason; the rest of the launch still transforms.
 {
   const root = 'home/user/node_modules/prepass-esm';

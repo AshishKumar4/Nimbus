@@ -160,7 +160,7 @@ export function lowerEsModule(source: string, scope: ModuleScope): { code: strin
     body: topLevelAwait ? 'async' : 'sync',
     exportsObject: 'arguments[2].exports',
     requireFunction: 'arguments[1]',
-    edits: unbound.filter((edit) => !records.some(({ start, end }) => edit.start >= start && edit.end <= end)),
+    edits: unbound,
   });
   return { code: scope === 'node' ? esModuleScopeTypeofs(code) : code, map: '', warnings: [] };
 }
@@ -435,7 +435,7 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
   // what the body reads for each named binding; and the edit to each use.
   const importModules = new Map<EsmRecord, { readonly mod: string; readonly interop: string | null }>();
   const reads = new Map<string, string>();
-  const uses: SourceEdit[] = [];
+  const uses: ColumnEdit[] = [];
   for (const record of records) {
     if (record.kind !== 'import' || record.bindings.length === 0) continue;
     const mod = temp();
@@ -449,11 +449,12 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
         if (use === 'write') continue;
         // `(` would continue a statement before it that has no `;`; `void` cannot.
         const callee = use === 'call' ? `(0, ${read})` : use === 'leading-call' ? `void 0, (0, ${read})` : null;
-        uses.push({ start, end, text: callee ?? (use === 'shorthand' ? `${binding.local}: ${read}` : read) });
+        uses.push(callee === null
+          ? { start, end, text: use === 'shorthand' ? `${binding.local}: ${read}` : read }
+          : { start, end, text: callee, call: true });
       }
     }
   }
-  const defaultExpressionUses = new Set<SourceEdit>();
 
   // In the body's scope, before it: a getter per export name in name order;
   // then, in source order, each requested module; then the bindings an
@@ -469,7 +470,8 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
   // A hashbang is only valid as the first line of a script; the body moves
   // into a function. Kept as a comment so line numbers stay put.
   if (source.startsWith('#!')) edits.push({ start: 0, end: 2, text: '//' });
-  const remove = (start: number, end: number) => edits.push({ start, end, text: blank(source.slice(start, end)) });
+  // A declaration is a statement: a `;` in its place ends one before it that has none.
+  const remove = (start: number, end: number) => edits.push({ start, end, text: ';' + blank(source.slice(start + 1, end)) });
 
   for (const record of records) {
     switch (record.kind) {
@@ -512,16 +514,13 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
         exportsAnything = true;
         const value = temp();
         const { start, end } = record.expression;
-        const within = uses.filter((use) => use.start >= start && use.end <= end);
-        for (const use of within) defaultExpressionUses.add(use);
-        const expression = applySourceEdits(source.slice(start, end), within.map((use) => ({ ...use, start: use.start - start, end: use.end - start })));
-        edits.push({
-          start: record.start, end: record.end,
-          // Through a property named default, an anonymous function or class
-          // is named `default`, as the language names an exported one.
-          text: `var ${value} = ({ default: (${blank(source.slice(record.start, start)).replace(/ /g, '')}${expression}) }).default;`
-            + blank(source.slice(end, record.end)).replace(/ /g, ''),
-        });
+        // Through a property named default, an anonymous function or class
+        // is named `default`, as the language names an exported one. The
+        // expression, and every edit in it, stays where the source has it.
+        const keyword = blank(source.slice(record.start, start));
+        const lineBreak = keyword.search(/[\n\r\u2028\u2029]/);
+        edits.push({ start: record.start, end: start, text: `var ${value} = ({ default: (` + (lineBreak === -1 ? '' : keyword.slice(lineBreak)) });
+        edits.push({ start: end, end: record.end, text: ') }).default;' + blank(source.slice(end, record.end)) });
         getters.push(['default', value]);
         break;
       }
@@ -563,13 +562,51 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
   const installed = getters
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([exported, value]) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`);
-  const prologue = [...installed, ...requires, ...imported, ...stars].join(' ');
-  const body = applySourceEdits(source, [...edits, ...uses.filter((use) => !defaultExpressionUses.has(use))]);
+  const allEdits = [...edits, ...uses];
+  const prologue = [...installed, ...requires, ...imported, ...stars].join(' ') + columnMapComment(source, allEdits);
+  const body = applySourceEdits(source, allEdits);
   // An ES module is strict: the directive opens the first line, where the
   // wrapper finds it (commonjs-cell.ts).
   return options.body === 'async'
     ? `"use strict";${header.join(' ')} return (async () => { ${prologue}${MODULE_BODY_MARK}${body}\n})();\n`
     : `"use strict";${header.join(' ')} ${prologue}${MODULE_BODY_MARK}${body}\n`;
+}
+
+/** An edit of the module's text; a call's (`(0, m.f)(…)`) is placed by V8 at its end, where the source's is at its start. */
+type ColumnEdit = SourceEdit & { call?: true };
+
+const LINE_BREAK = /\r\n|[\n\r\u2028\u2029]/;
+
+/**
+ * Where the edits change a line, for a frame's column and the fatal report's
+ * line (commonjs-cell.ts __nimbusSourceColumn, __nimbusSourceLine): by line,
+ * [source column, generated length, source text], and 1 for a call. Every
+ * edit keeps the module's line breaks, so each line of the source is a line
+ * of the emit.
+ */
+function columnMapComment(source: string, edits: readonly ColumnEdit[]): string {
+  const entries: Array<[number, number, number, string] | [number, number, number, string, 1]> = [];
+  const ordered = [...edits].sort((a, b) => a.start - b.start);
+  let line = 1;
+  let lineStart = 0;
+  let scanned = 0;
+  for (const edit of ordered) {
+    const before = source.slice(scanned, edit.start).split(LINE_BREAK);
+    if (before.length > 1) {
+      line += before.length - 1;
+      lineStart = edit.start - before[before.length - 1]!.length;
+    }
+    scanned = edit.start;
+    const from = source.slice(edit.start, edit.end).split(LINE_BREAK);
+    const to = edit.text.split(LINE_BREAK);
+    for (let i = 0; i < from.length; i++) {
+      const column = i === 0 ? edit.start - lineStart : 0;
+      const text = i === from.length - 1 ? to.slice(i).join('') : to[i]!;
+      if (text === from[i]) continue;
+      entries.push(edit.call && i === from.length - 1 ? [line + i, column, text.length, from[i]!, 1] : [line + i, column, text.length, from[i]!]);
+    }
+  }
+  return entries.length === 0 ? '' : `/*nimbus-columns ${JSON.stringify(entries).replace(/\*\//g, '*\\/')}*/`;
 }
 
 /** The bindings an exported declaration introduces. */

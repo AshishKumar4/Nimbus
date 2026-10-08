@@ -915,7 +915,8 @@ export function entryImporterUrl(filename: string | undefined, cwd: string): str
  * runner evaluates it: an ES entry's require is its static imports, and what
  * escapes it is explained as Node's loader explains it.
  */
-function entryModule(userCode: string, filename: string | undefined, importer: string, esModule: boolean | undefined): { name: string; esModule: boolean; text: string; evaluate: string; stackEntry: string } {
+function entryModule(userCode: string, filename: string | undefined, cwd: string, esModule: boolean | undefined): { name: string; esModule: boolean; text: string; evaluate: string; stackEntry: string } {
+  const importer = entryImporterUrl(filename, cwd);
   const code = rewriteProvidedCommonJsModules(userCode);
   const name = commonJsEntryModuleName(filename || '[eval]');
   const path = 'filename || "/home/user/script.js"';
@@ -926,8 +927,17 @@ function entryModule(userCode: string, filename: string | undefined, importer: s
     text: wrapped.text,
     evaluate: `__nimbusEvaluateEntry(__nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user", ${esModule === true})`,
     // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
-    stackEntry: JSON.stringify([name, filename || '<eval>', wrapped.head, esModule === true ? 1 : 0]),
+    stackEntry: JSON.stringify([name, entryFrameFile(filename, cwd, esModule === true), wrapped.head, esModule === true ? 1 : 0]),
   };
+}
+
+/** What Node's stack names the entry's file: its path, an ES module's file: URL; -e and stdin are [eval] and [stdin], as an ES module [eval1] in the launch's directory. */
+function entryFrameFile(filename: string | undefined, cwd: string, esModule: boolean): string {
+  const evaluated = filename === undefined || filename === '<eval>' || filename === '[stdin]';
+  if (!esModule) return evaluated ? (filename === '[stdin]' ? '[stdin]' : '[eval]') : filename;
+  const url = new URL('file://');
+  url.pathname = evaluated ? `${cwd.replace(/\/+$/, '')}/[eval1]` : filename;
+  return url.href;
 }
 
 /**
@@ -945,7 +955,7 @@ export async function generateEntrypointCode(
   cwd: string = DEFAULT_HOME,
   esModule?: boolean,
 ): Promise<GeneratedNodeFacetCode> {
-  const entry = entryModule(userCode, filename, entryImporterUrl(filename, cwd), esModule);
+  const entry = entryModule(userCode, filename, cwd, esModule);
   const bundleSource = await facetVfsBundleSourceFor(vfsState);
   return {
     code: `
@@ -1401,7 +1411,7 @@ export async function generateLongRunningNodeCode(
   sources: NodeFacetSources,
   pacer?: TurnBudget,
 ): Promise<GeneratedNodeFacetCode> {
-  const entry = entryModule(userCode, opts.filename, entryImporterUrl(opts.filename, opts.cwd || DEFAULT_HOME), opts.esModule);
+  const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule);
   const safeArgs = JSON.stringify({
     argv: opts.argv || [],
     nodeCommandLine: opts.node ?? null,

@@ -81,10 +81,10 @@ class Reader {
   #url = import.meta['url'];
   read() { return this.#url; }
 }
-function later(__nimbusMetadataModule_) { return [import.meta.url, __nimbusMetadataModule_]; }
-const __nimbusMetadataModule = 'user binding';
+function later($nimbusMet1) { return [import.meta.url, $nimbusMet1]; }
+const $nimbusMeta = 'user binding';
 const { url } = import.meta;
-return [new Reader().read(), later('argument'), url, __nimbusMetadataModule,
+return [new Reader().read(), later('argument'), url, $nimbusMeta,
   (function () { return this; })() === undefined];`;
   const rewritten = rewriteDynamicImports(source, parent, true);
   const execute = new Function('exports', 'require', 'module', rewritten);
@@ -98,7 +98,19 @@ return [new Reader().read(), later('argument'), url, __nimbusMetadataModule,
   const rewritten = rewriteDynamicImports('return [import.meta.url, import("./y.js")];', parent, true, false);
   assert.doesNotMatch(rewritten, /__nimbusDynamicImport/);
   assert.match(rewritten, /import\("\.\/y\.js"\)/);
-  assert.match(rewritten, /__nimbusMetadataModule\.__nimbusImportMeta\.url/);
+  assert.match(rewritten, /\$nimbusMeta\.url/);
+}
+
+// Every line and column of the cell stays where it was: import.meta and
+// import() are replaced by names as long as they are.
+{
+  const source = 'const a = import.meta.url; const b = import("./z.js"); throw a;\nfoo(import . meta);\n';
+  const rewritten = rewriteDynamicImports(source, parent, true);
+  const lines = rewritten.split('\n');
+  const at = lines[0].indexOf('const a');
+  assert.equal(lines[0].slice(at).length, source.split('\n')[0].length, 'the first line, after the binding, is as long');
+  assert.equal(lines[0].slice(at).indexOf('throw'), source.indexOf('throw'));
+  assert.equal(lines[1], 'foo($nimbusMeta  );');
 }
 
 // A script the parse refuses is returned as written, for the compile to report.

@@ -473,7 +473,7 @@ async function transformWithEsbuild(
  * before esbuild is loaded, which a rewrite-only request does not wait for.
  */
 async function runTransformRequest(
-  esbuildApi: EsbuildTransformApi | null,
+  engine: EsbuildTransformApi | (() => Promise<EsbuildTransformApi>) | null,
   code: string,
   options: EsbuildTransformOptions | undefined,
   rewrite: (code: string, parentUrl: string, moduleMetadata?: boolean, routeImports?: boolean) => string,
@@ -496,10 +496,11 @@ async function runTransformRequest(
       // session's define (requestOptions) keeps Node's scope.
       if (!(e instanceof RangeError)) throw e;
       const { esModule: _scope, ...rest } = options;
-      return runTransformRequest(esbuildApi, code, { ...rest, loader: 'js', format: 'cjs', target: 'esnext' }, rewrite, lower, lowerEsModule);
+      return runTransformRequest(engine, code, { ...rest, loader: 'js', format: 'cjs', target: 'esnext' }, rewrite, lower, lowerEsModule);
     }
     return parent === undefined ? lowered : { ...lowered, code: rewrite(lowered.code, parent, options.moduleMetadata) };
   }
+  const esbuildApi = typeof engine === 'function' ? await engine() : engine;
   if (esbuildApi === null) throw new Error('esbuild transform before esbuild is loaded');
   if (options?.moduleMetadata && parent !== undefined && code.includes('import')) {
     // CJS emit replaces import.meta with an empty object even when syntax
@@ -898,8 +899,12 @@ export class EsbuildService {
 
   /** One transform on the in-isolate engine, of source the provided-module pre-pass has seen. */
   private async transformInIsolate(code: string, options: EsbuildTransformOptions | undefined): Promise<TransformResult> {
-    if (!options?.rewriteOnly && !options?.esModule) await this.ensureInit();
-    return runTransformRequest(this._esbuild, code, options, rewriteDynamicImports, lowerAsyncModule, lowerEsModule);
+    // The engine loads for the first request that needs it (an ES module's lowering does not).
+    const engine = async () => {
+      await this.ensureInit();
+      return this._esbuild!;
+    };
+    return runTransformRequest(engine, code, options, rewriteDynamicImports, lowerAsyncModule, lowerEsModule);
   }
 
   /**
