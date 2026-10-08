@@ -209,7 +209,7 @@ function credFor(deps: SupervisorOpDeps, pid: number | undefined, cred?: VfsCred
   if (!Number.isInteger(pid) || pid <= 0) {
     throw new Error('supervisor op: filesystem operation requires a valid process pid');
   }
-  return deps.processes ? deps.processes.cred(pid) : CRED_SESSION_USER;
+  return deps.processes ? deps.processes.liveCred(pid) : CRED_SESSION_USER;
 }
 
 /**

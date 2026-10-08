@@ -188,6 +188,12 @@ export class ProcessTable {
     return immutableCred(entry.cred);
   }
 
+  liveCred(pid: number): VfsCred {
+    const entry = this.processes.get(pid);
+    if (!entry || entry.state !== 'running') throw noSuchProcess(pid);
+    return immutableCred(entry.cred);
+  }
+
   cred(pid: number): VfsCred {
     return this.credOf(pid);
   }

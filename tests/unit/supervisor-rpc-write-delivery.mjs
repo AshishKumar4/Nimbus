@@ -263,6 +263,24 @@ function assertOneDelivery(arrivals, op, attempts) {
 
 // ── Another instance, or a host that predates delivery ───────────────────
 
+for (const terminal of ['exited', 'killed']) {
+  const w = world();
+  const { pid, rpc } = w.process();
+  await rpc.writeFile('/home/user/ended.txt', 'before');
+  const revision = w.revision('home/user/ended.txt');
+  const writer = await rpc.openWaveWriter();
+  if (terminal === 'exited') w.session.processes.exit(pid, 0);
+  else w.session.processes.kill(pid, 15);
+  await w.session.files.releaseProcess(pid);
+  assert.equal(w.session.processes.get(pid).state, terminal, 'the historical process entry was not retained');
+  const refused = (error) => error.code === 'ESRCH';
+  await assert.rejects(rpc.stat('/home/user/ended.txt'), refused);
+  await assert.rejects(rpc.writeFile('/home/user/ended.txt', 'after'), refused);
+  await assert.rejects(rpc.writeBatchStream(new ReadableStream({ start(controller) { controller.close(); } }), { writer, wave: 1, attempt: 1 }), refused);
+  assert.equal(w.read('home/user/ended.txt'), 'before');
+  assert.equal(w.revision('home/user/ended.txt'), revision);
+}
+
 {
   const w = world();
   const { pid, rpc } = w.process();

@@ -318,12 +318,18 @@ export function __wasiFsStats(): ResidentFilesystemStats | null {
  * reports one did not do what it said it did, and exits non-zero.
  */
 export async function __wasiSettleWrites(): Promise<string | null> {
-  if (__wasiResident === null) return null;
-  const failures = await __wasiResident.fs.settle();
-  if (failures.length === 0) return null;
-  return failures
-    .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
-    .join('; ');
+  let failed: string | null = null;
+  try {
+    if (__wasiResident !== null) {
+      const failures = await __wasiResident.fs.settle();
+      if (failures.length > 0) failed = failures
+        .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
+        .join('; ');
+    }
+  } catch (error) {
+    if (__wasiProcessGone === null) throw error;
+  }
+  return __wasiProcessGone === null ? failed : processGoneMessage(__wasiProcessGone);
 }
 
 /** Anything about to leave the process waits until what it wrote is in the session. */
@@ -1863,10 +1869,6 @@ async function __wasiSettled(result: WasiRunResult): Promise<WasiRunResult> {
   let failed: string | null;
   try { failed = await __wasiSettleWrites(); }
   catch (e) { failed = (e as Error)?.message ?? String(e); }
-  if (__wasiProcessGone !== null) {
-    const gone = processGoneMessage(__wasiProcessGone);
-    failed = failed === null ? gone : `${gone}; ${failed}`;
-  }
   if (failed === null) return result;
   return { exitCode: result.exitCode || 1, error: result.error ? `${result.error}; ${failed}` : failed };
 }

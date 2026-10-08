@@ -36,6 +36,17 @@ try {
 } finally {
   await guest.dispose();
 }
+const reactor = await residentGuest();
+try {
+  reactor.kernel.writeFile('home/user/reactor-read.txt', 'read only');
+  reactor.restartSession();
+  await assert.rejects(reactor.statSize('home/user/reactor-read.txt'), (error) => error.errno === ESRCH);
+  const terminal = await reactor.P.__wasiSettleWrites();
+  assert.match(terminal ?? '', /the session no longer holds this process \(process pid \d+ does not exist\): it restarted, or ended the process, while the program ran, so every filesystem call since answered ESRCH/);
+} finally {
+  await reactor.dispose();
+}
+
 const writer = await residentGuest();
 try {
   const fd = await writer.open('home/user/held.txt', { create: true, write: true });
