@@ -17,6 +17,7 @@
  * credentials.
  */
 
+import { sha256Incremental } from '@nimbus-sh/core/_shared/crypto.js';
 import { MAX_TX_BLOB_BYTES, CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
 import { FACET_IMAGE_DIR, facetImageDigest, facetImagePath } from './process-fabric.js';
 import type { TurnBudget } from './turn-budget.js';
@@ -44,9 +45,12 @@ export interface ImageBlobStore {
   mkdirp(dir: string): void;
   /** The file's current size in bytes, or null when it does not exist. */
   sizeOf(path: string): number | null;
-  /** Create or REPLACE the file with exactly these bytes (truncating). */
+  /**
+   * Create or REPLACE the file with exactly these bytes (truncating). The
+   * bytes are taken during the call: the store reuses their buffer after.
+   */
   writeFile(path: string, bytes: Uint8Array): void;
-  /** Write bytes at an offset, growing the file. */
+  /** Write bytes at an offset, growing the file; taken during the call, as writeFile's. */
   writeRange(path: string, offset: number, bytes: Uint8Array): void;
   /** Entry names directly under `dir`. Throws when the dir is unreadable. */
   list(dir: string): string[];
@@ -119,10 +123,18 @@ export class ImageStore {
    *
    * Writing the sources here, once, is what lets the session stop holding
    * them: after this returns, the only thing it keeps is a path.
+   *
+   * An image given as parts (a code pack: process-fabric.ts
+   * encodeCommonJsPack) is never encoded whole: it is digested a part at a
+   * time, and written a part at a time only if no complete image is stored
+   * at that digest, each part released (emptied in place) as it is written.
+   * Encoded whole, an astro project's second launch held its pack's 33.6 MiB
+   * of strings and their 25 MiB of UTF-8 at once, and reset the session's
+   * isolate.
    */
   async materialize(
     pid: number,
-    images: AsyncIterable<readonly [string, string | readonly string[]]> | Iterable<readonly [string, string | readonly string[]]>,
+    images: AsyncIterable<readonly [string, string | string[]]> | Iterable<readonly [string, string | string[]]>,
     pacer: TurnBudget,
   ): Promise<Record<string, string>> {
     const fs = this.blobs();
@@ -138,7 +150,18 @@ export class ImageStore {
     fs.mkdirp(FACET_IMAGE_DIR);
     let count = 0;
     for await (const [moduleName, source] of images) {
-      const bytes = typeof source === 'string' ? new TextEncoder().encode(source) : encodeParts(source);
+      if (typeof source !== 'string') {
+        const { path, written } = await this.materializeParts(fs, source, rooted, pacer);
+        paths[moduleName] = path;
+        count++;
+        console.log(
+          '[image-store] pid=' + pid + ' image ' + count + ' ' + moduleName + ' → '
+          + path.slice(-12) + ' ' + written + ' bytes in parts, slice=' + FACET_IMAGE_WRITE_SLICE_BYTES
+          + ' turns=' + pacer.chunks,
+        );
+        continue;
+      }
+      const bytes = new TextEncoder().encode(source);
       const path = facetImagePath(await facetImageDigest(bytes));
       paths[moduleName] = path;
       rooted.push(path);
@@ -180,6 +203,64 @@ export class ImageStore {
   }
 
   /**
+   * One image given as parts: its digest read a part at a time, then, unless
+   * a complete image is already stored there, its bytes written a slice at a
+   * time from one slice-sized buffer, each part emptied as it is encoded. The
+   * root is claimed before the first byte, as every image's is. What it holds
+   * at once is one part's encoding and one slice, whatever the image's size.
+   */
+  private async materializeParts(
+    fs: ImageBlobStore,
+    parts: string[],
+    rooted: string[],
+    pacer: TurnBudget,
+  ): Promise<{ path: string; written: number }> {
+    const encoder = new TextEncoder();
+    const digest = sha256Incremental();
+    let length = 0;
+    for (const part of parts) {
+      const bytes = encoder.encode(part);
+      length += bytes.byteLength;
+      await digest.update(bytes);
+    }
+    const path = facetImagePath(await digest.hex());
+    rooted.push(path);
+    const stored = path.replace(/^\/+/, '');
+    // A complete image is already these bytes (see materialize).
+    if (fs.sizeOf(stored) === length) {
+      parts.fill('');
+      await pacer.spend(length);
+      return { path, written: length };
+    }
+    const slice = new Uint8Array(Math.min(FACET_IMAGE_WRITE_SLICE_BYTES, Math.max(length, 1)));
+    let filled = 0;
+    let offset = 0;
+    const flush = async () => {
+      const bytes = slice.subarray(0, filled);
+      // The first slice REPLACES the file, as materialize's does.
+      if (offset === 0) fs.writeFile(stored, bytes);
+      else fs.writeRange(stored, offset, bytes);
+      offset += filled;
+      filled = 0;
+      await pacer.spend(bytes.byteLength);
+    };
+    for (let i = 0; i < parts.length; i++) {
+      const bytes = encoder.encode(parts[i]);
+      parts[i] = '';
+      for (let at = 0; at < bytes.byteLength;) {
+        const n = Math.min(bytes.byteLength - at, slice.byteLength - filled);
+        slice.set(bytes.subarray(at, at + n), filled);
+        filled += n;
+        at += n;
+        if (filled === slice.byteLength) await flush();
+      }
+    }
+    if (filled > 0 || offset === 0) await flush();
+    if (offset !== length) throw new Error(`Nimbus: an image's parts encoded to ${offset} bytes, digested as ${length}`);
+    return { path, written: length };
+  }
+
+  /**
    * Drop every image no running process boots from.
    *
    * Content addressing means a changed program writes a NEW image rather than
@@ -206,31 +287,4 @@ export class ImageStore {
       try { fs.unlink(`${FACET_IMAGE_DIR}/${name}`); } catch { /* already gone */ }
     }
   }
-}
-
-/**
- * UTF-8 bytes of an image given as ordered parts, encoded into one buffer a
- * part at a time: joining the parts first would hold the whole image twice as
- * text.
- */
-function encodeParts(parts: readonly string[]): Uint8Array {
-  let length = 0;
-  for (const part of parts) {
-    for (let i = 0; i < part.length; i++) {
-      const code = part.charCodeAt(i);
-      if (code < 0x80) length += 1;
-      else if (code < 0x800) length += 2;
-      else if (code >= 0xd800 && code <= 0xdbff && (part.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { length += 4; i++; }
-      else length += 3;
-    }
-  }
-  const bytes = new Uint8Array(length);
-  const encoder = new TextEncoder();
-  let offset = 0;
-  for (const part of parts) {
-    const encoded = encoder.encode(part);
-    bytes.set(encoded, offset);
-    offset += encoded.byteLength;
-  }
-  return bytes;
 }

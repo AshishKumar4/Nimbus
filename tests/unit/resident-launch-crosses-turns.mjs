@@ -188,6 +188,16 @@ async function settle(world) {
   const firstYield = body.indexOf('pacer.spend(');
   assert.ok(firstYield > 0, 'the write loop is paced');
   assert.ok(pushRoot < firstYield, 'nothing is yielded on before the image is claimed');
+
+  // An image given as parts (a code pack) is written by materializeParts,
+  // under the same order: claimed before its first write and its first yield.
+  const partsStart = source.indexOf('  private async materializeParts(');
+  assert.ok(partsStart > 0, 'a pack is written by ImageStore.materializeParts');
+  const parts = source.slice(partsStart, source.indexOf('\n  /**', partsStart + 10));
+  const partsRoot = parts.indexOf('rooted.push(');
+  assert.ok(partsRoot > 0, 'a pack is claimed as it is named');
+  assert.ok(partsRoot < parts.indexOf('fs.writeFile('), 'a pack is rooted before its first write');
+  assert.ok(partsRoot < parts.indexOf('pacer.spend('), 'nothing is yielded on before a pack is claimed');
 }
 
 // ── 2b. materialize holds ONE image's text, not every image's ─────────────
