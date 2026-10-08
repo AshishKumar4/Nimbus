@@ -1268,7 +1268,7 @@ export class Interpreter {
         setMembership(terminalOutputFds, 1, io.terminalFds?.stdout ?? !io.stdout);
         setMembership(terminalOutputFds, 2, io.terminalFds?.stderr ?? !io.stderr);
         const terminalInputFds = new Set(this.persistentTerminalInputFds);
-        setMembership(terminalInputFds, 0, io.terminalFds?.stdin ?? (!stdin && Boolean(io.terminalStdin)));
+        setMembership(terminalInputFds, 0, io.terminalFds?.stdin ?? ((!stdin || stdin === io.terminalStdin) && Boolean(io.terminalStdin)));
         if (io.terminalStdin) {
             for (const fd of terminalInputFds) {
                 inputFds.set(fd, io.terminalStdin);

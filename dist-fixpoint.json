@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "0e87a824f185e67eacfc880570176741b56b02b87407527fb89b83cd9438f3d8",
+  "fingerprint": "0e7ec575d4dfce98d07670d276c205c21b9cc078b1ba3057053e34c5d0183023",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -950,7 +950,7 @@
     "packages/core/dist/substrate/lifo/shell/history.js": "c153b8bf3548849b3b6b2fd38cd5103cf4e78c2f87496f9a19f8f71a4b561e43",
     "packages/core/dist/substrate/lifo/shell/interpreter.d.ts": "4f05dc27c3a88338f6818e030ca7f41c88f18f04e3fb7b6e3bddca037d51188f",
     "packages/core/dist/substrate/lifo/shell/interpreter.d.ts.map": "a3450ec6bd7db581733811384799ac83237a1e51e9a865922912d2ba35fdb082",
-    "packages/core/dist/substrate/lifo/shell/interpreter.js": "e7393d05ea43b5862e9aa7cdcf19f242551ad11bc4310ecba96f00ec5120b129",
+    "packages/core/dist/substrate/lifo/shell/interpreter.js": "e0ebd25d7bc132ffc287650c174a17c35c02183bb4e58afc4ffb0b2f19ac2ce4",
     "packages/core/dist/substrate/lifo/shell/jobs.d.ts": "8774194f8b0ab87d746035b6ffd647cedcb17a23f7903b66414fdc9b2353dab1",
     "packages/core/dist/substrate/lifo/shell/jobs.d.ts.map": "ee035241b080eb69a7ec0b5295cd6589315fc0968a14be35281727cdbc557c55",
     "packages/core/dist/substrate/lifo/shell/jobs.js": "abe3021328148e71492c333cf516bff643ea9cfe16f77261f3d9d887ab303e92",
@@ -1395,7 +1395,7 @@
     "packages/core/src/substrate/lifo/shell/default-shell.ts": "8c7a21fc2c087edea7092bb870045d876095f98bee450cbae6480606b0ca1906",
     "packages/core/src/substrate/lifo/shell/expander.ts": "89eb2441c7e39f41b4fc9c5e05bd2196f0245beed98ad0f96ea6976f27866787",
     "packages/core/src/substrate/lifo/shell/history.ts": "0ae843047db6009177eebd37734f8f5f70d4cd73c0f1cdc7360a20258a0cc2fe",
-    "packages/core/src/substrate/lifo/shell/interpreter.ts": "121ca397a995c5eb317b5037536385ea0b5007034efb73853e10d770260bc684",
+    "packages/core/src/substrate/lifo/shell/interpreter.ts": "999f33fdcb6dfab37170de1dc1f8c1879d80b9bb8e577fdf7d1f23cf42851ac1",
     "packages/core/src/substrate/lifo/shell/jobs.ts": "f9435425acebc8e5ee6300c5f7288bee096327b8930979d83a63d47206815637",
     "packages/core/src/substrate/lifo/shell/lexer.ts": "044a5f9b79e09af94c5c91bba60ae375181a9834f0bdd1259727af02352d957c",
     "packages/core/src/substrate/lifo/shell/names.ts": "d700bd2f6876440118c7dffea10a7b245692dc9232b79d82317435f9d9184fb2",
