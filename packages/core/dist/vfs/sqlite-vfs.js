@@ -2970,7 +2970,7 @@ export class SqliteVFS {
      * (or their trust run out) before the retry, so a writer meets each at most once.
      */
     readRecallAt(key) {
-        const met = [...this.readLeases].filter(([owner, lease]) => this.readCovers(lease, key) && !this.isHolder(owner));
+        const met = [...this.readLeases].filter(([owner, lease]) => (this.readCovers(lease, key) && !this.isHolder(owner) && lease.delegation.lapsed?.() !== true));
         if (met.length === 0)
             return null;
         const recall = () => Promise.all(met.map(([owner, lease]) => {

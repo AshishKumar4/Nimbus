@@ -138,6 +138,15 @@ export class Delegations {
             reads: false,
             // The session's own stores are written synchronously, and never leased.
             excludes: SESSION_KERNEL_ROOTS,
+            lapsed: () => {
+                if (held === null || this.held.get(held.owner) !== held)
+                    return true;
+                if (held.read.confirmedAt + READ_LEASE_TRUST_MS + READ_LEASE_MARGIN_MS > Date.now())
+                    return false;
+                this.counts.readExpired++;
+                held.end();
+                return true;
+            },
             recall: (kind) => {
                 if (held === null || this.held.get(held.owner) !== held)
                     return Promise.resolve();
