@@ -5396,8 +5396,11 @@ const __fsMod = (() => {
   async function _mkdirAsync(p, opts) { await _structuralAsync(() => _mkdirQueued(p, opts), "mkdir", p); }
   async function _unlinkAsync(p) { await _structuralAsync(() => _unlinkQueued(p), "unlink", p); }
   async function _rmdirAsync(p) { await _structuralAsync(() => _rmdirQueued(p), "rmdir", p); }
+  // A directory's move is the session's to answer: what it holds moves with
+  // it there, and only that answer shows its names where they went.
   async function _renameAsync(oldP, newP) {
-    await _structuralAsync(() => _renameQueued(oldP, newP, true), "rename", oldP, _statLadder(_resolve(oldP), true) !== undefined);
+    const source = _statLadder(_resolve(oldP), true);
+    await _structuralAsync(() => _renameQueued(oldP, newP, true), "rename", oldP, source !== undefined && !source.isDirectory());
   }
 
   async function _truncateAsync(p, len) {
