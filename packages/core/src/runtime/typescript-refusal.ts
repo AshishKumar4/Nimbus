@@ -2,6 +2,8 @@
 // that says it when the file is required or imported. Kept apart from
 // typescript-strip.ts, which loads amaro, so that a session never bundles it.
 
+import { unknownFileExtensionMessage } from '../_shared/esm-resolver.js';
+
 /** Why Node will not run a TypeScript file; `snippet` (with `filename` and `startLine`) where amaro shows the place. */
 export interface TypeScriptRefusal {
   code: 'ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX' | 'ERR_INVALID_TYPESCRIPT_SYNTAX' | 'ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING' | 'ERR_UNKNOWN_FILE_EXTENSION';
@@ -15,7 +17,7 @@ export interface TypeScriptRefusal {
 export function unknownExtensionRefusal(path: string): TypeScriptRefusal {
   return {
     code: 'ERR_UNKNOWN_FILE_EXTENSION',
-    message: `Unknown file extension "${path.slice(path.lastIndexOf('.'))}" for ${path}`,
+    message: unknownFileExtensionMessage(path),
     filename: path, startLine: 0, snippet: '',
   };
 }

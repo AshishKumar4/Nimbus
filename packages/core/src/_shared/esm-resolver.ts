@@ -84,6 +84,13 @@ export interface EsmResolver {
   packageScopeSync(url: string): { pjsonPath: string; type: 'module' | 'commonjs' | 'none' };
 }
 
+/** Node's ERR_UNKNOWN_FILE_EXTENSION message for the file at `path`. */
+export function unknownFileExtensionMessage(path: string): string {
+  const base = path.slice(path.lastIndexOf('/') + 1);
+  const dot = base.lastIndexOf('.');
+  return `Unknown file extension "${dot > 0 ? base.slice(dot) : ''}" for ${path}`;
+}
+
 /** What a resolver is created with beyond its host. */
 export interface EsmResolverOptions {
   /** The program's own conditions (`node --conditions`, `-C`, NODE_OPTIONS'), beside Node's defaults. */
@@ -623,9 +630,7 @@ export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOpt
     },
     assertLoadable({ format, path }) {
       if (format !== 'unknown' || path === undefined) return;
-      const base = path.slice(path.lastIndexOf('/') + 1);
-      const dot = base.lastIndexOf('.');
-      throw nodeError(TypeError, 'ERR_UNKNOWN_FILE_EXTENSION', `Unknown file extension "${dot > 0 ? base.slice(dot) : ''}" for ${path}`);
+      throw nodeError(TypeError, 'ERR_UNKNOWN_FILE_EXTENSION', unknownFileExtensionMessage(path));
     },
     validateAttributes(url, format, attributes) {
       for (const key of Object.keys(attributes)) {
