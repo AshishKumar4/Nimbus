@@ -466,7 +466,7 @@ export function noteClientActivity(host: HibHost, ctx: any): void {
  * reasons so a rollback from a future deploy that added new reasons doesn't
  * leave the alarm stuck.
  */
-export type AlarmReason = 'w9-flush' | 'log-janitor' | 'resident-launch' | 'resident-keepalive';
+export type AlarmReason = 'w9-flush' | 'log-janitor' | 'resident-launch' | 'resident-keepalive' | 'hosting-watch';
 
 /**
  * W9: ensure the alarm is set for the next flush window. Cheap to
@@ -506,12 +506,16 @@ export function scheduleHibFlush(host: HibHost, ctx: any): void {
  *     and SQL; re-arm at the next retention deadline, if any.
  *   - `'resident-keepalive'` → no work; the fire IS the work. Re-arms
  *     while a resident process is running, so the object stays in memory.
+ *   - `'hosting-watch'` → hostingWatch (session/rpc.ts hostingWatchFired):
+ *     a host holding processes for other sessions tells them of its own
+ *     reset; re-arms while it holds one.
  */
 export function dispatchAlarm(
   host: HibHost,
   ctx: any,
   pumpResidentLaunches?: () => Promise<void>,
   alarmInfo?: AlarmInvocationInfo,
+  hostingWatch?: () => Promise<number | null>,
 ): Promise<void> {
   return timers(host, ctx).dispatch({
     'w9-flush': () => {
@@ -529,6 +533,10 @@ export function dispatchAlarm(
     },
     'resident-keepalive': (now) => {
       const rearmAt = residentKeepaliveFired(host, ctx, now);
+      if (rearmAt !== null) return { rearmAt };
+    },
+    'hosting-watch': async () => {
+      const rearmAt = await hostingWatch?.() ?? null;
       if (rearmAt !== null) return { rearmAt };
     },
   }, () => {
