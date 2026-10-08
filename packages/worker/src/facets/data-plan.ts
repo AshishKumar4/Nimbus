@@ -113,6 +113,11 @@ function baseOf(k: string): string {
   return k.slice(k.lastIndexOf('/') + 1);
 }
 
+/** The `package-json` rule: a package.json anywhere but in a git directory. */
+export function isManifestKey(k: string): boolean {
+  return baseOf(k) === 'package.json' && !k.split('/').includes('.git');
+}
+
 /** The package directory a path sits in: up to the name after its last node_modules. */
 export function packageRootOf(k: string): string | null {
   const at = k.lastIndexOf('node_modules/');
@@ -440,7 +445,7 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
       if (entry.kind !== 'file') continue;
       if (exact.get(k) === true) seenFiles.add(k);
       const name = baseOf(k);
-      if (name === 'package.json' && !segs.includes('.git')) { take(entry, 'package-json'); continue; }
+      if (isManifestKey(k)) { take(entry, 'package-json'); continue; }
       if (cwdPrefix === '' || k.startsWith(cwdPrefix)) {
         const rel = cwdPrefix === '' ? segs : k.slice(cwdPrefix.length).split('/');
         if (!rel.slice(0, -1).some((s) => PROJECT_EXCLUDED.has(s))) { take(entry, 'project'); continue; }

@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a one-shot node process can read every installed package's
+  package.json synchronously on its first run, as a resident process can.
+  Package resolution reads manifests for names no closure walk sees: vite's
+  config load reads one for every import of the config to decide whether to
+  externalize it, and on a fresh create-react-router project every read
+  failed, so it bundled @react-router/dev, @tailwindcss/vite and babel into
+  the config and ran out of memory. The session reads the manifests once per
+  install and hands each launch the copies; a launch holds a copy only while
+  the file still has its content, and reads any other manifest itself.
+
 - Fixed: a one-shot node process reports the files it was refused, and the
   code it produced, as they happen, as a resident process does, not only in
   its exit report. A run the platform killed reported nothing, so its next

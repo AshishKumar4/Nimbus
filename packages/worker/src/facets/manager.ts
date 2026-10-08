@@ -52,6 +52,7 @@ import {
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge, RuntimeVfsDirEntry, RuntimeVfsStat, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { direntTypeOf, type KnownDirentType } from '@nimbus-sh/core/vfs/dirent-type.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import {
@@ -77,7 +78,7 @@ import type { NodeTypeScript } from '@nimbus-sh/core/runtime/typescript-strip.js
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
 import type { ModuleScope, PackageType } from '@nimbus-sh/core/runtime/module-format.js';
-import { linkTargetOf, packageRootOf, planFacetData } from './data-plan.js';
+import { isManifestKey, linkTargetOf, packageRootOf, planFacetData } from './data-plan.js';
 import {
   principalTag, profilePrincipal, ReadProfile, verifiedEvidence, type ReadProfileBucket, type StagedProfileEntry,
 } from './read-profile.js';
@@ -200,6 +201,7 @@ import {
   BUNDLE_MAX_ENCODED_BYTES,
   PREFETCH_CACHE_MAX_BYTES,
   FS_LIST_PAGE_LIMIT,
+  CHUNK_SIZE,
 } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
@@ -803,6 +805,12 @@ function bundleUsesNodeSqlite(
   return false;
 }
 
+/**
+ * The most manifest text a one-shot's copies carry (_installedManifests);
+ * past it the process fetches the rest as it fetches any planned file.
+ */
+const MANIFEST_COPIES_MAX_BYTES = 4 * 1024 * 1024;
+
 /** Where inlined wasm images are staged, one kernel-owned file per content key. */
 const INLINE_WASM_DIR = '/var/lib/nimbus/inline-wasm';
 
@@ -1027,7 +1035,7 @@ class __ProcessExit extends Error {
 export default {
   async fetch(request, workerEnv, workerCtx) {
     const args = await request.json();
-    const { argv, nodeCommandLine, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan } = args;
+    const { argv, nodeCommandLine, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan, manifests } = args;
     const __nimbusProcessId = Number(args.pid || 1);
     // A pipe or redirect streams through this input channel (exec's
     // _pumpStdinPipe); node-shims' process.stdin and fd 0 read it.
@@ -1091,6 +1099,7 @@ ${sources.residentStore}
     __residentSetStorage(undefined, __supervisor);
     __nsSetCred(cred);
     __residentSetPlan(dataPlan);
+    __residentSetManifests(manifests);
     __residentSetPushRoots([_cwd || "/home/user", "/tmp"]);
     // The module bundle stays at module scope: a reused isolate adopts it
     // again on its next run, and its text cells are shared, not copied.
@@ -6081,6 +6090,67 @@ export class FacetManager {
     return [...plan];
   }
 
+  /** Per credential: the manifest copies read at one install revision, as the launch body carries them. */
+  private readonly manifestCopies = new Map<string, { install: string; json: string }>();
+  private static readonly MANIFEST_COPIES_MAX_CREDS = 4;
+
+  /**
+   * Every package.json the process's credential can see (data-plan.ts's
+   * `package-json` rule, which a resident's plan applies itself), as copies a
+   * one-shot is handed beside its plan: its store holds each manifest its own
+   * listing names from boot (facet-resident-store's __residentSetManifests).
+   * A program resolves package names its closure never named, and reads each
+   * manifest synchronously to do it: vite's config load, for every import of
+   * the config it decides whether to externalize.
+   *
+   * Read once per install revision (NpmCache.installRevision) and kept as the
+   * JSON the body carries, so a launch costs the copies' bytes and no read of
+   * each. A copy carries its file's content key and the process holds it only
+   * where its listing shows the same key, so a manifest written since (or
+   * installed outside npm) is fetched rather than served old. One that is not
+   * a single chunk (its content key is not the sha256 of its bytes), or past
+   * MANIFEST_COPIES_MAX_BYTES, is fetched as well.
+   */
+  private async _installedManifests(entry: ProcessEntry, pacer: TurnBudget): Promise<string> {
+    if (!this.filesystem) return '{"files":{}}';
+    const { cred } = entry;
+    const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
+    const sql = (this.ctx.storage as { sql?: SqlStorage }).sql;
+    const install = sql ? new NpmCache(sql).installRevision() : '';
+    const kept = this.manifestCopies.get(credKey);
+    if (kept !== undefined && kept.install === install) return kept.json;
+    const vfs = this.filesystem.bind({ pid: entry.pid, cred });
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    const files: Record<string, [contentKey: string, text: string]> = {};
+    let bytes = 0;
+    for (let after: string | null = null; ;) {
+      const page = await vfs.list(after, FS_LIST_PAGE_LIMIT);
+      await pacer.spend(page.entries.length * 64);
+      for (const listed of page.entries) {
+        const k = stripLeadingSlashes(listed.path);
+        if (listed.kind !== 'file' || listed.contentKey === undefined || !isManifestKey(k)) continue;
+        if (listed.size === 0 || listed.size > CHUNK_SIZE || bytes + listed.size > MANIFEST_COPIES_MAX_BYTES) continue;
+        const read = await filesOf(vfs).readBytes(k).catch(() => null);
+        if (read === null || await sha256Hex(read) !== listed.contentKey) continue;
+        let text: string;
+        try { text = decoder.decode(read); } catch { continue; }
+        files[k] = [listed.contentKey, text];
+        bytes += read.byteLength;
+        await pacer.spend(read.byteLength);
+      }
+      if (page.next === null) break;
+      after = page.next;
+    }
+    const json = JSON.stringify({ files });
+    this.manifestCopies.delete(credKey);
+    this.manifestCopies.set(credKey, { install, json });
+    for (const oldest of this.manifestCopies.keys()) {
+      if (this.manifestCopies.size <= FacetManager.MANIFEST_COPIES_MAX_CREDS) break;
+      this.manifestCopies.delete(oldest);
+    }
+    return json;
+  }
+
   /**
    * Paths earlier launches of the same build missed in this session. Other
    * sessions' misses (the shared read profile) join the module map instead,
@@ -6810,6 +6880,8 @@ export class FacetManager {
       // synchronously by a path its code spells out needs no listing, and is
       // its data plan.
       let dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+      // And every manifest it can see, from what the session read once per install.
+      const manifests = await this._installedManifests(entry, pacer);
       // A stoppable run's network goes through the session (SupervisorRPC's
       // fetch and connect), which records what it answers; its code is
       // digested, so a run after a stop that would load other code does not.
@@ -6826,7 +6898,7 @@ export class FacetManager {
       for (let stops = 0; ; stops++) {
         let outcome: FacetExecResult | { stop: StopRecord };
         try {
-          outcome = await this._execViaLoader(code, launch, entry, vfsState, dataPlan, runSignal, pacer, diagSink);
+          outcome = await this._execViaLoader(code, launch, entry, vfsState, dataPlan, manifests, runSignal, pacer, diagSink);
         } catch (error) {
           const changed = error instanceof ReplayCodeChanged;
           if (!changed && (!divergence.signal.aborted || abortController.signal.aborted)) throw error;
@@ -7428,6 +7500,8 @@ export class FacetManager {
     entry: ProcessEntry,
     vfsState: FacetVfsState,
     dataPlan: string[],
+    /** _installedManifests' JSON. */
+    manifests: string,
     signal: AbortSignal,
     pacer: TurnBudget,
     diagSink?: ExecDiagSink,
@@ -7444,7 +7518,7 @@ export class FacetManager {
     let __loadStart = 0;
     let __runStart = 0;
 
-    const body = JSON.stringify({
+    const fields = JSON.stringify({
       pid: entry.pid,
       argv: opts.argv || [],
       nodeCommandLine: opts.node ?? null,
@@ -7472,6 +7546,8 @@ export class FacetManager {
       dataPlan,
       ...(diagSink ? { diag: true } : {}),
     });
+    // The manifests ride as the JSON they are kept as, not stringified again per run.
+    const body = `${fields.slice(0, -1)},"manifests":${manifests}}`;
 
     try {
       return await this.processHost.runOnce(
