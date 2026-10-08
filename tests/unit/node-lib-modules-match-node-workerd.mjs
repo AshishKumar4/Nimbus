@@ -1,5 +1,5 @@
 // @serial
-// assert, assert/strict, querystring and punycode are Node v22.22.3's own
+// assert, assert/strict, util, querystring and punycode are Node v22.22.3's own
 // modules (node-lib-source.ts, run over node-lib-host.ts): each program here
 // prints what host Node prints, byte for byte, and exits as it does.
 //
@@ -9,7 +9,13 @@
 // AssertionError, match, rejects, strict and CallTracker were missing.
 // querystring.parse kept one value of a repeated key and returned a plain
 // object, stringify dropped arrays and null, and punycode was missing.
-// util.deprecate warned nothing and util.isDeepStrictEqual was JSON.stringify.
+// util was a sketch too: deprecate warned nothing, isDeepStrictEqual was
+// JSON.stringify, promisify knew no util.promisify.custom (promisify(exec)
+// resolved stdout alone, promisify(setTimeout) never resolved), styleText
+// colored a pipe and took any style, inherits took no superclass, parseArgs
+// was a port of its own, and MIMEType, parseEnv, getSystemErrorName, aborted,
+// getCallSites, diff, debug, the deprecated is* checks and _extend were
+// missing.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -121,6 +127,68 @@ console.log(require('pkg').encoded, require('punycode').encode('ü'));
 `,
   'node_modules/pkg/package.json': '{"name":"pkg","main":"index.js"}',
   'node_modules/pkg/index.js': "exports.encoded = require('punycode').encode('mañana');\n",
+  'util.cjs': SHOW + String.raw`
+const util = require('util');
+const { exec, execFile } = require('child_process');
+const show2 = (label, f) => { try { const r = f(); console.log(label + ': ' + (typeof r === 'string' ? r : JSON.stringify(r))); } catch (e) { show(label, e); } };
+// In JSON, its escapes are text the terminal keeps.
+show2('styleText pipe', () => [util.styleText('red', 'plain')]);
+show2('styleText unchecked', () => [util.styleText(['bold', 'underline'], 'styled', { validateStream: false }), util.styleText('dim', util.styleText('bold', 'nest') + 'ed', { validateStream: false })]);
+show2('styleText unknown', () => util.styleText('nope', 'x'));
+show2('styleText text', () => util.styleText('red', 5));
+show2('parseArgs', () => util.parseArgs({ args: ['-f', '--bar', 'b', '--', 'x'], options: { foo: { type: 'boolean', short: 'f' }, bar: { type: 'string' } }, allowPositionals: true }));
+show2('parseArgs tokens', () => util.parseArgs({ args: ['-ab', '--c=1'], options: { a: { type: 'boolean', short: 'a' }, b: { type: 'boolean', short: 'b' }, c: { type: 'string' } }, tokens: true }).tokens);
+show2('parseArgs unknown', () => util.parseArgs({ args: ['--x'], options: {} }));
+show2('parseArgs positional', () => util.parseArgs({ args: ['pos'], options: {} }));
+show2('parseArgs missing', () => util.parseArgs({ args: ['--s'], options: { s: { type: 'string' } } }));
+// json-server's bin reads its options with parseArgs at module init.
+const jsonServer = { port: { type: 'string', short: 'p', default: '3000' }, host: { type: 'string', short: 'h', default: 'localhost' }, static: { type: 'string', short: 's', multiple: true, default: [] }, help: { type: 'boolean' }, version: { type: 'boolean' } };
+show2('parseArgs defaults', () => util.parseArgs({ args: ['--version'], options: jsonServer, allowPositionals: true }));
+show2('parseArgs multiple', () => util.parseArgs({ args: ['-p', '4000', '--host=0.0.0.0', '-s', 'public', '-s', 'assets', 'db.json'], options: jsonServer, allowPositionals: true }));
+const opts = { verbose: { type: 'boolean', short: 'v' }, force: { type: 'boolean', short: 'f' }, out: { type: 'string', short: 'o' }, color: { type: 'boolean' } };
+show2('parseArgs grouped', () => util.parseArgs({ args: ['-vf', '-odist', '--', '--not-an-option', 'x'], options: opts, allowPositionals: true }));
+show2('parseArgs negative', () => util.parseArgs({ args: ['--no-color'], options: opts, allowNegative: true }));
+show2('parseArgs option value', () => util.parseArgs({ args: ['--out', '--verbose'], options: opts }));
+show2('parseArgs boolean value', () => util.parseArgs({ args: ['--verbose=yes'], options: opts }));
+show2('parseArgs bad type', () => util.parseArgs({ args: [], options: { bad: { type: 'number' } } }));
+show2('parseArgs lax', () => util.parseArgs({ args: ['--unknown', 'pos', '--k=v'], strict: false }));
+show2('parseArgs argv', () => util.parseArgs({ strict: false }));
+show2('parseEnv', () => util.parseEnv('A=1\nexport B="x\\ny"\n# c\nC=\'q\' # tail\nD=\x60b\x60\nE\nF=  sp  \nG="multi\nline"\nZ=9\n10=t\nH="open\nI=last'));
+show2('system errors', () => [util.getSystemErrorName(-2), util.getSystemErrorMessage(-13), util.getSystemErrorName(-99999), util.getSystemErrorMap().size, util.getSystemErrorMap().get(-98)]);
+show2('system error positive', () => util.getSystemErrorName(1));
+show2('system error type', () => util.getSystemErrorMessage('x'));
+show2('errnoException', () => { const e = util._errnoException(-2, 'open', 'x'); return [e.message, Object.keys(e), e.constructor.name]; });
+show2('exceptionWithHostPort', () => { const e = util._exceptionWithHostPort(-111, 'connect', '1.2.3.4', 80, 'here'); return [e.message, Object.keys(e)]; });
+show2('MIMEType', () => { const m = new util.MIMEType('Text/HTML; Charset="utf-8"; q=1'); m.params.set('x', 'y z'); return [String(m), m.essence, [...m.params.keys()]]; });
+show2('MIMEType bad', () => new util.MIMEType('bad'));
+show2('toUSVString', () => util.toUSVString('a\ud800b'));
+show2('inherits none', () => util.inherits(function A() {}, undefined));
+show2('inherits', () => { function A() {} function B() {} util.inherits(A, B); return [Object.getPrototypeOf(A.prototype) === B.prototype, A.super_ === B]; });
+show2('promisify none', () => util.promisify(5));
+show2('callbackify none', () => util.callbackify(5));
+show2('legacy checks', () => [util.isArray([]), util.isBoolean(1), util.isBuffer(Buffer.alloc(1)), util.isDate(new Date()), util.isError(new Error()), util.isFunction(() => {}), util.isNull(null), util.isNullOrUndefined(undefined), util.isNumber(1), util.isObject({}), util.isPrimitive('s'), util.isRegExp(/x/), util.isString('s'), util.isSymbol(Symbol()), util.isUndefined(undefined)]);
+show2('extend', () => util._extend({ a: 1 }, { b: 2 }));
+show2('diff', () => util.diff(['a', 'b', 'c'], ['a', 'x', 'c']));
+show2('diff strings', () => util.diff('abc', 'abd'));
+show2('debuglog', () => [typeof util.debuglog('nimbus'), util.debuglog('nimbus').enabled, util.debug === util.debuglog]);
+show2('callsites', () => util.getCallSites(1).map(({ functionName, scriptName, lineNumber, columnNumber, column }) => [functionName, scriptName.split('/').at(-1), lineNumber, columnNumber, column]));
+show2('callsites range', () => util.getCallSites(0));
+show2('deepStrictEqual', () => [util.isDeepStrictEqual(new Set([1]), new Set([1])), util.isDeepStrictEqual([1], ['1'])]);
+show2('names', () => Object.keys(util).join(','));
+show2('promisify.custom', () => [typeof setTimeout[util.promisify.custom], typeof exec[util.promisify.custom], util.promisify(exec) === exec[util.promisify.custom]]);
+(async () => {
+  console.log('promisify', await util.promisify((x, cb) => cb(null, x * 2))(21));
+  try { await util.promisify((cb) => cb(new RangeError('cb')))(); } catch (e) { console.log('promisify rejects', e.message); }
+  console.log('promisify setTimeout', await util.promisify(setTimeout)(1, 'later'));
+  console.log('promisify exec', JSON.stringify(await util.promisify(exec)('echo hi')));
+  try { await util.promisify(execFile)('sh', ['-c', 'echo out; echo err >&2; exit 3']); } catch (e) { console.log('promisify execFile fails', e.code, JSON.stringify(e.stdout), JSON.stringify(e.stderr)); }
+  await new Promise((resolve) => util.callbackify(async () => { throw null; })((e) => { console.log('callbackify', Object.keys(e), e.message, e.reason); resolve(); }));
+  await new Promise((resolve) => util.callbackify(async (x) => x + 1)(1, (e, v) => { console.log('callbackify value', e, v); resolve(); }));
+  await util.aborted(AbortSignal.abort(), {});
+  console.log('aborted');
+  try { await util.aborted({}, {}); } catch (e) { show('aborted not a signal', e); }
+})();
+`,
   'deprecate.cjs': SHOW + String.raw`
 const util = require('util');
 const old = util.deprecate(function old(a, b) { return a + b; }, 'old() is going away', 'DEP_NIMBUS');
@@ -132,7 +200,8 @@ console.log(plain(), plain());
 attempt('deprecate code', () => util.deprecate(() => {}, 'm', 5));
 `,
 };
-const PROGRAMS = ['assert.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs'];
+// Each program and its arguments.
+const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs'];
 
 const host = mkdtempSync(join(tmpdir(), 'node-lib-'));
 process.on('exit', () => rmSync(host, { recursive: true, force: true }));
@@ -141,7 +210,7 @@ for (const [path, text] of Object.entries(FILES)) {
   writeFileSync(join(host, path), text);
 }
 const expected = new Map(PROGRAMS.map((program) => {
-  const ran = spawnSync('node', [program], { cwd: host, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: host } });
+  const ran = spawnSync('node', program.split(' '), { cwd: host, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: host } });
   return [program, `${ran.stdout}exit ${ran.status}\n`];
 }));
 

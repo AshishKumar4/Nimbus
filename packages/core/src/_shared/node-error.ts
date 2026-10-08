@@ -213,12 +213,18 @@ type Message = string | ((...args: never[]) => string);
 const nodeErrorMessages: Record<string, readonly [Message, ...ErrorClass[]]> = {
   ERR_AMBIGUOUS_ARGUMENT: ['The "%s" argument is ambiguous. %s', TypeError],
   ERR_CONSTRUCT_CALL_REQUIRED: ['Class constructor %s cannot be invoked without `new`', TypeError],
+  ERR_FALSY_VALUE_REJECTION: [function (this: Record<string, unknown>, reason: unknown) {
+    this.reason = reason;
+    return 'Promise was rejected with falsy value';
+  }, Error],
   ERR_INTERNAL_ASSERTION: [(message?: string) => {
     const suffix = 'This is caused by either a bug in Node.js or incorrect usage of Node.js internals.\n'
       + 'Please open an issue with this stack trace at https://github.com/nodejs/node/issues\n';
     return message === undefined ? suffix : `${message}\n${suffix}`;
   }, Error],
   ERR_INVALID_ARG_TYPE: [invalidArgTypeMessage, TypeError],
+  ERR_INVALID_MIME_SYNTAX: [(production: string, str: string, invalidIndex: number) =>
+    `The MIME syntax for a ${production} in "${str}" is invalid${invalidIndex !== -1 ? ` at ${invalidIndex}` : ''}`, TypeError],
   ERR_INVALID_ARG_VALUE: [(name: string, value: unknown, reason = 'is invalid') => {
     let inspected = inspectValue(value, {});
     if (inspected.length > 128) inspected = `${inspected.slice(0, 128)}...`;
@@ -232,6 +238,11 @@ const nodeErrorMessages: Record<string, readonly [Message, ...ErrorClass[]]> = {
     const wrapped = names.map((name) => (Array.isArray(name) ? name.map((n) => `"${n}"`).join(' or ') : `"${name}"`));
     return `The ${formatList(wrapped, 'and')} argument${names.length > 1 ? 's' : ''} must be specified`;
   }, TypeError],
+  ERR_PARSE_ARGS_INVALID_OPTION_VALUE: ['%s', TypeError],
+  ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL: ["Unexpected argument '%s'. This command does not take positional arguments", TypeError],
+  ERR_PARSE_ARGS_UNKNOWN_OPTION: [(option: string, allowPositionals: boolean) => `Unknown option '${option}'${allowPositionals
+    ? `. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- ${JSON.stringify(option)}`
+    : ''}`, TypeError],
   ERR_OUT_OF_RANGE: [(str: string, range: string, input: unknown, replaceDefaultBoolean = false) => {
     let received: string;
     if (Number.isInteger(input) && Math.abs(input as number) > 2 ** 32) {
@@ -249,6 +260,7 @@ const nodeErrorMessages: Record<string, readonly [Message, ...ErrorClass[]]> = {
     `${name} should be ${allowZero ? '>=' : '>'} 0 and < 65536. Received ${determineSpecificType(port)}.`, RangeError],
   ERR_UNAVAILABLE_DURING_EXIT: ['Cannot call function in process exit handler', Error],
   ERR_UNKNOWN_SIGNAL: ['Unknown signal: %s', TypeError],
+  ERR_WORKER_UNSUPPORTED_OPERATION: ['%s is not supported in workers', TypeError],
 };
 
 /** `new codes.ERR_X(...args)`: Node's error for the code, its stack from where it was made. */
@@ -256,8 +268,11 @@ export type NodeErrorConstructor = ((...args: never[]) => Error) & { [base: stri
 
 function nodeErrorCodeConstructor(code: string, message: Message, Base: ErrorClass): NodeErrorConstructor {
   const make = function (...args: never[]): Error {
-    const text = typeof message === 'string' ? formatNodeMessage(message, args) : Reflect.apply(message, undefined, args);
-    return made(Base, code, text, undefined, make);
+    if (typeof message === 'string') return made(Base, code, formatNodeMessage(message, args), undefined, make);
+    // A message that sets fields on its error (ERR_FALSY_VALUE_REJECTION's reason) sets them after its code.
+    const fields: Record<string, unknown> = {};
+    const text = Reflect.apply(message, fields, args);
+    return made(Base, code, text, Object.keys(fields).length > 0 ? fields : undefined, make);
   } as NodeErrorConstructor;
   Object.defineProperty(make, 'name', { value: 'NodeError' });
   return make;

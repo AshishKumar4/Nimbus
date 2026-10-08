@@ -806,6 +806,22 @@ class __NimbusCallSite {
 }
 // What a runtime's shims format a stack with instead (node --enable-source-maps): null to keep the hook's own.
 let __nimbusStackFormatter = null;
+// V8's call sites while __nimbusCallSites captures them (the program's at their file's places).
+let __nimbusCapturingSites = false;
+// The \`count\` frames below \`above\`, as call sites: what util.getCallSites reads (Node's util binding).
+function __nimbusCallSites(count, above) {
+  const holder = {};
+  const limit = Error.stackTraceLimit;
+  Error.stackTraceLimit = count;
+  __nimbusCapturingSites = true;
+  try {
+    Error.captureStackTrace(holder, above);
+    return holder.stack;
+  } finally {
+    __nimbusCapturingSites = false;
+    Error.stackTraceLimit = limit;
+  }
+}
 function __nimbusUseStackFormatter(format) {
   __nimbusStackFormatter = format;
 }
@@ -813,6 +829,7 @@ function __nimbusUseStackFormatter(format) {
   let __userPrepare;
   const __apply = Reflect.apply;
   const __prepare = function prepareStackTrace(error, sites) {
+    if (__nimbusCapturingSites) return sites.map(__NimbusCallSite.of);
     // As Node's prepareStackTraceCallback calls it: a method of Error.
     if (typeof __userPrepare === "function") return __apply(__userPrepare, globalThis.Error, [error, sites.map(__NimbusCallSite.of)]);
     let stack;

@@ -36,6 +36,14 @@ const LIB = {
   'internal/querystring': '92d0cbd561d7cce93936b083d56d2a41063d177f3aa6772ae2c1871f160163d1',
   querystring: '4035dd8989e502f3c69eeba0eaeb9851c7609d749674a6bcbb043a1a0a65b507',
   punycode: 'c5c75d5f31323affefa3595e63b3c50bca8bf7a2766936699e20460398e61717',
+  'internal/streams/utils': '76f2a40f2e1b799a575116036549bf5eca5f69b9038a77b1016eee823e51625f',
+  'internal/util/debuglog': '4471d0ba1b85d272e583aef5ec9fe05c28377bf59b923523495bcba46a858fec',
+  'internal/mime': 'a926034befba38450e6198f7d9a1b27a4fb3dcf285cc2ba026adf64f95414430',
+  'internal/util/diff': '01aee993a6a0bc81c3cdfed2aebfe286fae25293b6fef110dd8bcb16266fe63e',
+  'internal/util/parse_args/utils': '15b86ef2cb0355c3b86be9b87963e336d50dc51c81a274307b59fed75bac2056',
+  'internal/util/parse_args/parse_args': 'a20438c20034305bdf1ef0053a938d9b5ae12865caca964dac79e897d38052a6',
+  'internal/util/trace_sigint': 'a40ab7d0652fac3691cb83d1084a94e1559f9a7773c17c8a6bdb51381530dc8c',
+  util: '0499a613f2263f431151eb41380814a851b8cfecbf45044cfdd245e0f02e6dc6',
 };
 const SOURCES = {
   primordials: {
@@ -104,12 +112,26 @@ console.log(JSON.stringify({ version: process.version, builtin }));
   return builtin;
 }
 
+/**
+ * libuv's errors as Node reports them (util.getSystemErrorMap: errno, name,
+ * message), measured on real node: what its uv binding's error map holds on
+ * Linux, Nimbus's platform.
+ */
+function measureUvErrors() {
+  const node = spawnSync('node', ['-e', 'console.log(JSON.stringify({ version: process.version, platform: process.platform, errors: [...require("util").getSystemErrorMap()].map(([errno, [name, message]]) => [errno, name, message]) }))'], { encoding: 'utf8' });
+  if (node.status !== 0) throw new Error(`node: ${node.stderr}`);
+  const { version, platform, errors } = JSON.parse(node.stdout);
+  if (version !== NODE_VERSION || platform !== 'linux') throw new Error(`libuv's errors are measured on linux node ${NODE_VERSION}; this is ${platform} ${version}`);
+  return errors;
+}
+
 const [primordials, eastAsianWidth, ...lib] = await Promise.all([
   fetchPinned(SOURCES.primordials), fetchPinned(SOURCES.eastAsianWidth),
   ...Object.entries(LIB).map(([id, sha256]) => fetchPinned({ url: libUrl(id), sha256 })),
 ]);
 const sources = Object.fromEntries(Object.keys(LIB).map((id, i) => [id, lib[i]]));
 const builtinObjects = measureBuiltinObjects();
+const uvErrors = measureUvErrors();
 const output = `/**
  * Node ${NODE_VERSION}'s own modules as Node runs them, over the primordials
  * lib/internal/per_context/primordials.js builds: upstream's text byte for
@@ -125,7 +147,8 @@ ${Object.keys(LIB).map((id) => ` *   ${libUrl(id)}`).join('\n')}
  *
  * NODE_BUILTIN_OBJECTS, the names inspect.js counts as built-in, is measured
  * on node ${NODE_VERSION}: inspect.js reads them off the global object when Node
- * loads it, before Node adds its own globals.
+ * loads it, before Node adds its own globals. NODE_UV_ERRORS, libuv's error
+ * map (util.getSystemErrorMap), is measured on the same node on linux.
  *
  * Node ${NODE_VERSION}'s SourceMap (lib/internal/source_map/source_map.js) keeps
  * its own Chromium BSD notice; the shims' --enable-source-maps reads maps with it.
@@ -150,6 +173,8 @@ export const NODE_PRIMORDIALS_SHA256 = '${SOURCES.primordials.sha256}';
 export const NODE_PRIMORDIALS_SOURCE: string = ${JSON.stringify(primordials)};
 /** The names inspect.js counts as built-in on node ${NODE_VERSION}, measured. */
 export const NODE_BUILTIN_OBJECTS: readonly string[] = ${JSON.stringify(builtinObjects)};
+/** libuv's errors on linux node ${NODE_VERSION}, measured: [errno, name, message], in its map's order. */
+export const NODE_UV_ERRORS: readonly (readonly [number, string, string])[] = ${JSON.stringify(uvErrors)};
 /** The W and F ranges of EastAsianWidth.txt ${UNICODE_VERSION}, merged: \`first[-last]\` in hex, comma-separated, ascending. */
 export const EAST_ASIAN_WIDE_RANGES = '${wideRanges(eastAsianWidth)}';
 `;

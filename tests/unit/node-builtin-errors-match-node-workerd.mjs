@@ -31,6 +31,12 @@ const shape = (e) => {
   let string; try { string = String(e); } catch { string = '<toString threw>'; }
   return { name: e.name, code: e.code, ctor: e.constructor && e.constructor.name, header, string, keys: Object.keys(e), ownName: Object.prototype.hasOwnProperty.call(e, 'name'), message: e.message };
 };
+// Each call starts with V8's stack limit: util._errnoException that throws
+// leaves it 0, in Node as here, and a stackless error reads differently.
+const stackTraceLimit = Error.stackTraceLimit;
+// An error a call raises later, out of band (workerd's crypto keygen calls the
+// callback it was not given), is no call's: it does not end the measurement.
+process.on('uncaughtException', (e) => process.stderr.write('uncaught: ' + e.message + '\n'));
 (async () => {
   for (const name of MODULES) {
     const mod = require(name);
@@ -40,6 +46,7 @@ const shape = (e) => {
       const isClass = /^[A-Z]/.test(key);
       for (const args of ARGS) {
         const row = { id, args: args.map(String) };
+        Error.stackTraceLimit = stackTraceLimit;
         let result;
         try {
           result = isClass ? new mod[key](...args) : mod[key].apply(mod, args);
