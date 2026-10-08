@@ -583,6 +583,17 @@ export interface VfsListPage {
     entries: VfsListEntry[];
     next: string | null;
 }
+/**
+ * Everything beneath a directory, as {@link VfsListPage} lists it, in one
+ * page read in one turn (fsSnapshot): every entry is current at `rev`, and
+ * the subtree is listed whole. A subtree with more entries than asked for is
+ * refused (E2BIG), never cut short.
+ */
+export interface VfsSnapshot {
+    epoch: string;
+    rev: number;
+    entries: VfsListEntry[];
+}
 export interface RuntimeProcessBridge {
     spawn(command: string, args: string[], options?: {
         cwd?: string;

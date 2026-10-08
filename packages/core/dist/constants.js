@@ -122,6 +122,9 @@ export const FS_READ_BATCH_REQUEST_BYTES = 4 * 1024 * 1024;
 // deepest realistic paths: a node_modules path runs ~200 bytes, so a full
 // page is ~1.6 MB against the 28 MiB bound.
 export const FS_LIST_PAGE_LIMIT = 8192;
+// Entries one subtree snapshot (fsSnapshot) carries before it is refused
+// (E2BIG): two list pages' worth, in one round trip and one revision.
+export const FS_SNAPSHOT_MAX_ENTRIES = 2 * FS_LIST_PAGE_LIMIT;
 // Names a process's listing takes from mounted filesystems (an embedder's
 // Drive, container or device), per launch. SQLite is listed whole, because a
 // listing of it is one index scan; a mount is walked through its readdir, one

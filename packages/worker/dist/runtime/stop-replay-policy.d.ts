@@ -100,6 +100,12 @@ export declare const REPLAY_OPERATION_POLICY: {
             entries?: unknown[];
         } | null;
     };
+    fsSnapshot: {
+        kind: "observation";
+        answer: (value: unknown) => {
+            entries?: unknown[];
+        } | null;
+    };
     fsStorageGrant: {
         kind: "observation";
         args: (a: readonly unknown[]) => unknown[];

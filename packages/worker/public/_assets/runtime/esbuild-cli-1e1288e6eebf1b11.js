@@ -706,7 +706,8 @@ return globalThis.Go;
     "fsAcquired",
     "fsStorageGrant",
     "fsReadRangeUncached",
-    "fsReadBatch"
+    "fsReadBatch",
+    "fsSnapshot"
   ];
   var SUPERVISOR_ANSWERED_METHODS = [
     ...FILESYSTEM_ANSWERED_RPC_METHODS,

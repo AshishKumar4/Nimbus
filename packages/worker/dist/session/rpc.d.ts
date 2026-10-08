@@ -27,7 +27,7 @@ import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import { type ResidentFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
-import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsSnapshot } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';
 import type { NimbusSession } from './nimbus-session.js';
@@ -273,6 +273,8 @@ export declare function _acquireForRoutedRequest(self: RpcHost, pid: number): Pr
  * — a process must not learn of a path it could not stat.
  */
 export declare function _rpcFsList(self: RpcHost, after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
+/** Everything beneath directory `root` a process may see, in one answer (subtreeSnapshot). */
+export declare function _rpcFsSnapshot(self: RpcHost, root: string, maxEntries: number, pid?: number): Promise<VfsSnapshot>;
 export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
 /** A bounded range used only to prepare fd 0, never an ordinary file read. */
 export declare function _rpcStdinFileRead(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<{

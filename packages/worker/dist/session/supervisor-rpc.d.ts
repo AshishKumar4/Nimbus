@@ -55,6 +55,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
         granted: number;
     }>;
     fsList(after?: string | null, limit?: number | null): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsListPage>;
+    fsSnapshot(root: string, maxEntries: number): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsSnapshot>;
     wsOpen(url: string, protocols: string[], headers?: import("./ws-relay.js").WsRelayHeaders, refusalBody?: boolean): Promise<import("./ws-relay.js").WsRelayOpened>;
     wsPoll(id: number, waitMs: number): Promise<unknown[]>;
     wsSend(id: number, text: string | null, bytes: Uint8Array | null): Promise<void>;

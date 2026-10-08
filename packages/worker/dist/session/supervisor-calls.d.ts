@@ -52,7 +52,7 @@ import type { SupervisorOpEnvelope, SupervisorOpName, WriteFileStatAnswer } from
 import { type SupervisorDeliveredOpName, type SupervisorJoinedReadOpName } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { R2CacheClient } from '../npm/r2-cache.js';
-import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsSnapshot, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type SupervisorAnswer, type SupervisorAnsweredMethod } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { type FsAcquireArgs, type FsAcquiredAnswer, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
@@ -237,6 +237,8 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
         granted: number;
     }>;
     fsList(after?: string | null, limit?: number | null): Promise<VfsListPage>;
+    /** Everything beneath directory `root`, in one page and one revision; E2BIG past `maxEntries` (session/rpc.ts _rpcFsSnapshot). */
+    fsSnapshot(root: string, maxEntries: number): Promise<VfsSnapshot>;
     /**
      * WebSocket relay. A facet does not open its own sockets: the supervisor
      * terminates them and hands frames back through `wsPoll`, so an inbound
