@@ -1781,6 +1781,14 @@ export declare class FacetManager {
      * before any caller's own `done` handler, so the process has ended by name
      * when they look. The placement goes to the process log under NIMBUS_DEBUG.
      */
+    /**
+     * The one watcher of a hosted process's lifecycle: a lost host ends it
+     * (ProcessHostLost), and `diesAlone`, a booted resident that logs its
+     * changes, dying on its own (out of memory, out of CPU) ends it too, its
+     * log drained as it is released and only then its exit told. A boot that
+     * fails or stops (to wait for stdin) is its launcher's to handle; a
+     * lifetime resident's caller watches its lifecycle itself.
+     */
     private _watchHost;
     /**
      * The reader the fabric completes a boot spec's by-path members with.
