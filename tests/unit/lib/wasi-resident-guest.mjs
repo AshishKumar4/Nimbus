@@ -47,7 +47,8 @@ export async function residentGuest({ refuse = () => false } = {}) {
   const processes = new SessionProcessSupervisor();
   const { pid } = processes.spawn('guest', ['guest'], '/home/user', { cred: USER });
   const authority = new ProcessFiles(raw);
-  const bridge = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
+  const retired = [];
+  let bridge = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
   let dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge, host: {} });
   const own = authority.bind({ pid, cred: USER });
   const refusedHandles = new Set();
@@ -100,7 +101,10 @@ export async function residentGuest({ refuse = () => false } = {}) {
     restartSession() {
       const next = new SessionProcessSupervisor();
       next.setPidBase(1_000_000);
+      const previous = bridge;
+      bridge = createSupervisorBridgeStore({ vfs: raw, processes: next, filesystem: authority });
       dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes: next, bridge, host: {} });
+      retired.push(previous);
     },
     /** path_open: the fd, or a thrown errno. `flags`: { create, truncate, exclusive, directory, write }. */
     async open(name, { create = false, truncate = false, exclusive = false, directory = false, write = false } = {}) {
@@ -163,7 +167,7 @@ export async function residentGuest({ refuse = () => false } = {}) {
       if (errno !== 0) throw Object.assign(new Error(`fd_filestat_get: errno ${errno}`), { errno });
       return { nlink: Number(view().getBigUint64(OUT + 24, true)), size: Number(view().getBigUint64(OUT + 32, true)) };
     },
-    async dispose() { await bridge.dispose(); await authority.releaseProcess(pid); harness.db.close(); },
+    async dispose() { for (const b of [...retired, bridge]) await b.dispose(); await authority.releaseProcess(pid); harness.db.close(); },
   };
   // The store boots on the first call; wait until it answers.
   await guest.open('home/user', { directory: true }).then((fd) => guest.close(fd));
