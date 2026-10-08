@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// createWorkerdSlots (node-inspect-host.ts WORKERD_SLOTS_SOURCE) holds
+// createWorkerdSlots (node-lib-host.ts WORKERD_SLOTS_SOURCE) holds
 // Array.prototype.includes only from the start of a read to workerd's first
 // cycle check, which no program code runs before, and lets go of it
 // whatever happens: when the inspect throws inside that window or after it,
@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import { types } from 'node:util';
 
-import { WORKERD_SLOTS_SOURCE } from '../../packages/worker/src/runtime/node-inspect-host.ts';
+import { WORKERD_SLOTS_SOURCE } from '../../packages/worker/src/runtime/node-lib-host.ts';
 
 const createWorkerdSlots = new Function(`return (${WORKERD_SLOTS_SOURCE});`)();
 const includes = Array.prototype.includes;

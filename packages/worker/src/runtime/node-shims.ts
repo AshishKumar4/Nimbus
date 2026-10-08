@@ -18,7 +18,9 @@
  *   - https: fetch()-backed request/get
  *   - net: Socket/Server with connect/write/end
  *   - child_process: ChildProcess objects (execution requires supervisor RPC)
- *   - assert, util, url, querystring, string_decoder, readline, tty, timers
+ *   - assert, querystring, punycode and util.inspect: Node's own modules
+ *     (node-lib-source.ts) over node-lib-host.ts
+ *   - util, url, string_decoder, readline, tty, timers
  *
  * VFS access: sync reads use __vfsBundle (pre-bundled by FacetManager);
  * async reads use the supervisor bridge as their source of truth whenever it
@@ -70,8 +72,8 @@ import {
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
 import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
-import { NODE_INSPECT_HOST_SOURCE, WORKERD_SLOTS_SOURCE } from './node-inspect-host.js';
-import { EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_INSPECT_SOURCE, NODE_PRIMORDIALS_SOURCE } from './node-inspect-source.js';
+import { NODE_LIB_HOST_SOURCE, WORKERD_SLOTS_SOURCE } from './node-lib-host.js';
+import { EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_LIB_SOURCES, NODE_PRIMORDIALS_SOURCE } from './node-lib-source.js';
 import { NODE_SOURCE_MAPS_SOURCE } from './node-source-maps.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
 import { RUNTIME_INTERPRETER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
@@ -6848,8 +6850,8 @@ ${UNDICI_SHIM_CODE}
 // ──  util module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 // util.inspect, format and formatWithOptions are Node v22.22.3's own
-// lib/internal/util/inspect.js (node-inspect-source.ts), evaluated the first
-// time a program formats a value, over what node-inspect-host.ts gives it in
+// lib/internal/util/inspect.js (node-lib-source.ts), evaluated the first
+// time a program formats a value, over what node-lib-host.ts gives it in
 // place of Node's internals: what a program prints of a value, through util
 // or console, is what Node prints (node-inspect-matches-node,
 // console-format-matches-node-workerd). workerd's own node:util gives
@@ -6858,17 +6860,21 @@ ${UNDICI_SHIM_CODE}
 // calls formatWithOptions directly (nuxi init).
 const __realUtil = typeof __real_util !== "undefined"
   ? (__real_util.default ?? __real_util) : globalThis.process.getBuiltinModule("util");
-let __nimbusNodeInspectExports = null;
-function __nimbusNodeInspect() {
-  if (__nimbusNodeInspectExports !== null) return __nimbusNodeInspectExports;
+// ── Node's library ──
+// Node's own modules (node-lib-source.ts), run over node-lib-host.ts the
+// first time a program needs one: util.inspect, assert, querystring,
+// punycode and what they require.
+let __nimbusNodeLibrary = null;
+function __nimbusNodeLib() {
+  if (__nimbusNodeLibrary !== null) return __nimbusNodeLibrary;
   // The East Asian Wide and Fullwidth ranges, ascending: [first, last] pairs.
   const wide = ${JSON.stringify(EAST_ASIAN_WIDE_RANGES)}.split(",").flatMap((range) => {
     const [first, last = first] = range.split("-");
     return [parseInt(first, 16), parseInt(last, 16)];
   });
-  __nimbusNodeInspectExports = (${NODE_INSPECT_HOST_SOURCE})({
+  __nimbusNodeLibrary = (${NODE_LIB_HOST_SOURCE})({
     util: __realUtil,
-    // V8's slots, as workerd's inspect reaches them (node-inspect-host.ts THE BINDING).
+    // V8's slots, as workerd's inspect reaches them (node-lib-host.ts THE BINDING).
     slots: (${WORKERD_SLOTS_SOURCE})(__realUtil),
     Buffer: __BufferMod,
     url: { pathToFileURL: __urlMod.pathToFileURL, URL: __urlMod.URL },
@@ -6886,14 +6892,52 @@ function __nimbusNodeInspect() {
       }
       return false;
     },
+    signals: __osMod.constants.signals,
+    insideNodeModules: __nimbusInsideNodeModules,
+    errorSourcePositions: __nimbusErrorSourcePositions,
+    tokenizer: (code, options) => __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").tokenizer(code, options),
+    sourceMaps: { getSourceMapsSupport: () => __nimbusSourceMapsSupport, findSourceMap: __nimbusFindSourceMap, getSourceLine: __nimbusOriginalSourceLine },
+    colorDepth: () => __nimbusColorDepth(),
     primordialsOf: function (primordials, globalThis) {
 ${NODE_PRIMORDIALS_SOURCE}
     },
-    inspectOf: function (exports, require, module, process, internalBinding, primordials) {
-${NODE_INSPECT_SOURCE}
+    sources: {
+${Object.entries(NODE_LIB_SOURCES).map(([id, text]) => `      ${JSON.stringify(id)}: function (exports, require, module, process, internalBinding, primordials) {\n${text}\n      },`).join('\n')}
     },
   });
-  return __nimbusNodeInspectExports;
+  return __nimbusNodeLibrary;
+}
+function __nimbusNodeInspect() {
+  return __nimbusNodeLib().require("internal/util/inspect");
+}
+// isInsideNodeModules (the util binding): whether the program's innermost
+// frame on the stack is a package's.
+function __nimbusInsideNodeModules() {
+  const limit = Error.stackTraceLimit;
+  Error.stackTraceLimit = Infinity;
+  const stack = new Error().stack;
+  Error.stackTraceLimit = limit;
+  for (const line of String(stack).split("\\n")) {
+    const frame = __nimbusFrameAt(line);
+    if (frame !== null && typeof __nimbusModuleOfFile === "function" && __nimbusModuleOfFile(frame[0]) !== null) {
+      return /[\\\\/]node_modules[\\\\/]/.test(frame[0]);
+    }
+  }
+  return false;
+}
+// getErrorSourcePositions (the errors binding): where V8 places the first
+// frame of an error's stack, in its file's text as the program wrote it.
+function __nimbusErrorSourcePositions(error) {
+  let stack;
+  try { stack = error.stack; } catch { return undefined; }
+  const frames = __nimbusGeneratedFrames.get(error)?.filter((frame) => frame[1] !== null)
+    ?? String(stack).split("\\n").map(__nimbusFrameAt).filter((frame) => frame !== null);
+  if (frames.length === 0 || typeof __nimbusModuleOfFile !== "function") return undefined;
+  const [file, line, column] = frames[0];
+  const text = __nimbusModuleSourceText(__nimbusModuleOfFile(file));
+  if (text === null) return undefined;
+  const sourceLine = text.split(/\\r\\n|[\\n\\r\\u2028\\u2029]/, line)[line - 1];
+  return sourceLine === undefined ? undefined : { sourceLine, scriptResourceName: file, lineNumber: line, startColumn: column - 1 };
 }
 // Node's errors describe a value only inspect can (a null-prototype
 // object) with it, as Node's do.
@@ -6933,9 +6977,9 @@ const __utilMod = {
     c.super_ = s;
     c.prototype = Object.create(s.prototype, { constructor: { value: c, enumerable: false, writable: true, configurable: true } });
   },
-  deprecate: (fn, msg) => fn,
+  deprecate(fn, msg, code) { return __nimbusNodeLib().require("internal/util").deprecate(fn, msg, code); },
   debuglog: () => () => {},
-  isDeepStrictEqual: (a, b) => JSON.stringify(a) === JSON.stringify(b),
+  isDeepStrictEqual(a, b) { return __nimbusNodeLib().require("internal/util/comparisons").isDeepStrictEqual(a, b); },
   TextEncoder: globalThis.TextEncoder,
   TextDecoder: globalThis.TextDecoder,
   // util.styleText(format, text [, opts]) — Node 20.12+. Returns text
@@ -7917,33 +7961,9 @@ const __inspectorMod = (() => {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  assert module ──────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-const __assertMod = Object.assign(
-  (v, m) => { if (!v) { const e = new Error(m || "AssertionError"); e.code = "ERR_ASSERTION"; throw e; } },
-  {
-    ok: (v, m) => { if (!v) { const e = new Error(m || "The expression evaluated to a falsy value"); e.code = "ERR_ASSERTION"; throw e; } },
-    equal: (a, b, m) => { if (a != b) { const e = new Error(m || __utilMod.inspect(a) + " != " + __utilMod.inspect(b)); e.code = "ERR_ASSERTION"; throw e; } },
-    notEqual: (a, b, m) => { if (a == b) { const e = new Error(m || __utilMod.inspect(a) + " == " + __utilMod.inspect(b)); e.code = "ERR_ASSERTION"; throw e; } },
-    strictEqual: (a, b, m) => { if (a !== b) { const e = new Error(m || __utilMod.inspect(a) + " !== " + __utilMod.inspect(b)); e.code = "ERR_ASSERTION"; throw e; } },
-    notStrictEqual: (a, b, m) => { if (a === b) { const e = new Error(m || "Values are strictly equal"); e.code = "ERR_ASSERTION"; throw e; } },
-    deepEqual: (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { const e = new Error(m || "deepEqual failed"); e.code = "ERR_ASSERTION"; throw e; } },
-    deepStrictEqual: (a, b, m) => __assertMod.deepEqual(a, b, m),
-    throws: (fn, m) => { try { fn(); } catch { return; } const e = new Error(m || "Missing expected exception"); e.code = "ERR_ASSERTION"; throw e; },
-    doesNotThrow: (fn, m) => { try { fn(); } catch (ex) { const e = new Error(m || "Got unwanted exception: " + ex.message); e.code = "ERR_ASSERTION"; throw e; } },
-    ifError: (v) => { if (v) throw v; },
-    fail: (m) => { const e = new Error(m || "Failed"); e.code = "ERR_ASSERTION"; throw e; },
-  }
-);
-
 // ═══════════════════════════════════════════════════════════════════════
-// ──  querystring, string_decoder, child_process ─────────────────────
+// ──  string_decoder, child_process ──────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-const __qsMod = {
-  stringify: (o, sep, eq) => Object.entries(o || {}).map(([k,v]) => encodeURIComponent(k) + (eq||"=") + encodeURIComponent(String(v))).join(sep||"&"),
-  parse: (s, sep, eq) => Object.fromEntries(new URLSearchParams(s)),
-  escape: encodeURIComponent,
-  unescape: decodeURIComponent,
-};
-
 const __stringDecoderMod = {
   StringDecoder: class { constructor(enc) { this.enc = enc || "utf8"; this._dec = new TextDecoder(this.enc); } write(buf) { return this._dec.decode(buf, { stream: true }); } end(buf) { return buf ? this._dec.decode(buf) : ""; } },
 };
@@ -10574,8 +10594,15 @@ builtins.buffer = __bufferModule;
 builtins.util = __utilMod;
 builtins.url = __urlMod;
 builtins.crypto = __cryptoMod;
-builtins.assert = __assertMod;
-builtins.querystring = __qsMod;
+// Node's own (Node's library above), each run the first time it is required.
+for (const [name, read] of [
+  ["assert", () => __nimbusNodeLib().require("assert")],
+  ["assert/strict", () => __nimbusNodeLib().require("assert").strict],
+  ["querystring", () => __nimbusNodeLib().require("querystring")],
+  ["punycode", () => __nimbusNodeLib().require("punycode")],
+]) {
+  Object.defineProperty(builtins, name, { get: read, enumerable: true, configurable: true });
+}
 builtins.string_decoder = __stringDecoderMod;
 // node:sqlite (sql.js-backed). Dual-registered like node:fs/promises; the
 // resolver strips the node: prefix but the explicit key matches the
@@ -10813,7 +10840,15 @@ __NodeModule._resolveFilename = (request, parent) => {
 };
 __NodeModule._load = (request, parent) => (parent instanceof __NodeModule ? parent.require(request) : __require(request));
 __NodeModule.Module = __NodeModule;
-__NodeModule.SourceMap = __NimbusSourceMap;
+// Node's class, from its library the first time it is read: then a value, as Node's.
+Object.defineProperty(__NodeModule, "SourceMap", {
+  get() {
+    const SourceMap = __nimbusSourceMapClass();
+    Object.defineProperty(__NodeModule, "SourceMap", { value: SourceMap, writable: true, enumerable: true, configurable: true });
+    return SourceMap;
+  },
+  enumerable: true, configurable: true,
+});
 __NodeModule.findSourceMap = function findSourceMap(sourceURL) { return __nimbusFindSourceMap(sourceURL); };
 __NodeModule.getSourceMapsSupport = function getSourceMapsSupport() { return __nimbusSourceMapsSupport; };
 __NodeModule.setSourceMapsSupport = function setSourceMapsSupport(enabled, options = {}) { __nimbusSetSourceMapsSupport(enabled, options); };

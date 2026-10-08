@@ -18,6 +18,8 @@ type ErrorClass = new (message?: string) => Error;
 
 /** One class per base and code, as Node makes one per code. */
 const nodeErrorClasses = new Map<ErrorClass, Map<string, ErrorClass>>();
+/** Each class's code, by its prototype. */
+const classCodes = new WeakMap<object, string>();
 
 /**
  * Node's error `code` on a `Base` (Error, TypeError, RangeError, …) with
@@ -60,6 +62,7 @@ function nodeErrorClass(Base: ErrorClass, code: string): ErrorClass {
     };
     // What Node's NodeError reports as its constructor: its base.
     Object.defineProperty(NodeError.prototype, 'constructor', { get: () => Base, enumerable: false, configurable: true });
+    classCodes.set(NodeError.prototype, code);
     classes.set(code, NodeError);
   }
   return NodeError;
@@ -151,6 +154,10 @@ export function determineSpecificType(value: unknown): string {
  * (`Buffer`) or anything else (`Array-like Object`) — and was `actual`.
  */
 export function invalidArgType(name: string, expected: string | readonly string[], actual: unknown): Error {
+  return made(TypeError, 'ERR_INVALID_ARG_TYPE', invalidArgTypeMessage(name, expected, actual), undefined, invalidArgType);
+}
+
+function invalidArgTypeMessage(name: string, expected: string | readonly string[], actual: unknown): string {
   const types: string[] = [];
   const instances: string[] = [];
   const other: string[] = [];
@@ -175,7 +182,130 @@ export function invalidArgType(name: string, expected: string | readonly string[
   }
   if (other.length > 1) message += `one of ${formatList(other, 'or')}`;
   else if (other.length === 1) message += `${other[0].toLowerCase() !== other[0] ? 'an ' : ''}${other[0]}`;
-  return made(TypeError, 'ERR_INVALID_ARG_TYPE', `${message}. Received ${determineSpecificType(actual)}`, undefined, invalidArgType);
+  return `${message}. Received ${determineSpecificType(actual)}`;
+}
+
+/** `1_000_000` (lib/internal/errors.js addNumericalSeparator). */
+function addNumericalSeparator(value: string): string {
+  let result = '';
+  let i = value.length;
+  const start = value[0] === '-' ? 1 : 0;
+  for (; i >= start + 4; i -= 3) result = `_${value.slice(i - 3, i)}${result}`;
+  return `${value.slice(0, i)}${result}`;
+}
+
+/** util.format's `%s` of what Node's messages are handed. */
+function formatNodeMessage(template: string, args: readonly unknown[]): string {
+  let i = 0;
+  return template.replace(/%s/g, () => {
+    const value = args[i++];
+    return typeof value === 'number' && Object.is(value, -0) ? '-0' : String(value);
+  });
+}
+
+type Message = string | ((...args: never[]) => string);
+
+/**
+ * Node's message for each code lib/internal/errors.js defines (its E()) that
+ * the runtime raises through `codes`, then the code's bases: its class's
+ * first, the others named beside it (`codes.ERR_INVALID_ARG_VALUE.RangeError`).
+ */
+const nodeErrorMessages: Record<string, readonly [Message, ...ErrorClass[]]> = {
+  ERR_AMBIGUOUS_ARGUMENT: ['The "%s" argument is ambiguous. %s', TypeError],
+  ERR_CONSTRUCT_CALL_REQUIRED: ['Class constructor %s cannot be invoked without `new`', TypeError],
+  ERR_INTERNAL_ASSERTION: [(message?: string) => {
+    const suffix = 'This is caused by either a bug in Node.js or incorrect usage of Node.js internals.\n'
+      + 'Please open an issue with this stack trace at https://github.com/nodejs/node/issues\n';
+    return message === undefined ? suffix : `${message}\n${suffix}`;
+  }, Error],
+  ERR_INVALID_ARG_TYPE: [invalidArgTypeMessage, TypeError],
+  ERR_INVALID_ARG_VALUE: [(name: string, value: unknown, reason = 'is invalid') => {
+    let inspected = inspectValue(value, {});
+    if (inspected.length > 128) inspected = `${inspected.slice(0, 128)}...`;
+    return `The ${name.includes('.') ? 'property' : 'argument'} '${name}' ${reason}. Received ${inspected}`;
+  }, TypeError, RangeError],
+  ERR_INVALID_RETURN_VALUE: [(input: string, name: string, value: unknown) =>
+    `Expected ${input} to be returned from the "${name}" function but got ${determineSpecificType(value)}.`, TypeError, RangeError],
+  ERR_INVALID_THIS: ['Value of "this" must be of type %s', TypeError],
+  ERR_INVALID_URI: ['URI malformed', URIError],
+  ERR_MISSING_ARGS: [(...names: (string | string[])[]) => {
+    const wrapped = names.map((name) => (Array.isArray(name) ? name.map((n) => `"${n}"`).join(' or ') : `"${name}"`));
+    return `The ${formatList(wrapped, 'and')} argument${names.length > 1 ? 's' : ''} must be specified`;
+  }, TypeError],
+  ERR_OUT_OF_RANGE: [(str: string, range: string, input: unknown, replaceDefaultBoolean = false) => {
+    let received: string;
+    if (Number.isInteger(input) && Math.abs(input as number) > 2 ** 32) {
+      received = addNumericalSeparator(String(input));
+    } else if (typeof input === 'bigint') {
+      received = String(input);
+      if (input > 2n ** 32n || input < -(2n ** 32n)) received = addNumericalSeparator(received);
+      received += 'n';
+    } else {
+      received = inspectValue(input, {});
+    }
+    return `${replaceDefaultBoolean ? str : `The value of "${str}" is out of range.`} It must be ${range}. Received ${received}`;
+  }, RangeError],
+  ERR_SOCKET_BAD_PORT: [(name: string, port: unknown, allowZero = true) =>
+    `${name} should be ${allowZero ? '>=' : '>'} 0 and < 65536. Received ${determineSpecificType(port)}.`, RangeError],
+  ERR_UNAVAILABLE_DURING_EXIT: ['Cannot call function in process exit handler', Error],
+  ERR_UNKNOWN_SIGNAL: ['Unknown signal: %s', TypeError],
+};
+
+/** `new codes.ERR_X(...args)`: Node's error for the code, its stack from where it was made. */
+export type NodeErrorConstructor = ((...args: never[]) => Error) & { [base: string]: NodeErrorConstructor };
+
+function nodeErrorCodeConstructor(code: string, message: Message, Base: ErrorClass): NodeErrorConstructor {
+  const make = function (...args: never[]): Error {
+    const text = typeof message === 'string' ? formatNodeMessage(message, args) : Reflect.apply(message, undefined, args);
+    return made(Base, code, text, undefined, make);
+  } as NodeErrorConstructor;
+  Object.defineProperty(make, 'name', { value: 'NodeError' });
+  return make;
+}
+
+/**
+ * lib/internal/errors.js `codes` for the codes in nodeErrorMessages: each a
+ * constructor of its class, its other bases' beside it by name, and the
+ * HideStackFramesError Node's validators construct (the same error here;
+ * hideStackFrames moves its stack).
+ */
+export const nodeErrorCodes: Readonly<Record<string, NodeErrorConstructor>> = Object.fromEntries(Object.entries(nodeErrorMessages).map(([code, [message, Base, ...others]]) => {
+  const constructor = nodeErrorCodeConstructor(code, message, Base);
+  constructor.HideStackFramesError = constructor;
+  for (const Other of others) {
+    const other = nodeErrorCodeConstructor(code, message, Other);
+    other.HideStackFramesError = other;
+    constructor[Other.name] = other;
+  }
+  return [code, constructor];
+}));
+
+/**
+ * lib/internal/errors.js hideStackFrames: `fn`, whose error's stack starts
+ * where the wrapper was called; a Node error's stack keeps its code.
+ */
+export function hideStackFrames<F extends (...args: never[]) => unknown>(fn: F): F & { withoutStackTrace: F } {
+  const wrapped = function (this: unknown, ...args: never[]): unknown {
+    try {
+      return Reflect.apply(fn, this, args);
+    } catch (error) {
+      if (Reflect.get(Error, 'stackTraceLimit') && error !== null && typeof error === 'object') {
+        const code = classCodes.get(Object.getPrototypeOf(error) as object);
+        if (code !== undefined) headStack(error as Error, `${(error as Error).name} [${code}]`, wrapped);
+        else captureStack(error as Error, wrapped);
+      }
+      throw error;
+    }
+  } as F & { withoutStackTrace: F };
+  wrapped.withoutStackTrace = fn;
+  return wrapped;
+}
+
+/** lib/internal/errors.js isErrorStackTraceLimitWritable. */
+export function isErrorStackTraceLimitWritable(): boolean {
+  const descriptor = Object.getOwnPropertyDescriptor(Error, 'stackTraceLimit');
+  if (descriptor === undefined) return Object.isExtensible(Error);
+  return Object.prototype.hasOwnProperty.call(descriptor, 'writable') ? descriptor.writable === true : descriptor.set !== undefined;
 }
 
 /** A system call's context, as Node's SystemError holds it (`info`), its keys in the order the call names them. */
@@ -248,11 +378,15 @@ export function nodeSystemError(code: string, prefix: string, context: SystemErr
  */
 function headStack(error: Error, name: string, above: Function): void {
   const own = Object.getOwnPropertyDescriptor(error, 'name');
-  // V8's (core's types are the language's, which have none).
-  const capture: unknown = Reflect.get(Error, 'captureStackTrace');
-  if (typeof capture === 'function') Reflect.apply(capture, Error, [error, above]);
+  captureStack(error, above);
   Object.defineProperty(error, 'name', { value: name, enumerable: false, writable: true, configurable: true });
   void error.stack;
   if (own === undefined) Reflect.deleteProperty(error, 'name');
   else Object.defineProperty(error, 'name', own);
+}
+
+/** V8's Error.captureStackTrace (core's types are the language's, which have none). */
+function captureStack(error: object, above: Function): void {
+  const capture: unknown = Reflect.get(Error, 'captureStackTrace');
+  if (typeof capture === 'function') Reflect.apply(capture, Error, [error, above]);
 }

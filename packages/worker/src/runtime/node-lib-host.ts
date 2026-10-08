@@ -1,20 +1,24 @@
 /**
- * Source of what Node's util.inspect (node-inspect-source.ts) is given in a
+ * Source of what Node's own modules (node-lib-source.ts) are given in a
  * Worker in place of Node's internal modules and bindings:
- * `createNodeInspect(platform)`, which runs inspect.js and returns its
- * exports. generateShimsCode embeds this text (node-shims.ts,
- * "util.inspect"), and tests/unit/node-inspect-matches-node.mjs evaluates
- * the same text beside Node's own. A string, not a function's toString():
- * tsc and bun print function source differently (see
- * javascript-string-literal.ts).
+ * `createNodeLib(platform)`, whose `require(id)` runs a module of Node's
+ * library once, the first time it is asked for, and returns its exports.
+ * generateShimsCode embeds this text (node-shims.ts, "Node's library"), and
+ * tests/unit/node-inspect-matches-node.mjs evaluates the same text beside
+ * Node's own. A string, not a function's toString(): tsc and bun print
+ * function source differently (see javascript-string-literal.ts).
  *
- * Node's own functions are ported: lib/internal/util.js join, removeColors
- * and isError; lib/internal/errors.js isStackOverflowError;
- * lib/internal/validators.js validateObject and validateString; src/
- * node_i18n.cc GetStringWidth. Its errors are the shims' (core _shared/
- * node-error.ts), which the text calls by name. Of the util binding, the
- * property and constructor-name readers are JavaScript, and every brand
- * check is intrinsic (util.types), never the prototype chain.
+ * What Node's modules require of its internals that is not itself one of
+ * them is ported here: lib/internal/util.js join, removeColors, isError,
+ * deprecate, setOwnProperty and normalizeEncoding; lib/internal/errors.js
+ * codes (core _shared/node-error.ts nodeErrorCodes, Node's messages),
+ * hideStackFrames, isErrorStackTraceLimitWritable and isStackOverflowError;
+ * lib/internal/url.js isURL; lib/internal/util/types.js's typed-array
+ * checks; src/node_i18n.cc GetStringWidth; and the bindings below. The
+ * errors are the shims' (node-error.ts), which the text calls by name. Of
+ * the util binding, the property and constructor-name readers are
+ * JavaScript, and every brand check is intrinsic (util.types), never the
+ * prototype chain.
  *
  * THE BINDING. A promise's state and result, a proxy's target and handler,
  * a Map or Set iterator's and a weak collection's entries are V8 slots no
@@ -36,21 +40,32 @@
  *
  * `platform`: { util (the platform's node:util), slots, Buffer, url ({ URL,
  * pathToFileURL }), process, builtinModules, builtinObjects (Node's
- * NODE_BUILTIN_OBJECTS), eastAsianWide(code),
- * primordialsOf(primordials, globalThis), inspectOf(exports, require, module,
- * process, internalBinding, primordials) }, the last two running the
- * upstream sources.
+ * NODE_BUILTIN_OBJECTS), eastAsianWide(code), signals (os.constants.signals),
+ * insideNodeModules() (whether the caller's code is a package's),
+ * errorSourcePositions(error) (where V8 places the frame an error was
+ * captured at: { sourceLine, scriptResourceName, lineNumber, startColumn },
+ * or undefined), tokenizer(code, options) (acorn's), sourceMaps
+ * ({ getSourceMapsSupport, findSourceMap, getSourceLine }), colorDepth()
+ * (internal/tty getColorDepth), primordialsOf(primordials, globalThis), and
+ * sources: { [id]: (exports, require, module, process, internalBinding,
+ * primordials) => void } }, the last two running the upstream text.
  */
-export const NODE_INSPECT_HOST_SOURCE = String.raw`function createNodeInspect(platform) {
+export const NODE_LIB_HOST_SOURCE = String.raw`function createNodeLib(platform) {
   "use strict";
   const platformUtil = platform.util;
-  const types = platformUtil.types;
   const primordials = {};
   platform.primordialsOf(primordials, globalThis);
   const customInspectSymbol = Symbol.for("nodejs.util.inspect.custom");
+  const typedArrayTag = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;
+  const typedArrayKind = (value) => Reflect.apply(typedArrayTag, value, []);
 
-  // lib/internal/errors.js: the errors inspect.js and its validators raise
-  // are the shims' (core _shared/node-error.ts nodeError, invalidArgType).
+  // lib/internal/util/types.js: the binding's checks, and the typed arrays' by their tag.
+  const types = { ...platformUtil.types, isArrayBufferView: ArrayBuffer.isView, isTypedArray: (value) => typedArrayKind(value) !== undefined };
+  for (const kind of ["Uint8Array", "Uint8ClampedArray", "Uint16Array", "Uint32Array", "Int8Array", "Int16Array", "Int32Array", "Float16Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array"]) {
+    types["is" + kind] = (value) => typedArrayKind(value) === kind;
+  }
+
+  // lib/internal/errors.js
   let maxStackErrorName;
   let maxStackErrorMessage;
   function isStackOverflowError(err) {
@@ -65,34 +80,32 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw`function createNodeInspect(pl
     }
     return !!err && err.name === maxStackErrorName && err.message === maxStackErrorMessage;
   }
+  // lib/internal/assert.js
   function assert(value, message) {
-    if (!value) {
-      throw nodeError(Error, "ERR_INTERNAL_ASSERTION", message ?? "This is caused by either a bug in Node.js or incorrect usage of Node.js internals.\nPlease open an issue with this stack trace at https://github.com/nodejs/node/issues\n");
-    }
+    if (!value) throw new nodeErrorCodes.ERR_INTERNAL_ASSERTION(message);
   }
-  assert.fail = (message) => assert(false, message);
-
-  // lib/internal/validators.js
-  const kValidateObjectNone = 0;
-  const kValidateObjectAllowNullable = 1 << 0;
-  const kValidateObjectAllowArray = 1 << 1;
-  const kValidateObjectAllowFunction = 1 << 2;
-  function validateObject(value, name, options = kValidateObjectNone) {
-    if (options === kValidateObjectNone) {
-      if (value === null || Array.isArray(value) || typeof value !== "object") throw invalidArgType(name, "object", value);
-      return;
-    }
-    if ((kValidateObjectAllowNullable & options) === 0 && value === null) throw invalidArgType(name, "object", value);
-    if ((kValidateObjectAllowArray & options) === 0 && Array.isArray(value)) throw invalidArgType(name, "object", value);
-    const throwOnFunction = (kValidateObjectAllowFunction & options) === 0;
-    if (typeof value !== "object" && (throwOnFunction || typeof value !== "function")) throw invalidArgType(name, "object", value);
-  }
-  function validateString(value, name) {
-    if (typeof value !== "string") throw invalidArgType(name, "string", value);
-  }
+  assert.fail = (message) => { throw new nodeErrorCodes.ERR_INTERNAL_ASSERTION(message); };
 
   // lib/internal/util.js
   const colorRegExp = /\u001b\[\d\d?m/g;
+  const codesWarned = new Set();
+  function getDeprecationWarningEmitter(code, msg, deprecated) {
+    let warned = false;
+    return function () {
+      if (warned) return;
+      warned = true;
+      if (code === "ExperimentalWarning") {
+        platform.process.emitWarning(msg, code, deprecated);
+      } else if (code !== undefined) {
+        if (!codesWarned.has(code)) {
+          platform.process.emitWarning(msg, "DeprecationWarning", code, deprecated);
+          codesWarned.add(code);
+        }
+      } else {
+        platform.process.emitWarning(msg, "DeprecationWarning", deprecated);
+      }
+    };
+  }
   const internalUtil = {
     customInspectSymbol,
     isError: (e) => types.isNativeError(e) || e instanceof Error,
@@ -109,6 +122,68 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw`function createNodeInspect(pl
       return str;
     },
     removeColors: (str) => String.prototype.replace.call(str, colorRegExp, ""),
+    deprecate(fn, msg, code, useEmitSync, modifyPrototype = true) {
+      if (code !== undefined) require("internal/validators").validateString(code, "code");
+      const emitDeprecationWarning = getDeprecationWarningEmitter(code, msg, deprecated);
+      function deprecated(...args) {
+        if (!platform.process.noDeprecation) emitDeprecationWarning();
+        if (new.target) return Reflect.construct(fn, args, new.target);
+        return Reflect.apply(fn, this, args);
+      }
+      if (modifyPrototype) {
+        Object.setPrototypeOf(deprecated, fn);
+        if (fn.prototype) deprecated.prototype = fn.prototype;
+        Object.defineProperty(deprecated, "length", { __proto__: null, ...Object.getOwnPropertyDescriptor(fn, "length") });
+      }
+      return deprecated;
+    },
+    setOwnProperty: (obj, key, value) => Object.defineProperty(obj, key, { __proto__: null, configurable: true, enumerable: true, value, writable: true }),
+    normalizeEncoding(enc) {
+      if (enc == null || enc === "utf8" || enc === "utf-8") return "utf8";
+      switch (enc.length) {
+        case 4:
+          if (enc === "UTF8") return "utf8";
+          if (enc === "ucs2" || enc === "UCS2") return "utf16le";
+          enc = enc.toLowerCase();
+          if (enc === "utf8") return "utf8";
+          if (enc === "ucs2") return "utf16le";
+          break;
+        case 3:
+          if (enc === "hex" || enc === "HEX" || enc.toLowerCase() === "hex") return "hex";
+          break;
+        case 5:
+          if (enc === "ascii") return "ascii";
+          if (enc === "ucs-2") return "utf16le";
+          if (enc === "UTF-8") return "utf8";
+          if (enc === "ASCII") return "ascii";
+          if (enc === "UCS-2") return "utf16le";
+          enc = enc.toLowerCase();
+          if (enc === "utf-8") return "utf8";
+          if (enc === "ascii") return "ascii";
+          if (enc === "ucs-2") return "utf16le";
+          break;
+        case 6:
+          if (enc === "base64") return "base64";
+          if (enc === "latin1" || enc === "binary") return "latin1";
+          if (enc === "BASE64") return "base64";
+          if (enc === "LATIN1" || enc === "BINARY") return "latin1";
+          enc = enc.toLowerCase();
+          if (enc === "base64") return "base64";
+          if (enc === "latin1" || enc === "binary") return "latin1";
+          break;
+        case 7:
+          if (enc === "utf16le" || enc === "UTF16LE" || enc.toLowerCase() === "utf16le") return "utf16le";
+          break;
+        case 8:
+          if (enc === "utf-16le" || enc === "UTF-16LE" || enc.toLowerCase() === "utf-16le") return "utf16le";
+          break;
+        case 9:
+          if (enc === "base64url" || enc === "BASE64URL" || enc.toLowerCase() === "base64url") return "base64url";
+          break;
+        default:
+          if (enc === "") return "utf8";
+      }
+    },
   };
 
   // THE BINDING's V8 slots (a promise's state and result, a proxy's target
@@ -124,10 +199,9 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw`function createNodeInspect(pl
     ["isSharedArrayBuffer", "SharedArrayBuffer"], ["isDataView", "DataView"], ["isNumberObject", "Number"],
     ["isStringObject", "String"], ["isBooleanObject", "Boolean"], ["isBigIntObject", "BigInt"], ["isSymbolObject", "Symbol"],
   ];
-  const typedArrayTag = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;
   const isArrayIndex = (key) => /^(?:0|[1-9][0-9]*)$/.test(key) && Number(key) < 4294967295;
   const utilBinding = {
-    constants: { ALL_PROPERTIES: 0, ONLY_ENUMERABLE: 2, kPending: 0, kRejected: 2 },
+    constants: { ALL_PROPERTIES: 0, ONLY_ENUMERABLE: 2, SKIP_SYMBOLS: 16, kPending: 0, kRejected: 2 },
     getOwnNonIndexProperties(object, filter) {
       // An object's own keys list its array indices first, ascending
       // (OrdinaryOwnPropertyKeys, and an array's, a typed array's and a
@@ -143,7 +217,8 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw`function createNodeInspect(pl
       const keys = [];
       for (let i = low; i < all.length; i++) {
         const key = all[i];
-        if (filter === 2 && !Object.prototype.propertyIsEnumerable.call(object, key)) continue;
+        if ((filter & 2) !== 0 && !Object.prototype.propertyIsEnumerable.call(object, key)) continue;
+        if ((filter & 16) !== 0 && typeof key === "symbol") continue;
         keys.push(key);
       }
       return keys;
@@ -154,11 +229,12 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw`function createNodeInspect(pl
     previewEntries: (...args) => Reflect.apply(slots.previewEntries, slots, args),
     getConstructorName(value) {
       if (Array.isArray(value)) return "Array";
-      if (types.isTypedArray(value)) return String(Reflect.apply(typedArrayTag, value, []));
+      if (types.isTypedArray(value)) return String(typedArrayKind(value));
       for (const [test, name] of builtinNames) if (types[test](value)) return name;
       return typeof value === "function" ? "Function" : "Object";
     },
     getExternalValue: () => 0n,
+    isInsideNodeModules: () => platform.insideNodeModules(),
   };
 
   // src/node_i18n.cc GetStringWidth, as Node built with ICU counts columns:
@@ -178,33 +254,55 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw`function createNodeInspect(pl
     },
   };
 
-  function evaluate() {
-    const modules = {
-      "internal/util": internalUtil,
-      "internal/errors": { isStackOverflowError },
-      "internal/util/types": types,
-      "internal/assert": assert,
-      // Node's own modules, whose frames read node:<id> (colored grey).
-      "internal/bootstrap/realm": { BuiltinModule: { exists: (id) => id.startsWith("internal/") || platform.builtinModules.includes(id) } },
-      "internal/validators": { validateObject, validateString, kValidateObjectAllowArray },
-      "internal/url": platform.url,
-      buffer: { Buffer: platform.Buffer },
-    };
-    const bindings = { util: utilBinding, config: { hasIntl: true }, icu: icuBinding };
-    const module = { exports: {} };
-    platform.inspectOf(module.exports, (id) => modules[id], module, platform.process, (name) => bindings[name], inspectPrimordials);
-    return module.exports;
-  }
+  // Node's internal modules that are not its own text here, by id.
+  const hosted = {
+    "internal/util": internalUtil,
+    "internal/errors": { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable, isStackOverflowError },
+    "internal/util/types": types,
+    "internal/assert": assert,
+    // Node's own modules, whose frames read node:<id> (colored grey).
+    "internal/bootstrap/realm": { BuiltinModule: { exists: (id) => id.startsWith("internal/") || platform.builtinModules.includes(id) } },
+    "internal/url": { ...platform.url, isURL: (self) => Boolean(self?.href && self.protocol && self.auth === undefined && self.path === undefined) },
+    "internal/crypto/util": { kKeyObject: Symbol("kKeyObject") },
+    "internal/deps/acorn/acorn/dist/acorn": { Parser: { tokenizer: (code, options) => platform.tokenizer(code, options) } },
+    "internal/source_map/source_map_cache": platform.sourceMaps,
+    "internal/tty": { getColorDepth: () => platform.colorDepth() },
+    buffer: { Buffer: platform.Buffer },
+  };
+  const bindings = {
+    util: utilBinding,
+    config: { hasIntl: true },
+    icu: icuBinding,
+    constants: { os: { signals: platform.signals } },
+    buffer: { compare: (a, b) => platform.Buffer.compare(a, b) },
+    errors: { getErrorSourcePositions: (error) => platform.errorSourcePositions(error) },
+  };
+  const internalBinding = (name) => bindings[name];
   // inspect.js reads primordials.globalThis once, for the names it counts as
   // built-in (showHidden shows a prototype's properties when its
   // constructor's name is not one): the capitalised globals there were when
-  // Node loaded it, measured (node-inspect-source.ts NODE_BUILTIN_OBJECTS).
+  // Node loaded it, measured (node-lib-source.ts NODE_BUILTIN_OBJECTS).
   const bootGlobal = Object.create(null);
   for (const name of platform.builtinObjects) bootGlobal[name] = globalThis[name];
   const inspectPrimordials = Object.create(null);
   for (const key of Reflect.ownKeys(primordials)) inspectPrimordials[key] = primordials[key];
   inspectPrimordials.globalThis = bootGlobal;
-  return evaluate();
+
+  // Node's own, each run once, its exports cached before it runs (a cycle
+  // reads what it has exported so far), as Node's BuiltinModule does.
+  const loaded = new Map();
+  function require(id) {
+    if (Object.prototype.hasOwnProperty.call(hosted, id)) return hosted[id];
+    const cached = loaded.get(id);
+    if (cached !== undefined) return cached.exports;
+    const source = platform.sources[id];
+    if (source === undefined) throw new Error("No such built-in module: " + id);
+    const module = { exports: {}, id };
+    loaded.set(id, module);
+    source(module.exports, require, module, platform.process, internalBinding, id === "internal/util/inspect" ? inspectPrimordials : primordials);
+    return module.exports;
+  }
+  return { require };
 }`;
 
 
