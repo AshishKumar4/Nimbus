@@ -6848,6 +6848,12 @@ const __realUtil = typeof __real_util !== "undefined"
 // Node's own modules (node-lib-source.ts), run over node-lib-host.ts the
 // first time a program needs one: util.inspect, assert, querystring,
 // punycode and what they require.
+// Node's primordials, taken when the process starts, before the program can
+// change what they capture, as Node's bootstrap takes them.
+const __nimbusPrimordials = {};
+(function (primordials, globalThis) {
+${NODE_PRIMORDIALS_SOURCE}
+})(__nimbusPrimordials, globalThis);
 let __nimbusNodeLibrary = null;
 function __nimbusNodeLib() {
   if (__nimbusNodeLibrary !== null) return __nimbusNodeLibrary;
@@ -6888,10 +6894,8 @@ function __nimbusNodeLib() {
     console: __consoleMod,
     workerThreads: builtins.worker_threads,
     nodeDebug: __nimbusNodeDebugAtLaunch,
-    callSites: (count, above) => (typeof __nimbusCallSites === "function" ? __nimbusCallSites(count, above) : []),
-    primordialsOf: function (primordials, globalThis) {
-${NODE_PRIMORDIALS_SOURCE}
-    },
+    callSites: (count, above) => (typeof __nimbusStackSites === "function" ? __nimbusStackSites({}, count, above) : []),
+    primordials: __nimbusPrimordials,
     sources: {
 ${Object.entries(NODE_LIB_SOURCES).map(([id, text]) => `      ${JSON.stringify(id)}: function (exports, require, module, process, internalBinding, primordials) {\n${text}\n      },`).join('\n')}
     },
@@ -6916,31 +6920,24 @@ function __nimbusOptionValue(name) {
 // isInsideNodeModules (the util binding): whether the program's innermost
 // frame on the stack is a package's.
 function __nimbusInsideNodeModules() {
-  const limit = Error.stackTraceLimit;
-  Error.stackTraceLimit = Infinity;
-  const stack = new Error().stack;
-  Error.stackTraceLimit = limit;
-  for (const line of String(stack).split("\\n")) {
-    const frame = __nimbusFrameAt(line);
-    if (frame !== null && typeof __nimbusModuleOfFile === "function" && __nimbusModuleOfFile(frame[0]) !== null) {
-      return /[\\\\/]node_modules[\\\\/]/.test(frame[0]);
-    }
+  if (typeof __nimbusStackSites !== "function") return false;
+  for (const site of __nimbusStackSites({}, Infinity, __nimbusInsideNodeModules)) {
+    const file = site.getFileName();
+    if (typeof file === "string" && __nimbusModuleOfFile(file) !== null) return /[\\\\/]node_modules[\\\\/]/.test(file);
   }
   return false;
 }
-// getErrorSourcePositions (the errors binding): where V8 places the first
-// frame of an error's stack, in its file's text as the program wrote it.
+// getErrorSourcePositions (the errors binding): where V8 placed the first
+// frame of a stack \`error\` captured and nothing read yet, in its file's text
+// as the program wrote it; an empty line where the runtime has no text for it.
 function __nimbusErrorSourcePositions(error) {
-  let stack;
-  try { stack = error.stack; } catch { return undefined; }
-  const frames = __nimbusGeneratedFrames.get(error)?.filter((frame) => frame[1] !== null)
-    ?? String(stack).split("\\n").map(__nimbusFrameAt).filter((frame) => frame !== null);
-  if (frames.length === 0 || typeof __nimbusModuleOfFile !== "function") return undefined;
-  const [file, line, column] = frames[0];
-  const text = __nimbusModuleSourceText(__nimbusModuleOfFile(file));
-  if (text === null) return undefined;
-  const sourceLine = text.split(/\\r\\n|[\\n\\r\\u2028\\u2029]/, line)[line - 1];
-  return sourceLine === undefined ? undefined : { sourceLine, scriptResourceName: file, lineNumber: line, startColumn: column - 1 };
+  const site = typeof __nimbusStackSites === "function" ? __nimbusStackSites(error)[0] : undefined;
+  const scriptResourceName = site?.getFileName() ?? "";
+  const lineNumber = site?.getLineNumber() ?? 0;
+  const startColumn = Math.max(0, (site?.getColumnNumber() ?? 1) - 1);
+  const text = scriptResourceName === "" ? null : __nimbusModuleSourceText(__nimbusModuleOfFile(scriptResourceName));
+  const sourceLine = text?.split(/\\r\\n|[\\n\\r\\u2028\\u2029]/, lineNumber)[lineNumber - 1] ?? "";
+  return { sourceLine, scriptResourceName, lineNumber, startColumn };
 }
 // Node's errors describe a value only inspect can (a null-prototype
 // object) with it, as Node's do.
@@ -10720,12 +10717,19 @@ __NodeModule._nodeModulePaths = (from) => {
 __NodeModule._resolveFilename = function _resolveFilename(request, parent, isMain, options) {
   if (__nimbusBuiltinId(request) !== null || __stagedBinding(request)) return request;
   let dirs = [__nimbusModuleDir(parent)];
+  // options.paths' directories, from the working directory, each validated as
+  // path.resolve does: a relative request's as it is searched, a bare one's first.
+  const relative = request.startsWith("./") || request.startsWith("../");
+  const absolute = (dir) => {
+    if (typeof dir !== "string") throw invalidArgType("paths[0]", "string", dir);
+    return __pathMod.resolve(dir);
+  };
   if (options !== null && typeof options === "object") {
-    if (Array.isArray(options.paths)) dirs = options.paths.map(String);
+    if (Array.isArray(options.paths)) dirs = relative ? options.paths : options.paths.map(absolute);
     else if (options.paths !== undefined) throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("options.paths", options.paths);
   }
   for (const dir of dirs) {
-    const resolved = __resolveFrom(request, dir);
+    const resolved = __resolveFrom(request, absolute(dir));
     if (resolved) return "/" + resolved.replace(/^\\/+/, "");
   }
   throw __nimbusModuleNotFound(request, parent);
@@ -11625,6 +11629,8 @@ __nimbusNodeErrorsAt(__BufferMod, { inPlace: true });
 // A module's exports as a require() that meets it while it loads (a cycle)
 // reads them (__makeLoadingExports), by its Module.
 const __nimbusLoadingExports = new WeakMap();
+// The ES modules this process loaded, by file (or an import's URL with a query).
+const __nimbusEsModules = new Map();
 // A module cell's evaluation when it completes later (top-level await), by
 // its evaluation key: what an import of it waits for.
 const __moduleEvaluations = new Map();
@@ -12091,8 +12097,13 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   const filename = "/" + resolvedPath.replace(/^\\/+/, "");
   // A query's or fragment's import is a job of its own, kept by its URL.
   const cacheKey = evaluationKey === resolvedPath ? filename : evaluationKey;
-  const cached = __NodeModule._cache[cacheKey];
+  // An ES module is the ES loader's (__nimbusEsModules); require.cache has
+  // it once a require() loads it (require(esm)), as Node's has.
+  const esModule = __nimbusModuleCellIsEsModule(resolvedPath.replace(/^\\/+/, ""));
+  const modules = esModule ? __nimbusEsModules : __NodeModule._cache;
+  const cached = esModule ? modules.get(cacheKey) : modules[cacheKey];
   if (cached !== undefined) {
+    if (esModule && required) __NodeModule._cache[cacheKey] ??= cached;
     __nimbusUpdateChildren(parent, cached, true);
     return cached.loaded ? cached.exports : (__nimbusLoadingExports.get(cached) ?? cached.exports);
   }
@@ -12100,10 +12111,13 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   const mod = new __NodeModule(filename, parent);
   mod.filename = filename;
   mod.paths = __NodeModule._nodeModulePaths(mod.path);
-  __NodeModule._cache[cacheKey] = mod;
+  if (esModule) modules.set(cacheKey, mod);
+  else modules[cacheKey] = mod;
+  if (esModule && required) __NodeModule._cache[cacheKey] = mod;
   __nimbusLoadingExports.set(mod, __makeLoadingExports(mod));
   const unload = () => {
-    delete __NodeModule._cache[cacheKey];
+    if (esModule) modules.delete(cacheKey);
+    if (__NodeModule._cache[cacheKey] === mod) delete __NodeModule._cache[cacheKey];
     __nimbusLoadingExports.delete(mod);
     const siblings = parent?.children;
     const at = Array.isArray(siblings) ? siblings.indexOf(mod) : -1;
@@ -12134,7 +12148,6 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   // module calls its require for its static imports only: it has no require
   // of its own (module-format.ts ES_MODULE_UNBOUND_NAMES).
   const modDir = __pathMod.dirname(filename);
-  const esModule = __nimbusModuleCellIsEsModule(resolvedPath.replace(/^\\/+/, ""));
   const scopedRequire = __nimbusMakeRequire(mod, modDir, !esModule);
 
   // X.5-M3: thread currently-loading module path through globalThis so the
@@ -12812,9 +12825,7 @@ function __loadStagedBinding(builds, fromDir) {
 // Whether the ES loader has the module at \`path\`: an ES module require() loaded
 // (require(esm)), whose job it keeps. A CommonJS module require() loaded is no job of its.
 function __nimbusEsmJobCached(path) {
-  if (typeof path !== "string") return false;
-  const key = path.replace(/^\\/+/, "");
-  return __NodeModule._cache["/" + key] !== undefined && __nimbusModuleCellIsEsModule(key);
+  return typeof path === "string" && __nimbusEsModules.has("/" + path.replace(/^\\/+/, ""));
 }
 // Module.prototype.require from \`parent\`, its requests resolving from \`fromDir\`.
 function __requireFrom(id, fromDir, parent, required = true) {
@@ -12862,9 +12873,16 @@ function __nimbusEvaluateEntry(wrapper, mod, filename, dirname, esModule) {
       __NodeModule._cache[mod.filename] = mod;
     }
     const self = evaluated ? globalThis : mod.exports;
-    const result = __nimbusReflectApply(wrapper, self, [mod.exports, __nimbusMakeRequire(mod), mod, evaluated ? mod.id : filename, evaluated ? "." : dirname]);
-    if (!evaluated) mod.loaded = true;
-    return result;
+    let threw = true;
+    try {
+      const result = __nimbusReflectApply(wrapper, self, [mod.exports, __nimbusMakeRequire(mod), mod, evaluated ? mod.id : filename, evaluated ? "." : dirname]);
+      threw = false;
+      return result;
+    } finally {
+      // Module._load: a module whose load threw leaves the cache.
+      if (!evaluated && threw) delete __NodeModule._cache[mod.filename];
+      else if (!evaluated) mod.loaded = true;
+    }
   }
   const url = builtins.url.pathToFileURL(filename).href;
   let result;

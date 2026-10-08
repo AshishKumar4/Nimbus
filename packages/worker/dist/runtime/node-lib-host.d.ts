@@ -43,10 +43,10 @@
  * NODE_BUILTIN_OBJECTS), eastAsianWide(code), signals (os.constants.signals),
  * insideNodeModules() (whether the caller's code is a package's),
  * errorSourcePositions(error) (where V8 places the frame an error was
- * captured at: { sourceLine, scriptResourceName, lineNumber, startColumn },
- * or undefined), tokenizer(code, options) (acorn's), sourceMaps
+ * captured at: { sourceLine, scriptResourceName, lineNumber, startColumn }),
+ * tokenizer(code, options) (acorn's), sourceMaps
  * ({ getSourceMapsSupport, findSourceMap, getSourceLine }), colorDepth()
- * (internal/tty getColorDepth), primordialsOf(primordials, globalThis), and
+ * (internal/tty getColorDepth), primordials (built when the process starts), and
  * sources: { [id]: (exports, require, module, process, internalBinding,
  * primordials) => void } }, the last two running the upstream text.
  */

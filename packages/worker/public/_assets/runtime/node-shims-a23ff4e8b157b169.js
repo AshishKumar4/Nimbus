@@ -10543,789 +10543,10 @@ const __realUtil = typeof __real_util !== "undefined"
 // Node's own modules (node-lib-source.ts), run over node-lib-host.ts the
 // first time a program needs one: util.inspect, assert, querystring,
 // punycode and what they require.
-let __nimbusNodeLibrary = null;
-function __nimbusNodeLib() {
-  if (__nimbusNodeLibrary !== null) return __nimbusNodeLibrary;
-  // The East Asian Wide and Fullwidth ranges, ascending: [first, last] pairs.
-  const wide = "1100-115f,231a-231b,2329-232a,23e9-23ec,23f0,23f3,25fd-25fe,2614-2615,2630-2637,2648-2653,267f,268a-268f,2693,26a1,26aa-26ab,26bd-26be,26c4-26c5,26ce,26d4,26ea,26f2-26f3,26f5,26fa,26fd,2705,270a-270b,2728,274c,274e,2753-2755,2757,2795-2797,27b0,27bf,2b1b-2b1c,2b50,2b55,2e80-2e99,2e9b-2ef3,2f00-2fd5,2ff0-303e,3041-3096,3099-30ff,3105-312f,3131-318e,3190-31e5,31ef-321e,3220-3247,3250-a48c,a490-a4c6,a960-a97c,ac00-d7a3,f900-faff,fe10-fe19,fe30-fe52,fe54-fe66,fe68-fe6b,ff01-ff60,ffe0-ffe6,16fe0-16fe4,16ff0-16ff6,17000-18cd5,18cff-18d1e,18d80-18df2,1aff0-1aff3,1aff5-1affb,1affd-1affe,1b000-1b122,1b132,1b150-1b152,1b155,1b164-1b167,1b170-1b2fb,1d300-1d356,1d360-1d376,1f004,1f0cf,1f18e,1f191-1f19a,1f200-1f202,1f210-1f23b,1f240-1f248,1f250-1f251,1f260-1f265,1f300-1f320,1f32d-1f335,1f337-1f37c,1f37e-1f393,1f3a0-1f3ca,1f3cf-1f3d3,1f3e0-1f3f0,1f3f4,1f3f8-1f43e,1f440,1f442-1f4fc,1f4ff-1f53d,1f54b-1f54e,1f550-1f567,1f57a,1f595-1f596,1f5a4,1f5fb-1f64f,1f680-1f6c5,1f6cc,1f6d0-1f6d2,1f6d5-1f6d8,1f6dc-1f6df,1f6eb-1f6ec,1f6f4-1f6fc,1f7e0-1f7eb,1f7f0,1f90c-1f93a,1f93c-1f945,1f947-1f9ff,1fa70-1fa7c,1fa80-1fa8a,1fa8e-1fac6,1fac8,1facd-1fadc,1fadf-1faea,1faef-1faf8,20000-2fffd,30000-3fffd".split(",").flatMap((range) => {
-    const [first, last = first] = range.split("-");
-    return [parseInt(first, 16), parseInt(last, 16)];
-  });
-  __nimbusNodeLibrary = (function createNodeLib(platform) {
-  "use strict";
-  const platformUtil = platform.util;
-  const primordials = {};
-  platform.primordialsOf(primordials, globalThis);
-  const customInspectSymbol = Symbol.for("nodejs.util.inspect.custom");
-  const typedArrayTag = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;
-  const typedArrayKind = (value) => Reflect.apply(typedArrayTag, value, []);
-
-  // lib/internal/util/types.js: the binding's checks, and the typed arrays' by their tag.
-  const types = { ...platformUtil.types, isArrayBufferView: ArrayBuffer.isView, isTypedArray: (value) => typedArrayKind(value) !== undefined };
-  for (const kind of ["Uint8Array", "Uint8ClampedArray", "Uint16Array", "Uint32Array", "Int8Array", "Int16Array", "Int32Array", "Float16Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array"]) {
-    types["is" + kind] = (value) => typedArrayKind(value) === kind;
-  }
-
-  // lib/internal/errors.js
-  let maxStackErrorName;
-  let maxStackErrorMessage;
-  function isStackOverflowError(err) {
-    if (maxStackErrorMessage === undefined) {
-      try {
-        function overflowStack() { overflowStack(); }
-        overflowStack();
-      } catch (e) {
-        maxStackErrorMessage = e.message;
-        maxStackErrorName = e.name;
-      }
-    }
-    return !!err && err.name === maxStackErrorName && err.message === maxStackErrorMessage;
-  }
-  // lib/internal/assert.js
-  function assert(value, message) {
-    if (!value) throw new nodeErrorCodes.ERR_INTERNAL_ASSERTION(message);
-  }
-  assert.fail = (message) => { throw new nodeErrorCodes.ERR_INTERNAL_ASSERTION(message); };
-
-  // lib/internal/util.js
-  const colorRegExp = /\u001b\[\d\d?m/g;
-  const kCustomPromisifiedSymbol = Symbol.for("nodejs.util.promisify.custom");
-  const kCustomPromisifyArgsSymbol = platform.customPromisifyArgs;
-  // libuv's errors (NODE_UV_ERRORS), by errno: [name, message].
-  let uvErrorMap;
-  const uvErrors = () => (uvErrorMap ??= new Map(platform.uvErrors.map(([errno, name, message]) => [errno, [name, message]])));
-  const codesWarned = new Set();
-  function getDeprecationWarningEmitter(code, msg, deprecated) {
-    let warned = false;
-    return function () {
-      if (warned) return;
-      warned = true;
-      if (code === "ExperimentalWarning") {
-        platform.process.emitWarning(msg, code, deprecated);
-      } else if (code !== undefined) {
-        if (!codesWarned.has(code)) {
-          platform.process.emitWarning(msg, "DeprecationWarning", code, deprecated);
-          codesWarned.add(code);
-        }
-      } else {
-        platform.process.emitWarning(msg, "DeprecationWarning", deprecated);
-      }
-    };
-  }
-  const internalUtil = {
-    customInspectSymbol,
-    isError: (e) => types.isNativeError(e) || e instanceof Error,
-    join(output, separator) {
-      let str = "";
-      if (output.length !== 0) {
-        const lastIndex = output.length - 1;
-        for (let i = 0; i < lastIndex; i++) {
-          str += output[i];
-          str += separator;
-        }
-        str += output[lastIndex];
-      }
-      return str;
-    },
-    removeColors: (str) => String.prototype.replace.call(str, colorRegExp, ""),
-    deprecate(fn, msg, code, useEmitSync, modifyPrototype = true) {
-      if (code !== undefined) require("internal/validators").validateString(code, "code");
-      const emitDeprecationWarning = getDeprecationWarningEmitter(code, msg, deprecated);
-      function deprecated(...args) {
-        if (!platform.process.noDeprecation) emitDeprecationWarning();
-        if (new.target) return Reflect.construct(fn, args, new.target);
-        return Reflect.apply(fn, this, args);
-      }
-      if (modifyPrototype) {
-        Object.setPrototypeOf(deprecated, fn);
-        if (fn.prototype) deprecated.prototype = fn.prototype;
-        Object.defineProperty(deprecated, "length", { __proto__: null, ...Object.getOwnPropertyDescriptor(fn, "length") });
-      }
-      return deprecated;
-    },
-    setOwnProperty: (obj, key, value) => Object.defineProperty(obj, key, { __proto__: null, configurable: true, enumerable: true, value, writable: true }),
-    kEmptyObject: Object.freeze({ __proto__: null }),
-    customPromisifyArgs: kCustomPromisifyArgsSymbol,
-    getLazy(initializer) {
-      let value;
-      let initialized = false;
-      return function () {
-        if (initialized === false) {
-          value = initializer();
-          initialized = true;
-        }
-        return value;
-      };
-    },
-    // The util binding's defineLazyProperties: each key a data property of
-    // the module's, read from it the first time it is.
-    defineLazyProperties(target, id, keys, enumerable = true) {
-      for (const key of keys) {
-        Object.defineProperty(target, key, {
-          __proto__: null,
-          enumerable,
-          configurable: true,
-          get() {
-            const value = require(id)[key];
-            Object.defineProperty(this, key, { __proto__: null, value, writable: true, enumerable, configurable: true });
-            return value;
-          },
-          set(value) {
-            Object.defineProperty(this, key, { __proto__: null, value, writable: true, enumerable, configurable: true });
-          },
-        });
-      }
-    },
-    promisify(original) {
-      require("internal/validators").validateFunction(original, "original");
-      if (original[kCustomPromisifiedSymbol]) {
-        const fn = original[kCustomPromisifiedSymbol];
-        require("internal/validators").validateFunction(fn, "util.promisify.custom");
-        return Object.defineProperty(fn, kCustomPromisifiedSymbol, { __proto__: null, value: fn, enumerable: false, writable: false, configurable: true });
-      }
-      // Names to make an object of when the callback is given several values (fs.read's bytesRead and buffer).
-      const argumentNames = original[kCustomPromisifyArgsSymbol];
-      function fn(...args) {
-        return new Promise((resolve, reject) => {
-          args.push((err, ...values) => {
-            if (err) return reject(err);
-            if (argumentNames !== undefined && values.length > 1) {
-              const obj = {};
-              for (let i = 0; i < argumentNames.length; i++) obj[argumentNames[i]] = values[i];
-              resolve(obj);
-            } else {
-              resolve(values[0]);
-            }
-          });
-          if (types.isPromise(Reflect.apply(original, this, args))) {
-            platform.process.emitWarning("Calling promisify on a function that returns a Promise is likely a mistake.", "DeprecationWarning", "DEP0174");
-          }
-        });
-      }
-      Object.setPrototypeOf(fn, Object.getPrototypeOf(original));
-      Object.defineProperty(fn, kCustomPromisifiedSymbol, { __proto__: null, value: fn, enumerable: false, writable: false, configurable: true });
-      const descriptors = Object.getOwnPropertyDescriptors(original);
-      for (const descriptor of Object.values(descriptors)) Object.setPrototypeOf(descriptor, null);
-      return Object.defineProperties(fn, descriptors);
-    },
-    getSystemErrorMap: () => new Map([...uvErrors()].map(([errno, entry]) => [errno, [...entry]])),
-    getSystemErrorName(err) {
-      const entry = uvErrors().get(err);
-      return entry ? entry[0] : "Unknown system error " + err;
-    },
-    getSystemErrorMessage(err) {
-      const entry = uvErrors().get(err);
-      return entry ? entry[1] : "Unknown system error " + err;
-    },
-    normalizeEncoding(enc) {
-      if (enc == null || enc === "utf8" || enc === "utf-8") return "utf8";
-      switch (enc.length) {
-        case 4:
-          if (enc === "UTF8") return "utf8";
-          if (enc === "ucs2" || enc === "UCS2") return "utf16le";
-          enc = enc.toLowerCase();
-          if (enc === "utf8") return "utf8";
-          if (enc === "ucs2") return "utf16le";
-          break;
-        case 3:
-          if (enc === "hex" || enc === "HEX" || enc.toLowerCase() === "hex") return "hex";
-          break;
-        case 5:
-          if (enc === "ascii") return "ascii";
-          if (enc === "ucs-2") return "utf16le";
-          if (enc === "UTF-8") return "utf8";
-          if (enc === "ASCII") return "ascii";
-          if (enc === "UCS-2") return "utf16le";
-          enc = enc.toLowerCase();
-          if (enc === "utf-8") return "utf8";
-          if (enc === "ascii") return "ascii";
-          if (enc === "ucs-2") return "utf16le";
-          break;
-        case 6:
-          if (enc === "base64") return "base64";
-          if (enc === "latin1" || enc === "binary") return "latin1";
-          if (enc === "BASE64") return "base64";
-          if (enc === "LATIN1" || enc === "BINARY") return "latin1";
-          enc = enc.toLowerCase();
-          if (enc === "base64") return "base64";
-          if (enc === "latin1" || enc === "binary") return "latin1";
-          break;
-        case 7:
-          if (enc === "utf16le" || enc === "UTF16LE" || enc.toLowerCase() === "utf16le") return "utf16le";
-          break;
-        case 8:
-          if (enc === "utf-16le" || enc === "UTF-16LE" || enc.toLowerCase() === "utf-16le") return "utf16le";
-          break;
-        case 9:
-          if (enc === "base64url" || enc === "BASE64URL" || enc.toLowerCase() === "base64url") return "base64url";
-          break;
-        default:
-          if (enc === "") return "utf8";
-      }
-    },
-  };
-
-  // THE BINDING's V8 slots (a promise's state and result, a proxy's target
-  // and handler, an iterator's and a weak collection's entries) are
-  // platform.slots', after an intrinsic brand check: values, which
-  // inspect.js formats itself.
-  const slots = platform.slots;
-
-  // V8's names (Object::GetConstructorName) for objects inspect.js finds no named constructor for.
-  const builtinNames = [
-    ["isMap", "Map"], ["isSet", "Set"], ["isWeakMap", "WeakMap"], ["isWeakSet", "WeakSet"], ["isDate", "Date"],
-    ["isRegExp", "RegExp"], ["isPromise", "Promise"], ["isNativeError", "Error"], ["isArrayBuffer", "ArrayBuffer"],
-    ["isSharedArrayBuffer", "SharedArrayBuffer"], ["isDataView", "DataView"], ["isNumberObject", "Number"],
-    ["isStringObject", "String"], ["isBooleanObject", "Boolean"], ["isBigIntObject", "BigInt"], ["isSymbolObject", "Symbol"],
-  ];
-  const isArrayIndex = (key) => /^(?:0|[1-9][0-9]*)$/.test(key) && Number(key) < 4294967295;
-  const utilBinding = {
-    constants: { ALL_PROPERTIES: 0, ONLY_ENUMERABLE: 2, SKIP_SYMBOLS: 16, kPending: 0, kRejected: 2 },
-    getOwnNonIndexProperties(object, filter) {
-      // An object's own keys list its array indices first, ascending
-      // (OrdinaryOwnPropertyKeys, and an array's, a typed array's and a
-      // String object's alike): the rest start where they end.
-      const all = Reflect.ownKeys(object);
-      let low = 0;
-      let high = all.length;
-      while (low < high) {
-        const mid = (low + high) >> 1;
-        if (typeof all[mid] === "string" && isArrayIndex(all[mid])) low = mid + 1;
-        else high = mid;
-      }
-      const keys = [];
-      for (let i = low; i < all.length; i++) {
-        const key = all[i];
-        if ((filter & 2) !== 0 && !Object.prototype.propertyIsEnumerable.call(object, key)) continue;
-        if ((filter & 16) !== 0 && typeof key === "symbol") continue;
-        keys.push(key);
-      }
-      return keys;
-    },
-    getProxyDetails: (value, showProxy) => (types.isProxy(value) ? slots.getProxyDetails(value, showProxy) : undefined),
-    getPromiseDetails: (promise) => slots.getPromiseDetails(promise),
-    // As inspect.js asks: a weak collection's entries alone, an iterator's with whether they pair.
-    previewEntries: (...args) => Reflect.apply(slots.previewEntries, slots, args),
-    getConstructorName(value) {
-      if (Array.isArray(value)) return "Array";
-      if (types.isTypedArray(value)) return String(typedArrayKind(value));
-      for (const [test, name] of builtinNames) if (types[test](value)) return name;
-      return typeof value === "function" ? "Function" : "Object";
-    },
-    getExternalValue: () => 0n,
-    isInsideNodeModules: () => platform.insideNodeModules(),
-  };
-
-  // src/node_i18n.cc GetStringWidth, as Node built with ICU counts columns:
-  // an East Asian Wide or Fullwidth character two, a default-emoji-
-  // presentation character two, a control, format character, enclosing or
-  // nonspacing mark or emoji modifier none (SOFT HYPHEN one), any other one.
-  const zeroWidth = /^(?!\u00AD)[\p{Cc}\p{Cf}\p{Me}\p{Mn}\p{Emoji_Modifier}]$/u;
-  const emojiPresentation = /^\p{Emoji_Presentation}$/u;
-  const icuBinding = {
-    getStringWidth(str) {
-      let width = 0;
-      for (const char of str) {
-        if (platform.eastAsianWide(char.codePointAt(0)) || emojiPresentation.test(char)) width += 2;
-        else if (!zeroWidth.test(char)) width += 1;
-      }
-      return width;
-    },
-  };
-
-  internalUtil.promisify.custom = kCustomPromisifiedSymbol;
-
-  // lib/internal/errors.js ErrnoException and ExceptionWithHostPort: a
-  // libuv errno's error, its code the errno's name.
-  class ErrnoException extends Error {
-    constructor(err, syscall, original) {
-      const code = require("util").getSystemErrorName(err);
-      super(original ? syscall + " " + code + " " + original : syscall + " " + code);
-      this.errno = err;
-      this.code = code;
-      this.syscall = syscall;
-    }
-    get ["constructor"]() { return Error; }
-  }
-  class ExceptionWithHostPort extends Error {
-    constructor(err, syscall, address, port, additional) {
-      const code = require("util").getSystemErrorName(err);
-      let details = "";
-      if (port && port > 0) details = " " + address + ":" + port;
-      else if (address) details = " " + address;
-      if (additional) details += " - Local (" + additional + ")";
-      super(syscall + " " + code + details);
-      this.errno = err;
-      this.code = code;
-      this.syscall = syscall;
-      this.address = address;
-      if (port) this.port = port;
-    }
-    get ["constructor"]() { return Error; }
-  }
-
-  // lib/internal/abort_controller.js's functions util exports, over the platform's AbortSignal.
-  const abortController = {
-    async aborted(signal, resource) {
-      if (signal === undefined) throw new nodeErrorCodes.ERR_INVALID_ARG_TYPE("signal", "AbortSignal", signal);
-      require("internal/validators").validateAbortSignal(signal, "signal");
-      require("internal/validators").validateObject(resource, "resource", require("internal/validators").kValidateObjectAllowObjects);
-      if (signal.aborted) return Promise.resolve();
-      return new Promise((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
-    },
-    transferableAbortSignal(signal) {
-      if (!(signal instanceof AbortSignal)) throw new nodeErrorCodes.ERR_INVALID_ARG_TYPE("signal", "AbortSignal", signal);
-      return signal;
-    },
-    transferableAbortController: () => new AbortController(),
-  };
-
-  // src/node_dotenv.cc Dotenv::ParseContent, as util.parseEnv and
-  // process.loadEnvFile read a .env file: keys in their bytes' order.
-  function parseEnv(input) {
-    const trim = (text) => text.replace(/^[ \t\n]+|[ \t\n]+$/g, "");
-    const store = new Map();
-    let content = trim(String(input).replaceAll("\r", ""));
-    while (content.length > 0) {
-      if (content[0] === "\n" || content[0] === "#") {
-        const newline = content.indexOf("\n");
-        content = newline === -1 ? "" : content.slice(newline + 1);
-        continue;
-      }
-      const equalOrNewline = content.search(/[=\n]/);
-      if (equalOrNewline === -1 || content[equalOrNewline] === "\n") {
-        if (equalOrNewline === -1) break;
-        content = trim(content.slice(equalOrNewline + 1));
-        continue;
-      }
-      let key = trim(content.slice(0, equalOrNewline));
-      content = content.slice(equalOrNewline + 1);
-      if (content.length === 0 || content[0] === "\n") {
-        store.set(key, "");
-        continue;
-      }
-      content = trim(content);
-      if (key.length === 0) continue;
-      if (key.startsWith("export ")) key = trim(key.slice(7));
-      if (content.length === 0) {
-        store.set(key, "");
-        break;
-      }
-      if (content[0] === "\"") {
-        const closing = content.indexOf("\"", 1);
-        if (closing !== -1) {
-          store.set(key, content.slice(1, closing).replaceAll("\\n", "\n"));
-          const newline = content.indexOf("\n", closing + 1);
-          content = newline === -1 ? "" : content.slice(newline + 1);
-          continue;
-        }
-      }
-      if (content[0] === "'" || content[0] === "\"" || content[0] === "\u0060") {
-        const closing = content.indexOf(content[0], 1);
-        if (closing === -1) {
-          const newline = content.indexOf("\n");
-          if (newline === -1) {
-            store.set(key, content);
-            break;
-          }
-          store.set(key, content.slice(0, newline));
-          content = content.slice(newline + 1);
-        } else {
-          store.set(key, content.slice(1, closing));
-          const newline = content.indexOf("\n", closing + 1);
-          content = newline === -1 ? "" : content.slice(newline + 1);
-          continue;
-        }
-      } else {
-        const newline = content.indexOf("\n");
-        let value = newline === -1 ? content : content.slice(0, newline);
-        const hash = value.indexOf("#");
-        if (hash !== -1) value = value.slice(0, hash);
-        store.set(key, trim(value));
-        content = newline === -1 ? "" : content.slice(newline + 1);
-      }
-      content = trim(content);
-    }
-    // A std::map's order: the keys' UTF-8 bytes, which is their code points'.
-    const byCodePoints = (a, b) => {
-      const x = [...a];
-      const y = [...b];
-      for (let i = 0; i < Math.min(x.length, y.length); i++) {
-        const d = x[i].codePointAt(0) - y[i].codePointAt(0);
-        if (d !== 0) return d;
-      }
-      return x.length - y.length;
-    };
-    const result = {};
-    for (const key of [...store.keys()].sort(byCodePoints)) result[key] = store.get(key);
-    return result;
-  }
-  utilBinding.parseEnv = parseEnv;
-  // Node's util binding GetCallSites: the frames below util.getCallSites, as
-  // V8's StackFrame reads them; a script's id is its own number here.
-  const scriptIds = new Map();
-  utilBinding.getCallSites = function getCallSites(frameCount) {
-    return platform.callSites(frameCount + 1, getCallSites).slice(1).map((site) => {
-      const scriptName = site.getScriptNameOrSourceURL?.() ?? site.getFileName() ?? "";
-      if (!scriptIds.has(scriptName)) scriptIds.set(scriptName, String(scriptIds.size + 1));
-      const column = site.getColumnNumber() ?? 0;
-      return {
-        functionName: site.getFunctionName() ?? "",
-        scriptId: scriptIds.get(scriptName),
-        scriptName,
-        lineNumber: site.getLineNumber() ?? 0,
-        columnNumber: column,
-        column,
-      };
-    });
-  };
-
-  // Node's internal modules that are not its own text here, by id.
-  const hosted = {
-    "internal/util": internalUtil,
-    "internal/errors": { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable, isStackOverflowError, ErrnoException, ExceptionWithHostPort },
-    "internal/options": { getOptionValue: (name) => platform.optionValue(name) },
-    "internal/constants": { CHAR_LOWERCASE_B: 98, CHAR_LOWERCASE_E: 101, CHAR_LOWERCASE_N: 110 },
-    "internal/abort_controller": abortController,
-    "internal/console/global": platform.console,
-    "internal/encoding": { TextDecoder: globalThis.TextDecoder, TextEncoder: globalThis.TextEncoder },
-    worker_threads: platform.workerThreads,
-    "internal/util/types": types,
-    "internal/assert": assert,
-    // Node's own modules, whose frames read node:<id> (colored grey).
-    "internal/bootstrap/realm": { BuiltinModule: { exists: (id) => id.startsWith("internal/") || platform.builtinModules.includes(id) } },
-    "internal/url": { ...platform.url, isURL: (self) => Boolean(self?.href && self.protocol && self.auth === undefined && self.path === undefined) },
-    "internal/crypto/util": { kKeyObject: Symbol("kKeyObject") },
-    "internal/deps/acorn/acorn/dist/acorn": { Parser: { tokenizer: (code, options) => platform.tokenizer(code, options) } },
-    "internal/source_map/source_map_cache": platform.sourceMaps,
-    "internal/tty": { getColorDepth: () => platform.colorDepth() },
-    buffer: { Buffer: platform.Buffer },
-  };
-  const bindings = {
-    util: utilBinding,
-    config: { hasIntl: true },
-    icu: icuBinding,
-    constants: { os: { signals: platform.signals } },
-    buffer: { compare: (a, b) => platform.Buffer.compare(a, b) },
-    errors: { getErrorSourcePositions: (error) => platform.errorSourcePositions(error) },
-    // Node's tracing is off: no category is enabled, and nothing traces.
-    trace_events: { getCategoryEnabledBuffer: () => new Uint8Array(1), trace() {} },
-  };
-  const internalBinding = (name) => bindings[name];
-  // inspect.js reads primordials.globalThis once, for the names it counts as
-  // built-in (showHidden shows a prototype's properties when its
-  // constructor's name is not one): the capitalised globals there were when
-  // Node loaded it, measured (node-lib-source.ts NODE_BUILTIN_OBJECTS).
-  const bootGlobal = Object.create(null);
-  for (const name of platform.builtinObjects) bootGlobal[name] = globalThis[name];
-  const inspectPrimordials = Object.create(null);
-  for (const key of Reflect.ownKeys(primordials)) inspectPrimordials[key] = primordials[key];
-  inspectPrimordials.globalThis = bootGlobal;
-
-  // Node's own, each run once, its exports cached before it runs (a cycle
-  // reads what it has exported so far), as Node's BuiltinModule does.
-  const loaded = new Map();
-  function require(id) {
-    if (Object.prototype.hasOwnProperty.call(hosted, id)) return hosted[id];
-    const cached = loaded.get(id);
-    if (cached !== undefined) return cached.exports;
-    const source = platform.sources[id];
-    if (source === undefined) throw new Error("No such built-in module: " + id);
-    const module = { exports: {}, id };
-    loaded.set(id, module);
-    source(module.exports, require, module, platform.process, internalBinding, id === "internal/util/inspect" ? inspectPrimordials : primordials);
-    // As Node's bootstrap does, before any program reads it (pre_execution.js).
-    if (id === "internal/util/debuglog") module.exports.initializeDebugEnv(platform.nodeDebug);
-    return module.exports;
-  }
-  return { require };
-})({
-    util: __realUtil,
-    // V8's slots, as workerd's inspect reaches them (node-lib-host.ts THE BINDING).
-    slots: (function createWorkerdSlots(util) {
-  "use strict";
-  const kPending = 0;
-  const kFulfilled = 1;
-  const kRejected = 2;
-  const PROXY = "Proxy [Array]";
-  const REVOKED = "<Revoked Proxy>";
-  const arrayPrototype = Array.prototype;
-  const customInspect = Symbol.for("nodejs.util.inspect.custom");
-  const isProxy = util.types.isProxy;
-  const escapes = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", "'": "'", "\\": "\\" };
-  // The primitive workerd's formatPrimitive handed stylize as 'text', or null for any other mark.
-  function primitiveOf(text, style) {
-    switch (style) {
-      case "number": return /^(?:-?(?:[0-9]|Infinity)|NaN$)/.test(text) ? { primitive: Number(text) } : null;
-      case "bigint": return /^-?[0-9]+n$/.test(text) ? { primitive: BigInt(text.slice(0, -1)) } : null;
-      case "boolean": return text === "true" || text === "false" ? { primitive: text === "true" } : null;
-      case "undefined": return text === "undefined" ? { primitive: undefined } : null;
-      case "null": return text === "null" ? { primitive: null } : null;
-      case "symbol": return text.startsWith("Symbol(") && text.endsWith(")") ? { primitive: Symbol(text.slice(7, -1)) } : null;
-      case "string":
-        if (!/^['"\u0060]/.test(text)) return null;
-        // strEscape's escapes: the meta table's and a lone surrogate's.
-        return { primitive: text.slice(1, -1).replace(/\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|[btnfr'\\])/g, (all, escape) => (escape.length > 1 ? String.fromCharCode(parseInt(escape.slice(1), 16)) : escapes[escape])) };
-      default: return null;
-    }
-  }
-  // What workerd's inspect of 'value' formats 'level' deep: objects,
-  // primitives and marks, in order, and the text, for an iterator's brace.
-  // Its 'seen' (the objects being formatted, outermost first) holds 'level'
-  // of them then: a prototype's properties showHidden adds are formatted
-  // before the value is pushed, and a proxy (showProxy) pushes none.
-  // Array.prototype.includes is held only until workerd's first cycle
-  // check, which no program code runs before; from then the hook is that
-  // call's own 'seen' array's, where no program can reach it. What program
-  // code still runs while workerd formats (the value's own toStringTag
-  // getter, a proxy in its prototype chain) sees every built-in as it was,
-  // and can inspect: a nested read holds and lets go of its own.
-  function capture(value, options, level) {
-    const events = [];
-    const previous = arrayPrototype.includes;
-    let seen = null;
-    let referenced = false;
-    const isObject = (item) => (typeof item === "object" && item !== null) || typeof item === "function";
-    // An object 'level' deep is taken, and answered as seen: workerd marks
-    // it circular and formats none of it, so no code of it runs (a getter,
-    // a trap). Answered so for the value itself, workerd marks the value a
-    // reference too, last.
-    function record(item) {
-      if (this !== seen || seen.length !== level || !isObject(item)) return Reflect.apply(previous, this, arguments);
-      events.push({ object: item });
-      if (item === value) referenced = true;
-      return true;
-    }
-    const first = function includes(item) {
-      arrayPrototype.includes = previous;
-      seen = this;
-      Object.defineProperty(seen, "includes", { value: record, writable: true, configurable: true });
-      return Reflect.apply(record, this, arguments);
-    };
-    arrayPrototype.includes = first;
-    let text;
-    try {
-      text = util.inspect(value, {
-        showHidden: false, depth: 0, ...options,
-        showProxy: true, colors: false, customInspect: false, getters: false, maxStringLength: Infinity,
-        breakLength: Infinity, compact: 3, sorted: false, numericSeparator: false,
-        stylize(mark, style) {
-          if ((seen === null ? 0 : seen.length) === level) events.push(primitiveOf(mark, style) ?? { mark });
-          return mark;
-        },
-      });
-    } finally {
-      if (arrayPrototype.includes === first) arrayPrototype.includes = previous;
-    }
-    if (referenced) events.pop();
-    return { events, text };
-  }
-  // The values a slot holds, read from 'read(depth)' (capture's events),
-  // each a value, a proxy (its parts, read a level deeper each time, until
-  // none is left past the depth) or a revoked proxy. 'count' values, or as
-  // many as the first read holds.
-  function slotValues(read, count) {
-    let nodes;
-    for (let depth = 0; ; depth++) {
-      const events = read(depth);
-      let at = 0;
-      let deeper = false;
-      // A node 'r' levels in, as this read formats it ('known' from the last).
-      const node = (known, r) => {
-        if (known !== undefined && known.parts !== undefined) {
-          if (r > depth) {
-            if (events[at++]?.mark !== PROXY) throw unreadable("a proxy");
-            deeper = true;
-            return known;
-          }
-          return { parts: [node(known.parts?.[0], r + 1), node(known.parts?.[1], r + 1)] };
-        }
-        const event = events[at++];
-        if (event === undefined) throw unreadable("a value");
-        if ("primitive" in event) return { value: event.primitive };
-        if ("object" in event) {
-          // Its own mark, past the depth.
-          while (at < events.length && "mark" in events[at] && events[at].mark !== PROXY && events[at].mark !== REVOKED) at++;
-          return { value: event.object };
-        }
-        if (event.mark === REVOKED) return { revoked: true };
-        if (event.mark === PROXY) {
-          deeper = true;
-          return { parts: null };
-        }
-        throw unreadable("a mark (" + event.mark + ")");
-      };
-      const next = [];
-      for (let i = 0; nodes === undefined ? at < events.length : i < nodes.length; i++) {
-        next.push(node(nodes?.[i], 1));
-        if (count !== undefined && nodes === undefined && next.length === count) break;
-      }
-      nodes = next;
-      if (!deeper) return nodes.map(standIn);
-      if (depth === 64) throw unreadable("a proxy 64 deep");
-    }
-  }
-  // Stand-ins: a proxy among a slot's values, rebuilt over its target with a
-  // handler of none of a program's traps, and the [target, handler] it
-  // stands for (null, revoked). inspect.js never formats one as an object:
-  // it asks getProxyDetails first, which unwraps it (below).
-  const standIns = new WeakMap();
-  function standIn(node) {
-    if (node.revoked) {
-      const revocable = Proxy.revocable({}, {});
-      revocable.revoke();
-      standIns.set(revocable.proxy, null);
-      return revocable.proxy;
-    }
-    if (node.parts === undefined) return node.value;
-    const parts = [standIn(node.parts[0]), standIn(node.parts[1])];
-    const proxy = new Proxy(parts[0], {});
-    standIns.set(proxy, parts);
-    return proxy;
-  }
-  // What inspect.js formats for a proxy, showProxy off: its innermost target
-  // (no stand-in is formatted as an object, nor any proxy trap run), or a
-  // revoked proxy, which throws there as in Node.
-  function innermostTarget(target) {
-    while (standIns.get(target)) target = standIns.get(target)[0];
-    return target;
-  }
-  // Whether inspect.js would find a custom inspect on 'object', read without
-  // running a program's code; a proxy on the way may hold one.
-  function reachesCustomInspect(object) {
-    for (let at = object; at !== null; at = Object.getPrototypeOf(at)) {
-      if (isProxy(at)) return true;
-      const own = Object.getOwnPropertyDescriptor(at, customInspect);
-      if (own !== undefined) return own.get !== undefined || typeof own.value === "function";
-    }
-    return false;
-  }
-  // The prototypes workerd's constructor discovery names without asking
-  // their constructors anything (its well-known prototypes).
-  const intrinsicPrototypes = new Set([
-    Object.prototype, Function.prototype, Array.prototype, Error.prototype,
-    Promise.prototype, Map.prototype, Set.prototype, WeakMap.prototype, WeakSet.prototype,
-  ]);
-  // Whether reading 'key' of 'object' runs none of a program's code: no
-  // proxy on the way to the first object holding it, whose descriptor is
-  // data; or, given 'intrinsicHolder', that first holder is it.
-  function readsInertly(object, key, intrinsicHolder) {
-    for (let at = object; at !== null; at = Object.getPrototypeOf(at)) {
-      if (isProxy(at)) return false;
-      const own = Object.getOwnPropertyDescriptor(at, key);
-      if (own === undefined) continue;
-      if (intrinsicHolder !== undefined) return at === intrinsicHolder;
-      return own.get === undefined && own.set === undefined;
-    }
-    return true;
-  }
-  // Whether workerd formats 'holder' with none of a program's code run, as
-  // its inspect reads the chain: no proxy on it; no accessor for its
-  // Symbol.toStringTag; and, for its constructor discovery, no constructor
-  // whose name is read through an accessor or whose instanceof check is a
-  // program's (Symbol.hasInstance held anywhere but Function.prototype).
-  function formatsInertly(holder) {
-    let tag = false;
-    for (let at = holder; at !== null; at = Object.getPrototypeOf(at)) {
-      if (isProxy(at)) return false;
-      const own = tag ? undefined : Object.getOwnPropertyDescriptor(at, Symbol.toStringTag);
-      if (own !== undefined) {
-        if (own.get !== undefined || own.set !== undefined) return false;
-        tag = true;
-      }
-      if (intrinsicPrototypes.has(at)) continue;
-      const constructor = Object.getOwnPropertyDescriptor(at, "constructor");
-      if (constructor === undefined || typeof constructor.value !== "function") continue;
-      if (!readsInertly(constructor.value, "name") || !readsInertly(constructor.value, Symbol.hasInstance, Function.prototype)) return false;
-    }
-    return true;
-  }
-  // What a slot whose holder cannot be read inertly shows (formatsInertly).
-  function unknown(text) {
-    return Object.freeze(Object.create(null, {
-      [customInspect]: { value: (depth, options) => options.stylize(text, "special") },
-      [Symbol.toStringTag]: { value: text },
-    }));
-  }
-  const ITEMS_UNKNOWN = unknown("<items unknown>");
-  const UNKNOWN = unknown("<unknown>");
-  function unreadable(what) {
-    return new Error("util.inspect: workerd's inspect did not hand over " + what + " in a V8 slot");
-  }
-  function getPromiseDetails(promise) {
-    if (!formatsInertly(promise)) return [kFulfilled, UNKNOWN];
-    const first = capture(promise, {}, 1);
-    if (first.events.length > 0 && first.events[0].mark === "<pending>") return [kPending];
-    const rejected = first.events.some((event) => event.mark === "<rejected>");
-    // Its result, the first value formatted (before the promise's own properties).
-    const [result] = slotValues((depth) => (depth === 0 ? first : capture(promise, { depth }, 1)).events, 1);
-    return [rejected ? kRejected : kFulfilled, result];
-  }
-  function getProxyDetails(proxy, showProxy) {
-    let parts = standIns.get(proxy);
-    if (parts === undefined) {
-      const first = capture(proxy, {}, 0);
-      // Revoked itself: its one mark (a revoked target's is the first of two parts').
-      if (first.events.length === 1 && first.events[0].mark === REVOKED) parts = null;
-      else parts = slotValues((depth) => (depth === 0 ? first : capture(proxy, { depth }, 0)).events, 2);
-    }
-    if (parts === null) return showProxy ? [null, null] : null;
-    if (showProxy) return parts;
-    // inspect.js calls the target's custom inspect with the proxy as this: a
-    // program's own proxy is that; a stand-in must never be, so the target of
-    // one, if it has such a hook, is not shown (nor its constructor's checks run).
-    const target = innermostTarget(parts[0]);
-    return standIns.has(proxy) && !standIns.has(target) && reachesCustomInspect(target) ? UNKNOWN : target;
-  }
-  function previewEntries(value, isKeyValue) {
-    if (!formatsInertly(value)) return isKeyValue === undefined ? [ITEMS_UNKNOWN] : [[ITEMS_UNKNOWN], false];
-    // A weak collection's entries are what showHidden shows. The value's own
-    // properties follow its entries: counted off by a read showing none.
-    const options = { showHidden: isKeyValue === undefined };
-    let text;
-    const entries = slotValues((depth) => {
-      const all = capture(value, { ...options, depth, maxArrayLength: Infinity }, 1);
-      const own = capture(value, { ...options, depth, maxArrayLength: 0 }, 1).events;
-      text ??= all.text;
-      return all.events.slice(0, all.events.length - own.length);
-    });
-    if (isKeyValue === undefined) return entries;
-    const pairs = /^[^{]*\[(?:Map|Set) Entries\] \{/.test(text);
-    if (pairs && entries.length % 2 !== 0) throw unreadable("an iterator's pairs");
-    return [entries, pairs];
-  }
-  return { getPromiseDetails, getProxyDetails, previewEntries };
-})(__realUtil),
-    Buffer: __BufferMod,
-    url: { pathToFileURL: __urlMod.pathToFileURL, URL: __urlMod.URL },
-    process: __processMod,
-    builtinModules: __NodeModule.builtinModules,
-    builtinObjects: ["Object","Function","Array","Number","Infinity","NaN","Boolean","String","Symbol","Date","Promise","RegExp","Error","AggregateError","EvalError","RangeError","ReferenceError","SyntaxError","TypeError","URIError","JSON","Math","Intl","ArrayBuffer","Atomics","Uint8Array","Int8Array","Uint16Array","Int16Array","Uint32Array","Int32Array","Float32Array","Float64Array","Uint8ClampedArray","BigUint64Array","BigInt64Array","DataView","Map","BigInt","Set","WeakMap","WeakSet","Proxy","Reflect","FinalizationRegistry","WeakRef"],
-    eastAsianWide(code) {
-      let low = 0;
-      let high = wide.length / 2 - 1;
-      while (low <= high) {
-        const mid = (low + high) >> 1;
-        if (code < wide[2 * mid]) high = mid - 1;
-        else if (code > wide[2 * mid + 1]) low = mid + 1;
-        else return true;
-      }
-      return false;
-    },
-    signals: __osMod.constants.signals,
-    insideNodeModules: __nimbusInsideNodeModules,
-    errorSourcePositions: __nimbusErrorSourcePositions,
-    tokenizer: (code, options) => __nimbusRegistryRequire("./nimbus/interpreter.js").tokenizer(code, options),
-    sourceMaps: { getSourceMapsSupport: () => __nimbusSourceMapsSupport, findSourceMap: __nimbusFindSourceMap, getSourceLine: __nimbusOriginalSourceLine },
-    colorDepth: () => __nimbusColorDepth(),
-    customPromisifyArgs: __nimbusCustomPromisifyArgs,
-    uvErrors: [[-7,"E2BIG","argument list too long"],[-13,"EACCES","permission denied"],[-98,"EADDRINUSE","address already in use"],[-99,"EADDRNOTAVAIL","address not available"],[-97,"EAFNOSUPPORT","address family not supported"],[-11,"EAGAIN","resource temporarily unavailable"],[-3000,"EAI_ADDRFAMILY","address family not supported"],[-3001,"EAI_AGAIN","temporary failure"],[-3002,"EAI_BADFLAGS","bad ai_flags value"],[-3013,"EAI_BADHINTS","invalid value for hints"],[-3003,"EAI_CANCELED","request canceled"],[-3004,"EAI_FAIL","permanent failure"],[-3005,"EAI_FAMILY","ai_family not supported"],[-3006,"EAI_MEMORY","out of memory"],[-3007,"EAI_NODATA","no address"],[-3008,"EAI_NONAME","unknown node or service"],[-3009,"EAI_OVERFLOW","argument buffer overflow"],[-3014,"EAI_PROTOCOL","resolved protocol is unknown"],[-3010,"EAI_SERVICE","service not available for socket type"],[-3011,"EAI_SOCKTYPE","socket type not supported"],[-114,"EALREADY","connection already in progress"],[-9,"EBADF","bad file descriptor"],[-16,"EBUSY","resource busy or locked"],[-125,"ECANCELED","operation canceled"],[-4080,"ECHARSET","invalid Unicode character"],[-103,"ECONNABORTED","software caused connection abort"],[-111,"ECONNREFUSED","connection refused"],[-104,"ECONNRESET","connection reset by peer"],[-89,"EDESTADDRREQ","destination address required"],[-17,"EEXIST","file already exists"],[-14,"EFAULT","bad address in system call argument"],[-27,"EFBIG","file too large"],[-113,"EHOSTUNREACH","host is unreachable"],[-4,"EINTR","interrupted system call"],[-22,"EINVAL","invalid argument"],[-5,"EIO","i/o error"],[-106,"EISCONN","socket is already connected"],[-21,"EISDIR","illegal operation on a directory"],[-40,"ELOOP","too many symbolic links encountered"],[-24,"EMFILE","too many open files"],[-90,"EMSGSIZE","message too long"],[-36,"ENAMETOOLONG","name too long"],[-100,"ENETDOWN","network is down"],[-101,"ENETUNREACH","network is unreachable"],[-23,"ENFILE","file table overflow"],[-105,"ENOBUFS","no buffer space available"],[-19,"ENODEV","no such device"],[-2,"ENOENT","no such file or directory"],[-12,"ENOMEM","not enough memory"],[-64,"ENONET","machine is not on the network"],[-92,"ENOPROTOOPT","protocol not available"],[-28,"ENOSPC","no space left on device"],[-38,"ENOSYS","function not implemented"],[-107,"ENOTCONN","socket is not connected"],[-20,"ENOTDIR","not a directory"],[-39,"ENOTEMPTY","directory not empty"],[-88,"ENOTSOCK","socket operation on non-socket"],[-95,"ENOTSUP","operation not supported on socket"],[-75,"EOVERFLOW","value too large for defined data type"],[-1,"EPERM","operation not permitted"],[-32,"EPIPE","broken pipe"],[-71,"EPROTO","protocol error"],[-93,"EPROTONOSUPPORT","protocol not supported"],[-91,"EPROTOTYPE","protocol wrong type for socket"],[-34,"ERANGE","result too large"],[-30,"EROFS","read-only file system"],[-108,"ESHUTDOWN","cannot send after transport endpoint shutdown"],[-29,"ESPIPE","invalid seek"],[-3,"ESRCH","no such process"],[-110,"ETIMEDOUT","connection timed out"],[-26,"ETXTBSY","text file is busy"],[-18,"EXDEV","cross-device link not permitted"],[-4094,"UNKNOWN","unknown error"],[-4095,"EOF","end of file"],[-6,"ENXIO","no such device or address"],[-31,"EMLINK","too many links"],[-112,"EHOSTDOWN","host is down"],[-121,"EREMOTEIO","remote I/O error"],[-25,"ENOTTY","inappropriate ioctl for device"],[-4028,"EFTYPE","inappropriate file type or format"],[-84,"EILSEQ","illegal byte sequence"],[-94,"ESOCKTNOSUPPORT","socket type not supported"],[-61,"ENODATA","no data available"],[-49,"EUNATCH","protocol driver not attached"],[-8,"ENOEXEC","exec format error"]],
-    optionValue: __nimbusOptionValue,
-    console: __consoleMod,
-    workerThreads: builtins.worker_threads,
-    nodeDebug: __nimbusNodeDebugAtLaunch,
-    callSites: (count, above) => (typeof __nimbusCallSites === "function" ? __nimbusCallSites(count, above) : []),
-    primordialsOf: function (primordials, globalThis) {
+// Node's primordials, taken when the process starts, before the program can
+// change what they capture, as Node's bootstrap takes them.
+const __nimbusPrimordials = {};
+(function (primordials, globalThis) {
 'use strict';
 
 /* eslint-disable node-core/prefer-primordials */
@@ -12074,7 +11295,794 @@ primordials.SafeArrayPrototypePushApply = (arr, items) => {
 ObjectSetPrototypeOf(primordials, null);
 ObjectFreeze(primordials);
 
+})(__nimbusPrimordials, globalThis);
+let __nimbusNodeLibrary = null;
+function __nimbusNodeLib() {
+  if (__nimbusNodeLibrary !== null) return __nimbusNodeLibrary;
+  // The East Asian Wide and Fullwidth ranges, ascending: [first, last] pairs.
+  const wide = "1100-115f,231a-231b,2329-232a,23e9-23ec,23f0,23f3,25fd-25fe,2614-2615,2630-2637,2648-2653,267f,268a-268f,2693,26a1,26aa-26ab,26bd-26be,26c4-26c5,26ce,26d4,26ea,26f2-26f3,26f5,26fa,26fd,2705,270a-270b,2728,274c,274e,2753-2755,2757,2795-2797,27b0,27bf,2b1b-2b1c,2b50,2b55,2e80-2e99,2e9b-2ef3,2f00-2fd5,2ff0-303e,3041-3096,3099-30ff,3105-312f,3131-318e,3190-31e5,31ef-321e,3220-3247,3250-a48c,a490-a4c6,a960-a97c,ac00-d7a3,f900-faff,fe10-fe19,fe30-fe52,fe54-fe66,fe68-fe6b,ff01-ff60,ffe0-ffe6,16fe0-16fe4,16ff0-16ff6,17000-18cd5,18cff-18d1e,18d80-18df2,1aff0-1aff3,1aff5-1affb,1affd-1affe,1b000-1b122,1b132,1b150-1b152,1b155,1b164-1b167,1b170-1b2fb,1d300-1d356,1d360-1d376,1f004,1f0cf,1f18e,1f191-1f19a,1f200-1f202,1f210-1f23b,1f240-1f248,1f250-1f251,1f260-1f265,1f300-1f320,1f32d-1f335,1f337-1f37c,1f37e-1f393,1f3a0-1f3ca,1f3cf-1f3d3,1f3e0-1f3f0,1f3f4,1f3f8-1f43e,1f440,1f442-1f4fc,1f4ff-1f53d,1f54b-1f54e,1f550-1f567,1f57a,1f595-1f596,1f5a4,1f5fb-1f64f,1f680-1f6c5,1f6cc,1f6d0-1f6d2,1f6d5-1f6d8,1f6dc-1f6df,1f6eb-1f6ec,1f6f4-1f6fc,1f7e0-1f7eb,1f7f0,1f90c-1f93a,1f93c-1f945,1f947-1f9ff,1fa70-1fa7c,1fa80-1fa8a,1fa8e-1fac6,1fac8,1facd-1fadc,1fadf-1faea,1faef-1faf8,20000-2fffd,30000-3fffd".split(",").flatMap((range) => {
+    const [first, last = first] = range.split("-");
+    return [parseInt(first, 16), parseInt(last, 16)];
+  });
+  __nimbusNodeLibrary = (function createNodeLib(platform) {
+  "use strict";
+  const platformUtil = platform.util;
+  const primordials = platform.primordials;
+  const customInspectSymbol = Symbol.for("nodejs.util.inspect.custom");
+  const typedArrayTag = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;
+  const typedArrayKind = (value) => Reflect.apply(typedArrayTag, value, []);
+
+  // lib/internal/util/types.js: the binding's checks, and the typed arrays' by their tag.
+  const types = { ...platformUtil.types, isArrayBufferView: ArrayBuffer.isView, isTypedArray: (value) => typedArrayKind(value) !== undefined };
+  for (const kind of ["Uint8Array", "Uint8ClampedArray", "Uint16Array", "Uint32Array", "Int8Array", "Int16Array", "Int32Array", "Float16Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array"]) {
+    types["is" + kind] = (value) => typedArrayKind(value) === kind;
+  }
+
+  // lib/internal/errors.js
+  let maxStackErrorName;
+  let maxStackErrorMessage;
+  function isStackOverflowError(err) {
+    if (maxStackErrorMessage === undefined) {
+      try {
+        function overflowStack() { overflowStack(); }
+        overflowStack();
+      } catch (e) {
+        maxStackErrorMessage = e.message;
+        maxStackErrorName = e.name;
+      }
+    }
+    return !!err && err.name === maxStackErrorName && err.message === maxStackErrorMessage;
+  }
+  // lib/internal/assert.js
+  function assert(value, message) {
+    if (!value) throw new nodeErrorCodes.ERR_INTERNAL_ASSERTION(message);
+  }
+  assert.fail = (message) => { throw new nodeErrorCodes.ERR_INTERNAL_ASSERTION(message); };
+
+  // lib/internal/util.js
+  const colorRegExp = /\u001b\[\d\d?m/g;
+  const kCustomPromisifiedSymbol = Symbol.for("nodejs.util.promisify.custom");
+  const kCustomPromisifyArgsSymbol = platform.customPromisifyArgs;
+  // libuv's errors (NODE_UV_ERRORS), by errno: [name, message].
+  let uvErrorMap;
+  const uvErrors = () => (uvErrorMap ??= new Map(platform.uvErrors.map(([errno, name, message]) => [errno, [name, message]])));
+  const codesWarned = new Set();
+  function getDeprecationWarningEmitter(code, msg, deprecated) {
+    let warned = false;
+    return function () {
+      if (warned) return;
+      warned = true;
+      if (code === "ExperimentalWarning") {
+        platform.process.emitWarning(msg, code, deprecated);
+      } else if (code !== undefined) {
+        if (!codesWarned.has(code)) {
+          platform.process.emitWarning(msg, "DeprecationWarning", code, deprecated);
+          codesWarned.add(code);
+        }
+      } else {
+        platform.process.emitWarning(msg, "DeprecationWarning", deprecated);
+      }
+    };
+  }
+  const internalUtil = {
+    customInspectSymbol,
+    isError: (e) => types.isNativeError(e) || e instanceof Error,
+    join(output, separator) {
+      let str = "";
+      if (output.length !== 0) {
+        const lastIndex = output.length - 1;
+        for (let i = 0; i < lastIndex; i++) {
+          str += output[i];
+          str += separator;
+        }
+        str += output[lastIndex];
+      }
+      return str;
     },
+    removeColors: (str) => String.prototype.replace.call(str, colorRegExp, ""),
+    deprecate(fn, msg, code, useEmitSync, modifyPrototype = true) {
+      if (code !== undefined) require("internal/validators").validateString(code, "code");
+      const emitDeprecationWarning = getDeprecationWarningEmitter(code, msg, deprecated);
+      function deprecated(...args) {
+        if (!platform.process.noDeprecation) emitDeprecationWarning();
+        if (new.target) return Reflect.construct(fn, args, new.target);
+        return Reflect.apply(fn, this, args);
+      }
+      if (modifyPrototype) {
+        Object.setPrototypeOf(deprecated, fn);
+        if (fn.prototype) deprecated.prototype = fn.prototype;
+        Object.defineProperty(deprecated, "length", { __proto__: null, ...Object.getOwnPropertyDescriptor(fn, "length") });
+      }
+      return deprecated;
+    },
+    setOwnProperty: (obj, key, value) => Object.defineProperty(obj, key, { __proto__: null, configurable: true, enumerable: true, value, writable: true }),
+    kEmptyObject: Object.freeze({ __proto__: null }),
+    customPromisifyArgs: kCustomPromisifyArgsSymbol,
+    getLazy(initializer) {
+      let value;
+      let initialized = false;
+      return function () {
+        if (initialized === false) {
+          value = initializer();
+          initialized = true;
+        }
+        return value;
+      };
+    },
+    // The util binding's defineLazyProperties: each key a data property of
+    // the module's, read from it the first time it is.
+    defineLazyProperties(target, id, keys, enumerable = true) {
+      for (const key of keys) {
+        Object.defineProperty(target, key, {
+          __proto__: null,
+          enumerable,
+          configurable: true,
+          get() {
+            const value = require(id)[key];
+            Object.defineProperty(this, key, { __proto__: null, value, writable: true, enumerable, configurable: true });
+            return value;
+          },
+          set(value) {
+            Object.defineProperty(this, key, { __proto__: null, value, writable: true, enumerable, configurable: true });
+          },
+        });
+      }
+    },
+    promisify(original) {
+      require("internal/validators").validateFunction(original, "original");
+      if (original[kCustomPromisifiedSymbol]) {
+        const fn = original[kCustomPromisifiedSymbol];
+        require("internal/validators").validateFunction(fn, "util.promisify.custom");
+        return Object.defineProperty(fn, kCustomPromisifiedSymbol, { __proto__: null, value: fn, enumerable: false, writable: false, configurable: true });
+      }
+      // Names to make an object of when the callback is given several values (fs.read's bytesRead and buffer).
+      const argumentNames = original[kCustomPromisifyArgsSymbol];
+      function fn(...args) {
+        return new Promise((resolve, reject) => {
+          args.push((err, ...values) => {
+            if (err) return reject(err);
+            if (argumentNames !== undefined && values.length > 1) {
+              const obj = {};
+              for (let i = 0; i < argumentNames.length; i++) obj[argumentNames[i]] = values[i];
+              resolve(obj);
+            } else {
+              resolve(values[0]);
+            }
+          });
+          if (types.isPromise(Reflect.apply(original, this, args))) {
+            platform.process.emitWarning("Calling promisify on a function that returns a Promise is likely a mistake.", "DeprecationWarning", "DEP0174");
+          }
+        });
+      }
+      Object.setPrototypeOf(fn, Object.getPrototypeOf(original));
+      Object.defineProperty(fn, kCustomPromisifiedSymbol, { __proto__: null, value: fn, enumerable: false, writable: false, configurable: true });
+      const descriptors = Object.getOwnPropertyDescriptors(original);
+      for (const descriptor of Object.values(descriptors)) Object.setPrototypeOf(descriptor, null);
+      return Object.defineProperties(fn, descriptors);
+    },
+    getSystemErrorMap: () => new Map([...uvErrors()].map(([errno, entry]) => [errno, [...entry]])),
+    getSystemErrorName(err) {
+      const entry = uvErrors().get(err);
+      return entry ? entry[0] : "Unknown system error " + err;
+    },
+    getSystemErrorMessage(err) {
+      const entry = uvErrors().get(err);
+      return entry ? entry[1] : "Unknown system error " + err;
+    },
+    normalizeEncoding(enc) {
+      if (enc == null || enc === "utf8" || enc === "utf-8") return "utf8";
+      switch (enc.length) {
+        case 4:
+          if (enc === "UTF8") return "utf8";
+          if (enc === "ucs2" || enc === "UCS2") return "utf16le";
+          enc = enc.toLowerCase();
+          if (enc === "utf8") return "utf8";
+          if (enc === "ucs2") return "utf16le";
+          break;
+        case 3:
+          if (enc === "hex" || enc === "HEX" || enc.toLowerCase() === "hex") return "hex";
+          break;
+        case 5:
+          if (enc === "ascii") return "ascii";
+          if (enc === "ucs-2") return "utf16le";
+          if (enc === "UTF-8") return "utf8";
+          if (enc === "ASCII") return "ascii";
+          if (enc === "UCS-2") return "utf16le";
+          enc = enc.toLowerCase();
+          if (enc === "utf-8") return "utf8";
+          if (enc === "ascii") return "ascii";
+          if (enc === "ucs-2") return "utf16le";
+          break;
+        case 6:
+          if (enc === "base64") return "base64";
+          if (enc === "latin1" || enc === "binary") return "latin1";
+          if (enc === "BASE64") return "base64";
+          if (enc === "LATIN1" || enc === "BINARY") return "latin1";
+          enc = enc.toLowerCase();
+          if (enc === "base64") return "base64";
+          if (enc === "latin1" || enc === "binary") return "latin1";
+          break;
+        case 7:
+          if (enc === "utf16le" || enc === "UTF16LE" || enc.toLowerCase() === "utf16le") return "utf16le";
+          break;
+        case 8:
+          if (enc === "utf-16le" || enc === "UTF-16LE" || enc.toLowerCase() === "utf-16le") return "utf16le";
+          break;
+        case 9:
+          if (enc === "base64url" || enc === "BASE64URL" || enc.toLowerCase() === "base64url") return "base64url";
+          break;
+        default:
+          if (enc === "") return "utf8";
+      }
+    },
+  };
+
+  // THE BINDING's V8 slots (a promise's state and result, a proxy's target
+  // and handler, an iterator's and a weak collection's entries) are
+  // platform.slots', after an intrinsic brand check: values, which
+  // inspect.js formats itself.
+  const slots = platform.slots;
+
+  // V8's names (Object::GetConstructorName) for objects inspect.js finds no named constructor for.
+  const builtinNames = [
+    ["isMap", "Map"], ["isSet", "Set"], ["isWeakMap", "WeakMap"], ["isWeakSet", "WeakSet"], ["isDate", "Date"],
+    ["isRegExp", "RegExp"], ["isPromise", "Promise"], ["isNativeError", "Error"], ["isArrayBuffer", "ArrayBuffer"],
+    ["isSharedArrayBuffer", "SharedArrayBuffer"], ["isDataView", "DataView"], ["isNumberObject", "Number"],
+    ["isStringObject", "String"], ["isBooleanObject", "Boolean"], ["isBigIntObject", "BigInt"], ["isSymbolObject", "Symbol"],
+  ];
+  const isArrayIndex = (key) => /^(?:0|[1-9][0-9]*)$/.test(key) && Number(key) < 4294967295;
+  const utilBinding = {
+    constants: { ALL_PROPERTIES: 0, ONLY_ENUMERABLE: 2, SKIP_SYMBOLS: 16, kPending: 0, kRejected: 2 },
+    getOwnNonIndexProperties(object, filter) {
+      // An object's own keys list its array indices first, ascending
+      // (OrdinaryOwnPropertyKeys, and an array's, a typed array's and a
+      // String object's alike): the rest start where they end.
+      const all = Reflect.ownKeys(object);
+      let low = 0;
+      let high = all.length;
+      while (low < high) {
+        const mid = (low + high) >> 1;
+        if (typeof all[mid] === "string" && isArrayIndex(all[mid])) low = mid + 1;
+        else high = mid;
+      }
+      const keys = [];
+      for (let i = low; i < all.length; i++) {
+        const key = all[i];
+        if ((filter & 2) !== 0 && !Object.prototype.propertyIsEnumerable.call(object, key)) continue;
+        if ((filter & 16) !== 0 && typeof key === "symbol") continue;
+        keys.push(key);
+      }
+      return keys;
+    },
+    getProxyDetails: (value, showProxy) => (types.isProxy(value) ? slots.getProxyDetails(value, showProxy) : undefined),
+    getPromiseDetails: (promise) => slots.getPromiseDetails(promise),
+    // As inspect.js asks: a weak collection's entries alone, an iterator's with whether they pair.
+    previewEntries: (...args) => Reflect.apply(slots.previewEntries, slots, args),
+    getConstructorName(value) {
+      if (Array.isArray(value)) return "Array";
+      if (types.isTypedArray(value)) return String(typedArrayKind(value));
+      for (const [test, name] of builtinNames) if (types[test](value)) return name;
+      return typeof value === "function" ? "Function" : "Object";
+    },
+    getExternalValue: () => 0n,
+    isInsideNodeModules: () => platform.insideNodeModules(),
+  };
+
+  // src/node_i18n.cc GetStringWidth, as Node built with ICU counts columns:
+  // an East Asian Wide or Fullwidth character two, a default-emoji-
+  // presentation character two, a control, format character, enclosing or
+  // nonspacing mark or emoji modifier none (SOFT HYPHEN one), any other one.
+  const zeroWidth = /^(?!\u00AD)[\p{Cc}\p{Cf}\p{Me}\p{Mn}\p{Emoji_Modifier}]$/u;
+  const emojiPresentation = /^\p{Emoji_Presentation}$/u;
+  const icuBinding = {
+    getStringWidth(str) {
+      let width = 0;
+      for (const char of str) {
+        if (platform.eastAsianWide(char.codePointAt(0)) || emojiPresentation.test(char)) width += 2;
+        else if (!zeroWidth.test(char)) width += 1;
+      }
+      return width;
+    },
+  };
+
+  internalUtil.promisify.custom = kCustomPromisifiedSymbol;
+
+  // lib/internal/errors.js ErrnoException and ExceptionWithHostPort: a
+  // libuv errno's error, its code the errno's name.
+  class ErrnoException extends Error {
+    constructor(err, syscall, original) {
+      const code = require("util").getSystemErrorName(err);
+      super(original ? syscall + " " + code + " " + original : syscall + " " + code);
+      this.errno = err;
+      this.code = code;
+      this.syscall = syscall;
+    }
+    get ["constructor"]() { return Error; }
+  }
+  class ExceptionWithHostPort extends Error {
+    constructor(err, syscall, address, port, additional) {
+      const code = require("util").getSystemErrorName(err);
+      let details = "";
+      if (port && port > 0) details = " " + address + ":" + port;
+      else if (address) details = " " + address;
+      if (additional) details += " - Local (" + additional + ")";
+      super(syscall + " " + code + details);
+      this.errno = err;
+      this.code = code;
+      this.syscall = syscall;
+      this.address = address;
+      if (port) this.port = port;
+    }
+    get ["constructor"]() { return Error; }
+  }
+
+  // lib/internal/abort_controller.js's functions util exports, over the platform's AbortSignal.
+  const followers = new WeakMap();
+  const abortController = {
+    async aborted(signal, resource) {
+      if (signal === undefined) throw new nodeErrorCodes.ERR_INVALID_ARG_TYPE("signal", "AbortSignal", signal);
+      require("internal/validators").validateAbortSignal(signal, "signal");
+      require("internal/validators").validateObject(resource, "resource", require("internal/validators").kValidateObjectAllowObjects);
+      if (signal.aborted) return Promise.resolve();
+      // On a signal that follows it, which none of the signal's own
+      // listeners can stop (Node's kResistStopPropagation), kept as long as it is.
+      const follower = AbortSignal.any([signal]);
+      followers.set(signal, [...(followers.get(signal) ?? []), follower]);
+      return new Promise((resolve) => follower.addEventListener("abort", () => resolve(), { once: true }));
+    },
+    transferableAbortSignal(signal) {
+      if (!(signal instanceof AbortSignal)) throw new nodeErrorCodes.ERR_INVALID_ARG_TYPE("signal", "AbortSignal", signal);
+      return signal;
+    },
+    transferableAbortController: () => new AbortController(),
+  };
+
+  // src/node_dotenv.cc Dotenv::ParseContent, as util.parseEnv and
+  // process.loadEnvFile read a .env file: keys in their bytes' order.
+  function parseEnv(input) {
+    const trim = (text) => text.replace(/^[ \t\n]+|[ \t\n]+$/g, "");
+    const store = new Map();
+    let content = trim(String(input).replaceAll("\r", ""));
+    while (content.length > 0) {
+      if (content[0] === "\n" || content[0] === "#") {
+        const newline = content.indexOf("\n");
+        content = newline === -1 ? "" : content.slice(newline + 1);
+        continue;
+      }
+      const equalOrNewline = content.search(/[=\n]/);
+      if (equalOrNewline === -1 || content[equalOrNewline] === "\n") {
+        if (equalOrNewline === -1) break;
+        content = trim(content.slice(equalOrNewline + 1));
+        continue;
+      }
+      let key = trim(content.slice(0, equalOrNewline));
+      content = content.slice(equalOrNewline + 1);
+      if (content.length === 0 || content[0] === "\n") {
+        store.set(key, "");
+        continue;
+      }
+      content = trim(content);
+      if (key.length === 0) continue;
+      if (key.startsWith("export ")) key = trim(key.slice(7));
+      if (content.length === 0) {
+        store.set(key, "");
+        break;
+      }
+      if (content[0] === "\"") {
+        const closing = content.indexOf("\"", 1);
+        if (closing !== -1) {
+          store.set(key, content.slice(1, closing).replaceAll("\\n", "\n"));
+          const newline = content.indexOf("\n", closing + 1);
+          content = newline === -1 ? "" : content.slice(newline + 1);
+          continue;
+        }
+      }
+      if (content[0] === "'" || content[0] === "\"" || content[0] === "\u0060") {
+        const closing = content.indexOf(content[0], 1);
+        if (closing === -1) {
+          const newline = content.indexOf("\n");
+          if (newline === -1) {
+            store.set(key, content);
+            break;
+          }
+          store.set(key, content.slice(0, newline));
+          content = content.slice(newline + 1);
+        } else {
+          store.set(key, content.slice(1, closing));
+          const newline = content.indexOf("\n", closing + 1);
+          content = newline === -1 ? "" : content.slice(newline + 1);
+          continue;
+        }
+      } else {
+        const newline = content.indexOf("\n");
+        let value = newline === -1 ? content : content.slice(0, newline);
+        const hash = value.indexOf("#");
+        if (hash !== -1) value = value.slice(0, hash);
+        store.set(key, trim(value));
+        content = newline === -1 ? "" : content.slice(newline + 1);
+      }
+      content = trim(content);
+    }
+    // A std::map's order: the keys' UTF-8 bytes, which is their code points'.
+    const byCodePoints = (a, b) => {
+      const x = [...a];
+      const y = [...b];
+      for (let i = 0; i < Math.min(x.length, y.length); i++) {
+        const d = x[i].codePointAt(0) - y[i].codePointAt(0);
+        if (d !== 0) return d;
+      }
+      return x.length - y.length;
+    };
+    const result = {};
+    for (const key of [...store.keys()].sort(byCodePoints)) result[key] = store.get(key);
+    return result;
+  }
+  utilBinding.parseEnv = parseEnv;
+  // Node's util binding GetCallSites: the frames below util.getCallSites, as
+  // V8's StackFrame reads them; a script's id is its own number here.
+  const scriptIds = new Map();
+  utilBinding.getCallSites = function getCallSites(frameCount) {
+    return platform.callSites(frameCount + 1, getCallSites).slice(1).map((site) => {
+      const scriptName = site.getScriptNameOrSourceURL?.() ?? site.getFileName() ?? "";
+      if (!scriptIds.has(scriptName)) scriptIds.set(scriptName, String(scriptIds.size + 1));
+      const column = site.getColumnNumber() ?? 0;
+      return {
+        functionName: site.getFunctionName() ?? "",
+        scriptId: scriptIds.get(scriptName),
+        scriptName,
+        lineNumber: site.getLineNumber() ?? 0,
+        columnNumber: column,
+        column,
+      };
+    });
+  };
+
+  // Node's internal modules that are not its own text here, by id.
+  const hosted = {
+    "internal/util": internalUtil,
+    "internal/errors": { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable, isStackOverflowError, ErrnoException, ExceptionWithHostPort },
+    "internal/options": { getOptionValue: (name) => platform.optionValue(name) },
+    "internal/constants": { CHAR_LOWERCASE_B: 98, CHAR_LOWERCASE_E: 101, CHAR_LOWERCASE_N: 110 },
+    "internal/abort_controller": abortController,
+    "internal/console/global": platform.console,
+    "internal/encoding": { TextDecoder: globalThis.TextDecoder, TextEncoder: globalThis.TextEncoder },
+    worker_threads: platform.workerThreads,
+    "internal/util/types": types,
+    "internal/assert": assert,
+    // Node's own modules, whose frames read node:<id> (colored grey).
+    "internal/bootstrap/realm": { BuiltinModule: { exists: (id) => id.startsWith("internal/") || platform.builtinModules.includes(id) } },
+    "internal/url": { ...platform.url, isURL: (self) => Boolean(self?.href && self.protocol && self.auth === undefined && self.path === undefined) },
+    "internal/crypto/util": { kKeyObject: Symbol("kKeyObject") },
+    "internal/deps/acorn/acorn/dist/acorn": { Parser: { tokenizer: (code, options) => platform.tokenizer(code, options) } },
+    "internal/source_map/source_map_cache": platform.sourceMaps,
+    "internal/tty": { getColorDepth: () => platform.colorDepth() },
+    buffer: { Buffer: platform.Buffer },
+  };
+  const bindings = {
+    util: utilBinding,
+    config: { hasIntl: true },
+    icu: icuBinding,
+    constants: { os: { signals: platform.signals } },
+    buffer: { compare: (a, b) => platform.Buffer.compare(a, b) },
+    errors: { getErrorSourcePositions: (error) => platform.errorSourcePositions(error) },
+    // Node's tracing is off: no category is enabled, and nothing traces.
+    trace_events: { getCategoryEnabledBuffer: () => new Uint8Array(1), trace() {} },
+  };
+  const internalBinding = (name) => bindings[name];
+  // inspect.js reads primordials.globalThis once, for the names it counts as
+  // built-in (showHidden shows a prototype's properties when its
+  // constructor's name is not one): the capitalised globals there were when
+  // Node loaded it, measured (node-lib-source.ts NODE_BUILTIN_OBJECTS).
+  const bootGlobal = Object.create(null);
+  for (const name of platform.builtinObjects) bootGlobal[name] = globalThis[name];
+  const inspectPrimordials = Object.create(null);
+  for (const key of Reflect.ownKeys(primordials)) inspectPrimordials[key] = primordials[key];
+  inspectPrimordials.globalThis = bootGlobal;
+
+  // Node's own, each run once, its exports cached before it runs (a cycle
+  // reads what it has exported so far), as Node's BuiltinModule does.
+  const loaded = new Map();
+  function require(id) {
+    if (Object.prototype.hasOwnProperty.call(hosted, id)) return hosted[id];
+    const cached = loaded.get(id);
+    if (cached !== undefined) return cached.exports;
+    const source = platform.sources[id];
+    if (source === undefined) throw new Error("No such built-in module: " + id);
+    const module = { exports: {}, id };
+    loaded.set(id, module);
+    source(module.exports, require, module, platform.process, internalBinding, id === "internal/util/inspect" ? inspectPrimordials : primordials);
+    // As Node's bootstrap does, before any program reads it (pre_execution.js).
+    if (id === "internal/util/debuglog") module.exports.initializeDebugEnv(platform.nodeDebug);
+    return module.exports;
+  }
+  return { require };
+})({
+    util: __realUtil,
+    // V8's slots, as workerd's inspect reaches them (node-lib-host.ts THE BINDING).
+    slots: (function createWorkerdSlots(util) {
+  "use strict";
+  const kPending = 0;
+  const kFulfilled = 1;
+  const kRejected = 2;
+  const PROXY = "Proxy [Array]";
+  const REVOKED = "<Revoked Proxy>";
+  const arrayPrototype = Array.prototype;
+  const customInspect = Symbol.for("nodejs.util.inspect.custom");
+  const isProxy = util.types.isProxy;
+  const escapes = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", "'": "'", "\\": "\\" };
+  // The primitive workerd's formatPrimitive handed stylize as 'text', or null for any other mark.
+  function primitiveOf(text, style) {
+    switch (style) {
+      case "number": return /^(?:-?(?:[0-9]|Infinity)|NaN$)/.test(text) ? { primitive: Number(text) } : null;
+      case "bigint": return /^-?[0-9]+n$/.test(text) ? { primitive: BigInt(text.slice(0, -1)) } : null;
+      case "boolean": return text === "true" || text === "false" ? { primitive: text === "true" } : null;
+      case "undefined": return text === "undefined" ? { primitive: undefined } : null;
+      case "null": return text === "null" ? { primitive: null } : null;
+      case "symbol": return text.startsWith("Symbol(") && text.endsWith(")") ? { primitive: Symbol(text.slice(7, -1)) } : null;
+      case "string":
+        if (!/^['"\u0060]/.test(text)) return null;
+        // strEscape's escapes: the meta table's and a lone surrogate's.
+        return { primitive: text.slice(1, -1).replace(/\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|[btnfr'\\])/g, (all, escape) => (escape.length > 1 ? String.fromCharCode(parseInt(escape.slice(1), 16)) : escapes[escape])) };
+      default: return null;
+    }
+  }
+  // What workerd's inspect of 'value' formats 'level' deep: objects,
+  // primitives and marks, in order, and the text, for an iterator's brace.
+  // Its 'seen' (the objects being formatted, outermost first) holds 'level'
+  // of them then: a prototype's properties showHidden adds are formatted
+  // before the value is pushed, and a proxy (showProxy) pushes none.
+  // Array.prototype.includes is held only until workerd's first cycle
+  // check, which no program code runs before; from then the hook is that
+  // call's own 'seen' array's, where no program can reach it. What program
+  // code still runs while workerd formats (the value's own toStringTag
+  // getter, a proxy in its prototype chain) sees every built-in as it was,
+  // and can inspect: a nested read holds and lets go of its own.
+  function capture(value, options, level) {
+    const events = [];
+    const previous = arrayPrototype.includes;
+    let seen = null;
+    let referenced = false;
+    const isObject = (item) => (typeof item === "object" && item !== null) || typeof item === "function";
+    // An object 'level' deep is taken, and answered as seen: workerd marks
+    // it circular and formats none of it, so no code of it runs (a getter,
+    // a trap). Answered so for the value itself, workerd marks the value a
+    // reference too, last.
+    function record(item) {
+      if (this !== seen || seen.length !== level || !isObject(item)) return Reflect.apply(previous, this, arguments);
+      events.push({ object: item });
+      if (item === value) referenced = true;
+      return true;
+    }
+    const first = function includes(item) {
+      arrayPrototype.includes = previous;
+      seen = this;
+      Object.defineProperty(seen, "includes", { value: record, writable: true, configurable: true });
+      return Reflect.apply(record, this, arguments);
+    };
+    arrayPrototype.includes = first;
+    let text;
+    try {
+      text = util.inspect(value, {
+        showHidden: false, depth: 0, ...options,
+        showProxy: true, colors: false, customInspect: false, getters: false, maxStringLength: Infinity,
+        breakLength: Infinity, compact: 3, sorted: false, numericSeparator: false,
+        stylize(mark, style) {
+          if ((seen === null ? 0 : seen.length) === level) events.push(primitiveOf(mark, style) ?? { mark });
+          return mark;
+        },
+      });
+    } finally {
+      if (arrayPrototype.includes === first) arrayPrototype.includes = previous;
+    }
+    if (referenced) events.pop();
+    return { events, text };
+  }
+  // The values a slot holds, read from 'read(depth)' (capture's events),
+  // each a value, a proxy (its parts, read a level deeper each time, until
+  // none is left past the depth) or a revoked proxy. 'count' values, or as
+  // many as the first read holds.
+  function slotValues(read, count) {
+    let nodes;
+    for (let depth = 0; ; depth++) {
+      const events = read(depth);
+      let at = 0;
+      let deeper = false;
+      // A node 'r' levels in, as this read formats it ('known' from the last).
+      const node = (known, r) => {
+        if (known !== undefined && known.parts !== undefined) {
+          if (r > depth) {
+            if (events[at++]?.mark !== PROXY) throw unreadable("a proxy");
+            deeper = true;
+            return known;
+          }
+          return { parts: [node(known.parts?.[0], r + 1), node(known.parts?.[1], r + 1)] };
+        }
+        const event = events[at++];
+        if (event === undefined) throw unreadable("a value");
+        if ("primitive" in event) return { value: event.primitive };
+        if ("object" in event) {
+          // Its own mark, past the depth.
+          while (at < events.length && "mark" in events[at] && events[at].mark !== PROXY && events[at].mark !== REVOKED) at++;
+          return { value: event.object };
+        }
+        if (event.mark === REVOKED) return { revoked: true };
+        if (event.mark === PROXY) {
+          deeper = true;
+          return { parts: null };
+        }
+        throw unreadable("a mark (" + event.mark + ")");
+      };
+      const next = [];
+      for (let i = 0; nodes === undefined ? at < events.length : i < nodes.length; i++) {
+        next.push(node(nodes?.[i], 1));
+        if (count !== undefined && nodes === undefined && next.length === count) break;
+      }
+      nodes = next;
+      if (!deeper) return nodes.map(standIn);
+      if (depth === 64) throw unreadable("a proxy 64 deep");
+    }
+  }
+  // Stand-ins: a proxy among a slot's values, rebuilt over its target with a
+  // handler of none of a program's traps, and the [target, handler] it
+  // stands for (null, revoked). inspect.js never formats one as an object:
+  // it asks getProxyDetails first, which unwraps it (below).
+  const standIns = new WeakMap();
+  function standIn(node) {
+    if (node.revoked) {
+      const revocable = Proxy.revocable({}, {});
+      revocable.revoke();
+      standIns.set(revocable.proxy, null);
+      return revocable.proxy;
+    }
+    if (node.parts === undefined) return node.value;
+    const parts = [standIn(node.parts[0]), standIn(node.parts[1])];
+    const proxy = new Proxy(parts[0], {});
+    standIns.set(proxy, parts);
+    return proxy;
+  }
+  // What inspect.js formats for a proxy, showProxy off: its innermost target
+  // (no stand-in is formatted as an object, nor any proxy trap run), or a
+  // revoked proxy, which throws there as in Node.
+  function innermostTarget(target) {
+    while (standIns.get(target)) target = standIns.get(target)[0];
+    return target;
+  }
+  // Whether inspect.js would find a custom inspect on 'object', read without
+  // running a program's code; a proxy on the way may hold one.
+  function reachesCustomInspect(object) {
+    for (let at = object; at !== null; at = Object.getPrototypeOf(at)) {
+      if (isProxy(at)) return true;
+      const own = Object.getOwnPropertyDescriptor(at, customInspect);
+      if (own !== undefined) return own.get !== undefined || typeof own.value === "function";
+    }
+    return false;
+  }
+  // The prototypes workerd's constructor discovery names without asking
+  // their constructors anything (its well-known prototypes).
+  const intrinsicPrototypes = new Set([
+    Object.prototype, Function.prototype, Array.prototype, Error.prototype,
+    Promise.prototype, Map.prototype, Set.prototype, WeakMap.prototype, WeakSet.prototype,
+  ]);
+  // Whether reading 'key' of 'object' runs none of a program's code: no
+  // proxy on the way to the first object holding it, whose descriptor is
+  // data; or, given 'intrinsicHolder', that first holder is it.
+  function readsInertly(object, key, intrinsicHolder) {
+    for (let at = object; at !== null; at = Object.getPrototypeOf(at)) {
+      if (isProxy(at)) return false;
+      const own = Object.getOwnPropertyDescriptor(at, key);
+      if (own === undefined) continue;
+      if (intrinsicHolder !== undefined) return at === intrinsicHolder;
+      return own.get === undefined && own.set === undefined;
+    }
+    return true;
+  }
+  // Whether workerd formats 'holder' with none of a program's code run, as
+  // its inspect reads the chain: no proxy on it; no accessor for its
+  // Symbol.toStringTag; and, for its constructor discovery, no constructor
+  // whose name is read through an accessor or whose instanceof check is a
+  // program's (Symbol.hasInstance held anywhere but Function.prototype).
+  function formatsInertly(holder) {
+    let tag = false;
+    for (let at = holder; at !== null; at = Object.getPrototypeOf(at)) {
+      if (isProxy(at)) return false;
+      const own = tag ? undefined : Object.getOwnPropertyDescriptor(at, Symbol.toStringTag);
+      if (own !== undefined) {
+        if (own.get !== undefined || own.set !== undefined) return false;
+        tag = true;
+      }
+      if (intrinsicPrototypes.has(at)) continue;
+      const constructor = Object.getOwnPropertyDescriptor(at, "constructor");
+      if (constructor === undefined || typeof constructor.value !== "function") continue;
+      if (!readsInertly(constructor.value, "name") || !readsInertly(constructor.value, Symbol.hasInstance, Function.prototype)) return false;
+    }
+    return true;
+  }
+  // What a slot whose holder cannot be read inertly shows (formatsInertly).
+  function unknown(text) {
+    return Object.freeze(Object.create(null, {
+      [customInspect]: { value: (depth, options) => options.stylize(text, "special") },
+      [Symbol.toStringTag]: { value: text },
+    }));
+  }
+  const ITEMS_UNKNOWN = unknown("<items unknown>");
+  const UNKNOWN = unknown("<unknown>");
+  function unreadable(what) {
+    return new Error("util.inspect: workerd's inspect did not hand over " + what + " in a V8 slot");
+  }
+  function getPromiseDetails(promise) {
+    if (!formatsInertly(promise)) return [kFulfilled, UNKNOWN];
+    const first = capture(promise, {}, 1);
+    if (first.events.length > 0 && first.events[0].mark === "<pending>") return [kPending];
+    const rejected = first.events.some((event) => event.mark === "<rejected>");
+    // Its result, the first value formatted (before the promise's own properties).
+    const [result] = slotValues((depth) => (depth === 0 ? first : capture(promise, { depth }, 1)).events, 1);
+    return [rejected ? kRejected : kFulfilled, result];
+  }
+  function getProxyDetails(proxy, showProxy) {
+    let parts = standIns.get(proxy);
+    if (parts === undefined) {
+      const first = capture(proxy, {}, 0);
+      // Revoked itself: its one mark (a revoked target's is the first of two parts').
+      if (first.events.length === 1 && first.events[0].mark === REVOKED) parts = null;
+      else parts = slotValues((depth) => (depth === 0 ? first : capture(proxy, { depth }, 0)).events, 2);
+    }
+    if (parts === null) return showProxy ? [null, null] : null;
+    if (showProxy) return parts;
+    // inspect.js calls the target's custom inspect with the proxy as this: a
+    // program's own proxy is that; a stand-in must never be, so the target of
+    // one, if it has such a hook, is not shown (nor its constructor's checks run).
+    const target = innermostTarget(parts[0]);
+    return standIns.has(proxy) && !standIns.has(target) && reachesCustomInspect(target) ? UNKNOWN : target;
+  }
+  function previewEntries(value, isKeyValue) {
+    if (!formatsInertly(value)) return isKeyValue === undefined ? [ITEMS_UNKNOWN] : [[ITEMS_UNKNOWN], false];
+    // A weak collection's entries are what showHidden shows. The value's own
+    // properties follow its entries: counted off by a read showing none.
+    const options = { showHidden: isKeyValue === undefined };
+    let text;
+    const entries = slotValues((depth) => {
+      const all = capture(value, { ...options, depth, maxArrayLength: Infinity }, 1);
+      const own = capture(value, { ...options, depth, maxArrayLength: 0 }, 1).events;
+      text ??= all.text;
+      return all.events.slice(0, all.events.length - own.length);
+    });
+    if (isKeyValue === undefined) return entries;
+    const pairs = /^[^{]*\[(?:Map|Set) Entries\] \{/.test(text);
+    if (pairs && entries.length % 2 !== 0) throw unreadable("an iterator's pairs");
+    return [entries, pairs];
+  }
+  return { getPromiseDetails, getProxyDetails, previewEntries };
+})(__realUtil),
+    Buffer: __BufferMod,
+    url: { pathToFileURL: __urlMod.pathToFileURL, URL: __urlMod.URL },
+    process: __processMod,
+    builtinModules: __NodeModule.builtinModules,
+    builtinObjects: ["Object","Function","Array","Number","Infinity","NaN","Boolean","String","Symbol","Date","Promise","RegExp","Error","AggregateError","EvalError","RangeError","ReferenceError","SyntaxError","TypeError","URIError","JSON","Math","Intl","ArrayBuffer","Atomics","Uint8Array","Int8Array","Uint16Array","Int16Array","Uint32Array","Int32Array","Float32Array","Float64Array","Uint8ClampedArray","BigUint64Array","BigInt64Array","DataView","Map","BigInt","Set","WeakMap","WeakSet","Proxy","Reflect","FinalizationRegistry","WeakRef"],
+    eastAsianWide(code) {
+      let low = 0;
+      let high = wide.length / 2 - 1;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (code < wide[2 * mid]) high = mid - 1;
+        else if (code > wide[2 * mid + 1]) low = mid + 1;
+        else return true;
+      }
+      return false;
+    },
+    signals: __osMod.constants.signals,
+    insideNodeModules: __nimbusInsideNodeModules,
+    errorSourcePositions: __nimbusErrorSourcePositions,
+    tokenizer: (code, options) => __nimbusRegistryRequire("./nimbus/interpreter.js").tokenizer(code, options),
+    sourceMaps: { getSourceMapsSupport: () => __nimbusSourceMapsSupport, findSourceMap: __nimbusFindSourceMap, getSourceLine: __nimbusOriginalSourceLine },
+    colorDepth: () => __nimbusColorDepth(),
+    customPromisifyArgs: __nimbusCustomPromisifyArgs,
+    uvErrors: [[-7,"E2BIG","argument list too long"],[-13,"EACCES","permission denied"],[-98,"EADDRINUSE","address already in use"],[-99,"EADDRNOTAVAIL","address not available"],[-97,"EAFNOSUPPORT","address family not supported"],[-11,"EAGAIN","resource temporarily unavailable"],[-3000,"EAI_ADDRFAMILY","address family not supported"],[-3001,"EAI_AGAIN","temporary failure"],[-3002,"EAI_BADFLAGS","bad ai_flags value"],[-3013,"EAI_BADHINTS","invalid value for hints"],[-3003,"EAI_CANCELED","request canceled"],[-3004,"EAI_FAIL","permanent failure"],[-3005,"EAI_FAMILY","ai_family not supported"],[-3006,"EAI_MEMORY","out of memory"],[-3007,"EAI_NODATA","no address"],[-3008,"EAI_NONAME","unknown node or service"],[-3009,"EAI_OVERFLOW","argument buffer overflow"],[-3014,"EAI_PROTOCOL","resolved protocol is unknown"],[-3010,"EAI_SERVICE","service not available for socket type"],[-3011,"EAI_SOCKTYPE","socket type not supported"],[-114,"EALREADY","connection already in progress"],[-9,"EBADF","bad file descriptor"],[-16,"EBUSY","resource busy or locked"],[-125,"ECANCELED","operation canceled"],[-4080,"ECHARSET","invalid Unicode character"],[-103,"ECONNABORTED","software caused connection abort"],[-111,"ECONNREFUSED","connection refused"],[-104,"ECONNRESET","connection reset by peer"],[-89,"EDESTADDRREQ","destination address required"],[-17,"EEXIST","file already exists"],[-14,"EFAULT","bad address in system call argument"],[-27,"EFBIG","file too large"],[-113,"EHOSTUNREACH","host is unreachable"],[-4,"EINTR","interrupted system call"],[-22,"EINVAL","invalid argument"],[-5,"EIO","i/o error"],[-106,"EISCONN","socket is already connected"],[-21,"EISDIR","illegal operation on a directory"],[-40,"ELOOP","too many symbolic links encountered"],[-24,"EMFILE","too many open files"],[-90,"EMSGSIZE","message too long"],[-36,"ENAMETOOLONG","name too long"],[-100,"ENETDOWN","network is down"],[-101,"ENETUNREACH","network is unreachable"],[-23,"ENFILE","file table overflow"],[-105,"ENOBUFS","no buffer space available"],[-19,"ENODEV","no such device"],[-2,"ENOENT","no such file or directory"],[-12,"ENOMEM","not enough memory"],[-64,"ENONET","machine is not on the network"],[-92,"ENOPROTOOPT","protocol not available"],[-28,"ENOSPC","no space left on device"],[-38,"ENOSYS","function not implemented"],[-107,"ENOTCONN","socket is not connected"],[-20,"ENOTDIR","not a directory"],[-39,"ENOTEMPTY","directory not empty"],[-88,"ENOTSOCK","socket operation on non-socket"],[-95,"ENOTSUP","operation not supported on socket"],[-75,"EOVERFLOW","value too large for defined data type"],[-1,"EPERM","operation not permitted"],[-32,"EPIPE","broken pipe"],[-71,"EPROTO","protocol error"],[-93,"EPROTONOSUPPORT","protocol not supported"],[-91,"EPROTOTYPE","protocol wrong type for socket"],[-34,"ERANGE","result too large"],[-30,"EROFS","read-only file system"],[-108,"ESHUTDOWN","cannot send after transport endpoint shutdown"],[-29,"ESPIPE","invalid seek"],[-3,"ESRCH","no such process"],[-110,"ETIMEDOUT","connection timed out"],[-26,"ETXTBSY","text file is busy"],[-18,"EXDEV","cross-device link not permitted"],[-4094,"UNKNOWN","unknown error"],[-4095,"EOF","end of file"],[-6,"ENXIO","no such device or address"],[-31,"EMLINK","too many links"],[-112,"EHOSTDOWN","host is down"],[-121,"EREMOTEIO","remote I/O error"],[-25,"ENOTTY","inappropriate ioctl for device"],[-4028,"EFTYPE","inappropriate file type or format"],[-84,"EILSEQ","illegal byte sequence"],[-94,"ESOCKTNOSUPPORT","socket type not supported"],[-61,"ENODATA","no data available"],[-49,"EUNATCH","protocol driver not attached"],[-8,"ENOEXEC","exec format error"]],
+    optionValue: __nimbusOptionValue,
+    console: __consoleMod,
+    workerThreads: builtins.worker_threads,
+    nodeDebug: __nimbusNodeDebugAtLaunch,
+    callSites: (count, above) => (typeof __nimbusStackSites === "function" ? __nimbusStackSites({}, count, above) : []),
+    primordials: __nimbusPrimordials,
     sources: {
       "internal/util/inspect": function (exports, require, module, process, internalBinding, primordials) {
 'use strict';
@@ -22773,31 +22781,24 @@ function __nimbusOptionValue(name) {
 // isInsideNodeModules (the util binding): whether the program's innermost
 // frame on the stack is a package's.
 function __nimbusInsideNodeModules() {
-  const limit = Error.stackTraceLimit;
-  Error.stackTraceLimit = Infinity;
-  const stack = new Error().stack;
-  Error.stackTraceLimit = limit;
-  for (const line of String(stack).split("\n")) {
-    const frame = __nimbusFrameAt(line);
-    if (frame !== null && typeof __nimbusModuleOfFile === "function" && __nimbusModuleOfFile(frame[0]) !== null) {
-      return /[\\/]node_modules[\\/]/.test(frame[0]);
-    }
+  if (typeof __nimbusStackSites !== "function") return false;
+  for (const site of __nimbusStackSites({}, Infinity, __nimbusInsideNodeModules)) {
+    const file = site.getFileName();
+    if (typeof file === "string" && __nimbusModuleOfFile(file) !== null) return /[\\/]node_modules[\\/]/.test(file);
   }
   return false;
 }
-// getErrorSourcePositions (the errors binding): where V8 places the first
-// frame of an error's stack, in its file's text as the program wrote it.
+// getErrorSourcePositions (the errors binding): where V8 placed the first
+// frame of a stack `error` captured and nothing read yet, in its file's text
+// as the program wrote it; an empty line where the runtime has no text for it.
 function __nimbusErrorSourcePositions(error) {
-  let stack;
-  try { stack = error.stack; } catch { return undefined; }
-  const frames = __nimbusGeneratedFrames.get(error)?.filter((frame) => frame[1] !== null)
-    ?? String(stack).split("\n").map(__nimbusFrameAt).filter((frame) => frame !== null);
-  if (frames.length === 0 || typeof __nimbusModuleOfFile !== "function") return undefined;
-  const [file, line, column] = frames[0];
-  const text = __nimbusModuleSourceText(__nimbusModuleOfFile(file));
-  if (text === null) return undefined;
-  const sourceLine = text.split(/\r\n|[\n\r\u2028\u2029]/, line)[line - 1];
-  return sourceLine === undefined ? undefined : { sourceLine, scriptResourceName: file, lineNumber: line, startColumn: column - 1 };
+  const site = typeof __nimbusStackSites === "function" ? __nimbusStackSites(error)[0] : undefined;
+  const scriptResourceName = site?.getFileName() ?? "";
+  const lineNumber = site?.getLineNumber() ?? 0;
+  const startColumn = Math.max(0, (site?.getColumnNumber() ?? 1) - 1);
+  const text = scriptResourceName === "" ? null : __nimbusModuleSourceText(__nimbusModuleOfFile(scriptResourceName));
+  const sourceLine = text?.split(/\r\n|[\n\r\u2028\u2029]/, lineNumber)[lineNumber - 1] ?? "";
+  return { sourceLine, scriptResourceName, lineNumber, startColumn };
 }
 // Node's errors describe a value only inspect can (a null-prototype
 // object) with it, as Node's do.
@@ -28118,12 +28119,19 @@ __NodeModule._nodeModulePaths = (from) => {
 __NodeModule._resolveFilename = function _resolveFilename(request, parent, isMain, options) {
   if (__nimbusBuiltinId(request) !== null || __stagedBinding(request)) return request;
   let dirs = [__nimbusModuleDir(parent)];
+  // options.paths' directories, from the working directory, each validated as
+  // path.resolve does: a relative request's as it is searched, a bare one's first.
+  const relative = request.startsWith("./") || request.startsWith("../");
+  const absolute = (dir) => {
+    if (typeof dir !== "string") throw invalidArgType("paths[0]", "string", dir);
+    return __pathMod.resolve(dir);
+  };
   if (options !== null && typeof options === "object") {
-    if (Array.isArray(options.paths)) dirs = options.paths.map(String);
+    if (Array.isArray(options.paths)) dirs = relative ? options.paths : options.paths.map(absolute);
     else if (options.paths !== undefined) throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("options.paths", options.paths);
   }
   for (const dir of dirs) {
-    const resolved = __resolveFrom(request, dir);
+    const resolved = __resolveFrom(request, absolute(dir));
     if (resolved) return "/" + resolved.replace(/^\/+/, "");
   }
   throw __nimbusModuleNotFound(request, parent);
@@ -29023,6 +29031,8 @@ __nimbusNodeErrorsAt(__BufferMod, { inPlace: true });
 // A module's exports as a require() that meets it while it loads (a cycle)
 // reads them (__makeLoadingExports), by its Module.
 const __nimbusLoadingExports = new WeakMap();
+// The ES modules this process loaded, by file (or an import's URL with a query).
+const __nimbusEsModules = new Map();
 // A module cell's evaluation when it completes later (top-level await), by
 // its evaluation key: what an import of it waits for.
 const __moduleEvaluations = new Map();
@@ -29605,8 +29615,13 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   const filename = "/" + resolvedPath.replace(/^\/+/, "");
   // A query's or fragment's import is a job of its own, kept by its URL.
   const cacheKey = evaluationKey === resolvedPath ? filename : evaluationKey;
-  const cached = __NodeModule._cache[cacheKey];
+  // An ES module is the ES loader's (__nimbusEsModules); require.cache has
+  // it once a require() loads it (require(esm)), as Node's has.
+  const esModule = __nimbusModuleCellIsEsModule(resolvedPath.replace(/^\/+/, ""));
+  const modules = esModule ? __nimbusEsModules : __NodeModule._cache;
+  const cached = esModule ? modules.get(cacheKey) : modules[cacheKey];
   if (cached !== undefined) {
+    if (esModule && required) __NodeModule._cache[cacheKey] ??= cached;
     __nimbusUpdateChildren(parent, cached, true);
     return cached.loaded ? cached.exports : (__nimbusLoadingExports.get(cached) ?? cached.exports);
   }
@@ -29614,10 +29629,13 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   const mod = new __NodeModule(filename, parent);
   mod.filename = filename;
   mod.paths = __NodeModule._nodeModulePaths(mod.path);
-  __NodeModule._cache[cacheKey] = mod;
+  if (esModule) modules.set(cacheKey, mod);
+  else modules[cacheKey] = mod;
+  if (esModule && required) __NodeModule._cache[cacheKey] = mod;
   __nimbusLoadingExports.set(mod, __makeLoadingExports(mod));
   const unload = () => {
-    delete __NodeModule._cache[cacheKey];
+    if (esModule) modules.delete(cacheKey);
+    if (__NodeModule._cache[cacheKey] === mod) delete __NodeModule._cache[cacheKey];
     __nimbusLoadingExports.delete(mod);
     const siblings = parent?.children;
     const at = Array.isArray(siblings) ? siblings.indexOf(mod) : -1;
@@ -29648,7 +29666,6 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   // module calls its require for its static imports only: it has no require
   // of its own (module-format.ts ES_MODULE_UNBOUND_NAMES).
   const modDir = __pathMod.dirname(filename);
-  const esModule = __nimbusModuleCellIsEsModule(resolvedPath.replace(/^\/+/, ""));
   const scopedRequire = __nimbusMakeRequire(mod, modDir, !esModule);
 
   // X.5-M3: thread currently-loading module path through globalThis so the
@@ -30834,9 +30851,7 @@ function __loadStagedBinding(builds, fromDir) {
 // Whether the ES loader has the module at `path`: an ES module require() loaded
 // (require(esm)), whose job it keeps. A CommonJS module require() loaded is no job of its.
 function __nimbusEsmJobCached(path) {
-  if (typeof path !== "string") return false;
-  const key = path.replace(/^\/+/, "");
-  return __NodeModule._cache["/" + key] !== undefined && __nimbusModuleCellIsEsModule(key);
+  return typeof path === "string" && __nimbusEsModules.has("/" + path.replace(/^\/+/, ""));
 }
 // Module.prototype.require from `parent`, its requests resolving from `fromDir`.
 function __requireFrom(id, fromDir, parent, required = true) {
@@ -30884,9 +30899,16 @@ function __nimbusEvaluateEntry(wrapper, mod, filename, dirname, esModule) {
       __NodeModule._cache[mod.filename] = mod;
     }
     const self = evaluated ? globalThis : mod.exports;
-    const result = __nimbusReflectApply(wrapper, self, [mod.exports, __nimbusMakeRequire(mod), mod, evaluated ? mod.id : filename, evaluated ? "." : dirname]);
-    if (!evaluated) mod.loaded = true;
-    return result;
+    let threw = true;
+    try {
+      const result = __nimbusReflectApply(wrapper, self, [mod.exports, __nimbusMakeRequire(mod), mod, evaluated ? mod.id : filename, evaluated ? "." : dirname]);
+      threw = false;
+      return result;
+    } finally {
+      // Module._load: a module whose load threw leaves the cache.
+      if (!evaluated && threw) delete __NodeModule._cache[mod.filename];
+      else if (!evaluated) mod.loaded = true;
+    }
   }
   const url = builtins.url.pathToFileURL(filename).href;
   let result;
