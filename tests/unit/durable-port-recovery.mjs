@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // A durable application's URL must keep answering the thing it was handed —
-// including the request that arrives while the application is still dead.
+// including the request that arrives while the application is still dead,
+// from outside the session or from inside it.
 //
 // The alarm pump re-drives a journaled launch on the platform's schedule;
 // a port request is a user holding a URL, and it cannot wait for an alarm
@@ -31,6 +32,7 @@ import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
+import { routeSessionLoopback } from '../../packages/worker/src/session/ai.ts';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -361,6 +363,39 @@ function routeHost(fm, portRegistry) {
   const again = await rpcRemoveDurableApp(self, 'app');
   assert.deepEqual(again, { owner: 'app', removed: false, port: null },
     'removing an owner nothing holds is removed:false, port:null');
+}
+
+// ── 10. a connection from inside the session waits out the re-drive too ─────
+//
+// A server the session lost when it restarted (an idle session that
+// hibernated) is driven back as the session wakes; `curl localhost:<port>`
+// or a fetch from another process, arriving before it listens again, waits
+// for it as the port route does, rather than being refused.
+{
+  const first = setup();
+  await first.fm.spawnNode('const http = require("http");', { command: 'node server.js', port: 20360 });
+  first.world.lose('app-slot-0');
+  const next = setup({ storage: first.storage, world: first.world, disk: first.disk });
+  next.processes.setPidBase(PID_GEN_STRIDE);
+  assert.equal(next.portRegistry.has(20360), false, 'the restart left the port dark');
+
+  const before = first.world.boots.length;
+  const response = await routeSessionLoopback(
+    { env: {}, ctx: next.ctx, portRegistry: next.portRegistry, ensureDurableAppOnPort: (port) => next.fm.ensureDurableAppOnPort(port) },
+    20360,
+    new Request('http://localhost:20360/'),
+  );
+  assert.equal(response?.status, 200, 'the connection waited out the re-drive and was answered');
+  assert.equal(first.world.boots.length, before + 1, 'by exactly one boot');
+  assert.equal(
+    await routeSessionLoopback(
+      { env: {}, ctx: next.ctx, portRegistry: next.portRegistry, ensureDurableAppOnPort: (port) => next.fm.ensureDurableAppOnPort(port) },
+      20361,
+      new Request('http://localhost:20361/'),
+    ),
+    null,
+    'a port no server held is still refused',
+  );
 }
 
 console.log('ok - durable port recovery (silent port re-drives and routes, absent is 502, failed is 503 self-refreshing, reserved ports are durable across kinds)');
