@@ -104,7 +104,37 @@ async function kept(revoke) {
   assert.deepEqual(globalThis.__first, { read: 'ERR:EACCES', open: 'ERR:EACCES' }, 'the first reads, over the kept store');
 }
 
+/**
+ * Bytes the process wrote itself are held whatever a barrier reports, so the
+ * read is judged where it is made: by the file's mode and owner as the
+ * namespace states them.
+ */
+async function own(settle) {
+  const authority = session();
+  const { supervisor } = facetSupervisor(authority);
+  await launchResident({
+    authority, program: PROGRAM, env: { SUPERVISOR: supervisor },
+    dataPlan: await residentDataPlan(authority, APP), cursor: authority.cursor(),
+  });
+  const probe = globalThis.__probe;
+  const MINE = `${APP}/mine.txt`;
+  probe.fs.writeFileSync(MINE, 'mine');
+  if (settle) await probe.fs.promises.writeFile(MINE, 'mine');
+  assert.equal(probe.read(MINE), 'mine', 'the premise: the process reads what it wrote');
+  probe.fs.chmodSync(MINE, 0o200);
+  if (settle) {
+    const changed = authority.rawVfs.revision();
+    await probe.resume();
+    await until(() => globalThis.__nimbusVfsCursor.rev >= changed, 'the barrier reported the chmod');
+  }
+  assert.equal(probe.fs.statSync(MINE).mode & 0o777, 0o200, 'the premise: its mode is write-only');
+  assert.equal(probe.read(MINE), 'ERR:EACCES', 'readFileSync of its own write-only file');
+  assert.equal(probe.open(MINE), 'ERR:EACCES', 'openSync for reading of its own write-only file');
+}
+
 await runScenarios(import.meta.path, {
+  'a file the process wrote and made write-only is refused to its reads': () => own(false),
+  'a file the process wrote, landed and made write-only is refused to its reads': () => own(true),
   'a running process holding a file is refused it after a chmod revokes its read': () => running(REVOKE.chmod),
   'a running process holding a file is refused it after a chown revokes its read': () => running(REVOKE.chown),
   'a kept store holding a file does not serve it after a chmod revoked its read': () => kept(REVOKE.chmod),
