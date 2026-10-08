@@ -13,6 +13,7 @@
 // fixtures and assert it actually fails when a boundary is crossed.
 
 import assert from 'node:assert/strict';
+import { MAX_FACET_CPU_MS } from '../../packages/fabric/src/facet-limits.ts';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,13 +32,18 @@ import {
   sharedResourceIdentifiers,
 } from '../../scripts/deploy-isolation.mjs';
 
+/**
+ * Configs under a temporary root. Each carries the CPU ceiling every hosting
+ * Worker must declare (facet-limits.mjs covers that rule), unless it sets its
+ * own: what these cases check is the isolation of their resources.
+ */
 function fixture(configs) {
   const root = mkdtempSync(join(tmpdir(), 'deploy-isolation-'));
   process.on('exit', () => rmSync(root, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(configs)) {
     const path = join(root, name);
     mkdirSync(join(path, '..'), { recursive: true });
-    writeFileSync(path, JSON.stringify(body));
+    writeFileSync(path, JSON.stringify({ limits: { cpu_ms: MAX_FACET_CPU_MS }, ...body }));
   }
   return root;
 }

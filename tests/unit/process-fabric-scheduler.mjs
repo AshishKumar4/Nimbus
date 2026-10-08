@@ -27,6 +27,7 @@
 // Behavior is asserted through the public ProcessFabric surface only.
 
 import assert from 'node:assert/strict';
+import { facetLoaderKey } from '../../packages/fabric/src/facet-limits.ts';
 import {
   ProcessFabric,
   ResidentProcessHandle,
@@ -145,7 +146,7 @@ for (const mode of PROCESS_HOST_MODES) {
     // One process in a fresh host, so it holds the first slot.
     assert.equal(boot.facetName, residentFacetName(0), 'the facet is named for its slot');
     assert.equal(boot.className, RESIDENT_PROCESS_CLASS, 'one class name for every runtime');
-    assert.equal(boot.loaderId, 'nimbus-process:coord-do-id:42', 'the loader id is the process key');
+    assert.equal(boot.loaderId, facetLoaderKey('process', 'nimbus-process:coord-do-id:42'), 'the loader id is the process key, under the process policy');
     // (2) syscalls route to the coordinator, whatever the process is and
     // wherever it runs — a peer mints the binding for the COORDINATOR's doId.
     const supervisor = boot.config.env.SUPERVISOR;

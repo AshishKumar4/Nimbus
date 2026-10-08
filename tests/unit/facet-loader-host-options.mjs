@@ -36,6 +36,7 @@ import { processHostFor } from '../../packages/worker/src/loaders/process-host.t
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { ISOLATE_NETWORK, workspaceNetwork } from '../../packages/core/src/_shared/workspace-network.ts';
+import { facetLoaderKey } from '../../packages/fabric/src/facet-limits.ts';
 
 // The pool mints its SUPERVISOR through ctx.exports; without one it degrades
 // to no binding at all, which would make the pid assertion below vacuous.
@@ -75,7 +76,7 @@ const facetFn = async function probeFacetCall() { return { ok: true }; };
 
   assert.equal(dispatched.length, 1);
   const { id, code } = dispatched[0];
-  assert.match(id, /^nfp:probe-session:session-do-i:/, 'the cache key is scoped to this session');
+  assert.ok(id.startsWith(`nfp:${facetLoaderKey('isolate', 'probe-session')}:session-do-i:`), `the cache key is scoped to this session, under the isolate policy: ${id}`);
   assert.deepEqual((await code).env.SUPERVISOR.supervisorProps, { doId: DO_ID, pid: 4242, bindingKind: 'infrastructure', route: { supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'NIMBUS_SESSION', hostDispatchMethod: 'supervisorOp' } },
     'the capability is minted for the invoking process, not for pid 0');
   facet.dispose();

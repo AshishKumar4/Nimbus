@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
+import { facetLoaderKey } from '../../packages/fabric/src/facet-limits.ts';
 import { launchManager } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
@@ -62,7 +63,7 @@ const firstBoot = world.boots[0].instance.boot;
 // index. One process in a fresh session, so it holds the first slot.
 const facetName = residentFacetName(0);
 assert.deepEqual(world.liveFacets(), [facetName], 'the process IS the session\'s facet for that pid');
-assert.equal(world.boots[0].loaderId, `nimbus-process:do-test:${spawned.pid}`,
+assert.equal(world.boots[0].loaderId, facetLoaderKey('process', `nimbus-process:do-test:${spawned.pid}`),
   'the module map is keyed on the process, so no two processes can share one');
 
 // ── 2. routed requests never evaluate the program again ─────────────────────
