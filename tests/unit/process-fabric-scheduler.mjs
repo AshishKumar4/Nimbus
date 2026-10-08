@@ -498,6 +498,7 @@ for (const mode of PROCESS_HOST_MODES) {
   };
   // A host arms the alarm that reports its own reset before it hosts anything.
   peer.ctx.storage.setAlarm = async () => {};
+  peer.scheduleHostingWatch = async () => {};
   const goodOpts = {
     coordinatorDoId: 'coord-do-id', pid: 62, writerId: crypto.randomUUID(), workerKey: 'k62',
     webSocketCapability: crypto.randomUUID(),

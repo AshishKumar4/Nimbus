@@ -214,6 +214,7 @@ import {
   isolateToken,
 } from '../../packages/fabric/src/process-host.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
+import { timers } from '../../packages/fabric/src/timers.ts';
 import { composeFabric } from '../../packages/fabric/src/composition.ts';
 import { openSupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { missingAssets } from './lib/staged-assets.mjs';
@@ -315,6 +316,8 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
       // `error`.
       peer.resetBy = null;
       peer.reset = (error) => { peer.resetBy = error; };
+      // A session arms its hosting watch on its own timer mux (NimbusSession.scheduleHostingWatch).
+      peer.scheduleHostingWatch = (at) => timers(peer, ctx).arm('hosting-watch', at);
       onPeer?.(peer);
       peers.set(name, peer);
     }
