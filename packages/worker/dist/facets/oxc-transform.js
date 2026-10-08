@@ -7,7 +7,7 @@ import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import { OXC_WASM_BUILD_ID } from '../oxc-wasm-artifact.generated.js';
 import { OXC_FACET_BUILD_ID } from '../oxc-facet-artifact.generated.js';
 import { fetchOxcFacetRuntime, fetchOxcWasmBytes } from '../runtime/oxc-wasm-bytes.js';
-import { SharedHelperFacet } from './helper-facet.js';
+import { FacetCallDeadlineError, SharedHelperFacet } from './helper-facet.js';
 /**
  * The Oxc wasm's linear memory past which the facet drops its instance after
  * a call. The module starts at 4.25 MiB and a call grows it to the module's
@@ -73,6 +73,7 @@ export function oxcFacetWorkerCode(wasm, runtime) {
 const oxcFacet = new SharedHelperFacet({
     id: OXC_FACET_WORKER_ID,
     className: 'OxcFacet',
+    kind: 'transform',
     what: 'the transform facet',
     async code(assets) {
         const [wasm, runtime] = await Promise.all([fetchOxcWasmBytes(assets), fetchOxcFacetRuntime(assets)]);
@@ -81,21 +82,6 @@ const oxcFacet = new SharedHelperFacet({
 });
 /** Modules one stack-fallback call carries; a batch with more makes more calls. */
 const STACK_FALLBACK_MODULES = 4;
-/** How long one stack-fallback call may take before its modules' answers are transient. */
-const STACK_FALLBACK_DEADLINE_MS = 30_000;
-/** `call`, or a rejection once `ms` pass first. */
-async function withDeadline(call, ms) {
-    let timer = null;
-    const deadline = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
-    });
-    try {
-        return await Promise.race([call, deadline]);
-    }
-    finally {
-        clearTimeout(timer);
-    }
-}
 /** Calls per slice: a slice whose call failed is sent once more. */
 const SLICE_ATTEMPTS = 2;
 /**
@@ -114,7 +100,7 @@ const SLICE_ATTEMPTS = 2;
  * fails or misses its deadline answer transient. Without a fallback the
  * exhaustion stands.
  */
-export function oxcTransformHost(ctx, env, stackFallback, { fallbackDeadlineMs = STACK_FALLBACK_DEADLINE_MS } = {}) {
+export function oxcTransformHost(ctx, env, stackFallback) {
     return async (requests) => {
         let facet = null;
         const outcomes = [];
@@ -138,7 +124,8 @@ export function oxcTransformHost(ctx, env, stackFallback, { fallbackDeadlineMs =
                             oxcFacet.forget(ctx, facet);
                         facet = null;
                         failure = error;
-                        if (classifyDoCall(error) === 'overloaded')
+                        // An overloaded actor, or a call past its deadline (which aborted the facet): not retried.
+                        if (classifyDoCall(error) === 'overloaded' || error instanceof FacetCallDeadlineError)
                             break;
                     }
                 }
@@ -163,7 +150,8 @@ export function oxcTransformHost(ctx, env, stackFallback, { fallbackDeadlineMs =
                     const reason = 'error' in outcomes[index] ? outcomes[index].error.split('\n').at(-1) : '';
                     console.warn(`[oxc-transform] ${requests[index].options?.dynamicImportParent ?? '<unnamed module>'}: ${reason}; transforming it with esbuild`);
                 }
-                const answered = await withDeadline(stackFallback(group.map((index) => requests[index])), fallbackDeadlineMs).catch((error) => group.map(() => ({ error: `esbuild facet unavailable: ${errorText(error)}`, transient: true })));
+                // The esbuild facet's call is bounded where every helper facet's is (helper-facet.ts).
+                const answered = await stackFallback(group.map((index) => requests[index])).catch((error) => group.map(() => ({ error: `esbuild facet unavailable: ${errorText(error)}`, transient: true })));
                 group.forEach((index, i) => { outcomes[index] = answered[i]; });
             }
         }

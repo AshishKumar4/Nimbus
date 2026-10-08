@@ -121,9 +121,11 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
     const [unreached] = await oxcTransformHost(ctx, env, async () => { throw new Error('esbuild facet reset'); })([deep]);
     assert.equal(unreached.transient, true);
     assert.match(unreached.error, /esbuild facet unavailable: esbuild facet reset/);
-    const [late] = await oxcTransformHost(ctx, env, () => new Promise(() => {}), { fallbackDeadlineMs: 50 })([deep]);
+    // A fallback past its call deadline fails at the helper facet's bound (helper-facet-call-deadline.mjs).
+    const expired = "Nimbus: the esbuild facet's transformMany gave no answer within 300000 ms (the esbuild kind's call deadline)";
+    const [late] = await oxcTransformHost(ctx, env, async () => { throw new Error(expired); })([deep]);
     assert.equal(late.transient, true);
-    assert.match(late.error, /esbuild facet unavailable: no answer within 50 ms/);
+    assert.match(late.error, /esbuild facet unavailable: Nimbus: the esbuild facet's transformMany gave no answer within 300000 ms/);
   } finally {
     console.warn = warn;
   }

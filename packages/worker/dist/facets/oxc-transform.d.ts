@@ -23,7 +23,5 @@ export declare function oxcFacetWorkerCode(wasm: ArrayBuffer, runtime: string): 
  * fails or misses its deadline answer transient. Without a fallback the
  * exhaustion stands.
  */
-export declare function oxcTransformHost(ctx: DurableObjectState, env: unknown, stackFallback?: EsbuildTransformHost, { fallbackDeadlineMs }?: {
-    fallbackDeadlineMs?: number;
-}): EsbuildTransformHost;
+export declare function oxcTransformHost(ctx: DurableObjectState, env: unknown, stackFallback?: EsbuildTransformHost): EsbuildTransformHost;
 //# sourceMappingURL=oxc-transform.d.ts.map

@@ -25,6 +25,7 @@ import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
+import { facetLoaderKey } from '../../packages/fabric/src/facet-limits.ts';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 import { missingAssets } from './lib/staged-assets.mjs';
 
@@ -95,7 +96,7 @@ assert.equal(world.boots.length, 1, 'the serve facet evaluated exactly once');
 // The facet is named for its reusable slot; the pid identity is carried by the
 // loader key asserted just below.
 assert.equal(world.boots[0].facetName, residentFacetName(0), 'the facet is the process\'s');
-assert.equal(world.boots[0].loaderId, `nimbus-process:do-test:${pid}`, 'keyed on the pid workerKey');
+assert.equal(world.boots[0].loaderId, facetLoaderKey('process', `nimbus-process:do-test:${pid}`), 'keyed on the pid workerKey, under the process policy');
 assert.deepEqual(world.liveFacets(), [residentFacetName(0)]);
 
 // ── 3. health-gate resolves when /doc answers 200 ────────────────────────────

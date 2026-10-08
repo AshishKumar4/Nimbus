@@ -153,6 +153,7 @@ export async function registerHostedCommands(self, workspace) {
                 // The supervisor derives the write credential from this; without
                 // it the prompt cannot write to the session filesystem.
                 pid: ctx.pid,
+                cred: requireVfsCred(ctx.cred, 'Python REPL'),
                 start: { cwd: ctx.cwd || shell.getCwd(), binName },
             });
         }

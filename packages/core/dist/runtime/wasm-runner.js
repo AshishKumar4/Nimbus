@@ -560,11 +560,8 @@ export function makeWasmRunner(deps) {
                 : { mode: 'direct', exportName: exportName, intArgs: parsedArgs };
             outcome = (await facet.submit(facetFn, submitArgs, {
                 wasmModules: { 'user.wasm': buf },
-                // 30s ceiling for compute. Most wasm calls return in
-                // microseconds; runaway loops hit this and a host that can
-                // abandon the facet surfaces a timeout as exitCode 1 + stderr.
-                timeoutMs: 30_000,
-                // A kill or Ctrl-C ends the facet too, where the host can.
+                // No deadline: a process runs until it exits or is killed. A kill
+                // or Ctrl-C ends the facet too, where the host can.
                 signal: opts.signal,
             }));
         }

@@ -9401,9 +9401,12 @@ export class FacetManager {
     const [rowKey, record] = entry;
 
     if (record.pid > this.processes.pidBase) {
-      // This instance's own row: the launch is already building — waiting
-      // for its port registration is the entire ask, and driving the row
-      // again would boot a second copy.
+      // This instance's own row. A process still launching or running will
+      // bind the port: waiting for its registration is the entire ask, and
+      // driving the row again would boot a second copy. One that has ended
+      // is owed the port only if its restart policy runs it again; otherwise
+      // its row is being released (_onResidentTerminal), and nothing will.
+      if (this.processes.get(record.pid)?.state === 'exited' && record.restart !== 'on-failure') return 'absent';
       return (await this._waitForPort(port, DURABLE_ENSURE_BOOT_BUDGET_MS))
         ? 'started' : 'failed';
     }

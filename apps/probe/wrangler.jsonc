@@ -12,7 +12,7 @@
   // and past `nodejs_compat` becoming the default (2026-08-04).
   "compatibility_date": "2026-09-26",
   // Shell commands run in the session DO; the 30 s default kills them. Facets keep their own ~30 s.
-  "limits": { "cpu_ms": 300000 },
+  "limits": { "cpu_ms": 300000, "subrequests": 10000000 },
   // Traces on every invocation: throwaways and nimbus-probe-staging are where
   // a lost supervisor call is diagnosed (see apps/hosted-demo/wrangler.jsonc).
   "observability": {

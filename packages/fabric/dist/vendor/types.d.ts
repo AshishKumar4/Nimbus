@@ -37,6 +37,10 @@ export interface WorkerCode {
     compatibilityDate: string;
     compatibilityFlags?: string[];
     allowExperimental?: boolean;
+    limits?: {
+        cpuMs?: number;
+        subRequests?: number;
+    };
     mainModule: string;
     modules: Record<string, ModuleContent>;
     env?: Record<string, unknown>;
@@ -54,10 +58,13 @@ export interface ServiceStub {
 }
 export interface EntrypointOptions {
     props?: Record<string, unknown>;
+    limits?: {
+        cpuMs?: number;
+        subRequests?: number;
+    };
 }
 export interface WorkerStub {
-    getEntrypoint(): EntrypointStub;
-    getEntrypoint(name: string, opts?: EntrypointOptions): EntrypointStub;
+    getEntrypoint(name?: string, opts?: EntrypointOptions): EntrypointStub;
 }
 export interface EntrypointStub {
     fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;

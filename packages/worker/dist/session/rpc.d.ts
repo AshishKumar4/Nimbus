@@ -49,7 +49,7 @@ export declare function _rpcCacheResult(self: RpcHost, ticket: string, result: {
 export declare function _rpcStdinPrepared(self: RpcHost, pid?: number, run?: string): Promise<void>;
 type ProcessRpcHost = Pick<NimbusSession, 'processes'>;
 type ReportRpcHost = ProcessRpcHost & Pick<NimbusSession, 'facetManager'>;
-type ExitRpcHost = ReportRpcHost & Pick<NimbusSession, 'terminal' | 'webSocketRelay' | 'supervisorForgetBridge' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'facetProcessManager'>;
+type ExitRpcHost = ReportRpcHost & Pick<NimbusSession, 'terminal' | 'shell' | 'webSocketRelay' | 'supervisorForgetBridge' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'facetProcessManager'>;
 export declare function checkedReadPayloadBytes(bytes: number): number;
 export declare function withReadAllocation<T>(bytes: number, read: () => Promise<T>): Promise<T>;
 /**
@@ -382,30 +382,7 @@ export declare function _rpcReportExit(self: ExitRpcHost, pid: number, code: num
  *     log buffer still has everything, so `logs <pid>` recovers it.
  */
 export declare function _emitExitDump(self: RpcHost, pid: number, code: number): void;
-/**
- * Fix 3 + Fix 4 + Fix 5: finalizer for shellExecuteTracked.
- *
- * Runs after a tracked shell.execute finishes (any path). Chooses when
- * to emit the exit-dump banner and when to log the debug trace.
- *
- * Dump policy (Fix 4):
- *   - Non-zero exit AND any buffered output → always dump.
- *   - Zero exit AND buffered output has >0 bytes → dump anyway. Rationale:
- *     an npm run that returned "success" while the ring buffer still has
- *     a traceback is the exact "clean-but-silent failure" we're hunting.
- *     The replay is unique information the user didn't see live (e.g.
- *     because the terminal was reconnected after the fact).
- *   - Zero exit AND empty buffer → nothing to say. Skip.
- *
- * Trace policy (Fix 5):
- *   - NIMBUS_DEBUG=1: always print `[exited pid=N code=C duration=Xms]`.
- *   - Default: print only for non-zero OR long-running scripts (the
- *     cmd-start banner makes them expect an exit marker).
- *
- * Called with the already-marked pid (processes.exit + processes.markExit
- * ran in shellExecuteTracked's finally).
- */
-export declare function _emitShellExecDone(self: RpcHost, pid: number, cmd: string, code: number, durationMs: number): void;
+export declare function _emitShellExecDone(self: RpcHost, pid: number, _cmd: string, code: number, durationMs: number): void;
 /**
  * External-exit path: invoked by FacetManager when a process is killed
  * outside the facet's own try/finally (timeout, explicit abort, or the
