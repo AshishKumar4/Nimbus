@@ -126,21 +126,25 @@ const CREATE_REQUIRE_CALL_RE = /\bcreateRequire\s*\([^)]*\)\s*\(\s*(['"`])([^'"`
 // minor wasted-work cost, not a correctness issue.
 const IMPORT_RE = /(?:^|[\n;}])\s*(?:import|export)(?:[\s{][\w*${}\s,]*?\s*from)?\s*(['"])([^'"]+)\1/g;
 
-// A require createRequire made, by the name it is bound to, read back from
-// the call: `const _require = createRequire`, `var req = module.createRequire`.
-const CREATE_REQUIRE_BINDING_RE = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:[\w$]+\.)?createRequire$/;
-// A name the module's own require (or its .resolve) is passed first.
-const PASSED_TO_REQUIRE_RE = /require(?:\.resolve)?\s*\(\s*([A-Za-z_$][\w$]*)\s*[,)]/g;
+// The prefilter's patterns read names as the language spells them (any
+// Unicode identifier; a name spelled with \u escapes is read as written, so
+// such a wrapper is not found), and a callee or a function as any of its
+// forms the analysis reads: parenthesized, called optionally, an async or
+// generator function, a function expression in parentheses.
+const NAME = String.raw`[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*`;
+const NOT_IN_NAME = String.raw`(?<![\p{ID_Continue}$\u200c\u200d\\.])`;
+// A name assigned, as a require createRequire made is bound: `r = `.
+const BOUND_RE = new RegExp(String.raw`${NOT_IN_NAME}(${NAME})\s*=(?![=>])`, 'gu');
 // What precedes a function's parameter list, read back to the name it is
-// called by: `function f`, `f = function`, `f = async function g`.
-const FUNCTION_HEAD_RE = /(?:\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)\s*|(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function\b\s*\*?\s*[\w$]*\s*)$/;
-// What precedes an arrow function's parameters: `f = `, `f = async `.
-const ARROW_HEAD_RE = /(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?$/;
-// A call's argument list that starts with a string, and the callee before it.
+// called by: `function f`, `function* f`, `f = function g`, `f = (async function`.
+const FUNCTION_HEAD_RE = new RegExp(String.raw`(?:\bfunction\s*\*?\s*(${NAME})\s*|${NOT_IN_NAME}(${NAME})\s*=\s*(?:\(\s*)*(?:async\s+)?function\b\s*\*?\s*(?:${NAME})?\s*)$`, 'u');
+// What precedes an arrow function's parameters: `f = `, `f = (async `.
+const ARROW_HEAD_RE = new RegExp(String.raw`${NOT_IN_NAME}(${NAME})\s*=\s*(?:\(\s*)*(?:async\s*)?$`, 'u');
+// What precedes a string-first call's argument list: its callee, maybe in
+// parentheses or called optionally (`f(`, `(f)(`, `f?.(`).
+const CALLEE_RE = new RegExp(String.raw`${NOT_IN_NAME}(${NAME})\s*(?:\)\s*)*(?:\?\.\s*)?$`, 'u');
+// A call's argument list that starts with a string.
 const STRING_CALL_RE = /\(\s*['"`]/g;
-const CALLEE_RE = /(?<![\w$.])([A-Za-z_$][\w$]*)\s*$/;
-// What precedes `=>` in `f = id =>`, `f = async id =>`: the name, and the parameter.
-const ARROW_PARAM_RE = /(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*$/;
 
 // Only the speculative ESM resolution boundary catches traversal failures.
 // Keep scheduling errors distinct there, then return the original cause.
@@ -876,9 +880,6 @@ export function configPackageNames(source: string): string[] {
   return [...names];
 }
 
-/** `$` is the one identifier character a pattern reads otherwise. */
-const identifierPattern = (names: Iterable<string>) => [...names].map((name) => name.replaceAll('$', '\\$')).join('|');
-
 /**
  * What a module's require wrappers load: a function that passes its first
  * parameter to a require (the module's own, or one createRequire made, by any
@@ -902,44 +903,44 @@ const identifierPattern = (names: Iterable<string>) => [...names].map((name) => 
  */
 export function requireWrapperCalls(code: string, stripped: string = code): string[] {
   if (!stripped.includes('equire')) return [];
-  // Literal scans first: a pattern that starts at every word costs a module's
-  // length many times over.
+  // The requires: the module's own, and each createRequire made.
   const requires = new Set(['require']);
   for (let at = stripped.indexOf('createRequire'); at >= 0; at = stripped.indexOf('createRequire', at + 1)) {
-    const bound = CREATE_REQUIRE_BINDING_RE.exec(stripped.slice(Math.max(0, at - 128), at + 'createRequire'.length));
-    if (bound) requires.add(bound[1]!);
+    // The last `name =` before the call within its statement: a declarator's.
+    const before = stripped.slice(Math.max(0, at - 256), at);
+    let bound: RegExpMatchArray | undefined;
+    for (const match of before.matchAll(BOUND_RE)) bound = match;
+    if (bound && !/[;{}]/.test(before.slice((bound.index ?? 0) + bound[0].length))) requires.add(bound[1]!);
   }
-  // Names some require is passed first: the parameters a wrapper could have.
+  // Names some require is passed first, as `r(x`, `(r)(x`, `r?.(x`,
+  // `r.resolve(x`, `r((x)`: the parameters a wrapper could have.
+  const callees = [...requires].map(escapeName).join('|');
+  const passed = new RegExp(String.raw`${NOT_IN_NAME}(?:${callees})\s*(?:\)\s*)*(?:\?\.\s*)?(?:\.\s*resolve\s*(?:\)\s*)*(?:\?\.\s*)?)?\(\s*(?:\(\s*)*(${NAME})\s*(?:\)\s*)*[,)]`, 'gu');
   const params = new Set<string>();
-  const passed = requires.size === 1 ? PASSED_TO_REQUIRE_RE
-    : new RegExp(`(?:${identifierPattern(requires)})(?:\\.resolve)?\\s*\\(\\s*([A-Za-z_$][\\w$]*)\\s*[,)]`, 'g');
-  for (const match of stripped.matchAll(passed)) {
-    // Not a property's (`obj.require(x)`) nor a longer name's (`__require(x)`).
-    if (!/[\w$.]/.test(stripped[(match.index ?? 0) - 1] ?? ' ')) params.add(match[1]!);
-  }
+  for (const match of stripped.matchAll(passed)) params.add(match[1]!);
   if (params.size === 0) return [];
-  // Functions with one of them first: `function f(id`, `f = function (id`,
-  // `f = (id) =>`, `f = id =>`. Found from the parameter, which a literal
-  // scan finds, and read back to the name the function is called by. A
-  // parenthesized head is taken as an arrow's whatever follows it (a default
-  // may call: `(id = fallback()) =>`); the parse decides.
+  // Named functions with one of them first: `function f(id`, `f = function
+  // (id`, `f = (id) =>`, `f = async (id = x) =>`, and `f = id =>`. Found from
+  // the parameter and read back to the name; a parameter list read back to
+  // anything else (a call's arguments, a method, an unnamed function) is not
+  // a named function's.
+  const p = [...params].map(escapeName).join('|');
   const candidates = new Set<string>();
-  for (const match of stripped.matchAll(new RegExp(`\\(\\s*(?:${identifierPattern(params)})\\s*[,)=]`, 'g'))) {
+  for (const match of stripped.matchAll(new RegExp(String.raw`\(\s*(?:${p})\s*[,)=]`, 'gu'))) {
     const at = match.index ?? 0;
     const before = stripped.slice(Math.max(0, at - 160), at);
     const head = FUNCTION_HEAD_RE.exec(before);
     const name = head !== null ? head[1] ?? head[2] : ARROW_HEAD_RE.exec(before)?.[1];
     if (name !== undefined) candidates.add(name);
   }
-  // `f = id =>`: from each arrow, its one parameter read back.
-  for (let at = stripped.indexOf('=>'); at >= 0; at = stripped.indexOf('=>', at + 2)) {
-    const param = ARROW_PARAM_RE.exec(stripped.slice(Math.max(0, at - 160), at));
-    if (param !== null && params.has(param[2]!)) candidates.add(param[1]!);
+  for (const match of stripped.matchAll(new RegExp(String.raw`${NOT_IN_NAME}(?:${p})\s*=>`, 'gu'))) {
+    const at = match.index ?? 0;
+    const name = ARROW_HEAD_RE.exec(stripped.slice(Math.max(0, at - 160), at).replace(/async\s+$/, ''))?.[1];
+    if (name !== undefined) candidates.add(name);
   }
   for (const name of requires) candidates.delete(name);
   if (candidates.size === 0) return [];
-  // And one of them called with a string: each call whose first argument
-  // opens a string, read back to its callee (what the string holds is the
+  // And one of them called with a string (what the string holds is the
   // parse's to read: a `$`, the other quote, an escape).
   let called = false;
   for (const match of stripped.matchAll(STRING_CALL_RE)) {
@@ -956,6 +957,9 @@ export function requireWrapperCalls(code: string, stripped: string = code): stri
     return [];
   }
 }
+
+/** A name as a pattern matches it: `$` is the one character a name holds that a pattern reads otherwise. */
+const escapeName = (name: string) => name.replaceAll('$', '\\$');
 
 /**
  * Phase 2's tier for a package's "import" branch beside the "require" branch
