@@ -1753,6 +1753,9 @@ export class SqliteVFS {
             return false;
         if (this.transactionDepth > 0 || this.transactionPublication !== null || this.activeMutationOwner !== null || this.activeWork.size > 0)
             return false;
+        // A pipelined call's write is committed in it, held with its publication: a run written later would be no one's.
+        if (this.activePipeline !== null)
+            return false;
         let run = this.appendRuns.get(node.ino);
         // A run is one caller's: another's write stores it first (writable), as its own.
         if (run !== undefined && (run.privileged !== this.privileged || !samePrincipal(run.origin, this.activeOrigin)))
