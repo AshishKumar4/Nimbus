@@ -34,7 +34,7 @@ import { ReplSession } from './repl-session.js';
 import { sessionUsesSciVariant } from '@nimbus-sh/core/runtime/python-pip.js';
 import { buildCPythonPreamble, enterWorkingDirectory } from '@nimbus-sh/core/runtime/cpython-runner.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
-import { CRED_KERNEL, type NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, type NimbusFilesystemAuthority, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { exists } from '@nimbus-sh/core/vfs/vfs.js';
 
 /** Written by the driver when the source so far cannot yet be run. */
@@ -80,6 +80,8 @@ export interface PythonReplDeps {
    * never touches a file.
    */
   pid?: number;
+  /** The invoking process's credential; absent only for the install-time warm-up. */
+  cred?: Readonly<VfsCred>;
   /**
    * Where the prompt starts: the shell's working directory, entered once
    * per interpreter, and the command that started it, which a refusal to
@@ -90,7 +92,7 @@ export interface PythonReplDeps {
 const PythonFacetResult = z.object({ stdout: z.string(), stderr: z.string(), exitCode: z.number().int(), error: z.string().optional() });
 const PythonFacetFailure = z.object({ __nimbusFacetError: z.string() });
 type PythonReplFacetResult = z.infer<typeof PythonFacetResult>;
-type InterpreterDeps = Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'home' | 'manifest' | 'pid' | 'start'>;
+type InterpreterDeps = Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'home' | 'manifest' | 'pid' | 'cred' | 'start'>;
 
 
 /** Where cpython-runner's catalog spec stages the interpreter. */
@@ -162,6 +164,13 @@ class PythonReplAdapter implements ReplAdapter {
       'Python 3.13.14 (CPython, wasm32-wasi, Nimbus runtime)\r\n' +
       'Type "exit()" or press Ctrl-D to exit.\r\n'
     );
+  }
+  async initialize(): Promise<{ stdout: string; stderr: string }> {
+    const result = await this.push('');
+    if (result.kind === 'output') return result;
+    if (result.kind === 'error') throw new Error(result.stderr.trim());
+    if (result.kind === 'exit') throw new Error(result.stderr?.trim() || `Python REPL startup exited ${result.exitCode}`);
+    throw new Error('Python REPL startup did not finish its driver');
   }
   push(source: string): Promise<ReplPushResult> {
     const controller = new AbortController();
@@ -318,9 +327,10 @@ class PythonReplAdapter implements ReplAdapter {
  * interpreter's setup, and `enter`, the source that starts the prompt in the
  * shell's working directory, which the facet runs once per interpreter.
  */
-export function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'start'>, pythonHome: string, userCode: string) {
+export function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'start' | 'cred'>, pythonHome: string, userCode: string) {
   return {
     userCode,
+    cred: deps.cred,
     pythonHome,
     pyArgv: ['python'],
     userEnv: { HOME: deps.home, PYTHONUNBUFFERED: '1' },
