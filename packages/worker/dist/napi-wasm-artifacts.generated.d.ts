@@ -17,7 +17,7 @@ export interface NapiWasmAsset {
 export interface StagedBindingArtifact {
     /** The binding's name (scripts/napi-wasm/specs.mjs). */
     readonly name: string;
-    /** The one version of `owner` the binding is built from. */
+    /** The one version of `owner` this build is built from (a binding may have several builds). */
     readonly version: string;
     /** The package whose JavaScript loads the binding. */
     readonly owner: string;
@@ -30,4 +30,6 @@ export interface StagedBindingArtifact {
 export declare const NAPI_WASM_LOADER: NapiWasmAsset;
 export declare const NAPI_WASM_TRAMPOLINE: NapiWasmAsset;
 export declare const STAGED_BINDING_ARTIFACTS: readonly StagedBindingArtifact[];
+/** The rolldown Nimbus itself depends on, whose build the build facet runs. */
+export declare const OWN_ROLLDOWN_VERSION: string;
 //# sourceMappingURL=napi-wasm-artifacts.generated.d.ts.map

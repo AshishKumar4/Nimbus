@@ -9,6 +9,12 @@
  * the event loop), and scripts/bundle-napi-wasm.mjs stages them under
  * public/_assets/napi-wasm/ with every file's SHA-256 pinned.
  *
+ * A build is of one upstream version and loads only under its owner at that
+ * version, so a binding may be staged at several (`<name>@<version>`, a
+ * build's key): a launch carries the builds of the versions the program
+ * installed, and node-shims answers a require with the one its owner's
+ * package.json names.
+ *
  * A node process whose closure requires any of them carries the shared loader
  * (ESM), the shared wasi trampoline, and each binding it requires: by value in
  * a one-shot, by kernel-owned VFS path in a resident process, where a
@@ -28,7 +34,9 @@ export { NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, type NapiWasmAsset };
 export declare const STAGED_BINDING_LOADER_MODULE = "nimbus-napi-wasm-loader.js";
 export declare const STAGED_BINDING_TRAMPOLINE_MODULE = "nimbus-napi-wasm-trampoline.wasm";
 export interface StagedBinding extends StagedBindingArtifact {
-    /** The binding's module-map name in a node facet. */
+    /** `<name>@<version>`: the build, as specs.mjs keys it and a launch names it. */
+    readonly key: string;
+    /** The build's module-map name in a node facet. */
     readonly moduleName: string;
     /**
      * Where a resident process's boot spec names the binding. Kernel-owned and
@@ -45,9 +53,15 @@ export interface StagedBinding extends StagedBindingArtifact {
     readonly specifier: RegExp;
 }
 export declare const STAGED_BINDINGS: readonly StagedBinding[];
-/** The staged binding named `name`; a name no build produced is a programming error. */
-export declare function stagedBinding(name: string): StagedBinding;
-/** Names of the staged bindings a closure requires, in table order. */
+/** The staged build `key` (`<name>@<version>`); a key no build produced is a programming error. */
+export declare function stagedBinding(key: string): StagedBinding;
+/**
+ * Keys of the staged builds a closure requires, in table order: a module
+ * that names a binding's package, at the version of the owner package the
+ * module is in (its package.json, which the walk stages beside it). A
+ * version with no staged build is none: node-shims names it when it is
+ * required.
+ */
 export declare function stagedBindingsRequiredBy(cells: Iterable<readonly [string, unknown]>): string[];
 /** Most filesystem questions stagedBindingsDeclaredBy asks: package.json reads and node_modules probes. */
 export declare const DECLARED_BINDING_PROBES = 1024;
@@ -58,8 +72,8 @@ export interface DeclaredBindingFs {
     realpath(path: string): Promise<string | null>;
 }
 /**
- * Names of the staged bindings a launched bin's own dependency tree installs,
- * in table order: a binding's owner at the binding's version, reached through
+ * Keys of the staged builds a launched bin's own dependency tree installs,
+ * in table order: a binding's owner at a version it is built for, reached through
  * the declared dependencies (dependencies, optionalDependencies,
  * peerDependencies) of the bin's package and of every package those resolve
  * to. Each name resolves as Node's resolver finds it, from the package that
@@ -98,10 +112,11 @@ export declare function stagedBindingCacheKey(asset: NapiWasmAsset): string;
 /** Fetch one staged file, verified against its pinned digest. */
 export declare function fetchStagedBindingAsset(env: StagedSourceEnv, asset: NapiWasmAsset): Promise<ArrayBuffer>;
 /**
- * The main-module block that registers `names`. It imports the shared loader
- * and trampoline and each binding, and hands node-shims one factory per
- * binding, registered under every package name it is required by; nothing is
- * instantiated until the program actually requires it.
+ * The main-module block that registers the builds `keys`. It imports the
+ * shared loader and trampoline and each build, and hands node-shims one
+ * factory per build, registered under every package name its binding is
+ * required by, by version; nothing is instantiated until the program
+ * actually requires it.
  */
-export declare function stagedBindingsFacetImport(names: readonly string[] | undefined): string;
+export declare function stagedBindingsFacetImport(keys: readonly string[] | undefined): string;
 //# sourceMappingURL=staged-bindings.d.ts.map

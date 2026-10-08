@@ -743,9 +743,9 @@ async function bundleRolldownFacet() {
   const shims = join(root, 'scripts', 'rolldown-facet', 'shims.mjs');
   const rolldownPkg = JSON.parse(readFileSync(join(root, 'node_modules', 'rolldown', 'package.json'), 'utf8'));
   const artifacts = readFileSync(join(root, 'src', 'napi-wasm-artifacts.generated.ts'), 'utf8');
-  const stagedVersion = /"name": "rolldown",\s*"version": "([^"]+)"/.exec(artifacts)?.[1];
+  const stagedVersion = /^export const OWN_ROLLDOWN_VERSION: string = "([^"]+)";$/m.exec(artifacts)?.[1];
   if (rolldownPkg.version !== stagedVersion) {
-    throw new Error(`[bundle-facet-workers/rolldown-facet] rolldown ${rolldownPkg.version} is installed; the staged binding is ${stagedVersion}`);
+    throw new Error(`[bundle-facet-workers/rolldown-facet] rolldown ${rolldownPkg.version} is installed; the build facet's staged binding is ${stagedVersion}`);
   }
   const result = await build({
     entryPoints: [join(root, 'scripts', 'rolldown-facet', 'entry.mjs')],
