@@ -362,6 +362,8 @@ export class Terminal {
   }
 
   async connect(timeoutMs = 15_000) {
+    this.submitCursor = this.stream.length;
+    this.submitCommand = false;
     this.ws = new WebSocket(`${this.wsBase}/s/${this.sid}/ws`, this.wsOptions);
     this.connected = false;
     this.closed = false;

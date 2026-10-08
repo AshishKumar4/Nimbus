@@ -117,6 +117,18 @@ try {
     const cancelled = terminal.waitForPrompt(1000);
     output(`^C\n${mark('A')}${prompt}${mark('B')}`);
     await cancelled;
+
+    await terminal.close();
+    const reconnected = once(sockets, 'connection');
+    await terminal.connect();
+    const [replacement] = await reconnected;
+    let prompted = false;
+    const fresh = terminal.waitForPrompt(1000).then(() => { prompted = true; });
+    await setImmediate();
+    const reused = prompted;
+    replacement.send(JSON.stringify({ type: 'output', data: `${mark('A')}${prompt}${mark('B')}` }));
+    await fresh;
+    assert.equal(reused, false, 'reconnect waits for this connection\'s B, without resetting the mark stream');
   });
 
   try {
