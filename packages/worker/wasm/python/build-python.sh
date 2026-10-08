@@ -35,7 +35,9 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-: "${WASI_SDK:?set WASI_SDK to the wasi-sdk root (bin/clang, share/wasi-sysroot)}"
+# The recipe's toolchain (see require_recipe, which every compiling stage runs
+# first); fetch and verify use none.
+WASI_SDK="${WASI_SDK:-/wasi-sdk}"
 BUILD="$HERE/build"
 SYSROOT="$WASI_SDK/share/wasi-sysroot"
 SRC="$BUILD/src"
