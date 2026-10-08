@@ -137,7 +137,7 @@ try {
 
   await page.setViewport({ width: 390, height: 844 });
   await page.click('#btnTerminal');
-  const tui = `process.stdout.write('\\x1b[2J\\x1b[HPHONE_TUI_READY\\n');
+  const tui = `process.stdout.write('\\x1b[2J\\x1b[HPHONE_TUI_READY\\r\\n');
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
 let input = '';
@@ -145,7 +145,7 @@ process.stdin.on('data', (chunk) => {
   const text = String(chunk);
   if (text.includes('q')) process.exit(0);
   input += text;
-  process.stdout.write('INPUT ' + input.replace(/\\r/g, '<CR>').replace(/\\n/g, '<LF>') + '\\n');
+  process.stdout.write('INPUT ' + input.replace(/\\r/g, '<CR>').replace(/\\n/g, '<LF>') + '\\r\\n');
 });
 setInterval(() => {}, 1000);`;
   const files = {
@@ -193,6 +193,18 @@ setInterval(() => {}, 1000);`;
       tab: document.getElementById('editorTab').textContent,
       status: document.getElementById('editorStatus').textContent,
       content: window.__nimbusMonacoEditor?.getValue(),
+      tui: (() => {
+        const view = document.querySelector('.logs-view.active.terminal-view');
+        const rect = (element) => {
+          const box = element?.getBoundingClientRect();
+          return box && { width: box.width, height: box.height, top: box.top, bottom: box.bottom };
+        };
+        return {
+          focused: view?.contains(document.activeElement),
+          view: rect(view), screen: rect(view?.querySelector('.xterm-screen')),
+          panel: rect(document.getElementById('logsPanelBody')),
+        };
+      })(),
     })));
   }
   throw error;
