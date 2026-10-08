@@ -50,6 +50,11 @@ const TIMER_ARM_ATTEMPTS = 3;
  * handler awaits external IO takes the normal chain path and keeps its own
  * turn-gated persistence. Requires the `nodejs_compat` (or `nodejs_als`)
  * compatibility flag on workerd.
+ *
+ * The collection closes when the dispatcher folds it. Work a handler started
+ * and did not await (a re-driven launch, waitUntil'd) keeps the context after
+ * the dispatch is done; its later arms take the chain, which runs after the
+ * dispatch's own write, instead of a collection nothing will read again.
  */
 const dispatchArms = new AsyncLocalStorage();
 /**
@@ -98,11 +103,11 @@ export class Timers {
         // semantics, and the dispatch's own write and re-arm carry it. The
         // setAlarm gate matches the chain path's, so both paths refuse alike
         // on a runtime without alarms.
-        const arms = dispatchArms.getStore();
-        if (arms) {
+        const collection = dispatchArms.getStore();
+        if (collection?.open) {
             if (typeof ctx?.storage?.setAlarm !== 'function')
                 return Promise.resolve(false);
-            arms.push({ reason, whenMs });
+            collection.arms.push({ reason, whenMs });
             return Promise.resolve(true);
         }
         const epoch = host._timerEpoch ?? 0;
@@ -210,7 +215,7 @@ async function dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo) {
     // Collect schedule requests made inside handler context (see
     // dispatchArms) and fold them into the map below, so an in-dispatch arm
     // neither deadlocks on the chain nor races the write.
-    const arms = [];
+    const collection = { arms: [], open: true };
     try {
         const now = Date.now();
         const existing = (await ctx?.storage?.get?.(TIMER_REASONS_KEY));
@@ -219,7 +224,7 @@ async function dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo) {
         const map = { ...(existing || {}) };
         const hadMap = Object.keys(map).length > 0;
         if (!hadMap) {
-            dispatchArms.run(arms, () => onLegacyAlarm?.());
+            dispatchArms.run(collection, () => onLegacyAlarm?.());
         }
         else {
             // Snapshot fireable reasons BEFORE running any of them, so a
@@ -239,7 +244,7 @@ async function dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo) {
                 if (!handler)
                     continue;
                 try {
-                    const result = await dispatchArms.run(arms, () => handler(now, alarmInfo));
+                    const result = await dispatchArms.run(collection, () => handler(now, alarmInfo));
                     if (result && typeof result.rearmAt === 'number') {
                         map[reason] = result.rearmAt;
                     }
@@ -254,7 +259,8 @@ async function dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo) {
         if (!current())
             return;
         // Fold the in-dispatch arms, earliest-deadline-first per reason.
-        for (const arm of arms) {
+        collection.open = false;
+        for (const arm of collection.arms) {
             if (!(arm.reason in map) || arm.whenMs < map[arm.reason]) {
                 map[arm.reason] = arm.whenMs;
             }
@@ -281,5 +287,8 @@ async function dispatchBody(ctx, current, handlers, onLegacyAlarm, alarmInfo) {
     }
     catch (e) {
         console.warn('[nimbus/W1] timers.dispatch threw:', errorText(e));
+    }
+    finally {
+        collection.open = false;
     }
 }
