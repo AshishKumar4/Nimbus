@@ -2074,7 +2074,8 @@ export async function _rpcHostProcess(
     );
     settleFacet(facet);
     facet.started.then(settleStarted, failStarted);
-    await cancelled;
+    // The facet lost here fails the held leg, which is how the session hears of it.
+    await Promise.race([cancelled, facet.lost]);
     return { ok: true };
   } catch (e) {
     failFacet(e);

@@ -15,7 +15,9 @@
 //   1. spawning a resident process evaluates the program EXACTLY ONCE;
 //   2. any number of routed requests evaluate it ZERO further times;
 //   3. a request that finds the facet gone FAILS LOUD — it never boots a
-//      replacement and answers from it.
+//      replacement and answers from it — and the process is over: it is
+//      listed as ended, and its restart policy decides whether a new process
+//      (a new pid, booted as any process is) takes its place.
 // A "boot" here is one module evaluation, exactly as it is on the real loader.
 
 import assert from 'node:assert/strict';
@@ -82,6 +84,32 @@ const afterLoss = await portRegistry.routeRequest(3000, new Request('http://s/po
 assert.equal(afterLoss.status, 502, 'a lost facet surfaces an error to the caller');
 assert.match((await afterLoss.json()).error, /no longer loaded/, 'the error names the real cause');
 assert.equal(world.boots.length, 1, 'the loss booted NO replacement — the ghost never happens');
+for (let i = 0; i < 100 && processes.get(spawned.pid)?.state === 'running'; i++) await new Promise((r) => setTimeout(r, 10));
+assert.equal(processes.get(spawned.pid)?.state, 'exited', 'the process whose facet was lost is listed as ended');
+assert.equal(processes.get(spawned.pid)?.exitCode, 137);
+
+// ── 3b. under restart on-failure, a lost facet's process is restarted ──────
+{
+  const crashy = await fm.spawnNode('http.createServer(...).listen(3001)', {
+    command: 'node crashy.js', filename: '/home/user/crashy.js', argv: ['/home/user/crashy.js'], cwd: '/home/user', port: 3001,
+    env: { NIMBUS_RESTART: 'on-failure' },
+  });
+  const boots = world.boots.length;
+  world.lose(residentFacetName(1));
+  const lost = await portRegistry.routeRequest(3001, new Request('http://s/port/3001/ping'), '/ping');
+  assert.equal(lost.status, 502);
+  let restarted;
+  for (let i = 0; i < 300 && !restarted; i++) {
+    restarted = processes.getRunning().find((p) => p.command === 'node crashy.js' && p.pid !== crashy.pid);
+    if (!restarted) await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.ok(restarted, 'a new process takes the lost one\'s place');
+  assert.deepEqual(processes.get(restarted.pid).restartedFrom, { pid: crashy.pid, cause: 'host-reset' });
+  for (let i = 0; i < 300 && portRegistry.get(3001)?.pid !== restarted.pid; i++) await new Promise((r) => setTimeout(r, 20));
+  const served = await portRegistry.routeRequest(3001, new Request('http://s/port/3001/ping'), '/ping');
+  assert.equal(served.status, 200, 'the new process serves the port');
+  assert.equal(world.boots.length, boots + 1, 'booted once, as the new process');
+}
 
 // ── 4b. $PORT is a hint to the program, not a claim on the port ────────────
 // The session exports PORT=3000 by default so Express-style scripts find it.
@@ -89,13 +117,14 @@ assert.equal(world.boots.length, 1, 'the loss booted NO replacement — the ghos
 // second server started in a session takes over the first one's port.
 {
   const { runFresh } = await import('../../packages/worker/src/runtime/node-runner.ts');
-  const owner = portRegistry.get(3000)?.pid;
+  const owner = portRegistry.get(3001)?.pid;
   await runFresh(fm, 'http.createServer(...).listen(4200)', {
-    argv: [], env: { PORT: '3000' }, cwd: '/home/user', filename: '/home/user/c.js',
+    argv: [], env: { PORT: '3001' }, cwd: '/home/user', filename: '/home/user/c.js',
     command: 'node c.js', forceLongRunning: true,
   });
-  assert.equal(portRegistry.get(3000)?.pid, owner,
-    'a spawn that merely inherited $PORT did not seize port 3000');
+  assert.ok(owner !== undefined, 'port 3001 has its owner, the restarted process');
+  assert.equal(portRegistry.get(3001)?.pid, owner,
+    'a spawn that merely inherited $PORT did not seize port 3001');
 }
 
 // ── 4. a spawn never claims a port it was not asked for ────────────────────
@@ -105,15 +134,15 @@ assert.equal(world.boots.length, 1, 'the loss booted NO replacement — the ghos
 // the user started kept running, unreachable. A port a program really binds
 // arrives through the http shim's listen() -> SUPERVISOR.registerPort.
 {
+  const owner = portRegistry.get(3001)?.pid;
   const before = portRegistry.getAll().map((e) => `${e.port}:${e.pid}`).sort();
   const second = await fm.spawnNode('http.createServer(...).listen(4200)', {
     command: 'node b.js', filename: '/home/user/b.js', cwd: '/home/user',
   });
   const after = portRegistry.getAll().map((e) => `${e.port}:${e.pid}`).sort();
   assert.deepEqual(after, before, 'a spawn with no requested port reserves nothing');
-  const stillA = portRegistry.get(3000);
-  assert.ok(stillA && stillA.pid === spawned.pid,
-    "port 3000 still belongs to the process that asked for it, not the newest spawn");
+  assert.ok(owner !== undefined && portRegistry.get(3001)?.pid === owner,
+    'port 3001 still belongs to the process that asked for it, not the newest spawn');
   assert.notEqual(second.pid, spawned.pid);
 }
 
