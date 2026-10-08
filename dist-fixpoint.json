@@ -73,7 +73,7 @@
     "packages/config/src/index.ts": "6057438442ce3546026c473e16addb42971b8b26105bd460490976e770dc7926",
     "packages/config/tsconfig.json": "0b055a7f359d104d5fdcfdafc1b03e73aa54afa96be34d29e4a23f91031262d5",
     "packages/core/LICENSE": "9abf902a70f15256b6d108767fc510341854ec2297e3874c5bc6df496a895617",
-    "packages/core/README.md": "9307b0445999504d61b4021e652b1a559237dcc7b59d34de83cad0a24ecb4045",
+    "packages/core/README.md": "1ab2ef46d8d358e98189533e2cf6947c712da2ecc37bcf05093cc83c1498106d",
     "packages/core/dist/_shared/ai-egress.d.ts": "ba2799e7be0ec11c06d0c1c9fddf7a9b1359d20aea012d625b6028a1aa380046",
     "packages/core/dist/_shared/ai-egress.d.ts.map": "0f78c29cce57241971fed547f11bed15b230b16a6e2074884cb2a122171393b7",
     "packages/core/dist/_shared/ai-egress.js": "a23a419673bd0fb7771344c1164f058147e9d0aa1a5bdb190eb21d6e397302ff",
