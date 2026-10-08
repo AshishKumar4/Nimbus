@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a node process could go on reading, synchronously, a file whose read
+  a chmod or a chown had revoked. The bytes it already held were kept under
+  the new revision because their content was unchanged (the same held for a
+  store kept from an earlier launch, and for a one-shot's package.json
+  copies), and readFileSync checked only the directories above the file.
+  A file is now kept or copied only while its mode and owner let the
+  process read it, and readFileSync and a read open judge the file's own
+  mode, as the session does: EACCES.
+
 - Fixed: a one-shot node process can read every installed package's
   package.json synchronously on its first run, as a resident process can.
   Package resolution reads manifests for names no closure walk sees: vite's
