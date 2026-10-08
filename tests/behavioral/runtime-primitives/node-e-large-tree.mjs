@@ -34,10 +34,7 @@ const DIR = '/home/user/got';
 const COLD_BOUND_MS = 120_000;
 const WARM_BOUND_MS = 30_000;
 const DEADLINE_FAILURE = /assembling the filesystem bundle/;
-// The exit status as a user reads it: echoed by the same shell right after.
-const NODE_E = 'node -e "console.log(\'NAME=\' + require(\'./package.json\').name)"; echo __NODE_EXIT__$?';
-/** The node -e exit status the shell echoed, or null. */
-const nodeExit = (output) => output.match(/__NODE_EXIT__(\d+)/)?.[1] ?? null;
+const NODE_E = 'node -e "console.log(\'NAME=\' + require(\'./package.json\').name)"';
 
 function withDeadline(promise, ms, label) {
   return Promise.race([
@@ -46,11 +43,9 @@ function withDeadline(promise, ms, label) {
   ]);
 }
 
-/** The install's own exit, and its summary line, from the full transcript. */
-function readInstall(output) {
-  const exit = output.match(/__INSTALL_EXIT__(\d+)/)?.[1];
+function readPackages(output) {
   const packages = output.match(/(?:added|Done!)\s+(\d+) packages/)?.[1];
-  return { exit: exit === undefined ? null : Number(exit), packages: packages === undefined ? null : Number(packages) };
+  return packages === undefined ? null : Number(packages);
 }
 
 if (!BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -64,25 +59,25 @@ try {
   await t.connect();
   await t.waitForPrompt(15_000);
 
-  const clone = await run(t, `git clone --depth 1 ${REPO} ${DIR} && cd ${DIR} && echo __CLONE_DONE__`, 300_000);
-  a.check('clone completes', clone.ok && /__CLONE_DONE__/.test(clone.output),
+  const clone = await run(t, `git clone --depth 1 ${REPO} ${DIR} && cd ${DIR}`, 300_000);
+  a.check('clone completes', clone.ok && clone.exitCode === 0,
     clone.error ?? clone.output.slice(-300));
 
-  // No pipeline in front of the sentinel: `npm install | tail` reports tail's
+  // No pipeline after the install: `npm install | tail` reports tail's
   // exit, not npm's.
-  const install = await run(t, 'npm install; echo __INSTALL_EXIT__$?', 900_000);
-  const installed = readInstall(install.output);
-  a.check('npm install completes with exit 0', install.ok && installed.exit === 0,
-    `exit=${installed.exit} ${install.error ?? install.output.slice(-400)}`);
-  a.check('the tree is large (hundreds of packages)', installed.packages !== null && installed.packages >= 500,
-    `packages=${installed.packages}`);
-  console.log(`  installed ${installed.packages} packages in ${install.elapsed} ms`);
+  const install = await run(t, 'npm install', 900_000);
+  const packages = readPackages(install.output);
+  a.check('npm install completes with exit 0', install.ok && install.exitCode === 0,
+    `exit=${install.exitCode} ${install.error ?? install.output.slice(-400)}`);
+  a.check('the tree is large (hundreds of packages)', packages !== null && packages >= 500,
+    `packages=${packages}`);
+  console.log(`  installed ${packages} packages in ${install.elapsed} ms`);
 
-  if (install.ok && installed.exit === 0) {
+  if (install.ok && install.exitCode === 0) {
     const cold = await run(t, NODE_E, COLD_BOUND_MS);
     a.check('cold node -e prints the package name', cold.ok && /NAME=got/.test(cold.output),
       cold.error ?? cold.output.slice(-400));
-    a.check('cold node -e exits 0', nodeExit(cold.output) === '0',
+    a.check('cold node -e exits 0', cold.exitCode === 0,
       cold.output.slice(-300));
     a.check('cold node -e hits no bundle deadline', !DEADLINE_FAILURE.test(cold.output),
       cold.output.slice(-400));
@@ -93,7 +88,7 @@ try {
     const warm = await run(t, NODE_E, WARM_BOUND_MS);
     a.check('warm node -e prints the package name', warm.ok && /NAME=got/.test(warm.output),
       warm.error ?? warm.output.slice(-400));
-    a.check('warm node -e exits 0', nodeExit(warm.output) === '0',
+    a.check('warm node -e exits 0', warm.exitCode === 0,
       warm.output.slice(-300));
     a.check('warm node -e hits no bundle deadline', !DEADLINE_FAILURE.test(warm.output),
       warm.output.slice(-400));

@@ -125,8 +125,8 @@ async function cutShort(dest, fresh, durable) {
   const t2 = new Terminal(sid);
   await t2.connect();
   await t2.waitForPrompt(30_000);
-  const again = await t2.run(`git clone --depth 1 ${REPO} ${fresh}; echo CLONE_RC=$?`, 300_000);
-  a.check('a clone in the new generation succeeds', /CLONE_RC=0/.test(again.output), again.output.slice(-400));
+  const again = await t2.run(`git clone --depth 1 ${REPO} ${fresh}`, 300_000);
+  a.check('a clone in the new generation succeeds', again.exitCode === 0, again.output.slice(-400));
   a.check('and checks out', await box.files.exists(`${fresh}/package.json`));
   a.check('and leaves no marker', !(await box.files.exists(`${fresh}/.git/nimbus-clone-job`)));
   await t2.close().catch(() => {});

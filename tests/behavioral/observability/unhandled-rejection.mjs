@@ -100,12 +100,7 @@ await t.run('rm -rf /home/user/handled && mkdir -p /home/user/handled', 5_000);
 await t.writeFile('/home/user/handled/handled.mjs', `
 Promise.reject(new Error('caught-101')).catch(() => { console.log('CAUGHT_OK'); });
 `);
-// SHELL-FOLLOWUPS-R5 (2026-05-11) suppressed the inline "exited with
-// code 0" dump for clean exits. To assert exit=0 we now sample $?
-// out-of-band via `echo NIMBUS_EXIT=$?` in the same shell invocation.
-// The CAUGHT_OK marker proves the .catch handler ran; NIMBUS_EXIT=0
-// proves the process terminated cleanly.
-const handR = await t.run('cd /home/user/handled && node handled.mjs; echo NIMBUS_EXIT=$?', 30_000);
+const handR = await t.run('cd /home/user/handled && node handled.mjs', 30_000);
 const handOut = handR.output;
 A.check(
   'handler-no-double: NO "Unhandled promise rejection" stderr (rejection was caught)',
@@ -118,8 +113,8 @@ A.check(
   `tail: ${handOut.slice(-500)}`,
 );
 A.check(
-  'handler-no-double: process exits cleanly (NIMBUS_EXIT=0 via $?)',
-  /NIMBUS_EXIT=0\b/.test(handOut) && !/NIMBUS_EXIT=[1-9]/.test(handOut),
+  'handler-no-double: process exits cleanly',
+  handR.exitCode === 0,
   `tail: ${handOut.slice(-500)}`,
 );
 
@@ -132,9 +127,7 @@ A.check(
 await t.run('rm -rf /home/user/dyn-reg && mkdir -p /home/user/dyn-reg', 5_000);
 await t.writeFile('/home/user/dyn-reg/mod.mjs', "export const X = 'REG_OK';");
 await t.writeFile('/home/user/dyn-reg/entry.mjs', `import('./mod.mjs').then(m => console.log('RESULT=' + m.X));`);
-// Same SHELL-FOLLOWUPS-R5 adaptation as check 3 — sample $? for exit
-// code instead of pattern-matching the (now-suppressed) inline dump.
-const regR = await t.run('cd /home/user/dyn-reg && node entry.mjs; echo NIMBUS_EXIT=$?', 30_000);
+const regR = await t.run('cd /home/user/dyn-reg && node entry.mjs', 30_000);
 const regOut = regR.output;
 A.check(
   'dynamic-import-regression: RESULT=REG_OK printed (existing fix still works)',
@@ -142,9 +135,8 @@ A.check(
   `tail: ${regOut.slice(-500)}`,
 );
 A.check(
-  'dynamic-import-regression: NIMBUS_EXIT=0 via $? AND no Unhandled rejection (listener no false-positive)',
-  /NIMBUS_EXIT=0\b/.test(regOut)
-    && !/NIMBUS_EXIT=[1-9]/.test(regOut)
+  'dynamic-import-regression: exit 0 AND no Unhandled rejection (listener no false-positive)',
+  regR.exitCode === 0
     && !/Unhandled promise rejection/.test(regOut),
   `tail: ${regOut.slice(-500)}`,
 );

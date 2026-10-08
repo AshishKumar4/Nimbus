@@ -81,6 +81,9 @@ export declare function classifyWsUpgrade(self: {
  */
 export declare function joinExistingSession(self: {
     ctx: any;
+    shell: {
+        announcePrompt(): void;
+    };
     terminal: {
         attach(ws: WebSocket, onFlush?: (data: string) => void): void;
         write(s: string): void;

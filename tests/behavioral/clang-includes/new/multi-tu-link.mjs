@@ -46,11 +46,11 @@ const rExists = await t.run(
 a.check('multi binary exists in cwd', /exists= true/.test(stripAnsi(rExists.output)),
   JSON.stringify(stripAnsi(rExists.output).slice(-200)));
 
-const rr = await t.run('./multi ; echo RUN_EXIT=$?', 30_000);
+const rr = await t.run('./multi', 30_000);
 const out2 = stripAnsi(rr.output);
 a.check('./multi prints "greet_a"', /greet_a/.test(out2), JSON.stringify(out2.slice(-300)));
 a.check('./multi prints "greet_b"', /greet_b/.test(out2), JSON.stringify(out2.slice(-300)));
-a.check('./multi exits 0', /RUN_EXIT=0/.test(out2), JSON.stringify(out2.slice(-200)));
+a.check('./multi exits 0', rr.exitCode === 0, JSON.stringify(out2.slice(-200)));
 
 await t.close();
 const sum = a.summary();

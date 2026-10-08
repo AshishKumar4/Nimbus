@@ -43,12 +43,16 @@ for (const mode of ['ready', 'mint-mismatch', 'upgrade-mismatch', 'delete-mismat
       throw new Error(`unexpected ${request.method} ${path}`);
     },
     websocket: {
-      open(ws) { ws.send(JSON.stringify({ type: 'output', data: 'user@nimbus:~$ ' })); },
+      open(ws) {
+        ws.send(JSON.stringify({ type: 'output', data: 'user@nimbus:~$ ' }));
+        ws.send(JSON.stringify({ type: 'shell-integration', event: 'prompt' }));
+      },
       message(ws, wire) {
         const message = JSON.parse(String(wire));
         assert.equal(message.type, 'input');
         commands++;
         ws.send(JSON.stringify({ type: 'output', data: '__NIMBUS_READY_42__\r\nuser@nimbus:~$ ' }));
+        ws.send(JSON.stringify({ type: 'shell-integration', event: 'end', submissionId: message.submissionId, exitCode: 0 }));
       },
     },
   });
