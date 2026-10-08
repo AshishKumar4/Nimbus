@@ -46,7 +46,7 @@ try {
   // Current c3 non-interactive flag surface: --template <id> --lang js,
   // boolean opt-outs as --flag=false, -y to accept remaining defaults.
   const createR = await t.run(
-    'npm create cloudflare@latest mvp -- --template hello-world --lang js --deploy=false --git=false --open=false -y 2>&1; echo C3_RC=$?',
+    'npm create cloudflare@latest mvp -- --template hello-world --lang js --deploy=false --git=false --open=false -y 2>&1',
     400_000,
   );
   const createOut = stripAnsi(createR.output);

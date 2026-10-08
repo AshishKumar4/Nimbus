@@ -9,19 +9,18 @@ const a=makeAsserter('astro-real');
 const ROOT='/home/user/astro-probe', APP=ROOT+'/mvp', PORT=4321;
 const MARKER='astro-real-'+Date.now();
 function tail(s,n=16){return stripAnsi(s).split(/\r?\n/).filter(Boolean).slice(-n).join('\n');}
-async function run(t,cmd,timeout){const r=await t.run(cmd+'; echo "___EXIT=$?___"',timeout);return {code:Number(r.output.match(/___EXIT=(\d+)___/)?.[1]??-1),output:stripAnsi(r.output)};}
 const sid=await mintSession();console.log(`[astro-real] sid=${sid} BASE=${BASE}`);
 const t=new Terminal(sid);let proc;
 try{
   await t.connect();await t.waitForPrompt(60000);
-  await run(t,`mkdir -p ${ROOT} && cd ${ROOT}`,15000);
-  const create=await run(t,'npm create astro@latest mvp -- --template minimal --no-install --no-git --skip-houston --yes 2>&1',240000);
-  a.check('create-astro creates the real minimal project',create.code===0,tail(create.output));
-  if(create.code!==0)throw new Error('scaffold failed');
-  const installed=await run(t,`cd ${APP} && npm install 2>&1`,400000);
-  a.check('npm install succeeds without rejecting the staged bindings',installed.code===0&&!/note:\s*(rolldown|satteri|@astrojs\/compiler-binding) has no Workers-compatible build/.test(installed.output),tail(installed.output));
-  if(installed.code!==0)throw new Error('install failed');
-  const version=await run(t,`grep '"version"' ${APP}/node_modules/astro/package.json`,15000);
+  await t.run(`mkdir -p ${ROOT} && cd ${ROOT}`,15000);
+  const create=await t.run('npm create astro@latest mvp -- --template minimal --no-install --no-git --skip-houston --yes 2>&1',240000);
+  a.check('create-astro creates the real minimal project',create.exitCode===0,tail(create.output));
+  if(create.exitCode!==0)throw new Error('scaffold failed');
+  const installed=await t.run(`cd ${APP} && npm install 2>&1`,400000);
+  a.check('npm install succeeds without rejecting the staged bindings',installed.exitCode===0&&!/note:\s*(rolldown|satteri|@astrojs\/compiler-binding) has no Workers-compatible build/.test(installed.output),tail(installed.output));
+  if(installed.exitCode!==0)throw new Error('install failed');
+  const version=await t.run(`grep '"version"' ${APP}/node_modules/astro/package.json`,15000);
   a.check('the installed framework is Astro 7',/"version":\s*"7\./.test(version.output),tail(version.output));
   await t.run(heredocCommand(APP+'/src/pages/proof.md','# Markdown proof\n\n**'+MARKER+'**\n'),10000);
   await t.run(heredocCommand(APP+'/src/pages/index.astro',`---\nimport { Content } from './proof.md';\n---\n<html lang="en"><head><title>Astro proof</title></head><body><Content /></body></html>\n`),10000);

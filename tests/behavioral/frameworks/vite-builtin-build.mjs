@@ -20,29 +20,24 @@ const sid = await mintSession();
 console.log(`[vite-builtin-build] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
-/** A command's output and exit status. */
-async function run(cmd, timeoutMs) {
-  const output = stripAnsi((await t.run(`${cmd}; echo "___EXIT=$?___"`, timeoutMs)).output);
-  return { code: Number(output.match(/___EXIT=(\d+)___/)?.[1] ?? -1), output };
-}
 const tail = (s, n = 20) => s.split('\n').filter((l) => l.trim()).slice(-n).join('\n');
 
 try {
   await t.connect();
   await t.waitForPrompt(60_000);
 
-  const created = await run('cd /home/user && npm create vite@latest vt -- --template react 2>&1', 300_000);
-  a.check('create-vite scaffolds the React template', created.code === 0, tail(created.output));
-  if (created.code !== 0) throw new Error('scaffold failed');
-  const installed = await run('cd /home/user/vt && npm install 2>&1', 600_000);
-  a.check('npm install succeeds', installed.code === 0, tail(installed.output));
-  if (installed.code !== 0) throw new Error('install failed');
+  const created = await t.run('cd /home/user && npm create vite@latest vt -- --template react 2>&1', 300_000);
+  a.check('create-vite scaffolds the React template', created.exitCode === 0, tail(created.output));
+  if (created.exitCode !== 0) throw new Error('scaffold failed');
+  const installed = await t.run('cd /home/user/vt && npm install 2>&1', 600_000);
+  a.check('npm install succeeds', installed.exitCode === 0, tail(installed.output));
+  if (installed.exitCode !== 0) throw new Error('install failed');
 
-  const built = await run('npm run build 2>&1', 300_000);
-  a.check('npm run build exits 0', built.code === 0, tail(built.output));
+  const built = await t.run('npm run build 2>&1', 300_000);
+  a.check('npm run build exits 0', built.exitCode === 0, tail(built.output));
   a.check('the build reports no asset-as-JS errors', !/Build error|Unexpected|JSX syntax/.test(built.output), tail(built.output));
 
-  const dist = (await run('ls dist dist/assets && cat dist/index.html', 30_000)).output;
+  const dist = (await t.run('ls dist dist/assets && cat dist/index.html', 30_000)).output;
   a.check('dist/assets holds hashed JS', /(index|main)-[\w-]+\.js/.test(dist), tail(dist, 30));
   a.check('imported assets are emitted hashed', /-[\w-]+\.(svg|png)/.test(dist), tail(dist, 30));
   a.check('public/ is copied to the dist root', /(favicon|vite)\.svg/.test(dist), tail(dist, 30));

@@ -101,11 +101,12 @@ try {
     JSON.stringify(projOut.slice(-300)));
 
   // The built-in `vite build` refuses the SvelteKit plugin honestly.
-  const install = await t.run('cd mvp && npm install 2>&1; echo "___EXIT=$?___"', 600_000);
-  a.check('npm install of the scaffold succeeds', /___EXIT=0___/.test(stripAnsi(install.output)),
+  const install = await t.run('cd mvp && npm install 2>&1', 600_000);
+  a.check('npm install of the scaffold succeeds', install.exitCode === 0,
     stripAnsi(install.output).slice(-400));
-  const build = stripAnsi((await t.run('npm run build 2>&1; echo "___EXIT=$?___"', 180_000)).output);
-  a.check('npm run build is refused (non-zero exit)', /___EXIT=[1-9]\d*___/.test(build), build.slice(-400));
+  const built = await t.run('npm run build 2>&1', 180_000);
+  const build = stripAnsi(built.output);
+  a.check('npm run build is refused (non-zero exit)', built.exitCode > 0, build.slice(-400));
   a.check('the refusal names the plugin the built-in build cannot run',
     /needs Vite plugins the built-in (build )?server cannot run \(@sveltejs\/kit\/vite\)/.test(build), build.slice(-600));
   a.check('no misleading esbuild error from the framework entry',

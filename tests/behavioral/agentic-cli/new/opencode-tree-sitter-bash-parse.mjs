@@ -43,7 +43,7 @@ try {
     JSON.stringify(installOut.slice(-400)));
 
   const diag = await t.run(
-    "opencode __nimbus-tree-sitter-diag 'echo hello | wc -l'; echo EXIT=$?",
+    "opencode __nimbus-tree-sitter-diag 'echo hello | wc -l'",
     180_000,
   );
   const diagOut = stripAnsi(diag.output);
@@ -61,7 +61,7 @@ try {
   try { result = jsonLine ? JSON.parse(jsonLine) : null; } catch { /* asserted below */ }
 
   a.check('diag emits a parseable JSON AST summary and exits 0',
-    result !== null && /EXIT=0/.test(diagOut),
+    result !== null && diag.exitCode === 0,
     JSON.stringify(diagOut.slice(-900)));
 
   if (result) {

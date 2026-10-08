@@ -81,9 +81,9 @@ try {
   a.check('the template extracts: a React Router project (package.json, app/root.tsx)',
     /EXTRACTED=\{"rr":true,"dev":true,"script":"react-router dev","root":true\}/.test(extractedOut), JSON.stringify(extractedOut.slice(-400)));
 
-  const install = await t.run('cd /home/user/remix-probe/mvp && npm install 2>&1; echo "___INSTALL=$?___"', 600_000);
+  const install = await t.run('cd /home/user/remix-probe/mvp && npm install 2>&1', 600_000);
   const installOut = stripAnsi(install.output);
-  a.check("the project's npm install completes", /___INSTALL=0___/.test(installOut), JSON.stringify(installOut.slice(-600)));
+  a.check("the project's npm install completes", install.exitCode === 0, JSON.stringify(installOut.slice(-600)));
 
   // readable-stream's constructor stealing: Node runs `Duplex.call(this)`
   // on an existing instance, and so must Nimbus.

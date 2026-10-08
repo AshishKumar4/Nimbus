@@ -7,7 +7,7 @@ export async function run(t, line, timeoutMs) {
   const startedAt = Date.now();
   try {
     const r = await t.run(line, timeoutMs);
-    return { ok: true, elapsed: r.elapsed, output: stripAnsi(r.output) };
+    return { ok: true, ...r };
   } catch (e) {
     return {
       ok: false,

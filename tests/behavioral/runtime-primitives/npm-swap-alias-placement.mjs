@@ -36,9 +36,9 @@ try {
   await t.run('mkdir -p swap-probe && cd swap-probe', 10_000);
   await t.run(heredocCommand('package.json', JSON.stringify({ name: 'swap-probe', version: '1.0.0' }, null, 2)), 10_000);
 
-  const install = await t.run('npm install esbuild; echo "INSTALL_EXIT=$?"', 240_000);
+  const install = await t.run('npm install esbuild', 240_000);
   const installOut = stripAnsi(install.output);
-  a.check('npm install esbuild exits 0', /INSTALL_EXIT=0/.test(installOut), JSON.stringify(installOut.slice(-600)));
+  a.check('npm install esbuild exits 0', install.exitCode === 0, JSON.stringify(installOut.slice(-600)));
   a.check('the swap is announced', /\[swap\] esbuild → esbuild-wasm/.test(installOut), JSON.stringify(installOut.slice(-600)));
   a.check('the swap is announced exactly once',
     (installOut.match(/\[swap\] esbuild → esbuild-wasm/g) || []).length === 1, JSON.stringify(installOut.slice(-900)));
@@ -70,9 +70,9 @@ try {
   const impOut = stripAnsi(imp.output);
   a.check("dynamic import('esbuild') resolves from an ESM entry", /IMPORT_VERSION=\d+\.\d+\.\d+/.test(impOut), JSON.stringify(impOut.slice(-400)));
 
-  const npx = await t.run('npx esbuild --version; echo "NPX_EXIT=$?"', 60_000);
+  const npx = await t.run('npx esbuild --version', 60_000);
   const npxOut = stripAnsi(npx.output);
-  a.check('npx esbuild --version runs', /NPX_EXIT=0/.test(npxOut) && /\d+\.\d+\.\d+/.test(npxOut), JSON.stringify(npxOut.slice(-400)));
+  a.check('npx esbuild --version runs', npx.exitCode === 0 && /\d+\.\d+\.\d+/.test(npxOut), JSON.stringify(npxOut.slice(-400)));
 
   const pkg = await t.run('cat package.json', 10_000);
   const pkgOut = stripAnsi(pkg.output);
