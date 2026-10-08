@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "94f569987f4fce4c3cdd68d3b5977e6eb497a09e95a9337a4140dcb7f821fc34",
+  "fingerprint": "e11c31630d6647383e054152c1884f50a65026a446ee1f7707505d8d06d5ffce",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -335,8 +335,8 @@
     "packages/core/dist/runtime/installed-runtimes.d.ts": "938898ac2b867bf1b253b5053319100f09f338b54a68fe8fc2f9aaaec2d6d759",
     "packages/core/dist/runtime/installed-runtimes.d.ts.map": "15e85597b819f42dd6fed6ea54144e171206e03ab43d4ceaca97207201e6a250",
     "packages/core/dist/runtime/installed-runtimes.js": "3f14bd2d769c6383ac326aac84915c83990ed1d2daa00c87a540df21983200b2",
-    "packages/core/dist/runtime/javascript-ast.d.ts": "3b8599436b9aadf86ac221fef4c5f449a21d053572b67dbc924d0ecfca692066",
-    "packages/core/dist/runtime/javascript-ast.d.ts.map": "9d952ba440ae93442db3ec5c1224ed7b09128f3fa4be4b9bcf287b346fe22075",
+    "packages/core/dist/runtime/javascript-ast.d.ts": "07c10b9aa844d41bcdaa40897a6cc2ce7bbcffef72838e52bbf85f3384281406",
+    "packages/core/dist/runtime/javascript-ast.d.ts.map": "9e9dedf102e8b4c0687031aaaac23fa78af711d4decdcd53ab3f843c7d951bf9",
     "packages/core/dist/runtime/javascript-ast.js": "a1d47f7a9894a06ea8cbb25b6cb638a70330b0fa9f6ee77190d6aa7589af79af",
     "packages/core/dist/runtime/javascript-scope.d.ts": "7509d98798a5d11ea655c831ac88eeb3115b9d07a37de402e3682d7f058ff2c0",
     "packages/core/dist/runtime/javascript-scope.d.ts.map": "e208de3ab30d34f2aed00634280249e1f76f7f9d1869bcd2635d9a028d4dc6c9",
@@ -1204,7 +1204,7 @@
     "packages/core/src/runtime/hydration.ts": "ded4863ddf94649123507fdfb96ac2d42e935af6c3db27e7205b5c2baeb7c576",
     "packages/core/src/runtime/import-lexer-hazards.ts": "6c647615bb8fa962400ecba2be91d5ba67fa30ae73d5f6b4ef636a405c9322e8",
     "packages/core/src/runtime/installed-runtimes.ts": "bd52e23ad2b9e78305e72c7b656c0402145892291b2209cfef7ae4657bdbba33",
-    "packages/core/src/runtime/javascript-ast.ts": "d372faba23bdc3ff30ad1a95fcd0192452f69d8666e776ee90685e02df2ee613",
+    "packages/core/src/runtime/javascript-ast.ts": "95158d2e468c42916b61d3ccd739570d9072740d02245d70747a991231cb75f4",
     "packages/core/src/runtime/javascript-scope.ts": "47a60e32bb2b8a8b855a9557279a5ab62e52f05d152bd500032ac13b55e27cec",
     "packages/core/src/runtime/js-repl-names.ts": "e4e6a8d1a74eccc2920217f4239edc7fa494935d9e08e073be80020909f10698",
     "packages/core/src/runtime/js-repl.ts": "d7013b1f5a9ec08f3a59487a3f76059f2d188702f99eabca6c35d6dc517925f9",
