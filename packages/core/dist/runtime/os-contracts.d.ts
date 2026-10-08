@@ -1,5 +1,4 @@
 import type { VfsEvent } from '../vfs/events.js';
-import type { DelegationTerms } from '../vfs/sqlite-vfs.js';
 /**
  * A value SQLite can return in a row.
  *
@@ -410,13 +409,6 @@ export interface RuntimeFsBridge {
     awaitRecall(owner: string, waitMs?: number): Awaitable<RecallKind | null>;
     /** The process has sent what it decided under `owner`, and done what recall `kind` asked. */
     recalled(owner: string, kind: RecallKind): Awaitable<void>;
-    /** A read lease with `terms`, granted at `at` (SqliteVFS.acquireReadLease); absent where the engine has none. */
-    acquireReadLease?(terms: DelegationTerms, at: {
-        readonly epoch: string;
-        readonly cursor: number;
-    }): {
-        readonly owner: string;
-    };
 }
 /** What a lease is asked for (RuntimeFsBridge.acquireExclusiveMutation). */
 export interface ExclusiveMutationRequest {

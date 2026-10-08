@@ -183,10 +183,9 @@ class GuardedProcessBridge {
      * reports (Delegations.readLease).
      */
     withReadLease(answer, options) {
-        const target = this.target;
-        if (options?.lease !== true || this.pid === undefined || answer.poison || target.acquireReadLease === undefined)
+        if (options?.lease !== true || this.pid === undefined || answer.poison)
             return answer;
-        const lease = this.delegations.readLease(this.pid, (terms) => target.acquireReadLease(terms, { epoch: answer.epoch, cursor: answer.rev }), this.scope);
+        const lease = this.delegations.readLease(this.pid, (terms) => this.target.acquireReadLease(terms, { epoch: answer.epoch, cursor: answer.rev }), this.scope);
         return lease === null ? answer : { ...answer, readLease: lease };
     }
     list(after, limit) { this.guard(); return this.target.list(after, limit); }
