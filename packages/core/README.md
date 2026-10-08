@@ -188,7 +188,8 @@ Two limits follow from a program deciding by itself:
 - A caller that cannot wait (the workspace's synchronous face, `vfs.sync`
   and a credentialed view of the engine) is refused with `EAGAIN` while the
   program sends, and the sending has started: the same call made again a
-  moment later finds the subtree current.
+  moment later finds the subtree current. A change is refused the same way
+  for the moment a program that is reading is told of it.
 - A program that makes no filesystem call for a long time (a long
   computation) cannot send what it decided when asked. It has
   `DELEGATION_RECALL_TIMEOUT_MS` (5 s) to answer; after that it loses the
@@ -202,21 +203,6 @@ Two limits follow from a program deciding by itself:
 What a program sends goes to the workspace as one ordered log of
 operations: a stream that stops leaves the operations before the stop, in
 the order they were made, never a later one without an earlier one.
-
-### A program that is reading
-
-A node program that is reading holds a read lease on the workspace (all of
-it but the session's own stores): a timer or callback of its runs on what
-it holds without asking the workspace first, for up to
-`READ_LEASE_TRUST_MS` (500 ms) after it last asked, while it has written
-nothing since. Another's change there first tells the program, which stops
-trusting what it holds before it answers; the change waits for the answer,
-or for the program's trust to run out, whichever is first. It never stops
-the program, and a program not reading (no callback in that time) costs a
-change nothing. As with a held subtree, a caller that cannot wait is
-refused with `EAGAIN` while the program is told, and the same call made a
-moment later goes through. A run that may stop and run again for its stdin
-takes no lease.
 
 ## Files
 

@@ -120,12 +120,22 @@ export interface DelegationStats {
   /** Holders revoked for not answering within the recall timeout. */
   readonly timedOut: number;
   /** Read leases granted, recalls of them answered, and recalls whose holder's trust ran out first. */
-  readonly reads: { readonly granted: number; readonly answered: number; readonly expired: number };
+  readonly reads: {
+    readonly granted: number;
+    readonly answered: number;
+    readonly expired: number;
+    /** What writers waited on recalls of them, in all and at the longest (ms). */
+    readonly waitMs: number;
+    readonly longestWaitMs: number;
+  };
 }
 
 export class Delegations {
   private readonly held = new Map<string, Held>();
-  private readonly counts = { grants: 0, share: 0, revoke: 0, timedOut: 0, readGranted: 0, readAnswered: 0, readExpired: 0 };
+  private readonly counts = {
+    grants: 0, share: 0, revoke: 0, timedOut: 0,
+    readGranted: 0, readAnswered: 0, readExpired: 0, readWaitMs: 0, readLongestWaitMs: 0,
+  };
   /** Each holder's leases. */
   private readonly byPid = new Map<number, Set<string>>();
   /**
@@ -321,7 +331,10 @@ export class Delegations {
       grants: this.counts.grants,
       recalls: { share: this.counts.share, revoke: this.counts.revoke },
       timedOut: this.counts.timedOut,
-      reads: { granted: this.counts.readGranted, answered: this.counts.readAnswered, expired: this.counts.readExpired },
+      reads: {
+        granted: this.counts.readGranted, answered: this.counts.readAnswered, expired: this.counts.readExpired,
+        waitMs: this.counts.readWaitMs, longestWaitMs: this.counts.readLongestWaitMs,
+      },
     };
   }
 
@@ -370,7 +383,12 @@ export class Delegations {
     held.pending = { kind: 'revoke', done: resolve, cancel: () => sessionTimers.clearTimeout(timer) };
     if (held.waiter !== null) held.waiter('revoke');
     else held.asked.push('revoke');
-    return promise;
+    const asked = Date.now();
+    return promise.then(() => {
+      const waited = Date.now() - asked;
+      this.counts.readWaitMs += waited;
+      this.counts.readLongestWaitMs = Math.max(this.counts.readLongestWaitMs, waited);
+    });
   }
 
   private forget(held: Held): void {
