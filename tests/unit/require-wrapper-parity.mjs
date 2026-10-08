@@ -58,6 +58,12 @@ export const d = load('generator-dep');`, ['generator-dep']],
 export const d = load('paren-require-dep');`, ['paren-require-dep']],
   ['an optionally called require', String.raw`function load(id) { return require?.(id); }
 export const d = load('optional-require-dep');`, ['optional-require-dep']],
+  ['an optional member resolve', String.raw`function load(id) { return require?.resolve(id); }
+export const d = load('optional-resolve-dep');`, ['optional-resolve-dep']],
+  ['an optionally called resolve', String.raw`function load(id) { return require.resolve?.(id); }
+export const d = load('optional-call-resolve-dep');`, ['optional-call-resolve-dep']],
+  ['a parenthesized string argument', String.raw`function load(id) { return require(id); }
+export const d = load(('paren-string-dep'));`, ['paren-string-dep']],
   ['a parenthesized argument', String.raw`function load(id) { return require((id)); }
 export const d = load('paren-arg-dep');`, ['paren-arg-dep']],
   ['a createRequire after another declarator', String.raw`import { createRequire } from 'node:module';
