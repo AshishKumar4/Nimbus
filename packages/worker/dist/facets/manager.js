@@ -529,8 +529,9 @@ function bundleUsesNodeSqlite(entryCode, bundle) {
     return false;
 }
 /**
- * The most manifest text a one-shot's copies carry (_installedManifests);
- * past it the process fetches the rest as it fetches any planned file.
+ * The most manifest text a one-shot's copies carry (_installedManifests), and
+ * the session keeps of them; past it the process fetches the rest as it
+ * fetches any planned file.
  */
 const MANIFEST_COPIES_MAX_BYTES = 4 * 1024 * 1024;
 /** Where inlined wasm images are staged, one kernel-owned file per content key. */
@@ -5195,9 +5196,12 @@ export class FacetManager {
         }
         return [...plan];
     }
-    /** Per credential: the manifest copies read at one install revision, as the launch body carries them. */
+    /**
+     * Per credential: the manifest copies read at one install revision, as the
+     * launch body carries them. Kept to MANIFEST_COPIES_MAX_BYTES in all, the
+     * most recently used first; one credential's are always kept.
+     */
     manifestCopies = new Map();
-    static MANIFEST_COPIES_MAX_CREDS = 4;
     /**
      * Every package.json the process's credential can see (data-plan.ts's
      * `package-json` rule, which a resident's plan applies itself), as copies a
@@ -5222,11 +5226,15 @@ export class FacetManager {
         const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
         const sql = this.ctx.storage.sql;
         const install = sql ? new NpmCache(sql).installRevision() : '';
-        const kept = this.manifestCopies.get(credKey);
-        if (kept !== undefined && kept.install === install)
-            return kept.json;
+        const held = this.manifestCopies.get(credKey);
+        if (held !== undefined && held.install === install) {
+            this.manifestCopies.delete(credKey);
+            this.manifestCopies.set(credKey, held);
+            return held.json;
+        }
         const vfs = this.filesystem.bind({ pid: entry.pid, cred });
-        const decoder = new TextDecoder('utf-8', { fatal: true });
+        // The text is the file's bytes, a byte order mark included.
+        const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
         const files = {};
         let bytes = 0;
         for (let after = null;;) {
@@ -5259,10 +5267,14 @@ export class FacetManager {
         const json = JSON.stringify({ files });
         this.manifestCopies.delete(credKey);
         this.manifestCopies.set(credKey, { install, json });
-        for (const oldest of this.manifestCopies.keys()) {
-            if (this.manifestCopies.size <= FacetManager.MANIFEST_COPIES_MAX_CREDS)
+        let kept = 0;
+        for (const copies of this.manifestCopies.values())
+            kept += copies.json.length;
+        for (const [oldest, copies] of this.manifestCopies) {
+            if (kept <= MANIFEST_COPIES_MAX_BYTES || oldest === credKey)
                 break;
             this.manifestCopies.delete(oldest);
+            kept -= copies.json.length;
         }
         return json;
     }

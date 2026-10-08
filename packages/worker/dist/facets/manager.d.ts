@@ -1476,9 +1476,12 @@ export declare class FacetManager {
      * left the closure no room under the map's bound.
      */
     private _staticReadPlan;
-    /** Per credential: the manifest copies read at one install revision, as the launch body carries them. */
+    /**
+     * Per credential: the manifest copies read at one install revision, as the
+     * launch body carries them. Kept to MANIFEST_COPIES_MAX_BYTES in all, the
+     * most recently used first; one credential's are always kept.
+     */
     private readonly manifestCopies;
-    private static readonly MANIFEST_COPIES_MAX_CREDS;
     /**
      * Every package.json the process's credential can see (data-plan.ts's
      * `package-json` rule, which a resident's plan applies itself), as copies a
