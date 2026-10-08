@@ -1183,6 +1183,7 @@ export class Shell {
    * both characters; a quoted join keeps the newline in the string.
    */
   private async acceptLine(rawLine: string, submission?: ShellInputSubmission): Promise<void> {
+    if (!this.lineSubmission) this.lineSubmission = submission;
     let command: string;
     if (this.pendingLine === null) {
       command = rawLine.trim();
@@ -1224,13 +1225,11 @@ export class Shell {
       this.writeToTerminal(actualLine + '\n');
     }
 
-    // Add to history
-    (await this.historyManager.add(actualLine));
-
     submission?.start();
     this.terminal.write(COMMAND_START);
     let status: number | null = null;
     try {
+      await this.historyManager.add(actualLine);
       status = await this.interpreter.executeLine(actualLine, this.terminalStdin, {
         interactive: true,
         commandIdentity: this.resolveCommandIdentity(undefined),
@@ -1248,10 +1247,10 @@ export class Shell {
       submission?.finish(status);
       release?.();
       this.activeSubmission = undefined;
+      this.promptSubmission = submission;
+      this.printPrompt();
     }
 
-    this.promptSubmission = submission;
-    this.printPrompt();
     (await this.drainPasteQueue());
     (await this.drainTypeAhead());
   }

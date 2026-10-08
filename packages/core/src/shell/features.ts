@@ -105,6 +105,7 @@ export class HeredocHandler {
     this.heredocInfo = null;
     this.currentHeredocIndex = 0;
     this.bodies = [];
+    this.submission = undefined;
   }
 
   private _patch(): void {
@@ -298,6 +299,8 @@ export class HeredocHandler {
   private async _finishHeredoc(): Promise<void> {
     const info = this.heredocInfo;
     if (!info) return;
+    const submission = this.submission;
+    this.submission = undefined;
     const script = [
       info.command,
       ...info.delimiters.flatMap((delimiter, index) => {
@@ -313,8 +316,7 @@ export class HeredocHandler {
     this.bodies = [];
 
     try {
-      await this._executeOriginalLine(script, this.submission);
-      this.submission = undefined;
+      await this._executeOriginalLine(script, submission);
     } catch (error) {
       this.terminal.write(`\x1b[31mheredoc error: ${errorMessage(error)}\x1b[0m\r\n`);
       this._printPrompt();
