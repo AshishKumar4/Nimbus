@@ -11,17 +11,15 @@
  *
  * The rows:
  *
- *   durable-slot:next    — the lowest never-issued slot number. Minting burns
- *                          one facet ID forever, so a freed name goes to
- *                          `free`, never back to `next`.
+ *   durable-slot:next    — the lowest never-issued slot number. A freed
+ *                          name goes to `free`, never back to `next`.
  *   durable-slot:free    — slot numbers whose applications were removed.
  *   durable-slot:<owner> — the owner's pinned slot. Written once, ever;
  *                          re-read on every relaunch and re-drive.
  *
  * Names carry the `app-slot-` prefix, disjoint by construction from the
- * ephemeral book's `proc-slot-` — the two namespaces share the facet-ID
- * budget, and a collision would hand one application's retained storage to
- * another process.
+ * ephemeral book's `proc-slot-` — a collision would hand one application's
+ * retained storage to another process.
  */
 /** The facet name a durable slot number names. */
 export declare function durableFacetName(slot: number): string;
@@ -30,9 +28,6 @@ export declare function durableFacetName(slot: number): string;
  * application's life. The owner key, counter and free list move inside one
  * transaction, so a concurrent spawn cannot split the claim, and a re-read
  * after a reset — or after eviction — answers the same name.
- *
- * The name is charged to the lifetime facet-ID ledger, which every facet
- * name on this DO shares.
  */
 export declare function acquireDurableFacetSlot(ctx: DurableObjectState, owner: string): Promise<string>;
 /**

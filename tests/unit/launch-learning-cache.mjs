@@ -57,7 +57,8 @@ assert.equal(cachedLaunches(), 1, 'the same miss again teaches nothing and keeps
 // A store that cannot write: the loss is in the process's own log.
 const put = ctx.storage.put;
 ctx.storage.put = async (key, value) => {
-  if (key.startsWith('launch-profile')) throw new Error('storage write refused');
+  // A multi-key put (the facet-name ledger's) is not the store's.
+  if (typeof key === 'string' && key.startsWith('launch-profile')) throw new Error('storage write refused');
   return put(key, value);
 };
 const third = await launch();

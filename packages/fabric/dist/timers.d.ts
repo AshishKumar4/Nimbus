@@ -117,6 +117,13 @@ export declare class Timers {
      */
     schedule(reason: string, whenMs: number): Promise<boolean>;
     /**
+     * {@link schedule}, for a caller that cannot go on unarmed: a refused arm
+     * is retried, up to TIMER_ARM_ATTEMPTS in all, and one still refused
+     * throws, naming the reason. A false from schedule is a timer that will not
+     * fire, so a caller that ignored it would wait forever.
+     */
+    arm(reason: string, whenMs: number): Promise<void>;
+    /**
      * Void every timer of this instance: a schedule or dispatch already
      * requested — still queued on the chain, or a dispatch whose handlers are
      * running — writes no reason and arms no alarm from here on. For a

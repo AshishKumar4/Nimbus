@@ -23,12 +23,12 @@
  *     crosses it is an uncatchable reset, not an error (`do.storage.bytes`).
  *   - a parent and its facets are evicted JOINTLY after minutes idle, so
  *     in-memory facet state is never safe to assume between two RPCs.
- *   - 65,536 facet ids per DO lifetime (`do.facet.count`), append-only and
- *     never reclaimed — the binding constraint for the leak, reached an
- *     order of magnitude before the byte quota. The pool charges each name's
- *     first use to the durable ledger (budgets.ts), which refuses a NEW name
- *     at the wall by name, instead of letting the platform fail opaquely.
- *     The refusal compares against the budget itself, not a threshold.
+ *   - live facets are bounded: one object failed at 32,240 facets none of
+ *     which was deleted, and its storage then failed to start (measured
+ *     2026-10-07). With each deleted after use, 70,000 names created none
+ *     failed, so the bound is on facets kept, not names ever used. Local
+ *     workerd differs: its facet index allows 65,535 names over the
+ *     object's lifetime (facet-tree-index.c++).
  *
  * A failed reclaim stays loud (facet-spawn's `runOnceAndReclaim`): storage
  * that was not given back is a permanent charge against the root's quota,
@@ -38,14 +38,12 @@
  * thing naming facets on this actor. The Agents SDK's sub-agent layer makes
  * the same assumption from the other side — it owns facet naming and runs
  * its own cleanup — so the two are mutually exclusive on one actor:
- * whichever acts second aborts or retires facets the other still tracks,
- * and the facet-id ledger counts only the names fabric minted.
+ * whichever acts second aborts or retires facets the other still tracks.
  */
 
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { chargeFacetName } from './budgets.js';
 
 /** `ctx.facets`, as the pool drives it — same surface the facet host uses. */
 export interface FacetPoolContainer {
@@ -54,14 +52,10 @@ export interface FacetPoolContainer {
   delete(name: string): void;
 }
 
-/** The hosting actor's context: its facet container, and the storage the
- *  facet-id ledger persists through. */
+/** The hosting actor's context: its facet container, and its storage. */
 export interface FacetPoolContext {
   facets?: FacetPoolContainer;
   storage: {
-    get(key: string): Promise<unknown> | unknown;
-    /** One atomic write of several keys, as Durable Object storage's multi-key put is. */
-    put(entries: Record<string, unknown>): Promise<void>;
     /** The session's SQL, where the storage ledger (N18) records facet databases. */
     sql?: SqlDatabase;
   };
@@ -91,11 +85,7 @@ export function facetPool(ctx: FacetPoolContext): FacetPool {
 export class FacetPool {
   constructor(private readonly ctx: FacetPoolContext) {}
 
-  /**
-   * Open (or re-enter) the named facet under a lease. A first-use name
-   * consumes one of the object's 65,536 lifetime facet ids and is refused at
-   * the wall; a reused name costs nothing, in this incarnation or any other.
-   */
+  /** Open (or re-enter) the named facet under a lease. */
   async acquire<S = unknown>(
     name: string,
     start: () => Promise<{ class: unknown }>,
@@ -104,7 +94,6 @@ export class FacetPool {
     if (!facets || typeof facets.get !== 'function') {
       throw new Error('fabric: ctx.facets is unavailable in this Durable Object; facets cannot be leased');
     }
-    await chargeFacetName(this.ctx, name, { refuseAtWall: true });
     const stub = facets.get(name, start) as S;
     let settled = false;
     let keepStorage = false;
