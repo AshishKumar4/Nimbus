@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## 2026-10-08: platform 0.8.0, config 0.2.4, core 0.16.0, fabric 0.11.0, worker 0.14.0, loom 0.2.3, sdk 0.12.0, react 0.2.3, cli 0.2.3, create-nimbus-app 0.2.1, runtime-cpython 3.13.14-1
 
+- Fixed: the first `vite` or `vite build` of a create-vite Vue project
+  failed. `@vitejs/plugin-vue` loads `vue/compiler-sfc` through a function
+  that wraps `createRequire`, and the first run staged no module reached
+  that way. The first run now stages modules a `createRequire` wrapper
+  loads.
 - Fixed: a resident process whose launch was over 2 MB and that was reset
   during its restart backoff never came back. The cold-start alarm
   re-drove its launch, but the launch's next timer was armed into a
