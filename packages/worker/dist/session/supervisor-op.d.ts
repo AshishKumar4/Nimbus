@@ -42,6 +42,7 @@ export interface SessionSupervisorHost {
      */
     readonly supervisorDeliveries?: SupervisorDeliveries;
     readonly facetManager?: Pick<FacetManager, 'journalCall'> | null;
+    waveTurn?(): Promise<void>;
     _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
     _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
     /**

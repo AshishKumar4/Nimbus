@@ -739,6 +739,10 @@ export class NimbusSession extends CloudflareDurableObject {
         this._supervisorOps?.forget(pid);
     }
     supervisorRewindBridge(pid) { return this._supervisorOps?.rewind(pid) ?? Promise.resolve(); }
+    // Other objects this isolate hosts run in the turn; this session's own events wait for it.
+    waveTurn() {
+        return this.ctx.blockConcurrencyWhile(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    }
     // Supervisor RPC (file/log/HMR/batch): what host stubs call, so an answer
     // leaves the session here and is counted (answerSupervisorOp).
     supervisorOp(envelope) {
