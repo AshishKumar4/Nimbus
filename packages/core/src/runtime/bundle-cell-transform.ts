@@ -25,12 +25,8 @@ import { vfsPathExtension } from '../vfs/path.js';
 import { mayHaveDynamicImport } from './dynamic-import-rewrite.js';
 import { moduleImporterUrl } from '../_shared/module-importer.js';
 import { lowerEsModule } from './async-module-lowering.js';
-import {
-  rewriteProvidedCommonJsModules,
-  transformSlices,
-  type EsbuildTransformOutcome,
-  type EsbuildTransformRequest,
-} from './esbuild-service.js';
+import { transformSlices, type EsbuildTransformOutcome, type EsbuildTransformRequest } from './esbuild-service.js';
+import { rewriteProvidedCommonJsModules } from './provided-packages.js';
 import { MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
 import { isEsModuleFile, typeScriptFormat, typeScriptUnderNodeModules, type ModuleScope, type PackageType } from './module-format.js';
 import type { NodeTypeScript } from './typescript-strip.js';
@@ -150,6 +146,8 @@ export interface BundleCellResult {
   /** A lowered ES module's EsModuleMap (async-module-lowering.ts), as JSON; '' for any other. */
   readonly map: string;
   readonly lowered: boolean;
+  /** An ES module lowered for the runtime (lowered too): Node's ES module semantics, whatever its map. */
+  readonly esModule: boolean;
   /**
    * esbuild's verdict was a rejection, and `code` is the shim that reports it.
    * Never stored: a host can report a crash as a rejection, and a stored shim
@@ -190,7 +188,7 @@ export function prepareBundleCell(
   // scope (module-format.ts): strict, `this` undefined at the top, and no
   // CommonJS wrapper name; in Bun's, with CommonJS's names. TypeScript keeps
   // CommonJS's names, as tsx and ts-node give them.
-  const esm = javaScript ? typeScriptFormat(path, () => packageType, () => source) === 'module' : !typescript && looksLikeEsm(path, source, packageType);
+  const esm = javaScript ? typeScriptFormat(path, () => packageType, () => source, true) === 'module' : !typescript && looksLikeEsm(path, source, packageType);
   // Source is transformed once per path; import.meta reads metadata from
   // each evaluation's module object, including its query and fragment.
   // The source URL still supplies the static parent for rewritten dynamic
@@ -220,7 +218,7 @@ export function prepareBundleCell(
   const cell = { path, typescript, lowered: !rewriteOnly, absUrl };
   if (esm && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
     try {
-      return { ...cell, outcome: lowerEsModule(src, scope, absUrl) };
+      return { ...cell, outcome: { ...lowerEsModule(src, scope, absUrl), esModule: scope } };
     } catch (e) {
       // Nested past this stack: the host's, then its engine's (runTransformRequest).
       if (e instanceof RangeError) return { ...cell, request: request(src, false) };
@@ -240,9 +238,10 @@ export function settleBundleCell(cell: BundleCell, outcome: EsbuildTransformOutc
   if ('error' in outcome) {
     if (outcome.transient) throw new Error(`esbuild transform unavailable for ${cell.path}: ${outcome.error}`);
     const code = 'typescript' in outcome ? typeScriptRefusalShim(outcome.typescript) : esbuildDiagnosticShim(cell.path, outcome.error);
-    return { code, map: '', lowered: cell.lowered, failed: true };
+    return { code, map: '', lowered: cell.lowered, esModule: false, failed: true };
   }
-  return { code: outcome.code, map: outcome.map, lowered: cell.lowered || outcome.esModule !== undefined, failed: false };
+  const esModule = outcome.esModule !== undefined;
+  return { code: outcome.code, map: outcome.map, lowered: cell.lowered || esModule, esModule, failed: false };
 }
 
 /**
@@ -259,6 +258,7 @@ export interface StoredBundleCell {
   readonly code: string;
   readonly map: string;
   readonly lowered: boolean;
+  readonly esModule: boolean;
 }
 
 /**
@@ -357,7 +357,7 @@ export async function transformBundleCells(
     }
     stats.transformed++;
     if (!store || key === undefined || !spend) return;
-    const refused = await store.put(key, { code: result.code, map: result.map, lowered: result.lowered }, spend);
+    const refused = await store.put(key, { code: result.code, map: result.map, lowered: result.lowered, esModule: result.esModule }, spend);
     if (refused === null) return;
     stats.storeErrors++;
     stats.storeError ??= refused;
@@ -419,7 +419,7 @@ export async function transformEntryScript(
   if (outcome === undefined) throw new Error('entry transform service returned no outcome');
   if ('error' in outcome) throw new Error(`entry dynamic import transform failed: ${outcome.error}`);
   if (store && key !== undefined) {
-    await store.put(key, { code: outcome.code, map: outcome.map, lowered: false }, pacer ? (bytes) => pacer.spend(bytes) : undefined);
+    await store.put(key, { code: outcome.code, map: outcome.map, lowered: false, esModule: false }, pacer ? (bytes) => pacer.spend(bytes) : undefined);
   }
   return outcome.code;
 }

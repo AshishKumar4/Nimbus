@@ -233,17 +233,17 @@ const WRAPPER_HEAD = 'module.exports = (0, function (Function) { return function
  * module's `Function`, is Node's module wrapper function, in the given scope
  * (THE WRAPPER). A leading shebang becomes a line comment of the same length
  * (Node strips it too; `#!` is not valid inside a function). `loweredHead`
- * is a lowered ES module's (EsModuleMap.head): its first line's generated
- * code, which a frame counts as wrapper.
+ * and `loweredTail` are a lowered ES module's (EsModuleMap): its own code
+ * around the module's text, which a frame counts as wrapper.
  */
-export function wrapCommonJsCell(cell: string, scope: CommonJsCellScope = 'function', loweredHead = 0): WrappedCommonJsCell {
+export function wrapCommonJsCell(cell: string, scope: CommonJsCellScope = 'function', loweredHead = 0, loweredTail = 0): WrappedCommonJsCell {
   const hashbang = cell.charCodeAt(0) === 35 && cell.charCodeAt(1) === 33;
   const body = hashbang ? '//' + cell.slice(2) : cell;
   const head = scope === 'function'
     ? WRAPPER_HEAD
     : WRAPPER_HEAD + (opensWithUseStrict(body) ? '"use strict";' : '') + '{';
   const tail = scope === 'function' ? '\n}; });' : '\n}}; });';
-  return { text: head + body + tail, head: head.length + loweredHead, tail: tail.length, hashbang };
+  return { text: head + body + tail, head: head.length + loweredHead, tail: tail.length + loweredTail, hashbang };
 }
 
 /** The module beside a code module that holds its emit's ColumnMap (core async-module-lowering.ts), read by its frames. */
@@ -627,6 +627,16 @@ function __nimbusFrameModule(url) {
   if (typeof url !== "string" || !url.startsWith(__NIMBUS_BUNDLE_URL)) return null;
   return __nimbusModuleNamed(url.slice(__NIMBUS_BUNDLE_URL.length));
 }
+// The module of the launch's cell at \`path\` (no leading slash), and the entry's; null for none.
+let __nimbusCellsByPath = null;
+function __nimbusModuleAtPath(path) {
+  __nimbusCellsByPath ??= new Map(__NIMBUS_CODE_CELLS.map((row) => [row[0], row[1]]));
+  const name = __nimbusCellsByPath.get(path);
+  return name === undefined ? null : __nimbusModuleNamed(name);
+}
+function __nimbusEntryModule() {
+  return __nimbusStackEntry === null ? null : __nimbusModuleNamed(__nimbusStackEntry[0]);
+}
 function __nimbusModuleNamed(name) {
   let module = __nimbusModules.get(name);
   if (module !== undefined) return module;
@@ -704,6 +714,7 @@ function __nimbusGeneratedColumn(module, line, column) {
 // A module's text as it was compiled, before any lowering: where Node reads
 // its source map's URL from and measures its lines.
 function __nimbusModuleSourceText(module) {
+  if (module === null) return null;
   const text = __nimbusFrameModuleText(module);
   if (text === null) return null;
   const body = text.slice(module.head, text.length - module.tail);

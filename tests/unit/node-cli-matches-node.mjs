@@ -117,6 +117,7 @@ const cases = [
   [['--no-experimental-strip-types', '--experimental-transform-types', 'main.mjs']],
   [['--experimental-transform-types', '--no-experimental-strip-types', 'main.mjs']],
   [['--no-experimental-strip-types', '--experimental-strip-types', 'main.mjs']],
+  [['--no-experimental-strip-types', '--experimental-transform-types', '--no-experimental-transform-types', 'main.mjs']],
   [['main.mjs'], '--no-experimental-strip-types'],
 ];
 for (const [args, nodeOptions = ''] of cases) {

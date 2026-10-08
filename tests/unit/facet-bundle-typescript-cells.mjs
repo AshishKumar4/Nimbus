@@ -188,7 +188,7 @@ const extra = await buildFacetVfsBundleSource({
   [`${TS}/lib/runtime.js`]: '#!/usr/bin/env node\nconst require = () => 1;\nmodule.exports = { shebang: "stripped" };\n',
   [`${TS}/lib/legacy.js`]: 'var helper = 1;\nfunction helper() {}\nmodule.exports = typeof helper;\n',
   [`${TS}/LICENSE`]: 'Apache License 2.0\n',
-}, false, undefined, { lowered: new Set([`${TS}/lib/runtime.js`]) });
+}, false, undefined, { lowered: new Map([[`${TS}/lib/runtime.js`, false]]) });
 const extraSet = { 'runner.js': `const __NIMBUS_CODE_CELLS = ${extra.codeCells};\nconst __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${extra.expression});\n` };
 for (const [name, text] of Object.entries(extra.codeModules)) extraSet[name] = { cjs: text };
 const extraMain = writeModuleSet(join(dir, 'extra'), extraSet, 'runner.js');

@@ -739,7 +739,7 @@ export function buildRuntimeHandler(
     // its package imports or give it the file's own URL (commonjs-cell.ts).
     const scriptExt = vfsPathExtension(resolvedPath);
     // The package scope's "type", through the resolver's own lookup.
-    const packageType = scriptExt === '.js' || scriptExt === '' || scriptExt === '.ts'
+    const packageType = scriptExt === '.js' || scriptExt === '' || stripsTypeScript(resolvedPath)
       ? await packageScopeType({
         exists: (path) => fs.exists(path),
         isDirectory: (path) => isDirectory(fs, path),
@@ -754,7 +754,7 @@ export function buildRuntimeHandler(
       // JavaScript to Node's CommonJS loader, which hands an ES module (by
       // Node's format for it) to its ES loader, which knows no TypeScript.
       const source = code;
-      const esModule = typeScriptFormat(resolvedPath, () => packageType, () => source) === 'module';
+      const esModule = typeScriptFormat(resolvedPath, () => packageType, () => source, true) === 'module';
       stripped = { code: esModule ? typeScriptRefusalShim(unknownExtensionRefusal('/' + resolvedPath)) : source, esModule: false };
     } else if (stripTypes !== null) {
       stripped = await stripTypeScriptEntry(code, resolvedPath, packageType, stripTypes, scriptPath);

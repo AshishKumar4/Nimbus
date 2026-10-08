@@ -23,11 +23,14 @@ import { generateTransformFacetRuntimeSource } from '../../packages/core/src/run
 import { prepareBundleCell, settleBundleCell } from '../../packages/core/src/runtime/bundle-cell-transform.ts';
 import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
 import { lowerAsyncModule, lowerEsModule } from '../../packages/core/src/runtime/async-module-lowering.ts';
+import { rewriteProvidedCommonJsModules } from '../../packages/core/src/runtime/provided-packages.ts';
 import { wrapCommonJsCell } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { oxcEngine } from './lib/oxc-engine.mjs';
 
 const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
+// What the transform facet's preamble installs beside its engine.
+const runtime = { rewriteDynamicImports, lowerAsyncModule, lowerEsModule, rewriteProvidedCommonJsModules };
 
 // esbuild as Nimbus ran it: the browser build over the compiled wasm.
 const esbuild = await esbuildEngine();
@@ -102,7 +105,7 @@ const outcomes = {
     if (!('request' in cell)) return null;
     let outcome;
     try {
-      outcome = await runTransformRequest(engine, cell.request.code, cell.request.options, rewriteDynamicImports, lowerAsyncModule, lowerEsModule);
+      outcome = await runTransformRequest(engine, cell.request.code, cell.request.options, runtime);
     } catch (error) {
       outcome = { error: String(error.message) };
     }
@@ -113,7 +116,7 @@ const outcomes = {
     const url = `file:///app/${name}`;
     try {
       // The entry script's request, as runtime-registry.ts makes it.
-      const { code } = await runTransformRequest(engine, source, { loader: loaderOf(name), format: 'cjs', dynamicImportParent: url, moduleMetadata: true }, rewriteDynamicImports, lowerAsyncModule, lowerEsModule);
+      const { code } = await runTransformRequest(engine, source, { loader: loaderOf(name), format: 'cjs', dynamicImportParent: url, moduleMetadata: true }, runtime);
       return await observe(code, true);
     } catch (error) {
       return { refused: true, topLevelAwait: /top-level await.*not supported.*cjs/i.test(String(error.message)) };
@@ -201,7 +204,7 @@ console.log(`  ok  ${CASES.length} modules x ${Object.keys(outcomes).length} tra
     const cell = prepareBundleCell(`app/${name}`, source, null, 'node');
     let outcome;
     try {
-      outcome = await runTransformRequest(engine, cell.request.code, cell.request.options, rewriteDynamicImports, lowerAsyncModule, lowerEsModule);
+      outcome = await runTransformRequest(engine, cell.request.code, cell.request.options, runtime);
     } catch (error) {
       // The transform facet's own mapping (facets/oxc-transform.ts OXC_FACET_BODY).
       outcome = error && error.stackExhausted === true ? { error: String(error.message), stackExhausted: true } : { error: String(error.message) };

@@ -78,6 +78,23 @@ const FILES = {
   "off/require-typed.cjs": "require('./typed.ts');\n",
   "off/mod/package.json": "{\"type\":\"module\"}",
   "off/mod/plain.ts": "console.log('mod plain');\n",
+  "rv/sm3.js": "throw new Error('aliased');\n//# sourceURL=file:///home/user/alias.js\n//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjogMywgInNvdXJjZXMiOiBbIm9yaWcuc3JjLmpzIl0sICJzb3VyY2VzQ29udGVudCI6IFsiLy8gb3JpZ2luYWxcblxuXG4gIHRocm93IG5ldyBFcnJvcignYWxpYXNlZCcpO1xuIl0sICJuYW1lcyI6IFtdLCAibWFwcGluZ3MiOiAiQUFHRSJ9\n",
+  "rv/sm4.cjs": "module.exports = 1;\n//# sourceURL=file:///home/user/alias4.js\n//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjogMywgInNvdXJjZXMiOiBbIm9yaWcuc3JjLmpzIl0sICJzb3VyY2VzQ29udGVudCI6IFsiLy8gb3JpZ2luYWxcblxuXG4gIHRocm93IG5ldyBFcnJvcignYWxpYXNlZCcpO1xuIl0sICJuYW1lcyI6IFtdLCAibWFwcGluZ3MiOiAiQUFHRSJ9\n",
+  "rv/find.cjs": "const m = require('module');\nconsole.log('uncompiled', typeof m.findSourceMap(require.resolve('./sm4.cjs')));\nrequire('./sm4.cjs');\nconsole.log('compiled', typeof m.findSourceMap(require.resolve('./sm4.cjs')), typeof m.findSourceMap('file:///home/user/alias4.js'));\n",
+  "rv/order.cjs": "const m = require('module');\nconsole.log('before', typeof m.findSourceMap(require.resolve('./sm4.cjs')));\nprocess.setSourceMapsEnabled(true);\nrequire('./sm4.cjs');\nconsole.log('after', typeof m.findSourceMap(require.resolve('./sm4.cjs')));\n",
+  "rv/lines.mjs": "import { findSourceMap } from 'node:module';\nconst sm = findSourceMap(import.meta.url);\nconsole.log(JSON.stringify(sm?.lineLengths));\n//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImwuc3JjLmpzIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBO0FBQ0E7QUFDQSJ9\n",
+  "rv/en.ts": "enum E { A }\nconsole.log('enum ran', E.A);\n",
+  "rv/plain.mts": "module.exports = 1;\nconsole.log('cjs mts ran');\n",
+  "rv/mod/package.json": "{\"type\":\"module\"}",
+  "rv/mod/p.cts": "console.log('cts in mod');\n",
+  "rv/esm.mts": "export const z = 1;\nconsole.log('esm mts');\n",
+  "rv/reqesm.cjs": "require('./esm.mts');\nimport('./esm.mts').then(() => console.log('import after require(esm) ok'), (e) => console.log('import:', e.code));\n",
+  "rv/plain.foo": "console.log('foo ran');\n",
+  "rv/foo.cjs": "require('./plain.foo');\nimport('./plain.foo').then(() => console.log('imported foo'), (e) => console.log('import foo:', e.code));\n",
+  "rv/attr.cjs": "import('./plain.foo', { with: { type: 'json' } }).then(() => 0, (e) => console.log('attr:', e.code));\n",
+  "rv/deep.ts": "const deep: unknown = [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]];\nexport default 7;\n",
+  "rv/deepimport.cjs": "import('./deep.ts').then((m) => console.log('default', m.default));\n",
+  "rv/lines.cjs": "const { findSourceMap } = require('node:module');\nconsole.log(JSON.stringify(findSourceMap(__filename)?.lineLengths));\n//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImwuc3JjLmpzIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBO0FBQ0E7QUFDQSJ9\n",
 };
 // Whose program frames are compared.
 const FRAMED = [
@@ -85,7 +102,7 @@ const FRAMED = [
   'node --experimental-transform-types tt-caught.ts', 'node --experimental-transform-types tt-esm.mts',
   'node --experimental-transform-types tt-required.cjs', 'node --experimental-transform-types tt-api.cjs',
   'node --experimental-transform-types --no-enable-source-maps tt-enum.ts', 'NODE_OPTIONS=--experimental-transform-types node tt-ns.ts',
-  'node --enable-source-maps sm.js', 'node --enable-source-maps sm2.js',
+  'node --enable-source-maps sm.js', 'node --enable-source-maps sm2.js', 'node --enable-source-maps rv/sm3.js',
 ];
 const COMMANDS = [
   'node main.mts', 'node use-cjs.cjs', 'node detect-esm.ts', 'node detect-cjs.ts', 'node frames.mts', 'node frames.cts',
@@ -99,6 +116,11 @@ const COMMANDS = [
   'node --no-experimental-strip-types off/require-typed.cjs',
   'node --no-experimental-strip-types off/mod/plain.ts',
   'NODE_OPTIONS=--no-experimental-strip-types node off/plain.ts',
+  'node --enable-source-maps rv/find.cjs', 'node rv/order.cjs', 'node --enable-source-maps rv/lines.mjs', 'node --enable-source-maps rv/lines.cjs',
+  'node --no-experimental-strip-types --experimental-transform-types --no-experimental-transform-types rv/en.ts',
+  'node --experimental-transform-types --no-experimental-strip-types rv/en.ts',
+  'node --no-experimental-strip-types rv/plain.mts', 'node --no-experimental-strip-types rv/mod/p.cts', 'node --no-experimental-strip-types rv/reqesm.cjs',
+  'node rv/foo.cjs', 'node rv/attr.cjs', 'node rv/deepimport.cjs',
 ];
 
 const host = realpathSync(mkdtempSync(join(tmpdir(), 'typescript-')));
