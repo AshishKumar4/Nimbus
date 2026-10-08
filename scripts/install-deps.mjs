@@ -12,12 +12,18 @@ if (import.meta.main) {
   }
   const root = fileURLToPath(new URL('../', import.meta.url));
   const commands = [
-    ...(args.length === 0 ? [{ command: process.execPath, args: ['install', '--frozen-lockfile', '--ignore-scripts'] }] : []),
-    { command: 'node', args: ['packages/worker/scripts/patch-install-deps.mjs'] },
+    // A sharp tarball download failed once; retry installation, not patches.
+    ...(args.length === 0 ? [{ command: process.execPath, args: ['install', '--frozen-lockfile', '--ignore-scripts'], attempts: 2 }] : []),
+    { command: 'node', args: ['packages/worker/scripts/patch-install-deps.mjs'], attempts: 1 },
   ];
   for (const step of commands) {
-    const result = spawnSync(step.command, step.args, { cwd: root, stdio: 'inherit' });
-    if (result.error) console.error(result.error.message);
-    if (result.status !== 0) process.exit(result.status ?? 2);
+    let status = 2;
+    for (let attempt = 0; attempt < step.attempts; attempt++) {
+      const result = spawnSync(step.command, step.args, { cwd: root, stdio: 'inherit' });
+      if (result.error) console.error(result.error.message);
+      status = result.status ?? 2;
+      if (status === 0) break;
+    }
+    if (status !== 0) process.exit(status);
   }
 }

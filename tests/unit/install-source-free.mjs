@@ -18,6 +18,37 @@ try {
     mkdirSync(join(root, dir), { recursive: true });
   }
   copyFileSync(join(REPO, 'scripts/install-deps.mjs'), join(root, 'scripts/install-deps.mjs'));
+  const callsPath = join(root, 'calls.json');
+  const seam = join(root, 'commands.mjs');
+  writeFileSync(seam, `
+import { mock } from 'bun:test';
+import { writeFileSync } from 'node:fs';
+const statuses = JSON.parse(process.env.INSTALL_STATUSES);
+const calls = [];
+mock.module('node:child_process', () => ({ spawnSync(command, args) {
+  calls.push({ command, args });
+  return { status: statuses.shift() ?? 99 };
+} }));
+process.on('exit', () => writeFileSync(${JSON.stringify(callsPath)}, JSON.stringify(calls)));
+`);
+  for (const test of [
+    { statuses: [1, 0, 0], exit: 0, steps: ['install', 'install', 'patch'] },
+    { statuses: [1, 3], exit: 3, steps: ['install', 'install'] },
+    { statuses: [0, 1], exit: 1, steps: ['install', 'patch'] },
+    { statuses: [1], exit: 1, steps: ['patch'], args: ['--patch-only'] },
+  ]) {
+    const result = spawnSync(process.execPath, ['--preload', seam, 'scripts/install-deps.mjs', ...(test.args ?? [])], {
+      cwd: root, encoding: 'utf8', env: { ...process.env, INSTALL_STATUSES: JSON.stringify(test.statuses) },
+    });
+    assert.equal(result.status, test.exit, result.stderr);
+    const calls = JSON.parse(readFileSync(callsPath, 'utf8'));
+    assert.deepEqual(calls.map((call) => call.args[0] === 'install' ? 'install' : 'patch'), test.steps);
+    for (const call of calls.filter((call) => call.args[0] === 'install')) {
+      assert.deepEqual(call.args, ['install', '--frozen-lockfile', '--ignore-scripts']);
+    }
+  }
+  rmSync(seam);
+  rmSync(callsPath);
   for (const file of ['patch-install-deps.mjs', 'cf-git-patch.mjs']) {
     copyFileSync(join(REPO, 'packages/worker/scripts', file), join(root, 'packages/worker/scripts', file));
   }
