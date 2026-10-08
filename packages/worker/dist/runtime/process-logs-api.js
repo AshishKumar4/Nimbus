@@ -220,6 +220,7 @@ export function handleProcessesListRequest(processes) {
             logBytes: snap?.bytes ?? 0,
             startTime: p.startTime,
             ...execIdField(p),
+            ...(p.restartedFrom === undefined ? {} : { restartedFrom: p.restartedFrom }),
         });
     }
     // Reaped processes with lingering log buffers (exited >60s ago, not

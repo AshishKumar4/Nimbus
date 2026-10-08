@@ -460,6 +460,12 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   const next = setup({ storage: first.storage, world, disk: first.disk });
   next.processes.setPidBase(PID_GEN_STRIDE);
   assert.equal(await next.fm.ensureDurableAppOnPort(20820), 'started');
+  // A request that brings the app back before recovery does is the session's
+  // restart all the same, and the user is told so, once.
+  assert.equal(
+    next.notices.filter((line) => /the session restarted while "ruby server\.rb" was running — restarting it/.test(line)).length, 1,
+    `a request-driven re-drive is announced; notices were: ${JSON.stringify(next.notices)}`,
+  );
   const recovered = (await journalRows(next.ctx)).find((candidate) => candidate.pid > PID_GEN_STRIDE);
   assert.equal(recovered.owner, row.owner, 'runtime re-drive preserves derived identity');
   assert.equal(recovered.port, 20820);
@@ -684,18 +690,29 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   assert.equal(redriven.restart, 'on-failure', 'so is the policy');
   await waitFor(async () => processes.get(redriven.pid)?.state === 'running' && self.portRegistry.get(20740)?.pid === redriven.pid, 5_000);
   assert.equal(world.boots.length, boots + 1, 'one boot for the restart');
+  // A crash restart says it is one, not a session restart.
+  assert.deepEqual(processes.get(redriven.pid).restartedFrom, { pid: a.pid, cause: 'exited', exitCode: 1 });
+  const restartLine = processes.allLogs(redriven.pid).map((chunk) => chunk.data).join('').split('\n')[0];
+  assert.match(restartLine, new RegExp(`"node crashy\\.js" exited with code 1, so it was restarted \\(restart on-failure\\); it was pid ${a.pid}`));
+  assert.doesNotMatch(restartLine, /session restarted/);
   assert.equal(await rowFor(ctx, a.pid), undefined, 'the crashed row is superseded');
   assert.equal(fm.launchJournal.has(a.pid), false, 'a same-instance restart releases journal lifetime bookkeeping');
   assert.ok(notices.some((line) => /exited with code 1 — restarting in 1s \(FencedWork attempt 1/.test(line)), JSON.stringify(notices));
 
-  // Healthy boot resets the SAME attempt budget. A spent unproven launch
-  // cannot bypass the journal's ceiling through the terminal-hook path.
+  // A healthy boot keeps the attempt it spent: the budget is whole again
+  // only once the process has run RESIDENT_PROVEN_MS in this instance
+  // (fenced-work.ts). A spent unproven launch cannot bypass the journal's
+  // ceiling through the terminal-hook path.
   const healthy = await rowFor(ctx, redriven.pid);
-  assert.equal(healthy.attempt, 0);
+  assert.equal(healthy.attempt, 1);
   await ctx.storage.put(`resident-launch:${redriven.pid}`, { ...healthy, phase: 'starting', attempt: FENCED_WORK_MAX_ATTEMPT });
   fm.finishProcess(redriven.pid, 1, 'crashed before healthy boot');
   await waitFor(async () => (await rowFor(ctx, redriven.pid)) === undefined, 5_000);
-  assert.ok(notices.some((line) => /leaving it stopped/.test(line)), JSON.stringify(notices.slice(-3)));
+  // A crash loop says the command exited again, not that the session restarted.
+  assert.ok(
+    notices.some((line) => /"node crashy\.js" exited with code 1 again before it had run 120 s since its restart, so it is left stopped; start it again with: node crashy\.js/.test(line)),
+    JSON.stringify(notices.slice(-3)),
+  );
   assert.equal((await journalRows(ctx)).some((r) => r.command === 'node crashy.js'), false, 'nothing left to re-drive');
 
   // 'never' (the default) and a clean exit release the row.
@@ -783,30 +800,31 @@ async function waitFor(probe, budgetMs) {
   }
 }
 
-// ── 12. a launch whose durable slot cannot be charged leaves nothing behind ──
-// The identity holds a reservation, so its launch takes a durable slot and
-// charges it to the facet-ID ledger after the identity is claimed. The
-// ledger's write fails: the launch fails, its process ends, its claim and
-// its row are released, and a retry is the identity's durable instance, not
-// a duplicate of a ghost.
+// ── 12. a launch whose durable slot cannot be claimed leaves nothing behind ──
+// The identity holds a reservation, so its launch takes a durable slot after
+// the identity is claimed. The slot's write fails: the launch fails, its
+// process ends, its claim and its row are released, and a retry is the
+// identity's durable instance, not a duplicate of a ghost.
 {
   const { fm, ctx, processes, notices, world } = setup();
-  const cwd = '/home/user/ledger-app';
+  const cwd = '/home/user/slot-app';
   const argv = [`${cwd}/server.js`];
   const owner = await deriveResidentOwner(cwd, argv);
   await reservePort(ctx, { owner, preferredPort: 20860, occupiedPorts: NONE });
-  const put = ctx.storage.put;
+  const transaction = ctx.storage.transaction;
   let failing = true;
-  ctx.storage.put = async (entries, value) => {
-    // The ledger writes a charge as one multi-key put; nothing else here does.
-    if (failing && typeof entries === 'object') throw new Error('ledger write failed');
-    return put(entries, value);
-  };
-  const spawn = () => fm.spawnNode(SERVER, { command: 'node ledger-app', argv, cwd });
+  ctx.storage.transaction = (body) => transaction((txn) => body({
+    ...txn,
+    async put(key, value) {
+      if (failing && key.startsWith('durable-slot:')) throw new Error('slot write failed');
+      return txn.put(key, value);
+    },
+  }));
+  const spawn = () => fm.spawnNode(SERVER, { command: 'node slot-app', argv, cwd });
   const boots = world.boots.length;
-  await assert.rejects(spawn(), /ledger write failed/);
+  await assert.rejects(spawn(), /slot write failed/);
   assert.equal(world.boots.length, boots, 'nothing booted');
-  assert.deepEqual(processes.getRunning().filter((entry) => entry.command === 'node ledger-app'), [],
+  assert.deepEqual(processes.getRunning().filter((entry) => entry.command === 'node slot-app'), [],
     'the failed launch left no process running');
   assert.equal(await ctx.storage.get(`resident-owner:${owner}`), undefined, 'the identity is not held');
   assert.deepEqual((await journalRows(ctx)).filter((row) => row.owner === owner), [], 'no launch row is left');

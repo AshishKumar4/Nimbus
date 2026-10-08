@@ -95,7 +95,7 @@ http.createServer((req, res) => {
   }
   if (req.url === '/codegen') {
     // Code produced while serving: staged for the next launch and reported.
-    try { globalThis.__nimbusRuntimeCode.compileFunction('async', [], 'return 1'); } catch {}
+    try { globalThis.__nimbusRuntimeCode.compileFunction('async', [], 'return 1', globalThis.__nimbusUnboundOrigin); } catch {}
   }
   if (req.url === '/stream') {
     res.writeHead(200, { 'content-type': 'text/event-stream' });

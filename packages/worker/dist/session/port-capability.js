@@ -418,7 +418,8 @@ export async function routeToSessionPort(self, port, request, innerPath, mountBa
         : await self.portRegistry.routeCapabilityRequest(port, capability, request, innerPath);
     if (proxied)
         return proxied;
-    return new Response(`No process listening on port ${port}`, { status: 502 });
+    const ended = self.portRegistry.ended(port);
+    return new Response(`No process listening on port ${port}${ended === undefined ? '' : `: ${ended}`}`, { status: 502 });
 }
 /** Route a capability-authenticated embedder request to a guest HTTP server. */
 export function routeCapabilityPort(self, port, capability, request, innerPath) {

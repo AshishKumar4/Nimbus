@@ -46,10 +46,12 @@ const harness = createSqliteVfsTestHarness();
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
 vfs.as(CRED_KERNEL).mkdir('home/user/app', { recursive: true, mode: 0o755 });
 
+// The module map is left unbuilt: this suite's subject is exec ids, not the
+// staged artifact the assembler would fetch, and no assembler is composed.
 const world = createFacetWorld(() => ({
   async startProcess() { return { ok: true }; },
   async handleHttpRequest() { return new Response('ok'); },
-}));
+}), { resolveConfig: false });
 const processes = new SessionProcessSupervisor();
 processes.setPidBase(PID_GEN_STRIDE);
 const env = {
