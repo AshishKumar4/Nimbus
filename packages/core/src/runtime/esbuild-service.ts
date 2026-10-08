@@ -20,7 +20,8 @@ import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { packageNameFromSpecifier } from './barrel-detect.js';
 import { bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
 import { lowerAsyncModule, lowerEsModule } from './async-module-lowering.js';
-import { ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs, type ModuleScope } from './module-format.js';
+import { ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs, type ModuleScope, type PackageType } from './module-format.js';
+import type { StrippedTypeScript, TypeScriptRefusal, TypeScriptStripOptions } from './typescript-strip.js';
 import {
   applySourceEdits,
   nodeList,
@@ -308,6 +309,17 @@ export interface EsbuildTransformOptions {
   dynamicImportParent?: string;
   /** Only the dynamic `import()` rewrite: the code is already CommonJS. */
   rewriteOnly?: boolean;
+  /**
+   * TypeScript Node runs: its types stripped as Node strips them, then as
+   * Node's format for it (by its extension, `packageType`, else its stripped
+   * syntax) an ES module lowered in Node's scope or CommonJS whose import()
+   * is routed (typescript-strip.ts). `sourcefile` names it; dynamicImportParent
+   * and moduleMetadata are read too.
+   */
+  stripTypes?: TypeScriptStripOptions;
+  packageType?: PackageType;
+  /** Only the strip: the stripped code, `esModule` where Node runs it as an ES module. */
+  stripOnly?: true;
   /** Bind compiler-produced import.meta references to the wrapper module. */
   moduleMetadata?: boolean;
   /**
@@ -323,6 +335,8 @@ export interface TransformResult {
   code: string;
   map: string;
   warnings: { text: string; location?: esbuild.Location | null }[];
+  /** Stripped TypeScript Node runs as an ES module, lowered (EsbuildTransformOptions.stripTypes). */
+  esModule?: true;
 }
 /**
  * One emitted output. `bytes` is authoritative (UTF-8 fidelity for the
@@ -479,8 +493,21 @@ async function runTransformRequest(
   rewrite: (code: string, parentUrl: string, moduleMetadata?: boolean, routeImports?: boolean) => string,
   lower: (esm: string) => string,
   lowerEsModule: (source: string, scope: ModuleScope, parentUrl: string) => TransformResult,
-): Promise<TransformResult> {
+): Promise<TransformResult | { error: string; typescript: TypeScriptRefusal }> {
   const parent = options?.dynamicImportParent;
+  if (options?.stripTypes) {
+    // The transform facet's amaro (oxc-facet/preamble.ts).
+    const strip: unknown = Reflect.get(globalThis, '__nimbusStripTypeScript');
+    if (typeof strip !== 'function') throw new Error('a type strip where amaro is not loaded');
+    const { stripTypes, packageType, stripOnly, ...rest } = options;
+    const stripped = await (strip(code, rest.sourcefile ?? '', stripTypes, packageType ?? null) as Promise<StrippedTypeScript>);
+    if ('refusal' in stripped) return { error: stripped.refusal.message, typescript: stripped.refusal };
+    if (stripOnly) return { code: stripped.code, map: '', warnings: [], ...(stripped.format === 'module' ? { esModule: true as const } : {}) };
+    if (stripped.format === 'module') {
+      return { ...await runTransformRequest(engine, stripped.code, { ...rest, esModule: 'node' }, rewrite, lower, lowerEsModule) as TransformResult, esModule: true };
+    }
+    return { code: parent === undefined ? stripped.code : rewrite(stripped.code, parent), map: '', warnings: [] };
+  }
   if (options?.rewriteOnly) {
     if (parent === undefined) throw new Error('a rewrite-only transform needs dynamicImportParent');
     return { code: rewrite(code, parent, options.moduleMetadata), map: '', warnings: [] };
@@ -629,7 +656,9 @@ export interface EsbuildTransformRequest {
  * (oxc-transform.ts's driver sets it from the RangeError it caught, never
  * from message text).
  */
-export type EsbuildTransformOutcome = TransformResult | { error: string; transient?: true; stackExhausted?: true };
+export type EsbuildTransformOutcome = TransformResult
+  | { error: string; transient?: true; stackExhausted?: true }
+  | { error: string; typescript: TypeScriptRefusal; transient?: never; stackExhausted?: never };
 
 /**
  * Runs transforms in another isolate: one call per batch, outcomes positional.
@@ -779,11 +808,11 @@ async function remotePlugin(plugin: esbuild.Plugin, initialOptions: esbuild.Buil
  * result, already so).
  */
 function requestOptions(options: EsbuildTransformOptions | undefined): EsbuildTransformOptions | undefined {
-  return options?.esModule === 'node' ? { ...options, define: { ...options.define, ...ES_MODULE_UNBOUND_NAMES } } : options;
+  return options?.esModule === 'node' || options?.stripTypes ? { ...options, define: { ...options.define, ...ES_MODULE_UNBOUND_NAMES } } : options;
 }
 
 function finishedTransform(result: TransformResult, options: EsbuildTransformOptions | undefined): TransformResult {
-  return options?.esModule === 'node' ? { ...result, code: esModuleScopeTypeofs(result.code) } : result;
+  return options?.esModule === 'node' || result.esModule ? { ...result, code: esModuleScopeTypeofs(result.code) } : result;
 }
 
 /** What a transform request is run on: a CJS emit of JavaScript has its bundled CommonJS records bound to the runtime's provided packages first. */
@@ -893,11 +922,15 @@ export class EsbuildService {
       return outcome;
     }
     // In the isolate the engine's own error propagates, diagnostics and all.
-    return finishedTransform(await this.transformInIsolate(preparedTransformSource(code, options), requestOptions(options)), options);
+    const result = await this.transformInIsolate(preparedTransformSource(code, options), requestOptions(options));
+    if ('error' in result) throw new Error(result.error);
+    return finishedTransform(result, options);
   }
 
   /** One transform on the in-isolate engine, of source the provided-module pre-pass has seen. */
-  private async transformInIsolate(code: string, options: EsbuildTransformOptions | undefined): Promise<TransformResult> {
+  private async transformInIsolate(
+    code: string, options: EsbuildTransformOptions | undefined,
+  ): Promise<TransformResult | { error: string; typescript: TypeScriptRefusal }> {
     // The engine loads for the first request that needs it (an ES module's lowering does not).
     const engine = async () => {
       await this.ensureInit();
@@ -939,7 +972,8 @@ export class EsbuildService {
     for (let j = 0; j < prepared.length; j++) {
       const { code, options } = prepared[j];
       try {
-        outcomes[positions[j]] = finishedTransform(await this.transformInIsolate(code, options), requests[positions[j]].options);
+        const result = await this.transformInIsolate(code, options);
+        outcomes[positions[j]] = 'error' in result ? result : finishedTransform(result, requests[positions[j]].options);
       } catch (e) {
         outcomes[positions[j]] = { error: errorText(e) };
       }

@@ -27,6 +27,7 @@
  */
 
 import { NODE_OPTION_ALIASES, NODE_OPTIONS_TABLE, NODE_V8_FLAGS } from './node-cli-options.generated.js';
+import type { NodeTypeScript } from './typescript-strip.js';
 
 /** What a node program's run takes of its command line: its runner, its launch's walk and its process read it. */
 export interface NodeLaunch {
@@ -42,6 +43,14 @@ export interface NodeLaunch {
   eval?: string;
   /** `-p`/`--print`: the eval's completion value is printed when the process exits. */
   print: boolean;
+  /** `--experimental-eventsource`: the EventSource global exists (NODE_OPTIONS' or the command line's, the latter's last). */
+  experimentalEventSource?: boolean;
+  /** `--no-experimental-strip-types`: TypeScript is JavaScript to the loaders, unless transformTypes. */
+  stripTypes?: boolean;
+  /** `--experimental-transform-types`: TypeScript is transformed, not only stripped. */
+  transformTypes?: boolean;
+  /** `--enable-source-maps`, which `--experimental-transform-types` sets where it is read. */
+  enableSourceMaps?: boolean;
 }
 
 /** What node's command line says, for the program it runs. */
@@ -108,6 +117,11 @@ interface ReadOptions {
   /** A boolean the last of its options set (`--print`, or `--no-print`). */
   print?: boolean;
   inputType?: string;
+  /** `--experimental-eventsource`, as the last of its options set it. */
+  experimentalEventSource?: boolean;
+  stripTypes?: boolean;
+  transformTypes?: boolean;
+  enableSourceMaps?: boolean;
   version: boolean;
   help: boolean;
   /** Where they end in `tokens` (past a `--`). */
@@ -179,6 +193,13 @@ function readOptions(tokens: readonly string[], env: boolean): ReadOptions | Nod
       case '--import': read.import.push(value); break;
       case '--eval': read.eval = value; break;
       case '--input-type': read.inputType = value; break;
+      case '--experimental-eventsource': read.experimentalEventSource = !negation; break;
+      case '--experimental-strip-types': read.stripTypes = !negation; break;
+      case '--experimental-transform-types':
+        read.transformTypes = !negation;
+        if (!negation) read.enableSourceMaps = true;
+        break;
+      case '--enable-source-maps': read.enableSourceMaps = !negation; break;
       case '--print': read.print = !negation; break;
       case '--version': read.version = !negation; break;
       case '--help': read.help = !negation; break;
@@ -187,6 +208,12 @@ function readOptions(tokens: readonly string[], env: boolean): ReadOptions | Nod
   if (unknown !== undefined) return refuse(`bad option: ${unknown}`);
   read.end = i;
   return read;
+}
+
+/** How Node's loader takes a TypeScript file under these options: stripped, or as JavaScript (`--no-experimental-strip-types`). */
+export function typeScriptStripOptions(launch: Pick<NodeLaunch, 'stripTypes' | 'transformTypes' | 'enableSourceMaps'>): NodeTypeScript {
+  if (launch.transformTypes) return { mode: 'transform', sourceMap: launch.enableSourceMaps === true };
+  return launch.stripTypes === false ? 'javascript' : { mode: 'strip-only', sourceMap: launch.enableSourceMaps === true };
 }
 
 /** node's `args` (after `node` itself) and its NODE_OPTIONS, read as Node reads them. */
@@ -208,6 +235,10 @@ export function parseNodeCommandLine(args: readonly string[], nodeOptions = ''):
     ...(fromArgs.eval !== undefined ? { eval: fromArgs.eval } : {}),
     print: fromArgs.print ?? fromEnv.print ?? false,
     ...(fromArgs.inputType ?? fromEnv.inputType) !== undefined ? { inputType: fromArgs.inputType ?? fromEnv.inputType } : {},
+    experimentalEventSource: fromArgs.experimentalEventSource ?? fromEnv.experimentalEventSource ?? false,
+    stripTypes: fromArgs.stripTypes ?? fromEnv.stripTypes ?? true,
+    transformTypes: fromArgs.transformTypes ?? fromEnv.transformTypes ?? false,
+    enableSourceMaps: fromArgs.enableSourceMaps ?? fromEnv.enableSourceMaps ?? false,
     version: fromArgs.version,
     help: fromArgs.help,
   };

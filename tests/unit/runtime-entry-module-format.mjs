@@ -22,7 +22,7 @@ import { buildRuntimeHandler } from '../../packages/core/src/runtime/runtime-reg
 
 const TRANSFORM_MARKER = '/* nimbus-test: transformed */';
 
-function makeHandler(files) {
+function makeHandler(files, { nodeCommandLine = false } = {}) {
   const transforms = [];
   let ranWith = null;
   let ranOpts = null;
@@ -43,6 +43,7 @@ function makeHandler(files) {
       version: 'v22.0.0',
       helpText: 'help',
       supportsBinSpawn: true,
+      ...(nodeCommandLine ? { nodeCommandLine: true } : {}),
       async run(code, opts) {
         ranWith = code;
         ranOpts = opts;
@@ -54,7 +55,18 @@ function makeHandler(files) {
       getEsbuild: () => ({
         async transform(code, opts) {
           transforms.push({ code, opts });
-          return { code: TRANSFORM_MARKER + '\n' + code };
+          return { code: TRANSFORM_MARKER + '\n' + code, map: '' };
+        },
+        // A type strip, as the transform facet's amaro answers it: the annotations blanked, and Node's format.
+        async transformMany(requests) {
+          return requests.map(({ code, options }) => {
+            transforms.push({ code, opts: options });
+            if (code.includes('enum ')) {
+              return { error: 'x', typescript: { code: 'ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX', message: 'enum', filename: options.sourcefile, startLine: 1, snippet: 'enum E {}' } };
+            }
+            const stripped = code.replace(/: number/g, (types) => ' '.repeat(types.length));
+            return { code: stripped, map: '', warnings: [], ...(/\b(import|export)\b/.test(code) ? { esModule: true } : {}) };
+          });
         },
       }),
       registry: { resolve: () => undefined },
@@ -63,8 +75,8 @@ function makeHandler(files) {
   return { handler, fs, transforms, ran: () => ranWith, ranOpts: () => ranOpts };
 }
 
-async function runScript(files, scriptPath) {
-  const built = makeHandler(files);
+async function runScript(files, scriptPath, options) {
+  const built = makeHandler(files, options);
   const stderr = [];
   const exitCode = await built.handler({
     vfs: built.fs,
@@ -219,6 +231,28 @@ for (const [entry, source] of [
   assert.equal(r.transforms[0].opts.loader, 'ts');
   assert.equal(r.transforms[0].opts.format, 'cjs');
   assert.ok(r.code.startsWith(TRANSFORM_MARKER), `${entry} reaches the runner as its CommonJS emit`);
+}
+
+// ── Under node, TypeScript is Node's: stripped, then run as JavaScript of Node's format ──
+//
+// The strip is a request of its own; an ES module's stripped code is then
+// lowered like any ES entry, CommonJS runs as stripped, and a file Node
+// refuses is code that throws Node's error.
+{
+  const node = { nodeCommandLine: true };
+  const esm = await runScript({ 'home/user/main.mts': 'export const x: number = 1;\n' }, '/home/user/main.mts', node);
+  assert.equal(esm.exitCode, 0, esm.stderr);
+  assert.deepEqual(esm.transforms.map((t) => t.opts.stripOnly ? 'strip' : t.opts.esModule), ['strip', 'node'], 'stripped, then lowered');
+  assert.equal(esm.transforms[1].code, `export const x${' '.repeat(': number'.length)} = 1;\n`, 'the lowering takes the stripped code');
+  const cjs = await runScript({ 'home/user/main.cts': 'const x: number = 1;\nmodule.exports = x;\n' }, '/home/user/main.cts', node);
+  assert.equal(cjs.exitCode, 0, cjs.stderr);
+  assert.equal(cjs.transforms.length, 1, 'only the strip');
+  assert.equal(cjs.code, `const x${' '.repeat(': number'.length)} = 1;\nmodule.exports = x;\n`, 'CommonJS runs as stripped');
+  const refused = await runScript({ 'home/user/main.ts': 'enum E {}\n' }, '/home/user/main.ts', node);
+  assert.match(refused.code, /__nimbusNodeError\(SyntaxError, "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX"/, 'a refused file throws Node\'s error');
+  const vendored = await runScript({ 'home/user/node_modules/x/main.ts': 'const x: number = 1;\n' }, '/home/user/node_modules/x/main.ts', node);
+  assert.equal(vendored.transforms.length, 0, 'TypeScript under node_modules is not stripped');
+  assert.match(vendored.code, /ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING/);
 }
 
 // ── `-` runs the program on stdin, with its arguments after argv[1] ──

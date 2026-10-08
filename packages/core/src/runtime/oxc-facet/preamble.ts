@@ -11,6 +11,7 @@
  *   globalThis.__nimbusRewriteDynamicImports  dynamic-import-rewrite.ts
  *   globalThis.__nimbusLowerAsyncModule     async-module-lowering.ts
  *   globalThis.__nimbusLowerEsModule        async-module-lowering.ts
+ *   globalThis.__nimbusStripTypeScript      typescript-strip.ts
  *
  * The last three parse with Acorn, which is why this is a bundle rather than
  * serialized functions. Keep this analysis out of the session's isolate.
@@ -18,10 +19,12 @@
 import { createOxcTransform } from '../oxc-transform.js';
 import { rewriteDynamicImports } from '../dynamic-import-rewrite.js';
 import { lowerAsyncModule, lowerEsModule } from '../async-module-lowering.js';
+import { stripTypeScript } from '../typescript-strip.js';
 
 Object.assign(globalThis, {
   __nimbusCreateOxcTransform: createOxcTransform,
   __nimbusRewriteDynamicImports: rewriteDynamicImports,
   __nimbusLowerAsyncModule: lowerAsyncModule,
   __nimbusLowerEsModule: lowerEsModule,
+  __nimbusStripTypeScript: stripTypeScript,
 });

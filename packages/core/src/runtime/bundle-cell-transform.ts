@@ -19,7 +19,7 @@
  * Nothing that decides a cell's output may live outside that closure.
  */
 
-import { typescriptLoader } from '../_shared/typescript-specifiers.js';
+import { isTypescriptDeclarationFile, stripsTypeScript, typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { errorText } from '../_shared/error-text.js';
 import { vfsPathExtension } from '../vfs/path.js';
 import { mayHaveDynamicImport } from './dynamic-import-rewrite.js';
@@ -32,7 +32,8 @@ import {
   type EsbuildTransformRequest,
 } from './esbuild-service.js';
 import { MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
-import { isEsModuleFile, type ModuleScope, type PackageType } from './module-format.js';
+import { isEsModuleFile, typeScriptFormat, typeScriptUnderNodeModules, type ModuleScope, type PackageType } from './module-format.js';
+import { nodeModulesRefusal, type NodeTypeScript, type TypeScriptRefusal } from './typescript-strip.js';
 
 /**
  * An ES module this large is lowered in the session (async-module-lowering.ts
@@ -82,12 +83,6 @@ export function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | null {
   return isTypescriptDeclarationFile(path) ? null : typescriptLoader(path);
 }
 
-/** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */
-export function isTypescriptDeclarationFile(path: string): boolean {
-  const base = path.slice(path.lastIndexOf('/') + 1);
-  return /\.d\.[mc]?ts$/.test(base);
-}
-
 /**
  * Whether Node runs a staged JavaScript file as an ES module
  * (module-format.ts isEsModuleFile: its extension, its package scope's
@@ -127,6 +122,19 @@ export function esbuildDiagnosticShim(path: string, reason: string): string {
   const escapedReason = JSON.stringify(`esbuild transform failed for ${path}: ${reason.replace(/\n/g, ' ')}`);
   return '// framework-fixes-F4 diagnostic shim — esbuild rejected the ESM transform\n' +
     '(function () { throw new Error(' + escapedReason + '); })();\n';
+}
+
+/**
+ * The module of a TypeScript file Node refuses: requiring or importing it
+ * throws Node's error, with amaro's snippet before its stack where it shows
+ * the place, and no arrow of the generated code (node-shims.ts
+ * __nimbusGeneratedNodeError).
+ */
+export function typeScriptRefusalShim(refusal: TypeScriptRefusal): string {
+  const Base = refusal.code === 'ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING' ? 'Error'
+    : refusal.code === 'ERR_UNKNOWN_FILE_EXTENSION' ? 'TypeError' : 'SyntaxError';
+  const decoration = refusal.snippet === '' ? null : `${refusal.filename}:${refusal.startLine}\n${refusal.snippet}`;
+  return `throw __nimbusNodeError(${Base}, ${JSON.stringify(refusal.code)}, ${JSON.stringify(refusal.message)}, undefined, ${JSON.stringify(decoration)});\n`;
 }
 
 /** One cell part-way through the pipeline: the session's steps are done, the host's may remain. */
@@ -170,14 +178,31 @@ export interface BundleCellResult {
  * the provided-module pre-pass and, for large bundled ESM, its lowering to
  * CommonJS — so a paced caller accounts the source before it.
  */
-export function prepareBundleCell(path: string, source: string, packageType: PackageType, scope: ModuleScope): BundleCell {
-  const loader = bundleTypescriptLoader(path);
+export function prepareBundleCell(
+  path: string, source: string, packageType: PackageType, scope: ModuleScope, stripTypes: NodeTypeScript | null = null,
+): BundleCell {
+  // TypeScript Node runs as JavaScript, in Node's format for it.
+  const javaScript = stripTypes === 'javascript' && stripsTypeScript(path);
+  const loader = javaScript ? null : bundleTypescriptLoader(path);
   const typescript = loader !== null;
+  // Node's own TypeScript: stripped, then an ES module lowered or CommonJS as Node's format says (typescript-strip.ts).
+  if (stripTypes !== null && stripTypes !== 'javascript' && stripsTypeScript(path)) {
+    const absUrl = moduleImporterUrl(path);
+    const cell = { path, typescript, lowered: false, absUrl };
+    if (typeScriptUnderNodeModules(path)) {
+      const refusal = nodeModulesRefusal('/' + path);
+      return { ...cell, outcome: { error: refusal.message, typescript: refusal } };
+    }
+    return {
+      ...cell,
+      request: { code: source, options: { stripTypes, packageType, sourcefile: '/' + path, dynamicImportParent: absUrl, moduleMetadata: true } },
+    };
+  }
   // A JavaScript file Node runs as an ES module is lowered in Node's module
   // scope (module-format.ts): strict, `this` undefined at the top, and no
   // CommonJS wrapper name; in Bun's, with CommonJS's names. TypeScript keeps
   // CommonJS's names, as tsx and ts-node give them.
-  const esm = !typescript && looksLikeEsm(path, source, packageType);
+  const esm = javaScript ? typeScriptFormat(path, () => packageType, () => source) === 'module' : !typescript && looksLikeEsm(path, source, packageType);
   // Source is transformed once per path; import.meta reads metadata from
   // each evaluation's module object, including its query and fragment.
   // The source URL still supplies the static parent for rewritten dynamic
@@ -226,9 +251,10 @@ export function prepareBundleCell(path: string, source: string, packageType: Pac
 export function settleBundleCell(cell: BundleCell, outcome: EsbuildTransformOutcome): BundleCellResult {
   if ('error' in outcome) {
     if (outcome.transient) throw new Error(`esbuild transform unavailable for ${cell.path}: ${outcome.error}`);
-    return { code: esbuildDiagnosticShim(cell.path, outcome.error), map: '', lowered: cell.lowered, failed: true };
+    const code = 'typescript' in outcome ? typeScriptRefusalShim(outcome.typescript) : esbuildDiagnosticShim(cell.path, outcome.error);
+    return { code, map: '', lowered: cell.lowered, failed: true };
   }
-  return { code: outcome.code, map: outcome.map, lowered: cell.lowered, failed: false };
+  return { code: outcome.code, map: outcome.map, lowered: cell.lowered || outcome.esModule === true, failed: false };
 }
 
 /**
@@ -257,9 +283,10 @@ export interface BundleCellResultStore {
    * The content address of `source` staged at `at` as a `kind`: a module
    * cell at its bundle path, under its package scope's `packageType` (which
    * decides whether it is an ES module) for a runtime whose ES modules run
-   * in `scope`, or an entry script at its URL.
+   * in `scope` and whose TypeScript is taken as `stripTypes` says, or an
+   * entry script at its URL.
    */
-  key(kind: 'cell' | 'entry', at: string, source: string, packageType?: PackageType, scope?: ModuleScope): Promise<string>;
+  key(kind: 'cell' | 'entry', at: string, source: string, packageType?: PackageType, scope?: ModuleScope, stripTypes?: NodeTypeScript | null): Promise<string>;
   /** The results held for `keys`; a key the store does not hold is absent. */
   getMany(keys: readonly string[]): Map<string, StoredBundleCell>;
   /**
@@ -321,7 +348,11 @@ export interface BundleCellTransformStats {
  */
 export async function transformBundleCells(
   cells: ReadonlyArray<{ readonly path: string; readonly source: string; readonly packageType: PackageType }>,
-  { host, store, pacer, scope }: { host: BundleCellHost; store?: BundleCellResultStore | null; pacer?: BundleCellPacer; scope: ModuleScope },
+  { host, store, pacer, scope, stripTypes = null }: {
+    host: BundleCellHost; store?: BundleCellResultStore | null; pacer?: BundleCellPacer; scope: ModuleScope;
+    /** How Node takes its TypeScript (node-cli.ts typeScriptStripOptions); null where it is compiled. */
+    stripTypes?: NodeTypeScript | null;
+  },
   place: (path: string, result: BundleCellResult) => void,
 ): Promise<BundleCellTransformStats> {
   const started = Date.now();
@@ -344,7 +375,7 @@ export async function transformBundleCells(
     stats.storeError ??= refused;
   };
   for (const slice of transformSlices(cells, (cell) => cell.source.length)) {
-    const keys = store ? await Promise.all(slice.map((cell) => store.key('cell', cell.path, cell.source, cell.packageType, scope))) : [];
+    const keys = store ? await Promise.all(slice.map((cell) => store.key('cell', cell.path, cell.source, cell.packageType, scope, stripTypes))) : [];
     const held = store ? store.getMany(keys) : new Map<string, StoredBundleCell>();
     const pending: Array<{ cell: BundleCell & { readonly request: EsbuildTransformRequest }; key: string | undefined }> = [];
     for (const [i, { path, source, packageType }] of slice.entries()) {
@@ -356,7 +387,7 @@ export async function transformBundleCells(
         continue;
       }
       if (pacer) await pacer.spend(source.length);
-      const cell = prepareBundleCell(path, source, packageType, scope);
+      const cell = prepareBundleCell(path, source, packageType, scope, stripTypes);
       if ('outcome' in cell) await settle(cell, key, cell.outcome);
       else pending.push({ cell, key });
     }

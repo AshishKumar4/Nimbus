@@ -36,6 +36,7 @@ import {
   type RuntimeCodeEntry,
 } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
+import { isTypescriptDeclarationFile, stripsTypeScript } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import type { EsModuleMap } from '@nimbus-sh/core/runtime/async-module-lowering.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES, type ReadAheadAccount } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField, type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
@@ -71,7 +72,8 @@ import {
   prefetchForRequire, requireFsOverBridge, resolveDeferredImport, ClosureBoundExceededError,
   type BridgeRequireFs, type DeferredImport, type PreloadModuleRoot, type RequiredModuleRoot,
 } from '@nimbus-sh/core/runtime/require-resolver.js';
-import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
+import { typeScriptStripOptions, type NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
+import type { NodeTypeScript } from '@nimbus-sh/core/runtime/typescript-strip.js';
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
 import type { ModuleScope, PackageType } from '@nimbus-sh/core/runtime/module-format.js';
@@ -102,7 +104,6 @@ import {
   bundleTypescriptLoader,
   esbuildDiagnosticShim,
   isBundleModuleCandidate,
-  isTypescriptDeclarationFile,
   looksLikeEsm,
   needsBundleCellTransform,
   transformBundleCells,
@@ -936,7 +937,7 @@ function entryModule(
     },
     evaluate: `__nimbusEvaluateEntry(__nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user", ${esModule === true})`,
     // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
-    stackEntry: JSON.stringify([name, entryFrameFile(filename, cwd, esModule === true), wrapped.head, esModule === true ? 1 : 0]),
+    stackEntry: JSON.stringify([name, entryFrameFile(filename, cwd, esModule === true), wrapped.head, esModule === true ? 1 : 0, wrapped.tail]),
   };
 }
 
@@ -2125,8 +2126,8 @@ interface ProcessBundleSpec {
   bundleProfile?: FacetBundleProfile;
   /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
   moduleScope?: ModuleScope;
-  /** The program's own conditions and preloads (`node -C`, `-r`, `--import`): the map is what it resolves and loads under them. */
-  node?: Pick<NodeLaunch, 'conditions' | 'require' | 'import'>;
+  /** The program's own conditions, preloads and TypeScript options: the map is what it resolves, loads and compiles under them. */
+  node?: Pick<NodeLaunch, 'conditions' | 'require' | 'import' | 'stripTypes' | 'transformTypes' | 'enableSourceMaps'>;
 }
 
 /**
@@ -2630,8 +2631,9 @@ export async function buildFacetVfsBundleSource(
     const adopt = code !== undefined && emit === undefined && commonJsCellReadsBack(path);
     if (code !== undefined) {
       // TypeScript is lowered too, and keeps CommonJS's names (bundle-cell-transform.ts).
-      const esModule = lowered?.has(path) === true && bundleTypescriptLoader(path) === null;
       const esModuleMap = emit === undefined ? null : esModuleMapOf(columnMaps?.get(path));
+      // An ES module the runtime lowered: JavaScript, or TypeScript Node strips (which has its map).
+      const esModule = lowered?.has(path) === true && (bundleTypescriptLoader(path) === null || esModuleMap !== null);
       const wrapped = wrapCommonJsCell(code, lowered?.has(path) ? 'block' : 'function', esModuleMap?.head);
       const name = commonJsCellModuleName(path);
       codeModules[name] = wrapped.text;
@@ -4173,6 +4175,7 @@ async function transformEsmInBundle(
   lowered: Set<string>,
   packageTypeOf: (path: string) => PackageType,
   scope: ModuleScope,
+  stripTypes: NodeTypeScript | null,
   esbuild: EsbuildService,
   pacer?: TurnBudget,
   store?: BundleCellResultStore,
@@ -4185,7 +4188,7 @@ async function transformEsmInBundle(
     // hardening-r5: binary cells are not modules.
     if (typeof source === 'string' && needsBundleCellTransform(path, source, packageType)) cells.push({ path, source, packageType });
   }
-  return transformBundleCells(cells, { host: esbuild, store, pacer, scope }, (path, result) => {
+  return transformBundleCells(cells, { host: esbuild, store, pacer, scope, stripTypes }, (path, result) => {
     placeEmit(path, result.code, result.map);
     if (result.lowered) lowered.add(path);
   });
@@ -4216,6 +4219,8 @@ export interface PrefetchBundleOptions {
   transformStore?: BundleCellResultStore;
   /** The program's own conditions (`node --conditions`), as the process resolves under them. */
   conditions?: readonly string[];
+  /** How Node takes the launch's TypeScript (node-cli.ts typeScriptStripOptions); null where it is compiled. */
+  stripTypes?: NodeTypeScript | null;
   /** What the command line preloads (`node -r`, `--import`): required roots, walked first, as they run first. */
   preloads?: readonly PreloadModuleRoot[];
 }
@@ -4322,6 +4327,7 @@ async function _buildPrefetchBundle(
     executedModules,
     transformStore,
     conditions = [],
+    stripTypes = null,
     preloads = [],
   }: PrefetchBundleOptions,
 ): Promise<FacetVfsState> {
@@ -4518,7 +4524,7 @@ async function _buildPrefetchBundle(
     // Transient failures propagate through the launch failure path before
     // serialization/cache/LOADER publication. Per-source verdicts still use
     // the lazy diagnostic cells installed by transformEsmInBundle.
-    transforms = await transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, moduleScope, esbuild, pacer, transformStore);
+    transforms = await transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, moduleScope, stripTypes, esbuild, pacer, transformStore);
   } else {
     // No esbuild service was given: the ESM cells stage as diagnostics that
     // say so, rather than as source the registry rejects without a reason.
@@ -6071,7 +6077,10 @@ export class FacetManager {
     const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
     // The program's conditions choose what it resolves, and its preloads what
     // it loads: a map walked under other ones is another map.
-    const launch = { conditions: spec.node?.conditions ?? [], require: spec.node?.require ?? [], import: spec.node?.import ?? [] };
+    const launch = {
+      conditions: spec.node?.conditions ?? [], require: spec.node?.require ?? [], import: spec.node?.import ?? [],
+      stripTypes: moduleScope === 'node' ? typeScriptStripOptions(spec.node ?? {}) : null,
+    };
     const key = `${profile}\x00${moduleScope}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}\x00${JSON.stringify(launch)}`;
     const revision = (await vfs.revision());
     // An entry built at an older revision can never be SERVED again — the
@@ -6131,6 +6140,7 @@ export class FacetManager {
       executedModules: executed,
       transformStore: this._transformStore(),
       conditions: launch.conditions,
+      stripTypes: launch.stripTypes,
       preloads: [
         ...launch.require.map((specifier) => ({ preload: 'require' as const, specifier })),
         ...launch.import.map((specifier) => ({ preload: 'import' as const, specifier })),
@@ -6185,7 +6195,7 @@ export class FacetManager {
         columnMaps: vfsState.columnMaps,
         lowered: vfsState.lowered,
         codeOnly: vfsState.codeOnly,
-        runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope),
+        runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope, launch.stripTypes),
       },
     );
     vfsState.cacheHit = false;
@@ -6264,7 +6274,7 @@ export class FacetManager {
    * path the map lacks — the same text written under a fresh name.
    */
   private async _stagedRuntimeCode(
-    learning: LaunchLearning, vfs: LaunchFs, pacer: TurnBudget, moduleScope: ModuleScope,
+    learning: LaunchLearning, vfs: LaunchFs, pacer: TurnBudget, moduleScope: ModuleScope, stripTypes: NodeTypeScript | null,
   ): Promise<Map<string, string> | undefined> {
     const modules = new Map<string, string>();
     for (const [codeKey, entry] of learning.code) {
@@ -6293,7 +6303,7 @@ export class FacetManager {
       };
       const lowered = new Set<string>();
       const packageTypeOf = await cellPackageTypes(vfs, [path]);
-      if (this.esbuild) await transformEsmInBundle(file, placeEmit, lowered, packageTypeOf, moduleScope, this.esbuild, pacer, this._transformStore());
+      if (this.esbuild) await transformEsmInBundle(file, placeEmit, lowered, packageTypeOf, moduleScope, stripTypes, this.esbuild, pacer, this._transformStore());
       else _markBundleEsmAsFailed(file, placeEmit, packageTypeOf, 'no esbuild service was given to this launch');
       let code = emits.get(path) ?? file[path];
       try {

@@ -62,12 +62,14 @@
 
 import { build } from 'esbuild';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 // core's own parser dependency, reached through the workspace hoist; the
 // script runs under plain node, so nothing here is TypeScript.
 import { parse } from 'acorn';
 
+import { amaroFacetDriver } from './amaro-driver.mjs';
 import { FACET_GLOBALS, freeNames } from './free-names.mjs';
 import { resolvePackageDir } from './resolve-package-dir.mjs';
 import { stageRuntimeAsset } from './stage-asset.mjs';
@@ -629,6 +631,18 @@ function stageEsbuildCli(src) {
  * top-level-await lowering, installed as globals the facet's class reads.
  */
 async function bundleOxcFacet() {
+  const amaroDriverPath = createRequire(join(coreRoot, 'package.json')).resolve('amaro');
+  const amaro = {
+    name: 'nimbus-amaro',
+    setup(context) {
+      context.onResolve({ filter: /^amaro$/ }, () => ({ path: amaroDriverPath }));
+      context.onLoad({ filter: /amaro[\\/]dist[\\/]index\.js$/ }, () => ({
+        contents: amaroFacetDriver(readFileSync(amaroDriverPath, 'utf8')),
+        loader: 'js',
+        resolveDir: dirname(amaroDriverPath),
+      }));
+    },
+  };
   const result = await build({
     entryPoints: [join(coreRoot, 'src', 'runtime', 'oxc-facet', 'preamble.ts')],
     bundle: true,
@@ -639,12 +653,13 @@ async function bundleOxcFacet() {
     write: false,
     logLevel: 'warning',
     legalComments: 'none',
+    plugins: [amaro],
   });
   if (!result.outputFiles || result.outputFiles.length === 0) {
     throw new Error('[bundle-facet-workers/oxc-facet] esbuild produced no output');
   }
   const runtime = withoutComments(result.outputFiles[0].text);
-  for (const global of ['__nimbusCreateOxcTransform', '__nimbusRewriteDynamicImports', '__nimbusLowerAsyncModule', '__nimbusLowerEsModule']) {
+  for (const global of ['__nimbusCreateOxcTransform', '__nimbusRewriteDynamicImports', '__nimbusLowerAsyncModule', '__nimbusLowerEsModule', '__nimbusStripTypeScript']) {
     if (!runtime.includes(global)) {
       throw new Error(`[bundle-facet-workers/oxc-facet] the bundle no longer installs globalThis.${global}`);
     }
@@ -812,7 +827,7 @@ async function main() {
     join(coreRoot, 'src', '_shared', 'node-shim-resolution.ts'),
     'node-shim-resolution',
   );
-  for (const name of ['resolveExports', 'resolvePackageEntry', 'packageSelfReferenceSubpath', 'typescriptFallbackCandidates', 'presentedCredential']) {
+  for (const name of ['resolveExports', 'resolvePackageEntry', 'packageSelfReferenceSubpath', 'typescriptFallbackCandidates', 'stripsTypeScript', 'presentedCredential']) {
     if (!new RegExp(`^function ${name}\\(`, 'm').test(shimResolution)) {
       throw new Error(`[bundle-facet-workers/node-shim-resolution] the bundle no longer declares function ${name}`);
     }
@@ -880,7 +895,7 @@ async function main() {
     '',
     '/**',
     ' * Declares resolveExports, resolvePackageEntry, packageSelfReferenceSubpath,',
-    ' * DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates,',
+    ' * DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates, stripsTypeScript,',
     ' * TYPESCRIPT_INDEX_CANDIDATES and presentedCredential; the node shims call them.',
     ' */',
     `export const NODE_SHIM_RESOLUTION_PREAMBLE: string = ${JSON.stringify(shimResolution)};`,
