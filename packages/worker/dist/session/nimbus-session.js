@@ -737,6 +737,11 @@ export class NimbusSession extends CloudflareDurableObject {
         this._supervisorOps?.forget(pid);
     }
     supervisorRewindBridge(pid) { return this._supervisorOps?.rewind(pid) ?? Promise.resolve(); }
+    // A storage wait: its input gate keeps this session's events out while the isolate's other objects run.
+    // (A timer under blockConcurrencyWhile never fires: the gate holds timers too, and the object resets.)
+    waveTurn() {
+        return this.ctx.storage.sync();
+    }
     // Supervisor RPC (file/log/HMR/batch): what host stubs call, so an answer
     // leaves the session here and is counted (answerSupervisorOp).
     supervisorOp(envelope) {

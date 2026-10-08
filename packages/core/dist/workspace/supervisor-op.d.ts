@@ -102,6 +102,7 @@ export interface SupervisorOpDeps {
      * predates delivery does not, and mints no binding that would send one.
      */
     readonly deliveries?: SupervisorDeliveries;
+    readonly turn?: () => Promise<void>;
     /**
      * Observe one logical answer, after transport read attempts have joined or
      * delivered mutations have found their receipt. A repeated pending read
@@ -169,6 +170,7 @@ export interface SupervisorOpTools {
     readonly hydrated: (path: string) => Promise<void>;
     /** The host instance's delivery store, absent on a host that applies nothing once. */
     readonly deliveries?: SupervisorDeliveries;
+    readonly turn?: () => Promise<void>;
 }
 /**
  * An asynchronous read that meets bytes still being imported (N17) waits for

@@ -52,6 +52,7 @@ export interface SessionSupervisorHost {
    */
   readonly supervisorDeliveries?: SupervisorDeliveries;
   readonly facetManager?: Pick<FacetManager, 'journalCall'> | null;
+  waveTurn?(): Promise<void>;
   _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
   _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
   /**
@@ -117,6 +118,7 @@ export function buildSessionSupervisorOps(
     readLease: withReadAllocation,
     extend,
     deliveries: host.supervisorDeliveries,
+    ...(host.waveTurn === undefined ? {} : { turn: () => host.waveTurn!() }),
     // Joining is part of the canonical handler, BEFORE this logical-answer
     // seam. A transport hedge must not consume another journal occurrence.
     observe: (envelope, dispatch) => host.facetManager

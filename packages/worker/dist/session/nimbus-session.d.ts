@@ -345,6 +345,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     /** Drop a dead pid's supervisor bridge — its credential stops being valid. */
     supervisorForgetBridge(pid: number): void;
     supervisorRewindBridge(pid: number): Promise<void>;
+    waveTurn(): Promise<void>;
     supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
     /** `envelope` answered, for the session itself: a call inside another answer (session/rpc.ts _rpcFsAcquired). */
     serveSupervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
