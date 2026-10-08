@@ -189,10 +189,8 @@ export class Shell {
   // Paste queue for multiline paste support
   pasteQueue: ShellQueuedInput[] = [];
   private lineSubmission: ShellInputSubmission | undefined;
-  private activeSubmission: ShellInputSubmission | undefined;
   private activeInput: ShellInputExecution | undefined;
   private lineInputs: Array<{ submission: ShellInputSubmission; release: () => void }> = [];
-  private promptSubmission: ShellInputSubmission | undefined;
   private primaryPrompt = false;
 
   /**
@@ -429,7 +427,7 @@ export class Shell {
     this.terminal.onSubmission?.((data, id, deliver, repl) => {
       const submission = new ShellInputSubmission(id, (event) => this.terminal.shellIntegration?.(event));
       const stdin = this.running && (repl || this.terminalStdin?.rawMode || this.terminalStdin?.isWaiting);
-      const owner = stdin ? this.activeSubmission : (!this.running ? this.lineSubmission : undefined);
+      const owner = stdin ? this.activeInput?.owner : (!this.running ? this.lineSubmission : undefined);
       if (stdin) this.activeInput?.bind(submission);
       else if (owner) this.lineInputs.push({ submission, release: submission.retain() });
       if (!this.running && !this.lineSubmission) this.lineSubmission = submission;
@@ -689,8 +687,7 @@ export class Shell {
     this.terminal.write(PROMPT_START + formatShellPrompt(this.env, this.cwd) + PROMPT_END);
     this.primaryPrompt = true;
     this.announcePrompt();
-    const submission = this.promptSubmission ?? this.lineSubmission;
-    this.promptSubmission = undefined;
+    const submission = this.lineSubmission;
     this.lineSubmission = undefined;
     submission?.prompt();
     for (const { submission: input, release } of this.lineInputs.splice(0)) {
@@ -1238,7 +1235,6 @@ export class Shell {
     this.primaryPrompt = false;
     const release = submission?.retain();
     this.lineSubmission = undefined;
-    this.activeSubmission = submission;
     this.running = true;
     this.abortController = new AbortController();
     this.terminalStdin = new TerminalStdin(() => this.consumeQueuedStdin());
@@ -1277,9 +1273,8 @@ export class Shell {
       this.terminal.write(commandEnd(status));
       execution?.finish(status);
       release?.();
-      this.activeSubmission = undefined;
       this.activeInput = undefined;
-      this.promptSubmission = submission;
+      this.lineSubmission = submission;
       this.printPrompt();
       execution?.prompt();
     }
