@@ -75,9 +75,6 @@ try {
 } finally {
   await probe.stop();
 }
-if (process.env.NIMBUS_PRINT_GLOBAL_GAPS === '1') console.log(JSON.stringify(found, null, 1));
-for (const runtime of ['node', 'bun']) {
-  assert.deepEqual(found[runtime], GAPS[runtime],
-    `${runtime}'s globals differ from host ${runtime}'s exactly as recorded (update tests/fixtures/node-globals-gaps.json when one closes):\n${JSON.stringify(found[runtime])}`);
-}
+assert.deepEqual(found, GAPS,
+  `the globals differ from host Node's and Bun's exactly as recorded (update tests/fixtures/node-globals-gaps.json when one closes):\nFOUND ${JSON.stringify(found)}\n`);
 console.log(`node-globals-match-node-workerd: ${found.node.length} node and ${found.bun.length} bun differences, as recorded`);
