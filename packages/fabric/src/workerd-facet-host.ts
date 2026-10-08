@@ -744,10 +744,10 @@ async function runOneShot<T>(
           }
         });
       } catch (error) {
-        // The ledger learns a limit refusal from the hold it ends.
+        if (started || Reflect.get(Object(error), RUN_ENTERED) === true || classifyError(error) !== 'dynamic_worker_cap') throw error;
+        // Refused before it was entered: an RPC-invoked worker stays counted until its session tears down, and workerd gives no signal for that.
+        // The ledger learns the refusal from the hold it ends.
         endFetch(error);
-        if (started || classifyError(error) !== 'dynamic_worker_cap') throw error;
-        // Refused before it started: an RPC-invoked worker stays counted until its session tears down, and workerd gives no signal for that.
         firstRefusal ??= Date.now();
         const readmitted = await readmitRefused(endFetch, { since: firstRefusal, signal: params.request.signal });
         if (readmitted === undefined) throw error;
@@ -770,6 +770,13 @@ async function runOneShot<T>(
 const ONE_SHOT_ENTRY = 'nimbus-one-shot.js';
 
 /**
+ * Set on whatever a one-shot's program throws, once its run was entered
+ * (carried across by enhanced_error_serialization): the platform refuses a
+ * run before entering it, so only an error without it can be a refusal.
+ */
+const RUN_ENTERED = 'nimbusRunEntered';
+
+/**
  * A one-shot, entered by `run`: its SUPERVISOR is the call's capability, and
  * a run its host ended (untilEnded) aborts itself where it stands.
  */
@@ -777,9 +784,13 @@ function oneShotEntry(mainModule: string): string {
   return `import { WorkerEntrypoint } from "cloudflare:workers";
 import program from ${JSON.stringify(`./${mainModule}`)};
 export default class extends WorkerEntrypoint {
-  run(request, supervisor, ended) {
+  async run(request, supervisor, ended) {
     ended().then((reason) => { if (reason !== null) this.ctx.abort(reason); }, () => {});
-    return program.fetch(request, { ...this.env, SUPERVISOR: supervisor }, this.ctx);
+    try {
+      return await program.fetch(request, { ...this.env, SUPERVISOR: supervisor }, this.ctx);
+    } catch (error) {
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { ${RUN_ENTERED}: true });
+    }
   }
 }
 `;
