@@ -414,6 +414,16 @@ export class Shell {
     this.pasteQueue.push(submission ? { data, submission, release: submission.retain() } : data);
   }
 
+  rejectQueuedInput(): void {
+    this.lineSubmission?.inherit(null);
+    for (const { submission } of this.lineInputs) submission.inherit(null);
+    for (const entry of this.pasteQueue.splice(0)) {
+      if (typeof entry === 'string') continue;
+      entry.submission.inherit(null);
+      this.lineInputs.push(entry);
+    }
+  }
+
   private bindTerminalInput(): void {
     this.terminal.onData((data, submission) => this.handleInput(data, submission));
     this.terminal.onSubmission?.((data, id, deliver, repl) => {

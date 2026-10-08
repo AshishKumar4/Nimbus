@@ -257,6 +257,14 @@ try {
       assert.equal((await pending).exitCode, null);
     });
   }
+
+  await scenario('a rejected oversized heredoc drops its owned input and reports no invented success', async ({ client }) => {
+    const result = await client.run("cat > /home/user/oversized <<'EOF'\n" + 'x\n'.repeat(50_001) + 'EOF\necho MUST_NOT_RUN', 10_000);
+    assert.equal(result.exitCode, null);
+    assert.match(result.output, /heredoc: exceeded .* line limit/);
+    assert.ok(!/(?:^|\n)MUST_NOT_RUN\r?(?:\n|$)/.test(result.output), 'rejected body and tail are not executed as shell input');
+    assert.equal((await client.run('true', 1000)).exitCode, 0, 'the prompt remains usable after the refusal');
+  });
 } finally {
   await new Promise((resolve) => sockets.close(resolve));
   await new Promise((resolve) => server.close(resolve));
