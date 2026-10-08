@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — 64-cycle health and version cases; CI 37.65 s wall (2026-10-08).
 import assert from 'node:assert/strict';
 import { waitForTarget } from '../behavioral/_deploy-target.mjs';
 
