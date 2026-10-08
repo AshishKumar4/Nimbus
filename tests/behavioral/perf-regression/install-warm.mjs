@@ -6,8 +6,8 @@
 //      (excluded from the measurement)
 //   2. `rm -rf node_modules` to force the install path.
 //   3. `npm install left-pad@1.3.0` again — every tarball should now come
-//      from the shared cache rather than the registry. Five times: the
-//      budget is about the typical cost, and one sample measures the tail.
+//      from the shared cache rather than the registry. Five samples,
+//      each held to the server-side budget.
 //
 // What this probe asserts, and why it changed:
 //
@@ -39,13 +39,8 @@ if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit
 const a = makeAsserter('perf-regression/install-warm');
 console.log(`perf-regression/install-warm — ${BASE}`);
 
-// Server-side budget, on the median of WARM_RUNS installs. Observed 94-263
-// ms (n=50, median 124, p95 216) across two targets, so this is ~1.9x p95,
-// tight enough to catch the >3x blowup that losing the cache path or
-// re-walking the tree would cause. On one install it measured the tail
-// instead: 1 of 58 samples on 2026-10-07 went over, at 1128 ms, all of it one
-// warm tarball read (fetch+write 1.0 s against a typical 60-120 ms). A 3x
-// regression moves the median; one slow read does not.
+// Server-side budget for every install. Observed 94-263 ms (n=50,
+// median 124, p95 216) across two targets. A slow cache read counts too.
 const SERVER_BUDGET_MS = 400;
 const WARM_RUNS = 5;
 // Backstop only. The client's own 62-140 ms is inside this, so it catches a
@@ -104,7 +99,6 @@ try {
   await t.run('npm install left-pad@1.3.0', 120_000);
   await t.run('rm -rf node_modules', 10_000);
 
-  const totals = [];
   for (let run = 1; run <= WARM_RUNS; run++) {
     if (run > 1) await t.run('rm -rf node_modules', 10_000);
     const before = await cacheCounters(sid);
@@ -128,12 +122,14 @@ try {
       wins !== null && wins[1] === wins[2] && Number(wins[2]) > 0,
       wins ? `R2 cache wins=${wins[1]}/${wins[2]}` : 'no "R2 cache wins" field — cache race won by nothing');
 
-    // 2. Server-side install time, scored on the median below.
+    // 2. Every server-side install must meet the budget.
     const phases = parsePhaseTotal(output);
     a.check(`run ${run}: installer reports a scoreable phase breakdown`, phases !== null,
       'no `phases:` line, or every phase rounded to 0.0s on a target predating millisecond output — the budget below cannot be scored');
     if (phases) {
-      totals.push(phases.total);
+      a.check(`run ${run}: server-side install ≤ ${SERVER_BUDGET_MS} ms`,
+        phases.total <= SERVER_BUDGET_MS,
+        `server=${phases.total}ms budget=${SERVER_BUDGET_MS}ms — ${phases.line}`);
       console.log(`[install-warm] run ${run}: server=${phases.total}ms wall=${wall.toFixed(0)}ms (client overhead ${(wall - phases.total).toFixed(0)}ms) — ${phases.line}`);
     }
 
@@ -143,13 +139,6 @@ try {
   }
   await t.close();
 
-  if (totals.length === WARM_RUNS) {
-    const median = [...totals].sort((x, y) => x - y)[Math.floor(WARM_RUNS / 2)];
-    a.check(`server-side install, median of ${WARM_RUNS}, ≤ ${SERVER_BUDGET_MS} ms`,
-      median <= SERVER_BUDGET_MS,
-      `median=${median}ms of [${totals.join(', ')}] budget=${SERVER_BUDGET_MS}ms`);
-    console.log(`[install-warm] server median=${median}ms of [${totals.join(', ')}]`);
-  }
 } finally {
   if (sid) { try { await deleteSession(sid); } catch { /* best-effort cleanup */ } }
 }

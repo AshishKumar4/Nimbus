@@ -3,7 +3,7 @@
 // own .armada.json and scripts/ci/unit.mjs plan it into parts and run them
 // in containers.
 //
-//   bun scripts/ci/remote-unit.mjs [<commit>] [--tier fast|slow|all] [--only a.mjs,b.mjs] [--label TEXT]
+//   bun scripts/ci/remote-unit.mjs [<commit>] [--tier fast|slow|all] [--only a.mjs,b.mjs]
 //
 // Run it in the lane's worktree. The commit (default HEAD) is what is
 // tested, never the working tree: commit first. --tier and --only narrow
@@ -19,13 +19,13 @@ const argv = process.argv.slice(2);
 const flags = {};
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
-  if (['--tier', '--only', '--label'].includes(argv[i]) && argv[i + 1] !== undefined) flags[argv[i].slice(2)] = argv[++i];
+  if (['--tier', '--only'].includes(argv[i]) && argv[i + 1] !== undefined) flags[argv[i].slice(2)] = argv[++i];
   else if (!argv[i].startsWith('--')) positional.push(argv[i]);
   else usage(`unexpected ${argv[i]}`);
 }
 if (positional.length > 1) usage('one commit at most');
 function usage(why) {
-  console.error(`${why}\nusage: bun scripts/ci/remote-unit.mjs [<commit>] [--tier fast|slow|all] [--only a.mjs,b.mjs] [--label TEXT]`);
+  console.error(`${why}\nusage: bun scripts/ci/remote-unit.mjs [<commit>] [--tier fast|slow|all] [--only a.mjs,b.mjs]`);
   process.exit(2);
 }
 
@@ -49,7 +49,7 @@ try {
   notGraded(error.message);
 }
 const words = [...(flags.tier ? ['--tier', flags.tier] : []), ...(flags.only ? ['--only', flags.only] : [])];
-const ran = spawnSync('bun', [join(client, 'src', 'cli.ts'), 'run', sha, ...(flags.label ? [`--label=${flags.label}`] : []), ...(words.length ? ['--', ...words] : [])], {
+const ran = spawnSync('bun', [join(client, 'src', 'cli.ts'), 'run', sha, ...(words.length ? ['--', ...words] : [])], {
   cwd: repo, stdio: 'inherit', env: armadaEnv(),
 });
 process.exit(ran.status ?? 2);

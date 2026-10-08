@@ -123,7 +123,7 @@ died; it loads esbuild's wasm from staged assets, so no other isolate holds
 it. Nothing per-process chooses:
 no spawn site, program name, mode or payload size reaches the selection, and an
 unrecognised value is refused rather than defaulted. Flip it on a target with
-`bun tests/behavioral/_throwaway-target.mjs up --var NIMBUS_PROCESS_HOST:peer`,
+`bun tests/behavioral/_throwaway-target.mjs up --bundle <release dir> --var NIMBUS_PROCESS_HOST:peer`,
 and read back where a process actually landed in the process log: every
 probe target, each throwaway included, is deployed with `NIMBUS_DEBUG=1`
 (`PROBE_TARGET_VARS` in `tests/behavioral/_deploy-target.mjs`).
@@ -395,9 +395,8 @@ again.
   longer on that repository's main (a rewritten history). It runs on
   Nimbus's own armada deployment, `nimbus-armada` (its own Worker, bucket
   and fleet cap), through `~/.config/armada/nimbus-armada.json`
-  (`ARMADA_CONNECTION` in `scripts/ci/lib/armada.mjs`). `ARMADA_URL` and
-  `ARMADA_TOKEN` override it; the GitHub unit job reads both from repo
-  secrets. Never print the token.
+  (`ARMADA_CONNECTION` in `scripts/ci/lib/armada.mjs`). `ARMADA_CONNECTION`
+  overrides the connection file. Never print its token.
 
 **Tiers.** A file's leading comment block may carry one marker:
 
@@ -439,9 +438,8 @@ when you are done:
 ```bash
 export CLOUDFLARE_ACCOUNT_ID=<account>
 
-eval "$(bun tests/behavioral/_throwaway-target.mjs up)"   # exports BASE + NIMBUS_PROBE_TOKEN
-bun tests/behavioral/run-all.mjs --no-retry
-bun tests/behavioral/_throwaway-target.mjs down           # delete, and confirm it is gone
+bun scripts/ci/remote-probes.mjs --deploy one-off
+bun tests/behavioral/_throwaway-target.mjs down --name one-off  # delete, and confirm it is gone
 ```
 
 `_throwaway-target.mjs session` prints `{base, sessionId, token}` for driving
@@ -515,9 +513,9 @@ lifecycle docs say such a shutdown terminates WebSockets.
 end `aborted` with "Application called abort() to reset Durable Object.".
 Such a row is the probe working, not a session death.
 
-This is also what CI runs: the `behavioral` workflow deploys the commit
-under test to its own throwaway (Preview `tw-ci-*`), grades that, and deletes
-it. `nimbus` is production and is never a target here.
+`remote-probes --deploy` builds the commit on armada and grades its own
+throwaway Preview. Delete the Preview after the run. `nimbus` is production
+and is never a target here.
 
 **Running alongside other agents.** `run-all.mjs` takes a machine-wide lock
 and refuses to start while another suite holds it, naming the holder;
