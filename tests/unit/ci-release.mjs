@@ -38,7 +38,7 @@ try {
         import { mock } from 'bun:test';
         mock.module(${JSON.stringify(installed)}, () => ({ assertInstalled() {} }));
         mock.module(${JSON.stringify(bundles)}, () => ({ fetchRelease: async () => ({ dir: '/fixture/bundle', release: {} }), releaseDigest() { throw new Error('an ungraded upload must not be sealed'); } }));
-        mock.module(${JSON.stringify(lease)}, () => ({ holdLease: () => 3 }));
+        mock.module(${JSON.stringify(lease)}, () => ({ holdLease: () => require('node:fs').openSync('/dev/null', 'r') }));
         process.env.CLOUDFLARE_ACCOUNT_ID = 'fixture-account';
         process.argv = ['bun', 'release.mjs', 'staging'];
         await import(${JSON.stringify(entry)});
