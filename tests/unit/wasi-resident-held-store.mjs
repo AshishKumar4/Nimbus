@@ -128,6 +128,7 @@ async function readWhole(fs, name) {
   const { fs, authority } = await processOver(seed);
   await fs.stat(beneath('many'));
   for (let i = 0; i < N; i++) await rewrite(fs, `many/f${String(i).padStart(4, '0')}.txt`, enc.encode(String(i).repeat(1000)));
+  fs.inbound();
   const names = await fs.readdir(beneath('many'));
   assert.equal(names.length, N, `a rewritten directory listed ${names.length} of ${N}`);
   assert.notEqual(await fs.stat(beneath('many/f0001.txt')), null, 'a file just rewritten was stat\'d as missing');
@@ -148,6 +149,8 @@ async function readWhole(fs, name) {
     const { fs } = await processOf(session);
     await fs.mkdir(beneath('d'), { mode: 0o777 }).catch((error) => { if (error.code !== 'EEXIST') throw error; });
     for (const [i, name] of names.entries()) await rewrite(fs, name, enc.encode(String(i).repeat(10)));
+    // Input arrives (a poll wakeup, a socket's bytes): the next answer takes the barrier first.
+    fs.inbound();
     const listed = await fs.readdir(beneath('d'));
     assert.equal(listed.length, N, `run ${run}: the directory it rewrote listed ${listed.length} of ${N}`);
     for (const name of [names[0], names[1], names[N - 1]]) assert.notEqual(await fs.stat(beneath(name)), null, `run ${run}: ${name}, just written, was stat'd as missing`);
