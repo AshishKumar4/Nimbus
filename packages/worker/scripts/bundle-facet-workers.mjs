@@ -705,7 +705,7 @@ async function bundleOxcFacet() {
     throw new Error('[bundle-facet-workers/oxc-facet] esbuild produced no output');
   }
   const runtime = withoutComments(result.outputFiles[0].text);
-  for (const global of ['__nimbusCreateOxcTransform', '__nimbusRewriteDynamicImports', '__nimbusLowerAsyncModule']) {
+  for (const global of ['__nimbusCreateOxcTransform', '__nimbusRewriteDynamicImports', '__nimbusLowerAsyncModule', '__nimbusLowerEsModule']) {
     if (!runtime.includes(global)) {
       throw new Error(`[bundle-facet-workers/oxc-facet] the bundle no longer installs globalThis.${global}`);
     }

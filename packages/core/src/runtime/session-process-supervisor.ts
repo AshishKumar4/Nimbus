@@ -393,6 +393,10 @@ export class SessionProcessSupervisor {
   }
 
   /** See ProcessTable.setPidBase — generation-unique pid allocation. */
+  onPidStride(listener: (stride: number) => void): void {
+    this.table.onPidStride(listener);
+  }
+
   setPidBase(base: number): void {
     this.table.setPidBase(base);
   }
@@ -537,6 +541,8 @@ export class SessionProcessSupervisor {
   hasLogs(pid: number): boolean {
     return this.logs.has(pid);
   }
+
+  retainsLogs(pid: number): boolean { return this.logs.retains(pid); }
 
   logSize(pid: number): number {
     return this.logs.size(pid);

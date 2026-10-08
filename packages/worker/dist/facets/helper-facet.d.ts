@@ -6,13 +6,26 @@
  */
 import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
+import { type FacetKind } from '@nimbus-sh/fabric/facet-limits.js';
 import type { StagedSourceEnv } from '../runtime/staged-source.js';
 /** What a helper facet is: its worker id and facet name, its class, and its code, built from the staged assets. */
 export interface HelperFacetSpec {
+    kind?: FacetKind;
     id: string;
     className: string;
     /** How a missing binding names it: "the transform facet". */
     what: string;
+    /**
+     * The child facet's name, when it is not `id`: the same worker code run as
+     * a second actor (the esbuild CLI's facet, apart from its compute calls).
+     */
+    facetName?: string;
+    /**
+     * The facet runs processes (the esbuild CLI): its calls have no wall
+     * deadline. Without it every call is a compute call, bounded by the kind's
+     * call deadline (boundedCalls).
+     */
+    runsProcesses?: true;
     code(assets: Required<StagedSourceEnv>): Promise<WorkerCode>;
 }
 /**
@@ -22,6 +35,18 @@ export interface HelperFacetSpec {
  * nothing of any host.
  */
 export declare function loadHelperFacet<T extends DurableObject>(ctx: DurableObjectState, env: unknown, spec: HelperFacetSpec): Promise<Fetcher<T>>;
+/**
+ * A helper facet's compute call that outlived its kind's call deadline. Not
+ * retried: the same input would wait as long again (buildFacetPrebundler and
+ * oxcTransformHost let it through as it is).
+ */
+export declare class FacetCallDeadlineError extends Error {
+    readonly what: string;
+    readonly method: string;
+    readonly kind: FacetKind;
+    readonly deadlineMs: number;
+    constructor(what: string, method: string, kind: FacetKind, deadlineMs: number);
+}
 /**
  * One stub per Durable Object: a caller that starts while another is still
  * loading the facet waits on that load. A load or call that failed drops the

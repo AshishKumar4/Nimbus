@@ -27,15 +27,16 @@ export class ProcessJournals {
         facet TEXT PRIMARY KEY,
         pid INTEGER NOT NULL,
         cred TEXT NOT NULL,
+        generation INTEGER NOT NULL,
         opened_at INTEGER NOT NULL
       )`);
             this.ready = true;
         }
         return sql;
     }
-    /** `pid`'s facet `facet` opened: its log may hold changes from now on. */
-    opened(facet, pid, cred) {
-        this.table()?.exec('INSERT OR REPLACE INTO nimbus_process_journals (facet, pid, cred, opened_at) VALUES (?, ?, ?, ?)', facet, pid, JSON.stringify(cred), Date.now());
+    /** `pid`'s facet `facet` opened, in incarnation `generation`: its log may hold changes from now on. */
+    opened(facet, pid, cred, generation) {
+        this.table()?.exec('INSERT OR REPLACE INTO nimbus_process_journals (facet, pid, cred, generation, opened_at) VALUES (?, ?, ?, ?, ?)', facet, pid, JSON.stringify(cred), generation, Date.now());
     }
     /** `pid`'s log is empty: a drain emptied it. */
     settled(pid) {
@@ -50,10 +51,11 @@ export class ProcessJournals {
         const sql = this.table();
         if (sql === undefined)
             return [];
-        return [...sql.exec('SELECT facet, pid, cred FROM nimbus_process_journals ORDER BY opened_at')].map((row) => ({
+        return [...sql.exec('SELECT facet, pid, cred, generation FROM nimbus_process_journals ORDER BY opened_at')].map((row) => ({
             facet: String(row.facet),
             pid: Number(row.pid),
             cred: JSON.parse(String(row.cred)),
+            generation: Number(row.generation),
         }));
     }
     /**
@@ -64,7 +66,7 @@ export class ProcessJournals {
      * and kept, reserved, for the next start.
      */
     async drainPending(io) {
-        const pending = this.pending();
+        const pending = this.pending().filter((row) => row.generation !== io.generation);
         for (const row of pending)
             io.reserved.add(row.facet);
         for (const row of pending) {

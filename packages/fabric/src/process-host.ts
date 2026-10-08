@@ -69,7 +69,7 @@ import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch, type HostNamespaceBinding } from './host-dispatch.js';
 import { z } from 'zod/v4';
-import { isTransientDoReset } from '@nimbus-sh/platform/oom-classify.js';
+import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 import {
   ProcessHostLost,
   type HostedProcess,
@@ -153,8 +153,21 @@ class FacetProcessHost implements ProcessHost {
   async open(params: ProcessHostParams): Promise<HostedProcess> {
     const supervisor: ResidentSupervisorProps = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
     const { name, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
+    // The platform can kill or reset the process's own facet (its memory or
+    // CPU limit, measured with astro dev on 2026-10-08) with the session left
+    // standing; the next call to the facet is what shows it. Its boot is left
+    // as the facet answers it: a run's own start and stop (a boot waiting on
+    // stdin is replayed) are not the host's to judge.
+    const loss = new HostLoss(facet.lost);
     return {
       ...facet,
+      lost: loss.signal,
+      handleHttpRequest: (request: Request) => loss.route(() => facet.handleHttpRequest(request)),
+      handleWebSocketRequest: (request: Request) => loss.route(() => facet.handleWebSocketRequest(request)),
+      release: () => {
+        loss.release();
+        return facet.release();
+      },
       describe: () =>
         `facet '${name}' (pid ${params.pid})`
         + ` of session ${this.coordDoId.slice(-12)}`
@@ -406,35 +419,17 @@ class PeerProcessHost implements ProcessHost {
       startArgs: params.startArgs,
     });
     hostLeg.catch(() => {});
-    // The platform resetting the peer under the process ends the process, and
-    // every leg says so by one name. It shows three ways: the held leg fails
-    // (a coordinator's own release settles it cleanly); or, as measured on
-    // Cloudflare (2026-10-07), the held leg stays open and the next call to
-    // the peer fails, after about 10 s, with the reset's own words; or the
-    // peer's next incarnation reports it (hostLost) from its own alarm.
-    let gone: ProcessHostLost | null = null;
-    let markLost: (lost: ProcessHostLost) => void = () => {};
-    const hostLost = new Promise<never>((_, reject) => { markLost = reject; });
-    hostLost.catch(() => {});
-    const loseHost = (error: unknown): ProcessHostLost => {
-      if (gone === null) {
-        gone = new ProcessHostLost(error);
-        markLost(gone);
-      }
-      return gone;
-    };
-    hostLeg.then(() => undefined, loseHost);
-    this.opens.set(params.workerKey, { capability: webSocketCapability, lose: loseHost });
-    /** A call to the peer that failed because the peer was reset is the loss; any other failure is its own. */
-    const lostOr = (error: unknown): unknown => gone ?? (peerWasReset(error) ? loseHost(error) : error);
+    // The held leg failing is one way the peer's loss shows (a coordinator's
+    // own release settles it cleanly); the peer's next incarnation reporting
+    // it (hostLost) from its own alarm is another.
+    const loss = new HostLoss(hostLeg);
+    this.opens.set(params.workerKey, { capability: webSocketCapability, lose: (error) => loss.lose(error) });
     // The peer starts the runner as part of hosting it; this reads back that
     // one boot payload without re-running anything, so `started` means exactly
     // what it means on a facet. Racing the host leg is what turns a peer that
     // died before the boot landed into a rejection rather than a hang — the
     // peer that would have answered is the thing that is gone.
-    const booted = placement.stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload, (error: unknown) => { throw lostOr(error); });
-    booted.catch(() => {});
-    const started = Promise.race([booted, hostLost]);
+    const started = loss.route(() => placement.stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload));
     started.catch(() => {});
     // Do not return a handle for a process that was never opened. Opening a
     // facet of one's own DO either throws or does not, before any handle
@@ -456,25 +451,20 @@ class PeerProcessHost implements ProcessHost {
     }
 
     let released = false;
-    // A route to a host that is gone fails at once, by name; one in flight
-    // when it goes fails then, not when the platform's own answer arrives.
-    const routed = (leg: () => Promise<Response>): Promise<Response> => {
-      if (gone !== null) return Promise.reject(gone);
-      return Promise.race([leg().catch((error: unknown) => { throw lostOr(error); }), hostLost]);
-    };
     return {
       started,
       // The held leg IS the process's residency here, and it settles cleanly
       // when the coordinator releases. The host going away under a process
       // that was up rejects this, and the fabric ends the process on it.
-      lost: hostLost,
+      lost: loss.signal,
       handleHttpRequest: (request: Request) =>
-        routed(() => routeThroughPeer(placement.stub, params.workerKey, request)),
+        loss.route(() => routeThroughPeer(placement.stub, params.workerKey, request)),
       handleWebSocketRequest: (request: Request) =>
-        routed(() => routeWebSocketThroughPeer(placement.stub, params.workerKey, webSocketCapability, request)),
+        loss.route(() => routeWebSocketThroughPeer(placement.stub, params.workerKey, webSocketCapability, request)),
       release: async () => {
         if (released) return;
         released = true;
+        loss.release();
         this.tokensInUse.delete(params.pid);
         this.opens.delete(params.workerKey);
         try {
@@ -581,14 +571,54 @@ class PeerProcessHost implements ProcessHost {
 }
 
 /**
- * An RPC to the peer failed because the platform reset the peer: the error
- * says the object was reset (`durableObjectReset`, or a reset's own wording).
- * Measured 2026-10-07: a peer reset under a CPU-bound process answered its
- * caller "Durable Object reset because its code was updated." with no deploy.
+ * One open process's host loss: the platform reset or killed the actor it
+ * runs in (its facet, or a peer), and the process is over. Fired once, by
+ * whichever shows it first: `held` (a leg the host holds for the process's
+ * life) failing, or a call to the host failing with a reset's own words
+ * (isHostReset). From then on every leg answers with the one
+ * ProcessHostLost: `signal` rejects with it, and a route fails at once.
+ *
+ * Measured on Cloudflare: a peer reset under a CPU-bound process left the
+ * held leg open, and only the next call failed, after about 10 s, with
+ * "Durable Object reset because its code was updated." (2026-10-07); a facet
+ * killed by its memory limit answered the next call, after about 60 s, with
+ * "Durable Object's isolate exceeded its memory limit and was reset."
+ * (2026-10-08). A call in flight when the loss shows fails then, not when
+ * the platform's own answer arrives.
  */
-function peerWasReset(error: unknown): boolean {
-  if (typeof error === 'object' && error !== null && Reflect.get(error, 'durableObjectReset') === true) return true;
-  return isTransientDoReset(error);
+class HostLoss {
+  private gone: ProcessHostLost | null = null;
+  /** Nimbus released the process itself (a kill, a stop): what fails after that is no loss. */
+  private released = false;
+  private reject: (lost: ProcessHostLost) => void = () => {};
+  readonly signal = new Promise<never>((_, reject) => { this.reject = reject; });
+
+  constructor(held?: Promise<unknown>) {
+    this.signal.catch(() => {});
+    held?.then(() => undefined, (error: unknown) => { if (!this.released) this.lose(error); });
+  }
+
+  lose(error: unknown): ProcessHostLost {
+    if (this.gone === null) {
+      this.gone = new ProcessHostLost(error);
+      this.reject(this.gone);
+    }
+    return this.gone;
+  }
+
+  /** The host is being released on purpose: the facet or peer ending now is that, not a loss. */
+  release(): void {
+    this.released = true;
+  }
+
+  /** A call to the host, which fails by the loss's name once the host is gone. */
+  route<T>(leg: () => Promise<T>): Promise<T> {
+    if (this.gone !== null) return Promise.reject(this.gone);
+    const call = leg().catch((error: unknown) => {
+      throw this.gone ?? (!this.released && isHostReset(error) ? this.lose(error) : error);
+    });
+    return Promise.race([call, this.signal]);
+  }
 }
 
 async function routeThroughPeer(

@@ -41,6 +41,7 @@ export class ProcessTable {
     nextPid = 1;
     base = 0;
     processes = new Map();
+    onStride = null;
     /**
      * Move the pid space onto this instance generation's range. Called once at
      * DO boot (before any event runs) with `isolateGen * PID_GEN_STRIDE`.
@@ -56,6 +57,14 @@ export class ProcessTable {
     get pidBase() {
         return this.base;
     }
+    /**
+     * Told the stride (pid / PID_GEN_STRIDE) a pid minted here enters past its
+     * generation's own: the next generation must start beyond it, or its pids
+     * would repeat this one's.
+     */
+    onPidStride(listener) {
+        this.onStride = listener;
+    }
     /** Allocate a PID and register a new process. */
     spawn(command, argv, cwd, options = {}) {
         const inheritedCred = options.parentPid === undefined
@@ -64,6 +73,8 @@ export class ProcessTable {
         const execId = options.execId
             ?? (options.parentPid === undefined ? undefined : this.processes.get(options.parentPid)?.execId);
         const pid = this.nextPid++;
+        if (pid % PID_GEN_STRIDE === 0)
+            this.onStride?.(pid / PID_GEN_STRIDE);
         const entry = {
             pid,
             command,

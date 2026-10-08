@@ -1,13 +1,11 @@
 #!/usr/bin/env bun
-// A rename whose source the namespace knows is not there is rename(2)'s
-// ENOENT, answered at the call, sync or async, before anything is logged:
-// never a change logged for the session to refuse later. In a subtree the
-// process holds, an async change is answered once it is logged, so a refusal
-// only the session gave arrived as a failure at the exit instead of the
-// call's ENOENT: create-next-app moves `pages` and `styles` only where they
-// exist, catching ENOENT, and so failed ("2 filesystem changes this process
-// made did not reach the session"). Red before: renameSync returned, the
-// async rename resolved, and the rename was sent.
+// A rename whose source the view knows is not there: a sync call answers it
+// from the view (ENOENT, nothing logged); an async one in a subtree the
+// process does not hold asks the session, which may know the source (a peer
+// made it after the view's snapshot) or refuse it with its own ENOENT, which
+// create-next-app catches for the `pages` and `styles` it moves only where
+// they exist. Red before (recheck): an unheld async rename trusted the view
+// and threw ENOENT for a source a peer had made.
 
 import assert from 'node:assert/strict';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
@@ -15,11 +13,18 @@ import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.
 import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
 import { waveSupervisor } from './lib/wave-supervisor.mjs';
 
-const renamed = [];
+const asked = [];
+// The session: what it has, the view's snapshot plus a name a peer made since.
+const sessionHas = new Set(['/home/user/app', '/home/user/peer']);
 const supervisor = waveSupervisor({
   async writeFile() {},
   async mkdir() {},
-  async rename(from, to) { renamed.push([from, to]); },
+  async rename(from, to) {
+    asked.push(from);
+    if (!sessionHas.has(from)) throw Object.assign(new Error(`ENOENT: no such file or directory, rename '${from}' -> '${to}'`), { code: 'ENOENT' });
+    sessionHas.delete(from);
+    sessionHas.add(to);
+  },
 });
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
@@ -36,10 +41,11 @@ const { fs, flushClient } = (declareNamespace({ metadata, manifest: { 'home/user
 
 assert.throws(() => fs.renameSync('/home/user/pages', '/home/user/src-pages'), (error) => error.code === 'ENOENT' && error.syscall === 'rename', 'renameSync of a missing source returned');
 await assert.rejects(fs.promises.rename('/home/user/styles', '/home/user/src-styles'), (error) => error.code === 'ENOENT', 'an async rename of a missing source resolved');
-// One that is there moves.
+await fs.promises.rename('/home/user/peer', '/home/user/src-peer');
 await fs.promises.rename('/home/user/app', '/home/user/src-app');
 await flushClient();
-assert.deepEqual(renamed, [['/home/user/app', '/home/user/src-app']], 'a rename of a missing source was sent');
+assert.deepEqual(asked, ['/home/user/styles', '/home/user/peer', '/home/user/app'], 'the session was not asked for each async rename, or was asked for the sync one');
+assert.equal(sessionHas.has('/home/user/src-peer'), true, 'a source a peer made was not renamed');
 assert.equal(fs.existsSync('/home/user/src-app'), true);
 
 console.log('node-rename-missing-source: ok');

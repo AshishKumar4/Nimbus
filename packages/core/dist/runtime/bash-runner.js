@@ -148,6 +148,7 @@ export async function createBashFacetSession(deps) {
             stepController = controller;
             const signal = deps.signal ? AbortSignal.any([controller.signal, deps.signal]) : controller.signal;
             let raw;
+            // No deadline: a process runs until it exits or is killed.
             try {
                 if (facet.submitRequest) {
                     const response = await facet.submitRequest(bashRequestStep, new Request('https://bash-facet.invalid/step', {
@@ -155,11 +156,11 @@ export async function createBashFacetSession(deps) {
                         headers: { 'content-type': 'application/json' },
                         body: JSON.stringify(args),
                         signal,
-                    }), { timeoutMs: 300_000 });
+                    }));
                     raw = await response.json();
                 }
                 else {
-                    raw = await facet.submit(bashFacetStep, args, { timeoutMs: 300_000, signal });
+                    raw = await facet.submit(bashFacetStep, args, { signal });
                 }
             }
             catch (error) {

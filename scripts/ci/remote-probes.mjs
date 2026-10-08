@@ -7,6 +7,7 @@
 //       [--only a,b] [--skip c,d] [--parts N] [--jobs J] [--repeat a,b --times T]
 //   bun scripts/ci/remote-probes.mjs --deploy <name> [<commit>] [--only a,b] [--skip c,d] [--parts N] [--jobs J]
 //   bun scripts/ci/remote-probes.mjs --target hosted:<https origin> [<commit>] --only a,b
+//       [--screenshots <local-dir>]
 //
 // --target hosted:<origin> runs the named hosted-demo checks against a
 // deployed demo (staging's, or production's at promotion) as a visitor
@@ -35,6 +36,7 @@
 // PROBE_TARGET_SKIPS. --repeat runs each named probe --times more times
 // (default 5), each alone and beside the suite, as the release matrix does
 // with write-heavy probes whose failure is intermittent.
+// --screenshots saves the existing capture hooks' PNGs under <dir>/<job>/<task>.
 //
 // It prints one line per task and every red row with its output tail, and
 // keeps the whole verdict under ~/.local/state/nimbus/remote-probes/.
@@ -46,6 +48,7 @@ import { join } from 'node:path';
 import { PROBE_TARGET_SKIPS } from '../../tests/behavioral/_probe-target-skips.mjs';
 import { mapOnArmada } from './lib/armada.mjs';
 import { assertInstalled } from './lib/installed.mjs';
+import { writeScreenshots } from './lib/probe-screenshots.mjs';
 
 /** A task's limit on armada, and so the job's: every part runs at once. */
 const TASK_TIMEOUT_S = 30 * 60;
@@ -54,7 +57,7 @@ const PREPARE_S = 15 * 60;
 const TOKEN_TTL_MS = (PREPARE_S + TASK_TIMEOUT_S) * 1000;
 
 const argv = process.argv.slice(2);
-const VALUED = ['--target', '--deploy', '--only', '--skip', '--parts', '--jobs', '--repeat', '--times'];
+const VALUED = ['--target', '--deploy', '--only', '--skip', '--parts', '--jobs', '--repeat', '--times', '--screenshots'];
 const flags = {};
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
@@ -75,7 +78,7 @@ const parts = count('parts', 4);
 const jobs = count('jobs', 4);
 const times = count('times', 5);
 function usage(why) {
-  console.error(`${why}\nusage: bun scripts/ci/remote-probes.mjs (--target staging|throwaway:<name> | --deploy <name>) [<commit>] [--only a,b] [--skip c,d] [--parts N] [--jobs J] [--repeat a,b --times T]`);
+  console.error(`${why}\nusage: bun scripts/ci/remote-probes.mjs (--target staging|throwaway:<name> | --deploy <name>) [<commit>] [--only a,b] [--skip c,d] [--parts N] [--jobs J] [--repeat a,b --times T] [--screenshots <local-dir>]`);
   process.exit(2);
 }
 
@@ -146,10 +149,10 @@ async function deploy(name) {
 let mapped;
 try {
   mapped = await mapOnArmada({
-    repo, sha, files: ['scripts/ci/probes.mjs', 'tests/behavioral/run-all.mjs'], setup: 'scripts/ci/recipe/chromium.sh',
+    repo, sha, files: ['scripts/ci/probes.mjs', 'scripts/ci/lib/probe-screenshots.mjs', 'tests/behavioral/run-all.mjs'], setup: 'scripts/ci/recipe/chromium.sh',
     items, env: token ? { NIMBUS_PROBE_TOKEN: token } : {}, label: `remote-probes ${sha.slice(0, 12)} ${throwaway ?? hosted ?? 'staging'}`, timeout: TASK_TIMEOUT_S,
     command: ['bun', 'scripts/ci/probes.mjs', '--out', '{out}', '--base', base, '--only', '{only}', '--skip', skip, '--part', '{part}', '--jobs', '{jobs}',
-      ...(token ? ['--start-by', String(startBy)] : ['--anonymous'])],
+      ...(token ? ['--start-by', String(startBy)] : ['--anonymous']), ...(flags.screenshots ? ['--screenshots', '1'] : [])],
   });
 } catch (error) {
   console.error(`remote-probes: NOT GRADED — ${scrub(error.message)}`);
@@ -171,7 +174,17 @@ const tasks = mapped.outcomes.map((outcome, i) => {
   else if (red.length > 0 && status === 0) status = 1;
   console.log(`${red.length === 0 ? 'ok  ' : 'FAIL'} ${item.task}: ${verdict.rows.length - red.length} of ${verdict.rows.length} rows green in ${Math.round(outcome.seconds)} s`);
   for (const row of red) console.log(`  FAIL ${row.name} (exit ${row.exitCode}, ${Math.round(row.seconds)} s)\n${row.output.trimEnd().split('\n').slice(-25).map((line) => `    ${line}`).join('\n')}`);
-  return { ...item, outcome, rows: verdict.rows };
+  let screenshots = [];
+  if (flags.screenshots) {
+    try {
+      screenshots = writeScreenshots(join(flags.screenshots, mapped.jobId, String(outcome.index + 1)), verdict.screenshots ?? []);
+      for (const path of screenshots) console.log(`screenshot: ${path}`);
+    } catch (error) {
+      status = 2;
+      console.error(`NOT GRADED ${item.task} screenshots: ${error.message}`);
+    }
+  }
+  return { ...item, outcome, rows: verdict.rows, ...(flags.screenshots ? { screenshots } : {}) };
 });
 
 const state = join(homedir(), '.local', 'state', 'nimbus', 'remote-probes');

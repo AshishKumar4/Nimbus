@@ -21,14 +21,16 @@ export interface PendingJournal {
     facet: string;
     pid: number;
     cred: VfsCred;
+    /** The session incarnation (generation) whose process wrote it. */
+    generation: number;
 }
 export declare class ProcessJournals {
     private readonly sql;
     private ready;
     constructor(sql: () => Sql | undefined);
     private table;
-    /** `pid`'s facet `facet` opened: its log may hold changes from now on. */
-    opened(facet: string, pid: number, cred: VfsCred): void;
+    /** `pid`'s facet `facet` opened, in incarnation `generation`: its log may hold changes from now on. */
+    opened(facet: string, pid: number, cred: VfsCred, generation: number): void;
     /** `pid`'s log is empty: a drain emptied it. */
     settled(pid: number): void;
     /** The row of `pid`, while its log may hold changes. */
@@ -44,6 +46,8 @@ export declare class ProcessJournals {
      */
     drainPending(io: {
         reserved: Set<string>;
+        /** This incarnation's generation: a row of it is a running process's log, never a previous one's to drain. */
+        generation: number;
         drain(row: PendingJournal): Promise<void>;
         log(message: string): void;
     }): Promise<void>;

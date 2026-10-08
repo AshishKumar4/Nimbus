@@ -17,6 +17,8 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
+import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
@@ -58,6 +60,29 @@ assert.equal(recall ?? null, null, `listing its own subtree recalled the process
 
 const other = files.bind({ pid: 8, cred: USER });
 await assert.rejects(async () => listed(other), (error) => error.code === 'EAGAIN', 'another process\'s listing took the held names as absent');
+
+// P4b recheck 3: through a mount whose backend is itself a namespace over the same engine
+// (an alias), the process's lookups still carry its holds. Red before: the
+// nested namespace's as() took the credential and the actor only, and its
+// view recalled the process's own delegation.
+{
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = engine.as(CRED_KERNEL);
+  kernel.mkdir('home/user/d', { recursive: true });
+  kernel.chown('home/user', USER.uid, USER.gid);
+  kernel.chown('home/user/d', USER.uid, USER.gid);
+  kernel.writeFile('home/user/d/a.txt', 'a.txt');
+  kernel.chown('home/user/d/a.txt', USER.uid, USER.gid);
+  const files = new ProcessFiles(engine);
+  files.vfs.mount('/alias', new CompositeVFS(sqliteFiles(engine, CRED_KERNEL)));
+  const holder = files.bind({ pid: 7, cred: USER });
+  const grant = await holder.acquireExclusiveMutation('/home/user/d', { delegate: { reads: true, inos: 16, bytes: 0 } });
+  const recall = holder.awaitRecall(grant.owner, 300);
+  assert.notEqual(await holder.stat('/alias/home/user/d/a.txt'), null);
+  assert.deepEqual((await holder.readdir('/alias/home/user/d')).map((entry) => entry.name ?? entry), ['a.txt']);
+  assert.equal(await recall, null, 'a lookup through the alias namespace recalled the process\'s own delegation');
+}
 
 console.log('process-list-own-delegation: ok');
 process.exit(0);

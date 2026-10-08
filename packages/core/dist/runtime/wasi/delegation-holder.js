@@ -63,10 +63,11 @@ export function delegationHolder(options) {
     let nextHandle = FIRST_LOCAL_HANDLE;
     /** Files written since their bytes were last logged, in the order last written. */
     const dirty = new Set();
-    /** Whether anything was logged since the store was last told the session changed (sent). */
-    let unsent = false;
-    /** Of that, a change written through (a write, truncate or close of a description): the store answers for it only once it is sent (throughPending). */
-    let throughUnsent = false;
+    // Changes logged, numbered; the last written through (the store answers for it once sent);
+    // and the last a completed send covered: a send covers only what was logged when it began.
+    let changes = 0;
+    let throughLogged = 0;
+    let sentAt = 0;
     /**
      * `file` stops being decided here (its grant is shared, recalled or gone,
      * or the process is about to change a name or an access above it): what
@@ -148,7 +149,7 @@ export function delegationHolder(options) {
     /** Log each file's latest bytes, in the order last written, under the name it has now. */
     const drain = () => {
         if (dirty.size > 0)
-            unsent = true;
+            changes++;
         for (const file of [...dirty]) {
             dirty.delete(file);
             // A copy: the file's buffer keeps changing as the process writes. A
@@ -207,15 +208,14 @@ export function delegationHolder(options) {
     /** Log a decision, after the bytes written before it. */
     const log = (op) => {
         drain();
-        unsent = true;
+        changes++;
         client.submit(op, { acknowledged: true });
     };
-    /** The store owes a barrier only once something this process decided reached the session. */
-    const sentSome = () => {
-        throughUnsent = false;
-        if (!unsent)
+    /** What was logged up to `covered` reached the session: the store owes a barrier once something did. */
+    const sentSome = (covered) => {
+        if (covered <= sentAt)
             return;
-        unsent = false;
+        sentAt = covered;
         options.sent?.();
     };
     const entryOf = (key) => {
@@ -494,8 +494,7 @@ export function delegationHolder(options) {
                     if (offset === null)
                         handle.position = at + bytes.byteLength;
                 }
-                unsent = true;
-                throughUnsent = true;
+                throughLogged = ++changes;
                 return bytes.byteLength;
             }
             const start = offset ?? handle.position;
@@ -528,8 +527,7 @@ export function delegationHolder(options) {
             if (file.through !== undefined) {
                 client.submit({ type: 'call', call: { call: 'ftruncate', path: file.key, ino: file.through.ino, ...(handle.description === undefined ? {} : { description: handle.description }), size } }, { acknowledged: true });
                 file.length = size;
-                unsent = true;
-                throughUnsent = true;
+                throughLogged = ++changes;
                 return;
             }
             if (!room(file, size))
@@ -565,8 +563,7 @@ export function delegationHolder(options) {
                 if (other === handle)
                     return;
             client.submit({ type: 'call', call: { call: 'close', path: handle.file.key, description: handle.description } }, { acknowledged: true });
-            unsent = true;
-            throughUnsent = true;
+            throughLogged = ++changes;
         },
         keyOf: (handleId) => handleOf(handleId).file.key,
         dup: (handleId) => {
@@ -703,21 +700,26 @@ export function delegationHolder(options) {
         holds: (key) => client.held(key) !== undefined,
         pending: () => dirty.size > 0 || client.pending(),
         flush: async () => {
+            drain();
+            const covered = changes;
             await client.flush();
-            sentSome();
+            sentSome(covered);
             failed();
         },
         send: async () => {
+            drain();
+            const covered = changes;
             await client.flush();
-            sentSome();
+            sentSome(covered);
         },
         reportRecorded: () => failed(),
-        throughPending: () => throughUnsent,
+        throughPending: () => throughLogged > sentAt,
         changing: (keys) => throughAt(keys),
         settle: async () => {
             drain();
+            const covered = changes;
             await client.settle();
-            sentSome();
+            sentSome(covered);
         },
         stats: () => {
             const stats = client.stats();

@@ -76,16 +76,6 @@ export declare function getSharedRuntimeExternals(specifier: string): string[];
 export declare const PROVIDED_PACKAGE_HOOK = "__nimbusProvidedPackage";
 /** Bind canonical esbuild/Bun CommonJS records to the runtime's provided packages. */
 export declare function rewriteProvidedCommonJsModules(source: string): string;
-/**
- * A large ES module (bundle-cell-transform.ts BUNDLED_ESM_REWRITE_MIN_BYTES)
- * lowered to CommonJS in the session, without the transform host: read a
- * statement at a time (readEsmRecords, bounded memory, imports live) and
- * emitted by the one emitter. Null for what it leaves to the host: top-level
- * await (its body is synchronous), an import.meta member it does not bind, a
- * module acorn cannot parse, and a source with no module syntax. In Bun's
- * `scope` (module-format.ts ModuleScope) the module keeps CommonJS's names.
- */
-export declare function rewriteBundledEsmToCjs(source: string, absoluteUrl: string, moduleFactory?: boolean, scope?: ModuleScope): TransformResult | null;
 import type * as esbuild from 'esbuild-wasm/esm/browser.js';
 /** What an in-isolate engine offers: esbuild's transform and build, ready to call. */
 export type EsbuildEngine = Pick<typeof esbuild, 'transform' | 'build'>;
@@ -124,11 +114,12 @@ export interface EsbuildTransformOptions {
     /** Bind compiler-produced import.meta references to the wrapper module. */
     moduleMetadata?: boolean;
     /**
-     * The code is an ES module, as Node runs it (module-format.ts): lowered
-     * strict, its top-level \`this\` undefined, and with none of CommonJS's
-     * names (esModuleSource, ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs).
+     * The code is an ES module, lowered to CommonJS in this runtime's scope
+     * at dynamicImportParent (async-module-lowering.ts lowerEsModule), its
+     * result's map the EsModuleMap; where the engine lowers it instead,
+     * moduleMetadata and define are read too.
      */
-    esModuleScope?: boolean;
+    esModule?: ModuleScope;
 }
 export interface TransformResult {
     code: string;

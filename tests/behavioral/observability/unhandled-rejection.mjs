@@ -1,33 +1,15 @@
 #!/usr/bin/env bun
-// observability/unhandled-rejection — facet body installs an
-// `unhandledrejection` / `error` listener that converts async
-// fire-and-forget rejections (and uncaught setTimeout-scheduled
-// errors) into stderr lines + exitCode=1. Pre-fix: silent exit
-// with exitCode=0 and empty stderr (the W5 zero-silent-OOM
-// contract only catches non-zero exits).
-//
-// Root cause (audit 2026-05-11-unhandled-rejection):
-//
-//   The facet's `NodeProcess.run()` wraps `__compiledFn(...)` in a
-//   try/catch (manager.ts:376-397) that only captures SYNCHRONOUS
-//   exceptions. Asynchronous rejections from `import().then()` calls
-//   without `.catch`, or unawaited async-function throws, fire during
-//   the microtask drain at line 400 and are NEITHER caught nor
-//   reported. Facet exits exitCode=0 with empty stderr. User sees
-//   a return-to-prompt with no diagnostic.
-//
-// Probe asserts:
-//   1. synthetic-rejection-loud: `Promise.reject(new Error('boom'))`
-//      with no .catch → stderr contains "Unhandled promise rejection"
-//      + the message, AND the process exits with code 1.
-//   2. async-fire-forget: an unawaited async function that throws →
-//      same shape.
-//   3. handler-no-double: `Promise.reject(new Error('caught')).catch(()=>{})`
-//      → NO "Unhandled promise rejection" string, exit=0. Verifies
-//      the listener doesn't false-positive on handled rejections.
-//   4. dynamic-import-regression: dynamic-import probe still works
-//      (the listener doesn't interfere with the existing fix).
+// observability/unhandled-rejection — a rejection nothing handles ends the
+// program as it ends Node's: Node's fatal report on stderr (the arrow at the
+// place, the error, the version), exit code 1. Real Node runs each program
+// too and is the oracle: its stderr, frames left out, is what the session's
+// output carries. A handled rejection reports nothing, and an import() the
+// listener must not disturb still runs.
 
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
@@ -40,56 +22,55 @@ await t.waitForPrompt(60_000);
 
 const A = makeAsserter('observability/unhandled-rejection');
 
-// ── Check 1: synthetic-rejection-loud ──────────────────────────────
-//
-// Promise.reject(...) with no .catch. Pre-fix the facet silently exits
-// exitCode=0 with empty stderr. Post-fix the listener fires:
-//   stderr: "Unhandled promise rejection: <Error.stack | message>"
-//   exitCode: 1
+const withoutFrames = (text) => text.replace(/\r\n/g, '\n').split('\n').filter((line) => !/^\s+at /.test(line)).join('\n');
+// Real Node's stderr and exit code for `program` as `file`, its directory named `dir`.
+function nodeRun(file, program, dir) {
+  const host = realpathSync(mkdtempSync(join(tmpdir(), 'unhandled-rejection-')));
+  try {
+    writeFileSync(join(host, file), program);
+    const ran = spawnSync('node', [file], { cwd: host, encoding: 'utf8', env: { PATH: process.env.PATH } });
+    return { status: ran.status, report: withoutFrames(ran.stderr.split(host).join(dir)).trim() };
+  } finally {
+    rmSync(host, { recursive: true, force: true });
+  }
+}
 
-await t.run('rm -rf /home/user/unhrej && mkdir -p /home/user/unhrej', 5_000);
-await t.writeFile('/home/user/unhrej/rej.mjs', `
+// ── Check 1: a rejected promise nothing handles ─────────────────────
+
+const REJ = `
 console.log('BEFORE');
 Promise.reject(new Error('synthetic-boom-42'));
 console.log('AFTER_KICKOFF');
-`);
+`;
+await t.run('rm -rf /home/user/unhrej && mkdir -p /home/user/unhrej', 5_000);
+await t.writeFile('/home/user/unhrej/rej.mjs', REJ);
+const rejNode = nodeRun('rej.mjs', REJ, '/home/user/unhrej');
 const rejR = await t.run('cd /home/user/unhrej && node rej.mjs', 30_000);
-const rejOut = rejR.output;
 A.check(
-  'synthetic-rejection-loud: stderr contains "Unhandled promise rejection" + message',
-  /Unhandled promise rejection[\s\S]*synthetic-boom-42/.test(rejOut),
-  `tail: ${rejOut.slice(-700)}`,
+  "rejection: Node's fatal report",
+  withoutFrames(rejR.output).includes(rejNode.report),
+  `node: ${rejNode.report}\nsession: ${rejR.output.slice(-900)}`,
 );
-A.check(
-  'synthetic-rejection-loud: process exits with code 1 (NOT silent exit=0)',
-  /exited with code 1/.test(rejOut) && !/exited with code 0/.test(rejOut),
-  `tail: ${rejOut.slice(-700)}`,
-);
+A.check("rejection: Node's exit code", rejNode.status === 1 && rejR.exitCode === rejNode.status, `exit ${rejR.exitCode}, node ${rejNode.status}`);
 
-// ── Check 2: async-fire-forget ─────────────────────────────────────
-//
-// Unawaited async function that throws. Same observable behaviour as
-// Promise.reject — the listener fires.
+// ── Check 2: an unawaited async function that throws ───────────────
 
-await t.run('rm -rf /home/user/aff && mkdir -p /home/user/aff', 5_000);
-await t.writeFile('/home/user/aff/aff.mjs', `
+const AFF = `
 async function failing() { throw new Error('async-fire-forget-99'); }
 console.log('BEFORE');
 failing();
 console.log('AFTER_KICKOFF');
-`);
+`;
+await t.run('rm -rf /home/user/aff && mkdir -p /home/user/aff', 5_000);
+await t.writeFile('/home/user/aff/aff.mjs', AFF);
+const affNode = nodeRun('aff.mjs', AFF, '/home/user/aff');
 const affR = await t.run('cd /home/user/aff && node aff.mjs', 30_000);
-const affOut = affR.output;
 A.check(
-  'async-fire-forget: stderr contains "Unhandled promise rejection" + message',
-  /Unhandled promise rejection[\s\S]*async-fire-forget-99/.test(affOut),
-  `tail: ${affOut.slice(-700)}`,
+  "async-fire-forget: Node's fatal report",
+  withoutFrames(affR.output).includes(affNode.report),
+  `node: ${affNode.report}\nsession: ${affR.output.slice(-900)}`,
 );
-A.check(
-  'async-fire-forget: process exits with code 1',
-  /exited with code 1/.test(affOut),
-  `tail: ${affOut.slice(-700)}`,
-);
+A.check("async-fire-forget: Node's exit code", affNode.status === 1 && affR.exitCode === affNode.status, `exit ${affR.exitCode}, node ${affNode.status}`);
 
 // ── Check 3: handler-no-double ──────────────────────────────────────
 //
@@ -103,8 +84,8 @@ Promise.reject(new Error('caught-101')).catch(() => { console.log('CAUGHT_OK'); 
 const handR = await t.run('cd /home/user/handled && node handled.mjs', 30_000);
 const handOut = handR.output;
 A.check(
-  'handler-no-double: NO "Unhandled promise rejection" stderr (rejection was caught)',
-  !/Unhandled promise rejection/.test(handOut),
+  'handler-no-double: no fatal report (the rejection was handled)',
+  !/Node\.js v\d/.test(handOut),
   `tail: ${handOut.slice(-500)}`,
 );
 A.check(
@@ -135,9 +116,8 @@ A.check(
   `tail: ${regOut.slice(-500)}`,
 );
 A.check(
-  'dynamic-import-regression: exit 0 AND no Unhandled rejection (listener no false-positive)',
-  regR.exitCode === 0
-    && !/Unhandled promise rejection/.test(regOut),
+  'dynamic-import-regression: exit 0 and no fatal report',
+  regR.exitCode === 0 && !/Node\.js v\d/.test(regOut),
   `tail: ${regOut.slice(-500)}`,
 );
 

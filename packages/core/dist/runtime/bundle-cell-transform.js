@@ -23,16 +23,15 @@ import { errorText } from '../_shared/error-text.js';
 import { vfsPathExtension } from '../vfs/path.js';
 import { mayHaveDynamicImport } from './dynamic-import-rewrite.js';
 import { moduleImporterUrl } from '../_shared/module-importer.js';
-import { rewriteBundledEsmToCjs, rewriteProvidedCommonJsModules, transformSlices, } from './esbuild-service.js';
+import { lowerEsModule } from './async-module-lowering.js';
+import { rewriteProvidedCommonJsModules, transformSlices, } from './esbuild-service.js';
 import { MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
-import { esModuleSource, isEsModuleFile } from './module-format.js';
+import { isEsModuleFile } from './module-format.js';
 /**
- * Bundled ESM this large is lowered in the session (esbuild-service.ts
- * rewriteBundledEsmToCjs) rather than by the transform host, whose memory
- * grows with the module and is never given back (Oxc's wasm reaches 105 MB
- * for workerd's 4.7 MB worker.mjs). The session reads it a statement at a
- * time (async-module-lowering.ts readEsmRecords), in bounded memory, its
- * imports live as everywhere else.
+ * An ES module this large is lowered in the session (async-module-lowering.ts
+ * lowerEsModule, which reads it a statement at a time, in bounded memory)
+ * rather than shipped to the transform facet, which lowers a smaller one the
+ * same way.
  */
 export const BUNDLED_ESM_REWRITE_MIN_BYTES = 512 * 1024;
 /**
@@ -137,7 +136,6 @@ export function prepareBundleCell(path, source, packageType, scope) {
     // CommonJS wrapper name; in Bun's, with CommonJS's names. TypeScript keeps
     // CommonJS's names, as tsx and ts-node give them.
     const esm = !typescript && looksLikeEsm(path, source, packageType);
-    const nodeScope = esm && scope === 'node';
     // Source is transformed once per path; import.meta reads metadata from
     // each evaluation's module object, including its query and fragment.
     // The source URL still supplies the static parent for rewritten dynamic
@@ -151,8 +149,8 @@ export function prepareBundleCell(path, source, packageType, scope) {
         options: rewriteOnly
             ? { rewriteOnly: true, dynamicImportParent: absUrl, moduleMetadata }
             : {
-                loader: loader ?? 'js', format: 'cjs', target: 'esnext', dynamicImportParent: absUrl, moduleMetadata,
-                ...(nodeScope ? { esModuleScope: true } : {}),
+                ...(esm ? { esModule: scope } : { loader: loader ?? 'js', format: 'cjs', target: 'esnext' }),
+                dynamicImportParent: absUrl, moduleMetadata,
             },
     });
     let src;
@@ -167,21 +165,14 @@ export function prepareBundleCell(path, source, packageType, scope) {
     const rewriteOnly = !typescript && !esm;
     const cell = { path, typescript, lowered: !rewriteOnly, absUrl };
     if (esm && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
-        let rewritten;
         try {
-            rewritten = rewriteBundledEsmToCjs(nodeScope ? esModuleSource(src) : src, absUrl, true, scope);
+            return { ...cell, outcome: lowerEsModule(src, scope, absUrl) };
         }
         catch (e) {
-            rewritten = { error: errorText(e) };
-        }
-        if (rewritten && 'error' in rewritten)
-            return { ...cell, outcome: rewritten };
-        if (rewritten) {
-            // Its declarations are CommonJS now; what import() calls remain go to
-            // the host like any cell's.
-            if (!mayHaveDynamicImport(rewritten.code) && !rewritten.code.includes('import.meta'))
-                return { ...cell, outcome: rewritten };
-            return { ...cell, request: request(rewritten.code, true) };
+            // Nested past this stack: the host's, then its engine's (runTransformRequest).
+            if (e instanceof RangeError)
+                return { ...cell, request: request(src, false) };
+            return { ...cell, outcome: { error: errorText(e) } };
         }
     }
     return { ...cell, request: request(src, rewriteOnly) };
@@ -196,9 +187,9 @@ export function settleBundleCell(cell, outcome) {
     if ('error' in outcome) {
         if (outcome.transient)
             throw new Error(`esbuild transform unavailable for ${cell.path}: ${outcome.error}`);
-        return { code: esbuildDiagnosticShim(cell.path, outcome.error), lowered: cell.lowered, failed: true };
+        return { code: esbuildDiagnosticShim(cell.path, outcome.error), map: '', lowered: cell.lowered, failed: true };
     }
-    return { code: outcome.code, lowered: cell.lowered, failed: false };
+    return { code: outcome.code, map: outcome.map, lowered: cell.lowered, failed: false };
 }
 /**
  * The entry script as the facet compiles it: each dynamic `import()` routed to
@@ -242,7 +233,7 @@ export async function transformBundleCells(cells, { host, store, pacer, scope },
         stats.transformed++;
         if (!store || key === undefined || !spend)
             return;
-        const refused = await store.put(key, { code: result.code, lowered: result.lowered }, spend);
+        const refused = await store.put(key, { code: result.code, map: result.map, lowered: result.lowered }, spend);
         if (refused === null)
             return;
         stats.storeErrors++;
@@ -309,7 +300,7 @@ export async function transformEntryScript(code, parentUrl, { host, store, pacer
     if ('error' in outcome)
         throw new Error(`entry dynamic import transform failed: ${outcome.error}`);
     if (store && key !== undefined) {
-        await store.put(key, { code: outcome.code, lowered: false }, pacer ? (bytes) => pacer.spend(bytes) : undefined);
+        await store.put(key, { code: outcome.code, map: outcome.map, lowered: false }, pacer ? (bytes) => pacer.spend(bytes) : undefined);
     }
     return outcome.code;
 }

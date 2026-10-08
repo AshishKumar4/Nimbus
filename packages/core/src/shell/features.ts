@@ -5,6 +5,7 @@ import type { ShellInputSubmission, ShellQueuedInput } from './input-submission.
 interface ShellLike {
   executeLine(line: string, submission?: ShellInputSubmission): Promise<void>;
   printPrompt(): void;
+  printContinuationPrompt(): void;
   handleInput(data: string, submission?: ShellInputSubmission): void | Promise<void>;
   drainPasteQueue(): void | Promise<void>;
   queuePasteInput(data: string, submission?: ShellInputSubmission): void;
@@ -146,7 +147,7 @@ export class HeredocHandler {
           if (isDelim && this.heredocInfo !== null) {
             (await this._finishHeredoc());
           } else if (!isDelim) {
-            this.terminal.write('> ');
+            this.shell.printContinuationPrompt();
             (await this._drainPasteQueue());
           }
         }
@@ -164,7 +165,7 @@ export class HeredocHandler {
         if (isDelim && this.heredocInfo !== null) {
           (await this._finishHeredoc());
         } else if (!isDelim) {
-          this.terminal.write('> ');
+          this.shell.printContinuationPrompt();
         }
         return;
       }
@@ -224,7 +225,7 @@ export class HeredocHandler {
     this.heredocInfo = info;
     this.currentHeredocIndex = 0;
     this.bodies = info.delimiters.map(() => []);
-    this.terminal.write('> ');
+    this.shell.printContinuationPrompt();
     await this._drainPasteQueue();
   }
 
@@ -268,7 +269,7 @@ export class HeredocHandler {
       await this._finishHeredoc();
       return;
     }
-    this.terminal.write('> ');
+    this.shell.printContinuationPrompt();
   }
 
   /**
@@ -292,7 +293,7 @@ export class HeredocHandler {
         await this._finishHeredoc();
         return;
       }
-      this.terminal.write('> ');
+      this.shell.printContinuationPrompt();
     }
   }
 

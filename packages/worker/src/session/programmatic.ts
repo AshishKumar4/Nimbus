@@ -32,7 +32,7 @@ import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/
 import { isPreviewHostSafeSid, previewHostUrl, readPreviewHostSuffix } from '../_shared/preview-host.js';
 import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy, SpawnedWorker } from '../facets/manager.js';
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
-import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
+import { adoptGeneration, generation, raiseGeneration, releaseGeneration, type GenerationContext } from '@nimbus-sh/fabric/generation.js';
 import { timers, type TimerHost } from '@nimbus-sh/fabric/timers.js';
 import { parseShellState, type NamedShell, type NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
@@ -1390,14 +1390,10 @@ export async function rpcDestroy(
     // (hydrated in the constructor).
     self._w1SessionDestroyed = true;
     try { await self.ctx.storage.put(SESSION_DESTROYED_KEY, destroyedAt); } catch { /* best-effort */ }
-    // deleteAll also wiped the isolate-generation counter; without
-    // re-persisting it the next boot would restart at generation 1, and a
-    // straggler facet from a HIGHER pre-destroy generation would classify as
-    // current-generation (pid > pidBase) — landing its output on the
-    // destroyed/recreated session. Keep {tombstone, isolateGen} consistent.
-    try { await self.ctx.storage.put(GENERATION_KEY, generation(self.ctx)); } catch { /* best-effort */ }
-
-    resetInMemorySessionState(self);
+    // deleteAll also wiped the isolate-generation counter: the recreated
+    // session's supervisor reserves its generation again (installEmptyProcessState),
+    // past every pid this instance minted, before it mints any.
+    await resetInMemorySessionState(self);
     destroyed = true;
     return { ok: true, killed, destroyedAt, reason };
   } finally {
@@ -1414,17 +1410,32 @@ async function quiesceInMemorySessionState(self: ProgrammaticHost): Promise<void
   self.terminal = null;
   await closeAcceptedWebSockets(self);
   try { self._cirrusHmrWsClients?.clear?.(); } catch {}
-  installEmptyProcessState(self, successorGeneration(self));
+  await installEmptyProcessState(self);
 }
 
 /**
- * The generation the NEXT boot of this session will run as.
- *
- * rpcDestroy re-persists the pre-destroy generation after wiping storage,
- * so `adoptGeneration` reads it back and bumps once — landing here.
+ * A session's process supervisor: the one way one is made, so each is
+ * wired to raise the persisted generation when its pids reach the next
+ * stride (pids never repeat across incarnations). It mints no pid before
+ * reserveSessionProcesses gives it its range.
  */
-function successorGeneration(self: ProgrammaticHost): number {
-  return generation(self.ctx) + 1;
+export function sessionProcesses(ctx: GenerationContext): SessionProcessSupervisor {
+  const processes = new SessionProcessSupervisor();
+  processes.onPidStride((stride) => { void raiseGeneration(ctx, stride); });
+  return processes;
+}
+
+/**
+ * Give `processes` (made by sessionProcesses) this incarnation's pid range:
+ * its generation durably reserved first (adoptGeneration: persisted past
+ * every one before it, and past every pid this context minted), then its
+ * pids start past that. The one way a live supervisor gets its range: at
+ * boot and at a destroy's recreate.
+ */
+export async function reserveSessionProcesses(ctx: GenerationContext, processes: SessionProcessSupervisor): Promise<SessionProcessSupervisor> {
+  await adoptGeneration(ctx);
+  processes.setPidBase(generation(ctx) * PID_GEN_STRIDE);
+  return processes;
 }
 
 /**
@@ -1442,9 +1453,9 @@ function successorGeneration(self: ProgrammaticHost): number {
  * generation could have issued. This instance has to refuse exactly the
  * same set for the rest of its life, so it takes the same floor.
  */
-function installEmptyProcessState(self: ProgrammaticHost, generation: number): void {
-  self.processes = new SessionProcessSupervisor();
-  self.processes.setPidBase(generation * PID_GEN_STRIDE);
+async function installEmptyProcessState(self: ProgrammaticHost): Promise<void> {
+  releaseGeneration(self.ctx);
+  self.processes = await reserveSessionProcesses(self.ctx, sessionProcesses(self.ctx));
   self.portRegistry = new PortRegistry((pid) => _acquireForRoutedRequest(self, pid));
   self._w9PersistWired = false;
 }
@@ -1468,7 +1479,7 @@ async function closeAcceptedWebSockets(self: ProgrammaticHost): Promise<void> {
   }
 }
 
-function resetInMemorySessionState(self: ProgrammaticHost): void {
+async function resetInMemorySessionState(self: ProgrammaticHost): Promise<void> {
   try { self._cirrusHmrWsClients?.clear?.(); } catch {}
   try { self.terminal?.close?.(); } catch {}
 
@@ -1499,14 +1510,8 @@ function resetInMemorySessionState(self: ProgrammaticHost): void {
   self.wranglerAliasBannerShown = false;
   self._b4Phase = 'drained';
 
-  // Adopt the generation the next boot will derive from the counter
-  // rpcDestroy just re-persisted, so the in-memory pid floor and the
-  // persisted one agree. Deliberately left unpersisted: storage keeps the
-  // pre-destroy value, and adoptGeneration re-derives this one from it.
-  const successor = successorGeneration(self);
-  installEmptyProcessState(self, successor);
+  await installEmptyProcessState(self);
   self._w9SchemaInit = false;
-  assumeGeneration(self.ctx, successor);
   try { self._w9WireProcessLogPersist?.(); } catch {}
 }
 

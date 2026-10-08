@@ -128,8 +128,9 @@ function rewriteFromLexer(code: string, parentUrl: string, metadata: boolean, im
     edits.push({ start: site.ss, end: site.d + 1, text: call });
   }
   if (!edits.length && !metas.length) return code;
-  if (!metas.length) return applyEdits(code, edits, metas, null, 0);
-  return applyEdits(code, edits, metas, escapedCaptureNames(code), afterDirectives(code));
+  if (!metas.length) return applyEdits(code, edits, metas, null, 0, '');
+  const { insertion, separator } = afterDirectives(code);
+  return applyEdits(code, edits, metas, escapedCaptureNames(code), insertion, separator);
 }
 
 /** Marks the lexer reports only where it reads the marked spot as code. */
@@ -313,23 +314,27 @@ function escapedCaptureNames(code: string): Set<string> {
 }
 
 /** Keep the user's directive prologue, and a hashbang, in front of the metadata capture. */
-function afterDirectives(code: string): number {
+function afterDirectives(code: string): { insertion: number; separator: string } {
   const tokens = tokenizer(code, { ecmaVersion: 'latest', allowHashBang: true });
   let token = tokens.getToken();
   let insertion = token.start;
+  // What ends the last directive where it has no `;`.
+  let separator = '';
   while (token.type === tokTypes.string) {
     const expression = parseExpressionAt(code, token.start, { ecmaVersion: 'latest', sourceType: 'script' });
     if (expression.type !== 'Literal' || typeof Reflect.get(expression, 'value') !== 'string') break;
     do { token = tokens.getToken(); } while (token.start < expression.end);
     if (token.type === tokTypes.semi) {
       insertion = token.end;
+      separator = '';
       token = tokens.getToken();
       continue;
     }
     if (token.type !== tokTypes.eof && !/[\n\r\u2028\u2029]/.test(code.slice(expression.end, token.start))) break;
     insertion = expression.end;
+    separator = ';';
   }
-  return insertion;
+  return { insertion, separator };
 }
 
 /** What the grammar's reading collects, as its parser recognizes it. */
@@ -409,21 +414,25 @@ function rewriteWithGrammar(code: string, parentUrl: string, metadata: boolean, 
     if (!imports) collected.edits.length = 0;
     if (!collected.edits.length && !collected.metas.length) return code;
     let insertion = program.body[0]?.start ?? code.length;
+    // After a directive, which a `;` ends where it has none.
+    let separator = '';
     for (const statement of program.body) {
       if (typeof Reflect.get(statement, 'directive') !== 'string') break;
       insertion = statement.end;
+      separator = code[statement.end - 1] === ';' ? '' : ';';
     }
-    return applyEdits(code, collected.edits, collected.metas, collected.names, insertion);
+    return applyEdits(code, collected.edits, collected.metas, collected.names, insertion, separator);
   }
   return code;
 }
 
-function applyEdits(code: string, edits: SourceEdit[], metas: Span[], names: Set<string> | null, insertion: number): string {
+function applyEdits(code: string, edits: SourceEdit[], metas: Span[], names: Set<string> | null, insertion: number, separator: string): string {
   if (metas.length) {
     let binding = METADATA_BINDING;
     while (code.includes(binding) || names?.has(binding)) binding += '_';
     for (const meta of metas) edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
-    edits.push({ start: insertion, end: insertion, text: `\n"use strict";\nconst ${binding} = arguments[2];\n` });
+    // On the line it is inserted in, so every line keeps its number: a directive of its own.
+    edits.push({ start: insertion, end: insertion, text: `${separator}"use strict";const ${binding} = arguments[2];` });
   }
   return applySourceEdits(code, edits);
 }

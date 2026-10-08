@@ -42,8 +42,8 @@ async function sessionWith(seed = {}) {
   return { files, kernel, next: 2 };
 }
 
-/** A process of `session` (its own pid) over its own real store, holding what it writes. */
-async function processOf(session) {
+/** A process of `session` (its own pid) over its own real store, holding what it writes. `gate`: each wave waits for it. */
+async function processOf(session, gate = () => null) {
   const authority = session.files.bind({ pid: session.next++, cred: USER });
   const storeSource = new Function(
     FACET_RESIDENT_STORE_SOURCE
@@ -73,7 +73,10 @@ async function processOf(session) {
   const view = storeSource.__residentNamespaceView(supervisor, device, USER);
   const port = {
     openWriter: async () => null,
-    writeBatchStream: (stream, _fence, owner) => authority.writeStream(stream, owner === undefined ? {} : { mutationOwner: owner }),
+    writeBatchStream: async (stream, _fence, owner) => {
+      await gate();
+      return authority.writeStream(stream, owner === undefined ? {} : { mutationOwner: owner });
+    },
     grants: {
       acquire: async (path, delegate) => authority.acquireExclusiveMutation(path, { delegate }),
       release: async (owner) => { authority.releaseExclusiveMutation(owner); },
@@ -90,8 +93,8 @@ async function processOf(session) {
 }
 
 /** A session with `seed`, and one process of it. */
-async function processOver(seed = {}) {
-  return processOf(await sessionWith(seed));
+async function processOver(seed = {}, gate) {
+  return processOf(await sessionWith(seed), gate);
 }
 
 /** Python's open(name, 'w') and one write of `bytes`. */
@@ -156,6 +159,39 @@ async function readWhole(fs, name) {
     for (const name of [names[0], names[1], names[N - 1]]) assert.notEqual(await fs.stat(beneath(name)), null, `run ${run}: ${name}, just written, was stat'd as missing`);
     await fs.settle();
   }
+}
+
+// ── A write through made while a send is in flight is still owed after it ──
+// Red before: the send's completion cleared the debt the new write logged
+// during its await; the stat after it took the barrier without sending that
+// write, and the store answered the size the session had: the old one.
+{
+  const first = Promise.withResolvers();
+  const second = Promise.withResolvers();
+  let holding = false;
+  let held = 0;
+  const gate = () => (holding ? (held++ === 0 ? first.promise : second.promise) : null);
+  const { fs } = await processOver({ 'seen.txt': 'x' }, gate);
+  await fs.stat(beneath('seen.txt'));
+  const handle = await fs.open(beneath('owed.txt'), { write: true, create: true, truncate: true });
+  await fs.write(handle.id, null, enc.encode('a'));
+  holding = true;
+  const stat = fs.stat(beneath('owed.txt'));
+  for (let i = 0; i < 200 && held === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(held, 1, 'the stat sent nothing first');
+  // During the send: a write and the close (another thread's, or the program's own between the send's turns).
+  await fs.write(handle.id, null, enc.encode('bb'));
+  const closed = fs.close(handle.id);
+  first.resolve();
+  let answered = null;
+  stat.then((value) => { answered = value; });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  holding = false;
+  second.resolve();
+  const final = await stat;
+  assert.equal((answered ?? final).size, 3, 'a stat after the send answered without the write made during it');
+  await closed;
+  await fs.settle();
 }
 
 // ── A file of a few MiB reads back what was written, at once ──

@@ -103,6 +103,8 @@ export interface RuntimeRunOpts {
      * explained as Node's loader explains it.
      */
     esModule?: boolean;
+    /** Its lowering's EsModuleMap (async-module-lowering.ts), as JSON: where its frames read the source's places. */
+    esModuleMap?: string;
     /** Whose scope its ES modules run in (RuntimeSpec.moduleScope): absent, Node's. */
     moduleScope?: ModuleScope;
     /**

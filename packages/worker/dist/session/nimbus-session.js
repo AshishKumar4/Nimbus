@@ -16,9 +16,7 @@ import * as runtimeServices from '../hosted/services.js';
 import { workspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
-import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { registerAllocObserver } from '@nimbus-sh/platform/heavy-alloc-coord.js';
@@ -50,7 +48,7 @@ import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState as _w12GetReplicaState } from './replica-routes.js';
 import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, ensureResidentKeepalive as _w1EnsureResidentKeepalive, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose, noteClientActivity } from './hibernation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
-import { adoptGeneration, generation } from '@nimbus-sh/fabric/generation.js';
+import { generation } from '@nimbus-sh/fabric/generation.js';
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 import { initSession as _w11InitSession } from './init.js';
@@ -301,7 +299,7 @@ export class NimbusSession extends CloudflareDurableObject {
      * terminal input, output rings, and exit records, behind one facade.
      * Every sibling module routes process operations through this field.
      */
-    processes = new SessionProcessSupervisor();
+    processes = _programmatic.sessionProcesses(this.ctx);
     portRegistry;
     /** W1: the retention deadline this instance armed the log-janitor alarm
      *  for, or null (hibernation.ts ensureLogJanitor). Replaces the pre-W1
@@ -457,8 +455,7 @@ export class NimbusSession extends CloudflareDurableObject {
         // refused/attributed accordingly (see session/rpc.ts). One storage
         // read+write per instance boot; fail-soft (replicas cannot put).
         ctx.blockConcurrencyWhile(async () => {
-            await adoptGeneration(ctx);
-            this.processes.setPidBase(generation(ctx) * PID_GEN_STRIDE);
+            await _programmatic.reserveSessionProcesses(ctx, this.processes);
             try {
                 this._w1SessionDestroyed =
                     (await ctx.storage.get(SESSION_DESTROYED_KEY)) !== undefined;

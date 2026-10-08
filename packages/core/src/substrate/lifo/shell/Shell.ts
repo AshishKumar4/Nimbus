@@ -40,6 +40,7 @@ import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
 import { exists, statOrThrow } from '../../../vfs/vfs.js';
 import { runKill, type HostProcessSignals } from '../commands/system/kill.js';
 import { ShellInputSubmission, ShellInputExecution, type ShellQueuedInput } from '../../../shell/input-submission.js';
+import type { ProcessExitNotice, ProcessExitNoticeSource } from '../../../runtime/process-exit-notices.js';
 
 function shellPromptParts(env: Record<string, string>, cwd: string): {
   displayPath: string;
@@ -191,7 +192,10 @@ export class Shell {
   private lineSubmission: ShellInputSubmission | undefined;
   private activeInput: ShellInputExecution | undefined;
   private lineInputs: Array<{ submission: ShellInputSubmission; release: () => void }> = [];
-  private primaryPrompt = false;
+  private promptMode: 'unprinted' | 'primary' | 'continuation' = 'unprinted';
+  private readonly exitNotices = new Map<number, ProcessExitNotice>();
+  private exitNoticeSource: ProcessExitNoticeSource | undefined;
+  private renderExitNotice: ((notice: ProcessExitNotice, source: ProcessExitNoticeSource) => string) | undefined;
 
   /**
    * Accepted lines that do not form a complete command yet: an unclosed
@@ -673,8 +677,7 @@ export class Shell {
 
   printPrompt(): void {
     if (this.pendingLine !== null) {
-      this.primaryPrompt = false;
-      this.terminal.write(CONTINUATION_PROMPT);
+      this.printContinuationPrompt();
       return;
     }
 
@@ -684,8 +687,16 @@ export class Shell {
     }
     this.processRegistry.collectZombies();
 
+    const source = this.exitNoticeSource;
+    if (source) {
+      for (const notice of this.exitNotices.values()) {
+        if (source.retainsLogs(notice.pid)) this.writeToTerminal(this.renderExitNotice?.(notice, source) ?? '');
+      }
+    }
+    this.exitNotices.clear();
+
     this.terminal.write(PROMPT_START + formatShellPrompt(this.env, this.cwd) + PROMPT_END);
-    this.primaryPrompt = true;
+    this.promptMode = 'primary';
     this.announcePrompt();
     const submission = this.lineSubmission;
     this.lineSubmission = undefined;
@@ -698,7 +709,21 @@ export class Shell {
 
   /** A newly attached client learns current readiness, never a replayed completion. */
   announcePrompt(): void {
-    if (!this.running && this.primaryPrompt) this.terminal.shellIntegration?.({ type: 'shell-integration', event: 'prompt' });
+    if (!this.running && this.promptMode === 'primary') this.terminal.shellIntegration?.({ type: 'shell-integration', event: 'prompt' });
+  }
+
+  printContinuationPrompt(): void {
+    this.promptMode = 'continuation';
+    this.terminal.write(CONTINUATION_PROMPT);
+  }
+
+  queueProcessExitNotice(notice: ProcessExitNotice, source: ProcessExitNoticeSource, render: (notice: ProcessExitNotice, source: ProcessExitNoticeSource) => string): boolean {
+    this.exitNoticeSource = source;
+    this.renderExitNotice = render;
+    for (const pid of this.exitNotices.keys()) if (!source.retainsLogs(pid)) this.exitNotices.delete(pid);
+    if (this.exitNotices.has(notice.pid)) return false;
+    this.exitNotices.set(notice.pid, notice);
+    return true;
   }
 
   async handleInput(data: string, submission?: ShellInputSubmission): Promise<void> {
@@ -1029,7 +1054,7 @@ export class Shell {
   }
 
   private getPromptWidth(): number {
-    if (this.pendingLine !== null) return CONTINUATION_PROMPT.length;
+    if (this.promptMode === 'continuation') return CONTINUATION_PROMPT.length;
     const { displayPath, user, host } = shellPromptParts(this.env, this.cwd);
     // "user@host:path$ " — count visible chars only (no ANSI codes)
     return user.length + 1 + host.length + 1 + displayPath.length + 2;
@@ -1068,7 +1093,7 @@ export class Shell {
 
     // Rewrite prompt + buffer
     this.terminal.write(
-      this.pendingLine === null ? formatShellPrompt(this.env, this.cwd) : CONTINUATION_PROMPT,
+      this.promptMode === 'continuation' ? CONTINUATION_PROMPT : formatShellPrompt(this.env, this.cwd),
     );
     this.terminal.write(this.lineBuffer);
 
@@ -1204,7 +1229,7 @@ export class Shell {
    * both characters; a quoted join keeps the newline in the string.
    */
   private async acceptLine(rawLine: string, submission?: ShellInputSubmission): Promise<void> {
-    this.primaryPrompt = false;
+    this.promptMode = 'unprinted';
     submission?.leavePrompt();
     if (!this.lineSubmission) this.lineSubmission = submission;
     let command: string;
@@ -1233,7 +1258,7 @@ export class Shell {
   }
 
   async executeLine(line: string, submission: ShellInputSubmission | undefined = this.lineSubmission): Promise<void> {
-    this.primaryPrompt = false;
+    this.promptMode = 'unprinted';
     const release = submission?.retain();
     this.lineSubmission = undefined;
     this.running = true;

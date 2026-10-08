@@ -19,12 +19,11 @@ import { tokenizer, tokTypes } from 'acorn';
 import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { packageNameFromSpecifier } from './barrel-detect.js';
 import { bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
-import { emitCommonJs, lowerAsyncModule, readEsmModule } from './async-module-lowering.js';
-import { ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs, esModuleSource, type ModuleScope } from './module-format.js';
+import { lowerAsyncModule, lowerEsModule } from './async-module-lowering.js';
+import { ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs, type ModuleScope } from './module-format.js';
 import { withRecall } from '../vfs/recall.js';
 import {
   applySourceEdits,
-  hasUnscopedAwait,
   nodeList,
   nodeName,
   nodeProp,
@@ -182,50 +181,6 @@ function topLevelModuleDeclarationRanges(source: string): ModuleDeclarationRange
   return walked === null || active ? null : ranges;
 }
 
-function importMetaEdits(source: string, absoluteUrl: string, moduleFactory: boolean): SourceEdit[] | null {
-  // A module factory's import.meta is the module's metadata object, bound by
-  // the facet's rewrite of every MetaProperty (dynamic-import-rewrite.ts), so
-  // any property — Vite's chunks read `import.meta.dirname`, `.env`, `.hot` —
-  // is left for that pass, exactly as esbuild's output leaves it.
-  if (moduleFactory) return [];
-  const edits: SourceEdit[] = [];
-  const urlExpression = JSON.stringify(absoluteUrl);
-  try {
-    const tokens = tokenizer(source, {
-      ecmaVersion: 'latest',
-      sourceType: 'module',
-      allowHashBang: true,
-    });
-    while (true) {
-      const start = tokens.getToken();
-      if (start.type === tokTypes.eof) return edits;
-      if (start.type !== tokTypes._import) continue;
-      const dot1 = tokens.getToken();
-      if (dot1.type !== tokTypes.dot) continue;
-      const meta = tokens.getToken();
-      if (meta.type !== tokTypes.name || source.slice(meta.start, meta.end) !== 'meta') return null;
-      const dot2 = tokens.getToken();
-      if (dot2.type !== tokTypes.dot) return null;
-      const property = tokens.getToken();
-      if (property.type !== tokTypes.name) return null;
-      const propertyName = source.slice(property.start, property.end);
-      if (propertyName === 'url') {
-        edits.push({ start: start.start, end: property.end, text: urlExpression });
-      } else if (propertyName === 'resolve') {
-        edits.push({
-          start: start.start,
-          end: property.end,
-          text: `(specifier => globalThis.__nimbusImportMetaResolve(specifier, ${urlExpression}))`,
-        });
-      } else {
-        return null;
-      }
-    }
-  } catch {
-    return null;
-  }
-}
-
 /**
  * The runtime's function a bound record calls for its package: the one the
  * module system serves (node-shims.ts), named apart from the module's own
@@ -235,6 +190,7 @@ export const PROVIDED_PACKAGE_HOOK = '__nimbusProvidedPackage';
 
 /** Bind canonical esbuild/Bun CommonJS records to the runtime's provided packages. */
 export function rewriteProvidedCommonJsModules(source: string): string {
+  if (!source.includes('__commonJS')) return source;
   const helpers = new Set(['__commonJS']);
   const declarations = topLevelModuleDeclarationRanges(source);
   if (!declarations) return source;
@@ -305,56 +261,6 @@ export function rewriteProvidedCommonJsModules(source: string): string {
   return edits.length === 0 ? source : applySourceEdits(source, edits);
 }
 
-/**
- * A large ES module (bundle-cell-transform.ts BUNDLED_ESM_REWRITE_MIN_BYTES)
- * lowered to CommonJS in the session, without the transform host: read a
- * statement at a time (readEsmRecords, bounded memory, imports live) and
- * emitted by the one emitter. Null for what it leaves to the host: top-level
- * await (its body is synchronous), an import.meta member it does not bind, a
- * module acorn cannot parse, and a source with no module syntax. In Bun's
- * `scope` (module-format.ts ModuleScope) the module keeps CommonJS's names.
- */
-export function rewriteBundledEsmToCjs(
-  source: string,
-  absoluteUrl: string,
-  moduleFactory = false,
-  scope: ModuleScope = 'node',
-): TransformResult | null {
-  if (hasUnscopedAwait(source)) return null;
-  // Read a statement at a time (readEsmRecords), so a multi-MiB bundle reads
-  // in bounded memory, imports live. What acorn cannot parse is left to the
-  // transform host, which has the last word on syntax.
-  let read: ReturnType<typeof readEsmModule>;
-  try {
-    read = readEsmModule(source);
-  } catch {
-    return null;
-  }
-  const { records, wrapperUses } = read;
-  if (records.length === 0) return null;
-  const metaEdits = importMetaEdits(source, absoluteUrl, moduleFactory);
-  if (!metaEdits) return null;
-  // A free use of a CommonJS wrapper name binds nothing in an ES module, as
-  // the transform's define has it (ES_MODULE_UNBOUND_NAMES).
-  const unbound: SourceEdit[] = [];
-  if (scope === 'node') for (const [name, references] of wrapperUses) {
-    const to = ES_MODULE_UNBOUND_NAMES[name]!;
-    for (const { start, end, use } of references) unbound.push({ start, end, text: use === 'shorthand' ? `${name}: ${to}` : to });
-  }
-
-  // Only generated references use wrapper arguments. Source declarations
-  // named module/require/exports retain their own meanings. An import.meta
-  // is one token run, so it is inside a record's range or outside every one.
-  const code = emitCommonJs(source, records, {
-    body: 'sync',
-    exportsObject: moduleFactory ? 'arguments[2].exports' : 'module.exports',
-    requireFunction: moduleFactory ? 'arguments[1]' : 'module.require',
-    edits: [...metaEdits, ...unbound].filter((edit) => !records.some(({ start, end }) => edit.start >= start && edit.end <= end)),
-  });
-  const strict = (moduleFactory ? '"use strict";\n' : '') + code;
-  return { code: scope === 'node' ? esModuleScopeTypeofs(strict) : strict, map: '', warnings: [] };
-}
-
 // ── The in-isolate engine ───────────────────────────────────────────────
 //
 // Nimbus runs no esbuild in a session's isolate: transforms go to the
@@ -406,11 +312,12 @@ export interface EsbuildTransformOptions {
   /** Bind compiler-produced import.meta references to the wrapper module. */
   moduleMetadata?: boolean;
   /**
-   * The code is an ES module, as Node runs it (module-format.ts): lowered
-   * strict, its top-level \`this\` undefined, and with none of CommonJS's
-   * names (esModuleSource, ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs).
+   * The code is an ES module, lowered to CommonJS in this runtime's scope
+   * at dynamicImportParent (async-module-lowering.ts lowerEsModule), its
+   * result's map the EsModuleMap; where the engine lowers it instead,
+   * moduleMetadata and define are read too.
    */
-  esModuleScope?: boolean;
+  esModule?: ModuleScope;
 }
 
 export interface TransformResult {
@@ -567,17 +474,33 @@ async function transformWithEsbuild(
  * before esbuild is loaded, which a rewrite-only request does not wait for.
  */
 async function runTransformRequest(
-  esbuildApi: EsbuildTransformApi | null,
+  engine: EsbuildTransformApi | (() => Promise<EsbuildTransformApi>) | null,
   code: string,
   options: EsbuildTransformOptions | undefined,
   rewrite: (code: string, parentUrl: string, moduleMetadata?: boolean, routeImports?: boolean) => string,
   lower: (esm: string) => string,
+  lowerEsModule: (source: string, scope: ModuleScope, parentUrl: string) => TransformResult,
 ): Promise<TransformResult> {
   const parent = options?.dynamicImportParent;
   if (options?.rewriteOnly) {
     if (parent === undefined) throw new Error('a rewrite-only transform needs dynamicImportParent');
     return { code: rewrite(code, parent, options.moduleMetadata), map: '', warnings: [] };
   }
+  if (options?.esModule) {
+    if (parent === undefined) throw new Error('an ES module transform needs dynamicImportParent');
+    try {
+      return lowerEsModule(code, options.esModule, parent);
+    } catch (e) {
+      // Nested past what a parse on this stack reaches (acorn, about 600
+      // levels): the engine's CommonJS, which in the transform facet runs out
+      // too and so goes to the esbuild facet, whose parser does not; the
+      // session's define (requestOptions) keeps Node's scope.
+      if (!(e instanceof RangeError)) throw e;
+      const { esModule: _scope, ...rest } = options;
+      return runTransformRequest(engine, code, { ...rest, loader: 'js', format: 'cjs', target: 'esnext' }, rewrite, lower, lowerEsModule);
+    }
+  }
+  const esbuildApi = typeof engine === 'function' ? await engine() : engine;
   if (esbuildApi === null) throw new Error('esbuild transform before esbuild is loaded');
   if (options?.moduleMetadata && parent !== undefined && code.includes('import')) {
     // CJS emit replaces import.meta with an empty object even when syntax
@@ -849,29 +772,26 @@ async function remotePlugin(plugin: esbuild.Plugin, initialOptions: esbuild.Buil
   };
 }
 
-/** What a transform request hands the engine: its source after the provided-module pre-pass, unless it asks only for the rewrite. */
+/**
+ * An ES module request in Node's scope carries the define that unbinds the
+ * CommonJS names, which the host's engine applies where the lowering's parse
+ * runs out of stack (runTransformRequest), and its result has a typeof of one
+ * 'undefined' (module-format.ts esModuleScopeTypeofs; for the lowering's own
+ * result, already so).
+ */
+function requestOptions(options: EsbuildTransformOptions | undefined): EsbuildTransformOptions | undefined {
+  return options?.esModule === 'node' ? { ...options, define: { ...options.define, ...ES_MODULE_UNBOUND_NAMES } } : options;
+}
+
+function finishedTransform(result: TransformResult, options: EsbuildTransformOptions | undefined): TransformResult {
+  return options?.esModule === 'node' ? { ...result, code: esModuleScopeTypeofs(result.code) } : result;
+}
+
+/** What a transform request is run on: a CJS emit of JavaScript has its bundled CommonJS records bound to the runtime's provided packages first. */
 function preparedTransformSource(code: string, options: EsbuildTransformOptions | undefined): string {
   if (options?.rewriteOnly) return code;
-  return withProvidedModuleRewrite(options?.esModuleScope ? esModuleSource(code) : code, options);
-}
-
-/** What the engine is asked: an ES module's scope as the define that makes it. */
-function engineTransformOptions(options: EsbuildTransformOptions | undefined): EsbuildTransformOptions | undefined {
-  if (!options?.esModuleScope || options.rewriteOnly) return options;
-  const { esModuleScope: _scope, ...rest } = options;
-  return { ...rest, define: { ...rest.define, ...ES_MODULE_UNBOUND_NAMES } };
-}
-
-/** An engine's result for `options`, with an ES module's typeof of an unbound name 'undefined'. */
-function finishedTransform(result: TransformResult, options: EsbuildTransformOptions | undefined): TransformResult {
-  return options?.esModuleScope && !options.rewriteOnly ? { ...result, code: esModuleScopeTypeofs(result.code) } : result;
-}
-
-/** A CJS emit of JavaScript binds bundled CommonJS records to the runtime's provided packages first. */
-function withProvidedModuleRewrite(code: string, options?: EsbuildTransformOptions): string {
-  return options?.format === 'cjs' && (!options.loader || options.loader === 'js' || options.loader === 'jsx')
-    ? rewriteProvidedCommonJsModules(code)
-    : code;
+  const javaScript = !options?.loader || options.loader === 'js' || options.loader === 'jsx';
+  return (options?.esModule || options?.format === 'cjs') && javaScript ? rewriteProvidedCommonJsModules(code) : code;
 }
 
 /**
@@ -974,14 +894,17 @@ export class EsbuildService {
       return outcome;
     }
     // In the isolate the engine's own error propagates, diagnostics and all.
-    const result = await this.transformInIsolate(preparedTransformSource(code, options), engineTransformOptions(options));
-    return finishedTransform(result, options);
+    return finishedTransform(await this.transformInIsolate(preparedTransformSource(code, options), requestOptions(options)), options);
   }
 
   /** One transform on the in-isolate engine, of source the provided-module pre-pass has seen. */
   private async transformInIsolate(code: string, options: EsbuildTransformOptions | undefined): Promise<TransformResult> {
-    if (!options?.rewriteOnly) await this.ensureInit();
-    return runTransformRequest(this._esbuild, code, options, rewriteDynamicImports, lowerAsyncModule);
+    // The engine loads for the first request that needs it (an ES module's lowering does not).
+    const engine = async () => {
+      await this.ensureInit();
+      return this._esbuild!;
+    };
+    return runTransformRequest(engine, code, options, rewriteDynamicImports, lowerAsyncModule, lowerEsModule);
   }
 
   /**
@@ -997,7 +920,7 @@ export class EsbuildService {
     const positions: number[] = [];
     requests.forEach(({ code, options }, i) => {
       try {
-        prepared.push({ code: preparedTransformSource(code, options), options: engineTransformOptions(options) });
+        prepared.push({ code: preparedTransformSource(code, options), options: requestOptions(options) });
         positions.push(i);
       } catch (e) {
         outcomes[i] = { error: errorText(e) };

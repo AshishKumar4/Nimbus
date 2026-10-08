@@ -13,7 +13,7 @@
  * `HostedProcess` and never imports this file.
  */
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { describeError, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
+import { describeError, isHostReset, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { getCtxExports, stagedBootAssembler, supervisorEntrypoint, supervisorEntrypointName, } from './composition.js';
@@ -22,6 +22,7 @@ import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.
 import { supervisorLoaderKey, mintProcessSupervisor } from './supervisor-props.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/process-fs-journal-reader-source.generated.js';
+import { applyFacetLimits, facetLimits, facetLoaderKey } from './facet-limits.js';
 export function getNimbusCtxExports() {
     const ctxExports = getCtxExports();
     if (!ctxExports || typeof ctxExports !== 'object') {
@@ -296,13 +297,17 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     // is gone. Both cases are reported instead.
     let evaluated = false;
     let released = false;
+    let markLost = () => { };
+    const lost = new Promise((_, reject) => { markLost = reject; });
+    lost.catch(() => { });
     const start = async () => {
         if (released) {
             throw new Error(`Nimbus: resident process ${params.pid} is no longer running`);
         }
         if (evaluated) {
-            throw new Error(`Nimbus: resident process ${params.pid} is no longer loaded (its facet was lost); `
-                + 'it is not restarted');
+            const gone = new Error(`Nimbus: resident process ${params.pid} is no longer loaded (its facet was lost)`);
+            markLost(gone);
+            throw gone;
         }
         evaluated = true;
         return { class: residentProcessClass(env, disk, supervisor, params, loaderKey) };
@@ -413,15 +418,16 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     started.catch(() => { });
     // A facet's isolate dies on its own (out of memory, out of CPU) and this
     // object goes on (measured: the journal probe, 2026-10-07). A journaling
-    // resident's class holds held() open while its isolate lives: its
-    // rejection, unless this release ended it, is the process lost. Any
-    // other class's death is not seen here.
-    const lost = params.journal ? started.then(() => facet.held()).then(() => { throw new Error(`Nimbus: resident process ${params.pid}'s held() returned`); }, (error) => {
-        if (released)
-            return new Promise(() => { });
-        throw new Error(`Nimbus: resident process ${params.pid} died: ${error instanceof Error ? error.message : String(error)}`);
-    }) : new Promise(() => { });
-    lost.catch(() => { });
+    // resident's class holds held() open while its isolate lives, from its
+    // creation (a lifetime run is watched while it runs): a platform reset of
+    // it is the process lost too. Anything else that ends the call is not: a
+    // run's own stop aborts the facet with its stop record, and a release ends it.
+    if (params.journal) {
+        Promise.resolve().then(() => facet.held()).catch((error) => {
+            if (!released && isHostReset(error))
+                markLost(error instanceof Error ? error : new Error(String(error)));
+        });
+    }
     return {
         started,
         lost,
@@ -448,7 +454,9 @@ function startFailure(error, name, pid) {
     const what = reset
         ? `reset facet '${name}' as it started process ${pid}`
         : `failed to start process ${pid} in facet '${name}'`;
-    return new Error(`Nimbus: Cloudflare ${what}, and gave no cause (${errorText(error)})`, { cause: error });
+    const named = new Error(`Nimbus: Cloudflare ${what}, and gave no cause (${errorText(error)})`, { cause: error });
+    // The platform's own reset flag, kept on the error it is answered as: the lifecycle reads it there (isHostReset).
+    return reset ? Object.assign(named, { durableObjectReset: true }) : named;
 }
 /**
  * The dynamic worker's Durable Object class, minted in the caller's request
@@ -463,8 +471,8 @@ function residentProcessClass(env, disk, supervisor, params, loaderKey) {
             + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.');
     }
     return loader
-        .get(loaderKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
-        .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
+        .get(facetLoaderKey('process', loaderKey), async () => applyFacetLimits('process', await residentWorkerConfig(env, disk, supervisor, params.boot)))
+        .getDurableObjectClass(RESIDENT_PROCESS_CLASS, { limits: facetLimits('process') });
 }
 async function runOneShot(ctx, env, supervisor, params, consume) {
     const loader = env.LOADER;
@@ -505,7 +513,7 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
             params.onWriterActivated(params.writerId);
             supervisorBinding = mintProcessSupervisor(supervisorRpc, supervisor);
         }
-        worker = loader.load({
+        worker = loader.load(applyFacetLimits('process', {
             compatibilityDate: spec.compatibilityDate,
             compatibilityFlags: spec.compatibilityFlags,
             mainModule: spec.mainModule,
@@ -516,11 +524,11 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
             ...(supervisorBinding && params.outbound
                 ? { globalOutbound: supervisorBinding }
                 : supervisor.egress !== undefined ? { globalOutbound: supervisor.egress } : {}),
-        });
+        }));
         // The loader has taken the map; holding it here would keep a second full
         // copy of the program alive for as long as the program runs.
         spec = undefined;
-        entrypoint = worker.getEntrypoint();
+        entrypoint = worker.getEntrypoint(undefined, { limits: facetLimits('process') });
         // Narrowed by the runtime check; kept as a property call on the stub —
         // extracting the method builds a pipelined `fetch.call` path workerd
         // refuses for dynamically-loaded workers.

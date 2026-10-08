@@ -12,12 +12,18 @@ const bytes = (s) => new TextEncoder().encode(s);
 
 function createHost() {
   const writes = [];
+  const notices = [];
   const processes = new SessionProcessSupervisor();
   return {
     writes,
+    notices,
     host: {
       processes,
       terminal: { write: (data) => writes.push(data) },
+      shell: {
+        queueProcessExitNotice(notice, source, render) { notices.push(() => render(notice, source)); return true; },
+        writeNotice(data) { writes.push(data); },
+      },
       nimbusDebug: false,
     },
   };
@@ -55,13 +61,17 @@ function createHost() {
 }
 
 {
-  const { host, writes } = createHost();
+  const { host, writes, notices } = createHost();
   const entry = host.processes.spawn('failed-server', [], '/home/user', { longRunning: true });
   host.processes.appendOutput(entry.pid, 'stdout', 'first\nsecond\n');
 
   _emitExitDump(host, entry.pid, 1);
 
-  assert.ok(writes.includes('first\r\nsecond\r\n'), 'exit-dump chunks use terminal line endings');
+  assert.ok(writes.includes('first\r\nsecond\r\n'), 'actual program diagnostics are immediate and use terminal line endings');
+  assert.equal(notices.length, 1);
+  const notice = notices[0]();
+  assert.ok(!notice.includes('first'), 'the queued status does not retain or replay diagnostics');
+  assert.ok(!/(^|[^\r])\n/.test(notice), 'the entire notice has no bare line feed');
   assert.equal(host.processes.allLogs(entry.pid)[0].data, 'first\nsecond\n');
 }
 

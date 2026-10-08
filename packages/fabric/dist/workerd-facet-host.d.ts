@@ -14,6 +14,7 @@
  */
 import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps } from './process-fabric.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
+import { type FacetResourceLimits } from './facet-limits.js';
 /** Structural surface of a NimbusLoadedEntrypoint RPC stub. */
 export interface LoadedWorkerEntrypointStub {
     handleHttpRequest?: (request: Request) => Promise<Response>;
@@ -40,7 +41,9 @@ export declare function getNimbusCtxExports(): NimbusCtxExports;
 export declare function createLoadedWorkerEntrypoint(ctxExports: NimbusCtxExports, supervisor: ResidentSupervisorProps, stage: unknown, name?: string | null): Promise<LoadedWorkerEntrypointStub>;
 /** What an unkeyed `LOADER.load` hands back. */
 interface LoadedWorkerStub {
-    getEntrypoint(): LoadedWorkerEntrypointStub;
+    getEntrypoint(name?: string, opts?: {
+        limits: FacetResourceLimits;
+    }): LoadedWorkerEntrypointStub;
     getDurableObjectClass(name: string): unknown;
 }
 /**
@@ -59,7 +62,9 @@ interface LoadedWorkerStub {
  */
 interface WorkerLoaderBinding {
     get(id: string | null, code: () => unknown): {
-        getDurableObjectClass(name: string): unknown;
+        getDurableObjectClass(name: string, opts?: {
+            limits: FacetResourceLimits;
+        }): unknown;
     };
     load(code: unknown): LoadedWorkerStub;
 }

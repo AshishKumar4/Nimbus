@@ -29,6 +29,7 @@ import { loaderOutbound, requireNetwork, type WorkspaceNetwork } from '@nimbus-s
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { supervisorEntrypoint, hostRoute, type HostRoute } from './composition.js';
 import { supervisorLoaderKey } from './supervisor-props.js';
+import { applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey, type FacetKind } from './facet-limits.js';
 import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { unsettledEnd } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -85,6 +86,8 @@ export interface IsolatePoolEnv {
 
 /** Options handed to IsolatePool's constructor. */
 export interface IsolatePoolOptions {
+  /** Policy for this pool's loaded workers; generic submitted code is an isolate. */
+  facetKind?: FacetKind;
   /**
    * Maximum concurrent in-flight facets, each a distinct Dynamic Worker
    * spent from the hosting DO's `DO_DYNAMIC_WORKER_LIMIT`. Default 1; a
@@ -97,7 +100,11 @@ export interface IsolatePoolOptions {
    * it, and a refused one waits for a slot of the claim.
    */
   claim?: DynamicWorkerClaim;
-  /** Per-task timeout in ms. Default 60_000. */
+  /**
+   * Per-task wall timeout in ms; 0 is none. Defaults to this facet kind's
+   * call deadline (facetCallDeadlineMs), and to none for a kind that runs
+   * processes, which have no wall deadline.
+   */
   timeoutMs?: number;
   /**
    * Per-task retry attempts AFTER the initial failure. Default 0.
@@ -458,7 +465,8 @@ export class IsolatePool {
   /** The width this pool's dispatches are held inside (IsolatePoolOptions.claim). */
   private readonly claim: DynamicWorkerClaim | undefined;
   private readonly concurrency: number;
-  private readonly defaultTimeoutMs: number;
+  readonly defaultTimeoutMs: number;
+  private readonly facetKind: FacetKind;
   private readonly defaultRetries: number;
   private readonly tag: string;
   private readonly slotGenerations = new Map<number, number>();
@@ -543,7 +551,8 @@ export class IsolatePool {
     this.ctx = ctx;
     this.claim = opts.claim;
     this.concurrency = Math.max(1, opts.concurrency ?? 1);
-    this.defaultTimeoutMs = opts.timeoutMs ?? 60_000;
+    this.facetKind = opts.facetKind ?? 'isolate';
+    this.defaultTimeoutMs = opts.timeoutMs ?? facetCallDeadlineMs(this.facetKind) ?? 0;
     this.defaultRetries = Math.max(0, opts.retries ?? 0);
     this.tag = opts.tag ?? 'facet';
     this.writerPid = opts.omitSupervisor || opts.supervisorPid === undefined ? undefined : opts.supervisorPid;
@@ -847,7 +856,7 @@ export class IsolatePool {
     // worker whose SUPERVISOR binding still names the dead generation's
     // pid. See the supervisorKey field comment for the failure mode.
     const buildId = (generation: number): string =>
-      `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${wasmHash}:${perCallWasmHash}:${this.supervisorKey}:slot-${slotIndex}:g${generation}${this.scope ? `:${this.scope}` : ''}${this.network?.id ? `:${this.network.id}` : ''}`;
+      `nfp:${facetLoaderKey(this.facetKind, this.tag)}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${wasmHash}:${perCallWasmHash}:${this.supervisorKey}:slot-${slotIndex}:g${generation}${this.scope ? `:${this.scope}` : ''}${this.network?.id ? `:${this.network.id}` : ''}`;
     let id = buildId(this.slotGenerations.get(slotIndex) ?? 0);
     const code = this.#buildCode(fnSource, perCallWasmEntries);
 
@@ -892,8 +901,8 @@ export class IsolatePool {
       const endFetch = admitted ?? (this.claim ? undefined : claimAdmission(this.ctx)) ?? beginLoaderFetch(this.ctx, id, this.claim);
       admitted = undefined;
       try {
-        const stub = this.loader.get(id, async () => code);
-        const entrypoint = stub.getEntrypoint();
+        const stub = this.loader.get(id, async () => applyFacetLimits(this.facetKind, code));
+        const entrypoint = stub.getEntrypoint(undefined, { limits: facetLimits(this.facetKind) });
         // Direct property call, awaited by this frame — bracketed, never
         // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
         return await invoke(entrypoint, attempt);

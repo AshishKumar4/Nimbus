@@ -2,6 +2,7 @@ import type { ShellInputSubmission, ShellQueuedInput } from './input-submission.
 interface ShellLike {
     executeLine(line: string, submission?: ShellInputSubmission): Promise<void>;
     printPrompt(): void;
+    printContinuationPrompt(): void;
     handleInput(data: string, submission?: ShellInputSubmission): void | Promise<void>;
     drainPasteQueue(): void | Promise<void>;
     queuePasteInput(data: string, submission?: ShellInputSubmission): void;

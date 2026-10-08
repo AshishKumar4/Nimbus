@@ -127,6 +127,20 @@ async function awaitSocketOpen(ws, timeoutMs, what) {
   throw new Error(`${what} did not open: ${why}`);
 }
 
+// A WebSocket silent both ways for ~270 s is dropped before the session (1006, no close frame).
+const SOCKET_KEEPALIVE_MS = 30_000;
+
+function keepSocketAlive(ws, everyMs = SOCKET_KEEPALIVE_MS) {
+  const timer = setInterval(() => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    try { ws.ping(); } catch { /* closing under us: its close stops this */ }
+  }, everyMs);
+  timer.unref?.();
+  const stop = () => clearInterval(timer);
+  ws.on('close', stop);
+  ws.on('error', stop);
+}
+
 const sessionAttachPaths = new Map();
 
 // Every minted session is DELETEd at exit unless deleteSession already did; only SIGKILL or a crash escapes.
@@ -345,6 +359,7 @@ export class Terminal {
     // it must not inherit BASE from another suite in the caller's env.
     this.wsBase = (options.base ?? BASE).replace(/^http/, 'ws');
     this.wsOptions = options.wsOptions ?? wsHeaders();
+    this.keepaliveMs = options.keepaliveMs ?? SOCKET_KEEPALIVE_MS;
     this.ws = null;
     // reset() clears the caller's view, never the shell protocol stream.
     this.stream = '';
@@ -367,6 +382,7 @@ export class Terminal {
     this.submission = null;
     this.promptCursor = this.protocol.length;
     this.ws = new WebSocket(`${this.wsBase}/s/${this.sid}/ws`, this.wsOptions);
+    keepSocketAlive(this.ws, this.keepaliveMs);
     this.connected = false;
     this.closed = false;
     this.closeDetail = null;
@@ -508,6 +524,7 @@ export class Terminal {
 export async function connectProcessTerminal(sid, pid, options = {}) {
   const timeoutMs = options.timeoutMs ?? 15_000;
   const ws = new WebSocket(`${WS_BASE}/s/${sid}/api/logs/${pid}`, wsHeaders());
+  keepSocketAlive(ws, options.keepaliveMs);
   let closed = false;
   let closeDetail = null;
   let exit = null;

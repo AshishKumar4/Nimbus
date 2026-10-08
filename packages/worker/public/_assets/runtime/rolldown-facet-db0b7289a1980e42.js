@@ -14590,7 +14590,10 @@ function varNames(value, sloppy, top = true, names = []) {
   if (value.type === "VariableDeclaration" && value.kind === "var") {
     for (const declarator of list(value, "declarations")) names.push(...patternNames(child(declarator, "id")));
   }
-  for (const key in value) if (key !== "parent") varNames(value[key], sloppy, false, names);
+  for (const key in value) {
+    const field = value[key];
+    if (field !== null && typeof field === "object" && key !== "parent") varNames(field, sloppy, false, names);
+  }
   return names;
 }
 function scopeOf(node, scope, sloppy, functionBody) {
@@ -14643,9 +14646,10 @@ function* scoped(value, scope, sloppy, functionBody = false, parent = null, key 
     const fields = Object.keys(item);
     for (let i2 = fields.length - 1; i2 >= 0; i2--) {
       const name50 = fields[i2];
-      if (name50 === "parent") continue;
+      const child2 = item[name50];
+      if (child2 === null || typeof child2 !== "object" || name50 === "parent") continue;
       const fieldScope = item.type === "SwitchStatement" && name50 === "discriminant" ? at : inner;
-      stack.push([item[name50], fieldScope, isFunction && name50 === "body", item, name50]);
+      stack.push([child2, fieldScope, isFunction && name50 === "body", item, name50]);
     }
   }
 }

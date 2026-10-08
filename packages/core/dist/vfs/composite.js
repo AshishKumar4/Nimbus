@@ -973,8 +973,14 @@ export class CompositeVFS {
             ...(held === undefined ? {} : { holds: held }),
         });
     }
-    as(cred, actor) {
+    as(cred, actor, options) {
         const principal = actor === undefined ? { cred } : { cred, actor };
+        // A process's view (its holds) is its own, never the cached one.
+        if (options?.holds !== undefined) {
+            return new CompositeVFS(this.table.mounts.get(ROOT_POINT).source, undefined, {
+                table: this.table, principal, views: this.views, viewed: new WeakMap(), holds: options.holds,
+            });
+        }
         const key = principalKey(principal);
         let view = this.views.refs.get(key)?.deref();
         if (view === undefined) {
