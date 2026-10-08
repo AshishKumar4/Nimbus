@@ -4210,10 +4210,9 @@ const __fsMod = (() => {
     const oldK = _strip(oldAbs);
     const newK = _strip(newAbs);
     const source = _statLadder(oldAbs, true);
-    // A source the namespace knows is not there is rename(2)'s ENOENT, here,
-    // whoever would have answered the call; only one this view does not list
-    // is the authority's to answer for.
-    if (source === undefined && _nsUnlisted(oldAbs, false, false) === null) throw _fsErr("ENOENT", "rename", oldP, newP);
+    // A source the namespace knows is not there is ENOENT here for a sync call (it has no other verdict) and where
+    // this process decides (a subtree it holds); an async one elsewhere asks the session, which a peer may have changed.
+    if (source === undefined && (!live || _decidedHere(oldAbs)) && _nsUnlisted(oldAbs, false, false) === null) throw _fsErr("ENOENT", "rename", oldP, newP);
     // A name renamed to itself is left as it is, as rename(2) leaves it.
     if (oldK === newK) {
       if (source !== undefined) return null;

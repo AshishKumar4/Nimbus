@@ -448,7 +448,9 @@ export declare class CompositeVFS implements VFS {
      * presented to the backends it reaches (their views are its own then).
      */
     scoped(check: () => void, owner?: string, holds?: () => ReadonlySet<string>): CompositeVFS;
-    as(cred: VfsCred, actor?: string): CompositeVFS;
+    as(cred: VfsCred, actor?: string, options?: {
+        holds?: () => ReadonlySet<string>;
+    }): CompositeVFS;
     /** Who this view acts as. */
     get principal(): Principal;
     get sync(): SyncVFS;
