@@ -6,8 +6,8 @@
 // scripts/ci/lib/matrix.mjs) is green if and only if every red row is a
 // probe listed here that failed exactly as approved. The probe ran to its
 // end (its asserter's summary is there), the named assertion failed with
-// the approved failure itself (its ✗ detail shows the approved HTTP status
-// and page title), and every other assertion in it passed, setup and
+// the approved failure itself (HTTP status/page title or exact detail),
+// and every other assertion in it passed, setup and
 // cleanup included. Any other
 // red is red, a listed probe's included. A listed probe still runs, and its
 // output is kept in the release's staged.json. If a listed probe passes,
@@ -87,5 +87,15 @@ export const DEFERRED = validateDeferrals([
     approved: 'user, 2026-10-07',
     owner: 'ContinuedMackerel',
     tracking: 'nuxt dev first-run 503 from the Nitro builder (frameworks lane, ContinuedMackerel)',
+  },
+  {
+    probe: 'frameworks/remix-real',
+    assertion: 'react-router dev serves the app through the port route on its first run',
+    failure: { detail: '"last":"no resident process was launched"' },
+    reason: "React Router dev's config load exceeds the isolate memory limit before a resident server is launched. "
+      + 'Only the first-run serve assertion may fail; setup, install, conditional imports and cleanup must pass.',
+    approved: 'user, 2026-10-08',
+    owner: 'ContinuedMackerel',
+    tracking: 'react-router dev config load exceeds the isolate memory limit (frameworks lane, ContinuedMackerel)',
   },
 ]);
