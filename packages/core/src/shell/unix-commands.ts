@@ -164,7 +164,7 @@ async function stdinText(ctx: Ctx): Promise<string | undefined> {
  * standard input as the byte stream it is, not a decoded string.
  */
 function textCommand(command: Command): (ctx: Ctx) => Promise<number> {
-  return wrap(withInvocationVfs(() => command as unknown as CmdFn));
+  return withInvocationVfs(() => command as unknown as CmdFn);
 }
 
 /** `factory`'s command over the invocation's own view, once the call carries a credential. */
