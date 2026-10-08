@@ -205,14 +205,25 @@ const nimbus = createNimbusHandler({
 });
 
 const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/spawn-worker$/;
+type ProbeEnv = Parameters<typeof nimbus.fetch>[1] & { CF_VERSION_METADATA?: { id: string } };
 
 export default {
-  async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
-    if (request.method === 'POST') {
-      const match = EMBEDDER_WORKER_RE.exec(new URL(request.url).pathname);
-      if (match) return spawnEmbedderWorker(request, env, match[1]);
-    }
-    return nimbus.fetch(request, env, ctx);
+  async fetch(request: Request, env: ProbeEnv, ctx: ExecutionContext): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    const match = request.method === 'POST' ? EMBEDDER_WORKER_RE.exec(path) : null;
+    const response = match ? await spawnEmbedderWorker(request, env, match[1]) : await nimbus.fetch(request, env, ctx);
+    const versionId = env.CF_VERSION_METADATA?.id;
+    // Stamp the three readiness replies, including 101; leave encoded asset
+    // and port responses intact instead of rebuilding their body metadata.
+    const readiness = (request.method === 'POST' && path === '/new')
+      || (request.method === 'GET' && /^\/s\/[^/]+\/ws$/.test(path))
+      || (request.method === 'DELETE' && /^\/s\/[^/]+\/$/.test(path));
+    if (!versionId || !readiness) return response;
+    const headers = new Headers(response.headers);
+    headers.set('x-nimbus-probe-version', versionId);
+    return new Response(response.body, {
+      status: response.status, statusText: response.statusText, headers, webSocket: response.webSocket,
+    });
   },
 };
 
