@@ -145,123 +145,6 @@ export const MODULE_BODY_MARK = '/*module*/';
 export const COMMONJS_WRAPPER_NAMES: ReadonlySet<string> = new Set(['exports', 'require', 'module', '__filename', '__dirname']);
 
 /**
- * A walk of `source`'s tokens, handed them in order: true for the token after an `await` outside every function body
- * that is not an object key (`{ await: 135 }`, as typescript's keyword table
- * has), and `atEnd()` for one that ends the source.
- */
-function unscopedAwaitScanner(source: string): ((token: Token) => boolean) & { atEnd(): boolean } {
-  const functionBraces: boolean[] = [];
-  const functionParenDepths: number[] = [];
-  const methodParenCandidates: boolean[] = [];
-  const arrowExpressions: Array<{ parens: number; braces: number; brackets: number }> = [];
-  let bracketDepth = 0;
-  let pendingMethodBody = false;
-  let pendingArrowBody = false;
-  let pendingFunctionKeyword = false;
-  let pendingAwait = false;
-  let previous = tokTypes.eof;
-  let previousEnd = 0;
-
-  const scan = (token: Token): boolean => {
-    const type = token.type;
-    if (pendingAwait) {
-      if (type !== tokTypes.colon) return true;
-      pendingAwait = false;
-    }
-
-    if (pendingMethodBody && type !== tokTypes.braceL) pendingMethodBody = false;
-    if (pendingArrowBody && type !== tokTypes.braceL) {
-      arrowExpressions.push({
-        parens: methodParenCandidates.length,
-        braces: functionBraces.length,
-        brackets: bracketDepth,
-      });
-      pendingArrowBody = false;
-    }
-
-    if (pendingFunctionKeyword) {
-      if (
-        type === tokTypes.colon || type === tokTypes.comma || type === tokTypes.braceR
-        || type === tokTypes.parenR || type === tokTypes.bracketR || type === tokTypes.eq
-      ) functionParenDepths.pop();
-      pendingFunctionKeyword = false;
-    }
-
-    if (source.slice(previousEnd, token.start).includes('\n')) {
-      while (arrowExpressions.length > 0) {
-        const arrow = arrowExpressions[arrowExpressions.length - 1];
-        if (
-          methodParenCandidates.length !== arrow.parens
-          || functionBraces.length !== arrow.braces
-          || bracketDepth !== arrow.brackets
-        ) break;
-        arrowExpressions.pop();
-      }
-    }
-
-    while (arrowExpressions.length > 0) {
-      const arrow = arrowExpressions[arrowExpressions.length - 1];
-      const delimited = (type === tokTypes.semi || type === tokTypes.comma)
-        && methodParenCandidates.length === arrow.parens
-        && functionBraces.length === arrow.braces
-        && bracketDepth === arrow.brackets;
-      const closed = (type === tokTypes.parenR && methodParenCandidates.length === arrow.parens)
-        || (type === tokTypes.bracketR && bracketDepth === arrow.brackets)
-        || (type === tokTypes.braceR && functionBraces.length === arrow.braces);
-      if (!delimited && !closed) break;
-      arrowExpressions.pop();
-    }
-
-    if (
-      type === tokTypes.name
-      && previous !== tokTypes.dot && previous !== tokTypes.questionDot
-      && source.slice(token.start, token.end) === 'await'
-      && !functionBraces.includes(true)
-      && arrowExpressions.length === 0
-    ) pendingAwait = true;
-
-    if (type === tokTypes._function || type === tokTypes._class) {
-      if (previous !== tokTypes.dot && previous !== tokTypes.questionDot) {
-        functionParenDepths.push(methodParenCandidates.length);
-        pendingFunctionKeyword = true;
-      }
-    } else if (type === tokTypes.arrow) {
-      pendingArrowBody = true;
-    } else if (type === tokTypes.parenL) {
-      methodParenCandidates.push(
-        functionBraces.length > 0
-          && (previous === tokTypes.name || previous === tokTypes.string
-            || previous === tokTypes.num || previous === tokTypes.bracketR),
-      );
-    } else if (type === tokTypes.parenR) {
-      pendingMethodBody = methodParenCandidates.pop() === true;
-    } else if (type === tokTypes.bracketL) {
-      bracketDepth++;
-    } else if (type === tokTypes.bracketR) {
-      bracketDepth = Math.max(0, bracketDepth - 1);
-    } else if (type === tokTypes.dollarBraceL) {
-      functionBraces.push(false);
-    } else if (type === tokTypes.braceL) {
-      const functionBody = pendingArrowBody
-        || pendingMethodBody
-        || functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length;
-      if (functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length) {
-        functionParenDepths.pop();
-      }
-      functionBraces.push(functionBody);
-      pendingArrowBody = false;
-      pendingMethodBody = false;
-    } else if (type === tokTypes.braceR) {
-      functionBraces.pop();
-    }
-    previousEnd = token.end;
-    previous = type;
-    return false;
-  };
-  return Object.assign(scan, { atEnd: () => pendingAwait });
-}
-
-/**
  * Whether Node runs `source`, whose extension and package "type" leave it
  * undecided, as an ES module: Node's syntax detection (doc/api/packages.md
  * "Syntax detection", on by default from v22.7.0), as src/node_contextify.cc
@@ -436,6 +319,124 @@ function templateAwaitAt(holding: readonly AstNode[], at: number): boolean {
     child = parent;
   }
   return false;
+}
+
+/**
+ * A walk of `source`'s tokens, handed them in order: true for the token after
+ * an `await` outside every function body that is not an object key
+ * (`{ await: 135 }`, as typescript's keyword table has), and `atEnd()` for
+ * one that ends the source.
+ */
+function unscopedAwaitScanner(source: string): ((token: Token) => boolean) & { atEnd(): boolean } {
+  const functionBraces: boolean[] = [];
+  const functionParenDepths: number[] = [];
+  const methodParenCandidates: boolean[] = [];
+  const arrowExpressions: Array<{ parens: number; braces: number; brackets: number }> = [];
+  let bracketDepth = 0;
+  let pendingMethodBody = false;
+  let pendingArrowBody = false;
+  let pendingFunctionKeyword = false;
+  let pendingAwait = false;
+  let previous = tokTypes.eof;
+  let previousEnd = 0;
+
+  const scan = (token: Token): boolean => {
+    const type = token.type;
+    if (pendingAwait) {
+      if (type !== tokTypes.colon) return true;
+      pendingAwait = false;
+    }
+
+    if (pendingMethodBody && type !== tokTypes.braceL) pendingMethodBody = false;
+    if (pendingArrowBody && type !== tokTypes.braceL) {
+      arrowExpressions.push({
+        parens: methodParenCandidates.length,
+        braces: functionBraces.length,
+        brackets: bracketDepth,
+      });
+      pendingArrowBody = false;
+    }
+
+    if (pendingFunctionKeyword) {
+      if (
+        type === tokTypes.colon || type === tokTypes.comma || type === tokTypes.braceR
+        || type === tokTypes.parenR || type === tokTypes.bracketR || type === tokTypes.eq
+      ) functionParenDepths.pop();
+      pendingFunctionKeyword = false;
+    }
+
+    if (source.slice(previousEnd, token.start).includes('\n')) {
+      while (arrowExpressions.length > 0) {
+        const arrow = arrowExpressions[arrowExpressions.length - 1];
+        if (
+          methodParenCandidates.length !== arrow.parens
+          || functionBraces.length !== arrow.braces
+          || bracketDepth !== arrow.brackets
+        ) break;
+        arrowExpressions.pop();
+      }
+    }
+
+    while (arrowExpressions.length > 0) {
+      const arrow = arrowExpressions[arrowExpressions.length - 1];
+      const delimited = (type === tokTypes.semi || type === tokTypes.comma)
+        && methodParenCandidates.length === arrow.parens
+        && functionBraces.length === arrow.braces
+        && bracketDepth === arrow.brackets;
+      const closed = (type === tokTypes.parenR && methodParenCandidates.length === arrow.parens)
+        || (type === tokTypes.bracketR && bracketDepth === arrow.brackets)
+        || (type === tokTypes.braceR && functionBraces.length === arrow.braces);
+      if (!delimited && !closed) break;
+      arrowExpressions.pop();
+    }
+
+    if (
+      type === tokTypes.name
+      && previous !== tokTypes.dot && previous !== tokTypes.questionDot
+      && source.slice(token.start, token.end) === 'await'
+      && !functionBraces.includes(true)
+      && arrowExpressions.length === 0
+    ) pendingAwait = true;
+
+    if (type === tokTypes._function || type === tokTypes._class) {
+      if (previous !== tokTypes.dot && previous !== tokTypes.questionDot) {
+        functionParenDepths.push(methodParenCandidates.length);
+        pendingFunctionKeyword = true;
+      }
+    } else if (type === tokTypes.arrow) {
+      pendingArrowBody = true;
+    } else if (type === tokTypes.parenL) {
+      methodParenCandidates.push(
+        functionBraces.length > 0
+          && (previous === tokTypes.name || previous === tokTypes.string
+            || previous === tokTypes.num || previous === tokTypes.bracketR),
+      );
+    } else if (type === tokTypes.parenR) {
+      pendingMethodBody = methodParenCandidates.pop() === true;
+    } else if (type === tokTypes.bracketL) {
+      bracketDepth++;
+    } else if (type === tokTypes.bracketR) {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+    } else if (type === tokTypes.dollarBraceL) {
+      functionBraces.push(false);
+    } else if (type === tokTypes.braceL) {
+      const functionBody = pendingArrowBody
+        || pendingMethodBody
+        || functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length;
+      if (functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length) {
+        functionParenDepths.pop();
+      }
+      functionBraces.push(functionBody);
+      pendingArrowBody = false;
+      pendingMethodBody = false;
+    } else if (type === tokTypes.braceR) {
+      functionBraces.pop();
+    }
+    previousEnd = token.end;
+    previous = type;
+    return false;
+  };
+  return Object.assign(scan, { atEnd: () => pendingAwait });
 }
 
 /**
