@@ -58,6 +58,38 @@ const verdict = (...tasks) => ({ tasks: tasks.map((rows, i) => ({ task: `part ${
 const ledger = row('session-ledger', 0);
 
 {
+  const assertion = 'boundary: only this launch failure';
+  const detail = '"last":"no resident process was launched"';
+  const entry = { ...deferral, probe: 'frameworks/remix-real', assertion, failure: { detail } };
+  assert.deepEqual(validateDeferrals([entry]), [entry], 'an exact approved detail is a valid failure form');
+  for (const failure of [{ detail: '' }, { detail: ' ' }, { detail: 7 }, { detail, status: 503, title: 't' }, { detail, typo: true }, { status: 503, title: 't', detail }]) {
+    assert.throws(() => validateDeferrals([{ ...entry, failure }]), /failure/, `invalid or mixed form ${JSON.stringify(failure)}`);
+  }
+  const output = (checks, finished = true) => [
+    ...checks.map(([ok, label, text]) => `  ${ok ? '✓' : '✗'} ${label}${text ? ` — ${text}` : ''}`),
+    ...(finished ? [`  ──── [frameworks/remix-real] ${checks.filter(([ok]) => ok).length} pass / ${checks.filter(([ok]) => !ok).length} fail`] : []),
+  ].join('\n');
+  const checks = [[true, 'setup'], [false, assertion, `prefix {${detail}} suffix`], [true, 'cleanup']];
+  const grade = (text, exitCode = 1) => gradeMatrix([verdict([row(entry.probe, exitCode, text), ledger])], [entry]);
+  assert.equal(grade(output(checks)).exitCode, 0, 'the exact substring on the one failed assertion matches');
+  for (const text of [
+    output([[true, 'setup'], [false, assertion, 'different failure'], [true, 'cleanup']]),
+    output([[true, 'setup'], [false, assertion, 'no resident process was launched'], [true, 'cleanup']]),
+    output([[true, 'setup'], [false, assertion, 'different failure'], [true, 'cleanup', detail]]),
+    output([...checks, [false, 'another assertion', detail]]),
+    output(checks, false),
+    output(checks).replace('2 pass / 1 fail', '2 pass / 2 fail'),
+  ]) {
+    const result = grade(text);
+    assert.equal(result.exitCode, 1, `mismatch, incomplete probe or extra failure remains red: ${text}`);
+    assert.deepEqual(result.applied, []);
+  }
+  assert.equal(grade(output([[true, 'setup'], [true, assertion], [true, 'cleanup']]), 0).exitCode, 1, 'passing requires removing the approved detail deferral');
+  assert.equal(gradeMatrix([verdict([ledger])], [entry]).exitCode, 1, 'a missing detail-deferred row cannot grade green');
+  console.log('  ok  exact detail approval shares strict completed-probe/one-failure/pass-removes rules with HTTP approval');
+}
+
+{
   const graded = gradeMatrix([verdict([row('git-local', 0), row('frameworks/nuxt-real', 1, asApproved), ledger])], [deferral]);
   assert.equal(graded.exitCode, 0, graded.problems.join('\n'));
   assert.deepEqual(graded.applied.map((entry) => entry.probe), ['frameworks/nuxt-real']);
