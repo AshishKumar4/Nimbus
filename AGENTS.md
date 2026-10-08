@@ -383,8 +383,8 @@ again.
   `bun tests/behavioral/_throwaway-target.mjs down --name <name>`, which
   builds nothing.
 - The container commands are `scripts/ci/{unit,build,bundle,probes}.mjs`.
-  Any runner can run them in a clean checkout after `bun install
-  --frozen-lockfile`. The environment is `.armada.json` and
+  Any runner can run them in a clean checkout after
+  `bun scripts/install-deps.mjs`. The environment is `.armada.json` and
   `scripts/ci/recipe/`; the probe environment adds Chromium.
   `scripts/ci/lib/armada.mjs` is the only file that knows armada.
 - The armada client is pinned to one commit of
@@ -544,7 +544,7 @@ Agent-specific probes:
 
 | Task | Command |
 |---|---|
-| Install deps on the workstation (no build) | `bun install --frozen-lockfile --ignore-scripts` |
+| Install deps on the workstation (no build) | `bun scripts/install-deps.mjs` |
 | Bundle worker assets | `bun run bundle` |
 | Dev server | `bun run dev` |
 | Deploy the dev stack (`nimbus-dev`) | `bun run deploy` |
@@ -562,11 +562,14 @@ The root `predev` script regenerates worker bundles.
 **Lanes do not build on the workstation.** No typecheck, tsc, bundling or
 `dist-integrity` runs there: `remote-build`, `remote-probes --deploy`,
 `release.mjs staging` and `promote.mjs` do that work on CI (Tests § CI) and
-only upload from here. Install a worktree's dependencies with
-`bun install --frozen-lockfile --ignore-scripts`. A plain `bun install` runs
-the root postinstall, which bundles. The upload and release scripts need
-only the `--ignore-scripts` install, and refuse with that command when it
-is missing (`scripts/ci/lib/installed.mjs`).
+only upload from here. Install a fresh worktree's dependencies with
+`bun scripts/install-deps.mjs`: a frozen install without lifecycle scripts,
+then the keyed dependency patches. The root postinstall calls this same
+script in patch-only mode; it builds no source. Armada's environment uses
+the same script, and its key covers everything it reads. Unit tests use
+the committed generated assets; builds regenerate them in the dist task.
+Upload and release scripts refuse with this command when dependencies are
+missing (`scripts/ci/lib/installed.mjs`).
 
 Every deploy's bundle is built behind `scripts/dist-integrity.mjs`, instead
 of a plain build: on CI for staging, production and the throwaways
