@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- The probe driver pings its terminal and process-log WebSockets every 30 s.
+  A socket that carried nothing either way for about 270 s was dropped on the
+  way to the session (close 1006, no close frame; the session was not reset),
+  so a probe waiting on a command that printed nothing for that long failed
+  as if its session had reset.
 - Breaking for Cloudflare embedders: the hosting Worker must explicitly set
   `"limits": { "cpu_ms": 300000, "subrequests": 10000000 }` in its Wrangler
   configuration. A facet's limits only lower its parent's, and under the
