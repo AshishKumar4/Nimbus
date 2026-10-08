@@ -105,6 +105,8 @@ export type BundleCell = {
 export interface BundleCellResult {
     /** The cell's code: CommonJS, the TypeScript emit, or the diagnostic shim. */
     readonly code: string;
+    /** A lowered ES module's EsModuleMap (async-module-lowering.ts), as JSON; '' for any other. */
+    readonly map: string;
     readonly lowered: boolean;
     /**
      * esbuild's verdict was a rejection, and `code` is the shim that reports it.
@@ -138,6 +140,7 @@ export declare function entryScriptRequest(code: string, parentUrl: string): Esb
 /** A result as a store keeps it: only transforms that succeeded are kept. */
 export interface StoredBundleCell {
     readonly code: string;
+    readonly map: string;
     readonly lowered: boolean;
 }
 /**

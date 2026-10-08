@@ -119,7 +119,7 @@ export function generatedNames(source: string, names: ReadonlySet<string> = iden
 function identifierNames(source: string): Set<string> {
   const names = new Set<string>();
   try {
-    for (const token of tokenizer(source, MODULE_PARSE_OPTIONS)) if (token.type === tokTypes.name) names.add(String(token.value));
+    for (const token of tokenizer(source, MODULE_PARSE_OPTIONS)) if (token.type === tokTypes.name) names.add(String(Reflect.get(token, 'value')));
   } catch (error) {
     // The parse after this reports the module's syntax error.
     if (!(error instanceof SyntaxError)) throw error;
@@ -414,7 +414,7 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
       } else if (node.type === 'ImportExpression') {
         dynamicImports.push(node.start);
       } else if (node.type === 'MetaProperty') {
-        if (stringOf(node.meta as EsNode, 'name') === 'import') metas.push({ start: node.start, end: node.end });
+        if (node.meta.name === 'import') metas.push({ start: node.start, end: node.end });
       } else if (node.type === 'AwaitExpression' || (node.type === 'ForOfStatement' && node.await)) awaits.push(node.start);
       // A function, once finished: its free uses, before its body is dropped.
       else if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {

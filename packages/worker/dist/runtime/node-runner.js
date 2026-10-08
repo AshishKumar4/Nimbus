@@ -119,6 +119,7 @@ export async function runFresh(facetMgr, code, opts) {
             filename: opts.filename,
             dirname: opts.dirname,
             ...(opts.esModule ? { esModule: true } : {}),
+            ...(opts.esModuleMap ? { esModuleMap: opts.esModuleMap } : {}),
             ...(opts.moduleScope ? { moduleScope: opts.moduleScope } : {}),
             command,
             port,

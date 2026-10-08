@@ -165,9 +165,8 @@ export function prepareBundleCell(path, source, packageType, scope) {
     const rewriteOnly = !typescript && !esm;
     const cell = { path, typescript, lowered: !rewriteOnly, absUrl };
     if (esm && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
-        let lowered;
         try {
-            lowered = lowerEsModule(src, scope);
+            return { ...cell, outcome: lowerEsModule(src, scope, absUrl) };
         }
         catch (e) {
             // Nested past this stack: the host's, then its engine's (runTransformRequest).
@@ -175,10 +174,6 @@ export function prepareBundleCell(path, source, packageType, scope) {
                 return { ...cell, request: request(src, false) };
             return { ...cell, outcome: { error: errorText(e) } };
         }
-        // Its declarations are CommonJS now; what import() and import.meta remain go to the host like any cell's.
-        if (!mayHaveDynamicImport(lowered.code) && !lowered.code.includes('import.meta'))
-            return { ...cell, outcome: lowered };
-        return { ...cell, request: request(lowered.code, true) };
     }
     return { ...cell, request: request(src, rewriteOnly) };
 }
@@ -192,9 +187,9 @@ export function settleBundleCell(cell, outcome) {
     if ('error' in outcome) {
         if (outcome.transient)
             throw new Error(`esbuild transform unavailable for ${cell.path}: ${outcome.error}`);
-        return { code: esbuildDiagnosticShim(cell.path, outcome.error), lowered: cell.lowered, failed: true };
+        return { code: esbuildDiagnosticShim(cell.path, outcome.error), map: '', lowered: cell.lowered, failed: true };
     }
-    return { code: outcome.code, lowered: cell.lowered, failed: false };
+    return { code: outcome.code, map: outcome.map, lowered: cell.lowered, failed: false };
 }
 /**
  * The entry script as the facet compiles it: each dynamic `import()` routed to
@@ -238,7 +233,7 @@ export async function transformBundleCells(cells, { host, store, pacer, scope },
         stats.transformed++;
         if (!store || key === undefined || !spend)
             return;
-        const refused = await store.put(key, { code: result.code, lowered: result.lowered }, spend);
+        const refused = await store.put(key, { code: result.code, map: result.map, lowered: result.lowered }, spend);
         if (refused === null)
             return;
         stats.storeErrors++;
@@ -305,7 +300,7 @@ export async function transformEntryScript(code, parentUrl, { host, store, pacer
     if ('error' in outcome)
         throw new Error(`entry dynamic import transform failed: ${outcome.error}`);
     if (store && key !== undefined) {
-        await store.put(key, { code: outcome.code, lowered: false }, pacer ? (bytes) => pacer.spend(bytes) : undefined);
+        await store.put(key, { code: outcome.code, map: outcome.map, lowered: false }, pacer ? (bytes) => pacer.spend(bytes) : undefined);
     }
     return outcome.code;
 }

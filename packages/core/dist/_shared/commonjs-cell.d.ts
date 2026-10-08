@@ -31,9 +31,13 @@ export interface WrappedCommonJsCell {
  * Wrap a CommonJS cell as a `{ cjs }` module whose export, given the
  * module's `Function`, is Node's module wrapper function, in the given scope
  * (THE WRAPPER). A leading shebang becomes a line comment of the same length
- * (Node strips it too; `#!` is not valid inside a function).
+ * (Node strips it too; `#!` is not valid inside a function). `loweredHead`
+ * is a lowered ES module's (EsModuleMap.head): its first line's generated
+ * code, which a frame counts as wrapper.
  */
-export declare function wrapCommonJsCell(cell: string, scope?: CommonJsCellScope, lowered?: boolean): WrappedCommonJsCell;
+export declare function wrapCommonJsCell(cell: string, scope?: CommonJsCellScope, loweredHead?: number): WrappedCommonJsCell;
+/** The module beside a code module that holds its emit's ColumnMap (core async-module-lowering.ts), read by its frames. */
+export declare function columnMapModuleName(name: string): string;
 /**
  * Whether a script declares one of the wrapper's five names lexically at its
  * top level (`const`, `let` or `class`) — the one thing that needs the block

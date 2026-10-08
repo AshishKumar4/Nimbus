@@ -383,9 +383,10 @@ async function runTransformRequest(engine, code, options, rewrite, lower, lowerE
         return { code: rewrite(code, parent, options.moduleMetadata), map: '', warnings: [] };
     }
     if (options?.esModule) {
-        let lowered;
+        if (parent === undefined)
+            throw new Error('an ES module transform needs dynamicImportParent');
         try {
-            lowered = lowerEsModule(code, options.esModule);
+            return lowerEsModule(code, options.esModule, parent);
         }
         catch (e) {
             // Nested past what a parse on this stack reaches (acorn, about 600
@@ -397,7 +398,6 @@ async function runTransformRequest(engine, code, options, rewrite, lower, lowerE
             const { esModule: _scope, ...rest } = options;
             return runTransformRequest(engine, code, { ...rest, loader: 'js', format: 'cjs', target: 'esnext' }, rewrite, lower, lowerEsModule);
         }
-        return parent === undefined ? lowered : { ...lowered, code: rewrite(lowered.code, parent, options.moduleMetadata) };
     }
     const esbuildApi = typeof engine === 'function' ? await engine() : engine;
     if (esbuildApi === null)

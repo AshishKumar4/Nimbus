@@ -115,9 +115,9 @@ export interface EsbuildTransformOptions {
     moduleMetadata?: boolean;
     /**
      * The code is an ES module, lowered to CommonJS in this runtime's scope
-     * (async-module-lowering.ts lowerEsModule); dynamicImportParent,
-     * moduleMetadata and, where the engine lowers it instead, define are the
-     * only other options read.
+     * at dynamicImportParent (async-module-lowering.ts lowerEsModule), its
+     * result's map the EsModuleMap; where the engine lowers it instead,
+     * moduleMetadata and define are read too.
      */
     esModule?: ModuleScope;
 }

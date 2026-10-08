@@ -34,11 +34,7 @@ export function mayHaveDynamicImport(code) {
 /** es-module-lexer's `t` for an import() call and for import.meta. */
 const DYNAMIC_IMPORT = 2;
 const IMPORT_META = 3;
-// The names a rewritten cell reads its loader and import.meta through: as
-// long as what each replaces (`import`, `import.meta`), so no column moves.
-const GENERATED_NAME_PREFIX = '$nimb';
-const IMPORT_NAME = '$nimbI';
-const METADATA_NAME = '$nimbusMeta';
+const METADATA_BINDING = '__nimbusMetadataModule';
 const IDENTIFIER_PART = /[$_\p{ID_Continue}\u200c\u200d]/u;
 /**
  * A source of this many characters fits the lexer's initial 1 MiB scratch
@@ -111,7 +107,8 @@ function rewriteFromLexer(code, parentUrl, metadata, imports) {
         calls.push({ ss: at, se: end, d: open, lexed: false });
     }
     calls.sort((a, b) => a.ss - b.ss);
-    const importStarts = [];
+    const call = DYNAMIC_IMPORT_HELPER + '(' + JSON.stringify(parentUrl) + ', ';
+    const edits = [];
     let validatedEnd = -1;
     for (const site of calls) {
         // Inside arguments Acorn has already accepted: an import() there is one.
@@ -125,12 +122,15 @@ function rewriteFromLexer(code, parentUrl, metadata, imports) {
                 return null;
             validatedEnd = site.se;
         }
-        importStarts.push(site.ss);
+        // d is the opening parenthesis; do not consume grouping in the argument.
+        edits.push({ start: site.ss, end: site.d + 1, text: call });
     }
-    if (!importStarts.length && !metas.length)
+    if (!edits.length && !metas.length)
         return code;
-    const { insertion, separator } = metas.length ? afterDirectives(code) : { insertion: 0, separator: '' };
-    return applyEdits(code, parentUrl, importStarts, metas, escapedCaptureNames(code), insertion, separator);
+    if (!metas.length)
+        return applyEdits(code, edits, metas, null, 0, '');
+    const { insertion, separator } = afterDirectives(code);
+    return applyEdits(code, edits, metas, escapedCaptureNames(code), insertion, separator);
 }
 /** Marks the lexer reports only where it reads the marked spot as code. */
 const CODE_MARK = ' import.meta ';
@@ -321,7 +321,7 @@ function escapedCaptureNames(code) {
         try {
             const token = tokenizer(code.slice(start, end), { ecmaVersion: 'latest' }).getToken();
             const value = Reflect.get(token, 'value');
-            if (token.type === tokTypes.name && typeof value === 'string' && value.startsWith(GENERATED_NAME_PREFIX))
+            if (token.type === tokTypes.name && typeof value === 'string' && value.startsWith(METADATA_BINDING))
                 names.add(value);
         }
         catch (error) {
@@ -371,9 +371,13 @@ class ImportCollector extends Parser {
         this.collected = collected;
     }
     parseDynamicImport(node) {
-        // Acorn validates the arguments; the call is replaced at its `import`.
+        // Acorn enters this production at the opening parenthesis. Its end,
+        // not source.start (which can exclude grouping parentheses), is the
+        // exact end of the prefix we replace. Acorn validates the arguments.
+        const end = Reflect.get(this, 'end');
         const parsed = produce(PARSE_DYNAMIC_IMPORT, this, [node]);
-        this.collected.imports.push(node.start);
+        if (typeof end === 'number')
+            this.collected.edits.push({ start: node.start, end, text: this.collected.call });
         return parsed;
     }
     parseStatement(context, topLevel, exports) {
@@ -406,14 +410,15 @@ class MetadataCollector extends ImportCollector {
  */
 function rewriteWithGrammar(code, parentUrl, metadata, imports) {
     const collected = {
-        imports: [],
+        call: DYNAMIC_IMPORT_HELPER + '(' + JSON.stringify(parentUrl) + ', ',
+        edits: [],
         metas: [],
         names: metadata ? new Set() : null,
     };
     // Import-only cells need no identifier collection.
     const Collector = metadata ? MetadataCollector : ImportCollector;
     for (const sourceType of metadata ? ['module', 'script'] : ['script', 'module']) {
-        collected.imports.length = 0;
+        collected.edits.length = 0;
         collected.metas.length = 0;
         collected.names?.clear();
         let program;
@@ -427,8 +432,8 @@ function rewriteWithGrammar(code, parentUrl, metadata, imports) {
             continue;
         }
         if (!imports)
-            collected.imports.length = 0;
-        if (!collected.imports.length && !collected.metas.length)
+            collected.edits.length = 0;
+        if (!collected.edits.length && !collected.metas.length)
             return code;
         let insertion = program.body[0]?.start ?? code.length;
         // After a directive, which a `;` ends where it has none.
@@ -439,41 +444,19 @@ function rewriteWithGrammar(code, parentUrl, metadata, imports) {
             insertion = statement.end;
             separator = code[statement.end - 1] === ';' ? '' : ';';
         }
-        return applyEdits(code, parentUrl, collected.imports, collected.metas, collected.names ?? escapedCaptureNames(code), insertion, separator);
+        return applyEdits(code, collected.edits, collected.metas, collected.names, insertion, separator);
     }
     return code;
 }
-function applyEdits(code, parentUrl, imports, metas, names, insertion, separator) {
-    const edits = [];
-    let tail = '';
-    if (imports.length) {
-        const name = generatedName(IMPORT_NAME, code, names);
-        for (const start of imports)
-            edits.push({ start, end: start + 'import'.length, text: name });
-        // Hoisted from after the cell's last line, where it moves none of them.
-        tail = `\nfunction ${name}(...args) { return ${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(parentUrl)}, ...args); }`;
-    }
+function applyEdits(code, edits, metas, names, insertion, separator) {
     if (metas.length) {
-        const name = generatedName(METADATA_NAME, code, names);
-        for (const { start, end } of metas)
-            edits.push({ start, end, text: inPlace(name, code.slice(start, end)) });
+        let binding = METADATA_BINDING;
+        while (code.includes(binding) || names?.has(binding))
+            binding += '_';
+        for (const meta of metas)
+            edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
         // On the line it is inserted in, so every line keeps its number: a directive of its own.
-        edits.push({ start: insertion, end: insertion, text: `${separator}"use strict";const ${name} = arguments[2].__nimbusImportMeta;` });
+        edits.push({ start: insertion, end: insertion, text: `${separator}"use strict";const ${binding} = arguments[2];` });
     }
-    return applySourceEdits(code, edits) + tail;
-}
-/** `name`, as long as `stem`, that the cell writes nowhere (escaped or not). */
-function generatedName(stem, code, names) {
-    for (let i = 0;; i++) {
-        const suffix = i === 0 ? '' : i.toString(36);
-        const name = stem.slice(0, stem.length - suffix.length) + suffix;
-        if (!code.includes(name) && !names.has(name))
-            return name;
-    }
-}
-/** `name` in place of `span`, its line breaks and the columns after it kept. */
-function inPlace(name, span) {
-    const blank = span.replace(/[^\n\r\u2028\u2029]/g, ' ');
-    const lineBreak = blank.search(/[\n\r\u2028\u2029]/);
-    return name + blank.slice(lineBreak === -1 || lineBreak >= name.length ? name.length : lineBreak);
+    return applySourceEdits(code, edits);
 }
