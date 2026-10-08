@@ -41,10 +41,12 @@ const script = String.raw`
   if ! bun packages/worker/scripts/napi-wasm/build.mjs --work "$W/work" --out "$W/out" --spec none > "$W/build.log" 2>&1; then
     echo BUILD-FAILED; tail -40 "$W/build.log"; exit 1
   fi
-  # The committed bindings beside the new loader, as a full --out tree.
-  for d in packages/worker/public/_assets/napi-wasm/*/; do
-    name=$(basename "$d"); [ "$name" = loader ] && continue
-    mkdir -p "$W/out/$name"; cp "$d"/*/* "$W/out/$name/"
+  # The committed bindings beside the new loader, as a full --out tree:
+  # each build in its own <name>/<version>/, as build.mjs writes it.
+  for d in packages/worker/public/_assets/napi-wasm/*/*/; do
+    rel=$(printf '%s' "$d" | sed 's#^packages/worker/public/_assets/napi-wasm/##')
+    case "$rel" in loader/*) continue ;; esac
+    mkdir -p "$W/out/$rel"; cp "$d"* "$W/out/$rel"
   done
   (cd packages/worker && NIMBUS_NAPI_WASM_ARTIFACTS="$W/out" bun scripts/bundle-napi-wasm.mjs)
   echo ---PROVENANCE---
@@ -67,8 +69,9 @@ const dir = join(homedir(), '.local', 'state', 'nimbus', 'remote-napi-loader');
 mkdirSync(dir, { recursive: true });
 const archive = join(dir, `${new Date().toISOString().replace(/[:.]/g, '')}-${sha.slice(0, 12)}.tar.xz`);
 writeFileSync(archive, Buffer.from(files.trim(), 'base64'));
-const local = git(['status', '--porcelain', '--untracked-files=all', '--', ...STAGED]);
-if (git(['rev-parse', 'HEAD']) !== sha || local) {
+// STAGED is repository-relative, whatever directory this runs from.
+const local = git(['-C', repo, 'status', '--porcelain', '--untracked-files=all', '--', ...STAGED]);
+if (git(['-C', repo, 'rev-parse', 'HEAD']) !== sha || local) {
   console.log(`remote-napi-loader: the staged files are in ${archive}; ${local ? 'files they replace have local changes' : `${sha.slice(0, 12)} is not HEAD`}, so nothing was written. Extract it at the repository root.`);
   process.exit(1);
 }
