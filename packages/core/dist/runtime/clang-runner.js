@@ -613,8 +613,8 @@ async function dispatchClangFacet(target, args, signal) {
             argv: args.argv,
             cred: args.cred,
         }, {
-            timeoutMs: 300_000,
-            // A kill or Ctrl-C ends the facet too, where the host can.
+            // No deadline: a process runs until it exits or is killed. A kill or
+            // Ctrl-C ends the facet too, where the host can.
             signal,
         });
         return {

@@ -192,6 +192,7 @@ function sharedBuildFacet(ctx, env) {
     const stub = loadHelperFacet(ctx, env, {
         id: generationId(generation),
         className: 'BuildFacet',
+        kind: 'build',
         what: 'the build facet',
         code: async (assets) => buildFacetWorkerCode(await fetchBuildFacetParts(assets)),
     });

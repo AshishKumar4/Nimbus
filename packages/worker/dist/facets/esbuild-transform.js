@@ -108,6 +108,7 @@ export function esbuildFacetWorkerCode(wasm, jsFnBody, cliRunner, transformRunti
 const esbuildFacet = new SharedHelperFacet({
     id: ESBUILD_FACET_WORKER_ID,
     className: 'EsbuildFacet',
+    kind: 'esbuild',
     what: 'the esbuild facet',
     async code(assets) {
         const [wasm, jsFnBody, cliRunner, transformRuntime] = await Promise.all([

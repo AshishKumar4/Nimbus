@@ -4,6 +4,7 @@
  * Each is one child actor whose worker owns an engine's wasm, so the
  * object's own isolate never instantiates it.
  */
+import { applyFacetLimits, facetLimits, facetLoaderKey } from '@nimbus-sh/fabric/facet-limits.js';
 /**
  * Load a helper facet: the worker `spec.id` from `env.LOADER`, its code
  * built from `env.ASSETS` the first time, and its class as the child facet
@@ -17,8 +18,9 @@ export async function loadHelperFacet(ctx, env, spec) {
     const assets = Reflect.get(Object(env), 'ASSETS');
     if (!assets || typeof assets.fetch !== 'function')
         throw new Error(`Nimbus: env.ASSETS unavailable for ${spec.what}`);
-    const worker = await loader.get(spec.id, () => spec.code({ ASSETS: assets }));
-    const facetClass = worker.getDurableObjectClass(spec.className);
+    const kind = spec.kind ?? 'worker';
+    const worker = await loader.get(facetLoaderKey(kind, spec.id), async () => applyFacetLimits(kind, await spec.code({ ASSETS: assets })));
+    const facetClass = worker.getDurableObjectClass(spec.className, { limits: facetLimits(kind) });
     return ctx.facets.get(spec.id, async () => ({ class: facetClass }));
 }
 /**

@@ -6,9 +6,11 @@
  */
 import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
+import { type FacetKind } from '@nimbus-sh/fabric/facet-limits.js';
 import type { StagedSourceEnv } from '../runtime/staged-source.js';
 /** What a helper facet is: its worker id and facet name, its class, and its code, built from the staged assets. */
 export interface HelperFacetSpec {
+    kind?: FacetKind;
     id: string;
     className: string;
     /** How a missing binding names it: "the transform facet". */

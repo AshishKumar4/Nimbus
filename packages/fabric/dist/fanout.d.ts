@@ -110,7 +110,7 @@ export interface FanoutOptions {
      */
     tag: string;
     /**
-     * Per-task wall timeout in ms. Defaults to the facet policy. Forwarded to the in-DO
+     * Per-task wall timeout in ms. Defaults to the fanout kind's call deadline. Forwarded to the in-DO
      * IsolatePool's submit calls and to the peer-DO RPC's own
      * IsolatePool.
      */

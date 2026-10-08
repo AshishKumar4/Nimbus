@@ -25,8 +25,8 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import type { HostRoute } from './composition.js';
-import { type FacetResourceLimits } from './facet-limits.js';
-import type { WorkerCode } from './vendor/types.js';
+import { type FacetCodePolicy } from './facet-limits.js';
+import type { WorkerCode, EntrypointOptions } from './vendor/types.js';
 /**
  * A dynamic worker's entrypoint, as hop 3 relays to it. `fetch` is the
  * entrypoint contract every loaded worker answers; `handleHttpRequest` is the
@@ -38,12 +38,8 @@ interface LoadedEntrypoint {
 }
 /** A stub for one dynamically-loaded worker, as the shims hop across it. */
 interface LoadedWorker {
-    getEntrypoint(name?: string, options?: {
-        limits: FacetResourceLimits;
-    }): LoadedEntrypoint;
-    getDurableObjectClass(name: string, options?: {
-        limits: FacetResourceLimits;
-    }): DurableObjectClass;
+    getEntrypoint(name?: string, options?: EntrypointOptions): LoadedEntrypoint;
+    getDurableObjectClass(name: string, options?: EntrypointOptions): DurableObjectClass;
 }
 /**
  * The OUTER `env.LOADER` these shims forward to. `load` is the unkeyed arm the
@@ -109,6 +105,20 @@ declare const NimbusLoadedEntrypointPropsSchema: z.ZodObject<{
     key: z.ZodString;
     name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     depth: z.ZodOptional<z.ZodNumber>;
+    policy: z.ZodOptional<z.ZodObject<{
+        kind: z.ZodCustom<"process" | "build" | "esbuild" | "transform" | "git" | "isolate" | "fanout" | "worker", "process" | "build" | "esbuild" | "transform" | "git" | "isolate" | "fanout" | "worker">;
+        limits: z.ZodObject<{
+            cpuMs: z.ZodNumber;
+            subRequests: z.ZodNumber;
+        }, z.core.$strip>;
+    }, z.core.$strip>>;
+    options: z.ZodOptional<z.ZodObject<{
+        props: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
+        limits: z.ZodOptional<z.ZodObject<{
+            cpuMs: z.ZodOptional<z.ZodNumber>;
+            subRequests: z.ZodOptional<z.ZodNumber>;
+        }, z.core.$strip>>;
+    }, z.core.$loose>>;
     supervisor: z.ZodOptional<z.ZodObject<{
         doId: z.ZodString;
         pid: z.ZodNumber;
@@ -159,6 +169,7 @@ export declare class NimbusLoaderRPC extends WorkerEntrypoint<NimbusLoaderShimEn
 /** Props hop 2 carries: the stashed code it re-loads, and its inherited depth. */
 interface NimbusLoadedWorkerProps extends NimbusLoaderDepthProps {
     key?: string;
+    policy?: FacetCodePolicy;
 }
 /** Hop 2: the returned "worker" stub. Exposes .getEntrypoint(). */
 export declare class NimbusLoadedWorker extends WorkerEntrypoint<NimbusLoaderShimEnv, NimbusLoadedWorkerProps> {
@@ -169,7 +180,7 @@ export declare class NimbusLoadedWorker extends WorkerEntrypoint<NimbusLoaderShi
      * SINGLE outer request context (the cross-request-I/O limitation is
      * real — stubs created in one outer request can't be used by another).
      */
-    getEntrypoint(name?: string): unknown;
+    getEntrypoint(name?: string, options?: EntrypointOptions): unknown;
     /**
      * Pass-through to outer worker.getDurableObjectClass(name). The
      * returned stub is tied to THIS method's outer request context; if
@@ -179,7 +190,7 @@ export declare class NimbusLoadedWorker extends WorkerEntrypoint<NimbusLoaderShi
      * request context (which is the build-time context), not through
      * this method.
      */
-    getDurableObjectClass(name: string): DurableObjectClass;
+    getDurableObjectClass(name: string, options?: EntrypointOptions): DurableObjectClass;
 }
 /** Hop 3: a named-or-default entrypoint. Exposes .fetch(). */
 export declare class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv, NimbusLoadedEntrypointProps> {

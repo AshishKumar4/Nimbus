@@ -95,7 +95,9 @@ export declare function wasmCompiler(): WasmCompiler;
  * {@link FacetHost.memoryBudgetBytes} instead (pipe-rules.ts).
  *
  * {@link FacetSubmitOptions.timeoutMs} and `signal` are honoured: either ends
- * the facet, as a substrate with isolates of its own does. A facet waiting for
+ * the facet, as a substrate with isolates of its own does. A call given no
+ * deadline has none: a process's run ends when it exits or is killed, and
+ * off Cloudflare no CPU limit ends a runaway one either. A facet waiting for
  * no call holds no part of this process: it does not keep it alive.
  *
  * `network` is the workspace's (`workspace.network`, or

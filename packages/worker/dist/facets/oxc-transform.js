@@ -3,6 +3,7 @@ import { generateTransformFacetRuntimeSource, transformSlices, } from '@nimbus-s
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
+import { facetCallDeadlineMs } from '@nimbus-sh/fabric/facet-limits.js';
 import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import { OXC_WASM_BUILD_ID } from '../oxc-wasm-artifact.generated.js';
 import { OXC_FACET_BUILD_ID } from '../oxc-facet-artifact.generated.js';
@@ -73,6 +74,7 @@ export function oxcFacetWorkerCode(wasm, runtime) {
 const oxcFacet = new SharedHelperFacet({
     id: OXC_FACET_WORKER_ID,
     className: 'OxcFacet',
+    kind: 'transform',
     what: 'the transform facet',
     async code(assets) {
         const [wasm, runtime] = await Promise.all([fetchOxcWasmBytes(assets), fetchOxcFacetRuntime(assets)]);
@@ -82,7 +84,7 @@ const oxcFacet = new SharedHelperFacet({
 /** Modules one stack-fallback call carries; a batch with more makes more calls. */
 const STACK_FALLBACK_MODULES = 4;
 /** How long one stack-fallback call may take before its modules' answers are transient. */
-const STACK_FALLBACK_DEADLINE_MS = 30_000;
+const STACK_FALLBACK_DEADLINE_MS = facetCallDeadlineMs('transform');
 /** `call`, or a rejection once `ms` pass first. */
 async function withDeadline(call, ms) {
     let timer = null;

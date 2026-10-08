@@ -1485,6 +1485,8 @@ export async function _rpcFanoutExecute(self, fnSource, args, poolOpts = {}) {
     const concurrency = Math.max(1, Math.min(args.length, dynamicWorkerHeadroom(self.ctx)));
     const claim = claimDynamicWorkers(self.ctx, concurrency);
     const pool = new IsolatePool(self.env, self.ctx, {
+        // The coordinator's fan-out, run here: the same kind, so the same limits and deadline.
+        facetKind: 'fanout',
         concurrency,
         claim: claim ?? undefined,
         timeoutMs: poolOpts.timeoutMs,

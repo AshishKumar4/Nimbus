@@ -62,7 +62,11 @@ export interface IsolatePoolOptions {
      * it, and a refused one waits for a slot of the claim.
      */
     claim?: DynamicWorkerClaim;
-    /** Per-task wall timeout in ms. Defaults to this facet kind's policy. */
+    /**
+     * Per-task wall timeout in ms; 0 is none. Defaults to this facet kind's
+     * call deadline (facetCallDeadlineMs), and to none for a kind that runs
+     * processes, which have no wall deadline.
+     */
     timeoutMs?: number;
     /**
      * Per-task retry attempts AFTER the initial failure. Default 0.
