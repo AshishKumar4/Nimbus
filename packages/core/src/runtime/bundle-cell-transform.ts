@@ -33,7 +33,7 @@ import {
 } from './esbuild-service.js';
 import { MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
 import { isEsModuleFile, typeScriptFormat, typeScriptUnderNodeModules, type ModuleScope, type PackageType } from './module-format.js';
-import { nodeModulesRefusal, type NodeTypeScript, type TypeScriptRefusal } from './typescript-strip.js';
+import type { NodeTypeScript, TypeScriptRefusal } from './typescript-strip.js';
 
 /**
  * An ES module this large is lowered in the session (async-module-lowering.ts
@@ -122,6 +122,24 @@ export function esbuildDiagnosticShim(path: string, reason: string): string {
   const escapedReason = JSON.stringify(`esbuild transform failed for ${path}: ${reason.replace(/\n/g, ' ')}`);
   return '// framework-fixes-F4 diagnostic shim — esbuild rejected the ESM transform\n' +
     '(function () { throw new Error(' + escapedReason + '); })();\n';
+}
+
+/** What Node's ES loader says of TypeScript it does not take (`--no-experimental-strip-types`). */
+export function unknownExtensionRefusal(path: string): TypeScriptRefusal {
+  return {
+    code: 'ERR_UNKNOWN_FILE_EXTENSION',
+    message: `Unknown file extension "${path.slice(path.lastIndexOf('.'))}" for ${path}`,
+    filename: path, startLine: 0, snippet: '',
+  };
+}
+
+/** The refusal of a file under node_modules, which Node does not strip. */
+export function nodeModulesRefusal(path: string): TypeScriptRefusal {
+  return {
+    code: 'ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING',
+    message: `Stripping types is currently unsupported for files under node_modules, for "${path}"`,
+    filename: path, startLine: 0, snippet: '',
+  };
 }
 
 /**

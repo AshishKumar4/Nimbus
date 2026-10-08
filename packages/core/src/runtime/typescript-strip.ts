@@ -14,24 +14,6 @@ export interface TypeScriptRefusal {
   snippet: string;
 }
 
-/** What Node's ES loader says of TypeScript it does not take (`--no-experimental-strip-types`). */
-export function unknownExtensionRefusal(path: string): TypeScriptRefusal {
-  return {
-    code: 'ERR_UNKNOWN_FILE_EXTENSION',
-    message: `Unknown file extension "${path.slice(path.lastIndexOf('.'))}" for ${path}`,
-    filename: path, startLine: 0, snippet: '',
-  };
-}
-
-/** The refusal of a file under node_modules, which Node does not strip. */
-export function nodeModulesRefusal(path: string): TypeScriptRefusal {
-  return {
-    code: 'ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING',
-    message: `Stripping types is currently unsupported for files under node_modules, for "${path}"`,
-    filename: path, startLine: 0, snippet: '',
-  };
-}
-
 /** Stripped code and the format Node runs it in, or why Node refuses it. */
 export type StrippedTypeScript = { code: string; format: 'module' | 'commonjs' } | { refusal: TypeScriptRefusal };
 

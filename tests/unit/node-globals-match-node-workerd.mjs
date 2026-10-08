@@ -1,6 +1,7 @@
 // @serial
 // The global object a session's `node` program sees, against host Node
-// 22.22.3's, and a `bun` program's against host Bun's: every name globalThis
+// 22.22.3's (also under --experimental-eventsource, which adds a global), and
+// a `bun` program's against host Bun's: every name globalThis
 // answers (its own and its prototypes', not Object.prototype's) and its
 // typeof. A difference is a workerd-only global a
 // node program should not see (caches, HTMLRewriter, WebSocketPair, …), a
@@ -49,11 +50,14 @@ const differences = (ours, theirs) => [...new Set([...Object.keys(ours), ...Obje
 const host = mkdtempSync(join(tmpdir(), 'node-globals-'));
 process.on('exit', () => rmSync(host, { recursive: true, force: true }));
 writeFileSync(join(host, 'globals.cjs'), PROGRAM);
+// Each command, by its fixture key.
+const COMMANDS = { node: 'node', 'node --experimental-eventsource': 'node --experimental-eventsource', bun: 'bun' };
 const reference = {};
-for (const runtime of ['node', 'bun']) {
-  const ran = spawnSync(runtime, ['globals.cjs'], { cwd: host, encoding: 'utf8', env: { PATH: process.env.PATH } });
-  assert.equal(ran.status, 0, `${runtime}: ${ran.stderr}`);
-  reference[runtime] = globalsOf(ran.stdout);
+for (const [key, command] of Object.entries(COMMANDS)) {
+  const [runtime, ...flags] = command.split(' ');
+  const ran = spawnSync(runtime, [...flags, 'globals.cjs'], { cwd: host, encoding: 'utf8', env: { PATH: process.env.PATH } });
+  assert.equal(ran.status, 0, `${command}: ${ran.stderr}`);
+  reference[key] = globalsOf(ran.stdout);
 }
 
 const GAPS = JSON.parse(readFileSync(new URL('../fixtures/node-globals-gaps.json', import.meta.url), 'utf8'));
@@ -65,9 +69,9 @@ try {
   try {
     await session.run(`mkdir -p ${W}`, 30_000);
     await session.writeFile(`${W}/globals.cjs`, PROGRAM);
-    for (const runtime of ['node', 'bun']) {
-      const r = await session.run(`cd ${W} && ${runtime} globals.cjs`, 120_000);
-      found[runtime] = differences(globalsOf(splitScenarioOutput(r.stdout).lines.join('\n')), reference[runtime]);
+    for (const [key, command] of Object.entries(COMMANDS)) {
+      const r = await session.run(`cd ${W} && ${command} globals.cjs`, 120_000);
+      found[key] = differences(globalsOf(splitScenarioOutput(r.stdout).lines.join('\n')), reference[key]);
     }
   } finally {
     await session.close().catch(() => {});

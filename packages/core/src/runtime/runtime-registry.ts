@@ -47,8 +47,8 @@ import type { Command, CommandContext } from '../substrate/lifo/commands/types.j
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { errorText } from '../_shared/error-text.js';
 import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput, typeScriptFormat, typeScriptUnderNodeModules, type ModuleScope, type PackageType } from './module-format.js';
-import { nodeModulesRefusal, unknownExtensionRefusal, type TypeScriptStripOptions } from './typescript-strip.js';
-import { typeScriptRefusalShim } from './bundle-cell-transform.js';
+import type { TypeScriptStripOptions } from './typescript-strip.js';
+import { nodeModulesRefusal, typeScriptRefusalShim, unknownExtensionRefusal } from './bundle-cell-transform.js';
 import { packageScopeType } from './require-resolution.js';
 import { exists, isDirectory } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerLaunchHost } from './server-launch.js';
@@ -753,8 +753,9 @@ export function buildRuntimeHandler(
     if (stripTypes === 'javascript') {
       // JavaScript to Node's CommonJS loader, which hands an ES module (by
       // Node's format for it) to its ES loader, which knows no TypeScript.
-      const esModule = typeScriptFormat(resolvedPath, () => packageType, () => code) === 'module';
-      stripped = { code: esModule ? typeScriptRefusalShim(unknownExtensionRefusal('/' + resolvedPath)) : code, esModule: false };
+      const source = code;
+      const esModule = typeScriptFormat(resolvedPath, () => packageType, () => source) === 'module';
+      stripped = { code: esModule ? typeScriptRefusalShim(unknownExtensionRefusal('/' + resolvedPath)) : source, esModule: false };
     } else if (stripTypes !== null) {
       stripped = await stripTypeScriptEntry(code, resolvedPath, packageType, stripTypes, scriptPath);
       if (stripped === null) return 1;

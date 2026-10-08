@@ -9890,6 +9890,13 @@ let __processUmask = Number(cred.umask) & 0o777;
 // process._eval. A host that passes none runs without them.
 const __nimbusNodeCommandLine = typeof nodeCommandLine === "undefined" ? undefined : nodeCommandLine;
 const __nimbusExecArgv = Array.isArray(__nimbusNodeCommandLine?.execArgv) ? __nimbusNodeCommandLine.execArgv.map(String) : [];
+// Node defines EventSource only with --experimental-eventsource; workerd's
+// lives on the global scope's prototype.
+if (__nimbusNodeCommandLine !== undefined && __nimbusNodeCommandLine !== null && __nimbusNodeCommandLine.experimentalEventSource !== true) {
+  for (let scope = globalThis; scope !== null && scope !== Object.prototype; scope = Object.getPrototypeOf(scope)) {
+    if (Object.hasOwn(scope, "EventSource")) delete scope.EventSource;
+  }
+}
 const __nimbusConditions = Array.isArray(__nimbusNodeCommandLine?.conditions) ? __nimbusNodeCommandLine.conditions.map(String) : [];
 const __nimbusEval = typeof __nimbusNodeCommandLine?.eval === "string" ? __nimbusNodeCommandLine.eval : undefined;
 const __processMod = {
