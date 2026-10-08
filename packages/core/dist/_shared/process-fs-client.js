@@ -905,9 +905,11 @@ export function processFsClient(options) {
                     await close(grant);
                 settling = false;
             }
-            const taken = client.takeFailures();
-            if (taken.length > 0)
-                throw failuresError(taken);
+            if (processGone !== null)
+                await retirePending().catch(() => { });
+            const failure = client.takeFailuresError();
+            if (failure !== null)
+                throw failure;
         },
         takeFailures() {
             return failures.splice(0, failures.length);
