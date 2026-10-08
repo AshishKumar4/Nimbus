@@ -31,11 +31,11 @@ globalThis.setTimeout = (fn, ms, ...args) => realSetTimeout(fn, typeof ms === 'n
 try {
   const facet = await loadHelperFacet(ctx, env, spec);
   const ms = facetCallDeadlineMs('esbuild');
-  await assert.rejects(facet.transformMany([]), new RegExp(`the esbuild facet's transformMany gave no answer within ${ms} ms`));
-  await assert.rejects(facet.build({}), new RegExp(`the esbuild facet's build gave no answer within ${ms} ms`));
-  const cli = facet.cli({});
-  const outcome = await Promise.race([cli.then(() => 'answered', (e) => `failed: ${e.message}`), new Promise((r) => realSetTimeout(() => r('pending'), 200))]);
-  assert.equal(outcome, 'pending', 'the CLI is a process: no wall deadline');
+  // Settled within 2 s of real time, or 'pending': an unbounded call fails here instead of hanging the file.
+  const settle = (call) => Promise.race([call.then(() => 'answered', (e) => e.message), new Promise((r) => realSetTimeout(() => r('pending'), 2000))]);
+  assert.match(await settle(facet.transformMany([])), new RegExp(`the esbuild facet's transformMany gave no answer within ${ms} ms`));
+  assert.match(await settle(facet.build({})), new RegExp(`the esbuild facet's build gave no answer within ${ms} ms`));
+  assert.equal(await settle(facet.cli({})), 'pending', 'the CLI is a process: no wall deadline');
 } finally {
   globalThis.setTimeout = realSetTimeout;
 }
