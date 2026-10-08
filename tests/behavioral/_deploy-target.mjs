@@ -238,7 +238,9 @@ export async function createSession(base, jwt, { signal } = {}) {
 // Old replies persisted for 25 s; complete cycles measured as fast as 452 ms.
 // 64 exceeds ceil(25_000 / 452) = 56. This is a count, never a settle timer.
 export const READINESS_CYCLES = 64;
-export const READINESS_BUDGET_MS = 180_000;
+// tw-hm-npm, 2026-10-07: slowest full cycle 2.85 s × 64 ≈ 182 s.
+// 240 s covers that plus the measured 25 s deploy overlap and 33 s headroom.
+export const READINESS_BUDGET_MS = 240_000;
 
 export class TargetNotReadyError extends Error {
   constructor(message) {
