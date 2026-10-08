@@ -131,6 +131,10 @@ let __wasiThreads = null;
 // compute-only instances) the guest has stdio, sockets and clocks but no
 // files, and a file syscall answers EBADF.
 let __wasiSup = null;
+// The session's refusal of this process (it no longer holds the pid: the
+// session restarted, or ended the process, while it ran). Each call it refuses
+// answers ESRCH; the run ends naming it (__wasiSettled).
+let __wasiProcessGone = null;
 // ── The process's own copy of the namespace ──────────────────────────────
 //
 // A filesystem syscall is a round trip to the session (5.9-12.7 ms for one
@@ -259,6 +263,7 @@ export function __wasiInitFS(opts) {
     // isolate across calls, so the previous tenant's stub must not answer the
     // next program's syscalls.
     __wasiSup = null;
+    __wasiProcessGone = null;
     __wasiFS = {
         root: __wasiCanonicalize(opts.root || ''),
         // Largest regular file the codec answers from a resident copy.
@@ -1632,6 +1637,7 @@ export function __wasiMakeImports(opts) {
         abi: opts.abi,
         synchronous: opts.parking === 'none',
         residentBytes: __wasiFS.residentFileCap,
+        processGone: (refusal) => { __wasiProcessGone ??= refusal; },
     });
     // Where something leaves the guest: a socket's bytes (fd_write on a socket
     // comes here too, through the raw capture below). A peer that hears from
@@ -1837,6 +1843,10 @@ async function __wasiSettled(result) {
     }
     catch (e) {
         failed = e?.message ?? String(e);
+    }
+    if (__wasiProcessGone !== null) {
+        const gone = `the session no longer holds this process (${__wasiProcessGone}): it restarted, or ended the process, while the program ran, so every filesystem call since answered ESRCH`;
+        failed = failed === null ? gone : `${gone}; ${failed}`;
     }
     if (failed === null)
         return result;

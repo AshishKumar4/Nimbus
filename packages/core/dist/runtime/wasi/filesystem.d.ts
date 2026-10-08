@@ -75,6 +75,12 @@ export interface AuthorityFilesystemOptions {
     /** The guest's live umask when its process can move it after boot (bash's `umask` builtin). */
     umask?(): number;
     /**
+     * The session answered that it holds no such process: it restarted (or
+     * ended the process) while the guest ran. The call itself gets ESRCH; the
+     * runner names why when the run ends.
+     */
+    processGone?(refusal: string): void;
+    /**
      * Largest regular file a read-only open answers from a resident copy. A
      * guest that reopens the same file for every module (CPython's zipimport,
      * a shell's scripts) then pays one stat per open and one read per revision,

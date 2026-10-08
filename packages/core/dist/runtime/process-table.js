@@ -37,6 +37,15 @@ function immutableCred(cred) {
  * the current base is by construction from a PREVIOUS generation.
  */
 export const PID_GEN_STRIDE = 1_000_000;
+/**
+ * A call made for a pid the table does not hold: the process ended, or the
+ * session restarted under it (pids carry the isolate generation, so a pid of
+ * an earlier generation is never reissued). Coded so a caller across RPC can
+ * tell it from a filesystem failure.
+ */
+function noSuchProcess(pid) {
+    return Object.assign(new Error(`process pid ${pid} does not exist`), { code: 'ESRCH' });
+}
 export class ProcessTable {
     nextPid = 1;
     base = 0;
@@ -83,7 +92,7 @@ export class ProcessTable {
     credOf(pid) {
         const entry = this.processes.get(pid);
         if (!entry)
-            throw new Error(`process pid ${pid} does not exist`);
+            throw noSuchProcess(pid);
         return immutableCred(entry.cred);
     }
     cred(pid) {
@@ -92,7 +101,7 @@ export class ProcessTable {
     setUmask(pid, umask) {
         const entry = this.processes.get(pid);
         if (!entry)
-            throw new Error(`process pid ${pid} does not exist`);
+            throw noSuchProcess(pid);
         if (!Number.isInteger(umask) || umask < 0 || umask > 0o777) {
             throw new Error(`invalid umask ${umask}`);
         }

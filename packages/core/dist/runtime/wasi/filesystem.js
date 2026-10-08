@@ -24,13 +24,17 @@ export const WASI_ACCEPTED_PATH_PREFIX = '/dev/nimbus/socket/';
 const S_IFMT = 0o170000, S_IFREG = 0o100000;
 const socketPathPrefixes = [WASI_TCP_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_ACCEPTED_PATH_PREFIX];
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true });
+/** Every code a VFS backend throws (vfs-error.ts), as its preview1 errno. */
+const VFS_ERRNO = {
+    E2BIG: 1, EACCES: 2, EAGAIN: 6, EBADF: 8, EBUSY: 10, EEXIST: 20, EINVAL: 28, EIO: 29, EISDIR: 31,
+    ELOOP: 32, ENAMETOOLONG: 37, ENOENT: 44, ENOSPC: 51, ENOTDIR: 54, ENOTEMPTY: 55, ENOTSUP: 58,
+    ENXIO: 60, EPERM: 63, EROFS: 69, ESTALE: 72, EXDEV: 75,
+};
 const errno = {
-    EACCES: 2, EAGAIN: 6, EBADF: 8, EBUSY: 10, EEXIST: 20, EFAULT: 21,
-    EFBIG: 22, EINTR: 27, EINVAL: 28, EIO: 29, EISDIR: 31, ELOOP: 32,
-    EMFILE: 33, ENAMETOOLONG: 37, ENFILE: 41, ENOENT: 44, ENOMEM: 48,
-    ENOSPC: 51, ENOSYS: 52, ENOTDIR: 54, ENOTEMPTY: 55, ENOTSUP: 58,
-    EPERM: 63, EPIPE: 64, EROFS: 69, ESPIPE: 70, ESTALE: 72, EXDEV: 75,
-    ENOTCAPABLE: 76,
+    ...VFS_ERRNO,
+    // The codec's own refusals, and the session's for a process it no longer holds.
+    EFAULT: 21, EFBIG: 22, EINTR: 27, EMFILE: 33, ENFILE: 41, ENOMEM: 48, ENOSYS: 52,
+    EPIPE: 64, ESPIPE: 70, ESRCH: 71, ENOTCAPABLE: 76,
 };
 export function filesystemErrno(error) {
     if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string')
@@ -38,6 +42,10 @@ export function filesystemErrno(error) {
     if (error instanceof RangeError)
         return errno.EFAULT;
     return errno.EIO;
+}
+/** The session's refusal of a call for a process it no longer holds (process-table.ts noSuchProcess), or null. */
+function goneProcess(error) {
+    return error instanceof Error && 'code' in error && error.code === 'ESRCH' ? error.message : null;
 }
 export function after(value, next) {
     return value instanceof Promise ? value.then(next) : next(value);
@@ -203,17 +211,23 @@ export function installAuthorityFilesystem(imports, options) {
     const guard = (previous, body, owns) => (...args) => {
         if (!options.fs() || (owns && !owns(args)))
             return previous ? previous(...args) : 52;
+        const refused = (error) => {
+            const gone = goneProcess(error);
+            if (gone !== null)
+                options.processGone?.(gone);
+            return filesystemErrno(error);
+        };
         try {
             const result = body(fs(), ...args);
             if (result instanceof Promise) {
                 if (options.synchronous)
                     throw new Error('Filesystem synchronous contract returned a Promise');
-                return result.catch(filesystemErrno);
+                return result.catch(refused);
             }
             return result;
         }
         catch (error) {
-            return filesystemErrno(error);
+            return refused(error);
         }
     };
     const owns = (args) => {
