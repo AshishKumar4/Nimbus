@@ -156,12 +156,11 @@ class FacetProcessHost implements ProcessHost {
     // The platform can kill or reset the process's own facet (its memory or
     // CPU limit, measured with astro dev on 2026-10-08) with the session
     // left standing; the next call to the facet is what shows it.
+    // Its boot is left as the facet answers it: a run's own start and stop
+    // (a boot waiting on stdin is replayed) are not the host's to judge.
     const loss = new HostLoss(facet.lost);
-    const started = loss.route(() => facet.started);
-    started.catch(() => {});
     return {
       ...facet,
-      started,
       lost: loss.signal,
       handleHttpRequest: (request: Request) => loss.route(() => facet.handleHttpRequest(request)),
       handleWebSocketRequest: (request: Request) => loss.route(() => facet.handleWebSocketRequest(request)),
