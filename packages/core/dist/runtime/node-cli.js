@@ -152,6 +152,23 @@ function readOptions(tokens, env) {
             case '--input-type':
                 read.inputType = value;
                 break;
+            case '--experimental-eventsource':
+                read.experimentalEventSource = !negation;
+                break;
+            case '--experimental-strip-types':
+                read.stripTypes = !negation;
+                break;
+            // Node applies an option's implications as it reads it (node_options.cc Implies).
+            case '--experimental-transform-types':
+                read.transformTypes = !negation;
+                if (!negation) {
+                    read.stripTypes = true;
+                    read.enableSourceMaps = true;
+                }
+                break;
+            case '--enable-source-maps':
+                read.enableSourceMaps = !negation;
+                break;
             case '--print':
                 read.print = !negation;
                 break;
@@ -167,6 +184,16 @@ function readOptions(tokens, env) {
         return refuse(`bad option: ${unknown}`);
     read.end = i;
     return read;
+}
+/**
+ * How Node's loaders take a TypeScript file under these options: by the
+ * strip flag as the options leave it, transformed or stripped, else as
+ * JavaScript (`--no-experimental-strip-types`).
+ */
+export function typeScriptStripOptions(launch) {
+    if (launch.stripTypes === false)
+        return 'javascript';
+    return { mode: launch.transformTypes ? 'transform' : 'strip-only', sourceMap: launch.enableSourceMaps === true };
 }
 /** node's `args` (after `node` itself) and its NODE_OPTIONS, read as Node reads them. */
 export function parseNodeCommandLine(args, nodeOptions = '') {
@@ -190,6 +217,10 @@ export function parseNodeCommandLine(args, nodeOptions = '') {
         ...(fromArgs.eval !== undefined ? { eval: fromArgs.eval } : {}),
         print: fromArgs.print ?? fromEnv.print ?? false,
         ...(fromArgs.inputType ?? fromEnv.inputType) !== undefined ? { inputType: fromArgs.inputType ?? fromEnv.inputType } : {},
+        experimentalEventSource: fromArgs.experimentalEventSource ?? fromEnv.experimentalEventSource ?? false,
+        stripTypes: fromArgs.stripTypes ?? fromEnv.stripTypes ?? true,
+        transformTypes: fromArgs.transformTypes ?? fromEnv.transformTypes ?? false,
+        enableSourceMaps: fromArgs.enableSourceMaps ?? fromEnv.enableSourceMaps ?? false,
         version: fromArgs.version,
         help: fromArgs.help,
     };

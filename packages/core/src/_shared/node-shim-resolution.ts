@@ -14,5 +14,5 @@ export {
   resolveExports,
   resolvePackageEntry,
 } from './exports-resolver.js';
-export { TYPESCRIPT_INDEX_CANDIDATES, typescriptFallbackCandidates } from './typescript-specifiers.js';
+export { TYPESCRIPT_INDEX_CANDIDATES, stripsTypeScript, typescriptFallbackCandidates } from './typescript-specifiers.js';
 export { presentedCredential } from './ai-egress.js';

@@ -20,7 +20,7 @@ import { pathToFileURL } from 'node:url';
 import { EsbuildService, buildWithEsbuild } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { buildWithRolldown } from '../../packages/core/src/runtime/rolldown-build.ts';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
-import { oxcEngine } from './lib/oxc-engine.mjs';
+import { oxcTransforms } from './lib/oxc-engine.mjs';
 
 const esbuild = await esbuildEngine();
 assert.equal(esbuild.version, '0.24.2');
@@ -757,7 +757,7 @@ const ENGINES = {
     buildHost: async (options, plugin) => clone(await buildWithEsbuild(esbuild, clone(options), plugin)),
   },
   nimbus: {
-    transformer: () => new EsbuildService(memoryFs({}), { engine: async () => oxcEngine }),
+    transformer: () => new EsbuildService(memoryFs({}), oxcTransforms),
     buildHost: async (options, plugin) => clone(await buildWithRolldown(rolldown, clone(options), plugin)),
   },
 };
