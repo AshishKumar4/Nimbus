@@ -48,6 +48,13 @@ for (const version of [...versions, UNBUILT]) {
   FILES[`${APP}/node_modules/at-${version}/node_modules/rolldown/package.json`] = JSON.stringify({ name: 'rolldown', version });
   FILES[`${sharedAt(version)}/binding.mjs`] = 'export {};\n';
 }
+// And rolldown installed under an alias at each staged version (`rd-0@npm:rolldown@<version>`): the folder is
+// the alias's, the package.json rolldown's.
+const sharedAlias = (i) => `${APP}/node_modules/rd-${i}/dist/shared`;
+versions.forEach((version, i) => {
+  FILES[`${APP}/node_modules/rd-${i}/package.json`] = JSON.stringify({ name: 'rolldown', version });
+  FILES[`${sharedAlias(i)}/binding.mjs`] = 'export {};\n';
+});
 for (const [path, body] of Object.entries(FILES)) {
   vfs.mkdir('/' + path.slice(0, path.lastIndexOf('/')), { recursive: true });
   vfs.writeFile('/' + path, enc.encode(body));
@@ -121,6 +128,10 @@ for (const build of builds) {
   assert.deepEqual(require('@rolldown/binding-wasm32-wasi', sharedAt(build.version)), { build: build.version }, `rolldown@${build.version} is answered with its own build`);
 }
 assert.equal(named('@rolldown/binding-wasm32-wasi', sharedAt(UNBUILT)).code, 'ERR_NIMBUS_BINDING_VERSION', 'a carried launch names an unbuilt version too');
+// Each alias is the owner by its package.json, whatever its folder is called: its own version's build.
+versions.forEach((version, i) => {
+  assert.deepEqual(require('@rolldown/binding-wasm32-wasi', sharedAlias(i)), { build: version }, `rd-${i}@npm:rolldown@${version} is answered with its own build`);
+});
 // One build carried, and the owner at another staged version: the next launch carries it.
 globalThis.__nimbusStagedBindings = new Map([['@rolldown/binding-wasm32-wasi', new Map([[rolldown.version, built.get(rolldown.version)]])]]);
 if (builds.length > 1) {
