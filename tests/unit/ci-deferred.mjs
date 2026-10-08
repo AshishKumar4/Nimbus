@@ -87,6 +87,16 @@ const ledger = row('session-ledger', 0);
   }
   assert.equal(grade(output([[true, 'setup'], [true, assertion], [true, 'cleanup']]), 0).exitCode, 1, 'passing requires removing the approved detail deferral');
   assert.equal(gradeMatrix([verdict([ledger])], [entry]).exitCode, 1, 'a missing detail-deferred row cannot grade green');
+  const relaunch = '[restart] Relaunching with --conditions=development';
+  const compound = { ...entry, failure: { detail: [detail, relaunch] } };
+  assert.deepEqual(validateDeferrals([compound]), [compound], 'every exact fragment is part of the approved failure');
+  const compoundGrade = (actual) => gradeMatrix([verdict([row(entry.probe, 1, output([[true, 'setup'], [false, assertion, actual], [true, 'cleanup']])), ledger])], [compound]);
+  assert.equal(compoundGrade(`{${detail},"dev":"${relaunch}"}`).exitCode, 0, 'both required fragments match');
+  assert.equal(compoundGrade(`{${detail}}`).exitCode, 1, 'a different no-resident failure without the approved relaunch is red');
+  assert.equal(compoundGrade(relaunch).exitCode, 1, 'relaunch alone without the approved launch failure is red');
+  for (const failure of [{ detail: [] }, { detail: [''] }, { detail: [detail, ' '] }, { detail: [detail, 7] }]) {
+    assert.throws(() => validateDeferrals([{ ...entry, failure }]), /failure/, `invalid fragment list ${JSON.stringify(failure)}`);
+  }
   console.log('  ok  exact detail approval shares strict completed-probe/one-failure/pass-removes rules with HTTP approval');
 }
 
