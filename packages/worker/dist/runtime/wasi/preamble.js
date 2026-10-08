@@ -235,14 +235,21 @@ export function __wasiFsStats() {
  * reports one did not do what it said it did, and exits non-zero.
  */
 export async function __wasiSettleWrites() {
-    if (__wasiResident === null)
-        return null;
-    const failures = await __wasiResident.fs.settle();
-    if (failures.length === 0)
-        return null;
-    return failures
-        .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
-        .join('; ');
+    let failed = null;
+    try {
+        if (__wasiResident !== null) {
+            const failures = await __wasiResident.fs.settle();
+            if (failures.length > 0)
+                failed = failures
+                    .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
+                    .join('; ');
+        }
+    }
+    catch (error) {
+        if (__wasiProcessGone === null)
+            throw error;
+    }
+    return __wasiProcessGone === null ? failed : processGoneMessage(__wasiProcessGone);
 }
 /** Anything about to leave the process waits until what it wrote is in the session. */
 function __wasiSettleFirst(body) {
@@ -1871,10 +1878,6 @@ async function __wasiSettled(result) {
     }
     catch (e) {
         failed = e?.message ?? String(e);
-    }
-    if (__wasiProcessGone !== null) {
-        const gone = processGoneMessage(__wasiProcessGone);
-        failed = failed === null ? gone : `${gone}; ${failed}`;
     }
     if (failed === null)
         return result;

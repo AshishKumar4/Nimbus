@@ -107,6 +107,12 @@ export class ProcessTable {
             throw noSuchProcess(pid);
         return immutableCred(entry.cred);
     }
+    liveCred(pid) {
+        const entry = this.processes.get(pid);
+        if (!entry || entry.state !== 'running')
+            throw noSuchProcess(pid);
+        return immutableCred(entry.cred);
+    }
     cred(pid) {
         return this.credOf(pid);
     }
