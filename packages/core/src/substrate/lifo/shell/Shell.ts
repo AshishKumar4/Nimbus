@@ -191,6 +191,7 @@ export class Shell {
   private lineSubmission: ShellInputSubmission | undefined;
   private activeSubmission: ShellInputSubmission | undefined;
   private promptSubmission: ShellInputSubmission | undefined;
+  private primaryPrompt = false;
 
   /**
    * Accepted lines that do not form a complete command yet: an unclosed
@@ -662,6 +663,7 @@ export class Shell {
 
   printPrompt(): void {
     if (this.pendingLine !== null) {
+      this.primaryPrompt = false;
       this.terminal.write(CONTINUATION_PROMPT);
       return;
     }
@@ -673,11 +675,17 @@ export class Shell {
     this.processRegistry.collectZombies();
 
     this.terminal.write(PROMPT_START + formatShellPrompt(this.env, this.cwd) + PROMPT_END);
-    this.terminal.shellIntegration?.({ type: 'shell-integration', event: 'prompt' });
+    this.primaryPrompt = true;
+    this.announcePrompt();
     const submission = this.promptSubmission ?? this.lineSubmission;
     this.promptSubmission = undefined;
     this.lineSubmission = undefined;
     submission?.prompt();
+  }
+
+  /** A newly attached client learns current readiness, never a replayed completion. */
+  announcePrompt(): void {
+    if (!this.running && this.primaryPrompt) this.terminal.shellIntegration?.({ type: 'shell-integration', event: 'prompt' });
   }
 
   async handleInput(data: string, submission?: ShellInputSubmission): Promise<void> {
@@ -1183,6 +1191,7 @@ export class Shell {
    * both characters; a quoted join keeps the newline in the string.
    */
   private async acceptLine(rawLine: string, submission?: ShellInputSubmission): Promise<void> {
+    this.primaryPrompt = false;
     if (!this.lineSubmission) this.lineSubmission = submission;
     let command: string;
     if (this.pendingLine === null) {
@@ -1210,6 +1219,7 @@ export class Shell {
   }
 
   async executeLine(line: string, submission: ShellInputSubmission | undefined = this.lineSubmission): Promise<void> {
+    this.primaryPrompt = false;
     const release = submission?.retain();
     this.lineSubmission = undefined;
     this.activeSubmission = submission;

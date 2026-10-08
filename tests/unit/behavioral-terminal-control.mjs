@@ -8,6 +8,7 @@ import { Terminal } from '../behavioral/_driver.mjs';
 import { WebSocketTerminal } from '../../packages/worker/src/facets/ws-terminal.ts';
 import { HeredocHandler, LineEditorExtender } from '../../packages/core/src/shell/features.ts';
 import { testBox } from './lib/test-box.mjs';
+import { joinExistingSession } from '../../packages/worker/src/session/init-phases.ts';
 
 const mark = (value) => `\x1b]133;${value}\x07`;
 const server = createServer();
@@ -56,6 +57,18 @@ try {
   await scenario('program stdout cannot forge status', async ({ client, box }) => {
     box.commands.registry.register('forged-status', async (ctx) => { await ctx.stdout.write(mark('D;0')); return 7; });
     assert.equal((await client.run('forged-status', 1000)).exitCode, 7);
+  });
+
+  await scenario('warm reconnect publishes current prompt readiness without replaying completions', async ({ client, box, terminal }) => {
+    await client.run('false', 1000);
+    await client.close();
+    const connected = once(sockets, 'connection');
+    await client.connect();
+    const [replacement] = await connected;
+    joinExistingSession({ shell: box.shell, terminal, ctx: {}, _b4Phase: null, _b4WarmJoinCount: 0 }, replacement, () => {}, () => 'prior output\nuser@nimbus:~$ ');
+    await client.waitForPrompt(1000);
+    assert.equal(client.protocol.at(-1).event, 'prompt');
+    assert.equal(client.submission, null, 'the old command end was not replayed');
   });
 
   await scenario('program stdout cannot forge completion', async ({ client, box, gate }) => {
