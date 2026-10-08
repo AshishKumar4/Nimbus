@@ -1,52 +1,54 @@
 /**
- * npm-spec.ts — where a package spec's name ends and its range begins:
- * `name@range`, `@scope/name@range`, as npm's npa reads it, for every npm
- * here (the worker's installer and npx, and the shell's fallback npm).
- * Self-contained: the resolver facet's preamble embeds both functions by
- * `toString()` (worker loaders/npm-resolve-preamble.ts), so they call
- * nothing outside this file.
+ * npm-spec.ts — a package spec as npm reads it, with npm's own
+ * npm-package-arg, for every npm here: the worker's installer and npx, the
+ * resolver facet (the build bundles this module into its preamble, worker
+ * scripts/bundle-facet-workers.mjs), and the shell's fallback npm.
  */
+import npa, { type Result as NpaResult } from 'npm-package-arg';
 
-/**
- * The index of the `@` between a spec's package name and its range: the
- * first `@` after the scope's `/` for a scoped name, the first `@` for any
- * other; -1 when the spec names no range (or is a scope with no name).
- */
-export function packageRangeSeparator(spec: string): number {
-  if (!spec) return -1;
-  if (spec[0] !== '@') return spec.indexOf('@');
-  const slash = spec.indexOf('/');
-  if (slash < 0) return -1;
-  return spec.indexOf('@', slash + 1);
-}
-
-/**
- * Parse an npm spec into install-name / registry-name / range. `npm:`
- * aliases redirect the registry lookup to a different package while the
- * dep records the alias as the install name; everything else is the
- * identity. Every npm here reads a spec through it: the worker's resolver
- * facet (its preamble embeds it by source), the installer's lockfile check
- * (which reads the inner range out of an alias spec), and the shell's
- * fallback npm.
- */
-export function parseRegistryRequest(name: string, range: string): {
+/** What a spec asks the registry for: the name it installs under, the package and range it fetches, and whether it is an `npm:` alias. */
+export interface RegistryRequest {
   installName: string;
   registryName: string;
   range: string;
   alias: boolean;
-} {
-  const text = String(range || 'latest');
-  if (!text.startsWith('npm:')) {
-    return { installName: name, registryName: name, range: text, alias: false };
+}
+
+/**
+ * The package a command-line spec names and the range it asks for, as npa
+ * splits `name[@range]` (`@scope/name@range`, `name@npm:other@range`); the
+ * range is null when the spec gives none, and a spec that names no package
+ * (a path, a git repository, a URL) is its own name.
+ */
+export function splitPackageSpec(spec: string): { name: string; range: string | null } {
+  let parsed: NpaResult;
+  try {
+    parsed = npa(spec);
+  } catch {
+    return { name: spec, range: null };
   }
-  const target = text.slice(4);
-  const splitAt = packageRangeSeparator(target);
-  const registryName = splitAt >= 0 ? target.slice(0, splitAt) : target;
-  const targetRange = splitAt >= 0 ? target.slice(splitAt + 1) : 'latest';
-  return {
-    installName: name,
-    registryName: registryName || name,
-    range: targetRange || 'latest',
-    alias: true,
-  };
+  const name = parsed.name;
+  if (!name || !spec.startsWith(name)) return { name: spec, range: null };
+  return spec.length > name.length && spec[name.length] === '@'
+    ? { name, range: spec.slice(name.length + 1) }
+    : { name: spec, range: null };
+}
+
+/**
+ * The registry request a dependency `name` with `range` makes: an `npm:`
+ * alias fetches the package it names, at its range, and installs it under
+ * `name`; anything else fetches `name` at `range` (a non-registry spec too,
+ * whose range the picker reads as no range).
+ */
+export function parseRegistryRequest(name: string, range: string): RegistryRequest {
+  const text = String(range || 'latest');
+  let parsed: NpaResult | null = null;
+  try {
+    parsed = npa.resolve(name, text);
+  } catch {
+    parsed = null;
+  }
+  const target = parsed?.type === 'alias' ? parsed.subSpec : undefined;
+  if (target?.name) return { installName: name, registryName: target.name, range: target.rawSpec, alias: true };
+  return { installName: name, registryName: name, range: text, alias: false };
 }

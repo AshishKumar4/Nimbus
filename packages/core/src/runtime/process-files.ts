@@ -180,14 +180,14 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   chown(path: RuntimeFsPath, uid: number, gid: number, options?: { followSymlinks?: boolean }): VfsMutationReceipt {
     this.guard(); return this.target.chown(path, uid, gid, options);
   }
-  open(path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeFileHandle { this.guard(); return this.target.open(path, flags); }
+  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeFileHandle { this.guard(); return this.target.open(path, flags, options); }
   read(handleId: number, offset: number | null, length: number): Uint8Array { this.guard(); return this.reading(() => this.target.read(handleId, offset, length)); }
   write(handleId: number, offset: number | null, bytes: Uint8Array): number { this.guard(); return this.target.write(handleId, offset, bytes); }
   close(handleId: number): void { return this.target.close(handleId); }
   readdir(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): RuntimeVfsDirEntry[] { this.guard(); return this.target.readdir(path, options); }
-  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number }): void { this.guard(); return this.target.mkdir(path, options); }
-  unlink(path: RuntimeFsPath): void { this.guard(); return this.target.unlink(path); }
-  rmdir(path: RuntimeFsPath): void { this.guard(); return this.target.rmdir(path); }
+  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number } & RuntimeMutationOwner): void { this.guard(); return this.target.mkdir(path, options); }
+  unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): void { this.guard(); return this.target.unlink(path, options); }
+  rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner): void { this.guard(); return this.target.rmdir(path, options); }
   rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner): void { this.guard(); return this.target.rename(from, to, options); }
   readlink(path: RuntimeFsPath): string | null { this.guard(); return this.target.readlink(path); }
   linkLeadsTo(path: string, link: string): string | null { this.guard(); return this.target.linkLeadsTo(path, link); }
@@ -278,7 +278,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     // An exclusive-mutation lease holds wherever a process's mutation lands,
     // on a mount as on SQLite: checked by the namespace on the route it
     // resolved, right before the backend is called.
-    this.vfs.guardMutations((cred, path) => engine.mutationRefusal(path, cred));
+    this.vfs.guardMutations((cred, path, owner) => engine.mutationRefusal(path, cred, owner));
     this.proc = standardProc();
     this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
     this.vfs.mount('/proc', this.proc);
@@ -575,6 +575,8 @@ interface AwaitedDescription {
   readonly path: string;
   readonly flags: RuntimeFileHandle['flags'];
   position: number;
+  /** The exclusive-mutation lease the open presented: the descriptor's mutations present it too. */
+  readonly owner?: string;
 }
 
 interface AwaitedDescriptors {
@@ -794,7 +796,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   }
   writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: { createParents?: boolean; expectedRevision?: number } & RuntimeMutationOwner) {
     return this.either([path], () => this.bridge.writeRange(path, offset, bytes, options), async () => {
-      await this.namespace.writeRange(await this.path(path), offset, bytes, { parents: options?.createParents === true });
+      await this.owned(options).writeRange(await this.path(path), offset, bytes, { parents: options?.createParents === true });
       return this.receipt();
     });
   }
@@ -813,7 +815,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   }
   truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean } & RuntimeMutationOwner) {
     return this.either([path], () => this.bridge.truncate(path, size, options), async () => {
-      await this.namespace.truncate((await this.path(path)), size);
+      await this.owned(options).truncate((await this.path(path)), size);
       return this.receipt();
     });
   }
@@ -850,17 +852,24 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return this.either([path], () => this.bridge.readdir(path, options), async () =>
       (await this.namespace.readdir((await this.path(path, options?.followSymlinks !== false)))).map((entry) => ({ name: entry.name, type: entry.type })));
   }
-  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number }) {
-    return this.either([path], () => this.bridge.mkdir(path, options), async () => this.namespace.mkdir((await this.path(path)), options));
+  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number } & RuntimeMutationOwner) {
+    return this.either([path], () => this.bridge.mkdir(path, options), async () => this.owned(options).mkdir((await this.path(path)), {
+      ...(options?.recursive === undefined ? {} : { recursive: options.recursive }),
+      ...(options?.mode === undefined ? {} : { mode: options.mode }),
+    }));
   }
-  unlink(path: RuntimeFsPath) {
-    return this.either([path], () => this.bridge.unlink(path), async () => this.namespace.unlink((await this.path(path, false))));
+  /** The namespace presenting `options`' exclusive-mutation lease to its guard, for a mutation that carries one. */
+  private owned(options?: RuntimeMutationOwner): CompositeVFS {
+    return options?.mutationOwner === undefined ? this.namespace : this.namespace.scoped(() => {}, options.mutationOwner);
   }
-  rmdir(path: RuntimeFsPath) {
-    return this.either([path], () => this.bridge.rmdir(path), async () => this.namespace.rmdir((await this.path(path, false))));
+  unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner) {
+    return this.either([path], () => this.bridge.unlink(path, options), async () => this.owned(options).unlink((await this.path(path, false))));
+  }
+  rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner) {
+    return this.either([path], () => this.bridge.rmdir(path, options), async () => this.owned(options).rmdir((await this.path(path, false))));
   }
   rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner) {
-    return this.either([from, to], () => this.bridge.rename(from, to, options), async () => this.namespace.rename((await this.path(from, false)), (await this.path(to, false))));
+    return this.either([from, to], () => this.bridge.rename(from, to, options), async () => this.owned(options).rename((await this.path(from, false)), (await this.path(to, false))));
   }
   realpath(path: RuntimeFsPath) {
     return this.either([path], () => this.bridge.realpath(path), async () => this.namespace.realpathAsync(await this.path(path)));
@@ -910,8 +919,8 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return { id, path: description.path, flags: { ...description.flags }, position: description.position, closed: false };
   }
 
-  open(path: RuntimeFsPath, flags: RuntimeOpenFlags) {
-    return this.either([path], () => this.bridge.open(path, flags), async () => {
+  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner) {
+    return this.either([path], () => this.bridge.open(path, flags, options), async () => {
       const follow = flags.followSymlinks !== false;
       const p = await this.path(path, follow);
       const stat = await this.namespace.stat(p, { follow });
@@ -923,8 +932,10 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       if (stat === null && !flags.create) throw syscallError('ENOENT', 'open', p);
       if (stat !== null && stat.type === 'directory' && (flags.write || flags.truncate || flags.append)) throw syscallError('EISDIR', 'open', p);
       if (flags.directory && stat !== null && stat.type !== 'directory') throw syscallError('ENOTDIR', 'open', p);
-      if (stat === null || flags.truncate) await this.namespace.writeFile(p, new Uint8Array(0), flags.mode === undefined ? undefined : { mode: flags.mode });
+      const mutates = !!(flags.write || flags.create || flags.truncate || flags.append);
+      if (stat === null || flags.truncate) await this.owned(mutates ? options : undefined).writeFile(p, new Uint8Array(0), flags.mode === undefined ? undefined : { mode: flags.mode });
       return this.issue({
+        ...(mutates && options?.mutationOwner !== undefined ? { owner: options.mutationOwner } : {}),
         // The file it opened, by the name the namespace resolved for it: a
         // link on the way repointed later does not move the descriptor.
         path: await this.namespace.realpathAsync(p),
@@ -968,14 +979,14 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       const start = d.flags.append ? ((await this.namespace.stat(d.path))?.size ?? 0) : offset ?? d.position;
       this.live();
       try {
-        await this.namespace.writeRange(d.path, start, bytes);
+        await this.owned({ mutationOwner: d.owner }).writeRange(d.path, start, bytes);
       } catch (error) {
         if (!(error instanceof VfsError && error.code === 'ENOTSUP')) throw error;
         const file = await this.namespace.readFile(d.path);
         const next = new Uint8Array(Math.max(file.byteLength, start + bytes.byteLength));
         next.set(file);
         next.set(bytes, start);
-        await this.namespace.writeFile(d.path, next);
+        await this.owned({ mutationOwner: d.owner }).writeFile(d.path, next);
       }
       if (offset === null || d.flags.append) d.position = start + bytes.byteLength;
       return bytes.byteLength;
@@ -1025,20 +1036,20 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   ftruncate(handleId: number, size: number) {
     return this.on(handleId, () => this.bridge.ftruncate(handleId, size), async (d) => {
       if (!d.flags.write) throw fsError('EINVAL', 'ftruncate', d.path);
-      await this.namespace.truncate(d.path, size);
+      await this.owned({ mutationOwner: d.owner }).truncate(d.path, size);
     });
   }
 
   fchmod(handleId: number, mode: number) {
-    return this.on(handleId, () => this.bridge.fchmod(handleId, mode), async (d) => { await this.namespace.chmod(d.path, mode); });
+    return this.on(handleId, () => this.bridge.fchmod(handleId, mode), async (d) => { await this.owned({ mutationOwner: d.owner }).chmod(d.path, mode); });
   }
 
   fchown(handleId: number, uid: number, gid: number) {
-    return this.on(handleId, () => this.bridge.fchown(handleId, uid, gid), async (d) => { await this.namespace.chown(d.path, uid, gid); });
+    return this.on(handleId, () => this.bridge.fchown(handleId, uid, gid), async (d) => { await this.owned({ mutationOwner: d.owner }).chown(d.path, uid, gid); });
   }
 
   futimes(handleId: number, atimeMs: number, mtimeMs: number) {
-    return this.on(handleId, () => this.bridge.futimes(handleId, atimeMs, mtimeMs), async (d) => { await this.namespace.utimes(d.path, atimeMs, mtimeMs); });
+    return this.on(handleId, () => this.bridge.futimes(handleId, atimeMs, mtimeMs), async (d) => { await this.owned({ mutationOwner: d.owner }).utimes(d.path, atimeMs, mtimeMs); });
   }
 }
 

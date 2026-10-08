@@ -24,6 +24,8 @@ export interface FetchMissingObjectsRequest {
         username: string;
         password: string;
     };
+    /** The repository is on a mounted filesystem (`dir` its namespace path). */
+    onMount?: boolean;
 }
 export interface FetchMissingObjectsResult {
     /** Objects the new pack holds (the wanted ids, and a wanted tree's subtrees). */
