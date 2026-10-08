@@ -30,6 +30,14 @@ import type { ModulePlan } from './modules.js';
 export interface UnitHost {
     /** The unit's `import(specifier, options)`. */
     readonly dynamicImport: ((specifier: unknown, options: unknown) => Promise<unknown>) | null;
+    /**
+     * The unit's free `Function`: a binding of its own, which it reads and
+     * assigns as a native cell does its module's (commonjs-cell.ts, THE
+     * WRAPPER); null where it is the global's.
+     */
+    readonly functionBinding: {
+        value: unknown;
+    } | null;
 }
 /** An import binding's source: the slot holds the module (named, default) or the namespace object. */
 type ImportInfo = {

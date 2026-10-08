@@ -2,13 +2,13 @@
 // The 65,536 facet-ID lifetime budget, counted instead of prosed about.
 //
 // A Durable Object admits 65,536 facet IDs over its LIFETIME; the IDs are
-// append-only and never reclaimed. The slot book already stops per-spawn burn
-// by reusing names — but nothing COUNTED the IDs actually consumed, and the
-// exhaustion failure is unrecoverable for the DO while the platform's message
-// for it names nothing. What has to hold:
+// append-only and never reclaimed. Each process of an incarnation takes a
+// name no earlier process of it held (residentFacetName), so every spawn
+// spends one; the exhaustion failure is unrecoverable for the DO while the
+// platform's message for it names nothing. What has to hold:
 //
-//   (1) the ledger counts names ever minted, not spawns: reuse — same
-//       incarnation or after a reset — never increments it;
+//   (1) the ledger counts names ever minted: one per process of an
+//       incarnation, and none for a name reused after a reset;
 //   (2) the count is durable: a fresh incarnation adopts the persisted
 //       high-water instead of restarting it, and never writes a smaller one;
 //   (3) a creation failure AT the wall names the budget and the count, and a
@@ -69,7 +69,7 @@ function spawn(fabric, pid) {
   });
 }
 
-// ── (1) names minted are counted; reuse is not ──────────────────────────────
+// ── (1) names minted are counted, one per process ────────────────────────────
 {
   const { ctx, fabric } = setup();
   const a = await spawn(fabric, 1);
@@ -82,14 +82,14 @@ function spawn(fabric, pid) {
     'three concurrent processes mint three names',
   );
 
-  // Release one and spawn again: the freed name is reused, no new ID burned.
+  // Release one and spawn again: the next process takes a fourth name.
   c.kill();
   await c.done;
   const d = await spawn(fabric, 4);
   await d.booted();
   assert.equal(
-    (await facetIdBudget(ctx)).consumed, 3,
-    'a spawn that reuses a freed name consumes no new facet ID',
+    (await facetIdBudget(ctx)).consumed, 4,
+    'a spawn after a release takes a name of its own',
   );
   for (const handle of [a, b, d]) { handle.kill(); await handle.done; }
 }
@@ -195,7 +195,8 @@ function spawn(fabric, pid) {
 
 // ── (5) a slot's charge is durable before its facet exists ──────────────────
 // The write of the first slot's charge fails: that process never boots and
-// no facet is created. The next spawn takes the slot and is counted once.
+// no facet is created. The next spawn takes the next slot, and the ledger,
+// which counts slots up to their high-water, counts the skipped one with it.
 {
   const { world, ctx, fabric } = setup();
   const put = ctx.storage.put;
@@ -212,9 +213,9 @@ function spawn(fabric, pid) {
   failing = false;
   const next = await spawn(fabric, 2);
   await next.booted();
-  assert.equal((await facetIdBudget(ctx)).consumed, 1, 'the slot is one id');
+  assert.equal((await facetIdBudget(ctx)).consumed, 2, 'proc-slot-0, never created, and proc-slot-1');
   next.kill();
   await next.done;
 }
 
-console.log('ok - facet-id-ledger (minted counted, reuse free, durable across resets, wall named)');
+console.log('ok - facet-id-ledger (minted counted, durable across resets, wall named)');

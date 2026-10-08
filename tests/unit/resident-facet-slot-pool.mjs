@@ -1,15 +1,16 @@
 #!/usr/bin/env bun
-// Facet names come from a reusable free list, not from the pid.
+// Facet names are slots: `proc-slot-<n>`, numbered per hosting actor.
 //
-// A Durable Object admits 65,536 facets over its LIFETIME — the IDs are
-// append-only and never reclaimed, so the bound is on facets ever CREATED, not
-// on facets alive at once. Naming a facet `proc-${pid}` when pids never repeat
-// burned one of those IDs per spawn, and a long-lived session would eventually
-// exhaust its facet index with no way back.
+// A Durable Object admits 65,536 facets over its LIFETIME: the IDs are
+// append-only and never reclaimed, so every name ever created spends one, and
+// the lifetime ledger (budgets.ts) counts them and names the wall.
 //
-// The property under test is therefore not "names are unique" but the opposite:
-// a name RETURNED must be handed out again, because reusing a name is what
-// costs no new ID.
+// A released name is still never handed to a later process of the same
+// incarnation. Getting a name a just-released process held, with the next
+// process's class, failed on Cloudflare with "internal error" and
+// durableObjectReset: vite8 after vinext, 7 of 7 on a throwaway; with a fresh
+// name, 4 of 4 started (2026-10-07). So each process takes the next name, and
+// concurrent processes never share one.
 
 import assert from 'node:assert/strict';
 import { processes, residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
@@ -70,28 +71,20 @@ function open(ctx, pid) {
   );
 }
 
-// ── Sequential spawn/release must not grow the facet index ──────────────────
-//
-// This is the regression that matters. Before the free list, 200 sequential
-// short-lived processes created 200 facet IDs and none came back.
+// ── A released name is never handed out again ────────────────────────────────
 const ctx = makeCtx();
 let pid = 1000;
-for (let i = 0; i < 200; i++) {
+for (let i = 0; i < 20; i++) {
   const facet = open(ctx, pid++);
   await facet.release();
 }
-assert.equal(
-  ctx.everCreated.length,
-  1,
-  `200 sequential processes must reuse one slot, but created ${ctx.everCreated.length}`
-    + ` facets: ${ctx.everCreated.slice(0, 5).join(', ')}…`,
+assert.deepEqual(
+  ctx.everCreated,
+  Array.from({ length: 20 }, (_, i) => `proc-slot-${i}`),
+  'twenty sequential processes take twenty names, in order',
 );
-assert.equal(ctx.everCreated[0], 'proc-slot-0');
 
-// ── Concurrent processes must NOT share a slot ──────────────────────────────
-//
-// The counter-property, and the one a naive free list gets wrong: reuse is
-// only legal after the previous tenant is gone.
+// ── Concurrent processes never share a slot ──────────────────────────────────
 const ctx2 = makeCtx('concurrent');
 const live = [];
 for (let i = 0; i < 8; i++) live.push(open(ctx2, 2000 + i));
@@ -102,31 +95,14 @@ assert.deepEqual(
   Array.from({ length: 8 }, (_, i) => `proc-slot-${i}`),
 );
 
-// ── A released slot is reused before a new one is minted ───────────────────
+// A released slot among live ones is not reused either: the next process takes the next name.
 await live[3].release();
-const reused = open(ctx2, 3001);
-assert.equal(
-  ctx2.everCreated.length,
-  8,
-  'reusing a returned slot must not create a new facet name',
-);
-assert.equal(reused.slot, 3, `the lowest free slot must be reused, got ${reused.slot}`);
+const next = open(ctx2, 3001);
+assert.equal(next.slot, 8, `the next process takes the next name, got slot ${next.slot}`);
 
-// Releasing several returns them lowest-first, so the high-water mark stays low.
-await live[1].release();
-await live[6].release();
-const a = open(ctx2, 3002);
-const b = open(ctx2, 3003);
-assert.equal(a.slot, 1);
-assert.equal(b.slot, 6);
-assert.equal(ctx2.everCreated.length, 8, 'the facet index must still not have grown');
-
-// ── Release is idempotent and does not double-free a slot ──────────────────
-//
-// A slot returned twice would be handed to two live processes at once, which
-// is the one way a free list can be worse than no free list at all.
-await a.release();
-await a.release();
+// ── Release is idempotent ────────────────────────────────────────────────────
+await next.release();
+await next.release();
 const c = open(ctx2, 3004);
 const d = open(ctx2, 3005);
 assert.notEqual(c.slot, d.slot, 'a double release must not hand one slot to two processes');
@@ -174,4 +150,3 @@ assert.equal(elsewhere.slot, 0, 'a different Durable Object has its own slot spa
 }
 
 console.log('resident-facet-slot-pool: ok');
-console.log(`  200 sequential spawns → ${ctx.everCreated.length} facet name(s) ever created`);
