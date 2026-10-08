@@ -88,6 +88,11 @@ export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform)
 
   // lib/internal/util.js
   const colorRegExp = /\u001b\[\d\d?m/g;
+  const kCustomPromisifiedSymbol = Symbol.for("nodejs.util.promisify.custom");
+  const kCustomPromisifyArgsSymbol = platform.customPromisifyArgs;
+  // libuv's errors (NODE_UV_ERRORS), by errno: [name, message].
+  let uvErrorMap;
+  const uvErrors = () => (uvErrorMap ??= new Map(platform.uvErrors.map(([errno, name, message]) => [errno, [name, message]])));
   const codesWarned = new Set();
   function getDeprecationWarningEmitter(code, msg, deprecated) {
     let warned = false;
@@ -138,6 +143,79 @@ export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform)
       return deprecated;
     },
     setOwnProperty: (obj, key, value) => Object.defineProperty(obj, key, { __proto__: null, configurable: true, enumerable: true, value, writable: true }),
+    kEmptyObject: Object.freeze({ __proto__: null }),
+    customPromisifyArgs: kCustomPromisifyArgsSymbol,
+    getLazy(initializer) {
+      let value;
+      let initialized = false;
+      return function () {
+        if (initialized === false) {
+          value = initializer();
+          initialized = true;
+        }
+        return value;
+      };
+    },
+    // The util binding's defineLazyProperties: each key a data property of
+    // the module's, read from it the first time it is.
+    defineLazyProperties(target, id, keys, enumerable = true) {
+      for (const key of keys) {
+        Object.defineProperty(target, key, {
+          __proto__: null,
+          enumerable,
+          configurable: true,
+          get() {
+            const value = require(id)[key];
+            Object.defineProperty(this, key, { __proto__: null, value, writable: true, enumerable, configurable: true });
+            return value;
+          },
+          set(value) {
+            Object.defineProperty(this, key, { __proto__: null, value, writable: true, enumerable, configurable: true });
+          },
+        });
+      }
+    },
+    promisify(original) {
+      require("internal/validators").validateFunction(original, "original");
+      if (original[kCustomPromisifiedSymbol]) {
+        const fn = original[kCustomPromisifiedSymbol];
+        require("internal/validators").validateFunction(fn, "util.promisify.custom");
+        return Object.defineProperty(fn, kCustomPromisifiedSymbol, { __proto__: null, value: fn, enumerable: false, writable: false, configurable: true });
+      }
+      // Names to make an object of when the callback is given several values (fs.read's bytesRead and buffer).
+      const argumentNames = original[kCustomPromisifyArgsSymbol];
+      function fn(...args) {
+        return new Promise((resolve, reject) => {
+          args.push((err, ...values) => {
+            if (err) return reject(err);
+            if (argumentNames !== undefined && values.length > 1) {
+              const obj = {};
+              for (let i = 0; i < argumentNames.length; i++) obj[argumentNames[i]] = values[i];
+              resolve(obj);
+            } else {
+              resolve(values[0]);
+            }
+          });
+          if (types.isPromise(Reflect.apply(original, this, args))) {
+            platform.process.emitWarning("Calling promisify on a function that returns a Promise is likely a mistake.", "DeprecationWarning", "DEP0174");
+          }
+        });
+      }
+      Object.setPrototypeOf(fn, Object.getPrototypeOf(original));
+      Object.defineProperty(fn, kCustomPromisifiedSymbol, { __proto__: null, value: fn, enumerable: false, writable: false, configurable: true });
+      const descriptors = Object.getOwnPropertyDescriptors(original);
+      for (const descriptor of Object.values(descriptors)) Object.setPrototypeOf(descriptor, null);
+      return Object.defineProperties(fn, descriptors);
+    },
+    getSystemErrorMap: () => new Map([...uvErrors()].map(([errno, entry]) => [errno, [...entry]])),
+    getSystemErrorName(err) {
+      const entry = uvErrors().get(err);
+      return entry ? entry[0] : "Unknown system error " + err;
+    },
+    getSystemErrorMessage(err) {
+      const entry = uvErrors().get(err);
+      return entry ? entry[1] : "Unknown system error " + err;
+    },
     normalizeEncoding(enc) {
       if (enc == null || enc === "utf8" || enc === "utf-8") return "utf8";
       switch (enc.length) {
@@ -254,10 +332,163 @@ export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform)
     },
   };
 
+  internalUtil.promisify.custom = kCustomPromisifiedSymbol;
+
+  // lib/internal/errors.js ErrnoException and ExceptionWithHostPort: a
+  // libuv errno's error, its code the errno's name.
+  class ErrnoException extends Error {
+    constructor(err, syscall, original) {
+      const code = require("util").getSystemErrorName(err);
+      super(original ? syscall + " " + code + " " + original : syscall + " " + code);
+      this.errno = err;
+      this.code = code;
+      this.syscall = syscall;
+    }
+    get ["constructor"]() { return Error; }
+  }
+  class ExceptionWithHostPort extends Error {
+    constructor(err, syscall, address, port, additional) {
+      const code = require("util").getSystemErrorName(err);
+      let details = "";
+      if (port && port > 0) details = " " + address + ":" + port;
+      else if (address) details = " " + address;
+      if (additional) details += " - Local (" + additional + ")";
+      super(syscall + " " + code + details);
+      this.errno = err;
+      this.code = code;
+      this.syscall = syscall;
+      this.address = address;
+      if (port) this.port = port;
+    }
+    get ["constructor"]() { return Error; }
+  }
+
+  // lib/internal/abort_controller.js's functions util exports, over the platform's AbortSignal.
+  const abortController = {
+    async aborted(signal, resource) {
+      if (signal === undefined) throw new nodeErrorCodes.ERR_INVALID_ARG_TYPE("signal", "AbortSignal", signal);
+      require("internal/validators").validateAbortSignal(signal, "signal");
+      require("internal/validators").validateObject(resource, "resource", require("internal/validators").kValidateObjectAllowObjects);
+      if (signal.aborted) return Promise.resolve();
+      return new Promise((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    },
+    transferableAbortSignal(signal) {
+      if (!(signal instanceof AbortSignal)) throw new nodeErrorCodes.ERR_INVALID_ARG_TYPE("signal", "AbortSignal", signal);
+      return signal;
+    },
+    transferableAbortController: () => new AbortController(),
+  };
+
+  // src/node_dotenv.cc Dotenv::ParseContent, as util.parseEnv and
+  // process.loadEnvFile read a .env file: keys in their bytes' order.
+  function parseEnv(input) {
+    const trim = (text) => text.replace(/^[ \t\n]+|[ \t\n]+$/g, "");
+    const store = new Map();
+    let content = trim(String(input).replaceAll("\r", ""));
+    while (content.length > 0) {
+      if (content[0] === "\n" || content[0] === "#") {
+        const newline = content.indexOf("\n");
+        content = newline === -1 ? "" : content.slice(newline + 1);
+        continue;
+      }
+      const equalOrNewline = content.search(/[=\n]/);
+      if (equalOrNewline === -1 || content[equalOrNewline] === "\n") {
+        if (equalOrNewline === -1) break;
+        content = trim(content.slice(equalOrNewline + 1));
+        continue;
+      }
+      let key = trim(content.slice(0, equalOrNewline));
+      content = content.slice(equalOrNewline + 1);
+      if (content.length === 0 || content[0] === "\n") {
+        store.set(key, "");
+        continue;
+      }
+      content = trim(content);
+      if (key.length === 0) continue;
+      if (key.startsWith("export ")) key = trim(key.slice(7));
+      if (content.length === 0) {
+        store.set(key, "");
+        break;
+      }
+      if (content[0] === "\"") {
+        const closing = content.indexOf("\"", 1);
+        if (closing !== -1) {
+          store.set(key, content.slice(1, closing).replaceAll("\\n", "\n"));
+          const newline = content.indexOf("\n", closing + 1);
+          content = newline === -1 ? "" : content.slice(newline + 1);
+          continue;
+        }
+      }
+      if (content[0] === "'" || content[0] === "\"" || content[0] === "\u0060") {
+        const closing = content.indexOf(content[0], 1);
+        if (closing === -1) {
+          const newline = content.indexOf("\n");
+          if (newline === -1) {
+            store.set(key, content);
+            break;
+          }
+          store.set(key, content.slice(0, newline));
+          content = content.slice(newline + 1);
+        } else {
+          store.set(key, content.slice(1, closing));
+          const newline = content.indexOf("\n", closing + 1);
+          content = newline === -1 ? "" : content.slice(newline + 1);
+          continue;
+        }
+      } else {
+        const newline = content.indexOf("\n");
+        let value = newline === -1 ? content : content.slice(0, newline);
+        const hash = value.indexOf("#");
+        if (hash !== -1) value = value.slice(0, hash);
+        store.set(key, trim(value));
+        content = newline === -1 ? "" : content.slice(newline + 1);
+      }
+      content = trim(content);
+    }
+    // A std::map's order: the keys' UTF-8 bytes, which is their code points'.
+    const byCodePoints = (a, b) => {
+      const x = [...a];
+      const y = [...b];
+      for (let i = 0; i < Math.min(x.length, y.length); i++) {
+        const d = x[i].codePointAt(0) - y[i].codePointAt(0);
+        if (d !== 0) return d;
+      }
+      return x.length - y.length;
+    };
+    const result = {};
+    for (const key of [...store.keys()].sort(byCodePoints)) result[key] = store.get(key);
+    return result;
+  }
+  utilBinding.parseEnv = parseEnv;
+  // Node's util binding GetCallSites: the frames below util.getCallSites, as
+  // V8's StackFrame reads them; a script's id is its own number here.
+  const scriptIds = new Map();
+  utilBinding.getCallSites = function getCallSites(frameCount) {
+    return platform.callSites(frameCount + 1, getCallSites).slice(1).map((site) => {
+      const scriptName = site.getScriptNameOrSourceURL?.() ?? site.getFileName() ?? "";
+      if (!scriptIds.has(scriptName)) scriptIds.set(scriptName, String(scriptIds.size + 1));
+      const column = site.getColumnNumber() ?? 0;
+      return {
+        functionName: site.getFunctionName() ?? "",
+        scriptId: scriptIds.get(scriptName),
+        scriptName,
+        lineNumber: site.getLineNumber() ?? 0,
+        columnNumber: column,
+        column,
+      };
+    });
+  };
+
   // Node's internal modules that are not its own text here, by id.
   const hosted = {
     "internal/util": internalUtil,
-    "internal/errors": { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable, isStackOverflowError },
+    "internal/errors": { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable, isStackOverflowError, ErrnoException, ExceptionWithHostPort },
+    "internal/options": { getOptionValue: (name) => platform.optionValue(name) },
+    "internal/constants": { CHAR_LOWERCASE_B: 98, CHAR_LOWERCASE_E: 101, CHAR_LOWERCASE_N: 110 },
+    "internal/abort_controller": abortController,
+    "internal/console/global": platform.console,
+    "internal/encoding": { TextDecoder: globalThis.TextDecoder, TextEncoder: globalThis.TextEncoder },
+    worker_threads: platform.workerThreads,
     "internal/util/types": types,
     "internal/assert": assert,
     // Node's own modules, whose frames read node:<id> (colored grey).
@@ -276,6 +507,8 @@ export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform)
     constants: { os: { signals: platform.signals } },
     buffer: { compare: (a, b) => platform.Buffer.compare(a, b) },
     errors: { getErrorSourcePositions: (error) => platform.errorSourcePositions(error) },
+    // Node's tracing is off: no category is enabled, and nothing traces.
+    trace_events: { getCategoryEnabledBuffer: () => new Uint8Array(1), trace() {} },
   };
   const internalBinding = (name) => bindings[name];
   // inspect.js reads primordials.globalThis once, for the names it counts as
@@ -300,6 +533,8 @@ export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform)
     const module = { exports: {}, id };
     loaded.set(id, module);
     source(module.exports, require, module, platform.process, internalBinding, id === "internal/util/inspect" ? inspectPrimordials : primordials);
+    // As Node's bootstrap does, before any program reads it (pre_execution.js).
+    if (id === "internal/util/debuglog") module.exports.initializeDebugEnv(platform.nodeDebug);
     return module.exports;
   }
   return { require };

@@ -62,7 +62,7 @@ import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
 import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
 import { NODE_LIB_HOST_SOURCE, WORKERD_SLOTS_SOURCE } from './node-lib-host.js';
-import { EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_LIB_SOURCES, NODE_PRIMORDIALS_SOURCE } from './node-lib-source.js';
+import { EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_LIB_SOURCES, NODE_PRIMORDIALS_SOURCE, NODE_UV_ERRORS } from './node-lib-source.js';
 import { NODE_SOURCE_MAPS_SOURCE } from './node-source-maps.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
 import { RUNTIME_INTERPRETER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
@@ -6882,6 +6882,13 @@ function __nimbusNodeLib() {
     tokenizer: (code, options) => __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").tokenizer(code, options),
     sourceMaps: { getSourceMapsSupport: () => __nimbusSourceMapsSupport, findSourceMap: __nimbusFindSourceMap, getSourceLine: __nimbusOriginalSourceLine },
     colorDepth: () => __nimbusColorDepth(),
+    customPromisifyArgs: __nimbusCustomPromisifyArgs,
+    uvErrors: ${JSON.stringify(NODE_UV_ERRORS)},
+    optionValue: __nimbusOptionValue,
+    console: __consoleMod,
+    workerThreads: builtins.worker_threads,
+    nodeDebug: __nimbusNodeDebugAtLaunch,
+    callSites: (count, above) => (typeof __nimbusCallSites === "function" ? __nimbusCallSites(count, above) : []),
     primordialsOf: function (primordials, globalThis) {
 ${NODE_PRIMORDIALS_SOURCE}
     },
@@ -6893,6 +6900,18 @@ ${Object.entries(NODE_LIB_SOURCES).map(([id, text]) => `      ${JSON.stringify(i
 }
 function __nimbusNodeInspect() {
   return __nimbusNodeLib().require("internal/util/inspect");
+}
+// What util.promisify makes an object of when a callback is given several
+// values (lib/internal/util.js customPromisifyArgs): fs.read's bytesRead and
+// buffer, dns.lookup's address and family.
+const __nimbusCustomPromisifyArgs = Symbol("customPromisifyArgs");
+// internal/options getOptionValue, for the options Node's library reads.
+function __nimbusOptionValue(name) {
+  switch (name) {
+    case "--eval": return typeof __nimbusNodeCommandLine?.eval === "string" ? __nimbusNodeCommandLine.eval : "";
+    case "--enable-source-maps": return __nimbusNodeCommandLine?.enableSourceMaps === true;
+    default: return undefined;
+  }
 }
 // isInsideNodeModules (the util binding): whether the program's innermost
 // frame on the stack is a package's.
@@ -6942,184 +6961,6 @@ Object.defineProperties(__nimbusInspect, {
   colors: { get() { return __nimbusNodeInspect().inspect.colors; }, set(value) { __nimbusNodeInspect().inspect.colors = value; }, enumerable: true, configurable: true },
   styles: { get() { return __nimbusNodeInspect().inspect.styles; }, set(value) { __nimbusNodeInspect().inspect.styles = value; }, enumerable: true, configurable: true },
 });
-const __utilMod = {
-  inspect: __nimbusInspect,
-  format: function format(...args) { return __nimbusNodeInspect().format(...args); },
-  formatWithOptions: function formatWithOptions(options, ...args) { return __nimbusNodeInspect().formatWithOptions(options, ...args); },
-  stripVTControlCharacters: function stripVTControlCharacters(str) { return __nimbusNodeInspect().stripVTControlCharacters(str); },
-  promisify: (fn) => (...a) => new Promise((res, rej) => fn(...a, (e, r) => e ? rej(e) : res(r))),
-  callbackify: (fn) => (...a) => { const cb = a.pop(); fn(...a).then(r => cb(null, r), e => cb(e)); },
-  types: __realUtil.types,
-  inherits: (c, s) => {
-    // X.5-Z5 Defect-B fix: guard against null/undefined superCtor or a
-    // superCtor whose .prototype is null/undefined. Without this guard,
-    // Object.create(undefined.prototype, ...) and Object.create(null, ...)
-    // both throw 'Object prototype may only be an Object or null: undefined'
-    // — same surface as Defect A but for shim namespaces with no synthetic
-    // .prototype. Mirrors the canonical inherits_browser.js fallback.
-    if (s == null || s.prototype == null) return;
-    c.super_ = s;
-    c.prototype = Object.create(s.prototype, { constructor: { value: c, enumerable: false, writable: true, configurable: true } });
-  },
-  deprecate(fn, msg, code) { return __nimbusNodeLib().require("internal/util").deprecate(fn, msg, code); },
-  debuglog: () => () => {},
-  isDeepStrictEqual(a, b) { return __nimbusNodeLib().require("internal/util/comparisons").isDeepStrictEqual(a, b); },
-  TextEncoder: globalThis.TextEncoder,
-  TextDecoder: globalThis.TextDecoder,
-  // util.styleText(format, text [, opts]) — Node 20.12+. Returns text
-  // wrapped in ANSI escape sequences for terminal styling. Used by
-  // create-vite and many modern CLIs.
-  //
-  // Surface: format may be a single style string or an array of style
-  // strings; in either case we apply each style's open code, then the
-  // text, then the closing code. The Nimbus terminal renders ANSI;
-  // unrecognised formats pass through as plain text (Node's docs say
-  // it throws TypeError in strict mode, but our facet code may emit
-  // styled error messages even for unrecognised foreground colors
-  // — choose the lenient pass-through to keep CLIs functioning).
-  styleText: (format, text /*, _opts */) => {
-    // ANSI lookup. Mirrors Node's util.inspect.colors keys.
-    const codes = {
-      reset:           [0, 0],
-      bold:            [1, 22],
-      italic:          [3, 23],
-      underline:       [4, 24],
-      strikethrough:   [9, 29],
-      hidden:          [8, 28],
-      dim:             [2, 22],
-      overlined:       [53, 55],
-      blink:           [5, 25],
-      inverse:         [7, 27],
-      doubleunderline: [21, 24],
-      framed:          [51, 54],
-      black:           [30, 39], red:    [31, 39], green:   [32, 39],
-      yellow:          [33, 39], blue:   [34, 39], magenta: [35, 39],
-      cyan:            [36, 39], white:  [37, 39], gray:    [90, 39],
-      grey:            [90, 39],
-      blackBright:     [90, 39], redBright:    [91, 39], greenBright: [92, 39],
-      yellowBright:    [93, 39], blueBright:   [94, 39], magentaBright: [95, 39],
-      cyanBright:      [96, 39], whiteBright:  [97, 39],
-      bgBlack:         [40, 49], bgRed:        [41, 49], bgGreen: [42, 49],
-      bgYellow:        [43, 49], bgBlue:       [44, 49], bgMagenta: [45, 49],
-      bgCyan:          [46, 49], bgWhite:      [47, 49], bgGray: [100, 49],
-      bgGrey:          [100, 49],
-      bgBlackBright:   [100, 49], bgRedBright: [101, 49], bgGreenBright: [102, 49],
-      bgYellowBright:  [103, 49], bgBlueBright: [104, 49], bgMagentaBright: [105, 49],
-      bgCyanBright:    [106, 49], bgWhiteBright: [107, 49],
-    };
-    const formats = Array.isArray(format) ? format : [format];
-    let opens = "";
-    let closes = "";
-    for (const f of formats) {
-      const c = codes[f];
-      if (c) {
-        opens += "\\x1b[" + c[0] + "m";
-        closes = "\\x1b[" + c[1] + "m" + closes;
-      }
-    }
-    return opens + String(text) + closes;
-  },
-  // util.parseArgs({ args, options, strict, allowPositionals, allowNegative })
-  // — Node 18.3+. The CLI argument parser modern npm bins reach for instead
-  // of a dependency: json-server's lib/bin.js destructures it at module
-  // init, so its absence crashed the bin at "parseArgs is not a function"
-  // before --version could answer. Node's contract, minus the tokens
-  // debugging output:
-  //   - --name, --name=value, --name value for string options;
-  //   - -s, -s value, -svalue, and grouped booleans -abc for shorts;
-  //   - --no-name sets a boolean false when allowNegative is on;
-  //   - -- ends option parsing, the rest are positionals;
-  //   - strict (default true) throws Node's own error codes for an unknown
-  //     option, a string option with no value, or a positional when they
-  //     are not allowed; lax mode records unknown options as booleans.
-  parseArgs: (config) => {
-    const cfg = config || {};
-    const args = Array.isArray(cfg.args) ? cfg.args.slice() : (__processMod.argv || []).slice(2);
-    const options = cfg.options || {};
-    const strict = cfg.strict !== false;
-    const allowPositionals = cfg.allowPositionals === undefined ? !strict : !!cfg.allowPositionals;
-    const allowNegative = !!cfg.allowNegative;
-    const values = {};
-    const positionals = [];
-    const err = (code, message) => nodeError(TypeError, code, message);
-    const shortToLong = {};
-    for (const [name, spec] of Object.entries(options)) {
-      if (spec === null || typeof spec !== "object" || Array.isArray(spec)) throw invalidArgType("options." + name, "object", spec);
-      const type = Object.hasOwn(spec, "type") ? spec.type : undefined;
-      if (type !== "string" && type !== "boolean") throw invalidArgType("options." + name + ".type", "('string|boolean')", type);
-      if (spec.short) shortToLong[spec.short] = name;
-      if (spec.default !== undefined) values[name] = spec.default;
-    }
-    const store = (name, value) => {
-      const spec = options[name];
-      if (spec && spec.multiple) {
-        if (!Array.isArray(values[name]) || (spec.default !== undefined && values[name] === spec.default)) values[name] = [];
-        values[name].push(value);
-      } else {
-        values[name] = value;
-      }
-    };
-    const optionValue = (name, inlineValue, next, raw) => {
-      const spec = options[name];
-      if (!spec) {
-        if (strict) throw err("ERR_PARSE_ARGS_UNKNOWN_OPTION", "Unknown option '" + raw + "'" + (allowPositionals ? ". To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- " + JSON.stringify(raw) : ""));
-        if (inlineValue !== undefined) return { value: inlineValue, consumed: 0 };
-        return { value: true, consumed: 0 };
-      }
-      if (spec.type === "boolean") {
-        if (inlineValue !== undefined && strict) throw err("ERR_PARSE_ARGS_INVALID_OPTION_VALUE", "Option '" + raw + "' does not take an argument.");
-        return { value: inlineValue !== undefined ? inlineValue : true, consumed: 0 };
-      }
-      if (inlineValue !== undefined) return { value: inlineValue, consumed: 0 };
-      if (next === undefined || (strict && next.startsWith("-") && next !== "-")) {
-        if (strict) throw err("ERR_PARSE_ARGS_INVALID_OPTION_VALUE", "Option '" + raw + " <value>' argument missing");
-        return { value: undefined, consumed: 0 };
-      }
-      return { value: next, consumed: 1 };
-    };
-    for (let i = 0; i < args.length; i++) {
-      const arg = args[i];
-      if (arg === "--") { positionals.push(...args.slice(i + 1)); break; }
-      if (arg.startsWith("--") && arg.length > 2) {
-        const eq = arg.indexOf("=");
-        let name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
-        const inline = eq === -1 ? undefined : arg.slice(eq + 1);
-        if (allowNegative && name.startsWith("no-") && options[name.slice(3)] && options[name.slice(3)].type === "boolean") {
-          store(name.slice(3), false);
-          continue;
-        }
-        const r = optionValue(name, inline, args[i + 1], "--" + name);
-        store(name, r.value);
-        i += r.consumed;
-        continue;
-      }
-      if (arg.startsWith("-") && arg.length > 1 && arg !== "-") {
-        // Short: -s, -s value, -svalue (string) or grouped -abc (booleans).
-        const first = arg[1];
-        const long = shortToLong[first] || first;
-        const spec = options[long];
-        if (spec && spec.type === "string") {
-          const inline = arg.length > 2 ? arg.slice(2) : undefined;
-          const r = optionValue(long, inline, args[i + 1], "-" + first);
-          store(long, r.value);
-          i += r.consumed;
-          continue;
-        }
-        for (const ch of arg.slice(1)) {
-          const l = shortToLong[ch] || ch;
-          const r = optionValue(l, undefined, undefined, "-" + ch);
-          store(l, r.value);
-        }
-        continue;
-      }
-      if (!allowPositionals) {
-        throw err("ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL", "Unexpected argument '" + arg + "'. This command does not take positional arguments");
-      }
-      positionals.push(arg);
-    }
-    return { values, positionals };
-  },
-};
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  url module ─────────────────────────────────────────────────────
@@ -7225,7 +7066,7 @@ const __utilMod = {
       obj.search = this.search;
       obj.searchParams = this.searchParams;
       obj.hash = this.hash;
-      return constructor.name + " " + __utilMod.inspect(obj, opts);
+      return constructor.name + " " + __nimbusInspect(obj, opts);
     }
   }
   for (const k of Object.getOwnPropertyNames(_Orig)) {
@@ -7245,7 +7086,7 @@ const __utilMod = {
       const separator = ", ";
       const innerOpts = { ...ctx };
       if (recurseTimes !== null) innerOpts.depth = recurseTimes - 1;
-      const innerInspect = (v) => __utilMod.inspect(v, innerOpts);
+      const innerInspect = (v) => __nimbusInspect(v, innerOpts);
       const output = [];
       for (const [name, value] of this) output.push(innerInspect(name) + " => " + innerInspect(value));
       let length = -separator.length;
@@ -8647,6 +8488,28 @@ const __childProcessMod = (() => {
     _execCallback(child, [String(file), ...args.map(String)].join(" "), cb);
     return child;
   }
+  // util.promisify's (lib/child_process.js customPromiseExecFunction): its
+  // stdout and stderr, or the error with both; the child is the promise's.
+  for (const fn of [exec, execFile]) {
+    Object.defineProperty(fn, Symbol.for("nodejs.util.promisify.custom"), {
+      enumerable: false,
+      value: { [fn.name](...args) {
+        let resolve;
+        let reject;
+        const promise = new Promise((onResolve, onReject) => { resolve = onResolve; reject = onReject; });
+        promise.child = fn(...args, (err, stdout, stderr) => {
+          if (err !== null) {
+            err.stdout = stdout;
+            err.stderr = stderr;
+            reject(err);
+          } else {
+            resolve({ stdout, stderr });
+          }
+        });
+        return promise;
+      } }[fn.name],
+    });
+  }
 
   /**
    * Fake-sync spawn. Phase-1 limit: V8/Workers can't truly block JS
@@ -8993,7 +8856,7 @@ function __nimbusHasColors(count, env) {
     throw invalidArgType("count", "number", count);
   } else if (!Number.isInteger(count) || count < 2 || count > Number.MAX_SAFE_INTEGER) {
     const range = Number.isInteger(count) ? ">= 2 && <= 9007199254740991" : "an integer";
-    throw nodeError(RangeError, "ERR_OUT_OF_RANGE", "The value of \\"count\\" is out of range. It must be " + range + ". Received " + __utilMod.inspect(count));
+    throw new nodeErrorCodes.ERR_OUT_OF_RANGE("count", range, count);
   }
   return count <= 2 ** __nimbusColorDepth(env);
 }
@@ -9098,7 +8961,7 @@ class __NimbusConsole {
     // Strings with no format directive are joined as formatWithOptions
     // joins them, without loading Node's inspect for a line it never needs.
     if (args.every((arg) => typeof arg === "string") && (args.length < 2 || !args[0].includes("%"))) return args.join(" ");
-    return __utilMod.formatWithOptions(this.#optionsFor(stream), ...args);
+    return __nimbusNodeInspect().formatWithOptions(this.#optionsFor(stream), ...args);
   }
   #write(stream, string) {
     const indent = this.#groupIndent;
@@ -9120,7 +8983,7 @@ class __NimbusConsole {
   error(...args) { const err = this.#stderr(); this.#write(err, this.#format(err, args)); }
   dir(object, options) {
     const out = this.#stdout();
-    this.#write(out, __utilMod.inspect(object, { customInspect: false, ...this.#optionsFor(out), ...options }));
+    this.#write(out, __nimbusInspect(object, { customInspect: false, ...this.#optionsFor(out), ...options }));
   }
   trace(...args) {
     const err = { name: "Trace", message: this.#format(this.#stderr(), args) };
@@ -9193,7 +9056,7 @@ class __NimbusConsole {
     }
     if (data === null || typeof data !== "object") return this.log(data);
     const options = this.#optionsFor(this.#stdout());
-    const show = (v) => __utilMod.inspect(v, {
+    const show = (v) => __nimbusInspect(v, {
       depth: v !== null && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length > 2 ? -1 : 0,
       maxArrayLength: 3,
       breakLength: Infinity,
@@ -10194,31 +10057,15 @@ Object.defineProperty(__processMod, "exitCode", {
     let value = code;
     if (typeof code === "string" && code !== "" && Number.isNaN((value = Number(code)))) value = code;
     if (typeof value !== "number") throw invalidArgType("code", "number", value);
-    if (!Number.isInteger(value)) throw __nimbusOutOfRange("code", "an integer", value);
+    if (!Number.isInteger(value)) throw new nodeErrorCodes.ERR_OUT_OF_RANGE("code", "an integer", value);
     if (value < Number.MIN_SAFE_INTEGER || value > Number.MAX_SAFE_INTEGER) {
-      throw __nimbusOutOfRange("code", ">= " + Number.MIN_SAFE_INTEGER + " && <= " + Number.MAX_SAFE_INTEGER, value);
+      throw new nodeErrorCodes.ERR_OUT_OF_RANGE("code", ">= " + Number.MIN_SAFE_INTEGER + " && <= " + Number.MAX_SAFE_INTEGER, value);
     }
     __nimbusExitCodeField = value | 0;
   },
   enumerable: true,
   configurable: false,
 });
-// Node's ERR_OUT_OF_RANGE for \`name\` (lib/internal/errors.js): an integer
-// past 2 ** 32 with its digits grouped, anything else as inspect shows it.
-function __nimbusOutOfRange(name, range, input) {
-  let received;
-  if (Number.isInteger(input) && Math.abs(input) > 2 ** 32) {
-    const digits = String(input);
-    const start = digits[0] === "-" ? 1 : 0;
-    let grouped = "";
-    let i = digits.length;
-    for (; i >= start + 4; i -= 3) grouped = "_" + digits.slice(i - 3, i) + grouped;
-    received = digits.slice(0, i) + grouped;
-  } else {
-    received = __utilMod.inspect(input);
-  }
-  return nodeError(RangeError, "ERR_OUT_OF_RANGE", "The value of \\"" + name + "\\" is out of range. It must be " + range + ". Received " + received);
-}
 // The natural end: 'exit' with process.exitCode, once, and the code its
 // listeners leave (Node's EmitProcessExit).
 function __nimbusExitAtEnd() {
@@ -10265,18 +10112,18 @@ function __nimbusNoSideEffectsToString(value) {
     try { return Function.prototype.toString.call(value); } catch { return "function () { [native code] }"; }
   }
   if (value === null || typeof value !== "object") return String(value);
-  if (__utilMod.types.isProxy(value)) return "#<Object>";
+  if (__realUtil.types.isProxy(value)) return "#<Object>";
   // A data property, own or inherited, never a getter.
   const dataProperty = (key) => {
     for (let o = value; o !== null; o = Object.getPrototypeOf(o)) {
-      if (__utilMod.types.isProxy(o)) return undefined;
+      if (__realUtil.types.isProxy(o)) return undefined;
       const d = Object.getOwnPropertyDescriptor(o, key);
       if (d) return "value" in d ? d.value : undefined;
     }
     return undefined;
   };
   const toString = dataProperty("toString");
-  if (__utilMod.types.isNativeError(value) || toString === Error.prototype.toString) {
+  if (__realUtil.types.isNativeError(value) || toString === Error.prototype.toString) {
     const name = dataProperty("name");
     const message = dataProperty("message");
     const n = typeof name === "string" ? name : "Error";
@@ -10287,7 +10134,7 @@ function __nimbusNoSideEffectsToString(value) {
     const ctor = dataProperty("constructor");
     if (typeof ctor === "function" && typeof ctor.name === "string" && ctor.name !== "") return "#<" + ctor.name + ">";
   }
-  const types = __utilMod.types;
+  const types = __realUtil.types;
   const builtin = Array.isArray(value) ? "Array" : types.isArgumentsObject(value) ? "Arguments"
     : types.isNativeError(value) ? "Error" : types.isDate(value) ? "Date" : types.isRegExp(value) ? "RegExp"
     : types.isBooleanObject(value) ? "Boolean" : types.isNumberObject(value) ? "Number"
@@ -10440,7 +10287,7 @@ function __nimbusFatalReport(error, fromPromise, enhance) {
   // AppendExceptionLine: an error keeps its arrow for below; for anything
   // else it is printed at once.
   if (arrow !== null) {
-    if (isObject && __utilMod.types.isNativeError(error)) attached = arrow;
+    if (isObject && __realUtil.types.isNativeError(error)) attached = arrow;
     else report += "\\n" + arrow;
   }
   let trace;
@@ -10448,7 +10295,7 @@ function __nimbusFatalReport(error, fromPromise, enhance) {
     try { trace = error.stack; } catch {}
     if (enhance) {
       try {
-        const inspect = __utilMod.inspect;
+        const inspect = __nimbusInspect;
         const colors = __nimbusShouldColorize(__processMod.stderr) || inspect.defaultOptions.colors;
         trace = inspect(error, { colors, customInspect: false, depth: Math.max(inspect.defaultOptions.depth, 5) });
       } catch {}
@@ -10575,7 +10422,6 @@ builtins.stream = __streamMod;
 // EventEmitter doesn't get clobbered.
 if (!__streamMod.EventEmitter) __streamMod.EventEmitter = __eventsMod;
 builtins.buffer = __bufferModule;
-builtins.util = __utilMod;
 builtins.url = __urlMod;
 builtins.crypto = __cryptoMod;
 // Node's own (Node's library above), each run the first time it is required.
@@ -10584,6 +10430,9 @@ for (const [name, read] of [
   ["assert/strict", () => __nimbusNodeLib().require("assert").strict],
   ["querystring", () => __nimbusNodeLib().require("querystring")],
   ["punycode", () => __nimbusNodeLib().require("punycode")],
+  ["util", () => __nimbusNodeLib().require("util")],
+  ["util/types", () => __nimbusNodeLib().require("util").types],
+  ["node:util/types", () => __nimbusNodeLib().require("util").types],
 ]) {
   Object.defineProperty(builtins, name, { get: read, enumerable: true, configurable: true });
 }
@@ -10597,6 +10446,8 @@ builtins.sqlite = __sqliteMod;
 builtins["node:sqlite"] = __sqliteMod;
 builtins.child_process = __childProcessMod;
 builtins.process = __processMod;
+// NODE_DEBUG as the program started with it: what util.debuglog reads (Node's bootstrap).
+const __nimbusNodeDebugAtLaunch = __processMod.env?.NODE_DEBUG;
 builtins.console = __consoleMod;
 ${NATIVE_HTTP_SOURCE}
 ${NODE_WS_UPGRADE_SOURCE}
@@ -10695,7 +10546,7 @@ builtins.dgram = (() => {
 })();
 builtins.dns = (() => {
   async function _doh(h, t) { try { const r = await fetch("https://cloudflare-dns.com/dns-query?name="+encodeURIComponent(h)+"&type="+(t||"A"),{headers:{"Accept":"application/dns-json"}}); const d = await r.json(); return (d.Answer||[]).map(a=>a.data).filter(Boolean); } catch { return []; } }
-  return { resolve: (h,t,cb) => { if (typeof t==="function"){cb=t;t="A";} _doh(h,t).then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)); }, resolve4: (h,cb) => _doh(h,"A").then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)), resolve6: (h,cb) => _doh(h,"AAAA").then(a=>cb(null,a)).catch(e=>cb(e)), lookup: (h,o,cb) => { if(typeof o==="function"){cb=o;} if(h==="localhost"){cb(null,"127.0.0.1",4);return;} _doh(h,"A").then(a=>cb(null,a[0]||"127.0.0.1",4)).catch(e=>cb(e)); }, promises: { resolve: (h,t) => _doh(h,t||"A"), resolve4: (h) => _doh(h,"A"), lookup: async(h) => { if(h==="localhost") return {address:"127.0.0.1",family:4}; const a=await _doh(h,"A"); return {address:a[0]||"127.0.0.1",family:4}; } } };
+  return { resolve: (h,t,cb) => { if (typeof t==="function"){cb=t;t="A";} _doh(h,t).then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)); }, resolve4: (h,cb) => _doh(h,"A").then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)), resolve6: (h,cb) => _doh(h,"AAAA").then(a=>cb(null,a)).catch(e=>cb(e)), lookup: Object.defineProperty((h,o,cb) => { if(typeof o==="function"){cb=o;} if(h==="localhost"){cb(null,"127.0.0.1",4);return;} _doh(h,"A").then(a=>cb(null,a[0]||"127.0.0.1",4)).catch(e=>cb(e)); }, __nimbusCustomPromisifyArgs, { value: ["address", "family"], enumerable: false }), promises: { resolve: (h,t) => _doh(h,t||"A"), resolve4: (h) => _doh(h,"A"), lookup: async(h) => { if(h==="localhost") return {address:"127.0.0.1",family:4}; const a=await _doh(h,"A"); return {address:a[0]||"127.0.0.1",family:4}; } } };
 })();
 builtins.tty = {
   isatty: () => __nimbusAttachedTty,
@@ -11309,10 +11160,6 @@ builtins.v8 = {
 const __BroadcastChannel = (() => {
   const open = new Map();
   const state = new WeakMap();
-  const missing = (name) => {
-    const error = nodeError(TypeError, "ERR_MISSING_ARGS", 'The "' + name + '" argument must be specified');
-    return error;
-  };
   const own = (channel) => {
     const s = state.get(channel);
     if (s === undefined) {
@@ -11326,7 +11173,7 @@ const __BroadcastChannel = (() => {
   };
   class BroadcastChannel extends EventTarget {
     constructor(name) {
-      if (arguments.length === 0) throw missing("name");
+      if (arguments.length === 0) throw new nodeErrorCodes.ERR_MISSING_ARGS("name");
       super();
       const s = { name: String(name), open: true, hold: null, handlers: { message: null, messageerror: null } };
       state.set(this, s);
@@ -11346,7 +11193,7 @@ const __BroadcastChannel = (() => {
     set onmessageerror(handler) { own(this).handlers.messageerror = typeof handler === "function" ? handler : null; }
     postMessage(message) {
       const s = own(this);
-      if (arguments.length === 0) throw missing("message");
+      if (arguments.length === 0) throw new nodeErrorCodes.ERR_MISSING_ARGS("message");
       if (!s.open) throw new DOMException("BroadcastChannel is closed.", "InvalidStateError");
       const data = structuredClone(message);
       const schedule = globalThis.__nimbusRawSetTimeout || globalThis.setTimeout;
@@ -11543,6 +11390,13 @@ builtins["timers/promises"] = (() => {
   };
 })();
 builtins["node:timers/promises"] = builtins["timers/promises"];
+// util.promisify's for the timers: timers/promises' (lib/timers.js).
+for (const [owner, name] of [[builtins.timers, "setTimeout"], [builtins.timers, "setImmediate"], [globalThis, "setTimeout"], [globalThis, "setImmediate"]]) {
+  const fn = owner[name];
+  if (typeof fn === "function" && Object.isExtensible(fn) && !Object.hasOwn(fn, Symbol.for("nodejs.util.promisify.custom"))) {
+    Object.defineProperty(fn, Symbol.for("nodejs.util.promisify.custom"), { enumerable: true, get: () => builtins["timers/promises"][name] });
+  }
+}
 
 // X.5-M (M-2): dns/promises subpath registration for redis.
 // @redis/client/dist/lib/client does require('dns/promises') to do
@@ -11555,8 +11409,6 @@ builtins["node:timers/promises"] = builtins["timers/promises"];
 builtins["dns/promises"] = builtins.dns.promises;
 builtins["node:dns/promises"] = builtins["dns/promises"];
 
-builtins["util/types"] = builtins.util.types;
-builtins["node:util/types"] = builtins["util/types"];
 
 // undici (npm, not node core) — Nimbus provides it instead of node_modules.
 // __requireFrom checks this table BEFORE resolving, so this wins over any

@@ -148,12 +148,17 @@ function formatNodeMessage(template, args) {
 var nodeErrorMessages = {
   ERR_AMBIGUOUS_ARGUMENT: ['The "%s" argument is ambiguous. %s', TypeError],
   ERR_CONSTRUCT_CALL_REQUIRED: ["Class constructor %s cannot be invoked without `new`", TypeError],
+  ERR_FALSY_VALUE_REJECTION: [function(reason) {
+    this.reason = reason;
+    return "Promise was rejected with falsy value";
+  }, Error],
   ERR_INTERNAL_ASSERTION: [(message) => {
     const suffix = "This is caused by either a bug in Node.js or incorrect usage of Node.js internals.\nPlease open an issue with this stack trace at https://github.com/nodejs/node/issues\n";
     return message === void 0 ? suffix : `${message}
 ${suffix}`;
   }, Error],
   ERR_INVALID_ARG_TYPE: [invalidArgTypeMessage, TypeError],
+  ERR_INVALID_MIME_SYNTAX: [(production, str, invalidIndex) => `The MIME syntax for a ${production} in "${str}" is invalid${invalidIndex !== -1 ? ` at ${invalidIndex}` : ""}`, TypeError],
   ERR_INVALID_ARG_VALUE: [(name, value, reason = "is invalid") => {
     let inspected = inspectValue(value, {});
     if (inspected.length > 128) inspected = `${inspected.slice(0, 128)}...`;
@@ -166,6 +171,9 @@ ${suffix}`;
     const wrapped = names.map((name) => Array.isArray(name) ? name.map((n) => `"${n}"`).join(" or ") : `"${name}"`);
     return `The ${formatList(wrapped, "and")} argument${names.length > 1 ? "s" : ""} must be specified`;
   }, TypeError],
+  ERR_PARSE_ARGS_INVALID_OPTION_VALUE: ["%s", TypeError],
+  ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL: ["Unexpected argument '%s'. This command does not take positional arguments", TypeError],
+  ERR_PARSE_ARGS_UNKNOWN_OPTION: [(option, allowPositionals) => `Unknown option '${option}'${allowPositionals ? `. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- ${JSON.stringify(option)}` : ""}`, TypeError],
   ERR_OUT_OF_RANGE: [(str, range, input, replaceDefaultBoolean = false) => {
     let received;
     if (Number.isInteger(input) && Math.abs(input) > 2 ** 32) {
@@ -181,12 +189,15 @@ ${suffix}`;
   }, RangeError],
   ERR_SOCKET_BAD_PORT: [(name, port, allowZero = true) => `${name} should be ${allowZero ? ">=" : ">"} 0 and < 65536. Received ${determineSpecificType(port)}.`, RangeError],
   ERR_UNAVAILABLE_DURING_EXIT: ["Cannot call function in process exit handler", Error],
-  ERR_UNKNOWN_SIGNAL: ["Unknown signal: %s", TypeError]
+  ERR_UNKNOWN_SIGNAL: ["Unknown signal: %s", TypeError],
+  ERR_WORKER_UNSUPPORTED_OPERATION: ["%s is not supported in workers", TypeError]
 };
 function nodeErrorCodeConstructor(code, message, Base) {
   const make = function(...args) {
-    const text = typeof message === "string" ? formatNodeMessage(message, args) : Reflect.apply(message, void 0, args);
-    return made(Base, code, text, void 0, make);
+    if (typeof message === "string") return made(Base, code, formatNodeMessage(message, args), void 0, make);
+    const fields = {};
+    const text = Reflect.apply(message, fields, args);
+    return made(Base, code, text, Object.keys(fields).length > 0 ? fields : void 0, make);
   };
   Object.defineProperty(make, "name", { value: "NodeError" });
   return make;
@@ -10578,6 +10589,11 @@ function __nimbusNodeLib() {
 
   // lib/internal/util.js
   const colorRegExp = /\u001b\[\d\d?m/g;
+  const kCustomPromisifiedSymbol = Symbol.for("nodejs.util.promisify.custom");
+  const kCustomPromisifyArgsSymbol = platform.customPromisifyArgs;
+  // libuv's errors (NODE_UV_ERRORS), by errno: [name, message].
+  let uvErrorMap;
+  const uvErrors = () => (uvErrorMap ??= new Map(platform.uvErrors.map(([errno, name, message]) => [errno, [name, message]])));
   const codesWarned = new Set();
   function getDeprecationWarningEmitter(code, msg, deprecated) {
     let warned = false;
@@ -10628,6 +10644,79 @@ function __nimbusNodeLib() {
       return deprecated;
     },
     setOwnProperty: (obj, key, value) => Object.defineProperty(obj, key, { __proto__: null, configurable: true, enumerable: true, value, writable: true }),
+    kEmptyObject: Object.freeze({ __proto__: null }),
+    customPromisifyArgs: kCustomPromisifyArgsSymbol,
+    getLazy(initializer) {
+      let value;
+      let initialized = false;
+      return function () {
+        if (initialized === false) {
+          value = initializer();
+          initialized = true;
+        }
+        return value;
+      };
+    },
+    // The util binding's defineLazyProperties: each key a data property of
+    // the module's, read from it the first time it is.
+    defineLazyProperties(target, id, keys, enumerable = true) {
+      for (const key of keys) {
+        Object.defineProperty(target, key, {
+          __proto__: null,
+          enumerable,
+          configurable: true,
+          get() {
+            const value = require(id)[key];
+            Object.defineProperty(this, key, { __proto__: null, value, writable: true, enumerable, configurable: true });
+            return value;
+          },
+          set(value) {
+            Object.defineProperty(this, key, { __proto__: null, value, writable: true, enumerable, configurable: true });
+          },
+        });
+      }
+    },
+    promisify(original) {
+      require("internal/validators").validateFunction(original, "original");
+      if (original[kCustomPromisifiedSymbol]) {
+        const fn = original[kCustomPromisifiedSymbol];
+        require("internal/validators").validateFunction(fn, "util.promisify.custom");
+        return Object.defineProperty(fn, kCustomPromisifiedSymbol, { __proto__: null, value: fn, enumerable: false, writable: false, configurable: true });
+      }
+      // Names to make an object of when the callback is given several values (fs.read's bytesRead and buffer).
+      const argumentNames = original[kCustomPromisifyArgsSymbol];
+      function fn(...args) {
+        return new Promise((resolve, reject) => {
+          args.push((err, ...values) => {
+            if (err) return reject(err);
+            if (argumentNames !== undefined && values.length > 1) {
+              const obj = {};
+              for (let i = 0; i < argumentNames.length; i++) obj[argumentNames[i]] = values[i];
+              resolve(obj);
+            } else {
+              resolve(values[0]);
+            }
+          });
+          if (types.isPromise(Reflect.apply(original, this, args))) {
+            platform.process.emitWarning("Calling promisify on a function that returns a Promise is likely a mistake.", "DeprecationWarning", "DEP0174");
+          }
+        });
+      }
+      Object.setPrototypeOf(fn, Object.getPrototypeOf(original));
+      Object.defineProperty(fn, kCustomPromisifiedSymbol, { __proto__: null, value: fn, enumerable: false, writable: false, configurable: true });
+      const descriptors = Object.getOwnPropertyDescriptors(original);
+      for (const descriptor of Object.values(descriptors)) Object.setPrototypeOf(descriptor, null);
+      return Object.defineProperties(fn, descriptors);
+    },
+    getSystemErrorMap: () => new Map([...uvErrors()].map(([errno, entry]) => [errno, [...entry]])),
+    getSystemErrorName(err) {
+      const entry = uvErrors().get(err);
+      return entry ? entry[0] : "Unknown system error " + err;
+    },
+    getSystemErrorMessage(err) {
+      const entry = uvErrors().get(err);
+      return entry ? entry[1] : "Unknown system error " + err;
+    },
     normalizeEncoding(enc) {
       if (enc == null || enc === "utf8" || enc === "utf-8") return "utf8";
       switch (enc.length) {
@@ -10744,10 +10833,163 @@ function __nimbusNodeLib() {
     },
   };
 
+  internalUtil.promisify.custom = kCustomPromisifiedSymbol;
+
+  // lib/internal/errors.js ErrnoException and ExceptionWithHostPort: a
+  // libuv errno's error, its code the errno's name.
+  class ErrnoException extends Error {
+    constructor(err, syscall, original) {
+      const code = require("util").getSystemErrorName(err);
+      super(original ? syscall + " " + code + " " + original : syscall + " " + code);
+      this.errno = err;
+      this.code = code;
+      this.syscall = syscall;
+    }
+    get ["constructor"]() { return Error; }
+  }
+  class ExceptionWithHostPort extends Error {
+    constructor(err, syscall, address, port, additional) {
+      const code = require("util").getSystemErrorName(err);
+      let details = "";
+      if (port && port > 0) details = " " + address + ":" + port;
+      else if (address) details = " " + address;
+      if (additional) details += " - Local (" + additional + ")";
+      super(syscall + " " + code + details);
+      this.errno = err;
+      this.code = code;
+      this.syscall = syscall;
+      this.address = address;
+      if (port) this.port = port;
+    }
+    get ["constructor"]() { return Error; }
+  }
+
+  // lib/internal/abort_controller.js's functions util exports, over the platform's AbortSignal.
+  const abortController = {
+    async aborted(signal, resource) {
+      if (signal === undefined) throw new nodeErrorCodes.ERR_INVALID_ARG_TYPE("signal", "AbortSignal", signal);
+      require("internal/validators").validateAbortSignal(signal, "signal");
+      require("internal/validators").validateObject(resource, "resource", require("internal/validators").kValidateObjectAllowObjects);
+      if (signal.aborted) return Promise.resolve();
+      return new Promise((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    },
+    transferableAbortSignal(signal) {
+      if (!(signal instanceof AbortSignal)) throw new nodeErrorCodes.ERR_INVALID_ARG_TYPE("signal", "AbortSignal", signal);
+      return signal;
+    },
+    transferableAbortController: () => new AbortController(),
+  };
+
+  // src/node_dotenv.cc Dotenv::ParseContent, as util.parseEnv and
+  // process.loadEnvFile read a .env file: keys in their bytes' order.
+  function parseEnv(input) {
+    const trim = (text) => text.replace(/^[ \t\n]+|[ \t\n]+$/g, "");
+    const store = new Map();
+    let content = trim(String(input).replaceAll("\r", ""));
+    while (content.length > 0) {
+      if (content[0] === "\n" || content[0] === "#") {
+        const newline = content.indexOf("\n");
+        content = newline === -1 ? "" : content.slice(newline + 1);
+        continue;
+      }
+      const equalOrNewline = content.search(/[=\n]/);
+      if (equalOrNewline === -1 || content[equalOrNewline] === "\n") {
+        if (equalOrNewline === -1) break;
+        content = trim(content.slice(equalOrNewline + 1));
+        continue;
+      }
+      let key = trim(content.slice(0, equalOrNewline));
+      content = content.slice(equalOrNewline + 1);
+      if (content.length === 0 || content[0] === "\n") {
+        store.set(key, "");
+        continue;
+      }
+      content = trim(content);
+      if (key.length === 0) continue;
+      if (key.startsWith("export ")) key = trim(key.slice(7));
+      if (content.length === 0) {
+        store.set(key, "");
+        break;
+      }
+      if (content[0] === "\"") {
+        const closing = content.indexOf("\"", 1);
+        if (closing !== -1) {
+          store.set(key, content.slice(1, closing).replaceAll("\\n", "\n"));
+          const newline = content.indexOf("\n", closing + 1);
+          content = newline === -1 ? "" : content.slice(newline + 1);
+          continue;
+        }
+      }
+      if (content[0] === "'" || content[0] === "\"" || content[0] === "\u0060") {
+        const closing = content.indexOf(content[0], 1);
+        if (closing === -1) {
+          const newline = content.indexOf("\n");
+          if (newline === -1) {
+            store.set(key, content);
+            break;
+          }
+          store.set(key, content.slice(0, newline));
+          content = content.slice(newline + 1);
+        } else {
+          store.set(key, content.slice(1, closing));
+          const newline = content.indexOf("\n", closing + 1);
+          content = newline === -1 ? "" : content.slice(newline + 1);
+          continue;
+        }
+      } else {
+        const newline = content.indexOf("\n");
+        let value = newline === -1 ? content : content.slice(0, newline);
+        const hash = value.indexOf("#");
+        if (hash !== -1) value = value.slice(0, hash);
+        store.set(key, trim(value));
+        content = newline === -1 ? "" : content.slice(newline + 1);
+      }
+      content = trim(content);
+    }
+    // A std::map's order: the keys' UTF-8 bytes, which is their code points'.
+    const byCodePoints = (a, b) => {
+      const x = [...a];
+      const y = [...b];
+      for (let i = 0; i < Math.min(x.length, y.length); i++) {
+        const d = x[i].codePointAt(0) - y[i].codePointAt(0);
+        if (d !== 0) return d;
+      }
+      return x.length - y.length;
+    };
+    const result = {};
+    for (const key of [...store.keys()].sort(byCodePoints)) result[key] = store.get(key);
+    return result;
+  }
+  utilBinding.parseEnv = parseEnv;
+  // Node's util binding GetCallSites: the frames below util.getCallSites, as
+  // V8's StackFrame reads them; a script's id is its own number here.
+  const scriptIds = new Map();
+  utilBinding.getCallSites = function getCallSites(frameCount) {
+    return platform.callSites(frameCount + 1, getCallSites).slice(1).map((site) => {
+      const scriptName = site.getScriptNameOrSourceURL?.() ?? site.getFileName() ?? "";
+      if (!scriptIds.has(scriptName)) scriptIds.set(scriptName, String(scriptIds.size + 1));
+      const column = site.getColumnNumber() ?? 0;
+      return {
+        functionName: site.getFunctionName() ?? "",
+        scriptId: scriptIds.get(scriptName),
+        scriptName,
+        lineNumber: site.getLineNumber() ?? 0,
+        columnNumber: column,
+        column,
+      };
+    });
+  };
+
   // Node's internal modules that are not its own text here, by id.
   const hosted = {
     "internal/util": internalUtil,
-    "internal/errors": { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable, isStackOverflowError },
+    "internal/errors": { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable, isStackOverflowError, ErrnoException, ExceptionWithHostPort },
+    "internal/options": { getOptionValue: (name) => platform.optionValue(name) },
+    "internal/constants": { CHAR_LOWERCASE_B: 98, CHAR_LOWERCASE_E: 101, CHAR_LOWERCASE_N: 110 },
+    "internal/abort_controller": abortController,
+    "internal/console/global": platform.console,
+    "internal/encoding": { TextDecoder: globalThis.TextDecoder, TextEncoder: globalThis.TextEncoder },
+    worker_threads: platform.workerThreads,
     "internal/util/types": types,
     "internal/assert": assert,
     // Node's own modules, whose frames read node:<id> (colored grey).
@@ -10766,6 +11008,8 @@ function __nimbusNodeLib() {
     constants: { os: { signals: platform.signals } },
     buffer: { compare: (a, b) => platform.Buffer.compare(a, b) },
     errors: { getErrorSourcePositions: (error) => platform.errorSourcePositions(error) },
+    // Node's tracing is off: no category is enabled, and nothing traces.
+    trace_events: { getCategoryEnabledBuffer: () => new Uint8Array(1), trace() {} },
   };
   const internalBinding = (name) => bindings[name];
   // inspect.js reads primordials.globalThis once, for the names it counts as
@@ -10790,6 +11034,8 @@ function __nimbusNodeLib() {
     const module = { exports: {}, id };
     loaded.set(id, module);
     source(module.exports, require, module, platform.process, internalBinding, id === "internal/util/inspect" ? inspectPrimordials : primordials);
+    // As Node's bootstrap does, before any program reads it (pre_execution.js).
+    if (id === "internal/util/debuglog") module.exports.initializeDebugEnv(platform.nodeDebug);
     return module.exports;
   }
   return { require };
@@ -11072,6 +11318,13 @@ function __nimbusNodeLib() {
     tokenizer: (code, options) => __nimbusRegistryRequire("./nimbus/interpreter.js").tokenizer(code, options),
     sourceMaps: { getSourceMapsSupport: () => __nimbusSourceMapsSupport, findSourceMap: __nimbusFindSourceMap, getSourceLine: __nimbusOriginalSourceLine },
     colorDepth: () => __nimbusColorDepth(),
+    customPromisifyArgs: __nimbusCustomPromisifyArgs,
+    uvErrors: [[-7,"E2BIG","argument list too long"],[-13,"EACCES","permission denied"],[-98,"EADDRINUSE","address already in use"],[-99,"EADDRNOTAVAIL","address not available"],[-97,"EAFNOSUPPORT","address family not supported"],[-11,"EAGAIN","resource temporarily unavailable"],[-3000,"EAI_ADDRFAMILY","address family not supported"],[-3001,"EAI_AGAIN","temporary failure"],[-3002,"EAI_BADFLAGS","bad ai_flags value"],[-3013,"EAI_BADHINTS","invalid value for hints"],[-3003,"EAI_CANCELED","request canceled"],[-3004,"EAI_FAIL","permanent failure"],[-3005,"EAI_FAMILY","ai_family not supported"],[-3006,"EAI_MEMORY","out of memory"],[-3007,"EAI_NODATA","no address"],[-3008,"EAI_NONAME","unknown node or service"],[-3009,"EAI_OVERFLOW","argument buffer overflow"],[-3014,"EAI_PROTOCOL","resolved protocol is unknown"],[-3010,"EAI_SERVICE","service not available for socket type"],[-3011,"EAI_SOCKTYPE","socket type not supported"],[-114,"EALREADY","connection already in progress"],[-9,"EBADF","bad file descriptor"],[-16,"EBUSY","resource busy or locked"],[-125,"ECANCELED","operation canceled"],[-4080,"ECHARSET","invalid Unicode character"],[-103,"ECONNABORTED","software caused connection abort"],[-111,"ECONNREFUSED","connection refused"],[-104,"ECONNRESET","connection reset by peer"],[-89,"EDESTADDRREQ","destination address required"],[-17,"EEXIST","file already exists"],[-14,"EFAULT","bad address in system call argument"],[-27,"EFBIG","file too large"],[-113,"EHOSTUNREACH","host is unreachable"],[-4,"EINTR","interrupted system call"],[-22,"EINVAL","invalid argument"],[-5,"EIO","i/o error"],[-106,"EISCONN","socket is already connected"],[-21,"EISDIR","illegal operation on a directory"],[-40,"ELOOP","too many symbolic links encountered"],[-24,"EMFILE","too many open files"],[-90,"EMSGSIZE","message too long"],[-36,"ENAMETOOLONG","name too long"],[-100,"ENETDOWN","network is down"],[-101,"ENETUNREACH","network is unreachable"],[-23,"ENFILE","file table overflow"],[-105,"ENOBUFS","no buffer space available"],[-19,"ENODEV","no such device"],[-2,"ENOENT","no such file or directory"],[-12,"ENOMEM","not enough memory"],[-64,"ENONET","machine is not on the network"],[-92,"ENOPROTOOPT","protocol not available"],[-28,"ENOSPC","no space left on device"],[-38,"ENOSYS","function not implemented"],[-107,"ENOTCONN","socket is not connected"],[-20,"ENOTDIR","not a directory"],[-39,"ENOTEMPTY","directory not empty"],[-88,"ENOTSOCK","socket operation on non-socket"],[-95,"ENOTSUP","operation not supported on socket"],[-75,"EOVERFLOW","value too large for defined data type"],[-1,"EPERM","operation not permitted"],[-32,"EPIPE","broken pipe"],[-71,"EPROTO","protocol error"],[-93,"EPROTONOSUPPORT","protocol not supported"],[-91,"EPROTOTYPE","protocol wrong type for socket"],[-34,"ERANGE","result too large"],[-30,"EROFS","read-only file system"],[-108,"ESHUTDOWN","cannot send after transport endpoint shutdown"],[-29,"ESPIPE","invalid seek"],[-3,"ESRCH","no such process"],[-110,"ETIMEDOUT","connection timed out"],[-26,"ETXTBSY","text file is busy"],[-18,"EXDEV","cross-device link not permitted"],[-4094,"UNKNOWN","unknown error"],[-4095,"EOF","end of file"],[-6,"ENXIO","no such device or address"],[-31,"EMLINK","too many links"],[-112,"EHOSTDOWN","host is down"],[-121,"EREMOTEIO","remote I/O error"],[-25,"ENOTTY","inappropriate ioctl for device"],[-4028,"EFTYPE","inappropriate file type or format"],[-84,"EILSEQ","illegal byte sequence"],[-94,"ESOCKTNOSUPPORT","socket type not supported"],[-61,"ENODATA","no data available"],[-49,"EUNATCH","protocol driver not attached"],[-8,"ENOEXEC","exec format error"]],
+    optionValue: __nimbusOptionValue,
+    console: __consoleMod,
+    workerThreads: builtins.worker_threads,
+    nodeDebug: __nimbusNodeDebugAtLaunch,
+    callSites: (count, above) => (typeof __nimbusCallSites === "function" ? __nimbusCallSites(count, above) : []),
     primordialsOf: function (primordials, globalThis) {
 'use strict';
 
@@ -19770,12 +20023,2752 @@ const punycode = {
 module.exports = punycode;
 
       },
+      "internal/streams/utils": function (exports, require, module, process, internalBinding, primordials) {
+'use strict';
+
+const {
+  Symbol,
+  SymbolAsyncIterator,
+  SymbolFor,
+  SymbolIterator,
+} = primordials;
+
+// We need to use SymbolFor to make these globally available
+// for interoperability with readable-stream, i.e. readable-stream
+// and node core needs to be able to read/write private state
+// from each other for proper interoperability.
+const kIsDestroyed = SymbolFor('nodejs.stream.destroyed');
+const kIsErrored = SymbolFor('nodejs.stream.errored');
+const kIsReadable = SymbolFor('nodejs.stream.readable');
+const kIsWritable = SymbolFor('nodejs.stream.writable');
+const kIsDisturbed = SymbolFor('nodejs.stream.disturbed');
+
+const kOnConstructed = Symbol('kOnConstructed');
+
+const kIsClosedPromise = SymbolFor('nodejs.webstream.isClosedPromise');
+const kControllerErrorFunction = SymbolFor('nodejs.webstream.controllerErrorFunction');
+
+const kState = Symbol('kState');
+const kObjectMode = 1 << 0;
+const kErrorEmitted = 1 << 1;
+const kAutoDestroy = 1 << 2;
+const kEmitClose = 1 << 3;
+const kDestroyed = 1 << 4;
+const kClosed = 1 << 5;
+const kCloseEmitted = 1 << 6;
+const kErrored = 1 << 7;
+const kConstructed = 1 << 8;
+
+function isReadableNodeStream(obj, strict = false) {
+  return !!(
+    obj &&
+    typeof obj.pipe === 'function' &&
+    typeof obj.on === 'function' &&
+    (
+      !strict ||
+      (typeof obj.pause === 'function' && typeof obj.resume === 'function')
+    ) &&
+    (!obj._writableState || obj._readableState?.readable !== false) && // Duplex
+    (!obj._writableState || obj._readableState) // Writable has .pipe.
+  );
+}
+
+function isWritableNodeStream(obj) {
+  return !!(
+    obj &&
+    typeof obj.write === 'function' &&
+    typeof obj.on === 'function' &&
+    (!obj._readableState || obj._writableState?.writable !== false) // Duplex
+  );
+}
+
+function isDuplexNodeStream(obj) {
+  return !!(
+    obj &&
+    (typeof obj.pipe === 'function' && obj._readableState) &&
+    typeof obj.on === 'function' &&
+    typeof obj.write === 'function'
+  );
+}
+
+function isNodeStream(obj) {
+  return (
+    obj &&
+    (
+      obj._readableState ||
+      obj._writableState ||
+      (typeof obj.write === 'function' && typeof obj.on === 'function') ||
+      (typeof obj.pipe === 'function' && typeof obj.on === 'function')
+    )
+  );
+}
+
+function isReadableStream(obj) {
+  return !!(
+    obj &&
+    !isNodeStream(obj) &&
+    typeof obj.pipeThrough === 'function' &&
+    typeof obj.getReader === 'function' &&
+    typeof obj.cancel === 'function'
+  );
+}
+
+function isWritableStream(obj) {
+  return !!(
+    obj &&
+    !isNodeStream(obj) &&
+    typeof obj.getWriter === 'function' &&
+    typeof obj.abort === 'function'
+  );
+}
+
+function isTransformStream(obj) {
+  return !!(
+    obj &&
+    !isNodeStream(obj) &&
+    typeof obj.readable === 'object' &&
+    typeof obj.writable === 'object'
+  );
+}
+
+function isWebStream(obj) {
+  return isReadableStream(obj) || isWritableStream(obj) || isTransformStream(obj);
+}
+
+function isIterable(obj, isAsync) {
+  if (obj == null) return false;
+  if (isAsync === true) return typeof obj[SymbolAsyncIterator] === 'function';
+  if (isAsync === false) return typeof obj[SymbolIterator] === 'function';
+  return typeof obj[SymbolAsyncIterator] === 'function' ||
+    typeof obj[SymbolIterator] === 'function';
+}
+
+function isDestroyed(stream) {
+  if (!isNodeStream(stream)) return null;
+  const wState = stream._writableState;
+  const rState = stream._readableState;
+  const state = wState || rState;
+  return !!(stream.destroyed || stream[kIsDestroyed] || state?.destroyed);
+}
+
+// Have been end():d.
+function isWritableEnded(stream) {
+  if (!isWritableNodeStream(stream)) return null;
+  if (stream.writableEnded === true) return true;
+  const wState = stream._writableState;
+  if (wState?.errored) return false;
+  if (typeof wState?.ended !== 'boolean') return null;
+  return wState.ended;
+}
+
+// Have emitted 'finish'.
+function isWritableFinished(stream, strict) {
+  if (!isWritableNodeStream(stream)) return null;
+  if (stream.writableFinished === true) return true;
+  const wState = stream._writableState;
+  if (wState?.errored) return false;
+  if (typeof wState?.finished !== 'boolean') return null;
+  return !!(
+    wState.finished ||
+    (strict === false && wState.ended === true && wState.length === 0)
+  );
+}
+
+// Have been push(null):d.
+function isReadableEnded(stream) {
+  if (!isReadableNodeStream(stream)) return null;
+  if (stream.readableEnded === true) return true;
+  const rState = stream._readableState;
+  if (!rState || rState.errored) return false;
+  if (typeof rState?.ended !== 'boolean') return null;
+  return rState.ended;
+}
+
+// Have emitted 'end'.
+function isReadableFinished(stream, strict) {
+  if (!isReadableNodeStream(stream)) return null;
+  const rState = stream._readableState;
+  if (rState?.errored) return false;
+  if (typeof rState?.endEmitted !== 'boolean') return null;
+  return !!(
+    rState.endEmitted ||
+    (strict === false && rState.ended === true && rState.length === 0)
+  );
+}
+
+function isReadable(stream) {
+  if (stream && stream[kIsReadable] != null) return stream[kIsReadable];
+  if (typeof stream?.readable !== 'boolean') return null;
+  if (isDestroyed(stream)) return false;
+  return isReadableNodeStream(stream) &&
+    stream.readable &&
+    !isReadableFinished(stream);
+}
+
+function isWritable(stream) {
+  if (stream && stream[kIsWritable] != null) return stream[kIsWritable];
+  if (typeof stream?.writable !== 'boolean') return null;
+  if (isDestroyed(stream)) return false;
+  return isWritableNodeStream(stream) &&
+    stream.writable &&
+    !isWritableEnded(stream);
+}
+
+function isFinished(stream, opts) {
+  if (!isNodeStream(stream)) {
+    return null;
+  }
+
+  if (isDestroyed(stream)) {
+    return true;
+  }
+
+  if (opts?.readable !== false && isReadable(stream)) {
+    return false;
+  }
+
+  if (opts?.writable !== false && isWritable(stream)) {
+    return false;
+  }
+
+  return true;
+}
+
+function isWritableErrored(stream) {
+  if (!isNodeStream(stream)) {
+    return null;
+  }
+
+  if (stream.writableErrored) {
+    return stream.writableErrored;
+  }
+
+  return stream._writableState?.errored ?? null;
+}
+
+function isReadableErrored(stream) {
+  if (!isNodeStream(stream)) {
+    return null;
+  }
+
+  if (stream.readableErrored) {
+    return stream.readableErrored;
+  }
+
+  return stream._readableState?.errored ?? null;
+}
+
+function isClosed(stream) {
+  if (!isNodeStream(stream)) {
+    return null;
+  }
+
+  if (typeof stream.closed === 'boolean') {
+    return stream.closed;
+  }
+
+  const wState = stream._writableState;
+  const rState = stream._readableState;
+
+  if (
+    typeof wState?.closed === 'boolean' ||
+    typeof rState?.closed === 'boolean'
+  ) {
+    return wState?.closed || rState?.closed;
+  }
+
+  if (typeof stream._closed === 'boolean' && isOutgoingMessage(stream)) {
+    return stream._closed;
+  }
+
+  return null;
+}
+
+function isOutgoingMessage(stream) {
+  return (
+    typeof stream._closed === 'boolean' &&
+    typeof stream._defaultKeepAlive === 'boolean' &&
+    typeof stream._removedConnection === 'boolean' &&
+    typeof stream._removedContLen === 'boolean'
+  );
+}
+
+function isServerResponse(stream) {
+  return (
+    typeof stream._sent100 === 'boolean' &&
+    isOutgoingMessage(stream)
+  );
+}
+
+function isServerRequest(stream) {
+  return (
+    typeof stream._consuming === 'boolean' &&
+    typeof stream._dumped === 'boolean' &&
+    stream.req?.upgradeOrConnect === undefined
+  );
+}
+
+function willEmitClose(stream) {
+  if (!isNodeStream(stream)) return null;
+
+  const wState = stream._writableState;
+  const rState = stream._readableState;
+  const state = wState || rState;
+
+  return (!state && isServerResponse(stream)) || !!(
+    state?.autoDestroy &&
+    state.emitClose &&
+    state.closed === false
+  );
+}
+
+function isDisturbed(stream) {
+  return !!(stream && (
+    stream[kIsDisturbed] ??
+    (stream.readableDidRead || stream.readableAborted)
+  ));
+}
+
+function isErrored(stream) {
+  return !!(stream && (
+    stream[kIsErrored] ??
+    stream.readableErrored ??
+    stream.writableErrored ??
+    stream._readableState?.errorEmitted ??
+    stream._writableState?.errorEmitted ??
+    stream._readableState?.errored ??
+    stream._writableState?.errored
+  ));
+}
+
+module.exports = {
+  kOnConstructed,
+  isDestroyed,
+  kIsDestroyed,
+  isDisturbed,
+  kIsDisturbed,
+  isErrored,
+  kIsErrored,
+  isReadable,
+  kIsReadable,
+  kIsClosedPromise,
+  kControllerErrorFunction,
+  kIsWritable,
+  isClosed,
+  isDuplexNodeStream,
+  isFinished,
+  isIterable,
+  isReadableNodeStream,
+  isReadableStream,
+  isReadableEnded,
+  isReadableFinished,
+  isReadableErrored,
+  isNodeStream,
+  isWebStream,
+  isWritable,
+  isWritableNodeStream,
+  isWritableStream,
+  isWritableEnded,
+  isWritableFinished,
+  isWritableErrored,
+  isServerRequest,
+  isServerResponse,
+  willEmitClose,
+  isTransformStream,
+  kState,
+  // bitfields
+  kObjectMode,
+  kErrorEmitted,
+  kAutoDestroy,
+  kEmitClose,
+  kDestroyed,
+  kClosed,
+  kCloseEmitted,
+  kErrored,
+  kConstructed,
+};
+
+      },
+      "internal/util/debuglog": function (exports, require, module, process, internalBinding, primordials) {
+'use strict';
+
+const {
+  MathFloor,
+  Number,
+  NumberPrototypeToFixed,
+  ObjectDefineProperty,
+  RegExp,
+  RegExpPrototypeExec,
+  SafeArrayIterator,
+  SafeMap,
+  StringPrototypePadStart,
+  StringPrototypeSplit,
+  StringPrototypeToLowerCase,
+  StringPrototypeToUpperCase,
+} = primordials;
+const {
+  CHAR_LOWERCASE_B: kTraceBegin,
+  CHAR_LOWERCASE_E: kTraceEnd,
+  CHAR_LOWERCASE_N: kTraceInstant,
+} = require('internal/constants');
+const { inspect, format, formatWithOptions } = require('internal/util/inspect');
+const { getCategoryEnabledBuffer, trace } = internalBinding('trace_events');
+
+// `debugImpls` and `testEnabled` are deliberately not initialized so any call
+// to `debuglog()` before `initializeDebugEnv()` is called will throw.
+let debugImpls;
+let testEnabled;
+
+
+// `debugEnv` is initial value of process.env.NODE_DEBUG
+function initializeDebugEnv(debugEnv) {
+  debugImpls = { __proto__: null };
+  if (debugEnv) {
+    // This is run before any user code, it's OK not to use primordials.
+    debugEnv = debugEnv.replace(/[|\\{}()[\]^$+?.]/g, '\\$&')
+      .replaceAll('*', '.*')
+      .replaceAll(',', '$|^');
+    const debugEnvRegex = new RegExp(`^${debugEnv}$`, 'i');
+    testEnabled = (str) => RegExpPrototypeExec(debugEnvRegex, str) !== null;
+  } else {
+    testEnabled = () => false;
+  }
+}
+
+// Emits warning when user sets
+// NODE_DEBUG=http or NODE_DEBUG=http2.
+function emitWarningIfNeeded(set) {
+  if ('HTTP' === set || 'HTTP2' === set) {
+    process.emitWarning('Setting the NODE_DEBUG environment variable ' +
+      'to \'' + StringPrototypeToLowerCase(set) + '\' can expose sensitive ' +
+      'data (such as passwords, tokens and authentication headers) ' +
+      'in the resulting log.');
+  }
+}
+
+const noop = () => {};
+
+let utilColors;
+function lazyUtilColors() {
+  utilColors ??= require('internal/util/colors');
+  return utilColors;
+}
+
+function debuglogImpl(enabled, set) {
+  if (debugImpls[set] === undefined) {
+    if (enabled) {
+      const pid = process.pid;
+      emitWarningIfNeeded(set);
+      debugImpls[set] = function debug(...args) {
+        const colors = lazyUtilColors().shouldColorize(process.stderr);
+        const msg = formatWithOptions({ colors }, ...args);
+        const coloredPID = inspect(pid, { colors });
+        process.stderr.write(format('%s %s: %s\n', set, coloredPID, msg));
+      };
+    } else {
+      debugImpls[set] = noop;
+    }
+  }
+  return debugImpls[set];
+}
+
+// debuglogImpl depends on process.pid and process.env.NODE_DEBUG,
+// so it needs to be called lazily in top scopes of internal modules
+// that may be loaded before these run time states are allowed to
+// be accessed.
+function debuglog(set, cb) {
+  function init() {
+    set = StringPrototypeToUpperCase(set);
+    enabled = testEnabled(set);
+  }
+  let debug = (...args) => {
+    init();
+    // Only invokes debuglogImpl() when the debug function is
+    // called for the first time.
+    debug = debuglogImpl(enabled, set);
+    if (typeof cb === 'function') {
+      ObjectDefineProperty(debug, 'enabled', {
+        __proto__: null,
+        get() {
+          return enabled;
+        },
+        configurable: true,
+        enumerable: true,
+      });
+      cb(debug);
+    }
+    switch (args.length) {
+      case 1: return debug(args[0]);
+      case 2: return debug(args[0], args[1]);
+      default: return debug(...new SafeArrayIterator(args));
+    }
+  };
+  let enabled;
+  let test = () => {
+    init();
+    test = () => enabled;
+    return enabled;
+  };
+  const logger = (...args) => {
+    // Improve performance when debug is disabled, avoid calling `new SafeArrayIterator(args)`
+    if (enabled === false) return;
+    switch (args.length) {
+      case 1: return debug(args[0]);
+      case 2: return debug(args[0], args[1]);
+      default: return debug(...new SafeArrayIterator(args));
+    }
+  };
+  ObjectDefineProperty(logger, 'enabled', {
+    __proto__: null,
+    get() {
+      return test();
+    },
+    configurable: true,
+    enumerable: true,
+  });
+  return logger;
+}
+
+function pad(value) {
+  return StringPrototypePadStart(`${value}`, 2, '0');
+}
+
+const kNone = 1 << 0;
+const kSkipLog = 1 << 1;
+const kSkipTrace = 1 << 2;
+const kShouldSkipAll = kSkipLog | kSkipTrace;
+
+const kSecond = 1000;
+const kMinute = 60 * kSecond;
+const kHour = 60 * kMinute;
+
+function formatTime(ms) {
+  let hours = 0;
+  let minutes = 0;
+  let seconds = 0;
+
+  if (ms >= kSecond) {
+    if (ms >= kMinute) {
+      if (ms >= kHour) {
+        hours = MathFloor(ms / kHour);
+        ms = ms % kHour;
+      }
+      minutes = MathFloor(ms / kMinute);
+      ms = ms % kMinute;
+    }
+    seconds = ms / kSecond;
+  }
+
+  if (hours !== 0 || minutes !== 0) {
+    ({ 0: seconds, 1: ms } = StringPrototypeSplit(
+      NumberPrototypeToFixed(seconds, 3),
+      '.',
+      2,
+    ));
+    const res = hours !== 0 ? `${hours}:${pad(minutes)}` : minutes;
+    return `${res}:${pad(seconds)}.${ms} (${hours !== 0 ? 'h:m' : ''}m:ss.mmm)`;
+  }
+
+  if (seconds !== 0) {
+    return `${NumberPrototypeToFixed(seconds, 3)}s`;
+  }
+
+  return `${Number(NumberPrototypeToFixed(ms, 3))}ms`;
+}
+
+function safeTraceLabel(label) {
+  return label.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+}
+
+/**
+ * @typedef {(label: string, timeFormatted: string, args?: any[]) => void} LogImpl
+ */
+
+/**
+ * Returns true if label was found
+ * @param {string} timesStore
+ * @param {string} implementation
+ * @param {LogImpl} logImp
+ * @param {string} label
+ * @param {any} args
+ * @returns {void}
+ */
+function timeLogImpl(timesStore, implementation, logImp, label, args) {
+  const time = timesStore.get(label);
+  if (time === undefined) {
+    process.emitWarning(`No such label '${label}' for ${implementation}`);
+    return;
+  }
+
+  const duration = process.hrtime(time);
+  const ms = duration[0] * 1000 + duration[1] / 1e6;
+
+  const formatted = formatTime(ms);
+
+  if (args === undefined) {
+    logImp(label, formatted);
+  } else {
+    logImp(label, formatted, args);
+  }
+}
+
+/**
+ * @param {SafeMap} timesStore
+ * @param {string} traceCategory
+ * @param {string} implementation
+ * @param {number} timerFlags
+ * @param {string} logLabel
+ * @param {string} traceLabel
+ * @returns {void}
+ */
+function time(timesStore, traceCategory, implementation, timerFlags, logLabel = 'default', traceLabel = undefined) {
+  // Coerces everything other than Symbol to a string
+  logLabel = `${logLabel}`;
+
+  if (traceLabel !== undefined) {
+    traceLabel = `${traceLabel}`;
+  } else {
+    traceLabel = logLabel;
+  }
+
+  if (timesStore.has(logLabel)) {
+    process.emitWarning(`Label '${logLabel}' already exists for ${implementation}`);
+    return;
+  }
+
+  if ((timerFlags & kSkipTrace) === 0) {
+    traceLabel = safeTraceLabel(traceLabel);
+    trace(kTraceBegin, traceCategory, traceLabel, 0);
+  }
+
+  timesStore.set(logLabel, process.hrtime());
+}
+
+/**
+ * @param {SafeMap} timesStore
+ * @param {string} traceCategory
+ * @param {string} implementation
+ * @param {number} timerFlags
+ * @param {LogImpl} logImpl
+ * @param {string} logLabel
+ * @param {string} traceLabel
+ * @returns {void}
+ */
+function timeEnd(
+  timesStore,
+  traceCategory,
+  implementation,
+  timerFlags,
+  logImpl,
+  logLabel = 'default',
+  traceLabel = undefined,
+) {
+  // Coerces everything other than Symbol to a string
+  logLabel = `${logLabel}`;
+
+  if (traceLabel !== undefined) {
+    traceLabel = `${traceLabel}`;
+  } else {
+    traceLabel = logLabel;
+  }
+
+  if ((timerFlags & kSkipLog) === 0) {
+    timeLogImpl(timesStore, implementation, logImpl, logLabel);
+  }
+
+  if ((timerFlags & kSkipTrace) === 0) {
+    traceLabel = safeTraceLabel(traceLabel);
+    trace(kTraceEnd, traceCategory, traceLabel, 0);
+  }
+
+  timesStore.delete(logLabel);
+}
+
+/**
+ * @param {SafeMap} timesStore
+ * @param {string} traceCategory
+ * @param {string} implementation
+ * @param {number} timerFlags
+ * @param {LogImpl} logImpl
+ * @param {string} logLabel
+ * @param {string} traceLabel
+ * @param {any[]} args
+ * @returns {void}
+ */
+function timeLog(
+  timesStore,
+  traceCategory,
+  implementation,
+  timerFlags,
+  logImpl,
+  logLabel = 'default',
+  traceLabel = undefined,
+  args,
+) {
+  // Coerces everything other than Symbol to a string
+  logLabel = `${logLabel}`;
+
+  if (traceLabel !== undefined) {
+    traceLabel = `${traceLabel}`;
+  } else {
+    traceLabel = logLabel;
+  }
+
+  if ((timerFlags & kSkipLog) === 0) {
+    timeLogImpl(timesStore, implementation, logImpl, logLabel, args);
+  }
+
+  if ((timerFlags & kSkipTrace) === 0) {
+    traceLabel = safeTraceLabel(traceLabel);
+    trace(kTraceInstant, traceCategory, traceLabel, 0);
+  }
+}
+
+/**
+ * @type {Record<string, SafeMap>}
+ */
+let tracesStores;
+
+/**
+ * @typedef {(logLabel: string, traceLabel?: string) => void} TimerStart
+ */
+
+/**
+ * @typedef {(logLabel: string, traceLabel?: string) => void} TimerEnd
+ */
+
+/**
+ * @typedef {(logLabel: string, traceLabel?: string, args?: any[]) => void} TimerLog
+ */
+
+/**
+ * Debuglog with time fns and support for trace
+ * @param {string} set
+ * @param {(startTimer: TimerStart, endTimer: TimerEnd, logTimer: TimerLog) => void} cb
+ * @returns {{startTimer: TimerStart, endTimer: TimerEnd, logTimer: TimerLog}}
+ */
+function debugWithTimer(set, cb) {
+  set = StringPrototypeToUpperCase(set);
+
+  if (tracesStores === undefined) {
+    tracesStores = { __proto__: null };
+  }
+
+  /**
+   * @type {LogImpl}
+   */
+  function logImpl(label, timeFormatted, args) {
+    const pid = process.pid;
+    const colors = { colors: lazyUtilColors().shouldColorize(process.stderr) };
+    const coloredPID = inspect(pid, colors);
+
+    if (args === undefined)
+      process.stderr.write(format('%s %s %s: %s\n', set, coloredPID, label, timeFormatted));
+    else
+      process.stderr.write(
+        format(
+          '%s %s %s: %s\n',
+          set,
+          coloredPID,
+          label,
+          timeFormatted,
+          ...new SafeArrayIterator(args),
+        ),
+      );
+  }
+
+  const traceCategory = `node,node.${StringPrototypeToLowerCase(set)}`;
+  let traceCategoryBuffer;
+  let debugLogCategoryEnabled = false;
+  let timerFlags = kNone;
+
+  function ensureTimerFlagsAreUpdated() {
+    timerFlags &= ~kSkipTrace;
+
+    if (traceCategoryBuffer[0] === 0) {
+      timerFlags |= kSkipTrace;
+    }
+  }
+
+  /**
+   * @type {TimerStart}
+   */
+  function internalStartTimer(logLabel, traceLabel) {
+    ensureTimerFlagsAreUpdated();
+
+    if ((timerFlags & kShouldSkipAll) === kShouldSkipAll) {
+      return;
+    }
+
+    time(
+      tracesStores[set],
+      traceCategory,
+      'debuglog.time',
+      timerFlags,
+      logLabel,
+      traceLabel,
+    );
+  }
+
+  /**
+   * @type {TimerEnd}
+   */
+  function internalEndTimer(logLabel, traceLabel) {
+    ensureTimerFlagsAreUpdated();
+
+    if ((timerFlags & kShouldSkipAll) === kShouldSkipAll) {
+      return;
+    }
+
+    timeEnd(
+      tracesStores[set],
+      traceCategory,
+      'debuglog.timeEnd',
+      timerFlags,
+      logImpl,
+      logLabel,
+      traceLabel,
+    );
+  }
+
+  /**
+   * @type {TimerLog}
+   */
+  function internalLogTimer(logLabel, traceLabel, args) {
+    ensureTimerFlagsAreUpdated();
+
+    if ((timerFlags & kShouldSkipAll) === kShouldSkipAll) {
+      return;
+    }
+
+    timeLog(
+      tracesStores[set],
+      traceCategory,
+      'debuglog.timeLog',
+      timerFlags,
+      logImpl,
+      logLabel,
+      traceLabel,
+      args,
+    );
+  }
+
+  function init() {
+    if (tracesStores[set] === undefined) {
+      tracesStores[set] = new SafeMap();
+    }
+    emitWarningIfNeeded(set);
+    debugLogCategoryEnabled = testEnabled(set);
+    traceCategoryBuffer = getCategoryEnabledBuffer(traceCategory);
+
+    timerFlags = kNone;
+
+    if (!debugLogCategoryEnabled) {
+      timerFlags |= kSkipLog;
+    }
+
+    if (traceCategoryBuffer[0] === 0) {
+      timerFlags |= kSkipTrace;
+    }
+
+    cb(internalStartTimer, internalEndTimer, internalLogTimer);
+  }
+
+  /**
+   * @type {TimerStart}
+   */
+  const startTimer = (logLabel, traceLabel) => {
+    init();
+
+    if ((timerFlags & kShouldSkipAll) !== kShouldSkipAll)
+      internalStartTimer(logLabel, traceLabel);
+  };
+
+  /**
+   * @type {TimerEnd}
+   */
+  const endTimer = (logLabel, traceLabel) => {
+    init();
+
+    if ((timerFlags & kShouldSkipAll) !== kShouldSkipAll)
+      internalEndTimer(logLabel, traceLabel);
+  };
+
+  /**
+   * @type {TimerLog}
+   */
+  const logTimer = (logLabel, traceLabel, args) => {
+    init();
+
+    if ((timerFlags & kShouldSkipAll) !== kShouldSkipAll)
+      internalLogTimer(logLabel, traceLabel, args);
+  };
+
+  return {
+    startTimer,
+    endTimer,
+    logTimer,
+  };
+}
+
+module.exports = {
+  kNone,
+  kSkipLog,
+  kSkipTrace,
+  formatTime,
+  time,
+  timeEnd,
+  timeLog,
+  debuglog,
+  debugWithTimer,
+  initializeDebugEnv,
+};
+
+      },
+      "internal/mime": function (exports, require, module, process, internalBinding, primordials) {
+'use strict';
+
+const {
+  FunctionPrototypeCall,
+  ObjectDefineProperty,
+  RegExpPrototypeExec,
+  SafeMap,
+  SafeStringPrototypeSearch,
+  StringPrototypeCharAt,
+  StringPrototypeIndexOf,
+  StringPrototypeSlice,
+  StringPrototypeToLowerCase,
+  SymbolIterator,
+} = primordials;
+const {
+  ERR_INVALID_MIME_SYNTAX,
+} = require('internal/errors').codes;
+
+const NOT_HTTP_TOKEN_CODE_POINT = /[^!#$%&'*+\-.^_`|~A-Za-z0-9]/g;
+const NOT_HTTP_QUOTED_STRING_CODE_POINT = /[^\t\u0020-~\u0080-\u00FF]/g;
+
+const END_BEGINNING_WHITESPACE = /[^\r\n\t ]|$/;
+const START_ENDING_WHITESPACE = /[\r\n\t ]*$/;
+
+function toASCIILower(str) {
+  // eslint-disable-next-line no-control-regex
+  if (!/[^\x00-\x7f]/.test(str)) return StringPrototypeToLowerCase(str);
+  let result = '';
+  for (let i = 0; i < str.length; i++) {
+    const char = str[i];
+
+    result += char >= 'A' && char <= 'Z' ?
+      StringPrototypeToLowerCase(char) :
+      char;
+  }
+  return result;
+}
+
+const SOLIDUS = '/';
+const SEMICOLON = ';';
+
+function parseTypeAndSubtype(str) {
+  // Skip only HTTP whitespace from start
+  let position = SafeStringPrototypeSearch(str, END_BEGINNING_WHITESPACE);
+  // read until '/'
+  const typeEnd = StringPrototypeIndexOf(str, SOLIDUS, position);
+  const trimmedType = typeEnd === -1 ?
+    StringPrototypeSlice(str, position) :
+    StringPrototypeSlice(str, position, typeEnd);
+  const invalidTypeIndex = SafeStringPrototypeSearch(trimmedType,
+                                                     NOT_HTTP_TOKEN_CODE_POINT);
+  if (trimmedType === '' || invalidTypeIndex !== -1 || typeEnd === -1) {
+    throw new ERR_INVALID_MIME_SYNTAX('type', str, invalidTypeIndex);
+  }
+  // skip type and '/'
+  position = typeEnd + 1;
+  const type = toASCIILower(trimmedType);
+  // read until ';'
+  const subtypeEnd = StringPrototypeIndexOf(str, SEMICOLON, position);
+  const rawSubtype = subtypeEnd === -1 ?
+    StringPrototypeSlice(str, position) :
+    StringPrototypeSlice(str, position, subtypeEnd);
+  position += rawSubtype.length;
+  if (subtypeEnd !== -1) {
+    // skip ';'
+    position += 1;
+  }
+  const trimmedSubtype = StringPrototypeSlice(
+    rawSubtype,
+    0,
+    SafeStringPrototypeSearch(rawSubtype, START_ENDING_WHITESPACE));
+  const invalidSubtypeIndex = SafeStringPrototypeSearch(trimmedSubtype,
+                                                        NOT_HTTP_TOKEN_CODE_POINT);
+  if (trimmedSubtype === '' || invalidSubtypeIndex !== -1) {
+    throw new ERR_INVALID_MIME_SYNTAX('subtype', str, invalidSubtypeIndex);
+  }
+  const subtype = toASCIILower(trimmedSubtype);
+  return [
+    type,
+    subtype,
+    position,
+  ];
+}
+
+const EQUALS_SEMICOLON_OR_END = /[;=]|$/;
+const QUOTED_VALUE_PATTERN = /^(?:([\\]$)|[\\][\s\S]|[^"])*(?:(")|$)/u;
+
+function removeBackslashes(str) {
+  let ret = '';
+  // We stop at str.length - 1 because we want to look ahead one character.
+  let i;
+  for (i = 0; i < str.length - 1; i++) {
+    const c = str[i];
+    if (c === '\\') {
+      i++;
+      ret += str[i];
+    } else {
+      ret += c;
+    }
+  }
+  // We add the last character if we didn't skip to it.
+  if (i === str.length - 1) {
+    ret += str[i];
+  }
+  return ret;
+}
+
+
+function escapeQuoteOrSolidus(str) {
+  let result = '';
+  for (let i = 0; i < str.length; i++) {
+    const char = str[i];
+    result += (char === '"' || char === '\\') ? `\\${char}` : char;
+  }
+  return result;
+}
+
+const encode = (value) => {
+  if (value.length === 0) return '""';
+  const encode = SafeStringPrototypeSearch(value, NOT_HTTP_TOKEN_CODE_POINT) !== -1;
+  if (!encode) return value;
+  const escaped = escapeQuoteOrSolidus(value);
+  return `"${escaped}"`;
+};
+
+class MIMEParams {
+  #data = new SafeMap();
+  // We set the flag the MIMEParams instance as processed on initialization
+  // to defer the parsing of a potentially large string.
+  #processed = true;
+  #string = null;
+
+  /**
+   * Used to instantiate a MIMEParams object within the MIMEType class and
+   * to allow it to be parsed lazily.
+   */
+  static instantiateMimeParams(str) {
+    const instance = new MIMEParams();
+    instance.#string = str;
+    instance.#processed = false;
+    return instance;
+  }
+
+  delete(name) {
+    this.#parse();
+    this.#data.delete(name);
+  }
+
+  get(name) {
+    this.#parse();
+    const data = this.#data;
+    if (data.has(name)) {
+      return data.get(name);
+    }
+    return null;
+  }
+
+  has(name) {
+    this.#parse();
+    return this.#data.has(name);
+  }
+
+  set(name, value) {
+    this.#parse();
+    const data = this.#data;
+    name = `${name}`;
+    value = `${value}`;
+    const invalidNameIndex = SafeStringPrototypeSearch(name, NOT_HTTP_TOKEN_CODE_POINT);
+    if (name.length === 0 || invalidNameIndex !== -1) {
+      throw new ERR_INVALID_MIME_SYNTAX(
+        'parameter name',
+        name,
+        invalidNameIndex,
+      );
+    }
+    const invalidValueIndex = SafeStringPrototypeSearch(
+      value,
+      NOT_HTTP_QUOTED_STRING_CODE_POINT);
+    if (invalidValueIndex !== -1) {
+      throw new ERR_INVALID_MIME_SYNTAX(
+        'parameter value',
+        value,
+        invalidValueIndex,
+      );
+    }
+    data.set(name, value);
+  }
+
+  *entries() {
+    this.#parse();
+    yield* this.#data.entries();
+  }
+
+  *keys() {
+    this.#parse();
+    yield* this.#data.keys();
+  }
+
+  *values() {
+    this.#parse();
+    yield* this.#data.values();
+  }
+
+  toString() {
+    this.#parse();
+    let ret = '';
+    for (const { 0: key, 1: value } of this.#data) {
+      const encoded = encode(value);
+      // Ensure they are separated
+      if (ret.length) ret += ';';
+      ret += `${key}=${encoded}`;
+    }
+    return ret;
+  }
+
+  // Used to act as a friendly class to stringifying stuff
+  // not meant to be exposed to users, could inject invalid values
+  #parse() {
+    if (this.#processed) return;  // already parsed
+    const paramsMap = this.#data;
+    let position = 0;
+    const str = this.#string;
+    const endOfSource = SafeStringPrototypeSearch(
+      StringPrototypeSlice(str, position),
+      START_ENDING_WHITESPACE,
+    ) + position;
+    while (position < endOfSource) {
+      // Skip any whitespace before parameter
+      position += SafeStringPrototypeSearch(
+        StringPrototypeSlice(str, position),
+        END_BEGINNING_WHITESPACE,
+      );
+      // Read until ';' or '='
+      const afterParameterName = SafeStringPrototypeSearch(
+        StringPrototypeSlice(str, position),
+        EQUALS_SEMICOLON_OR_END,
+      ) + position;
+      const parameterString = toASCIILower(
+        StringPrototypeSlice(str, position, afterParameterName),
+      );
+      position = afterParameterName;
+      // If we found a terminating character
+      if (position < endOfSource) {
+        // Safe to use because we never do special actions for surrogate pairs
+        const char = StringPrototypeCharAt(str, position);
+        // Skip the terminating character
+        position += 1;
+        // Ignore parameters without values
+        if (char === ';') {
+          continue;
+        }
+      }
+      // If we are at end of the string, it cannot have a value
+      if (position >= endOfSource) break;
+      // Safe to use because we never do special actions for surrogate pairs
+      const char = StringPrototypeCharAt(str, position);
+      let parameterValue = null;
+      if (char === '"') {
+        // Handle quoted-string form of values
+        // skip '"'
+        position += 1;
+        // Find matching closing '"' or end of string
+        //   use $1 to see if we terminated on unmatched '\'
+        //   use $2 to see if we terminated on a matching '"'
+        //   so we can skip the last char in either case
+        const insideMatch = RegExpPrototypeExec(
+          QUOTED_VALUE_PATTERN,
+          StringPrototypeSlice(str, position));
+        position += insideMatch[0].length;
+        // Skip including last character if an unmatched '\' or '"' during
+        // unescape
+        const inside = insideMatch[1] || insideMatch[2] ?
+          StringPrototypeSlice(insideMatch[0], 0, -1) :
+          insideMatch[0];
+        // Unescape '\' quoted characters
+        parameterValue = removeBackslashes(inside);
+        // If we did have an unmatched '\' add it back to the end
+        if (insideMatch[1]) parameterValue += '\\';
+      } else {
+        // Handle the normal parameter value form
+        const valueEnd = StringPrototypeIndexOf(str, SEMICOLON, position);
+        const rawValue = valueEnd === -1 ?
+          StringPrototypeSlice(str, position) :
+          StringPrototypeSlice(str, position, valueEnd);
+        position += rawValue.length;
+        const trimmedValue = StringPrototypeSlice(
+          rawValue,
+          0,
+          SafeStringPrototypeSearch(rawValue, START_ENDING_WHITESPACE),
+        );
+        // Ignore parameters without values
+        if (trimmedValue === '') continue;
+        parameterValue = trimmedValue;
+      }
+      if (
+        parameterString !== '' &&
+        SafeStringPrototypeSearch(parameterString,
+                                  NOT_HTTP_TOKEN_CODE_POINT) === -1 &&
+        SafeStringPrototypeSearch(parameterValue,
+                                  NOT_HTTP_QUOTED_STRING_CODE_POINT) === -1 &&
+        paramsMap.has(parameterString) === false
+      ) {
+        paramsMap.set(parameterString, parameterValue);
+      }
+      position++;
+    }
+    this.#data = paramsMap;
+    this.#processed = true;
+  }
+}
+const MIMEParamsStringify = MIMEParams.prototype.toString;
+ObjectDefineProperty(MIMEParams.prototype, SymbolIterator, {
+  __proto__: null,
+  configurable: true,
+  value: MIMEParams.prototype.entries,
+  writable: true,
+});
+ObjectDefineProperty(MIMEParams.prototype, 'toJSON', {
+  __proto__: null,
+  configurable: true,
+  value: MIMEParamsStringify,
+  writable: true,
+});
+
+const { instantiateMimeParams } = MIMEParams;
+delete MIMEParams.instantiateMimeParams;
+
+class MIMEType {
+  #type;
+  #subtype;
+  #parameters;
+  constructor(string) {
+    string = `${string}`;
+    const data = parseTypeAndSubtype(string);
+    this.#type = data[0];
+    this.#subtype = data[1];
+    this.#parameters = instantiateMimeParams(StringPrototypeSlice(string, data[2]));
+  }
+
+  get type() {
+    return this.#type;
+  }
+
+  set type(v) {
+    v = `${v}`;
+    const invalidTypeIndex = SafeStringPrototypeSearch(v, NOT_HTTP_TOKEN_CODE_POINT);
+    if (v.length === 0 || invalidTypeIndex !== -1) {
+      throw new ERR_INVALID_MIME_SYNTAX('type', v, invalidTypeIndex);
+    }
+    this.#type = toASCIILower(v);
+  }
+
+  get subtype() {
+    return this.#subtype;
+  }
+
+  set subtype(v) {
+    v = `${v}`;
+    const invalidSubtypeIndex = SafeStringPrototypeSearch(v, NOT_HTTP_TOKEN_CODE_POINT);
+    if (v.length === 0 || invalidSubtypeIndex !== -1) {
+      throw new ERR_INVALID_MIME_SYNTAX('subtype', v, invalidSubtypeIndex);
+    }
+    this.#subtype = toASCIILower(v);
+  }
+
+  get essence() {
+    return `${this.#type}/${this.#subtype}`;
+  }
+
+  get params() {
+    return this.#parameters;
+  }
+
+  toString() {
+    let ret = `${this.#type}/${this.#subtype}`;
+    const paramStr = FunctionPrototypeCall(MIMEParamsStringify, this.#parameters);
+    if (paramStr.length) ret += `;${paramStr}`;
+    return ret;
+  }
+}
+ObjectDefineProperty(MIMEType.prototype, 'toJSON', {
+  __proto__: null,
+  configurable: true,
+  value: MIMEType.prototype.toString,
+  writable: true,
+});
+
+module.exports = {
+  MIMEParams,
+  MIMEType,
+};
+
+      },
+      "internal/util/diff": function (exports, require, module, process, internalBinding, primordials) {
+'use strict';
+
+const {
+  ArrayIsArray,
+  ArrayPrototypeReverse,
+} = primordials;
+
+const { validateStringArray, validateString } = require('internal/validators');
+const { myersDiff } = require('internal/assert/myers_diff');
+
+function validateInput(value, name) {
+  if (!ArrayIsArray(value)) {
+    validateString(value, name);
+    return;
+  }
+
+  validateStringArray(value, name);
+}
+
+/**
+ * Generate a difference report between two values
+ * @param {Array | string} actual - The first value to compare
+ * @param {Array | string} expected - The second value to compare
+ * @returns {Array} - An array of differences between the two values.
+ * The returned data is an array of arrays, where each sub-array has two elements:
+ * 1. The operation to perform: -1 for delete, 0 for no-op, 1 for insert
+ * 2. The value to perform the operation on
+ */
+function diff(actual, expected) {
+  if (actual === expected) {
+    return [];
+  }
+
+  validateInput(actual, 'actual');
+  validateInput(expected, 'expected');
+
+  return ArrayPrototypeReverse(myersDiff(actual, expected));
+}
+
+module.exports = {
+  diff,
+};
+
+      },
+      "internal/util/parse_args/utils": function (exports, require, module, process, internalBinding, primordials) {
+'use strict';
+
+const {
+  ArrayPrototypeFind,
+  ObjectEntries,
+  ObjectPrototypeHasOwnProperty: ObjectHasOwn,
+  StringPrototypeCharAt,
+  StringPrototypeIncludes,
+  StringPrototypeStartsWith,
+} = primordials;
+
+const {
+  validateObject,
+} = require('internal/validators');
+
+// These are internal utilities to make the parsing logic easier to read, and
+// add lots of detail for the curious. They are in a separate file to allow
+// unit testing, although that is not essential (this could be rolled into
+// main file and just tested implicitly via API).
+//
+// These routines are for internal use, not for export to client.
+
+/**
+ * Return the named property, but only if it is an own property.
+ */
+function objectGetOwn(obj, prop) {
+  if (ObjectHasOwn(obj, prop))
+    return obj[prop];
+}
+
+/**
+ * Return the named options property, but only if it is an own property.
+ */
+function optionsGetOwn(options, longOption, prop) {
+  if (ObjectHasOwn(options, longOption))
+    return objectGetOwn(options[longOption], prop);
+}
+
+/**
+ * Determines if the argument may be used as an option value.
+ * @example
+ * isOptionValue('V') // returns true
+ * isOptionValue('-v') // returns true (greedy)
+ * isOptionValue('--foo') // returns true (greedy)
+ * isOptionValue(undefined) // returns false
+ */
+function isOptionValue(value) {
+  if (value == null) return false;
+
+  // Open Group Utility Conventions are that an option-argument
+  // is the argument after the option, and may start with a dash.
+  return true; // greedy!
+}
+
+/**
+ * Detect whether there is possible confusion and user may have omitted
+ * the option argument, like `--port --verbose` when `port` of type:string.
+ * In strict mode we throw errors if value is option-like.
+ */
+function isOptionLikeValue(value) {
+  if (value == null) return false;
+
+  return value.length > 1 && StringPrototypeCharAt(value, 0) === '-';
+}
+
+/**
+ * Determines if `arg` is just a short option.
+ * @example '-f'
+ */
+function isLoneShortOption(arg) {
+  return arg.length === 2 &&
+    StringPrototypeCharAt(arg, 0) === '-' &&
+    StringPrototypeCharAt(arg, 1) !== '-';
+}
+
+/**
+ * Determines if `arg` is a lone long option.
+ * @example
+ * isLoneLongOption('a') // returns false
+ * isLoneLongOption('-a') // returns false
+ * isLoneLongOption('--foo') // returns true
+ * isLoneLongOption('--foo=bar') // returns false
+ */
+function isLoneLongOption(arg) {
+  return arg.length > 2 &&
+    StringPrototypeStartsWith(arg, '--') &&
+    !StringPrototypeIncludes(arg, '=', 3);
+}
+
+/**
+ * Determines if `arg` is a long option and value in the same argument.
+ * @example
+ * isLongOptionAndValue('--foo') // returns false
+ * isLongOptionAndValue('--foo=bar') // returns true
+ */
+function isLongOptionAndValue(arg) {
+  return arg.length > 2 &&
+    StringPrototypeStartsWith(arg, '--') &&
+    StringPrototypeIncludes(arg, '=', 3);
+}
+
+/**
+ * Determines if `arg` is a short option group.
+ *
+ * See Guideline 5 of the [Open Group Utility Conventions](https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap12.html).
+ *   One or more options without option-arguments, followed by at most one
+ *   option that takes an option-argument, should be accepted when grouped
+ *   behind one '-' delimiter.
+ * @example
+ * isShortOptionGroup('-a', {}) // returns false
+ * isShortOptionGroup('-ab', {}) // returns true
+ * // -fb is an option and a value, not a short option group
+ * isShortOptionGroup('-fb', {
+ *   options: { f: { type: 'string' } }
+ * }) // returns false
+ * isShortOptionGroup('-bf', {
+ *   options: { f: { type: 'string' } }
+ * }) // returns true
+ * // -bfb is an edge case, return true and caller sorts it out
+ * isShortOptionGroup('-bfb', {
+ *   options: { f: { type: 'string' } }
+ * }) // returns true
+ */
+function isShortOptionGroup(arg, options) {
+  if (arg.length <= 2) return false;
+  if (StringPrototypeCharAt(arg, 0) !== '-') return false;
+  if (StringPrototypeCharAt(arg, 1) === '-') return false;
+
+  const firstShort = StringPrototypeCharAt(arg, 1);
+  const longOption = findLongOptionForShort(firstShort, options);
+  return optionsGetOwn(options, longOption, 'type') !== 'string';
+}
+
+/**
+ * Determine if arg is a short string option followed by its value.
+ * @example
+ * isShortOptionAndValue('-a', {}); // returns false
+ * isShortOptionAndValue('-ab', {}); // returns false
+ * isShortOptionAndValue('-fFILE', {
+ *   options: { foo: { short: 'f', type: 'string' }}
+ * }) // returns true
+ */
+function isShortOptionAndValue(arg, options) {
+  validateObject(options, 'options');
+
+  if (arg.length <= 2) return false;
+  if (StringPrototypeCharAt(arg, 0) !== '-') return false;
+  if (StringPrototypeCharAt(arg, 1) === '-') return false;
+
+  const shortOption = StringPrototypeCharAt(arg, 1);
+  const longOption = findLongOptionForShort(shortOption, options);
+  return optionsGetOwn(options, longOption, 'type') === 'string';
+}
+
+/**
+ * Find the long option associated with a short option. Looks for a configured
+ * `short` and returns the short option itself if a long option is not found.
+ * @example
+ * findLongOptionForShort('a', {}) // returns 'a'
+ * findLongOptionForShort('b', {
+ *   options: { bar: { short: 'b' } }
+ * }) // returns 'bar'
+ */
+function findLongOptionForShort(shortOption, options) {
+  validateObject(options, 'options');
+  const longOptionEntry = ArrayPrototypeFind(
+    ObjectEntries(options),
+    ({ 1: optionConfig }) => objectGetOwn(optionConfig, 'short') === shortOption,
+  );
+  return longOptionEntry?.[0] ?? shortOption;
+}
+
+/**
+ * Check if the given option includes a default value
+ * and that option has not been set by the input args.
+ * @param {string} longOption - long option name e.g. 'foo'
+ * @param {object} optionConfig - the option configuration properties
+ * @param {object} values - option values returned in `values` by parseArgs
+ */
+function useDefaultValueOption(longOption, optionConfig, values) {
+  return objectGetOwn(optionConfig, 'default') !== undefined &&
+    values[longOption] === undefined;
+}
+
+module.exports = {
+  findLongOptionForShort,
+  isLoneLongOption,
+  isLoneShortOption,
+  isLongOptionAndValue,
+  isOptionValue,
+  isOptionLikeValue,
+  isShortOptionAndValue,
+  isShortOptionGroup,
+  useDefaultValueOption,
+  objectGetOwn,
+  optionsGetOwn,
+};
+
+      },
+      "internal/util/parse_args/parse_args": function (exports, require, module, process, internalBinding, primordials) {
+'use strict';
+
+const {
+  ArrayPrototypeForEach,
+  ArrayPrototypeMap,
+  ArrayPrototypePush,
+  ArrayPrototypePushApply,
+  ArrayPrototypeShift,
+  ArrayPrototypeSlice,
+  ArrayPrototypeUnshiftApply,
+  ObjectEntries,
+  ObjectPrototypeHasOwnProperty: ObjectHasOwn,
+  StringPrototypeCharAt,
+  StringPrototypeIndexOf,
+  StringPrototypeSlice,
+  StringPrototypeStartsWith,
+} = primordials;
+
+const {
+  validateArray,
+  validateBoolean,
+  validateBooleanArray,
+  validateObject,
+  validateString,
+  validateStringArray,
+  validateUnion,
+} = require('internal/validators');
+
+const {
+  findLongOptionForShort,
+  isLoneLongOption,
+  isLoneShortOption,
+  isLongOptionAndValue,
+  isOptionValue,
+  isOptionLikeValue,
+  isShortOptionAndValue,
+  isShortOptionGroup,
+  useDefaultValueOption,
+  objectGetOwn,
+  optionsGetOwn,
+} = require('internal/util/parse_args/utils');
+
+const {
+  codes: {
+    ERR_INVALID_ARG_VALUE,
+    ERR_PARSE_ARGS_INVALID_OPTION_VALUE,
+    ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL,
+    ERR_PARSE_ARGS_UNKNOWN_OPTION,
+  },
+} = require('internal/errors');
+
+const {
+  kEmptyObject,
+} = require('internal/util');
+
+const { getOptionValue } = require('internal/options');
+
+function getMainArgs() {
+  // -p / --print internally sets --eval, so this works for all cases
+  const evalValue = getOptionValue('--eval');
+
+  if (evalValue.length !== 0) {
+    return ArrayPrototypeSlice(process.argv, 1);
+  }
+
+  return ArrayPrototypeSlice(process.argv, 2);
+}
+
+/**
+ * In strict mode, throw for possible usage errors like --foo --bar
+ * @param {object} token - from tokens as available from parseArgs
+ */
+function checkOptionLikeValue(token) {
+  if (!token.inlineValue && isOptionLikeValue(token.value)) {
+    // Only show short example if user used short option.
+    const example = StringPrototypeStartsWith(token.rawName, '--') ?
+      `'${token.rawName}=-XYZ'` :
+      `'--${token.name}=-XYZ' or '${token.rawName}-XYZ'`;
+    const errorMessage = `Option '${token.rawName}' argument is ambiguous.
+Did you forget to specify the option argument for '${token.rawName}'?
+To specify an option argument starting with a dash use ${example}.`;
+    throw new ERR_PARSE_ARGS_INVALID_OPTION_VALUE(errorMessage);
+  }
+}
+
+/**
+ * In strict mode, throw for usage errors.
+ * @param {object} config - from config passed to parseArgs
+ * @param {object} token - from tokens as available from parseArgs
+ */
+function checkOptionUsage(config, token) {
+  let tokenName = token.name;
+  if (!ObjectHasOwn(config.options, tokenName)) {
+    // Check for negated boolean option.
+    if (config.allowNegative && StringPrototypeStartsWith(tokenName, 'no-')) {
+      tokenName = StringPrototypeSlice(tokenName, 3);
+      if (!ObjectHasOwn(config.options, tokenName) || optionsGetOwn(config.options, tokenName, 'type') !== 'boolean') {
+        throw new ERR_PARSE_ARGS_UNKNOWN_OPTION(
+          token.rawName, config.allowPositionals);
+      }
+    } else {
+      throw new ERR_PARSE_ARGS_UNKNOWN_OPTION(
+        token.rawName, config.allowPositionals);
+    }
+  }
+
+  const short = optionsGetOwn(config.options, tokenName, 'short');
+  const shortAndLong = `${short ? `-${short}, ` : ''}--${tokenName}`;
+  const type = optionsGetOwn(config.options, tokenName, 'type');
+  if (type === 'string' && typeof token.value !== 'string') {
+    throw new ERR_PARSE_ARGS_INVALID_OPTION_VALUE(`Option '${shortAndLong} <value>' argument missing`);
+  }
+  // (Idiomatic test for undefined||null, expecting undefined.)
+  if (type === 'boolean' && token.value != null) {
+    throw new ERR_PARSE_ARGS_INVALID_OPTION_VALUE(`Option '${shortAndLong}' does not take an argument`);
+  }
+}
+
+
+/**
+ * Store the option value in `values`.
+ * @param {object} token - from tokens as available from parseArgs
+ * @param {object} options - option configs, from parseArgs({ options })
+ * @param {object} values - option values returned in `values` by parseArgs
+ * @param {boolean} allowNegative - allow negative optinons if true
+ */
+function storeOption(token, options, values, allowNegative) {
+  let longOption = token.name;
+  let optionValue = token.value;
+  if (longOption === '__proto__') {
+    return; // No. Just no.
+  }
+
+  if (allowNegative && StringPrototypeStartsWith(longOption, 'no-') && optionValue === undefined) {
+    // Boolean option negation: --no-foo
+    longOption = StringPrototypeSlice(longOption, 3);
+    token.name = longOption;
+    optionValue = false;
+  }
+
+  // We store based on the option value rather than option type,
+  // preserving the users intent for author to deal with.
+  const newValue = optionValue ?? true;
+  if (optionsGetOwn(options, longOption, 'multiple')) {
+    // Always store value in array, including for boolean.
+    // values[longOption] starts out not present,
+    // first value is added as new array [newValue],
+    // subsequent values are pushed to existing array.
+    // (note: values has null prototype, so simpler usage)
+    if (values[longOption]) {
+      ArrayPrototypePush(values[longOption], newValue);
+    } else {
+      values[longOption] = [newValue];
+    }
+  } else {
+    values[longOption] = newValue;
+  }
+}
+
+/**
+ * Store the default option value in `values`.
+ * @param {string} longOption - long option name e.g. 'foo'
+ * @param {string
+ *         | boolean
+ *         | string[]
+ *         | boolean[]} optionValue - default value from option config
+ * @param {object} values - option values returned in `values` by parseArgs
+ */
+function storeDefaultOption(longOption, optionValue, values) {
+  if (longOption === '__proto__') {
+    return; // No. Just no.
+  }
+
+  values[longOption] = optionValue;
+}
+
+/**
+ * Process args and turn into identified tokens:
+ * - option (along with value, if any)
+ * - positional
+ * - option-terminator
+ * @param {string[]} args - from parseArgs({ args }) or mainArgs
+ * @param {object} options - option configs, from parseArgs({ options })
+ */
+function argsToTokens(args, options) {
+  const tokens = [];
+  let index = -1;
+  let groupCount = 0;
+
+  const remainingArgs = ArrayPrototypeSlice(args);
+  while (remainingArgs.length > 0) {
+    const arg = ArrayPrototypeShift(remainingArgs);
+    const nextArg = remainingArgs[0];
+    if (groupCount > 0)
+      groupCount--;
+    else
+      index++;
+
+    // Check if `arg` is an options terminator.
+    // Guideline 10 in https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap12.html
+    if (arg === '--') {
+      // Everything after a bare '--' is considered a positional argument.
+      ArrayPrototypePush(tokens, { kind: 'option-terminator', index });
+      ArrayPrototypePushApply(
+        tokens, ArrayPrototypeMap(remainingArgs, (arg) => {
+          return { kind: 'positional', index: ++index, value: arg };
+        }),
+      );
+      break; // Finished processing args, leave while loop.
+    }
+
+    if (isLoneShortOption(arg)) {
+      // e.g. '-f'
+      const shortOption = StringPrototypeCharAt(arg, 1);
+      const longOption = findLongOptionForShort(shortOption, options);
+      let value;
+      let inlineValue;
+      if (optionsGetOwn(options, longOption, 'type') === 'string' &&
+          isOptionValue(nextArg)) {
+        // e.g. '-f', 'bar'
+        value = ArrayPrototypeShift(remainingArgs);
+        inlineValue = false;
+      }
+      ArrayPrototypePush(
+        tokens,
+        { kind: 'option', name: longOption, rawName: arg,
+          index, value, inlineValue });
+      if (value != null) ++index;
+      continue;
+    }
+
+    if (isShortOptionGroup(arg, options)) {
+      // Expand -fXzy to -f -X -z -y
+      const expanded = [];
+      for (let index = 1; index < arg.length; index++) {
+        const shortOption = StringPrototypeCharAt(arg, index);
+        const longOption = findLongOptionForShort(shortOption, options);
+        if (optionsGetOwn(options, longOption, 'type') !== 'string' ||
+          index === arg.length - 1) {
+          // Boolean option, or last short in group. Well formed.
+          ArrayPrototypePush(expanded, `-${shortOption}`);
+        } else {
+          // String option in middle. Yuck.
+          // Expand -abfFILE to -a -b -fFILE
+          ArrayPrototypePush(expanded, `-${StringPrototypeSlice(arg, index)}`);
+          break; // finished short group
+        }
+      }
+      ArrayPrototypeUnshiftApply(remainingArgs, expanded);
+      groupCount = expanded.length;
+      continue;
+    }
+
+    if (isShortOptionAndValue(arg, options)) {
+      // e.g. -fFILE
+      const shortOption = StringPrototypeCharAt(arg, 1);
+      const longOption = findLongOptionForShort(shortOption, options);
+      const value = StringPrototypeSlice(arg, 2);
+      ArrayPrototypePush(
+        tokens,
+        { kind: 'option', name: longOption, rawName: `-${shortOption}`,
+          index, value, inlineValue: true });
+      continue;
+    }
+
+    if (isLoneLongOption(arg)) {
+      // e.g. '--foo'
+      const longOption = StringPrototypeSlice(arg, 2);
+      let value;
+      let inlineValue;
+      if (optionsGetOwn(options, longOption, 'type') === 'string' &&
+          isOptionValue(nextArg)) {
+        // e.g. '--foo', 'bar'
+        value = ArrayPrototypeShift(remainingArgs);
+        inlineValue = false;
+      }
+      ArrayPrototypePush(
+        tokens,
+        { kind: 'option', name: longOption, rawName: arg,
+          index, value, inlineValue });
+      if (value != null) ++index;
+      continue;
+    }
+
+    if (isLongOptionAndValue(arg)) {
+      // e.g. --foo=bar
+      const equalIndex = StringPrototypeIndexOf(arg, '=');
+      const longOption = StringPrototypeSlice(arg, 2, equalIndex);
+      const value = StringPrototypeSlice(arg, equalIndex + 1);
+      ArrayPrototypePush(
+        tokens,
+        { kind: 'option', name: longOption, rawName: `--${longOption}`,
+          index, value, inlineValue: true });
+      continue;
+    }
+
+    ArrayPrototypePush(tokens, { kind: 'positional', index, value: arg });
+  }
+  return tokens;
+}
+
+const parseArgs = (config = kEmptyObject) => {
+  const args = objectGetOwn(config, 'args') ?? getMainArgs();
+  const strict = objectGetOwn(config, 'strict') ?? true;
+  const allowPositionals = objectGetOwn(config, 'allowPositionals') ?? !strict;
+  const returnTokens = objectGetOwn(config, 'tokens') ?? false;
+  const allowNegative = objectGetOwn(config, 'allowNegative') ?? false;
+  const options = objectGetOwn(config, 'options') ?? { __proto__: null };
+  // Bundle these up for passing to strict-mode checks.
+  const parseConfig = { args, strict, options, allowPositionals, allowNegative };
+
+  // Validate input configuration.
+  validateArray(args, 'args');
+  validateBoolean(strict, 'strict');
+  validateBoolean(allowPositionals, 'allowPositionals');
+  validateBoolean(returnTokens, 'tokens');
+  validateBoolean(allowNegative, 'allowNegative');
+  validateObject(options, 'options');
+  ArrayPrototypeForEach(
+    ObjectEntries(options),
+    ({ 0: longOption, 1: optionConfig }) => {
+      validateObject(optionConfig, `options.${longOption}`);
+
+      // type is required
+      const optionType = objectGetOwn(optionConfig, 'type');
+      validateUnion(optionType, `options.${longOption}.type`, ['string', 'boolean']);
+
+      if (ObjectHasOwn(optionConfig, 'short')) {
+        const shortOption = optionConfig.short;
+        validateString(shortOption, `options.${longOption}.short`);
+        if (shortOption.length !== 1) {
+          throw new ERR_INVALID_ARG_VALUE(
+            `options.${longOption}.short`,
+            shortOption,
+            'must be a single character',
+          );
+        }
+      }
+
+      const multipleOption = objectGetOwn(optionConfig, 'multiple');
+      if (ObjectHasOwn(optionConfig, 'multiple')) {
+        validateBoolean(multipleOption, `options.${longOption}.multiple`);
+      }
+
+      const defaultValue = objectGetOwn(optionConfig, 'default');
+      if (defaultValue !== undefined) {
+        let validator;
+        switch (optionType) {
+          case 'string':
+            validator = multipleOption ? validateStringArray : validateString;
+            break;
+
+          case 'boolean':
+            validator = multipleOption ? validateBooleanArray : validateBoolean;
+            break;
+        }
+        validator(defaultValue, `options.${longOption}.default`);
+      }
+    },
+  );
+
+  // Phase 1: identify tokens
+  const tokens = argsToTokens(args, options);
+
+  // Phase 2: process tokens into parsed option values and positionals
+  const result = {
+    values: { __proto__: null },
+    positionals: [],
+  };
+  if (returnTokens) {
+    result.tokens = tokens;
+  }
+  ArrayPrototypeForEach(tokens, (token) => {
+    if (token.kind === 'option') {
+      if (strict) {
+        checkOptionUsage(parseConfig, token);
+        checkOptionLikeValue(token);
+      }
+      storeOption(token, options, result.values, parseConfig.allowNegative);
+    } else if (token.kind === 'positional') {
+      if (!allowPositionals) {
+        throw new ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL(token.value);
+      }
+      ArrayPrototypePush(result.positionals, token.value);
+    }
+  });
+
+  // Phase 3: fill in default values for missing args
+  ArrayPrototypeForEach(ObjectEntries(options), ({ 0: longOption,
+                                                   1: optionConfig }) => {
+    const mustSetDefault = useDefaultValueOption(longOption,
+                                                 optionConfig,
+                                                 result.values);
+    if (mustSetDefault) {
+      storeDefaultOption(longOption,
+                         objectGetOwn(optionConfig, 'default'),
+                         result.values);
+    }
+  });
+
+
+  return result;
+};
+
+module.exports = {
+  parseArgs,
+};
+
+      },
+      "internal/util/trace_sigint": function (exports, require, module, process, internalBinding, primordials) {
+'use strict';
+
+const { isMainThread } = require('worker_threads');
+const {
+  ERR_WORKER_UNSUPPORTED_OPERATION,
+} = require('internal/errors').codes;
+
+let sigintWatchdog;
+function getSigintWatchdog() {
+  if (!sigintWatchdog) {
+    const { SigintWatchdog } = require('internal/watchdog');
+    sigintWatchdog = new SigintWatchdog();
+  }
+  return sigintWatchdog;
+}
+
+function setTraceSigInt(enable) {
+  if (!isMainThread)
+    throw new ERR_WORKER_UNSUPPORTED_OPERATION('Calling util.setTraceSigInt');
+  if (enable) {
+    getSigintWatchdog().start();
+  } else {
+    getSigintWatchdog().stop();
+  }
+};
+
+module.exports = {
+  setTraceSigInt,
+};
+
+      },
+      "util": function (exports, require, module, process, internalBinding, primordials) {
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+'use strict';
+
+const {
+  ArrayIsArray,
+  ArrayPrototypeJoin,
+  ArrayPrototypePop,
+  ArrayPrototypePush,
+  ArrayPrototypeReduce,
+  Date,
+  DatePrototypeGetDate,
+  DatePrototypeGetHours,
+  DatePrototypeGetMinutes,
+  DatePrototypeGetMonth,
+  DatePrototypeGetSeconds,
+  Error,
+  ErrorCaptureStackTrace,
+  FunctionPrototypeBind,
+  NumberIsSafeInteger,
+  ObjectDefineProperties,
+  ObjectDefineProperty,
+  ObjectGetOwnPropertyDescriptors,
+  ObjectKeys,
+  ObjectPrototypeToString,
+  ObjectSetPrototypeOf,
+  ObjectValues,
+  ReflectApply,
+  RegExp,
+  RegExpPrototypeSymbolReplace,
+  StringPrototypePadStart,
+  StringPrototypeToWellFormed,
+} = primordials;
+
+const {
+  ErrnoException,
+  ExceptionWithHostPort,
+  codes: {
+    ERR_FALSY_VALUE_REJECTION,
+    ERR_INVALID_ARG_TYPE,
+    ERR_OUT_OF_RANGE,
+  },
+  isErrorStackTraceLimitWritable,
+} = require('internal/errors');
+const {
+  format,
+  formatWithOptions,
+  inspect,
+  stripVTControlCharacters,
+} = require('internal/util/inspect');
+const { debuglog } = require('internal/util/debuglog');
+const {
+  validateBoolean,
+  validateFunction,
+  validateNumber,
+  validateString,
+  validateOneOf,
+  validateObject,
+} = require('internal/validators');
+const { isBuffer } = require('buffer').Buffer;
+const {
+  isReadableStream,
+  isWritableStream,
+  isNodeStream,
+} = require('internal/streams/utils');
+const types = require('internal/util/types');
+
+let utilColors;
+function lazyUtilColors() {
+  utilColors ??= require('internal/util/colors');
+  return utilColors;
+}
+const { getOptionValue } = require('internal/options');
+
+const binding = internalBinding('util');
+
+const {
+  deprecate,
+  getLazy,
+  getSystemErrorMap,
+  getSystemErrorName: internalErrorName,
+  getSystemErrorMessage: internalErrorMessage,
+  promisify,
+  defineLazyProperties,
+} = require('internal/util');
+
+let abortController;
+
+function lazyAbortController() {
+  abortController ??= require('internal/abort_controller');
+  return abortController;
+}
+
+let internalDeepEqual;
+
+/**
+ * @deprecated since v4.0.0
+ * @param {any} arg
+ * @returns {arg is boolean}
+ */
+function isBoolean(arg) {
+  return typeof arg === 'boolean';
+}
+
+/**
+ * @deprecated since v4.0.0
+ * @param {any} arg
+ * @returns {arg is null}
+ */
+function isNull(arg) {
+  return arg === null;
+}
+
+/**
+ * @deprecated since v4.0.0
+ * @param {any} arg
+ * @returns {arg is (null | undefined)}
+ */
+function isNullOrUndefined(arg) {
+  return arg === null || arg === undefined;
+}
+
+/**
+ * @deprecated since v4.0.0
+ * @param {any} arg
+ * @returns {arg is number}
+ */
+function isNumber(arg) {
+  return typeof arg === 'number';
+}
+
+/**
+ * @param {any} arg
+ * @returns {arg is string}
+ */
+function isString(arg) {
+  return typeof arg === 'string';
+}
+
+/**
+ * @deprecated since v4.0.0
+ * @param {any} arg
+ * @returns {arg is symbol}
+ */
+function isSymbol(arg) {
+  return typeof arg === 'symbol';
+}
+
+/**
+ * @deprecated since v4.0.0
+ * @param {any} arg
+ * @returns {arg is undefined}
+ */
+function isUndefined(arg) {
+  return arg === undefined;
+}
+
+/**
+ * @deprecated since v4.0.0
+ * @param {any} arg
+ * @returns {a is NonNullable<object>}
+ */
+function isObject(arg) {
+  return arg !== null && typeof arg === 'object';
+}
+
+/**
+ * @deprecated since v4.0.0
+ * @param {any} e
+ * @returns {arg is Error}
+ */
+function isError(e) {
+  return ObjectPrototypeToString(e) === '[object Error]' || e instanceof Error;
+}
+
+/**
+ * @deprecated since v4.0.0
+ * @param {any} arg
+ * @returns {arg is Function}
+ */
+function isFunction(arg) {
+  return typeof arg === 'function';
+}
+
+/**
+ * @deprecated since v4.0.0
+ * @param {any} arg
+ * @returns {arg is (boolean | null | number | string | symbol | undefined)}
+ */
+function isPrimitive(arg) {
+  return arg === null ||
+         (typeof arg !== 'object' && typeof arg !== 'function');
+}
+
+/**
+ * @param {number} n
+ * @returns {string}
+ */
+function pad(n) {
+  return StringPrototypePadStart(n.toString(), 2, '0');
+}
+
+/**
+ * @param {string} [code]
+ * @returns {string}
+ */
+function escapeStyleCode(code) {
+  if (code === undefined) return '';
+  return `\u001b[${code}m`;
+}
+
+/**
+ * @param {string | string[]} format
+ * @param {string} text
+ * @param {object} [options={}]
+ * @param {boolean} [options.validateStream=true] - Whether to validate the stream.
+ * @param {Stream} [options.stream=process.stdout] - The stream used for validation.
+ * @returns {string}
+ */
+function styleText(format, text, { validateStream = true, stream = process.stdout } = {}) {
+  validateString(text, 'text');
+  validateBoolean(validateStream, 'options.validateStream');
+
+  let skipColorize;
+  if (validateStream) {
+    if (
+      !isReadableStream(stream) &&
+      !isWritableStream(stream) &&
+      !isNodeStream(stream)
+    ) {
+      throw new ERR_INVALID_ARG_TYPE('stream', ['ReadableStream', 'WritableStream', 'Stream'], stream);
+    }
+
+    // If the stream is falsy or should not be colorized, set skipColorize to true
+    skipColorize = !lazyUtilColors().shouldColorize(stream);
+  }
+
+  // If the format is not an array, convert it to an array
+  const formatArray = ArrayIsArray(format) ? format : [format];
+
+  const codes = [];
+  for (const key of formatArray) {
+    if (key === 'none') continue;
+    const formatCodes = inspect.colors[key];
+    // If the format is not a valid style, throw an error
+    if (formatCodes == null) {
+      validateOneOf(key, 'format', ObjectKeys(inspect.colors));
+    }
+    if (skipColorize) continue;
+    ArrayPrototypePush(codes, formatCodes);
+  }
+
+  if (skipColorize) {
+    return text;
+  }
+
+  // Build opening codes
+  let openCodes = '';
+  for (let i = 0; i < codes.length; i++) {
+    openCodes += escapeStyleCode(codes[i][0]);
+  }
+
+  // Process the text to handle nested styles
+  let processedText;
+  if (codes.length > 0) {
+    processedText = ArrayPrototypeReduce(
+      codes,
+      (text, code) => RegExpPrototypeSymbolReplace(
+        // Find the reset code
+        new RegExp(`\\u001b\\[${code[1]}m`, 'g'),
+        text,
+        (match, offset) => {
+          // Check if there's more content after this reset
+          if (offset + match.length < text.length) {
+            if (
+              code[0] === inspect.colors.dim[0] ||
+              code[0] === inspect.colors.bold[0]
+            ) {
+              // Dim and bold are not mutually exclusive, so we need to reapply
+              return `${match}${escapeStyleCode(code[0])}`;
+            }
+            return escapeStyleCode(code[0]);
+          }
+          return match;
+        },
+      ),
+      text,
+    );
+  } else {
+    processedText = text;
+  }
+
+  // Build closing codes in reverse order
+  let closeCodes = '';
+  for (let i = codes.length - 1; i >= 0; i--) {
+    closeCodes += escapeStyleCode(codes[i][1]);
+  }
+
+  return `${openCodes}${processedText}${closeCodes}`;
+}
+
+const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep',
+                'Oct', 'Nov', 'Dec'];
+
+/**
+ * @returns {string}  26 Feb 16:19:34
+ */
+function timestamp() {
+  const d = new Date();
+  const t = ArrayPrototypeJoin([
+    pad(DatePrototypeGetHours(d)),
+    pad(DatePrototypeGetMinutes(d)),
+    pad(DatePrototypeGetSeconds(d)),
+  ], ':');
+  return `${DatePrototypeGetDate(d)} ${months[DatePrototypeGetMonth(d)]} ${t}`;
+}
+
+let console;
+/**
+ * Log is just a thin wrapper to console.log that prepends a timestamp
+ * @deprecated since v6.0.0
+ * @type {(...args: any[]) => void}
+ */
+function log(...args) {
+  console ??= require('internal/console/global');
+  console.log('%s - %s', timestamp(), format(...args));
+}
+
+/**
+ * Inherit the prototype methods from one constructor into another.
+ *
+ * The Function.prototype.inherits from lang.js rewritten as a standalone
+ * function (not on Function.prototype). NOTE: If this file is to be loaded
+ * during bootstrapping this function needs to be rewritten using some native
+ * functions as prototype setup using normal JavaScript does not work as
+ * expected during bootstrapping (see mirror.js in r114903).
+ * @param {Function} ctor Constructor function which needs to inherit the
+ *     prototype.
+ * @param {Function} superCtor Constructor function to inherit prototype from.
+ * @throws {TypeError} Will error if either constructor is null, or if
+ *     the super constructor lacks a prototype.
+ */
+function inherits(ctor, superCtor) {
+
+  if (ctor === undefined || ctor === null)
+    throw new ERR_INVALID_ARG_TYPE('ctor', 'Function', ctor);
+
+  if (superCtor === undefined || superCtor === null)
+    throw new ERR_INVALID_ARG_TYPE('superCtor', 'Function', superCtor);
+
+  if (superCtor.prototype === undefined) {
+    throw new ERR_INVALID_ARG_TYPE('superCtor.prototype',
+                                   'Object', superCtor.prototype);
+  }
+  ObjectDefineProperty(ctor, 'super_', {
+    __proto__: null,
+    value: superCtor,
+    writable: true,
+    configurable: true,
+  });
+  ObjectSetPrototypeOf(ctor.prototype, superCtor.prototype);
+}
+
+/**
+ * @deprecated since v6.0.0
+ * @template T
+ * @template S
+ * @param {T} target
+ * @param {S} source
+ * @returns {S extends null ? T : (T & S)}
+ */
+function _extend(target, source) {
+  // Don't do anything if source isn't an object
+  if (source === null || typeof source !== 'object') return target;
+
+  const keys = ObjectKeys(source);
+  let i = keys.length;
+  while (i--) {
+    target[keys[i]] = source[keys[i]];
+  }
+  return target;
+}
+
+const callbackifyOnRejected = (reason, cb) => {
+  // `!reason` guard inspired by bluebird (Ref: https://goo.gl/t5IS6M).
+  // Because `null` is a special error value in callbacks which means "no error
+  // occurred", we error-wrap so the callback consumer can distinguish between
+  // "the promise rejected with null" or "the promise fulfilled with undefined".
+  if (!reason) {
+    reason = new ERR_FALSY_VALUE_REJECTION.HideStackFramesError(reason);
+    ErrorCaptureStackTrace(reason, callbackifyOnRejected);
+  }
+  return cb(reason);
+};
+
+/**
+ * @template {(...args: any[]) => Promise<any>} T
+ * @param {T} original
+ * @returns {T extends (...args: infer TArgs) => Promise<infer TReturn> ?
+ *   ((...params: [...TArgs, ((err: Error, ret: TReturn) => any)]) => void) :
+ *   never
+ * }
+ */
+function callbackify(original) {
+  validateFunction(original, 'original');
+
+  // We DO NOT return the promise as it gives the user a false sense that
+  // the promise is actually somehow related to the callback's execution
+  // and that the callback throwing will reject the promise.
+  function callbackified(...args) {
+    const maybeCb = ArrayPrototypePop(args);
+    validateFunction(maybeCb, 'last argument');
+    const cb = FunctionPrototypeBind(maybeCb, this);
+    // In true node style we process the callback on `nextTick` with all the
+    // implications (stack, `uncaughtException`, `async_hooks`)
+    ReflectApply(original, this, args)
+      .then((ret) => process.nextTick(cb, null, ret),
+            (rej) => process.nextTick(callbackifyOnRejected, rej, cb));
+  }
+
+  const descriptors = ObjectGetOwnPropertyDescriptors(original);
+  // It is possible to manipulate a functions `length` or `name` property. This
+  // guards against the manipulation.
+  if (typeof descriptors.length.value === 'number') {
+    descriptors.length.value++;
+  }
+  if (typeof descriptors.name.value === 'string') {
+    descriptors.name.value += 'Callbackified';
+  }
+  const propertiesValues = ObjectValues(descriptors);
+  for (let i = 0; i < propertiesValues.length; i++) {
+  // We want to use null-prototype objects to not rely on globally mutable
+  // %Object.prototype%.
+    ObjectSetPrototypeOf(propertiesValues[i], null);
+  }
+  ObjectDefineProperties(callbackified, descriptors);
+  return callbackified;
+}
+
+/**
+ * @param {number} err
+ * @returns {string}
+ */
+function getSystemErrorMessage(err) {
+  validateNumber(err, 'err');
+  if (err >= 0 || !NumberIsSafeInteger(err)) {
+    throw new ERR_OUT_OF_RANGE('err', 'a negative integer', err);
+  }
+  return internalErrorMessage(err);
+}
+
+/**
+ * @param {number} err
+ * @returns {string}
+ */
+function getSystemErrorName(err) {
+  validateNumber(err, 'err');
+  if (err >= 0 || !NumberIsSafeInteger(err)) {
+    throw new ERR_OUT_OF_RANGE('err', 'a negative integer', err);
+  }
+  return internalErrorName(err);
+}
+
+function _errnoException(...args) {
+  if (isErrorStackTraceLimitWritable()) {
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 0;
+    const e = new ErrnoException(...args);
+    Error.stackTraceLimit = limit;
+    ErrorCaptureStackTrace(e, _errnoException);
+    return e;
+  }
+  return new ErrnoException(...args);
+}
+
+function _exceptionWithHostPort(...args) {
+  if (isErrorStackTraceLimitWritable()) {
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 0;
+    const e = new ExceptionWithHostPort(...args);
+    Error.stackTraceLimit = limit;
+    ErrorCaptureStackTrace(e, _exceptionWithHostPort);
+    return e;
+  }
+  return new ExceptionWithHostPort(...args);
+}
+
+/**
+ * Parses the content of a `.env` file.
+ * @param {string} content
+ * @returns {Record<string, string>}
+ */
+function parseEnv(content) {
+  validateString(content, 'content');
+  return binding.parseEnv(content);
+}
+
+const lazySourceMap = getLazy(() => require('internal/source_map/source_map_cache'));
+
+/**
+ * @typedef {object} CallSite // The call site
+ * @property {string} scriptName // The name of the resource that contains the
+ * script for the function for this StackFrame
+ * @property {string} functionName // The name of the function associated with this stack frame
+ * @property {number} lineNumber // The number, 1-based, of the line for the associate function call
+ * @property {number} columnNumber // The 1-based column offset on the line for the associated function call
+ */
+
+/**
+ * @param {CallSite} callSite // The call site object to reconstruct from source map
+ * @returns {CallSite | undefined} // The reconstructed call site object
+ */
+function reconstructCallSite(callSite) {
+  const { scriptName, lineNumber, columnNumber } = callSite;
+  const sourceMap = lazySourceMap().findSourceMap(scriptName);
+  if (!sourceMap) return;
+  const entry = sourceMap.findEntry(lineNumber - 1, columnNumber - 1);
+  if (!entry?.originalSource) return;
+  return {
+    __proto__: null,
+    // If the name is not found, it is an empty string to match the behavior of `util.getCallSite()`
+    functionName: entry.name ?? '',
+    scriptName: entry.originalSource,
+    lineNumber: entry.originalLine + 1,
+    column: entry.originalColumn + 1,
+    columnNumber: entry.originalColumn + 1,
+  };
+}
+
+/**
+ *
+ * The call site array to map
+ * @param {CallSite[]} callSites
+ * Array of objects with the reconstructed call site
+ * @returns {CallSite[]}
+ */
+function mapCallSite(callSites) {
+  const result = [];
+  for (let i = 0; i < callSites.length; ++i) {
+    const callSite = callSites[i];
+    const found = reconstructCallSite(callSite);
+    ArrayPrototypePush(result, found ?? callSite);
+  }
+  return result;
+}
+
+/**
+ * @typedef {object} CallSiteOptions // The call site options
+ * @property {boolean} sourceMap // Enable source map support
+ */
+
+/**
+ * Returns the callSite
+ * @param {number} frameCount
+ * @param {CallSiteOptions} options
+ * @returns {CallSite[]}
+ */
+function getCallSites(frameCount = 10, options) {
+  // If options is not provided check if frameCount is an object
+  if (options === undefined) {
+    if (typeof frameCount === 'object') {
+      // If frameCount is an object, it is the options object
+      options = frameCount;
+      validateObject(options, 'options');
+      if (options.sourceMap !== undefined) {
+        validateBoolean(options.sourceMap, 'options.sourceMap');
+      }
+      frameCount = 10;
+    } else {
+      // If options is not provided, set it to an empty object
+      options = {};
+    };
+  } else {
+    // If options is provided, validate it
+    validateObject(options, 'options');
+    if (options.sourceMap !== undefined) {
+      validateBoolean(options.sourceMap, 'options.sourceMap');
+    }
+  }
+
+  // Using kDefaultMaxCallStackSizeToCapture as reference
+  validateNumber(frameCount, 'frameCount', 1, 200);
+  // If options.sourceMaps is true or if sourceMaps are enabled but the option.sourceMaps is not set explicitly to false
+  if (options.sourceMap === true || (getOptionValue('--enable-source-maps') && options.sourceMap !== false)) {
+    return mapCallSite(binding.getCallSites(frameCount));
+  }
+  return binding.getCallSites(frameCount);
+};
+
+// Keep the `exports =` so that various functions can still be monkeypatched
+module.exports = {
+  _errnoException,
+  _exceptionWithHostPort,
+  _extend: deprecate(_extend,
+                     'The `util._extend` API is deprecated. Please use Object.assign() instead.',
+                     'DEP0060'),
+  callbackify,
+  debug: debuglog,
+  debuglog,
+  deprecate,
+  format,
+  styleText,
+  formatWithOptions,
+  // Deprecated getCallSite.
+  // This API can be removed in next semver-minor release.
+  getCallSite: deprecate(getCallSites,
+                         'The `util.getCallSite` API has been renamed to `util.getCallSites()`.',
+                         'ExperimentalWarning'),
+  getCallSites,
+  getSystemErrorMap,
+  getSystemErrorName,
+  getSystemErrorMessage,
+  inherits,
+  inspect,
+  isArray: deprecate(ArrayIsArray,
+                     'The `util.isArray` API is deprecated. Please use `Array.isArray()` instead.',
+                     'DEP0044'),
+  isBoolean: deprecate(isBoolean,
+                       'The `util.isBoolean` API is deprecated.  Please use `typeof arg === "boolean"` instead.',
+                       'DEP0045'),
+  isBuffer: deprecate(isBuffer,
+                      'The `util.isBuffer` API is deprecated. Please use `Buffer.isBuffer()` instead.',
+                      'DEP0046'),
+  isDeepStrictEqual(a, b) {
+    if (internalDeepEqual === undefined) {
+      internalDeepEqual = require('internal/util/comparisons')
+        .isDeepStrictEqual;
+    }
+    return internalDeepEqual(a, b);
+  },
+  isNull: deprecate(isNull,
+                    'The `util.isNull` API is deprecated. Please use `arg === null` instead.',
+                    'DEP0050'),
+  isNullOrUndefined: deprecate(isNullOrUndefined,
+                               'The `util.isNullOrUndefined` API is deprecated. ' +
+                               'Please use `arg === null || arg === undefined` instead.',
+                               'DEP0051'),
+  isNumber: deprecate(isNumber,
+                      'The `util.isNumber` API is deprecated. Please use `typeof arg === "number"` instead.',
+                      'DEP0052'),
+  isString: deprecate(isString,
+                      'The `util.isString` API is deprecated.  Please use `typeof arg === "string"` instead.',
+                      'DEP0056'),
+  isSymbol: deprecate(isSymbol,
+                      'The `util.isSymbol` API is deprecated.  Please use `arg === "symbol"` instead.',
+                      'DEP0057'),
+  isUndefined: deprecate(isUndefined,
+                         'The `util.isUndefined` API is deprecated. Please use `arg === undefined` instead.',
+                         'DEP0058'),
+  isRegExp: deprecate(types.isRegExp,
+                      'The `util.isRegExp` API is deprecated. Please use `arg instanceof RegExp` instead.',
+                      'DEP0055'),
+  isObject: deprecate(isObject,
+                      'The `util.isObject` API is deprecated. ' +
+                      'Please use `arg !== null && typeof arg === "object"` instead.',
+                      'DEP0053'),
+  isDate: deprecate(types.isDate,
+                    'The `util.isDate` API is deprecated.  Please use `arg instanceof Date` instead.',
+                    'DEP0047'),
+  isError: deprecate(isError,
+                     'The `util.isError` API is deprecated. ' +
+                     'Please use `ObjectPrototypeToString(e) === "[object Error]" ' +
+                     '|| e instanceof Error` instead.',
+                     'DEP0048'),
+  isFunction: deprecate(isFunction,
+                        'The `util.isFunction` API is deprecated.  Please use `typeof arg === "function"` instead.',
+                        'DEP0049'),
+  isPrimitive: deprecate(isPrimitive,
+                         'The `util.isPrimitive` API is deprecated. ' +
+                         'Please use `arg === null || ' +
+                         '(typeof arg !== "object" && typeof arg !== "function")` instead.',
+                         'DEP0054'),
+  log: deprecate(log,
+                 'The `util.log API is deprecated. ' +
+                 'Please use console.log() with a custom formatter or a third-party logger instead.',
+                 'DEP0059'),
+  promisify,
+  stripVTControlCharacters,
+  toUSVString(input) {
+    return StringPrototypeToWellFormed(`${input}`);
+  },
+  get transferableAbortSignal() {
+    return lazyAbortController().transferableAbortSignal;
+  },
+  get transferableAbortController() {
+    return lazyAbortController().transferableAbortController;
+  },
+  get aborted() {
+    return lazyAbortController().aborted;
+  },
+  types,
+  parseEnv,
+};
+
+defineLazyProperties(
+  module.exports,
+  'internal/util/parse_args/parse_args',
+  ['parseArgs'],
+);
+
+defineLazyProperties(
+  module.exports,
+  'internal/encoding',
+  ['TextDecoder', 'TextEncoder'],
+);
+
+defineLazyProperties(
+  module.exports,
+  'internal/mime',
+  ['MIMEType', 'MIMEParams'],
+);
+
+defineLazyProperties(
+  module.exports,
+  'internal/util/diff',
+  ['diff'],
+);
+
+defineLazyProperties(
+  module.exports,
+  'internal/util/trace_sigint',
+  ['setTraceSigInt'],
+);
+
+      },
     },
   });
   return __nimbusNodeLibrary;
 }
 function __nimbusNodeInspect() {
   return __nimbusNodeLib().require("internal/util/inspect");
+}
+// What util.promisify makes an object of when a callback is given several
+// values (lib/internal/util.js customPromisifyArgs): fs.read's bytesRead and
+// buffer, dns.lookup's address and family.
+const __nimbusCustomPromisifyArgs = Symbol("customPromisifyArgs");
+// internal/options getOptionValue, for the options Node's library reads.
+function __nimbusOptionValue(name) {
+  switch (name) {
+    case "--eval": return typeof __nimbusNodeCommandLine?.eval === "string" ? __nimbusNodeCommandLine.eval : "";
+    case "--enable-source-maps": return __nimbusNodeCommandLine?.enableSourceMaps === true;
+    default: return undefined;
+  }
 }
 // isInsideNodeModules (the util binding): whether the program's innermost
 // frame on the stack is a package's.
@@ -19825,184 +22818,6 @@ Object.defineProperties(__nimbusInspect, {
   colors: { get() { return __nimbusNodeInspect().inspect.colors; }, set(value) { __nimbusNodeInspect().inspect.colors = value; }, enumerable: true, configurable: true },
   styles: { get() { return __nimbusNodeInspect().inspect.styles; }, set(value) { __nimbusNodeInspect().inspect.styles = value; }, enumerable: true, configurable: true },
 });
-const __utilMod = {
-  inspect: __nimbusInspect,
-  format: function format(...args) { return __nimbusNodeInspect().format(...args); },
-  formatWithOptions: function formatWithOptions(options, ...args) { return __nimbusNodeInspect().formatWithOptions(options, ...args); },
-  stripVTControlCharacters: function stripVTControlCharacters(str) { return __nimbusNodeInspect().stripVTControlCharacters(str); },
-  promisify: (fn) => (...a) => new Promise((res, rej) => fn(...a, (e, r) => e ? rej(e) : res(r))),
-  callbackify: (fn) => (...a) => { const cb = a.pop(); fn(...a).then(r => cb(null, r), e => cb(e)); },
-  types: __realUtil.types,
-  inherits: (c, s) => {
-    // X.5-Z5 Defect-B fix: guard against null/undefined superCtor or a
-    // superCtor whose .prototype is null/undefined. Without this guard,
-    // Object.create(undefined.prototype, ...) and Object.create(null, ...)
-    // both throw 'Object prototype may only be an Object or null: undefined'
-    // — same surface as Defect A but for shim namespaces with no synthetic
-    // .prototype. Mirrors the canonical inherits_browser.js fallback.
-    if (s == null || s.prototype == null) return;
-    c.super_ = s;
-    c.prototype = Object.create(s.prototype, { constructor: { value: c, enumerable: false, writable: true, configurable: true } });
-  },
-  deprecate(fn, msg, code) { return __nimbusNodeLib().require("internal/util").deprecate(fn, msg, code); },
-  debuglog: () => () => {},
-  isDeepStrictEqual(a, b) { return __nimbusNodeLib().require("internal/util/comparisons").isDeepStrictEqual(a, b); },
-  TextEncoder: globalThis.TextEncoder,
-  TextDecoder: globalThis.TextDecoder,
-  // util.styleText(format, text [, opts]) — Node 20.12+. Returns text
-  // wrapped in ANSI escape sequences for terminal styling. Used by
-  // create-vite and many modern CLIs.
-  //
-  // Surface: format may be a single style string or an array of style
-  // strings; in either case we apply each style's open code, then the
-  // text, then the closing code. The Nimbus terminal renders ANSI;
-  // unrecognised formats pass through as plain text (Node's docs say
-  // it throws TypeError in strict mode, but our facet code may emit
-  // styled error messages even for unrecognised foreground colors
-  // — choose the lenient pass-through to keep CLIs functioning).
-  styleText: (format, text /*, _opts */) => {
-    // ANSI lookup. Mirrors Node's util.inspect.colors keys.
-    const codes = {
-      reset:           [0, 0],
-      bold:            [1, 22],
-      italic:          [3, 23],
-      underline:       [4, 24],
-      strikethrough:   [9, 29],
-      hidden:          [8, 28],
-      dim:             [2, 22],
-      overlined:       [53, 55],
-      blink:           [5, 25],
-      inverse:         [7, 27],
-      doubleunderline: [21, 24],
-      framed:          [51, 54],
-      black:           [30, 39], red:    [31, 39], green:   [32, 39],
-      yellow:          [33, 39], blue:   [34, 39], magenta: [35, 39],
-      cyan:            [36, 39], white:  [37, 39], gray:    [90, 39],
-      grey:            [90, 39],
-      blackBright:     [90, 39], redBright:    [91, 39], greenBright: [92, 39],
-      yellowBright:    [93, 39], blueBright:   [94, 39], magentaBright: [95, 39],
-      cyanBright:      [96, 39], whiteBright:  [97, 39],
-      bgBlack:         [40, 49], bgRed:        [41, 49], bgGreen: [42, 49],
-      bgYellow:        [43, 49], bgBlue:       [44, 49], bgMagenta: [45, 49],
-      bgCyan:          [46, 49], bgWhite:      [47, 49], bgGray: [100, 49],
-      bgGrey:          [100, 49],
-      bgBlackBright:   [100, 49], bgRedBright: [101, 49], bgGreenBright: [102, 49],
-      bgYellowBright:  [103, 49], bgBlueBright: [104, 49], bgMagentaBright: [105, 49],
-      bgCyanBright:    [106, 49], bgWhiteBright: [107, 49],
-    };
-    const formats = Array.isArray(format) ? format : [format];
-    let opens = "";
-    let closes = "";
-    for (const f of formats) {
-      const c = codes[f];
-      if (c) {
-        opens += "\x1b[" + c[0] + "m";
-        closes = "\x1b[" + c[1] + "m" + closes;
-      }
-    }
-    return opens + String(text) + closes;
-  },
-  // util.parseArgs({ args, options, strict, allowPositionals, allowNegative })
-  // — Node 18.3+. The CLI argument parser modern npm bins reach for instead
-  // of a dependency: json-server's lib/bin.js destructures it at module
-  // init, so its absence crashed the bin at "parseArgs is not a function"
-  // before --version could answer. Node's contract, minus the tokens
-  // debugging output:
-  //   - --name, --name=value, --name value for string options;
-  //   - -s, -s value, -svalue, and grouped booleans -abc for shorts;
-  //   - --no-name sets a boolean false when allowNegative is on;
-  //   - -- ends option parsing, the rest are positionals;
-  //   - strict (default true) throws Node's own error codes for an unknown
-  //     option, a string option with no value, or a positional when they
-  //     are not allowed; lax mode records unknown options as booleans.
-  parseArgs: (config) => {
-    const cfg = config || {};
-    const args = Array.isArray(cfg.args) ? cfg.args.slice() : (__processMod.argv || []).slice(2);
-    const options = cfg.options || {};
-    const strict = cfg.strict !== false;
-    const allowPositionals = cfg.allowPositionals === undefined ? !strict : !!cfg.allowPositionals;
-    const allowNegative = !!cfg.allowNegative;
-    const values = {};
-    const positionals = [];
-    const err = (code, message) => nodeError(TypeError, code, message);
-    const shortToLong = {};
-    for (const [name, spec] of Object.entries(options)) {
-      if (spec === null || typeof spec !== "object" || Array.isArray(spec)) throw invalidArgType("options." + name, "object", spec);
-      const type = Object.hasOwn(spec, "type") ? spec.type : undefined;
-      if (type !== "string" && type !== "boolean") throw invalidArgType("options." + name + ".type", "('string|boolean')", type);
-      if (spec.short) shortToLong[spec.short] = name;
-      if (spec.default !== undefined) values[name] = spec.default;
-    }
-    const store = (name, value) => {
-      const spec = options[name];
-      if (spec && spec.multiple) {
-        if (!Array.isArray(values[name]) || (spec.default !== undefined && values[name] === spec.default)) values[name] = [];
-        values[name].push(value);
-      } else {
-        values[name] = value;
-      }
-    };
-    const optionValue = (name, inlineValue, next, raw) => {
-      const spec = options[name];
-      if (!spec) {
-        if (strict) throw err("ERR_PARSE_ARGS_UNKNOWN_OPTION", "Unknown option '" + raw + "'" + (allowPositionals ? ". To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- " + JSON.stringify(raw) : ""));
-        if (inlineValue !== undefined) return { value: inlineValue, consumed: 0 };
-        return { value: true, consumed: 0 };
-      }
-      if (spec.type === "boolean") {
-        if (inlineValue !== undefined && strict) throw err("ERR_PARSE_ARGS_INVALID_OPTION_VALUE", "Option '" + raw + "' does not take an argument.");
-        return { value: inlineValue !== undefined ? inlineValue : true, consumed: 0 };
-      }
-      if (inlineValue !== undefined) return { value: inlineValue, consumed: 0 };
-      if (next === undefined || (strict && next.startsWith("-") && next !== "-")) {
-        if (strict) throw err("ERR_PARSE_ARGS_INVALID_OPTION_VALUE", "Option '" + raw + " <value>' argument missing");
-        return { value: undefined, consumed: 0 };
-      }
-      return { value: next, consumed: 1 };
-    };
-    for (let i = 0; i < args.length; i++) {
-      const arg = args[i];
-      if (arg === "--") { positionals.push(...args.slice(i + 1)); break; }
-      if (arg.startsWith("--") && arg.length > 2) {
-        const eq = arg.indexOf("=");
-        let name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
-        const inline = eq === -1 ? undefined : arg.slice(eq + 1);
-        if (allowNegative && name.startsWith("no-") && options[name.slice(3)] && options[name.slice(3)].type === "boolean") {
-          store(name.slice(3), false);
-          continue;
-        }
-        const r = optionValue(name, inline, args[i + 1], "--" + name);
-        store(name, r.value);
-        i += r.consumed;
-        continue;
-      }
-      if (arg.startsWith("-") && arg.length > 1 && arg !== "-") {
-        // Short: -s, -s value, -svalue (string) or grouped -abc (booleans).
-        const first = arg[1];
-        const long = shortToLong[first] || first;
-        const spec = options[long];
-        if (spec && spec.type === "string") {
-          const inline = arg.length > 2 ? arg.slice(2) : undefined;
-          const r = optionValue(long, inline, args[i + 1], "-" + first);
-          store(long, r.value);
-          i += r.consumed;
-          continue;
-        }
-        for (const ch of arg.slice(1)) {
-          const l = shortToLong[ch] || ch;
-          const r = optionValue(l, undefined, undefined, "-" + ch);
-          store(l, r.value);
-        }
-        continue;
-      }
-      if (!allowPositionals) {
-        throw err("ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL", "Unexpected argument '" + arg + "'. This command does not take positional arguments");
-      }
-      positionals.push(arg);
-    }
-    return { values, positionals };
-  },
-};
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  url module ─────────────────────────────────────────────────────
@@ -20108,7 +22923,7 @@ const __utilMod = {
       obj.search = this.search;
       obj.searchParams = this.searchParams;
       obj.hash = this.hash;
-      return constructor.name + " " + __utilMod.inspect(obj, opts);
+      return constructor.name + " " + __nimbusInspect(obj, opts);
     }
   }
   for (const k of Object.getOwnPropertyNames(_Orig)) {
@@ -20128,7 +22943,7 @@ const __utilMod = {
       const separator = ", ";
       const innerOpts = { ...ctx };
       if (recurseTimes !== null) innerOpts.depth = recurseTimes - 1;
-      const innerInspect = (v) => __utilMod.inspect(v, innerOpts);
+      const innerInspect = (v) => __nimbusInspect(v, innerOpts);
       const output = [];
       for (const [name, value] of this) output.push(innerInspect(name) + " => " + innerInspect(value));
       let length = -separator.length;
@@ -22062,6 +24877,28 @@ const __childProcessMod = (() => {
     _execCallback(child, [String(file), ...args.map(String)].join(" "), cb);
     return child;
   }
+  // util.promisify's (lib/child_process.js customPromiseExecFunction): its
+  // stdout and stderr, or the error with both; the child is the promise's.
+  for (const fn of [exec, execFile]) {
+    Object.defineProperty(fn, Symbol.for("nodejs.util.promisify.custom"), {
+      enumerable: false,
+      value: { [fn.name](...args) {
+        let resolve;
+        let reject;
+        const promise = new Promise((onResolve, onReject) => { resolve = onResolve; reject = onReject; });
+        promise.child = fn(...args, (err, stdout, stderr) => {
+          if (err !== null) {
+            err.stdout = stdout;
+            err.stderr = stderr;
+            reject(err);
+          } else {
+            resolve({ stdout, stderr });
+          }
+        });
+        return promise;
+      } }[fn.name],
+    });
+  }
 
   /**
    * Fake-sync spawn. Phase-1 limit: V8/Workers can't truly block JS
@@ -22408,7 +25245,7 @@ function __nimbusHasColors(count, env) {
     throw invalidArgType("count", "number", count);
   } else if (!Number.isInteger(count) || count < 2 || count > Number.MAX_SAFE_INTEGER) {
     const range = Number.isInteger(count) ? ">= 2 && <= 9007199254740991" : "an integer";
-    throw nodeError(RangeError, "ERR_OUT_OF_RANGE", "The value of \"count\" is out of range. It must be " + range + ". Received " + __utilMod.inspect(count));
+    throw new nodeErrorCodes.ERR_OUT_OF_RANGE("count", range, count);
   }
   return count <= 2 ** __nimbusColorDepth(env);
 }
@@ -22513,7 +25350,7 @@ class __NimbusConsole {
     // Strings with no format directive are joined as formatWithOptions
     // joins them, without loading Node's inspect for a line it never needs.
     if (args.every((arg) => typeof arg === "string") && (args.length < 2 || !args[0].includes("%"))) return args.join(" ");
-    return __utilMod.formatWithOptions(this.#optionsFor(stream), ...args);
+    return __nimbusNodeInspect().formatWithOptions(this.#optionsFor(stream), ...args);
   }
   #write(stream, string) {
     const indent = this.#groupIndent;
@@ -22535,7 +25372,7 @@ class __NimbusConsole {
   error(...args) { const err = this.#stderr(); this.#write(err, this.#format(err, args)); }
   dir(object, options) {
     const out = this.#stdout();
-    this.#write(out, __utilMod.inspect(object, { customInspect: false, ...this.#optionsFor(out), ...options }));
+    this.#write(out, __nimbusInspect(object, { customInspect: false, ...this.#optionsFor(out), ...options }));
   }
   trace(...args) {
     const err = { name: "Trace", message: this.#format(this.#stderr(), args) };
@@ -22608,7 +25445,7 @@ class __NimbusConsole {
     }
     if (data === null || typeof data !== "object") return this.log(data);
     const options = this.#optionsFor(this.#stdout());
-    const show = (v) => __utilMod.inspect(v, {
+    const show = (v) => __nimbusInspect(v, {
       depth: v !== null && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length > 2 ? -1 : 0,
       maxArrayLength: 3,
       breakLength: Infinity,
@@ -23609,31 +26446,15 @@ Object.defineProperty(__processMod, "exitCode", {
     let value = code;
     if (typeof code === "string" && code !== "" && Number.isNaN((value = Number(code)))) value = code;
     if (typeof value !== "number") throw invalidArgType("code", "number", value);
-    if (!Number.isInteger(value)) throw __nimbusOutOfRange("code", "an integer", value);
+    if (!Number.isInteger(value)) throw new nodeErrorCodes.ERR_OUT_OF_RANGE("code", "an integer", value);
     if (value < Number.MIN_SAFE_INTEGER || value > Number.MAX_SAFE_INTEGER) {
-      throw __nimbusOutOfRange("code", ">= " + Number.MIN_SAFE_INTEGER + " && <= " + Number.MAX_SAFE_INTEGER, value);
+      throw new nodeErrorCodes.ERR_OUT_OF_RANGE("code", ">= " + Number.MIN_SAFE_INTEGER + " && <= " + Number.MAX_SAFE_INTEGER, value);
     }
     __nimbusExitCodeField = value | 0;
   },
   enumerable: true,
   configurable: false,
 });
-// Node's ERR_OUT_OF_RANGE for `name` (lib/internal/errors.js): an integer
-// past 2 ** 32 with its digits grouped, anything else as inspect shows it.
-function __nimbusOutOfRange(name, range, input) {
-  let received;
-  if (Number.isInteger(input) && Math.abs(input) > 2 ** 32) {
-    const digits = String(input);
-    const start = digits[0] === "-" ? 1 : 0;
-    let grouped = "";
-    let i = digits.length;
-    for (; i >= start + 4; i -= 3) grouped = "_" + digits.slice(i - 3, i) + grouped;
-    received = digits.slice(0, i) + grouped;
-  } else {
-    received = __utilMod.inspect(input);
-  }
-  return nodeError(RangeError, "ERR_OUT_OF_RANGE", "The value of \"" + name + "\" is out of range. It must be " + range + ". Received " + received);
-}
 // The natural end: 'exit' with process.exitCode, once, and the code its
 // listeners leave (Node's EmitProcessExit).
 function __nimbusExitAtEnd() {
@@ -23680,18 +26501,18 @@ function __nimbusNoSideEffectsToString(value) {
     try { return Function.prototype.toString.call(value); } catch { return "function () { [native code] }"; }
   }
   if (value === null || typeof value !== "object") return String(value);
-  if (__utilMod.types.isProxy(value)) return "#<Object>";
+  if (__realUtil.types.isProxy(value)) return "#<Object>";
   // A data property, own or inherited, never a getter.
   const dataProperty = (key) => {
     for (let o = value; o !== null; o = Object.getPrototypeOf(o)) {
-      if (__utilMod.types.isProxy(o)) return undefined;
+      if (__realUtil.types.isProxy(o)) return undefined;
       const d = Object.getOwnPropertyDescriptor(o, key);
       if (d) return "value" in d ? d.value : undefined;
     }
     return undefined;
   };
   const toString = dataProperty("toString");
-  if (__utilMod.types.isNativeError(value) || toString === Error.prototype.toString) {
+  if (__realUtil.types.isNativeError(value) || toString === Error.prototype.toString) {
     const name = dataProperty("name");
     const message = dataProperty("message");
     const n = typeof name === "string" ? name : "Error";
@@ -23702,7 +26523,7 @@ function __nimbusNoSideEffectsToString(value) {
     const ctor = dataProperty("constructor");
     if (typeof ctor === "function" && typeof ctor.name === "string" && ctor.name !== "") return "#<" + ctor.name + ">";
   }
-  const types = __utilMod.types;
+  const types = __realUtil.types;
   const builtin = Array.isArray(value) ? "Array" : types.isArgumentsObject(value) ? "Arguments"
     : types.isNativeError(value) ? "Error" : types.isDate(value) ? "Date" : types.isRegExp(value) ? "RegExp"
     : types.isBooleanObject(value) ? "Boolean" : types.isNumberObject(value) ? "Number"
@@ -24054,7 +26875,7 @@ function __nimbusFatalReport(error, fromPromise, enhance) {
   // AppendExceptionLine: an error keeps its arrow for below; for anything
   // else it is printed at once.
   if (arrow !== null) {
-    if (isObject && __utilMod.types.isNativeError(error)) attached = arrow;
+    if (isObject && __realUtil.types.isNativeError(error)) attached = arrow;
     else report += "\n" + arrow;
   }
   let trace;
@@ -24062,7 +26883,7 @@ function __nimbusFatalReport(error, fromPromise, enhance) {
     try { trace = error.stack; } catch {}
     if (enhance) {
       try {
-        const inspect = __utilMod.inspect;
+        const inspect = __nimbusInspect;
         const colors = __nimbusShouldColorize(__processMod.stderr) || inspect.defaultOptions.colors;
         trace = inspect(error, { colors, customInspect: false, depth: Math.max(inspect.defaultOptions.depth, 5) });
       } catch {}
@@ -24189,7 +27010,6 @@ builtins.stream = __streamMod;
 // EventEmitter doesn't get clobbered.
 if (!__streamMod.EventEmitter) __streamMod.EventEmitter = __eventsMod;
 builtins.buffer = __bufferModule;
-builtins.util = __utilMod;
 builtins.url = __urlMod;
 builtins.crypto = __cryptoMod;
 // Node's own (Node's library above), each run the first time it is required.
@@ -24198,6 +27018,9 @@ for (const [name, read] of [
   ["assert/strict", () => __nimbusNodeLib().require("assert").strict],
   ["querystring", () => __nimbusNodeLib().require("querystring")],
   ["punycode", () => __nimbusNodeLib().require("punycode")],
+  ["util", () => __nimbusNodeLib().require("util")],
+  ["util/types", () => __nimbusNodeLib().require("util").types],
+  ["node:util/types", () => __nimbusNodeLib().require("util").types],
 ]) {
   Object.defineProperty(builtins, name, { get: read, enumerable: true, configurable: true });
 }
@@ -24211,6 +27034,8 @@ builtins.sqlite = __sqliteMod;
 builtins["node:sqlite"] = __sqliteMod;
 builtins.child_process = __childProcessMod;
 builtins.process = __processMod;
+// NODE_DEBUG as the program started with it: what util.debuglog reads (Node's bootstrap).
+const __nimbusNodeDebugAtLaunch = __processMod.env?.NODE_DEBUG;
 builtins.console = __consoleMod;
 
 const __nativeHttpResponse = globalThis.Response;
@@ -25119,7 +27944,7 @@ builtins.dgram = (() => {
 })();
 builtins.dns = (() => {
   async function _doh(h, t) { try { const r = await fetch("https://cloudflare-dns.com/dns-query?name="+encodeURIComponent(h)+"&type="+(t||"A"),{headers:{"Accept":"application/dns-json"}}); const d = await r.json(); return (d.Answer||[]).map(a=>a.data).filter(Boolean); } catch { return []; } }
-  return { resolve: (h,t,cb) => { if (typeof t==="function"){cb=t;t="A";} _doh(h,t).then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)); }, resolve4: (h,cb) => _doh(h,"A").then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)), resolve6: (h,cb) => _doh(h,"AAAA").then(a=>cb(null,a)).catch(e=>cb(e)), lookup: (h,o,cb) => { if(typeof o==="function"){cb=o;} if(h==="localhost"){cb(null,"127.0.0.1",4);return;} _doh(h,"A").then(a=>cb(null,a[0]||"127.0.0.1",4)).catch(e=>cb(e)); }, promises: { resolve: (h,t) => _doh(h,t||"A"), resolve4: (h) => _doh(h,"A"), lookup: async(h) => { if(h==="localhost") return {address:"127.0.0.1",family:4}; const a=await _doh(h,"A"); return {address:a[0]||"127.0.0.1",family:4}; } } };
+  return { resolve: (h,t,cb) => { if (typeof t==="function"){cb=t;t="A";} _doh(h,t).then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)); }, resolve4: (h,cb) => _doh(h,"A").then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)), resolve6: (h,cb) => _doh(h,"AAAA").then(a=>cb(null,a)).catch(e=>cb(e)), lookup: Object.defineProperty((h,o,cb) => { if(typeof o==="function"){cb=o;} if(h==="localhost"){cb(null,"127.0.0.1",4);return;} _doh(h,"A").then(a=>cb(null,a[0]||"127.0.0.1",4)).catch(e=>cb(e)); }, __nimbusCustomPromisifyArgs, { value: ["address", "family"], enumerable: false }), promises: { resolve: (h,t) => _doh(h,t||"A"), resolve4: (h) => _doh(h,"A"), lookup: async(h) => { if(h==="localhost") return {address:"127.0.0.1",family:4}; const a=await _doh(h,"A"); return {address:a[0]||"127.0.0.1",family:4}; } } };
 })();
 builtins.tty = {
   isatty: () => __nimbusAttachedTty,
@@ -25733,10 +28558,6 @@ builtins.v8 = {
 const __BroadcastChannel = (() => {
   const open = new Map();
   const state = new WeakMap();
-  const missing = (name) => {
-    const error = nodeError(TypeError, "ERR_MISSING_ARGS", 'The "' + name + '" argument must be specified');
-    return error;
-  };
   const own = (channel) => {
     const s = state.get(channel);
     if (s === undefined) {
@@ -25750,7 +28571,7 @@ const __BroadcastChannel = (() => {
   };
   class BroadcastChannel extends EventTarget {
     constructor(name) {
-      if (arguments.length === 0) throw missing("name");
+      if (arguments.length === 0) throw new nodeErrorCodes.ERR_MISSING_ARGS("name");
       super();
       const s = { name: String(name), open: true, hold: null, handlers: { message: null, messageerror: null } };
       state.set(this, s);
@@ -25770,7 +28591,7 @@ const __BroadcastChannel = (() => {
     set onmessageerror(handler) { own(this).handlers.messageerror = typeof handler === "function" ? handler : null; }
     postMessage(message) {
       const s = own(this);
-      if (arguments.length === 0) throw missing("message");
+      if (arguments.length === 0) throw new nodeErrorCodes.ERR_MISSING_ARGS("message");
       if (!s.open) throw new DOMException("BroadcastChannel is closed.", "InvalidStateError");
       const data = structuredClone(message);
       const schedule = globalThis.__nimbusRawSetTimeout || globalThis.setTimeout;
@@ -25967,6 +28788,13 @@ builtins["timers/promises"] = (() => {
   };
 })();
 builtins["node:timers/promises"] = builtins["timers/promises"];
+// util.promisify's for the timers: timers/promises' (lib/timers.js).
+for (const [owner, name] of [[builtins.timers, "setTimeout"], [builtins.timers, "setImmediate"], [globalThis, "setTimeout"], [globalThis, "setImmediate"]]) {
+  const fn = owner[name];
+  if (typeof fn === "function" && Object.isExtensible(fn) && !Object.hasOwn(fn, Symbol.for("nodejs.util.promisify.custom"))) {
+    Object.defineProperty(fn, Symbol.for("nodejs.util.promisify.custom"), { enumerable: true, get: () => builtins["timers/promises"][name] });
+  }
+}
 
 // X.5-M (M-2): dns/promises subpath registration for redis.
 // @redis/client/dist/lib/client does require('dns/promises') to do
@@ -25979,8 +28807,6 @@ builtins["node:timers/promises"] = builtins["timers/promises"];
 builtins["dns/promises"] = builtins.dns.promises;
 builtins["node:dns/promises"] = builtins["dns/promises"];
 
-builtins["util/types"] = builtins.util.types;
-builtins["node:util/types"] = builtins["util/types"];
 
 // undici (npm, not node core) — Nimbus provides it instead of node_modules.
 // __requireFrom checks this table BEFORE resolving, so this wins over any
