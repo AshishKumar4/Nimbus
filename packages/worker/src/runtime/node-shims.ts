@@ -12728,11 +12728,12 @@ globalThis.__nimbusImportMetaResolve = function __nimbusImportMetaResolve(specif
 /**
  * Staged N-API bindings (PACKAGE_ABI_POLICY stagedArtifacts of kind
  * "binding"). A launch whose closure requires one carries the staged wasm
- * build in its module map and registers it on globalThis.__nimbusStagedBindings
- * under the package name the binding is required by. require() answers that
- * name from the registry ahead of node_modules: the published package of that
- * name (rolldown's wasm32-wasip1-threads build, or a platform shard) cannot
- * run in a Worker isolate.
+ * builds of the versions installed in its module map and registers them on
+ * globalThis.__nimbusStagedBindings under the package name the binding is
+ * required by, by version. require() answers that name from the registry
+ * ahead of node_modules, with the build its owner's version names: the
+ * published package of that name (rolldown's wasm32-wasip1-threads build, or
+ * a platform shard) cannot run in a Worker isolate.
  */
 function __stagedBinding(id) {
   const registry = globalThis.__nimbusStagedBindings;
@@ -12740,11 +12741,42 @@ function __stagedBinding(id) {
 }
 
 /**
- * Every binding Nimbus stages, carried or not: a launch registers only those
- * its closure names (staged-bindings.ts stagedBindingsRequiredBy).
+ * Every binding build Nimbus stages, carried or not: a launch registers only
+ * those its closure names (staged-bindings.ts stagedBindingsRequiredBy).
  */
 const __NIMBUS_STAGED_BINDINGS = ${JSON.stringify(STAGED_BINDING_ARTIFACTS.map(({ name, owner, version, requiredAs }) => ({ name, owner, version, requiredAs })))};
 const __stagedBindingsNamed = new Set();
+
+// The version of \`owner\` a require from \`fromDir\` comes from, and its
+// package.json: the installed package \`fromDir\` is in, when its package.json
+// names \`owner\`, whatever its folder is called (an alias,
+// \`rd@npm:rolldown@1.2.13\`, installs rolldown as node_modules/rd). A require
+// from outside the owner has none.
+function __stagedOwnerVersion(owner, fromDir) {
+  const dir = fromDir + "/";
+  const at = dir.lastIndexOf("node_modules/");
+  if (at < 0) return { version: null, manifest: null };
+  const parts = dir.slice(at + "node_modules/".length).split("/");
+  const depth = parts[0].startsWith("@") ? 2 : 1;
+  if (parts.length <= depth || parts[depth - 1] === "") return { version: null, manifest: null };
+  const manifest = "/" + dir.slice(0, at) + "node_modules/" + parts.slice(0, depth).join("/") + "/package.json";
+  let found = null;
+  try { found = JSON.parse(builtins.fs.readFileSync(manifest, "utf8")); } catch {}
+  if (!found || found.name !== owner || typeof found.version !== "string") return { version: null, manifest: null };
+  return { version: found.version, manifest };
+}
+
+// What a require of \`owner\`'s binding from \`owner\`@\`version\` (read from
+// \`manifest\`) has to do when Nimbus stages no build of that version: which
+// versions it does, and how to install one.
+function __stagedVersionUnbuilt(owner, version, manifest) {
+  const versions = __NIMBUS_STAGED_BINDINGS.filter((b) => b.owner === owner).map((b) => b.version);
+  const newest = versions[versions.length - 1];
+  return Object.assign(new Error("Nimbus runs " + owner + "'s N-API binding from staged wasm builds of " + versions.join(", ")
+    + ", and this process loaded " + owner + "@" + version + " (" + manifest + "), which has none yet; no native build loads in a"
+    + " Worker. Install a version Nimbus builds: npm install " + owner + "@" + newest + ", or where another package requires "
+    + owner + ", pin it in package.json (" + '"overrides": { "' + owner + '": "' + newest + '" }' + ")."), { code: "ERR_NIMBUS_BINDING_VERSION" });
+}
 
 /**
  * A require of a staged binding's package (its wasm32-wasi build, or a
@@ -12759,10 +12791,16 @@ const __stagedBindingsNamed = new Set();
 function __stagedBindingNotCarried(id, fromDir) {
   for (const binding of __NIMBUS_STAGED_BINDINGS) {
     const shard = binding.requiredAs.some((wasi) => id === wasi || id.startsWith(wasi.replace(/wasm32-wasi$/, "")));
-    const native = id.endsWith(".node") && ("/" + fromDir + "/").includes("/node_modules/" + binding.owner + "/");
+    const native = id.endsWith(".node") && __stagedOwnerVersion(binding.owner, fromDir).version !== null;
     if (!shard && !native) continue;
     if (binding.requiredAs.some((wasi) => __stagedBinding(wasi))) return null;
-    const message = "Nimbus runs " + binding.owner + "'s N-API binding from a staged " + binding.version + " build, and this launch"
+    // A version with no staged build is the version's to fix, not the launch's.
+    const loaded = __stagedOwnerVersion(binding.owner, fromDir);
+    if (loaded.version !== null && !__NIMBUS_STAGED_BINDINGS.some((b) => b.owner === binding.owner && b.version === loaded.version)) {
+      return __stagedVersionUnbuilt(binding.owner, loaded.version, loaded.manifest);
+    }
+    const versions = __NIMBUS_STAGED_BINDINGS.filter((b) => b.name === binding.name).map((b) => b.version).join(", ");
+    const message = "Nimbus runs " + binding.owner + "'s N-API binding from staged builds of " + versions + ", and this launch"
       + " does not carry it: no module the launch staged names " + binding.requiredAs[0] + " (the package was loaded by a name"
       + " its code computes), so " + id + " was asked for instead, and no native build loads in a Worker. The next launch of"
       + " this command, which learns the modules this one loaded, carries it.";
@@ -12775,25 +12813,28 @@ function __stagedBindingNotCarried(id, fromDir) {
   return null;
 }
 
-function __loadStagedBinding(entry, fromDir) {
-  if (entry.exports !== undefined) return entry.exports;
-  // The binding is built from one upstream version. The package requiring it
-  // must be that version, or its JavaScript and the binding disagree about
-  // every class and option; a require from anywhere else has no version to
-  // check against.
-  const marker = "node_modules/" + entry.owner + "/";
-  const dir = fromDir + "/";
-  const at = dir.lastIndexOf(marker);
-  if (at >= 0) {
-    const manifest = "/" + dir.slice(0, at + marker.length) + "package.json";
-    let version = null;
-    try { version = JSON.parse(builtins.fs.readFileSync(manifest, "utf8")).version; } catch {}
-    if (version !== entry.version) {
-      throw new Error("Nimbus runs " + entry.owner + "'s N-API binding from a staged " + entry.version
-        + " build; this process loaded " + entry.owner + "@" + version + " (" + manifest + "), which it"
-        + " does not match. Install " + entry.owner + "@" + entry.version + ".");
+function __loadStagedBinding(builds, fromDir) {
+  // A build is of one upstream version: the package requiring it must be
+  // that version, or its JavaScript and the binding disagree about every
+  // class and option. So the owner's own package.json picks the build; a
+  // require from outside the owner has no version, and takes the one build
+  // the launch carries.
+  const first = builds.values().next().value;
+  const loaded = __stagedOwnerVersion(first.owner, fromDir);
+  const entry = loaded.version !== null ? builds.get(loaded.version) : builds.size === 1 ? first : undefined;
+  if (entry === undefined) {
+    if (loaded.version === null) {
+      throw new Error("Nimbus carries " + first.owner + "'s N-API binding at " + [...builds.keys()].join(", ")
+        + ", and this require of it comes from outside " + first.owner + " (" + fromDir + "), so no version says which.");
     }
+    if (!__NIMBUS_STAGED_BINDINGS.some((b) => b.owner === first.owner && b.version === loaded.version)) {
+      throw __stagedVersionUnbuilt(first.owner, loaded.version, loaded.manifest);
+    }
+    throw new Error("Nimbus runs " + first.owner + "'s N-API binding from staged builds, and this launch carries "
+      + [...builds.keys()].join(", ") + ", not " + loaded.version + ", which this process loaded (" + loaded.manifest
+      + "). The next launch of this command, which learns the modules this one loaded, carries it.");
   }
+  if (entry.exports !== undefined) return entry.exports;
   entry.exports = entry.create({
     fs: builtins.fs,
     env: builtins.process.env,

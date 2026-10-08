@@ -134,7 +134,7 @@
     "bundle:npm-cjs": "node scripts/bundle-npm-cjs.mjs",
     "bundle:agent-chat": "node scripts/bundle-agent-chat.mjs",
     "bundle:preview-isolation": "node scripts/bundle-preview-isolation.mjs",
-    "bundle": "bun run bundle:git && bun run bundle:facets && bun run bundle:esbuild && bun run bundle:oxc && bun run bundle:amaro && bun run bundle:sqlite && bun run bundle:shims && bun run bundle:tailwind && bun run bundle:opencode && bun run bundle:napi-wasm && bun run bundle:real-vite && bun run bundle:plugin-react && bun run bundle:npm-cjs && bun run bundle:agent-chat && bun run bundle:preview-isolation",
+    "bundle": "bun run bundle:git && bun run bundle:napi-wasm && bun run bundle:facets && bun run bundle:esbuild && bun run bundle:oxc && bun run bundle:amaro && bun run bundle:sqlite && bun run bundle:shims && bun run bundle:tailwind && bun run bundle:opencode && bun run bundle:real-vite && bun run bundle:plugin-react && bun run bundle:npm-cjs && bun run bundle:agent-chat && bun run bundle:preview-isolation",
     "clean:dist": "node ../../scripts/clean-dist.mjs",
     "build": "bun run clean:dist && tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
     "prepublishOnly": "bun ../../scripts/dist-integrity.mjs --publish",
