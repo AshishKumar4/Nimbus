@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertCfGitPatched } from '../../packages/worker/scripts/cf-git-patch.mjs';
@@ -19,29 +19,36 @@ try {
   }
   copyFileSync(join(REPO, 'scripts/install-deps.mjs'), join(root, 'scripts/install-deps.mjs'));
   const callsPath = join(root, 'calls.json');
+  const sequencePath = join(root, 'sequence.json');
   const seam = join(root, 'commands.mjs');
-  writeFileSync(seam, `
-import { mock } from 'bun:test';
-import { writeFileSync } from 'node:fs';
-const statuses = JSON.parse(process.env.INSTALL_STATUSES);
-const calls = [];
-mock.module('node:child_process', () => ({ spawnSync(command, args) {
-  calls.push({ command, args });
-  return { status: statuses.shift() ?? 99 };
-} }));
-process.on('exit', () => writeFileSync(${JSON.stringify(callsPath)}, JSON.stringify(calls)));
-`);
+  const bin = join(root, 'bin');
+  mkdirSync(bin);
+  const fakeCommand = `#!${process.execPath}\n
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+const statuses = JSON.parse(readFileSync(${JSON.stringify(sequencePath)}, 'utf8'));
+appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify({ args: process.argv.slice(2) }) + '\\n');
+const status = statuses.shift() ?? 99;
+writeFileSync(${JSON.stringify(sequencePath)}, JSON.stringify(statuses));
+process.exit(status);
+`;
+  for (const name of ['bun', 'node']) {
+    writeFileSync(join(bin, name), fakeCommand);
+    chmodSync(join(bin, name), 0o700);
+  }
+  writeFileSync(seam, `process.execPath = ${JSON.stringify(join(bin, 'bun'))};\n`);
   for (const test of [
     { statuses: [1, 0, 0], exit: 0, steps: ['install', 'install', 'patch'] },
     { statuses: [1, 3], exit: 3, steps: ['install', 'install'] },
     { statuses: [0, 1], exit: 1, steps: ['install', 'patch'] },
     { statuses: [1], exit: 1, steps: ['patch'], args: ['--patch-only'] },
   ]) {
+    writeFileSync(sequencePath, JSON.stringify(test.statuses));
+    writeFileSync(callsPath, '');
     const result = spawnSync(process.execPath, ['--preload', seam, 'scripts/install-deps.mjs', ...(test.args ?? [])], {
-      cwd: root, encoding: 'utf8', env: { ...process.env, INSTALL_STATUSES: JSON.stringify(test.statuses) },
+      cwd: root, encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
     });
     assert.equal(result.status, test.exit, result.stderr);
-    const calls = JSON.parse(readFileSync(callsPath, 'utf8'));
+    const calls = readFileSync(callsPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     assert.deepEqual(calls.map((call) => call.args[0] === 'install' ? 'install' : 'patch'), test.steps);
     for (const call of calls.filter((call) => call.args[0] === 'install')) {
       assert.deepEqual(call.args, ['install', '--frozen-lockfile', '--ignore-scripts']);
@@ -49,6 +56,8 @@ process.on('exit', () => writeFileSync(${JSON.stringify(callsPath)}, JSON.string
   }
   rmSync(seam);
   rmSync(callsPath);
+  rmSync(sequencePath);
+  rmSync(bin, { recursive: true, force: true });
   for (const file of ['patch-install-deps.mjs', 'cf-git-patch.mjs']) {
     copyFileSync(join(REPO, 'packages/worker/scripts', file), join(root, 'packages/worker/scripts', file));
   }
