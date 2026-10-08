@@ -87,7 +87,11 @@ try {
     await empty;
   });
 
-  assert.equal(stripAnsi(`a${mark('D;0')}b\x1b]0;window title\x1b\\c\x1b[31md\x1b[0m`), 'abcd');
+  try {
+    assert.equal(stripAnsi(`a${mark('D;0')}b\x1b]0;window title\x1b\\c\x1b[31md\x1b[0m`), 'abcd');
+  } catch (error) {
+    failures.push(`strip OSC sequences: ${error.message}`);
+  }
 } finally {
   await new Promise((resolve) => sockets.close(resolve));
   await new Promise((resolve) => server.close(resolve));
