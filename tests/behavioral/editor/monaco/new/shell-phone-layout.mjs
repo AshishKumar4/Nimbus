@@ -8,6 +8,7 @@ import { launchBrowser, openPage, waitForSessionTerminalText } from '../../../_r
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const label = 'editor/monaco/new/shell-phone-layout';
+const FILE_CONTENT = '// Phone workspace\nconst answer = 42;\n';
 const a = makeAsserter(label);
 console.log(`${label} — ${BASE}`);
 const sid = await mintSession();
@@ -74,7 +75,8 @@ try {
   await page.waitForSelector('.tree-node[data-path="/home/user/phone-layout.js"]', { visible: true, timeout: 30_000 });
   await screenshot('phone-files-390x844');
   await page.click('.tree-node[data-path="/home/user/phone-layout.js"]');
-  await page.waitForFunction(() => document.querySelector('.monaco-editor .view-lines')?.textContent.includes('const answer = 42;'), { timeout: 60_000 });
+  await page.waitForFunction((content) => window.__nimbusMonacoEditor?.getValue() === content
+    && document.querySelector('.monaco-editor .view-lines')?.getBoundingClientRect().width > 0, { timeout: 60_000 }, FILE_CONTENT);
   await pane('#editorPanel');
   a.check('choosing a file opens its real content in the full-width editor',
     await page.evaluate(() => document.getElementById('editorTab').textContent.includes('phone-layout.js')
@@ -89,7 +91,7 @@ try {
   await page.click('#btnEditor');
   await pane('#editorPanel');
   a.check('switching through Agent preserves the open file',
-    await page.evaluate(() => document.querySelector('.monaco-editor .view-lines').textContent.includes('const answer = 42;')));
+    await page.evaluate((content) => window.__nimbusMonacoEditor.getValue() === content, FILE_CONTENT));
 
   const app = `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Phone preview</title><style>body{margin:24px;font:18px system-ui}button{padding:12px;font:inherit}</style><h1>Nimbus preview</h1><button id="counter">Clicks 0</button><script>let n=0;counter.onclick=()=>counter.textContent='Clicks '+(++n)</script>`;
   const server = `require('http').createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end(${JSON.stringify(app)});}).listen(3000,()=>console.log('phone-preview-ready'));`;
@@ -127,6 +129,15 @@ try {
       && desktop.terminal.y > desktop.editor.y && desktop.phoneButton.width === 0, JSON.stringify(desktop));
   await screenshot('desktop-workspace-1440x900');
   a.check('switching and resizing cause no browser runtime errors', ctx.pageErrors.length === 0, JSON.stringify(ctx.pageErrors));
+} catch (error) {
+  await screenshot('failure');
+  console.error('[shell-phone] failure state', await page.evaluate(() => ({
+    pane: document.getElementById('mainPanel').dataset.pane,
+    tab: document.getElementById('editorTab').textContent,
+    status: document.getElementById('editorStatus').textContent,
+    content: window.__nimbusMonacoEditor?.getValue(),
+  })));
+  throw error;
 } finally {
   await ctx.close();
   await browser.close();
