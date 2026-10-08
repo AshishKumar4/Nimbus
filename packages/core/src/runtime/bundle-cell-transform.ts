@@ -151,6 +151,8 @@ export type BundleCell = {
 export interface BundleCellResult {
   /** The cell's code: CommonJS, the TypeScript emit, or the diagnostic shim. */
   readonly code: string;
+  /** A lowered ES module's EsModuleMap (async-module-lowering.ts), as JSON; '' for any other. */
+  readonly map: string;
   readonly lowered: boolean;
   /**
    * esbuild's verdict was a rejection, and `code` is the shim that reports it.
@@ -204,17 +206,13 @@ export function prepareBundleCell(path: string, source: string, packageType: Pac
   const rewriteOnly = !typescript && !esm;
   const cell = { path, typescript, lowered: !rewriteOnly, absUrl };
   if (esm && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
-    let lowered;
     try {
-      lowered = lowerEsModule(src, scope);
+      return { ...cell, outcome: lowerEsModule(src, scope, absUrl) };
     } catch (e) {
       // Nested past this stack: the host's, then its engine's (runTransformRequest).
       if (e instanceof RangeError) return { ...cell, request: request(src, false) };
       return { ...cell, outcome: { error: errorText(e) } };
     }
-    // Its declarations are CommonJS now; what import() and import.meta remain go to the host like any cell's.
-    if (!mayHaveDynamicImport(lowered.code) && !lowered.code.includes('import.meta')) return { ...cell, outcome: lowered };
-    return { ...cell, request: request(lowered.code, true) };
   }
   return { ...cell, request: request(src, rewriteOnly) };
 }
@@ -228,9 +226,9 @@ export function prepareBundleCell(path: string, source: string, packageType: Pac
 export function settleBundleCell(cell: BundleCell, outcome: EsbuildTransformOutcome): BundleCellResult {
   if ('error' in outcome) {
     if (outcome.transient) throw new Error(`esbuild transform unavailable for ${cell.path}: ${outcome.error}`);
-    return { code: esbuildDiagnosticShim(cell.path, outcome.error), lowered: cell.lowered, failed: true };
+    return { code: esbuildDiagnosticShim(cell.path, outcome.error), map: '', lowered: cell.lowered, failed: true };
   }
-  return { code: outcome.code, lowered: cell.lowered, failed: false };
+  return { code: outcome.code, map: outcome.map, lowered: cell.lowered, failed: false };
 }
 
 /**
@@ -245,6 +243,7 @@ export function entryScriptRequest(code: string, parentUrl: string): EsbuildTran
 /** A result as a store keeps it: only transforms that succeeded are kept. */
 export interface StoredBundleCell {
   readonly code: string;
+  readonly map: string;
   readonly lowered: boolean;
 }
 
@@ -339,7 +338,7 @@ export async function transformBundleCells(
     }
     stats.transformed++;
     if (!store || key === undefined || !spend) return;
-    const refused = await store.put(key, { code: result.code, lowered: result.lowered }, spend);
+    const refused = await store.put(key, { code: result.code, map: result.map, lowered: result.lowered }, spend);
     if (refused === null) return;
     stats.storeErrors++;
     stats.storeError ??= refused;
@@ -401,7 +400,7 @@ export async function transformEntryScript(
   if (outcome === undefined) throw new Error('entry transform service returned no outcome');
   if ('error' in outcome) throw new Error(`entry dynamic import transform failed: ${outcome.error}`);
   if (store && key !== undefined) {
-    await store.put(key, { code: outcome.code, lowered: false }, pacer ? (bytes) => pacer.spend(bytes) : undefined);
+    await store.put(key, { code: outcome.code, map: outcome.map, lowered: false }, pacer ? (bytes) => pacer.spend(bytes) : undefined);
   }
   return outcome.code;
 }

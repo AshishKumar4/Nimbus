@@ -1,19 +1,15 @@
 #!/usr/bin/env bun
 // lowerEsModule, the one lowering of an ES module to the CommonJS a cell runs,
-// as the transform host completes it (dynamic-import-rewrite.ts binding
-// import.meta and routing import()) and as a cell runs it: the wrapper's
-// require and module are its arguments. Imports stay live, a default export
-// evaluates where it stands, top-level await takes the async body, and every
-// line of the module, and every column outside a use of an import, is where
-// the source has it.
+// import.meta and import() bound, as a cell runs it: the wrapper's require
+// and module are its arguments. Imports stay live, a default export evaluates
+// where it stands, top-level await takes the async body, every line of the
+// module is where the source has it, and its map reads every edited one back.
 
 import assert from 'node:assert/strict';
 import { lowerEsModule } from '../../packages/core/src/runtime/async-module-lowering.ts';
-import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
-import { MODULE_BODY_MARK } from '../../packages/core/src/runtime/javascript-ast.ts';
 
 const url = 'file:///home/user/node_modules/pkg/chunk.js';
-const lowered = (source) => rewriteDynamicImports(lowerEsModule(source, 'node').code, url, true);
+const lowered = (source) => lowerEsModule(source, 'node', url).code;
 // Runs lowered code as a cell's wrapper does (commonjs-cell.ts: strict, in a
 // block, which its own `const require` shadows); its result, an async body's promise.
 const run = (code, require, meta = {}) => {
@@ -73,7 +69,7 @@ for (const [source, async] of [
   ['for await (const x of xs) use(x); export {};', true],
   ['class C { async m() { for await (const x of xs); } } export { C };', false],
 ]) {
-  assert.equal(lowerEsModule(source, 'node').code.includes('return (async () => {'), async, source);
+  assert.equal(lowerEsModule(source, 'node', url).code.includes('return (async () => {'), async, source);
 }
 {
   const { module, result } = run(lowered('export let db; db = await Promise.resolve("connected");'), noRequire);
@@ -89,9 +85,9 @@ for (const [source, async] of [
   assert.equal(module.exports.here, '/home/user/node_modules/pkg');
 }
 
-// Lines and columns: what the lowering adds sits on the first line before
-// MODULE_BODY_MARK; past it, each line is the source's own, a removed
-// declaration as spaces, and import.meta's binding keeps the line count.
+// Lines and columns: what the lowering adds sits on the first line, before
+// its map's head; past it, each line is the source's own but for its edits,
+// which the map's columns read back as the source.
 {
   const source = [
     '#!/usr/bin/env node',
@@ -107,13 +103,25 @@ for (const [source, async] of [
     'export * from "./more.js";',
     'console.log(import.meta.url, join);',
   ].join('\n');
-  const code = lowered(source);
-  const body = code.slice(code.indexOf(MODULE_BODY_MARK) + MODULE_BODY_MARK.length);
-  const lines = body.split('\n');
+  const { code, map } = lowerEsModule(source, 'node', url);
+  const { head, columns } = JSON.parse(map);
+  const lines = code.slice(head).split('\n');
   const wanted = source.split('\n');
   assert.ok(lines.length > wanted.length, 'a line per source line, then only what follows the source');
   assert.ok(lines[wanted.length - 1].startsWith('console.log('), 'the last line is the last line');
-  assert.equal(code.slice(0, code.indexOf(MODULE_BODY_MARK)).includes('\n'), false, 'the lowering adds no line');
+  assert.equal(code.slice(0, head).includes('\n'), false, 'the lowering adds no line');
+  // Each line its edits changed, read back through the map, is the source's.
+  for (const [i, line] of wanted.entries()) {
+    let back = '';
+    let at = 0;
+    let delta = 0;
+    for (const [, column, length, text] of columns.filter((entry) => entry[0] === i + 1)) {
+      back += lines[i].slice(at, column + delta) + text;
+      at = column + delta + length;
+      delta += length - text.length;
+    }
+    assert.equal(back + lines[i].slice(at), line, `line ${i + 1} reads back`);
+  }
   assert.equal(lines[0], '//' + wanted[0].slice(2), 'the hashbang, a comment');
   // A removed declaration leaves its lines, a `;` where it began.
   for (const at of [1, 2, 3, 4, 10]) assert.match(lines[at], /^;? *$/, wanted[at]);

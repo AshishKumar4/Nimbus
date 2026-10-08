@@ -34,6 +34,11 @@ const FILES = {
   // Columns after what the lowering rewrites on a line: an import's use, import.meta, an anonymous default's head.
   'sameline.mjs': "import { sep, join } from 'node:path'; const u = import.meta.url; const s = join('a', 'b') + sep; throw new Error('same line ' + s.length + typeof u);\n",
   'anon.mjs': "export default function () { throw new Error('anonymous default'); }\n",
+  // An edit's length after every normalization (typeof of an unbound name), import.meta spelled with spaces.
+  'typeofs.mjs': "import { sep } from 'node:path'; const t = typeof require + typeof module; throw new Error('typeofs ' + t + sep);\n",
+  'spaced.mjs': "const u = import . meta . url; throw new Error('spaced ' + typeof u);\n",
+  // Text the emit carries that looks like what it generates: an export name, an escaped identifier.
+  'names.mjs': "import { sep } from 'node:path';\nconst value = 1; export { value as \"/*nimbus-columns \" };\nconst \\u005f_nimbus_m0 = 42, \\u005f_nimbus_m1 = 43;\nconsole.log(sep, __nimbus_m0 + __nimbus_m1, new Error('names').stack.split('\\n')[1].trim());\n",
   'callanon.mjs': "import run from './anon.mjs'; import { sep } from 'node:path'\nconst x = sep\nrun()\n",
   // Node shows the line it compiled, not what the file holds when it throws.
   'overwrite.mjs': "import { writeFileSync } from 'node:fs';\nwriteFileSync(new URL(import.meta.url), 'replaced\\nreplaced\\nreplaced\\n');\nthrow new Error('overwritten');\n",
@@ -54,6 +59,10 @@ const FILES = {
   'prepare.mjs': [
     "Error.prepareStackTrace = function () { return this === Error; };",
     "console.log(new Error('receiver').stack);",
+    "function hook() { return 'wanted'; }",
+    "hook.call = () => 'wrong';",
+    "Error.prepareStackTrace = hook;",
+    "console.log(new Error('applied').stack);",
     "Error.prepareStackTrace = (error, sites) => sites.slice(0, 1).map((site) => [site.getFileName(), site.getLineNumber(), site.getColumnNumber(), site.getFunctionName()].join(' ')).join();",
     "function named() { return new Error('third'); }",
     'console.log(named().stack);',
@@ -64,7 +73,7 @@ const FILES = {
 const COMMANDS = [
   'node top.mjs', 'node fn.mjs', 'node reject.mjs', 'node tla.mjs', 'node meta.mjs', 'node line1.mjs', 'node big.mjs',
   'node cjs.cjs', 'node caught.mjs', 'node prepare.mjs', `node --input-type=module -e "const x = 1; throw new Error('eval ' + x);"`,
-  'node sameline.mjs', 'node callanon.mjs', 'node overwrite.mjs', `node --input-type=module -e "process.chdir('/'); throw new Error('moved');"`,
+  'node sameline.mjs', 'node callanon.mjs', 'node overwrite.mjs', 'node typeofs.mjs', 'node spaced.mjs', 'node names.mjs', `node --input-type=module -e "process.chdir('/'); throw new Error('moved');"`,
 ];
 
 const host = realpathSync(mkdtempSync(join(tmpdir(), 'esm-frames-')));

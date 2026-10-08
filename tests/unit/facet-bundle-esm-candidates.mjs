@@ -194,7 +194,7 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
       sent.push(...requests.map(({ code }) => code));
       return requests.map(({ code, options }) => {
         try {
-          lowerEsModule(code, options.esModule);
+          lowerEsModule(code, options.esModule, options.dynamicImportParent);
         } catch (e) {
           return { error: e.message };
         }

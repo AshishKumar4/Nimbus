@@ -22,6 +22,7 @@ import {
   COMMONJS_CELL_RUNTIME_SOURCE,
   commonJsCellModuleName,
   commonJsCellReadsBack,
+  columnMapModuleName,
   commonJsEntryModuleName,
   declaresWrapperBinding,
   RUNTIME_INTERPRETER_MODULE,
@@ -35,6 +36,7 @@ import {
   type RuntimeCodeEntry,
 } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
+import type { EsModuleMap } from '@nimbus-sh/core/runtime/async-module-lowering.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES, type ReadAheadAccount } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField, type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -915,16 +917,23 @@ export function entryImporterUrl(filename: string | undefined, cwd: string): str
  * runner evaluates it: an ES entry's require is its static imports, and what
  * escapes it is explained as Node's loader explains it.
  */
-function entryModule(userCode: string, filename: string | undefined, cwd: string, esModule: boolean | undefined): { name: string; esModule: boolean; text: string; evaluate: string; stackEntry: string } {
+function entryModule(
+  userCode: string, filename: string | undefined, cwd: string, esModule: boolean | undefined, esModuleMap: string | undefined,
+): { name: string; esModule: boolean; modules: Record<string, string>; evaluate: string; stackEntry: string } {
   const importer = entryImporterUrl(filename, cwd);
-  const code = rewriteProvidedCommonJsModules(userCode);
+  const map = esModuleMap ? JSON.parse(esModuleMap) as EsModuleMap : null;
+  // A lowered ES module was bound before it was lowered (core esbuild-service.ts preparedTransformSource).
+  const code = map ? userCode : rewriteProvidedCommonJsModules(userCode);
   const name = commonJsEntryModuleName(filename || '[eval]');
   const path = 'filename || "/home/user/script.js"';
-  const wrapped = wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function', esModule === true);
+  const wrapped = wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function', map?.head);
   return {
     name,
     esModule: esModule === true,
-    text: wrapped.text,
+    modules: {
+      [name]: wrapped.text,
+      ...(map !== null && map.columns.length > 0 ? { [columnMapModuleName(name)]: JSON.stringify(map.columns) } : {}),
+    },
     evaluate: `__nimbusEvaluateEntry(__nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user", ${esModule === true})`,
     // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
     stackEntry: JSON.stringify([name, entryFrameFile(filename, cwd, esModule === true), wrapped.head, esModule === true ? 1 : 0]),
@@ -954,8 +963,9 @@ export async function generateEntrypointCode(
   filename?: string,
   cwd: string = DEFAULT_HOME,
   esModule?: boolean,
+  esModuleMap?: string,
 ): Promise<GeneratedNodeFacetCode> {
-  const entry = entryModule(userCode, filename, cwd, esModule);
+  const entry = entryModule(userCode, filename, cwd, esModule, esModuleMap);
   const bundleSource = await facetVfsBundleSourceFor(vfsState);
   return {
     code: `
@@ -1276,7 +1286,7 @@ ${RESIDENCY_MISS_REPORT}
 };
 `,
     modules: bundleSource.modules,
-    codeModules: { ...bundleSource.codeModules, ...interpreterModules(sources), [entry.name]: entry.text },
+    codeModules: { ...bundleSource.codeModules, ...interpreterModules(sources), ...entry.modules },
   };
 }
 
@@ -1401,6 +1411,7 @@ export async function generateLongRunningNodeCode(
     filename?: string;
     dirname?: string;
     esModule?: boolean;
+    esModuleMap?: string;
     stdin?: string;
     attachedTty?: boolean;
     cred: ProcessEntry['cred'];
@@ -1411,7 +1422,7 @@ export async function generateLongRunningNodeCode(
   sources: NodeFacetSources,
   pacer?: TurnBudget,
 ): Promise<GeneratedNodeFacetCode> {
-  const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule);
+  const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.esModuleMap);
   const safeArgs = JSON.stringify({
     argv: opts.argv || [],
     nodeCommandLine: opts.node ?? null,
@@ -1923,7 +1934,7 @@ export class NimbusProcess extends DurableObject {
 }
 `,
     modules: bundleSource.modules,
-    codeModules: { ...bundleSource.codeModules, ...interpreterModules(sources), [entry.name]: entry.text },
+    codeModules: { ...bundleSource.codeModules, ...interpreterModules(sources), ...entry.modules },
   };
 }
 
@@ -1987,6 +1998,8 @@ interface FacetVfsState {
    * with none is its own module.
    */
   emits?: Map<string, string>;
+  /** A lowered ES module's EsModuleMap (core async-module-lowering.ts), as JSON, by path. */
+  columnMaps?: Map<string, string>;
   /**
    * The cells lowered from ESM or compiled from TypeScript
    * (transformEsmInBundle), whose module wraps them in the block scope
@@ -2124,6 +2137,7 @@ export function releaseSerializedSources(vfsState: FacetVfsState): void {
   if (!vfsState.bundleSource) return;
   vfsState.bundle = {};
   vfsState.emits = undefined;
+  vfsState.columnMaps = undefined;
   vfsState.lowered = undefined;
 }
 
@@ -2172,7 +2186,7 @@ async function facetVfsBundleSourceFor(
   return vfsState.bundleSource
     ?? await buildFacetVfsBundleSource(
       vfsState.bundle, vfsState.bundleSideModulesRequired, pacer,
-      { emits: vfsState.emits, lowered: vfsState.lowered, codeOnly: vfsState.codeOnly },
+      { emits: vfsState.emits, columnMaps: vfsState.columnMaps, lowered: vfsState.lowered, codeOnly: vfsState.codeOnly },
     );
 }
 
@@ -2285,6 +2299,7 @@ function retainedVfsStateBytes(state: FacetVfsState): number {
     if (typeof cell === 'string' || cell instanceof Uint8Array) bytes += _bundleCellLength(cell);
   }
   for (const [path, emit] of state.emits ?? []) bytes += path.length + emit.length;
+  for (const [path, map] of state.columnMaps ?? []) bytes += path.length + map.length;
   for (const path of state.lowered ?? []) bytes += path.length;
   for (const path of state.codeOnly ?? []) bytes += path.length;
   const source = state.bundleSource;
@@ -2571,6 +2586,7 @@ export async function buildFacetVfsBundleSource(
   {
     consume = false,
     emits,
+    columnMaps,
     lowered,
     codeOnly,
     runtimeCode,
@@ -2578,6 +2594,8 @@ export async function buildFacetVfsBundleSource(
     consume?: boolean;
     /** The module of each cell a transform changed (FacetVfsState.emits). */
     emits?: ReadonlyMap<string, string>;
+    /** FacetVfsState.columnMaps. */
+    columnMaps?: ReadonlyMap<string, string>;
     /** Cells lowered from ESM or compiled from TypeScript, wrapped in the block scope. */
     lowered?: ReadonlySet<string>;
     /** Files whose emit the map carries and not the file (FacetVfsState.codeOnly). */
@@ -2602,9 +2620,12 @@ export async function buildFacetVfsBundleSource(
     if (code !== undefined) {
       // TypeScript is lowered too, and keeps CommonJS's names (bundle-cell-transform.ts).
       const esModule = lowered?.has(path) === true && bundleTypescriptLoader(path) === null;
-      const wrapped = wrapCommonJsCell(code, lowered?.has(path) ? 'block' : 'function', esModule);
+      const map = emit === undefined ? undefined : columnMaps?.get(path);
+      const esModuleMap = map === undefined ? null : JSON.parse(map) as EsModuleMap;
+      const wrapped = wrapCommonJsCell(code, lowered?.has(path) ? 'block' : 'function', esModuleMap?.head);
       const name = commonJsCellModuleName(path);
       codeModules[name] = wrapped.text;
+      if (esModuleMap !== null && esModuleMap.columns.length > 0) codeModules[columnMapModuleName(name)] = JSON.stringify(esModuleMap.columns);
       rows.push([path, name, wrapped.head, wrapped.tail, wrapped.hashbang ? 1 : 0, adopt ? 1 : 0, esModule ? 1 : 0]);
       if (pacer) await pacer.spend(code.length);
     }
@@ -4090,7 +4111,7 @@ async function addEntryAbsPathReads(
  */
 function _markBundleEsmAsFailed(
   bundle: Record<string, string | Uint8Array>,
-  placeEmit: (path: string, code: string) => void,
+  placeEmit: (path: string, code: string, map: string) => void,
   packageTypeOf: (path: string) => PackageType,
   reason: string,
 ): void {
@@ -4100,7 +4121,7 @@ function _markBundleEsmAsFailed(
     if (typeof src !== 'string') continue;
     // A TypeScript source is never runnable as staged, so it always needs
     // the emit it cannot get; a JavaScript file only if it is ESM.
-    if (bundleTypescriptLoader(path) !== null || looksLikeEsm(path, src, packageTypeOf(path))) placeEmit(path, esbuildDiagnosticShim(path, reason));
+    if (bundleTypescriptLoader(path) !== null || looksLikeEsm(path, src, packageTypeOf(path))) placeEmit(path, esbuildDiagnosticShim(path, reason), '');
   }
 }
 
@@ -4138,7 +4159,7 @@ async function cellPackageTypes(vfs: LaunchFs, paths: Iterable<string>): Promise
  */
 async function transformEsmInBundle(
   bundle: Record<string, string | Uint8Array>,
-  placeEmit: (path: string, code: string) => void,
+  placeEmit: (path: string, code: string, map: string) => void,
   lowered: Set<string>,
   packageTypeOf: (path: string) => PackageType,
   scope: ModuleScope,
@@ -4155,7 +4176,7 @@ async function transformEsmInBundle(
     if (typeof source === 'string' && needsBundleCellTransform(path, source, packageType)) cells.push({ path, source, packageType });
   }
   return transformBundleCells(cells, { host: esbuild, store, pacer, scope }, (path, result) => {
-    placeEmit(path, result.code);
+    placeEmit(path, result.code, result.map);
     if (result.lowered) lowered.add(path);
   });
 }
@@ -4457,6 +4478,7 @@ async function _buildPrefetchBundle(
   //     reaches the guest as CommonJS (commonjs-cell.ts says why the registry
   //     cannot take the ES module itself).
   const emits = new Map<string, string>();
+  const columnMaps = new Map<string, string>();
   const lowered = new Set<string>();
   // A file staged only to run carries its emit and not itself
   // (FacetVfsState.codeOnly): installed code is most of a map, and each ES
@@ -4473,8 +4495,9 @@ async function _buildPrefetchBundle(
   // has one: the build never holds the file's bytes and its module both, and
   // what reads the cells for their code (bundleUsesNodeSqlite, the wasm and
   // binding scans) reads the module, which is all the map carries.
-  const placeEmit = (path: string, code: string) => {
+  const placeEmit = (path: string, code: string, map = '') => {
     emits.set(path, code);
+    if (map) columnMaps.set(path, map);
     if (!runOnly(path)) return;
     bundle[path] = code;
     codeOnly.add(path);
@@ -4497,7 +4520,8 @@ async function _buildPrefetchBundle(
   for (const path of Object.keys(bundle)) {
     const cell = bundle[path];
     const code = emits.get(path) ?? (isBundleModuleCandidate(path) && bundleTypescriptLoader(path) === null ? cell : undefined);
-    if (typeof code !== 'string') continue;
+    // A lowered ES module was bound before it was lowered (esbuild-service.ts preparedTransformSource).
+    if (typeof code !== 'string' || columnMaps.has(path)) continue;
     await pacer?.spend(code.length);
     let bound: string;
     try {
@@ -4627,6 +4651,7 @@ async function _buildPrefetchBundle(
       evictedCells[k] = bundle[k]!;
       delete bundle[k];
       emits.delete(k);
+      columnMaps.delete(k);
       lowered.delete(k);
       codeOnly.delete(k);
       size.remove(k);
@@ -4667,6 +4692,7 @@ async function _buildPrefetchBundle(
   return {
     bundle,
     ...(emits.size > 0 ? { emits } : {}),
+    ...(columnMaps.size > 0 ? { columnMaps } : {}),
     ...(lowered.size > 0 ? { lowered } : {}),
     ...(codeOnly.size > 0 ? { codeOnly } : {}),
     cursor,
@@ -6146,6 +6172,7 @@ export class FacetManager {
       {
         consume: true,
         emits: vfsState.emits,
+        columnMaps: vfsState.columnMaps,
         lowered: vfsState.lowered,
         codeOnly: vfsState.codeOnly,
         runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope),
@@ -6247,13 +6274,17 @@ export class FacetManager {
         const result = await this.esbuild.transform(entry.text, {
           esModule: moduleScope, moduleMetadata: true, dynamicImportParent: 'data:text/javascript,',
         });
-        modules.set(codeKey, wrapCommonJsCell(result.code, 'block', true).text);
+        modules.set(codeKey, wrapCommonJsCell(result.code, 'block', (JSON.parse(result.map) as EsModuleMap).head).text);
         continue;
       }
       const path = entry.path.replace(/^\/+/, '');
       const file: Record<string, string> = { [path]: entry.text };
       const emits = new Map<string, string>();
-      const placeEmit = (at: string, code: string) => { emits.set(at, code); };
+      let head: number | undefined;
+      const placeEmit = (at: string, code: string, map: string) => {
+        emits.set(at, code);
+        if (map) head = (JSON.parse(map) as EsModuleMap).head;
+      };
       const lowered = new Set<string>();
       const packageTypeOf = await cellPackageTypes(vfs, [path]);
       if (this.esbuild) await transformEsmInBundle(file, placeEmit, lowered, packageTypeOf, moduleScope, this.esbuild, pacer, this._transformStore());
@@ -6265,7 +6296,7 @@ export class FacetManager {
         // Unparseable: it stays as written, and requiring it says why.
       }
       const scope = lowered.has(path) || declaresWrapperBinding(code) ? 'block' : 'function';
-      modules.set(codeKey, wrapCommonJsCell(code, scope, lowered.has(path)).text);
+      modules.set(codeKey, wrapCommonJsCell(code, scope, head).text);
     }
     return modules.size > 0 ? modules : undefined;
   }
@@ -6460,6 +6491,8 @@ export class FacetManager {
       invokerPid?: number;
       /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
       esModule?: boolean;
+      /** RuntimeRunOpts.esModuleMap. */
+      esModuleMap?: string;
       /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
       moduleScope?: ModuleScope;
       bundleProfile?: FacetBundleProfile;
@@ -7306,7 +7339,7 @@ export class FacetManager {
             // own assets, for the same reason.
             const stagedModules = await this._stagedBindingModulesByValue(vfsState.stagedBindings ?? []);
             const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user', pacer);
-            const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule);
+            const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.esModuleMap);
             const codeModules: Record<string, { cjs: string }> = {};
             for (const [name, text] of Object.entries(generatedWorker.codeModules)) codeModules[name] = { cjs: text };
             if (diagSink) {

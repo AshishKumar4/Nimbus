@@ -110,6 +110,8 @@ export interface RunFreshOpts {
   launchesServer?: boolean;
   /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
   esModule?: boolean;
+  /** RuntimeRunOpts.esModuleMap. */
+  esModuleMap?: string;
   /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
   moduleScope?: ModuleScope;
   /** A node program's command line (RuntimeRunOpts.node). */
@@ -186,6 +188,7 @@ export async function runFresh(
       filename: opts.filename,
       dirname: opts.dirname,
       ...(opts.esModule ? { esModule: true } : {}),
+      ...(opts.esModuleMap ? { esModuleMap: opts.esModuleMap } : {}),
       ...(opts.moduleScope ? { moduleScope: opts.moduleScope } : {}),
       command,
       port,

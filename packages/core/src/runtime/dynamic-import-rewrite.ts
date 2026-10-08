@@ -39,11 +39,7 @@ interface Span { start: number; end: number }
 /** es-module-lexer's `t` for an import() call and for import.meta. */
 const DYNAMIC_IMPORT = 2;
 const IMPORT_META = 3;
-// The names a rewritten cell reads its loader and import.meta through: as
-// long as what each replaces (`import`, `import.meta`), so no column moves.
-const GENERATED_NAME_PREFIX = '$nimb';
-const IMPORT_NAME = '$nimbI';
-const METADATA_NAME = '$nimbusMeta';
+const METADATA_BINDING = '__nimbusMetadataModule';
 const IDENTIFIER_PART = /[$_\p{ID_Continue}\u200c\u200d]/u;
 
 /**
@@ -116,7 +112,8 @@ function rewriteFromLexer(code: string, parentUrl: string, metadata: boolean, im
   }
   calls.sort((a, b) => a.ss - b.ss);
 
-  const importStarts: number[] = [];
+  const call = DYNAMIC_IMPORT_HELPER + '(' + JSON.stringify(parentUrl) + ', ';
+  const edits: SourceEdit[] = [];
   let validatedEnd = -1;
   for (const site of calls) {
     // Inside arguments Acorn has already accepted: an import() there is one.
@@ -127,11 +124,13 @@ function rewriteFromLexer(code: string, parentUrl: string, metadata: boolean, im
       if (!validImportArguments(source.slice(site.ss, site.se))) return null;
       validatedEnd = site.se;
     }
-    importStarts.push(site.ss);
+    // d is the opening parenthesis; do not consume grouping in the argument.
+    edits.push({ start: site.ss, end: site.d + 1, text: call });
   }
-  if (!importStarts.length && !metas.length) return code;
-  const { insertion, separator } = metas.length ? afterDirectives(code) : { insertion: 0, separator: '' };
-  return applyEdits(code, parentUrl, importStarts, metas, escapedCaptureNames(code), insertion, separator);
+  if (!edits.length && !metas.length) return code;
+  if (!metas.length) return applyEdits(code, edits, metas, null, 0, '');
+  const { insertion, separator } = afterDirectives(code);
+  return applyEdits(code, edits, metas, escapedCaptureNames(code), insertion, separator);
 }
 
 /** Marks the lexer reports only where it reads the marked spot as code. */
@@ -304,7 +303,7 @@ function escapedCaptureNames(code: string): Set<string> {
     try {
       const token = tokenizer(code.slice(start, end), { ecmaVersion: 'latest' }).getToken();
       const value: unknown = Reflect.get(token, 'value');
-      if (token.type === tokTypes.name && typeof value === 'string' && value.startsWith(GENERATED_NAME_PREFIX)) names.add(value);
+      if (token.type === tokTypes.name && typeof value === 'string' && value.startsWith(METADATA_BINDING)) names.add(value);
     } catch (error) {
       // A unicode escape in text need not spell a legal word.
       if (!(error instanceof SyntaxError)) throw error;
@@ -340,8 +339,8 @@ function afterDirectives(code: string): { insertion: number; separator: string }
 
 /** What the grammar's reading collects, as its parser recognizes it. */
 interface Collected {
-  /** Where each import() call's `import` starts. */
-  imports: number[];
+  call: string;
+  edits: SourceEdit[];
   metas: Span[];
   /** Every identifier, which the metadata capture's name must not shadow. */
   names: Set<string> | null;
@@ -356,9 +355,12 @@ class ImportCollector extends Parser {
     super(options, input);
   }
   parseDynamicImport(node: Node): Node {
-    // Acorn validates the arguments; the call is replaced at its `import`.
+    // Acorn enters this production at the opening parenthesis. Its end,
+    // not source.start (which can exclude grouping parentheses), is the
+    // exact end of the prefix we replace. Acorn validates the arguments.
+    const end: unknown = Reflect.get(this, 'end');
     const parsed = produce(PARSE_DYNAMIC_IMPORT, this, [node]);
-    this.collected.imports.push(node.start);
+    if (typeof end === 'number') this.collected.edits.push({ start: node.start, end, text: this.collected.call });
     return parsed;
   }
   parseStatement(context: unknown, topLevel: boolean, exports: unknown): Node {
@@ -391,14 +393,15 @@ class MetadataCollector extends ImportCollector {
  */
 function rewriteWithGrammar(code: string, parentUrl: string, metadata: boolean, imports: boolean): string {
   const collected: Collected = {
-    imports: [],
+    call: DYNAMIC_IMPORT_HELPER + '(' + JSON.stringify(parentUrl) + ', ',
+    edits: [],
     metas: [],
     names: metadata ? new Set<string>() : null,
   };
   // Import-only cells need no identifier collection.
   const Collector = metadata ? MetadataCollector : ImportCollector;
   for (const sourceType of metadata ? ['module', 'script'] as const : ['script', 'module'] as const) {
-    collected.imports.length = 0; collected.metas.length = 0; collected.names?.clear();
+    collected.edits.length = 0; collected.metas.length = 0; collected.names?.clear();
     let program: Program;
     try {
       program = new Collector({
@@ -408,8 +411,8 @@ function rewriteWithGrammar(code: string, parentUrl: string, metadata: boolean, 
     } catch {
       continue;
     }
-    if (!imports) collected.imports.length = 0;
-    if (!collected.imports.length && !collected.metas.length) return code;
+    if (!imports) collected.edits.length = 0;
+    if (!collected.edits.length && !collected.metas.length) return code;
     let insertion = program.body[0]?.start ?? code.length;
     // After a directive, which a `;` ends where it has none.
     let separator = '';
@@ -418,43 +421,18 @@ function rewriteWithGrammar(code: string, parentUrl: string, metadata: boolean, 
       insertion = statement.end;
       separator = code[statement.end - 1] === ';' ? '' : ';';
     }
-    return applyEdits(code, parentUrl, collected.imports, collected.metas, collected.names ?? escapedCaptureNames(code), insertion, separator);
+    return applyEdits(code, collected.edits, collected.metas, collected.names, insertion, separator);
   }
   return code;
 }
 
-function applyEdits(
-  code: string, parentUrl: string, imports: readonly number[], metas: readonly Span[], names: ReadonlySet<string>, insertion: number, separator: string,
-): string {
-  const edits: SourceEdit[] = [];
-  let tail = '';
-  if (imports.length) {
-    const name = generatedName(IMPORT_NAME, code, names);
-    for (const start of imports) edits.push({ start, end: start + 'import'.length, text: name });
-    // Hoisted from after the cell's last line, where it moves none of them.
-    tail = `\nfunction ${name}(...args) { return ${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(parentUrl)}, ...args); }`;
-  }
+function applyEdits(code: string, edits: SourceEdit[], metas: Span[], names: Set<string> | null, insertion: number, separator: string): string {
   if (metas.length) {
-    const name = generatedName(METADATA_NAME, code, names);
-    for (const { start, end } of metas) edits.push({ start, end, text: inPlace(name, code.slice(start, end)) });
+    let binding = METADATA_BINDING;
+    while (code.includes(binding) || names?.has(binding)) binding += '_';
+    for (const meta of metas) edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
     // On the line it is inserted in, so every line keeps its number: a directive of its own.
-    edits.push({ start: insertion, end: insertion, text: `${separator}"use strict";const ${name} = arguments[2].__nimbusImportMeta;` });
+    edits.push({ start: insertion, end: insertion, text: `${separator}"use strict";const ${binding} = arguments[2];` });
   }
-  return applySourceEdits(code, edits) + tail;
-}
-
-/** `name`, as long as `stem`, that the cell writes nowhere (escaped or not). */
-function generatedName(stem: string, code: string, names: ReadonlySet<string>): string {
-  for (let i = 0; ; i++) {
-    const suffix = i === 0 ? '' : i.toString(36);
-    const name = stem.slice(0, stem.length - suffix.length) + suffix;
-    if (!code.includes(name) && !names.has(name)) return name;
-  }
-}
-
-/** `name` in place of `span`, its line breaks and the columns after it kept. */
-function inPlace(name: string, span: string): string {
-  const blank = span.replace(/[^\n\r\u2028\u2029]/g, ' ');
-  const lineBreak = blank.search(/[\n\r\u2028\u2029]/);
-  return name + blank.slice(lineBreak === -1 || lineBreak >= name.length ? name.length : lineBreak);
+  return applySourceEdits(code, edits);
 }

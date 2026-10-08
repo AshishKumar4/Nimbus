@@ -105,7 +105,7 @@ for (const [label, source] of Object.entries(CASES)) {
     'export default value;',
   ].join('\n');
   const expected = shape(await run(esbuild.transformSync(bundle, { format: 'cjs', loader: 'js' }).code));
-  const code = `return (function () { ${lowerEsModule(bundle, 'node').code} }).call(undefined, undefined, require, module);`;
+  const code = `return (function () { ${lowerEsModule(bundle, 'node', 'file:///bundle.mjs').code} }).call(undefined, undefined, require, module);`;
   assert.deepEqual(shape(await run(code)), expected, 'the lowering');
 }
 
@@ -146,7 +146,7 @@ for (const [label, source] of Object.entries(CASES)) {
     new Function('module', 'exports', 'require', emitCommonJs(dep, readEsmRecords(dep), { body: 'sync' }))(depModule, depModule.exports, () => ({}));
     for (const [body, code] of [
       ['sync', emitCommonJs(source, readEsmRecords(source), { body: 'sync' })],
-      ['module', `return (function () { ${lowerEsModule(source, 'node').code} }).call(undefined, undefined, require, module);`],
+      ['module', `return (function () { ${lowerEsModule(source, 'node', 'file:///m.mjs').code} }).call(undefined, undefined, require, module);`],
     ]) {
       depModule.exports.log.length = 0;
       const module = { exports: {} };
@@ -199,7 +199,7 @@ for (const [label, source] of Object.entries(CASES)) {
       const lowerings = {
         sync: () => emitCommonJs(source, readEsmRecords(source), { body: 'sync' }),
         async: () => emitCommonJs(source, readEsmRecords(source), { body: 'async' }),
-        module: () => `return (function () { ${lowerEsModule(source, 'node').code} }).call(undefined, undefined, require, module);`,
+        module: () => `return (function () { ${lowerEsModule(source, 'node', 'file:///m.mjs').code} }).call(undefined, undefined, require, module);`,
       };
       if (source.includes('await')) delete lowerings.sync;
       for (const [body, lower] of Object.entries(lowerings)) {

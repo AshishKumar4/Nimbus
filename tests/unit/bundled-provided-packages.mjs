@@ -65,7 +65,7 @@ for (const source of [
     const load=wrap({"node_modules/undici/index.js"(e,m){throw new Error('native factory ran')}});
     export { load };`;
   const bound = rewriteProvidedCommonJsModules(source);
-  const transformed = lowerEsModule(bound, 'node');
+  const transformed = lowerEsModule(bound, 'node', 'file:///app/bundle.js');
   const require = (name) => {
     assert.equal(name, './helper.js');
     return { __commonJS() { throw new Error('factory was not externalized'); } };

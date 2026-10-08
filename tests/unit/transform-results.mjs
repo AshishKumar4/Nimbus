@@ -290,7 +290,7 @@ try {
     const db = new Database(':memory:');
     const maxBytes = 64 * 1024;
     const { store } = storeOver(db, { maxBytes, maxEntryBytes: 16 * 1024 });
-    const result = (i, bytes = 4096) => ({ code: String(i).padEnd(bytes, '.'), lowered: i % 2 === 0 });
+    const result = (i, bytes = 4096) => ({ code: String(i).padEnd(bytes, '.'), map: i % 3 === 0 ? '{"head":1,"columns":[]}' : '', lowered: i % 2 === 0 });
     const keys = [];
     for (let i = 0; i < 40; i++) {
       keys.push(await store.key('cell', `m${i}.mjs`, String(i)));
@@ -322,7 +322,7 @@ try {
     const key = await store.key('cell', 'big.mjs', 'source');
     const spent = [];
     // A launch killed while the result is being written stops the write.
-    await assert.rejects(store.put(key, { code, lowered: true }, async (n) => { spent.push(n); throw new Error('process gone'); }), /process gone/);
+    await assert.rejects(store.put(key, { code, map: '', lowered: true }, async (n) => { spent.push(n); throw new Error('process gone'); }), /process gone/);
     assert.equal(store.getMany([key]).size, 0, 'a write cut short is no result');
     assert.equal(partsOf(db), 0, 'and leaves no parts behind');
     assert.equal(chargeOf(db), 0, 'and no charge');
@@ -332,12 +332,12 @@ try {
     spent.length = 0;
     let release;
     const gate = new Promise((resolve) => { release = resolve; });
-    const slow = store.put(key, { code, lowered: true }, async (n) => { spent.push(n); await gate; });
-    assert.equal(await store.put(key, { code, lowered: true }, async (n) => { spent.push(n); }), null);
-    assert.deepEqual(store.getMany([key]).get(key), { code, lowered: true }, 'the first to finish is read back exactly');
+    const slow = store.put(key, { code, map: '', lowered: true }, async (n) => { spent.push(n); await gate; });
+    assert.equal(await store.put(key, { code, map: '', lowered: true }, async (n) => { spent.push(n); }), null);
+    assert.deepEqual(store.getMany([key]).get(key), { code, map: '', lowered: true }, 'the first to finish is read back exactly');
     release();
     assert.equal(await slow, null);
-    assert.deepEqual(store.getMany([key]).get(key), { code, lowered: true }, 'and survives the second finishing');
+    assert.deepEqual(store.getMany([key]).get(key), { code, map: '', lowered: true }, 'and survives the second finishing');
     assert.equal(partsOf(db), Math.ceil(bytes / MAX_TX_BLOB_BYTES), 'only the result\'s own parts remain');
     assert.ok(spent.every((n) => n <= MAX_TX_BLOB_BYTES), `written in parts of at most ${MAX_TX_BLOB_BYTES} bytes`);
 
@@ -357,7 +357,8 @@ try {
     const code = 'import("./x.mjs");\n';
     const spent = [];
     const first = await transformEntryScript(code, 'file:///home/user/[eval]', { host, store, pacer: { spend: async (n) => { spent.push(n); } } });
-    assert.deepEqual(spent, [new TextEncoder().encode(first).byteLength], 'its write is accounted to the launch pacer, like a cell\'s');
+    // The stored payload: the (empty) map's line, then the code.
+    assert.deepEqual(spent, [new TextEncoder().encode(`\n${first}`).byteLength], 'its write is accounted to the launch pacer, like a cell\'s');
     assert.equal(await transformEntryScript(code, 'file:///home/user/[eval]', { host, store }), first);
     assert.equal(calls.length, 1, 'the second run is read back');
     const broken = new EsbuildService(undefined, { transformHost: recordingHost([], { reject: () => true }) });

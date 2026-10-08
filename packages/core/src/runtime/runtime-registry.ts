@@ -113,6 +113,8 @@ export interface RuntimeRunOpts {
    * explained as Node's loader explains it.
    */
   esModule?: boolean;
+  /** Its lowering's EsModuleMap (async-module-lowering.ts), as JSON: where its frames read the source's places. */
+  esModuleMap?: string;
   /** Whose scope its ES modules run in (RuntimeSpec.moduleScope): absent, Node's. */
   moduleScope?: ModuleScope;
   /**
@@ -467,6 +469,7 @@ export function buildRuntimeHandler(
       /** Node refuses the code before it loads `--import`'s modules (NodeEvalProgram.refusedBeforeImports): none load. */
       refusedBeforeImports?: boolean;
       esModule?: boolean;
+      esModuleMap?: string;
     }): Promise<number> => {
       const result = await spec.run(code, {
         cred: ctx.cred,
@@ -488,6 +491,7 @@ export function buildRuntimeHandler(
         ...(program.launchesServer ? { launchesServer: true } : {}),
         // Evaluated as Node's loader runs an ES module, in Node's scope.
         ...(program.esModule && moduleScope === 'node' ? { esModule: true } : {}),
+        ...(program.esModuleMap ? { esModuleMap: program.esModuleMap } : {}),
         moduleScope,
       });
       if (result.stdout) ctx.stdout.write(result.stdout);
@@ -506,16 +510,19 @@ export function buildRuntimeHandler(
      * (module-format.ts esModuleSyntaxError). Null when the transform failed
      * otherwise, which it has reported.
      */
-    async function lowerToCommonJs(code: string, loader: 'js' | 'jsx' | 'ts' | 'tsx', url: string, what: string, esm: boolean): Promise<string | null> {
+    async function lowerToCommonJs(
+      code: string, loader: 'js' | 'jsx' | 'ts' | 'tsx', url: string, what: string, esm: boolean,
+    ): Promise<{ code: string; map: string } | null> {
       try {
         const eb = await getEsbuild();
         // An ES module keeps its runtime's scope (module-format.ts ModuleScope).
-        return (await eb.transform(code, {
+        const { code: lowered, map } = await eb.transform(code, {
           ...(esm && loader === 'js' ? { esModule: moduleScope } : { loader, format: 'cjs' }), dynamicImportParent: url, moduleMetadata: true,
-        })).code;
+        });
+        return { code: lowered, map };
       } catch (e) {
         const syntaxError = esm && loader === 'js' ? esModuleSyntaxError(code, url) : null;
-        if (syntaxError !== null) return syntaxError;
+        if (syntaxError !== null) return { code: syntaxError, map: '' };
         ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);
         return null;
       }
@@ -527,11 +534,13 @@ export function buildRuntimeHandler(
      * module (`--input-type=module`, or its syntax, module-format.ts) lowered,
      * which `-p` refuses as Node does (node-eval.ts); else Node's eval code.
      */
-    async function inputProgram(source: string, what: '[eval]' | '[stdin]'): Promise<{ code: string; written: string; refusedBeforeImports: boolean; esModule: boolean } | null> {
+    async function inputProgram(
+      source: string, what: '[eval]' | '[stdin]',
+    ): Promise<{ code: string; written: string; refusedBeforeImports: boolean; esModule: boolean; esModuleMap?: string } | null> {
       const esModule = isEsModuleInput(source, inputType);
       if (esModule && !print) {
         const lowered = await lowerToCommonJs(source, 'js', evalUrl(), what, true);
-        return lowered === null ? null : { code: lowered, written: source, refusedBeforeImports: false, esModule: true };
+        return lowered === null ? null : { code: lowered.code, written: source, refusedBeforeImports: false, esModule: true, esModuleMap: lowered.map };
       }
       if (!spec.nodeCommandLine) return { code: source, written: source, refusedBeforeImports: false, esModule: false };
       const mode: NodeEvalMode = esModule ? 'module' : inputType === 'commonjs' ? 'commonjs' : 'default';
@@ -558,12 +567,13 @@ export function buildRuntimeHandler(
     if (line.eval !== undefined) {
       const program = await inputProgram(line.eval, '[eval]');
       if (program === null) return 1;
-      const { code, written, refusedBeforeImports, esModule } = program;
+      const { code, written, refusedBeforeImports, esModule, esModuleMap } = program;
       const programArgs = args.slice(flagSpan);
       return runProgram(code, {
         print,
         refusedBeforeImports,
         esModule,
+        esModuleMap,
         argv: programArgs,
         filename: '<eval>',
         dirname: ctx.cwd || '/home/user',
@@ -614,11 +624,12 @@ export function buildRuntimeHandler(
       // `-p` prints the value of the code it read (eval_stdin.js).
       const program = await inputProgram(input, '[stdin]');
       if (program === null) return 1;
-      const { code, written, refusedBeforeImports, esModule } = program;
+      const { code, written, refusedBeforeImports, esModule, esModuleMap } = program;
       return runProgram(code, {
         print,
         refusedBeforeImports,
         esModule,
+        esModuleMap,
         argv: [...leadingFlags, '-', ...args.slice(scriptIdx + 1)],
         filename: '[stdin]',
         dirname: ctx.cwd || '/home/user',
@@ -723,11 +734,13 @@ export function buildRuntimeHandler(
     // What the server-launch analysis reads: JavaScript as written (an ES module's
     // lowering requires through its own helper), TypeScript and JSX compiled.
     const written = code;
+    let esModuleMap: string | undefined;
     if (typescript !== null || scriptExt === '.jsx' || esm) {
       const loader = typescript ?? (scriptExt === '.jsx' ? 'jsx' : 'js');
       const lowered = await lowerToCommonJs(code, loader, 'file:///' + resolvedPath.replace(/^\/+/, ''), scriptPath, esm);
       if (lowered === null) return 1;
-      code = lowered;
+      code = lowered.code;
+      esModuleMap = lowered.map;
     }
 
     const filename = '/' + resolvedPath;
@@ -736,6 +749,7 @@ export function buildRuntimeHandler(
       : '/';
     return runProgram(code, {
       esModule: esm,
+      ...(esModuleMap ? { esModuleMap } : {}),
       argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
       filename,
       dirname,

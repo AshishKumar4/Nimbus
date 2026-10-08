@@ -312,9 +312,9 @@ export interface EsbuildTransformOptions {
   moduleMetadata?: boolean;
   /**
    * The code is an ES module, lowered to CommonJS in this runtime's scope
-   * (async-module-lowering.ts lowerEsModule); dynamicImportParent,
-   * moduleMetadata and, where the engine lowers it instead, define are the
-   * only other options read.
+   * at dynamicImportParent (async-module-lowering.ts lowerEsModule), its
+   * result's map the EsModuleMap; where the engine lowers it instead,
+   * moduleMetadata and define are read too.
    */
   esModule?: ModuleScope;
 }
@@ -478,7 +478,7 @@ async function runTransformRequest(
   options: EsbuildTransformOptions | undefined,
   rewrite: (code: string, parentUrl: string, moduleMetadata?: boolean, routeImports?: boolean) => string,
   lower: (esm: string) => string,
-  lowerEsModule: (source: string, scope: ModuleScope) => TransformResult,
+  lowerEsModule: (source: string, scope: ModuleScope, parentUrl: string) => TransformResult,
 ): Promise<TransformResult> {
   const parent = options?.dynamicImportParent;
   if (options?.rewriteOnly) {
@@ -486,9 +486,9 @@ async function runTransformRequest(
     return { code: rewrite(code, parent, options.moduleMetadata), map: '', warnings: [] };
   }
   if (options?.esModule) {
-    let lowered: TransformResult;
+    if (parent === undefined) throw new Error('an ES module transform needs dynamicImportParent');
     try {
-      lowered = lowerEsModule(code, options.esModule);
+      return lowerEsModule(code, options.esModule, parent);
     } catch (e) {
       // Nested past what a parse on this stack reaches (acorn, about 600
       // levels): the engine's CommonJS, which in the transform facet runs out
@@ -498,7 +498,6 @@ async function runTransformRequest(
       const { esModule: _scope, ...rest } = options;
       return runTransformRequest(engine, code, { ...rest, loader: 'js', format: 'cjs', target: 'esnext' }, rewrite, lower, lowerEsModule);
     }
-    return parent === undefined ? lowered : { ...lowered, code: rewrite(lowered.code, parent, options.moduleMetadata) };
   }
   const esbuildApi = typeof engine === 'function' ? await engine() : engine;
   if (esbuildApi === null) throw new Error('esbuild transform before esbuild is loaded');

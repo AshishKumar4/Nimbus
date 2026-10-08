@@ -131,7 +131,7 @@ import {
   type SourceRealm,
 } from './runtime-function-source.js';
 import { INTERPRETER_UNSUPPORTED } from '../interpreter/unsupported-code.js';
-import { MODULE_BODY_MARK, applySourceEdits, forEachNode, type SourceEdit } from '../runtime/javascript-ast.js';
+import { applySourceEdits, forEachNode, type SourceEdit } from '../runtime/javascript-ast.js';
 import { moduleImporterUrl } from './module-importer.js';
 
 export type { RuntimeFunctionKind } from './runtime-function-source.js';
@@ -232,21 +232,25 @@ const WRAPPER_HEAD = 'module.exports = (0, function (Function) { return function
  * Wrap a CommonJS cell as a `{ cjs }` module whose export, given the
  * module's `Function`, is Node's module wrapper function, in the given scope
  * (THE WRAPPER). A leading shebang becomes a line comment of the same length
- * (Node strips it too; `#!` is not valid inside a function).
+ * (Node strips it too; `#!` is not valid inside a function). `loweredHead`
+ * is a lowered ES module's (EsModuleMap.head): its first line's generated
+ * code, which a frame counts as wrapper.
  */
-export function wrapCommonJsCell(cell: string, scope: CommonJsCellScope = 'function', lowered = false): WrappedCommonJsCell {
+export function wrapCommonJsCell(cell: string, scope: CommonJsCellScope = 'function', loweredHead = 0): WrappedCommonJsCell {
   const hashbang = cell.charCodeAt(0) === 35 && cell.charCodeAt(1) === 33;
   const body = hashbang ? '//' + cell.slice(2) : cell;
   const head = scope === 'function'
     ? WRAPPER_HEAD
     : WRAPPER_HEAD + (opensWithUseStrict(body) ? '"use strict";' : '') + '{';
   const tail = scope === 'function' ? '\n}; });' : '\n}}; });';
-  // A lowered ES module's first line opens with the lowering's own code: to a frame, the head too.
-  const mark = lowered ? body.indexOf(MODULE_BODY_MARK) : -1;
-  const lineEnd = body.search(/[\n\r\u2028\u2029]/);
-  const opening = mark !== -1 && (lineEnd === -1 || mark < lineEnd) ? mark + MODULE_BODY_MARK.length : 0;
-  return { text: head + body + tail, head: head.length + opening, tail: tail.length, hashbang };
+  return { text: head + body + tail, head: head.length + loweredHead, tail: tail.length, hashbang };
 }
+
+/** The module beside a code module that holds its emit's ColumnMap (core async-module-lowering.ts), read by its frames. */
+export function columnMapModuleName(name: string): string {
+  return name + COLUMN_MAP_SUFFIX;
+}
+const COLUMN_MAP_SUFFIX = '.columns';
 
 const WRAPPER_NAMES = new Set(['exports', 'require', 'module', '__filename', '__dirname']);
 /** Could the text declare a wrapper name lexically at all: the cheap test before a parse. */
@@ -649,18 +653,19 @@ function __nimbusFrameFile(module) {
 }
 // A lowered ES module's edits that moved its columns, by line: [source column,
 // generated length, source text, 1 for a call] (async-module-lowering.ts
-// columnMapComment), read once from the first line of its text; null for none.
+// ColumnMap), read once from the module beside its own; null for none.
 function __nimbusColumnEdits(module) {
   if (module.columns !== undefined) return module.columns;
   module.columns = null;
   if (!module.esModule) return null;
-  const text = __nimbusFrameModuleText(module);
-  const lineEnd = text === null ? -1 : text.search(/[\\n\\r\\u2028\\u2029]/);
-  const first = text === null ? "" : text.slice(0, lineEnd === -1 ? text.length : lineEnd);
-  const at = first.indexOf("/*nimbus-columns ");
-  if (at === -1) return null;
+  let entries;
+  try {
+    entries = JSON.parse(__nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + module.name + ${JSON.stringify(COLUMN_MAP_SUFFIX)}, "utf8"));
+  } catch {
+    return null;
+  }
   const columns = new Map();
-  for (const entry of JSON.parse(first.slice(at + 17, first.indexOf("*/", at)))) {
+  for (const entry of entries) {
     const line = columns.get(entry[0]) ?? [];
     line.push(entry);
     columns.set(entry[0], line);
@@ -778,9 +783,10 @@ class __NimbusCallSite {
 }
 {
   let __userPrepare;
+  const __apply = Reflect.apply;
   const __prepare = function prepareStackTrace(error, sites) {
     // As Node's prepareStackTraceCallback calls it: a method of Error.
-    if (typeof __userPrepare === "function") return __userPrepare.call(globalThis.Error, error, sites.map(__NimbusCallSite.of));
+    if (typeof __userPrepare === "function") return __apply(__userPrepare, globalThis.Error, [error, sites.map(__NimbusCallSite.of)]);
     let stack;
     try {
       stack = Error.prototype.toString.call(error);

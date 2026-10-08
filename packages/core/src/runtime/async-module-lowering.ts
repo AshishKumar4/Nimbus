@@ -29,11 +29,10 @@
  * CommonJS cell gives a module with top-level await; `sync` is the module's
  * own statements at the wrapper's top level.
  *
- * Every line and column of the module stays where the source has it, as V8
- * reports them in Node: what the emitter adds goes on the first line, before
- * MODULE_BODY_MARK, and a declaration it removes leaves spaces and its line
- * breaks. A use of an import, rewritten to read its module, is longer than
- * the name it replaces.
+ * Every line of the module stays where the source has it: what the emitter
+ * adds goes on the first line, before the module (its `head`), and every
+ * edit keeps the line breaks it replaces. Where an edit moves a column, the
+ * emit's ColumnMap says so, for its frames to read the source's place.
  *
  * Acorn's parse gives the declarations: esbuild prints an import or export
  * clause across several lines when it is long (serve 14's `import {\n
@@ -43,10 +42,11 @@
  * Runs in the transform facet (installed by oxc-facet/preamble.ts), in
  * esbuild-service.ts, and in the shell's `node` command.
  */
-import type { ModuleDeclaration, Pattern, Statement } from 'acorn';
-import { applySourceEdits, COMMONJS_WRAPPER_NAMES, MODULE_BODY_MARK, MODULE_PARSE_OPTIONS, parseStatements, type SourceEdit } from './javascript-ast.js';
+import { tokenizer, tokTypes, type ModuleDeclaration, type Pattern, type Statement } from 'acorn';
+import { DYNAMIC_IMPORT_HELPER } from './dynamic-import-rewrite.js';
+import { applySourceEdits, COMMONJS_WRAPPER_NAMES, MODULE_PARSE_OPTIONS, parseStatements, type SourceEdit } from './javascript-ast.js';
 import { bindingScope, list, namesBinding, programNames, scoped, stringOf, type EsNode, type Scope } from './javascript-scope.js';
-import { ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs, esModuleSource, type ModuleScope } from './module-format.js';
+import { ES_MODULE_UNBOUND_NAMES, esModuleSource, type ModuleScope } from './module-format.js';
 
 /**
  * One name an import binds: the module's namespace, or one of its exports
@@ -68,7 +68,7 @@ export type EsmImportBinding =
 export interface EsmReference {
   readonly start: number;
   readonly end: number;
-  readonly use: 'read' | 'call' | 'leading-call' | 'shorthand' | 'write';
+  readonly use: 'read' | 'typeof' | 'call' | 'leading-call' | 'shorthand' | 'write';
 }
 
 /**
@@ -104,14 +104,27 @@ function blank(text: string): string {
 }
 
 /**
- * Names for code generated around `source`: a prefix its text does not hold
- * anywhere, then a number, so no binding of the source is one of them.
+ * Names for code generated around `source`: none of `names`, its identifiers
+ * as the parse reads them (unicode escapes decoded); by default its tokens'.
  */
-export function generatedNames(source: string): () => string {
-  let prefix = '__nimbus_m';
-  while (source.includes(prefix)) prefix += '_';
+export function generatedNames(source: string, names: ReadonlySet<string> = identifierNames(source)): () => string {
   let count = 0;
-  return () => `${prefix}${count++}`;
+  return () => {
+    let name: string;
+    do name = `__nimbus_m${count++}`; while (names.has(name));
+    return name;
+  };
+}
+
+function identifierNames(source: string): Set<string> {
+  const names = new Set<string>();
+  try {
+    for (const token of tokenizer(source, MODULE_PARSE_OPTIONS)) if (token.type === tokTypes.name) names.add(String(token.value));
+  } catch (error) {
+    // The parse after this reports the module's syntax error.
+    if (!(error instanceof SyntaxError)) throw error;
+  }
+  return names;
 }
 
 export interface CommonJsEmitOptions {
@@ -129,13 +142,19 @@ export interface CommonJsEmitOptions {
   readonly exportsObject?: string;
   /** The CommonJS require function, as an expression. Default `require`. */
   readonly requireFunction?: string;
-  /** Further edits to the body, outside every record's range (import.meta rewrites). */
+  /** Further edits to the body, outside every record's range. */
   readonly edits?: readonly SourceEdit[];
   /**
-   * What a later pass replaces in place, as long as it is (dynamic-import-rewrite.ts:
-   * import.meta, an import()'s `import`): its source text, for the column map.
+   * The module's import.meta (each `metas` span) read from `metadata`, an
+   * expression, and its import() calls (each at a `dynamicImports` start)
+   * made through the process's loader with `parentUrl` as their parent.
    */
-  readonly replacedInPlace?: readonly Span[];
+  readonly bind?: {
+    readonly metadata: string;
+    readonly parentUrl: string;
+    readonly metas: readonly Span[];
+    readonly dynamicImports: readonly number[];
+  };
 }
 
 interface Span { readonly start: number; readonly end: number }
@@ -146,31 +165,42 @@ export function lowerAsyncModule(esm: string): string {
 }
 
 /**
- * An ES module lowered to the CommonJS a cell runs (commonjs-cell.ts): the
- * one lowering, which the transform facet runs for a module under
- * bundle-cell-transform.ts BUNDLED_ESM_REWRITE_MIN_BYTES and the session for
- * a larger one, read a statement at a time (bounded memory). Its import()
- * and import.meta are bound after, by the dynamic-import rewrite. In Node's
- * `scope` a free use of a CommonJS wrapper name binds nothing
- * (module-format.ts ES_MODULE_UNBOUND_NAMES); in Bun's the module keeps
- * them. Throws acorn's SyntaxError for a module that does not parse.
+ * An ES module lowered to the CommonJS a cell runs (commonjs-cell.ts), at
+ * `parentUrl`: the one lowering, which the transform facet runs for a module
+ * under bundle-cell-transform.ts BUNDLED_ESM_REWRITE_MIN_BYTES and the
+ * session for a larger one, read a statement at a time (bounded memory). Its
+ * import.meta is the cell's module's, its import() the process loader's. In
+ * Node's `scope` a free use of a CommonJS wrapper name binds nothing
+ * (module-format.ts ES_MODULE_UNBOUND_NAMES; its typeof is 'undefined'); in
+ * Bun's the module keeps them. `map` is the emit's EsModuleMap. Throws
+ * acorn's SyntaxError for a module that does not parse.
  */
-export function lowerEsModule(source: string, scope: ModuleScope): { code: string; map: string; warnings: [] } {
+export function lowerEsModule(source: string, scope: ModuleScope, parentUrl: string): { code: string; map: string; warnings: [] } {
   const module = esModuleSource(source);
-  const { records, wrapperUses, topLevelAwait, replacedInPlace } = readEsmModule(module);
+  const { records, wrapperUses, topLevelAwait, metas, dynamicImports, names } = readEsmModule(module);
   const unbound: SourceEdit[] = [];
   if (scope === 'node') for (const [name, references] of wrapperUses) {
     const to = ES_MODULE_UNBOUND_NAMES[name]!;
-    for (const { start, end, use } of references) unbound.push({ start, end, text: use === 'shorthand' ? `${name}: ${to}` : to });
+    for (const { start, end, use } of references) {
+      unbound.push({ start, end, text: use === 'typeof' ? '(void 0)' : use === 'shorthand' ? `${name}: ${to}` : to });
+    }
   }
-  const code = emitCommonJs(module, records, {
+  const { code, head, columns } = emitModule(module, records, {
     body: topLevelAwait ? 'async' : 'sync',
+    names: generatedNames(module, names),
     exportsObject: 'arguments[2].exports',
     requireFunction: 'arguments[1]',
     edits: unbound,
-    replacedInPlace,
+    bind: { metadata: 'arguments[2].__nimbusImportMeta', parentUrl, metas, dynamicImports },
   });
-  return { code: scope === 'node' ? esModuleScopeTypeofs(code) : code, map: '', warnings: [] };
+  const map: EsModuleMap = { head, columns };
+  return { code, map: JSON.stringify(map), warnings: [] };
+}
+
+/** What a lowered ES module's frames read back as its source's places: its emit's head and ColumnMap. */
+export interface EsModuleMap {
+  readonly head: number;
+  readonly columns: ColumnMap;
 }
 
 /** A use of a name an import may bind, before the module's imports are all known. */
@@ -208,12 +238,16 @@ export function readEsmModule(source: string): {
   wrapperUses: ReadonlyMap<string, readonly EsmReference[]>;
   /** An `await` (or `for await`) outside every function. */
   topLevelAwait: boolean;
-  /** Each one-line import.meta, and each import()'s `import`. */
-  replacedInPlace: readonly Span[];
+  /** Every import.meta, and where each import() starts. */
+  metas: readonly Span[];
+  dynamicImports: readonly number[];
+  /** Every identifier's name, unicode escapes decoded. */
+  names: ReadonlySet<string>;
 } {
   const first = readModule(source, null);
   const read = first.importsAfterCode ? readModule(source, first.imported) : first;
-  return { records: read.records, wrapperUses: read.wrapperUses, topLevelAwait: read.topLevelAwait, replacedInPlace: read.replacedInPlace };
+  const { records, wrapperUses, topLevelAwait, metas, dynamicImports, names } = read;
+  return { records, wrapperUses, topLevelAwait, metas, dynamicImports, names };
 }
 
 function readModule(source: string, known: ReadonlySet<string> | null): {
@@ -222,7 +256,9 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
   importsAfterCode: boolean;
   wrapperUses: Map<string, EsmReference[]>;
   topLevelAwait: boolean;
-  replacedInPlace: Span[];
+  metas: Span[];
+  dynamicImports: number[];
+  names: Set<string>;
 } {
   // ModuleExportName: an identifier, or a string such as `export { a as "b-c" }`.
   const nameOf = (node: { type: string; name?: string; value?: unknown }) =>
@@ -240,7 +276,9 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
   const awaits: number[] = [];
   // Where an expression statement starts with a tracked name: a call there is a leading-call.
   const statementStarts = new Set<number>();
-  const replacedInPlace: Span[] = [];
+  const metas: Span[] = [];
+  const dynamicImports: number[] = [];
+  const names = new Set<string>();
 
   const outside: Scope = { names: new Set(), parent: null };
   // Where an identifier spelled as an imported name starts, in order: code
@@ -282,7 +320,9 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
 
   const onIdentifier = (identifier: EsNode) => {
     const name = stringOf(identifier, 'name');
-    if (name === null || !tracked.has(name)) return;
+    if (name === null) return;
+    names.add(name);
+    if (!tracked.has(name)) return;
     // Identifiers finish in source order; one out of it is put in its place.
     let at = mentions.length;
     while (at > 0 && mentions[at - 1]! > identifier.start) at--;
@@ -372,9 +412,9 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
       else if (node.type === 'ExpressionStatement') {
         if (mentioned(node.start, node.start + 1)) statementStarts.add(node.start);
       } else if (node.type === 'ImportExpression') {
-        replacedInPlace.push({ start: node.start, end: node.start + 'import'.length });
+        dynamicImports.push(node.start);
       } else if (node.type === 'MetaProperty') {
-        if (node.end - node.start === 'import.meta'.length) replacedInPlace.push({ start: node.start, end: node.end });
+        if (stringOf(node.meta as EsNode, 'name') === 'import') metas.push({ start: node.start, end: node.end });
       } else if (node.type === 'AwaitExpression' || (node.type === 'ForOfStatement' && node.await)) awaits.push(node.start);
       // A function, once finished: its free uses, before its body is dropped.
       else if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
@@ -395,7 +435,7 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
     const found = uses.get(name);
     if (found && !declared.has(name)) wrapperUses.set(name, found);
   }
-  return { records: withUses, imported, importsAfterCode, wrapperUses, topLevelAwait: awaits.length > 0, replacedInPlace };
+  return { records: withUses, imported, importsAfterCode, wrapperUses, topLevelAwait: awaits.length > 0, metas, dynamicImports, names };
 }
 
 /** How an identifier under `parent` by `key` uses the binding it names. */
@@ -416,6 +456,8 @@ function useOf(parent: EsNode, key: string, patternProperties: ReadonlySet<EsNod
       return parent.shorthand === true ? 'shorthand' : 'read';
     case 'CallExpression':
       return key === 'callee' ? 'call' : 'read';
+    case 'UnaryExpression':
+      return parent.operator === 'typeof' ? 'typeof' : 'read';
     case 'TaggedTemplateExpression':
       return key === 'tag' ? 'call' : 'read';
     default:
@@ -425,6 +467,15 @@ function useOf(parent: EsNode, key: string, patternProperties: ReadonlySet<EsNod
 
 /** The CommonJS for ES module `source`, whose import and export declarations are `records`. */
 export function emitCommonJs(source: string, records: readonly EsmRecord[], options: CommonJsEmitOptions): string {
+  return emitModule(source, records, options).code;
+}
+
+/**
+ * The emit, with where its first line's generated code ends (`head`, which
+ * the cell wrapper adds to its own) and the columns its edits moved
+ * (ColumnMap): what a frame of it reads back as the source's places.
+ */
+function emitModule(source: string, records: readonly EsmRecord[], options: CommonJsEmitOptions): { code: string; head: number; columns: ColumnMap } {
   const temp = options.names ?? generatedNames(source);
   const key = (name: string) => `[${JSON.stringify(name)}]`;
   // The wrapper's top level holds only generated names (these helpers, and
@@ -575,37 +626,46 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
     );
   }
   if (requires.length > 0) header.push(`const ${requireRef} = (specifier) => ${options.requireFunction ?? 'require'}(specifier);`);
+  const bind = options.bind;
+  if (bind && bind.metas.length > 0) {
+    const meta = temp();
+    header.push(`const ${meta} = ${bind.metadata};`);
+    for (const { start, end } of bind.metas) edits.push({ start, end, text: meta + blank(source.slice(start, end)).replace(/ /g, '') });
+  }
+  if (bind && bind.dynamicImports.length > 0) {
+    const load = temp();
+    header.push(`const ${load} = (...args) => ${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(bind.parentUrl)}, ...args);`);
+    for (const start of bind.dynamicImports) edits.push({ start, end: start + 'import'.length, text: load });
+  }
   const installed = getters
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([exported, value]) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`);
   const allEdits = [...edits, ...uses];
-  const kept = (options.replacedInPlace ?? []).map(({ start, end }) => ({ start, end, text: source.slice(start, end), kept: true as const }));
-  const prologue = [...installed, ...requires, ...imported, ...stars].join(' ') + columnMapComment(source, [...allEdits, ...kept]);
-  const body = applySourceEdits(source, allEdits);
+  const prologue = [...installed, ...requires, ...imported, ...stars].join(' ');
   // An ES module is strict: the directive opens the first line, where the
   // wrapper finds it (commonjs-cell.ts).
-  return options.body === 'async'
-    ? `"use strict";${header.join(' ')} return (async () => { ${prologue}${MODULE_BODY_MARK}${body}\n})();\n`
-    : `"use strict";${header.join(' ')} ${prologue}${MODULE_BODY_MARK}${body}\n`;
+  const lead = options.body === 'async'
+    ? `"use strict";${header.join(' ')} return (async () => { ${prologue}`
+    : `"use strict";${header.join(' ')} ${prologue}`;
+  const code = lead + applySourceEdits(source, allEdits) + (options.body === 'async' ? '\n})();\n' : '\n');
+  return { code, head: lead.length, columns: columnMap(source, allEdits) };
 }
 
+/** An edit of the module's text; a call's (`(0, m.f)(…)`) is placed by V8 at its end, where the source's is at its start. */
+type ColumnEdit = SourceEdit & { call?: true };
+
 /**
- * An edit of the module's text; a call's (`(0, m.f)(…)`) is placed by V8 at
- * its end, where the source's is at its start. A kept one is a later pass's.
+ * Where a module's edits change a line, by line: [line, source column,
+ * generated length, source text], and 1 for a call (commonjs-cell.ts
+ * __nimbusSourceColumn, __nimbusSourceLine).
  */
-type ColumnEdit = SourceEdit & { call?: true; kept?: true };
+export type ColumnMap = Array<[number, number, number, string] | [number, number, number, string, 1]>;
 
 const LINE_BREAK = /\r\n|[\n\r\u2028\u2029]/;
 
-/**
- * Where the edits change a line, for a frame's column and the fatal report's
- * line (commonjs-cell.ts __nimbusSourceColumn, __nimbusSourceLine): by line,
- * [source column, generated length, source text], and 1 for a call. Every
- * edit keeps the module's line breaks, so each line of the source is a line
- * of the emit.
- */
-function columnMapComment(source: string, edits: readonly ColumnEdit[]): string {
-  const entries: Array<[number, number, number, string] | [number, number, number, string, 1]> = [];
+/** The ColumnMap of `edits`, each of which keeps the module's line breaks: each line of the source is a line of the emit. */
+function columnMap(source: string, edits: readonly ColumnEdit[]): ColumnMap {
+  const entries: ColumnMap = [];
   const ordered = [...edits].sort((a, b) => a.start - b.start);
   let line = 1;
   let lineStart = 0;
@@ -622,11 +682,11 @@ function columnMapComment(source: string, edits: readonly ColumnEdit[]): string 
     for (let i = 0; i < from.length; i++) {
       const column = i === 0 ? edit.start - lineStart : 0;
       const text = i === from.length - 1 ? to.slice(i).join('') : to[i]!;
-      if (text === from[i] && !edit.kept) continue;
+      if (text === from[i]) continue;
       entries.push(edit.call && i === from.length - 1 ? [line + i, column, text.length, from[i]!, 1] : [line + i, column, text.length, from[i]!]);
     }
   }
-  return entries.length === 0 ? '' : `/*nimbus-columns ${JSON.stringify(entries).replace(/\*\//g, '*\\/')}*/`;
+  return entries;
 }
 
 /** The bindings an exported declaration introduces. */
