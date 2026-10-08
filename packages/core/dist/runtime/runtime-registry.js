@@ -41,7 +41,7 @@ import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.
 import { stripsTypeScript, typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { errorText } from '../_shared/error-text.js';
-import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput, typeScriptFormat, typeScriptUnderNodeModules } from './module-format.js';
+import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput, typeScriptEntryRefused, typeScriptUnderNodeModules } from './module-format.js';
 import { nodeModulesRefusal, typeScriptRefusalShim, unknownExtensionRefusal } from './typescript-refusal.js';
 import { packageScopeType } from './require-resolution.js';
 import { isDirectory } from '../vfs/vfs.js';
@@ -515,11 +515,8 @@ export function buildRuntimeHandler(spec, ctx0) {
         const stripTypes = spec.nodeCommandLine && moduleScope === 'node' && stripsTypeScript(resolvedPath) ? typeScriptStripOptions(launch) : null;
         let stripped = null;
         if (stripTypes === 'javascript') {
-            // JavaScript to Node's CommonJS loader, which hands an ES module (by
-            // Node's format for it) to its ES loader, which knows no TypeScript.
-            const source = code;
-            const esModule = typeScriptFormat(resolvedPath, () => packageType, () => source, true) === 'module';
-            stripped = { code: esModule ? typeScriptRefusalShim(unknownExtensionRefusal('/' + resolvedPath)) : source, esModule: false };
+            const refused = typeScriptEntryRefused(packageType, code, launch.import.length > 0);
+            stripped = { code: refused ? typeScriptRefusalShim(unknownExtensionRefusal('/' + resolvedPath)) : code, esModule: false };
         }
         else if (stripTypes !== null) {
             stripped = await stripTypeScriptEntry(code, resolvedPath, packageType, stripTypes, scriptPath);

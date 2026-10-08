@@ -10006,11 +10006,11 @@ error: the Oxc transform crashed (${reason})`);
     return typescriptLoader(path) === "ts" && !isTypescriptDeclarationFile(path);
   }
 
-  function typeScriptFormat(path, packageType, stripped, asJavaScript = false) {
+  function typeScriptFormat(path, packageType, stripped) {
     if (!stripsTypeScript(path)) return null;
     const ext = vfsPathExtension(path);
-    if (ext === ".mts" && !asJavaScript) return "module";
-    if (ext === ".cts" && !asJavaScript) return "commonjs";
+    if (ext === ".mts") return "module";
+    if (ext === ".cts") return "commonjs";
     const type = packageType();
     if (type !== null) return type;
     return containsModuleSyntax(stripped()) ? "module" : "commonjs";

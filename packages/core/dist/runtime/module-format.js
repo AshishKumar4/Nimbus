@@ -30,23 +30,30 @@ export function isEsModuleFile(path, source, packageType) {
     const type = ext === '.js' || ext === '' ? packageType() : null;
     return type === null ? containsModuleSyntax(source) : type === 'module';
 }
-/**
- * Node 22.22.3's get_format.js for TypeScript; `stripped` is read only where
- * the package type does not decide. As JavaScript (`--no-experimental-strip-types`),
- * `.mts` and `.cts` say nothing either: the file is as a `.js` file is.
- */
-export function typeScriptFormat(path, packageType, stripped, asJavaScript = false) {
+/** Node 22.22.3's get_format.js for TypeScript; `stripped` is read only for a typeless `.ts`. */
+export function typeScriptFormat(path, packageType, stripped) {
     if (!stripsTypeScript(path))
         return null;
     const ext = vfsPathExtension(path);
-    if (ext === '.mts' && !asJavaScript)
+    if (ext === '.mts')
         return 'module';
-    if (ext === '.cts' && !asJavaScript)
+    if (ext === '.cts')
         return 'commonjs';
     const type = packageType();
     if (type !== null)
         return type;
     return containsModuleSyntax(stripped()) ? 'module' : 'commonjs';
+}
+/**
+ * TypeScript Node does not strip (`--no-experimental-strip-types`) run as the
+ * program's entry: Node's ES loader takes it under `--import`, in a type:module
+ * package or with module syntax (run_main.js), and refuses its extension;
+ * otherwise its CommonJS loader runs it as JavaScript. Required, such a file is
+ * the CommonJS loader's whatever its package (its .js handler reads the type of
+ * .js alone): an ES module by its syntax.
+ */
+export function typeScriptEntryRefused(packageType, source, imports) {
+    return imports || packageType === 'module' || containsModuleSyntax(source);
 }
 /** Node refuses to strip a file under node_modules (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING). */
 export function typeScriptUnderNodeModules(path) {
