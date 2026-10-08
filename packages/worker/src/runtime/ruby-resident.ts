@@ -273,9 +273,12 @@ export function buildRubySocketProcessWorker(preamble: string): string {
     '    globalThis.__nimbusFsJournalSql = ctx.storage.sql;',
     '  }',
     // Pending while this isolate lives: the coordinator learns of its death
-    // (out of memory, out of CPU) by this call's rejection.
+    // (out of memory, out of CPU) by this call's rejection. Its resolver is
+    // kept on the object, so a collection never finds the promise
+    // unsettleable (which the runtime answers by rejecting it: "Promise will
+    // never complete").
     '  held() {',
-    '    return new Promise(() => {});',
+    '    return new Promise((resolve) => { (this.__nimbusHeld ??= []).push(resolve); });',
     '  }',
     '  async startProcess(args) {',
     '    __nimbusAdoptRubySupervisor(this.env);',
