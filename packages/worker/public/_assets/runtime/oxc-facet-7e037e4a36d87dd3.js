@@ -9198,7 +9198,7 @@ function ${name}(...args) { return ${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(par
   }
   function lowerEsModule(source, scope) {
     const module = esModuleSource(source);
-    const { records, wrapperUses, topLevelAwait } = readEsmModule(module);
+    const { records, wrapperUses, topLevelAwait, replacedInPlace } = readEsmModule(module);
     const unbound = [];
     if (scope === "node") for (const [name, references] of wrapperUses) {
       const to = ES_MODULE_UNBOUND_NAMES[name];
@@ -9208,7 +9208,8 @@ function ${name}(...args) { return ${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(par
       body: topLevelAwait ? "async" : "sync",
       exportsObject: "arguments[2].exports",
       requireFunction: "arguments[1]",
-      edits: unbound
+      edits: unbound,
+      replacedInPlace
     });
     return { code: scope === "node" ? esModuleScopeTypeofs(code) : code, map: "", warnings: [] };
   }
@@ -9218,7 +9219,7 @@ function ${name}(...args) { return ${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(par
   function readEsmModule(source) {
     const first = readModule(source, null);
     const read = first.importsAfterCode ? readModule(source, first.imported) : first;
-    return { records: read.records, wrapperUses: read.wrapperUses, topLevelAwait: read.topLevelAwait };
+    return { records: read.records, wrapperUses: read.wrapperUses, topLevelAwait: read.topLevelAwait, replacedInPlace: read.replacedInPlace };
   }
   function readModule(source, known) {
     const nameOf = (node) => node.type === "Identifier" ? String(node.name) : String(node.value);
@@ -9231,6 +9232,7 @@ function ${name}(...args) { return ${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(par
     let importsAfterCode = false;
     const awaits = [];
     const statementStarts =   new Set();
+    const replacedInPlace = [];
     const outside = { names:   new Set(), parent: null };
     const mentions = [];
     const mentioned = (start, end) => {
@@ -9365,6 +9367,10 @@ function ${name}(...args) { return ${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(par
         if (node.type === "Identifier") onIdentifier(node);
         else if (node.type === "ExpressionStatement") {
           if (mentioned(node.start, node.start + 1)) statementStarts.add(node.start);
+        } else if (node.type === "ImportExpression") {
+          replacedInPlace.push({ start: node.start, end: node.start + "import".length });
+        } else if (node.type === "MetaProperty") {
+          if (node.end - node.start === "import.meta".length) replacedInPlace.push({ start: node.start, end: node.end });
         } else if (node.type === "AwaitExpression" || node.type === "ForOfStatement" && node.await) awaits.push(node.start);
         else if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
           freeIn.set(node, freeUses(node));
@@ -9382,7 +9388,7 @@ function ${name}(...args) { return ${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(par
       const found = uses.get(name);
       if (found && !declared.has(name)) wrapperUses.set(name, found);
     }
-    return { records: withUses, imported, importsAfterCode, wrapperUses, topLevelAwait: awaits.length > 0 };
+    return { records: withUses, imported, importsAfterCode, wrapperUses, topLevelAwait: awaits.length > 0, replacedInPlace };
   }
   function useOf(parent, key, patternProperties) {
     switch (parent.type) {
@@ -9520,7 +9526,8 @@ function ${name}(...args) { return ${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(par
     if (requires.length > 0) header.push(`const ${requireRef} = (specifier) => ${options.requireFunction ?? "require"}(specifier);`);
     const installed = getters.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([exported, value]) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`);
     const allEdits = [...edits, ...uses];
-    const prologue = [...installed, ...requires, ...imported, ...stars].join(" ") + columnMapComment(source, allEdits);
+    const kept = (options.replacedInPlace ?? []).map(({ start, end }) => ({ start, end, text: source.slice(start, end), kept: true }));
+    const prologue = [...installed, ...requires, ...imported, ...stars].join(" ") + columnMapComment(source, [...allEdits, ...kept]);
     const body = applySourceEdits(source, allEdits);
     return options.body === "async" ? `"use strict";${header.join(" ")} return (async () => { ${prologue}${MODULE_BODY_MARK}${body}
 })();
@@ -9546,7 +9553,7 @@ function ${name}(...args) { return ${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(par
       for (let i = 0; i < from.length; i++) {
         const column = i === 0 ? edit.start - lineStart : 0;
         const text = i === from.length - 1 ? to.slice(i).join("") : to[i];
-        if (text === from[i]) continue;
+        if (text === from[i] && !edit.kept) continue;
         entries.push(edit.call && i === from.length - 1 ? [line + i, column, text.length, from[i], 1] : [line + i, column, text.length, from[i]]);
       }
     }

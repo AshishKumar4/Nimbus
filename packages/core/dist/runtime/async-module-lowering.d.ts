@@ -95,6 +95,15 @@ export interface CommonJsEmitOptions {
     readonly requireFunction?: string;
     /** Further edits to the body, outside every record's range (import.meta rewrites). */
     readonly edits?: readonly SourceEdit[];
+    /**
+     * What a later pass replaces in place, as long as it is (dynamic-import-rewrite.ts:
+     * import.meta, an import()'s `import`): its source text, for the column map.
+     */
+    readonly replacedInPlace?: readonly Span[];
+}
+interface Span {
+    readonly start: number;
+    readonly end: number;
 }
 /** `esm` lowered to the CommonJS function body of an async module. */
 export declare function lowerAsyncModule(esm: string): string;
@@ -140,7 +149,10 @@ export declare function readEsmModule(source: string): {
     wrapperUses: ReadonlyMap<string, readonly EsmReference[]>;
     /** An `await` (or `for await`) outside every function. */
     topLevelAwait: boolean;
+    /** Each one-line import.meta, and each import()'s `import`. */
+    replacedInPlace: readonly Span[];
 };
 /** The CommonJS for ES module `source`, whose import and export declarations are `records`. */
 export declare function emitCommonJs(source: string, records: readonly EsmRecord[], options: CommonJsEmitOptions): string;
+export {};
 //# sourceMappingURL=async-module-lowering.d.ts.map
