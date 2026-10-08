@@ -119,17 +119,6 @@ declare const NimbusLoadedEntrypointPropsSchema: z.ZodObject<{
             subRequests: z.ZodOptional<z.ZodNumber>;
         }, z.core.$strip>>;
     }, z.core.$loose>>;
-    supervisor: z.ZodOptional<z.ZodObject<{
-        doId: z.ZodString;
-        pid: z.ZodNumber;
-        writerId: z.ZodString;
-        route: z.ZodOptional<z.ZodObject<{
-            supervisorEntrypoint: z.ZodString;
-            hostNamespace: z.ZodString;
-            hostDispatchMethod: z.ZodString;
-        }, z.core.$strip>>;
-        hostIncarnation: z.ZodOptional<z.ZodString>;
-    }, z.core.$strip>>;
     stage: z.ZodOptional<z.ZodUnknown>;
 }, z.core.$loose>;
 type NimbusLoadedEntrypointProps = z.infer<typeof NimbusLoadedEntrypointPropsSchema>;
@@ -195,7 +184,6 @@ export declare class NimbusLoadedWorker extends WorkerEntrypoint<NimbusLoaderShi
 /** Hop 3: a named-or-default entrypoint. Exposes .fetch(). */
 export declare class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv, NimbusLoadedEntrypointProps> {
     _props(): NimbusLoadedEntrypointProps;
-    _supervisorBinding(props: NimbusLoadedEntrypointProps): Promise<unknown>;
     _resolveEntrypoint(): Promise<LoadedEntrypoint>;
     /**
      * Relay the inner entrypoint's Response to the caller with a LIVE body.
@@ -233,6 +221,11 @@ export declare class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoade
      * cross-request-I/O limitation.
      */
     fetch(request: Request): Promise<Response>;
+    /**
+     * A staged one-shot's run (runOneShot): forwarded to the program assembled
+     * here, with its host's capability and its `ended`, in this one request.
+     */
+    run(request: Request, supervisor: unknown, ended: unknown): Promise<Response>;
 }
 /** Props the synthesized namespace carries: which binding, on which supervisor. */
 interface NimbusDoNamespaceProps {

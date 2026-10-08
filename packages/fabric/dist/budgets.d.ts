@@ -218,6 +218,8 @@ export declare function readmitRefused(refused: EndLoaderFetch, options: {
     since: number;
     signal?: AbortSignal;
 }): Promise<EndLoaderFetch | undefined>;
+/** The one Dynamic Worker a process puts in flight, on the ledger: its launch, then its run or its residency. */
+export declare function launchWorkerKey(pid: number): string;
 /**
  * Run a launch admitted once on the ledger. It waits, as
  * {@link beginLoaderFetchWhenFree} with its process does, for one Dynamic

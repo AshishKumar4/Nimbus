@@ -1258,12 +1258,19 @@ export declare class FacetManager {
      */
     private _endBySignal;
     /**
-     * End a running process from outside it (a signal, a lost host): its ports,
-     * RPC resources and writers go, it exits with `code` and `reason`, and the
-     * host hears of it. `portEnding` is what a request to one of its ports is
-     * told from then on (PortRegistry.ended).
+     * The process is over: its ports, writers and RPC resources go, and its
+     * end is recorded, once. Every way a process ends comes here: its own exit
+     * (reportExit, a run's answer), a signal, a kill, a lost host, a launch or
+     * boot that failed.
      */
-    private _endFromOutside;
+    private _end;
+    /**
+     * A lifetime run (its start call held open for its life): when that call
+     * ends, so do its resources; one that fails while the process still runs
+     * ends it, as `what` failing. One already over (its own exit, a kill)
+     * rejects the call as an echo of that end, which records nothing again.
+     */
+    private _watchLifetime;
     /**
      * The actor hosting `workerKey` reports, from its own next incarnation,
      * that the platform reset it under the process (session/rpc.ts
@@ -1747,15 +1754,6 @@ export declare class FacetManager {
      */
     private _stageOpencodeFacet;
     /**
-     * Attached-TTY staged-artifact lifecycle (the interactive opencode TUI). Boots
-     * the runner's startProcess() — which holds the facet open via ctx.waitUntil
-     * while opencode's createCliRenderer loop streams ANSI frames to the terminal
-     * RPC and the live stdin pump feeds keystrokes — and returns immediately with
-     * the pid. The facet reports its own exit via SUPERVISOR.reportExit; resources
-     * release on report-exit, the same contract the long-running node path uses.
-     */
-    private _execStagedArtifactAttached;
-    /**
      * Run a headless `opencode serve` as a resident, routeable server facet. The
      * server binds a KNOWN loopback port (honouring an explicit --port/-p/env.PORT,
      * else an allocated free port injected into argv) so the in-session loopback
@@ -1786,7 +1784,14 @@ export declare class FacetManager {
         command?: string;
         invokerPid?: number;
     }): Promise<StagedArtifactExecResult>;
-    private _runOpencodeServerFacet;
+    /**
+     * A staged opencode resident: the attached TUI, or with `port` a headless
+     * serve routed on it. Its runner holds startProcess open for the process's
+     * whole life, so that one call is the lifecycle; it reports its own exit.
+     * The module map is assembled on the Worker-Loader cache-miss path, so the
+     * artifact sources exist only while this facet is loading.
+     */
+    private _startStagedResident;
     /**
      * NIMBUS_DEBUG live evidence (log-tail channel) of where a resident process
      * was scheduled. The manager logs an opaque description; only the fabric
@@ -1869,14 +1874,6 @@ export declare class FacetManager {
     private _warmOpencodeServer;
     /** Recent stderr/stdout tail for a pid, for fail-loud diagnostics. */
     private _processLogTail;
-    /**
-     * A launch that fails before its process is running reports the same way
-     * regardless of which phase failed: the pid is exited, the terminal event
-     * recorded, and the session notified. Callers do their phase-specific
-     * cleanup (ports, tracked RPC resources) first and pass a reason that names
-     * the phase.
-     */
-    private _failLaunch;
     /**
      * Re-drive a journalled launch after an instance reset. What the journal
      * row carries is the recipe, and who the launch ran as (its credential and

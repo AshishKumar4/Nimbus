@@ -31,11 +31,10 @@ import { failureOf as errorFromCacheFailure } from '../runtime/stop-replay-body.
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
+import { bindingSupervisor, supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { claimDynamicWorkers, dynamicWorkerHeadroom, setProcessBlocked } from '@nimbus-sh/fabric/budgets.js';
 import { residentBootSpecSchema, } from '@nimbus-sh/fabric/process-fabric.js';
 import { processes, } from '@nimbus-sh/fabric/workerd-facet-host.js';
-import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { residentFacetOf } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { readHydrating } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
@@ -1450,11 +1449,7 @@ const HOSTED_RECORD_WAIT_MS = 30_000;
  */
 const RESIDENT_READ_RANGE_BYTES = 4 * 1024 * 1024;
 function peerDiskReader(supervisor) {
-    const supervisorRpc = supervisorEntrypoint(undefined, supervisor.route?.supervisorEntrypoint);
-    if (!supervisorRpc) {
-        throw new Error(`Nimbus: ctx.exports.${supervisor.route?.supervisorEntrypoint ?? 'SupervisorRPC'} unavailable`);
-    }
-    const fs = supervisorRpc({ props: supervisor });
+    const fs = bindingSupervisor(supervisor);
     return { readFile: (path) => readSupervisorFile(fs, path) };
 }
 async function readSupervisorFile(fs, path) {
