@@ -98,7 +98,8 @@ function world() {
       get() {
         const stub = {
           async supervisorOp(sent) {
-            const envelope = structuredClone(sent);
+            const envelope = sent.stream === undefined ? structuredClone(sent)
+              : { ...structuredClone({ ...sent, stream: undefined }), stream: sent.stream };
             const fault = w.faults.shift();
             w.arrivals.push({
               op: envelope.delivery?.op ?? envelope.op,
