@@ -1,9 +1,6 @@
 // _probe-target-skips.mjs — probes the runner must not run against a
-// bearer-token probe target, and why. One list, read by everything that
-// drives the suite at a probe target: scripts/ci/remote-probes.mjs and
-// `.github/workflows/behavioral.yml`.
-//
-// Print it for a shell: `bun tests/behavioral/_probe-target-skips.mjs`
+// bearer-token probe target, and why. The armada probe and release paths
+// share these target capabilities.
 
 export const PROBE_TARGET_SKIPS = [
   // hosted-demo-only surfaces. `apps/probe` has no demo OAuth and no
@@ -56,4 +53,3 @@ export const HOSTED_DEMO_CHECKS = [
 /** What production alone can serve (host-form previews need its zone route): promote.mjs adds these. */
 export const PRODUCTION_ONLY_CHECKS = ['preview/new/coi-host-preview-live'];
 
-if (import.meta.main) process.stdout.write(PROBE_TARGET_SKIPS.join(','));
