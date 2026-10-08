@@ -360,6 +360,8 @@ const __nimbusStopReplay = (() => {
       if (run.canStop || run.replay) installTape(run.replay ? run.replay.tape : null, run.canStop);
     },
     get armed() { return !!(run && run.armed); },
+    // Armed, it cannot stop, and it is no run after a stop: nothing it is answered is asked again.
+    get final() { return !!(run && run.armed && !run.canStop && run.replay === null); },
     // Whether this run's network goes through the session (which records what
     // it answers); without it any request makes the run unreplayable.
     get outbound() { return !!(run && run.outbound); },

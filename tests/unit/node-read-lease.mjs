@@ -74,9 +74,9 @@ await runScenarios(import.meta.path, {
   async 'past its trust, the next timer asks again'() {
     const { probe, log } = await boot();
     await probe.resume();
-    await sleep(READ_LEASE_TRUST_MS + READ_LEASE_MARGIN_MS);
     const before = asked(log);
-    await probe.resume();
+    // Its own timer, past the trust (this realm's timers are the process's: barriered too).
+    await sleep(READ_LEASE_TRUST_MS + READ_LEASE_MARGIN_MS);
     assert.equal(asked(log), before + 1, 'a timer past the lease\'s trust asked nothing');
     assert.ok(globalThis.__nimbusProcessFs.stats().readConfirms >= 1, 'the barrier did not confirm the lease');
   },

@@ -1974,13 +1974,15 @@ export class SqliteVFS {
     this._invalidations = [];
     this._invalidationBytes = 0;
     this._invalidationFloor = this._revision;
+    // Granted at the clock this ends: each holder is told, and asks again.
+    for (const [owner, lease] of [...this.readLeases]) this.breakReadLease(owner, lease);
     return incarnation;
   }
 
   private readonly exclusiveMutationLeases = new Map<string, Lease>();
   /** Read leases (acquireReadLease), by owner. */
   private readonly readLeases = new Map<string, ReadLease>();
-  /** Read leases a publication found unrecalled and ended (a writer that skipped refusalAt): its staleness is the holder's trust window. */
+  /** Read leases ended without waiting for their holders (breakReadLease). */
   private readLeasesBroken = 0;
   private activeMutationOwner: string | null = null;
   /**
@@ -3705,17 +3707,26 @@ export class SqliteVFS {
 
   /**
    * A publication a read lease covers, by a writer that did not recall it
-   * (one that skipped refusalAt): the lease ends here, untold, and its
-   * holder's copy is stale for what remains of its trust (Delegations). Counted, and said.
+   * (one that skipped refusalAt): the lease is broken. Said.
    */
   private breakUnrecalledReadLeases(paths: readonly string[]): void {
     const keys = paths.map((path) => normalizeVfsPath(path)).filter((key) => key !== '');
     for (const [owner, lease] of [...this.readLeases]) {
       if (this.isHolder(owner) || !keys.some((key) => this.readCovers(lease, key))) continue;
-      this.readLeases.delete(owner);
-      this.readLeasesBroken++;
+      this.breakReadLease(owner, lease);
       console.error(`[nimbus] a publication at /${keys[0]} did not recall the read lease it covers; ended`);
     }
+  }
+
+  /**
+   * End a read lease without waiting for its holder, which is told (its
+   * recall, asked now): until it hears, its copy is stale for what remains
+   * of its trust (Delegations). Counted.
+   */
+  private breakReadLease(owner: string, lease: ReadLease): void {
+    this.readLeases.delete(owner);
+    this.readLeasesBroken++;
+    void lease.delegation.recall('revoke').catch(() => {});
   }
 
   /** Commit a generation that writes nothing, so a publication has a tick of its own. */

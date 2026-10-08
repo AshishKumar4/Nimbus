@@ -36,6 +36,8 @@ function __nimbusVfsPathKey(path) {
 let __nimbusProcessUmaskOf = () => undefined;
 const __nimbusRawTimer = globalThis.setTimeout;
 const __nimbusRawClearTimer = globalThis.clearTimeout;
+// And its clock, before a run that can stop tapes Date (stop-replay.ts): a read lease's trust is real time.
+const __nimbusRawNow = Date.now;
 let __nimbusProcessFsInstance = null;
 function __nimbusProcessFs() {
   if (__nimbusProcessFsInstance !== null) return __nimbusProcessFsInstance;
@@ -70,6 +72,7 @@ function __nimbusProcessFs() {
     // Home directories themselves are never held: the shell and the editor live there.
     isHomeRoot: (key) => (key.startsWith("home/") && key.length > 5 && !key.includes("/", 5)) || key === "root",
     timers: { setTimeout: __nimbusRawTimer, clearTimeout: __nimbusRawClearTimer },
+    now: __nimbusRawNow,
     // The process's umask as each create is logged (process.umask moves it;
     // its setUmask to the session is not ordered with the waves).
     umask: () => __nimbusProcessUmaskOf(),

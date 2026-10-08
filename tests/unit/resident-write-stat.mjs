@@ -103,7 +103,7 @@ await runScenarios(import.meta.path, {
     }));
     const writing = probe.fs.promises.writeFile(F, 'mine');
     await served.promise;
-    authority.kfs.unlink('home/user/app/f.txt');
+    await authority.peer.unlink('home/user/app/f.txt');
     const deleted = authority.rawVfs.revision();
     const resumed = probe.resume();
     await until(() => globalThis.__nimbusVfsCursor.rev >= deleted, 'the barrier applied the deletion');

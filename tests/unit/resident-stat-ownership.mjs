@@ -112,7 +112,7 @@ await runScenarios(import.meta.path, {
     // authority is the backstop, and the process must not go on reading
     // bytes the authority refused.
     const { authority, probe, log } = await boot();
-    authority.kfs.writeFile(`${APP}/was-mine.txt`, 'original');
+    await authority.peer.writeFile(`${APP}/was-mine.txt`, 'original');
     await probe.resume(() => null);
     const root = authority.rawVfs.as(CRED_KERNEL);
     root.chown(`${APP}/was-mine.txt`, 0, 0);
@@ -212,8 +212,8 @@ await runScenarios(import.meta.path, {
 
   async "rewriting an existing file keeps its owner and mode"() {
     const { authority, probe } = await boot();
-    authority.kfs.writeFile(`${APP}/private.txt`, 'p');
-    authority.kfs.chmod(`${APP}/private.txt`, 0o600);
+    await authority.peer.writeFile(`${APP}/private.txt`, 'p');
+    await authority.peer.chmod(`${APP}/private.txt`, 0o600);
     await probe.resume(() => null);
     probe.fs.writeFileSync(`/${APP}/private.txt`, 'rewritten');
     const kept = { uid: CRED.uid, gid: CRED.gid, mode: '600', dir: false };

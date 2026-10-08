@@ -11,8 +11,10 @@
  * invalidation log, served through the session's real supervisor-op handler,
  * with the session's routed surface built the way hosted/runtime.ts builds it.
  * A peer is anything that writes it from outside the facet —
- * `authority.kfs.writeFile` — which is exactly what a shell command or another
- * process is to the supervisor.
+ * `authority.peer.writeFile` — which is exactly what a shell command or
+ * another process is to the supervisor: its change waits for the read lease
+ * of a process that is reading to be recalled (withRecall), which the
+ * synchronous `authority.kfs` cannot.
  *
  * ONE LAUNCH PER PROCESS. The body installs process-wide state it never takes
  * down — the resumption barriers on globalThis.setTimeout, globalThis.console,
@@ -37,6 +39,7 @@ import { generateShimsCode } from '../../../packages/worker/src/runtime/node-shi
 import { nodeFacetSources } from './node-facet-sources.mjs';
 import { generatedModuleSet, writeModuleSet } from './module-map-bundle.mjs';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
+import { withRecall } from '../../../packages/core/src/vfs/recall.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SUPERVISOR_OP_ROUTES } from '../../../packages/core/src/workspace/supervisor-op.ts';
@@ -120,6 +123,12 @@ export function createAuthority(vfsOptions) {
   return {
     rawVfs,
     kfs,
+    // `kfs`, each call made again once what it meets is recalled: a peer's change.
+    peer: new Proxy(kfs, {
+      get: (target, name) => (typeof target[name] === 'function'
+        ? (...args) => withRecall(() => target[name](...args))
+        : target[name]),
+    }),
     host,
     cursor: () => ({ epoch: rawVfs.epoch, rev: rawVfs.revision() }),
     read: (path) => dec.decode(kfs.readFile(path)),

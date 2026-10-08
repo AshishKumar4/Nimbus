@@ -94,7 +94,7 @@ await runScenarios(import.meta.path, {
     assert.equal(await probe.resume(`${APP}/own.txt`), 'MINE', 'its own write survives the barrier that reports it');
     assert.equal(coherenceStats().fills, fills, 'and is not refetched: the report is its own write coming back');
 
-    authority.kfs.writeFile('home/user/app/own.txt', 'PEER');
+    await authority.peer.writeFile('home/user/app/own.txt', 'PEER');
     assert.equal(
       await probe.resume(`${APP}/own.txt`),
       'PEER',
@@ -105,20 +105,20 @@ await runScenarios(import.meta.path, {
   async 'bytes an async read filled, then changed by a peer'() {
     const { authority, probe } = await boot();
     // Created after the boot fill, so only the async read below can put it in the store.
-    authority.kfs.writeFile('home/user/app/late.txt', 'L1');
+    await authority.peer.writeFile('home/user/app/late.txt', 'L1');
     assert.equal(await probe.readAsync(`${APP}/late.txt`), 'L1');
     assert.equal(probe.read(`${APP}/late.txt`), 'L1', 'the async read wrote through to the store');
 
-    authority.kfs.writeFile('home/user/app/late.txt', 'L2');
+    await authority.peer.writeFile('home/user/app/late.txt', 'L2');
     assert.equal(await probe.resume(`${APP}/late.txt`), 'L2', 'the filled row is dated, so the change evicts it');
   },
 
   async 'a refetched row, changed again'() {
     const { authority, probe } = await boot({ 'boot.txt': 'B1' });
     assert.equal(probe.read(`${APP}/boot.txt`), 'B1');
-    authority.kfs.writeFile('home/user/app/boot.txt', 'B2');
+    await authority.peer.writeFile('home/user/app/boot.txt', 'B2');
     assert.equal(await probe.resume(`${APP}/boot.txt`), 'B2', 'the boot fill dated the row, so the first change is seen');
-    authority.kfs.writeFile('home/user/app/boot.txt', 'B3');
+    await authority.peer.writeFile('home/user/app/boot.txt', 'B3');
     assert.equal(
       await probe.resume(`${APP}/boot.txt`),
       'B3',
@@ -136,7 +136,7 @@ await runScenarios(import.meta.path, {
     assert.equal(await probe.resume(`${APP}/fd.txt`), 'XYcdef', 'and survives the barrier that reports it');
     assert.equal(coherenceStats().fills, fills, 'without a refetch: its receipt dated the row');
 
-    authority.kfs.writeFile('home/user/app/fd.txt', 'PEER');
+    await authority.peer.writeFile('home/user/app/fd.txt', 'PEER');
     assert.equal(await probe.resume(`${APP}/fd.txt`), 'PEER');
   },
 
@@ -154,8 +154,8 @@ await runScenarios(import.meta.path, {
 
     probe.write(`${APP}/race.txt`, 'MINE');
     await held.wrote;
-    authority.kfs.writeFile('home/user/app/race.txt', 'PEER');
-    authority.kfs.writeFile('home/user/app/q.txt', 'q1');
+    await authority.peer.writeFile('home/user/app/race.txt', 'PEER');
+    await authority.peer.writeFile('home/user/app/q.txt', 'q1');
     const resumed = probe.resumeAll([`${APP}/race.txt`, `${APP}/q.txt`]);
     assert.equal(
       await Promise.race([resumed, sleep(100).then(() => 'still waiting')]),
@@ -179,8 +179,8 @@ await runScenarios(import.meta.path, {
 
     probe.write(`${APP}/race.txt`, 'MINE');
     await held.wrote;
-    authority.kfs.writeFile('home/user/app/race.txt', 'PEER');
-    authority.kfs.writeFile('home/user/app/q.txt', 'q1');
+    await authority.peer.writeFile('home/user/app/race.txt', 'PEER');
+    await authority.peer.writeFile('home/user/app/q.txt', 'q1');
     const acquired = log.calls.fsAcquire ?? 0;
     const first = probe.resumeAll([`${APP}/race.txt`, `${APP}/q.txt`]);
     await until(() => (log.calls.fsAcquire ?? 0) > acquired, "the first resumption's barrier");
@@ -210,7 +210,7 @@ await runScenarios(import.meta.path, {
     probe.write(`${APP}/race.txt`, 'FIRST');
     await held.wrote;
     probe.write(`${APP}/race.txt`, 'SECOND');
-    authority.kfs.writeFile('home/user/app/q.txt', 'q1');
+    await authority.peer.writeFile('home/user/app/q.txt', 'q1');
     const resumed = probe.resumeAll([`${APP}/race.txt`, `${APP}/q.txt`]);
     assert.deepEqual(
       await Promise.race([resumed, sleep(100).then(() => 'still waiting')]),
@@ -230,7 +230,7 @@ await runScenarios(import.meta.path, {
     // own bytes are the newest.
     const held = heldWriteFile();
     const { authority, probe } = await boot({}, held.overrides);
-    authority.kfs.writeFile('home/user/app/race.txt', 'PEER');
+    await authority.peer.writeFile('home/user/app/race.txt', 'PEER');
     probe.write(`${APP}/race.txt`, 'MINE');
     await held.wrote;
     const resumed = probe.resume(`${APP}/race.txt`);
@@ -251,9 +251,9 @@ await runScenarios(import.meta.path, {
 
     probe.write(`${APP}/race.txt`, 'MINE');
     await held.wrote;
-    authority.kfs.writeFile('home/user/app/race.txt', 'PEER');
-    for (let i = 0; i < 4_000; i++) authority.kfs.writeFile('home/user/app/churn.txt', `churn-${i}`);
-    authority.kfs.unlink('home/user/app/churn.txt');
+    await authority.peer.writeFile('home/user/app/race.txt', 'PEER');
+    for (let i = 0; i < 4_000; i++) await authority.peer.writeFile('home/user/app/churn.txt', `churn-${i}`);
+    await authority.peer.unlink('home/user/app/churn.txt');
     const resumed = probe.resume(`${APP}/race.txt`);
     assert.equal(await Promise.race([resumed, sleep(100).then(() => 'still waiting')]), 'still waiting');
     const stats = coherenceStats();
@@ -285,10 +285,10 @@ await runScenarios(import.meta.path, {
       },
     }));
 
-    authority.kfs.writeFile('home/user/app/slow.txt', 'S1');
+    await authority.peer.writeFile('home/user/app/slow.txt', 'S1');
     const reading = probe.readAsync(`${APP}/slow.txt`);
     await readServed.promise;
-    authority.kfs.writeFile('home/user/app/slow.txt', 'S2');
+    await authority.peer.writeFile('home/user/app/slow.txt', 'S2');
     assert.equal(await probe.resume(`${APP}/other.txt`), 'ERR:ENOENT', 'a barrier runs while the read is held');
     readGate.resolve();
     assert.equal(await reading, 'S1', 'the async read returns what it was served');
@@ -326,7 +326,7 @@ await runScenarios(import.meta.path, {
       },
     }));
     hold.armed = true;
-    for (let i = 0; i < N; i++) authority.kfs.writeFile(`home/user/app/many-${i}.txt`, `new-${i}`);
+    for (let i = 0; i < N; i++) await authority.peer.writeFile(`home/user/app/many-${i}.txt`, `new-${i}`);
     const first = probe.resumeAll(paths);
     await hold.served.promise;
     const acquired = log.calls.fsAcquire ?? 0;
@@ -363,10 +363,10 @@ await runScenarios(import.meta.path, {
     }));
 
     hold.armed = true;
-    authority.kfs.writeFile('home/user/app/p.txt', 'v2');
+    await authority.peer.writeFile('home/user/app/p.txt', 'v2');
     const first = probe.resume(`${APP}/p.txt`);
     await hold.served.promise;
-    authority.kfs.writeFile('home/user/app/p.txt', 'v3');
+    await authority.peer.writeFile('home/user/app/p.txt', 'v3');
     const acquired = log.calls.fsAcquire ?? 0;
     const second = probe.resume(`${APP}/p.txt`);
     await until(() => (log.calls.fsAcquire ?? 0) > acquired, "the second resumption's ACQUIRE");
@@ -400,7 +400,7 @@ await runScenarios(import.meta.path, {
     let writing = true;
     const writer = (async () => {
       while (writing && Date.now() < stop) {
-        authority.kfs.writeFile(K, `w${++writes}`);
+        await authority.peer.writeFile(K, `w${++writes}`);
         await sleep(10);
       }
       writing = false;

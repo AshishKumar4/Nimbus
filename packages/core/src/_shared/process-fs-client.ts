@@ -232,20 +232,31 @@ export interface ProcessFsClient {
   pending(): boolean;
   /**
    * Whether the process's read lease is held and trusted now: nothing it
-   * covers has changed since the barrier that last confirmed it, or the
-   * change waits for this process to have answered its recall. A
-   * resumption's barrier need not ask the session.
+   * covers has changed since the barrier that last confirmed it (another's
+   * change waits for this process to have answered its recall, and it has
+   * logged nothing of its own since), so a resumption's barrier need not
+   * ask the session.
    */
   readTrusted(): boolean;
-  /** Whether a barrier's ACQUIRE asks for the read lease too (VfsAcquireOptions.lease). */
-  readLeaseWanted(): boolean;
+  /** A barrier's ACQUIRE asking for the read lease too (VfsAcquireOptions.lease), now; null when it takes none. */
+  readLeaseAsk(): ReadLeaseAsk | null;
   /**
-   * The barrier that asked at `askedAt` (this client's clock) applied an
-   * answer carrying `lease` (VfsAcquireResult.readLease): trusted until
-   * `askedAt + lease.trustMs`, and its recalls answered from now on.
+   * The barrier that asked with `ask` applied an answer carrying `lease`
+   * (VfsAcquireResult.readLease): trusted until `ask.at + lease.trustMs`
+   * while the process logs nothing more, and its recalls answered from now on.
    */
-  readLeased(lease: { owner: string; trustMs: number }, askedAt: number): void;
+  readLeased(lease: { owner: string; trustMs: number }, ask: ReadLeaseAsk): void;
   stats(): ProcessFsStats;
+}
+
+/**
+ * When a barrier asked for the read lease (the client's clock), and the log
+ * then: what it logged, when every change of its was answered by that ask
+ * (its own changes are in what the answer brings), or -1.
+ */
+export interface ReadLeaseAsk {
+  readonly at: number;
+  readonly logged: number;
 }
 
 export interface ProcessFsStats {
@@ -856,11 +867,12 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   };
 
   /**
-   * The read lease (readLeased): its owner, until when it is trusted, and
-   * when a barrier last confirmed it. Untrusted the moment its recall
-   * arrives, before the session is told (answerReadRecalls).
+   * The read lease (readLeased): its owner, until when it is trusted, when
+   * a barrier last confirmed it, and the log that barrier asked at.
+   * Untrusted the moment its recall arrives, before the session is told
+   * (answerReadRecalls), and while the process has logged since.
    */
-  let readLease: { owner: string; until: number; confirmedAt: number } | null = null;
+  let readLease: { owner: string; until: number; confirmedAt: number; logged: number } | null = null;
   /**
    * Read leases recalled or given back: never trusted again. A barrier's
    * answer that confirmed one can arrive after its recall was answered (the
@@ -876,12 +888,12 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   };
 
   /** Give the read lease back (idle, or the process settling): the session's recall of it waits on no one. */
-  const releaseReadLease = (): void => {
+  const releaseReadLease = async (): Promise<void> => {
     const lease = readLease;
     if (lease === null) return;
     endReadLease(lease.owner);
     counters.readReleased++;
-    void session.grants?.release(lease.owner).catch(() => {});
+    await session.grants?.release(lease.owner).catch(() => {});
   };
 
   /**
@@ -903,8 +915,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       }
       if (readLease?.owner !== owner) return;
       if (kind === null) {
-        if (readLease.confirmedAt < polled) releaseReadLease();
-        if (readLease === null) return;
+        if (readLease.confirmedAt < polled) {
+          await releaseReadLease();
+          return;
+        }
         continue;
       }
       // Untrusted first: a barrier from now on asks, and only then is the
@@ -1140,7 +1154,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     },
     async settle() {
       settling = true;
-      releaseReadLease();
+      // Given back before the process is over: a writer after it never waits on its trust.
+      await releaseReadLease();
       if (claiming !== null) await claiming;
       try {
         // Until nothing more is logged (a flush's drain may log more).
@@ -1157,15 +1172,16 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return failures.splice(0, failures.length);
     },
     readTrusted() {
-      return readLease !== null && now() < readLease.until;
+      return readLease !== null && readLease.logged === logged && now() < readLease.until;
     },
-    readLeaseWanted() {
-      return session.grants !== undefined && !settling;
+    readLeaseAsk() {
+      if (session.grants === undefined || settling) return null;
+      return { at: now(), logged: answered === logged ? logged : -1 };
     },
-    readLeased(lease, askedAt) {
+    readLeased(lease, ask) {
       if (session.grants === undefined || settling || endedReadLeases.has(lease.owner)) return;
       const confirmed = readLease?.owner === lease.owner;
-      readLease = { owner: lease.owner, until: askedAt + lease.trustMs, confirmedAt: now() };
+      readLease = { owner: lease.owner, until: ask.at + lease.trustMs, confirmedAt: now(), logged: ask.logged };
       if (confirmed) {
         counters.readConfirms++;
         return;
