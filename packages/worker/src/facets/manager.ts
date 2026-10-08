@@ -120,7 +120,7 @@ import {
 } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { requirePackageEntry } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
-import { LaunchLearningStore, type LaunchLearning, type LaunchReport } from './launch-learning-store.js';
+import { LAUNCH_PROFILE_MAX_PATHS, LaunchLearningStore, type LaunchLearning, type LaunchReport } from './launch-learning-store.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
@@ -733,7 +733,6 @@ const ENTRYPOINT_TIMER_TRACKER = `
  * the only place that knows whether a miss was ever answered.
  */
 const RESIDENCY_MISS_REPORT = `
-const __NIMBUS_RESIDENCY_NAMED_MAX = 20;
 // What the next launch of this entry must stage, kept apart because they are
 // staged differently: files read synchronously and not answered (data), and
 // modules the program tried to execute that the map lacked (graph roots).
@@ -743,22 +742,29 @@ function __nimbusDataReadMisses() {
 function __nimbusExecutedModuleMisses() {
   return [...(globalThis.__nimbusModuleMisses || [])];
 }
+const __nimbusResidencyMissText = ${residencyMissReport.toString()};
 function __nimbusResidencyMissReport() {
-  const __missed = globalThis.__nimbusVfsResidencyMisses;
-  if (!__missed || __missed.size === 0) return "";
-  const __paths = [];
-  for (const __k of __missed) __paths.push("/" + __k);
-  const __named = __paths.slice(0, __NIMBUS_RESIDENCY_NAMED_MAX);
-  const __rest = __paths.length - __named.length;
-  return "node: " + __paths.length + " file(s) were read synchronously but their content was "
-    + "never staged into the process, so every one of those reads failed and the program "
-    + "carried on without the bytes. Failing rather than reporting a result built on them:\\n"
-    + __named.map((__p) => "  " + __p + "\\n").join("")
-    + (__rest > 0 ? "  ... and " + __rest + " more\\n" : "")
-    + "The files exist and an async read (fs.promises.readFile) returns them now; the next "
-    + "run of the same command stages them up front.\\n";
+  return __nimbusResidencyMissText(__nimbusDataReadMisses());
 }
 `;
+
+/**
+ * The words of that report for the refused reads `keys` (namespace keys, no
+ * leading slash): what the guest prints at its exit, and what a one-shot the
+ * platform killed is failed with from the misses it reported as it ran
+ * (exec). Empty when there are none. Runs in the guest as its own text.
+ */
+export function residencyMissReport(keys: readonly string[]): string {
+  if (keys.length === 0) return '';
+  const named = keys.slice(0, 20);
+  return 'node: ' + keys.length + ' file(s) were read synchronously but their content was '
+    + 'never staged into the process, so every one of those reads failed and the program '
+    + 'carried on without the bytes. Failing rather than reporting a result built on them:\n'
+    + named.map((key) => '  /' + key + '\n').join('')
+    + (keys.length > named.length ? '  ... and ' + (keys.length - named.length) + ' more\n' : '')
+    + 'The files exist and an async read (fs.promises.readFile) returns them now; the next '
+    + 'run of the same command stages them up front.\n';
+}
 
 /**
  * Static `import * as __real_X from 'node:X'` block. Prepended to generated
@@ -1068,6 +1074,12 @@ ${VFS_CURSOR_SEED_SOURCE}
     // run that made one cannot stop to be run again.
     const __supervisor = workerEnv?.SUPERVISOR
       ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
+    // What the run misses, and the code it produces, reach the session as they
+    // happen, as a resident's do: a run the platform kills (its memory limit)
+    // sends no exit envelope, and its next launch must still stage what it
+    // lacked. The envelope stays the record of a run that ends, so a report
+    // that fails here is not this run's failure.
+    __nimbusRuntimeCodeReporter = () => __nimbusFlushRuntimeCode(__supervisor).catch(() => {});
     // Its network goes through its workspace's egress: node:tls refuses a TLS socket by name.
     globalThis.__nimbusEgress = workerEnv?.NIMBUS_EGRESS === true;
     // The same store, namespace and data plan a resident boots on, backed by
@@ -5246,9 +5258,11 @@ export class FacetManager {
   // spawn created as an OS-child of the attach TUI. When the attach process
   // exits (reported / killed), its serve facet is torn down with it.
   private _pairedServeFacet = new Map<number, number>();
-  // The bundle a resident pid booted from, so the misses it reports at exit
-  // stage into the next launch of the same entry, as a one-shot's do.
-  private readonly residentBundleKeys = new Map<number, string>();
+  // The bundle a running pid launched from, so the misses it reports as they
+  // happen, and a resident's at its exit, stage into the next launch of the
+  // same entry; and the reads it reported refused, which a one-shot that ends
+  // without its own exit report (the platform killed it) is failed naming.
+  private readonly launchBundles = new Map<number, { key: string; refused: Set<string> }>();
   /** Per resident pid: the shared read profile's entries its launch staged, settled at its exit. */
   private readonly residentProfileOffers = new Map<number, { staged: StagedProfileEntry[]; unresolved: string[] }>();
   /**
@@ -5457,7 +5471,7 @@ export class FacetManager {
     // Rooted on waitUntil: the hook fires synchronously inside whatever turn
     // ended the process, and the delete must not be a floating promise there.
     this.processes.setOnTerminal((pid) => {
-      this.residentBundleKeys.delete(pid);
+      this.launchBundles.delete(pid);
       this.residentProfileOffers.delete(pid);
       // Its writers' cursors go with it, unless its log is still to be
       // drained (which numbers against them, and forgets them after).
@@ -6518,9 +6532,12 @@ export class FacetManager {
   /** Acknowledge generated code only after storage has accepted it. The
    * launch key comes from the process table, never from guest arguments. */
   async noteProcessRuntimeCode(pid: number, entries: unknown[], executedModules: string[] = [], dataReads: string[] = []): Promise<void> {
-    const key = this.residentBundleKeys.get(pid);
-    if (!key || this.processes.get(pid)?.state !== 'running') throw new Error('Runtime code report has no live launch');
-    await this._recordLaunchLearning(key, { code: entries, executedModules, dataReads });
+    const launch = this.launchBundles.get(pid);
+    if (!launch || this.processes.get(pid)?.state !== 'running') throw new Error('Runtime code report has no live launch');
+    for (const path of Array.isArray(dataReads) ? dataReads : []) {
+      if (typeof path === 'string' && launch.refused.size < LAUNCH_PROFILE_MAX_PATHS) launch.refused.add(path);
+    }
+    await this._recordLaunchLearning(launch.key, { code: entries, executedModules, dataReads });
   }
 
   noteProcessReportedExit(
@@ -6533,7 +6550,7 @@ export class FacetManager {
   ): void {
     // Filed before the exit marks the table: the terminal hook forgets the key.
     this.ctx.waitUntil(
-      this._recordLaunchLearning(this.residentBundleKeys.get(pid), { code: runtimeCode, executedModules, dataReads })
+      this._recordLaunchLearning(this.launchBundles.get(pid)?.key, { code: runtimeCode, executedModules, dataReads })
         .catch((error) => this._learningLost(pid, error)),
     );
     const residencyMisses = [...(dataReads ?? []), ...(executedModules ?? [])];
@@ -6745,6 +6762,8 @@ export class FacetManager {
       }
       throw err;
     }
+    // What it reports missing as it runs is filed against this bundle.
+    if (vfsState.bundleKey) this.launchBundles.set(entry.pid, { key: vfsState.bundleKey, refused: new Set() });
     // Where the one-shot's listing of its namespace walks mounts: what its
     // launch names, the literal paths of its own code included.
     const cwd = opts.cwd || '/home/user';
@@ -6912,12 +6931,16 @@ export class FacetManager {
       }
       const exitCode = 1;
       const reason = `runtime worker error: ${errorMessage(err)}`;
+      // The run ended without its exit report (the platform killed it), so it
+      // is failed here naming what it reported refused as it ran: a cause the
+      // next launch removes, and one the platform's error does not name.
+      const refused = residencyMissReport([...(this.launchBundles.get(entry.pid)?.refused ?? [])]);
       this.processes.exit(entry.pid, exitCode);
       this._w5RecordTermination(entry.pid, exitCode, 'runtime-worker', reason);
       try {
         this.hooks.onExternalExit?.(entry.pid, exitCode, reason);
       } catch {}
-      return { exitCode, stdout: '', stderr: `${errorMessage(err)}${unsettled ? `\n${unsettled}` : ''}` };
+      return { exitCode, stdout: '', stderr: `${errorMessage(err)}${unsettled ? `\n${unsettled}` : ''}${refused}` };
     } finally {
       opts.signal?.removeEventListener('abort', onShellAbort);
       pacer.settle();
@@ -8574,7 +8597,7 @@ export class FacetManager {
     const cacheHit = vfsState.cacheHit ?? false;
 
     const vfsCursor = vfsState.cursor;
-    if (vfsState.bundleKey) this.residentBundleKeys.set(entry.pid, vfsState.bundleKey);
+    if (vfsState.bundleKey) this.launchBundles.set(entry.pid, { key: vfsState.bundleKey, refused: new Set() });
     const profileOffer = vfsState.profileOffer;
     if (profileOffer !== undefined) this.residentProfileOffers.set(entry.pid, profileOffer);
     // The map is generated; the state's only remaining job is its cursor.

@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a one-shot node process reports the files it was refused, and the
+  code it produced, as they happen, as a resident process does, not only in
+  its exit report. A run the platform killed reported nothing, so its next
+  launch missed the same files and died the same way: a fresh
+  create-react-router project's config load was killed by memory ("Worker
+  exceeded memory limit") on every run. A killed run's failure now names the
+  reads it was refused, beside the platform's error, and its next launch
+  stages them.
+
 - Fixed: a node run that was refused a synchronous read of a file it had not
   been staged (EAGAIN) fails at exit, naming the file, even when the program
   swallowed the error and a later call on the same path succeeded. vite's
