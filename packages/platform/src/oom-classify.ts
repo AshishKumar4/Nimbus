@@ -227,6 +227,8 @@ const HOST_TERMINATIONS: readonly RegExp[] = [
   /^(?:Python )?Worker exceeded CPU time limit\.?$/,
   /^Durable Object exceeded its CPU time limit and was reset\.$/,
   /^Durable Object reset because its code was updated\.$/,
+  /^Internal error (?:in|while starting up) Durable Object storage caused object to be reset; reference = \S+$/,
+  /^Durable Object storage operation exceeded timeout which caused the object to be reset\.$/,
 ];
 
 /**
