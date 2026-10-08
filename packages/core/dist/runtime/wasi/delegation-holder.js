@@ -65,6 +65,8 @@ export function delegationHolder(options) {
     const dirty = new Set();
     /** Whether anything was logged since the store was last told the session changed (sent). */
     let unsent = false;
+    /** Of that, a change written through (a write, truncate or close of a description): the store answers for it only once it is sent (throughPending). */
+    let throughUnsent = false;
     /**
      * `file` stops being decided here (its grant is shared, recalled or gone,
      * or the process is about to change a name or an access above it): what
@@ -210,6 +212,7 @@ export function delegationHolder(options) {
     };
     /** The store owes a barrier only once something this process decided reached the session. */
     const sentSome = () => {
+        throughUnsent = false;
         if (!unsent)
             return;
         unsent = false;
@@ -492,6 +495,7 @@ export function delegationHolder(options) {
                         handle.position = at + bytes.byteLength;
                 }
                 unsent = true;
+                throughUnsent = true;
                 return bytes.byteLength;
             }
             const start = offset ?? handle.position;
@@ -525,6 +529,7 @@ export function delegationHolder(options) {
                 client.submit({ type: 'call', call: { call: 'ftruncate', path: file.key, ino: file.through.ino, ...(handle.description === undefined ? {} : { description: handle.description }), size } }, { acknowledged: true });
                 file.length = size;
                 unsent = true;
+                throughUnsent = true;
                 return;
             }
             if (!room(file, size))
@@ -561,6 +566,7 @@ export function delegationHolder(options) {
                     return;
             client.submit({ type: 'call', call: { call: 'close', path: handle.file.key, description: handle.description } }, { acknowledged: true });
             unsent = true;
+            throughUnsent = true;
         },
         keyOf: (handleId) => handleOf(handleId).file.key,
         dup: (handleId) => {
@@ -706,6 +712,7 @@ export function delegationHolder(options) {
             sentSome();
         },
         reportRecorded: () => failed(),
+        throughPending: () => throughUnsent,
         changing: (keys) => throughAt(keys),
         settle: async () => {
             drain();

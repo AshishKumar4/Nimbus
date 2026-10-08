@@ -103,6 +103,13 @@ export interface DelegationHolder {
     /** A refusal the session has made of what this process logged, thrown now (with its errno), not waiting for anything: what a close reports. */
     reportRecorded(): void;
     /**
+     * Whether a change written through (no subtree held decides it: its bytes
+     * are the session's, not held here) was logged since the store last
+     * caught up: what the store answers waits for it to be sent (send), so the
+     * process reads its own writes.
+     */
+    throughPending(): boolean;
+    /**
      * The process is about to change a name or an access at or above `keys`
      * (anywhere, when absent) by a route not decided here (a call of the
      * session's, or a change by name the client logs): each file it holds

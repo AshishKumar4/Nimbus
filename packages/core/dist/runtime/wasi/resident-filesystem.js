@@ -296,6 +296,10 @@ export function residentFilesystem(session, resident, delegation) {
      * first when one is owed, then `local`, whose DELEGATE hands the call on.
      */
     const answer = (name, local, remote) => {
+        // What this process wrote through is the session's before the store
+        // answers for it: sent first (and the barrier owed), so it reads its own writes.
+        if (holder !== null && holder.throughPending())
+            return holder.send().then(() => answer(name, local, remote));
         const settle = (value) => {
             if (value !== DELEGATE) {
                 counts.local++;
