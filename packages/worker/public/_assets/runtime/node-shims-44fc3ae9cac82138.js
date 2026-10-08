@@ -18526,19 +18526,9 @@ function __nimbusUnhandledRejection(reason, promise) {
     __nimbusUncaughtException(thrown, false);
     return;
   }
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-ece6c6b1f126ba07.js
-  const label = kind === "rejection"
-    ? "Unhandled promise rejection: "
-    : "Uncaught exception: ";
-  const line = label + __nimbusRuntimeErrorTrace(error) + "\n";
-  stderr += line;
-  __nimbusReleaseStderr(line);
-  __nimbusReportProcessExit(1, line);
-========
   if (handled) return;
   const errorLike = typeof reason === "object" && reason !== null && Object.hasOwn(reason, "stack");
   __nimbusUncaughtException(errorLike ? reason : new __NimbusUnhandledPromiseRejection(reason), true);
->>>>>>>> origin/main:packages/worker/public/_assets/runtime/node-shims-81b04e09ed19ae08.js
 }
 
 if (typeof globalThis.addEventListener === "function") {
