@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "85870b1f2868d14fdb1c78e400f227fa63d19ac33f00e027f544a3566438e048",
+  "fingerprint": "a42f255296bf94d36dc03076c26a0dd9396aa5357bd4ffc37ad7bbba65ea1d76",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2186,8 +2186,8 @@
     "packages/worker/dist/runtime/project-fs.d.ts.map": "0197108f056310ce947fea7e5b805635d94b2da12cb659bf85993d2781d70a57",
     "packages/worker/dist/runtime/project-fs.js": "9ca7ed1f78946850f7553174b8d247680c2b8267a97b646c8ad686ea1f90074d",
     "packages/worker/dist/runtime/python-repl.d.ts": "3fbe4e668c1f458a5c201cd156fb8ffea8a22d4380c49002c7e112742c14e43b",
-    "packages/worker/dist/runtime/python-repl.d.ts.map": "2ad8c376317e1f87bc2c93dea9ac85227ab16afbd51bca1980c07af36ca4cbc0",
-    "packages/worker/dist/runtime/python-repl.js": "7ffe8b87ffc20d52533362d3526c02dc800fc62122b617b0ad2b35863e09f971",
+    "packages/worker/dist/runtime/python-repl.d.ts.map": "0679c2cfc170ef93887b0b6ffda538bb9f8ee068fd89dc5274db73e76eab8ab8",
+    "packages/worker/dist/runtime/python-repl.js": "029f7a9798a9ae9add48869d07347758e6038768f363658ec001a570d745644d",
     "packages/worker/dist/runtime/repl-session.d.ts": "5bd249d15f449ca361a31512ac3e13b5cab25a62168fe3ee13a559bf53790b3b",
     "packages/worker/dist/runtime/repl-session.d.ts.map": "7cd7919265dbf76d6fecb77150594b26b88ca346f9ee0f1288303fa81537f322",
     "packages/worker/dist/runtime/repl-session.js": "53d06c0008650b90468325acd7b5d343e6d6cae3651e3392a2dea1b73a409ee5",
@@ -2648,7 +2648,7 @@
     "packages/worker/src/runtime/package-manager.ts": "8c357ff2cca4433fbc42ef0ea0cff7553aa39b1f90b6530a28a2152beba0420e",
     "packages/worker/src/runtime/process-logs-api.ts": "39336a1f20c10eaf7d1cbdb17e252330da6fa3771438bd60c5705ced3b78cd78",
     "packages/worker/src/runtime/project-fs.ts": "6e63bdbe4a25a5a42efc83607829828dccd6b64d33a0e89531bc2aa35a78bade",
-    "packages/worker/src/runtime/python-repl.ts": "ea597b91b91041b6815065bf5e870c1dff025a11208e1d3efe018467f70bda56",
+    "packages/worker/src/runtime/python-repl.ts": "a23bd17ebb1576e007a2e1fc8b9d48463e935b8a5d2809237c8517a1818dc9dd",
     "packages/worker/src/runtime/repl-session.ts": "2323ac3029816b246559499791eaf8f90dbd1ac5767ccb9099d3b107ca28120d",
     "packages/worker/src/runtime/ruby-repl.ts": "ad473b664c30e2d6126c5948d672ff55fa490a44addf44fbbdc23f7887e113c9",
     "packages/worker/src/runtime/ruby-resident.ts": "75858e227d18dd7fa838821d030358022ffaddd7bbaa084f874d986cfea3846c",

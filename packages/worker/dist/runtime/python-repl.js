@@ -152,7 +152,7 @@ class PythonReplAdapter {
         }
         return { kind: 'output', stdout: result.stdout, stderr: result.stderr };
     }
-    close() { return this.interrupt(); }
+    close() { return this.stop(); }
     resetPool() {
         const pool = this.pool;
         this.pool = null;
@@ -160,6 +160,10 @@ class PythonReplAdapter {
         pool?.dispose();
     }
     async interrupt() {
+        await this.stop();
+        await this.initialize();
+    }
+    async stop() {
         const active = this.active;
         active?.controller.abort();
         try {
