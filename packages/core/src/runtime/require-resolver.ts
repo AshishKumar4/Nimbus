@@ -47,7 +47,7 @@ import { requireWrapperCalls } from './require-wrappers.js';
 
 // The CommonJS resolver this walk stages from (require-resolution.ts).
 export { requireFsOverBridge, type BridgeRequireFs, type RequireFs } from './require-resolution.js';
-export { mayCallRequireWrapper, requireWrapperCalls } from './require-wrappers.js';
+export { requireWrapperCalls } from './require-wrappers.js';
 
 // Match literal-string require/require.resolve with single, double, or
 // template-literal-no-interp specifier. The plain-string variant is by
@@ -604,8 +604,7 @@ export async function prefetchForRequire(
     // What a require wrapper's calls name (@vitejs/plugin-vue's
     // `tryRequire("vue/compiler-sfc", root)`): optional loads, as the
     // wrapper's try says, so phase 2's, resolved as require() resolves them.
-    const calls = fromFile !== undefined && vfs.wrapperCalls ? await vfs.wrapperCalls(fromFile, code) : requireWrapperCalls(code);
-    const loads = calls.filter((specifier) => !isFacetProvided(specifier));
+    const loads = (await requireWrapperCalls(code)).filter((specifier) => !isFacetProvided(specifier));
     for (const specifier of loads) defer({ specifier, fromDir, alternatives: loads.length, require: true });
   }
 

@@ -9,7 +9,7 @@
  * the interpreter does (intrinsics.ts), since the prefetch runs it in the
  * program's realm.
  */
-import { arrayIsArray, objectCreate, objectKeys, reflectGet } from './intrinsics.js';
+import { SafeWeakMap, arrayIsArray, objectCreate, objectKeys, reflectGet } from './intrinsics.js';
 
 /**
  * One module a module's text asks for, and how: `static` (an import or
@@ -80,119 +80,150 @@ function requireCallee(callee: unknown): string | undefined {
   return identifierName(reflectGet(callee, 'object'));
 }
 
-/** Whether `body` passes `param` as the first argument of a call `isRequire` names. */
-function passesToRequire(body: unknown, param: string, isRequire: (name: string) => boolean): boolean {
-  const pending: unknown[] = [body];
-  while (pending.length > 0) {
-    const node = pending[pending.length - 1];
-    pending.length -= 1;
-    if (typeof node !== 'object' || node === null) continue;
-    if (arrayIsArray(node)) {
-      for (let i = 0; i < node.length; i++) pending[pending.length] = node[i];
-      continue;
-    }
-    const type = reflectGet(node, 'type');
-    if (typeof type !== 'string' || type === 'Literal' || type === 'TemplateElement') continue;
-    if (type === 'CallExpression') {
-      const callee = requireCallee(reflectGet(node, 'callee'));
-      const args = reflectGet(node, 'arguments');
-      if (callee !== undefined && isRequire(callee) && arrayIsArray(args) && args.length > 0 && identifierName(args[0]) === param) return true;
-    }
-    const keys = objectKeys(node);
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      if (key === 'type' || key === 'start' || key === 'end' || key === 'loc' || key === 'range') continue;
-      pending[pending.length] = reflectGet(node, key);
-    }
+/** A node's numeric `start` or `end`, else -1. */
+function offset(node: unknown, key: 'start' | 'end'): number {
+  if (typeof node !== 'object' || node === null) return -1;
+  const at = reflectGet(node, key);
+  return typeof at === 'number' ? at : -1;
+}
+
+/** A function's first parameter, and the requires its body passes it to first (callee names). */
+interface FunctionFacts {
+  readonly param: string;
+  readonly passedTo: string[];
+}
+
+/**
+ * The modules a program asks for, read node by node in post-order (each
+ * node after its children), as acorn finishes them: a whole tree walked so
+ * (programRequests), or a parse that keeps no tree of the program
+ * (core/runtime/require-wrappers.ts, parseStatements' onNode). Nothing it
+ * keeps refers to a node once that node's parent is read, so a parse that
+ * drops each statement as it goes holds no more than it would.
+ */
+export class RequestCollector {
+  private readonly requests: ModuleRequest[] = [];
+  // The requires createRequire made, by the name bound to one.
+  private readonly made: Record<string, true> = objectCreate(null);
+  // Calls of a require-like callee (`r(x`, `r.resolve(x`) with a name first, by that name: the callee and where.
+  private readonly passed: Record<string, { callee: string; at: number }[]> = objectCreate(null);
+  // Each function node with a named first parameter, until its binding (a declarator or an assignment) is read.
+  private readonly functions = new SafeWeakMap<object, FunctionFacts>();
+  // Named functions with a named first parameter.
+  private readonly candidates: { name: string; facts: FunctionFacts }[] = [];
+  // Calls of a name (other than require) with a string first.
+  private readonly calls: { callee: string; specifier: string }[] = [];
+
+  private add(specifier: string | undefined, kind: ModuleRequest['kind']): void {
+    if (specifier !== undefined) this.requests[this.requests.length] = { specifier, kind };
   }
-  return false;
-}
 
-/** What programRequests reads: every request, and of them the calls of a require wrapper. */
-interface ProgramRequests {
-  readonly requests: ModuleRequest[];
-  readonly wrapperCalls: string[];
-}
+  private candidate(name: string | undefined, fn: unknown): void {
+    if (name === undefined || typeof fn !== 'object' || fn === null) return;
+    const facts = this.functions.get(fn);
+    if (facts !== undefined) this.candidates[this.candidates.length] = { name, facts };
+  }
 
-function analyze(program: unknown): ProgramRequests {
-  const requests: ModuleRequest[] = [];
-  const add = (specifier: string | undefined, kind: ModuleRequest['kind']) => {
-    if (specifier !== undefined) requests[requests.length] = { specifier, kind };
-  };
-  // Read as the walk goes, decided once it has seen every declaration: the
-  // requires createRequire made, the named functions with a named first
-  // parameter, the names passed first to a call, and the calls of a name
-  // (other than require) with a string.
-  const made: Record<string, true> = objectCreate(null);
-  const functions: { name: string; param: string; body: unknown }[] = [];
-  const passed: { callee: string; param: string }[] = [];
-  const calls: { callee: string; specifier: string }[] = [];
-  const candidate = (name: string | undefined, fn: unknown) => {
-    const param = firstParameter(fn);
-    if (name !== undefined && param !== undefined && typeof fn === 'object' && fn !== null) functions[functions.length] = { name, param, body: reflectGet(fn, 'body') };
-  };
-  const pending: unknown[] = [program];
-  while (pending.length > 0) {
-    const node = pending[pending.length - 1];
-    pending.length -= 1;
-    if (typeof node !== 'object' || node === null) continue;
-    if (arrayIsArray(node)) {
-      for (let i = 0; i < node.length; i++) pending[pending.length] = node[i];
-      continue;
-    }
+  /** Read `node`, every one of whose children has been read. */
+  visit(node: unknown): void {
+    if (typeof node !== 'object' || node === null) return;
     const type = reflectGet(node, 'type');
-    if (typeof type !== 'string') continue;
     if (type === 'ImportDeclaration' || type === 'ExportAllDeclaration' || type === 'ExportNamedDeclaration') {
-      add(spelledString(reflectGet(node, 'source')), 'static');
+      this.add(spelledString(reflectGet(node, 'source')), 'static');
     } else if (type === 'ImportExpression') {
-      add(spelledString(reflectGet(node, 'source')), 'dynamic');
+      this.add(spelledString(reflectGet(node, 'source')), 'dynamic');
     } else if (type === 'CallExpression') {
       const callee = reflectGet(node, 'callee');
       const args = reflectGet(node, 'arguments');
       if (arrayIsArray(args) && args.length > 0) {
         const name = identifierName(callee);
         const specifier = spelledString(args[0]);
-        if (name === 'require') add(specifier, 'require');
-        else if (name !== undefined && specifier !== undefined) calls[calls.length] = { callee: name, specifier };
+        if (name === 'require') this.add(specifier, 'require');
+        else if (name !== undefined && specifier !== undefined) this.calls[this.calls.length] = { callee: name, specifier };
         const from = requireCallee(callee);
         const param = identifierName(args[0]);
-        if (from !== undefined && param !== undefined) passed[passed.length] = { callee: from, param };
+        if (from !== undefined && param !== undefined) {
+          const list = this.passed[param] ?? (this.passed[param] = []);
+          list[list.length] = { callee: from, at: offset(node, 'start') };
+        }
+      }
+    } else if (type === 'FunctionDeclaration' || type === 'FunctionExpression' || type === 'ArrowFunctionExpression') {
+      const param = firstParameter(node);
+      if (param !== undefined) {
+        // What its body (its calls are read by now) passes the parameter to first.
+        const body = reflectGet(node, 'body');
+        const from = offset(body, 'start'), to = offset(body, 'end');
+        const passedTo: string[] = [];
+        const list = this.passed[param];
+        if (list !== undefined) {
+          for (let i = 0; i < list.length; i++) if (list[i].at >= from && list[i].at < to) passedTo[passedTo.length] = list[i].callee;
+        }
+        const facts: FunctionFacts = { param, passedTo };
+        this.functions.set(node, facts);
+        if (type === 'FunctionDeclaration') this.candidate(identifierName(reflectGet(node, 'id')), node);
       }
     } else if (type === 'VariableDeclarator') {
       const name = identifierName(reflectGet(node, 'id'));
       const init = reflectGet(node, 'init');
-      if (name !== undefined && makesRequire(init)) made[name] = true;
-      candidate(name, init);
+      if (name !== undefined && makesRequire(init)) this.made[name] = true;
+      this.candidate(name, init);
     } else if (type === 'AssignmentExpression') {
-      if (reflectGet(node, 'operator') === '=') candidate(identifierName(reflectGet(node, 'left')), reflectGet(node, 'right'));
-    } else if (type === 'FunctionDeclaration') {
-      candidate(identifierName(reflectGet(node, 'id')), node);
+      if (reflectGet(node, 'operator') === '=') this.candidate(identifierName(reflectGet(node, 'left')), reflectGet(node, 'right'));
     }
+  }
+
+  /** The requests, once every node is read: the program's, and the specifiers a require wrapper's calls name. */
+  finish(): { requests: ModuleRequest[]; wrapperCalls: string[] } {
+    const isRequire = (name: string) => name === 'require' || this.made[name] === true;
+    const wrappers: Record<string, true> = objectCreate(null);
+    for (let i = 0; i < this.candidates.length; i++) {
+      const { name, facts } = this.candidates[i];
+      if (isRequire(name)) continue;
+      for (let j = 0; j < facts.passedTo.length; j++) {
+        if (isRequire(facts.passedTo[j])) { wrappers[name] = true; break; }
+      }
+    }
+    const wrapperCalls: string[] = [];
+    for (let i = 0; i < this.calls.length; i++) {
+      const call = this.calls[i];
+      if (wrappers[call.callee] === true) wrapperCalls[wrapperCalls.length] = call.specifier;
+      if (this.made[call.callee] === true || wrappers[call.callee] === true) this.add(call.specifier, 'require');
+    }
+    return { requests: this.requests, wrapperCalls };
+  }
+}
+
+/** `program` read whole, in post-order. */
+function collect(program: unknown): RequestCollector {
+  const collector = new RequestCollector();
+  // Each entry is a node and whether its children are on the stack already.
+  const pending: { node: unknown; expanded: boolean }[] = [{ node: program, expanded: false }];
+  while (pending.length > 0) {
+    const top = pending[pending.length - 1];
+    const node = top.node;
+    if (top.expanded || typeof node !== 'object' || node === null) {
+      pending.length -= 1;
+      if (top.expanded) collector.visit(node);
+      continue;
+    }
+    top.expanded = true;
+    if (arrayIsArray(node)) {
+      pending.length -= 1;
+      for (let i = node.length - 1; i >= 0; i--) pending[pending.length] = { node: node[i], expanded: false };
+      continue;
+    }
+    const type = reflectGet(node, 'type');
+    if (typeof type !== 'string') { pending.length -= 1; continue; }
     const keys = objectKeys(node);
-    for (let i = 0; i < keys.length; i++) {
+    for (let i = keys.length - 1; i >= 0; i--) {
       const key = keys[i];
       if (key === 'type' || key === 'start' || key === 'end' || key === 'loc' || key === 'range') continue;
       // A literal's or template element's value is data; elsewhere `value` holds a node (a property's).
       if ((key === 'value' || key === 'regex') && (type === 'Literal' || type === 'TemplateElement')) continue;
-      pending[pending.length] = reflectGet(node, key);
+      pending[pending.length] = { node: reflectGet(node, key), expanded: false };
     }
   }
-  const isRequire = (name: string) => name === 'require' || made[name] === true;
-  // Only a function whose parameter's name some require is passed is read again.
-  const reaching: Record<string, true> = objectCreate(null);
-  for (let i = 0; i < passed.length; i++) if (isRequire(passed[i].callee)) reaching[passed[i].param] = true;
-  const wrappers: Record<string, true> = objectCreate(null);
-  for (let i = 0; i < functions.length; i++) {
-    const { name, param, body } = functions[i];
-    if (reaching[param] === true && !isRequire(name) && passesToRequire(body, param, isRequire)) wrappers[name] = true;
-  }
-  const wrapperCalls: string[] = [];
-  for (let i = 0; i < calls.length; i++) {
-    const call = calls[i];
-    if (wrappers[call.callee] === true) wrapperCalls[wrapperCalls.length] = call.specifier;
-    if (made[call.callee] === true || wrappers[call.callee] === true) add(call.specifier, 'require');
-  }
-  return { requests, wrapperCalls };
+  return collector;
 }
 
 /**
@@ -207,18 +238,22 @@ function analyze(program: unknown): ProgramRequests {
  * language reads it; one in a comment or a string is not a request.
  */
 export function programRequests(program: unknown): ModuleRequest[] {
-  return analyze(program).requests;
+  return collect(program).finish().requests;
 }
 
 /** Of programRequests, the specifiers a require wrapper's calls name, each once. */
 export function programWrapperCalls(program: unknown): string[] {
-  const calls = analyze(program).wrapperCalls;
+  return uniqueSpecifiers(collect(program).finish().wrapperCalls);
+}
+
+/** `specifiers`, each once, in order. */
+export function uniqueSpecifiers(specifiers: readonly string[]): string[] {
   const seen: Record<string, true> = objectCreate(null);
   const unique: string[] = [];
-  for (let i = 0; i < calls.length; i++) {
-    if (seen[calls[i]] === true) continue;
-    seen[calls[i]] = true;
-    unique[unique.length] = calls[i];
+  for (let i = 0; i < specifiers.length; i++) {
+    if (seen[specifiers[i]] === true) continue;
+    seen[specifiers[i]] = true;
+    unique[unique.length] = specifiers[i];
   }
   return unique;
 }
