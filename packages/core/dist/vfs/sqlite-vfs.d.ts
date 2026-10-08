@@ -808,6 +808,10 @@ export declare class SqliteVFS {
      * its own lookups recall none of them.
      */
     private activeHolds;
+    /** The pipelined call running (pipelined): its commits run ahead of the read recalls it meets. */
+    private activePipeline;
+    /** Pipelined commits not yet published: no read lease is granted until they are. */
+    private heldPipelines;
     /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
     private activeWrite;
     /** Whether the running call reads what has landed (a `landed` view): its reads ask no holder to send. */
@@ -1401,6 +1405,32 @@ export declare class SqliteVFS {
      * (or their trust run out) before the retry, so a writer meets each at most once.
      */
     private readRecallAt;
+    /**
+     * `run`, a call that can wait (withRecall): the read recalls it meets were
+     * sent a turn before (its refusal), and it commits ahead of them. What it
+     * commits is held (held leases, refusing another caller as a delegation
+     * does) and published once they are over: `published`. Its own later calls
+     * pass what it holds.
+     */
+    private pipelined;
+    /** A pipeline for `writer`'s commits (pipelined, or a wave's). */
+    private newPipeline;
+    /** `run`, its commits `pipeline`'s. */
+    private inPipeline;
+    /** No more commits of `pipeline`'s: what it holds is published once its recalls are over. */
+    private endPipeline;
+    /** What the pipelined call holds for its publication, when it holds anything. */
+    private heldPublication;
+    /** The pipelined call whose commits are held now, if any: one that ran ahead of a recall. */
+    private holding;
+    /**
+     * Hold `paths` for `pipeline` until it publishes: each by a lease at the
+     * path (a file's content), or at its directory (a name made, moved or
+     * removed), whose recall is the publication.
+     */
+    private hold;
+    /** `pipeline`'s recalls are over: what it holds is let go, and what it committed published. */
+    private publishHeld;
     /** `owner`'s lease ends: the storage its holder had reserved and not used goes back to the ledger. */
     private endLease;
     /**
@@ -1430,7 +1460,12 @@ export declare class SqliteVFS {
     private askedIno;
     /** Whether the running call is made by `owner`'s holder (its mutation scope, or the delegations its view holds). */
     private isHolder;
-    /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked); `holds`: the writer's own. */
+    /**
+     * Give up every delegation of another holder that a write at `key`
+     * overlaps (each recalled, revoked); `holds`: the writer's own. A reader's
+     * recall a `pipeline` runs ahead of: sent, and a turn given for it to leave
+     * before the write commits.
+     */
     private recallDelegationsAt;
     /**
      * The refusal for an access to `key` that `lease`'s holder must answer

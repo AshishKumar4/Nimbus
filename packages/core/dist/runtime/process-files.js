@@ -185,7 +185,16 @@ class GuardedProcessBridge {
     withReadLease(answer, options) {
         if (options?.lease !== true || this.pid === undefined || answer.poison)
             return answer;
-        const lease = this.delegations.readLease(this.pid, (terms) => this.target.acquireReadLease(terms, { epoch: answer.epoch, cursor: answer.rev }), this.scope);
+        let lease;
+        try {
+            lease = this.delegations.readLease(this.pid, (terms) => this.target.acquireReadLease(terms, { epoch: answer.epoch, cursor: answer.rev }), this.scope);
+        }
+        catch (error) {
+            // A change being published (EAGAIN): this barrier is answered without one.
+            if (error?.code !== 'EAGAIN')
+                throw error;
+            lease = null;
+        }
         return lease === null ? answer : { ...answer, readLease: lease };
     }
     list(after, limit) { this.guard(); return this.target.list(after, limit); }
