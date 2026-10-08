@@ -448,6 +448,8 @@ interface ViewShare {
   check?: () => void;
   /** The exclusive-mutation lease this view's mutations present to the guard. */
   owner?: string;
+  /** The delegations this view's process holds: its backends' lookups recall none of them (VFS.as). */
+  holds?: () => ReadonlySet<string>;
 }
 
 function principalKey(principal: Principal): string {
@@ -467,6 +469,8 @@ export class CompositeVFS implements VFS {
   private readonly check: (() => void) | undefined;
   /** The exclusive-mutation lease this view's mutations present (scoped's `owner`). */
   private readonly owner: string | undefined;
+  /** The delegations this view's process holds (scoped's `holds`): presented to every backend it reaches. */
+  private readonly holds: (() => ReadonlySet<string>) | undefined;
   /**
    * Views per principal, held weakly: one per principal while someone holds
    * it, none once no one does (a table serving thousands of agents does not
@@ -482,6 +486,7 @@ export class CompositeVFS implements VFS {
     this.viewed = shared?.viewed ?? new WeakMap();
     this.check = shared?.check;
     this.owner = shared?.owner;
+    this.holds = shared?.holds;
     if (shared) {
       this.table = shared.table;
       this.viewer = shared.principal;
@@ -1174,15 +1179,18 @@ export class CompositeVFS implements VFS {
    * routed onto a mount). Shares this view's table, principal and backend
    * views; not cached, so the check is the holder's alone. A scoped view
    * scoped again keeps the checks it had (they run first) and its lease,
-   * unless another is given.
+   * unless another is given. `holds`: the delegations its process holds,
+   * presented to the backends it reaches (their views are its own then).
    */
-  scoped(check: () => void, owner?: string): CompositeVFS {
+  scoped(check: () => void, owner?: string, holds?: () => ReadonlySet<string>): CompositeVFS {
     const outer = this.check;
     const composed = outer === undefined ? check : () => { outer(); check(); };
     const lease = owner ?? this.owner;
+    const held = holds ?? this.holds;
     return new CompositeVFS(this.table.mounts.get(ROOT_POINT)!.source, undefined, {
-      table: this.table, principal: this.viewer, views: this.views, viewed: this.viewed, check: composed,
+      table: this.table, principal: this.viewer, views: this.views, viewed: held === this.holds ? this.viewed : new WeakMap(), check: composed,
       ...(lease === undefined ? {} : { owner: lease }),
+      ...(held === undefined ? {} : { holds: held }),
     });
   }
 
@@ -1269,7 +1277,7 @@ export class CompositeVFS implements VFS {
     if (cred === null || found.as === undefined) return found;
     let view = this.viewed.get(found);
     // The actor goes with the credential: a backend's write events name the principal (observeWrites).
-    if (view === undefined) this.viewed.set(found, view = found.as(cred, this.viewer.actor));
+    if (view === undefined) this.viewed.set(found, view = found.as(cred, this.viewer.actor, this.holds === undefined ? undefined : { holds: this.holds }));
     return view;
   }
 

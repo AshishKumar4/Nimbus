@@ -52,6 +52,7 @@ import { residentFacetOf } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { readHydrating } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { StorageLedger } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import {
   headerPairs,
   isolateToken,
@@ -768,7 +769,8 @@ export async function _rpcFsList(
   pid?: number,
 ): Promise<VfsListPage> {
   const args = FsListArgsSchema.parse({ after: after ?? null, limit: limit ?? null });
-  return self.supervisorBridge(pid).list(args.after, args.limit ?? undefined);
+  // A page that reaches another holder's delegation waits for its recall, and is read again.
+  return withRecall(() => self.supervisorBridge(pid).list(args.after, args.limit ?? undefined));
 }
 
 export async function _rpcFsReadRange(
