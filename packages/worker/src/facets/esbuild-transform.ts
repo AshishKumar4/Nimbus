@@ -29,7 +29,8 @@ import { fetchOxcFacetRuntime } from '../runtime/oxc-wasm-bytes.js';
 import type { NamespaceFs } from '@nimbus-sh/core/runtime/process-files.js';
 import { OXC_FACET_WORKER_ID, oxcTransformHost } from './oxc-transform.js';
 import { rolldownBuildHost } from './build-facet.js';
-import { SharedHelperFacet } from './helper-facet.js';
+import { SharedHelperFacet, type HelperFacetSpec } from './helper-facet.js';
+import type { StagedSourceEnv } from '../runtime/staged-source.js';
 
 /**
  * Everything of the facet's module but its staged parts: esbuild's JS adapter,
@@ -137,14 +138,12 @@ export function esbuildFacetWorkerCode(
  * stub, so a caller that starts while another is still loading it (fetching
  * and verifying its staged adapter and runner) waits on that load.
  */
-const esbuildFacet = new SharedHelperFacet<EsbuildFacetRpc>({
+const esbuildFacetSpec = {
   id: ESBUILD_FACET_WORKER_ID,
   className: 'EsbuildFacet',
   kind: 'esbuild',
-  // `esbuild` the command is a process; transformMany and build are compute calls.
-  processMethods: ['cli'],
   what: 'the esbuild facet',
-  async code(assets) {
+  async code(assets: Required<StagedSourceEnv>) {
     const [wasm, jsFnBody, cliRunner, transformRuntime] = await Promise.all([
       fetchEsbuildWasmBytes(assets),
       fetchEsbuildJsFnBody(assets),
@@ -153,6 +152,21 @@ const esbuildFacet = new SharedHelperFacet<EsbuildFacetRpc>({
     ]);
     return esbuildFacetWorkerCode(wasm, jsFnBody, cliRunner, transformRuntime);
   },
+} as const satisfies HelperFacetSpec;
+
+/** transformMany and build: compute calls, bounded by the esbuild kind's call deadline. */
+const esbuildFacet = new SharedHelperFacet<EsbuildFacetRpc>(esbuildFacetSpec);
+
+/**
+ * `esbuild` the command, a process: the same worker as a second actor, so a
+ * compute call that expires (and aborts its facet) never ends a running
+ * command, and the command has no wall deadline.
+ */
+const esbuildCliFacet = new SharedHelperFacet<EsbuildFacetRpc>({
+  ...esbuildFacetSpec,
+  facetName: `${ESBUILD_FACET_WORKER_ID}:cli`,
+  what: 'the esbuild command\'s facet',
+  runsProcesses: true,
 });
 
 /**
@@ -165,13 +179,14 @@ async function onEsbuildFacet<T>(
   ctx: DurableObjectState,
   env: unknown,
   call: (facet: Fetcher<EsbuildFacetRpc>) => Promise<T>,
+  shared: SharedHelperFacet<EsbuildFacetRpc> = esbuildFacet,
 ): Promise<T> {
-  const stub = esbuildFacet.stub(ctx, env);
+  const stub = shared.stub(ctx, env);
   const endFetch = await beginHelperFetch(ctx, ESBUILD_FACET_WORKER_ID);
   try {
     return await call(await stub);
   } catch (error) {
-    esbuildFacet.forget(ctx, stub);
+    shared.forget(ctx, stub);
     throw error;
   } finally {
     endFetch();
@@ -214,7 +229,7 @@ export async function runEsbuildCli(
     // The esbuild facet has no network (its loader denies one): nothing to route.
     props: supervisorBindingProps(ctx, pid, { writerId: crypto.randomUUID(), network: ISOLATE_NETWORK }),
   });
-  return onEsbuildFacet(ctx, env, (facet) => facet.cli(args, supervisor, output));
+  return onEsbuildFacet(ctx, env, (facet) => facet.cli(args, supervisor, output), esbuildCliFacet);
 }
 
 /**

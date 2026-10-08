@@ -15,7 +15,7 @@ import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import { OXC_WASM_BUILD_ID } from '../oxc-wasm-artifact.generated.js';
 import { OXC_FACET_BUILD_ID } from '../oxc-facet-artifact.generated.js';
 import { fetchOxcFacetRuntime, fetchOxcWasmBytes } from '../runtime/oxc-wasm-bytes.js';
-import { SharedHelperFacet } from './helper-facet.js';
+import { FacetCallDeadlineError, SharedHelperFacet } from './helper-facet.js';
 
 /**
  * The Oxc wasm's linear memory past which the facet drops its instance after
@@ -147,7 +147,8 @@ export function oxcTransformHost(
             if (facet) oxcFacet.forget(ctx, facet);
             facet = null;
             failure = error;
-            if (classifyDoCall(error) === 'overloaded') break;
+            // An overloaded actor, or a call past its deadline (which aborted the facet): not retried.
+            if (classifyDoCall(error) === 'overloaded' || error instanceof FacetCallDeadlineError) break;
           }
         }
         if (answered === null) {
