@@ -144,6 +144,16 @@ export const BUILD_FIXPOINT = [
   })),
   {
     cwd: 'packages/worker',
+    script: 'bundle:facets',
+    why: 'produce core source strings before their compiled asset consumers',
+  },
+  {
+    cwd: 'packages/core',
+    script: 'build',
+    why: 'compile the facet-generated client consumed by bundle:shims',
+  },
+  {
+    cwd: 'packages/worker',
     script: 'bundle',
     why: 'stage assets and regenerate sources — bundle:shims reads dist',
   },
