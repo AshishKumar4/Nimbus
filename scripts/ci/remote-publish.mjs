@@ -1,0 +1,50 @@
+#!/usr/bin/env bun
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { mapOnArmada } from './lib/armada.mjs';
+
+const argv = process.argv.slice(2);
+const phaseAt = argv.indexOf('--phase');
+const phase = phaseAt >= 0 ? argv[phaseAt + 1] : null;
+const position = argv.filter((_, index) => index !== phaseAt && index !== phaseAt + 1);
+if (!['runtime', 'packages'].includes(phase) || position.length > 1 || argv.length !== position.length + 2) {
+  console.error('usage: bun scripts/ci/remote-publish.mjs [<commit>] --phase runtime|packages');
+  process.exit(2);
+}
+const git = (args) => {
+  const result = spawnSync('git', args, { encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(result.stderr.trim());
+  return result.stdout.trim();
+};
+try {
+  const repo = git(['rev-parse', '--show-toplevel']);
+  const sha = git(['rev-parse', '--verify', `${position[0] ?? 'HEAD'}^{commit}`]);
+  const mapped = await mapOnArmada({ repo, sha, files: ['scripts/ci/publish-pack.mjs', 'scripts/ci/lib/publish-packages.mjs'], items: [1], command: ['bun', 'scripts/ci/publish-pack.mjs', '--out', '{out}', '--phase', phase], label: `publish-pack ${sha.slice(0, 12)} ${phase}` });
+  const outcome = mapped.outcomes[0];
+  if (outcome?.kind !== 'exited' || mapped.outputs[0] === null) throw new Error(`armada publish packing was not graded (${mapped.jobId}): ${outcome?.tail ?? 'no outcome'}`);
+  const result = JSON.parse(mapped.outputs[0]);
+  if (result.head !== mapped.commit || result.phase !== phase) throw new Error('publish artifact provenance does not match the requested commit and phase');
+  const dir = join(process.env.NIMBUS_PUBLISH_ARTIFACTS ?? '/mnt/local/nimbus/verify/publish', sha);
+  mkdirSync(dir, { recursive: true });
+  const manifest = { commit: sha, job: mapped.jobId, phase, rows: result.rows, tarballs: [] };
+  for (const row of result.rows) console.error(`${row.exitCode === 0 ? 'ok' : 'FAIL'} ${row.name}: ${row.exitCode}${row.exitCode ? '\n' + row.output : ''}`);
+  if (outcome.exitCode !== 0 || result.rows.some((row) => row.exitCode !== 0)) {
+    writeFileSync(join(dir, `${phase}-verdict.json`), JSON.stringify(manifest, null, 2) + '\n');
+    process.exit(1);
+  }
+  for (const artifact of result.tarballs) {
+    if (!/^[A-Za-z0-9._-]+\.tgz$/.test(artifact.file)) throw new Error('publish artifact has an unsafe filename');
+    const bytes = Buffer.from(artifact.base64, 'base64');
+    if (createHash('sha256').update(bytes).digest('hex') !== artifact.sha256 || bytes.length !== artifact.bytes) throw new Error(`${artifact.file} did not arrive intact`);
+    writeFileSync(join(dir, artifact.file), bytes);
+    const { base64, ...receipt } = artifact;
+    manifest.tarballs.push(receipt);
+  }
+  writeFileSync(join(dir, `${phase}.json`), JSON.stringify(manifest, null, 2) + '\n');
+  console.log(JSON.stringify({ dir, manifest: join(dir, `${phase}.json`), tarballs: manifest.tarballs }));
+} catch (error) {
+  console.error(`remote-publish: NOT GRADED — ${error.message}`);
+  process.exit(2);
+}
