@@ -153,6 +153,9 @@ function nameOf(op) {
 function fsError(errno, message, path) {
     return Object.assign(new Error(message), { code: errno, path });
 }
+function isProcessGone(error) {
+    return 'code' in error && error.code === 'ESRCH';
+}
 /** The open description a call writes through (W7Call description), if any. */
 function descriptionOf(call) {
     return 'description' in call ? call.description : undefined;
@@ -240,6 +243,7 @@ export function processFsClient(options) {
     /** Writer epochs given up whose retirement the session has not answered yet (lostEpoch). */
     const retiring = [];
     const failures = [];
+    let processGone = null;
     /** Entries logged, the last one answered (every one before it is), and the flushes waiting for a place in the log. */
     let logged = 0;
     let answered = 0;
@@ -295,16 +299,25 @@ export function processFsClient(options) {
      * from the first entry not yet numbered, recorded in the journal so a
      * drain sends each entry under the number it was given.
      */
+    const retirePending = async () => {
+        while (retiring.length > 0) {
+            try {
+                await session.retireWriter?.(retiring[0]);
+            }
+            catch (error) {
+                if (processGone === null || !(error instanceof Error) || !isProcessGone(error))
+                    throw error;
+            }
+            retiring.shift();
+        }
+    };
     const writerFor = async (entries) => {
         const numberedPending = entries.some((entry) => entry.seq !== 0) || queue.some((entry) => entry.seq !== 0);
         if (epoch !== null && (epoch.writer === null || numberedPending || now() - epoch.openedAt < WAVE_EPOCH_TTL_MS / 2))
             return epoch.writer;
         // An epoch given up is retired before anything else is sent (lostEpoch);
         // one the session cannot be told of yet is told before the next wave.
-        while (retiring.length > 0) {
-            await session.retireWriter?.(retiring[0]);
-            retiring.shift();
-        }
+        await retirePending();
         const openedAt = now();
         const writer = await session.openWriter(counters.epochs === 0);
         epoch = { writer, openedAt, numbering: null };
@@ -359,6 +372,10 @@ export function processFsClient(options) {
             writer = await writerFor(entries);
         }
         catch (error) {
+            if (error instanceof Error && isProcessGone(error)) {
+                endedProcess(entries, error, epoch?.writer ?? null);
+                return;
+            }
             for (const entry of entries)
                 fail(entry, 'EIO', `the session gave this process no writer: ${error instanceof Error ? error.message : String(error)}`);
             journal.dropThrough(entries[entries.length - 1].jid);
@@ -415,6 +432,10 @@ export function processFsClient(options) {
         }
         catch (error) {
             // Lost past every re-send, or refused before any op (the epoch gone): their fate is unknown.
+            if (error instanceof Error && isProcessGone(error)) {
+                endedProcess(entries, error, writer);
+                return;
+            }
             lostEpoch(entries, `the session did not answer this write: ${error instanceof Error ? error.message : String(error)}`, writer);
             return;
         }
@@ -494,6 +515,21 @@ export function processFsClient(options) {
         epoch = null;
         for (const entry of queue)
             entry.seq = 0;
+    };
+    const endedProcess = (entries, refusal, writer) => {
+        processGone ??= refusal;
+        const ended = [...entries, ...queue.splice(0)];
+        for (const entry of ended) {
+            if (entry.op !== null) {
+                heapBytes -= entry.bytes;
+                entry.op = null;
+            }
+            fail(entry, 'ESRCH', processGone.message);
+        }
+        journal.dropThrough(ended[ended.length - 1].jid);
+        if (writer !== null)
+            retiring.push(writer);
+        epoch = null;
     };
     const pump = () => {
         scheduled = false;
@@ -754,6 +790,8 @@ export function processFsClient(options) {
             return queue.length > 0 || inFlight !== null;
         },
         submit(given, submitOptions) {
+            if (processGone !== null)
+                throw processGone;
             const acknowledged = submitOptions?.acknowledged === true;
             const op = withUmaskOf(given, options.umask);
             const named = pathsOf(op);
@@ -834,13 +872,18 @@ export function processFsClient(options) {
         flush() {
             options.drain?.();
             const mark = logged;
-            if (answered >= mark)
-                return Promise.resolve();
-            const flushed = new Promise((resolve) => { marks.push({ mark, resolve }); });
+            const flushed = answered >= mark ? Promise.resolve() : new Promise((resolve) => { marks.push({ mark, resolve }); });
             schedule();
-            return flushed;
+            return flushed.then(async () => {
+                if (processGone === null)
+                    return;
+                await retirePending().catch(() => { });
+                throw processGone;
+            });
         },
         effect() {
+            if (processGone !== null)
+                return null;
             options.drain?.();
             return answered >= logged ? null : client.flush();
         },
@@ -862,15 +905,20 @@ export function processFsClient(options) {
                     await close(grant);
                 settling = false;
             }
-            const taken = client.takeFailures();
-            if (taken.length > 0)
-                throw failuresError(taken);
+            if (processGone !== null)
+                await retirePending().catch(() => { });
+            const failure = client.takeFailuresError();
+            if (failure !== null)
+                throw failure;
         },
         takeFailures() {
             return failures.splice(0, failures.length);
         },
         takeFailuresError() {
             const taken = failures.splice(0, failures.length);
+            // A missing process is terminal even after its recorded ops were taken.
+            if (processGone !== null)
+                return processGone;
             return taken.length === 0 ? null : failuresError(taken);
         },
         noteFailure(failure) {
@@ -888,6 +936,9 @@ const DRAIN_WAVE_BASE = 2 ** 40;
  * response, its exit): each named, with the session's errno and message.
  */
 export function failuresError(failures) {
+    const gone = failures.find((failure) => failure.errno === 'ESRCH');
+    if (gone !== undefined)
+        return Object.assign(new Error(gone.message), { code: 'ESRCH', failures });
     return Object.assign(new Error(`${failures.length} filesystem change${failures.length === 1 ? '' : 's'} this process made did not reach the session:\n`
         + failures.map((failure) => `  ${failure.op} ${failure.path}: ${failure.errno}: ${failure.message}`).join('\n')), { code: 'EIO', failures });
 }

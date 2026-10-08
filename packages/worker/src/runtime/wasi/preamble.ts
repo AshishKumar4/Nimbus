@@ -45,6 +45,7 @@ import type {
 
 import {
   installAuthorityFilesystem,
+  processGoneMessage,
   WASI_ACCEPTED_PATH_PREFIX,
   WASI_LISTEN_PATH_PREFIX,
   WASI_TCP_PATH_PREFIX,
@@ -206,6 +207,11 @@ let __wasiThreads: WasiThreadScheduler | null = null;
 // files, and a file syscall answers EBADF.
 let __wasiSup: WasiSupervisorStub | null = null;
 
+// The session's refusal of this process (it no longer holds the pid: the
+// session restarted, or ended the process, while it ran). Each call it refuses
+// answers ESRCH; the run ends naming it (__wasiSettled).
+let __wasiProcessGone: string | null = null;
+
 // ── The process's own copy of the namespace ──────────────────────────────
 //
 // A filesystem syscall is a round trip to the session (5.9-12.7 ms for one
@@ -312,12 +318,18 @@ export function __wasiFsStats(): ResidentFilesystemStats | null {
  * reports one did not do what it said it did, and exits non-zero.
  */
 export async function __wasiSettleWrites(): Promise<string | null> {
-  if (__wasiResident === null) return null;
-  const failures = await __wasiResident.fs.settle();
-  if (failures.length === 0) return null;
-  return failures
-    .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
-    .join('; ');
+  let failed: string | null = null;
+  try {
+    if (__wasiResident !== null) {
+      const failures = await __wasiResident.fs.settle();
+      if (failures.length > 0) failed = failures
+        .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
+        .join('; ');
+    }
+  } catch (error) {
+    if (__wasiProcessGone === null) throw error;
+  }
+  return __wasiProcessGone === null ? failed : processGoneMessage(__wasiProcessGone);
 }
 
 /** Anything about to leave the process waits until what it wrote is in the session. */
@@ -364,6 +376,7 @@ export function __wasiInitFS(opts: WasiInitOptions): void {
   // isolate across calls, so the previous tenant's stub must not answer the
   // next program's syscalls.
   __wasiSup = null;
+  __wasiProcessGone = null;
   __wasiFS = {
     root: __wasiCanonicalize(opts.root || ''),
     // Largest regular file the codec answers from a resident copy.
@@ -727,7 +740,10 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     dv.setUint32(off + 4, hi, true);
   }
   function readPath(ptr: number, len: number): string {
-    const bytes = u8().subarray(ptr, ptr + len);
+    // By the constructor, not subarray: past 128 MiB of guest memory a
+    // Worker refuses a subarray's begin (wasi/filesystem.ts, guestBytes).
+    const mem = u8();
+    const bytes = new Uint8Array(mem.buffer, mem.byteOffset + ptr, Math.max(0, Math.min(len, mem.length - ptr)));
     return utf8dec.decode(bytes);
   }
   let stdoutBuf = '';
@@ -1140,7 +1156,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       let off = 0;
       while (off < bufLen) {
         const n = Math.min(bufLen - off, CHUNK);
-        crypto.getRandomValues(memU8.subarray(bufPtr + off, bufPtr + off + n));
+        crypto.getRandomValues(new Uint8Array(memU8.buffer, memU8.byteOffset + bufPtr + off, n));
         off += n;
       }
       return __WASI_ESUCCESS;
@@ -1648,6 +1664,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     abi: opts.abi,
     synchronous: opts.parking === 'none',
     residentBytes: __wasiFS.residentFileCap,
+    processGone: (refusal) => { __wasiProcessGone ??= refusal; },
   });
 
   // Where something leaves the guest: a socket's bytes (fd_write on a socket

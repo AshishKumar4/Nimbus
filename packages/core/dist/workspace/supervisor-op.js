@@ -90,7 +90,7 @@ function credFor(deps, pid, cred) {
     if (!Number.isInteger(pid) || pid <= 0) {
         throw new Error('supervisor op: filesystem operation requires a valid process pid');
     }
-    return deps.processes ? deps.processes.cred(pid) : CRED_SESSION_USER;
+    return deps.processes ? deps.processes.liveCred(pid) : CRED_SESSION_USER;
 }
 /**
  * The canonical supervisor op set — every operation the supervisor RPC
@@ -313,10 +313,11 @@ const NATIVE_OPS = {
         let admit;
         let mountReach;
         if (fence !== undefined) {
+            if (t.deliveries !== undefined && e.pid !== undefined)
+                t.bridge(e.pid, e.cred);
             if (t.deliveries === undefined || fence.hostIncarnation !== t.deliveries.incarnation || e.pid === undefined) {
                 throw Object.assign(new Error('ESTALE: writeBatchStream was sent through a binding another instance of this host minted'), { code: 'ESTALE' });
             }
-            t.bridge(e.pid, e.cred);
             const admission = t.deliveries.admitWave(e.pid, fence.writer, fence.wave, fence.attempt);
             admit = admission.check;
             mountReach = admission.reach;
@@ -451,12 +452,10 @@ export function createSupervisorOpHandler(deps) {
     const serve = (op, envelope) => deps.observe
         ? deps.observe(envelope, () => withRecall(() => perform(op, envelope))) : withRecall(() => perform(op, envelope));
     /**
-     * A mutation delivered exactly once (supervisor-delivery.ts), checked in
-     * the order that makes a repeat safe: the delivery was minted for THIS
-     * instance — a restarted one refuses its predecessor's, permanently, since
-     * it holds none of its receipts or descriptors — then the process is live
-     * and is who it says, before any receipt answers for it, and only then the
-     * receipt, or the mutation.
+     * A mutation delivered exactly once (supervisor-delivery.ts). Refuse a
+     * missing process before its stale binding. A live process's delivery must
+     * still name THIS instance before any receipt answers: a restarted one
+     * holds none of its predecessor's receipts or descriptors.
      */
     const deliver = (envelope, span) => {
         const deliveries = deps.deliveries;
@@ -473,15 +472,13 @@ export function createSupervisorOpHandler(deps) {
             'nimbus.operation_id': delivery.data.id,
             'nimbus.host_incarnation': delivery.data.hostIncarnation,
         });
-        if (delivery.data.hostIncarnation !== deliveries.incarnation) {
-            throw Object.assign(new Error(`ESTALE: ${op} was sent through a binding another instance of this host minted`), { code: 'ESTALE' });
-        }
         const pid = envelope.pid;
         if (pid === undefined)
             throw new Error(`supervisor op: a delivered ${op} names no process`);
-        // The process's own bridge, which is what refuses a pid that does not
-        // exist or has been released (ESTALE), and a cred riding a pid.
         tools.bridge(pid, envelope.cred);
+        if (delivery.data.hostIncarnation !== deliveries.incarnation) {
+            throw Object.assign(new Error(`ESTALE: ${op} was sent through a binding another instance of this host minted`), { code: 'ESTALE' });
+        }
         span.set({ 'nimbus.pid': pid });
         const { receipt, answer } = deliveries.deliver(pid, delivery.data.id, op, () => supervisorDeliveryAnswer(serve(op, { ...envelope, op, delivery: undefined })));
         span.set({ 'nimbus.receipt': receipt });
