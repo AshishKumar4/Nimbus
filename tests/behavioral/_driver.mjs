@@ -177,16 +177,36 @@ function nameMintedOnFailure(code) {
 
 // 'exit' listeners must be synchronous, so a child of the same runtime runs the fetches.
 // Each DELETE is read through deletionResult: only the destroy result confirms a deletion.
+// A 503 (the session object refusing work it is too busy to admit; the destroy
+// never ran) or a failed request is tried again, after the answer's Retry-After
+// (else 1 s), at most DELETE_TRIES times within DELETE_BUDGET_MS: a session busy
+// with an install refused its DELETE once and was counted a leak while it lived.
+// Any other answer is the verdict. The destroy is idempotent.
+const DELETE_TRIES = 4;
+const DELETE_BUDGET_MS = 30_000;
 const DELETE_SESSIONS = `
 (async () => {
   const { deletionResult } = await import(${JSON.stringify(new URL('./_ledger.mjs', import.meta.url).href)});
-  const { base, sessions } = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+  const { base, sessions, tries, budgetMs } = JSON.parse(require('fs').readFileSync(0, 'utf8'));
   const results = await Promise.all(sessions.map(async ([sid, headers]) => {
-    try {
-      const result = await deletionResult(await fetch(base + '/s/' + encodeURIComponent(sid) + '/', { method: 'DELETE', headers }));
-      return { status: result.status, confirmed: result.ok };
-    } catch (error) {
-      return { status: 'error: ' + error.message, confirmed: false };
+    const deadline = Date.now() + budgetMs;
+    let last;
+    for (let attempt = 1; ; attempt++) {
+      let waitMs = 1000;
+      try {
+        const response = await fetch(base + '/s/' + encodeURIComponent(sid) + '/', {
+          method: 'DELETE', headers, signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
+        });
+        const result = await deletionResult(response);
+        last = { status: result.status, confirmed: result.ok, attempts: attempt };
+        if (response.status !== 503) return last;
+        const after = Number(response.headers.get('retry-after'));
+        if (Number.isFinite(after) && after >= 0) waitMs = after * 1000;
+      } catch (error) {
+        last = { status: 'error: ' + error.message, confirmed: false, attempts: attempt };
+      }
+      if (attempt >= tries || Date.now() + waitMs >= deadline) return last;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
   }));
   process.stdout.write(JSON.stringify(results));
@@ -200,7 +220,7 @@ function deleteUndeletedSync() {
   let statuses;
   try {
     statuses = JSON.parse(execFileSync(process.execPath, ['-e', DELETE_SESSIONS], {
-      input: JSON.stringify({ base: BASE, sessions }),
+      input: JSON.stringify({ base: BASE, sessions, tries: DELETE_TRIES, budgetMs: DELETE_BUDGET_MS }),
       encoding: 'utf8',
       timeout: 60_000,
     }));
@@ -209,8 +229,9 @@ function deleteUndeletedSync() {
   }
   sessions.forEach(([sid], i) => {
     const result = statuses[i];
-    console.log(`deleteSession (exit hook): ${sid} → ${result.status} confirmed=${result.confirmed === true}`);
-    ledger('exit-delete', sid, result.status, { confirmed: result.confirmed === true });
+    const tries = result.attempts > 1 ? ` after ${result.attempts} tries` : '';
+    console.log(`deleteSession (exit hook): ${sid} → ${result.status} confirmed=${result.confirmed === true}${tries}`);
+    ledger('exit-delete', sid, result.status, { confirmed: result.confirmed === true, attempts: result.attempts });
   });
 }
 
