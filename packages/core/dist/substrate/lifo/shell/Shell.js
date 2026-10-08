@@ -114,6 +114,7 @@ export class Shell {
     lineSubmission;
     activeSubmission;
     promptSubmission;
+    primaryPrompt = false;
     /**
      * Accepted lines that do not form a complete command yet: an unclosed
      * quote or a trailing `\` keeps the shell reading under PS2, as bash
@@ -541,6 +542,7 @@ export class Shell {
     }
     printPrompt() {
         if (this.pendingLine !== null) {
+            this.primaryPrompt = false;
             this.terminal.write(CONTINUATION_PROMPT);
             return;
         }
@@ -550,11 +552,17 @@ export class Shell {
         }
         this.processRegistry.collectZombies();
         this.terminal.write(PROMPT_START + formatShellPrompt(this.env, this.cwd) + PROMPT_END);
-        this.terminal.shellIntegration?.({ type: 'shell-integration', event: 'prompt' });
+        this.primaryPrompt = true;
+        this.announcePrompt();
         const submission = this.promptSubmission ?? this.lineSubmission;
         this.promptSubmission = undefined;
         this.lineSubmission = undefined;
         submission?.prompt();
+    }
+    /** A newly attached client learns current readiness, never a replayed completion. */
+    announcePrompt() {
+        if (!this.running && this.primaryPrompt)
+            this.terminal.shellIntegration?.({ type: 'shell-integration', event: 'prompt' });
     }
     async handleInput(data, submission) {
         // Raw mode: bypass all shell line editing, deliver keypresses directly
@@ -1049,6 +1057,7 @@ export class Shell {
      * both characters; a quoted join keeps the newline in the string.
      */
     async acceptLine(rawLine, submission) {
+        this.primaryPrompt = false;
         if (!this.lineSubmission)
             this.lineSubmission = submission;
         let command;
@@ -1075,6 +1084,7 @@ export class Shell {
         (await this.executeLine(command, submission));
     }
     async executeLine(line, submission = this.lineSubmission) {
+        this.primaryPrompt = false;
         const release = submission?.retain();
         this.lineSubmission = undefined;
         this.activeSubmission = submission;

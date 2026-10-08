@@ -98,6 +98,7 @@ export declare class Shell {
     private lineSubmission;
     private activeSubmission;
     private promptSubmission;
+    private primaryPrompt;
     /**
      * Accepted lines that do not form a complete command yet: an unclosed
      * quote or a trailing `\` keeps the shell reading under PS2, as bash
@@ -188,6 +189,8 @@ export declare class Shell {
     start(): Promise<void>;
     private sourceRcFiles;
     printPrompt(): void;
+    /** A newly attached client learns current readiness, never a replayed completion. */
+    announcePrompt(): void;
     handleInput(data: string, submission?: ShellInputSubmission): Promise<void>;
     private handleTab;
     private handleStdinInput;
