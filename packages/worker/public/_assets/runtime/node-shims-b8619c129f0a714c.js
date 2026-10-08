@@ -5384,8 +5384,11 @@ const __fsMod = (() => {
   // disagree about order, and a program mixing them sees one sequence.
   // In a subtree the process holds, the change is decided here: answered
   // once logged, the session's answer reported if it refuses.
-  async function _structuralAsync(queue, syscall, p) {
-    const decided = _decidedHere(_resolve(p));
+  // Answered once logged where a held subtree decides it and this view judged
+  // it (`judged`: the name it changes is one this view lists); what only
+  // the authority can answer is its answer, awaited.
+  async function _structuralAsync(queue, syscall, p, judged = true) {
+    const decided = judged && _decidedHere(_resolve(p));
     const queued = queue();
     if (decided) _detachStructuralMutation(__nimbusDecided(queued), syscall, p);
     else await queued;
@@ -5393,7 +5396,9 @@ const __fsMod = (() => {
   async function _mkdirAsync(p, opts) { await _structuralAsync(() => _mkdirQueued(p, opts), "mkdir", p); }
   async function _unlinkAsync(p) { await _structuralAsync(() => _unlinkQueued(p), "unlink", p); }
   async function _rmdirAsync(p) { await _structuralAsync(() => _rmdirQueued(p), "rmdir", p); }
-  async function _renameAsync(oldP, newP) { await _structuralAsync(() => _renameQueued(oldP, newP, true), "rename", oldP); }
+  async function _renameAsync(oldP, newP) {
+    await _structuralAsync(() => _renameQueued(oldP, newP, true), "rename", oldP, _statLadder(_resolve(oldP), true) !== undefined);
+  }
 
   async function _truncateAsync(p, len) {
     const absPath = _resolveFollow(p, "open");
@@ -6024,12 +6029,13 @@ const __fsMod = (() => {
     const oldK = _strip(oldAbs);
     const newK = _strip(newAbs);
     const source = _statLadder(oldAbs, true);
-    // A name renamed to itself is left as it is, as rename(2) leaves it, once
-    // it is known to exist; a name this view does not list is the authority's
-    // to answer for.
+    // A source the namespace knows is not there is rename(2)'s ENOENT, here,
+    // whoever would have answered the call; only one this view does not list
+    // is the authority's to answer for.
+    if (source === undefined && _nsUnlisted(oldAbs, false, false) === null) throw _fsErr("ENOENT", "rename", oldP, newP);
+    // A name renamed to itself is left as it is, as rename(2) leaves it.
     if (oldK === newK) {
       if (source !== undefined) return null;
-      if (_nsUnlisted(oldAbs, false, false) === null) throw _fsErr("ENOENT", "rename", oldP, newP);
       return _queueStructuralMutation(oldAbs, "rename", oldP, () => _vfsOp({ type: "rename", from: oldK, to: newK }), undefined, newP);
     }
     // What rename(2) refuses before it moves anything, refused here before
