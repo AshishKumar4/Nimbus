@@ -28,6 +28,7 @@
  */
 import { type RequireFs, type WalkProgress } from './require-resolution.js';
 export { requireFsOverBridge, type BridgeRequireFs, type RequireFs } from './require-resolution.js';
+export { mayCallRequireWrapper, requireWrapperCalls } from './require-wrappers.js';
 /**
  * Result of a prefetch walk: path → content for every reachable file.
  *
@@ -161,26 +162,4 @@ conditions?: readonly string[]): Promise<string | null>;
  * acorn cannot parse (TypeScript) names none.
  */
 export declare function configPackageNames(source: string): string[];
-/**
- * What a module's require wrappers load: a function that passes its first
- * parameter to a require (the module's own, or one createRequire made, by any
- * name), or to its `.resolve`, loads what each of its calls names with a
- * string. @vitejs/plugin-vue loads the project's compiler so:
- *
- *   const _require = createRequire(import.meta.url);
- *   function tryRequire(id, from) {
- *     try { return from ? _require(_require.resolve(id, { paths: [from] })) : _require(id); } catch (e) {}
- *   }
- *   … tryRequire("vue/compiler-sfc", root) …
- *
- * No other grammar reads that call, and a Vue project's first `vite` and
- * `vite build` failed on what it loads. `stripped` (the module without its
- * comments) is read by patterns first, which find the calls a wrapper could
- * make: almost every module has none, and is never parsed. A module with
- * some is parsed, and read by the analysis the runtime's import() prefetch
- * reads it with (core/interpreter/module-requests.ts programWrapperCalls):
- * only a function whose own body passes its parameter to a require is a
- * wrapper. The patterns may admit more than it does, never less.
- */
-export declare function requireWrapperCalls(code: string, stripped?: string): string[];
 //# sourceMappingURL=require-resolver.d.ts.map

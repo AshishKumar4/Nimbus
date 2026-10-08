@@ -13,6 +13,7 @@ import { resolvePackageEntry as sharedResolvePackageEntry, resolveExports as sha
 import { TYPESCRIPT_INDEX_CANDIDATES, typescriptFallbackCandidates, } from '../_shared/typescript-specifiers.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { packageTypeOf } from './module-format.js';
+import { requireWrapperCalls } from './require-wrappers.js';
 /**
  * The conditions `require` resolves `exports` and `imports` under: Node's
  * (DEFAULT_CJS_CONDITIONS), and the program's own (`node --conditions`).
@@ -37,6 +38,13 @@ export function requirePackageEntry(pkg, subpath, conditions) {
         return entry;
     return sharedResolvePackageEntry(pkg, subpath, importConditions(conditions));
 }
+/**
+ * What each file's require wrappers load, by its revision, per filesystem:
+ * a launch walks what the last one walked, and only a revision a write made
+ * is read again (tokenized, and parsed if it could hold one).
+ */
+const WRAPPER_CALLS = new WeakMap();
+const WRAPPER_CALLS_MAX = 16_384;
 export function requireFsOverBridge(bridge) {
     const decoder = new TextDecoder();
     const absent = (read) => (async () => {
@@ -51,7 +59,32 @@ export function requireFsOverBridge(bridge) {
     })();
     const stat = (path) => absent(() => bridge.stat(path));
     const readBytes = (path) => absent(() => bridge.readFile(path));
+    let wrappers = WRAPPER_CALLS.get(bridge);
+    if (wrappers === undefined)
+        WRAPPER_CALLS.set(bridge, wrappers = new Map());
+    const kept = wrappers;
     return {
+        async wrapperCalls(path, code) {
+            let revision;
+            try {
+                revision = await bridge.revision(path);
+            }
+            catch {
+                return requireWrapperCalls(code);
+            }
+            const memo = kept.get(path);
+            if (memo !== undefined && memo.revision === revision)
+                return memo.calls;
+            const calls = requireWrapperCalls(code);
+            kept.delete(path);
+            kept.set(path, { revision, calls });
+            for (const oldest of kept.keys()) {
+                if (kept.size <= WRAPPER_CALLS_MAX)
+                    break;
+                kept.delete(oldest);
+            }
+            return calls;
+        },
         exists: async (path) => (await stat(path)) !== null,
         isDirectory: async (path) => (await stat(path))?.type === 'directory',
         readFileString: async (path) => {

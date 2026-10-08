@@ -33,9 +33,10 @@ import { isNativeBinPath } from './os-contracts.js';
 import { stripCommentsForImports } from './comment-strip.js';
 import { createEsmResolver } from '../_shared/esm-resolver.js';
 import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
-import { programWrapperCalls } from '../interpreter/module-requests.js';
+import { requireWrapperCalls } from './require-wrappers.js';
 // The CommonJS resolver this walk stages from (require-resolution.ts).
 export { requireFsOverBridge } from './require-resolution.js';
+export { mayCallRequireWrapper, requireWrapperCalls } from './require-wrappers.js';
 // Match literal-string require/require.resolve with single, double, or
 // template-literal-no-interp specifier. The plain-string variant is by
 // far the dominant npm pattern; the others catch a long tail of
@@ -110,25 +111,6 @@ const CREATE_REQUIRE_CALL_RE = /\bcreateRequire\s*\([^)]*\)\s*\(\s*(['"`])([^'"`
 // false-positive. The walker no-ops on missed resolutions, so it's a
 // minor wasted-work cost, not a correctness issue.
 const IMPORT_RE = /(?:^|[\n;}])\s*(?:import|export)(?:[\s{][\w*${}\s,]*?\s*from)?\s*(['"])([^'"]+)\1/g;
-// The prefilter's patterns read names as the language spells them (any
-// Unicode identifier; a name spelled with \u escapes is read as written, so
-// such a wrapper is not found), and a callee or a function as any of its
-// forms the analysis reads: parenthesized, called optionally, an async or
-// generator function, a function expression in parentheses.
-const NAME = String.raw `[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*`;
-const NOT_IN_NAME = String.raw `(?<![\p{ID_Continue}$\u200c\u200d\\.])`;
-// A name assigned, as a require createRequire made is bound: `r = `.
-const BOUND_RE = new RegExp(String.raw `${NOT_IN_NAME}(${NAME})\s*=(?![=>])`, 'gu');
-// What precedes a function's parameter list, read back to the name it is
-// called by: `function f`, `function* f`, `f = function g`, `f = (async function`.
-const FUNCTION_HEAD_RE = new RegExp(String.raw `(?:\bfunction\s*\*?\s*(${NAME})\s*|${NOT_IN_NAME}(${NAME})\s*=\s*(?:\(\s*)*(?:async\s+)?function\b\s*\*?\s*(?:${NAME})?\s*)$`, 'u');
-// What precedes an arrow function's parameters: `f = `, `f = (async `.
-const ARROW_HEAD_RE = new RegExp(String.raw `${NOT_IN_NAME}(${NAME})\s*=\s*(?:\(\s*)*(?:async\s*)?$`, 'u');
-// What precedes a string-first call's argument list: its callee, maybe in
-// parentheses or called optionally (`f(`, `(f)(`, `f?.(`).
-const CALLEE_RE = new RegExp(String.raw `${NOT_IN_NAME}(${NAME})\s*(?:\)\s*)*(?:\?\.\s*)?$`, 'u');
-// A call's argument list that starts with a string.
-const STRING_CALL_RE = /\(\s*['"`]/g;
 // Only the speculative ESM resolution boundary catches traversal failures.
 // Keep scheduling errors distinct there, then return the original cause.
 class WalkControlFailure extends Error {
@@ -530,7 +512,8 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         // What a require wrapper's calls name (@vitejs/plugin-vue's
         // `tryRequire("vue/compiler-sfc", root)`): optional loads, as the
         // wrapper's try says, so phase 2's, resolved as require() resolves them.
-        const loads = requireWrapperCalls(code, stripped).filter((specifier) => !isFacetProvided(specifier));
+        const calls = fromFile !== undefined && vfs.wrapperCalls ? await vfs.wrapperCalls(fromFile, code) : requireWrapperCalls(code);
+        const loads = calls.filter((specifier) => !isFacetProvided(specifier));
         for (const specifier of loads)
             defer({ specifier, fromDir, alternatives: loads.length, require: true });
     }
@@ -822,99 +805,6 @@ export function configPackageNames(source) {
     });
     return [...names];
 }
-/**
- * What a module's require wrappers load: a function that passes its first
- * parameter to a require (the module's own, or one createRequire made, by any
- * name), or to its `.resolve`, loads what each of its calls names with a
- * string. @vitejs/plugin-vue loads the project's compiler so:
- *
- *   const _require = createRequire(import.meta.url);
- *   function tryRequire(id, from) {
- *     try { return from ? _require(_require.resolve(id, { paths: [from] })) : _require(id); } catch (e) {}
- *   }
- *   … tryRequire("vue/compiler-sfc", root) …
- *
- * No other grammar reads that call, and a Vue project's first `vite` and
- * `vite build` failed on what it loads. `stripped` (the module without its
- * comments) is read by patterns first, which find the calls a wrapper could
- * make: almost every module has none, and is never parsed. A module with
- * some is parsed, and read by the analysis the runtime's import() prefetch
- * reads it with (core/interpreter/module-requests.ts programWrapperCalls):
- * only a function whose own body passes its parameter to a require is a
- * wrapper. The patterns may admit more than it does, never less.
- */
-export function requireWrapperCalls(code, stripped = code) {
-    if (!stripped.includes('equire'))
-        return [];
-    // The requires: the module's own, and each createRequire made.
-    const requires = new Set(['require']);
-    for (let at = stripped.indexOf('createRequire'); at >= 0; at = stripped.indexOf('createRequire', at + 1)) {
-        // The last `name =` before the call within its statement: a declarator's.
-        const before = stripped.slice(Math.max(0, at - 256), at);
-        let bound;
-        for (const match of before.matchAll(BOUND_RE))
-            bound = match;
-        if (bound && !/[;{}]/.test(before.slice((bound.index ?? 0) + bound[0].length)))
-            requires.add(bound[1]);
-    }
-    // Names some require is passed first, as `r(x`, `(r)(x`, `r?.(x`,
-    // `r.resolve(x`, `r((x)`: the parameters a wrapper could have.
-    const callees = [...requires].map(escapeName).join('|');
-    const passed = new RegExp(String.raw `${NOT_IN_NAME}(?:${callees})\s*(?:\)\s*)*(?:\?\.\s*)?(?:\.\s*resolve\s*(?:\)\s*)*(?:\?\.\s*)?)?\(\s*(?:\(\s*)*(${NAME})\s*(?:\)\s*)*[,)]`, 'gu');
-    const params = new Set();
-    for (const match of stripped.matchAll(passed))
-        params.add(match[1]);
-    if (params.size === 0)
-        return [];
-    // Named functions with one of them first: `function f(id`, `f = function
-    // (id`, `f = (id) =>`, `f = async (id = x) =>`, and `f = id =>`. Found from
-    // the parameter and read back to the name; a parameter list read back to
-    // anything else (a call's arguments, a method, an unnamed function) is not
-    // a named function's.
-    const p = [...params].map(escapeName).join('|');
-    const candidates = new Set();
-    for (const match of stripped.matchAll(new RegExp(String.raw `\(\s*(?:${p})\s*[,)=]`, 'gu'))) {
-        const at = match.index ?? 0;
-        const before = stripped.slice(Math.max(0, at - 160), at);
-        const head = FUNCTION_HEAD_RE.exec(before);
-        const name = head !== null ? head[1] ?? head[2] : ARROW_HEAD_RE.exec(before)?.[1];
-        if (name !== undefined)
-            candidates.add(name);
-    }
-    for (const match of stripped.matchAll(new RegExp(String.raw `${NOT_IN_NAME}(?:${p})\s*=>`, 'gu'))) {
-        const at = match.index ?? 0;
-        const name = ARROW_HEAD_RE.exec(stripped.slice(Math.max(0, at - 160), at).replace(/async\s+$/, ''))?.[1];
-        if (name !== undefined)
-            candidates.add(name);
-    }
-    for (const name of requires)
-        candidates.delete(name);
-    if (candidates.size === 0)
-        return [];
-    // And one of them called with a string (what the string holds is the
-    // parse's to read: a `$`, the other quote, an escape).
-    let called = false;
-    for (const match of stripped.matchAll(STRING_CALL_RE)) {
-        const at = match.index ?? 0;
-        const callee = CALLEE_RE.exec(stripped.slice(Math.max(0, at - 96), at));
-        if (callee !== null && candidates.has(callee[1])) {
-            called = true;
-            break;
-        }
-    }
-    if (!called)
-        return [];
-    // A module nested past the walk's stack names no load, as one acorn cannot parse.
-    try {
-        const program = parseJavaScriptProgram(code);
-        return program === null ? [] : programWrapperCalls(program);
-    }
-    catch {
-        return [];
-    }
-}
-/** A name as a pattern matches it: `$` is the one character a name holds that a pattern reads otherwise. */
-const escapeName = (name) => name.replaceAll('$', '\\$');
 /**
  * Phase 2's tier for a package's "import" branch beside the "require" branch
  * the process loads: a module runner may import it, the code's own import()

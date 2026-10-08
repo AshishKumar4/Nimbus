@@ -26,6 +26,12 @@ export interface RequireFs {
     } | null>;
     /** Revalidate held content through the same principal without rereading its bytes. */
     assertReadable?(path: string): Awaitable<void>;
+    /**
+     * What a require wrapper's calls in `path`, whose text is `code`, load
+     * (require-wrappers.ts requireWrapperCalls), kept by the file's revision;
+     * absent, the walk reads them itself.
+     */
+    wrapperCalls?(path: string, code: string): Awaitable<readonly string[]>;
 }
 /**
  * The resolver's filesystem over a bound process bridge (supervisor RPC or
