@@ -283,7 +283,10 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
      * it arrives as a new invocation, so the chunk runs against a fresh CPU
      * budget rather than the one the launch has already been spending.
      */
+    /** A launch's next turn; one that cannot be armed throws, and fails the launch waiting on it (PacedWork). */
     private _scheduleLaunchTurn;
+    /** The hosting alarm (session/rpc.ts armHostingWatch), on this session's timer mux. */
+    scheduleHostingWatch(at: number): Promise<void>;
     /**
      * Convenience: the full URL prefix for the Vite dev server inside this
      * session (e.g. `/s/nimble-otter-4271/preview`). Falls back to the
