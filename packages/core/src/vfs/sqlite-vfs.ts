@@ -211,6 +211,12 @@ export interface DelegationTerms {
   /** A read lease's (acquireReadLease): the subtrees it does not cover, the session's own stores its synchronous use writes. */
   readonly excludes?: readonly string[];
   /**
+   * A read lease's: whether its holder no longer trusts it (no barrier of
+   * its confirmed it within its trust), and if so it is ended here, at
+   * once: a mutation then waits for nothing, synchronous or not.
+   */
+  lapsed?(): boolean;
+  /**
    * How many inode numbers to reserve for what the holder makes: it numbers
    * them itself (a stat shows the number before the session has the file)
    * and sends each with its file (W7 v4 `ino`).
@@ -4053,7 +4059,8 @@ export class SqliteVFS {
    * (or their trust run out) before the retry, so a writer meets each at most once.
    */
   private readRecallAt(key: string): RecallRequired | null {
-    const met = [...this.readLeases].filter(([owner, lease]) => this.readCovers(lease, key) && !this.isHolder(owner));
+    const met = [...this.readLeases].filter(([owner, lease]) => (
+      this.readCovers(lease, key) && !this.isHolder(owner) && lease.delegation.lapsed?.() !== true));
     if (met.length === 0) return null;
     const recall = (): Promise<void> => Promise.all(met.map(([owner, lease]) => {
       lease.recalling ??= (async () => {

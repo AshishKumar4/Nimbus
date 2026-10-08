@@ -37,9 +37,9 @@ function session() {
   return { engine, kernel, files, revoked };
 }
 
-/** A barrier of `bridge`'s that asks for the lease, from wherever it is. */
-function barrier(s, bridge) {
-  return bridge.acquire(s.engine.epoch, s.engine.revision(), { lease: true });
+/** A barrier of `bridge`'s that asks for the lease, from `from` (an answer it applied) or from now. */
+function barrier(s, bridge, from) {
+  return bridge.acquire(s.engine.epoch, from?.rev ?? s.engine.revision(), { lease: true });
 }
 
 // ── Taken by a barrier, at its revision; confirmed by the next ──
@@ -64,7 +64,8 @@ function barrier(s, bridge) {
   const s = session();
   const reader = s.files.bind({ pid: 7, cred: USER });
   const writer = s.files.bind({ pid: 8, cred: USER });
-  const { readLease } = barrier(s, reader);
+  const taken = barrier(s, reader);
+  const { readLease } = taken;
   // The holder's own write recalls nothing.
   await withRecall(() => reader.writeFile('/home/user/d/own.txt', 'mine'));
   assert.equal(s.files.delegations.stats().reads.answered, 0);
@@ -81,7 +82,7 @@ function barrier(s, bridge) {
   assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/a.txt')), 'v2');
   assert.equal(s.files.delegations.stats().reads.answered, 1);
   // The next barrier sees the write, and takes a new lease.
-  const next = barrier(s, reader);
+  const next = barrier(s, reader, taken);
   assert.ok(next.paths.some((entry) => entry.path === 'home/user/d/a.txt'));
   assert.notEqual(next.readLease?.owner, readLease.owner);
 }
@@ -101,7 +102,7 @@ function barrier(s, bridge) {
   assert.equal(s.files.delegations.stats().reads.expired, 1);
 }
 
-// ── A holder whose trust ran out already costs a writer nothing ──
+// ── A holder whose trust ran out already costs a writer nothing, a synchronous one included ──
 {
   const s = session();
   const reader = s.files.bind({ pid: 7, cred: USER });
@@ -111,6 +112,10 @@ function barrier(s, bridge) {
   const started = Date.now();
   await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'v4'));
   assert.ok(Date.now() - started < 50, `a write waited ${Date.now() - started} ms on a lease no barrier used`);
+  // The engine's own synchronous writer meets none either.
+  barrier(s, reader);
+  await sleep(READ_LEASE_TRUST_MS + READ_LEASE_MARGIN_MS + 20);
+  s.kernel.writeFile('home/user/d/a.txt', 'v4b');
 }
 
 // ── A recall asked: the next barrier confirms nothing until it is answered ──
