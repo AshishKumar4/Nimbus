@@ -52,7 +52,7 @@ export class ShellInputExecution {
   private status: number | null = null;
   private readonly inputs: Array<{ submission: ShellInputSubmission; release: () => void }> = [];
 
-  constructor(readonly owner: ShellInputSubmission) {}
+  constructor(readonly owner?: ShellInputSubmission) {}
 
   bind(submission: ShellInputSubmission): void {
     if (submission !== this.owner) this.inputs.push({ submission, release: submission.retain() });
@@ -60,7 +60,7 @@ export class ShellInputExecution {
 
   finish(status: number | null): void {
     this.status = status;
-    this.owner.finish(status);
+    this.owner?.finish(status);
   }
 
   prompt(): void {

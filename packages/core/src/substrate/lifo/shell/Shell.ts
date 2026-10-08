@@ -39,7 +39,7 @@ import { readDefaultShell } from './default-shell.js';
 import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
 import { exists, statOrThrow } from '../../../vfs/vfs.js';
 import { runKill, type HostProcessSignals } from '../commands/system/kill.js';
-import { ShellInputSubmission, type ShellInputExecution, type ShellQueuedInput } from '../../../shell/input-submission.js';
+import { ShellInputSubmission, ShellInputExecution, type ShellQueuedInput } from '../../../shell/input-submission.js';
 
 function shellPromptParts(env: Record<string, string>, cwd: string): {
   displayPath: string;
@@ -1241,7 +1241,7 @@ export class Shell {
       this.writeToTerminal(actualLine + '\n');
     }
 
-    const execution = submission?.start();
+    const execution = submission?.start() ?? new ShellInputExecution();
     this.activeInput = execution;
     for (const { submission: input, release } of this.lineInputs.splice(0)) {
       execution?.bind(input);

@@ -235,6 +235,20 @@ try {
     assert.equal((await batch).exitCode, 0, 'the batch gets its last true status');
   });
 
+  await scenario('a tagged stdin input can join a foreground command from an ordinary terminal', async ({ client, box, terminal }) => {
+    const read = Promise.withResolvers();
+    box.commands.registry.register('reader', async (ctx) => {
+      const detach = terminal.attachRepl(() => read.resolve());
+      await ctx.stdout.write('ORDINARY_READER_READY\n');
+      await read.promise;
+      detach();
+      return 9;
+    });
+    client.ws.send(JSON.stringify({ type: 'input', data: 'reader\r' }));
+    await client.waitFor((text) => text.includes('ORDINARY_READER_READY'), 1000, 'ordinary reader start');
+    assert.equal((await client.run('payload', 1000)).exitCode, 9);
+  });
+
   for (const command of ['echo "unfinished', "cat > /home/user/incomplete <<'EOF'"]) {
     await scenario('an incomplete line cancels without manufacturing an exit status: ' + command, async ({ client }) => {
       const pending = client.run(command, 1000);
