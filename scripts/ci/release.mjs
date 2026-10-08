@@ -104,6 +104,7 @@ const receipt = join(dir, 'staging-receipt.json');
 const up = spawnSync('bun', ['tests/behavioral/_staging-target.mjs', 'up', '--release', dir, '--receipt', receipt, ...(flags['rotate-secrets'] ? ['--rotate-secrets'] : [])], {
   cwd: repo, stdio: ['ignore', 'ignore', 'inherit', leaseFd],
 });
+if (up.status === 2) notGraded(`the upload's readiness was not graded; the release is in ${dir}`);
 if (up.status !== 0) {
   console.log(`release: the upload to staging failed (exit ${up.status}); the release is in ${dir}`);
   process.exit(1);
