@@ -2647,7 +2647,8 @@ async function __residentEnumerate(supervisor) {
       if (!Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(rev) || rev < 0) {
         throw new Error("Nimbus: fsList returned unusable metadata for '" + path + "'");
       }
-      entries.push({ path, size, rev, epoch: cursor.epoch, ckey: entry.contentKey == null ? null : String(entry.contentKey) });
+      // Its stat, for the bytes the store already has: who may read them (__nsReadable).
+      entries.push({ path, size, rev, epoch: cursor.epoch, ckey: entry.contentKey == null ? null : String(entry.contentKey), stat: entry.stat ?? null });
     }
     if (listed.next === null || listed.next === undefined) {
       return { entries, names, namespaceBytes, cursor, complete: true, reason: null };
