@@ -12,7 +12,8 @@ export async function launchFrameworkDev({ terminal, sid, cwd, command, port, ac
   // ends at the shell's completion marks, not prompt-shaped program output.
   terminal.reset();
   terminal.cmd(`cd ${cwd} && __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=${frameworkProxyHost} ${command}`);
-  await terminal.waitFor((b) => LONG_RUNNING.test(b) || terminal.promptAfter(terminal.submitCursor) !== null, 180_000, 'the server start line or the prompt');
+  const submission = terminal.submission;
+  await terminal.waitFor((b) => LONG_RUNNING.test(b) || submission.end !== null, 180_000, 'the server start line or the prompt');
   const text = stripAnsi(terminal.buf);
   const pid = Number(text.match(LONG_RUNNING)?.[1] || 0);
   if (!pid) return { ok: false, pid: 0, output: text, last: 'no resident process was launched', process: null, response: null };

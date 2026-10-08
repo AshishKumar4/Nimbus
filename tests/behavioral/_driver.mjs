@@ -349,8 +349,10 @@ export class Terminal {
     // reset() clears the caller's view, never the shell protocol stream.
     this.stream = '';
     this.bufferStart = 0;
-    this.submitCursor = 0;
-    this.submitCommand = false;
+    this.submission = null;
+    this.submissions = new Map();
+    this.protocol = [];
+    this.promptCursor = 0;
     /** The `spawn` frames the session sent: one per process it started. */
     this.spawns = [];
     this.connected = false;
@@ -362,8 +364,8 @@ export class Terminal {
   }
 
   async connect(timeoutMs = 15_000) {
-    this.submitCursor = this.stream.length;
-    this.submitCommand = false;
+    this.submission = null;
+    this.promptCursor = this.protocol.length;
     this.ws = new WebSocket(`${this.wsBase}/s/${this.sid}/ws`, this.wsOptions);
     this.connected = false;
     this.closed = false;
@@ -382,6 +384,14 @@ export class Terminal {
         const m = JSON.parse(data.toString('utf8'));
         if (m.type === 'output' && typeof m.data === 'string') {
           this.stream += m.data;
+        } else if (m.type === 'shell-integration') {
+          this.protocol.push({ ...m, at: this.stream.length });
+          const submission = this.submissions.get(m.submissionId);
+          if (m.event === 'input' && submission) submission.ownerId = m.ownerId;
+          if (m.event === 'end' && submission && submission.end === null && (m.exitCode === null || Number.isSafeInteger(m.exitCode))) {
+            submission.end = this.stream.length;
+            submission.exitCode = m.exitCode;
+          }
         } else if (m.type === 'spawn') {
           this.spawns.push(m);
         }
@@ -390,26 +400,25 @@ export class Terminal {
     await awaitSocketOpen(this.ws, timeoutMs, `terminal WebSocket /s/${this.sid}/ws`);
   }
 
-  send(line, isCommand = true) {
+  send(line) {
     if (this.ws.readyState !== WebSocket.OPEN) throw new Error('WS not open');
-    if (/[\r\n]/.test(line) || line === '\x03') {
-      let executing = false;
-      for (const mark of this.marksAfter(this.submitCursor)) {
-        if (mark[1] === 'C') executing = true;
-        if (mark[1] === 'D') executing = false;
-      }
-      // Input to an executing command is stdin, not another shell submission.
-      if (!executing) {
-        this.submitCursor = this.stream.length;
-        this.submitCommand = isCommand && line !== '\x03';
-      }
+    if (/[\r\n]/.test(line)) {
+      const submission = { id: crypto.randomUUID(), start: this.stream.length, end: null, exitCode: null, ownerId: null };
+      this.submissions.set(submission.id, submission);
+      this.submission = submission;
+      this.ws.send(JSON.stringify({ type: 'input', data: line, submissionId: submission.id }));
+      return;
+    }
+    if (line === '\x03') {
+      this.promptCursor = this.protocol.length;
+      this.submission = null;
     }
     this.ws.send(JSON.stringify({ type: 'input', data: line }));
   }
 
   /** Send a command + carriage return. */
   cmd(line) {
-    this.send(line + '\r', line.trim() !== '');
+    this.send(line + '\r');
   }
 
   get buf() { return this.stream.slice(this.bufferStart); }
@@ -443,8 +452,7 @@ export class Terminal {
       };
       const timer = setTimeout(() => {
         cleanup();
-        const marks = [...this.marksAfter(this.submitCursor)].slice(-12).map((mark) => [mark[1], mark[2] ?? null]);
-        reject(new Error(`waitFor(${label}) timeout after ${timeoutMs}ms; tail: ${JSON.stringify(stripAnsi(this.buf).slice(-300))}; shell marks: ${JSON.stringify(marks)}`));
+        reject(new Error(`waitFor(${label}) timeout after ${timeoutMs}ms; tail: ${JSON.stringify(stripAnsi(this.buf).slice(-300))}; shell control: ${JSON.stringify(this.protocol.slice(-8))}`));
       }, timeoutMs);
       this.ws?.on('message', check);
       this.ws?.on('close', check);
@@ -452,47 +460,27 @@ export class Terminal {
     });
   }
 
-  marksAfter(cursor) {
-    return this.stream.slice(cursor).matchAll(/\x1b\]133;([ABCD])(?:;(-?\d+))?(?:\x07|\x1b\\)/g);
-  }
-
-  promptAfter(cursor, needsCommand = this.submitCommand) {
-    let execution = 'pending';
-    let exitCode = null;
-    for (const mark of this.marksAfter(cursor)) {
-      if (mark[1] === 'C' && execution === 'pending') execution = 'running';
-      if (mark[1] === 'D' && execution === 'running') {
-        execution = 'finished';
-        exitCode = mark[2] === undefined ? null : Number(mark[2]);
-      }
-      if (mark[1] === 'B' && (!needsCommand || execution === 'finished')) {
-        return { end: cursor + mark.index + mark[0].length, exitCode };
-      }
-    }
-    return null;
-  }
-
-  /** A prompt, after execution when submitted: a resume's initial B is not completion. */
+  /** Trusted server completion for this input, or a fresh primary prompt on connect. */
   async waitForPrompt(timeoutMs = 30_000) {
-    const cursor = this.submitCursor;
-    const needsCommand = this.submitCommand;
-    return this.waitFor(() => this.promptAfter(cursor, needsCommand) !== null, timeoutMs, 'shell prompt-end mark');
+    const submission = this.submission;
+    const promptCursor = this.promptCursor;
+    return this.waitFor(() => submission
+      ? submission.end !== null
+      : this.protocol.slice(promptCursor).some((frame) => frame.event === 'prompt'), timeoutMs, 'shell completion');
   }
 
   /**
-   * Run a shell command through its first prompt-end mark. Output includes
-   * the terminal's command echo and prompt; bare D yields a null exitCode.
+   * Run one submitted batch through its server-confirmed end. Output includes
+   * echoes and prompts; exitCode is the last executed command's status, or null.
    */
   async run(line, timeoutMs = 60_000) {
     this.reset();
     const t0 = Date.now();
     this.cmd(line);
-    const cursor = this.submitCursor;
-    const needsCommand = this.submitCommand;
-    await this.waitForPrompt(timeoutMs);
-    const completion = this.promptAfter(cursor, needsCommand);
+    const submission = this.submission;
+    await this.waitFor(() => submission.end !== null, timeoutMs, 'submitted shell batch');
     const elapsed = Date.now() - t0;
-    return { elapsed, output: stripAnsi(this.stream.slice(cursor, completion.end)), exitCode: completion.exitCode };
+    return { elapsed, output: stripAnsi(this.stream.slice(submission.start, submission.end)), exitCode: submission.exitCode };
   }
 
   /** Write `content` to `path` with a quoted heredoc (heredocCommand). */

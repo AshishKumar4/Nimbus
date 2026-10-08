@@ -266,11 +266,17 @@ export async function localTerminal(probe, { install = ['bash'] } = {}) {
   const run = async (command, timeoutMs = 120_000, { progress, stalledMs = 120_000 } = {}) => {
     const cursor = terminal.stream.length;
     const pending = terminal.run(command, timeoutMs);
+    const submission = terminal.submission;
     const [result] = await Promise.all([pending, ...(progress
-      ? [wait(command, () => terminal.promptAfter(cursor) !== null, timeoutMs, progress, stalledMs)] : [])]);
-    const raw = terminal.stream.slice(cursor, terminal.promptAfter(cursor).end);
-    const body = /\x1b\]133;C\x07([\s\S]*?)\x1b\]133;D(?:;-?\d+)?\x07/.exec(raw)?.[1] ?? '';
-    return { stdout: strip(body), status: result.exitCode };
+      ? [wait(command, () => submission.end !== null, timeoutMs, progress, stalledMs)] : [])]);
+    let start = cursor;
+    let stdout = '';
+    for (const event of terminal.protocol) {
+      if (event.submissionId !== submission.id) continue;
+      if (event.event === 'start') start = event.at;
+      if (event.event === 'finish') stdout += terminal.stream.slice(start, event.at);
+    }
+    return { stdout: strip(stdout), status: result.exitCode };
   };
   for (const name of install) {
     const r = await run(`nimbus install ${name}`, 240_000);

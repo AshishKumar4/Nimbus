@@ -25,7 +25,35 @@ async function scenario(name, exercise) {
     [peer] = await connected;
     peer.send(JSON.stringify({ type: 'output', data: prompt }));
     await terminal.waitFor((text) => text.includes(prompt), 1000, 'initial prompt text');
-    const output = (data) => peer.send(JSON.stringify({ type: 'output', data }));
+    // The fixture's marks are shell lifecycle facts; serialize the same facts
+    // out of band. Forged program marks are covered by the real-shell test.
+    let buffered = '';
+    let status;
+    const output = (data) => {
+      buffered += data;
+      for (;;) {
+        const complete = /\x1b\]133;([ABCD])(?:;(-?\d+))?(?:\x07|\x1b\\)/.exec(buffered);
+        if (!complete) {
+          const partial = buffered.lastIndexOf('\x1b]');
+          const end = partial < 0 ? buffered.length : partial;
+          if (end) peer.send(JSON.stringify({ type: 'output', data: buffered.slice(0, end) }));
+          buffered = buffered.slice(end);
+          return;
+        }
+        peer.send(JSON.stringify({ type: 'output', data: buffered.slice(0, complete.index + complete[0].length) }));
+        buffered = buffered.slice(complete.index + complete[0].length);
+        const submissionId = terminal.submission?.id;
+        if (complete[1] === 'C') peer.send(JSON.stringify({ type: 'shell-integration', event: 'start', submissionId }));
+        if (complete[1] === 'D') status = complete[2] === undefined ? null : Number(complete[2]);
+        if (complete[1] === 'B') {
+          peer.send(JSON.stringify({ type: 'shell-integration', event: 'prompt' }));
+          if (status !== undefined && submissionId) {
+            peer.send(JSON.stringify({ type: 'shell-integration', event: 'end', submissionId, exitCode: status }));
+            status = undefined;
+          }
+        }
+      }
+    };
     await exercise(terminal, peer, output);
     console.log(`PASS ${name}`);
   } catch (error) {
@@ -98,6 +126,7 @@ try {
     terminal.cmd('');
     const empty = terminal.waitForPrompt(1000);
     output(`${mark('A')}${prompt}${mark('B')}`);
+    peer.send(JSON.stringify({ type: 'shell-integration', event: 'end', submissionId: terminal.submission.id, exitCode: null }));
     await empty;
 
     terminal.cmd('python');
@@ -108,7 +137,7 @@ try {
     const exiting = terminal.waitForPrompt(1000);
     output(`${mark('D;5')}${mark('A')}${prompt}${mark('B')}`);
     await exiting;
-    assert.equal(terminal.promptAfter(terminal.submitCursor).exitCode, 5, 'stdin keeps the running command\'s C');
+    assert.equal(terminal.submission.exitCode, 5, 'stdin keeps the running command\'s ownership');
 
     terminal.cmd('echo "open');
     output('> ');
@@ -127,6 +156,7 @@ try {
     await setImmediate();
     const reused = prompted;
     replacement.send(JSON.stringify({ type: 'output', data: `${mark('A')}${prompt}${mark('B')}` }));
+    replacement.send(JSON.stringify({ type: 'shell-integration', event: 'prompt' }));
     await fresh;
     assert.equal(reused, false, 'reconnect waits for this connection\'s B, without resetting the mark stream');
   });
