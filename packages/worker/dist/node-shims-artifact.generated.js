@@ -9,9 +9,9 @@
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-771045bcfc4b7ab1.js";
-export const NODE_SHIMS_BUILD_ID = "771045bcfc4b7ab1";
-export const NODE_SHIMS_SHA256 = "771045bcfc4b7ab10d7ac93b1ab174e484760b3f40186317eb5a1928905eb861";
+export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-5727250833b77c39.js";
+export const NODE_SHIMS_BUILD_ID = "5727250833b77c39";
+export const NODE_SHIMS_SHA256 = "5727250833b77c39d3276106b18b67e51f2610af06634d78ad519d7e540c722b";
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
 export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-8faf39adba18ced6.js";
 export const VFS_WRITE_LEDGER_BUILD_ID = "8faf39adba18ced6";
