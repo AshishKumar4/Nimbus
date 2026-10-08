@@ -247,21 +247,24 @@ async function down() {
   const token = apiToken({ cwd: PROBE_APP, account });
 
   for (const name of names) {
-    const preview = readState(statePath(name))?.preview ?? previewName(name);
-    const base = readState(statePath(name))?.base ?? null;
-    const existing = await cfApi(`/workers/workers/${PREVIEW_PARENT}/previews/${encodeURIComponent(preview)}`, { account, token });
-    log(`deleting Preview ${preview} of ${PREVIEW_PARENT}`);
-    wrangle(WRANGLER, ['preview', 'delete', '--name', preview, '--worker-name', PREVIEW_PARENT, '--skip-confirmation'], {
-      cwd: PROBE_APP, account, allowFail: true,
-    });
-    const gone = await confirmDeleted({ name, preview, account, token });
-    // Its hostname may go on being served (spike/preview-stale): `list` looks.
-    if (existing.ok && base) recordDeleted({ name, preview, id: existing.result?.id ?? null, base });
-    rmSync(statePath(name), { force: true });
+    const recorded = readState(statePath(name));
+    const preview = recorded?.preview ?? previewName(name);
+    const existing = await previewPresence({ preview, account, token });
+    if (existing.kind === 'exists') {
+      log(`deleting Preview ${preview} of ${PREVIEW_PARENT}`);
+      wrangle(WRANGLER, ['preview', 'delete', '--name', preview, '--worker-name', PREVIEW_PARENT, '--skip-confirmation'], {
+        cwd: PROBE_APP, account, allowFail: true,
+      });
+    }
+    const gone = existing.kind === 'unknown' ? { ok: false, reason: existing.reason }
+      : await confirmDeleted({ name, preview, account, token });
     if (!gone.ok) {
-      console.error(`FAILED to confirm ${name} is gone: ${gone.reason}`);
+      console.error(`FAILED to confirm ${name} is gone: ${gone.reason}; receipt kept at ${statePath(name)}`);
       process.exitCode = 1;
     } else {
+      // Its hostname may go on being served (spike/preview-stale): `list` looks.
+      if (existing.kind === 'exists' && recorded?.base) recordDeleted({ name, preview, id: existing.id, base: recorded.base });
+      rmSync(statePath(name), { force: true });
       log(`confirmed gone: ${name} (${gone.reason})`);
     }
   }
@@ -396,6 +399,21 @@ function workersDevUrlOf(urls) {
 
 // ── Teardown ─────────────────────────────────────────────────────────
 
+/** Only the Preview-not-found API answer establishes absence. */
+async function previewPresence({ preview, account, token }) {
+  let got;
+  try {
+    got = await cfApi(`/workers/workers/${PREVIEW_PARENT}/previews/${encodeURIComponent(preview)}`, { account, token });
+  } catch (error) {
+    return { kind: 'unknown', reason: `Preview ${preview}: transport error: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (got.ok) return { kind: 'exists', id: got.result?.id ?? null };
+  if (got.status === 404 && Array.isArray(got.errors) && got.errors.some((error) => error?.code === 10025)) {
+    return { kind: 'not-found' };
+  }
+  return { kind: 'unknown', reason: `Preview ${preview}: HTTP ${got.status}, errors ${JSON.stringify(got.errors)}` };
+}
+
 /**
  * Is the Preview gone?
  *
@@ -408,18 +426,20 @@ function workersDevUrlOf(urls) {
  * 200 for ~30s after the API had stopped listing it.
  */
 async function confirmDeleted({ name, preview, account, token }) {
-  const got = await cfApi(`/workers/workers/${PREVIEW_PARENT}/previews/${encodeURIComponent(preview)}`, { account, token });
-  if (got.ok) return { ok: false, reason: `the API still answers Preview ${preview}` };
+  const presence = await previewPresence({ preview, account, token });
+  if (presence.kind === 'exists') return { ok: false, reason: `the API still answers Preview ${preview}` };
+  if (presence.kind === 'unknown') return { ok: false, reason: presence.reason };
 
   const base = readState(statePath(name))?.base;
-  if (!base) return { ok: true, reason: `Preview ${preview} is not listed (${got.status})` };
+  const absent = `Preview ${preview} is not found (HTTP 404, code 10025)`;
+  if (!base) return { ok: true, reason: absent };
 
   const status = await waitForHostnameGone(base);
   return {
     ok: true,
     reason: status === null
-      ? `Preview ${preview} is not listed (${got.status}) and the hostname no longer serves it`
-      : `Preview ${preview} is not listed; ${base} still answers ${status} after `
+      ? `${absent} and the hostname no longer serves it`
+      : `${absent}; ${base} still answers ${status} after `
         + `${HOSTNAME_SETTLE_MS}ms of edge propagation`,
   };
 }
