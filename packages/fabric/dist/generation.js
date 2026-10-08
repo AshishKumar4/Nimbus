@@ -44,6 +44,20 @@ function stateOf(ctx) {
 export function generation(ctx) {
     return states.get(ctx)?.value ?? 0;
 }
+/**
+ * This incarnation minted pids into `stride` (PID_GEN_STRIDE wide): the
+ * persisted counter is raised to it, so the next incarnation's generation,
+ * and its pid range, lies past every pid minted here.
+ */
+export function raiseGeneration(ctx, stride) {
+    const state = stateOf(ctx);
+    if (stride <= (state.raised ?? state.value))
+        return Promise.resolve();
+    state.raised = stride;
+    return Promise.resolve(ctx.storage.put(GENERATION_KEY, stride)).catch((e) => {
+        console.warn('[nimbus/W9] generation raise failed:', errorText(e));
+    });
+}
 /** Increment + persist the generation counter once per fresh isolate. */
 export async function adoptGeneration(ctx) {
     const state = stateOf(ctx);

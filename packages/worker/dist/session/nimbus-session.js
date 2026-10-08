@@ -50,7 +50,7 @@ import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState as _w12GetReplicaState } from './replica-routes.js';
 import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, ensureResidentKeepalive as _w1EnsureResidentKeepalive, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose, noteClientActivity } from './hibernation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
-import { adoptGeneration, generation } from '@nimbus-sh/fabric/generation.js';
+import { adoptGeneration, generation, raiseGeneration } from '@nimbus-sh/fabric/generation.js';
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 import { initSession as _w11InitSession } from './init.js';
@@ -459,6 +459,8 @@ export class NimbusSession extends CloudflareDurableObject {
         ctx.blockConcurrencyWhile(async () => {
             await adoptGeneration(ctx);
             this.processes.setPidBase(generation(ctx) * PID_GEN_STRIDE);
+            // Pids never repeat across incarnations: one that mints into the next range pushes the next base past it.
+            this.processes.onPidStride((stride) => { void raiseGeneration(ctx, stride); });
             try {
                 this._w1SessionDestroyed =
                     (await ctx.storage.get(SESSION_DESTROYED_KEY)) !== undefined;

@@ -41,6 +41,12 @@ export interface GenerationContext {
 }
 /** This incarnation's generation. Zero until {@link adoptGeneration} ran. */
 export declare function generation(ctx: object): number;
+/**
+ * This incarnation minted pids into `stride` (PID_GEN_STRIDE wide): the
+ * persisted counter is raised to it, so the next incarnation's generation,
+ * and its pid range, lies past every pid minted here.
+ */
+export declare function raiseGeneration(ctx: GenerationContext, stride: number): Promise<void>;
 /** Increment + persist the generation counter once per fresh isolate. */
 export declare function adoptGeneration(ctx: GenerationContext): Promise<void>;
 /**

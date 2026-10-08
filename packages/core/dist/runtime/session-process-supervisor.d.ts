@@ -198,6 +198,7 @@ export declare class SessionProcessSupervisor {
     /** See ProcessTable.residentRunning — running long-running process count. */
     get residentRunning(): number;
     /** See ProcessTable.setPidBase — generation-unique pid allocation. */
+    onPidStride(listener: (stride: number) => void): void;
     setPidBase(base: number): void;
     /** The current generation's pid floor: pids <= base are prior-generation. */
     get pidBase(): number;

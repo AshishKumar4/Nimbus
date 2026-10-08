@@ -90,6 +90,7 @@ export declare class ProcessTable {
     private nextPid;
     private base;
     private processes;
+    private onStride;
     /**
      * Move the pid space onto this instance generation's range. Called once at
      * DO boot (before any event runs) with `isolateGen * PID_GEN_STRIDE`.
@@ -98,6 +99,12 @@ export declare class ProcessTable {
     setPidBase(base: number): void;
     /** The current generation's pid floor: pids <= base are prior-generation. */
     get pidBase(): number;
+    /**
+     * Told the stride (pid / PID_GEN_STRIDE) a pid minted here enters past its
+     * generation's own: the next generation must start beyond it, or its pids
+     * would repeat this one's.
+     */
+    onPidStride(listener: (stride: number) => void): void;
     /** Allocate a PID and register a new process. */
     spawn(command: string, argv: string[], cwd: string, options?: ProcessTableSpawnOptions): ProcessEntry;
     credOf(pid: number): VfsCred;
