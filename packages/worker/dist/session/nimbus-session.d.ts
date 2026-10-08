@@ -380,8 +380,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcFsReadRange(path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
     _rpcFsReadBatch(requests: _rpc.FsReadBatchRequest[], pid?: number): Promise<_rpc.FsReadBatchEntry[]>;
     _rpcFsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<VfsMutationReceipt>;
-    _rpcFsAppend(path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
-    _rpcFsAppendAck(writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
     _rpcHmrRelay(clientId: string | null, msg: string): Promise<void>;
     _rpcHmrNextEvent(timeoutMs: number): Promise<HmrEvent[]>;
     _rpcReplayBoundary(pid?: number, run?: string): Promise<void>;
@@ -613,22 +611,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     /** Colocated embedders only (DO stub); not on the remote dispatcher. See `rpcSpawnWorker`. */
     _rpcSpawnWorker(workerCode: string, command: string, cwd: string, opts?: import('../facets/manager.js').LongRunningWorkerSpawnOptions): Promise<import("../facets/manager.js").SpawnedWorker>;
     _rpcDestroy(options?: _programmatic.ProgrammaticDestroyOptions): Promise<_programmatic.ProgrammaticDestroyResult>;
-    vfsReadFile(path: string): ArrayBuffer | null;
-    vfsReadFileString(path: string): string | null;
-    vfsStat(path: string): {
-        type: string;
-        size: number;
-        atime: number;
-        ctime: number;
-        mtime: number;
-        mode: number;
-    } | null;
-    vfsExists(path: string): boolean;
-    vfsReaddir(path: string): {
-        name: string;
-        type: string;
-    }[];
-    vfsWriteFile(path: string, data: ArrayBuffer): void;
     fetch(request: Request): Promise<Response>;
     _handleFetch(request: Request): Promise<Response>;
     /**

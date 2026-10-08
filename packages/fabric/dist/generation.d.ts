@@ -41,8 +41,22 @@ export interface GenerationContext {
 }
 /** This incarnation's generation. Zero until {@link adoptGeneration} ran. */
 export declare function generation(ctx: object): number;
-/** Increment + persist the generation counter once per fresh isolate. */
+/**
+ * This incarnation minted pids into `stride` (PID_GEN_STRIDE wide): the
+ * persisted counter is raised to it, so the next incarnation's generation,
+ * and its pid range, lies past every pid minted here.
+ */
+export declare function raiseGeneration(ctx: GenerationContext, stride: number): Promise<void>;
+/** What the next incarnation must start past: this one's generation, or the stride its pids reached (raiseGeneration). */
+export declare function generationFloor(ctx: object): number;
+/**
+ * Increment + persist the generation counter once per incarnation: past the
+ * persisted one, and past every pid this context minted before (its
+ * generationFloor, after releaseGeneration).
+ */
 export declare function adoptGeneration(ctx: GenerationContext): Promise<void>;
+/** This context takes a new incarnation: the next adoptGeneration reserves a generation past all of this one's. */
+export declare function releaseGeneration(ctx: object): void;
 /**
  * Take on a generation without persisting it, and clear the adopted guard so
  * a later {@link adoptGeneration} re-derives from storage. The

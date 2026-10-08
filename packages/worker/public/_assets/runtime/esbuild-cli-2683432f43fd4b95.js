@@ -638,11 +638,11 @@ return globalThis.Go;
     "fsFchmod",
     "fsFchown",
     "fsFutimes",
-    "fsAppend",
-    "fsAppendAck",
     "writeBatch",
     "fsAcquireExclusiveMutation",
-    "fsReleaseExclusiveMutation"
+    "fsReleaseExclusiveMutation",
+    "fsAwaitRecall",
+    "fsRecalled"
   ];
   function bridgeOverSupervisor(supervisor, local) {
     return {
@@ -687,12 +687,12 @@ return globalThis.Go;
       fchmod: (...args) => answerValue(supervisor.fsFchmod(...args)),
       fchown: (...args) => answerValue(supervisor.fsFchown(...args)),
       futimes: (...args) => answerValue(supervisor.fsFutimes(...args)),
-      appendOnce: (...args) => answerValue(supervisor.fsAppend(...args)),
-      acknowledgeAppend: (...args) => answerValue(supervisor.fsAppendAck(...args)),
       writeBatch: (...args) => answerValue(supervisor.writeBatch(...args)),
       writeStream: (...args) => answerStream(supervisor.writeBatchStream(...args)),
       acquireExclusiveMutation: (...args) => answerValue(supervisor.fsAcquireExclusiveMutation(...args)),
-      releaseExclusiveMutation: (...args) => answerValue(supervisor.fsReleaseExclusiveMutation(...args))
+      releaseExclusiveMutation: (...args) => answerValue(supervisor.fsReleaseExclusiveMutation(...args)),
+      awaitRecall: (...args) => answerValue(supervisor.fsAwaitRecall(...args)),
+      recalled: (...args) => answerValue(supervisor.fsRecalled(...args))
     };
   }
 

@@ -52,7 +52,10 @@ await runScenarios(import.meta.path, {
   async 'an async writeFile is one call, and the sync view has its stat'() {
     const { authority, probe, log } = await boot();
     const made = await callsOf(log, () => probe.fs.promises.writeFile('/home/user/app/new.txt', 'fresh'));
-    assert.deepEqual(made, { writeFileStat: 1 }, 'the write and its stat together');
+    // The process's first write opens its writer epoch; the write is one wave, its receipt the stat.
+    assert.deepEqual(made, { openWaveWriter: 1, writeBatchStream: 1 }, 'the write and its stat together');
+    const again = await callsOf(log, () => probe.fs.promises.writeFile('/home/user/app/other.txt', 'again'));
+    assert.deepEqual(again, { writeBatchStream: 1 }, 'and the next write is one call');
     const stat = probe.fs.statSync('/home/user/app/new.txt');
     assert.equal(stat.size, 5, 'the sync view stats the new file');
     assert.equal(stat.uid, 1000, 'owned as the authority made it');
@@ -73,29 +76,13 @@ await runScenarios(import.meta.path, {
     assert.equal(stat.size, 4);
   },
 
-  async 'a session deployed before writeFileStat is asked for the write and the stat separately'() {
-    for (const refusal of [
-      'The RPC receiver does not implement the method "writeFileStat".',
-      "supervisor op: 'writeFileStat' is not served by this host",
-      "supervisor op: 'deliverOnce' names no mutation it can deliver once",
-    ]) {
-      const { authority, probe, log } = await boot({ writeFileStat: async () => { throw new Error(refusal); } });
-      await probe.fs.promises.writeFile(F, 'v2');
-      assert.equal(authority.read('home/user/app/f.txt'), 'v2', `the write lands (${refusal})`);
-      assert.equal(probe.fs.statSync(F).size, 2, 'and stats');
-      const made = await callsOf(log, () => probe.fs.promises.writeFile(F, 'v3'));
-      assert.equal(made.writeFileStat, undefined, 'writeFileStat is not asked again');
-      assert.equal(made.writeFile, 1, 'the write is its own call');
-    }
-  },
-
   async 'a write answered without a stat asks for the stat separately'() {
     // A mount whose metadata read failed after the write committed.
     const { probe, log } = await boot((forward) => ({
-      writeFileStat: async (path, content) => ({ revision: await forward('writeFile', [path, content]) }),
+      writeBatchStream: async (...args) => ({ ...(await forward('writeBatchStream', args)), receipts: [] }),
     }));
     const made = await callsOf(log, () => probe.fs.promises.writeFile('/home/user/app/new.txt', 'fresh'));
-    assert.equal(made.writeFileStat, 1, 'the write is answered');
+    assert.equal(made.writeBatchStream, 1, 'the write is answered');
     assert.equal(made.fsReadBatch, 1, 'and its stat asked for');
     assert.equal(probe.fs.statSync('/home/user/app/new.txt').size, 5);
   },
@@ -107,8 +94,8 @@ await runScenarios(import.meta.path, {
     const served = Promise.withResolvers();
     const release = Promise.withResolvers();
     const { authority, probe } = await boot((forward) => ({
-      writeFileStat: async (path, content) => {
-        const answer = await forward('writeFileStat', [path, content]);
+      writeBatchStream: async (...args) => {
+        const answer = await forward('writeBatchStream', args);
         served.resolve();
         await release.promise;
         return answer;
@@ -144,7 +131,12 @@ await runScenarios(import.meta.path, {
   },
 
   async 'a refused write is the write\'s error'() {
-    const { probe } = await boot({ writeFileStat: async () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); } });
+    // The session's refusal of the call, as its wave answers it.
+    const { probe, authority } = await boot({}, (seeded) => {
+      seeded.rawVfs.as(CRED_KERNEL).chown('home/user/app/f.txt', 0, 0);
+      seeded.rawVfs.as(CRED_KERNEL).chmod('home/user/app/f.txt', 0o644);
+    });
+    void authority;
     const outcome = await probe.fs.promises.writeFile(F, 'v2').then(() => 'written', (error) => error.code);
     assert.equal(outcome, 'EACCES');
   },

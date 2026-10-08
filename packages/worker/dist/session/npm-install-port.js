@@ -1,5 +1,6 @@
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { materializeNpmBinShims } from '../npm/bin-links.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 export function createNpmInstallPort(self) {
     return {
         async install(spec) {
@@ -7,8 +8,9 @@ export function createNpmInstallPort(self) {
             const globalBinDir = globalPrefix ? `${globalPrefix}/bin` : undefined;
             const sqliteFs = self.ensureSqliteFs();
             const installer = await self.ensureNpmInstaller();
+            // The session's own engine calls here wait for a delegation they meet: each is repeatable.
             if (globalPrefix)
-                self.ensureGlobalPrefixDirs(globalPrefix);
+                await withRecall(() => self.ensureGlobalPrefixDirs(globalPrefix));
             const installCwd = globalPrefix ? `${globalPrefix}/lib` : spec.projectDir;
             const result = await installer.install(installCwd, {
                 packages: spec.packages.length > 0 ? [...spec.packages] : undefined,
@@ -27,7 +29,7 @@ export function createNpmInstallPort(self) {
                 // bin linker already skips entries whose target never landed, so
                 // a partial tree safely exposes exactly the bins that installed.
                 const vfs = sqliteFs.as(CRED_KERNEL);
-                linkedBins = await materializeNpmBinShims(vfs, `${installCwd}/node_modules`, globalBinDir);
+                linkedBins = await withRecall(() => materializeNpmBinShims(vfs, `${installCwd}/node_modules`, globalBinDir));
             }
             return {
                 installed: result.installed,

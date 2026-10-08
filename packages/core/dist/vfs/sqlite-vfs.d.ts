@@ -27,10 +27,13 @@
  * state-0 content and publish it atomically.
  */
 import { VfsEventEmitter, type VfsEvent } from './events.js';
-import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
+import { type BatchWritePayload, type VfsInodeKind, type W7Attrs, type W7DataCall, type W7PathCall } from '@nimbus-sh/platform/w7-frame.js';
+export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { type Principal, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
+/** The tables the store keeps (dropped whole by a reset of an older store; listed by an embedder's destroy). */
+export declare const STORE_TABLES: readonly ["vfs_state", "vfs_inodes", "vfs_chunks", "vfs_contents", "vfs_content_chunks", "vfs_inode_history", "vfs_tombstones", "vfs_cold_trash", "vfs_gc_queue", "vfs_snapshots", "vfs_jobs", "vfs_wave_cursors", "vfs_wave_descriptions"];
 /** The root directory has no row; this is what it is. */
 export declare const ROOT_DIRECTORY_MODE = 16877;
 /** The root's inode number, reserved: the allocator starts at 2. */
@@ -39,9 +42,54 @@ export type { BatchChunkEntry, BatchInodeEntry, BatchWritePayload, VfsInodeKind,
 export interface ExclusiveMutationLease {
     readonly root: string;
     readonly owner: string;
+    /** A delegation's inode numbers, reserved for what its holder makes: [first, end). */
+    readonly inos?: InodeRange;
+    /** A delegation's storage bytes, reserved for what its holder writes. */
+    readonly bytes?: number;
+}
+/** Inode numbers reserved for a delegation's holder: [first, end). */
+export interface InodeRange {
+    readonly first: number;
+    readonly end: number;
 }
 export interface ExclusiveMutationOptions {
     readonly includeMissingAncestors?: boolean;
+    /**
+     * Make the lease a delegation: its holder decides the subtree's operations
+     * itself and sends them later (as writes under the lease), so another
+     * caller's access recalls them first (RecallRequired) instead of being
+     * refused.
+     */
+    readonly delegation?: DelegationTerms;
+}
+/** What a delegation's holder agreed to (ExclusiveMutationOptions.delegation). */
+export interface DelegationTerms {
+    /** Another caller's reads under the root recall too, not only its writes: the holder's writes may be unsent. */
+    readonly reads: boolean;
+    /**
+     * Bring the holder's decided operations in. Settles once every operation
+     * it decided before the recall is stored here, and the holder has done
+     * what `kind` asks: 'share', send each operation as it decides it from
+     * now on (another caller reads the subtree; the delegation stays), or
+     * 'revoke', give the subtree up (another caller writes it; the lease
+     * ends, and the holder's later writes under it are ESTALE). The engine
+     * joins concurrent recalls of one delegation into one.
+     */
+    recall(kind: 'share' | 'revoke'): Promise<void>;
+    /** Refuses (throws) a root its maker does not delegate; asked with the lease's resolved root, before anything else. */
+    admit?(root: string): void;
+    /**
+     * How many inode numbers to reserve for what the holder makes: it numbers
+     * them itself (a stat shows the number before the session has the file)
+     * and sends each with its file (W7 v4 `ino`).
+     */
+    readonly inos?: number;
+    /**
+     * Storage bytes to reserve for what the holder writes (N18): the holder
+     * decides a write fits locally against them, and its waves draw on them.
+     * Past them, its waves are admitted as anyone's (ENOSPC when full).
+     */
+    readonly bytes?: number;
 }
 export interface VfsOpenDescription {
     /** Inode number the description currently resolves; 0 is never issued. */
@@ -117,6 +165,8 @@ export interface CredentialedVfs {
     readonly cred: VfsCred;
     /** Who the view acts as: its credential and actor, the principal its write events name. */
     readonly principal: Principal;
+    /** The delegations the view's process holds, asked at each call (SqliteVFS.as `holds`). */
+    readonly holds?: () => ReadonlySet<string>;
     exists(path: string): boolean;
     isDirectory(path: string): boolean;
     isFile(path: string): boolean;
@@ -155,8 +205,6 @@ export interface CredentialedVfs {
     /** Ranged read that bypasses the LRU content cache (see SqliteVFS.readRange). */
     readRangeUncached(path: string, offset: number, length: number): Uint8Array;
     writeRange(path: string, offset: number, bytes: Uint8Array): void;
-    appendOnce(path: string, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): number;
-    acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void;
     truncate(path: string, size: number): void;
     readFileString(path: string): string;
     stat(path: string): VfsStat;
@@ -292,14 +340,67 @@ export interface WriteBatchStreamProgress {
     /** 1-based sequence of the last durable publish group; zero means none. */
     committedGroupSequence: number;
     committedPathCount: number;
+    /**
+     * The wave's operations committed, in order: each removal, directory,
+     * file, rename, truncate, attribute change and call counts one. On a
+     * refusal, the refused operation is the one at this index.
+     */
+    committedOps: number;
     inodes: number;
     chunks: number;
     /** Each published file and link, by the path the stream named, as stat will report it. */
     receipts: WriteStreamReceipt[];
+    /** A sequenced wave's answer (WriteStreamOptions.sequence). */
+    sequence?: WaveSequenceAnswer;
+    /** Each call, rename, truncate and attribute change the wave committed here (not on a mount): what its maker dates its own copy by. */
+    mutations?: WaveMutation[];
+}
+/**
+ * One op a wave committed (`index`, its place among the wave's ops, from 0):
+ * its path's revision right before it and the session's right after, read
+ * in the turn it committed, as a single call's receipt has them
+ * (VfsMutationReceipt): a copy dated at or above `before` was current, and
+ * with this op on it is current at `after`.
+ */
+export interface WaveMutation {
+    index: number;
+    before: number;
+    after: number;
+}
+/**
+ * A sequenced writer's wave (a process's filesystem client): its ops are
+ * numbered `first`, `first + 1`, … in order, under `writer` (the pid and
+ * writer epoch the session admits the wave under). The session keeps, per
+ * writer, the highest number it has committed (its cursor), moved in the
+ * transaction that commits that op, so an op a re-sent wave carries again
+ * is answered, never applied twice. `ack`: the highest cursor the writer
+ * has had answered; the refusal stored for it is dropped.
+ */
+export interface WaveSequence {
+    writer: string;
+    first: number;
+    ack: number;
+    /** The process whose writer it is: what the session keeps of the process (its waves' open descriptions) is kept under it. */
+    pid: number;
+}
+/**
+ * What a sequenced wave committed: every op up to `cursor`. `refused`: the
+ * op the session refused (its number, its errno); nothing after it in the
+ * wave was applied. The same answer comes back for a re-send of the wave.
+ */
+export interface WaveSequenceAnswer {
+    cursor: number;
+    refused?: {
+        seq: number;
+        errno: string;
+        message: string;
+    };
 }
 /** A streamed file's stat as published: what a producer's git index entry records. */
 export interface WriteStreamReceipt {
     path: string;
+    /** An `open` call's: the session's descriptor of the description it opened (WaveDescriptions.open). */
+    handle?: number;
     ino: number;
     mode: number;
     size: number;
@@ -308,6 +409,8 @@ export interface WriteStreamReceipt {
     uid: number;
     gid: number;
     dev: number;
+    /** The session's revision once a call's file landed: what its writeFile answers. */
+    revision?: number;
 }
 /** The longest target a routed symbolic link takes, in bytes: PATH_MAX, as symlink(2) bounds it. */
 export declare const ROUTED_LINK_TARGET_MAX = 4096;
@@ -321,6 +424,15 @@ export declare const ROUTED_LINK_TARGET_MAX = 4096;
  * declares an atomic streaming write could take more; none does yet.
  */
 export declare const ROUTED_FILE_MAX: number;
+/**
+ * The most bytes one data call (W7DataCall: a writeFile, appendFile or
+ * write at an offset) carries. Its bytes are held until the call is made,
+ * under credit its record reserves whole when it begins, as a routed
+ * file's are; a client splits a larger write into pieces of this size
+ * (process-fs-client's DATA_PIECE_BYTES, WAVE_BYTES). A larger call is
+ * refused (EINVAL) before any of its bytes are read.
+ */
+export declare const DATA_CALL_MAX: number;
 /**
  * A wave's record that the namespace places on a mount (WaveRouter.apply),
  * each the single call a program would make there. Paths are where the
@@ -345,6 +457,32 @@ export type RoutedWaveRecord = {
     readonly path: string;
     readonly target: string;
     readonly slot: string;
+}
+/** A process's call (W7Call), made by the namespace's operation of that name, its data whole. */
+ | {
+    readonly type: 'call';
+    readonly call: W7PathCall;
+} | {
+    readonly type: 'data-call';
+    readonly call: W7DataCall;
+    readonly path: string;
+    readonly mode: number;
+    readonly bytes: Uint8Array;
+    readonly offset?: number;
+}
+/** A process's rename, truncate or attribute change (W7 v4), made by the namespace's operation of that name. */
+ | {
+    readonly type: 'rename';
+    readonly from: string;
+    readonly to: string;
+} | {
+    readonly type: 'truncate';
+    readonly path: string;
+    readonly size: number;
+} | {
+    readonly type: 'setattr';
+    readonly path: string;
+    readonly attrs: W7Attrs;
 };
 /** A routed name's stat once published: what its receipt reports. */
 export interface RoutedStat {
@@ -369,7 +507,8 @@ export interface WaveRouter {
      * mutations' lookup (CompositeVFS.mutationRoute, links followed). A tail
      * that does not exist yet is kept as named, after the nearest ancestor
      * that resolves. Synchronous while the lookup stays on synchronous
-     * backends, so a commit can recheck a placement in its own turn.
+     * backends, so a commit can recheck a placement in its own turn, and the
+     * engine runs it as the wave's holder (SqliteVFS.withHolds).
      */
     resolveDirectory(path: string, cred: VfsCred, signal?: AbortSignal): string | Promise<string>;
     /** The mount a mutation at resolved namespace path `path` lands on, or null when it is this filesystem's alone. */
@@ -411,6 +550,33 @@ export interface WriteStreamOptions {
     /** Right before each commit: the fenced wave is still admitted (SupervisorDeliveries.admitWave). */
     admit?: () => void;
     mountReach?: WaveMountReach;
+    sequence?: WaveSequence;
+    /** The writing process's open descriptions, for its `open`, `close` and description calls (W7Call description). */
+    descriptions?: WaveDescriptions;
+}
+/**
+ * A process's open descriptions as its waves name them (W7Call
+ * `description`): kept by the binding that serves the process, as its
+ * descriptors are (SqliteRuntimeFsBridge), so the process reads, stats and
+ * closes them as its own. Each one's access was decided at its open: a later
+ * chmod, chown, rename or unlink never changes what it can do, and its file
+ * lives until its last close.
+ */
+export interface WaveDescriptions {
+    /**
+     * Open `id`, a description of the file `ino` numbers with `rights`, its
+     * access decided already (SqliteVFS.describeInode): the session's
+     * descriptor of it, or null when no file has that number any more.
+     */
+    adopt(id: string, ino: number, rights: {
+        read: boolean;
+        write: boolean;
+    }, path: string, cred: VfsCred): number | null;
+    /** The description `id` names, or undefined (never opened, or closed). */
+    node(id: string): VfsOpenDescription | undefined;
+    /** The session's descriptor of `id`, or undefined. */
+    handle(id: string): number | undefined;
+    close(id: string): void;
 }
 export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
 export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
@@ -421,12 +587,11 @@ export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
         code: 'ERR_WRITE_BATCH_STREAM';
         phase: WriteBatchStreamFailurePhase;
         message: string;
-        /** The refusal's errno (EACCES, EROFS, …) when the filesystem refused; absent otherwise. */
+        /** The refusal's errno (EACCES, EEXIST, EROFS, …) when the filesystem refused; absent otherwise. */
         errno?: string;
     };
 });
 export declare const INODE_ROWS_PER_SQL_EXEC: number;
-export declare const VFS_APPEND_RECEIPT_LIMIT = 2048;
 type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
 type TransactionSource = 'strict-batch' | 'range-mutation' | 'content-stage' | 'content-publish' | 'content-gc';
 type TransactionLimitMode = 'bounded';
@@ -622,9 +787,17 @@ export declare class SqliteVFS {
      */
     rotateIncarnation(): string;
     private readonly exclusiveMutationLeases;
-    /** Why a lease holds what it holds, where its holder said: what a write it refuses is told. */
-    private readonly exclusiveMutationReasons;
     private activeMutationOwner;
+    /**
+     * The delegations the running call is made by (callerView: a view bound
+     * to a lease, or a holder process's view, which answers what it holds):
+     * its own lookups recall none of them.
+     */
+    private activeHolds;
+    /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
+    private activeWrite;
+    /** Whether the running call reads what has landed (a `landed` view): its reads ask no holder to send. */
+    private activeLanded;
     /** Shared by every concurrent stream targeting this session's VFS. */
     private readonly writeStreamCredits;
     private _stagedStreamBytes;
@@ -775,9 +948,23 @@ export declare class SqliteVFS {
         read: boolean;
         write: boolean;
         sync?: boolean;
-    }, principal?: Principal, 
+    }, principal?: Principal, holds?: () => ReadonlySet<string>, 
     /** The exclusive-mutation lease the open presented: the description's own mutations (write, truncate, chmod, chown, utimes) present it too. */
     mutationOwner?: string): VfsOpenDescription;
+    /**
+     * A description of the file `ino` numbers, its access decided already: by
+     * the open that made it (creat(2) of a mode without write still writes),
+     * or by an open a process's wave made and the session kept
+     * (vfs_wave_descriptions). The inode an open description of it holds,
+     * else the one a name has; null once neither does (an unlinked file whose
+     * last description closed: its bytes went with it). `path` names it in
+     * errors.
+     */
+    describeInode(ino: number, path: string, cred: VfsCred, rights: {
+        read: boolean;
+        write: boolean;
+    }, principal?: Principal, holds?: () => ReadonlySet<string>): VfsOpenDescription | null;
+    private describe;
     /**
      * Hold `bytes`, written through `opened` at `offset`, in its file's
      * AppendRun when they extend the file (an O_APPEND write is at `end()`): a
@@ -931,31 +1118,38 @@ export declare class SqliteVFS {
      */
     private logicalPath;
     /**
-     * uid 0's view: its writes may use the storage the ledger keeps back from
-     * everyone else (N18's kernel reserve, as ext4 reserves blocks for root).
-     * Covers each call's synchronous part; the kernel's bookkeeping is that.
-     */
-    private privilegedView;
-    /**
      * Bind credentials and, optionally, the capability of a live mutation
      * lease; `actor` names the principal finer than its uid, in the write
-     * events its mutations make (observeWrites).
+     * events its mutations make (observeWrites); `holds` answers, at each
+     * call, the delegations the view's process holds (its own lookups recall
+     * none of them). `landed`: the view reads what has landed, never asking a
+     * holder to send first (an observer that is told when a wave lands, the
+     * editor's file tree, reads after it); its writes still recall.
      */
     as(cred: VfsCred, options?: {
         mutationOwner?: string;
         actor?: string;
+        holds?: () => ReadonlySet<string>;
+        landed?: boolean;
     }): CredentialedVfs;
     /** `run` as `origin`'s call: the principal its write events name. */
     private asOrigin;
     /**
-     * `view`, each of its calls but LEAF_READS first writing every append
-     * this VFS holds (appendThrough): a view is how a caller changes the
-     * store or reads more of it than one file, and none may do either
-     * without them. A leaf read looks at the one file it names, which path
-     * resolution writes the appends of, so a program reading one file while
-     * appending to another is not made to store each append as it comes.
+     * `view`, each call made as its caller, the one place a view's calls
+     * enter the engine: with the caller's privilege (uid 0 may use the
+     * storage the ledger keeps back from everyone else, N18's kernel reserve,
+     * as ext4 reserves blocks for root), as its principal (the write events
+     * it makes), and, for a synchronous mutation (OWNED_MUTATIONS), within
+     * its mutation lease (spanning work carries the owner per slice). Each
+     * call but a LEAF_READS one first writes every append this VFS holds
+     * (appendThrough): a view is how a caller changes the store or reads more
+     * of it than one file, and none may do either without them. A leaf read
+     * looks at the one file it names, which path resolution writes the
+     * appends of, so a program reading one file while appending to another is
+     * not made to store each append as it comes. Each covers its call's
+     * synchronous part; work it defers re-enters it (asCaller).
      */
-    private settlingView;
+    private callerView;
     private accessInode;
     private accessMode;
     /**
@@ -1153,6 +1347,8 @@ export declare class SqliteVFS {
      */
     acquireGlobalExclusiveMutation(reason?: string): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
+    /** `owner`'s lease ends: the storage its holder had reserved and not used goes back to the ledger. */
+    private endLease;
     /**
      * Hand `owner`'s lease, root unchanged, to a new owner in one step: from
      * now on a write that presents `owner` is ESTALE, while the new owner's go
@@ -1161,9 +1357,40 @@ export declare class SqliteVFS {
      */
     rotateExclusiveMutation(owner: string): string;
     hasExclusiveMutation(): boolean;
+    /**
+     * Recall a read-covering delegation `key` lies in, for any caller but its
+     * holder (the lease a mutation scope or a view presents).
+     */
+    private recallReads;
+    /** Whether a create under `root` (it, or anything under it) would take permissions from a default ACL or a shared directory. */
+    private inheritsPermissions;
+    /** `count` inode numbers no one else will be given, in one transaction: a gap if unused, never a reuse. */
+    private reserveInos;
+    /**
+     * The inode number a batch entry asks for (W7 v4 `ino`), or undefined to
+     * be numbered here. Only the holder of a delegation numbers its own
+     * entries, from a range one of its leases reserved (the one its call is
+     * made under, or any its process holds), and a number already used by
+     * another name is refused (there are no hard links).
+     */
+    private askedIno;
+    /** Whether the running call is made by `owner`'s holder (its mutation scope, or the delegations its view holds). */
+    private isHolder;
+    /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked); `holds`: the writer's own. */
+    private recallDelegationsAt;
+    /**
+     * The refusal for an access to `key` that `lease`'s holder must answer
+     * first, and the recall it waits on: one per delegation at a time, a
+     * revoke superseding a share. A shared delegation stays; a revoked one
+     * ends here, so its holder's later writes under it are ESTALE.
+     */
+    private recallRequired;
     private withMutationOwner;
-    /** Refuse a mutation at `path` another lease covers; `owner` presents the caller's own lease. */
-    assertMutationAllowed(path: string, owner?: string): void;
+    /**
+     * Refuse a mutation at `path` another lease covers; `owner` presents the
+     * caller's own lease, `holds` the delegations the caller's process holds.
+     */
+    assertMutationAllowed(path: string, owner?: string, holds?: () => ReadonlySet<string>): void;
     /**
      * Why a mutation at `path`, as `cred` names it (a confined caller's /tmp/x
      * is its own file), is refused: another owner's exclusive-mutation lease
@@ -1180,6 +1407,7 @@ export declare class SqliteVFS {
      */
     private refusalAt;
     private assertMutationsAllowed;
+    /** `ino`: the number a delegation's holder gave the directory it made (askedIno), for a lone mkdir. */
     private mkdir;
     private _mkdirSingle;
     /**
@@ -1188,13 +1416,23 @@ export declare class SqliteVFS {
      * the caller may write.
      */
     private fileWriteInode;
+    /** `ino`: the number a delegation's holder gave the file it made (askedIno), kept when this makes it. */
     private writeFile;
     private symlink;
     private readlink;
     /** Where `path` leads, in the caller's names, or null for a loop. */
     private resolveSymlink;
     private readFile;
-    private readInodeBytes;
+    /**
+     * The regular file a pathname read resolved to (live or a snapshot's):
+     * ENOENT when nothing is there, EISDIR for a directory, EINVAL for
+     * anything else that is not a regular file.
+     */
+    private regularFile;
+    /** All of an inode's bytes (a link's text). */
+    private readWhole;
+    /** `length` bytes of an inode's at `offset`, clamped to its size: a read past the end is short. */
+    private readNodeRange;
     /**
      * Read a whole file straight from SQL, bypassing the LRU content cache
      * entirely (neither consulted nor populated). For one-shot bulk reads
@@ -1237,6 +1475,13 @@ export declare class SqliteVFS {
      */
     private manifestRange;
     /** One chunk's bytes, through the LRU when `cached`. */
+    /**
+     * The bytes of chunks `ids` (at most KEYS_PER_SQL_EXEC), in one
+     * statement, by id; a chunk not stored here (cold, pending) is
+     * unreadable. A missing id is absent from the answer: the caller names
+     * what it expected.
+     */
+    private loadChunks;
     private readChunk;
     /**
      * The one read of a stored chunk: the bytes of a row whose state holds
@@ -1268,21 +1513,6 @@ export declare class SqliteVFS {
      */
     private writeRange;
     /**
-     * Publish an append and its dedupe receipt in the same SQLite transaction.
-     * Large content may stage privately first, but its inode publication and
-     * receipt still share the final transaction. Receipts are removed only by
-     * explicit client acknowledgement after that client relinquishes retries.
-     */
-    private appendOnce;
-    activateAppendWriter(pid: number, writerId: string): void;
-    private acknowledgeAppend;
-    revokeAppendWriter(pid: number, writerId: string): void;
-    revokeAppendWriters(pid: number): void;
-    revokeAppendWritersThrough(maxPid: number): void;
-    private finishAppendPidRevocation;
-    private deleteAppendRowsBounded;
-    private resumeAppendMaintenance;
-    /**
      * Truncate or zero-extend to `size`. Only the chunk at the new end is
      * re-cut; rows past it go. Every mutation commits before return.
      */
@@ -1303,7 +1533,11 @@ export declare class SqliteVFS {
      */
     private rewriteFile;
     /** Publish a rewrite in one transaction when it fits; false when it does not. */
-    private tryPublishRewrite;
+    /**
+     * Publish `node` rewritten to `content` in one transaction. One that would
+     * not fit the transaction bounds is refused (assertTransactionFits), or,
+     * `ifFits`, not made: false, and the caller publishes it another way.
+     */
     private publishRewrite;
     /** `node` as the rewrite publishes it; `madeAt`, when given, is its mtime and ctime (else now, and the commit's). */
     private rewrittenEntry;
@@ -1321,6 +1555,13 @@ export declare class SqliteVFS {
     /** The manifest counterpart of chunkUnshared: the CoW guard for large files. */
     private contentUnshared;
     private newPlan;
+    /**
+     * Pieces staged into `staging` (of the file at `path`) in bounded
+     * transactions: each takes pieces until the next would not fit, then
+     * commits through `commit` (the caller's: its authority, its checkpoint
+     * row with `commitRow`). `flush` commits what is held.
+     */
+    private stagingWriter;
     /** Create a state-0 content in its own transaction and hold it live. */
     private beginStaging;
     /**
@@ -1404,13 +1645,15 @@ export declare class SqliteVFS {
      */
     private removeRecursive;
     /**
-     * The inodes under `root`, then `root` itself, in descending path order, a
-     * bounded page at a time. A path under a directory extends the directory's
-     * path, so it sorts after it: every entry comes before the directory that
-     * holds it. Each page starts below the last path read, so removing what
-     * was already yielded does not disturb the walk.
+     * Every inode strictly under `root`, a bounded page at a time: the live
+     * tree, or the tree as of generation `at` (pageAt, live and history
+     * merged), in path order; or, live, in descending path order (`desc`),
+     * where every entry comes before the directory holding it (a path under a
+     * directory extends the directory's) and each page starts below the last
+     * path read, so removing what was already yielded does not disturb the
+     * walk. `directoriesOnly` takes only directories.
      */
-    private subtreeDescending;
+    private subtree;
     private rename;
     /**
      * Unwind the destination inodes a failed move had already published.
@@ -1464,8 +1707,6 @@ export declare class SqliteVFS {
     private copyTreeNow;
     /** Reserve a planned copy's rows in the ledger (N18); its slices draw from it. */
     private reserveCopy;
-    /** Every entry strictly under `root` as of generation `g`, a page at a time. */
-    private subtreeAt;
     /**
      * Run a copyTree job to completion: the root row and the job row in the
      * first transaction, then one page per transaction, the cursor moving in
@@ -1504,11 +1745,12 @@ export declare class SqliteVFS {
         quiesce: true;
     }): Promise<SnapshotInfo>;
     /**
-     * Run `pin` once nothing spans awaits and no exclusive lease is held: the
-     * check and `pin` run in one turn, so nothing can start between them. New
-     * spanning work waits behind the gate until then (Kinu N14: await, never
-     * EBUSY). A lease is synchronous and cannot wait, so one taken meanwhile
-     * is waited out too.
+     * Run `pin` once nothing spans awaits, no plain exclusive lease is held,
+     * and every delegation is shared (its holder's decided operations stored):
+     * the check and `pin` run in one turn, so nothing can start between them.
+     * New spanning work waits behind the gate until then (Kinu N14: await,
+     * never EBUSY). A lease is synchronous and cannot wait, so one taken
+     * meanwhile is waited out too.
      */
     private quiesced;
     /**
@@ -1922,6 +2164,83 @@ export declare class SqliteVFS {
      */
     private routeRecord;
     private writeStream;
+    /**
+     * A sequenced writer's state as its wave starts: its cursor, and the
+     * refusal it has not had answered (dropped once `ack` reaches it). Kept
+     * until its process is over and its log drained (forgetSequences). A
+     * wave that starts past the op after the cursor
+     * names ops the session never had: refused, ESTALE (they are lost).
+     */
+    private openSequence;
+    /**
+     * A process's data call, made as the call of that name: a writeFile, an
+     * appendFile (made where missing), or a write or append through an open
+     * description (describedFile). The published name's stat, or null for a
+     * description whose file no name has any more (the bytes go with it).
+     */
+    private applyDataCall;
+    /**
+     * A W7 `open` (a write description's open, W7Call open): what open(2) of a
+     * file to write decides, as the session's own open does
+     * (SqliteRuntimeFsBridge.open): EEXIST for an exclusive create of a name
+     * there (a link included, followed or not), ENOENT without `create`,
+     * ELOOP for a link when `nofollow`, EISDIR for a directory, EACCES without
+     * write permission; a name made empty with `mode` less the call's umask, or
+     * an existing file emptied when `truncate`. Its answer is the file's stat.
+     */
+    private openToWrite;
+    /**
+     * The open description a process's call names (W7Call description): its
+     * binding's; else, for a process's sequenced wave, the one the session
+     * kept for it (vfs_wave_descriptions), adopted into the binding with the
+     * access its open decided (the session restarted since, or the process is
+     * gone and its log is drained). Null when no file has its inode any more;
+     * undefined when none is open under `id`.
+     */
+    private described;
+    /** Whether `id` names an open description of the wave's process (described): its file is this filesystem's. */
+    private isDescribed;
+    /** The open description a process's call names (described): EBADF when none is open under it; null when its file is gone. */
+    private describedBy;
+    /**
+     * A W7 `close`: what the session kept of the description goes, and the
+     * description. A close that reports what storing its writes failed with
+     * has closed all the same: its refusal, whatever its errno, forgets the
+     * row too (refuseInSequence), as this transaction is rolled back.
+     */
+    private closeDescribed;
+    private forgetDescription;
+    /**
+     * A re-sent `open` the writer's cursor passed: its answer again, as a
+     * receipt (the description's descriptor and its file's stat), adopted
+     * from what the session kept when the binding has it no more. Null when
+     * it is closed since, or its file is gone.
+     */
+    private reopened;
+    /**
+     * The file an open description writes: the one inode `ino` names, wherever
+     * it is named now, or null once no name has it; without `ino`, the file at
+     * `path`. Found by its name while that still names it; else by a scan for
+     * its number (a rename by another process under an open description).
+     */
+    private describedFile;
+    /**
+     * Process `pid` is over and its write log drained: its writers' cursors
+     * (`${pid}:${writer}`, processWaveSequence) go, and the open descriptions
+     * the session kept for it (vfs_wave_descriptions). They live exactly that long, so
+     * a drain after a restart still finds them, and nothing else keeps them.
+     */
+    forgetSequences(pid: number): void;
+    /** The op numbered `seq` committed: in its own transaction, the writer's cursor moves to it. */
+    private advanceSequence;
+    /**
+     * The op numbered `seq` was refused: the cursor passes it, and the refusal
+     * is kept until the writer has had it answered. `closed`: it was a close,
+     * whose description is gone whatever it answered (closeDescribed).
+     */
+    private refuseInSequence;
+    /** `run` as a call made by the delegations `holds` (its lookups recall none of them), in this turn only. */
+    private withHolds;
     private consumeStream;
     private _writeBatchWithRetry;
     /**
@@ -1950,6 +2269,8 @@ export declare class SqliteVFS {
      * with both errors; the embedder must discard this VFS in that case.
      */
     withTransaction<T>(callback: () => T): T;
+    /** withTransaction, its rollback reported as `rolledBack` makes it of the callback's error. */
+    private publishedTransaction;
     /**
      * Deliver a mutation's events while the directories it removed are still
      * known by their modes (watchedName). Inside an embedder transaction the
@@ -2015,6 +2336,23 @@ export declare class SqliteVFS {
     /** The cache and the publication learn what touchDirectoryRows committed. */
     private touchedDirectoriesCommitted;
     private executeTransactionPlan;
+    /** A plan's deletions: rows, tombstones, and the content a dereferencing delete lets go of. */
+    private applyPlanDeletes;
+    /** The plan's new staging contents, numbered and stored (state staging). */
+    private createPlanStagings;
+    /**
+     * Every chunk the plan's pieces name, by hash: found, brought back from
+     * cold, rewritten in place, or inserted. Its id, by hash key.
+     */
+    private storePlanChunks;
+    /**
+     * Each inode's content reference (entry.chunkId, entry.contentId): a
+     * chunk, a manifest found by digest or made, a staging published, or an
+     * edit of a manifest in place.
+     */
+    private publishPlanContents;
+    /** The plan's inode rows: identity, generation and content; what each replaced is queued for collection. */
+    private upsertPlanInodes;
     /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
     /**
      * Chunk rows as (id, hash, data) triples; size is length(data), so a row
@@ -2120,6 +2458,7 @@ export declare class SqliteVFS {
      * joined, cut and hashed here, before the transaction; the hashes resolve
      * to chunk ids inside it.
      */
+    /** `commitRow`: the transaction's commit callback writes a checkpoint row, which the plan counts. */
     private prepareBatchTransaction;
     private validateFileChunks;
     private validateInodeContentShape;
@@ -2136,7 +2475,7 @@ export declare class SqliteVFS {
      * 19,429-file tree, on the object's only thread.
      *
      * The subtree is held whole, so only callers that commit it whole use this:
-     * a batch's deletions and a rename. A removal pages (subtreeDescending).
+     * a batch's deletions and a rename. A removal pages (subtree, descending).
      */
     private collectSubtreeInodes;
     /**

@@ -75,10 +75,12 @@
  */
 
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SupervisorBindingProps } from './supervisor-props.js';
 import { z } from 'zod/v4';
 import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import type { ServiceStub } from './vendor/types.js';
 
 /**
@@ -405,6 +407,18 @@ export interface ProcessHostParams {
    * the storage limit.
    */
   storageBytes?: number;
+  /**
+   * The process logs its changes in its facet's store (process-fs-journal.ts):
+   * the session is told the facet's name when it opens (`opened`), and
+   * `drain` is handed the store's journal when the process is released,
+   * before the store goes. A drain that throws keeps the store and its name.
+   * Its class holds `held()` open while its isolate lives, so a death after
+   * its boot (out of memory, CPU) is the process's `lost`.
+   */
+  journal?: {
+    opened(facet: string): void;
+    drain(journal: ProcessFsJournalSource): Promise<void>;
+  };
 }
 
 /**
@@ -749,6 +763,13 @@ export interface ResidentProcessSpawn {
   /** See {@link ProcessHostParams.storageBytes}. */
   storageBytes?: number;
   /**
+   * A Nimbus runtime's process (node, python, ruby, opencode), whose class
+   * logs its changes in its facet's store and holds `held()` open while its
+   * isolate lives (ProcessHostParams.journal). Never an application's own
+   * class, whose store is its own.
+   */
+  journaled?: boolean;
+  /**
    * Called before any concrete host capability can expose this writer.
    * A spawn must not proceed unless the supervisor accepts the authority.
    */
@@ -765,7 +786,15 @@ function heldUntilKilled(): { promise: Promise<void>; release: () => void } {
 }
 
 export class ProcessFabric {
-  constructor(private readonly host: ProcessHost) {}
+  /**
+   * `journalFor`: the write-log hooks of a resident process's facet
+   * (ProcessHostParams.journal), when its coordinator keeps them: every
+   * resident it starts logs its changes in its facet's store.
+   */
+  constructor(
+    private readonly host: ProcessHost,
+    private readonly options: { journalFor?: (pid: number) => ProcessHostParams['journal'] } = {},
+  ) {}
 
   /**
    * Boot a resident process on this deployment's substrate and return its
@@ -782,6 +811,7 @@ export class ProcessFabric {
     // after the host is released; a later incarnation must use a fresh one.
     const writerId = crypto.randomUUID();
     spawn.onWriterActivated(writerId);
+    const journal = spawn.journaled ? this.options.journalFor?.(spawn.pid) : undefined;
 
     let hosted: HostedProcess;
     try {
@@ -793,6 +823,7 @@ export class ProcessFabric {
         startArgs: spawn.startArgs,
         ...(spawn.facet !== undefined ? { facet: spawn.facet } : {}),
         ...(spawn.storageBytes !== undefined ? { storageBytes: spawn.storageBytes } : {}),
+        ...(journal !== undefined ? { journal } : {}),
       });
     } catch (error) {
       spawn.onWriterRetired(writerId);
@@ -819,7 +850,9 @@ export class ProcessFabric {
     // on its host, so residency ends at a kill — or at the host dying, which
     // is the same thing happening to the process without anyone asking for it.
     const done = (spawn.startContract === 'lifetime'
-      ? hosted.started.then(() => undefined)
+      // A lifetime run ends with its start: a platform reset, said by the
+      // start or by the host, is its host lost; its own stop is not one.
+      ? Promise.race([hosted.started.then(() => undefined, (error: unknown) => { throw isHostReset(error) ? new ProcessHostLost(error) : error; }), hosted.lost])
       : hosted.started.then(() => Promise.race([held.promise, hosted.lost]))
     ).finally(() => release());
     done.catch(() => {});

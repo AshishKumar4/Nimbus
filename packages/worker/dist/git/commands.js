@@ -17,6 +17,7 @@ import { bridgeCleanupFs, cleanUpClone, deleteCloneJob, setCloneJobPhase, writeC
 import { packsSeam } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { DEFAULT_CONTEXT, DEFAULT_RENAME_SCORE, absentSpec, binaryPath, bytesFromBinary, detectRenames, formatNameOnly, formatNameStatus, formatPatch, formatStat, parseRenameScore, pathLine, statFile, StatList, } from './unified-diff.js';
@@ -3026,10 +3027,10 @@ filesystem) {
                 // On a mount the lease's root is the first name missing on the way
                 // to the destination as the namespace sees it (SQLite's own inodes do
                 // not say), held at that path: the namespace refuses another's
-                // mutations there by it, as it does on SQLite.
-                const mutationLease = place.mount
-                    ? vfs.as(ctx.cred).acquireExclusiveMutation(await firstMissing(ctx.vfs, target))
-                    : vfs.as(ctx.cred).acquireExclusiveMutation(target, { includeMissingAncestors: true });
+                // mutations there by it, as it does on SQLite. A delegation it
+                // overlaps is recalled first (withRecall).
+                const leaseRoot = place.mount ? await firstMissing(ctx.vfs, target) : target;
+                const mutationLease = await withRecall(() => vfs.as(ctx.cred).acquireExclusiveMutation(leaseRoot, place.mount ? {} : { includeMissingAncestors: true }));
                 // A piece of the clone that hung may still write: the facet runner
                 // hands the lease to a new owner before it runs the piece again.
                 let mutationOwner = mutationLease.owner;

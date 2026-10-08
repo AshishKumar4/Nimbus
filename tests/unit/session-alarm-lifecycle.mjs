@@ -20,7 +20,7 @@ import {
   wireProcessLogPersist,
 } from '../../packages/worker/src/session/hibernation.ts';
 import { timers, TIMER_REASONS_KEY } from '../../packages/fabric/src/timers.ts';
-import { GENERATION_KEY, assumeGeneration } from '../../packages/fabric/src/generation.ts';
+import { GENERATION_KEY, assumeGeneration, generation } from '../../packages/fabric/src/generation.ts';
 import { SESSION_DESTROYED_KEY } from '../../packages/worker/src/session/keys.ts';
 import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -250,9 +250,10 @@ function makeDestroyHost(storage) {
   assert.ok(storage.deleteAlarmCalls >= 1, 'destroy deletes the pending alarm');
   assert.ok(storage.map.has(SESSION_DESTROYED_KEY), 'destroy writes the tombstone (survives deleteAll)');
   assert.equal(host._w1SessionDestroyed, true, 'destroy flags the live instance');
-  assert.equal(storage.map.get(GENERATION_KEY), 3,
-    'destroy re-persists the isolate generation (deleteAll wiped it; a gen-1 restart would misclassify pre-destroy stragglers as current-generation)');
-  console.log('  [5] rpcDestroy deletes the alarm, re-persists isolateGen, and leaves the tombstone');
+  // deleteAll wiped the counter; the recreated session reserved its own past it (a gen-1 restart would misclassify pre-destroy stragglers as current-generation).
+  assert.equal(storage.map.get(GENERATION_KEY), generation(host.ctx), 'the recreated session runs as the persisted generation');
+  assert.ok(generation(host.ctx) > 3, 'past the destroyed one');
+  console.log('  [5] rpcDestroy deletes the alarm, persists the recreated isolateGen past the destroyed one, and leaves the tombstone');
 
   // Legitimate re-initialization of the SAME session id (documented SDK
   // flow) lifts the tombstone so the recreated session's janitor arms again.

@@ -19,6 +19,7 @@ import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { waveSupervisor } from './lib/wave-supervisor.mjs';
 
 const CHUNK = 65536; // READ_STREAM_CHUNK_BYTES
 
@@ -55,6 +56,8 @@ const supervisor = {
   writeFile: (path, content) => bridge.writeFile(path, content),
   mkdir: (path) => bridge.mkdir(path, { recursive: true }),
 };
+// Its process's waves reach these calls (lib/wave-supervisor.mjs).
+waveSupervisor(supervisor);
 
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
@@ -155,7 +158,9 @@ assert.equal(typeof counter(), 'number',
   const beforeWrite = counter();
   const batchesBeforeWrite = batches.length;
   await batchedShims.fs.promises.writeFile(`/${mine}/written.txt`, 'w');
-  assert.ok(batches.length > batchesBeforeWrite, 'the write learned nothing, so this case proves nothing');
+  // Its stat comes back with it, in its call's receipt: no learn at all.
+  assert.equal(batches.length, batchesBeforeWrite, `an async write learned its stat by a round trip of its own: ${JSON.stringify(batches.slice(batchesBeforeWrite))}`);
+  assert.equal(batchedShims.fs.statSync(`/${mine}/written.txt`).size, 1, 'the write\'s stat is what the process sees');
   assert.equal(counter(), beforeWrite, 'an async write, which reads nothing, moved the read count');
 }
 

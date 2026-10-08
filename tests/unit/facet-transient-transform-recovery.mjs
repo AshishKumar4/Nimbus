@@ -13,7 +13,7 @@ import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
 import { writeModuleSet } from './lib/module-map-bundle.mjs';
-import { supervisorDouble } from './lib/supervisor-double.mjs';
+import { opSender, supervisorDouble } from './lib/supervisor-double.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 
 const { host, rawVfs, kfs } = createAuthority();
@@ -46,11 +46,14 @@ const service = new EsbuildService(undefined, {
   },
 });
 let stdout = '', loaderPublications = 0;
-adoptCtxExports({ SupervisorRPC: ({ props }) => supervisorDouble(async (name, args) => {
-  if (name === 'stdout') { stdout += new TextDecoder().decode(args[0]); return; }
-  if (name === 'stderr' || name === 'reportExit') return;
-  return host.supervisorOp({ op: name, args, pid: props?.pid });
-}) });
+adoptCtxExports({ SupervisorRPC: ({ props }) => {
+  const send = opSender((envelope) => host.supervisorOp({ ...envelope, pid: props?.pid }));
+  return supervisorDouble(async (name, args) => {
+    if (name === 'stdout') { stdout += new TextDecoder().decode(args[0]); return; }
+    if (name === 'stderr' || name === 'reportExit') return;
+    return send(name, args);
+  });
+} });
 const directory = mkdtempSync(join(tmpdir(), 'transient-transform-'));
 const env = {
   LOADER: {

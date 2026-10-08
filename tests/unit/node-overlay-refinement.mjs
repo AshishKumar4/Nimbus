@@ -35,8 +35,8 @@ globalThis.__probe = {
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
-/** Write-back ops the harness holds until a flush: the request does not reach the authority before then. */
-const WRITE_BACKS = new Set(['writeFile', 'writeRange', 'truncate', 'unlink', 'remove', 'fsAppend']);
+/** Write-back ops the harness holds until a flush: the request does not reach the authority before then (a process's waves carry them all). */
+const WRITE_BACKS = new Set(['writeBatchStream']);
 
 await runScenarios(import.meta.path, Object.fromEntries(fixture.cases.map((testCase, index) => [`node-overlay #${index}`, async () => {
   const authority = createAuthority();

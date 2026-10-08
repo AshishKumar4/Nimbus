@@ -89,6 +89,11 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
   assert.equal(harness.calls[0].userEnv.HOME, '/home/ruby');
   // Gems live under that HOME, as Ruby's own default (File.join(ENV["HOME"], ".gem")) says.
   assert.equal(harness.calls[0].userEnv.GEM_HOME, '/home/ruby/.gem');
+  // Its credential rides with the call: with it, the facet answers from its
+  // resident store and sends changes as waves (initFS cred). Red before: none
+  // was passed, and every file call was a round trip.
+  const ctxCred = commandContext(filesystem, {}).cred;
+  assert.deepEqual(harness.calls[0].cred, { uid: ctxCred.uid, gid: ctxCred.gid, groups: [...ctxCred.groups] });
   // With no HOME in the command's environment, the session user's home.
   assert.equal(await run(commandContext(filesystem, {})), 0);
   assert.equal(harness.calls[1].userEnv.HOME, '/home/session');

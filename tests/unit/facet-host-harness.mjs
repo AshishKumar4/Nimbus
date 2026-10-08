@@ -34,8 +34,24 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
   const live = new Map();
 
   const loader = {
-    load() {
-      throw new Error('a resident process is never loaded through LOADER.load');
+    // The one unkeyed load: the journal reader a released resident's store
+    // is opened with (process-fs-journal-reader.ts), over that facet's store.
+    load(code) {
+      if (!code?.modules?.['reader.js']) throw new Error('a resident process is never loaded through LOADER.load');
+      return {
+        getDurableObjectClass: (className) => ({
+          className,
+          async instantiate(facetName) {
+            const journal = sqlJournal(createProcessFacetCtx(facetName).storage.sql);
+            return {
+              numberings: () => journal.numberings(),
+              number: (numbering) => journal.number(numbering),
+              readAfter: (after, maxBytes) => journal.readAfter(after, maxBytes),
+              dropThrough: (jid) => journal.dropThrough(jid),
+            };
+          },
+        }),
+      };
     },
     get(loaderId, config) {
       return {
@@ -66,18 +82,44 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
     return instance;
   };
 
+  /** facetName → its isolate's death, which a runtime resident's held() call hears. */
+  const deaths = new Map();
+  const deathOf = (name) => {
+    let death = deaths.get(name);
+    if (!death) {
+      let reject;
+      death = { promise: new Promise((_, r) => { reject = r; }), reject };
+      death.promise.catch(() => {});
+      deaths.set(name, death);
+    }
+    return death;
+  };
+  const die = (name, error) => {
+    deaths.get(name)?.reject(error);
+    deaths.delete(name);
+  };
+
   const facets = {
     get(name, start) {
       return {
         async startProcess(args) { return (await ensure(name, start)).startProcess(args); },
         async handleHttpRequest(request) { return (await ensure(name, start)).handleHttpRequest(request); },
+        // A runtime resident's class holds this open while its isolate lives.
+        held() { return deathOf(name).promise; },
+        // The journal reader's (LOADER.load above).
+        async numberings() { return (await ensure(name, start)).numberings(); },
+        async number(numbering) { return (await ensure(name, start)).number(numbering); },
+        async readAfter(after, maxBytes) { return (await ensure(name, start)).readAfter(after, maxBytes); },
+        async dropThrough(jid) { return (await ensure(name, start)).dropThrough(jid); },
       };
     },
     // abort ends the process; the store stays. delete is the only call that
     // drops a facet's SQLite — mirroring workerd's split, which is what the
     // durable release relies on.
-    abort(name) { live.delete(name); },
-    delete(name) { live.delete(name); resetProcessFacetStorage(name); },
+    // Whoever aborts or deletes a facet ended it, and what held it open
+    // hears nothing (a release ignores it; a previous incarnation is gone).
+    abort(name) { live.delete(name); deaths.delete(name); },
+    delete(name) { live.delete(name); deaths.delete(name); resetProcessFacetStorage(name); },
   };
 
   return {
@@ -89,6 +131,8 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
     liveFacets: () => [...live.keys()],
     /** Drop a running facet the way a platform reset would, without releasing it. */
     lose: (name) => live.delete(name),
+    /** The facet's isolate dies on its own (out of memory, out of CPU): its held() call rejects with `error`. */
+    die: (name, error = new Error('Worker exceeded memory limit.')) => { live.delete(name); die(name, error); },
   };
 }
 
@@ -217,6 +261,7 @@ import { processHostFor } from '../../packages/worker/src/loaders/process-host.t
 import { timers } from '../../packages/fabric/src/timers.ts';
 import { composeFabric } from '../../packages/fabric/src/composition.ts';
 import { openSupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
+import { sqlJournal } from '../../packages/core/src/_shared/process-fs-journal.ts';
 import { missingAssets } from './lib/staged-assets.mjs';
 
 // The harness plays the embedder: its ctx.exports (createCtxExports below)

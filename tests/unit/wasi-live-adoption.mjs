@@ -173,7 +173,7 @@ console.log('wasi-live-adoption: silent-write-loss assertions passed');
 // ── 7. Ruby re-adopts AFTER mounting, because the mount drops the stub ───────
 {
   const runner = readFileSync(RUBY_RUNNER_SRC, 'utf8');
-  const mount = runner.indexOf('__nimbusInstallRubyFs();');
+  const mount = runner.indexOf('__nimbusInstallRubyFs(args.cred);');
   const readopt = runner.indexOf('__wasiAdoptSupervisor(globalThis.__nimbusRubySupervisor)');
   assert.ok(mount > 0 && readopt > mount,
     'ruby must adopt the supervisor AFTER __wasiInitFS, which clears it');
