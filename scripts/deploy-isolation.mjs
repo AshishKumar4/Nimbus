@@ -51,6 +51,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseWranglerJsonc } from '../packages/worker/src/wrangler/wrangler-config.ts';
+import { MAX_FACET_CPU_MS, MAX_FACET_SUBREQUESTS } from '../packages/fabric/src/facet-limits.ts';
 
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -259,6 +260,15 @@ const REQUIRED_BINDINGS = [
  * missing capability this is a violation, production included: a deploy
  * that binds the cache and cannot read it is a deploy with a broken install.
  */
+export function facetLimitViolations(block) {
+  return [['cpu_ms', 'cpuMs', MAX_FACET_CPU_MS], ['subrequests', 'subRequests', MAX_FACET_SUBREQUESTS]].flatMap(([key, policy, floor]) => {
+    const configured = block?.limits?.[key];
+    return Number.isInteger(configured) && configured >= floor
+      ? []
+      : [`hosting Worker limits.${key}=${configured ?? 'unset'} is below facet policy maximum ${policy}=${floor}`];
+  });
+}
+
 export function missingCatalogPin(block) {
   const binds = (block.r2_buckets ?? []).some((r) => r.binding === 'NIMBUS_RUNTIME_CACHE');
   const pin = block.vars?.NIMBUS_RUNTIME_CATALOG_SHA256;
@@ -603,6 +613,7 @@ export function checkPreview(relPath, {
   }
 
   result.violations.push(...missingCatalogPin(resolvePreview(config, envName)));
+  result.violations.push(...facetLimitViolations(resolvePreview(config, envName, { inherit: true })));
   result.missing = missingCapabilities(resolvePreview(config, envName, { inherit: true }));
   const declared = bindingNames(block);
   for (const [name, kind] of bindingNames(resolveEnvironment(config, envName))) {
@@ -627,6 +638,7 @@ export function checkConfig(relPath, {
   const targetName = resolveWorkerName(config, envName, workerName);
   const isProductionDeploy = envName === PRODUCTION_ENV && !workerName;
   violations.push(...missingCatalogPin(resolveEnvironment(config, envName)));
+  violations.push(...facetLimitViolations(resolveEnvironment(config, envName, { inherit: true })));
 
   if (isProductionDeploy) {
     return {

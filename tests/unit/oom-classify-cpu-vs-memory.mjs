@@ -32,7 +32,7 @@
 
 import assert from 'node:assert/strict';
 import {
-  classifyError, classifyMessage, isOomCause, isTransientDoReset,
+  classifyError, classifyMessage, isHostReset, isOomCause, isTransientDoReset,
 } from '../../packages/platform/src/oom-classify.ts';
 
 // ── Memory kills land in 'oom' ──────────────────────────────────────────
@@ -131,5 +131,30 @@ assert.equal(classifyMessage('Too many subrequests.'), 'subrequest_cap');
 assert.equal(classifyMessage('actor was condemned'), 'condemnation');
 assert.equal(classifyMessage('hard evict'), 'hard_evict');
 assert.equal(classifyMessage('something else entirely'), 'unknown');
+
+// ── A host's death is its platform's own signal, never a guess from text ──
+// fabric's HostLoss ends a process with 137 on isHostReset, so a program's
+// own error that merely mentions a limit must not read as its host dying.
+assert.equal(isHostReset(new Error('cpu time limit must be positive')), false);
+assert.equal(isHostReset(new Error('uploaded file exceeded memory limit of 32 MiB')), false);
+assert.equal(isHostReset(new RangeError('Memory limit exceeded')), false);
+assert.equal(isHostReset(new Error('Network connection lost.')), false);
+assert.equal(isHostReset(new Error('my storage operation was reset by the user')), false);
+for (const signature of [
+  "Durable Object's isolate exceeded its memory limit and was reset.",
+  'Worker exceeded memory limit.',
+  'Worker has exceeded memory limit.',
+  'Worker exceeded CPU time limit.',
+  'Durable Object exceeded its CPU time limit and was reset.',
+  'Durable Object reset because its code was updated.',
+  'Internal error in Durable Object storage caused object to be reset; reference = 3fcleke374ccojo3eopmdsbo',
+  'Internal error while starting up Durable Object storage caused object to be reset; reference = 3fcleke374ccojo3eopmdsbo',
+  'Durable Object storage operation exceeded timeout which caused the object to be reset.',
+]) {
+  assert.equal(isHostReset(new Error(signature)), true, signature);
+}
+assert.equal(isHostReset(new Error("broken.exceededMemory; jsg.Error: Durable Object's isolate exceeded its memory limit and was reset.")), true);
+assert.equal(isHostReset(new Error("broken.exceededMemory; jsg.Error: Durable Object's isolate exceeded its memory limit due to overflowing the storage cache.")), true);
+assert.equal(isHostReset(Object.assign(new Error('anything'), { durableObjectReset: true })), true);
 
 console.log('oom-classify-cpu-vs-memory: OK');

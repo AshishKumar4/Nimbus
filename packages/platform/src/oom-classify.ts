@@ -210,6 +210,28 @@ export function isTransientDoReset(input: unknown): boolean {
 }
 
 /**
+ * The platform's own word that the actor a call reached was reset or killed:
+ * its `durableObjectReset` flag, or one of its termination sentences, whole.
+ * Text a program wrote never counts, however it reads: a process whose host
+ * this matches is ended (fabric process-host.ts HostLoss).
+ */
+export function isHostReset(input: unknown): boolean {
+  if (typeof input === 'object' && input !== null && Reflect.get(input, 'durableObjectReset') === true) return true;
+  const message = readMessage(input).trim().replace(/^broken\.\w+;\s*jsg\.\w+:\s*/, '');
+  return HOST_TERMINATIONS.some((signature) => signature.test(message));
+}
+
+const HOST_TERMINATIONS: readonly RegExp[] = [
+  /^Durable Object's isolate exceeded its memory limit (?:and was reset\.|due to )/,
+  /^Worker (?:has )?exceeded memory limit\.$/,
+  /^(?:Python )?Worker exceeded CPU time limit\.?$/,
+  /^Durable Object exceeded its CPU time limit and was reset\.$/,
+  /^Durable Object reset because its code was updated\.$/,
+  /^Internal error (?:in|while starting up) Durable Object storage caused object to be reset; reference = \S+$/,
+  /^Durable Object storage operation exceeded timeout which caused the object to be reset\.$/,
+];
+
+/**
  * A failure the platform reports without a cause: workerd's "internal error;
  * reference = <id>", whose reference only Cloudflare can look up. The error
  * may carry `durableObjectReset` (the object it reached was reset), and
