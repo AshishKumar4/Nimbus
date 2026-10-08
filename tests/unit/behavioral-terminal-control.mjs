@@ -152,6 +152,19 @@ try {
     assert.equal((await tail).exitCode, 1, 'the tail owns its separate false');
   });
 
+  for (const tail of ['echo "open', "cat > /home/user/prefix-heredoc <<'EOF'"]) {
+    await scenario('a completed prefix cannot complete an unfinished batch tail: ' + tail, async ({ client }) => {
+      let completed = false;
+      const pending = client.run('true\n' + tail, 1000).then((result) => { completed = true; return result; });
+      await client.waitFor((text) => text.endsWith('> '), 1000, 'incomplete tail');
+      await setImmediate();
+      const premature = completed;
+      client.ws.send(JSON.stringify({ type: 'input', data: '\x03' }));
+      await pending;
+      assert.equal(premature, false, 'earlier readiness is no completion while the tail remains under PS2');
+    });
+  }
+
   await scenario('queued submissions own distinct completion and status', async ({ client, box, gate }) => {
     const first = gate(), second = gate();
     box.commands.registry.register('first', async (ctx) => { await ctx.stdout.write('FIRST_STARTED\n'); await first.promise; return 3; });
