@@ -18,11 +18,14 @@ for (const [kind, configured] of Object.entries(FACET_LIMITS)) {
   assert.deepEqual(code.limits, { cpuMs: 1, subRequests: 1 }, `${kind}: caller config is not mutated`);
   assert.ok(configured.subRequests > 12000 + 64);
   assert.ok(configured.subRequests <= 10_000_000, `${kind}: never claims more than the provider maximum`);
-  assert.ok(facetLoaderKey(kind, 'fixture').endsWith(`:${configured.cpuMs}:${configured.subRequests}`));
+  assert.equal(facetLoaderKey(kind, 'fixture'), `${kind}:${configured.cpuMs}:${configured.subRequests}/7/fixture`, `${kind}: the policy, the raw id's length, the raw id`);
   assert.equal(facetPolicyKey(kind), `${kind}:${configured.cpuMs}:${configured.subRequests}`);
   seen.add(kind);
 }
 for (const kind of ['process', 'build', 'esbuild', 'transform', 'git']) assert.ok(seen.has(kind));
+// An id that spells another id plus a policy is still another id.
+assert.notEqual(facetLoaderKey('worker', 'foo'), facetLoaderKey('worker', facetLoaderKey('worker', 'foo')));
+assert.notEqual(facetLoaderKey('worker', 'a/1/b'), facetLoaderKey('worker', 'a'));
 const loaderIds = new Set();
 const ctx = { id: { toString: () => 'facet-policy-unit' }, waitUntil() {} };
 for (const kind of seen) {
