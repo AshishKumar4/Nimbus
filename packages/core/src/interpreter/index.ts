@@ -242,6 +242,12 @@ export function moduleRequests(path: string, text: string): ModuleRequest[] {
 
 interface BlockParser extends AcornParser {
   strict: boolean;
+  start: number;
+  end: number;
+  lastTokStart: number;
+  lastTokEnd: number;
+  raise(pos: number, message: string): never;
+  raiseRecoverable(pos: number, message: string): never;
   startNode(): object;
   expect(type: unknown): void;
   enterScope(flags: number): void;
@@ -260,6 +266,19 @@ const FOUND = objectCreate(null);
 class ThrowFinder extends AcornParserClass {
   offset = -1;
   found: [number, number] | null = null;
+  // The token a syntax error is at, as V8 marks it: the parser's current or
+  // last token where one starts there (a reserved word is raised past it).
+  raisedToken: [number, number] | null = null;
+
+  raise(pos: number, message: string): never {
+    this.raisedToken = pos === this.start ? [pos, this.end] : pos === this.lastTokStart ? [pos, this.lastTokEnd] : null;
+    return super.raise(pos, message);
+  }
+
+  // acorn's is its raise, not a call of it.
+  raiseRecoverable(pos: number, message: string): never {
+    return this.raise(pos, message);
+  }
 
   parseTopLevel(node: Program): Program {
     const exports = objectCreate(null);
@@ -268,7 +287,9 @@ class ThrowFinder extends AcornParserClass {
       const names = objectKeys(this.undefinedExports);
       for (let i = 0; i < names.length; i++) {
         const name = names[i];
-        this.raiseRecoverable(this.undefinedExports[name].start, "Export '" + name + "' is not defined");
+        const { start, end } = this.undefinedExports[name];
+        this.raisedToken = [start, end];
+        super.raise(start, "Export '" + name + "' is not defined");
       }
     }
     this.next();
@@ -318,6 +339,8 @@ export function fatalLocation(text: string, goal: 'script' | 'module', offset: n
   } catch (error) {
     if (error === FOUND) return finder.found;
     if (offset !== -1 || !isObject(error)) return null;
+    const token = finder.raisedToken;
+    if (token !== null && token[1] > token[0]) return token;
     const at = reflectGet(error, 'pos');
     const end = reflectGet(error, 'raisedAt');
     if (typeof at !== 'number') return null;

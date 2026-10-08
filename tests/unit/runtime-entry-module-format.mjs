@@ -65,7 +65,7 @@ function makeHandler(files, { nodeCommandLine = false } = {}) {
               return { error: 'x', typescript: { code: 'ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX', message: 'enum', filename: options.sourcefile, startLine: 1, snippet: 'enum E {}' } };
             }
             const stripped = code.replace(/: number/g, (types) => ' '.repeat(types.length));
-            return { code: stripped, map: '', warnings: [], ...(/\b(import|export)\b/.test(code) ? { esModule: true } : {}) };
+            return { code: stripped, map: '', warnings: [], ...(/\b(import|export)\b/.test(code) ? { esModule: 'node' } : {}) };
           });
         },
       }),

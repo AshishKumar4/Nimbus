@@ -8,7 +8,10 @@
 
 import { readFile } from 'node:fs/promises';
 import { createOxcTransform } from '../../../packages/core/src/runtime/oxc-transform.ts';
+import { stripTypeScript } from '../../../packages/core/src/runtime/typescript-strip.ts';
 import { OXC_WASM_ASSET_PATH } from '../../../packages/worker/src/oxc-wasm-artifact.generated.ts';
 
 const bytes = await readFile(new URL(`../../../packages/worker/public${OXC_WASM_ASSET_PATH}`, import.meta.url));
 export const oxcEngine = createOxcTransform(await WebAssembly.compile(bytes));
+// The type strip the transform facet installs beside its engine (oxc-facet/preamble.ts), here over amaro's own package.
+globalThis.__nimbusStripTypeScript ??= stripTypeScript;

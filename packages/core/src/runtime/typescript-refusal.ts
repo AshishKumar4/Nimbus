@@ -1,0 +1,43 @@
+// What Node 22.22.3 says of a TypeScript file it will not run, and the module
+// that says it when the file is required or imported. Kept apart from
+// typescript-strip.ts, which loads amaro, so that a session never bundles it.
+
+/** Why Node will not run a TypeScript file; `snippet` (with `filename` and `startLine`) where amaro shows the place. */
+export interface TypeScriptRefusal {
+  code: 'ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX' | 'ERR_INVALID_TYPESCRIPT_SYNTAX' | 'ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING' | 'ERR_UNKNOWN_FILE_EXTENSION';
+  message: string;
+  filename: string;
+  startLine: number;
+  snippet: string;
+}
+
+/** What Node's ES loader says of TypeScript it does not take (`--no-experimental-strip-types`). */
+export function unknownExtensionRefusal(path: string): TypeScriptRefusal {
+  return {
+    code: 'ERR_UNKNOWN_FILE_EXTENSION',
+    message: `Unknown file extension "${path.slice(path.lastIndexOf('.'))}" for ${path}`,
+    filename: path, startLine: 0, snippet: '',
+  };
+}
+
+/** The refusal of a file under node_modules, which Node does not strip. */
+export function nodeModulesRefusal(path: string): TypeScriptRefusal {
+  return {
+    code: 'ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING',
+    message: `Stripping types is currently unsupported for files under node_modules, for "${path}"`,
+    filename: path, startLine: 0, snippet: '',
+  };
+}
+
+/**
+ * The module of a TypeScript file Node refuses: requiring or importing it
+ * throws Node's error, with amaro's snippet before its stack where it shows
+ * the place, and no arrow of the generated code (node-shims.ts
+ * __nimbusGeneratedNodeError).
+ */
+export function typeScriptRefusalShim(refusal: TypeScriptRefusal): string {
+  const Base = refusal.code === 'ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING' ? 'Error'
+    : refusal.code === 'ERR_UNKNOWN_FILE_EXTENSION' ? 'TypeError' : 'SyntaxError';
+  const decoration = refusal.snippet === '' ? null : `${refusal.filename}:${refusal.startLine}\n${refusal.snippet}`;
+  return `throw __nimbusNodeError(${Base}, ${JSON.stringify(refusal.code)}, ${JSON.stringify(refusal.message)}, undefined, ${JSON.stringify(decoration)});\n`;
+}

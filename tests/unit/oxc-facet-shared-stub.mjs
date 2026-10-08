@@ -188,6 +188,41 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   }
   assert.ok(calls.every((n) => n <= 4) && calls.reduce((a, b) => a + b, 0) === 6, JSON.stringify(calls));
   console.log('  ok  six too-deep cells with no store or pacer are all placed, four per esbuild call at most');
+
+  // TypeScript the strip takes but the lowering cannot (in a facet, acorn's
+  // stack ends near 600 levels, amaro's past 1,000): the transform facet's
+  // retry is the stripped module, which the esbuild facet, with no amaro, lowers.
+  const stripped = 'export const t         = 1;';
+  const previous = globalThis.__nimbusStripTypeScript;
+  globalThis.__nimbusStripTypeScript = async () => ({ code: stripped, format: 'module' });
+  const exhausted = { transform: async () => { throw Object.assign(new RangeError('Maximum call stack size exceeded'), { stackExhausted: true }); } };
+  const tooDeep = () => { throw new RangeError('Maximum call stack size exceeded'); };
+  const typed = { stripTypes: { mode: 'strip-only', sourceMap: false }, packageType: null, sourcefile: '/src/t.mts', dynamicImportParent: 'file:///src/t.mts' };
+  const thrown = await runTransformRequest(exhausted, 'export const t: unknown = 1;', typed, rewriteDynamicImports, lowerAsyncModule, tooDeep).then(() => null, (e) => e);
+  globalThis.__nimbusStripTypeScript = previous;
+  assert.equal(thrown?.stackExhausted, true);
+  assert.equal(thrown.retry.code, stripped);
+  assert.equal(thrown.retry.options.esModule, 'node');
+  assert.equal(thrown.retry.options.stripTypes, undefined);
+  const retried = [];
+  const { ctx: retryCtx, env: retryEnv } = durableObject(class {
+    async transformMany(requests) {
+      return requests.map(() => ({ error: 'Maximum call stack size exceeded', stackExhausted: true, retry: thrown.retry }));
+    }
+  });
+  console.warn = () => {};
+  try {
+    const [outcome] = await oxcTransformHost(retryCtx, retryEnv, async (requests) => {
+      retried.push(...requests);
+      return fallback(requests);
+    })([{ code: 'export const t: unknown = 1;', options: typed }]);
+    assert.equal(outcome.error, undefined, outcome.error);
+    assert.equal(outcome.esModule, 'node');
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepEqual(retried, [thrown.retry], 'the esbuild facet is sent the retry');
+  console.log('  ok  TypeScript too deep to lower after its strip is lowered by esbuild from its stripped code');
 }
 
 // ── A stub that threw is dropped: the retry mints a fresh one ───────────────

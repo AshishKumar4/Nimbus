@@ -21,7 +21,8 @@ import { packageNameFromSpecifier } from './barrel-detect.js';
 import { bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
 import { lowerAsyncModule, lowerEsModule } from './async-module-lowering.js';
 import { ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs, type ModuleScope, type PackageType } from './module-format.js';
-import type { StrippedTypeScript, TypeScriptRefusal, TypeScriptStripOptions } from './typescript-strip.js';
+import type { StrippedTypeScript, TypeScriptStripOptions } from './typescript-strip.js';
+import type { TypeScriptRefusal } from './typescript-refusal.js';
 import {
   applySourceEdits,
   nodeList,
@@ -335,8 +336,8 @@ export interface TransformResult {
   code: string;
   map: string;
   warnings: { text: string; location?: esbuild.Location | null }[];
-  /** Stripped TypeScript Node runs as an ES module, lowered (EsbuildTransformOptions.stripTypes). */
-  esModule?: true;
+  /** An ES module this lowered, in this runtime's scope: its frames are an ES module's, and Node's its typeofs. */
+  esModule?: ModuleScope;
 }
 /**
  * One emitted output. `bytes` is authoritative (UTF-8 fidelity for the
@@ -502,9 +503,16 @@ async function runTransformRequest(
     const { stripTypes, packageType, stripOnly, ...rest } = options;
     const stripped = await (strip(code, rest.sourcefile ?? '', stripTypes, packageType ?? null) as Promise<StrippedTypeScript>);
     if ('refusal' in stripped) return { error: stripped.refusal.message, typescript: stripped.refusal };
-    if (stripOnly) return { code: stripped.code, map: '', warnings: [], ...(stripped.format === 'module' ? { esModule: true as const } : {}) };
+    if (stripOnly) return { code: stripped.code, map: '', warnings: [], ...(stripped.format === 'module' ? { esModule: 'node' as const } : {}) };
     if (stripped.format === 'module') {
-      return { ...await runTransformRequest(engine, stripped.code, { ...rest, esModule: 'node' }, rewrite, lower, lowerEsModule) as TransformResult, esModule: true };
+      const lowering: EsbuildTransformOptions = { ...rest, esModule: 'node' };
+      try {
+        return await runTransformRequest(engine, stripped.code, lowering, rewrite, lower, lowerEsModule);
+      } catch (e) {
+        // Where the engine's stack runs out (oxc-transform.ts), the esbuild facet lowers the stripped code: it has no amaro.
+        if (typeof e === 'object' && e !== null && Reflect.get(e, 'stackExhausted') === true) Reflect.set(e, 'retry', { code: stripped.code, options: lowering });
+        throw e;
+      }
     }
     return { code: parent === undefined ? stripped.code : rewrite(stripped.code, parent), map: '', warnings: [] };
   }
@@ -515,15 +523,16 @@ async function runTransformRequest(
   if (options?.esModule) {
     if (parent === undefined) throw new Error('an ES module transform needs dynamicImportParent');
     try {
-      return lowerEsModule(code, options.esModule, parent);
+      return { ...lowerEsModule(code, options.esModule, parent), esModule: options.esModule };
     } catch (e) {
       // Nested past what a parse on this stack reaches (acorn, about 600
       // levels): the engine's CommonJS, which in the transform facet runs out
       // too and so goes to the esbuild facet, whose parser does not; the
       // session's define (requestOptions) keeps Node's scope.
       if (!(e instanceof RangeError)) throw e;
-      const { esModule: _scope, ...rest } = options;
-      return runTransformRequest(engine, code, { ...rest, loader: 'js', format: 'cjs', target: 'esnext' }, rewrite, lower, lowerEsModule);
+      const { esModule: scope, ...rest } = options;
+      const compiled = await runTransformRequest(engine, code, { ...rest, loader: 'js', format: 'cjs', target: 'esnext' }, rewrite, lower, lowerEsModule);
+      return { ...compiled as TransformResult, esModule: scope };
     }
   }
   const esbuildApi = typeof engine === 'function' ? await engine() : engine;
@@ -657,7 +666,7 @@ export interface EsbuildTransformRequest {
  * from message text).
  */
 export type EsbuildTransformOutcome = TransformResult
-  | { error: string; transient?: true; stackExhausted?: true }
+  | { error: string; transient?: true; stackExhausted?: true; retry?: EsbuildTransformRequest }
   | { error: string; typescript: TypeScriptRefusal; transient?: never; stackExhausted?: never };
 
 /**
@@ -812,7 +821,7 @@ function requestOptions(options: EsbuildTransformOptions | undefined): EsbuildTr
 }
 
 function finishedTransform(result: TransformResult, options: EsbuildTransformOptions | undefined): TransformResult {
-  return options?.esModule === 'node' || result.esModule ? { ...result, code: esModuleScopeTypeofs(result.code) } : result;
+  return (options?.esModule ?? result.esModule) === 'node' ? { ...result, code: esModuleScopeTypeofs(result.code) } : result;
 }
 
 /** What a transform request is run on: a CJS emit of JavaScript has its bundled CommonJS records bound to the runtime's provided packages first. */

@@ -4,15 +4,7 @@
 // the result carries its source map. Runs in the transform facet.
 
 import { typeScriptFormat, type PackageType } from './module-format.js';
-
-/** Why Node will not run a TypeScript file; `snippet` (with `filename` and `startLine`) where amaro shows the place. */
-export interface TypeScriptRefusal {
-  code: 'ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX' | 'ERR_INVALID_TYPESCRIPT_SYNTAX' | 'ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING' | 'ERR_UNKNOWN_FILE_EXTENSION';
-  message: string;
-  filename: string;
-  startLine: number;
-  snippet: string;
-}
+import type { TypeScriptRefusal } from './typescript-refusal.js';
 
 /** Stripped code and the format Node runs it in, or why Node refuses it. */
 export type StrippedTypeScript = { code: string; format: 'module' | 'commonjs' } | { refusal: TypeScriptRefusal };

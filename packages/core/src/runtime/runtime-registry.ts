@@ -48,7 +48,7 @@ import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { errorText } from '../_shared/error-text.js';
 import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput, typeScriptFormat, typeScriptUnderNodeModules, type ModuleScope, type PackageType } from './module-format.js';
 import type { TypeScriptStripOptions } from './typescript-strip.js';
-import { nodeModulesRefusal, typeScriptRefusalShim, unknownExtensionRefusal } from './bundle-cell-transform.js';
+import { nodeModulesRefusal, typeScriptRefusalShim, unknownExtensionRefusal } from './typescript-refusal.js';
 import { packageScopeType } from './require-resolution.js';
 import { exists, isDirectory } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerLaunchHost } from './server-launch.js';
@@ -525,7 +525,7 @@ export function buildRuntimeHandler(
         const [outcome] = await (await getEsbuild()).transformMany([{ code, options: { stripTypes, packageType, stripOnly: true, sourcefile: '/' + path } }]);
         if ('typescript' in outcome) return { code: typeScriptRefusalShim(outcome.typescript), esModule: false };
         if ('error' in outcome) throw new Error(outcome.error);
-        return { code: outcome.code, esModule: outcome.esModule === true };
+        return { code: outcome.code, esModule: outcome.esModule !== undefined };
       } catch (e) {
         ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);
         return null;
