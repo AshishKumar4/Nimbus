@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { mapOnArmada } from './lib/armada.mjs';
+import { PUBLISH_ARTIFACTS } from './lib/state-dir.mjs';
 
 const argv = process.argv.slice(2);
 const phaseAt = argv.indexOf('--phase');
@@ -26,7 +27,7 @@ try {
   if (outcome?.kind !== 'exited' || mapped.outputs[0] === null) throw new Error(`armada publish packing was not graded (${mapped.jobId}): ${outcome?.tail ?? 'no outcome'}`);
   const result = JSON.parse(mapped.outputs[0]);
   if (result.head !== mapped.commit || result.phase !== phase) throw new Error('publish artifact provenance does not match the requested commit and phase');
-  const dir = join(process.env.NIMBUS_PUBLISH_ARTIFACTS ?? '/mnt/local/nimbus/verify/publish', sha);
+  const dir = join(PUBLISH_ARTIFACTS, sha);
   mkdirSync(dir, { recursive: true });
   const manifest = { commit: sha, job: mapped.jobId, phase, rows: result.rows, tarballs: [] };
   for (const row of result.rows) console.error(`${row.exitCode === 0 ? 'ok' : 'FAIL'} ${row.name}: ${row.exitCode}${row.exitCode ? '\n' + row.output : ''}`);

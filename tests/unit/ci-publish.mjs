@@ -65,7 +65,12 @@ if(args[0]==='dist-tag') {s.latest=f.runtime.version;save();process.exit(0);}
 throw new Error('unexpected npm command '+args.join(' '));
 `;
   for (const command of ['bun', 'npm']) { writeFileSync(join(bin, command), program); chmodSync(join(bin, command), 0o700); }
-  const run = () => spawnSync('bash', [join(repo, 'scripts/publish-web.sh'), sha], { encoding: 'utf8', timeout: 20_000, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, NIMBUS_PUBLISH_REPO: repo, NIMBUS_PUBLISH_ARTIFACTS: join(root, 'artifacts'), PUBLISH_STATE: stateFile, PUBLISH_FIXTURE: fixture, PUBLISH_LOG: logFile } });
+  const run = (override = true) => {
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, NIMBUS_PUBLISH_ARTIFACTS: join(root, 'artifacts'), PUBLISH_STATE: stateFile, PUBLISH_FIXTURE: fixture, PUBLISH_LOG: logFile };
+    if (override) env.NIMBUS_PUBLISH_REPO = repo;
+    else delete env.NIMBUS_PUBLISH_REPO;
+    return spawnSync('bash', [join(repo, 'scripts/publish-web.sh'), sha], { cwd: root, encoding: 'utf8', timeout: 20_000, env });
+  };
   const calls = () => readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const set = (value) => { writeFileSync(stateFile, JSON.stringify({ done: [], ...value })); writeFileSync(logFile, ''); };
 
@@ -79,8 +84,9 @@ throw new Error('unexpected npm command '+args.join(' '));
   const runtimeSigned = first.indexOf(signing[0]);
   const phase2 = first.findIndex((call) => call.cmd === 'bun' && call.args.includes('packages'));
   assert.ok(phase2 > runtimeSigned && first.slice(runtimeSigned, phase2).some((call) => call.args.includes('dist-tags.latest')), 'public latest confirmation precedes phase 2');
-  result = run();
+  result = run(false);
   assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /already on npm, identical:/, 'script-relative checkout selection works from an unrelated cwd without a repo override');
   assert.equal(calls().filter((call) => call.cmd === 'npm' && call.args[0] === 'publish').length, 3, 'rerun skips all identical immutable versions');
 
   set({ failGate: true });

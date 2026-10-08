@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo="${NIMBUS_PUBLISH_REPO:-/home/mrwhite0racle/Nimbus}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+repo="${NIMBUS_PUBLISH_REPO:-$(git -C "$script_dir" rev-parse --show-toplevel)}"
 cd "$repo"
 sha="${1:-$(git rev-parse HEAD)}"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'usage: publish-web.sh [full commit sha]' >&2; exit 2; }
-dir="${NIMBUS_PUBLISH_ARTIFACTS:-/mnt/local/nimbus/verify/publish}/$sha"
+artifacts="$(node --input-type=module -e 'import {PUBLISH_ARTIFACTS} from "./scripts/ci/lib/state-dir.mjs"; console.log(PUBLISH_ARTIFACTS);')"
+dir="$artifacts/$sha"
 registry='https://registry.npmjs.org'
 work="$(mktemp -d)"
 trap 'rm -f "$work/runtime.tsv" "$work/packages.tsv" "$work/view.json" "$work/view.err"; rmdir "$work"' EXIT
