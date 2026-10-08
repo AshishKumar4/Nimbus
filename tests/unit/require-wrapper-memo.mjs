@@ -1,41 +1,49 @@
 #!/usr/bin/env bun
-// The supervisor's walk reads a file's require wrappers once per revision of
-// it: requireFsOverBridge keeps what a revision answers, so a launch that
-// walks what the last one walked reads, tokenizes and parses nothing again,
-// and a write (a new revision) is read anew.
+// What a module's require wrappers load answers the text the walk read, and
+// only it: a launch reuses the answer for text it has read before (wherever,
+// whatever its path's revision says), and text that changed is read anew,
+// even where the filesystem's revision did not move with it (a write between
+// the read and the revision, or a mount, whose paths are all revision 0).
 
 import assert from 'node:assert/strict';
-import { requireFsOverBridge } from '../../packages/core/src/runtime/require-resolver.ts';
+import { prefetchForRequire, requireFsOverBridge } from '../../packages/core/src/runtime/require-resolver.ts';
 
-const wrapper = (specifier) => `function load(id) { return require(id); }\nexport const d = load('${specifier}');`;
-const revisions = new Map([['app/a.js', 1], ['app/b.js', 1]]);
+const wrapper = (specifier) => `function load(id) { try { return require(id); } catch {} }\nmodule.exports = load('${specifier}');\n`;
+const files = new Map([
+  ['app/index.js', wrapper('first')],
+  ['app/node_modules/first/package.json', JSON.stringify({ name: 'first', main: 'index.js' })],
+  ['app/node_modules/first/index.js', 'module.exports = 1;\n'],
+  ['app/node_modules/second/package.json', JSON.stringify({ name: 'second', main: 'index.js' })],
+  ['app/node_modules/second/index.js', 'module.exports = 2;\n'],
+]);
+const strip = (path) => path.replace(/^\/+/, '');
+const dirs = (path) => [...files.keys()].some((f) => f.startsWith(strip(path) + '/'));
+const stat = (path) => files.has(strip(path)) ? { type: 'file', size: files.get(strip(path)).length, revision: 0 }
+  : dirs(path) ? { type: 'directory', size: 0, revision: 0 } : null;
+// Every path is revision 0, as a mount's are: no revision ever moves.
 const bridge = {
-  revision: async (path) => {
-    if (!revisions.has(path)) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
-    return revisions.get(path);
+  revision: async () => 0,
+  stat: async (path) => {
+    const st = stat(path);
+    if (st === null) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+    return st;
   },
-  stat: async () => null,
-  readFile: async () => null,
+  readFile: async (path) => {
+    if (!files.has(strip(path))) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+    return new TextEncoder().encode(files.get(strip(path)));
+  },
   access: async () => {},
 };
-const fs = requireFsOverBridge(bridge);
+const walk = async () => {
+  const r = await prefetchForRequire(requireFsOverBridge(bridge), files.get('app/index.js'), '/app', '/app/index.js');
+  assert.ok(!('kind' in r), JSON.stringify(r));
+  return ['first', 'second'].filter((name) => r.bundle[`app/node_modules/${name}/index.js`] !== undefined);
+};
 
-const first = await fs.wrapperCalls('app/a.js', wrapper('first'));
-assert.deepEqual(first, ['first']);
-// The same revision answers what it answered, whatever text is handed with it.
-assert.equal(await fs.wrapperCalls('app/a.js', wrapper('unread')), first, 'one revision is read once');
-// Another filesystem over the same bridge (another launch) keeps it too.
-assert.equal(await requireFsOverBridge(bridge).wrapperCalls('app/a.js', wrapper('unread')), first, 'across launches');
-// A write is a new revision, read anew.
-revisions.set('app/a.js', 2);
-assert.deepEqual(await fs.wrapperCalls('app/a.js', wrapper('second')), ['second'], 'a new revision is read');
-// Each path is its own.
-assert.deepEqual(await fs.wrapperCalls('app/b.js', wrapper('other')), ['other']);
-// A path the filesystem has no revision for is read, and kept by nothing.
-assert.deepEqual(await fs.wrapperCalls('app/gone.js', wrapper('gone')), ['gone']);
-assert.deepEqual(await fs.wrapperCalls('app/gone.js', wrapper('again')), ['again']);
-// Another filesystem keeps its own.
-const elsewhere = requireFsOverBridge({ ...bridge, revision: async () => 2 });
-assert.deepEqual(await elsewhere.wrapperCalls('app/a.js', wrapper('elsewhere')), ['elsewhere'], 'per filesystem');
+assert.deepEqual(await walk(), ['first'], 'the wrapper call is read');
+files.set('app/index.js', wrapper('second'));
+assert.deepEqual(await walk(), ['second'], 'changed text is read anew, though its revision did not move');
+files.set('app/index.js', wrapper('first'));
+assert.deepEqual(await walk(), ['first'], 'and back');
 
 console.log('require-wrapper-memo: ok');

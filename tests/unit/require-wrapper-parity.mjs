@@ -78,6 +78,15 @@ export const d = load('escaped-dep');`, ['escaped-dep']],
 // require(id)
 const re = /require\(id\)/;
 export const d = load('not-a-load');`, []],
+  ['a createRequire through an object literal', String.raw`import { createRequire } from 'node:module';
+const req = ({ createRequire }).createRequire(import.meta.url);
+function load(id) { return req(id); }
+export const d = load('object-literal-dep');`, ['object-literal-dep']],
+  ['a createRequire whose statement holds another assignment', String.raw`import { createRequire } from 'node:module';
+let other;
+const req = createRequire((other = import.meta.url));
+function load(id) { return req(id); }
+export const d = load('inner-assignment-dep');`, ['inner-assignment-dep']],
   ['no wrapper', String.raw`function label(id) { return "[" + id + "]"; }
 function second(options, id) { return require(id); }
 export const a = label('not-a-module'), b = second('not-either', 'x');`, []],
@@ -89,7 +98,7 @@ export const d = viaMember('member-dep');`, []],
 
 for (const [name, code, expected] of cases) {
   const runtime = [...new Set(moduleRequests('pkg/index.js', code).filter((r) => r.kind === 'require').map((r) => r.specifier))].sort();
-  const walk = [...requireWrapperCalls(code)].sort();
+  const walk = [...await requireWrapperCalls(code)].sort();
   assert.deepEqual(runtime, expected, `${name}: the import() prefetch reads ${JSON.stringify(runtime)}`);
   assert.deepEqual(walk, expected, `${name}: the supervisor's walk reads ${JSON.stringify(walk)}`);
 }
