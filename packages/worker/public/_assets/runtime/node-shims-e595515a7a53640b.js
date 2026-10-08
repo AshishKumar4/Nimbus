@@ -3328,13 +3328,19 @@ const __fsMod = (() => {
    *     answered, so the program's result rests on a read that failed. It
    *     names the files and exits non-zero rather than let that report
    *     success.
-   *   - The supervisor, from the exit envelope: the next bundle built for
-   *     the same entry stages exactly these paths, so the miss stops
-   *     recurring. Observation, not a guess about what a program will read.
+   *   - The supervisor, as the misses happen (the runtime-code report) and
+   *     from the exit envelope: the next bundle built for the same entry
+   *     stages exactly these paths, so the miss stops recurring. Observation,
+   *     not a guess about what a program will read. A run the platform kills
+   *     sends no envelope, so the report as they happen is what teaches it.
    *
-   * An entry clears only when the PROGRAM is handed the bytes for that path.
-   * Residency repaired behind its back does not un-answer the access that
-   * already failed.
+   * An entry clears only when the program takes the remedy its error names:
+   * an asynchronous read of the path, which waits for the bytes. No later
+   * synchronous answer clears it, neither a read the fault-in has since made
+   * succeed nor a stat or existence check: by then the program may have
+   * built on the refusal. vite's resolver swallows the EAGAIN of a
+   * package.json, bundles the package it took to be missing, and asks about
+   * the same path again later, successfully.
    */
   const _residencyMisses = globalThis.__nimbusVfsResidencyMisses
     || (globalThis.__nimbusVfsResidencyMisses = new Set());
@@ -3411,6 +3417,7 @@ const __fsMod = (() => {
     if (speculation && speculation.issued.has(landing)) speculation.issued.add(k);
   }
 
+  // The asynchronous read of a refused path answered it (the ledger above).
   function _residencySatisfied(absPath) {
     if (_residencyMisses.size === 0 || _speculation()) return;
     const k = _strip(absPath);
@@ -5937,7 +5944,6 @@ const __fsMod = (() => {
     }
     const denial = _denialCode(content);
     if (denial) throw _fsErr(denial, "open", p);
-    _residencySatisfied(absPath);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     if (encoding) {
       // An encoding requested: a string, whatever the cell's shape.
@@ -6035,7 +6041,6 @@ const __fsMod = (() => {
   function existsSync(p) {
     const absPath = _resolve(p);
     _nsRequire("access", p, "fs.promises.access");
-    _residencySatisfied(absPath);
     return _statLadder(absPath) !== undefined;
   }
 
@@ -6059,9 +6064,6 @@ const __fsMod = (() => {
       const mount = _nsUnlisted(absPath, true, false);
       if (mount !== null) throw _nsUnlistedErr(mount, "stat", p, "fs.promises.stat");
     }
-    // An answer settles the path, including the honest "not there": the
-    // namespace names every path this credential can see.
-    _residencySatisfied(absPath);
     if (stat !== undefined) return stat;
     // Node's statSync honors { throwIfNoEntry: false } by returning undefined
     // for a missing path instead of throwing.
@@ -6119,7 +6121,6 @@ const __fsMod = (() => {
       const mount = _nsUnlisted(absPath, true, true);
       if (mount !== null) throw _nsUnlistedErr(mount, "scandir", p, "fs.promises.readdir");
     }
-    _residencySatisfied(absPath);
     const listed = _nsList(k);
     const sorted = [...listed.keys()].sort();
     if (!opts?.withFileTypes) return sorted;
@@ -6634,7 +6635,6 @@ const __fsMod = (() => {
     if (cell !== undefined) {
       const denial = _denialCode(cell);
       if (denial) throw _fsErr(denial, syscall, p);
-      _residencySatisfied(absPath);
       return _asBytes(cell);
     }
     const asyncForm = "the async fs." + syscall + "/fs.promises form";
@@ -6814,7 +6814,6 @@ const __fsMod = (() => {
       if (cell === undefined) return undefined;
       const denial = _denialCode(cell);
       if (denial) throw _fsErr(denial, syscall, this._path);
-      _residencySatisfied(this._abs);
       return _asBytes(cell);
     }
     _notResident(syscall) {

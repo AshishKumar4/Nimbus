@@ -2260,6 +2260,30 @@ function __residentSetPlan(paths) {
 }
 
 /**
+ * Every package.json the launch's listing names, held from boot: the data
+ * plan's `package-json` rule (facets/data-plan.ts) for a launch the session
+ * plans without a listing (a one-shot). Package resolution reads manifests
+ * synchronously, for whatever names a program resolves, which no closure
+ * walk bounds: vite's config load resolves every import of the config to
+ * decide what to externalize, and took each manifest it was refused for a
+ * package that is not installed.
+ *
+ * The launch hands over the manifests the session read once per install
+ * (manager.ts _installedManifests), by path, each with its content key. A
+ * listed manifest whose content key is its copy's is held from the copy, so
+ * a copy is never older than the file; any other is fetched with the plan.
+ * Null: no such rule (a resident's plan names its manifests itself).
+ */
+let __residentManifests = null;
+function __residentSetManifests(manifests) {
+  const files = manifests && typeof manifests === "object" && manifests.files && typeof manifests.files === "object" ? manifests.files : null;
+  __residentManifests = files === null ? null : new Map(Object.entries(files));
+}
+function __residentIsManifest(path) {
+  return (path === "package.json" || path.endsWith("/package.json")) && !("/" + path).includes("/.git/");
+}
+
+/**
  * Adopt the module map's bundle into an EMPTY store — the first fill, and the
  * one that costs nothing extra, because those bytes are already in the facet.
  * The cursor the bundle was read at becomes the store's.
@@ -2692,10 +2716,18 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   // would have carried: files under the push roots changed since the cursor
   // (all of them there, when the revisions are not comparable).
   const plan = __residentPlan;
+  const manifests = __residentManifests;
   const wanted = new Set(dropped);
   const fetch = [];
+  const copied = [];
   for (const file of listing.entries) {
     if (current.has(file.path)) continue;
+    if (manifests !== null && __residentIsManifest(file.path)) {
+      const copy = manifests.get(file.path);
+      if (Array.isArray(copy) && file.ckey !== null && copy[0] === file.ckey) copied.push({ file, text: String(copy[1]) });
+      else fetch.push(file);
+      continue;
+    }
     if (plan.has(file.path) || wanted.has(file.path)
       || (__residentPushable(file.path) && (!comparable || file.rev > held.rev))) fetch.push(file);
   }
@@ -2709,7 +2741,17 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   }
   __residentNamespaceReserveBytes += namespaceGrowth;
   let filled;
-  try { filled = await __residentFetchFiles(supervisor, fetch); }
+  try {
+    // A copy holds the bytes the listing names (equal content keys), dated at
+    // its revision; one the store has no room for is fetched like the rest.
+    let copiedBytes = 0;
+    for (const { text } of copied) copiedBytes += __residentCellCost(text);
+    if (copiedBytes > 0) await __residentEnsureRoom(copiedBytes);
+    for (const { file, text } of copied) {
+      if (!__residentPut(t, file.path, text, file.rev, file.ckey)) fetch.push(file);
+    }
+    filled = await __residentFetchFiles(supervisor, fetch);
+  }
   finally { __residentNamespaceReserveBytes -= namespaceGrowth; }
 
   // The cursor may only advance to a state the rows actually describe, and
