@@ -12724,17 +12724,23 @@ function __stagedBinding(id) {
 const __NIMBUS_STAGED_BINDINGS = ${JSON.stringify(STAGED_BINDING_ARTIFACTS.map(({ name, owner, version, requiredAs }) => ({ name, owner, version, requiredAs })))};
 const __stagedBindingsNamed = new Set();
 
-// The version of \`owner\` a require from \`fromDir\` comes from, as its
-// package.json says, and that file; a require from outside the owner has none.
+// The version of \`owner\` a require from \`fromDir\` comes from, and its
+// package.json: the installed package \`fromDir\` is in, when its package.json
+// names \`owner\`, whatever its folder is called (an alias,
+// \`rd@npm:rolldown@1.2.13\`, installs rolldown as node_modules/rd). A require
+// from outside the owner has none.
 function __stagedOwnerVersion(owner, fromDir) {
-  const marker = "node_modules/" + owner + "/";
   const dir = fromDir + "/";
-  const at = dir.lastIndexOf(marker);
+  const at = dir.lastIndexOf("node_modules/");
   if (at < 0) return { version: null, manifest: null };
-  const manifest = "/" + dir.slice(0, at + marker.length) + "package.json";
-  let version = null;
-  try { version = JSON.parse(builtins.fs.readFileSync(manifest, "utf8")).version; } catch {}
-  return { version, manifest };
+  const parts = dir.slice(at + "node_modules/".length).split("/");
+  const depth = parts[0].startsWith("@") ? 2 : 1;
+  if (parts.length <= depth || parts[depth - 1] === "") return { version: null, manifest: null };
+  const manifest = "/" + dir.slice(0, at) + "node_modules/" + parts.slice(0, depth).join("/") + "/package.json";
+  let found = null;
+  try { found = JSON.parse(builtins.fs.readFileSync(manifest, "utf8")); } catch {}
+  if (!found || found.name !== owner || typeof found.version !== "string") return { version: null, manifest: null };
+  return { version: found.version, manifest };
 }
 
 // What a require of \`owner\`'s binding from \`owner\`@\`version\` (read from
@@ -12762,7 +12768,7 @@ function __stagedVersionUnbuilt(owner, version, manifest) {
 function __stagedBindingNotCarried(id, fromDir) {
   for (const binding of __NIMBUS_STAGED_BINDINGS) {
     const shard = binding.requiredAs.some((wasi) => id === wasi || id.startsWith(wasi.replace(/wasm32-wasi$/, "")));
-    const native = id.endsWith(".node") && ("/" + fromDir + "/").includes("/node_modules/" + binding.owner + "/");
+    const native = id.endsWith(".node") && __stagedOwnerVersion(binding.owner, fromDir).version !== null;
     if (!shard && !native) continue;
     if (binding.requiredAs.some((wasi) => __stagedBinding(wasi))) return null;
     // A version with no staged build is the version's to fix, not the launch's.
