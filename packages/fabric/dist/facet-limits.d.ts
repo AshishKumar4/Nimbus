@@ -48,6 +48,13 @@ export declare const MAX_FACET_CPU_MS: number;
 export declare function facetLimits(kind: FacetKind): Readonly<FacetResourceLimits>;
 /** A cached worker must not retain an earlier policy's limits or guest binding. */
 export declare function facetPolicyKey(kind: FacetKind, limits?: Readonly<FacetResourceLimits>): string;
+/**
+ * The Loader id `key` is cached under with `kind`'s policy: the policy, then
+ * the raw id's length, then the raw id. The policy key has no `/` and the
+ * length fixes where the raw id ends, so no two (id, policy) pairs share an
+ * encoding, whatever a raw id contains (a guest names its own ids through the
+ * Loader shim). Applied once, at the boundary that creates the cached worker.
+ */
 export declare function facetLoaderKey(kind: FacetKind, key: string, limits?: Readonly<FacetResourceLimits>): string;
 /** Callers can lower, never raise, a kind's native ceiling. */
 export declare function effectiveFacetLimits(kind: FacetKind, requested?: Partial<FacetResourceLimits>): FacetResourceLimits;
