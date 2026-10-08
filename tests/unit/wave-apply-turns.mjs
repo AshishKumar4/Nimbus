@@ -106,7 +106,8 @@ for (const kind of ['deletes', 'directories']) {
   kernel.chown('home/user/proj', 1000, 1000);
   kernel.chown('home/user/proj/old', 1000, 1000);
   new ProcessFiles(engine);
-  const N = 60;
+  // Within one batch's 1,024 paths (W7_MAX_PATHS_PER_BATCH).
+  const N = kind === 'deletes' ? 60 : 24;
   const payload = { inodes: [], chunks: [], deletePaths: [] };
   for (let i = 0; i < N; i++) {
     if (kind === 'deletes') {
