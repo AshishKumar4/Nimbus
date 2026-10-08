@@ -806,20 +806,37 @@ class __NimbusCallSite {
 }
 // What a runtime's shims format a stack with instead (node --enable-source-maps): null to keep the hook's own.
 let __nimbusStackFormatter = null;
-// V8's call sites while __nimbusCallSites captures them (the program's at their file's places).
-let __nimbusCapturingSites = false;
-// The \`count\` frames below \`above\`, as call sites: what util.getCallSites reads (Node's util binding).
-function __nimbusCallSites(count, above) {
-  const holder = {};
-  const limit = Error.stackTraceLimit;
-  Error.stackTraceLimit = count;
-  __nimbusCapturingSites = true;
+// V8's call sites of \`holder\`'s stack, the program's at their file's places,
+// as Node's bindings read them natively: captured here \`count\` frames below
+// \`above\` when \`count\` is given, else as \`holder\` captured them before
+// anything read its stack. Neither the program's Error.prepareStackTrace nor
+// its Error.stackTraceLimit or Error.captureStackTrace takes part, and
+// Error's own properties are left as they were.
+const __nimbusCaptureStackTrace = Error.captureStackTrace;
+const __nimbusSites = (error, sites) => sites.map(__NimbusCallSite.of);
+function __nimbusStackSites(holder, count, above) {
+  const prepare = Object.getOwnPropertyDescriptor(Error, "prepareStackTrace");
+  const limit = Object.getOwnPropertyDescriptor(Error, "stackTraceLimit");
+  const define = (name, value) => {
+    try { Object.defineProperty(Error, name, { value, writable: true, enumerable: name === "stackTraceLimit", configurable: true }); } catch {}
+  };
+  const restore = (name, descriptor) => {
+    try {
+      if (descriptor === undefined) delete Error[name];
+      else Object.defineProperty(Error, name, descriptor);
+    } catch {}
+  };
   try {
-    Error.captureStackTrace(holder, above);
-    return holder.stack;
+    define("prepareStackTrace", __nimbusSites);
+    if (count !== undefined) {
+      define("stackTraceLimit", count);
+      Reflect.apply(__nimbusCaptureStackTrace, Error, [holder, above]);
+    }
+    const sites = holder.stack;
+    return Array.isArray(sites) ? sites : [];
   } finally {
-    __nimbusCapturingSites = false;
-    Error.stackTraceLimit = limit;
+    restore("prepareStackTrace", prepare);
+    restore("stackTraceLimit", limit);
   }
 }
 function __nimbusUseStackFormatter(format) {
@@ -829,7 +846,6 @@ function __nimbusUseStackFormatter(format) {
   let __userPrepare;
   const __apply = Reflect.apply;
   const __prepare = function prepareStackTrace(error, sites) {
-    if (__nimbusCapturingSites) return sites.map(__NimbusCallSite.of);
     // As Node's prepareStackTraceCallback calls it: a method of Error.
     if (typeof __userPrepare === "function") return __apply(__userPrepare, globalThis.Error, [error, sites.map(__NimbusCallSite.of)]);
     let stack;

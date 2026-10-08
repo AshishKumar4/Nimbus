@@ -34,6 +34,11 @@
 // answered a path without its leading slash and threw for a builtin, and
 // a missing module threw an Error without a code, so a program's
 // \`e.code === 'MODULE_NOT_FOUND'\` check for an optional dependency failed.
+// require.cache holds what Node's holds: CommonJS modules however they
+// loaded, an ES module once required, an entry whose load threw no longer.
+// util.getCallSites, assert's source expression and punycode's
+// isInsideNodeModules read V8's sites as Node's bindings do, whatever the
+// program set Error's hooks and limit to.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -205,6 +210,12 @@ show2('promisify.custom', () => [typeof setTimeout[util.promisify.custom], typeo
   await util.aborted(AbortSignal.abort(), {});
   console.log('aborted');
   try { await util.aborted({}, {}); } catch (e) { show('aborted not a signal', e); }
+  // Its listener is the one an earlier listener's stopImmediatePropagation does not stop.
+  const controller = new AbortController();
+  controller.signal.addEventListener('abort', (event) => { event.stopImmediatePropagation(); console.log('first abort listener'); });
+  const aborted = util.aborted(controller.signal, {}).then(() => 'resolved');
+  controller.abort();
+  console.log('aborted past a stopped dispatch ' + await Promise.race([aborted, new Promise((resolve) => setTimeout(() => resolve('pending'), 50))]));
 })();
 `,
   'identity.cjs': SHOW + String.raw`
@@ -276,6 +287,11 @@ notFound('require empty', () => require(''));
 notFound('require number', () => require(5));
 notFound('resolve number', () => require.resolve(5));
 notFound('resolve bad paths', () => require.resolve('dep', { paths: 'x' }));
+// options.paths' relative entries are the working directory's (the host's root here).
+console.log('resolve relative paths ' + [rel(require.resolve('./child.cjs', { paths: ['mods'] })), rel(require.resolve('dep', { paths: ['mods/sub'] })), rel(require.resolve('./nested.cjs', { paths: ['nope', 'mods/sub'] }))].join(' '));
+notFound('resolve paths number', () => require.resolve('dep', { paths: [5] }));
+notFound('resolve paths null after a hit', () => require.resolve('./child.cjs', { paths: ['mods', null] }));
+notFound('resolve bare paths null after a hit', () => require.resolve('dep', { paths: ['mods', null] }));
 const fromDir = Module.createRequire(path.join(__dirname, 'sub') + '/');
 notFound('createRequire dir', () => fromDir('zz'));
 console.log('createRequire ' + [rel(Module.createRequire(__filename).resolve('./child.cjs')), Module.createRequire(__filename).main === module, rel(Module.createRequire(require('url').pathToFileURL(__filename)).resolve('dep'))].join(' '));
@@ -301,6 +317,63 @@ module.exports = { count: globalThis.count, parent: rel(module.parent.filename),
   'mods/pre.cjs': "try { require('nope-pre'); } catch (e) { console.log('preload ' + e.code + ' ' + JSON.stringify(e.requireStack.map((p) => require('path').basename(p))) + ' ' + (require.main === undefined) + ' ' + (process.mainModule === undefined) + ' ' + module.parent.id); }\n",
   'mods/plain.cjs': "console.log('plain main ' + (require.main === module) + ' ' + module.id);\n",
   'mods/stdin.cjs': "const path = require('path');\nconsole.log('stdin ' + [__filename, __dirname, module.id, path.basename(module.filename), require.main === undefined, process.mainModule === undefined, module.paths.length > 0].join(' '));\ntry { require('nope-stdin'); } catch (e) { console.log('stdin missing ' + JSON.stringify(e.requireStack.map((p) => path.basename(p)))); }\n",
+  'mods/throws.cjs': "process.on('uncaughtException', (e) => console.log('caught ' + e.message + ' ' + (require.cache[__filename] === undefined) + ' ' + Object.keys(require.cache).length + ' ' + (require.main === module)));\nthrow new Error('entry threw');\n",
+  'mods/esm/cache.cjs': String.raw`const path = require('path');
+const keys = () => JSON.stringify(Object.keys(require.cache).map((k) => path.relative(__dirname, k)));
+(async () => {
+  await import('./e.mjs');
+  await import('./c.cjs');
+  await import('./s.mjs');
+  await import('./e.mjs?v=1');
+  await import('./d.json', { with: { type: 'json' } });
+  console.log('imported ' + keys());
+  require('./r.mjs');
+  console.log('required esm ' + keys());
+  console.log('required imported esm ' + (require('./e.mjs').e) + ' ' + keys());
+  delete require.cache[require.resolve('./r.mjs')];
+  console.log('required again ' + (require('./r.mjs').r) + ' ' + globalThis.rCount + ' ' + keys());
+})();
+`,
+  'mods/esm/e.mjs': 'export const e = 1;\n',
+  'mods/esm/r.mjs': 'globalThis.rCount = (globalThis.rCount ?? 0) + 1;\nexport const r = 2;\n',
+  'mods/esm/c.cjs': 'exports.c = 1;\n',
+  'mods/esm/c2.cjs': 'exports.c2 = 1;\n',
+  'mods/esm/e2.mjs': 'export const e2 = 1;\n',
+  'mods/esm/s.mjs': "import './c2.cjs';\nimport './e2.mjs';\nexport const s = 1;\n",
+  'mods/esm/d.json': '{ "d": 1 }',
+  'sites.cjs': SHOW + String.raw`
+const util = require('util');
+const assert = require('assert');
+const path = require('path');
+const sites = () => util.getCallSites(1).map((s) => [s.functionName, path.basename(s.scriptName), s.lineNumber]);
+const x = 0;
+let formatted = 0;
+const message = () => { try { assert.ok(x === 1); } catch (e) { return JSON.stringify(e.message); } };
+// Error's own hook and limit, as the program left them.
+const descriptors = () => JSON.stringify([typeof Error.prepareStackTrace, Object.getOwnPropertyDescriptor(Error, 'stackTraceLimit')]);
+console.log('plain ' + JSON.stringify(sites()) + ' ' + message() + ' ' + descriptors());
+Error.prepareStackTrace = (e, s) => { formatted++; return 'custom'; };
+console.log('assigned hook ' + JSON.stringify(sites()) + ' ' + message() + ' ' + formatted + ' ' + descriptors());
+const hook = (e, s) => { formatted++; return 'defined'; };
+Object.defineProperty(Error, 'prepareStackTrace', { value: hook, configurable: true, writable: true });
+console.log('defined hook ' + JSON.stringify(sites()) + ' ' + message() + ' ' + formatted + ' ' + descriptors() + ' ' + (Object.getOwnPropertyDescriptor(Error, 'prepareStackTrace').value === hook));
+delete Error.prepareStackTrace;
+Error.stackTraceLimit = 0;
+console.log('limit 0 ' + JSON.stringify(sites()) + ' ' + message() + ' ' + descriptors());
+Error.stackTraceLimit = 10;
+const capture = Error.captureStackTrace;
+Error.captureStackTrace = () => {};
+console.log('capture replaced ' + JSON.stringify(sites()) + ' ' + message());
+Error.captureStackTrace = capture;
+Object.defineProperty(Error, 'stackTraceLimit', { value: 3, writable: false, enumerable: true, configurable: true });
+console.log('limit locked ' + JSON.stringify(sites()) + ' ' + descriptors());
+`,
+  'sites-early.cjs': SHOW + String.raw`
+Error.captureStackTrace = () => {};
+Error.prepareStackTrace = () => 'opaque';
+const x = 0;
+try { require('assert').ok(x === 1); } catch (e) { console.log('early ' + JSON.stringify(e.message)); }
+`,
   'deprecate.cjs': SHOW + String.raw`
 const util = require('util');
 const old = util.deprecate(function old(a, b) { return a + b; }, 'old() is going away', 'DEP_NIMBUS');
@@ -313,7 +386,7 @@ attempt('deprecate code', () => util.deprecate(() => {}, 'm', 5));
 `,
 };
 // Each program's command line, after \`node\`.
-const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs'];
+const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'sites-early.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs'];
 
 const host = mkdtempSync(join(tmpdir(), 'node-lib-'));
 process.on('exit', () => rmSync(host, { recursive: true, force: true }));

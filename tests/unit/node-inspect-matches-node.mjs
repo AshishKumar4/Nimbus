@@ -45,7 +45,7 @@ const port = (__HOST__)({
     return false;
   },
   signals: require('os').constants.signals,
-  primordialsOf: new Function('primordials', 'globalThis', __PRIMORDIALS__),
+  primordials: ((primordials) => (new Function('primordials', 'globalThis', __PRIMORDIALS__)(primordials, globalThis), primordials))({}),
   sources: Object.fromEntries(Object.entries(__SOURCES__).map(([id, text]) => [id, new Function('exports', 'require', 'module', 'process', 'internalBinding', 'primordials', text)])),
 }).require('internal/util/inspect');
 

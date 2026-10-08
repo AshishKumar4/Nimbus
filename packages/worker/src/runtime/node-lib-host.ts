@@ -43,18 +43,17 @@
  * NODE_BUILTIN_OBJECTS), eastAsianWide(code), signals (os.constants.signals),
  * insideNodeModules() (whether the caller's code is a package's),
  * errorSourcePositions(error) (where V8 places the frame an error was
- * captured at: { sourceLine, scriptResourceName, lineNumber, startColumn },
- * or undefined), tokenizer(code, options) (acorn's), sourceMaps
+ * captured at: { sourceLine, scriptResourceName, lineNumber, startColumn }),
+ * tokenizer(code, options) (acorn's), sourceMaps
  * ({ getSourceMapsSupport, findSourceMap, getSourceLine }), colorDepth()
- * (internal/tty getColorDepth), primordialsOf(primordials, globalThis), and
+ * (internal/tty getColorDepth), primordials (built when the process starts), and
  * sources: { [id]: (exports, require, module, process, internalBinding,
  * primordials) => void } }, the last two running the upstream text.
  */
 export const NODE_LIB_HOST_SOURCE = String.raw`function createNodeLib(platform) {
   "use strict";
   const platformUtil = platform.util;
-  const primordials = {};
-  platform.primordialsOf(primordials, globalThis);
+  const primordials = platform.primordials;
   const customInspectSymbol = Symbol.for("nodejs.util.inspect.custom");
   const typedArrayTag = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;
   const typedArrayKind = (value) => Reflect.apply(typedArrayTag, value, []);
@@ -364,13 +363,18 @@ export const NODE_LIB_HOST_SOURCE = String.raw`function createNodeLib(platform) 
   }
 
   // lib/internal/abort_controller.js's functions util exports, over the platform's AbortSignal.
+  const followers = new WeakMap();
   const abortController = {
     async aborted(signal, resource) {
       if (signal === undefined) throw new nodeErrorCodes.ERR_INVALID_ARG_TYPE("signal", "AbortSignal", signal);
       require("internal/validators").validateAbortSignal(signal, "signal");
       require("internal/validators").validateObject(resource, "resource", require("internal/validators").kValidateObjectAllowObjects);
       if (signal.aborted) return Promise.resolve();
-      return new Promise((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      // On a signal that follows it, which none of the signal's own
+      // listeners can stop (Node's kResistStopPropagation), kept as long as it is.
+      const follower = AbortSignal.any([signal]);
+      followers.set(signal, [...(followers.get(signal) ?? []), follower]);
+      return new Promise((resolve) => follower.addEventListener("abort", () => resolve(), { once: true }));
     },
     transferableAbortSignal(signal) {
       if (!(signal instanceof AbortSignal)) throw new nodeErrorCodes.ERR_INVALID_ARG_TYPE("signal", "AbortSignal", signal);
