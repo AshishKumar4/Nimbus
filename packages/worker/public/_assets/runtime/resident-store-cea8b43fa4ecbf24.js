@@ -2213,7 +2213,7 @@ async function __nsListSubtree(supervisor, dir) {
   const listed = [dir];
   const written = new Set();
   for (const entry of snapshot.entries) {
-    const k = String(entry.path).replace(/^/+/, "");
+    const k = String(entry.path).replace(/^\/+/, "");
     if (!entry.stat || !__nsDescribes(entry.stat)) return false;
     if (!__nsTryPut(t, k, entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null)) return false;
     written.add(k);
