@@ -24,7 +24,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
-import { DECIDED_BACKLOG_OPS, processFsClient } from '../../packages/core/src/_shared/process-fs-client.ts';
+import { DECIDED_BACKLOG_OPS, failuresError, processFsClient } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
 
@@ -261,6 +261,36 @@ for (const reported of ['EIO', undefined]) {
   await c.submit(writeFile('home/user/next', 'n'));
   assert.equal(s.text('home/user/next'), 'n');
   assert.equal(s.calls.epochs, 2, 'the ops after a lost epoch were not sent under a new one');
+}
+
+for (const phase of ['openWriter', 'stream']) {
+  const s = session();
+  const gone = Object.assign(new Error(`process pid ${PID} does not exist`), { code: 'ESRCH' });
+  if (phase === 'openWriter') s.port.openWriter = async () => { throw gone; };
+  else s.fault = async () => { throw gone; };
+  const retire = s.port.retireWriter;
+  s.port.retireWriter = async (writer) => {
+    await retire(writer);
+    throw gone;
+  };
+  const c = client(s);
+  c.submit(writeFile('home/user/acknowledged', 'a'), { acknowledged: true });
+  const pending = c.submit(writeFile('home/user/awaited', 'b'));
+  await assert.rejects(pending, (error) => error.code === 'ESRCH' && error.message === gone.message);
+  await assert.rejects(c.flush(), (error) => error === gone);
+  assert.equal(c.effect(), null, `${phase}: output and exit still synchronously threw the filesystem refusal`);
+  assert.throws(() => c.submit(writeFile('home/user/later', 'c')), (error) => error === gone);
+  assert.equal(c.stats().lost, 0, `${phase}: a missing process was classified as a lost epoch`);
+  assert.equal(s.calls.epochs, phase === 'stream' ? 1 : 0, `${phase}: the terminal process reopened a writer`);
+  assert.equal(s.calls.retired?.length ?? 0, phase === 'stream' ? 1 : 0, `${phase}: the current writer was not retired`);
+  const failures = c.takeFailures();
+  assert.equal(failures.length, 1, 'the acknowledged change was not recorded exactly once');
+  assert.equal(failures[0].path, 'home/user/acknowledged');
+  assert.ok(failures.every((failure) => failure.errno === 'ESRCH' && failure.message === gone.message));
+  assert.equal(failuresError(failures).code, 'ESRCH');
+  assert.equal(failuresError(failures).message, gone.message);
+  await assert.rejects(c.settle(), (error) => error.code === 'ESRCH' && error.message === gone.message);
+  for (const path of ['acknowledged', 'awaited', 'later']) assert.equal(s.text(`home/user/${path}`), null);
 }
 
 // ── The synchronous cap refuses ENOMEM, logging nothing ──────────────────

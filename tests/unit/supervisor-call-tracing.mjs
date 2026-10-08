@@ -155,22 +155,25 @@ function world() {
   console.log('  ok  a lost request: one session span, applied by the repeat');
 }
 
-// ── A write that reached a restarted session: refused, and recorded as refused on both sides ──
+// ── A restarted session: process or binding refusal recorded on both sides ──
 
-{
+for (const knownProcess of [false, true]) {
   spans.length = 0;
   const w = world();
   w.restart();
-  await assert.rejects(w.rpc.writeFile('/home/user/c.txt', 'hello'), /ESTALE/);
+  if (knownProcess) assert.equal(w.session.processes.spawn('python3', ['python3'], '/home/user').pid, w.pid);
+  const code = knownProcess ? 'ESTALE' : 'ESRCH';
+  await assert.rejects(w.rpc.writeFile('/home/user/c.txt', 'hello'), (error) => error.code === code);
   const [call] = spans.filter((span) => span.name === 'nimbus.supervisor.deliver');
   assert.equal(call.attributes['do_call.outcome'], 'callee_error');
   assert.equal(call.attributes['do_call.answered_by'], 1);
-  assert.match(call.exceptions.at(-1)?.message ?? '', /ESTALE/, "the caller span does not carry the session's refusal");
+  assert.equal(call.exceptions.at(-1)?.code, code, "the caller span does not carry the session's refusal");
   const [refused] = childrenOf(call);
   assert.equal(refused.name, 'nimbus.session.deliver');
   assert.equal(refused.attributes['nimbus.receipt'], undefined, 'a refused delivery reports a receipt');
-  assert.equal(refused.exceptions[0]?.code, 'ESTALE', 'the session span does not record why it refused');
-  console.log('  ok  a restarted session: ESTALE recorded on the session span and the caller span');
+  assert.equal(refused.exceptions[0]?.code, code, 'the session span does not record why it refused');
+  assert.equal(call.exceptions.at(-1)?.message, refused.exceptions[0]?.message, 'the two sides recorded different refusals');
+  console.log(`  ok  a restarted session: ${code} recorded on the session span and the caller span`);
 }
 
 // ── Reads: an attempt that arrives while the first is served joins it ──
@@ -226,8 +229,14 @@ for (const shape of ['before-2026-09-25', 'throwing']) {
   assert.equal(await settles(w.rpc.readFile('/home/user/once.txt'), `${shape}: readFile`), 'hello');
   assert.equal(await settles(w.rpc.exists('/home/user/missing'), `${shape}: exists`), false);
 
-  // A refusal keeps its code; nothing is applied.
+  // Both process and binding refusals keep their codes; nothing is applied.
   w.restart();
+  await assert.rejects(
+    settles(w.rpc.writeFile('/home/user/refused.txt', 'x'), `${shape}: missing process`),
+    (error) => error.code === 'ESRCH',
+  );
+  assert.equal(kernel().exists('home/user/refused.txt'), false);
+  assert.equal(w.session.processes.spawn('python3', ['python3'], '/home/user').pid, w.pid);
   await assert.rejects(
     settles(w.rpc.writeFile('/home/user/refused.txt', 'x'), `${shape}: refused write`),
     (error) => error.code === 'ESTALE',

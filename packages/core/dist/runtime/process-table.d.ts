@@ -108,6 +108,7 @@ export declare class ProcessTable {
     /** Allocate a PID and register a new process. */
     spawn(command: string, argv: string[], cwd: string, options?: ProcessTableSpawnOptions): ProcessEntry;
     credOf(pid: number): VfsCred;
+    liveCred(pid: number): VfsCred;
     cred(pid: number): VfsCred;
     setUmask(pid: number, umask: number): number;
     /** child-process isolation: mark an existing entry as long-running. Idempotent. */
