@@ -32,7 +32,7 @@ import { stripLeadingSlashes } from '../vfs/path.js';
 import { isNativeBinPath } from './os-contracts.js';
 import { stripCommentsForImports } from './comment-strip.js';
 import { createEsmResolver } from '../_shared/esm-resolver.js';
-import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
+import { calleeName, forEachNode, isAstNode, parseJavaScriptProgram } from './javascript-ast.js';
 // The CommonJS resolver this walk stages from (require-resolution.ts).
 export { requireFsOverBridge } from './require-resolution.js';
 // Match literal-string require/require.resolve with single, double, or
@@ -109,6 +109,23 @@ const CREATE_REQUIRE_CALL_RE = /\bcreateRequire\s*\([^)]*\)\s*\(\s*(['"`])([^'"`
 // false-positive. The walker no-ops on missed resolutions, so it's a
 // minor wasted-work cost, not a correctness issue.
 const IMPORT_RE = /(?:^|[\n;}])\s*(?:import|export)(?:[\s{][\w*${}\s,]*?\s*from)?\s*(['"])([^'"]+)\1/g;
+// A require createRequire made, by the name it is bound to, read back from
+// the call: `const _require = createRequire`, `var req = module.createRequire`.
+const CREATE_REQUIRE_BINDING_RE = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:[\w$]+\.)?createRequire$/;
+// A name the module's own require (or its .resolve) is passed first.
+const PASSED_TO_REQUIRE_RE = /require(?:\.resolve)?\s*\(\s*([A-Za-z_$][\w$]*)\s*[,)]/g;
+// What precedes a function's parameter list, read back to the name it is
+// called by: `function f`, `f = function`, `f = async function g`.
+const FUNCTION_HEAD_RE = /(?:\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)\s*|(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function\b\s*\*?\s*[\w$]*\s*)$/;
+// What precedes an arrow function's parameters: `f = `, `f = async `.
+const ARROW_HEAD_RE = /(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?$/;
+// A parenthesized parameter list an arrow follows.
+const ARROW_PARAMS_RE = /^\([^()]*\)\s*=>/;
+// A call's argument list that starts with a string, and the callee before it.
+const STRING_CALL_RE = /\(\s*(['"`])[^'"`$\n]+?\1\s*[,)]/g;
+const CALLEE_RE = /(?<![\w$.])([A-Za-z_$][\w$]*)\s*$/;
+// What precedes `=>` in `f = id =>`, `f = async id =>`: the name, and the parameter.
+const ARROW_PARAM_RE = /(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*$/;
 // Only the speculative ESM resolution boundary catches traversal failures.
 // Keep scheduling errors distinct there, then return the original cause.
 class WalkControlFailure extends Error {
@@ -277,11 +294,11 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     // loads the few its input names. Walking a table first spent the bound on
     // grammars the program never loads, and cut the deferral it does.
     const deferredDynamic = new Map();
-    function defer({ specifier, fromDir, alternatives, path }) {
+    function defer({ specifier, fromDir, alternatives, path, require }) {
         let queue = deferredDynamic.get(alternatives);
         if (queue === undefined)
             deferredDynamic.set(alternatives, queue = []);
-        queue.push({ specifier, fromDir, ...(path !== undefined ? { path } : {}) });
+        queue.push({ specifier, fromDir, ...(path !== undefined ? { path } : {}), ...(require ? { require } : {}) });
     }
     function nextDeferred() {
         let fewest = Infinity;
@@ -507,6 +524,12 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         }
         for (const specifier of deferrals)
             defer({ specifier, fromDir, alternatives: deferrals.size });
+        // What a require wrapper's calls name (@vitejs/plugin-vue's
+        // `tryRequire("vue/compiler-sfc", root)`): optional loads, as the
+        // wrapper's try says, so phase 2's, resolved as require() resolves them.
+        const loads = requireWrapperCalls(code, stripped).filter((specifier) => !isFacetProvided(specifier));
+        for (const specifier of loads)
+            defer({ specifier, fromDir, alternatives: loads.length, require: true });
     }
     // A dynamic `import()` loads what Node's ESM resolver names (the process's
     // loader resolves it the same way, core/_shared/esm-resolver.ts): the
@@ -621,7 +644,9 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         // Phase 2: dynamic-import subtrees, fewest alternatives first; the queue grows as they are walked.
         lazy = true;
         for (let next = nextDeferred(); next !== undefined && bytesSeen < maxBundleBytes; next = nextDeferred()) {
-            const resolved = next.path ?? await resolveDynamicImport(next.specifier, next.fromDir);
+            const resolved = next.path ?? (next.require
+                ? (await resolveStaticDependency(next.specifier, next.fromDir))?.resolved ?? null
+                : await resolveDynamicImport(next.specifier, next.fromDir));
             if (!resolved)
                 continue;
             // An optional learned root is staged whole or not at all: a module in
@@ -744,15 +769,18 @@ conditions = []) {
             throw new WalkControlFailure('Dependency walk interrupted', { cause });
         }
     });
-    const esm = walkEsmResolver(vfs, paced, async (path) => {
+    const read = async (path) => {
         try {
             return await vfs.readFileString(stripLeadingSlashes(path));
         }
         catch {
             return null;
         }
-    }, conditions);
+    };
+    const esm = walkEsmResolver(vfs, paced, read, conditions);
     try {
+        if (deferral.require)
+            return (await resolveRequireEx(vfs, deferral.specifier, deferral.fromDir, read, paced, conditions))?.resolved ?? null;
         return await resolveImportWith(esm, deferral.specifier, deferral.fromDir);
     }
     catch (error) {
@@ -790,6 +818,165 @@ export function configPackageNames(source) {
             names.add(text);
     });
     return [...names];
+}
+/** `$` is the one identifier character a pattern reads otherwise. */
+const identifierPattern = (names) => [...names].map((name) => name.replaceAll('$', '\\$')).join('|');
+/**
+ * What a module's require wrappers load: a function that passes its first
+ * parameter to a require (the module's own, or one createRequire made, by any
+ * name), or to its `.resolve`, loads what each of its calls names with a
+ * string. @vitejs/plugin-vue loads the project's compiler so:
+ *
+ *   const _require = createRequire(import.meta.url);
+ *   function tryRequire(id, from) {
+ *     try { return from ? _require(_require.resolve(id, { paths: [from] })) : _require(id); } catch (e) {}
+ *   }
+ *   … tryRequire("vue/compiler-sfc", root) …
+ *
+ * No other grammar reads that call, and a Vue project's first `vite` and
+ * `vite build` failed on what it loads. `stripped` (the module without its
+ * comments) is read by patterns first, which find the calls a wrapper could
+ * make: almost every module has none, and is never parsed. A module with
+ * some is parsed, and only a function whose own body passes its parameter to
+ * a require is a wrapper. The runtime's import() prefetch reads the same
+ * calls (core/interpreter moduleRequests).
+ */
+export function requireWrapperCalls(code, stripped = code) {
+    if (!stripped.includes('equire'))
+        return [];
+    // Literal scans first: a pattern that starts at every word costs a module's
+    // length many times over.
+    const requires = new Set(['require']);
+    for (let at = stripped.indexOf('createRequire'); at >= 0; at = stripped.indexOf('createRequire', at + 1)) {
+        const bound = CREATE_REQUIRE_BINDING_RE.exec(stripped.slice(Math.max(0, at - 128), at + 'createRequire'.length));
+        if (bound)
+            requires.add(bound[1]);
+    }
+    // Names some require is passed first: the parameters a wrapper could have.
+    const params = new Set();
+    const passed = requires.size === 1 ? PASSED_TO_REQUIRE_RE
+        : new RegExp(`(?:${identifierPattern(requires)})(?:\\.resolve)?\\s*\\(\\s*([A-Za-z_$][\\w$]*)\\s*[,)]`, 'g');
+    for (const match of stripped.matchAll(passed)) {
+        // Not a property's (`obj.require(x)`) nor a longer name's (`__require(x)`).
+        if (!/[\w$.]/.test(stripped[(match.index ?? 0) - 1] ?? ' '))
+            params.add(match[1]);
+    }
+    if (params.size === 0)
+        return [];
+    // Functions with one of them first: `function f(id`, `f = function (id`,
+    // `f = (id) =>`, `f = id =>`. Found from the parameter, which a literal
+    // scan finds, and read back to the name the function is called by.
+    const candidates = new Set();
+    for (const match of stripped.matchAll(new RegExp(`\\(\\s*(?:${identifierPattern(params)})\\s*[,)=]`, 'g'))) {
+        const at = match.index ?? 0;
+        const before = stripped.slice(Math.max(0, at - 160), at);
+        const head = FUNCTION_HEAD_RE.exec(before);
+        const arrow = head === null && ARROW_PARAMS_RE.test(stripped.slice(at, at + 240)) ? ARROW_HEAD_RE.exec(before) : null;
+        const name = head?.[1] ?? head?.[2] ?? arrow?.[1];
+        if (name !== undefined)
+            candidates.add(name);
+    }
+    // `f = id =>`: from each arrow, its one parameter read back.
+    for (let at = stripped.indexOf('=>'); at >= 0; at = stripped.indexOf('=>', at + 2)) {
+        const param = ARROW_PARAM_RE.exec(stripped.slice(Math.max(0, at - 160), at));
+        if (param !== null && params.has(param[2]))
+            candidates.add(param[1]);
+    }
+    for (const name of requires)
+        candidates.delete(name);
+    if (candidates.size === 0)
+        return [];
+    // And one of them called with a string: each such call read back to its callee.
+    let called = false;
+    for (const match of stripped.matchAll(STRING_CALL_RE)) {
+        const at = match.index ?? 0;
+        const callee = CALLEE_RE.exec(stripped.slice(Math.max(0, at - 96), at));
+        if (callee !== null && candidates.has(callee[1])) {
+            called = true;
+            break;
+        }
+    }
+    if (!called)
+        return [];
+    // A module nested past the walk's stack names no load, as one acorn cannot parse.
+    try {
+        return wrapperCallsOf(code);
+    }
+    catch {
+        return [];
+    }
+}
+/** requireWrapperCalls over the parsed module: the calls of its functions that pass their first parameter to a require. */
+function wrapperCallsOf(code) {
+    const program = parseJavaScriptProgram(code);
+    if (program === null)
+        return [];
+    const made = new Set();
+    const functions = [];
+    const calls = [];
+    const name = (node) => (isAstNode(node) && node.type === 'Identifier' ? String(node.name) : undefined);
+    const firstParameter = (fn) => {
+        if (!isAstNode(fn) || !(fn.type === 'FunctionDeclaration' || fn.type === 'FunctionExpression' || fn.type === 'ArrowFunctionExpression'))
+            return undefined;
+        const first = fn.params[0];
+        return isAstNode(first) && first.type === 'AssignmentPattern' ? name(first.left) : name(first);
+    };
+    const candidate = (named, fn) => {
+        const param = firstParameter(fn);
+        if (named !== undefined && param !== undefined)
+            functions.push({ name: named, param, body: fn.body });
+    };
+    // `x(…)` and `x.resolve(…)` are x's require.
+    const requireOf = (callee) => name(callee)
+        ?? (callee.type === 'MemberExpression' && !callee.computed && name(callee.property) === 'resolve' ? name(callee.object) : undefined);
+    forEachNode(program, (raw) => {
+        const node = raw;
+        if (node.type === 'VariableDeclarator') {
+            const init = node.init;
+            if (name(node.id) !== undefined && isAstNode(init) && init.type === 'CallExpression' && calleeName(init.callee) === 'createRequire')
+                made.add(name(node.id));
+            candidate(name(node.id), init);
+        }
+        else if (node.type === 'AssignmentExpression' && node.operator === '=') {
+            candidate(name(node.left), node.right);
+        }
+        else if (node.type === 'FunctionDeclaration') {
+            candidate(name(node.id), node);
+        }
+        else if (node.type === 'CallExpression') {
+            const callee = name(node.callee);
+            const specifier = literalString(node.arguments[0]);
+            if (callee !== undefined && specifier !== undefined)
+                calls.push({ callee, specifier });
+        }
+    });
+    const isRequire = (callee) => callee === 'require' || (callee !== undefined && made.has(callee));
+    const wrappers = new Set();
+    for (const fn of functions) {
+        if (isRequire(fn.name) || wrappers.has(fn.name))
+            continue;
+        let passes = false;
+        forEachNode(fn.body, (raw) => {
+            const node = raw;
+            if (passes || node.type !== 'CallExpression')
+                return;
+            passes = isRequire(requireOf(node.callee)) && name(node.arguments[0]) === fn.param;
+        });
+        if (passes)
+            wrappers.add(fn.name);
+    }
+    return [...new Set(calls.filter((call) => wrappers.has(call.callee)).map((call) => call.specifier))];
+}
+/** A string literal, or a template with no substitutions. */
+function literalString(node) {
+    if (!isAstNode(node))
+        return undefined;
+    if (node.type === 'Literal')
+        return typeof node.value === 'string' ? node.value : undefined;
+    if (node.type !== 'TemplateLiteral' || node.expressions.length !== 0)
+        return undefined;
+    const cooked = node.quasis[0]?.value?.cooked;
+    return typeof cooked === 'string' ? cooked : undefined;
 }
 /**
  * Phase 2's tier for a package's "import" branch beside the "require" branch

@@ -60,12 +60,18 @@ export interface ModuleRequest {
 }
 /**
  * The modules a file's text asks for, as this parser reads it: import and
- * export-from sources, `import()` of a string, and `require()` of a string
- * (any call of a `require` binding, the module's own or one createRequire
- * made). A specifier spelled with escapes or in a template is read as the
- * language reads it; one in a comment or a string is not a request. Text the
- * parser cannot read (TypeScript, JSX, a syntax error) asks for nothing.
- * The import() prefetch (node-shims.ts) finds what to fetch with it.
+ * export-from sources, `import()` of a string, and `require()` of a string:
+ * any call of a `require` binding, the module's own or one createRequire
+ * made, by any name. A call of a require wrapper with a string asks for it
+ * too: a function that passes its first parameter to such a require, or to
+ * its `.resolve` (@vitejs/plugin-vue's `tryRequire(id, from)`, which loads
+ * the project's vue/compiler-sfc as `tryRequire("vue/compiler-sfc", root)`).
+ * The supervisor's walk reads the same calls (require-resolver.ts,
+ * requireWrapperCalls). A specifier spelled with escapes or in a template is
+ * read as the language reads it; one in a comment or a string is not a
+ * request. Text the parser cannot read (TypeScript, JSX, a syntax error) asks
+ * for nothing. The import() prefetch (node-shims.ts) finds what to fetch
+ * with it.
  */
 export declare function moduleRequests(path: string, text: string): ModuleRequest[];
 /**
