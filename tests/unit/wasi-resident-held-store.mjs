@@ -179,7 +179,9 @@ async function readWhole(fs, name) {
   const stat = fs.stat(beneath('owed.txt'));
   for (let i = 0; i < 200 && held === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(held, 1, 'the stat sent nothing first');
+  // During the send: a write and the close (another thread's, or the program's own between the send's turns).
   await fs.write(handle.id, null, enc.encode('bb'));
+  const closed = fs.close(handle.id);
   first.resolve();
   let answered = null;
   stat.then((value) => { answered = value; });
@@ -188,7 +190,7 @@ async function readWhole(fs, name) {
   second.resolve();
   const final = await stat;
   assert.equal((answered ?? final).size, 3, 'a stat after the send answered without the write made during it');
-  await fs.close(handle.id);
+  await closed;
   await fs.settle();
 }
 
