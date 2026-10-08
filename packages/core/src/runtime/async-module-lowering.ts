@@ -131,7 +131,14 @@ export interface CommonJsEmitOptions {
   readonly requireFunction?: string;
   /** Further edits to the body, outside every record's range (import.meta rewrites). */
   readonly edits?: readonly SourceEdit[];
+  /**
+   * What a later pass replaces in place, as long as it is (dynamic-import-rewrite.ts:
+   * import.meta, an import()'s `import`): its source text, for the column map.
+   */
+  readonly replacedInPlace?: readonly Span[];
 }
+
+interface Span { readonly start: number; readonly end: number }
 
 /** `esm` lowered to the CommonJS function body of an async module. */
 export function lowerAsyncModule(esm: string): string {
@@ -150,7 +157,7 @@ export function lowerAsyncModule(esm: string): string {
  */
 export function lowerEsModule(source: string, scope: ModuleScope): { code: string; map: string; warnings: [] } {
   const module = esModuleSource(source);
-  const { records, wrapperUses, topLevelAwait } = readEsmModule(module);
+  const { records, wrapperUses, topLevelAwait, replacedInPlace } = readEsmModule(module);
   const unbound: SourceEdit[] = [];
   if (scope === 'node') for (const [name, references] of wrapperUses) {
     const to = ES_MODULE_UNBOUND_NAMES[name]!;
@@ -161,6 +168,7 @@ export function lowerEsModule(source: string, scope: ModuleScope): { code: strin
     exportsObject: 'arguments[2].exports',
     requireFunction: 'arguments[1]',
     edits: unbound,
+    replacedInPlace,
   });
   return { code: scope === 'node' ? esModuleScopeTypeofs(code) : code, map: '', warnings: [] };
 }
@@ -200,10 +208,12 @@ export function readEsmModule(source: string): {
   wrapperUses: ReadonlyMap<string, readonly EsmReference[]>;
   /** An `await` (or `for await`) outside every function. */
   topLevelAwait: boolean;
+  /** Each one-line import.meta, and each import()'s `import`. */
+  replacedInPlace: readonly Span[];
 } {
   const first = readModule(source, null);
   const read = first.importsAfterCode ? readModule(source, first.imported) : first;
-  return { records: read.records, wrapperUses: read.wrapperUses, topLevelAwait: read.topLevelAwait };
+  return { records: read.records, wrapperUses: read.wrapperUses, topLevelAwait: read.topLevelAwait, replacedInPlace: read.replacedInPlace };
 }
 
 function readModule(source: string, known: ReadonlySet<string> | null): {
@@ -212,6 +222,7 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
   importsAfterCode: boolean;
   wrapperUses: Map<string, EsmReference[]>;
   topLevelAwait: boolean;
+  replacedInPlace: Span[];
 } {
   // ModuleExportName: an identifier, or a string such as `export { a as "b-c" }`.
   const nameOf = (node: { type: string; name?: string; value?: unknown }) =>
@@ -229,6 +240,7 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
   const awaits: number[] = [];
   // Where an expression statement starts with a tracked name: a call there is a leading-call.
   const statementStarts = new Set<number>();
+  const replacedInPlace: Span[] = [];
 
   const outside: Scope = { names: new Set(), parent: null };
   // Where an identifier spelled as an imported name starts, in order: code
@@ -359,6 +371,10 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
       if (node.type === 'Identifier') onIdentifier(node);
       else if (node.type === 'ExpressionStatement') {
         if (mentioned(node.start, node.start + 1)) statementStarts.add(node.start);
+      } else if (node.type === 'ImportExpression') {
+        replacedInPlace.push({ start: node.start, end: node.start + 'import'.length });
+      } else if (node.type === 'MetaProperty') {
+        if (node.end - node.start === 'import.meta'.length) replacedInPlace.push({ start: node.start, end: node.end });
       } else if (node.type === 'AwaitExpression' || (node.type === 'ForOfStatement' && node.await)) awaits.push(node.start);
       // A function, once finished: its free uses, before its body is dropped.
       else if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
@@ -379,7 +395,7 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
     const found = uses.get(name);
     if (found && !declared.has(name)) wrapperUses.set(name, found);
   }
-  return { records: withUses, imported, importsAfterCode, wrapperUses, topLevelAwait: awaits.length > 0 };
+  return { records: withUses, imported, importsAfterCode, wrapperUses, topLevelAwait: awaits.length > 0, replacedInPlace };
 }
 
 /** How an identifier under `parent` by `key` uses the binding it names. */
@@ -563,7 +579,8 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([exported, value]) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`);
   const allEdits = [...edits, ...uses];
-  const prologue = [...installed, ...requires, ...imported, ...stars].join(' ') + columnMapComment(source, allEdits);
+  const kept = (options.replacedInPlace ?? []).map(({ start, end }) => ({ start, end, text: source.slice(start, end), kept: true as const }));
+  const prologue = [...installed, ...requires, ...imported, ...stars].join(' ') + columnMapComment(source, [...allEdits, ...kept]);
   const body = applySourceEdits(source, allEdits);
   // An ES module is strict: the directive opens the first line, where the
   // wrapper finds it (commonjs-cell.ts).
@@ -572,8 +589,11 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
     : `"use strict";${header.join(' ')} ${prologue}${MODULE_BODY_MARK}${body}\n`;
 }
 
-/** An edit of the module's text; a call's (`(0, m.f)(…)`) is placed by V8 at its end, where the source's is at its start. */
-type ColumnEdit = SourceEdit & { call?: true };
+/**
+ * An edit of the module's text; a call's (`(0, m.f)(…)`) is placed by V8 at
+ * its end, where the source's is at its start. A kept one is a later pass's.
+ */
+type ColumnEdit = SourceEdit & { call?: true; kept?: true };
 
 const LINE_BREAK = /\r\n|[\n\r\u2028\u2029]/;
 
@@ -602,7 +622,7 @@ function columnMapComment(source: string, edits: readonly ColumnEdit[]): string 
     for (let i = 0; i < from.length; i++) {
       const column = i === 0 ? edit.start - lineStart : 0;
       const text = i === from.length - 1 ? to.slice(i).join('') : to[i]!;
-      if (text === from[i]) continue;
+      if (text === from[i] && !edit.kept) continue;
       entries.push(edit.call && i === from.length - 1 ? [line + i, column, text.length, from[i]!, 1] : [line + i, column, text.length, from[i]!]);
     }
   }
