@@ -166,6 +166,36 @@ export async function residentGuest({ refuse = () => false } = {}) {
       return wasiImport.poll_oneoff(SUB, EVENT, 1, NEVENTS);
     },
     sync: (fd) => wasiImport.fd_sync(fd),
+    /** os.listdir: path_open of the directory, then fd_readdir until it is read through; the names, or a thrown errno. */
+    async listdir(name) {
+      const fd = await guest.open(name, { directory: true });
+      const BUF = 16384, LEN = 8192;
+      const names = [];
+      let cookie = 0n;
+      try {
+        for (;;) {
+          const errno = await wasiImport.fd_readdir(fd, BUF, LEN, cookie, OUT);
+          if (errno !== 0) throw Object.assign(new Error(`fd_readdir ${name}: errno ${errno}`), { errno });
+          const used = view().getUint32(OUT, true);
+          let at = 0;
+          let whole = 0;
+          while (at + 24 <= used) {
+            const next = view().getBigUint64(BUF + at, true);
+            const length = view().getUint32(BUF + at + 16, true);
+            if (at + 24 + length > used) break;
+            const entry = new TextDecoder().decode(bytesAt().slice(BUF + at + 24, BUF + at + 24 + length));
+            if (entry !== '.' && entry !== '..') names.push(entry);
+            cookie = next;
+            at += 24 + length;
+            whole++;
+          }
+          if (used < LEN || whole === 0) break;
+        }
+      } finally {
+        await guest.close(fd);
+      }
+      return names;
+    },
     async mkdir(name) { const n = putPath(name); return wasiImport.path_create_directory(PREOPEN_FD, PATH, n); },
     /** fd_filestat_get: { nlink, size }, or a thrown errno. */
     async fstat(fd) {
