@@ -17,9 +17,11 @@
 //
 // Run it in the lane's worktree. <commit> defaults to HEAD; what is built is
 // the commit, never the working tree. The files are written into the
-// worktree only when <commit> is its HEAD and the binding's directory does
-// not exist yet; either way the archive is saved and its path printed. Then
-// commit them, and run scripts/ci/remote-build.mjs for the dist fixpoint.
+// worktree only when <commit> is its HEAD, the binding's directory does not
+// exist yet, and no file the archive writes has a change of its own, staged
+// or not (checked when the run returns, so an edit made during it counts);
+// either way the archive is saved and its path printed. Then commit them,
+// and run scripts/ci/remote-build.mjs for the dist fixpoint.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -101,16 +103,21 @@ const saveDir = join(homedir(), '.local/state/nimbus/remote-napi-binding');
 mkdirSync(saveDir, { recursive: true });
 const saved = join(saveDir, `${new Date().toISOString().replace(/[-:.]/g, '')}-${key}-${sha.slice(0, 12)}.tar.xz`);
 writeFileSync(saved, archive);
-const head = git(['rev-parse', 'HEAD']);
-if (head !== sha || existsSync(join(repo, dir))) {
-  console.log(`remote-napi-binding: saved ${saved} (job ${r.jobId}); not written: ${head !== sha ? `${sha.slice(0, 12)} is not this worktree's HEAD` : `${dir} exists`}`);
-  process.exit(0);
-}
 // What bundle-napi-wasm staged; the build's own out tree (its pruned
 // lockfile) stays in the archive, out of the Worker's static assets.
 const listed = spawnSync('tar', ['tJf', saved], { encoding: 'utf8' });
 if (listed.status !== 0) throw new Error(`tar failed: ${listed.stderr}`);
 const members = listed.stdout.split('\n').filter((member) => member.startsWith('packages/') && !member.endsWith('/'));
+const head = git(['rev-parse', 'HEAD']);
+const changed = members.filter((member) => git(['status', '--porcelain', '--', member]) !== '');
+const refusal = head !== sha ? `${sha.slice(0, 12)} is not this worktree's HEAD`
+  : existsSync(join(repo, dir)) ? `${dir} exists`
+    : changed.length > 0 ? `these have changes of their own: ${changed.join(', ')}`
+      : null;
+if (refusal !== null) {
+  console.log(`remote-napi-binding: saved ${saved} (job ${r.jobId}); not written: ${refusal}`);
+  process.exit(0);
+}
 const unpacked = spawnSync('tar', ['xJf', saved, '-C', repo, ...members], { encoding: 'utf8' });
 if (unpacked.status !== 0) throw new Error(`tar failed: ${unpacked.stderr}`);
 console.log(`remote-napi-binding: wrote ${dir} (job ${r.jobId}; archive ${saved}). Commit it, then run scripts/ci/remote-build.mjs.`);
