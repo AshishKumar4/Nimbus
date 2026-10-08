@@ -18,7 +18,7 @@ export { FILESYSTEM_RPC_METHODS, vfsSupervisor } from './filesystem-mirrors.gene
 /** The calls node's shims make that the bridge does not name. */
 const NODE_SHIM_RPC_METHODS = [
     'readFile', 'writeFileStat', 'lstat', 'exists', 'hasLegacySymlinkUnder', 'setUmask', 'fsAcquired',
-    'fsStorageGrant', 'fsReadRangeUncached', 'fsReadBatch', 'fsSnapshot',
+    'fsStorageGrant', 'fsReadRangeUncached', 'fsReadBatch', 'fsListTree',
 ];
 export const SUPERVISOR_ANSWERED_METHODS = [
     ...FILESYSTEM_ANSWERED_RPC_METHODS,

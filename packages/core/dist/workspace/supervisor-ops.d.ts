@@ -43,7 +43,7 @@ export declare const SUPERVISOR_OP_TABLE: {
     readonly fsAcquired: "joined";
     readonly fsRevision: "joined";
     readonly fsList: "joined";
-    readonly fsSnapshot: "joined";
+    readonly fsListTree: "joined";
     readonly fsStorageGrant: null;
     readonly wsOpen: null;
     readonly wsPoll: null;

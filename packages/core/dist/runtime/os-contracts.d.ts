@@ -585,11 +585,11 @@ export interface VfsListPage {
 }
 /**
  * Everything beneath a directory, as {@link VfsListPage} lists it, in one
- * page read in one turn (fsSnapshot): every entry is current at `rev`, and
+ * page read in one turn (fsListTree): every entry is current at `rev`, and
  * the subtree is listed whole. A subtree with more entries than asked for is
  * refused (E2BIG), never cut short.
  */
-export interface VfsSnapshot {
+export interface VfsListTree {
     epoch: string;
     rev: number;
     entries: VfsListEntry[];

@@ -50,9 +50,9 @@ import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred, } from '@nimbus-sh/core
 import { MAX_RPC_SAFE_PAYLOAD_BYTES, RESIDENT_KEEPALIVE_MS } from '@nimbus-sh/platform/limits.js';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
-import { FS_LIST_PAGE_LIMIT, FS_SNAPSHOT_MAX_ENTRIES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
+import { FS_LIST_PAGE_LIMIT, FS_LIST_TREE_MAX_ENTRIES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
 import { registerServingPort } from './serving-port.js';
-import { subtreeSnapshot } from '@nimbus-sh/core/runtime/fs-snapshot.js';
+import { subtreeListing } from '@nimbus-sh/core/runtime/fs-list-tree.js';
 import { normalizeVfsPath, parentVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { z } from 'zod/v4';
 // Cache I/O stays in SupervisorRPC's realm, at its original subrequest depth.
@@ -415,9 +415,9 @@ const FsListArgsSchema = z.object({
     after: z.string().max(4096).nullable(),
     limit: z.number().int().min(1).max(FS_LIST_PAGE_LIMIT).nullable(),
 });
-const FsSnapshotArgsSchema = z.object({
+const FsListTreeArgsSchema = z.object({
     root: z.string().max(4096),
-    maxEntries: z.number().int().min(1).max(FS_SNAPSHOT_MAX_ENTRIES),
+    maxEntries: z.number().int().min(1).max(FS_LIST_TREE_MAX_ENTRIES),
 });
 /**
  * The facet's WebSocket relay. A facet does not open its own sockets: the
@@ -602,11 +602,11 @@ export async function _rpcFsList(self, after, limit, pid) {
     // A page that reaches another holder's delegation waits for its recall, and is read again.
     return withRecall(() => self.supervisorBridge(pid).list(args.after, args.limit ?? undefined));
 }
-/** Everything beneath directory `root` a process may see, in one answer (subtreeSnapshot). */
-export async function _rpcFsSnapshot(self, root, maxEntries, pid) {
-    const args = FsSnapshotArgsSchema.parse({ root, maxEntries });
+/** Everything beneath directory `root` a process may see, in one answer (subtreeListing). */
+export async function _rpcFsListTree(self, root, maxEntries, pid) {
+    const args = FsListTreeArgsSchema.parse({ root, maxEntries });
     // A page that reaches another holder's delegation waits for its recall, and the subtree is walked again.
-    return withRecall(() => subtreeSnapshot(self.supervisorBridge(pid), args.root, args.maxEntries));
+    return withRecall(() => subtreeListing(self.supervisorBridge(pid), args.root, args.maxEntries));
 }
 export async function _rpcFsReadRange(self, path, offset, length, pid, cred) {
     return self.supervisorOp({ op: 'fsReadRange', args: [path, offset, length], pid, cred });

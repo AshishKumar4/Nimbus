@@ -13,6 +13,6 @@
  * Size: 36.48 KiB
  */
 
-export const ESBUILD_CLI_ASSET_PATH: string = "/_assets/runtime/esbuild-cli-1e1288e6eebf1b11.js";
-export const ESBUILD_CLI_BUILD_ID: string = "1e1288e6eebf1b11";
-export const ESBUILD_CLI_SHA256: string = "1e1288e6eebf1b11241e6285b23a78661ffd91e11cc8c60f811a242a3c9b03c7";
+export const ESBUILD_CLI_ASSET_PATH: string = "/_assets/runtime/esbuild-cli-62e5f44066edafe3.js";
+export const ESBUILD_CLI_BUILD_ID: string = "62e5f44066edafe3";
+export const ESBUILD_CLI_SHA256: string = "62e5f44066edafe371063d7cf2c7bd15590543c4873e05f08d6c697117375053";

@@ -368,9 +368,9 @@ export function supervisorCalls(base) {
         async fsList(after, limit) {
             return this._call(this._fsRead('fsList', [after ?? null, limit ?? null]));
         }
-        /** Everything beneath directory `root`, in one page and one revision; E2BIG past `maxEntries` (session/rpc.ts _rpcFsSnapshot). */
-        async fsSnapshot(root, maxEntries) {
-            return this._call(this._fsRead('fsSnapshot', [root, maxEntries]));
+        /** Everything beneath directory `root`, in one page and one revision; E2BIG past `maxEntries` (session/rpc.ts _rpcFsListTree). */
+        async fsListTree(root, maxEntries) {
+            return this._call(this._fsRead('fsListTree', [root, maxEntries]));
         }
         /**
          * WebSocket relay. A facet does not open its own sockets: the supervisor

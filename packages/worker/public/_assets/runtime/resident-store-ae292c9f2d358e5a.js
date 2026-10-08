@@ -39,7 +39,7 @@ const __RESIDENT_BATCH_ROWS = 512;
 const __RESIDENT_BATCH_PATHS = 1024;
 const __RESIDENT_BATCH_BYTES = 4194304;
 const __RESIDENT_LIST_PAGE = 8192;
-const __RESIDENT_SNAPSHOT_ENTRIES = 16384;
+const __RESIDENT_TREE_ENTRIES = 16384;
 /**
  * Pages one enumeration may take before it gives up.
  *
@@ -2196,30 +2196,30 @@ async function __nsListDirectory(supervisor, dir) {
 }
 
 /**
- * List everything beneath `dir` in one answer (fsSnapshot): what a walker
+ * List everything beneath `dir` in one answer (fsListTree): what a walker
  * of the tree (git status, a build, an interpreter's startup) is about to
  * look at, in one round trip instead of two per directory, every entry
- * current at one revision. A subtree larger than the snapshot's bound is
+ * current at one revision. A subtree larger than the listing's bound is
  * refused there (E2BIG), and listed one directory at a time instead.
  * True when `dir` was listed whole.
  */
 async function __nsListSubtree(supervisor, dir) {
-  if (!supervisor || typeof supervisor.fsSnapshot !== "function") return false;
+  if (!supervisor || typeof supervisor.fsListTree !== "function") return false;
   const t = __residentRequire();
-  let snapshot;
-  try { snapshot = await supervisor.fsSnapshot("/" + dir, __RESIDENT_SNAPSHOT_ENTRIES); }
+  let tree;
+  try { tree = await supervisor.fsListTree("/" + dir, __RESIDENT_TREE_ENTRIES); }
   catch { return false; }
-  if (!snapshot || !Array.isArray(snapshot.entries)) return false;
+  if (!tree || !Array.isArray(tree.entries)) return false;
   const listed = [dir];
   const written = new Set();
-  for (const entry of snapshot.entries) {
+  for (const entry of tree.entries) {
     const k = String(entry.path).replace(/^\/+/, "");
     if (!entry.stat || !__nsDescribes(entry.stat)) return false;
     if (!__nsTryPut(t, k, entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null)) return false;
     written.add(k);
     if (entry.kind === "directory" && !entry.unlisted) listed.push(k);
   }
-  // A name the snapshot no longer shows under a directory it listed goes.
+  // A name the listing no longer shows under a directory it listed goes.
   for (const directory of listed) {
     for (const child of __nsChildren(directory)) {
       const k = (directory === "" ? "" : directory + "/") + child.name;

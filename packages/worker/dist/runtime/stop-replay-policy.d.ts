@@ -100,7 +100,7 @@ export declare const REPLAY_OPERATION_POLICY: {
             entries?: unknown[];
         } | null;
     };
-    fsSnapshot: {
+    fsListTree: {
         kind: "observation";
         answer: (value: unknown) => {
             entries?: unknown[];
