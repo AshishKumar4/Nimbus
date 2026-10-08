@@ -21,7 +21,7 @@
  * an ordinary call of the global eval, which a Worker refuses at request time
  * natively too.
  */
-import { parse } from 'acorn';
+import { Parser, parse, tokTypes } from 'acorn';
 import { expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, scriptExpression, } from '../_shared/runtime-function-source.js';
 import { Compiler } from './compile.js';
 import { moduleCell } from './modules.js';
@@ -29,7 +29,7 @@ import { ROOT_ENV, frameTemplate, installHost, isObject, makeFunction } from './
 import { analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
 import { ownFunctionExpression, ownProgram } from './tree.js';
 import { own } from './parser-realm.js';
-import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, arrayIsArray, charCodeAt, isWhitespaceCode, objectKeys, reflectGet, reflectGetOwnPropertyDescriptor, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
+import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, arrayIsArray, charCodeAt, isWhitespaceCode, objectCreate, objectKeys, reflectGet, reflectGetOwnPropertyDescriptor, reflectSet, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
@@ -181,6 +181,59 @@ export function moduleRequests(path, text) {
     }
     return requests;
 }
+const AcornParserClass = Parser;
+const FOUND = objectCreate(null);
+/**
+ * acorn keeping no statement once parsed, at the top level or in a block (a
+ * fatal error may come from a multi-MiB bundle, and acorn's tree is 17 to 24
+ * times its source): what is held is the chain of open nodes. It stops at the
+ * innermost throw whose argument holds `offset`, which finishes before any
+ * throw around it.
+ */
+class ThrowFinder extends AcornParserClass {
+    offset = -1;
+    found = null;
+    parseTopLevel(node) {
+        const exports = objectCreate(null);
+        while (this.type !== tokTypes.eof)
+            this.parseStatement(null, true, exports);
+        if (this.inModule) {
+            const names = objectKeys(this.undefinedExports);
+            for (let i = 0; i < names.length; i++) {
+                const name = names[i];
+                this.raiseRecoverable(this.undefinedExports[name].start, "Export '" + name + "' is not defined");
+            }
+        }
+        this.next();
+        return this.finishNode(node, 'Program');
+    }
+    parseBlock(createNewLexicalScope = true, node = this.startNode(), exitStrict = false) {
+        reflectSet(node, 'body', []);
+        this.expect(tokTypes.braceL);
+        if (createNewLexicalScope)
+            this.enterScope(0);
+        while (this.type !== tokTypes.braceR)
+            this.parseStatement(null);
+        if (exitStrict)
+            this.strict = false;
+        this.next();
+        if (createNewLexicalScope)
+            this.exitScope();
+        return this.finishNode(node, 'BlockStatement');
+    }
+    finishNode(node, type) {
+        const finished = super.finishNode(node, type);
+        if (type === 'ThrowStatement') {
+            const argument = reflectGet(finished, 'argument');
+            if (this.offset >= reflectGet(argument, 'start') && this.offset < reflectGet(finished, 'end')) {
+                const start = reflectGet(finished, 'start');
+                this.found = [start, start + 1];
+                throw FOUND;
+            }
+        }
+        return finished;
+    }
+}
 /**
  * Where V8 would place a fatal error's report in `text`, a module's whole
  * text (a `{ cjs }` cell's wrapper included) as `goal` parses it, for the
@@ -192,12 +245,14 @@ export function moduleRequests(path, text) {
  *     of the token it stops at; null when the text parses.
  */
 export function fatalLocation(text, goal, offset) {
-    const options = goal === 'module' ? MODULE_OPTIONS : COMMONJS_OPTIONS;
-    let program;
+    const finder = new ThrowFinder(goal === 'module' ? MODULE_OPTIONS : COMMONJS_OPTIONS, text);
+    finder.offset = offset;
     try {
-        program = parse(text, options);
+        finder.parse();
     }
     catch (error) {
+        if (error === FOUND)
+            return finder.found;
         if (offset !== -1 || !isObject(error))
             return null;
         const at = reflectGet(error, 'pos');
@@ -206,38 +261,7 @@ export function fatalLocation(text, goal, offset) {
             return null;
         return [at, typeof end === 'number' && end > at ? end : at + 1];
     }
-    if (offset === -1)
-        return null;
-    let found = null;
-    const pending = [program];
-    while (pending.length > 0) {
-        const node = pending[pending.length - 1];
-        pending.length -= 1;
-        if (typeof node !== 'object' || node === null)
-            continue;
-        if (arrayIsArray(node)) {
-            for (let i = 0; i < node.length; i++)
-                pending[pending.length] = node[i];
-            continue;
-        }
-        const start = reflectGet(node, 'start');
-        const end = reflectGet(node, 'end');
-        if (typeof start !== 'number' || typeof end !== 'number' || offset < start || offset >= end)
-            continue;
-        if (reflectGet(node, 'type') === 'ThrowStatement') {
-            const argument = reflectGet(node, 'argument');
-            const from = isObject(argument) ? reflectGet(argument, 'start') : undefined;
-            if (typeof from === 'number' && offset >= from)
-                found = [start, start + 1];
-        }
-        const keys = objectKeys(node);
-        for (let i = 0; i < keys.length; i++) {
-            const key = keys[i];
-            if (key !== 'type' && key !== 'start' && key !== 'end' && key !== 'loc' && key !== 'range')
-                pending[pending.length] = reflectGet(node, key);
-        }
-    }
-    return found;
+    return null;
 }
 /** Whether a module's top level has import or export declarations. */
 function hasModuleSyntax(program) {
