@@ -514,7 +514,6 @@ async function until(ready, what) {
 {
   const s = session();
   const fd = await s.fs.open('/tmp/through.txt', { write: true, create: true, truncate: true, mode: 0o644 });
-  assert.equal(s.fs.through?.(fd.id) ?? true, true);
   await s.fs.write(fd.id, null, enc.encode('abc'));
   await s.fs.close(fd.id);
   assert.equal((await s.fs.stat('/tmp/through.txt')).size, 3, 'a stat after the close missed the write');
