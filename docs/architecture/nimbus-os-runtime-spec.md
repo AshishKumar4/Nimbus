@@ -62,9 +62,10 @@ External platform constraints checked for this spec:
 
 ## Facet Resource Contract
 
-On Cloudflare, an embedder's hosting Worker must set `limits.cpu_ms >= 300000`.
+On Cloudflare, an embedder's hosting Worker must set `limits.cpu_ms >= 300000`
+and `limits.subrequests >= 10000000`: a facet's limits only lower its parent's.
 The pure config builder and deployment validation reject a smaller value,
-reporting both the host's configured CPU ceiling and the facet policy maximum.
+reporting both the host's configured ceiling and the facet policy maximum.
 `packages/fabric/src/facet-limits.ts` is the single policy source; the config
 package's constant is generated from it, not a runtime dependency on fabric.
 

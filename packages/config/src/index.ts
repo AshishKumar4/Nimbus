@@ -25,7 +25,7 @@
 /**
  * Options for {@link buildNimbusWranglerConfig}.
  */
-import { MAX_FACET_CPU_MS } from './facet-limits.generated.js';
+import { MAX_FACET_CPU_MS, MAX_FACET_SUBREQUESTS } from './facet-limits.generated.js';
 
 export type NimbusRuntimeName =
   | 'node'
@@ -76,6 +76,8 @@ export interface BuildWranglerOptions {
   name: string;
   /** Hosting Worker CPU budget. Must accommodate every fabric facet kind. */
   cpuMs?: number;
+  /** Hosting Worker subrequests per invocation. Must accommodate every fabric facet kind. */
+  subrequests?: number;
   /**
    * Compatibility date. Default `2026-09-26`. A date keeps every other
    * behavior it selects; the config names each flag Nimbus needs that the
@@ -149,7 +151,7 @@ export interface WranglerConfig {
   compatibility_date: string;
   compatibility_flags: string[];
   placement?: { mode: 'smart' };
-  limits: { cpu_ms: number };
+  limits: { cpu_ms: number; subrequests: number };
   vars?: Record<string, string>;
   assets: {
     directory: string;
@@ -216,6 +218,10 @@ export function buildNimbusWranglerConfig(opts: BuildWranglerOptions): WranglerC
   if (!Number.isInteger(cpuMs) || cpuMs < MAX_FACET_CPU_MS) {
     throw new Error(`@nimbus-sh/config: hosting Worker limits.cpu_ms=${cpuMs} is below facet policy maximum cpuMs=${MAX_FACET_CPU_MS}`);
   }
+  const subrequests = opts.subrequests ?? MAX_FACET_SUBREQUESTS;
+  if (!Number.isInteger(subrequests) || subrequests < MAX_FACET_SUBREQUESTS) {
+    throw new Error(`@nimbus-sh/config: hosting Worker limits.subrequests=${subrequests} is below facet policy maximum subRequests=${MAX_FACET_SUBREQUESTS}`);
+  }
   const prefix = opts.r2BucketPrefix ?? opts.name;
   const runtimeCache = opts.runtimeCache ?? 'shared';
   const runtimeCacheMode = typeof runtimeCache === 'string' ? runtimeCache : runtimeCache.mode;
@@ -232,7 +238,7 @@ export function buildNimbusWranglerConfig(opts: BuildWranglerOptions): WranglerC
     compatibility_date: compatDate,
     compatibility_flags: REQUIRED_FLAGS.filter(([, onByDate]) => compatDate < onByDate).map(([flag]) => flag),
     // Shell commands run in the session DO; the platform's 30 s default kills long ones.
-    limits: { cpu_ms: cpuMs },
+    limits: { cpu_ms: cpuMs, subrequests },
     assets: {
       directory: 'node_modules/@nimbus-sh/worker/public',
       binding: 'ASSETS',

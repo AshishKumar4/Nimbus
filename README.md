@@ -5,7 +5,7 @@
 # Nimbus
 
 Embedders on Cloudflare must set the hosting Worker's `limits.cpu_ms` to at
-least `300000`. Nimbus's explicit per-kind facet policy lives in
+least `300000` and `limits.subrequests` to at least `10000000`. Nimbus's explicit per-kind facet policy lives in
 `packages/fabric/src/facet-limits.ts`; config generation and deployment
 validation enforce the hosting-Worker constraint. Invocation resource limits
 are distinct from the filesystem write-delivery guarantees.
