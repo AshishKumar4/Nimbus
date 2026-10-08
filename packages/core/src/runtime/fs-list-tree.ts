@@ -1,6 +1,6 @@
 import { FS_LIST_PAGE_LIMIT } from '../constants.js';
 import { normalizeVfsPath } from '../vfs/path.js';
-import type { RuntimeFsBridge, VfsListEntry, VfsSnapshot } from './os-contracts.js';
+import type { RuntimeFsBridge, VfsListEntry, VfsListTree } from './os-contracts.js';
 
 /**
  * Everything beneath directory `root` that `bridge`'s process may see, as
@@ -8,9 +8,9 @@ import type { RuntimeFsBridge, VfsListEntry, VfsSnapshot } from './os-contracts.
  * filesystem is answered in the turn it is asked): every entry current at
  * one revision, and the subtree whole. Past `maxEntries` it is refused (E2BIG),
  * so the caller lists it some other way rather than mistaking part of it
- * for all of it. The session's fsSnapshot (session/rpc.ts).
+ * for all of it. The session's fsListTree (session/rpc.ts).
  */
-export async function subtreeSnapshot(bridge: Pick<RuntimeFsBridge, 'list'>, root: string, maxEntries: number): Promise<VfsSnapshot> {
+export async function subtreeListing(bridge: Pick<RuntimeFsBridge, 'list'>, root: string, maxEntries: number): Promise<VfsListTree> {
   const key = normalizeVfsPath(root);
   const prefix = key === '' ? '' : `${key}/`;
   let after: string | null = key === '' ? null : prefix;

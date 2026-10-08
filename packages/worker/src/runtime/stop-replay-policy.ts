@@ -55,7 +55,7 @@ export const REPLAY_OPERATION_POLICY = {
     const v = omit(value, ['epoch', 'rev']) as { entries?: unknown[] } | null;
     return v && Array.isArray(v.entries) ? { ...v, entries: v.entries.map((e) => omit(e, ['rev'])) } : v;
   } },
-  fsSnapshot: { kind: 'observation', answer: (value) => {
+  fsListTree: { kind: 'observation', answer: (value) => {
     const v = omit(value, ['epoch', 'rev']) as { entries?: unknown[] } | null;
     return v && Array.isArray(v.entries) ? { ...v, entries: v.entries.map((e) => omit(e, ['rev'])) } : v;
   } },

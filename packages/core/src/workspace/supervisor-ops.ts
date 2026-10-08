@@ -43,7 +43,7 @@ export const SUPERVISOR_OP_TABLE = {
   fsAcquired: 'joined',
   fsRevision: 'joined',
   fsList: 'joined',
-  fsSnapshot: 'joined',
+  fsListTree: 'joined',
   fsStorageGrant: null,
   wsOpen: null,
   wsPoll: null,
