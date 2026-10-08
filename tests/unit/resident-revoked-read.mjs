@@ -85,7 +85,26 @@ async function running(revoke) {
   assert.equal(probe.open(SECRET), 'ERR:EACCES', 'openSync for reading of a file whose read was revoked');
 }
 
-/** A store kept from an earlier launch, which held the file, is reconciled before the program reads it. */
+/** A session supervisor that records each path the process asks it to read. */
+function counting(authority) {
+  const reads = [];
+  let forward;
+  const handle = facetSupervisor(authority, {
+    fsReadBatch: async (requests) => {
+      for (const request of requests) if ('length' in request) reads.push(String(request.path).replace(/^\/+/, ''));
+      return forward('fsReadBatch', [requests]);
+    },
+  });
+  forward = handle.forward;
+  return { supervisor: handle.supervisor, reads };
+}
+
+/**
+ * A store kept from an earlier launch, which held the file, is reconciled
+ * before the program reads it. A file whose mode changed and stays readable
+ * is kept by its content key, with no read; the revoked one is asked of the
+ * session.
+ */
 async function kept(revoke) {
   const authority = session();
   const sql = facetSql();
@@ -99,9 +118,13 @@ async function kept(revoke) {
   const filled = await previous.__residentSynchronizeFromSupervisor(facetSupervisor(authority).supervisor);
   assert.ok(filled.filled >= 2, 'the premise: the earlier launch held the file');
   revoke(authority);
-  const { supervisor } = facetSupervisor(authority);
+  authority.kfs.chmod('home/user/app/f.txt', 0o600);
+  const { supervisor, reads } = counting(authority);
   await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: supervisor }, sql, cursor: authority.cursor() });
   assert.deepEqual(globalThis.__first, { read: 'ERR:EACCES', open: 'ERR:EACCES' }, 'the first reads, over the kept store');
+  assert.ok(reads.includes(KEY), `the revoked file is asked of the session: ${JSON.stringify(reads)}`);
+  assert.ok(!reads.includes('home/user/app/f.txt'), `a file still readable after its chmod is kept, not read again: ${JSON.stringify(reads)}`);
+  assert.equal(globalThis.__probe.read(`${APP}/f.txt`), 'f');
 }
 
 /**
