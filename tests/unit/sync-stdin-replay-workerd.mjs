@@ -667,7 +667,7 @@ try {
     const t0 = Date.now();
     t.cmd(`sleep 8 | node -e "function u(){require('fs').readFileSync(0)} console.log('print' + 'ed')"`);
     const printedAfter = await t.waitFor((b) => /\nprinted/.test(b), 60_000, 'printed');
-    await t.waitForNewPrompt(60_000);
+    await t.waitForPrompt(60_000);
     check(printedAfter < 5_000, `pipe: an unused reader prints before its writer ends (${printedAfter} ms, writer 8000 ms)`);
 
     // Ctrl-C while the read waits ends the program with 130, as it does
@@ -678,7 +678,7 @@ try {
     await new Promise((r) => setTimeout(r, 1000));
     const c0 = Date.now();
     t.send('\x03');
-    await t.waitForNewPrompt(30_000);
+    await t.waitForPrompt(30_000);
     const interrupted = Date.now() - c0;
     // The interrupted line's status, read by the next one.
     const status = Number(/S=(\d+)/.exec((await run('echo "S=$?"')).stdout)?.[1]);

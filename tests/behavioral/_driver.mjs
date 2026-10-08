@@ -25,7 +25,8 @@ export let AUTH_TOKEN = process.env.NIMBUS_PROBE_TOKEN || '';
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function stripAnsi(s) {
-  return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b[\(\)][AB012]/g, '');
+  return s.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b[\(\)][AB012]/g, '');
 }
 
 function authHeaders() {
@@ -372,7 +373,10 @@ export class Terminal {
     this.wsBase = (options.base ?? BASE).replace(/^http/, 'ws');
     this.wsOptions = options.wsOptions ?? wsHeaders();
     this.ws = null;
-    this.buf = '';
+    // reset() clears the caller's view, never the shell protocol stream.
+    this.stream = '';
+    this.bufferStart = 0;
+    this.submitCursor = 0;
     /** The `spawn` frames the session sent: one per process it started. */
     this.spawns = [];
     this.connected = false;
@@ -401,7 +405,7 @@ export class Terminal {
       try {
         const m = JSON.parse(data.toString('utf8'));
         if (m.type === 'output' && typeof m.data === 'string') {
-          this.buf += m.data;
+          this.stream += m.data;
         } else if (m.type === 'spawn') {
           this.spawns.push(m);
         }
@@ -417,10 +421,13 @@ export class Terminal {
 
   /** Send a command + carriage return. */
   cmd(line) {
+    this.submitCursor = this.stream.length;
     this.send(line + '\r');
   }
 
-  reset() { this.buf = ''; }
+  get buf() { return this.stream.slice(this.bufferStart); }
+
+  reset() { this.bufferStart = this.stream.length; }
 
   /** Wait until predicate(stripped buf) returns true. */
   async waitFor(predicate, timeoutMs = 30_000, label = 'pattern') {
@@ -457,37 +464,35 @@ export class Terminal {
     });
   }
 
-  /** Wait until the most recent line ends with a shell prompt ($ or # or >). */
-  async waitForPrompt(timeoutMs = 30_000) {
-    return this.waitFor(
-      (b) => /[$#>]\s*$/.test(b.trimEnd().slice(-3)),
-      timeoutMs,
-      'prompt',
-    );
+  promptAfter(cursor) {
+    let exitCode = null;
+    for (const mark of this.stream.slice(cursor).matchAll(/\x1b\]133;([ABCD])(?:;(-?\d+))?(?:\x07|\x1b\\)/g)) {
+      if (mark[1] === 'C') exitCode = null;
+      if (mark[1] === 'D') exitCode = mark[2] === undefined ? null : Number(mark[2]);
+      if (mark[1] === 'B') return { end: cursor + mark.index + mark[0].length, exitCode };
+    }
+    return null;
   }
 
-  /** Wait for a NEW prompt after sending input (avoids returning on the prior prompt). */
-  async waitForNewPrompt(timeoutMs = 30_000) {
-    const startLen = this.buf.length;
-    return this.waitFor(
-      (b) => b.length > 0 && this.buf.length > startLen && /[$#>]\s*$/.test(b.trimEnd().slice(-3)),
-      timeoutMs,
-      'new prompt',
-    );
+  /** The first shell prompt-end mark after cmd(), even if it already arrived. */
+  async waitForPrompt(timeoutMs = 30_000) {
+    const cursor = this.submitCursor;
+    return this.waitFor(() => this.promptAfter(cursor) !== null, timeoutMs, 'shell prompt-end mark');
   }
 
   /**
-   * Run a shell command + wait for the prompt to return; return the
-   * stdout chunk produced (output between this command's echo and the
-   * next prompt). Best-effort: we strip the command echo from the head.
+   * Run a shell command through its first prompt-end mark. Output includes
+   * the terminal's command echo and prompt; bare D yields a null exitCode.
    */
   async run(line, timeoutMs = 60_000) {
     this.reset();
     const t0 = Date.now();
     this.cmd(line);
-    await this.waitForNewPrompt(timeoutMs);
+    const cursor = this.submitCursor;
+    await this.waitForPrompt(timeoutMs);
+    const completion = this.promptAfter(cursor);
     const elapsed = Date.now() - t0;
-    return { elapsed, output: stripAnsi(this.buf) };
+    return { elapsed, output: stripAnsi(this.stream.slice(cursor, completion.end)), exitCode: completion.exitCode };
   }
 
   /** Write `content` to `path` with a quoted heredoc (heredocCommand). */

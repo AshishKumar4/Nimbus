@@ -32,16 +32,12 @@ await sleep(2_000);
 await t.waitForPrompt(15_000).catch(() => {});
 
 async function runProbe(cmd, timeoutMs) {
-  t.reset();
-  t.cmd(cmd);
-  // Wait for next prompt OR a long stall.
-  let elapsed = 0;
   try {
-    elapsed = await t.waitForNewPrompt(timeoutMs);
+    const result = await t.run(cmd, timeoutMs);
+    return { cmd, ...result, timedOut: false };
   } catch (e) {
     return { cmd, elapsed: timeoutMs, output: stripAnsi(t.buf), timedOut: true };
   }
-  return { cmd, elapsed, output: stripAnsi(t.buf), timedOut: false };
 }
 
 // ── A: npx itself responds ─────────────────────────────────────────────
