@@ -429,6 +429,7 @@ export class NimbusSession extends CloudflareDurableObject {
             // egress), so it is there before the workspace is: a launch re-driven
             // by a cold alarm, or by the reconnect's recovery, goes out through it.
             network: () => workspaceNetwork(this.egressForWorkspace()),
+            supervisorOp: (envelope) => this.supervisorOp(envelope),
         });
         // In `wrangler dev`, the outer Worker and this DO share a single
         // workerd process, so the `adoptCtxExports(ctx.exports)` call in the

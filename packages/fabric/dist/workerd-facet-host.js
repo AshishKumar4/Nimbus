@@ -13,16 +13,17 @@
  * `HostedProcess` and never imports this file.
  */
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { describeError, isHostReset, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
+import { classifyError, describeError, isHostReset, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { getCtxExports, stagedBootAssembler, supervisorEntrypoint, supervisorEntrypointName, } from './composition.js';
-import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, withDynamicWorkerCapNamed, } from './budgets.js';
+import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, readmitRefused, withDynamicWorkerCapNamed, } from './budgets.js';
 import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
 import { supervisorLoaderKey, mintProcessSupervisor } from './supervisor-props.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/process-fs-journal-reader-source.generated.js';
 import { applyFacetLimits, facetLimits, facetLoaderKey } from './facet-limits.js';
+import { withResolvers } from './turn-budget.js';
 export function getNimbusCtxExports() {
     const ctxExports = getCtxExports();
     if (!ctxExports || typeof ctxExports !== 'object') {
@@ -263,8 +264,8 @@ export class Processes {
      * map across a sibling hop would meet the 32 MiB RPC ceiling that by-path
      * boot specs exist to avoid — for a run that gains nothing by moving.
      */
-    run(supervisor, params, consume) {
-        return runOneShot(this.ctx, this.env, supervisor, params, consume);
+    run(supervisor, supervise, params, consume) {
+        return runOneShot(this.ctx, this.env, supervisor, supervise, params, consume);
     }
 }
 function spawnResident(ctx, env, disk, supervisor, params) {
@@ -474,7 +475,7 @@ function residentProcessClass(env, disk, supervisor, params, loaderKey) {
         .get(facetLoaderKey('process', loaderKey), async () => applyFacetLimits('process', await residentWorkerConfig(env, disk, supervisor, params.boot)))
         .getDurableObjectClass(RESIDENT_PROCESS_CLASS, { limits: facetLimits('process') });
 }
-async function runOneShot(ctx, env, supervisor, params, consume) {
+async function runOneShot(ctx, env, supervisor, supervise, params, consume) {
     const loader = env.LOADER;
     if (!loader || typeof loader.load !== 'function') {
         throw new Error('Nimbus: env.LOADER binding missing or invalid. Running a program requires '
@@ -496,10 +497,11 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
     // the pipelined-`fetch.call` note below for its sibling.
     // A run inside an admitted launch (withLaunchAdmission) is that launch's
     // worker, already let in (claimAdmission), whatever pid it runs as.
-    const endFetch = claimAdmission(ctx, params.pid) ?? await beginLoaderFetchWhenFree(ctx, `one-shot:${params.writerId}`, {
+    let endFetch = claimAdmission(ctx, params.pid) ?? await beginLoaderFetchWhenFree(ctx, `one-shot:${params.writerId}`, {
         signal: params.request.signal,
         process: { pid: params.pid },
     });
+    let capability;
     let supervisorBinding;
     let worker;
     let entrypoint;
@@ -509,19 +511,20 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
         // assemble should not have granted append authority on its way out.
         let spec = await params.code();
         assertModuleMapWithinCodeLimit(spec.modules);
-        if (supervisorRpc) {
-            params.onWriterActivated(params.writerId);
+        params.onWriterActivated(params.writerId);
+        capability = supervise(supervisor);
+        // A network the session answers (SupervisorRPC.fetch/connect) is the
+        // binding's: a globalOutbound is a service binding, never a capability.
+        if (supervisorRpc && params.outbound)
             supervisorBinding = mintProcessSupervisor(supervisorRpc, supervisor);
-        }
         worker = loader.load(applyFacetLimits('process', {
             compatibilityDate: spec.compatibilityDate,
             compatibilityFlags: spec.compatibilityFlags,
-            mainModule: spec.mainModule,
-            modules: spec.modules,
-            ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding, ...egressMarker(supervisor) } } : {}),
-            // The same binding answers its network (SupervisorRPC.fetch/connect), which goes out
-            // through the workspace's egress; else the egress itself, when there is one.
-            ...(supervisorBinding && params.outbound
+            mainModule: ONE_SHOT_ENTRY,
+            modules: { ...spec.modules, [ONE_SHOT_ENTRY]: oneShotEntry(spec.mainModule) },
+            env: egressMarker(supervisor),
+            // Else out through the workspace's egress, when there is one.
+            ...(supervisorBinding
                 ? { globalOutbound: supervisorBinding }
                 : supervisor.egress !== undefined ? { globalOutbound: supervisor.egress } : {}),
         }));
@@ -533,33 +536,97 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
         // extracting the method builds a pipelined `fetch.call` path workerd
         // refuses for dynamically-loaded workers.
         const ep = entrypoint;
-        if (typeof ep.fetch !== 'function') {
-            throw new Error('Nimbus: one-shot runtime entrypoint has no fetch method');
+        if (typeof ep.run !== 'function') {
+            throw new Error('Nimbus: one-shot runtime entrypoint has no run method');
         }
         params.onLoaded?.();
-        try {
-            const response = await ep.fetch(params.request);
+        let firstRefusal;
+        for (;;) {
+            let started = false;
             try {
-                return await consume(response);
+                // The request crosses without its signal, which no RPC value carries;
+                // the run hears it until its response is consumed, as a fetch would.
+                // A clone each time: a refused run is sent again with the same body.
+                const request = new Request(params.request.clone(), { signal: null });
+                return await untilEnded(params.request.signal, async (ended) => {
+                    const response = await ep.run(request, capability, ended);
+                    started = true;
+                    try {
+                        return await consume(response);
+                    }
+                    finally {
+                        disposeRpcResource(response);
+                    }
+                });
             }
-            finally {
-                disposeRpcResource(response);
+            catch (error) {
+                // The ledger learns a limit refusal from the hold it ends.
+                endFetch(error);
+                if (started || classifyError(error) !== 'dynamic_worker_cap')
+                    throw error;
+                // Refused before it started: sent again once the ledger lets it in.
+                firstRefusal ??= Date.now();
+                const readmitted = await readmitRefused(endFetch, { since: firstRefusal, signal: params.request.signal });
+                if (readmitted === undefined)
+                    throw error;
+                endFetch = readmitted;
             }
-        }
-        catch (error) {
-            // A limit refusal pauses the ledger's admissions (beginLoaderFetchWhenFree).
-            endFetch(error);
-            throw error;
         }
     }
     catch (error) {
         throw withDynamicWorkerCapNamed(ctx, error);
     }
     finally {
-        endFetch();
+        // The run's session closes as these go, and the platform counts its
+        // worker until then: they go before the hold, which lets the next one in.
         disposeRpcResource(entrypoint);
         disposeRpcResource(worker);
+        disposeRpcResource(capability);
         disposeRpcResource(supervisorBinding);
+        endFetch();
+    }
+}
+const ONE_SHOT_ENTRY = 'nimbus-one-shot.js';
+/**
+ * A one-shot, entered by `run`: its SUPERVISOR is the call's capability, and
+ * a run its host ended (untilEnded) aborts itself where it stands.
+ */
+function oneShotEntry(mainModule) {
+    return `import { WorkerEntrypoint } from "cloudflare:workers";
+import program from ${JSON.stringify(`./${mainModule}`)};
+export default class extends WorkerEntrypoint {
+  run(request, supervisor, ended) {
+    ended().then((reason) => { if (reason !== null) this.ctx.abort(reason); }, () => {});
+    return program.fetch(request, { ...this.env, SUPERVISOR: supervisor }, this.ctx);
+  }
+}
+`;
+}
+/**
+ * `start`'s call, ended as a fetch carrying `signal` would be: rejected with
+ * the signal's reason the moment it aborts. A signal does not cross an RPC
+ * call, so the run asks how it ends (`ended`) and is answered with that
+ * reason, to abort itself, or with null once its call is over.
+ */
+async function untilEnded(signal, start) {
+    if (signal.aborted)
+        throw signal.reason;
+    const reason = withResolvers();
+    const aborted = withResolvers();
+    const abort = () => {
+        reason.resolve(String(signal.reason));
+        aborted.resolve();
+    };
+    signal.addEventListener('abort', abort, { once: true });
+    try {
+        const outcome = await Promise.race([start(() => reason.promise).then((value) => ({ value })), aborted.promise]);
+        if (!outcome)
+            throw signal.reason;
+        return outcome.value;
+    }
+    finally {
+        signal.removeEventListener('abort', abort);
+        reason.resolve(null);
     }
 }
 /**
@@ -622,6 +689,7 @@ export async function residentWorkerConfig(env, disk, supervisor, boot) {
     if (!supervisorRpc) {
         throw new Error(`Nimbus: ctx.exports.${supervisor.route?.supervisorEntrypoint ?? supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`);
     }
+    // The binding, not its host's capability (Supervise): a resident's calls each go one hop below its own request, at a fixed depth.
     return { ...workspaceOutbound(config, supervisor), env: { SUPERVISOR: mintProcessSupervisor(supervisorRpc, supervisor), ...egressMarker(supervisor) } };
 }
 /**

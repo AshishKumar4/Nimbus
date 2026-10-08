@@ -30,6 +30,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { hostWasmIdentity } from './host-wasm.js';
+import { withResolvers } from './turn-budget.js';
 /**
  * Distinct Dynamic Workers one Durable Object may have with in-flight
  * requests at once, shared across all concurrent requests to that object;
@@ -81,7 +82,7 @@ function ledger(ctx) {
         entry = {
             inFlight: new Map(), holders: new Map(), processHolds: new Map(), news: new Map(), graph: undefined,
             schedule: decideOnALaterTurn, deciding: false,
-            claims: new Set(), peak: 0,
+            claims: new Set(), peak: 0, readmitted: 0,
             waiters: [], pauseMs: 0, pauseTimer: undefined, epoch: 0, refusals: 0,
         };
         ledgers.set(ctx, entry);
@@ -134,7 +135,7 @@ function hold(entry, workerKey, claim, holder) {
     entry.peak = Math.max(entry.peak, inUse(entry));
     const epoch = entry.epoch;
     let ended = false;
-    return (failure) => {
+    const end = (failure) => {
         if (ended)
             return;
         ended = true;
@@ -160,7 +161,11 @@ function hold(entry, workerKey, claim, holder) {
             entry.refusals = 0;
         admitWaiters(entry);
     };
+    holdTerms.set(end, { entry, key: workerKey, claim, holder });
+    return end;
 }
+/** What each hold was taken on, so a refused call is let in again on the same (readmitRefused). */
+const holdTerms = new WeakMap();
 /**
  * The platform refused a worker this ledger counted room for: it still
  * counts workers the ledger has released, which no release here can show.
@@ -184,8 +189,9 @@ function refused(entry, epoch) {
     }, entry.pauseMs);
 }
 function admissible(entry, waiter) {
-    // Requests to a worker already in flight count once, even while paused.
-    if (entry.inFlight.has(waiter.key))
+    // Requests to a worker already in flight count once, even while paused;
+    // a call the platform refused waits the pause out all the same.
+    if (entry.inFlight.has(waiter.key) && !(waiter.refused && entry.pauseMs > 0))
         return true;
     if (entry.pauseMs > 0)
         return false;
@@ -452,37 +458,82 @@ export function beginLoaderFetch(ctx, workerKey, claim, holder) {
  *   finally { end(); }
  */
 export function beginLoaderFetchWhenFree(ctx, workerKey, options = {}) {
-    const { signal } = options;
-    return new Promise((resolve, reject) => {
-        if (signal?.aborted) {
-            reject(signal.reason);
+    return queue(ledger(ctx), workerKey, claimOf(ctx, options.claim), options.process, false, options.signal);
+}
+/** Wait on `entry` for a hold of `key`, in the order asked: see {@link beginLoaderFetchWhenFree}. */
+function queue(entry, key, claim, process, refused, signal) {
+    const { promise, resolve, reject } = withResolvers();
+    if (signal?.aborted) {
+        reject(signal.reason);
+        return promise;
+    }
+    const abandon = () => {
+        const at = entry.waiters.indexOf(waiter);
+        if (at < 0)
             return;
-        }
-        const entry = ledger(ctx);
-        const abandon = () => {
-            const at = entry.waiters.indexOf(waiter);
-            if (at < 0)
-                return;
-            entry.waiters.splice(at, 1);
-            reject(signal?.reason);
-        };
-        const waiter = {
-            key: workerKey,
-            claim: claimOf(ctx, options.claim),
-            process: options.process,
-            admit(end) {
-                signal?.removeEventListener('abort', abandon);
-                resolve(end);
-            },
-            refuse(error) {
-                signal?.removeEventListener('abort', abandon);
-                reject(error);
-            },
-        };
-        entry.waiters.push(waiter);
-        signal?.addEventListener('abort', abandon, { once: true });
-        admitWaiters(entry);
-    });
+        entry.waiters.splice(at, 1);
+        reject(signal?.reason);
+    };
+    const waiter = {
+        key,
+        claim,
+        process,
+        refused,
+        admit(end) {
+            signal?.removeEventListener('abort', abandon);
+            resolve(end);
+        },
+        refuse(error) {
+            signal?.removeEventListener('abort', abandon);
+            reject(error);
+        },
+    };
+    entry.waiters.push(waiter);
+    signal?.addEventListener('abort', abandon, { once: true });
+    admitWaiters(entry);
+    return promise;
+}
+/**
+ * How long one call waits, in all, on the ledger after the platform first
+ * refused it before the refusal surfaces ({@link readmitRefused}). A deployed
+ * Durable Object admitted a refused batch after a 6 s pause; 15 s bounds a
+ * call that would never be admitted.
+ */
+export const REFUSED_CALL_WAIT_MS = 15_000;
+/**
+ * The hold to send a call again on, after the platform refused it ("Dynamic
+ * worker concurrency limit exceeded"): it refuses a call before the call
+ * starts, so nothing ran. It still counts workers the ledger has given back
+ * (one called over RPC stays counted until its session has closed, which no
+ * release here can show), so `refused`, the call's hold, ended with that
+ * refusal, paused admission. The new hold is taken on the same terms (key,
+ * claim, process; a launch's run is that launch's run again), once the
+ * ledger lets it in: after the pause, even when its key is still in flight,
+ * and when there is room. Undefined once `signal` aborts or the call's first
+ * refusal (`since`) is {@link REFUSED_CALL_WAIT_MS} old.
+ */
+export async function readmitRefused(refused, options) {
+    const terms = holdTerms.get(refused);
+    if (terms === undefined)
+        throw new Error('Nimbus: only a hold the Dynamic Worker ledger gave can be readmitted');
+    const remainingMs = options.since + REFUSED_CALL_WAIT_MS - Date.now();
+    if (remainingMs <= 0 || options.signal?.aborted)
+        return undefined;
+    // Cleared once the wait settles: a pending timer keeps the hosting object from hibernating.
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(), remainingMs);
+    const signal = options.signal ? AbortSignal.any([deadline.signal, options.signal]) : deadline.signal;
+    const process = terms.holder === null ? undefined : { pid: terms.holder };
+    const end = await queue(terms.entry, terms.key, terms.claim, process, true, signal)
+        .catch(() => undefined)
+        .finally(() => clearTimeout(timer));
+    if (end === undefined)
+        return undefined;
+    terms.entry.readmitted++;
+    const admission = terms.admission;
+    if (admission === undefined || admission.claimed || admission.closed)
+        return end;
+    return claimed(admission, end);
 }
 /**
  * The admission of the launch whose async context this is. AsyncLocalStorage
@@ -577,16 +628,23 @@ export function claimAdmission(ctx, pid) {
     const admission = launchAdmission.getStore();
     if (admission?.ctx !== ctx || admission.end === undefined || admission.claimed)
         return undefined;
+    return claimed(admission, beginLoaderFetch(ctx, `launch:${admission.process.pid}`, undefined, pid ?? admission.process.pid));
+}
+/** `runner`, a hold on `admission`'s worker, as that launch's run: claimed until it ends. */
+function claimed(admission, runner) {
     admission.claimed = true;
-    const runner = beginLoaderFetch(ctx, `launch:${admission.process.pid}`, undefined, pid ?? admission.process.pid);
     let ended = false;
-    return (failure) => {
+    const end = (failure) => {
         if (ended)
             return;
         ended = true;
         admission.claimed = false;
         runner(failure);
     };
+    const terms = holdTerms.get(runner);
+    if (terms)
+        holdTerms.set(end, { ...terms, admission });
+    return end;
 }
 /**
  * The Dynamic Worker `workerKey` in flight for a helper's call (the
@@ -641,6 +699,7 @@ export function loaderLedgerStats(ctx) {
         claimed: claimedWidth(entry),
         headroom: headroom(entry),
         peak: entry.peak,
+        readmitted: entry.readmitted,
         waiting: entry.waiters.length,
         pauseMs: entry.pauseMs,
     };

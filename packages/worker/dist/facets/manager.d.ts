@@ -35,7 +35,7 @@ import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js'
 import { type BundleCellResultStore, type BundleCellTransformStats } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
 import { StdinTaken } from '../runtime/stop-replay-host.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
-import { type ProcessHostFactory, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
+import { type ProcessHostFactory, type ResidentCodeSpec, type Supervise } from '@nimbus-sh/fabric/process-fabric.js';
 import { ProcessJournals } from '../session/process-journals.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
@@ -827,6 +827,11 @@ export interface FacetManagerHooks {
      * composition supplies it; absent, the isolate's own network.
      */
     network?: () => WorkspaceNetwork;
+    /**
+     * The host's own SUPERVISOR for a one-shot (Supervise), handed to it with
+     * the call that runs it. Absent, each gets its binding.
+     */
+    supervise?: Supervise;
     /**
      * Fired when a process was terminated OUTSIDE the facet's own try/
      * finally (timeout via abort, explicit kill, etc.) — the facet never

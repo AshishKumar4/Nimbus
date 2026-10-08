@@ -1,13 +1,14 @@
-import { WorkerEntrypoint } from 'cloudflare:workers';
+import { RpcTarget } from 'cloudflare:workers';
+import type { SupervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
-import { TRANSPORT, type Resend, type SupervisorTransport } from './supervisor-calls.js';
-declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
+import { TRANSPORT, type SupervisorTransport } from './supervisor-calls.js';
+declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
     _op<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorOpName, args?: readonly unknown[], extra?: Omit<SupervisorOpEnvelope, "op" | "args">): Promise<T>;
     _caller(envelope: SupervisorOpEnvelope): SupervisorOpEnvelope;
     _fsOp<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorOpName, args?: readonly unknown[]): Promise<T>;
     _fsRead<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorJoinedReadOpName, args?: readonly unknown[]): Promise<T>;
     _fsMutation<T>(op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorDeliveredOpName, args: NonNullable<SupervisorOpEnvelope["args"]>): Promise<T>;
-    _resent<T>(envelope: SupervisorOpEnvelope, trace: Resend["trace"], policy?: import("@nimbus-sh/fabric/do-calls.js").DoCallRetryPolicy): Promise<T>;
+    _resent<T>(envelope: SupervisorOpEnvelope, trace: import("./supervisor-calls.js").Resend["trace"], policy?: import("@nimbus-sh/fabric/do-calls.js").DoCallRetryPolicy): Promise<T>;
     _mutationOwner(): string | undefined;
     _hostIncarnation(): string | undefined;
     _reportingPid(): number;
@@ -187,31 +188,19 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
         seq: number;
     }): Promise<void>;
     [TRANSPORT](): SupervisorTransport;
-}) & typeof WorkerEntrypoint;
+}) & typeof RpcTarget;
 /**
- * A process's SUPERVISOR as a service binding (`env.SUPERVISOR`), and its
- * network when it is the process's globalOutbound. The platform serves it
- * from whichever isolate it likes, so every call reaches the host on a fresh
- * Durable Object stub, by the route its props carry, as a new request there.
+ * A one-shot's SUPERVISOR as a capability its host hands it in the call that
+ * runs it, answered by `answer`, the host Durable Object's own
+ * supervisorOp. workerd delivers a call on it over that call's RPC session,
+ * inside the host's IoContext: no new request to the host, so it neither
+ * becomes the host's front request, whose subrequest depth every later call
+ * of the host inherits, nor costs the binding's hop and the stub's.
  */
-export declare class SupervisorRPC extends SupervisorRPC_base {
+export declare class ProcessSupervisor extends ProcessSupervisor_base {
+    #private;
+    constructor(props: SupervisorBindingProps, env: unknown, answer: (envelope: SupervisorOpEnvelope) => Promise<unknown>);
     [TRANSPORT](): SupervisorTransport;
-    /**
-     * The program's network, when this binding is its globalOutbound (a run
-     * that can stop): a read is recorded with its bytes and answered again to a
-     * run after a stop; anything else is something done outside the process.
-     */
-    fetch(request: Request): Promise<Response>;
-    /**
-     * A connection the program opens. One its TLS shim opened is named
-     * `<token>.nimbus-net.invalid`: the session says where it goes, and this
-     * side makes the TLS session with the server when the program asks for it
-     * (netTls 'upgrade'), then carries the plaintext both ways. workerd's
-     * outbound connect cannot carry TLS itself ("Incoming CONNECT with TLS not
-     * supported", worker-entrypoint.c++), which is why TLS ends here. Any
-     * other connection is proxied as it is.
-     */
-    connect(socket: Socket): Promise<void>;
 }
 export {};
-//# sourceMappingURL=supervisor-rpc.d.ts.map
+//# sourceMappingURL=process-supervisor.d.ts.map
