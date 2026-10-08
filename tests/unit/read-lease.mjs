@@ -76,7 +76,8 @@ function barrier(s, bridge, from) {
   assert.equal(kind, 'revoke');
   await sleep(10);
   assert.equal(published, false, 'the write was published before the holder answered its recall');
-  assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/a.txt')), 'v1');
+  // Committed ahead of the answer, and held: another caller that cannot wait is refused.
+  assert.throws(() => s.kernel.readFile('home/user/d/a.txt'), (error) => error.code === 'EAGAIN');
   reader.recalled(readLease.owner, 'revoke');
   await writing;
   assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/a.txt')), 'v2');
@@ -85,6 +86,84 @@ function barrier(s, bridge, from) {
   const next = barrier(s, reader, taken);
   assert.ok(next.paths.some((entry) => entry.path === 'home/user/d/a.txt'));
   assert.equal(next.readLease, undefined);
+}
+
+// ── A writer that can wait commits ahead of the recall; nothing is published, or seen, before the answer ──
+{
+  const s = session();
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const writer = s.files.bind({ pid: 8, cred: USER });
+  const other = s.files.bind({ pid: 9, cred: USER });
+  const taken = barrier(s, reader);
+  const before = s.engine.revision();
+  const seen = other.acquire(s.engine.epoch, s.engine.revision());
+  let published = false;
+  const writing = withRecall(() => writer.writeFile('/home/user/d/a.txt', 'piped')).then(() => { published = true; });
+  assert.equal(await reader.awaitRecall(taken.readLease.owner, 1000), 'revoke');
+  await sleep(10);
+  // Committed, and held: no revision, no barrier reports it, no lease is granted, and another's access waits.
+  assert.equal(published, false);
+  assert.equal(s.engine.revision(), before, 'the write was published before the reader answered');
+  const meanwhile = other.acquire(s.engine.epoch, seen.rev, { lease: true });
+  assert.ok(!meanwhile.paths.some((entry) => entry.path === 'home/user/d/a.txt'), 'a barrier reported a held write');
+  assert.equal(meanwhile.readLease, undefined, 'a lease was granted over a held write');
+  let read = null;
+  const reading = withRecall(() => other.readFile('/home/user/d/a.txt')).then((bytes) => { read = bytes; });
+  assert.throws(() => other.writeFile('/home/user/d/a.txt', 'theirs'), (error) => error.code === 'EAGAIN');
+  await sleep(10);
+  assert.equal(read, null, 'another\'s read saw a held write');
+  reader.recalled(taken.readLease.owner, 'revoke');
+  await writing;
+  await reading;
+  assert.equal(new TextDecoder().decode(read), 'piped');
+  assert.ok(s.engine.revision() > before);
+  assert.ok(other.acquire(s.engine.epoch, seen.rev).paths.some((entry) => entry.path === 'home/user/d/a.txt'), 'published, a barrier reports it');
+}
+
+// ── The writer's own later calls pass what it holds, and its publications wait at its end ──
+{
+  const s = session();
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const writer = s.files.bind({ pid: 8, cred: USER });
+  const { readLease } = barrier(s, reader);
+  const held = new Set();
+  await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'one'), undefined, held);
+  assert.equal(held.size, 1, 'the first call held nothing for its end');
+  const started = Date.now();
+  await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'two'), undefined, held);
+  assert.ok(Date.now() - started < 50, `the writer's own second call waited ${Date.now() - started} ms on its own hold`);
+  let done = false;
+  const ending = Promise.all(held).then(() => { done = true; });
+  await sleep(10);
+  assert.equal(done, false, 'published before the reader answered');
+  assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
+  reader.recalled(readLease.owner, 'revoke');
+  await ending;
+  assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/a.txt')), 'two');
+}
+
+// ── A held write is published after a later one elsewhere, at a revision of its own ──
+{
+  const s = session();
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const writer = s.files.bind({ pid: 8, cred: USER });
+  const other = s.files.bind({ pid: 9, cred: USER });
+  const { readLease } = barrier(s, reader);
+  const from = other.acquire(s.engine.epoch, s.engine.revision());
+  const writing = withRecall(() => writer.writeFile('/home/user/d/a.txt', 'held'));
+  await sleep(10);
+  // Recalled just now: the reader holds no lease, and the kernel's own store writes without one.
+  s.kernel.mkdir('.nimbus', { recursive: true });
+  s.kernel.writeFile('.nimbus/elsewhere', 'x');
+  const later = other.acquire(s.engine.epoch, from.rev);
+  assert.ok(later.paths.some((entry) => entry.path === '.nimbus/elsewhere'));
+  assert.ok(!later.paths.some((entry) => entry.path === 'home/user/d/a.txt'), 'the held write was reported with the later one');
+  reader.recalled(readLease.owner, 'revoke');
+  await writing;
+  const last = other.acquire(s.engine.epoch, later.rev);
+  const reported = last.paths.find((entry) => entry.path === 'home/user/d/a.txt');
+  assert.ok(reported !== undefined, 'a barrier at the later write\'s revision never hears of the held one');
+  assert.ok(last.rev > later.rev);
 }
 
 // ── Recalled, a reader is leased nothing for its trust: the writer's next change waits on no one ──

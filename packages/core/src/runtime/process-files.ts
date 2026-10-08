@@ -212,7 +212,14 @@ class GuardedProcessBridge implements RuntimeFsBridge {
    */
   withReadLease(answer: VfsAcquireResult, options?: VfsAcquireOptions): VfsAcquireResult {
     if (options?.lease !== true || this.pid === undefined || answer.poison) return answer;
-    const lease = this.delegations.readLease(this.pid, (terms) => this.target.acquireReadLease(terms, { epoch: answer.epoch, cursor: answer.rev }), this.scope);
+    let lease: { owner: string; trustMs: number } | null;
+    try {
+      lease = this.delegations.readLease(this.pid, (terms) => this.target.acquireReadLease(terms, { epoch: answer.epoch, cursor: answer.rev }), this.scope);
+    } catch (error) {
+      // A change being published (EAGAIN): this barrier is answered without one.
+      if ((error as { code?: unknown } | null)?.code !== 'EAGAIN') throw error;
+      lease = null;
+    }
     return lease === null ? answer : { ...answer, readLease: lease };
   }
   list(after?: string | null, limit?: number): VfsListPage { this.guard(); return this.target.list(after, limit); }
