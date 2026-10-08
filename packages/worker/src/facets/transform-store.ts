@@ -70,7 +70,7 @@ import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 /** Bytes of a result kept in its own row; a larger one goes in parts of this size. */
 const PART_BYTES = MAX_TX_BLOB_BYTES;
 /** The layout of a key's preimage; a change to it is a change of every address. */
-const KEY_SCHEMA = 'nimbus-transform/2';
+const KEY_SCHEMA = 'nimbus-transform/3';
 /** Rows removed per transaction when a generation's rows are dropped. */
 const DROP_BATCH_ROWS = 128;
 
@@ -248,7 +248,9 @@ export class TransformStore implements BundleCellResultStore {
           this.forget(key);
           continue;
         }
-        found.set(key, { code, lowered: Number(row.lowered) !== 0 });
+        // A result is its map's JSON, a line of its own (JSON escapes every line break), then its code.
+        const lineEnd = code.indexOf('\n');
+        found.set(key, { map: code.slice(0, lineEnd), code: code.slice(lineEnd + 1), lowered: Number(row.lowered) !== 0 });
       }
       // Recency to the hour: a launch within the hour of the last rewrites nothing.
       this.sql.exec(`UPDATE nimbus_transform_results SET used = ? WHERE used < ? AND key IN (${marks})`, hour, hour, ...batch);
@@ -277,7 +279,7 @@ export class TransformStore implements BundleCellResultStore {
   }
 
   async put(key: string, result: StoredBundleCell, spend?: (bytes: number) => Promise<void>): Promise<string | null> {
-    const bytes = encoder.encode(result.code);
+    const bytes = encoder.encode(`${result.map}\n${result.code}`);
     const inline = bytes.byteLength <= PART_BYTES;
     const parts = inline ? 0 : Math.ceil(bytes.byteLength / PART_BYTES);
     const charge = chargeOf(bytes.byteLength, parts);

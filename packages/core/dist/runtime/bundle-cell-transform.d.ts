@@ -21,12 +21,10 @@
 import { type EsbuildTransformOutcome, type EsbuildTransformRequest } from './esbuild-service.js';
 import { type ModuleScope, type PackageType } from './module-format.js';
 /**
- * Bundled ESM this large is lowered in the session (esbuild-service.ts
- * rewriteBundledEsmToCjs) rather than by the transform host, whose memory
- * grows with the module and is never given back (Oxc's wasm reaches 105 MB
- * for workerd's 4.7 MB worker.mjs). The session reads it a statement at a
- * time (async-module-lowering.ts readEsmRecords), in bounded memory, its
- * imports live as everywhere else.
+ * An ES module this large is lowered in the session (async-module-lowering.ts
+ * lowerEsModule, which reads it a statement at a time, in bounded memory)
+ * rather than shipped to the transform facet, which lowers a smaller one the
+ * same way.
  */
 export declare const BUNDLED_ESM_REWRITE_MIN_BYTES: number;
 /**
@@ -107,6 +105,8 @@ export type BundleCell = {
 export interface BundleCellResult {
     /** The cell's code: CommonJS, the TypeScript emit, or the diagnostic shim. */
     readonly code: string;
+    /** A lowered ES module's EsModuleMap (async-module-lowering.ts), as JSON; '' for any other. */
+    readonly map: string;
     readonly lowered: boolean;
     /**
      * esbuild's verdict was a rejection, and `code` is the shim that reports it.
@@ -140,6 +140,7 @@ export declare function entryScriptRequest(code: string, parentUrl: string): Esb
 /** A result as a store keeps it: only transforms that succeeded are kept. */
 export interface StoredBundleCell {
     readonly code: string;
+    readonly map: string;
     readonly lowered: boolean;
 }
 /**

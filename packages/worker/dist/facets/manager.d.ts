@@ -176,12 +176,14 @@ interface GeneratedNodeFacetCode {
  * `<cwd>/[stdin]`).
  */
 export declare function entryImporterUrl(filename: string | undefined, cwd: string): string;
+/** A data: URL module as a launch stages it: always an ES module to Node, in the runtime's scope. */
+export declare function stagedDataUrlModule(text: string, moduleScope: ModuleScope, esbuild: EsbuildService): Promise<string>;
 /**
  * Generate one-shot runtime code with a plain fetch handler. `filename`
  * names the entry's module, and so its stack frames; with `cwd` it is the
  * entry's importer (entryImporterUrl).
  */
-export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string, cwd?: string, esModule?: boolean): Promise<GeneratedNodeFacetCode>;
+export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string, cwd?: string, esModule?: boolean, esModuleMap?: string): Promise<GeneratedNodeFacetCode>;
 /** One wasm image the generated main module imports from the module map. */
 export interface FacetWasmImport {
     /** The module-map name the boot spec carries the image under. */
@@ -232,6 +234,7 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
     filename?: string;
     dirname?: string;
     esModule?: boolean;
+    esModuleMap?: string;
     stdin?: string;
     attachedTty?: boolean;
     cred: ProcessEntry['cred'];
@@ -269,6 +272,8 @@ interface FacetVfsState {
      * with none is its own module.
      */
     emits?: Map<string, string>;
+    /** A lowered ES module's EsModuleMap (core async-module-lowering.ts), as JSON, by path. */
+    columnMaps?: Map<string, string>;
     /**
      * The cells lowered from ESM or compiled from TypeScript
      * (transformEsmInBundle), whose module wraps them in the block scope
@@ -463,10 +468,12 @@ export declare function encodedBundleSize(bundle: FacetVfsBundle): {
  * split into ordered fragments; the merge expression concatenates those
  * fragments back to the original string or Uint8Array.
  */
-export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, lowered, codeOnly, runtimeCode, }?: {
+export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, columnMaps, lowered, codeOnly, runtimeCode, }?: {
     consume?: boolean;
     /** The module of each cell a transform changed (FacetVfsState.emits). */
     emits?: ReadonlyMap<string, string>;
+    /** FacetVfsState.columnMaps. */
+    columnMaps?: ReadonlyMap<string, string>;
     /** Cells lowered from ESM or compiled from TypeScript, wrapped in the block scope. */
     lowered?: ReadonlySet<string>;
     /** Files whose emit the map carries and not the file (FacetVfsState.codeOnly). */
@@ -1564,6 +1571,8 @@ export declare class FacetManager {
         invokerPid?: number;
         /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
         esModule?: boolean;
+        /** RuntimeRunOpts.esModuleMap. */
+        esModuleMap?: string;
         /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
         moduleScope?: ModuleScope;
         bundleProfile?: FacetBundleProfile;

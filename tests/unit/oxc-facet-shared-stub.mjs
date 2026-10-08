@@ -147,7 +147,7 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   resetInstances();
   const { generateTransformFacetRuntimeSource } = await import('../../packages/core/src/runtime/esbuild-service.ts');
   const { rewriteDynamicImports } = await import('../../packages/core/src/runtime/dynamic-import-rewrite.ts');
-  const { lowerAsyncModule } = await import('../../packages/core/src/runtime/async-module-lowering.ts');
+  const { lowerAsyncModule, lowerEsModule } = await import('../../packages/core/src/runtime/async-module-lowering.ts');
   const { transformBundleCells } = await import('../../packages/core/src/runtime/bundle-cell-transform.ts');
   const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
   const { createRequire } = await import('node:module');
@@ -163,13 +163,13 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   const fallback = async (requests) => {
     calls.push(requests.length);
     const outcomes = [];
-    for (const { code, options } of requests) outcomes.push(await runTransformRequest(esbuild, code, options, rewriteDynamicImports, lowerAsyncModule));
+    for (const { code, options } of requests) outcomes.push(await runTransformRequest(esbuild, code, options, rewriteDynamicImports, lowerAsyncModule, lowerEsModule));
     return outcomes;
   };
-  // Arrays 4,000 deep: past Oxc's passes on Bun's stack (and Node's 585).
+  // Arrays 7,000 deep: past Oxc's passes and the lowering's parse on Bun's stack (acorn's ~5,000), within esbuild's.
   const cells = Array.from({ length: 6 }, (_, i) => ({
     path: `node_modules/deep/d${i}.mjs`,
-    source: `export const x${i} = ${'['.repeat(4000)}${i}${']'.repeat(4000)};`,
+    source: `export const x${i} = ${'['.repeat(7000)}${i}${']'.repeat(7000)};`,
     packageType: null,
   }));
   const placed = new Map();

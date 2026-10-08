@@ -6,7 +6,7 @@
   };
   function jsoncToJson(text, dialect) {
     const lineEnd2 = LINE_END[dialect];
-    const blank = dialect === "tsconfck" ? (comment) => comment.replace(/\S/g, " ") : () => " ";
+    const blank2 = dialect === "tsconfck" ? (comment) => comment.replace(/\S/g, " ") : () => " ";
     const source = text.charCodeAt(0) === 65279 ? text.slice(1) : text;
     let out = "";
     for (let i = 0; i < source.length; i++) {
@@ -18,13 +18,13 @@
       } else if (c === "/" && source[i + 1] === "/") {
         let end = i;
         while (end < source.length && !lineEnd2.test(source[end])) end++;
-        out += blank(source.slice(i, end));
+        out += blank2(source.slice(i, end));
         i = end - 1;
       } else if (c === "/" && source[i + 1] === "*") {
         const close = source.indexOf("*/", i + 2);
         if (close < 0 && dialect === "esbuild") throw new Error('Expected "*/" to terminate multi-line comment');
         const end = close < 0 ? source.length : close + 2;
-        out += blank(source.slice(i, end));
+        out += blank2(source.slice(i, end));
         i = end - 1;
       } else {
         out += dialect === "esbuild" && lineEnd2.test(c) ? "\n" : c;
@@ -5931,12 +5931,10 @@ error: the Oxc transform crashed (${reason})`);
     }
     finishNode(node, type) {
       const finished = super.finishNode(node, type);
-      if (isAstNode(finished)) {
-        this.hooks.onNode?.(finished);
-        if (FUNCTION_TYPES.has(type)) {
-          const body = finished.body;
-          if (isAstNode(body) && body.type === "BlockStatement") Reflect.set(body, "body", []);
-        }
+      this.hooks.onNode?.(finished);
+      if (FUNCTION_TYPES.has(type)) {
+        const body = Reflect.get(finished, "body");
+        if (body?.type === "BlockStatement") Reflect.set(body, "body", []);
       }
       return finished;
     }
@@ -8747,8 +8745,9 @@ error: the Oxc transform crashed (${reason})`);
       edits.push({ start: site.ss, end: site.d + 1, text: call });
     }
     if (!edits.length && !metas.length) return code;
-    if (!metas.length) return applyEdits(code, edits, metas, null, 0);
-    return applyEdits(code, edits, metas, escapedCaptureNames(code), afterDirectives(code));
+    if (!metas.length) return applyEdits(code, edits, metas, null, 0, "");
+    const { insertion, separator } = afterDirectives(code);
+    return applyEdits(code, edits, metas, escapedCaptureNames(code), insertion, separator);
   }
   var CODE_MARK = " import.meta ";
   function passedOver(source, imports, hazards) {
@@ -8888,6 +8887,7 @@ error: the Oxc transform crashed (${reason})`);
     const tokens = tokenizer2(code, { ecmaVersion: "latest", allowHashBang: true });
     let token = tokens.getToken();
     let insertion = token.start;
+    let separator = "";
     while (token.type === types$1.string) {
       const expression = parseExpressionAt2(code, token.start, { ecmaVersion: "latest", sourceType: "script" });
       if (expression.type !== "Literal" || typeof Reflect.get(expression, "value") !== "string") break;
@@ -8896,13 +8896,15 @@ error: the Oxc transform crashed (${reason})`);
       } while (token.start < expression.end);
       if (token.type === types$1.semi) {
         insertion = token.end;
+        separator = "";
         token = tokens.getToken();
         continue;
       }
       if (token.type !== types$1.eof && !/[\n\r\u2028\u2029]/.test(code.slice(expression.end, token.start))) break;
       insertion = expression.end;
+      separator = ";";
     }
-    return insertion;
+    return { insertion, separator };
   }
   var ImportCollector = class extends Parser {
     constructor(options, input, collected) {
@@ -8964,23 +8966,22 @@ error: the Oxc transform crashed (${reason})`);
       if (!imports) collected.edits.length = 0;
       if (!collected.edits.length && !collected.metas.length) return code;
       let insertion = program.body[0]?.start ?? code.length;
+      let separator = "";
       for (const statement of program.body) {
         if (typeof Reflect.get(statement, "directive") !== "string") break;
         insertion = statement.end;
+        separator = code[statement.end - 1] === ";" ? "" : ";";
       }
-      return applyEdits(code, collected.edits, collected.metas, collected.names, insertion);
+      return applyEdits(code, collected.edits, collected.metas, collected.names, insertion, separator);
     }
     return code;
   }
-  function applyEdits(code, edits, metas, names, insertion) {
+  function applyEdits(code, edits, metas, names, insertion, separator) {
     if (metas.length) {
       let binding = METADATA_BINDING;
       while (code.includes(binding) || names?.has(binding)) binding += "_";
       for (const meta of metas) edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
-      edits.push({ start: insertion, end: insertion, text: `
-"use strict";
-const ${binding} = arguments[2];
-` });
+      edits.push({ start: insertion, end: insertion, text: `${separator}"use strict";const ${binding} = arguments[2];` });
     }
     return applySourceEdits(code, edits);
   }
@@ -9052,7 +9053,10 @@ const ${binding} = arguments[2];
     if (value.type === "VariableDeclaration" && value.kind === "var") {
       for (const declarator of list(value, "declarations")) names.push(...patternNames(child(declarator, "id")));
     }
-    for (const key in value) if (key !== "parent") varNames(value[key], sloppy, false, names);
+    for (const key in value) {
+      const field = value[key];
+      if (field !== null && typeof field === "object" && key !== "parent") varNames(field, sloppy, false, names);
+    }
     return names;
   }
   function scopeOf(node, scope, sloppy, functionBody) {
@@ -9104,9 +9108,10 @@ const ${binding} = arguments[2];
       const fields = Object.keys(item);
       for (let i = fields.length - 1; i >= 0; i--) {
         const name = fields[i];
-        if (name === "parent") continue;
+        const child2 = item[name];
+        if (child2 === null || typeof child2 !== "object" || name === "parent") continue;
         const fieldScope = item.type === "SwitchStatement" && name === "discriminant" ? at2 : inner;
-        stack.push([item[name], fieldScope, isFunction && name === "body", item, name]);
+        stack.push([child2, fieldScope, isFunction && name === "body", item, name]);
       }
     }
   }
@@ -9139,14 +9144,63 @@ const ${binding} = arguments[2];
     }
   }
 
-  function generatedNames(source) {
-    let prefix = "__nimbus_m";
-    while (source.includes(prefix)) prefix += "_";
+  var ES_MODULE_SCOPE_GLOBAL = "__nimbusEsmScope";
+  var ES_MODULE_UNBOUND_NAMES = Object.fromEntries(
+    [...COMMONJS_WRAPPER_NAMES].map((name) => [name, `${ES_MODULE_SCOPE_GLOBAL}.${name}`])
+  );
+  function esModuleSource(source) {
+    return source + "\nexport {};\n";
+  }
+
+  function blank(text) {
+    return text.replace(/[^\n\r\u2028\u2029]/g, " ");
+  }
+  var GENERATED_NAME_PREFIX = "__nimbus_m";
+  function generatedNames(source, names = generatedLookingNames(source)) {
     let count = 0;
-    return () => `${prefix}${count++}`;
+    return () => {
+      let name;
+      do
+        name = `${GENERATED_NAME_PREFIX}${count++}`;
+      while (names.has(name));
+      return name;
+    };
+  }
+  function generatedLookingNames(source) {
+    const names =   new Set();
+    try {
+      for (const token of tokenizer2(source, MODULE_PARSE_OPTIONS)) {
+        const value = Reflect.get(token, "value");
+        if (token.type === types$1.name && typeof value === "string" && value.startsWith(GENERATED_NAME_PREFIX)) names.add(value);
+      }
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+    }
+    return names;
   }
   function lowerAsyncModule(esm) {
     return emitCommonJs(esm, readEsmRecords(esm), { body: "async" });
+  }
+  function lowerEsModule(source, scope, parentUrl) {
+    const module = esModuleSource(source);
+    const { records, wrapperUses, topLevelAwait, metas, dynamicImports, names } = readEsmModule(module);
+    const unbound = [];
+    if (scope === "node") for (const [name, references] of wrapperUses) {
+      const to = ES_MODULE_UNBOUND_NAMES[name];
+      for (const { start, end, use } of references) {
+        unbound.push({ start, end, text: use === "typeof" ? "(void 0)" : use === "shorthand" ? `${name}: ${to}` : to });
+      }
+    }
+    const { code, head, columns } = emitModule(module, records, {
+      body: topLevelAwait ? "async" : "sync",
+      names: generatedNames(module, names),
+      exportsObject: "arguments[2].exports",
+      requireFunction: "arguments[1]",
+      edits: unbound,
+      bind: { metadata: "arguments[2].__nimbusImportMeta", parentUrl, metas, dynamicImports }
+    });
+    const map = { head, columns };
+    return { code, map: JSON.stringify(map), warnings: [] };
   }
   function readEsmRecords(source) {
     return readEsmModule(source).records;
@@ -9154,7 +9208,8 @@ const ${binding} = arguments[2];
   function readEsmModule(source) {
     const first = readModule(source, null);
     const read = first.importsAfterCode ? readModule(source, first.imported) : first;
-    return { records: read.records, wrapperUses: read.wrapperUses };
+    const { records, wrapperUses, topLevelAwait, metas, dynamicImports, names } = read;
+    return { records, wrapperUses, topLevelAwait, metas, dynamicImports, names };
   }
   function readModule(source, known) {
     const nameOf = (node) => node.type === "Identifier" ? String(node.name) : String(node.value);
@@ -9165,6 +9220,11 @@ const ${binding} = arguments[2];
     const uses =   new Map();
     let code = false;
     let importsAfterCode = false;
+    const awaits = [];
+    const statementStarts =   new Set();
+    const metas = [];
+    const dynamicImports = [];
+    const names =   new Set();
     const outside = { names:   new Set(), parent: null };
     const mentions = [];
     const mentioned = (start, end) => {
@@ -9200,7 +9260,9 @@ const ${binding} = arguments[2];
     };
     const onIdentifier = (identifier) => {
       const name = stringOf(identifier, "name");
-      if (name === null || !tracked.has(name)) return;
+      if (name === null) return;
+      if (name.startsWith(GENERATED_NAME_PREFIX)) names.add(name);
+      if (!tracked.has(name)) return;
       let at2 = mentions.length;
       while (at2 > 0 && mentions[at2 - 1] > identifier.start) at2--;
       mentions.splice(at2, 0, identifier.start);
@@ -9297,19 +9359,30 @@ const ${binding} = arguments[2];
       onStatement: (statement) => onStatement(statement),
       onNode: (node) => {
         if (node.type === "Identifier") onIdentifier(node);
-        else if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") freeIn.set(node, freeUses(node));
+        else if (node.type === "ExpressionStatement") {
+          if (mentioned(node.start, node.start + 1)) statementStarts.add(node.start);
+        } else if (node.type === "ImportExpression") {
+          dynamicImports.push(node.start);
+        } else if (node.type === "MetaProperty") {
+          if (node.meta.name === "import") metas.push({ start: node.start, end: node.end });
+        } else if (node.type === "AwaitExpression" || node.type === "ForOfStatement" && node.await) awaits.push(node.start);
+        else if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
+          freeIn.set(node, freeUses(node));
+          while (awaits.length > 0 && awaits[awaits.length - 1] >= node.start) awaits.pop();
+        }
       }
     });
+    const leading = (references) => references.map((reference) => reference.use === "call" && statementStarts.has(reference.start) ? { ...reference, use: "leading-call" } : reference);
     const withUses = records.map((record) => record.kind !== "import" ? record : {
       ...record,
-      bindings: record.bindings.map((binding) => binding.kind === "namespace" ? binding : { ...binding, references: uses.get(binding.local) ?? [] })
+      bindings: record.bindings.map((binding) => binding.kind === "namespace" ? binding : { ...binding, references: leading(uses.get(binding.local) ?? []) })
     });
     const wrapperUses =   new Map();
     for (const name of COMMONJS_WRAPPER_NAMES) {
       const found = uses.get(name);
       if (found && !declared.has(name)) wrapperUses.set(name, found);
     }
-    return { records: withUses, imported, importsAfterCode, wrapperUses };
+    return { records: withUses, imported, importsAfterCode, wrapperUses, topLevelAwait: awaits.length > 0, metas, dynamicImports, names };
   }
   function useOf(parent, key, patternProperties) {
     switch (parent.type) {
@@ -9328,6 +9401,8 @@ const ${binding} = arguments[2];
         return parent.shorthand === true ? "shorthand" : "read";
       case "CallExpression":
         return key === "callee" ? "call" : "read";
+      case "UnaryExpression":
+        return parent.operator === "typeof" ? "typeof" : "read";
       case "TaggedTemplateExpression":
         return key === "tag" ? "call" : "read";
       default:
@@ -9335,6 +9410,9 @@ const ${binding} = arguments[2];
     }
   }
   function emitCommonJs(source, records, options) {
+    return emitModule(source, records, options).code;
+  }
+  function emitModule(source, records, options) {
     const temp = options.names ?? generatedNames(source);
     const key = (name) => `[${JSON.stringify(name)}]`;
     const requireRef = temp();
@@ -9362,11 +9440,11 @@ const ${binding} = arguments[2];
         reads.set(binding.local, read);
         for (const { start, end, use } of binding.references) {
           if (use === "write") continue;
-          uses.push({ start, end, text: use === "call" ? `(0, ${read})` : use === "shorthand" ? `${binding.local}: ${read}` : read });
+          const callee = use === "call" ? `(0, ${read})` : use === "leading-call" ? `void 0, (0, ${read})` : null;
+          uses.push(callee === null ? { start, end, text: use === "shorthand" ? `${binding.local}: ${read}` : read } : { start, end, text: callee, call: true });
         }
       }
     }
-    const defaultExpressionUses =   new Set();
     const requires = [];
     const imported = [];
     const getters = [];
@@ -9374,10 +9452,11 @@ const ${binding} = arguments[2];
     const edits = [...options.edits ?? []];
     let exportsAnything = false;
     if (source.startsWith("#!")) edits.push({ start: 0, end: 2, text: "//" });
+    const remove = (start, end) => edits.push({ start, end, text: ";" + blank(source.slice(start + 1, end)) });
     for (const record of records) {
       switch (record.kind) {
         case "import": {
-          edits.push({ start: record.start, end: record.end, text: "" });
+          remove(record.start, record.end);
           const module = importModules.get(record);
           if (!module) {
             requires.push(`${requireOf(record.source)};`);
@@ -9395,7 +9474,7 @@ const ${binding} = arguments[2];
         }
         case "export": {
           exportsAnything = true;
-          edits.push({ start: record.start, end: record.end, text: "" });
+          remove(record.start, record.end);
           if (record.source === null) {
             for (const name of record.names) {
               if (name.kind !== "named") throw new Error(`export of the namespace ${name.exported} without a source module`);
@@ -9414,21 +9493,17 @@ const ${binding} = arguments[2];
           exportsAnything = true;
           const value = temp();
           const { start, end } = record.expression;
-          const within = uses.filter((use) => use.start >= start && use.end <= end);
-          for (const use of within) defaultExpressionUses.add(use);
-          const expression = applySourceEdits(source.slice(start, end), within.map((use) => ({ ...use, start: use.start - start, end: use.end - start })));
-          edits.push({
-            start: record.start,
-            end: record.end,
-            text: `var ${value} = ({ default: (${expression}) }).default;`
-          });
+          const keyword = blank(source.slice(record.start, start));
+          const lineBreak2 = keyword.search(/[\n\r\u2028\u2029]/);
+          edits.push({ start: record.start, end: start, text: `var ${value} = ({ default: (` + (lineBreak2 === -1 ? "" : keyword.slice(lineBreak2)) });
+          edits.push({ start: end, end: record.end, text: ") }).default;" + blank(source.slice(end, record.end)) });
           getters.push(["default", value]);
           break;
         }
         case "export-all": {
           exportsAnything = true;
           const mod = temp();
-          edits.push({ start: record.start, end: record.end, text: "" });
+          remove(record.start, record.end);
           requires.push(`const ${mod} = ${requireOf(record.source)};`);
           stars.push(
             `for (const k in ${mod}) if (k !== "default" && !${ownKey}(${exportsRef}, k)) ${exportGetter}(k, () => ${mod}[k]);`
@@ -9438,7 +9513,7 @@ const ${binding} = arguments[2];
       }
     }
     const header = exportsAnything ? [
-      `const ${exportsRef} = ${options.exportsObject ?? "module.exports"}; ({}).constructor.defineProperty(${exportsRef}, "__esModule", { value: true });`,
+      `const ${exportsRef} = ${options.exportsObject ?? "module.exports"}; ({}).constructor.defineProperty(${exportsRef}, "__esModule", { value: true }); ({}).constructor.defineProperty(${exportsRef}, ({}).constructor.getOwnPropertySymbols(({}).constructor.getPrototypeOf(async () => {}))[0], { value: "Module" });`,
       `const ${exportGetter} = (name, get) => ({}).constructor.defineProperty(${exportsRef}, name, { enumerable: true, get });`,
       `const ${ownKey} = (o, k) => ({}).hasOwnProperty.call(o, k);`
     ] : [];
@@ -9448,17 +9523,48 @@ const ${binding} = arguments[2];
       );
     }
     if (requires.length > 0) header.push(`const ${requireRef} = (specifier) => ${options.requireFunction ?? "require"}(specifier);`);
+    const bind = options.bind;
+    if (bind && bind.metas.length > 0) {
+      const meta = temp();
+      header.push(`const ${meta} = ${bind.metadata};`);
+      for (const { start, end } of bind.metas) edits.push({ start, end, text: meta + blank(source.slice(start, end)).replace(/ /g, "") });
+    }
+    if (bind && bind.dynamicImports.length > 0) {
+      const load = temp();
+      header.push(`const ${load} = (...args) => ${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(bind.parentUrl)}, ...args);`);
+      for (const start of bind.dynamicImports) edits.push({ start, end: start + "import".length, text: load });
+    }
     const installed = getters.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([exported, value]) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`);
+    const allEdits = [...edits, ...uses];
     const prologue = [...installed, ...requires, ...imported, ...stars].join(" ");
-    const body = applySourceEdits(source, [...edits, ...uses.filter((use) => !defaultExpressionUses.has(use))]);
-    return options.body === "async" ? `"use strict";${header.join("\n")}
-return (async () => { ${prologue}
-${body}
-})();
-` : `${header.join("\n")}
-${prologue}
-${body}
-`;
+    const lead = options.body === "async" ? `"use strict";${header.join(" ")} return (async () => { ${prologue}` : `"use strict";${header.join(" ")} ${prologue}`;
+    const code = lead + applySourceEdits(source, allEdits) + (options.body === "async" ? "\n})();\n" : "\n");
+    return { code, head: lead.length, columns: columnMap(source, allEdits) };
+  }
+  var LINE_BREAK = /\r\n|[\n\r\u2028\u2029]/;
+  function columnMap(source, edits) {
+    const entries = [];
+    const ordered = [...edits].sort((a, b) => a.start - b.start);
+    let line = 1;
+    let lineStart = 0;
+    let scanned = 0;
+    for (const edit of ordered) {
+      const before = source.slice(scanned, edit.start).split(LINE_BREAK);
+      if (before.length > 1) {
+        line += before.length - 1;
+        lineStart = edit.start - before[before.length - 1].length;
+      }
+      scanned = edit.start;
+      const from = source.slice(edit.start, edit.end).split(LINE_BREAK);
+      const to = edit.text.split(LINE_BREAK);
+      for (let i = 0; i < from.length; i++) {
+        const column = i === 0 ? edit.start - lineStart : 0;
+        const text = i === from.length - 1 ? to.slice(i).join("") : to[i];
+        if (text === from[i]) continue;
+        entries.push(edit.call && i === from.length - 1 ? [line + i, column, text.length, from[i], 1] : [line + i, column, text.length, from[i]]);
+      }
+    }
+    return entries;
   }
   function declaredNames(declaration) {
     if (declaration.type !== "VariableDeclaration") return declaration.id ? [declaration.id.name] : [];
@@ -9492,6 +9598,7 @@ ${body}
   Object.assign(globalThis, {
     __nimbusCreateOxcTransform: createOxcTransform,
     __nimbusRewriteDynamicImports: rewriteDynamicImports,
-    __nimbusLowerAsyncModule: lowerAsyncModule
+    __nimbusLowerAsyncModule: lowerAsyncModule,
+    __nimbusLowerEsModule: lowerEsModule
   });
 })();

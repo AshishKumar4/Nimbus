@@ -89,12 +89,6 @@ export declare const COMMONJS_WRAPPER_NAMES: ReadonlySet<string>;
  */
 export declare function containsModuleSyntax(source: string, scope?: 'file' | 'eval'): boolean;
 /**
- * Whether `source` may hold an `await` outside every function body (a
- * top-level await), read off its tokens: true when one is found, or when the
- * source does not tokenize, so a false answer is certain.
- */
-export declare function hasUnscopedAwait(source: string): boolean;
-/**
  * Walk `source`'s tokens tracking brace, paren and bracket depth, without
  * building an AST (a multi-MiB bundle chunk must fit a 48 MiB heap). `visit`
  * sees every token with whether it sits at top level and the module syntax

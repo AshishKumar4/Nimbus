@@ -93,8 +93,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   assert.equal(r.exitCode, 0, r.stderr);
   assert.ok(r.code.startsWith(TRANSFORM_MARKER), 'extensionless ESM bin must reach the runner as CJS');
   assert.equal(r.transforms.length, 1);
-  assert.equal(r.transforms[0].opts.loader, 'js');
-  assert.equal(r.transforms[0].opts.format, 'cjs');
+  assert.equal(r.transforms[0].opts.esModule, 'node', 'lowered as an ES module, in Node\'s scope');
   // The shebang is stripped before the transform, never handed to esbuild.
   assert.doesNotMatch(r.transforms[0].code, /^#!/);
 }
@@ -160,7 +159,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   }, '/home/user/node_modules/my.pkg/bin/cli');
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(r.transforms.length, 1, 'a dotted directory must not hide an extensionless entry');
-  assert.equal(r.transforms[0].opts.loader, 'js');
+  assert.equal(r.transforms[0].opts.esModule, 'node');
 }
 
 // ── an extensionless CommonJS body inside a type:module project survives ──
@@ -190,7 +189,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   }, '/home/user/.hookrc');
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(r.transforms.length, 1);
-  assert.equal(r.transforms[0].opts.loader, 'js');
+  assert.equal(r.transforms[0].opts.esModule, 'node');
 }
 
 // ── TypeScript entries keep their own loader ──

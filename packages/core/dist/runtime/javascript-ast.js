@@ -54,13 +54,11 @@ class StatementParser extends AcornParserClass {
     }
     finishNode(node, type) {
         const finished = super.finishNode(node, type);
-        if (isAstNode(finished)) {
-            this.hooks.onNode?.(finished);
-            if (FUNCTION_TYPES.has(type)) {
-                const body = finished.body;
-                if (isAstNode(body) && body.type === 'BlockStatement')
-                    Reflect.set(body, 'body', []);
-            }
+        this.hooks.onNode?.(finished);
+        if (FUNCTION_TYPES.has(type)) {
+            const body = Reflect.get(finished, 'body');
+            if (body?.type === 'BlockStatement')
+                Reflect.set(body, 'body', []);
         }
         return finished;
     }
@@ -298,35 +296,10 @@ function templateAwaitAt(holding, at) {
     return false;
 }
 /**
- * Whether `source` may hold an `await` outside every function body (a
- * top-level await), read off its tokens: true when one is found, or when the
- * source does not tokenize, so a false answer is certain.
- */
-export function hasUnscopedAwait(source) {
-    try {
-        const tokens = tokenizer(source, {
-            ecmaVersion: 'latest',
-            sourceType: 'module',
-            allowHashBang: true,
-        });
-        const scan = unscopedAwaitScanner(source);
-        for (;;) {
-            const token = tokens.getToken();
-            if (token.type === tokTypes.eof)
-                return scan.atEnd();
-            if (scan(token))
-                return true;
-        }
-    }
-    catch {
-        return true;
-    }
-}
-/**
- * The state of {@link hasUnscopedAwait}'s walk, handed `source`'s tokens in
- * order: true for the token after an `await` outside every function body
- * that is not an object key (`{ await: 135 }`, as typescript's keyword table
- * has), and `atEnd()` for one that ends the source.
+ * A walk of `source`'s tokens, handed them in order: true for the token after
+ * an `await` outside every function body that is not an object key
+ * (`{ await: 135 }`, as typescript's keyword table has), and `atEnd()` for
+ * one that ends the source.
  */
 function unscopedAwaitScanner(source) {
     const functionBraces = [];
