@@ -7,7 +7,7 @@
 
 import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
-import { applyFacetLimits, facetLimits, facetLoaderKey, type FacetKind } from '@nimbus-sh/fabric/facet-limits.js';
+import { applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey, type FacetKind } from '@nimbus-sh/fabric/facet-limits.js';
 import type { StagedSourceEnv } from '../runtime/staged-source.js';
 
 /** What a helper facet is: its worker id and facet name, its class, and its code, built from the staged assets. */
@@ -17,6 +17,12 @@ export interface HelperFacetSpec {
   className: string;
   /** How a missing binding names it: "the transform facet". */
   what: string;
+  /**
+   * The facet's methods that run a process (the esbuild CLI): they have no
+   * wall deadline. Every other method is a compute call, bounded by the
+   * kind's call deadline (boundedCalls).
+   */
+  processMethods?: readonly string[];
   code(assets: Required<StagedSourceEnv>): Promise<WorkerCode>;
 }
 
@@ -38,7 +44,45 @@ export async function loadHelperFacet<T extends DurableObject>(
   const kind = spec.kind ?? 'worker';
   const worker = await loader.get(facetLoaderKey(kind, spec.id), async () => applyFacetLimits(kind, await spec.code({ ASSETS: assets })));
   const facetClass = worker.getDurableObjectClass(spec.className, { limits: facetLimits(kind) });
-  return ctx.facets.get<T>(spec.id, async () => ({ class: facetClass }));
+  return boundedCalls(ctx.facets.get<T>(spec.id, async () => ({ class: facetClass })), spec, kind);
+}
+
+/**
+ * `stub`, with each compute call bounded by `kind`'s call deadline
+ * (facetCallDeadlineMs): one that has not answered by then fails, naming the
+ * facet, the method and the deadline. The call is released, not retried; the
+ * caller drops the stub as it does after any failed call. A process method
+ * (spec.processMethods) runs unbounded, as every process does. The one place
+ * a helper facet's calls are bounded, so no call site keeps its own timer.
+ */
+function boundedCalls<T extends DurableObject>(stub: Fetcher<T>, spec: HelperFacetSpec, kind: FacetKind): Fetcher<T> {
+  const deadlineMs = facetCallDeadlineMs(kind);
+  if (deadlineMs === undefined) return stub;
+  const processMethods = new Set(spec.processMethods ?? []);
+  return new Proxy(stub, {
+    get(target, property, receiver) {
+      const value: unknown = Reflect.get(target, property, receiver);
+      if (typeof value !== 'function') return value;
+      // Called on the stub itself, never on this wrapper (Symbol.dispose included).
+      if (typeof property !== 'string' || processMethods.has(property)) return value.bind(target);
+      return (...args: unknown[]) => withinDeadline(
+        Promise.resolve(Reflect.apply(value, target, args)),
+        deadlineMs,
+        `Nimbus: ${spec.what}'s ${property} gave no answer within ${deadlineMs} ms (the ${kind} kind's call deadline)`,
+      );
+    },
+  });
+}
+
+/** `call`, or a rejection with `message` once `ms` pass first. */
+async function withinDeadline<R>(call: Promise<R>, ms: number, message: string): Promise<R> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const expired = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); });
+  try {
+    return await Promise.race([call, expired]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
 }
 
 /**

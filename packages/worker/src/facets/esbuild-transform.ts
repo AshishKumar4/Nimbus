@@ -141,6 +141,8 @@ const esbuildFacet = new SharedHelperFacet<EsbuildFacetRpc>({
   id: ESBUILD_FACET_WORKER_ID,
   className: 'EsbuildFacet',
   kind: 'esbuild',
+  // `esbuild` the command is a process; transformMany and build are compute calls.
+  processMethods: ['cli'],
   what: 'the esbuild facet',
   async code(assets) {
     const [wasm, jsFnBody, cliRunner, transformRuntime] = await Promise.all([

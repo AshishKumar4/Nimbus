@@ -9,7 +9,6 @@ import {
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
-import { facetCallDeadlineMs } from '@nimbus-sh/fabric/facet-limits.js';
 import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
@@ -102,21 +101,6 @@ const oxcFacet = new SharedHelperFacet<OxcFacetRpc>({
 /** Modules one stack-fallback call carries; a batch with more makes more calls. */
 const STACK_FALLBACK_MODULES = 4;
 
-/** How long one stack-fallback call may take before its modules' answers are transient. */
-const STACK_FALLBACK_DEADLINE_MS = facetCallDeadlineMs('transform')!;
-
-/** `call`, or a rejection once `ms` pass first. */
-async function withDeadline<T>(call: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
-  });
-  try {
-    return await Promise.race([call, deadline]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 /** Calls per slice: a slice whose call failed is sent once more. */
 const SLICE_ATTEMPTS = 2;
@@ -141,7 +125,6 @@ export function oxcTransformHost(
   ctx: DurableObjectState,
   env: unknown,
   stackFallback?: EsbuildTransformHost,
-  { fallbackDeadlineMs = STACK_FALLBACK_DEADLINE_MS }: { fallbackDeadlineMs?: number } = {},
 ): EsbuildTransformHost {
   return async (requests) => {
     let facet: Promise<Fetcher<OxcFacetRpc>> | null = null;
@@ -186,7 +169,8 @@ export function oxcTransformHost(
           const reason = 'error' in outcomes[index] ? outcomes[index].error.split('\n').at(-1) : '';
           console.warn(`[oxc-transform] ${requests[index].options?.dynamicImportParent ?? '<unnamed module>'}: ${reason}; transforming it with esbuild`);
         }
-        const answered = await withDeadline(stackFallback(group.map((index) => requests[index])), fallbackDeadlineMs).catch(
+        // The esbuild facet's call is bounded where every helper facet's is (helper-facet.ts).
+        const answered = await stackFallback(group.map((index) => requests[index])).catch(
           (error: unknown) => group.map(() => ({ error: `esbuild facet unavailable: ${errorText(error)}`, transient: true as const })),
         );
         group.forEach((index, i) => { outcomes[index] = answered[i]; });
