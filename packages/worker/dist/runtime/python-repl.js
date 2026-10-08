@@ -69,6 +69,7 @@ function buildReplDriver(source) {
 }
 class PythonReplAdapter {
     pool = null;
+    closed = false;
     /** Which interpreter variant the cached pool holds; see ensurePool. */
     poolUsesSci = false;
     deps;
@@ -94,6 +95,8 @@ class PythonReplAdapter {
         throw new Error('Python REPL startup did not finish its driver');
     }
     push(source) {
+        if (this.closed)
+            return Promise.reject(new Error('Python REPL is closed'));
         const controller = new AbortController();
         const done = this.evaluate(source, controller.signal);
         const active = { controller, done };
@@ -152,7 +155,7 @@ class PythonReplAdapter {
         }
         return { kind: 'output', stdout: result.stdout, stderr: result.stderr };
     }
-    close() { return this.stop(); }
+    close() { this.closed = true; return this.stop(); }
     resetPool() {
         const pool = this.pool;
         this.pool = null;
@@ -161,7 +164,8 @@ class PythonReplAdapter {
     }
     async interrupt() {
         await this.stop();
-        await this.initialize();
+        if (!this.closed)
+            await this.initialize();
     }
     async stop() {
         const active = this.active;
