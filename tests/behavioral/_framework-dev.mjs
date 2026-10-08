@@ -9,7 +9,7 @@ const LONG_RUNNING = /\[(?:bin|facet) started \(long-running\): pid=(\d+)/;
 
 export async function launchFrameworkDev({ terminal, sid, cwd, command, port, accepts, budgetMs = 180_000 }) {
   // The launch banner owns the PID; a command that never becomes resident
-  // ends at the shell's completion marks, not prompt-shaped program output.
+  // ends at the shell's completion frame, not prompt-shaped program output.
   terminal.reset();
   terminal.cmd(`cd ${cwd} && __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=${frameworkProxyHost} ${command}`);
   const submission = terminal.submission;

@@ -19,8 +19,9 @@ export class ShellInputSubmission {
         if (this.pending === 0 && this.atPrompt)
             this.end(this.status);
     }
+    leavePrompt() { this.atPrompt = false; }
     start() {
-        this.atPrompt = false;
+        this.leavePrompt();
         this.publish({ type: 'shell-integration', event: 'start', submissionId: this.id });
         return new ShellInputExecution(this);
     }

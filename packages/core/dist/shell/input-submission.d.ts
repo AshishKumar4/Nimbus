@@ -27,6 +27,7 @@ export declare class ShellInputSubmission {
     constructor(id: string, publish: (event: ShellIntegrationEvent) => void);
     retain(): () => void;
     release(): void;
+    leavePrompt(): void;
     start(): ShellInputExecution;
     finish(status: number | null): void;
     inherit(status: number | null): void;

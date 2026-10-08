@@ -96,10 +96,8 @@ export declare class Shell {
     private tabCount;
     pasteQueue: ShellQueuedInput[];
     private lineSubmission;
-    private activeSubmission;
     private activeInput;
     private lineInputs;
-    private promptSubmission;
     private primaryPrompt;
     /**
      * Accepted lines that do not form a complete command yet: an unclosed

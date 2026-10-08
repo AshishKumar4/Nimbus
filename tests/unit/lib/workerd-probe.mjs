@@ -217,7 +217,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
  * running commands through the real shell. `run(command)` returns the
  * command's own output (the echo and prompts stripped) and its exit status.
  *
- * The driver reads completion and status from the shell's OSC 133 marks.
+ * The driver reads completion and status from trusted shell control frames.
  * `timeoutMs` bounds the wait. Work a loaded machine can stretch past any
  * bound passes `{ progress, stalledMs }` too: `progress()` fingerprints what
  * the command is doing (the session's Dynamic Worker ledger, say), and the
