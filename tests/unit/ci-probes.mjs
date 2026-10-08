@@ -13,9 +13,11 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { writeScreenshots } from '../../scripts/ci/lib/probe-screenshots.mjs';
 
 const REPO = join(import.meta.dirname, '..', '..');
 const TOKEN = `probe-token-${process.pid}-not-a-jwt`;
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jHn0AAAAASUVORK5CYII=', 'base64');
 
 const root = mkdtempSync(join(tmpdir(), 'ci-probes-'));
 const server = createServer((request, response) => response.end('target')).listen(0, '127.0.0.1');
@@ -24,13 +26,15 @@ const base = `http://127.0.0.1:${server.address().port}`;
 try {
   const behavioral = join(root, 'tests', 'behavioral');
   mkdirSync(behavioral, { recursive: true });
-  mkdirSync(join(root, 'scripts', 'ci'), { recursive: true });
+  mkdirSync(join(root, 'scripts', 'ci', 'lib'), { recursive: true });
   for (const file of ['run-all.mjs', '_probe-browser.mjs', '_ledger.mjs']) copyFileSync(join(REPO, 'tests', 'behavioral', file), join(behavioral, file));
   copyFileSync(join(REPO, 'scripts', 'ci', 'probes.mjs'), join(root, 'scripts', 'ci', 'probes.mjs'));
+  copyFileSync(join(REPO, 'scripts', 'ci', 'lib', 'probe-screenshots.mjs'), join(root, 'scripts', 'ci', 'lib', 'probe-screenshots.mjs'));
+  const capture = `if (process.env.NIMBUS_PROBE_SCREENSHOTS) require('fs').writeFileSync(require('path').join(process.env.NIMBUS_PROBE_SCREENSHOTS, 'capture.png'), Buffer.from('${PNG.toString('base64')}', 'base64'));\n`;
   // Sorted, they are a, b, c, d: --part 1/2 is a and c, --part 2/2 is b and d.
   writeFileSync(join(behavioral, 'a.mjs'), "console.log('a sees ' + process.env.NIMBUS_PROBE_TOKEN + ' at ' + process.env.BASE);\n");
-  writeFileSync(join(behavioral, 'b.mjs'), "console.error('b fails holding ' + process.env.NIMBUS_PROBE_TOKEN); process.exit(3);\n");
-  writeFileSync(join(behavioral, 'c.mjs'), "console.log('c passes');\n");
+  writeFileSync(join(behavioral, 'b.mjs'), capture + "console.error('b fails holding ' + process.env.NIMBUS_PROBE_TOKEN); process.exit(3);\n");
+  writeFileSync(join(behavioral, 'c.mjs'), capture + "console.log('c passes');\n");
   // A long line thick with the token: wherever a pipe read splits it, some
   // token is split across two reads.
   writeFileSync(join(behavioral, 'd.mjs'), "console.error(('x'.repeat(7) + process.env.NIMBUS_PROBE_TOKEN).repeat(6000)); process.exit(1);\n");
@@ -51,6 +55,21 @@ try {
   };
   const rows = (verdict) => verdict.rows.map((row) => [row.name, row.exitCode]);
 
+  {
+    for (const name of ['b', 'c']) {
+      const verdict = await probes(['--base', base, '--only', name, '--screenshots', '1']);
+      assert.equal(verdict.status, name === 'b' ? 1 : 0, verdict.log);
+      const paths = writeScreenshots(join(root, 'captures-' + name), verdict.screenshots);
+      assert.deepEqual(paths, [join(root, 'captures-' + name, 'capture.png')]);
+      assert.deepEqual(readFileSync(paths[0]), PNG, 'armada task output returns the exact PNG, even when the probe fails');
+      assert.throws(() => writeScreenshots(join(root, 'captures-' + name), verdict.screenshots), /EEXIST/, 'a repeated export cannot overwrite an artifact');
+    }
+    const dir = join(root, 'unsafe-captures');
+    for (const name of ['../escape.png', '/absolute.png', 'not-a-png.txt']) {
+      assert.throws(() => writeScreenshots(dir, [{ name, base64: PNG.toString('base64') }]), /invalid screenshot artifact/);
+    }
+    console.log('  ok  screenshot hooks return exact PNGs through the verdict on pass and failure; exports keep files in their task directory without overwriting');
+  }
   {
     const verdict = await probes(['--base', base, '--part', '1/2', '--jobs', '2']);
     assert.equal(verdict.status, 0, verdict.log);
