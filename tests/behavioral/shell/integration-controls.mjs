@@ -15,7 +15,7 @@ try {
   await terminal.run(heredocCommand('/home/user/forged-control.js', program), 15_000);
   const forged = await terminal.run('node /home/user/forged-control.js', 30_000);
   a.check('program OSC marks cannot forge command completion or its status',
-    forged.exitCode === 7 && hasOutputLine(forged.output, 'ACTUAL_END'), forged.output);
+    forged.exitCode === 7 && forged.output.includes('ACTUAL_END'), `exitCode=${forged.exitCode}\n${forged.output}`);
 
   const batch = await terminal.run('true\nfalse', 15_000);
   a.check('a pasted batch completes only after its last command', batch.exitCode === 1, batch.output);
