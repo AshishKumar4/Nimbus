@@ -1259,6 +1259,9 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   function fsError(errno, message, path) {
     return Object.assign(new Error(message), { code: errno, path });
   }
+  function isProcessGone(error) {
+    return "code" in error && error.code === "ESRCH";
+  }
   function descriptionOf(call) {
     return "description" in call ? call.description : void 0;
   }
@@ -1379,7 +1382,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         try {
           await session.retireWriter?.(retiring[0]);
         } catch (error) {
-          if (processGone === null || !(error instanceof Error) || !("code" in error) || error.code !== "ESRCH") throw error;
+          if (processGone === null || !(error instanceof Error) || !isProcessGone(error)) throw error;
         }
         retiring.shift();
       }
@@ -1431,7 +1434,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       try {
         writer = await writerFor(entries);
       } catch (error2) {
-        if (error2 instanceof Error && "code" in error2 && error2.code === "ESRCH") {
+        if (error2 instanceof Error && isProcessGone(error2)) {
           endedProcess(entries, error2, epoch?.writer ?? null);
           return;
         }
@@ -1478,7 +1481,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           timers
         });
       } catch (error2) {
-        if (error2 instanceof Error && "code" in error2 && error2.code === "ESRCH") {
+        if (error2 instanceof Error && isProcessGone(error2)) {
           endedProcess(entries, error2, writer);
           return;
         }
