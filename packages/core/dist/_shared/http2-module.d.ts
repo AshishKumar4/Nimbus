@@ -19,7 +19,6 @@
  * (scripts/bundle-facet-workers.mjs), so it reaches nothing outside itself
  * but `host`.
  */
-/** What the runtime embedding the module supplies. */
 export interface Http2ModuleHost {
     EventEmitter: new () => {
         emit(event: string, ...args: unknown[]): boolean;

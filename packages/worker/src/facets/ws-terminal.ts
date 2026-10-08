@@ -1,3 +1,4 @@
+import type { ShellInputSubmission, ShellIntegrationEvent } from '@nimbus-sh/core/shell/input-submission.js';
 
 interface ReplBinding {
   input(data: string): void | Promise<void>;
@@ -9,7 +10,8 @@ interface ReplBinding {
 export class WebSocketTerminal {
   /** Null while the terminal is headless (composed before any attach). */
   public ws: WebSocket | null;
-  private dataCallback: ((data: string) => void | Promise<void>) | null = null;
+  private dataCallback: ((data: string, submission?: ShellInputSubmission) => void | Promise<void>) | null = null;
+  private submissionCallback: ((data: string, id: string, deliver: (submission: ShellInputSubmission) => void | Promise<void>, repl: boolean) => void | Promise<void>) | null = null;
 
   /**
    * editor/monaco (2026-05-13): Editor-pane file-system bridge.
@@ -84,6 +86,7 @@ export class WebSocketTerminal {
     this.buffer = [];
     this.onFlush = null;
     this.dataCallback = null;
+    this.submissionCallback = null;
     this.fsCallback = null;
     try { this.ws?.close(1000, 'terminal closed'); } catch {}
     this.ws = null;
@@ -135,12 +138,26 @@ export class WebSocketTerminal {
     }
   }
 
-  onData(callback: (data: string) => void | Promise<void>): void { this.dataCallback = callback; }
+  onData(callback: (data: string, submission?: ShellInputSubmission) => void | Promise<void>): void { this.dataCallback = callback; }
 
-  handleMessage(msg: { type: string; data?: string; cols?: number; rows?: number; path?: string; content?: string; dir?: string; recursive?: boolean }): void | Promise<void> {
+  onSubmission(callback: (data: string, id: string, deliver: (submission: ShellInputSubmission) => void | Promise<void>, repl: boolean) => void | Promise<void>): void {
+    this.submissionCallback = callback;
+  }
+
+  shellIntegration(event: ShellIntegrationEvent): void {
+    this.flushNow();
+    try { this.ws?.send(JSON.stringify(event)); } catch { /* the socket closed */ }
+  }
+
+  handleMessage(msg: { type: string; data?: string; submissionId?: string; cols?: number; rows?: number; path?: string; content?: string; dir?: string; recursive?: boolean }): void | Promise<void> {
     switch (msg.type) {
       case 'input':
-        if (msg.data) return this.sendData(msg.data);
+        if (msg.data) {
+          if (msg.submissionId && this.submissionCallback) {
+            return this.submissionCallback(msg.data, msg.submissionId, (submission) => this.sendData(msg.data ?? '', submission), this.replBinding !== null);
+          }
+          return this.sendData(msg.data);
+        }
         return;
       case 'resize':
         if (msg.cols) this._cols = msg.cols;
@@ -194,9 +211,9 @@ export class WebSocketTerminal {
   onFs(cb: (msg: any, reply: (frame: any) => void) => void): void {
     this.fsCallback = cb;
   }
-  sendData(data: string): void | Promise<void> {
+  sendData(data: string, submission?: ShellInputSubmission): void | Promise<void> {
     if (this.replBinding) return this.replBinding.input(data);
-    return this.dataCallback?.(data);
+    return this.dataCallback?.(data, submission);
   }
   attachRepl(input: (data: string) => void | Promise<void>, dispose?: () => Promise<void>): () => void {
     if (this.replTeardown) throw new Error('Cannot attach a REPL while cleanup is running');

@@ -46,8 +46,7 @@ export function nodeStdinPrintProgram(source, mode) {
 }
 /** Thrown as the program's first act, after its -r preloads, as Node throws it; its stack leads with the code, as a Node error's does. */
 const ESM_CANNOT_PRINT = {
-    code: 'const e = new Error("--print cannot be used with ESM input"); e.code = "ERR_EVAL_ESM_CANNOT_PRINT";'
-        + ' e.name = "Error [ERR_EVAL_ESM_CANNOT_PRINT]"; e.stack; delete e.name; throw e;',
+    code: 'throw __nimbusNodeError(Error, "ERR_EVAL_ESM_CANNOT_PRINT", "--print cannot be used with ESM input");',
     refusedBeforeImports: true,
 };
 const SCRIPT = { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true };

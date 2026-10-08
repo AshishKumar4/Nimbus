@@ -1,11 +1,14 @@
 import { lex } from '../substrate/lifo/shell/lexer.js';
 import { TokenKind } from '../substrate/lifo/shell/types.js';
+import type { ShellInputSubmission, ShellQueuedInput } from './input-submission.js';
 
 interface ShellLike {
-  executeLine(line: string): Promise<void>;
+  executeLine(line: string, submission?: ShellInputSubmission): Promise<void>;
   printPrompt(): void;
-  handleInput(data: string): void;
-  drainPasteQueue(): void;
+  handleInput(data: string, submission?: ShellInputSubmission): void | Promise<void>;
+  drainPasteQueue(): void | Promise<void>;
+  queuePasteInput(data: string, submission?: ShellInputSubmission): void;
+  rejectQueuedInput(): void;
   redrawLine(): void;
   running: boolean;
   readonly history: readonly string[];
@@ -13,7 +16,7 @@ interface ShellLike {
   cursorPos: number;
   screenCursorRow: number;
   historyIndex: number;
-  pasteQueue: string[];
+  pasteQueue: ShellQueuedInput[];
 }
 
 interface TerminalLike {
@@ -68,9 +71,10 @@ function heredocBodiesComplete(input: string, delimiters: HeredocInfo['delimiter
 export class HeredocHandler {
   private shell: ShellLike;
   private terminal: TerminalLike;
-  private originalExecuteLine: ((line: string) => Promise<void>) | null = null;
+  private originalExecuteLine: ((line: string, submission?: ShellInputSubmission) => Promise<void>) | null = null;
   private originalPrintPrompt: (() => void) | null = null;
-  private originalHandleInput: ((data: string) => void) | null = null;
+  private originalHandleInput: ((data: string, submission?: ShellInputSubmission) => void | Promise<void>) | null = null;
+  private submission: ShellInputSubmission | undefined;
 
   // ── Accumulation state ──
   private active = false;
@@ -102,6 +106,7 @@ export class HeredocHandler {
     this.heredocInfo = null;
     this.currentHeredocIndex = 0;
     this.bodies = [];
+    this.submission = undefined;
   }
 
   private _patch(): void {
@@ -110,7 +115,7 @@ export class HeredocHandler {
     this.originalPrintPrompt = this.shell.printPrompt.bind(this.shell);
     this.originalHandleInput = this.shell.handleInput.bind(this.shell);
 
-    this.shell.handleInput = async (data: string): Promise<void> => {
+    this.shell.handleInput = async (data: string, submission?: ShellInputSubmission): Promise<void> => {
       if (this.active && data === '\x03') {
         this._cancel();
         this.terminal.write('^C\r\n');
@@ -135,7 +140,7 @@ export class HeredocHandler {
           this.shell.historyIndex = -1;
           for (let i = 1; i < parts.length; i++) {
             if (i === parts.length - 1 && parts[i] === '') continue;
-            this.shell.pasteQueue.push(parts[i]);
+            this.shell.queuePasteInput(parts[i], submission);
           }
           const isDelim = this._processLine(currentLine);
           if (isDelim && this.heredocInfo !== null) {
@@ -164,10 +169,10 @@ export class HeredocHandler {
         return;
       }
 
-      this._handleOriginalInput(data);
+      await this._handleOriginalInput(data, submission);
     };
 
-    this.shell.executeLine = async (line: string): Promise<void> => {
+    this.shell.executeLine = async (line: string, submission?: ShellInputSubmission): Promise<void> => {
       if (this.active) {
         const current = this._currentDelimiter();
         const rawLine = (current?.stripTabs && this.shell.lineBuffer)
@@ -179,11 +184,12 @@ export class HeredocHandler {
 
       const info = parseHeredoc(line);
       if (info) {
+        this.submission = submission;
         await this._startAccumulation(info);
         return;
       }
 
-      return (await this._executeOriginalLine(line));
+      return (await this._executeOriginalLine(line, submission));
     };
 
     this.shell.printPrompt = async (): Promise<void> => {
@@ -200,17 +206,17 @@ export class HeredocHandler {
     if (printPrompt) printPrompt();
   }
 
-  private _handleOriginalInput(data: string): void {
+  private _handleOriginalInput(data: string, submission?: ShellInputSubmission): void | Promise<void> {
     const handleInput = this.originalHandleInput;
-    if (handleInput) handleInput(data);
+    if (handleInput) return handleInput(data, submission);
   }
 
-  private async _executeOriginalLine(line: string): Promise<void> {
+  private async _executeOriginalLine(line: string, submission?: ShellInputSubmission): Promise<void> {
     const executeLine = this.originalExecuteLine;
     if (!executeLine) {
       throw new Error('heredoc handler is not installed');
     }
-    await executeLine(line);
+    await executeLine(line, submission);
   }
 
   private async _startAccumulation(info: HeredocInfo): Promise<void> {
@@ -241,6 +247,7 @@ export class HeredocHandler {
     const lines = this.bodies[this.currentHeredocIndex];
     if (!lines || lines.length >= HeredocHandler.MAX_HEREDOC_LINES) {
       this.terminal.write(`\x1b[31mheredoc: exceeded ${HeredocHandler.MAX_HEREDOC_LINES} line limit\x1b[0m\r\n`);
+      this.shell.rejectQueuedInput();
       this._cancel();
       this._printPrompt();
       return true; // stop accumulation
@@ -270,13 +277,15 @@ export class HeredocHandler {
    * Uses an iterative loop (not recursive) to avoid stack overflow.
    */
   private async _drainPasteQueue(): Promise<void> {
-    const queue: string[] | undefined = this.shell.pasteQueue;
+    const queue = this.shell.pasteQueue;
     if (!queue || queue.length === 0) return;
 
     while (this.active && queue.length > 0) {
-      const nextLine = queue.shift();
-      if (nextLine === undefined) break;
+      const entry = queue.shift();
+      if (entry === undefined) break;
+      const nextLine = typeof entry === 'string' ? entry : entry.data;
       this.terminal.write(nextLine + '\r\n');
+      if (typeof entry !== 'string') entry.release();
 
       if (this._processLine(nextLine)) {
         if (this.heredocInfo === null) return; // limit exceeded
@@ -290,6 +299,8 @@ export class HeredocHandler {
   private async _finishHeredoc(): Promise<void> {
     const info = this.heredocInfo;
     if (!info) return;
+    const submission = this.submission;
+    this.submission = undefined;
     const script = [
       info.command,
       ...info.delimiters.flatMap((delimiter, index) => {
@@ -305,11 +316,11 @@ export class HeredocHandler {
     this.bodies = [];
 
     try {
-      await this._executeOriginalLine(script);
+      await this._executeOriginalLine(script, submission);
     } catch (error) {
       this.terminal.write(`\x1b[31mheredoc error: ${errorMessage(error)}\x1b[0m\r\n`);
       this._printPrompt();
-      this.shell.drainPasteQueue();
+      await this.shell.drainPasteQueue();
     }
   }
 
@@ -365,7 +376,7 @@ function errorMessage(error: unknown): string {
 export class LineEditorExtender {
   private shell: ShellLike;
   private terminal: TerminalLike;
-  private originalHandleInput: ((data: string) => void) | null = null;
+  private originalHandleInput: ((data: string, submission?: ShellInputSubmission) => void | Promise<void>) | null = null;
 
   /** Single-slot kill-ring. Set by Ctrl+W / Ctrl+K / Ctrl+U / Alt+Backspace / Alt+D. */
   private killRing: string = '';
@@ -410,19 +421,17 @@ export class LineEditorExtender {
   private _patch(): void {
     this.originalHandleInput = this.shell.handleInput.bind(this.shell);
 
-    this.shell.handleInput = (data: string): void => {
+    this.shell.handleInput = (data: string, submission?: ShellInputSubmission): void | Promise<void> => {
       // Skip when a process is running — the line editor only governs
       // shell-prompt input. Process-stdin input has its own model
       // (terminalStdin / stdinLineBuffer) handled by the shell.
       if (this.shell.running) {
-        this.originalHandleInput!(data);
-        return;
+        return this.originalHandleInput?.(data, submission);
       }
 
       // Reverse-i-search sub-mode owns ALL input until exited.
       if (this.rsearchActive) {
-        this._rsearchHandle(data);
-        return;
+        return this._rsearchHandle(data, submission);
       }
 
       // Yank-last-arg state is reset on any non-Alt+. input.
@@ -434,7 +443,7 @@ export class LineEditorExtender {
       // Try each binding. First-match wins; on no match fall through.
       if (this._handleBinding(data)) return;
 
-      this.originalHandleInput!(data);
+      return this.originalHandleInput?.(data, submission);
     };
   }
 
@@ -730,7 +739,7 @@ export class LineEditorExtender {
     this._rsearchRender();
   }
 
-  private _rsearchHandle(data: string): void {
+  private _rsearchHandle(data: string, submission?: ShellInputSubmission): void | Promise<void> {
     const s = this.shell;
 
     // Esc / Ctrl+G → abort, keep the partial line buffer as it was.
@@ -750,8 +759,7 @@ export class LineEditorExtender {
       s.redrawLine();
       // Defer to the original handler to execute the (now-restored)
       // line. Sending '\r' triggers the same path Enter would.
-      this.originalHandleInput!('\r');
-      return;
+      return this.originalHandleInput?.('\r', submission);
     }
 
     // Another Ctrl+R → step to the next-older match.

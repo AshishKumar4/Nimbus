@@ -27,6 +27,22 @@ export interface StatementHooks {
      */
     readonly onNode?: (node: AstNode) => void;
 }
+/** The parts of acorn's Parser a plugin uses (acorn's plugin API, which its declarations leave out). */
+export interface AcornParser {
+    type: unknown;
+    inModule: boolean;
+    undefinedExports: Record<string, {
+        start: number;
+    }>;
+    parse(): Program;
+    parseStatement(context: null, topLevel?: boolean, exports?: object): unknown;
+    finishNode<T>(node: T, type: string): T;
+    raiseRecoverable(pos: number, message: string): void;
+    next(): void;
+    scopeStack: Array<{
+        var: string[];
+    }>;
+}
 /**
  * acorn's parse of `source` with no tree of the whole program held: each
  * top-level statement goes to the hooks as it is parsed and is not kept,

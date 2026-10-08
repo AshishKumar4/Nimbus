@@ -1,3 +1,4 @@
+import { invalidArgType, nodeError } from '../../../_shared/node-error.js';
 import { Buffer } from './buffer.js';
 
 type ZlibCallback = (err: Error | null, result?: Buffer) => void;
@@ -57,22 +58,6 @@ function zBufError(cause: unknown): Error {
     errno: -5,
     cause,
   });
-}
-
-/**
- * Node throws this synchronously rather than deferring a callback that does
- * not exist.
- */
-function invalidCallback(value: unknown): TypeError {
-  const received =
-    value === undefined ? 'undefined'
-    : value === null ? 'null'
-    : typeof value === 'object' ? `an instance of ${value.constructor?.name ?? 'Object'}`
-    : `type ${typeof value} (${String(value)})`;
-  return Object.assign(
-    new TypeError(`The "callback" argument must be of type function. Received ${received}`),
-    { code: 'ERR_INVALID_ARG_TYPE' },
-  );
 }
 
 async function processStream(
@@ -142,7 +127,7 @@ function wrapAsync(
 ): ZlibAsync {
   return function (data: ZlibInput, optionsOrCb: object | ZlibCallback, cb?: ZlibCallback): void {
     const callback = typeof optionsOrCb === 'function' ? optionsOrCb : cb;
-    if (typeof callback !== 'function') throw invalidCallback(callback);
+    if (typeof callback !== 'function') throw invalidArgType('callback', 'function', callback);
     const bytes = toBytes(data);
     // Two arms, not .then().catch(): a callback that throws on success must
     // not be handed its own exception as a second, failed invocation.
@@ -168,9 +153,8 @@ export const unzip = wrapAsync((data) => (looksLikeGzip(data) ? 'gzip' : 'deflat
  * missing export or a vague "not supported".
  */
 function syncUnavailable(name: string, asyncName: string): never {
-  throw Object.assign(new Error(
-    `zlib.${name}: synchronous compression is not available on this runtime. Use the async zlib.${asyncName}(data, callback) form instead.`,
-  ), { code: 'ERR_ZLIB_SYNC_UNAVAILABLE' });
+  throw nodeError(Error, 'ERR_ZLIB_SYNC_UNAVAILABLE',
+    `zlib.${name}: synchronous compression is not available on this runtime. Use the async zlib.${asyncName}(data, callback) form instead.`);
 }
 
 export function gzipSync(buffer?: ZlibInput, options?: object): never {

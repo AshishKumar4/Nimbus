@@ -37,16 +37,16 @@ try {
   a.check('compile + link succeed', !/error:/i.test(out1), JSON.stringify(out1.slice(-400)));
   a.check('no "undefined symbol: sum3"', !/undefined symbol.*sum3/i.test(out1), JSON.stringify(out1.slice(-400)));
 
-  const rr = await t.run('./sum3demo ; echo RUN_EXIT=$?', 30_000);
+  const rr = await t.run('./sum3demo', 30_000);
   const out2 = stripAnsi(rr.output);
   a.check('./sum3demo prints "S=60" (10+20+30)', /S=60/.test(out2), JSON.stringify(out2.slice(-300)));
-  a.check('./sum3demo exits 0', /RUN_EXIT=0/.test(out2), JSON.stringify(out2.slice(-200)));
+  a.check('./sum3demo exits 0', rr.exitCode === 0, JSON.stringify(out2.slice(-200)));
 
   // Regression: linking onto an existing directory fails honestly and does
   // NOT destroy it (pre-permissions VFS clobbered the seeded project dir).
-  const rd = await t.run('clang app.c math.c -o example-app ; echo CC_EXIT=$?', 240_000);
+  const rd = await t.run('clang app.c math.c -o example-app', 240_000);
   const out3 = stripAnsi(rd.output);
-  a.check('link onto existing dir exits nonzero', /CC_EXIT=[1-9]/.test(out3), JSON.stringify(out3.slice(-300)));
+  a.check('link onto existing dir exits nonzero', rd.exitCode > 0, JSON.stringify(out3.slice(-300)));
   a.check('link onto existing dir reports EISDIR', /EISDIR|is a directory|unable to open/i.test(out3), JSON.stringify(out3.slice(-300)));
   const rl = await t.run('test -d /home/user/example-app && test -f /home/user/example-app/package.json && echo DIR=intact || echo DIR=lost', 15_000);
   a.check('seeded /home/user/example-app survives the refused link', /DIR=intact/.test(stripAnsi(rl.output)), JSON.stringify(stripAnsi(rl.output).slice(-200)));
