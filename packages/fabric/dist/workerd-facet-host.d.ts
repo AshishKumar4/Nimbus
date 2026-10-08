@@ -13,6 +13,7 @@
  * `HostedProcess` and never imports this file.
  */
 import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps } from './process-fabric.js';
+import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import { type FacetResourceLimits } from './facet-limits.js';
 /** Structural surface of a NimbusLoadedEntrypoint RPC stub. */
 export interface LoadedWorkerEntrypointStub {
@@ -43,6 +44,7 @@ interface LoadedWorkerStub {
     getEntrypoint(name?: string, opts?: {
         limits: FacetResourceLimits;
     }): LoadedWorkerEntrypointStub;
+    getDurableObjectClass(name: string): unknown;
 }
 /**
  * `env.LOADER` — the Worker Loader binding, as used from inside a DO.
@@ -135,6 +137,8 @@ export declare function cloneStorage(ctx: DurableObjectState, clone: {
 export declare function residentFacetName(slot: number): string;
 /** The prefix every durable application's facet name carries. */
 export declare const DURABLE_FACET_NAME_PREFIX = "app-slot-";
+/** The facet names this actor's session keeps for an undrained write log (process-fs-journal.ts). */
+export declare function reservedFacetNames(ctx: DurableObjectState): Set<string>;
 /** The facet a running resident process `pid` lives in on this actor, for its storage ledger row. */
 export declare function residentFacetOf(ctx: DurableObjectState, pid: number): string | undefined;
 export declare function deleteFacetStorage(ctx: DurableObjectState, name: string): void;
@@ -183,6 +187,25 @@ export declare class Processes {
      * boot specs exist to avoid — for a run that gains nothing by moving.
      */
     run<T>(supervisor: ResidentSupervisorProps, params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
+}
+/**
+ * The write log a process left in its facet's store (process-fs-journal.ts),
+ * read through the journal reader class the facet is opened with now, over
+ * the same SQLite. The name is aborted first: a get with a new class of a
+ * facet still running (a previous incarnation's) would reset this object.
+ */
+export declare function facetJournal(ctx: DurableObjectState, env: JournalReaderEnv, name: string): ProcessFsJournalSource;
+/** What facetJournal loads its reader with: the Worker Loader's unkeyed load. */
+export interface JournalReaderEnv {
+    LOADER?: {
+        load(code: {
+            compatibilityDate: string;
+            mainModule: string;
+            modules: Record<string, string>;
+        }): {
+            getDurableObjectClass(name: string): unknown;
+        };
+    };
 }
 /**
  * The WorkerCode the loader callback returns for one resident boot: the
