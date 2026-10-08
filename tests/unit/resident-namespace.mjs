@@ -111,7 +111,7 @@ await runScenarios(import.meta.path, {
     const { fs } = probe;
     assert.equal(fs.existsSync('/opt/locked'), true);
     assert.equal(fs.existsSync('/opt/locked/inside.txt'), false, 'hidden under a directory the process cannot search');
-    authority.rawVfs.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 }).chmod('opt/locked', 0o755);
+    await authority.peerAs({ uid: 0, gid: 0, groups: [0], umask: 0o022 }).chmod('opt/locked', 0o755);
     const seen = await probe.resume(() => fs.existsSync('/opt/locked/inside.txt') + '|' + fs.readdirSync('/opt/locked').join(','));
     assert.equal(seen, 'true|inside.txt');
   },

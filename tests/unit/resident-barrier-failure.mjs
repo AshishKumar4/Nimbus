@@ -68,8 +68,15 @@ async function boot() {
   const fault = { fsAcquire: null, fsList: null, fsReadBatch: null };
   const overrides = {};
   let forward;
+  // Every barrier here asks: the session grants no read lease (a barrier's
+  // failures are what this file is about, not the lease that skips one).
+  const asked = (op, args) => {
+    if (op !== 'fsAcquire' || args[2]?.lease !== true) return args;
+    const { lease: _lease, ...options } = args[2];
+    return [args[0], args[1], options];
+  };
   for (const op of Object.keys(fault)) {
-    overrides[op] = (...args) => (fault[op] ? fault[op](...args) : forward(op, args));
+    overrides[op] = (...args) => (fault[op] ? fault[op](...args) : forward(op, asked(op, args)));
   }
   const handle = facetSupervisor(authority, overrides);
   forward = handle.forward;
@@ -120,9 +127,9 @@ await runScenarios(import.meta.path, {
     // listing saying the peer's new name is free: statSync ENOENT, and a
     // write would pass as a creation owned by the writer.
     const { authority, fault, probe } = await boot();
-    const root = authority.rawVfs.as(CRED_KERNEL);
-    root.writeFile('home/user/app/peer.txt', 'theirs');
-    root.chmod('home/user/app/peer.txt', 0o644);
+    const root = authority.peerAs(CRED_KERNEL);
+    await root.writeFile('home/user/app/peer.txt', 'theirs');
+    await root.chmod('home/user/app/peer.txt', 0o644);
     fault.fsAcquire = DROPPED;
     const seen = await probe.resumeWith(() => probe.own('/home/user/app/peer.txt'));
     fault.fsAcquire = null;

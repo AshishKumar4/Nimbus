@@ -114,9 +114,9 @@ await runScenarios(import.meta.path, {
     const { authority, probe, log } = await boot();
     await authority.peer.writeFile(`${APP}/was-mine.txt`, 'original');
     await probe.resume(() => null);
-    const root = authority.rawVfs.as(CRED_KERNEL);
-    root.chown(`${APP}/was-mine.txt`, 0, 0);
-    root.chmod(`${APP}/was-mine.txt`, 0o644);
+    const root = authority.peerAs(CRED_KERNEL);
+    await root.chown(`${APP}/was-mine.txt`, 0, 0);
+    await root.chmod(`${APP}/was-mine.txt`, 0o644);
     const accepted = probe.t(() => probe.fs.writeFileSync(`/${APP}/was-mine.txt`, 'pwned'));
     // Whatever the local answer, the write-back meets the authority.
     await probe.resume(() => null);
@@ -170,15 +170,15 @@ await runScenarios(import.meta.path, {
 
   async 'a directory the view learns of by a later delta is as known as one listed at launch'() {
     const { authority, probe } = await boot({ tmp: true });
-    const root = authority.rawVfs.as(CRED_KERNEL);
-    root.mkdir('tmp/late', { mode: 0o755 });
-    root.chmod('tmp/late', 0o755);
-    root.writeFile('tmp/late/theirs', 'late secret');
-    root.chmod('tmp/late/theirs', 0o644);
-    root.mkdir('tmp/shared', { mode: 0o1777 });
-    root.chmod('tmp/shared', 0o1777);
-    root.writeFile('tmp/shared/theirs', 'shared secret');
-    root.chmod('tmp/shared/theirs', 0o644);
+    const root = authority.peerAs(CRED_KERNEL);
+    await root.mkdir('tmp/late', { mode: 0o755 });
+    await root.chmod('tmp/late', 0o755);
+    await root.writeFile('tmp/late/theirs', 'late secret');
+    await root.chmod('tmp/late/theirs', 0o644);
+    await root.mkdir('tmp/shared', { mode: 0o1777 });
+    await root.chmod('tmp/shared', 0o1777);
+    await root.writeFile('tmp/shared/theirs', 'shared secret');
+    await root.chmod('tmp/shared/theirs', 0o644);
     await probe.resume(() => null);
     assert.deepEqual(probe.own('/tmp/late/theirs'), rootOwned);
     assert.equal(probe.t(() => probe.fs.writeFileSync('/tmp/late/theirs', 'pwned')), 'ERR:EACCES');
@@ -192,9 +192,9 @@ await runScenarios(import.meta.path, {
   async 'a name a peer creates after the last delta: the write is refused at write-back, reported, and not ours past the next barrier'() {
     const { authority, probe, log } = await boot({ tmp: true });
     await probe.resume(() => null);
-    const root = authority.rawVfs.as(CRED_KERNEL);
-    root.writeFile('tmp/raced', 'theirs');
-    root.chmod('tmp/raced', 0o644);
+    const root = authority.peerAs(CRED_KERNEL);
+    await root.writeFile('tmp/raced', 'theirs');
+    await root.chmod('tmp/raced', 0o644);
     // No barrier since: the view still says the name is free, a creation.
     assert.equal(probe.t(() => probe.fs.writeFileSync('/tmp/raced', 'ours')), undefined);
     await probe.resume(() => null);
@@ -250,9 +250,9 @@ await runScenarios(import.meta.path, {
       onAuthority: (made) => { authorityRef = made; },
     });
     await probe.resume(() => null);
-    const root = authority.rawVfs.as(CRED_KERNEL);
-    root.writeFile(`${APP}/peer.txt`, 'theirs');
-    root.chmod(`${APP}/peer.txt`, 0o644);
+    const root = authority.peerAs(CRED_KERNEL);
+    await root.writeFile(`${APP}/peer.txt`, 'theirs');
+    await root.chmod(`${APP}/peer.txt`, 0o644);
     strip = true;
     const first = await probe.resume(() => probe.own(`/${APP}/peer.txt`));
     assert.equal(stripped, 1, 'the incomplete answer was served');
@@ -269,11 +269,11 @@ await runScenarios(import.meta.path, {
   async 'a record learned by delta answers access and type: a private peer file is not readable, a directory is a directory'() {
     const { authority, probe } = await boot();
     await probe.resume(() => null);
-    const root = authority.rawVfs.as(CRED_KERNEL);
-    root.writeFile(`${APP}/private.txt`, 'root only');
-    root.chmod(`${APP}/private.txt`, 0o600);
-    root.mkdir(`${APP}/late-dir`, { mode: 0o755 });
-    root.chmod(`${APP}/late-dir`, 0o755);
+    const root = authority.peerAs(CRED_KERNEL);
+    await root.writeFile(`${APP}/private.txt`, 'root only');
+    await root.chmod(`${APP}/private.txt`, 0o600);
+    await root.mkdir(`${APP}/late-dir`, { mode: 0o755 });
+    await root.chmod(`${APP}/late-dir`, 0o755);
     const R_OK = 4;
     const seen = await probe.resume(() => [
       probe.t(() => probe.fs.accessSync(`/${APP}/private.txt`, R_OK)),

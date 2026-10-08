@@ -120,15 +120,18 @@ export function createAuthority(vfsOptions) {
   }));
   // The host double carries what the session supervisor ops read of a session.
   attachSupervisorOps(host, buildSessionSupervisorOps(/** @type {any} */ (host), undefined, routed));
+  // `view`, each call made again once what it meets is recalled: a peer's change.
+  const peerOf = (view) => new Proxy(view, {
+    get: (target, name) => (typeof target[name] === 'function'
+      ? (...args) => withRecall(() => target[name](...args))
+      : target[name]),
+  });
   return {
     rawVfs,
     kfs,
-    // `kfs`, each call made again once what it meets is recalled: a peer's change.
-    peer: new Proxy(kfs, {
-      get: (target, name) => (typeof target[name] === 'function'
-        ? (...args) => withRecall(() => target[name](...args))
-        : target[name]),
-    }),
+    peer: peerOf(kfs),
+    /** A peer with credential `cred` (root's, for a change the session user may not make). */
+    peerAs: (cred) => peerOf(rawVfs.as(cred)),
     host,
     cursor: () => ({ epoch: rawVfs.epoch, rev: rawVfs.revision() }),
     read: (path) => dec.decode(kfs.readFile(path)),

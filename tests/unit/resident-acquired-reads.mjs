@@ -89,8 +89,8 @@ await runScenarios(import.meta.path, {
 
   async 'a refused read still applies its barrier'() {
     const { authority, probe } = await boot();
-    const root = authority.rawVfs.as(CRED_KERNEL);
-    root.mkdir('home/user/app/private', { mode: 0o700 });
+    const root = authority.peerAs(CRED_KERNEL);
+    await root.mkdir('home/user/app/private', { mode: 0o700 });
     await authority.peer.writeFile('home/user/app/g.txt', 'g2');
     assert.equal(await probe.settle(probe.fs.promises.stat('/home/user/app/private/x')), 'ERR:EACCES', 'the refusal is the read\'s');
     assert.notEqual(probe.read(G), 'g1', 'and the barrier that came with it was applied');
@@ -109,9 +109,11 @@ await runScenarios(import.meta.path, {
       await authority.peer.writeFile('home/user/app/f.txt', 'v2');
       assert.equal(await probe.fs.promises.readFile(F, 'utf8'), 'v2', `readFile still reads (${refusal})`);
       assert.equal((await probe.fs.promises.stat(F)).size, 2, 'stat still stats');
+      const leased = globalThis.__nimbusVfsCoherence.leasedBarriers;
       const later = await callsOf(log, () => probe.fs.promises.stat(F));
       assert.equal(later.made.fsAcquired, undefined, 'and fsAcquired is not asked again');
-      assert.equal(later.made.fsAcquire, 1, 'the barrier is asked on its own');
+      // Asked, or answered by the read lease the barrier before it took.
+      assert.equal((later.made.fsAcquire ?? 0) + globalThis.__nimbusVfsCoherence.leasedBarriers - leased, 1, 'the barrier is taken on its own');
     }
   },
 

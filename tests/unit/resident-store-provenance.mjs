@@ -329,10 +329,12 @@ await runScenarios(import.meta.path, {
     for (let i = 0; i < N; i++) await authority.peer.writeFile(`home/user/app/many-${i}.txt`, `new-${i}`);
     const first = probe.resumeAll(paths);
     await hold.served.promise;
-    const acquired = log.calls.fsAcquire ?? 0;
+    // Each later barrier asks, or the read lease the first one took answers it.
+    const barriers = () => (log.calls.fsAcquire ?? 0) + (globalThis.__nimbusVfsCoherence?.leasedBarriers ?? 0);
+    const acquired = barriers();
     const later = [];
     for (let i = 0; i < 9; i++) later.push(probe.resumeAll(paths));
-    await until(() => (log.calls.fsAcquire ?? 0) >= acquired + 9, 'the nine later ACQUIREs');
+    await until(() => barriers() >= acquired + 9, 'the nine later barriers');
     await sleep(20);
     hold.gate.resolve();
 

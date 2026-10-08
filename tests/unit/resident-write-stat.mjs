@@ -66,9 +66,9 @@ await runScenarios(import.meta.path, {
     // Created by root after the launch, so the process's namespace has never
     // named it, and its write took it for a new file of its own.
     const { authority, probe } = await boot();
-    const root = authority.rawVfs.as(CRED_KERNEL);
-    root.writeFile('home/user/app/shared.txt', 'root');
-    root.chmod('home/user/app/shared.txt', 0o666);
+    const root = authority.peerAs(CRED_KERNEL);
+    await root.writeFile('home/user/app/shared.txt', 'root');
+    await root.chmod('home/user/app/shared.txt', 0o666);
     await probe.fs.promises.writeFile('/home/user/app/shared.txt', 'ours');
     const stat = probe.fs.statSync('/home/user/app/shared.txt');
     assert.equal(stat.uid, 0, 'the authority kept root as the owner');
