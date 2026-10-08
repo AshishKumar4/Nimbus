@@ -34,7 +34,7 @@ const OXC_FACET_BODY = [
     '    const outcomes = [];',
     '    for (const { code, options } of requests) {',
     '      try {',
-    '        outcomes.push(await runTransformRequest(oxc, code, options, globalThis.__nimbusRewriteDynamicImports, globalThis.__nimbusLowerAsyncModule));',
+    '        outcomes.push(await runTransformRequest(oxc, code, options, globalThis.__nimbusRewriteDynamicImports, globalThis.__nimbusLowerAsyncModule, globalThis.__nimbusLowerEsModule));',
     '      } catch (e) {',
     '        const error = String((e && e.message) || e);',
     '        outcomes.push(e && e.stackExhausted === true ? { error, stackExhausted: true } : { error });',

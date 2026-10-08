@@ -1,4 +1,5 @@
 import { type SourceEdit } from './javascript-ast.js';
+import { type ModuleScope } from './module-format.js';
 /**
  * One name an import binds: the module's namespace, or one of its exports
  * by name (`default` included, which `import d from` binds too). A string
@@ -97,6 +98,21 @@ export interface CommonJsEmitOptions {
 /** `esm` lowered to the CommonJS function body of an async module. */
 export declare function lowerAsyncModule(esm: string): string;
 /**
+ * An ES module lowered to the CommonJS a cell runs (commonjs-cell.ts): the
+ * one lowering, which the transform facet runs for a module under
+ * bundle-cell-transform.ts BUNDLED_ESM_REWRITE_MIN_BYTES and the session for
+ * a larger one, read a statement at a time (bounded memory). Its import()
+ * and import.meta are bound after, by the dynamic-import rewrite. In Node's
+ * `scope` a free use of a CommonJS wrapper name binds nothing
+ * (module-format.ts ES_MODULE_UNBOUND_NAMES); in Bun's the module keeps
+ * them. Throws acorn's SyntaxError for a module that does not parse.
+ */
+export declare function lowerEsModule(source: string, scope: ModuleScope): {
+    code: string;
+    map: string;
+    warnings: [];
+};
+/**
  * The import and export declarations of ES module `source`, in source order,
  * each named import binding with where the module uses it (EsmReference).
  * Throws on a syntax error.
@@ -121,6 +137,8 @@ export declare function readEsmRecords(source: string): EsmRecord[];
 export declare function readEsmModule(source: string): {
     records: EsmRecord[];
     wrapperUses: ReadonlyMap<string, readonly EsmReference[]>;
+    /** An `await` (or `for await`) outside every function. */
+    topLevelAwait: boolean;
 };
 /** The CommonJS for ES module `source`, whose import and export declarations are `records`. */
 export declare function emitCommonJs(source: string, records: readonly EsmRecord[], options: CommonJsEmitOptions): string;

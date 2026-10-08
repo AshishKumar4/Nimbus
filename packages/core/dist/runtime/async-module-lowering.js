@@ -1,5 +1,10 @@
-import { applySourceEdits, COMMONJS_WRAPPER_NAMES, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
+import { applySourceEdits, COMMONJS_WRAPPER_NAMES, MODULE_BODY_MARK, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
 import { bindingScope, list, namesBinding, programNames, scoped, stringOf } from './javascript-scope.js';
+import { ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs, esModuleSource } from './module-format.js';
+/** `text` as spaces, its line breaks kept. */
+function blank(text) {
+    return text.replace(/[^\n\r\u2028\u2029]/g, ' ');
+}
 /**
  * Names for code generated around `source`: a prefix its text does not hold
  * anywhere, then a number, so no binding of the source is one of them.
@@ -14,6 +19,34 @@ export function generatedNames(source) {
 /** `esm` lowered to the CommonJS function body of an async module. */
 export function lowerAsyncModule(esm) {
     return emitCommonJs(esm, readEsmRecords(esm), { body: 'async' });
+}
+/**
+ * An ES module lowered to the CommonJS a cell runs (commonjs-cell.ts): the
+ * one lowering, which the transform facet runs for a module under
+ * bundle-cell-transform.ts BUNDLED_ESM_REWRITE_MIN_BYTES and the session for
+ * a larger one, read a statement at a time (bounded memory). Its import()
+ * and import.meta are bound after, by the dynamic-import rewrite. In Node's
+ * `scope` a free use of a CommonJS wrapper name binds nothing
+ * (module-format.ts ES_MODULE_UNBOUND_NAMES); in Bun's the module keeps
+ * them. Throws acorn's SyntaxError for a module that does not parse.
+ */
+export function lowerEsModule(source, scope) {
+    const module = esModuleSource(source);
+    const { records, wrapperUses, topLevelAwait } = readEsmModule(module);
+    const unbound = [];
+    if (scope === 'node')
+        for (const [name, references] of wrapperUses) {
+            const to = ES_MODULE_UNBOUND_NAMES[name];
+            for (const { start, end, use } of references)
+                unbound.push({ start, end, text: use === 'shorthand' ? `${name}: ${to}` : to });
+        }
+    const code = emitCommonJs(module, records, {
+        body: topLevelAwait ? 'async' : 'sync',
+        exportsObject: 'arguments[2].exports',
+        requireFunction: 'arguments[1]',
+        edits: unbound.filter((edit) => !records.some(({ start, end }) => edit.start >= start && edit.end <= end)),
+    });
+    return { code: scope === 'node' ? esModuleScopeTypeofs(code) : code, map: '', warnings: [] };
 }
 /**
  * The import and export declarations of ES module `source`, in source order,
@@ -42,7 +75,7 @@ export function readEsmRecords(source) {
 export function readEsmModule(source) {
     const first = readModule(source, null);
     const read = first.importsAfterCode ? readModule(source, first.imported) : first;
-    return { records: read.records, wrapperUses: read.wrapperUses };
+    return { records: read.records, wrapperUses: read.wrapperUses, topLevelAwait: read.topLevelAwait };
 }
 function readModule(source, known) {
     // ModuleExportName: an identifier, or a string such as `export { a as "b-c" }`.
@@ -56,6 +89,8 @@ function readModule(source, known) {
     const uses = new Map();
     let code = false;
     let importsAfterCode = false;
+    // Where each await finished so far starts; a function, once finished, takes back its own.
+    const awaits = [];
     const outside = { names: new Set(), parent: null };
     // Where an identifier spelled as an imported name starts, in order: code
     // with none in it uses no import, and is not walked.
@@ -199,9 +234,14 @@ function readModule(source, known) {
         onNode: (node) => {
             if (node.type === 'Identifier')
                 onIdentifier(node);
+            else if (node.type === 'AwaitExpression' || (node.type === 'ForOfStatement' && node.await))
+                awaits.push(node.start);
             // A function, once finished: its free uses, before its body is dropped.
-            else if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression')
+            else if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
                 freeIn.set(node, freeUses(node));
+                while (awaits.length > 0 && awaits[awaits.length - 1] >= node.start)
+                    awaits.pop();
+            }
         },
     });
     const withUses = records.map((record) => record.kind !== 'import' ? record : {
@@ -214,7 +254,7 @@ function readModule(source, known) {
         if (found && !declared.has(name))
             wrapperUses.set(name, found);
     }
-    return { records: withUses, imported, importsAfterCode, wrapperUses };
+    return { records: withUses, imported, importsAfterCode, wrapperUses, topLevelAwait: awaits.length > 0 };
 }
 /** How an identifier under `parent` by `key` uses the binding it names. */
 function useOf(parent, key, patternProperties) {
@@ -304,10 +344,11 @@ export function emitCommonJs(source, records, options) {
     // into a function. Kept as a comment so line numbers stay put.
     if (source.startsWith('#!'))
         edits.push({ start: 0, end: 2, text: '//' });
+    const remove = (start, end) => edits.push({ start, end, text: blank(source.slice(start, end)) });
     for (const record of records) {
         switch (record.kind) {
             case 'import': {
-                edits.push({ start: record.start, end: record.end, text: '' });
+                remove(record.start, record.end);
                 const module = importModules.get(record);
                 if (!module) {
                     requires.push(`${requireOf(record.source)};`);
@@ -328,7 +369,7 @@ export function emitCommonJs(source, records, options) {
             }
             case 'export': {
                 exportsAnything = true;
-                edits.push({ start: record.start, end: record.end, text: '' });
+                remove(record.start, record.end);
                 if (record.source === null) {
                     for (const name of record.names) {
                         // A module's own export names a binding of its own; nothing else parses.
@@ -357,7 +398,8 @@ export function emitCommonJs(source, records, options) {
                     start: record.start, end: record.end,
                     // Through a property named default, an anonymous function or class
                     // is named `default`, as the language names an exported one.
-                    text: `var ${value} = ({ default: (${expression}) }).default;`,
+                    text: `var ${value} = ({ default: (${blank(source.slice(record.start, start)).replace(/ /g, '')}${expression}) }).default;`
+                        + blank(source.slice(end, record.end)).replace(/ /g, ''),
                 });
                 getters.push(['default', value]);
                 break;
@@ -365,18 +407,21 @@ export function emitCommonJs(source, records, options) {
             case 'export-all': {
                 exportsAnything = true;
                 const mod = temp();
-                edits.push({ start: record.start, end: record.end, text: '' });
+                remove(record.start, record.end);
                 requires.push(`const ${mod} = ${requireOf(record.source)};`);
                 stars.push(`for (const k in ${mod}) if (k !== "default" && !${ownKey}(${exportsRef}, k)) ${exportGetter}(k, () => ${mod}[k]);`);
                 break;
             }
         }
     }
-    // Object is reached through a literal: in a sync body these lines share
-    // the module's scope, where it may declare a binding of that name.
+    // Object and Symbol.toStringTag (AsyncFunction.prototype's one own symbol)
+    // are reached through literals: in a sync body these lines share the
+    // module's scope, where it may declare a binding of either name. Tagged
+    // `Module`, as Node's namespace is, a call on it reads `Module.f` in a stack.
     const header = exportsAnything
         ? [
-            `const ${exportsRef} = ${options.exportsObject ?? 'module.exports'}; ({}).constructor.defineProperty(${exportsRef}, "__esModule", { value: true });`,
+            `const ${exportsRef} = ${options.exportsObject ?? 'module.exports'}; ({}).constructor.defineProperty(${exportsRef}, "__esModule", { value: true }); `
+                + `({}).constructor.defineProperty(${exportsRef}, ({}).constructor.getOwnPropertySymbols(({}).constructor.getPrototypeOf(async () => {}))[0], { value: "Module" });`,
             `const ${exportGetter} = (name, get) => ({}).constructor.defineProperty(${exportsRef}, name, { enumerable: true, get });`,
             `const ${ownKey} = (o, k) => ({}).hasOwnProperty.call(o, k);`,
         ]
@@ -395,12 +440,11 @@ export function emitCommonJs(source, records, options) {
         .map(([exported, value]) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`);
     const prologue = [...installed, ...requires, ...imported, ...stars].join(' ');
     const body = applySourceEdits(source, [...edits, ...uses.filter((use) => !defaultExpressionUses.has(use))]);
-    // An ES module is strict. A sync body keeps the source's own directive at
-    // the top; an async one moves the source into the function, so the
-    // directive opens the header, where the wrapper finds it (commonjs-cell.ts).
+    // An ES module is strict: the directive opens the first line, where the
+    // wrapper finds it (commonjs-cell.ts).
     return options.body === 'async'
-        ? `"use strict";${header.join('\n')}\nreturn (async () => { ${prologue}\n${body}\n})();\n`
-        : `${header.join('\n')}\n${prologue}\n${body}\n`;
+        ? `"use strict";${header.join(' ')} return (async () => { ${prologue}${MODULE_BODY_MARK}${body}\n})();\n`
+        : `"use strict";${header.join(' ')} ${prologue}${MODULE_BODY_MARK}${body}\n`;
 }
 /** The bindings an exported declaration introduces. */
 function declaredNames(declaration) {

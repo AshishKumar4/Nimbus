@@ -33,7 +33,7 @@ export interface WrappedCommonJsCell {
  * (THE WRAPPER). A leading shebang becomes a line comment of the same length
  * (Node strips it too; `#!` is not valid inside a function).
  */
-export declare function wrapCommonJsCell(cell: string, scope?: CommonJsCellScope): WrappedCommonJsCell;
+export declare function wrapCommonJsCell(cell: string, scope?: CommonJsCellScope, lowered?: boolean): WrappedCommonJsCell;
 /**
  * Whether a script declares one of the wrapper's five names lexically at its
  * top level (`const`, `let` or `class`) — the one thing that needs the block

@@ -6,7 +6,7 @@
   };
   function jsoncToJson(text, dialect) {
     const lineEnd2 = LINE_END[dialect];
-    const blank = dialect === "tsconfck" ? (comment) => comment.replace(/\S/g, " ") : () => " ";
+    const blank2 = dialect === "tsconfck" ? (comment) => comment.replace(/\S/g, " ") : () => " ";
     const source = text.charCodeAt(0) === 65279 ? text.slice(1) : text;
     let out = "";
     for (let i = 0; i < source.length; i++) {
@@ -18,13 +18,13 @@
       } else if (c === "/" && source[i + 1] === "/") {
         let end = i;
         while (end < source.length && !lineEnd2.test(source[end])) end++;
-        out += blank(source.slice(i, end));
+        out += blank2(source.slice(i, end));
         i = end - 1;
       } else if (c === "/" && source[i + 1] === "*") {
         const close = source.indexOf("*/", i + 2);
         if (close < 0 && dialect === "esbuild") throw new Error('Expected "*/" to terminate multi-line comment');
         const end = close < 0 ? source.length : close + 2;
-        out += blank(source.slice(i, end));
+        out += blank2(source.slice(i, end));
         i = end - 1;
       } else {
         out += dialect === "esbuild" && lineEnd2.test(c) ? "\n" : c;
@@ -5931,12 +5931,10 @@ error: the Oxc transform crashed (${reason})`);
     }
     finishNode(node, type) {
       const finished = super.finishNode(node, type);
-      if (isAstNode(finished)) {
-        this.hooks.onNode?.(finished);
-        if (FUNCTION_TYPES.has(type)) {
-          const body = finished.body;
-          if (isAstNode(body) && body.type === "BlockStatement") Reflect.set(body, "body", []);
-        }
+      this.hooks.onNode?.(finished);
+      if (FUNCTION_TYPES.has(type)) {
+        const body = Reflect.get(finished, "body");
+        if (body?.type === "BlockStatement") Reflect.set(body, "body", []);
       }
       return finished;
     }
@@ -5946,6 +5944,7 @@ error: the Oxc transform crashed (${reason})`);
     parser.hooks = hooks;
     parser.parse();
   }
+  var MODULE_BODY_MARK = "/*module*/";
   var COMMONJS_WRAPPER_NAMES =   new Set(["exports", "require", "module", "__filename", "__dirname"]);
   function applySourceEdits(source, edits) {
     const ordered = [...edits].sort((a, b) => a.start - b.start || a.end - b.end);
@@ -8747,8 +8746,9 @@ error: the Oxc transform crashed (${reason})`);
       edits.push({ start: site.ss, end: site.d + 1, text: call });
     }
     if (!edits.length && !metas.length) return code;
-    if (!metas.length) return applyEdits(code, edits, metas, null, 0);
-    return applyEdits(code, edits, metas, escapedCaptureNames(code), afterDirectives(code));
+    if (!metas.length) return applyEdits(code, edits, metas, null, 0, "");
+    const { insertion, separator } = afterDirectives(code);
+    return applyEdits(code, edits, metas, escapedCaptureNames(code), insertion, separator);
   }
   var CODE_MARK = " import.meta ";
   function passedOver(source, imports, hazards) {
@@ -8888,6 +8888,7 @@ error: the Oxc transform crashed (${reason})`);
     const tokens = tokenizer2(code, { ecmaVersion: "latest", allowHashBang: true });
     let token = tokens.getToken();
     let insertion = token.start;
+    let separator = "";
     while (token.type === types$1.string) {
       const expression = parseExpressionAt2(code, token.start, { ecmaVersion: "latest", sourceType: "script" });
       if (expression.type !== "Literal" || typeof Reflect.get(expression, "value") !== "string") break;
@@ -8896,13 +8897,15 @@ error: the Oxc transform crashed (${reason})`);
       } while (token.start < expression.end);
       if (token.type === types$1.semi) {
         insertion = token.end;
+        separator = "";
         token = tokens.getToken();
         continue;
       }
       if (token.type !== types$1.eof && !/[\n\r\u2028\u2029]/.test(code.slice(expression.end, token.start))) break;
       insertion = expression.end;
+      separator = ";";
     }
-    return insertion;
+    return { insertion, separator };
   }
   var ImportCollector = class extends Parser {
     constructor(options, input, collected) {
@@ -8964,23 +8967,22 @@ error: the Oxc transform crashed (${reason})`);
       if (!imports) collected.edits.length = 0;
       if (!collected.edits.length && !collected.metas.length) return code;
       let insertion = program.body[0]?.start ?? code.length;
+      let separator = "";
       for (const statement of program.body) {
         if (typeof Reflect.get(statement, "directive") !== "string") break;
         insertion = statement.end;
+        separator = code[statement.end - 1] === ";" ? "" : ";";
       }
-      return applyEdits(code, collected.edits, collected.metas, collected.names, insertion);
+      return applyEdits(code, collected.edits, collected.metas, collected.names, insertion, separator);
     }
     return code;
   }
-  function applyEdits(code, edits, metas, names, insertion) {
+  function applyEdits(code, edits, metas, names, insertion, separator) {
     if (metas.length) {
       let binding = METADATA_BINDING;
       while (code.includes(binding) || names?.has(binding)) binding += "_";
       for (const meta of metas) edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
-      edits.push({ start: insertion, end: insertion, text: `
-"use strict";
-const ${binding} = arguments[2];
-` });
+      edits.push({ start: insertion, end: insertion, text: `${separator}"use strict";const ${binding} = arguments[2];` });
     }
     return applySourceEdits(code, edits);
   }
@@ -9052,7 +9054,10 @@ const ${binding} = arguments[2];
     if (value.type === "VariableDeclaration" && value.kind === "var") {
       for (const declarator of list(value, "declarations")) names.push(...patternNames(child(declarator, "id")));
     }
-    for (const key in value) if (key !== "parent") varNames(value[key], sloppy, false, names);
+    for (const key in value) {
+      const field = value[key];
+      if (field !== null && typeof field === "object" && key !== "parent") varNames(field, sloppy, false, names);
+    }
     return names;
   }
   function scopeOf(node, scope, sloppy, functionBody) {
@@ -9104,9 +9109,10 @@ const ${binding} = arguments[2];
       const fields = Object.keys(item);
       for (let i = fields.length - 1; i >= 0; i--) {
         const name = fields[i];
-        if (name === "parent") continue;
+        const child2 = item[name];
+        if (child2 === null || typeof child2 !== "object" || name === "parent") continue;
         const fieldScope = item.type === "SwitchStatement" && name === "discriminant" ? at2 : inner;
-        stack.push([item[name], fieldScope, isFunction && name === "body", item, name]);
+        stack.push([child2, fieldScope, isFunction && name === "body", item, name]);
       }
     }
   }
@@ -9139,6 +9145,31 @@ const ${binding} = arguments[2];
     }
   }
 
+  var ES_MODULE_SCOPE_GLOBAL = "__nimbusEsmScope";
+  var ES_MODULE_UNBOUND_NAMES = Object.fromEntries(
+    [...COMMONJS_WRAPPER_NAMES].map((name) => [name, `${ES_MODULE_SCOPE_GLOBAL}.${name}`])
+  );
+  function esModuleScopeTypeofs(code) {
+    if (!code.includes(ES_MODULE_SCOPE_GLOBAL)) return code;
+    const edits = [];
+    parseStatements(code, { ecmaVersion: "latest", sourceType: "commonjs", allowHashBang: true, allowImportExportEverywhere: true }, {
+      onNode: (node) => {
+        const operand = node.type === "UnaryExpression" && node.operator === "typeof" ? node.argument : null;
+        if (operand !== null && isUnboundNameAccessor(operand)) edits.push({ start: operand.start, end: operand.end, text: "(void 0)" });
+      }
+    });
+    return applySourceEdits(code, edits);
+  }
+  function isUnboundNameAccessor(node) {
+    return node.type === "MemberExpression" && !node.computed && !node.optional && node.object.type === "Identifier" && node.object.name === ES_MODULE_SCOPE_GLOBAL && node.property.type === "Identifier" && COMMONJS_WRAPPER_NAMES.has(node.property.name);
+  }
+  function esModuleSource(source) {
+    return source + "\nexport {};\n";
+  }
+
+  function blank(text) {
+    return text.replace(/[^\n\r\u2028\u2029]/g, " ");
+  }
   function generatedNames(source) {
     let prefix = "__nimbus_m";
     while (source.includes(prefix)) prefix += "_";
@@ -9148,13 +9179,29 @@ const ${binding} = arguments[2];
   function lowerAsyncModule(esm) {
     return emitCommonJs(esm, readEsmRecords(esm), { body: "async" });
   }
+  function lowerEsModule(source, scope) {
+    const module = esModuleSource(source);
+    const { records, wrapperUses, topLevelAwait } = readEsmModule(module);
+    const unbound = [];
+    if (scope === "node") for (const [name, references] of wrapperUses) {
+      const to = ES_MODULE_UNBOUND_NAMES[name];
+      for (const { start, end, use } of references) unbound.push({ start, end, text: use === "shorthand" ? `${name}: ${to}` : to });
+    }
+    const code = emitCommonJs(module, records, {
+      body: topLevelAwait ? "async" : "sync",
+      exportsObject: "arguments[2].exports",
+      requireFunction: "arguments[1]",
+      edits: unbound.filter((edit) => !records.some(({ start, end }) => edit.start >= start && edit.end <= end))
+    });
+    return { code: scope === "node" ? esModuleScopeTypeofs(code) : code, map: "", warnings: [] };
+  }
   function readEsmRecords(source) {
     return readEsmModule(source).records;
   }
   function readEsmModule(source) {
     const first = readModule(source, null);
     const read = first.importsAfterCode ? readModule(source, first.imported) : first;
-    return { records: read.records, wrapperUses: read.wrapperUses };
+    return { records: read.records, wrapperUses: read.wrapperUses, topLevelAwait: read.topLevelAwait };
   }
   function readModule(source, known) {
     const nameOf = (node) => node.type === "Identifier" ? String(node.name) : String(node.value);
@@ -9165,6 +9212,7 @@ const ${binding} = arguments[2];
     const uses =   new Map();
     let code = false;
     let importsAfterCode = false;
+    const awaits = [];
     const outside = { names:   new Set(), parent: null };
     const mentions = [];
     const mentioned = (start, end) => {
@@ -9297,7 +9345,11 @@ const ${binding} = arguments[2];
       onStatement: (statement) => onStatement(statement),
       onNode: (node) => {
         if (node.type === "Identifier") onIdentifier(node);
-        else if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") freeIn.set(node, freeUses(node));
+        else if (node.type === "AwaitExpression" || node.type === "ForOfStatement" && node.await) awaits.push(node.start);
+        else if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
+          freeIn.set(node, freeUses(node));
+          while (awaits.length > 0 && awaits[awaits.length - 1] >= node.start) awaits.pop();
+        }
       }
     });
     const withUses = records.map((record) => record.kind !== "import" ? record : {
@@ -9309,7 +9361,7 @@ const ${binding} = arguments[2];
       const found = uses.get(name);
       if (found && !declared.has(name)) wrapperUses.set(name, found);
     }
-    return { records: withUses, imported, importsAfterCode, wrapperUses };
+    return { records: withUses, imported, importsAfterCode, wrapperUses, topLevelAwait: awaits.length > 0 };
   }
   function useOf(parent, key, patternProperties) {
     switch (parent.type) {
@@ -9374,10 +9426,11 @@ const ${binding} = arguments[2];
     const edits = [...options.edits ?? []];
     let exportsAnything = false;
     if (source.startsWith("#!")) edits.push({ start: 0, end: 2, text: "//" });
+    const remove = (start, end) => edits.push({ start, end, text: blank(source.slice(start, end)) });
     for (const record of records) {
       switch (record.kind) {
         case "import": {
-          edits.push({ start: record.start, end: record.end, text: "" });
+          remove(record.start, record.end);
           const module = importModules.get(record);
           if (!module) {
             requires.push(`${requireOf(record.source)};`);
@@ -9395,7 +9448,7 @@ const ${binding} = arguments[2];
         }
         case "export": {
           exportsAnything = true;
-          edits.push({ start: record.start, end: record.end, text: "" });
+          remove(record.start, record.end);
           if (record.source === null) {
             for (const name of record.names) {
               if (name.kind !== "named") throw new Error(`export of the namespace ${name.exported} without a source module`);
@@ -9420,7 +9473,7 @@ const ${binding} = arguments[2];
           edits.push({
             start: record.start,
             end: record.end,
-            text: `var ${value} = ({ default: (${expression}) }).default;`
+            text: `var ${value} = ({ default: (${blank(source.slice(record.start, start)).replace(/ /g, "")}${expression}) }).default;` + blank(source.slice(end, record.end)).replace(/ /g, "")
           });
           getters.push(["default", value]);
           break;
@@ -9428,7 +9481,7 @@ const ${binding} = arguments[2];
         case "export-all": {
           exportsAnything = true;
           const mod = temp();
-          edits.push({ start: record.start, end: record.end, text: "" });
+          remove(record.start, record.end);
           requires.push(`const ${mod} = ${requireOf(record.source)};`);
           stars.push(
             `for (const k in ${mod}) if (k !== "default" && !${ownKey}(${exportsRef}, k)) ${exportGetter}(k, () => ${mod}[k]);`
@@ -9438,7 +9491,7 @@ const ${binding} = arguments[2];
       }
     }
     const header = exportsAnything ? [
-      `const ${exportsRef} = ${options.exportsObject ?? "module.exports"}; ({}).constructor.defineProperty(${exportsRef}, "__esModule", { value: true });`,
+      `const ${exportsRef} = ${options.exportsObject ?? "module.exports"}; ({}).constructor.defineProperty(${exportsRef}, "__esModule", { value: true }); ({}).constructor.defineProperty(${exportsRef}, ({}).constructor.getOwnPropertySymbols(({}).constructor.getPrototypeOf(async () => {}))[0], { value: "Module" });`,
       `const ${exportGetter} = (name, get) => ({}).constructor.defineProperty(${exportsRef}, name, { enumerable: true, get });`,
       `const ${ownKey} = (o, k) => ({}).hasOwnProperty.call(o, k);`
     ] : [];
@@ -9451,13 +9504,9 @@ const ${binding} = arguments[2];
     const installed = getters.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([exported, value]) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`);
     const prologue = [...installed, ...requires, ...imported, ...stars].join(" ");
     const body = applySourceEdits(source, [...edits, ...uses.filter((use) => !defaultExpressionUses.has(use))]);
-    return options.body === "async" ? `"use strict";${header.join("\n")}
-return (async () => { ${prologue}
-${body}
+    return options.body === "async" ? `"use strict";${header.join(" ")} return (async () => { ${prologue}${MODULE_BODY_MARK}${body}
 })();
-` : `${header.join("\n")}
-${prologue}
-${body}
+` : `"use strict";${header.join(" ")} ${prologue}${MODULE_BODY_MARK}${body}
 `;
   }
   function declaredNames(declaration) {
@@ -9492,6 +9541,7 @@ ${body}
   Object.assign(globalThis, {
     __nimbusCreateOxcTransform: createOxcTransform,
     __nimbusRewriteDynamicImports: rewriteDynamicImports,
-    __nimbusLowerAsyncModule: lowerAsyncModule
+    __nimbusLowerAsyncModule: lowerAsyncModule,
+    __nimbusLowerEsModule: lowerEsModule
   });
 })();

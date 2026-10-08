@@ -60,6 +60,12 @@ export declare function calleeName(callee: AnyNode): string | null;
 /** The module syntax a token opens: a top-level declaration, or `import.meta` anywhere. */
 export type ModuleSyntaxToken = 'import' | 'export' | 'import.meta';
 /**
+ * Where the first line of an ES module lowered to CommonJS turns from the
+ * lowering's own code to the module's (async-module-lowering.ts emitCommonJs;
+ * commonjs-cell.ts wrapCommonJsCell counts what precedes it as the head).
+ */
+export declare const MODULE_BODY_MARK = "/*module*/";
+/**
  * The names Node's CommonJS wrapper binds: what a CommonJS module's top level
  * may not redeclare lexically, and what no ES module's scope has.
  */
@@ -88,12 +94,6 @@ export declare const COMMONJS_WRAPPER_NAMES: ReadonlySet<string>;
  * place (commonJsCompileError).
  */
 export declare function containsModuleSyntax(source: string, scope?: 'file' | 'eval'): boolean;
-/**
- * Whether `source` may hold an `await` outside every function body (a
- * top-level await), read off its tokens: true when one is found, or when the
- * source does not tokenize, so a false answer is certain.
- */
-export declare function hasUnscopedAwait(source: string): boolean;
 /**
  * Walk `source`'s tokens tracking brace, paren and bracket depth, without
  * building an AST (a multi-MiB bundle chunk must fit a 48 MiB heap). `visit`

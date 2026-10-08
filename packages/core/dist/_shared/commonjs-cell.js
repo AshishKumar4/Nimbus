@@ -35,7 +35,7 @@
  * call with their own exports, require, module, __filename and __dirname. A
  * cell of CommonJS runs as Node's own wrapper runs it, as the function body:
  *
- *   module.exports = (function (Function) { return function (exports, require, module, __filename, __dirname) {<cell>
+ *   module.exports = (0, function (Function) { return function (exports, require, module, __filename, __dirname) {<cell>
  *   }; });
  *
  * The module's `Function` is the Function constructor bound to the module's
@@ -54,7 +54,7 @@
  * SyntaxError. Such a cell sits in a BLOCK inside the function, where the
  * declaration shadows the parameter, which is what the module meant:
  *
- *   module.exports = (function (Function) { return function (exports, require, module, __filename, __dirname) {<"use strict";>{<cell>
+ *   module.exports = (0, function (Function) { return function (exports, require, module, __filename, __dirname) {<"use strict";>{<cell>
  *   }}; });
  *
  * Only a lowered module gets the block, because the block is not a function
@@ -127,7 +127,7 @@ import { createHash } from 'node:crypto';
 import { parse, tokenizer, tokTypes } from 'acorn';
 import { RUNTIME_FUNCTION_HEADS, expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, runtimeFunctionSyntaxError as syntaxErrorIn, scriptExpression, } from './runtime-function-source.js';
 import { INTERPRETER_UNSUPPORTED } from '../interpreter/unsupported-code.js';
-import { applySourceEdits, forEachNode } from '../runtime/javascript-ast.js';
+import { MODULE_BODY_MARK, applySourceEdits, forEachNode } from '../runtime/javascript-ast.js';
 import { moduleImporterUrl } from './module-importer.js';
 /** This module's own built-ins, for the checks it shares with the interpreter. */
 const REALM = {
@@ -196,21 +196,27 @@ export function commonJsEntryModuleName(filename) {
 export function commonJsCellReadsBack(key) {
     return !/[%\\]/.test(key);
 }
-const WRAPPER_HEAD = 'module.exports = (function (Function) { return function (exports, require, module, __filename, __dirname) {';
+// `(0, …)` keeps V8 from naming the wrapper `module.exports`: a frame reads
+// `Object.<anonymous>`, as Node's does.
+const WRAPPER_HEAD = 'module.exports = (0, function (Function) { return function (exports, require, module, __filename, __dirname) {';
 /**
  * Wrap a CommonJS cell as a `{ cjs }` module whose export, given the
  * module's `Function`, is Node's module wrapper function, in the given scope
  * (THE WRAPPER). A leading shebang becomes a line comment of the same length
  * (Node strips it too; `#!` is not valid inside a function).
  */
-export function wrapCommonJsCell(cell, scope = 'function') {
+export function wrapCommonJsCell(cell, scope = 'function', lowered = false) {
     const hashbang = cell.charCodeAt(0) === 35 && cell.charCodeAt(1) === 33;
     const body = hashbang ? '//' + cell.slice(2) : cell;
     const head = scope === 'function'
         ? WRAPPER_HEAD
         : WRAPPER_HEAD + (opensWithUseStrict(body) ? '"use strict";' : '') + '{';
     const tail = scope === 'function' ? '\n}; });' : '\n}}; });';
-    return { text: head + body + tail, head: head.length, tail: tail.length, hashbang };
+    // A lowered ES module's first line opens with the lowering's own code: to a frame, the head too.
+    const mark = lowered ? body.indexOf(MODULE_BODY_MARK) : -1;
+    const lineEnd = body.search(/[\n\r\u2028\u2029]/);
+    const opening = mark !== -1 && (lineEnd === -1 || mark < lineEnd) ? mark + MODULE_BODY_MARK.length : 0;
+    return { text: head + body + tail, head: head.length + opening, tail: tail.length, hashbang };
 }
 const WRAPPER_NAMES = new Set(['exports', 'require', 'module', '__filename', '__dirname']);
 /** Could the text declare a wrapper name lexically at all: the cheap test before a parse. */
@@ -581,12 +587,13 @@ function __nimbusEntryWrapper(name, importer) {
     throw e;
   }
 }
-// ── Frames, as Node's fatal report places them (node-shims.ts __nimbusFatalArrow) ──
+// ── Frames, as Node names and places them ──
 // The launch's entry: [moduleName, the name Node gives it (its path, an ES
 // module's file: URL, [eval], [stdin]), the wrapper's head, 1 for an ES module].
 const __nimbusStackEntry = typeof __NIMBUS_STACK_ENTRY === "undefined" ? null : __NIMBUS_STACK_ENTRY;
 const __NIMBUS_BUNDLE_URL = new URL("./", import.meta.url).href;
 let __nimbusCellsByName = null;
+const __nimbusModules = new Map();
 // A stack frame's module, by its URL in the map: the cell's VFS path (or the
 // entry's name), whether it is an ES module, the wrapper's head on its first
 // line, and whether its first line was a shebang. Null for a frame of
@@ -596,13 +603,124 @@ function __nimbusFrameModule(url) {
   return __nimbusModuleNamed(url.slice(__NIMBUS_BUNDLE_URL.length));
 }
 function __nimbusModuleNamed(name) {
+  let module = __nimbusModules.get(name);
+  if (module !== undefined) return module;
   if (__nimbusStackEntry !== null && name === __nimbusStackEntry[0]) {
-    return { name, path: null, file: __nimbusStackEntry[1], head: __nimbusStackEntry[2], esModule: __nimbusStackEntry[3] === 1, hashbang: false };
+    module = { name, path: null, file: __nimbusStackEntry[1], head: __nimbusStackEntry[2], esModule: __nimbusStackEntry[3] === 1, hashbang: false };
+  } else {
+    __nimbusCellsByName ??= new Map(__NIMBUS_CODE_CELLS.map((row) => [row[1], row]));
+    const row = __nimbusCellsByName.get(name);
+    if (row === undefined) return null;
+    module = { name, path: "/" + row[0], file: null, head: row[2], esModule: row[6] === 1, hashbang: row[4] === 1 };
   }
-  __nimbusCellsByName ??= new Map(__NIMBUS_CODE_CELLS.map((row) => [row[1], row]));
-  const row = __nimbusCellsByName.get(name);
-  return row === undefined ? null
-    : { name, path: "/" + row[0], file: null, head: row[2], esModule: row[6] === 1, hashbang: row[4] === 1 };
+  __nimbusModules.set(name, module);
+  return module;
+}
+function __nimbusFileUrl(path) {
+  const url = new URL("file://");
+  url.pathname = path;
+  return url.href;
+}
+// What a module's file is called in a stack: its path, an ES module's file:
+// URL; -e and stdin code are [eval] and [stdin], an ES module of either
+// [eval1] in the working directory.
+function __nimbusFrameFile(module) {
+  module.frameFile ??= (() => {
+    if (module.path !== null) return module.esModule ? __nimbusFileUrl(module.path) : module.path;
+    const named = module.file;
+    if (named === "<eval>" || named === "[stdin]") {
+      if (!module.esModule) return named === "<eval>" ? "[eval]" : "[stdin]";
+      const cwd = String(globalThis.process?.cwd?.() ?? "/home/user").replace(/\\/+$/, "");
+      return __nimbusFileUrl(cwd + "/[eval1]");
+    }
+    return module.esModule ? __nimbusFileUrl(named) : named;
+  })();
+  return module.frameFile;
+}
+let __nimbusModulesByFile = null;
+// The module whose frames read \`file\` (__nimbusFrameFile), or null.
+function __nimbusModuleOfFile(file) {
+  if (__nimbusModulesByFile === null) {
+    __nimbusModulesByFile = new Map();
+    const add = (name) => {
+      const module = __nimbusModuleNamed(name);
+      if (module !== null) __nimbusModulesByFile.set(__nimbusFrameFile(module), module);
+    };
+    for (const row of __NIMBUS_CODE_CELLS) add(row[1]);
+    if (__nimbusStackEntry !== null) add(__nimbusStackEntry[0]);
+  }
+  return __nimbusModulesByFile.get(file) ?? null;
+}
+// A frame in a module of the program: its place in the module's file, as
+// Node's frame names it (a first line's column without the wrapper's head).
+function __nimbusFrameLocation(site) {
+  const fileName = site.getFileName();
+  const module = __nimbusFrameModule(fileName);
+  if (module === null) return null;
+  const line = site.getLineNumber();
+  const column = site.getColumnNumber();
+  if (line === null || column === null) return null;
+  return { from: fileName + ":" + line + ":" + column, module, file: __nimbusFrameFile(module), line, column: line === 1 ? column - module.head : column };
+}
+function __nimbusFrameText(site, location) {
+  const text = String(site);
+  if (location === null) return text;
+  const at = text.lastIndexOf(location.from);
+  return at === -1 ? text : text.slice(0, at) + location.file + ":" + location.line + ":" + location.column + text.slice(at + location.from.length);
+}
+// A call site of the program's code as Node's reads: its file and place;
+// anything else, V8's own.
+class __NimbusCallSite {
+  #site;
+  #location;
+  constructor(site, location) {
+    this.#site = site;
+    this.#location = location;
+  }
+  static of(site) {
+    const location = __nimbusFrameLocation(site);
+    if (location === null) return site;
+    if (!__NimbusCallSite.delegates) {
+      __NimbusCallSite.delegates = true;
+      for (const name of Object.getOwnPropertyNames(Object.getPrototypeOf(site))) {
+        if (name === "constructor" || Object.hasOwn(__NimbusCallSite.prototype, name) || typeof site[name] !== "function") continue;
+        Object.defineProperty(__NimbusCallSite.prototype, name, {
+          value: function (...args) { return this.#site[name](...args); }, writable: true, configurable: true,
+        });
+      }
+    }
+    return new __NimbusCallSite(site, location);
+  }
+  getFileName() { return this.#location.file; }
+  getScriptNameOrSourceURL() { return this.#location.file; }
+  getLineNumber() { return this.#location.line; }
+  getColumnNumber() { return this.#location.column; }
+  getEnclosingLineNumber() { return this.#site.getEnclosingLineNumber(); }
+  getEnclosingColumnNumber() {
+    const column = this.#site.getEnclosingColumnNumber();
+    return this.#site.getEnclosingLineNumber() === 1 && column !== null ? column - this.#location.module.head : column;
+  }
+  toString() { return __nimbusFrameText(this.#site, this.#location); }
+}
+{
+  let __userPrepare;
+  const __prepare = function prepareStackTrace(error, sites) {
+    if (typeof __userPrepare === "function") return __userPrepare(error, sites.map(__NimbusCallSite.of));
+    let stack;
+    try {
+      stack = Error.prototype.toString.call(error);
+    } catch {
+      stack = "<error>";
+    }
+    for (const site of sites) stack += "\\n    at " + __nimbusFrameText(site, __nimbusFrameLocation(site));
+    return stack;
+  };
+  Object.defineProperty(Error, "prepareStackTrace", {
+    get() { return __prepare; },
+    // Restoring the hook a program read restores the default.
+    set(value) { __userPrepare = value === __prepare ? undefined : value; },
+    configurable: true,
+  });
 }
 // A frame module's text as the registry compiled it, or null.
 function __nimbusFrameModuleText(module) {
