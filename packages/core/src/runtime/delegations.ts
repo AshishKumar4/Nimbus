@@ -174,9 +174,7 @@ export class Delegations {
     };
     held = { pid, owner: lease.owner, root: lease.root, asked: [], waiter: null, pending: null, end, scope, read: null };
     this.held.set(lease.owner, held);
-    let owned = this.byPid.get(pid);
-    if (owned === undefined) this.byPid.set(pid, owned = new Set());
-    owned.add(lease.owner);
+    this.holdsOf(pid, scope).add(lease.owner);
     // The process ended holding it: reported, then given up.
     scope.subscriptions.add(() => {
       if (this.held.get(lease.owner) === held) this.options.orphaned?.({ pid, root: lease.root });
@@ -235,9 +233,7 @@ export class Delegations {
     };
     held = { pid, owner: lease.owner, root: '', asked: [], waiter: null, pending: null, end, scope, read: { confirmedAt: now } };
     this.held.set(lease.owner, held);
-    let owned = this.byPid.get(pid);
-    if (owned === undefined) this.byPid.set(pid, owned = new Set());
-    owned.add(lease.owner);
+    this.holdsOf(pid, scope).add(lease.owner);
     // Its holder decided nothing: ending with it loses nothing, and says nothing.
     scope.subscriptions.add(end);
     return { owner: lease.owner, trustMs: READ_LEASE_TRUST_MS };
@@ -287,6 +283,21 @@ export class Delegations {
   /** The leases of every delegation `pid` holds: what its own calls are made by. */
   heldBy(pid: number): ReadonlySet<string> {
     return this.byPid.get(pid) ?? NONE;
+  }
+
+  /**
+   * The leases process `pid` holds, as one set for as long as its `scope`
+   * lives: a call that began before it took one (a wave in flight when its
+   * read lease is granted) is made by that one too.
+   */
+  holdsOf(pid: number, scope: { readonly subscriptions: Set<() => void> }): Set<string> {
+    let owned = this.byPid.get(pid);
+    if (owned === undefined) {
+      const made = owned = new Set();
+      this.byPid.set(pid, made);
+      scope.subscriptions.add(() => { if (this.byPid.get(pid) === made) this.byPid.delete(pid); });
+    }
+    return owned;
   }
 
   get size(): number {
@@ -353,9 +364,7 @@ export class Delegations {
   private forget(held: Held): void {
     if (this.held.get(held.owner) !== held) return;
     this.held.delete(held.owner);
-    const owned = this.byPid.get(held.pid);
-    owned?.delete(held.owner);
-    if (owned?.size === 0) this.byPid.delete(held.pid);
+    this.byPid.get(held.pid)?.delete(held.owner);
     held.scope.subscriptions.delete(held.end);
     held.waiter?.(null);
   }
