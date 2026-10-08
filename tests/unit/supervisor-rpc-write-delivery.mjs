@@ -264,6 +264,27 @@ function assertOneDelivery(arrivals, op, attempts) {
 // ── Another instance, or a host that predates delivery ───────────────────
 
 {
+  const w = world();
+  const { pid, rpc } = w.process();
+  const hostIncarnation = supervisorDeliveryProps(w.session.ctx).hostIncarnation;
+  await rpc.writeFile('/home/user/restart.txt', 'before restart');
+  const revision = w.revision('home/user/restart.txt');
+  w.session = openSession(w.harness);
+  w.session.processes.setPidBase(1_000_000);
+  const gone = (error) => error.code === 'ESRCH' && error.message === `process pid ${pid} does not exist`;
+  await assert.rejects(rpc.stat('/home/user/restart.txt'), gone, 'a restarted session refuses the old process read as ESRCH');
+  await assert.rejects(rpc.writeFile('/home/user/restart.txt', 'stale process'), gone, 'the same process mutation gets ESRCH, not the stale-binding refusal');
+  const current = w.process();
+  const stale = new SupervisorRPC({ props: { doId: 'session', pid: current.pid, hostIncarnation, writerId: 'write-run' } }, w.env);
+  await assert.rejects(stale.writeFile('/home/user/restart.txt', 'stale binding'), (error) => error.code === 'ESTALE');
+  assert.equal(w.read('home/user/restart.txt'), 'before restart');
+  assert.equal(w.revision('home/user/restart.txt'), revision, 'neither refusal changed the file');
+  await current.rpc.writeFile('/home/user/restart.txt', 'current process');
+  assert.equal(w.read('home/user/restart.txt'), 'current process', 'a current process and binding can still write');
+  console.log('  ok  a restarted process gets ESRCH on reads and mutations; a live process with a stale binding gets ESTALE');
+}
+
+{
   // The session restarts between attempts. Its receipts died with it, so the
   // new instance cannot tell whether the write ran: it refuses the repeat —
   // permanently, since the process it came from died with that instance too.
