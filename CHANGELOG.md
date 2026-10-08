@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a node run that was refused a synchronous read of a file it had not
+  been staged (EAGAIN) fails at exit, naming the file, even when the program
+  swallowed the error and a later call on the same path succeeded. vite's
+  resolver swallows the EAGAIN of a package.json, bundles the package it took
+  to be missing, and later stats and reads the same path successfully; that
+  later answer cleared the miss, so the run reported success built on the
+  wrong answer. Only the remedy the error names, an asynchronous read of the
+  path, answers it now.
+
 - Fixed: a WebAssembly program whose memory grew past 128 MiB could no longer
   read or write at the top of it: rolldown pre-bundling React with
   lucide-react (152 MiB) failed "Bad address (os error 21)" writing its
