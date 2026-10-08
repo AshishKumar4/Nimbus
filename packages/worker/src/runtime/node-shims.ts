@@ -9890,6 +9890,9 @@ let __processUmask = Number(cred.umask) & 0o777;
 // process._eval. A host that passes none runs without them.
 const __nimbusNodeCommandLine = typeof nodeCommandLine === "undefined" ? undefined : nodeCommandLine;
 const __nimbusExecArgv = Array.isArray(__nimbusNodeCommandLine?.execArgv) ? __nimbusNodeCommandLine.execArgv.map(String) : [];
+// --no-experimental-strip-types: TypeScript is JavaScript to the CommonJS
+// loader, and has no format to the ES loader.
+const __nimbusTypeScriptAsJavaScript = __nimbusNodeCommandLine?.stripTypes === false && __nimbusNodeCommandLine?.transformTypes !== true;
 // Node defines EventSource only with --experimental-eventsource; workerd's
 // lives on the global scope's prototype.
 if (__nimbusNodeCommandLine !== undefined && __nimbusNodeCommandLine !== null && __nimbusNodeCommandLine.experimentalEventSource !== true) {
@@ -12189,7 +12192,7 @@ const __esmResolver = createEsmResolver({
       return found ? "/" + String(found).replace(/^\\/+/, "") : null;
     } catch { return null; }
   },
-}, { conditions: __nimbusConditions, stripTypes: __nimbusNodeCommandLine?.stripTypes !== false || __nimbusNodeCommandLine?.transformTypes === true });
+}, { conditions: __nimbusConditions, stripTypes: !__nimbusTypeScriptAsJavaScript });
 const __esmNamespaces = new Map();
 /** A module namespace: its names sorted, read through to the exports. */
 function __esmNamespaceOf(names, read) {
@@ -12657,7 +12660,11 @@ function __requireFrom(id, fromDir, required = true) {
 
   const resolved = __resolveFrom(id, fromDir);
   if (!resolved) throw new Error("Cannot find module '" + id + "' (from " + fromDir + ")");
-
+  // An ES module's static import is the ES loader's.
+  if (!required && __nimbusTypeScriptAsJavaScript && stripsTypeScript(resolved)) {
+    const path = "/" + String(resolved).replace(/^\\/+/, "");
+    throw __nimbusGeneratedNodeError(TypeError, "ERR_UNKNOWN_FILE_EXTENSION", 'Unknown file extension "' + path.slice(path.lastIndexOf(".")) + '" for ' + path, undefined, null);
+  }
   return __loadModule(resolved, resolved, required);
 }
 
