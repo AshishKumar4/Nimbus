@@ -45,6 +45,7 @@ import type {
 
 import {
   installAuthorityFilesystem,
+  processGoneMessage,
   WASI_ACCEPTED_PATH_PREFIX,
   WASI_LISTEN_PATH_PREFIX,
   WASI_TCP_PATH_PREFIX,
@@ -1825,7 +1826,7 @@ async function __wasiSettled(result: WasiRunResult): Promise<WasiRunResult> {
   try { failed = await __wasiSettleWrites(); }
   catch (e) { failed = (e as Error)?.message ?? String(e); }
   if (__wasiProcessGone !== null) {
-    const gone = `the session no longer holds this process (${__wasiProcessGone}): it restarted, or ended the process, while the program ran, so every filesystem call since answered ESRCH`;
+    const gone = processGoneMessage(__wasiProcessGone);
     failed = failed === null ? gone : `${gone}; ${failed}`;
   }
   if (failed === null) return result;

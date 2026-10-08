@@ -107,15 +107,22 @@ const errno: Readonly<Record<string, Errno>> = {
   EFAULT: 21, EFBIG: 22, EINTR: 27, EMFILE: 33, ENFILE: 41, ENOMEM: 48, ENOSYS: 52,
   EPIPE: 64, ESPIPE: 70, ESRCH: 71, ENOTCAPABLE: 76,
 };
-export function filesystemErrno(error: unknown): Errno {
+/**
+ * A refused filesystem call as the guest's errno. The session's refusal of a
+ * process it no longer holds (process-table.ts noSuchProcess: it restarted,
+ * or ended the process, while the program ran) answers ESRCH and is also
+ * handed to `gone`, so the run can end naming it ({@link processGoneMessage}).
+ */
+export function refusalErrno(error: unknown, gone?: (refusal: string) => void): Errno {
+  if (error instanceof Error && 'code' in error && error.code === 'ESRCH') gone?.(error.message);
   if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string') return errno[error.code] ?? errno.EIO;
   if (error instanceof RangeError) return errno.EFAULT;
   return errno.EIO;
 }
 
-/** The session's refusal of a call for a process it no longer holds (process-table.ts noSuchProcess), or null. */
-function goneProcess(error: unknown): string | null {
-  return error instanceof Error && 'code' in error && error.code === 'ESRCH' ? error.message : null;
+/** How a run whose session no longer holds its process ends. */
+export function processGoneMessage(refusal: string): string {
+  return `the session no longer holds this process (${refusal}): it restarted, or ended the process, while the program ran, so every filesystem call since answered ESRCH`;
 }
 export function after<T, R>(value: Awaitable<T>, next: (value: T) => Awaitable<R>): Awaitable<R> {
   return value instanceof Promise ? value.then(next) : next(value);
@@ -295,11 +302,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     owns?: (args: A) => boolean,
   ): ((...args: A) => SyscallResult) => (...args) => {
     if (!options.fs() || (owns && !owns(args))) return previous ? previous(...args) : 52;
-    const refused = (error: unknown): Errno => {
-      const gone = goneProcess(error);
-      if (gone !== null) options.processGone?.(gone);
-      return filesystemErrno(error);
-    };
+    const refused = (error: unknown): Errno => refusalErrno(error, options.processGone);
     try {
       const result = body(fs(), ...args);
       if (result instanceof Promise) {

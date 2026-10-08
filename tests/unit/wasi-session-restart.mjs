@@ -10,11 +10,13 @@
  * current directory: stat .: I/O error".
  *
  * The session's refusal is ESRCH: each call it refuses answers ESRCH, and the
- * run ends naming why. A refusal of any other kind is untouched.
+ * run ends naming why, for a WASI guest (the WASI body's run) and for bash
+ * (its own scheduler). A refusal of any other kind is untouched.
  */
 
 import assert from 'node:assert/strict';
 import { residentGuest } from './lib/wasi-resident-guest.mjs';
+import { loadPreamble } from './lib/bash-preamble.mjs';
 
 const ESRCH = 71;
 const guest = await residentGuest();
@@ -34,4 +36,24 @@ try {
 } finally {
   await guest.dispose();
 }
-console.log('wasi-session-restart: a restarted session reads as ESRCH and a named ending');
+// bash's own scheduler maps its refusals through the same entry point and
+// ends the same way: it waits at a read, the session restarts, and its next
+// write is refused.
+const bash = loadPreamble({ remote: true });
+try {
+  const parked = await bash.boot({
+    argv: ['bash', '-c', 'echo before > /tmp/before; read line; echo after > /tmp/after; echo "write=$?"'],
+    environ: ['PATH=/bin:/usr/bin', 'HOME=/home/user', 'NIMBUS_PWD=/', 'TERM=dumb'],
+    stdinTty: false, stdinClosed: false, busyboxApplets: bash.applets,
+  });
+  assert.equal(parked.state, 'need-input', `bash waits at its read (${parked.error ?? ''})`);
+  bash.restartSession();
+  const ended = await bash.feed({ data: 'go\n', eof: true });
+  assert.equal(ended.state, 'error', `a bash run whose session restarted under it fails (${JSON.stringify(ended).slice(0, 400)})`);
+  assert.notEqual(ended.exitCode, 0);
+  assert.match(ended.error ?? '', /session no longer holds this process \(process pid \d+ does not exist\): it restarted, or ended the process, while the program ran/,
+    'the bash run names the restart');
+} finally {
+  await bash.dispose();
+}
+console.log('wasi-session-restart: a restarted session reads as ESRCH and a named ending, for a WASI guest and for bash');

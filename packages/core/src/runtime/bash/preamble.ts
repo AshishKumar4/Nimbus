@@ -43,7 +43,7 @@ import type {
   BashWasiFsImports,
   BashWasiImports,
 } from './types.js';
-import { after, filesystemErrno, installAuthorityFilesystem } from '../wasi/filesystem.js';
+import { after, installAuthorityFilesystem, processGoneMessage, refusalErrno } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
@@ -116,7 +116,7 @@ function newSession(args: BashBootArgs): BashSession {
 
   if (!filesystem) throw new Error('bash requires a process filesystem capability');
   const cwd = args.cwd;
-  return {
+  const session: BashSession = {
     mod, coreutils, coreutilsRoot: norm(args.coreutilsRoot), fs: filesystem, cwd, cred: args.cred, parking: args.parking, pipeBudget: pipeBudget(args.memoryBudgetBytes), pending: new Set(),
     argv: args.argv, environ: args.environ,
     stdinTty: !!args.stdinTty,
@@ -127,7 +127,10 @@ function newSession(args: BashBootArgs): BashSession {
     missingWasi: new Set(),
     stats: { instances: 0, reused: 0, memPeak: 0, mainHi: 0, slotHi: 0 },
     error: null,
+    processGone: null,
+    gone: (refusal) => { session.processGone ??= refusal; },
   };
+  return session;
 }
 function initStdinQueued(s: BashSession): void { s.stdin.queued = s.stdin.chunks.reduce((a, c) => a + c.length, 0); }
 
@@ -342,7 +345,7 @@ function makeWasiFs(s: BashSession, proc: BashProc, DV: () => DataView, U8: () =
     random_get(p: number,n: number): BashErrno { for(let i=0;i<n;i+=65536)crypto.getRandomValues(U8().subarray(p+i,p+Math.min(i+65536,n)));return 0; },
     proc_exit(code: number) { throw new Exit(code); },
   };
-  installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, resident });
+  installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, resident, processGone: s.gone });
   installPreopenRehoming(proc, imports);
   return imports;
 }
@@ -548,7 +551,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
       const result = call(...args);
       if (!(result instanceof Promise)) return result;
       const pending = { name, settled: false, value: 0, promise: Promise.resolve() };
-      pending.promise = result.then(value => { pending.value = value; pending.settled = true; }, error => { pending.value = filesystemErrno(error); pending.settled = true; });
+      pending.promise = result.then(value => { pending.value = value; pending.settled = true; }, error => { pending.value = refusalErrno(error, s.gone); pending.settled = true; });
       proc.pendingFs = pending;
       c.reason = 'filesystem';
       initHdr(proc.MAIN_BUF, MAIN_SIZE);
@@ -725,7 +728,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
       return 0;
     },
     // nimbus-proc.c reads these two as `errno = -r` on a negative return, so a
-    // failure has to arrive negated; filesystemErrno's positive value would be
+    // failure has to arrive negated; refusalErrno's positive value would be
     // handed back to bash as a live descriptor.
     dup: suspend('dup', async (o: number) => {
       const e = proc.fds.get(o); if (!e) return -E.BADF;
@@ -734,7 +737,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
         proc.fds.set(nf, e.kind === 'authority' ? { ...e, handle: await s.fs.dup(e.handle.id) } : { ...e });
         if (e.kind === 'pipe') bumpPipe(s, e, 1);
         return nf;
-      } catch (error) { return -filesystemErrno(error); }
+      } catch (error) { return -refusalErrno(error, s.gone); }
     }),
     dup2: suspend('dup2', async (o: number, n: number) => {
       const e = proc.fds.get(o); if (!e) return -E.BADF;
@@ -757,7 +760,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
         proc.fds.set(n, copy);
         if (e.kind === 'pipe') bumpPipe(s, e, 1);
         return n;
-      } catch (error) { return -filesystemErrno(error); }
+      } catch (error) { return -refusalErrno(error, s.gone); }
     }),
     kill: (pid, signal) => signalProc(s, proc, pid, signal),
     setpgid: () => 0, getpgid: () => proc.pid, getppid: () => proc.ppid,
@@ -1016,7 +1019,7 @@ async function doExec(s: BashSession, proc: BashProc): Promise<void> {
   const module = key.startsWith(s.coreutilsRoot + '/') ? s.coreutils.get(name) : undefined;
   if (!module) {
     try { await s.fs.access(path, 1); proc.ctx.resume = -45; }
-    catch (error) { proc.ctx.resume = -filesystemErrno(error); }
+    catch (error) { proc.ctx.resume = -refusalErrno(error, s.gone); }
     resumeProc(proc);
     return;
   }
@@ -1137,8 +1140,8 @@ async function doExec(s: BashSession, proc: BashProc): Promise<void> {
   // the arguments has to answer the guest as an errno rather than escape the
   // import and fail the whole session.
   const result = <T>(produce: () => T | Promise<T>, finish: (value: T) => number) => {
-    try { const next = after(produce(), finish); return next instanceof Promise ? next.catch(filesystemErrno) : next; }
-    catch (error) { return filesystemErrno(error); }
+    try { const next = after(produce(), finish); return next instanceof Promise ? next.catch((error) => refusalErrno(error, s.gone)) : next; }
+    catch (error) { return refusalErrno(error, s.gone); }
   };
   const native = {
     startup_cwd: (ptr: number, capacity: number) => { const bytes = te.encode(proc.cwd); if (!capacity) return bytes.length; if (capacity <= bytes.length) return -37; U8().set(bytes, ptr); U8()[ptr + bytes.length] = 0; return bytes.length; },
@@ -1400,6 +1403,7 @@ async function pump(s: BashSession): Promise<BashSlice> {
     const code = s.rootExit === null ? 0 : s.rootExit;
     await Promise.all(s.pending);
     S = null;
+    if (s.processGone !== null) return { state: 'error', exitCode: code || 1, stdout: out, stderr: err, error: processGoneMessage(s.processGone), stats };
     return { state: 'exited', exitCode: code, stdout: out, stderr: err, stats };
   }
   if (s.stdin.waiters.length > 0) {
