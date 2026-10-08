@@ -1236,6 +1236,13 @@ export declare class FacetManager {
      */
     private _endBySignal;
     /**
+     * End a running process from outside it (a signal, a lost host): its ports,
+     * RPC resources and writers go, it exits with `code` and `reason`, and the
+     * host hears of it. `portEnding` is what a request to one of its ports is
+     * told from then on (PortRegistry.ended).
+     */
+    private _endFromOutside;
+    /**
      * The actor hosting `workerKey` reports, from its own next incarnation,
      * that the platform reset it under the process (session/rpc.ts
      * hostingWatchFired). True when it was this session's open process, which
@@ -1757,7 +1764,7 @@ export declare class FacetManager {
      * before any caller's own `done` handler, so the process has ended by name
      * when they look. The placement goes to the process log under NIMBUS_DEBUG.
      */
-    private _hosted;
+    private _watchHost;
     /**
      * The reader the fabric completes a boot spec's by-path members with.
      *
