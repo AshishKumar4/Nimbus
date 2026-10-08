@@ -684,12 +684,7 @@
     term.loadAddon(fitAddon);
     try { term.loadAddon(new WebglAddon.WebglAddon()); } catch (e) {}
     term.open(document.getElementById('terminal-container'));
-    function fitSessionTerminal() {
-      const pane = document.getElementById('terminal-container');
-      // Fitting a hidden pane would resize the running shell to 2 columns / 1 row.
-      if (pane.clientWidth > 0 && pane.clientHeight > 0) fitAddon.fit();
-    }
-    fitSessionTerminal();
+    fitAddon.fit();
 
     // ── State ──
     const dot = document.getElementById('statusDot');
@@ -776,7 +771,7 @@
       setTimeout(() => {
         // Re-apply persisted pane dims for this workspace.
         try { if (typeof PaneResizer !== 'undefined') PaneResizer.onLayoutChange(); } catch {}
-        try { fitSessionTerminal(); } catch {}
+        try { fitAddon.fit(); } catch {}
         if (phoneLayout.matches && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
         // Re-layout Monaco after the panel resizes. automaticLayout:true
         // already handles this but explicit layout() on surface switch
@@ -2430,7 +2425,7 @@
         }
       }
       function applyTerminalFit() {
-        try { fitSessionTerminal(); } catch {}
+        try { fitAddon.fit(); } catch {}
         // A process view may own the panel instead of the shell xterm.
         if (typeof ProcSidebar !== 'undefined') ProcSidebar.refitActive();
       }
@@ -2942,7 +2937,7 @@
     window.addEventListener('resize', () => {
       // fit() can throw while the shell view is hidden behind a process
       // view (display:none container); the resize frame still matters.
-      try { fitSessionTerminal(); } catch {}
+      try { fitAddon.fit(); } catch {}
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'resize',cols:term.cols,rows:term.rows}));
     });
 
@@ -3012,7 +3007,7 @@
       // the terminal's viewport just grew or shrunk and the shell needs
       // the new size so its line-wrapping stays correct.
       function refitTerminal() {
-        try { fitSessionTerminal(); } catch {}
+        try { fitAddon.fit(); } catch {}
         if (ws?.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
         }
