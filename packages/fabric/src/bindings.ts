@@ -429,6 +429,19 @@ function _resolveStubInCurrentContext(
   return outerLoader.get(facetLoaderKey(carried.kind, key, carried.limits), async () => applyFacetLimits(carried.kind, code, carried.limits));
 }
 
+/**
+ * The policy a loaded entrypoint runs under: the one its props carry, else
+ * the one its stored code carries, else its route's kind (a staged boot is
+ * a process; a handle on someone else's worker is a worker).
+ */
+function entrypointPolicy(props: NimbusLoadedEntrypointProps): FacetCodePolicy {
+  if (props.policy !== undefined) return props.policy;
+  const stored = _loadedCodesGet(props.key);
+  if (stored !== undefined) return codeFacetPolicy(stored);
+  const kind: FacetKind = props.stage !== undefined ? 'process' : 'worker';
+  return { kind, limits: facetLimits(kind) };
+}
+
 function startOptions(policy: FacetCodePolicy, options?: EntrypointOptions): EntrypointOptions {
   const lower = effectiveFacetLimits(policy.kind, options?.limits);
   return { ...options, limits: {
@@ -585,6 +598,7 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv
     const props = this._props();
     const outerLoader = this.env?.LOADER;
     if (!outerLoader) throw new Error('Nimbus: outer env.LOADER missing');
+    const policy = entrypointPolicy(props);
     let outerStub: LoadedWorker;
     if (props.stage !== undefined) {
       // Staged artifact: assemble the full module map lazily, ONLY on a
@@ -593,7 +607,6 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv
       // one-shot fetch open for the whole run, which keeps that context
       // alive.
       const stage = props.stage;
-      const policy = props.policy ?? { kind: 'process' as const, limits: facetLimits('process') };
       outerStub = outerLoader.get(facetLoaderKey(policy.kind, props.key, policy.limits), async () => {
         const assembled = await stagedBootAssembler()(this.env, stage);
         assertModuleMapWithinCodeLimit(
@@ -610,16 +623,13 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv
       // loader's own cache. The cache-miss callback fails loud: a spec-free
       // stub is a handle on a worker someone else loaded — re-loading it from
       // code would boot an empty isolate, a silent wrong answer.
-      const policy = props.policy ?? { kind: 'worker' as const, limits: facetLimits('worker') };
-      outerStub = _resolveStubInCurrentContext(outerLoader, props.key, props.policy)
+      outerStub = _resolveStubInCurrentContext(outerLoader, props.key, policy)
         ?? outerLoader.get(facetLoaderKey(policy.kind, props.key, policy.limits), async () => {
           throw new Error(`Nimbus: dynamic worker '${props.key}' is no longer loaded (evicted?)`);
         });
     }
     const outer = await outerStub;
     if (!outer) throw new Error('Nimbus: loaded worker code missing');
-    const stored = _loadedCodesGet(props.key);
-    const policy = props.policy ?? (stored ? codeFacetPolicy(stored) : { kind: props.stage !== undefined ? 'process' as const : 'worker' as const, limits: facetLimits(props.stage !== undefined ? 'process' : 'worker') });
     return await outer.getEntrypoint(props.name ?? undefined, startOptions(policy, props.options));
   }
 
