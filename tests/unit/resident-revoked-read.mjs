@@ -155,7 +155,58 @@ async function own(settle) {
   assert.equal(probe.open(MINE), 'ERR:EACCES', 'openSync for reading of its own write-only file');
 }
 
+/** fs.promises.cp's answer: 'copied', or the error's code. */
+async function cp(probe, src, dest) {
+  try { await probe.fs.promises.cp(src, dest); return 'copied'; } catch (error) { return 'ERR:' + error.code; }
+}
+
+/**
+ * fs.promises.cp of a file the process holds copies it as copyFile does:
+ * through the read that judges it. The process's own write-only file is
+ * refused, and so is a source the store holds as the session's denial,
+ * which is not bytes; neither leaves a copy.
+ */
+async function cpOwn() {
+  const authority = session();
+  const { supervisor } = facetSupervisor(authority);
+  await launchResident({
+    authority, program: PROGRAM, env: { SUPERVISOR: supervisor },
+    dataPlan: await residentDataPlan(authority, APP), cursor: authority.cursor(),
+  });
+  const probe = globalThis.__probe;
+  const MINE = `${APP}/mine.txt`;
+  probe.fs.writeFileSync(MINE, 'mine');
+  assert.equal(await cp(probe, MINE, `${APP}/readable-copy.txt`), 'copied', 'the premise: cp copies a file the process may read');
+  assert.equal(authority.read('home/user/app/readable-copy.txt'), 'mine');
+  probe.fs.chmodSync(MINE, 0o200);
+  assert.equal(await cp(probe, MINE, `${APP}/copy.txt`), 'ERR:EACCES', 'cp of its own write-only file');
+  assert.equal(authority.kfs.exists('home/user/app/copy.txt'), false, 'and no copy is made');
+}
+
+async function cpDenied() {
+  const authority = session();
+  // Unreadable from the start: the earlier launch's fill holds the session's answer.
+  authority.kfs.chmod(KEY, 0o000);
+  const sql = facetSql();
+  const previous = new Function(
+    `${FACET_RESIDENT_STORE_SOURCE}\nreturn { __residentBind, __residentAdoptModuleBundle, __residentSynchronizeFromSupervisor, __residentSetPlan, __nsSetCred, __residentGet };`,
+  )();
+  previous.__residentBind({ storage: { sql } });
+  previous.__nsSetCred({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
+  previous.__residentSetPlan(await residentDataPlan(authority, APP));
+  previous.__residentAdoptModuleBundle({}, authority.cursor());
+  await previous.__residentSynchronizeFromSupervisor(facetSupervisor(authority).supervisor);
+  assert.deepEqual(previous.__residentGet(KEY), { error: 'EACCES' }, 'the premise: the store holds the source as a denial');
+  const { supervisor } = facetSupervisor(authority);
+  await launchResident({ authority, program: PROGRAM, env: { SUPERVISOR: supervisor }, sql, cursor: authority.cursor() });
+  const probe = globalThis.__probe;
+  assert.equal(await cp(probe, SECRET, `${APP}/copy.txt`), 'ERR:EACCES', 'cp of a source held as a denial');
+  assert.equal(authority.kfs.exists('home/user/app/copy.txt'), false, 'and no copy is made');
+}
+
 await runScenarios(import.meta.path, {
+  'fs.promises.cp of a file the process wrote and made write-only is refused': cpOwn,
+  'fs.promises.cp of a source the store holds as a denial is refused, and writes nothing': cpDenied,
   'a file the process wrote and made write-only is refused to its reads': () => own(false),
   'a file the process wrote, landed and made write-only is refused to its reads': () => own(true),
   'a running process holding a file is refused it after a chmod revokes its read': () => running(REVOKE.chmod),
