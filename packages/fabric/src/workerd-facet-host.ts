@@ -454,15 +454,17 @@ function spawnResident(
   // is gone. Both cases are reported instead.
   let evaluated = false;
   let released = false;
+  let markLost: (error: Error) => void = () => {};
+  const lost = new Promise<never>((_, reject) => { markLost = reject; });
+  lost.catch(() => {});
   const start = async (): Promise<{ class: unknown }> => {
     if (released) {
       throw new Error(`Nimbus: resident process ${params.pid} is no longer running`);
     }
     if (evaluated) {
-      throw new Error(
-        `Nimbus: resident process ${params.pid} is no longer loaded (its facet was lost); `
-          + 'it is not restarted',
-      );
+      const gone = new Error(`Nimbus: resident process ${params.pid} is no longer loaded (its facet was lost)`);
+      markLost(gone);
+      throw gone;
     }
     evaluated = true;
     return { class: residentProcessClass(env, disk, supervisor, params, loaderKey) };
@@ -545,9 +547,7 @@ function spawnResident(
   started.catch(() => {});
   return {
     started,
-    // A facet cannot die without taking its Durable Object — and this object —
-    // with it, so there is no independent death to report.
-    lost: new Promise<never>(() => {}),
+    lost,
     // A request can arrive before the boot call; it creates the facet as that call would.
     handleHttpRequest: (request: Request) => facet.handleHttpRequest(request),
     handleWebSocketRequest: (request: Request) => facet.fetch(request),
