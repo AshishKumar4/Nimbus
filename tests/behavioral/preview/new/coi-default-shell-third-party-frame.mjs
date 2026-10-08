@@ -170,6 +170,7 @@ try {
   await offerOn('port:' + PORT, 'default-shell');
   await screenshot(page, 'final-desktop-isolated-offer-reload-normally');
   await page.setViewport({ width: 390, height: 844 });
+  await page.click('#btnPreview');
   await screenshot(page, 'final-mobile-isolated-offer-reload-normally');
   await page.setViewport({ width: 1280, height: 800 });
   const switchStarted = Date.now();
