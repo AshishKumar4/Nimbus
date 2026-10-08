@@ -25,7 +25,7 @@ import { clearPortCapability, isValidAppName, persistPortCapability, portRecordK
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
 import { isPreviewHostSafeSid, previewHostUrl, readPreviewHostSuffix } from '../_shared/preview-host.js';
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
-import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
+import { GENERATION_KEY, assumeGeneration, generationFloor, raiseGeneration } from '@nimbus-sh/fabric/generation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
 import { parseShellState } from '@nimbus-sh/core/workspace';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
@@ -1090,8 +1090,9 @@ export async function rpcDestroy(self, options = {}) {
         // straggler facet from a HIGHER pre-destroy generation would classify as
         // current-generation (pid > pidBase) — landing its output on the
         // destroyed/recreated session. Keep {tombstone, isolateGen} consistent.
+        // The floor, not the generation: a stride this incarnation's pids reached (raiseGeneration) was wiped too.
         try {
-            await self.ctx.storage.put(GENERATION_KEY, generation(self.ctx));
+            await self.ctx.storage.put(GENERATION_KEY, generationFloor(self.ctx));
         }
         catch { /* best-effort */ }
         resetInMemorySessionState(self);
@@ -1130,7 +1131,17 @@ async function quiesceInMemorySessionState(self) {
  * so `adoptGeneration` reads it back and bumps once — landing here.
  */
 function successorGeneration(self) {
-    return generation(self.ctx) + 1;
+    return generationFloor(self.ctx) + 1;
+}
+/**
+ * A session's process supervisor: the one way one is made, so each is
+ * wired to raise the persisted generation when its pids reach the next
+ * stride (pids never repeat across incarnations).
+ */
+export function sessionProcesses(ctx) {
+    const processes = new SessionProcessSupervisor();
+    processes.onPidStride((stride) => { void raiseGeneration(ctx, stride); });
+    return processes;
 }
 /**
  * Install the empty process/port state a destroyed session leaves behind.
@@ -1148,7 +1159,7 @@ function successorGeneration(self) {
  * same set for the rest of its life, so it takes the same floor.
  */
 function installEmptyProcessState(self, generation) {
-    self.processes = new SessionProcessSupervisor();
+    self.processes = sessionProcesses(self.ctx);
     self.processes.setPidBase(generation * PID_GEN_STRIDE);
     self.portRegistry = new PortRegistry((pid) => _acquireForRoutedRequest(self, pid));
     self._w9PersistWired = false;

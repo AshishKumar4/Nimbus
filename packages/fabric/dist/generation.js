@@ -58,6 +58,11 @@ export function raiseGeneration(ctx, stride) {
         console.warn('[nimbus/W9] generation raise failed:', errorText(e));
     });
 }
+/** What the next incarnation must start past: this one's generation, or the stride its pids reached (raiseGeneration). */
+export function generationFloor(ctx) {
+    const state = states.get(ctx);
+    return Math.max(state?.value ?? 0, state?.raised ?? 0);
+}
 /** Increment + persist the generation counter once per fresh isolate. */
 export async function adoptGeneration(ctx) {
     const state = stateOf(ctx);

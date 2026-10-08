@@ -47,6 +47,8 @@ export declare function generation(ctx: object): number;
  * and its pid range, lies past every pid minted here.
  */
 export declare function raiseGeneration(ctx: GenerationContext, stride: number): Promise<void>;
+/** What the next incarnation must start past: this one's generation, or the stride its pids reached (raiseGeneration). */
+export declare function generationFloor(ctx: object): number;
 /** Increment + persist the generation counter once per fresh isolate. */
 export declare function adoptGeneration(ctx: GenerationContext): Promise<void>;
 /**
