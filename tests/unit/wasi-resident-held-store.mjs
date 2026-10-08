@@ -1,0 +1,143 @@
+#!/usr/bin/env bun
+/**
+ * wasi-resident-held-store — a WASI process that holds a subtree, over the
+ * real resident store (facet-resident-store.ts) rather than a test double:
+ * what it decided is what it reads, lists and stats there.
+ *
+ * Red before (live, wasi-fs-load, python):
+ *   - a second run that rewrote files a first run had written listed its
+ *     directory as empty and stat'd the files it had just written as missing;
+ *   - a 2 to 5 MiB file read back right after it was written had no bytes.
+ */
+
+import assert from 'node:assert/strict';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { residentFilesystem } from '../../packages/core/src/runtime/wasi/resident-filesystem.ts';
+import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
+const ROOT = 'home/user';
+const beneath = (path) => ({ root: ROOT, path, beneath: true });
+const k = (p) => `/${ROOT}/${p}`;
+
+/** A session with `seed` (path -> text) written as the user's, and a process over the real store that holds what it writes. */
+async function processOver(seed = {}) {
+  const harness = createSqliteVfsTestHarness();
+  const files = new ProcessFiles(new SqliteVFS(harness.sql, harness.ctx));
+  const kernel = files.bind({ pid: 1, cred: CRED_KERNEL });
+  const authority = files.bind({ pid: 2, cred: USER });
+  for (const dir of ['/home', `/${ROOT}`]) await kernel.mkdir(dir, { recursive: true });
+  await kernel.chown(`/${ROOT}`, 1000, 1000);
+  for (const [path, text] of Object.entries(seed)) {
+    const at = path.lastIndexOf('/');
+    if (at > 0) { await kernel.mkdir(k(path.slice(0, at)), { recursive: true }); await kernel.chown(k(path.slice(0, at)), 1000, 1000); }
+    await kernel.writeFile(k(path), enc.encode(text));
+    await kernel.chown(k(path), 1000, 1000);
+  }
+  const storeSource = new Function(
+    FACET_RESIDENT_STORE_SOURCE
+      + '\nreturn { __residentBindInMemory, __residentSetStorage, __residentBootLazy, __residentNamespaceView };',
+  )();
+  storeSource.__residentBindInMemory(64 * 1024 * 1024);
+  const supervisor = {
+    fsAcquire: (...args) => authority.acquire(...args),
+    fsList: (...args) => authority.list(...args),
+    readdir: (path) => authority.readdir(path),
+    readlink: (path) => authority.readlink(path),
+    stat: (path, options) => authority.stat(path, options),
+    async fsReadBatch(requests) {
+      const out = [];
+      for (const request of requests) {
+        try {
+          if (request.lstat) out.push({ stat: await authority.stat(request.path, { followSymlinks: false }) });
+          else out.push({ bytes: await authority.readRange(request.path, request.offset, request.length) });
+        } catch (error) { out.push({ error }); }
+      }
+      return out;
+    },
+  };
+  storeSource.__residentSetStorage(undefined, supervisor);
+  assert.equal(await storeSource.__residentBootLazy(supervisor), true);
+  const device = (await authority.stat('/')).dev;
+  const view = storeSource.__residentNamespaceView(supervisor, device, USER);
+  const session = {
+    openWriter: async () => null,
+    writeBatchStream: (stream, _fence, owner) => authority.writeStream(stream, owner === undefined ? {} : { mutationOwner: owner }),
+    grants: {
+      acquire: async (path, delegate) => authority.acquireExclusiveMutation(path, { delegate }),
+      release: async (owner) => { authority.releaseExclusiveMutation(owner); },
+      awaitRecall: (owner, waitMs) => authority.awaitRecall(owner, waitMs),
+      recalled: async (owner, kind) => { authority.recalled(owner, kind); },
+    },
+  };
+  const fs = residentFilesystem(authority, view, {
+    session,
+    grantAfter: 1,
+    isHomeRoot: (key) => key.startsWith('home/') && !key.slice(5).includes('/'),
+  });
+  return { fs, kernel, authority };
+}
+
+/** Python's open(name, 'w') and one write of `bytes`. */
+async function rewrite(fs, name, bytes) {
+  const handle = await fs.open(beneath(name), { write: true, create: true, truncate: true });
+  await fs.write(handle.id, null, bytes);
+  await fs.close(handle.id);
+}
+
+/** Python's open(name, 'rb').read(): its size, then its bytes. */
+async function readWhole(fs, name) {
+  const handle = await fs.open(beneath(name), { read: true });
+  const { size } = await fs.fstat(handle.id);
+  const parts = [];
+  let at = 0;
+  for (;;) {
+    const chunk = await fs.read(handle.id, null, Math.max(size - at, 1));
+    if (chunk.byteLength === 0) break;
+    parts.push(chunk);
+    at += chunk.byteLength;
+  }
+  await fs.close(handle.id);
+  const out = new Uint8Array(at);
+  let off = 0;
+  for (const part of parts) { out.set(part, off); off += part.byteLength; }
+  return out;
+}
+
+// ── A second run rewrites what a first left: it lists and stats what it wrote ──
+{
+  const N = 50;
+  const seed = {};
+  for (let i = 0; i < N; i++) seed[`many/f${String(i).padStart(4, '0')}.txt`] = String(i).repeat(1000);
+  const { fs, authority } = await processOver(seed);
+  await fs.stat(beneath('many'));
+  for (let i = 0; i < N; i++) await rewrite(fs, `many/f${String(i).padStart(4, '0')}.txt`, enc.encode(String(i).repeat(1000)));
+  const names = await fs.readdir(beneath('many'));
+  assert.equal(names.length, N, `a rewritten directory listed ${names.length} of ${N}`);
+  assert.notEqual(await fs.stat(beneath('many/f0001.txt')), null, 'a file just rewritten was stat\'d as missing');
+  assert.equal(dec.decode(await readWhole(fs, 'many/f0001.txt')), '1'.repeat(1000));
+  await fs.settle();
+  assert.equal((await authority.readdir(beneath('many'))).length, N);
+}
+
+// ── A file of a few MiB reads back what was written, at once ──
+for (const mib of [1, 2, 3, 4, 5, 6]) {
+  const { fs, authority } = await processOver({ 'seen.txt': 'x' });
+  await fs.stat(beneath('seen.txt'));
+  const big = new Uint8Array(mib * 1024 * 1024);
+  for (let i = 0; i < big.length; i += 4096) big[i] = (i / 4096 + mib) & 0xff;
+  await rewrite(fs, `big${mib}.bin`, big);
+  const got = await readWhole(fs, `big${mib}.bin`);
+  assert.equal(got.byteLength, big.byteLength, `${mib} MiB written, ${got.byteLength} bytes read back`);
+  assert.deepEqual(got.subarray(0, 8192), big.subarray(0, 8192));
+  await fs.settle();
+  assert.equal((await authority.stat(beneath(`big${mib}.bin`))).size, big.byteLength);
+}
+
+console.log('wasi-resident-held-store: ok');
+process.exit(0);
