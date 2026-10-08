@@ -24,6 +24,6 @@ export function processHostMode(env) {
 /** The substrate for this deployment, resolved once. */
 export function processHostFor(ctx, env, disk, 
 /** The workspace's network (the session's composition supplies it); absent, the isolate's own. */
-network = () => ISOLATE_NETWORK) {
-    return createProcessHost(processHostMode(env), ctx, env, disk, network);
+network = () => ISOLATE_NETWORK, supervise) {
+    return createProcessHost(processHostMode(env), ctx, env, disk, network, supervise);
 }

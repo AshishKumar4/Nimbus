@@ -4470,7 +4470,7 @@ export class FacetManager {
         this.hooks = hooks;
         // The workspace's network (FacetManagerHooks.network); a manager no workspace composed uses the isolate's.
         this.network = hooks.network ?? (() => ISOLATE_NETWORK);
-        this.processHost = host(ctx, env, () => this._residentDisk(), this.network);
+        this.processHost = host(ctx, env, () => this._residentDisk(), this.network, hooks.supervise);
         this.processJournals = new ProcessJournals(() => this.ctx.storage.sql);
         // Every resident logs its changes in its facet's store: the session
         // books the store when it opens, and drains it when the process is

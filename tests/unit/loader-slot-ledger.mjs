@@ -131,7 +131,7 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
       load() {
         return {
           getEntrypoint: () => ({
-            async fetch() {
+            async run() {
               if (refuseOneShot) throw new Error(CAP_MESSAGE);
               oneShotMidFlight = loaderLedgerStats(ctx).inFlightWorkers;
               return new Response('ran');

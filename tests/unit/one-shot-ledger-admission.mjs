@@ -51,7 +51,7 @@ function oneShotHost(doId) {
         log.loaded++;
         return {
           getEntrypoint: () => ({
-            async fetch(request) {
+            async run(request) {
               const { writerId } = await request.json();
               log.running++;
               log.peakRunning = Math.max(log.peakRunning, log.running);

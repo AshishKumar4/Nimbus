@@ -73,7 +73,7 @@ import { ProcessHostLost, } from './process-fabric.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import { BindingError } from './vendor/errors.js';
 import { processes, } from './workerd-facet-host.js';
-import { supervisorBindingProps } from './supervisor-props.js';
+import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 /**
  * The substrate for this deployment, resolved once. The mode arrives already
  * decided — the embedder owns the config var that picks it, and refuses an
@@ -84,16 +84,17 @@ import { supervisorBindingProps } from './supervisor-props.js';
  */
 export function createProcessHost(mode, ctx, env, disk, 
 /** The workspace's network: every process's binding carries it, and with it its egress. */
-network) {
+network, supervise = bindingSupervisor) {
     return mode === 'peer'
-        ? new PeerProcessHost(ctx, env, network)
-        : new FacetProcessHost(ctx, env, disk, network);
+        ? new PeerProcessHost(ctx, env, network, supervise)
+        : new FacetProcessHost(ctx, env, disk, network, supervise);
 }
 // ── facet: the process is a child of the user's own session DO ──────────────
 class FacetProcessHost {
     ctx;
     disk;
     network;
+    supervise;
     /**
      * The process shares its session's Durable Object, so the session's own
      * store is reachable by copy-on-write — and its storage budget is the same
@@ -107,15 +108,17 @@ class FacetProcessHost {
     };
     env;
     coordDoId;
-    constructor(ctx, env, disk, network) {
+    constructor(ctx, env, disk, network, supervise) {
         this.ctx = ctx;
         this.disk = disk;
         this.network = network;
+        this.supervise = supervise;
         this.env = (env ?? {});
         this.coordDoId = ctx.id.toString();
     }
     runOnce(params, consume) {
-        return processes(this.ctx, this.env).run(supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() }), params, consume);
+        const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
+        return processes(this.ctx, this.env).run(supervisor, this.supervise, params, consume);
     }
     async open(params) {
         const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
@@ -243,6 +246,7 @@ function processPeerStub(value, peerName) {
 class PeerProcessHost {
     ctx;
     network;
+    supervise;
     /**
      * A peer buys independent CPU and its own storage budget, and pays for both
      * with the image path: nothing crosses a Durable Object boundary by
@@ -260,9 +264,10 @@ class PeerProcessHost {
     tokensInUse = new Map();
     /** workerKey → how to end an open process whose host reports its reset (hostLost). */
     opens = new Map();
-    constructor(ctx, env, network) {
+    constructor(ctx, env, network, supervise) {
         this.ctx = ctx;
         this.network = network;
+        this.supervise = supervise;
         if (env === null || (typeof env !== 'object' && typeof env !== 'function')) {
             throw new BindingError('ProcessFabric: a peer host requires environment bindings');
         }
@@ -279,7 +284,8 @@ class PeerProcessHost {
      * worker of the coordinator here exactly as it does on `facet`.
      */
     runOnce(params, consume) {
-        return processes(this.ctx, this.env).run(supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() }), params, consume);
+        const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
+        return processes(this.ctx, this.env).run(supervisor, this.supervise, params, consume);
     }
     async open(params) {
         if (params.facet) {

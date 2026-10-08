@@ -38,7 +38,7 @@ try {
           namespace: 'test',
         }));
         builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-          contents: 'export class DurableObject {}; export class WorkerEntrypoint {};',
+          contents: 'export class DurableObject {}; export class WorkerEntrypoint {}; export class RpcTarget {};',
           loader: 'js',
         }));
       },
