@@ -118,6 +118,7 @@ const INPUTS = {
   fsAcquired: [{ epoch, cursor }, 'stat', ['/home/user']],
   fsRevision: [path],
   fsList: [after, limit],
+  fsListTree: ['/home/user/proj', 64],
   fsStorageGrant: ['proc-slot-0', 4096, 8192],
   wsOpen: [url, protocols, wsHeaders, true],
   wsPoll: [id, waitMs],
