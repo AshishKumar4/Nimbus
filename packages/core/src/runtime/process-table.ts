@@ -37,7 +37,20 @@ export interface ProcessEntry {
   attachedTty?: boolean;
   /** Output is owned by the command that launched it, until its launch returns. */
   foreground?: boolean;
+  /**
+   * The process this one restarts, when it is one: a resident started again
+   * under a new pid because the session object itself restarted while it
+   * ran, or, under restart 'on-failure', because it exited with a non-zero
+   * code or the platform reset the host it ran on. Absent otherwise.
+   */
+  restartedFrom?: ProcessRestart;
 }
+
+/** Which process a restart replaced, and why it was restarted. */
+export type ProcessRestart =
+  | { pid: number; cause: 'session-restart' }
+  | { pid: number; cause: 'exited'; exitCode: number }
+  | { pid: number; cause: 'host-reset' };
 
 export interface ProcessTableSpawnOptions {
   cred?: VfsCred;
@@ -48,6 +61,8 @@ export interface ProcessTableSpawnOptions {
    * inherited.
    */
   execId?: string;
+  /** The process this one restarts (ProcessEntry.restartedFrom). */
+  restartedFrom?: ProcessRestart;
 }
 
 /**
@@ -150,6 +165,7 @@ export class ProcessTable {
       cred: immutableCred(options.cred ?? inheritedCred),
       parentPid: options.parentPid,
       ...(execId === undefined ? {} : { execId }),
+      ...(options.restartedFrom === undefined ? {} : { restartedFrom: { ...options.restartedFrom } }),
     };
     this.processes.set(pid, entry);
     return entry;

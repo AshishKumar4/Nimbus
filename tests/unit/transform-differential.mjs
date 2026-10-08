@@ -76,7 +76,7 @@ async function observe(code, lowered) {
   const log = console.log;
   console.log = () => {};
   try {
-    const returned = holder.exports.call(module.exports, module.exports, (s) => { requires.push(s); return anything(); }, module, '/app/x.js', '/app');
+    const returned = holder.exports(Function).call(module.exports, module.exports, (s) => { requires.push(s); return anything(); }, module, '/app/x.js', '/app');
     if (returned && typeof returned.then === 'function') await returned;
   } catch (error) {
     // The message names the binding esbuild or Oxc chose; the constructor does not.

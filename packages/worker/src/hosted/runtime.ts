@@ -35,7 +35,7 @@ import { adoptCtxExports, supervisorEntrypoint } from '@nimbus-sh/fabric/composi
 import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 
-const HostedTask = z.enum(['resident-launch', 'resident-keepalive', 'log-flush', 'log-janitor']);
+const HostedTask = z.enum(['resident-launch', 'resident-keepalive', 'log-flush', 'log-janitor', 'hosting-watch']);
 export type HostedRuntimeTask = z.infer<typeof HostedTask>;
 
 export interface HostedRuntimeLifecycle {
@@ -184,6 +184,17 @@ class RuntimeOwner {
     if (registry !== this._cpRegistry) throw new Error('Nimbus runtime cannot replace the workspace registry');
   }
   _notifySession(line: string) { this.terminal.write(`${line}\r\n`); }
+  /**
+   * The hosting alarm (session/rpc.ts armHostingWatch), through the
+   * embedder's lifecycle: the embedder owns this object's alarm, and its
+   * `onScheduled('hosting-watch')` hands the watch back.
+   */
+  scheduleHostingWatch(at: number): Promise<void> {
+    const pending = this.schedule('hosting-watch', at);
+    this.options.lifecycle.waitUntil(pending);
+    return pending;
+  }
+
   _scheduleLaunchTurn(notBefore = Date.now()): Promise<void> {
     const pending = this.schedule('resident-launch', Math.max(Date.now(), notBefore));
     this.options.lifecycle.waitUntil(pending);
@@ -278,6 +289,10 @@ class RuntimeOwner {
     } else if (task === 'log-flush') {
       this.flushScheduled = false;
       this.processes.flushLogs();
+    } else if (task === 'hosting-watch') {
+      // A failure to look again throws to the embedder's alarm, which retries it.
+      const next = await rpc.hostingWatchFired(this);
+      if (next !== null) await this.scheduleHostingWatch(next);
     } else {
       const next = logJanitorFired(this);
       if (next !== null && !(await this.scheduleJanitor(next)) && this._w1JanitorAt === next) this._w1JanitorAt = null;

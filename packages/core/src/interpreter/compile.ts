@@ -80,6 +80,12 @@ const SHORT: object = objectFreeze({ short: true });
 export interface UnitHost {
   /** The unit's `import(specifier, options)`. */
   readonly dynamicImport: ((specifier: unknown, options: unknown) => Promise<unknown>) | null;
+  /**
+   * The unit's free `Function`: a binding of its own, which it reads and
+   * assigns as a native cell does its module's (commonjs-cell.ts, THE
+   * WRAPPER); null where it is the global's.
+   */
+  readonly functionBinding: { value: unknown } | null;
 }
 
 /** An import binding's source: the slot holds the module (named, default) or the namespace object. */
@@ -1419,6 +1425,8 @@ export class Compiler {
   private globalRead(name: string, forTypeof: boolean): Sync {
     // The global object's undefined, NaN and Infinity are read-only and cannot be deleted.
     if (name === 'undefined') return () => undefined;
+    const bound = name === 'Function' ? this.unit.host.functionBinding : null;
+    if (bound !== null) return () => bound.value;
     if (name === 'NaN') return () => NaN;
     if (name === 'Infinity') return () => Infinity;
     const ops = operators();
@@ -1458,7 +1466,10 @@ export class Compiler {
     const ops = operators();
     let write: (env: Env, value: unknown) => void;
     const b = ref.binding;
-    if (b === null) {
+    const bound = b === null && name === 'Function' ? this.unit.host.functionBinding : null;
+    if (bound !== null) {
+      write = (_env, value) => { bound.value = value; };
+    } else if (b === null) {
       write = strict
         ? (_env, value) => {
           if (!reflectHas(G, name)) throw new ReferenceError(`${name} is not defined`);
@@ -2220,7 +2231,8 @@ export class Compiler {
       const ref = this.analysis.ref(target);
       const name = target.name;
       const objects = this.withObjects(ref);
-      const isGlobal = ref.binding === null;
+      // A unit's own Function is a binding, as a native cell's parameter is: not deletable.
+      const isGlobal = ref.binding === null && !(name === 'Function' && this.unit.host.functionBinding !== null);
       return syncCode((env) => {
         for (let i = 0; i < objects.length; i++) {
           const o = objects[i](env);
