@@ -7424,7 +7424,7 @@ export class SqliteVFS {
                 if (placed === null)
                     return false;
                 at.setPhase('publish');
-                at.settleBefore();
+                await at.settleBefore();
                 reached();
                 await router.apply({ type: 'delete', path: placed }, cred, at.guard, at.owner);
                 at.committed(null);
@@ -7435,7 +7435,7 @@ export class SqliteVFS {
                 if (placed === null)
                     return false;
                 at.setPhase('publish');
-                at.settleBefore();
+                await at.settleBefore();
                 reached();
                 // A directory has no receipt, here as in a group.
                 await router.apply({ type: 'directory', path: placed, mode: record.inode.mode }, cred, at.guard, at.owner);
@@ -7454,7 +7454,7 @@ export class SqliteVFS {
                 if (placed === null)
                     return false;
                 at.setPhase('publish');
-                at.settleBefore();
+                await at.settleBefore();
                 reached();
                 // Made under the umask the process made it with, as on this filesystem (W7Call umask).
                 const stat = await router.apply({ type: 'call', call: { ...call, path: placed } }, withUmask(cred, 'umask' in call ? call.umask : undefined), at.guard, at.owner);
@@ -7476,7 +7476,7 @@ export class SqliteVFS {
                     throw vfsError('EXDEV', record.from, `a rename to '${record.to}' crosses a mount`);
                 }
                 at.setPhase('publish');
-                at.settleBefore();
+                await at.settleBefore();
                 reached();
                 await router.apply({ type: 'rename', from, to }, cred, at.guard, at.owner);
                 at.committed(null);
@@ -7491,7 +7491,7 @@ export class SqliteVFS {
                 if (placed === null)
                     return false;
                 at.setPhase('publish');
-                at.settleBefore();
+                await at.settleBefore();
                 reached();
                 await router.apply(record.type === 'truncate' ? { type: 'truncate', path: placed, size: record.size } : { type: 'setattr', path: placed, attrs: record.attrs }, cred, at.guard, at.owner);
                 at.committed(null);
@@ -7558,7 +7558,7 @@ export class SqliteVFS {
                 }
                 at.setPhase('publish');
                 try {
-                    at.settleBefore();
+                    await at.settleBefore();
                     reached();
                     const bytes = concatBytes(file.held.map((chunk) => chunk.data));
                     const stat = await router.apply(file.call !== undefined
@@ -8172,6 +8172,8 @@ export class SqliteVFS {
             return true;
         };
         const flushDirectories = () => {
+            if (leading)
+                throw new Error('internal: the leading directories commit only through endLeading');
             while (commitDirectoryBatch())
                 ;
         };
@@ -8197,9 +8199,43 @@ export class SqliteVFS {
         // the directories, in batches the plan's accounting bounds.
         let leading = true;
         let leadingDeletes = [];
-        const endLeading = () => {
-            queueLeading();
-            flushDirectories();
+        // Once checked: the removals to commit, then the directories (held aside until the removals are in).
+        let deletesToCommit = [];
+        let directoriesToBatch = null;
+        /** Commit the leading phase's next group: whether one was there. */
+        const commitLeadingStep = () => {
+            const path = deletesToCommit.shift();
+            if (path !== undefined) {
+                commitDelete(path);
+                return true;
+            }
+            if (directoriesToBatch !== null) {
+                let batch = [];
+                for (const inode of directoriesToBatch) {
+                    if (this.newPlan().wouldExceedInodes(batch.length + 1) !== null) {
+                        directoryBatches.push(batch);
+                        batch = [];
+                    }
+                    batch.push(inode);
+                }
+                if (batch.length > 0)
+                    directoryBatches.push(batch);
+                directoriesToBatch = null;
+            }
+            return commitDirectoryBatch();
+        };
+        /**
+         * The one way the leading phase ends, whatever ends it (a file, a call,
+         * a routed record, the batch's end): checked, then committed a group a
+         * turn when the caller gives turns.
+         */
+        const endLeading = async () => {
+            phase = 'publish';
+            this.withHolds(holds, queueLeading);
+            while (this.withHolds(holds, commitLeadingStep)) {
+                if (options.turn !== undefined && (deletesToCommit.length > 0 || directoriesToBatch !== null || directoryBatches.length > 0))
+                    await options.turn();
+            }
         };
         const queueLeading = () => {
             if (!leading)
@@ -8219,22 +8255,11 @@ export class SqliteVFS {
                 if (linked !== null)
                     throw linkedDirectoryRefusal(linked);
             }));
-            // Held aside while the removals commit: commitDelete flushes what is
-            // pending, and the directories go in the bounded batches below.
-            const directories = pendingDirectories;
+            // Held aside while the removals commit (commitDelete flushes what is
+            // pending), then batched as the plan's accounting bounds (commitLeadingStep).
+            directoriesToBatch = pendingDirectories;
             pendingDirectories = [];
-            for (const path of deletes)
-                commitDelete(path);
-            let batch = [];
-            for (const inode of directories) {
-                if (this.newPlan().wouldExceedInodes(batch.length + 1) !== null) {
-                    directoryBatches.push(batch);
-                    batch = [];
-                }
-                batch.push(inode);
-            }
-            if (batch.length > 0)
-                directoryBatches.push(batch);
+            deletesToCommit = deletes;
         };
         const stagePiece = (file, piece) => {
             if (file.held !== null) {
@@ -8418,7 +8443,6 @@ export class SqliteVFS {
          * before it.
          */
         const queueCall = (path, apply, options = {}) => {
-            endLeading();
             flushGroup();
             flushDirectories();
             pendingCalls.push({ index: recordIndex, seq: applying, path, paths: options.paths ?? 1, apply, receipt: options.receipt === true });
@@ -8534,9 +8558,9 @@ export class SqliteVFS {
                         options.admit?.();
                     },
                     // Whatever the wave wrote here before the record commits first.
-                    settleBefore: () => {
+                    settleBefore: async () => {
                         flushCalls();
-                        endLeading();
+                        await endLeading();
                         flushDirectories();
                         flushGroup();
                         options.admit?.();
@@ -8559,6 +8583,10 @@ export class SqliteVFS {
                     },
                 }))
                     continue;
+                // Only removals and directories are held in the leading phase: anything
+                // else that lands here ends it first (a routed record ends it in settleBefore).
+                if (leading && record.type !== 'delete' && record.type !== 'directory')
+                    await endLeading();
                 // A call's bytes are gathered whole, and the call made at its end.
                 if (record.type === 'file-begin' && record.inode.call !== undefined) {
                     phase = 'validation';
@@ -8568,7 +8596,6 @@ export class SqliteVFS {
                     }
                     // What is ahead of it commits first, giving its credit back, so the
                     // reservation below never waits on credit this wave holds.
-                    endLeading();
                     flushGroup();
                     flushDirectories();
                     const lease = record.inode.size === 0 ? null : await acquireCredit(record.inode.size, options.signal);
@@ -8631,14 +8658,6 @@ export class SqliteVFS {
                     const attrs = this.creationAttrs(record.inode.path, record.inode.mode, cred, record.type === 'directory');
                     Object.assign(record.inode, { uid: cred.uid, gid: attrs.gid, mode: attrs.mode });
                 }
-                if (options.turn !== undefined && record.type === 'file-begin' && leading) {
-                    phase = 'publish';
-                    this.withHolds(holds, queueLeading);
-                    while (this.withHolds(holds, commitDirectoryBatch)) {
-                        if (directoryBatches.length > 0)
-                            await options.turn();
-                    }
-                }
                 // Each record is applied in one synchronous turn, by the stream's
                 // caller: as the delegations it holds, whose lookups recall none of them.
                 const ended = this.withHolds(holds, () => {
@@ -8677,7 +8696,6 @@ export class SqliteVFS {
                             phase = 'publish';
                             // Authorising a file reads its parent from the committed inode
                             // tree, so pending directories become visible first.
-                            endLeading();
                             flushDirectories();
                             phase = 'validation';
                             // The file lands where its name resolves (links followed, as a
@@ -8892,7 +8910,6 @@ export class SqliteVFS {
                         }
                         case 'batch-end':
                             phase = 'publish';
-                            endLeading();
                             flushDirectories();
                             flushGroup();
                             return true;
