@@ -260,8 +260,6 @@ interface Pipeline {
   readonly recalls: Set<Promise<void>>;
   /** What it committed and has not published. */
   publication: Publication | null;
-  /** Each held path's own generation, as it committed it (committedRows), for its publication. */
-  readonly rows: Map<string, OwnGeneration>;
   /** The leases holding what it changed, by root. */
   readonly roots: Map<string, string>;
   /** Its writer, by the delegations it presents (as its first held commit presents them): its later calls pass what it holds. None for a writer that presents none. */
@@ -4159,7 +4157,7 @@ export class SqliteVFS {
   private newPipeline(writer: ReadonlySet<string> | null): Pipeline {
     let settle!: () => void;
     const published = new Promise<void>((resolve) => { settle = resolve; });
-    return { recalls: new Set(), publication: null, rows: new Map(), roots: new Map(), writer, published, settle };
+    return { recalls: new Set(), publication: null, roots: new Map(), writer, published, settle };
   }
 
   /** `run`, its commits `pipeline`'s. */
@@ -4204,8 +4202,6 @@ export class SqliteVFS {
       publication.paths.add(path);
       const key = normalizeVfsPath(path);
       if (key === '') continue;
-      const committed = this.committedRows.get(key);
-      if (committed !== undefined) pipeline.rows.set(key, committed);
       const parent = structural.has(path) ? this.parentPath(key) : '';
       const root = parent === '' ? key : parent;
       if (pipeline.roots.has(root)) continue;
@@ -4227,7 +4223,8 @@ export class SqliteVFS {
     const publication = pipeline.publication!;
     for (const owner of pipeline.roots.values()) this.endLease(owner);
     this.heldPipelines--;
-    for (const [key, row] of pipeline.rows) if (!this.committedRows.has(key)) this.committedRows.set(key, row);
+    // Logged at its publication's revision: a cursor handed out since its
+    // commit (another's publication) is below it, so every reader hears of it.
     try {
       if (publication.paths.size > 0) this.bumpRevision([...publication.paths], publication.structural);
       this.deliverEvents(publication.removedDirectories, () => {

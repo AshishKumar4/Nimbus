@@ -256,8 +256,11 @@ await runScenarios(import.meta.path, {
 
   async 'an lstat of a link does not send the write parked under its target'() {
     const { authority, probe } = await boot();
+    // Recalled by a change elsewhere, the process holds no read lease for a
+    // while: the peer's mode change below is made in the write's own turn.
+    await authority.peer.writeFile('home/user/app/f.txt', 'elsewhere');
     probe.fs.writeFileSync(LINK, 'parked');
-    await authority.peer.chmod('home/user/app/target.txt', 0o444);
+    authority.kfs.chmod('home/user/app/target.txt', 0o444);
     assert.equal((await probe.fs.promises.lstat(LINK)).isSymbolicLink(), true);
     assert.equal(authority.read('home/user/app/target.txt'), 'old', 'the write is still parked');
   },
