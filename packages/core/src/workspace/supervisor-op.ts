@@ -603,12 +603,10 @@ export function createSupervisorOpHandler(
   const serve = (op: SupervisorOpName, envelope: SupervisorOpEnvelope): unknown => deps.observe
     ? deps.observe(envelope, async () => perform(op, envelope)) : perform(op, envelope);
   /**
-   * A mutation delivered exactly once (supervisor-delivery.ts), checked in
-   * the order that makes a repeat safe: the delivery was minted for THIS
-   * instance — a restarted one refuses its predecessor's, permanently, since
-   * it holds none of its receipts or descriptors — then the process is live
-   * and is who it says, before any receipt answers for it, and only then the
-   * receipt, or the mutation.
+   * A mutation delivered exactly once (supervisor-delivery.ts). Refuse a
+   * missing process before its stale binding. A live process's delivery must
+   * still name THIS instance before any receipt answers: a restarted one
+   * holds none of its predecessor's receipts or descriptors.
    */
   const deliver = (envelope: SupervisorOpEnvelope, span: SpanRecorder) => {
     const deliveries = deps.deliveries;
@@ -624,17 +622,15 @@ export function createSupervisorOpHandler(
       'nimbus.operation_id': delivery.data.id,
       'nimbus.host_incarnation': delivery.data.hostIncarnation,
     });
+    const pid = envelope.pid;
+    if (pid === undefined) throw new Error(`supervisor op: a delivered ${op} names no process`);
+    tools.bridge(pid, envelope.cred);
     if (delivery.data.hostIncarnation !== deliveries.incarnation) {
       throw Object.assign(
         new Error(`ESTALE: ${op} was sent through a binding another instance of this host minted`),
         { code: 'ESTALE' },
       );
     }
-    const pid = envelope.pid;
-    if (pid === undefined) throw new Error(`supervisor op: a delivered ${op} names no process`);
-    // The process's own bridge, which is what refuses a pid that does not
-    // exist or has been released (ESTALE), and a cred riding a pid.
-    tools.bridge(pid, envelope.cred);
     span.set({ 'nimbus.pid': pid });
     const { receipt, answer } = deliveries.deliver(
       pid, delivery.data.id, op, () => supervisorDeliveryAnswer(serve(op, { ...envelope, op, delivery: undefined })),
