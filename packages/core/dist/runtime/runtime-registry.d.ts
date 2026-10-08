@@ -42,6 +42,7 @@ import type { EsbuildService } from './esbuild-service.js';
 import { type FacetBundleProfile } from './bundle-profile.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
+import { type ModuleScope } from './module-format.js';
 import { type NodeLaunch } from './node-cli.js';
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
@@ -96,6 +97,14 @@ export interface RuntimeRunOpts {
      * code; with `print`, the program's code returns the value to print.
      */
     node?: NodeLaunch;
+    /**
+     * The program is an ES module the handler lowered (module-format.ts): its
+     * own require is its static imports, and what escapes its evaluation is
+     * explained as Node's loader explains it.
+     */
+    esModule?: boolean;
+    /** Whose scope its ES modules run in (RuntimeSpec.moduleScope): absent, Node's. */
+    moduleScope?: ModuleScope;
     /**
      * The pipe or redirect the program's stdin is (`echo hi | node x.js`,
      * `node x.js < in.txt`); absent when stdin is the terminal. A runner
@@ -183,6 +192,11 @@ export interface RuntimeSpec {
      * it), and the program's conditions and execArgv go to the run.
      */
     nodeCommandLine?: boolean;
+    /**
+     * Whose scope the runtime runs an ES module in (module-format.ts
+     * ModuleScope), the entry's and every module it loads: absent, Node's.
+     */
+    moduleScope?: ModuleScope;
     /**
      * The runner routes a program that starts a server to a resident process
      * (node-runner.ts runFresh), so the handler reports whether it does

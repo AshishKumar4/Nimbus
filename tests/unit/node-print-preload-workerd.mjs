@@ -6,6 +6,9 @@
 //     not after process.exit(); `crypto` is
 //     node:crypto in eval code; `-p` reads its code from stdin when it has
 //     none; code with module syntax is refused (ERR_EVAL_ESM_CANNOT_PRINT);
+//   - a syntax error is reported where Node's eval mode compiles: by default
+//     before `--import`'s modules load, with --input-type=commonjs after,
+//     and a module's (eval or file) after `-r`'s and `--import`'s;
 //   - `-r`/`--require` modules are required from the working directory, in
 //     order and once each, NODE_OPTIONS' first, before the program is
 //     require.main; `--import` ones are imported after them; for a script, an
@@ -37,6 +40,8 @@ const FILES = {
   // With module syntax: an ES module with only import.meta is not lowered yet (bundle-cell-transform.ts looksLikeEsm).
   'imp.mjs': "import { sep } from 'node:path'; console.log('imp', typeof import.meta.url, sep, globalThis.PRE);",
   'main.cjs': "console.log('main', require.main === module, globalThis.PRE ?? 0);",
+  // An ES module that does not parse.
+  'bad.mjs': 'return 1;\n',
   'data.json': JSON.stringify({ name: 'data' }),
   '.env': 'GREETING=hello\n',
   'env.cjs': "console.log('env', process.env.GREETING);",
@@ -72,12 +77,30 @@ const COMMANDS = [
   'node -r envload/config env.cjs',
   'node -r ./pre.cjs server.cjs',
 ];
-// Node refuses these: its exit status, and a line its output names.
+// Node refuses these: its exit status, and the start of a line its output
+// names (or a pattern the line matches). Which error a run ends on shows
+// what ran first: a preload that does not resolve fails the run only if it
+// is loaded before the code is compiled.
+const MISSING_IMPORT = /^Error( \[ERR_MODULE_NOT_FOUND\])?: Cannot find module '[^']*\/missing\.mjs'/;
 const REFUSED = [
   [`node -p 'import fs from "fs"; 1'`, 1, 'Error [ERR_EVAL_ESM_CANNOT_PRINT]: --print cannot be used with ESM input'],
   [`node -p 'return 1'`, 1, 'SyntaxError: Illegal return statement'],
   // Refused as it compiles: after -r's modules, before --import's load.
   [`node -r ./pre.cjs --import ./missing.mjs -p 'export default 1'`, 1, 'Error [ERR_EVAL_ESM_CANNOT_PRINT]: --print cannot be used with ESM input'],
+  // By default Node compiles a script before --import's modules load
+  // (evalTypeScript); --input-type=commonjs compiles it as it runs, after
+  // (evalScript). (Node heads its internal error `Error [ERR_MODULE_NOT_FOUND]:`;
+  // the session's resolver errors carry the code, not yet the header.)
+  [`node --import ./missing.mjs -p 'return 1'`, 1, 'SyntaxError: Illegal return statement'],
+  [`node --input-type=commonjs --import ./missing.mjs -p 'return 1'`, 1, MISSING_IMPORT],
+  // A module's syntax error is Node's as it evaluates the entry: after -r's
+  // modules run and --import's load. (Its message is acorn's: the module is
+  // parsed here, not by V8.)
+  [`node --input-type=module -e 'return 1'`, 1, 'SyntaxError: '],
+  [`node -r ./nope.cjs --input-type=module -e 'return 1'`, 1, "Error: Cannot find module './nope.cjs'"],
+  [`node --input-type=module --import ./missing.mjs -e 'return 1'`, 1, MISSING_IMPORT],
+  ['node bad.mjs', 1, 'SyntaxError: '],
+  ['node -r ./nope.cjs bad.mjs', 1, "Error: Cannot find module './nope.cjs'"],
   ['node -r ./nope.cjs main.cjs', 1, "Error: Cannot find module './nope.cjs'"],
 ];
 
@@ -108,13 +131,14 @@ try {
       assert.deepEqual({ status: r.status, lines: got }, expected, `${command} answers as Node: ${r.stdout.slice(-2500)}`);
       console.log(`  ok  ${command}: ${JSON.stringify(expected.lines).slice(0, 120)} (exit ${expected.status})`);
     }
+    const names = (lines, line) => lines.some((got) => (line instanceof RegExp ? line.test(got) : got.startsWith(line)));
     for (const [command, status, line] of REFUSED) {
       const expected = hostRun(command);
       assert.equal(expected.status, status, `host: ${command}`);
-      assert.ok(expected.lines.includes(line), `host: ${command} names ${line}: ${expected.lines.join('\n')}`);
+      assert.ok(names(expected.lines, line), `host: ${command} names ${line}: ${expected.lines.join('\n')}`);
       const r = await session.run(`cd ${W} && ${command}`, 120_000);
       assert.equal(r.status, status, `${command}: exit ${r.status}: ${r.stdout.slice(-1500)}`);
-      assert.ok(splitScenarioOutput(r.stdout).lines.some((got) => got.startsWith(line)), `${command} names ${line}: ${r.stdout.slice(-1500)}`);
+      assert.ok(names(splitScenarioOutput(r.stdout).lines, line), `${command} names ${line}: ${r.stdout.slice(-1500)}`);
       console.log(`  ok  ${command}: ${line}`);
     }
   } finally {

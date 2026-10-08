@@ -7,7 +7,7 @@
 // so PID 1 needs no other watch.
 //
 // Run by bun, it runs itself as PID 1 of a new PID namespace (bubblewrap
-// --as-pid-1, as run-bounded uses) and opens a facet there. Under Bun a
+// --as-pid-1) and opens a facet there. Under Bun a
 // facet is a process realm, the transport this concerns.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';

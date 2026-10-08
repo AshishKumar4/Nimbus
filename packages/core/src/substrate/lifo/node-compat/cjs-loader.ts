@@ -21,7 +21,8 @@ import { createModuleShim, type RequireFunction } from './module.js';
 import { Buffer } from './buffer.js';
 import type { Options } from 'acorn';
 import { emitCommonJs, generatedNames, readEsmRecords } from '../../../runtime/async-module-lowering.js';
-import { applySourceEdits, hasTopLevelModuleSyntax, MODULE_PARSE_OPTIONS, parseStatements, PROGRAM_PARSE_OPTIONS } from '../../../runtime/javascript-ast.js';
+import { applySourceEdits, MODULE_PARSE_OPTIONS, parseStatements, PROGRAM_PARSE_OPTIONS } from '../../../runtime/javascript-ast.js';
+import { declaredPackageType, isEsModuleFile, type PackageType } from '../../../runtime/module-format.js';
 import { fileURLToPath } from './url.js';
 import { scanCjsExports } from '../../../runtime/cjs-export-names.js';
 import { resolve, dirname, join, extname } from '../utils/path.js';
@@ -31,8 +32,6 @@ import {
 	resolveExports,
 	type ResolvablePackageJson,
 } from '../../../_shared/exports-resolver.js';
-
-export type PackageType = 'module' | 'commonjs' | null;
 
 /**
  * The conditions this loader resolves "exports" and "imports" with: require's,
@@ -95,31 +94,7 @@ function moduleOnlyExpressions(source: string, esm = true): { meta: Span[]; dyna
 	}
 }
 
-/**
- * Whether `source` is an ES module by its syntax, as Node's detection reads
- * it: a top-level import or export declaration (not `import(`, not one
- * inside a string), or an `import.meta`.
- */
-export function isEsmSource(source: string): boolean {
-	if (hasTopLevelModuleSyntax(source)) return true;
-	if (!source.includes('import.meta')) return false;
-	try {
-		return moduleOnlyExpressions(source).meta.length > 0;
-	} catch {
-		return false;
-	}
-}
-
-/** A package.json's "type", when it declares one. */
-export function declaredPackageType(packageJson: string): PackageType {
-	try {
-		const pkg: unknown = JSON.parse(packageJson);
-		const type = typeof pkg === 'object' && pkg !== null && 'type' in pkg ? pkg.type : undefined;
-		return type === 'module' || type === 'commonjs' ? type : null;
-	} catch { return null; }
-}
-
-/** Nearest package.json "type" walking up from a .js file (Node.js semantics), read synchronously inside `require`. */
+/** Nearest package.json "type" walking up from a file (Node.js semantics), read synchronously inside `require`. */
 function packageType(filename: string, vfs: NodeFilesystem): PackageType {
 	for (let dir = dirname(filename); ; dir = dirname(dir)) {
 		const pkgPath = join(dir, 'package.json');
@@ -128,14 +103,6 @@ function packageType(filename: string, vfs: NodeFilesystem): PackageType {
 	}
 }
 
-/** Whether a module runs as an ES module: .mjs always, .cjs never, a .js by its package's type, else by its syntax. */
-export function treatAsEsm(source: string, filename: string, declared: () => PackageType): boolean {
-	const ext = extname(filename);
-	if (ext === '.mjs') return true;
-	if (ext === '.cjs') return false;
-	const type = ext === '.js' ? declared() : null;
-	return type === null ? isEsmSource(source) : type === 'module';
-}
 
 // The wrapper every module runs in: CommonJS's five names and the globals a
 // module may find as free variables, then the loader's own values, under
@@ -447,7 +414,7 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 		cache[filename] = initialExports;
 
 		const clean = stripShebang(source);
-		const esm = preread?.esm ?? treatAsEsm(clean, filename, () => packageType(filename, filesystem()));
+		const esm = preread?.esm ?? isEsModuleFile(filename, clean, () => packageType(filename, filesystem()));
 		if (esm) lowered.add(filename);
 		let fn: (...args: unknown[]) => void;
 		try {

@@ -26,7 +26,7 @@
  * legacy `buildVfsBundle` walked every file in node_modules. W2.6a
  * de-quarantines it as the primary content-bundle source.
  */
-import { METADATA_CANDIDATE_WORK, resolveRequireEx, } from './require-resolution.js';
+import { METADATA_CANDIDATE_WORK, packageJsonVisible, resolveRequireEx, } from './require-resolution.js';
 import { FACET_PROVIDED_PACKAGES, VFS_BUNDLE_MAX_BYTES } from '../constants.js';
 import { stripLeadingSlashes } from '../vfs/path.js';
 import { isNativeBinPath } from './os-contracts.js';
@@ -143,6 +143,53 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     let additionalBytes = 0;
     let additionalFiles = 0;
     const encoder = new TextEncoder();
+    // The phase-2 unit staged whole or not at all (an optional learned root):
+    // what it staged, and whether the bound cut its closure.
+    let unit = null;
+    /** The optional learned roots that landed, each with its closure (PrefetchResult.units). */
+    const units = [];
+    /**
+     * A landed root's whole static closure among the optional cells: what it
+     * staged, and what it reached that another root had staged before it (the
+     * static edges say, a visited path's edges having been recorded when it
+     * was walked), with the manifests its packages were resolved through. A
+     * shared dependency is then in every group that needs it, and pruning one
+     * group leaves it to the others. The required closure is not a member: it
+     * is never pruned.
+     */
+    function unitClosure(root, staged) {
+        const members = new Set(staged);
+        const optional = (path) => speculative.has(path) && bundle[path] !== undefined;
+        // Walked by its own seen-set: a cell the unit staged is a member already,
+        // and the walk still goes through it to what it reaches (B → C → S, C
+        // staged by B, S by an earlier root).
+        const seen = new Set();
+        const queue = optional(root) ? [root] : [];
+        for (const path of queue) {
+            seen.add(path);
+            members.add(path);
+        }
+        while (queue.length > 0) {
+            const at = queue.pop();
+            for (const to of edges.get(at) ?? []) {
+                if (seen.has(to) || !optional(to))
+                    continue;
+                seen.add(to);
+                members.add(to);
+                queue.push(to);
+            }
+        }
+        for (const path of [...members]) {
+            for (let dir = path.slice(0, path.lastIndexOf('/')); dir !== ''; dir = dir.slice(0, Math.max(0, dir.lastIndexOf('/')))) {
+                const manifest = dir + '/package.json';
+                if (optional(manifest))
+                    members.add(manifest);
+                if (PACKAGE_ROOT.test(dir) || !dir.includes('/'))
+                    break;
+            }
+        }
+        return [...members];
+    }
     function fits(path, bytes) {
         if (!policy || policy.held[path] !== undefined)
             return true;
@@ -186,6 +233,8 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             if (counted && bytesSeen + size > maxBundleBytes) {
                 if (!lazy)
                     closureExceeded = { kind: 'closure-exceeds-bound', entry: entryFile ?? 'entry code', bytesSeen, bound: maxBundleBytes, lastPath: path };
+                if (unit)
+                    unit.cut = true;
                 return null;
             }
         }
@@ -214,6 +263,8 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         bundle[path] = content;
         if (lazy)
             speculative.add(path);
+        if (unit)
+            unit.staged.push([path, counted ? size : 0]);
         if (progress)
             await progress(content.length);
         return content;
@@ -230,7 +281,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         let queue = deferredDynamic.get(alternatives);
         if (queue === undefined)
             deferredDynamic.set(alternatives, queue = []);
-        queue.push(path === undefined ? { specifier, fromDir } : { specifier, fromDir, path });
+        queue.push({ specifier, fromDir, ...(path !== undefined ? { path } : {}) });
     }
     function nextDeferred() {
         let fewest = Infinity;
@@ -282,6 +333,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     }
     /** Tool configs found for the launch; phase 2 stages them first. */
     const configRoots = new Set();
+    const optionalRoots = new Set();
     let lazy = false;
     // `entry`: the entry file itself, whose own `import()` is a deferral of its
     // main module, not an optional feature, and is followed as required.
@@ -339,15 +391,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                     break; // already shipped, stop walking
                 if (progress)
                     await progress(METADATA_CANDIDATE_WORK + dirPkgJson.length);
-                // A package.json the user may not look up is no package scope, as
-                // Node's lookup reads it: a device mount shows nothing above the
-                // directory its user consented to.
-                const held = await (async () => vfs.exists(dirPkgJson))().catch((error) => {
-                    if (error && typeof error === 'object' && 'code' in error && error.code === 'EACCES')
-                        return false;
-                    throw error;
-                });
-                if (held && !(await vfs.isDirectory(dirPkgJson))) {
+                if ((await packageJsonVisible(vfs, dirPkgJson)) && !(await vfs.isDirectory(dirPkgJson))) {
                     visited.add(dirPkgJson);
                     await stageCell(dirPkgJson, 'metadata');
                 }
@@ -360,10 +404,20 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         // walk everything else as CJS/ESM.
         if (!vfsPath.endsWith('.json')) {
             const fromDir = vfsPath.includes('/') ? vfsPath.substring(0, vfsPath.lastIndexOf('/')) : '.';
-            (await parseAndResolve(content, fromDir, entry));
+            (await parseAndResolve(content, fromDir, entry, vfsPath));
         }
     }
-    async function parseAndResolve(code, fromDir, entry = false) {
+    const edges = new Map();
+    function edge(from, to) {
+        if (from === undefined || from === to)
+            return;
+        let children = edges.get(from);
+        if (children === undefined)
+            edges.set(from, children = []);
+        if (!children.includes(to))
+            children.push(to);
+    }
+    async function parseAndResolve(code, fromDir, entry = false, fromFile) {
         if (declined || closureExceeded)
             return;
         if (progress)
@@ -425,8 +479,10 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                 if (closureExceeded || declined)
                     break;
                 const staged = await resolveStaticDependency(specifier, fromDir);
-                if (staged)
-                    (await addFile(staged.resolved));
+                if (staged) {
+                    edge(fromFile, staged.resolved);
+                    await addFile(staged.resolved);
+                }
                 followUp(specifier, staged);
             }
         }
@@ -447,7 +503,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             if (closureExceeded)
                 break;
             if (resolved)
-                (await addFile(resolved));
+                await addFile(resolved);
         }
         for (const specifier of deferrals)
             defer({ specifier, fromDir, alternatives: deferrals.size });
@@ -527,11 +583,17 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                 continue;
             }
             const path = stripLeadingSlashes(root.path);
-            if (root.config && root.text === undefined) {
-                configRoots.add(path);
+            if ((root.config || root.optional) && root.text === undefined) {
+                if (root.config)
+                    configRoots.add(path);
+                if (root.optional)
+                    optionalRoots.add(path);
                 defer({ specifier: path, fromDir: path.slice(0, path.lastIndexOf('/')), alternatives: 0, path });
                 continue;
             }
+            // Its text is staged as runtime code (manager.ts _stagedRuntimeCode); only a required root walks it.
+            if (root.optional)
+                continue;
             if (root.text === undefined)
                 await addFile(path);
             else
@@ -562,11 +624,46 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
             const resolved = next.path ?? await resolveDynamicImport(next.specifier, next.fromDir);
             if (!resolved)
                 continue;
-            await addFile(resolved);
+            // An optional learned root is staged whole or not at all: a module in
+            // the map without what it imports fails where the module's late load
+            // would have worked.
+            // What it cut is taken back with its traversal: the paths it visited
+            // and the deferrals it queued, so a root after it that shares a
+            // dependency walks that dependency again rather than skipping it.
+            unit = optionalRoots.has(resolved) ? { staged: [], cut: false } : null;
+            const visitedBefore = visited.size;
+            const queuedBefore = new Map([...deferredDynamic].map(([alternatives, queue]) => [alternatives, queue.length]));
+            try {
+                await addFile(resolved);
+            }
+            finally {
+                if (unit?.cut) {
+                    for (const [path, size] of unit.staged) {
+                        delete bundle[path];
+                        speculative.delete(path);
+                        bytesSeen -= size;
+                    }
+                    let at = 0;
+                    const walked = [];
+                    for (const path of visited)
+                        if (at++ >= visitedBefore)
+                            walked.push(path);
+                    for (const path of walked)
+                        visited.delete(path);
+                    for (const [alternatives, queue] of deferredDynamic)
+                        queue.length = queuedBefore.get(alternatives) ?? 0;
+                }
+                else if (unit !== null) {
+                    const members = unitClosure(resolved, unit.staged.map(([path]) => path));
+                    if (members.length > 0)
+                        units.push({ root: resolved, members });
+                }
+                unit = null;
+            }
             if (configRoots.has(resolved) && typeof bundle[resolved] === 'string')
                 await deferConfigNames(resolved);
         }
-        return { bundle, speculative, entryPaths };
+        return { bundle, speculative, entryPaths, edges, ...(units.length > 0 ? { units } : {}) };
     }
     try {
         return await walk();
@@ -665,6 +762,8 @@ conditions = []) {
     }
 }
 /** An npm package name: `name` or `@scope/name` (lowercase, URL-safe). */
+/** A package's root directory under node_modules (`node_modules/name`, `node_modules/@scope/name`). */
+const PACKAGE_ROOT = /(?:^|\/)node_modules\/(?:@[^/]+\/)?[^/]+$/;
 const PACKAGE_NAME = /^(?:@[a-z0-9][\w.~-]*\/)?[a-z0-9][\w.~-]*$/;
 /**
  * The package names a config spells as a string or a property key

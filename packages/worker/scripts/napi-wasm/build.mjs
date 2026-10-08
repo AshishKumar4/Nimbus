@@ -8,9 +8,9 @@
  * `--spec none` builds the loader alone (no Rust toolchain needed).
  *
  * Keep this Bun orchestrator at <=4 GiB. If Cargo needs a separate 16 GiB
- * cgroup, name the bounded runner explicitly; builds remain serial:
- *   NIMBUS_CARGO_RUNNER=/mnt/scratch/nimbus/run-bounded \
- *   NIMBUS_TEST_MEMORY_MAX=4G NIMBUS_TEST_TIMEOUT=3600 run-bounded bun .../build.mjs ...
+ * cgroup, NIMBUS_CARGO_RUNNER names a command that runs its arguments
+ * bounded (`<runner> cargo build …`, with NIMBUS_TEST_MEMORY_MAX=16G and
+ * NIMBUS_TEST_TIMEOUT=3600 in its environment); builds remain serial.
  *
  * specs.mjs holds every pin. For each spec, failing loudly at the first
  * mismatch:

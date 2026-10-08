@@ -1,30 +1,25 @@
-/**
- * npm-spec.ts — where a package spec's name ends and its range begins:
- * `name@range`, `@scope/name@range`, as npm's npa reads it, for every npm
- * here (the worker's installer and npx, and the shell's fallback npm).
- * Self-contained: the resolver facet's preamble embeds both functions by
- * `toString()` (worker loaders/npm-resolve-preamble.ts), so they call
- * nothing outside this file.
- */
-/**
- * The index of the `@` between a spec's package name and its range: the
- * first `@` after the scope's `/` for a scoped name, the first `@` for any
- * other; -1 when the spec names no range (or is a scope with no name).
- */
-export declare function packageRangeSeparator(spec: string): number;
-/**
- * Parse an npm spec into install-name / registry-name / range. `npm:`
- * aliases redirect the registry lookup to a different package while the
- * dep records the alias as the install name; everything else is the
- * identity. Every npm here reads a spec through it: the worker's resolver
- * facet (its preamble embeds it by source), the installer's lockfile check
- * (which reads the inner range out of an alias spec), and the shell's
- * fallback npm.
- */
-export declare function parseRegistryRequest(name: string, range: string): {
+/** What a spec asks the registry for: the name it installs under, the package and range it fetches, and whether it is an `npm:` alias. */
+export interface RegistryRequest {
     installName: string;
     registryName: string;
     range: string;
     alias: boolean;
+}
+/**
+ * The package a command-line spec names and the range it asks for, as npa
+ * splits `name[@range]` (`@scope/name@range`, `name@npm:other@range`); the
+ * range is null when the spec gives none, and a spec that names no package
+ * (a path, a git repository, a URL) is its own name.
+ */
+export declare function splitPackageSpec(spec: string): {
+    name: string;
+    range: string | null;
 };
+/**
+ * The registry request a dependency `name` with `range` makes: an `npm:`
+ * alias fetches the package it names, at its range, and installs it under
+ * `name`; anything else fetches `name` at `range` (a non-registry spec too,
+ * whose range the picker reads as no range).
+ */
+export declare function parseRegistryRequest(name: string, range: string): RegistryRequest;
 //# sourceMappingURL=npm-spec.d.ts.map
