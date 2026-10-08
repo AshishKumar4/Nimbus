@@ -65,6 +65,8 @@ export declare class PortRegistry {
     private readonly deliveredAcquire;
     private ports;
     private facetStubsByPid;
+    /** Why a port's process ended, when it was told (unregisterByPid); until the port is registered again. */
+    private endings;
     /** Pids whose target takes a delivered ACQUIRE off the request (see DELIVERED_ACQUIRE_HEADER). */
     private acquireDeliveredPids;
     private portWaitersByPid;
@@ -102,8 +104,13 @@ export declare class PortRegistry {
     allocate(pid: number): number;
     /** Unregister a port. */
     unregister(port: number): boolean;
-    /** Unregister all ports owned by a specific PID. */
-    unregisterByPid(pid: number): number;
+    /**
+     * Unregister all ports owned by a specific PID. `ending` says why its
+     * process ended, for a request to one of those ports to be told (ended).
+     */
+    unregisterByPid(pid: number, ending?: string): number;
+    /** Why the process that last served `port` ended, when it was told and nothing has registered the port since. */
+    ended(port: number): string | undefined;
     /** Look up a port entry. */
     get(port: number): PortEntry | undefined;
     /** Attach a normalized route target to ports previously reserved by a PID. */

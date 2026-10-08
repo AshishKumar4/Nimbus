@@ -111,6 +111,13 @@ export declare function classifyMessage(msg: string): OomCause;
  */
 export declare function isTransientDoReset(input: unknown): boolean;
 /**
+ * A failure the platform reports without a cause: workerd's "internal error;
+ * reference = <id>", whose reference only Cloudflare can look up. The error
+ * may carry `durableObjectReset` (the object it reached was reset), and
+ * nothing else; the caller has to name what it was doing.
+ */
+export declare function isUnexplainedPlatformError(input: unknown): boolean;
+/**
  * Workerd shed the call because the target Durable Object's input-gate
  * queue was too deep or too old: "Durable Object is overloaded."
  *

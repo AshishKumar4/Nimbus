@@ -214,6 +214,7 @@ import {
   isolateToken,
 } from '../../packages/fabric/src/process-host.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
+import { timers } from '../../packages/fabric/src/timers.ts';
 import { composeFabric } from '../../packages/fabric/src/composition.ts';
 import { openSupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { missingAssets } from './lib/staged-assets.mjs';
@@ -242,8 +243,6 @@ export const PROCESS_HOST_MODES = ['facet', 'peer'];
 export function createProcessHost(mode, world, disk, {
   env, coordDoId = 'coord-do-id', colocated = false, peerWithoutFacets = false, deliveries = false,
 } = {}) {
-  const calls = [];
-  const stubs = [];
   const hostEnv = env ?? {
     LOADER: world.loader,
     ASSETS: missingAssets,
@@ -255,6 +254,34 @@ export function createProcessHost(mode, world, disk, {
     host.hostIncarnation = hostIncarnation;
     return host;
   }
+  const { ns, peers, calls, stubs } = createPeerNamespace(world, hostEnv, { colocated, peerWithoutFacets });
+  const host = processHostFor(
+    coordinator,
+    { NIMBUS_SESSION: ns, NIMBUS_PROCESS_HOST: 'peer' },
+    () => disk,
+  );
+  host.peers = peers;
+  host.namesResolved = calls;
+  host.stubs = stubs;
+  host.hostIncarnation = hostIncarnation;
+  return host;
+}
+
+/**
+ * A fake `NIMBUS_SESSION` namespace whose sibling sessions host processes
+ * through the REAL `_rpc*` host legs, over `world`'s facets. `peers` maps each
+ * sibling's name to its state; `peer.die(error)` severs its held host leg
+ * exactly as a Durable Object reset severs an inbound call.
+ *
+ * `colocated: true` makes every peer report the COORDINATOR's isolate;
+ * `peerWithoutFacets: true` gives each peer no `ctx.facets`. `coordinator`
+ * (`{ doId, supervisorOp }`) is the session a peer reaches back to through
+ * the same namespace. Each peer's storage records the alarm it arms
+ * (`ctx.storage.alarmAt`). `onPeer(peer)` sees each peer as it is made.
+ */
+export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, coordinator, onPeer } = {}) {
+  const calls = [];
+  const stubs = [];
   // Every `ns.get()` for one name reaches one peer, exactly as a DO namespace
   // does; a second stub for the same name must see the same hosted records.
   const peers = new Map();
@@ -265,9 +292,11 @@ export function createProcessHost(mode, world, disk, {
       // A hosting sibling that cannot host: the failure a peer suffers where a
       // coordinator would have thrown before any handle existed.
       if (peerWithoutFacets) delete ctx.facets;
+      ctx.storage.alarmAt = null;
+      ctx.storage.setAlarm = async (at) => { ctx.storage.alarmAt = at; };
       peer = {
         ctx,
-        env: hostEnv,
+        env: { ...hostEnv, NIMBUS_SESSION: ns },
         _hostedProcesses: new Map(),
         _hostedProcessWaiters: new Map(),
         // A peer is a DIFFERENT Durable Object, so it reports a different
@@ -282,6 +311,14 @@ export function createProcessHost(mode, world, disk, {
       // Durable Object reset severs an inbound call.
       peer.death = new Promise((_, reject) => { peer.die = reject; });
       peer.death.catch(() => {});
+      // `reset(error)` is the reset Cloudflare was measured doing (2026-10-07):
+      // the held leg stays open, and every later call to the peer fails with
+      // `error`.
+      peer.resetBy = null;
+      peer.reset = (error) => { peer.resetBy = error; };
+      // A session arms its hosting watch on its own timer mux (NimbusSession.scheduleHostingWatch).
+      peer.scheduleHostingWatch = (at) => timers(peer, ctx).arm('hosting-watch', at);
+      onPeer?.(peer);
       peers.set(name, peer);
     }
     return peer;
@@ -290,6 +327,9 @@ export function createProcessHost(mode, world, disk, {
     idFromName: (name) => name,
     idFromString: (id) => id,
     get(name) {
+      if (coordinator !== undefined && name === coordinator.doId) {
+        return { supervisorOp: (envelope) => Promise.resolve().then(() => coordinator.supervisorOp(envelope)) };
+      }
       const peer = peerFor(name);
       calls.push(name);
       // Stubs carry a disposer, as RPC stubs do, so a leg that forgets to
@@ -301,6 +341,7 @@ export function createProcessHost(mode, world, disk, {
         // The upgrade leg is a service-binding fetch on the peer — route it
         // to the same real handler the production entrypoint calls.
         async fetch(request) {
+          if (peer.resetBy) throw peer.resetBy;
           const headers = request.headers;
           return routeHostedWebSocket(
             peer,
@@ -314,6 +355,7 @@ export function createProcessHost(mode, world, disk, {
         // supervisorOp first, exactly as the shipped host does.
         supervisorOp(envelope) {
           const { op, args } = envelope;
+          if (peer.resetBy && op !== 'hostProcess') return Promise.reject(peer.resetBy);
           switch (op) {
             case 'processHostProbe': return Promise.resolve({ isolateToken: peer.isolateToken });
             case 'hostProcess': return Promise.race([_rpcHostProcess(peer, args[0], args[1]), peer.death]);
@@ -327,16 +369,7 @@ export function createProcessHost(mode, world, disk, {
       };
     },
   };
-  const host = processHostFor(
-    coordinator,
-    { NIMBUS_SESSION: ns, NIMBUS_PROCESS_HOST: 'peer' },
-    () => disk,
-  );
-  host.peers = peers;
-  host.namesResolved = calls;
-  host.stubs = stubs;
-  host.hostIncarnation = hostIncarnation;
-  return host;
+  return { ns, peers, calls, stubs };
 }
 
 /**

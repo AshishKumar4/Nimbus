@@ -160,6 +160,8 @@ export const DELIVERED_ACQUIRE_HEADER = 'X-Nimbus-Vfs-Acquired';
 export class PortRegistry {
   private ports = new Map<number, PortEntry>();
   private facetStubsByPid = new Map<number, RouteableFacetTarget>();
+  /** Why a port's process ended, when it was told (unregisterByPid); until the port is registered again. */
+  private endings = new Map<number, string>();
   /** Pids whose target takes a delivered ACQUIRE off the request (see DELIVERED_ACQUIRE_HEADER). */
   private acquireDeliveredPids = new Set<number>();
   private portWaitersByPid = new Map<number, Set<() => void>>();
@@ -199,6 +201,7 @@ export class PortRegistry {
    */
   register(port: number, pid: number): void {
     const target = this.facetStubsByPid.get(pid) ?? null;
+    this.endings.delete(port);
     this.ports.set(port, {
       port,
       pid,
@@ -231,18 +234,27 @@ export class PortRegistry {
     return this.ports.delete(port);
   }
 
-  /** Unregister all ports owned by a specific PID. */
-  unregisterByPid(pid: number): number {
+  /**
+   * Unregister all ports owned by a specific PID. `ending` says why its
+   * process ended, for a request to one of those ports to be told (ended).
+   */
+  unregisterByPid(pid: number, ending?: string): number {
     let count = 0;
     for (const [port, entry] of this.ports) {
       if (entry.pid === pid) {
         this.ports.delete(port);
+        if (ending !== undefined) this.endings.set(port, ending);
         count++;
       }
     }
     this.facetStubsByPid.delete(pid);
     this.acquireDeliveredPids.delete(pid);
     return count;
+  }
+
+  /** Why the process that last served `port` ended, when it was told and nothing has registered the port since. */
+  ended(port: number): string | undefined {
+    return this.endings.get(port);
   }
 
   /** Look up a port entry. */

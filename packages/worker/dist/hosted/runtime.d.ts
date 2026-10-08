@@ -11,6 +11,7 @@ import * as services from './services.js';
 import { HostedSession, type HostedSessionScope } from './session.js';
 import { z } from 'zod/v4';
 declare const HostedTask: z.ZodEnum<{
+    "hosting-watch": "hosting-watch";
     "resident-launch": "resident-launch";
     "resident-keepalive": "resident-keepalive";
     "log-flush": "log-flush";

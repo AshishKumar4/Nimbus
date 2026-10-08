@@ -68,6 +68,8 @@ import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
 import { z } from 'zod/v4';
+import { isTransientDoReset } from '@nimbus-sh/platform/oom-classify.js';
+import { ProcessHostLost, } from './process-fabric.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import { BindingError } from './vendor/errors.js';
 import { processes, } from './workerd-facet-host.js';
@@ -243,6 +245,8 @@ class PeerProcessHost {
     coordDoId;
     /** pid → the isolate token of the peer currently hosting that process. */
     tokensInUse = new Map();
+    /** workerKey → how to end an open process whose host reports its reset (hostLost). */
+    opens = new Map();
     constructor(ctx, env, network) {
         this.ctx = ctx;
         this.network = network;
@@ -297,14 +301,35 @@ class PeerProcessHost {
             startArgs: params.startArgs,
         });
         hostLeg.catch(() => { });
+        // The platform resetting the peer under the process ends the process, and
+        // every leg says so by one name. It shows three ways: the held leg fails
+        // (a coordinator's own release settles it cleanly); or, as measured on
+        // Cloudflare (2026-10-07), the held leg stays open and the next call to
+        // the peer fails, after about 10 s, with the reset's own words; or the
+        // peer's next incarnation reports it (hostLost) from its own alarm.
+        let gone = null;
+        let markLost = () => { };
+        const hostLost = new Promise((_, reject) => { markLost = reject; });
+        hostLost.catch(() => { });
+        const loseHost = (error) => {
+            if (gone === null) {
+                gone = new ProcessHostLost(error);
+                markLost(gone);
+            }
+            return gone;
+        };
+        hostLeg.then(() => undefined, loseHost);
+        this.opens.set(params.workerKey, { capability: webSocketCapability, lose: loseHost });
+        /** A call to the peer that failed because the peer was reset is the loss; any other failure is its own. */
+        const lostOr = (error) => gone ?? (peerWasReset(error) ? loseHost(error) : error);
         // The peer starts the runner as part of hosting it; this reads back that
         // one boot payload without re-running anything, so `started` means exactly
         // what it means on a facet. Racing the host leg is what turns a peer that
         // died before the boot landed into a rejection rather than a hang — the
         // peer that would have answered is the thing that is gone.
-        const booted = placement.stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload);
+        const booted = placement.stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload, (error) => { throw lostOr(error); });
         booted.catch(() => { });
-        const started = Promise.race([booted, hostLeg.then(() => booted)]);
+        const started = Promise.race([booted, hostLost]);
         started.catch(() => { });
         // Do not return a handle for a process that was never opened. Opening a
         // facet of one's own DO either throws or does not, before any handle
@@ -317,6 +342,7 @@ class PeerProcessHost {
         }
         catch (error) {
             this.tokensInUse.delete(params.pid);
+            this.opens.delete(params.workerKey);
             // Awaited, not fired off: a spawn that rejects must mean nothing was
             // left running, which is what a throw from `processes().spawn` means on
             // the other substrate.
@@ -329,19 +355,27 @@ class PeerProcessHost {
             throw error;
         }
         let released = false;
+        // A route to a host that is gone fails at once, by name; one in flight
+        // when it goes fails then, not when the platform's own answer arrives.
+        const routed = (leg) => {
+            if (gone !== null)
+                return Promise.reject(gone);
+            return Promise.race([leg().catch((error) => { throw lostOr(error); }), hostLost]);
+        };
         return {
             started,
-            // The held leg IS the process's residency here. It settles cleanly when
-            // the coordinator releases; anything else is the host going away under a
-            // process that was up, and the fabric ends the process on it.
-            lost: hostLeg.then(() => new Promise(() => { })),
-            handleHttpRequest: (request) => routeThroughPeer(placement.stub, params.workerKey, request),
-            handleWebSocketRequest: (request) => routeWebSocketThroughPeer(placement.stub, params.workerKey, webSocketCapability, request),
+            // The held leg IS the process's residency here, and it settles cleanly
+            // when the coordinator releases. The host going away under a process
+            // that was up rejects this, and the fabric ends the process on it.
+            lost: hostLost,
+            handleHttpRequest: (request) => routed(() => routeThroughPeer(placement.stub, params.workerKey, request)),
+            handleWebSocketRequest: (request) => routed(() => routeWebSocketThroughPeer(placement.stub, params.workerKey, webSocketCapability, request)),
             release: async () => {
                 if (released)
                     return;
                 released = true;
                 this.tokensInUse.delete(params.pid);
+                this.opens.delete(params.workerKey);
                 try {
                     await this._cancel(params.workerKey, placement.peerName);
                 }
@@ -352,6 +386,13 @@ class PeerProcessHost {
             describe: () => `peer '${placement.peerName}' (isolate ${placement.isolateToken.slice(0, 8)})`
                 + `; ${describeImageDelivery(this.imageDelivery)}`,
         };
+    }
+    hostLost(workerKey, capability) {
+        const open = this.opens.get(workerKey);
+        if (open === undefined || open.capability !== capability)
+            return false;
+        open.lose(new Error('the host restarted without it'));
+        return true;
     }
     /**
      * Probe successive sibling names until one reports an isolate token distinct
@@ -436,6 +477,17 @@ class PeerProcessHost {
         this.ctx.waitUntil(cancelled);
         return cancelled;
     }
+}
+/**
+ * An RPC to the peer failed because the platform reset the peer: the error
+ * says the object was reset (`durableObjectReset`, or a reset's own wording).
+ * Measured 2026-10-07: a peer reset under a CPU-bound process answered its
+ * caller "Durable Object reset because its code was updated." with no deploy.
+ */
+function peerWasReset(error) {
+    if (typeof error === 'object' && error !== null && Reflect.get(error, 'durableObjectReset') === true)
+        return true;
+    return isTransientDoReset(error);
 }
 async function routeThroughPeer(stub, workerKey, request) {
     const result = await stub._rpcRouteHostedHttp(workerKey, {

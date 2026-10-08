@@ -55,10 +55,10 @@ const expected = JSON.parse(v8.stdout);
 // with this process's own Function (the shims route the global one through Reflect.apply).
 const ModuleFunction = Function;
 globalThis.__nimbusRuntimeCode = {
-  compileExpression(code) {
+  compileExpression(code, origin) {
     const moduleObject = { exports: {} };
     new ModuleFunction('module', 'exports', runtimeExpressionModule(code))(moduleObject, moduleObject.exports);
-    return moduleObject.exports;
+    return moduleObject.exports(origin.import, origin.Function);
   },
 };
 const factory = new Function(

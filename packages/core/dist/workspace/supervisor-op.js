@@ -125,7 +125,7 @@ export const SUPERVISOR_OPS = [
     'cpDrainOutput', 'cpKill', 'cpWait', 'cpBlocked',
     'fsFstat', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsReaddirHandle', 'fsFtruncate', 'fsFchmod', 'fsFchown', 'fsFutimes', 'fsSync', 'fsRealpath', 'fsRemove', 'fsCopyFile', 'fsCopyTree', 'fsAcquireExclusiveMutation', 'fsReleaseExclusiveMutation',
     'innerDoFetch', 'innerDoCall', 'fanoutExecute', 'processHostProbe', 'hostProcess',
-    'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay', 'hmrNextEvent',
+    'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hostLost', 'hmrRelay', 'hmrNextEvent',
     'replayBoundary', 'netTls', 'outbound', 'stdinFileRead', 'stdinPrepared',
     'getCachedTarball', 'putCachedTarball', 'getPackument',
     'cacheResult',
@@ -199,6 +199,7 @@ export const SUPERVISOR_OP_ROUTES = {
     awaitHostedBoot: { method: '_rpcAwaitHostedBoot', args: [0] },
     routeHostedHttp: { method: '_rpcRouteHostedHttp', args: [0, 1] },
     cancelHostProcess: { method: '_rpcCancelHostProcess', args: [0] },
+    hostLost: { method: '_rpcHostLost', args: [0, 1] },
     hmrRelay: { method: '_rpcHmrRelay', args: [0, 1] },
     hmrNextEvent: { method: '_rpcHmrNextEvent', args: [0] },
     // A process that can stop at a read of stdin (worker runtime/stop-replay.ts).
