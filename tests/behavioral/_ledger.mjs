@@ -1,6 +1,7 @@
 /**
  * The per-run session ledger `_driver.mjs` appends to: one JSON line per
  * mint and per DELETE of a session. run-all reads it once the probes finish.
+ * And the exit hook's DELETEs, which a child process runs (deleteSessions).
  */
 
 /**
@@ -25,6 +26,55 @@ export async function deletionResult(response) {
     && Number.isSafeInteger(result.destroyedAt) && result.destroyedAt >= 0
     && (result.reason === null || typeof result.reason === 'string');
   return { ok: Boolean(confirmed), status: response.status, body };
+}
+
+/**
+ * How long a 503's Retry-After asks to wait, in ms: delay-seconds or an
+ * HTTP-date (RFC 9110 §10.2.3), from `now`. Null when the header is absent,
+ * empty or neither (Date.parse alone is lenient: "1.5" parses as 2001).
+ *
+ * @param {string | null} header
+ * @param {number} [now]
+ * @returns {number | null}
+ */
+export function retryAfterMs(header, now = Date.now()) {
+  const value = (header ?? '').trim();
+  const ms = /^\d+$/.test(value) ? Number(value) * 1000
+    : /[A-Za-z]{3}/.test(value) ? Date.parse(value) - now : NaN;
+  return Number.isFinite(ms) ? Math.max(0, ms) : null;
+}
+
+/**
+ * DELETE each session and read the answer through deletionResult. A 503 (the
+ * session object refusing work it is too busy to admit; the destroy never
+ * ran) or a failed request is tried again, after the answer's Retry-After or
+ * else 1 s, at most `tries` times within `budgetMs`: a session busy with an
+ * install refused its DELETE once and was counted a leak while it lived. Any
+ * other answer is the verdict. The destroy is idempotent.
+ *
+ * @param {{ base: string, sessions: [string, Record<string, string>][], tries: number, budgetMs: number }} run
+ * @returns {Promise<{ status: number | string, confirmed: boolean, attempts: number }[]>}
+ */
+export async function deleteSessions({ base, sessions, tries, budgetMs }) {
+  return Promise.all(sessions.map(async ([sid, headers]) => {
+    const deadline = Date.now() + budgetMs;
+    for (let attempt = 1; ; attempt++) {
+      let last, waitMs = 1000;
+      try {
+        const response = await fetch(`${base}/s/${encodeURIComponent(sid)}/`, {
+          method: 'DELETE', headers, signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
+        });
+        const result = await deletionResult(response);
+        last = { status: result.status, confirmed: result.ok, attempts: attempt };
+        if (response.status !== 503) return last;
+        waitMs = retryAfterMs(response.headers.get('retry-after')) ?? waitMs;
+      } catch (error) {
+        last = { status: `error: ${error.message}`, confirmed: false, attempts: attempt };
+      }
+      if (attempt >= tries || Date.now() + waitMs >= deadline) return last;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }));
 }
 
 /**
