@@ -623,15 +623,16 @@ export function processFsClient(options) {
         if (readLease?.owner === owner)
             readLease = null;
     };
-    /** Give the read lease back (idle, or the process settling): the session's recall of it waits on no one. */
-    const releaseReadLease = async () => {
-        const lease = readLease;
-        if (lease === null)
-            return;
-        endReadLease(lease.owner);
+    /** Give read lease `owner` back (idle, or the run ending): the session's recall of it waits on no one. */
+    const giveBackReadLease = async (owner) => {
+        endReadLease(owner);
         counters.readReleased++;
-        await session.grants?.release(lease.owner).catch(() => { });
+        await session.grants?.release(owner).catch(() => { });
     };
+    /** The run ended (settle): it takes no read lease again. */
+    let runEnded = false;
+    /** Read leases granted to a barrier asked before the run ended, on their way back: settle waits for them. */
+    const givingBack = new Set();
     /**
      * The read lease's recalls, for as long as it is the process's: each poll
      * that comes back empty while no barrier confirmed it gives it back (it is
@@ -654,7 +655,7 @@ export function processFsClient(options) {
                 return;
             if (kind === null) {
                 if (readLease.confirmedAt < polled) {
-                    await releaseReadLease();
+                    await giveBackReadLease(owner);
                     return;
                 }
                 continue;
@@ -919,8 +920,11 @@ export function processFsClient(options) {
         },
         async settle() {
             settling = true;
-            // Given back before the process is over: a writer after it never waits on its trust.
-            await releaseReadLease();
+            runEnded = true;
+            // Given back before the run is over: a writer after it never waits on its trust.
+            if (readLease !== null)
+                await giveBackReadLease(readLease.owner);
+            await Promise.all([...givingBack]);
             if (claiming !== null)
                 await claiming;
             try {
@@ -948,13 +952,19 @@ export function processFsClient(options) {
             return readLease !== null && readLease.logged === logged && now() < readLease.until;
         },
         readLeaseAsk() {
-            if (session.grants === undefined || settling)
+            if (session.grants === undefined || runEnded)
                 return null;
             return { at: now(), logged: answered === logged ? logged : -1 };
         },
         readLeased(lease, ask) {
-            if (session.grants === undefined || settling || endedReadLeases.has(lease.owner))
+            if (session.grants === undefined || endedReadLeases.has(lease.owner))
                 return;
+            if (runEnded) {
+                const back = giveBackReadLease(lease.owner);
+                givingBack.add(back);
+                void back.finally(() => givingBack.delete(back));
+                return;
+            }
             const confirmed = readLease?.owner === lease.owner;
             readLease = { owner: lease.owner, until: ask.at + lease.trustMs, confirmedAt: now(), logged: ask.logged };
             if (confirmed) {

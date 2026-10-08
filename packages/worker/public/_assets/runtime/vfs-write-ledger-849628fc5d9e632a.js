@@ -1615,14 +1615,14 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       if (endedReadLeases.size > 64) endedReadLeases.delete(endedReadLeases.values().next().value);
       if (readLease?.owner === owner) readLease = null;
     };
-    const releaseReadLease = async () => {
-      const lease = readLease;
-      if (lease === null) return;
-      endReadLease(lease.owner);
+    const giveBackReadLease = async (owner) => {
+      endReadLease(owner);
       counters.readReleased++;
-      await session.grants?.release(lease.owner).catch(() => {
+      await session.grants?.release(owner).catch(() => {
       });
     };
+    let runEnded = false;
+    const givingBack =   new Set();
     const answerReadRecalls = async (owner) => {
       const port = session.grants;
       for (; ; ) {
@@ -1637,7 +1637,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         if (readLease?.owner !== owner) return;
         if (kind === null) {
           if (readLease.confirmedAt < polled) {
-            await releaseReadLease();
+            await giveBackReadLease(owner);
             return;
           }
           continue;
@@ -1848,7 +1848,9 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       },
       async settle() {
         settling = true;
-        await releaseReadLease();
+        runEnded = true;
+        if (readLease !== null) await giveBackReadLease(readLease.owner);
+        await Promise.all([...givingBack]);
         if (claiming !== null) await claiming;
         try {
           while (answered < logged) await client.flush();
@@ -1870,11 +1872,17 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         return readLease !== null && readLease.logged === logged && now() < readLease.until;
       },
       readLeaseAsk() {
-        if (session.grants === void 0 || settling) return null;
+        if (session.grants === void 0 || runEnded) return null;
         return { at: now(), logged: answered === logged ? logged : -1 };
       },
       readLeased(lease, ask) {
-        if (session.grants === void 0 || settling || endedReadLeases.has(lease.owner)) return;
+        if (session.grants === void 0 || endedReadLeases.has(lease.owner)) return;
+        if (runEnded) {
+          const back = giveBackReadLease(lease.owner);
+          givingBack.add(back);
+          void back.finally(() => givingBack.delete(back));
+          return;
+        }
         const confirmed = readLease?.owner === lease.owner;
         readLease = { owner: lease.owner, until: ask.at + lease.trustMs, confirmedAt: now(), logged: ask.logged };
         if (confirmed) {
