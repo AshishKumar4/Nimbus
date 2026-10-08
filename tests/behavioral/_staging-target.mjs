@@ -89,6 +89,7 @@ const {
   randomSecret,
   readState,
   requireAccountPin,
+  TargetNotReadyError,
   waitForTarget,
   workersDevSubdomain,
   writeState,
@@ -140,7 +141,13 @@ if (!run) {
   console.error(`usage: bun tests/behavioral/_staging-target.mjs <${Object.keys(COMMANDS).join('|')}> [flags]`);
   process.exit(2);
 }
-await run();
+try {
+  await run();
+} catch (error) {
+  if (!(error instanceof TargetNotReadyError)) throw error;
+  console.error(`readiness: NOT GRADED — ${error.message}`);
+  process.exitCode = error.exitCode;
+}
 
 // ── Commands ─────────────────────────────────────────────────────────
 
