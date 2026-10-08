@@ -36,7 +36,7 @@ for (const mode of ['ready', 'mint-mismatch', 'upgrade-mismatch', 'transient-500
           return new Response('internal error; reference fixture', { status: 500, headers: { [header]: uploaded } });
         }
         destroyed.add(sid);
-        return Response.json({ ok: true, result: { ok: true, killed: 0, destroyedAt: Date.now() } }, { headers: { [header]: uploaded } });
+        return Response.json({ ok: true, result: { ok: true, killed: 0, destroyedAt: Date.now(), reason: 'target-readiness' } }, { headers: { [header]: uploaded } });
       }
       throw new Error(`unexpected ${request.method} ${path}`);
     },
