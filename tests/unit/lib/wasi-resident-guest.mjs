@@ -40,7 +40,7 @@ export const canPark = typeof WebAssembly.Suspending === 'function' && typeof We
  */
 export async function residentGuest({ refuse = () => false, of } = {}) {
   const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
-  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync };`);
+  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync, __wasiPrepareFilesystem };`);
   let P;
   try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
 

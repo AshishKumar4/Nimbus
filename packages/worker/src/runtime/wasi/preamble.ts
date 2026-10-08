@@ -223,22 +223,23 @@ let __wasiProcessGone: string | null = null;
 // `inbound()` is called wherever input from outside enters the guest (a
 // socket's bytes, an accepted connection, a poll wakeup): the next answer then
 // takes the ACQUIRE barrier first, the causal rule a node process keeps.
-let __wasiResident: { sup: WasiSupervisorStub; fs: ResidentFilesystem } | null = null;
+let __wasiResident: { sup: WasiSupervisorStub; fs: ResidentFilesystem; ready: Promise<ResidentNamespace | null> } | null = null;
 
 /** The resident filesystem over `sup`, booting its store; its calls go to the session until the boot lands. */
-function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): ResidentFilesystem {
+function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { fs: ResidentFilesystem; ready: Promise<ResidentNamespace | null> } {
   const supervisor = answeringSupervisor(sup);
   const authority = supervisorFilesystem(sup);
   const store = __wasiResidentStore;
   store.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
   store.__residentSetStorage(undefined, supervisor);
   let view: ResidentNamespace | null = null;
-  void (async () => {
+  const ready = (async () => {
     // The session's own filesystem is the one the store answers for: its root reports its device.
     const root = await authority.stat('/');
-    if (root === null || !(await store.__residentBootLazy(supervisor))) return;
+    if (root === null || !(await store.__residentBootLazy(supervisor))) return null;
     view = store.__residentNamespaceView(supervisor, root.dev, cred);
-  })().catch(() => { view = null; });
+    return view;
+  })().catch(() => { view = null; return null; });
   const booting: ResidentNamespace = {
     get device() { return view === null ? -1 : view.device; },
     cred,
@@ -273,11 +274,12 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): ResidentF
   // A resident's facet keeps the log of what it sends in its own store
   // (process-fs-journal.ts), drained by the session once the process is gone.
   const journalSql: JournalSql | undefined = Reflect.get(globalThis, '__nimbusFsJournalSql');
-  return residentFilesystem(authority, booting, {
+  const fs = residentFilesystem(authority, booting, {
     session,
     isHomeRoot: isHomeDirectory,
     ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
   });
+  return { fs, ready };
 }
 
 /** The stub's wave calls (SupervisorRPC.openWaveWriter, writeBatchStream). */
@@ -303,8 +305,22 @@ function __wasiFilesystem(parking: WasiMakeImportsOptions['parking']): RuntimeFs
   // same-isolate supervisor answers synchronously and is used as it is.
   const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
   if (cred === null || !canPark) return supervisorFilesystem(sup);
-  if (__wasiResident === null || __wasiResident.sup !== sup) __wasiResident = { sup, fs: __wasiStartResident(sup, cred) };
+  if (__wasiResident === null || __wasiResident.sup !== sup) __wasiResident = { sup, ...__wasiStartResident(sup, cred) };
   return __wasiResident.fs;
+}
+
+export async function __wasiPrepareFilesystem(roots: readonly string[]): Promise<void> {
+  __wasiFilesystem('jspi');
+  const view = await __wasiResident?.ready;
+  if (!view) return;
+  const paths = roots.map(__wasiCanonicalize);
+  const ancestors = new Set<string>();
+  for (const root of paths) {
+    const parts = root.split('/');
+    for (let depth = 1; depth <= parts.length; depth++) ancestors.add(parts.slice(0, depth).join('/'));
+  }
+  await view.lookup([...ancestors], false);
+  for (const root of paths) await view.listTree(root);
 }
 
 /** This process's filesystem calls so far and who answered them (ResidentFilesystemStats), or null when the session answered them all. */
