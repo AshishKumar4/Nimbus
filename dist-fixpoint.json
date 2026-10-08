@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "0e848709a43916bfa0e8bcd75093ed6181e17f5f63e56f82cf9a5166d19fdfd8",
+  "fingerprint": "d6d088c676f31db5206b32334914c17e10080451024d4ab08f46897250220623",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -913,8 +913,8 @@
     "packages/core/dist/substrate/lifo/shell/ProcessRegistry.d.ts.map": "75076d1b04d6f5baab73fe97103eac98e26a34efe0a958f538297a91725a0436",
     "packages/core/dist/substrate/lifo/shell/ProcessRegistry.js": "e0f3291e5878f1c619831e1678681c555f8192d8f37d444ffc9db8362718877d",
     "packages/core/dist/substrate/lifo/shell/Shell.d.ts": "bac26aaf7551e61704b9cb8363c568f49158e6920dcd6ce8c4f9aecbfd5d0f91",
-    "packages/core/dist/substrate/lifo/shell/Shell.d.ts.map": "45071dea84a8e88975198eb6e7d205b92feffa5aad0cc3b85b8079a6513c9c88",
-    "packages/core/dist/substrate/lifo/shell/Shell.js": "8db935161044bf67035f170cf09b714b154cb5e26150b96cf1209a43840149c0",
+    "packages/core/dist/substrate/lifo/shell/Shell.d.ts.map": "c3204b60a78fec3ff23f92b960bd458b258dafeb629a5db6eddd6be27d7c9b44",
+    "packages/core/dist/substrate/lifo/shell/Shell.js": "f6f863e305f04b7273c0d0ac4b4376a6f0f56835b6a3f717867c133a5f79676a",
     "packages/core/dist/substrate/lifo/shell/bash-builtins.d.ts": "866b5af3ce08844e3ef56deefe3acea8ccd4619e7f48efc03b9a0bdec66a3842",
     "packages/core/dist/substrate/lifo/shell/bash-builtins.d.ts.map": "b13e53cca0f93b7b379c74398e98993f882eb3ac5fc89b5e558e947ef642c790",
     "packages/core/dist/substrate/lifo/shell/bash-builtins.js": "e0539677af432c19a88ea7be394848465e363f55a1f4de05f7550fe1deb84144",
@@ -1368,7 +1368,7 @@
     "packages/core/src/substrate/lifo/sandbox/HeadlessTerminal.ts": "7c0e2bc554ff50f46e14aa05798f2ad1b0eec52008bd2ab8d4098e49f3342ec2",
     "packages/core/src/substrate/lifo/sandbox/run-command.ts": "7f890e204ff8c5f6c193aa2fbcbb24b3c3b140e7cb7cf43a12f75601688564c6",
     "packages/core/src/substrate/lifo/shell/ProcessRegistry.ts": "225508314f16bc435229efcd6c1fb888fb65d2f2cf61fdf65c479d3abe88545b",
-    "packages/core/src/substrate/lifo/shell/Shell.ts": "635e4256c0b87bcfa0476886e32a7c6947ebd8db9ca96a6ecc21827a3d5ea32f",
+    "packages/core/src/substrate/lifo/shell/Shell.ts": "76aba66058e20e14abbb0a0bc0451868f13484e9908d3de3a6e9e90a1194b142",
     "packages/core/src/substrate/lifo/shell/bash-builtins.ts": "78787c8c03af5e2f6a458997f267a40a933b2888c567100f622f5d03d65e86e3",
     "packages/core/src/substrate/lifo/shell/byte-queue.ts": "7981c49b91a49595c5d495903162bbeb9ea6fd531cb5cdf0e8879763cafddb93",
     "packages/core/src/substrate/lifo/shell/completer.ts": "4313f0edf551a248c100ba03e522443cb9f2334f1c1a956906117c46703dc6e1",

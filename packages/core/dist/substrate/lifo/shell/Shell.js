@@ -44,6 +44,21 @@ export function formatShellPrompt(env, cwd) {
 }
 /** PS2 — shown while an accepted line has not closed into a command yet. */
 const CONTINUATION_PROMPT = '> ';
+/**
+ * Shell-integration marks (FinalTerm's OSC 133), the ones bash and zsh write
+ * for VS Code, iTerm2 and WezTerm: A where a fresh prompt starts, B where it
+ * ends and input begins, C when an accepted command starts executing, D with
+ * its status when it ends. A client learns from them that a command returned,
+ * and how, instead of matching text that looks like a prompt. Only a fresh
+ * prompt is marked; a redraw of the line being edited rewrites the row the
+ * marks already name and finishes no command. Terminals that do not know
+ * them ignore them, as xterm.js does.
+ */
+const PROMPT_START = '\x1b]133;A\x07';
+const PROMPT_END = '\x1b]133;B\x07';
+const COMMAND_START = '\x1b]133;C\x07';
+/** D, with the status when the command returned one. */
+const commandEnd = (status) => `\x1b]133;D${status === null ? '' : `;${status}`}\x07`;
 export class Shell {
     filesystem;
     terminal;
@@ -497,7 +512,7 @@ export class Shell {
             this.writeToTerminal(`[${job.id}] Done    ${job.command}\n`);
         }
         this.processRegistry.collectZombies();
-        this.terminal.write(formatShellPrompt(this.env, this.cwd));
+        this.terminal.write(PROMPT_START + formatShellPrompt(this.env, this.cwd) + PROMPT_END);
     }
     async handleInput(data) {
         // Raw mode: bypass all shell line editing, deliver keypresses directly
@@ -1001,8 +1016,10 @@ export class Shell {
         this.running = true;
         this.abortController = new AbortController();
         this.terminalStdin = new TerminalStdin();
+        this.terminal.write(COMMAND_START);
+        let status = null;
         try {
-            await this.interpreter.executeLine(actualLine, this.terminalStdin, {
+            status = await this.interpreter.executeLine(actualLine, this.terminalStdin, {
                 interactive: true,
                 commandIdentity: this.resolveCommandIdentity(undefined),
                 runAs: this.commandIdentity.runAs,
@@ -1016,6 +1033,7 @@ export class Shell {
             this.stdinCursorPos = 0;
             this.running = false;
             this.abortController = null;
+            this.terminal.write(commandEnd(status));
         }
         this.printPrompt();
         (await this.drainPasteQueue());
