@@ -21,6 +21,12 @@
  * self-contained function: nothing inside may refer to this module.
  */
 import { invalidArgType, nodeError } from './node-error.js';
+/** Node's ERR_UNKNOWN_FILE_EXTENSION message for the file at `path`. */
+export function unknownFileExtensionMessage(path) {
+    const base = path.slice(path.lastIndexOf('/') + 1);
+    const dot = base.lastIndexOf('.');
+    return `Unknown file extension "${dot > 0 ? base.slice(dot) : ''}" for ${path}`;
+}
 export function createEsmResolver(host, options = {}) {
     const conditions = new Set(['node', 'import', 'module-sync', ...(options.conditions ?? [])]);
     // The host's questions, each yielded as-is and typed by what it answers.
@@ -374,13 +380,14 @@ export function createEsmResolver(host, options = {}) {
         const base = path.slice(path.lastIndexOf('/') + 1);
         const dot = base.lastIndexOf('.');
         const ext = dot > 0 ? base.slice(dot) : '';
-        if (ext === '.mjs' || ext === '.mts')
+        const typeScript = options.stripTypes !== false;
+        if (ext === '.mjs' || (ext === '.mts' && typeScript))
             return 'module';
-        if (ext === '.cjs' || ext === '.cts')
+        if (ext === '.cjs' || (ext === '.cts' && typeScript))
             return 'commonjs';
         if (ext === '.json')
             return 'json';
-        if (ext === '.js' || ext === '.ts' || ext === '') {
+        if (ext === '.js' || (ext === '.ts' && typeScript) || ext === '') {
             const type = (yield* packageScopeConfig(url)).type;
             if (type === 'module')
                 return 'module';
@@ -388,7 +395,7 @@ export function createEsmResolver(host, options = {}) {
                 return 'commonjs';
             return 'detect';
         }
-        throw nodeError(TypeError, 'ERR_UNKNOWN_FILE_EXTENSION', `Unknown file extension "${ext}" for ${path}`);
+        return 'unknown';
     }
     function* finalizeResolution(resolved, baseUrl) {
         const base = filePath(baseUrl);
@@ -538,6 +545,11 @@ export function createEsmResolver(host, options = {}) {
         packageScopeSync(url) {
             const { pjsonPath, type } = runSync(packageScopeConfig(new URL(url)));
             return { pjsonPath, type };
+        },
+        assertLoadable({ format, path }) {
+            if (format !== 'unknown' || path === undefined)
+                return;
+            throw nodeError(TypeError, 'ERR_UNKNOWN_FILE_EXTENSION', unknownFileExtensionMessage(path));
         },
         validateAttributes(url, format, attributes) {
             for (const key of Object.keys(attributes)) {

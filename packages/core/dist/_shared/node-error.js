@@ -18,10 +18,10 @@ const nodeErrorClasses = new Map();
 /**
  * Node's error `code` on a `Base` (Error, TypeError, RangeError, …) with
  * `message`, and `props` set on it after (an `info`, a `cmd`). Its stack
- * starts at the caller: the frames above it are Node's own in Node.
+ * starts at the caller of `above`: the frames above it are Node's own in Node.
  */
-export function nodeError(Base, code, message, props) {
-    return made(Base, code, message, props, nodeError);
+export function nodeError(Base, code, message, props, above = nodeError) {
+    return made(Base, code, message, props, above);
 }
 /** nodeError's error, its stack starting where `above` was called. */
 function made(Base, code, message, props, above) {

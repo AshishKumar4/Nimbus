@@ -233,17 +233,17 @@ const WRAPPER_HEAD = 'module.exports = (0, function (Function) { return function
  * module's `Function`, is Node's module wrapper function, in the given scope
  * (THE WRAPPER). A leading shebang becomes a line comment of the same length
  * (Node strips it too; `#!` is not valid inside a function). `loweredHead`
- * is a lowered ES module's (EsModuleMap.head): its first line's generated
- * code, which a frame counts as wrapper.
+ * and `loweredTail` are a lowered ES module's (EsModuleMap): its own code
+ * around the module's text, which a frame counts as wrapper.
  */
-export function wrapCommonJsCell(cell: string, scope: CommonJsCellScope = 'function', loweredHead = 0): WrappedCommonJsCell {
+export function wrapCommonJsCell(cell: string, scope: CommonJsCellScope = 'function', loweredHead = 0, loweredTail = 0): WrappedCommonJsCell {
   const hashbang = cell.charCodeAt(0) === 35 && cell.charCodeAt(1) === 33;
   const body = hashbang ? '//' + cell.slice(2) : cell;
   const head = scope === 'function'
     ? WRAPPER_HEAD
     : WRAPPER_HEAD + (opensWithUseStrict(body) ? '"use strict";' : '') + '{';
   const tail = scope === 'function' ? '\n}; });' : '\n}}; });';
-  return { text: head + body + tail, head: head.length + loweredHead, tail: tail.length, hashbang };
+  return { text: head + body + tail, head: head.length + loweredHead, tail: tail.length + loweredTail, hashbang };
 }
 
 /** The module beside a code module that holds its emit's ColumnMap (core async-module-lowering.ts), read by its frames. */
@@ -613,7 +613,8 @@ function __nimbusEntryWrapper(name, importer) {
 // ── Frames, as Node names and places them ──
 // The launch's entry: [moduleName, the name Node gives its frames' file (its
 // path, an ES module's file: URL, [eval], [stdin], an ES module of -e or stdin
-// [eval1] in the launch's directory), the wrapper's head, 1 for an ES module].
+// [eval1] in the launch's directory), the wrapper's head, 1 for an ES module,
+// the wrapper's tail].
 const __nimbusStackEntry = typeof __NIMBUS_STACK_ENTRY === "undefined" ? null : __NIMBUS_STACK_ENTRY;
 const __NIMBUS_BUNDLE_URL = new URL("./", import.meta.url).href;
 let __nimbusCellsByName = null;
@@ -626,16 +627,26 @@ function __nimbusFrameModule(url) {
   if (typeof url !== "string" || !url.startsWith(__NIMBUS_BUNDLE_URL)) return null;
   return __nimbusModuleNamed(url.slice(__NIMBUS_BUNDLE_URL.length));
 }
+// The module of the launch's cell at \`path\` (no leading slash), and the entry's; null for none.
+let __nimbusCellsByPath = null;
+function __nimbusModuleAtPath(path) {
+  __nimbusCellsByPath ??= new Map(__NIMBUS_CODE_CELLS.map((row) => [row[0], row[1]]));
+  const name = __nimbusCellsByPath.get(path);
+  return name === undefined ? null : __nimbusModuleNamed(name);
+}
+function __nimbusEntryModule() {
+  return __nimbusStackEntry === null ? null : __nimbusModuleNamed(__nimbusStackEntry[0]);
+}
 function __nimbusModuleNamed(name) {
   let module = __nimbusModules.get(name);
   if (module !== undefined) return module;
   if (__nimbusStackEntry !== null && name === __nimbusStackEntry[0]) {
-    module = { name, path: null, file: __nimbusStackEntry[1], head: __nimbusStackEntry[2], esModule: __nimbusStackEntry[3] === 1, hashbang: false };
+    module = { name, path: null, file: __nimbusStackEntry[1], head: __nimbusStackEntry[2], tail: __nimbusStackEntry[4], esModule: __nimbusStackEntry[3] === 1, hashbang: false };
   } else {
     __nimbusCellsByName ??= new Map(__NIMBUS_CODE_CELLS.map((row) => [row[1], row]));
     const row = __nimbusCellsByName.get(name);
     if (row === undefined) return null;
-    module = { name, path: "/" + row[0], file: null, head: row[2], esModule: row[6] === 1, hashbang: row[4] === 1 };
+    module = { name, path: "/" + row[0], file: null, head: row[2], tail: row[3], esModule: row[6] === 1, hashbang: row[4] === 1 };
   }
   __nimbusModules.set(name, module);
   return module;
@@ -700,6 +711,18 @@ function __nimbusGeneratedColumn(module, line, column) {
   return column + delta;
 }
 // A module's line as its source has it, from the emit's.
+// A module's text as it was compiled, before any lowering: where Node reads
+// its source map's URL from and measures its lines.
+function __nimbusModuleSourceText(module) {
+  if (module === null) return null;
+  const text = __nimbusFrameModuleText(module);
+  if (text === null) return null;
+  const body = text.slice(module.head, text.length - module.tail);
+  if (__nimbusColumnEdits(module) === null) return body;
+  const parts = body.split(/(\\r\\n|[\\n\\r\\u2028\\u2029])/);
+  for (let i = 0; i < parts.length; i += 2) parts[i] = __nimbusSourceLine(module, i / 2 + 1, parts[i]);
+  return parts.join("");
+}
 function __nimbusSourceLine(module, line, emitted) {
   const edits = __nimbusColumnEdits(module)?.get(line);
   if (edits === undefined) return emitted;
@@ -781,6 +804,11 @@ class __NimbusCallSite {
   }
   toString() { return __nimbusFrameText(this.#site, this.#location); }
 }
+// What a runtime's shims format a stack with instead (node --enable-source-maps): null to keep the hook's own.
+let __nimbusStackFormatter = null;
+function __nimbusUseStackFormatter(format) {
+  __nimbusStackFormatter = format;
+}
 {
   let __userPrepare;
   const __apply = Reflect.apply;
@@ -793,6 +821,8 @@ class __NimbusCallSite {
     } catch {
       stack = "<error>";
     }
+    const formatted = __nimbusStackFormatter === null ? null : __nimbusStackFormatter(error, stack, sites);
+    if (formatted !== null) return formatted;
     for (const site of sites) stack += "\\n    at " + __nimbusFrameText(site, __nimbusFrameLocation(site));
     return stack;
   };

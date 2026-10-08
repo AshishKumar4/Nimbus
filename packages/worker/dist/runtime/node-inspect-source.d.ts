@@ -16,6 +16,12 @@
  * on node v22.22.3: inspect.js reads them off the global object when Node
  * loads it, before Node adds its own globals.
  *
+ * Node v22.22.3's SourceMap (lib/internal/source_map/source_map.js, its
+ * own Chromium BSD notice kept), which the shims' --enable-source-maps reads
+ * maps with:
+ *   https://raw.githubusercontent.com/nodejs/node/v22.22.3/lib/internal/source_map/source_map.js
+ *   sha256 8a5b739a9c886ccbeb73932ad9d37d666469e7b643039ba53482116a93859e91 (NODE_SOURCE_MAP_SHA256)
+ *
  * The East Asian Wide and Fullwidth code points, for the column width
  * Node's ICU build counts (src/node_i18n.cc GetColumnWidth), are the W and F
  * ranges of the Unicode Character Database of Node's ICU (78.2, Unicode 17.0.0):
@@ -30,6 +36,8 @@ export declare const NODE_INSPECT_SHA256 = "2f2f01d7077800f8565d1be2bd1e6800f8ac
 export declare const NODE_INSPECT_SOURCE: string;
 export declare const NODE_PRIMORDIALS_SHA256 = "9e3fe2fe051667172d6ed9d997eee99b3454a7e4ec779dd63c1f19d44b25b1ca";
 export declare const NODE_PRIMORDIALS_SOURCE: string;
+export declare const NODE_SOURCE_MAP_SHA256 = "8a5b739a9c886ccbeb73932ad9d37d666469e7b643039ba53482116a93859e91";
+export declare const NODE_SOURCE_MAP_SOURCE: string;
 /** The names inspect.js counts as built-in on node v22.22.3, measured. */
 export declare const NODE_BUILTIN_OBJECTS: readonly string[];
 /** The W and F ranges of EastAsianWidth.txt 17.0.0, merged: `first[-last]` in hex, comma-separated, ascending. */

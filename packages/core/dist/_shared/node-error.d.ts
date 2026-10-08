@@ -17,9 +17,9 @@ type ErrorClass = new (message?: string) => Error;
 /**
  * Node's error `code` on a `Base` (Error, TypeError, RangeError, …) with
  * `message`, and `props` set on it after (an `info`, a `cmd`). Its stack
- * starts at the caller: the frames above it are Node's own in Node.
+ * starts at the caller of `above`: the frames above it are Node's own in Node.
  */
-export declare function nodeError(Base: ErrorClass, code: string, message: string, props?: Record<string, unknown>): Error;
+export declare function nodeError(Base: ErrorClass, code: string, message: string, props?: Record<string, unknown>, above?: Function): Error;
 /**
  * An error another implementation made for Node's `code` on `Base` (the
  * builtins workerd provides: their own `name` and `toString`, a stack headed

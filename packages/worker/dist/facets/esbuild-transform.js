@@ -41,7 +41,7 @@ const ESBUILD_FACET_BODY = [
     '      const outcomes = [];',
     '      for (const { code, options } of requests) {',
     '        try {',
-    '          outcomes.push(await runTransformRequest(own, code, options, globalThis.__nimbusRewriteDynamicImports, globalThis.__nimbusLowerAsyncModule, globalThis.__nimbusLowerEsModule));',
+    '          outcomes.push(await runTransformRequest(own, code, options, globalThis.__nimbusTransformRuntime));',
     '        } catch (e) {',
     '          outcomes.push({ error: String((e && e.message) || e) });',
     '        }',

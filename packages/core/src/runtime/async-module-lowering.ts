@@ -161,6 +161,8 @@ export interface CommonJsEmitOptions {
     readonly metas: readonly Span[];
     readonly dynamicImports: readonly number[];
   };
+  /** Where the module's own text ends in `source` (esModuleSource appends to it): the emit's `end`. */
+  readonly sourceLength?: number;
 }
 
 interface Span { readonly start: number; readonly end: number }
@@ -191,21 +193,27 @@ export function lowerEsModule(source: string, scope: ModuleScope, parentUrl: str
       unbound.push({ start, end, text: use === 'typeof' ? '(void 0)' : use === 'shorthand' ? `${name}: ${to}` : to });
     }
   }
-  const { code, head, columns } = emitModule(module, records, {
+  const { code, head, end, columns } = emitModule(module, records, {
     body: topLevelAwait ? 'async' : 'sync',
     names: generatedNames(module, names),
     exportsObject: 'arguments[2].exports',
     requireFunction: 'arguments[1]',
     edits: unbound,
     bind: { metadata: 'arguments[2].__nimbusImportMeta', parentUrl, metas, dynamicImports },
+    sourceLength: source.length,
   });
-  const map: EsModuleMap = { head, columns };
+  const map: EsModuleMap = { head, tail: code.length - end, columns };
   return { code, map: JSON.stringify(map), warnings: [] };
 }
 
-/** What a lowered ES module's frames read back as its source's places: its emit's head and ColumnMap. */
+/**
+ * What a lowered ES module's frames read back as its source's places: where
+ * the module's own text starts (`head`) and ends (`tail` from the emit's end)
+ * in its emit, and the ColumnMap of its edits.
+ */
 export interface EsModuleMap {
   readonly head: number;
+  readonly tail: number;
   readonly columns: ColumnMap;
 }
 
@@ -481,7 +489,7 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
  * the cell wrapper adds to its own) and the columns its edits moved
  * (ColumnMap): what a frame of it reads back as the source's places.
  */
-function emitModule(source: string, records: readonly EsmRecord[], options: CommonJsEmitOptions): { code: string; head: number; columns: ColumnMap } {
+function emitModule(source: string, records: readonly EsmRecord[], options: CommonJsEmitOptions): { code: string; head: number; end: number; columns: ColumnMap } {
   const temp = options.names ?? generatedNames(source);
   const key = (name: string) => `[${JSON.stringify(name)}]`;
   // The wrapper's top level holds only generated names (these helpers, and
@@ -654,7 +662,10 @@ function emitModule(source: string, records: readonly EsmRecord[], options: Comm
     ? `"use strict";${header.join(' ')} return (async () => { ${prologue}`
     : `"use strict";${header.join(' ')} ${prologue}`;
   const code = lead + applySourceEdits(source, allEdits) + (options.body === 'async' ? '\n})();\n' : '\n');
-  return { code, head: lead.length, columns: columnMap(source, allEdits) };
+  const sourceLength = options.sourceLength ?? source.length;
+  let end = lead.length + sourceLength;
+  for (const edit of allEdits) if (edit.end <= sourceLength) end += edit.text.length - (edit.end - edit.start);
+  return { code, head: lead.length, end, columns: columnMap(source, allEdits) };
 }
 
 /** An edit of the module's text; a call's (`(0, m.f)(…)`) is placed by V8 at its end, where the source's is at its start. */

@@ -54,7 +54,8 @@ export interface EsmResolverHost {
   cjsResolve(specifier: string, parentPath: string): MaybePromise<string | null>;
 }
 
-export type EsmFormat = 'builtin' | 'module' | 'commonjs' | 'json' | 'detect' | 'data';
+/** `unknown`: an extension Node's loaders know no format of, which loading refuses (EsmResolver.assertLoadable). */
+export type EsmFormat = 'builtin' | 'module' | 'commonjs' | 'json' | 'detect' | 'data' | 'unknown';
 
 export interface EsmResolution {
   url: string;
@@ -73,6 +74,8 @@ export interface EsmResolver {
   metaResolveSync(specifier: string, parentUrl: string): string;
   /** Node's import-attribute check, for the format a resolution loads as. */
   validateAttributes(url: string, format: EsmFormat, attributes: Record<string, unknown>): void;
+  /** Node's defaultLoad: a resolution of an `unknown` format, which Node resolves, does not load. */
+  assertLoadable(resolution: EsmResolution): void;
   /**
    * Node's getPackageScopeConfig for a file: URL, over a host whose every
    * answer is immediate: the package.json path its scope reads, and the
@@ -81,10 +84,19 @@ export interface EsmResolver {
   packageScopeSync(url: string): { pjsonPath: string; type: 'module' | 'commonjs' | 'none' };
 }
 
+/** Node's ERR_UNKNOWN_FILE_EXTENSION message for the file at `path`. */
+export function unknownFileExtensionMessage(path: string): string {
+  const base = path.slice(path.lastIndexOf('/') + 1);
+  const dot = base.lastIndexOf('.');
+  return `Unknown file extension "${dot > 0 ? base.slice(dot) : ''}" for ${path}`;
+}
+
 /** What a resolver is created with beyond its host. */
 export interface EsmResolverOptions {
   /** The program's own conditions (`node --conditions`, `-C`, NODE_OPTIONS'), beside Node's defaults. */
   conditions?: readonly string[];
+  /** False under `--no-experimental-strip-types`: a TypeScript file has no format. */
+  stripTypes?: boolean;
 }
 
 export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOptions = {}): EsmResolver {
@@ -449,16 +461,17 @@ export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOpt
     const base = path.slice(path.lastIndexOf('/') + 1);
     const dot = base.lastIndexOf('.');
     const ext = dot > 0 ? base.slice(dot) : '';
-    if (ext === '.mjs' || ext === '.mts') return 'module';
-    if (ext === '.cjs' || ext === '.cts') return 'commonjs';
+    const typeScript = options.stripTypes !== false;
+    if (ext === '.mjs' || (ext === '.mts' && typeScript)) return 'module';
+    if (ext === '.cjs' || (ext === '.cts' && typeScript)) return 'commonjs';
     if (ext === '.json') return 'json';
-    if (ext === '.js' || ext === '.ts' || ext === '') {
+    if (ext === '.js' || (ext === '.ts' && typeScript) || ext === '') {
       const type = (yield* packageScopeConfig(url)).type;
       if (type === 'module') return 'module';
       if (type === 'commonjs') return 'commonjs';
       return 'detect';
     }
-    throw nodeError(TypeError, 'ERR_UNKNOWN_FILE_EXTENSION', `Unknown file extension "${ext}" for ${path}`);
+    return 'unknown';
   }
 
   /** A resolution before loading: its URL, and the file or builtin it names. */
@@ -614,6 +627,10 @@ export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOpt
     packageScopeSync(url) {
       const { pjsonPath, type } = runSync(packageScopeConfig(new URL(url)));
       return { pjsonPath, type };
+    },
+    assertLoadable({ format, path }) {
+      if (format !== 'unknown' || path === undefined) return;
+      throw nodeError(TypeError, 'ERR_UNKNOWN_FILE_EXTENSION', unknownFileExtensionMessage(path));
     },
     validateAttributes(url, format, attributes) {
       for (const key of Object.keys(attributes)) {

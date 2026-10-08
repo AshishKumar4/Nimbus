@@ -8,9 +8,9 @@
 
 import assert from 'node:assert/strict';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
-import { oxcEngine } from './lib/oxc-engine.mjs';
+import { oxcTransforms } from './lib/oxc-engine.mjs';
 
-const service = new EsbuildService(undefined, { engine: async () => oxcEngine });
+const service = new EsbuildService(undefined, oxcTransforms);
 
 const source = [
   '#!/usr/bin/env node',
