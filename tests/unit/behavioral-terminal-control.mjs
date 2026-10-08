@@ -29,7 +29,7 @@ async function scenario(name, exercise) {
     [peer] = await connected;
     terminal = new WebSocketTerminal(peer);
     box = await testBox({ terminal });
-    box.shell.bindTerminal(terminal);
+    await box.shell.start();
     HeredocHandler.install(box.shell, terminal);
     LineEditorExtender.install(box.shell, terminal);
     peer.on('message', (wire) => {
