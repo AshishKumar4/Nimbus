@@ -120,6 +120,27 @@ function barrier(s, bridge, from) {
   assert.ok(other.acquire(s.engine.epoch, seen.rev).paths.some((entry) => entry.path === 'home/user/d/a.txt'), 'published, a barrier reports it');
 }
 
+// ── A descriptor's writes that met a reader's recall land, and are published once it answers ──
+{
+  const s = session();
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const writer = s.files.bind({ pid: 8, cred: USER });
+  const { readLease } = barrier(s, reader);
+  const held = new Set();
+  const handle = await withRecall(() => writer.open('/home/user/d/log.txt', { write: true, create: true, truncate: true }), undefined, held);
+  await withRecall(() => writer.write(handle.id, null, new TextEncoder().encode('started\n')), undefined, held);
+  await withRecall(() => writer.fsync(handle.id), undefined, held);
+  writer.close(handle.id);
+  assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
+  reader.recalled(readLease.owner, 'revoke');
+  await Promise.all(held);
+  // Past the hold-off, a reader holds a lease again: what was written is not left to a later turn.
+  await sleep(READ_LEASE_TRUST_MS + 20);
+  barrier(s, reader);
+  await sleep(50);
+  assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/log.txt')), 'started\n');
+}
+
 // ── The writer's own later calls pass what it holds, and its publications wait at its end ──
 {
   const s = session();
