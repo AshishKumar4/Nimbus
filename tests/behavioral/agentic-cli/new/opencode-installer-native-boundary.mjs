@@ -27,7 +27,7 @@ try {
     hasOutputLine(installerText, '#!/usr/bin/env bash'),
     JSON.stringify(installerText.slice(-800)));
 
-  const result = await t.run('curl -fsSL https://opencode.ai/install | bash; echo STATUS=$?', 90_000);
+  const result = await t.run('curl -fsSL https://opencode.ai/install | bash', 90_000);
   const out = stripAnsi(result.output);
   const tail = JSON.stringify(out.slice(-1200));
 
@@ -55,7 +55,7 @@ try {
     refusal?.[2] === 'wasm', `arch=${refusal?.[2]} ${tail}`);
 
   a.check('the installer exits non-zero rather than claiming success',
-    hasOutputLine(out, 'STATUS=1'), tail);
+    result.exitCode === 1, tail);
 
   a.check('nothing failed inside curl or bash on the way there',
     !/Expected Word|got Redirection|307 Temporary Redirect|<html/i.test(out), tail);
