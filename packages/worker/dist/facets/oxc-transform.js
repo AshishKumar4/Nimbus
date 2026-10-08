@@ -7,7 +7,7 @@ import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import { OXC_WASM_BUILD_ID } from '../oxc-wasm-artifact.generated.js';
 import { OXC_FACET_BUILD_ID } from '../oxc-facet-artifact.generated.js';
 import { fetchOxcFacetRuntime, fetchOxcWasmBytes } from '../runtime/oxc-wasm-bytes.js';
-import { SharedHelperFacet } from './helper-facet.js';
+import { FacetCallDeadlineError, SharedHelperFacet } from './helper-facet.js';
 /**
  * The Oxc wasm's linear memory past which the facet drops its instance after
  * a call. The module starts at 4.25 MiB and a call grows it to the module's
@@ -124,7 +124,8 @@ export function oxcTransformHost(ctx, env, stackFallback) {
                             oxcFacet.forget(ctx, facet);
                         facet = null;
                         failure = error;
-                        if (classifyDoCall(error) === 'overloaded')
+                        // An overloaded actor, or a call past its deadline (which aborted the facet): not retried.
+                        if (classifyDoCall(error) === 'overloaded' || error instanceof FacetCallDeadlineError)
                             break;
                     }
                 }

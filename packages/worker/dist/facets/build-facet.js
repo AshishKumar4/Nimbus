@@ -1,7 +1,7 @@
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
-import { loadHelperFacet } from './helper-facet.js';
+import { FacetCallDeadlineError, loadHelperFacet } from './helper-facet.js';
 import { ROLLDOWN_FACET_ASSET_PATH, ROLLDOWN_FACET_BUILD_ID, ROLLDOWN_FACET_SHA256 } from '../rolldown-facet-artifact.generated.js';
 import { fetchStagedText, stagedAsset } from '../runtime/staged-source.js';
 import { NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, fetchStagedBindingAsset, stagedBinding, } from '../runtime/staged-bindings.js';
@@ -352,6 +352,9 @@ export function buildFacetPrebundler(ctx, env) {
             }
             catch (error) {
                 forgetBuildFacet(ctx, facet);
+                // A call past its deadline aborted the facet already; the same pre-bundle would wait as long again.
+                if (error instanceof FacetCallDeadlineError)
+                    throw error;
                 if (!facet.crashed)
                     throw Object.assign(new Error(messageOf(error)), { reset: true });
                 const message = messageOf(error);

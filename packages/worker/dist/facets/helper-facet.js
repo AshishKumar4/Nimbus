@@ -21,37 +21,69 @@ export async function loadHelperFacet(ctx, env, spec) {
     const kind = spec.kind ?? 'worker';
     const worker = await loader.get(facetLoaderKey(kind, spec.id), async () => applyFacetLimits(kind, await spec.code({ ASSETS: assets })));
     const facetClass = worker.getDurableObjectClass(spec.className, { limits: facetLimits(kind) });
-    return boundedCalls(ctx.facets.get(spec.id, async () => ({ class: facetClass })), spec, kind);
+    const facetName = spec.facetName ?? spec.id;
+    const stub = ctx.facets.get(facetName, async () => ({ class: facetClass }));
+    return spec.runsProcesses ? stub : boundedCalls(ctx, facetName, stub, spec, kind);
+}
+/**
+ * A helper facet's compute call that outlived its kind's call deadline. Not
+ * retried: the same input would wait as long again (buildFacetPrebundler and
+ * oxcTransformHost let it through as it is).
+ */
+export class FacetCallDeadlineError extends Error {
+    what;
+    method;
+    kind;
+    deadlineMs;
+    constructor(what, method, kind, deadlineMs) {
+        super(`Nimbus: ${what}'s ${method} gave no answer within ${deadlineMs} ms (the ${kind} kind's call deadline)`);
+        this.what = what;
+        this.method = method;
+        this.kind = kind;
+        this.deadlineMs = deadlineMs;
+        this.name = 'FacetCallDeadlineError';
+    }
 }
 /**
  * `stub`, with each compute call bounded by `kind`'s call deadline
- * (facetCallDeadlineMs): one that has not answered by then fails, naming the
- * facet, the method and the deadline. The call is released, not retried; the
- * caller drops the stub as it does after any failed call. A process method
- * (spec.processMethods) runs unbounded, as every process does. The one place
- * a helper facet's calls are bounded, so no call site keeps its own timer.
+ * (facetCallDeadlineMs). The one place a helper facet's calls are bounded,
+ * so no call site keeps its own timer.
+ *
+ * A call that has not answered by then is ended, not abandoned: an RPC
+ * cannot be cancelled by itself, so the facet is aborted, which ends its
+ * work and every call on it (a late plugin answer has nothing to resume),
+ * and the next load gets a fresh actor. Only then does the call fail, with a
+ * FacetCallDeadlineError, so the caller's admission is released after the
+ * work really ended. A facet that runs processes is a separate actor
+ * (spec.runsProcesses), so this never ends a running esbuild command.
  */
-function boundedCalls(stub, spec, kind) {
+function boundedCalls(ctx, facetName, stub, spec, kind) {
     const deadlineMs = facetCallDeadlineMs(kind);
     if (deadlineMs === undefined)
         return stub;
-    const processMethods = new Set(spec.processMethods ?? []);
     return new Proxy(stub, {
         get(target, property, receiver) {
             const value = Reflect.get(target, property, receiver);
             if (typeof value !== 'function')
                 return value;
             // Called on the stub itself, never on this wrapper (Symbol.dispose included).
-            if (typeof property !== 'string' || processMethods.has(property))
+            if (typeof property !== 'string')
                 return value.bind(target);
-            return (...args) => withinDeadline(Promise.resolve(Reflect.apply(value, target, args)), deadlineMs, `Nimbus: ${spec.what}'s ${property} gave no answer within ${deadlineMs} ms (the ${kind} kind's call deadline)`);
+            return (...args) => withinDeadline(Promise.resolve(Reflect.apply(value, target, args)), deadlineMs, () => {
+                const expired = new FacetCallDeadlineError(spec.what, property, kind, deadlineMs);
+                try {
+                    ctx.facets.abort(facetName, expired);
+                }
+                catch { /* already gone */ }
+                return expired;
+            });
         },
     });
 }
-/** `call`, or a rejection with `message` once `ms` pass first. */
-async function withinDeadline(call, ms, message) {
+/** `call`, or, once `ms` pass first, a rejection with what `expire` returns (after it has run). */
+async function withinDeadline(call, ms, expire) {
     let timer = null;
-    const expired = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); });
+    const expired = new Promise((_, reject) => { timer = setTimeout(() => reject(expire()), ms); });
     try {
         return await Promise.race([call, expired]);
     }
