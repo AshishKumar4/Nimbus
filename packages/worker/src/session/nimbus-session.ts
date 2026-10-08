@@ -25,7 +25,6 @@ import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
-import { PID_GEN_STRIDE } from '@nimbus-sh/core/runtime/process-table.js';
 import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -104,7 +103,7 @@ import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/rou
 import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState as _w12GetReplicaState } from './replica-routes.js';
 import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, ensureResidentKeepalive as _w1EnsureResidentKeepalive, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose, noteClientActivity } from './hibernation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
-import { adoptGeneration, generation } from '@nimbus-sh/fabric/generation.js';
+import { generation } from '@nimbus-sh/fabric/generation.js';
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 import { initSession as _w11InitSession, type InitSessionOptions } from './init.js';
@@ -544,8 +543,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     // refused/attributed accordingly (see session/rpc.ts). One storage
     // read+write per instance boot; fail-soft (replicas cannot put).
     ctx.blockConcurrencyWhile(async () => {
-      await adoptGeneration(ctx);
-      this.processes.setPidBase(generation(ctx) * PID_GEN_STRIDE);
+      await _programmatic.reserveSessionProcesses(ctx, this.processes);
       try {
         this._w1SessionDestroyed =
           (await ctx.storage.get(SESSION_DESTROYED_KEY)) !== undefined;

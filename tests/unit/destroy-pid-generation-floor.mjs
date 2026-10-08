@@ -90,27 +90,15 @@ const straggler = victim.pid;
 const result = await rpcDestroy(host, { reason: 'test' });
 assert.equal(result.ok, true);
 
-// ── Storage keeps the pre-destroy generation ────────────────────────────
-// rpcDestroy re-persists it AFTER deleteAll so the next boot bumps to
-// GEN + 1. This assertion pins that the in-memory fix did not corrupt the
-// persisted value on its way through the destroy path.
-assert.equal(storage.get(GENERATION_KEY), GEN,
-  're-persisted isolate generation must be the PRE-destroy one');
-
-// ── Memory now agrees with storage ──────────────────────────────────────
-// The next boot will floor pids at (GEN + 1) * STRIDE. This instance must
-// use the same floor for the rest of its life.
-assert.equal(host.processes.pidBase, (GEN + 1) * PID_GEN_STRIDE,
-  'post-destroy pid floor must match what the next boot will use');
-assert.equal(generation(host.ctx), GEN + 1,
-  'in-memory generation must match the pid floor it implies');
-// The adopted guard is cleared: a later adopt re-derives from the persisted
-// pre-destroy counter and bumps to the same successor the memory holds.
-await adoptGeneration(host.ctx);
-assert.equal(generation(host.ctx), GEN + 1,
-  'the next adopt re-derives the successor from storage');
-assert.equal(storage.get(GENERATION_KEY), GEN + 1,
-  'the next adopt persists the successor');
+// ── The recreated session runs as a generation it reserved ─────────────
+// Its supervisor reserved its generation durably (reserveSessionProcesses)
+// before minting any pid, past every one this instance minted: storage
+// holds the generation it runs as, and its pids start past it.
+assert.ok(generation(host.ctx) > GEN, 'the recreated session runs past the destroyed generation');
+assert.equal(storage.get(GENERATION_KEY), generation(host.ctx),
+  'the generation the recreated session runs as is the persisted one');
+assert.equal(host.processes.pidBase, generation(host.ctx) * PID_GEN_STRIDE,
+  'its pid floor is its generation\'s');
 
 // ── The behaviour that floor exists to produce ──────────────────────────
 // A facet spawned before the destroy is still alive and still calling back.
@@ -130,7 +118,7 @@ assert.equal(exit.reason, PRIOR_GENERATION_EXIT_REASON,
 // ── A pid issued by the NEW generation is not refused ───────────────────
 // The floor must reject the old range without swallowing the new one.
 const fresh = host.processes.spawn('sh', [], '/home/user');
-assert.ok(fresh.pid > (GEN + 1) * PID_GEN_STRIDE,
+assert.ok(fresh.pid > generation(host.ctx) * PID_GEN_STRIDE,
   'a post-destroy spawn allocates above the new floor');
 await _rpcStdout(host, fresh.pid, new TextEncoder().encode('hello\n'));
 const freshLogs = host.processes.tailLogs(fresh.pid, { lines: 10 });
@@ -138,31 +126,30 @@ assert.equal(freshLogs.length, 1, 'current-generation output is still buffered')
 assert.equal(freshLogs[0].data, 'hello\n');
 
 // ── Pids never repeat through a destroy and a recreate ──────────────────
-// The session's supervisor is made by sessionProcesses, as the DO's is: a
-// pid minted into the next stride raises the persisted generation to it.
-// Destroy keeps that floor (not the generation it booted as), and the
-// supervisor it installs is wired the same way. Red before: the destroy
-// re-persisted the booted generation over the raise, its replacement
-// supervisor raised nothing, and the next boot's range held pids already
-// minted.
-{
+// Every live supervisor reserves its generation durably before it mints a
+// pid (reserveSessionProcesses), and one minting into the next stride
+// raises it. A fresh context (the next boot, after a crash) adopts past
+// every pid either the destroyed or the recreated session minted. Red
+// before: the recreated session ran as a generation storage did not hold,
+// and the next boot adopted it again and reissued its first pid.
+const freshContext = (storage) => ({ storage: { get: async (k) => storage.get(k), put: async (k, v) => { storage.set(k, v); } } });
+for (const crossing of [false, true]) {
   const { host, storage } = makeHost();
   host.processes = sessionProcesses(host.ctx);
   host.processes.setPidBase((GEN + 1) * PID_GEN_STRIDE - 2);
   const minted = [];
   for (let i = 0; i < 4; i++) minted.push(host.processes.spawn('sh', [], '/home/user').pid);
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(storage.get(GENERATION_KEY), GEN + 1, 'minting into the next stride raised nothing');
   await rpcDestroy(host, { reason: 'test' });
   assert.ok(host.processes.pidBase >= Math.max(...minted), `the post-destroy floor ${host.processes.pidBase} is not past the last pid ${Math.max(...minted)}`);
-  // The replacement supervisor raises too, near the end of its own range.
-  host.processes.setPidBase(host.processes.pidBase + PID_GEN_STRIDE - 2);
-  for (let i = 0; i < 4; i++) minted.push(host.processes.spawn('sh', [], '/home/user').pid);
+  // One fresh pid; or, crossing, enough to reach the next stride.
+  if (crossing) host.processes.setPidBase(host.processes.pidBase + PID_GEN_STRIDE - 2);
+  for (let i = 0; i < (crossing ? 4 : 1); i++) minted.push(host.processes.spawn('sh', [], '/home/user').pid);
   await new Promise((resolve) => setTimeout(resolve, 0));
-  // The recreated session's next boot starts past every pid either supervisor minted.
-  await adoptGeneration(host.ctx);
-  assert.ok(generation(host.ctx) * PID_GEN_STRIDE >= Math.max(...minted),
-    `the recreated session's base ${generation(host.ctx) * PID_GEN_STRIDE} is not past the last pid ${Math.max(...minted)}`);
+  const next = freshContext(storage);
+  await adoptGeneration(next);
+  assert.ok(generation(next) * PID_GEN_STRIDE >= Math.max(...minted),
+    `${crossing ? 'crossing: ' : ''}the next boot's base ${generation(next) * PID_GEN_STRIDE} is not past the last pid ${Math.max(...minted)}`);
 }
 
 console.log('destroy-pid-generation-floor: OK');
