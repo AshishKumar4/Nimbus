@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "129954f3f00b6045c2dc3149c0238d1039d4673795b9b99d4a0af01b0b30ead9",
+  "fingerprint": "976a6b19ef716e89fc98b093a637bb0c0c40cf3a67400cfb2765f2c1778d0f5f",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -344,9 +344,9 @@
     "packages/core/dist/runtime/framework-detect.d.ts": "8557524a57836c34627d643f839005bcd15ea452f1fad52bc55f0d2e69209990",
     "packages/core/dist/runtime/framework-detect.d.ts.map": "8fdd1b460ea778e5fa2011ecc69391a24ef0b621f0519990fcb87b02e9d46623",
     "packages/core/dist/runtime/framework-detect.js": "b0bdad7cd40f1234aa8cf5c6db7afaebd7aec2c7f38d8a7d310f479050798170",
-    "packages/core/dist/runtime/fs-snapshot.d.ts": "557c078ec2323a6b0416d8e5d83e9e40ea5c0bbc5f9b47d930b6331677e3acd8",
-    "packages/core/dist/runtime/fs-snapshot.d.ts.map": "585d5cc8194370092347d198851b5efced6498365460c0d977d6c268c7b3b27b",
-    "packages/core/dist/runtime/fs-snapshot.js": "52cacf340c6a543b34ddca9ab8ca0b9be273ee483426ca3ff16c3299713a925f",
+    "packages/core/dist/runtime/fs-snapshot.d.ts": "2e4ea6451c743d066ed4d9f3acf4441a520f090f2caa311940d66aad587d5fd4",
+    "packages/core/dist/runtime/fs-snapshot.d.ts.map": "d2407c7d92a752ef6cc9ea1e0e4aaca2ece1a2bda15dd179670b9ac0698143b5",
+    "packages/core/dist/runtime/fs-snapshot.js": "32929d06775e804debc397997c29b510ee87da6034b12ceeb4a5c3c7b70d9585",
     "packages/core/dist/runtime/hydration.d.ts": "b8d0db280732b3f5d61f26cd18c431dddd489c01d2e8bb181e829b4771f6d82a",
     "packages/core/dist/runtime/hydration.d.ts.map": "f7b51bb9590905ad4cb3c3bc673ae3e83643c8766c98e6482313898557262999",
     "packages/core/dist/runtime/hydration.js": "94a2c5654d59f901f18c2689791e91623ba4b1c510379f496b7eaef2c688629b",
@@ -1243,7 +1243,7 @@
     "packages/core/src/runtime/filesystem-methods.ts": "799de54656d9f0bd19a61baf95de484a14b46a21f8719517f97c89a3dc24632a",
     "packages/core/src/runtime/filesystem-mirrors.generated.ts": "ce8651b4af510747c252b6d2cb067c0b611b6adc73e879388a3b4d1d60f6b602",
     "packages/core/src/runtime/framework-detect.ts": "9814a3a017015fe077f0a520683503e125db50a7e1e3b1cdb20c61b388817508",
-    "packages/core/src/runtime/fs-snapshot.ts": "7c7ac778d16999276f9c12436041193cd1323b65644db92bfd55c71e1cdc5558",
+    "packages/core/src/runtime/fs-snapshot.ts": "7f810c85c648fa000ecc80bc0d179c829846065cbccf5d711040a621cec12a5b",
     "packages/core/src/runtime/hydration.ts": "ded4863ddf94649123507fdfb96ac2d42e935af6c3db27e7205b5c2baeb7c576",
     "packages/core/src/runtime/import-lexer-hazards.ts": "6c647615bb8fa962400ecba2be91d5ba67fa30ae73d5f6b4ef636a405c9322e8",
     "packages/core/src/runtime/installed-runtimes.ts": "bd52e23ad2b9e78305e72c7b656c0402145892291b2209cfef7ae4657bdbba33",
