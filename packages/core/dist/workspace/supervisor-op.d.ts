@@ -1,7 +1,4 @@
-import { type SqliteVFS, type WaveSequence } from '../vfs/sqlite-vfs.js';
-import type { ProcessFsSession } from '../_shared/process-fs-client.js';
-import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
-import { SUPERVISOR_OPS, type SupervisorOpName } from './supervisor-ops.js';
+import { type SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { type VfsCred } from '../runtime/os-contracts.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge, RuntimeVfsStat } from '../runtime/os-contracts.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
@@ -56,9 +53,6 @@ export interface SupervisorWaveFence {
     readonly wave: number;
     readonly attempt: number;
     readonly hostIncarnation: string;
-    /** A sequenced writer's wave: its first op's number, and the cursor it has had answered (WaveSequence). */
-    readonly seq?: number;
-    readonly ack?: number;
 }
 /**
  * `writeFileStat`'s answer: the write's revision, and the path's lstat after
@@ -149,10 +143,10 @@ export interface SupervisorOpHost {
  *
  * An op absent here is not served, on any host. The one other name an
  * envelope may carry is SUPERVISOR_DELIVER_OP (supervisor-delivery.ts): a
- * wrapper around one of these, which the handler unwraps. The names, and
- * how a resend of each is met, are SUPERVISOR_OP_TABLE (supervisor-ops.ts).
+ * wrapper around one of these, which the handler unwraps.
  */
-export { SUPERVISOR_OPS, type SupervisorOpName };
+export declare const SUPERVISOR_OPS: readonly ["readFile", "readFileBytes", "writeFile", "writeFileStat", "stat", "lstat", "hasLegacySymlinkUnder", "utimes", "chmod", "access", "chown", "setUmask", "readdir", "exists", "mkdir", "rmdir", "rename", "unlink", "readlink", "fsLinkLeadsTo", "symlink", "fsAcquire", "fsAcquired", "fsRevision", "fsList", "fsStorageGrant", "wsOpen", "wsPoll", "wsSend", "wsClose", "fsOpen", "fsRead", "fsWrite", "fsClose", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "fsWriteRange", "fsAppend", "fsAppendAck", "fsTruncate", "writeBatch", "writeBatchStream", "openWaveWriter", "putRegistryEntries", "stdout", "stderr", "prefetch", "registerPort", "allocatePort", "unregisterPort", "reportExit", "routeLoopback", "transform", "cpSpawn", "reportRuntimeCode", "cpStdinWrite", "cpStdinEnd", "cpReadStdin", "cpReadOutput", "cpDrainOutput", "cpKill", "cpWait", "cpBlocked", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsSync", "fsRealpath", "fsRemove", "fsCopyFile", "fsCopyTree", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "innerDoFetch", "innerDoCall", "fanoutExecute", "processHostProbe", "hostProcess", "awaitHostedOpen", "awaitHostedBoot", "routeHostedHttp", "cancelHostProcess", "hostLost", "hmrRelay", "hmrNextEvent", "replayBoundary", "netTls", "outbound", "stdinFileRead", "stdinPrepared", "getCachedTarball", "putCachedTarball", "getPackument", "cacheResult"];
+export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
 /**
  * What the shared handler hands a host override: the pid-keyed bridge and
  * the deps it was built with, so an override that wraps a filesystem op
@@ -209,10 +203,11 @@ declare const NATIVE_OPS: {
     fsRemove: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
     fsCopyFile: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number | void>;
     fsCopyTree: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
-    fsAcquireExclusiveMutation: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").ExclusiveMutationGrant>;
+    fsAcquireExclusiveMutation: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<{
+        root: string;
+        owner: string;
+    }>;
     fsReleaseExclusiveMutation: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
-    fsAwaitRecall: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RecallKind | null>;
-    fsRecalled: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
     readFileBytes: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike> | null>;
     stat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<RuntimeVfsStat | null>;
     lstat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<RuntimeVfsStat | null>;
@@ -238,32 +233,13 @@ declare const NATIVE_OPS: {
     fsTruncate: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsMutationReceipt>;
     fsWriteRange: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsMutationReceipt>;
     writeBatchStream: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<import("../vfs/sqlite-vfs.js").WriteBatchStreamResult>;
-    retireWaveWriter: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<void> | undefined;
     openWaveWriter: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => {
-        writer: null;
-        hostIncarnation?: undefined;
-    } | {
         writer: string;
         hostIncarnation: string;
     };
     stdout: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => void | Promise<void> | undefined;
     stderr: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => void | Promise<void> | undefined;
 };
-/**
- * A sequenced wave's numbering, under the key its process's writer is kept
- * by: `${pid}:${writer}`. A sequenced writer is its process's epoch: its
- * cursor answers a re-sent op, never applies it twice, and a drain of the
- * process's log after it is gone (journalDrainSession) numbers against the
- * same cursor its own waves moved.
- */
-export declare function processWaveSequence(pid: number, fence: Pick<WaveFence, 'writer' | 'seq' | 'ack'>): WaveSequence | undefined;
-/**
- * The session a gone process's write log (process-fs-journal.ts) is drained
- * into, in the session itself: `fs` is its credential's bridge, and with no
- * transport between there is no fence; each wave is numbered under the
- * writer the process gave it.
- */
-export declare function journalDrainSession(fs: RuntimeFsBridge, pid: number): ProcessFsSession;
 /** The ops {@link NATIVE_OPS} defines — the route table covers the rest. */
 export type NativeOpName = keyof typeof NATIVE_OPS;
 export declare const SUPERVISOR_NATIVE_OPS: ReadonlySet<string>;
@@ -285,7 +261,7 @@ export interface SupervisorOpBridgeStore {
 }
 /**
  * Exported so the session's `supervisorBridge` — used by RPC bodies the
- * envelope delegates back to (fsOpen, writeBatch, …) — is the
+ * envelope delegates back to (fsOpen, fsAppend, writeBatch, …) — is the
  * same cache the handler's native ops serve from, never a second one.
  */
 export declare function createSupervisorBridgeStore(deps: Pick<SupervisorOpDeps, 'vfs' | 'processes' | 'filesystem'>): SupervisorOpBridgeStore;
@@ -293,4 +269,5 @@ export declare function createSupervisorBridgeStore(deps: Pick<SupervisorOpDeps,
 /** One envelope in, its result out: what a host forwards `supervisorOp` to. */
 export type SupervisorOpDispatch = (envelope: SupervisorOpEnvelope) => Promise<unknown>;
 export declare function createSupervisorOpHandler(deps: SupervisorOpDeps): SupervisorOpDispatch;
+export {};
 //# sourceMappingURL=supervisor-op.d.ts.map

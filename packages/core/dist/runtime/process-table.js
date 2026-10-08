@@ -76,6 +76,7 @@ export class ProcessTable {
             cred: immutableCred(options.cred ?? inheritedCred),
             parentPid: options.parentPid,
             ...(execId === undefined ? {} : { execId }),
+            ...(options.restartedFrom === undefined ? {} : { restartedFrom: { ...options.restartedFrom } }),
         };
         this.processes.set(pid, entry);
         return entry;

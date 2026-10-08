@@ -108,6 +108,7 @@ export const SUPERVISOR_OP_TABLE = {
   awaitHostedBoot: null,
   routeHostedHttp: null,
   cancelHostProcess: null,
+  hostLost: null,
   hmrRelay: null,
   hmrNextEvent: null,
   replayBoundary: null,

@@ -18,7 +18,7 @@
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type RuntimeCodeEntry } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { ReadAheadBudget } from '@nimbus-sh/core/runtime/stdin-read.js';
-import { type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
+import { type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
@@ -172,10 +172,17 @@ interface GeneratedNodeFacetCode {
     codeModules: Record<string, string>;
 }
 /**
- * Generate one-shot runtime code with a plain fetch handler. `filename`
- * names the entry's module, and so its stack frames.
+ * The URL an entry's import() resolves against and its `Function` carries:
+ * the script's own, as Node names it (`-e` code is `<cwd>/[eval]`, stdin
+ * `<cwd>/[stdin]`).
  */
-export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string, esModule?: boolean): Promise<GeneratedNodeFacetCode>;
+export declare function entryImporterUrl(filename: string | undefined, cwd: string): string;
+/**
+ * Generate one-shot runtime code with a plain fetch handler. `filename`
+ * names the entry's module, and so its stack frames; with `cwd` it is the
+ * entry's importer (entryImporterUrl).
+ */
+export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string, cwd?: string, esModule?: boolean): Promise<GeneratedNodeFacetCode>;
 /** One wasm image the generated main module imports from the module map. */
 export interface FacetWasmImport {
     /** The module-map name the boot spec carries the image under. */
@@ -1040,6 +1047,8 @@ export interface ResidentAppSummary {
     diagnostic: string | null;
     /** The exec id of `pid` (`ProcessEntry.execId`); absent when it has none. */
     execId?: string;
+    /** The process `pid` restarts (`ProcessEntry.restartedFrom`); absent when it is no restart. */
+    restartedFrom?: ProcessRestart;
 }
 /** What a pid's journal row says about who it is. */
 export interface ResidentIdentity {
@@ -1215,6 +1224,10 @@ export declare class FacetManager {
     private ensureInflight;
     /** Per-pid chain of journal-row amendments; see `_amendRow`. */
     private rowAmendments;
+    /** A process whose host the platform reset (_endByHostLoss), until its terminal hook reads why it ended. */
+    private hostLosses;
+    /** Each running resident's uptime proof timer (_proveByUptime). */
+    private uptimeProofs;
     /**
      * pid → the derived owner it duplicates: the second live instance of an
      * identity. Not journalled (nothing re-drives it), so this is the only
@@ -1230,12 +1243,44 @@ export declare class FacetManager {
      */
     private _endBySignal;
     /**
+     * End a running process from outside it (a signal, a lost host): its ports,
+     * RPC resources and writers go, it exits with `code` and `reason`, and the
+     * host hears of it. `portEnding` is what a request to one of its ports is
+     * told from then on (PortRegistry.ended).
+     */
+    private _endFromOutside;
+    /**
+     * The actor hosting `workerKey` reports, from its own next incarnation,
+     * that the platform reset it under the process (session/rpc.ts
+     * hostingWatchFired). True when it was this session's open process, which
+     * is now lost (ProcessHost.hostLost).
+     */
+    hostLost(workerKey: string, capability: string): boolean;
+    /**
+     * The platform reset the host of a running process (ProcessHostLost): the
+     * process is over, as if killed (137), and says why. Its ports answer with
+     * the cause at once, and its restart policy decides what follows, as for
+     * any process that ends on its own (_onResidentTerminal).
+     */
+    private _endByHostLoss;
+    /**
      * The process is over. Every end-of-life passes through here: a clean
      * exit, a kill, a timeout, a crash. Only one of them owes anything more
      * than the journal row's release — a crash under 'on-failure' is re-driven
      * from the row, after a backoff, while the row is still in storage so a
      * reset inside the backoff window recovers it like any other resident.
      */
+    /**
+     * The evidence a resident ran (fenced-work.ts RESIDENT_PROVEN_MS): this
+     * instance's timer, from the boot. If the process is still running with
+     * its row when it fires, the row's re-drive budget is whole again. A timer
+     * of an instance that died never fires, so time while the session was
+     * down never counts. Resolves when the row is amended, or at once when
+     * there is nothing to prove.
+     */
+    private _proveByUptime;
+    /** Stop `pid`'s uptime proof: the process ended, or its proof restarts. */
+    private _dropUptimeProof;
     private _onResidentTerminal;
     /** Claim identity AND write its recovery row in one serializable storage transaction. */
     private _claimResident;
@@ -1730,7 +1775,13 @@ export declare class FacetManager {
      * was scheduled. The manager logs an opaque description; only the fabric
      * knows what a placement is.
      */
-    private _noteProcessPlacement;
+    /**
+     * A resident process's handle, as it comes back from the fabric: a host
+     * the platform resets under it ends the process (_endByHostLoss). Watched
+     * before any caller's own `done` handler, so the process has ended by name
+     * when they look. The placement goes to the process log under NIMBUS_DEBUG.
+     */
+    private _watchHost;
     /**
      * The reader the fabric completes a boot spec's by-path members with.
      *
@@ -1809,6 +1860,14 @@ export declare class FacetManager {
      * `hooks.resolveWorkerLaunch`.
      */
     private _redrive;
+    /**
+     * The process-table entry of a resident launch: a child of its invoker,
+     * under its credential, as exec's. A re-drive has no invoker (the journal
+     * never holds one): it runs as the row says, records the process it
+     * restarts and why, and says so as its first line of output. The terminal
+     * a session's restart disconnected is not where the user looks for it.
+     */
+    private _spawnLaunchEntry;
     /**
      * Spawn a long-running Node process with the same shimmed require/fs/http
      * environment used by foreground `node <script>` execution.

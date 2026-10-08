@@ -424,7 +424,7 @@ export class NimbusSession extends CloudflareDurableObject {
             ctx,
             env,
             notify: (line) => this._notifySession(line),
-            requestLaunchTurn: async (at) => { await this._scheduleLaunchTurn(at); },
+            requestLaunchTurn: (at) => this._scheduleLaunchTurn(at),
             armResidentKeepalive: () => _w1EnsureResidentKeepalive(this, ctx),
             filesystem: () => this.getFilesystemAuthority(),
             // The workspace's network is its egress's (workspaceNetwork: one per
@@ -538,7 +538,7 @@ export class NimbusSession extends CloudflareDurableObject {
      * (retention sweep), 'resident-launch' and 'resident-keepalive'.
      */
     async alarm(alarmInfo) {
-        return _w9DoDispatchAlarm(this, this.ctx, () => this._pumpResidentLaunches(), alarmInfo);
+        return _w9DoDispatchAlarm(this, this.ctx, () => this._pumpResidentLaunches(), alarmInfo, () => _rpc.hostingWatchFired(this));
     }
     /**
      * Grant the fresh turn a suspended launch asked for.
@@ -583,8 +583,13 @@ export class NimbusSession extends CloudflareDurableObject {
      * it arrives as a new invocation, so the chunk runs against a fresh CPU
      * budget rather than the one the launch has already been spending.
      */
+    /** A launch's next turn; one that cannot be armed throws, and fails the launch waiting on it (PacedWork). */
     _scheduleLaunchTurn(notBefore = 0) {
-        return timers(this, this.ctx).schedule('resident-launch', Math.max(Date.now(), notBefore));
+        return timers(this, this.ctx).arm('resident-launch', Math.max(Date.now(), notBefore));
+    }
+    /** The hosting alarm (session/rpc.ts armHostingWatch), on this session's timer mux. */
+    scheduleHostingWatch(at) {
+        return timers(this, this.ctx).arm(_rpc.HOSTING_WATCH_REASON, at);
     }
     /**
      * Convenience: the full URL prefix for the Vite dev server inside this
@@ -860,6 +865,18 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     async _rpcRouteHostedHttp(workerKey, request) {
         return _rpc._rpcRouteHostedHttp(this, workerKey, request);
+    }
+    async _rpcHostLost(workerKey, capability) {
+        // The host asks until it gets an answer; a session that cannot stand up
+        // to act on the report holds no process of that host, and says so.
+        try {
+            this.ensureSqliteFs();
+            this.ensureFacetManager();
+        }
+        catch {
+            return false;
+        }
+        return _rpc._rpcHostLost(this, workerKey, capability);
     }
     async _rpcCancelHostProcess(workerKey) {
         return _rpc._rpcCancelHostProcess(this, workerKey);

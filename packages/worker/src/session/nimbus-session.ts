@@ -512,7 +512,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
       ctx,
       env,
       notify: (line) => this._notifySession(line),
-      requestLaunchTurn: async (at) => { await this._scheduleLaunchTurn(at); },
+      requestLaunchTurn: (at) => this._scheduleLaunchTurn(at),
       armResidentKeepalive: () => _w1EnsureResidentKeepalive(this, ctx),
       filesystem: () => this.getFilesystemAuthority(),
       // The workspace's network is its egress's (workspaceNetwork: one per
@@ -638,6 +638,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
       this.ctx,
       () => this._pumpResidentLaunches(),
       alarmInfo,
+      () => _rpc.hostingWatchFired(this),
     );
   }
 
@@ -680,8 +681,14 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    * it arrives as a new invocation, so the chunk runs against a fresh CPU
    * budget rather than the one the launch has already been spending.
    */
-  private _scheduleLaunchTurn(notBefore = 0): Promise<boolean> {
-    return timers(this, this.ctx).schedule('resident-launch', Math.max(Date.now(), notBefore));
+  /** A launch's next turn; one that cannot be armed throws, and fails the launch waiting on it (PacedWork). */
+  private _scheduleLaunchTurn(notBefore = 0): Promise<void> {
+    return timers(this, this.ctx).arm('resident-launch', Math.max(Date.now(), notBefore));
+  }
+
+  /** The hosting alarm (session/rpc.ts armHostingWatch), on this session's timer mux. */
+  scheduleHostingWatch(at: number): Promise<void> {
+    return timers(this, this.ctx).arm(_rpc.HOSTING_WATCH_REASON, at);
   }
 
   /**
@@ -970,6 +977,17 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
   async _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): Promise<HostedHttpResponse> {
     return _rpc._rpcRouteHostedHttp(this as any, workerKey, request);
+  }
+  async _rpcHostLost(workerKey: string, capability: string): Promise<boolean> {
+    // The host asks until it gets an answer; a session that cannot stand up
+    // to act on the report holds no process of that host, and says so.
+    try {
+      this.ensureSqliteFs();
+      this.ensureFacetManager();
+    } catch {
+      return false;
+    }
+    return _rpc._rpcHostLost(this as any, workerKey, capability);
   }
   async _rpcCancelHostProcess(workerKey: string): Promise<{ cancelled: boolean }> {
     return _rpc._rpcCancelHostProcess(this as any, workerKey);

@@ -74,6 +74,7 @@
  * `ResidentDiskReader` it was given.
  */
 
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SupervisorBindingProps } from './supervisor-props.js';
 import { z } from 'zod/v4';
@@ -393,8 +394,8 @@ export interface ProcessHostParams {
   /**
    * Set only by the coordinator's durable-application path: an explicit facet
    * name (`app-slot-<n>`) allocated from DO storage, plus the release split
-   * that keeps its SQLite across aborts. Absent, the host allocates an
-   * ephemeral `proc-slot-<n>` name from its in-memory free list and deletes
+   * that keeps its SQLite across aborts. Absent, the host takes the next
+   * ephemeral `proc-slot-<n>` name from its in-memory slot book and deletes
    * the store on release.
    */
   facet?: { name: string; durable: boolean };
@@ -420,6 +421,19 @@ export interface ProcessHostParams {
 }
 
 /**
+ * The platform reset the Durable Object a running process was hosted on, and
+ * the process ended with it. Only a host that is not the coordinator can
+ * report this (process-host.ts `peer`); the platform's own words, which may
+ * name a cause that did not happen ("its code was updated"), are the cause.
+ */
+export class ProcessHostLost extends Error {
+  constructor(cause: unknown) {
+    super(`its host was reset by the platform (${errorText(cause)})`, { cause });
+    this.name = 'ProcessHostLost';
+  }
+}
+
+/**
  * One resident process, as its coordinator sees it. Identical in meaning on
  * every substrate — that identity IS the abstraction, so a divergence here is
  * a bug rather than a documented difference.
@@ -429,12 +443,13 @@ export interface HostedProcess {
    * The runner's startProcess payload. The runner is started as part of
    * opening the host, so this is a handle on that one boot — awaiting it twice
    * is safe and never re-starts anything. A `lifetime` runner settles it at
-   * exit; a host that dies before then rejects it.
+   * exit; a host that dies before then rejects it with {@link ProcessHostLost}.
    */
   readonly started: Promise<unknown>;
   /**
-   * Rejects if the HOST dies under a process that is already up — the one
-   * failure a substrate can suffer that the process itself never reports.
+   * Rejects, with {@link ProcessHostLost}, if the HOST dies under a process
+   * that is already up — the one failure a substrate can suffer that the
+   * process itself never reports.
    *
    * It is not symmetric, and pretending otherwise is what leaks a process. A
    * facet dies only with the Durable Object that owns it, which takes the
@@ -617,6 +632,14 @@ export interface ProcessHost {
    */
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
   open(params: ProcessHostParams): Promise<HostedProcess>;
+  /**
+   * The actor hosting `workerKey` found, in a new incarnation, that it no
+   * longer holds the process (a peer's own alarm, `hostLost` op), and proved
+   * it hosted it with the capability minted for that open. The process is
+   * lost ({@link ProcessHostLost}). False when this host has no such open.
+   * A facet's host is the coordinator itself, so it never hears this.
+   */
+  hostLost?(workerKey: string, capability: string): boolean;
 }
 
 /**
@@ -650,7 +673,8 @@ export type ProcessHostFactory = (
  *
  * `done` settles when the process ends: for a `lifetime` runner that is its
  * held-open startProcess settling (resolve on exit, reject on host death);
- * for a `boot` runner it is the kill that releases the host.
+ * for a `boot` runner it is the kill that releases the host. A host that
+ * dies under either rejects it with {@link ProcessHostLost}.
  *
  * The handle is disposable so FacetManager's existing per-pid resource
  * tracking tears a process down exactly the way it releases any other
