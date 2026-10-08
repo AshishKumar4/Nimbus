@@ -32,6 +32,8 @@ function __nimbusVfsPathKey(path) {
 // The platform's timers, captured before the shims wrap setTimeout with the
 // VFS resumption barrier: the client's resends and watches are the shim's own
 // infrastructure, not a user resumption.
+// The process's umask, set by the runtime that shares this scope (the node shims).
+let __nimbusProcessUmaskOf = () => undefined;
 const __nimbusRawTimer = globalThis.setTimeout;
 const __nimbusRawClearTimer = globalThis.clearTimeout;
 let __nimbusProcessFsInstance = null;
@@ -70,7 +72,7 @@ function __nimbusProcessFs() {
     timers: { setTimeout: __nimbusRawTimer, clearTimeout: __nimbusRawClearTimer },
     // The process's umask as each create is logged (process.umask moves it;
     // its setUmask to the session is not ordered with the waves).
-    umask: () => (typeof globalThis.__nimbusProcessUmask === "function" ? globalThis.__nimbusProcessUmask() : undefined),
+    umask: () => __nimbusProcessUmaskOf(),
     // The process's own SQLite, where it has one (a resident's facet:
     // __nimbusFsJournalSql): every change is there before the program is told
     // it succeeded, and what it holds when it dies the session drains from it.
