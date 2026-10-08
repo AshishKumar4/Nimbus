@@ -8,6 +8,10 @@
 
 import assert from 'node:assert/strict';
 import { mock } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 mock.module('cloudflare:workers', () => ({
   RpcTarget: class {},
@@ -103,6 +107,59 @@ const params = (request) => ({
   const unheard = new Promise((resolve) => setTimeout(() => resolve('still reading'), 2000));
   await assert.rejects(Promise.race([running, unheard]), /killed mid-body/);
   assert.match(await loaded.args[2](), /killed mid-body/);
+}
+
+// ── 3. A run the platform refused is sent again; one the program failed, never ──
+const CAP_MESSAGE = 'Dynamic worker concurrency limit exceeded: each request may have up to 10 concurrent dynamic worker invocations. Wait for one to finish before starting another.';
+/** The loader, running each program through the entry module it is given, as workerd does; `refuse` runs are refused before entry. */
+const entryDirs = [];
+function entered(program, refuse = 0) {
+  const runs = { refused: 0, entered: 0 };
+  const env = { LOADER: { load(config) {
+    const dir = mkdtempSync(join(tmpdir(), 'nimbus-one-shot-entry-'));
+    entryDirs.push(dir);
+    writeFileSync(join(dir, 'runner.js'), program);
+    writeFileSync(join(dir, 'nimbus-one-shot.js'), config.modules['nimbus-one-shot.js']);
+    const entry = import(pathToFileURL(join(dir, 'nimbus-one-shot.js')).href);
+    return {
+      getEntrypoint: () => ({
+        async run(...args) {
+          if (runs.refused < refuse) { runs.refused++; throw new Error(CAP_MESSAGE); }
+          runs.entered++;
+          const { default: Entry } = await entry;
+          return new Entry({ abort() {} }, {}).run(...args);
+        },
+        [Symbol.dispose]() {},
+      }),
+      [Symbol.dispose]() {},
+    };
+  } } };
+  return { env, runs };
+}
+try {
+  {
+    const writes = [];
+    const supervise = () => ({ write: async (text) => { writes.push(text); } });
+    const program = `export default { async fetch(request, env) {
+    await env.SUPERVISOR.write('once');
+    throw new Error(${JSON.stringify(CAP_MESSAGE)});
+  } };`;
+    const { env, runs } = entered(program);
+    await assert.rejects(
+      processes(ctx, env).run(PROPS, supervise, params(new Request('http://run.local/', { method: 'POST' })), (response) => response.json()),
+      /Dynamic worker concurrency limit exceeded/,
+    );
+    assert.deepEqual(runs, { refused: 0, entered: 1 }, 'a program that failed with the limit\'s words, after it ran, is not run again');
+    assert.deepEqual(writes, ['once']);
+  }
+  {
+    const { env, runs } = entered('export default { fetch: () => Response.json({ exitCode: 0 }) };', 1);
+    const result = await processes(ctx, env).run(PROPS, () => ({}), params(new Request('http://run.local/', { method: 'POST' })), (response) => response.json());
+    assert.deepEqual(result, { exitCode: 0 });
+    assert.deepEqual(runs, { refused: 1, entered: 1 }, 'a run the platform refused before entering it is sent again');
+  }
+} finally {
+  for (const dir of entryDirs) rmSync(dir, { recursive: true, force: true });
 }
 
 console.log('a one-shot\'s SUPERVISOR is its host\'s capability, handed with the call that runs it');
