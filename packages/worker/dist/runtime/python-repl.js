@@ -69,6 +69,7 @@ function buildReplDriver(source) {
 }
 class PythonReplAdapter {
     pool = null;
+    closed = false;
     /** Which interpreter variant the cached pool holds; see ensurePool. */
     poolUsesSci = false;
     deps;
@@ -83,7 +84,19 @@ class PythonReplAdapter {
         return ('Python 3.13.14 (CPython, wasm32-wasi, Nimbus runtime)\r\n' +
             'Type "exit()" or press Ctrl-D to exit.\r\n');
     }
+    async initialize() {
+        const result = await this.push('');
+        if (result.kind === 'output')
+            return result;
+        if (result.kind === 'error')
+            throw new Error(result.stderr.trim());
+        if (result.kind === 'exit')
+            throw new Error(result.stderr?.trim() || `Python REPL startup exited ${result.exitCode}`);
+        throw new Error('Python REPL startup did not finish its driver');
+    }
     push(source) {
+        if (this.closed)
+            return Promise.reject(new Error('Python REPL is closed'));
         const controller = new AbortController();
         const done = this.evaluate(source, controller.signal);
         const active = { controller, done };
@@ -142,7 +155,7 @@ class PythonReplAdapter {
         }
         return { kind: 'output', stdout: result.stdout, stderr: result.stderr };
     }
-    close() { return this.interrupt(); }
+    close() { this.closed = true; return this.stop(); }
     resetPool() {
         const pool = this.pool;
         this.pool = null;
@@ -150,6 +163,11 @@ class PythonReplAdapter {
         pool?.dispose();
     }
     async interrupt() {
+        await this.stop();
+        if (!this.closed)
+            await this.initialize();
+    }
+    async stop() {
         const active = this.active;
         active?.controller.abort();
         try {
@@ -236,6 +254,7 @@ class PythonReplAdapter {
 export function pythonReplStep(deps, pythonHome, userCode) {
     return {
         userCode,
+        cred: deps.cred,
         pythonHome,
         pyArgv: ['python'],
         userEnv: { HOME: deps.home, PYTHONUNBUFFERED: '1' },
