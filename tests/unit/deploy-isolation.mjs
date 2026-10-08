@@ -13,7 +13,7 @@
 // fixtures and assert it actually fails when a boundary is crossed.
 
 import assert from 'node:assert/strict';
-import { MAX_FACET_CPU_MS } from '../../packages/fabric/src/facet-limits.ts';
+import { MAX_FACET_CPU_MS, MAX_FACET_SUBREQUESTS } from '../../packages/fabric/src/facet-limits.ts';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -43,7 +43,7 @@ function fixture(configs) {
   for (const [name, body] of Object.entries(configs)) {
     const path = join(root, name);
     mkdirSync(join(path, '..'), { recursive: true });
-    writeFileSync(path, JSON.stringify({ limits: { cpu_ms: MAX_FACET_CPU_MS }, ...body }));
+    writeFileSync(path, JSON.stringify({ limits: { cpu_ms: MAX_FACET_CPU_MS, subrequests: MAX_FACET_SUBREQUESTS }, ...body }));
   }
   return root;
 }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { FACET_LIMITS, MAX_FACET_CPU_MS, applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey, facetPolicyKey } from '../../packages/fabric/src/facet-limits.ts';
-import { facetCpuViolations } from '../../scripts/deploy-isolation.mjs';
+import { FACET_LIMITS, MAX_FACET_CPU_MS, MAX_FACET_SUBREQUESTS, applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey, facetPolicyKey } from '../../packages/fabric/src/facet-limits.ts';
+import { facetLimitViolations } from '../../scripts/deploy-isolation.mjs';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { buildNimbusWranglerConfig } from '../../packages/config/src/index.ts';
@@ -54,15 +54,26 @@ for (const kind of seen) {
   }
 }
 assert.equal(loaderIds.size, seen.size, 'distinct kinds cannot reuse a cached worker with another policy');
+// A Dynamic Worker's limits only lower its parent's, so the hosting Worker
+// must declare at least the highest of each (a resident's 10M subrequests ran
+// under the plan's 10,000 and its filesystem calls failed, 2026-10-08).
 assert.equal(MAX_FACET_CPU_MS, Math.max(...Object.values(FACET_LIMITS).map(limits => limits.cpuMs)));
-assert.deepEqual(facetCpuViolations({ limits: { cpu_ms: MAX_FACET_CPU_MS } }), []);
-const refused = facetCpuViolations({ limits: { cpu_ms: MAX_FACET_CPU_MS - 1 } });
-assert.equal(refused.length, 1);
-assert.ok(refused[0].includes(String(MAX_FACET_CPU_MS - 1)) && refused[0].includes(String(MAX_FACET_CPU_MS)));
-assert.equal(facetCpuViolations({}).length, 1);
-assert.equal(buildNimbusWranglerConfig({ name: 'facet-policy-unit' }).limits.cpu_ms, MAX_FACET_CPU_MS);
-assert.equal(buildNimbusWranglerConfig({ name: 'facet-policy-unit', cpuMs: MAX_FACET_CPU_MS }).limits.cpu_ms, MAX_FACET_CPU_MS);
+assert.equal(MAX_FACET_SUBREQUESTS, Math.max(...Object.values(FACET_LIMITS).map(limits => limits.subRequests)));
+const hosting = { cpu_ms: MAX_FACET_CPU_MS, subrequests: MAX_FACET_SUBREQUESTS };
+assert.deepEqual(facetLimitViolations({ limits: hosting }), []);
+for (const [key, floor] of [['cpu_ms', MAX_FACET_CPU_MS], ['subrequests', MAX_FACET_SUBREQUESTS]]) {
+  const refused = facetLimitViolations({ limits: { ...hosting, [key]: floor - 1 } });
+  assert.equal(refused.length, 1, key);
+  assert.ok(refused[0].includes(`limits.${key}=${floor - 1}`) && refused[0].includes(String(floor)), refused[0]);
+}
+assert.equal(facetLimitViolations({ limits: { cpu_ms: MAX_FACET_CPU_MS } }).length, 1, 'subrequests unset is refused');
+assert.equal(facetLimitViolations({}).length, 2);
+assert.deepEqual(buildNimbusWranglerConfig({ name: 'facet-policy-unit' }).limits, hosting);
+assert.deepEqual(buildNimbusWranglerConfig({ name: 'facet-policy-unit', cpuMs: MAX_FACET_CPU_MS, subrequests: MAX_FACET_SUBREQUESTS }).limits, hosting);
 assert.throws(() => buildNimbusWranglerConfig({ name: 'facet-policy-unit', cpuMs: MAX_FACET_CPU_MS - 1 }), error => {
   return error.message.includes(String(MAX_FACET_CPU_MS - 1)) && error.message.includes(String(MAX_FACET_CPU_MS));
+});
+assert.throws(() => buildNimbusWranglerConfig({ name: 'facet-policy-unit', subrequests: 10_000 }), error => {
+  return error.message.includes('limits.subrequests=10000') && error.message.includes(String(MAX_FACET_SUBREQUESTS));
 });
 console.log(`${seen.size} facet kinds receive explicit native and reportable limits`);
