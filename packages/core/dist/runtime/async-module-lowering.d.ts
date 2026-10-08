@@ -75,7 +75,8 @@ export type EsmRecord = {
 };
 /**
  * Names for code generated around `source`: none of `names`, its identifiers
- * as the parse reads them (unicode escapes decoded); by default its tokens'.
+ * that start as they do, as the parse reads them (unicode escapes decoded);
+ * by default its tokens'.
  */
 export declare function generatedNames(source: string, names?: ReadonlySet<string>): () => string;
 export interface CommonJsEmitOptions {
@@ -164,7 +165,7 @@ export declare function readEsmModule(source: string): {
     /** Every import.meta, and where each import() starts. */
     metas: readonly Span[];
     dynamicImports: readonly number[];
-    /** Every identifier's name, unicode escapes decoded. */
+    /** Every identifier's name that starts as a generated one does (generatedNames), unicode escapes decoded. */
     names: ReadonlySet<string>;
 };
 /** The CommonJS for ES module `source`, whose import and export declarations are `records`. */

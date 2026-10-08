@@ -51,26 +51,30 @@ import { ES_MODULE_UNBOUND_NAMES, esModuleSource } from './module-format.js';
 function blank(text) {
     return text.replace(/[^\n\r\u2028\u2029]/g, ' ');
 }
+const GENERATED_NAME_PREFIX = '__nimbus_m';
 /**
  * Names for code generated around `source`: none of `names`, its identifiers
- * as the parse reads them (unicode escapes decoded); by default its tokens'.
+ * that start as they do, as the parse reads them (unicode escapes decoded);
+ * by default its tokens'.
  */
-export function generatedNames(source, names = identifierNames(source)) {
+export function generatedNames(source, names = generatedLookingNames(source)) {
     let count = 0;
     return () => {
         let name;
         do
-            name = `__nimbus_m${count++}`;
+            name = `${GENERATED_NAME_PREFIX}${count++}`;
         while (names.has(name));
         return name;
     };
 }
-function identifierNames(source) {
+function generatedLookingNames(source) {
     const names = new Set();
     try {
-        for (const token of tokenizer(source, MODULE_PARSE_OPTIONS))
-            if (token.type === tokTypes.name)
-                names.add(String(Reflect.get(token, 'value')));
+        for (const token of tokenizer(source, MODULE_PARSE_OPTIONS)) {
+            const value = Reflect.get(token, 'value');
+            if (token.type === tokTypes.name && typeof value === 'string' && value.startsWith(GENERATED_NAME_PREFIX))
+                names.add(value);
+        }
     }
     catch (error) {
         // The parse after this reports the module's syntax error.
@@ -216,7 +220,8 @@ function readModule(source, known) {
         const name = stringOf(identifier, 'name');
         if (name === null)
             return;
-        names.add(name);
+        if (name.startsWith(GENERATED_NAME_PREFIX))
+            names.add(name);
         if (!tracked.has(name))
             return;
         // Identifiers finish in source order; one out of it is put in its place.

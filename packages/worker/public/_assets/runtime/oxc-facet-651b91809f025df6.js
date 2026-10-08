@@ -9155,20 +9155,24 @@ error: the Oxc transform crashed (${reason})`);
   function blank(text) {
     return text.replace(/[^\n\r\u2028\u2029]/g, " ");
   }
-  function generatedNames(source, names = identifierNames(source)) {
+  var GENERATED_NAME_PREFIX = "__nimbus_m";
+  function generatedNames(source, names = generatedLookingNames(source)) {
     let count = 0;
     return () => {
       let name;
       do
-        name = `__nimbus_m${count++}`;
+        name = `${GENERATED_NAME_PREFIX}${count++}`;
       while (names.has(name));
       return name;
     };
   }
-  function identifierNames(source) {
+  function generatedLookingNames(source) {
     const names =   new Set();
     try {
-      for (const token of tokenizer2(source, MODULE_PARSE_OPTIONS)) if (token.type === types$1.name) names.add(String(Reflect.get(token, "value")));
+      for (const token of tokenizer2(source, MODULE_PARSE_OPTIONS)) {
+        const value = Reflect.get(token, "value");
+        if (token.type === types$1.name && typeof value === "string" && value.startsWith(GENERATED_NAME_PREFIX)) names.add(value);
+      }
     } catch (error) {
       if (!(error instanceof SyntaxError)) throw error;
     }
@@ -9257,7 +9261,7 @@ error: the Oxc transform crashed (${reason})`);
     const onIdentifier = (identifier) => {
       const name = stringOf(identifier, "name");
       if (name === null) return;
-      names.add(name);
+      if (name.startsWith(GENERATED_NAME_PREFIX)) names.add(name);
       if (!tracked.has(name)) return;
       let at2 = mentions.length;
       while (at2 > 0 && mentions[at2 - 1] > identifier.start) at2--;
