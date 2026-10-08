@@ -632,7 +632,7 @@ export function entryImporterUrl(filename, cwd) {
  */
 function entryModule(userCode, filename, cwd, esModule, esModuleMap) {
     const importer = entryImporterUrl(filename, cwd);
-    const map = esModuleMap ? JSON.parse(esModuleMap) : null;
+    const map = esModuleMapOf(esModuleMap);
     // A lowered ES module was bound before it was lowered (core esbuild-service.ts preparedTransformSource).
     const code = map ? userCode : rewriteProvidedCommonJsModules(userCode);
     const name = commonJsEntryModuleName(filename || '[eval]');
@@ -649,6 +649,15 @@ function entryModule(userCode, filename, cwd, esModule, esModuleMap) {
         // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
         stackEntry: JSON.stringify([name, entryFrameFile(filename, cwd, esModule === true), wrapped.head, esModule === true ? 1 : 0]),
     };
+}
+/** A transform result's EsModuleMap (core async-module-lowering.ts), or null for none: an engine's emit, not the lowering's. */
+function esModuleMapOf(map) {
+    return map ? JSON.parse(map) : null;
+}
+/** A data: URL module as a launch stages it: always an ES module to Node, in the runtime's scope. */
+export async function stagedDataUrlModule(text, moduleScope, esbuild) {
+    const result = await esbuild.transform(text, { esModule: moduleScope, moduleMetadata: true, dynamicImportParent: 'data:text/javascript,' });
+    return wrapCommonJsCell(result.code, 'block', esModuleMapOf(result.map)?.head).text;
 }
 /** What Node's stack names the entry's file: its path, an ES module's file: URL; -e and stdin are [eval] and [stdin], as an ES module [eval1] in the launch's directory. */
 function entryFrameFile(filename, cwd, esModule) {
@@ -2090,8 +2099,7 @@ export async function buildFacetVfsBundleSource(bundle, forceSideModules = false
         if (code !== undefined) {
             // TypeScript is lowered too, and keeps CommonJS's names (bundle-cell-transform.ts).
             const esModule = lowered?.has(path) === true && bundleTypescriptLoader(path) === null;
-            const map = emit === undefined ? undefined : columnMaps?.get(path);
-            const esModuleMap = map === undefined ? null : JSON.parse(map);
+            const esModuleMap = emit === undefined ? null : esModuleMapOf(columnMaps?.get(path));
             const wrapped = wrapCommonJsCell(code, lowered?.has(path) ? 'block' : 'function', esModuleMap?.head);
             const name = commonJsCellModuleName(path);
             codeModules[name] = wrapped.text;
@@ -5400,11 +5408,7 @@ export class FacetManager {
             if (entry.path.startsWith('data:')) {
                 if (!this.esbuild)
                     throw new Error('No transformer for a staged data URL module');
-                // A data: URL is always an ES module to Node, in the runtime's scope.
-                const result = await this.esbuild.transform(entry.text, {
-                    esModule: moduleScope, moduleMetadata: true, dynamicImportParent: 'data:text/javascript,',
-                });
-                modules.set(codeKey, wrapCommonJsCell(result.code, 'block', JSON.parse(result.map).head).text);
+                modules.set(codeKey, await stagedDataUrlModule(entry.text, moduleScope, this.esbuild));
                 continue;
             }
             const path = entry.path.replace(/^\/+/, '');
@@ -5413,8 +5417,7 @@ export class FacetManager {
             let head;
             const placeEmit = (at, code, map) => {
                 emits.set(at, code);
-                if (map)
-                    head = JSON.parse(map).head;
+                head = esModuleMapOf(map)?.head;
             };
             const lowered = new Set();
             const packageTypeOf = await cellPackageTypes(vfs, [path]);

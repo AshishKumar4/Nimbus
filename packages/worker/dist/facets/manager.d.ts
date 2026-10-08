@@ -176,6 +176,8 @@ interface GeneratedNodeFacetCode {
  * `<cwd>/[stdin]`).
  */
 export declare function entryImporterUrl(filename: string | undefined, cwd: string): string;
+/** A data: URL module as a launch stages it: always an ES module to Node, in the runtime's scope. */
+export declare function stagedDataUrlModule(text: string, moduleScope: ModuleScope, esbuild: EsbuildService): Promise<string>;
 /**
  * Generate one-shot runtime code with a plain fetch handler. `filename`
  * names the entry's module, and so its stack frames; with `cwd` it is the
