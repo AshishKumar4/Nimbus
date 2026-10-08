@@ -179,6 +179,7 @@ const byteStream = (bytes) => new ReadableStream({
   };
   let session = open();
   const env = { NIMBUS_SESSION: {
+    idFromName: (id) => ({ toString: () => id }),
     idFromString: (id) => ({ toString: () => id }),
     get: () => ({ supervisorOp: (sent) => session.host.supervisorOp(sent) }),
   } };
