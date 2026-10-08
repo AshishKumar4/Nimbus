@@ -17,6 +17,14 @@
 // getCallSites, diff, debug, the deprecated is* checks and _extend were
 // missing.
 //
+// Which builtins there are is one decision (node-shims.ts __nimbusBuiltinId)
+// for require, import, module.isBuiltin, module.builtinModules and
+// process.getBuiltinModule. Before, each decided for itself: bare 'sqlite'
+// was a builtin (shadowing npm's sqlite), getBuiltinModule('undici') answered
+// the provided package, builtinModules listed node:-prefixed duplicates, and
+// sys, path/posix, path/win32, _stream_* and timers.promises were missing.
+// string_decoder was TextDecoder's: hex, base64 and latin1 threw.
+//
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
 
@@ -189,6 +197,36 @@ show2('promisify.custom', () => [typeof setTimeout[util.promisify.custom], typeo
   try { await util.aborted({}, {}); } catch (e) { show('aborted not a signal', e); }
 })();
 `,
+  'identity.cjs': SHOW + String.raw`
+const Module = require('module');
+const show2 = (label, f) => { try { const r = f(); console.log(label + ': ' + (typeof r === 'string' ? r : JSON.stringify(r))); } catch (e) { show(label, e); } };
+for (const id of ['fs', 'node:fs', 'sqlite', 'node:sqlite', 'test', 'undici', 'node:undici', 'node:nope', 'sys', 'path/posix', 'path/win32', 'node:util/types', 'node:fs/promises', '_stream_readable', 'string_decoder']) {
+  show2('isBuiltin ' + id, () => Module.isBuiltin(id));
+  // node:sqlite loaded warns of its own (sqlite-shim.ts, not here).
+  if (id !== 'node:sqlite') show2('getBuiltinModule ' + id, () => typeof process.getBuiltinModule(id));
+}
+show2('isBuiltin 5', () => Module.isBuiltin(5));
+show2('getBuiltinModule 5', () => process.getBuiltinModule(5));
+show2('require node:nope', () => require('node:nope'));
+show2('require node:undici', () => require('node:undici'));
+show2('require sqlite', () => { try { require('sqlite'); return 'loaded'; } catch { return 'not found'; } });
+show2('node: prefixed listed', () => Module.builtinModules.filter((id) => id.startsWith('node:') || id === 'sqlite' || id === 'undici'));
+show2('aliases', () => [require('sys') === require('util'), require('sys') === require('node:sys'), require('path/posix') === require('path').posix, require('path/win32') === require('path').win32,
+  require('_stream_readable') === require('stream').Readable, require('_stream_writable') === require('stream').Writable, require('_stream_duplex') === require('stream').Duplex,
+  require('_stream_transform') === require('stream').Transform, require('_stream_passthrough') === require('stream').PassThrough, require('timers').promises === require('timers/promises'),
+  require('node:util/types') === require('util').types, require('node:fs/promises') === require('fs').promises]);
+show2('win32 join', () => require('path/win32').join('a', 'b'));
+const { StringDecoder } = require('string_decoder');
+show2('string_decoder', () => {
+  const utf8 = new StringDecoder('utf8');
+  const hex = new StringDecoder('hex');
+  const b64 = new StringDecoder('base64');
+  const u16 = new StringDecoder('utf16le');
+  return [utf8.write(Buffer.from([0xe2, 0x82])), utf8.write(Buffer.from([0xac])), utf8.end(Buffer.from([0xe2])), hex.write(Buffer.from([1, 255])), b64.write(Buffer.from('ab')), b64.end(),
+    u16.write(Buffer.from([0x61])), u16.write(Buffer.from([0x00, 0x62])), new StringDecoder('latin1').write(Buffer.from([0xe9])), new StringDecoder().encoding, new StringDecoder('UCS2').encoding];
+});
+show2('string_decoder unknown', () => new StringDecoder('nope'));
+`,
   'deprecate.cjs': SHOW + String.raw`
 const util = require('util');
 const old = util.deprecate(function old(a, b) { return a + b; }, 'old() is going away', 'DEP_NIMBUS');
@@ -201,7 +239,7 @@ attempt('deprecate code', () => util.deprecate(() => {}, 'm', 5));
 `,
 };
 // Each program and its arguments.
-const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs'];
+const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs'];
 
 const host = mkdtempSync(join(tmpdir(), 'node-lib-'));
 process.on('exit', () => rmSync(host, { recursive: true, force: true }));

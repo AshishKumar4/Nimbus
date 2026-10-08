@@ -7805,9 +7805,10 @@ const __inspectorMod = (() => {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  string_decoder, child_process ──────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-const __stringDecoderMod = {
-  StringDecoder: class { constructor(enc) { this.enc = enc || "utf8"; this._dec = new TextDecoder(this.enc); } write(buf) { return this._dec.decode(buf, { stream: true }); } end(buf) { return buf ? this._dec.decode(buf) : ""; } },
-};
+// workerd's node:string_decoder, Node's StringDecoder: hex, base64, latin1
+// and UTF-16 as well as UTF-8, a character split across writes held over.
+const __stringDecoderMod = typeof __real_string_decoder !== "undefined"
+  ? (__real_string_decoder.default ?? __real_string_decoder) : globalThis.process.getBuiltinModule("string_decoder");
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  child_process — W8 facet-mapped impl ──────────────────────────
@@ -9946,9 +9947,10 @@ const __processMod = {
     openssl_is_boringssl: true,
     ...(__nimbusNodeCommandLine ? { typescript: __nimbusNodeCommandLine.transformTypes ? "transform" : __nimbusNodeCommandLine.stripTypes !== false && "strip" } : {}),
   }),
-  getBuiltinModule: (specifier) => {
-    const key = String(specifier).replace(/^node:/, "");
-    return Object.prototype.hasOwnProperty.call(builtins, key) ? builtins[key] : undefined;
+  getBuiltinModule: (id) => {
+    if (typeof id !== "string") throw invalidArgType("id", "string", id);
+    const builtin = __nimbusBuiltinId(id);
+    return builtin === null ? undefined : builtins[builtin];
   },
   execPath: "/usr/local/bin/node",
   execArgv: __nimbusExecArgv,
@@ -10421,10 +10423,6 @@ builtins.os = __osMod;
 // constants.UV_FS_O_FILEMAP at module init; that crash blocked the entire
 // scaffold flow. See __constantsMod definition above for the full shape.
 builtins.constants = __constantsMod;
-// Also register under the 'node:'-prefixed key. __requireFrom (this
-// file ~line 2900) has a fast-path strip but the explicit registration
-// matches the dns/promises + util/types convention.
-builtins["node:constants"] = __constantsMod;
 builtins.events = __eventsMod;
 builtins.stream = __streamMod;
 // X.5-R: real Node's \`require('stream')\` re-exports EventEmitter
@@ -10448,10 +10446,28 @@ for (const [name, read] of [
   ["punycode", () => __nimbusNodeLib().require("punycode")],
   ["util", () => __nimbusNodeLib().require("util")],
   ["util/types", () => __nimbusNodeLib().require("util").types],
-  ["node:util/types", () => __nimbusNodeLib().require("util").types],
+  ["path/posix", () => builtins.path.posix],
+  ["path/win32", () => builtins.path.win32],
+  ["_stream_duplex", () => __streamMod.Duplex],
+  ["_stream_passthrough", () => __streamMod.PassThrough],
+  ["_stream_readable", () => __streamMod.Readable],
+  ["_stream_transform", () => __streamMod.Transform],
+  ["_stream_writable", () => __streamMod.Writable],
 ]) {
   Object.defineProperty(builtins, name, { get: read, enumerable: true, configurable: true });
 }
+// lib/sys.js: util, deprecated (DEP0025) the first time it loads.
+let __nimbusSysWarned = false;
+Object.defineProperty(builtins, "sys", {
+  get() {
+    if (!__nimbusSysWarned) {
+      __nimbusSysWarned = true;
+      __processMod.emitWarning("sys is deprecated. Use util instead.", "DeprecationWarning", "DEP0025");
+    }
+    return builtins.util;
+  },
+  enumerable: true, configurable: true,
+});
 builtins.string_decoder = __stringDecoderMod;
 // node:sqlite (sql.js-backed). Dual-registered like node:fs/promises; the
 // resolver strips the node: prefix but the explicit key matches the
@@ -10459,7 +10475,6 @@ builtins.string_decoder = __stringDecoderMod;
 // synchronously on the first DatabaseSync open (sqlite-shim.ts __getSQL) —
 // the ~48 MiB boot must not be paid by processes that never open a DB.
 builtins.sqlite = __sqliteMod;
-builtins["node:sqlite"] = __sqliteMod;
 builtins.child_process = __childProcessMod;
 builtins.process = __processMod;
 // NODE_DEBUG as the program started with it: what util.debuglog reads (Node's bootstrap).
@@ -10588,6 +10603,18 @@ builtins.tty = {
 // core and must not be reported as such — a package that sniffs this list
 // would otherwise conclude e.g. undici ships with node.
 const __nimbusFacetProvidedPackages = new Set(${FACET_PROVIDED_PACKAGES_LITERAL});
+// Node's builtins that exist only with the scheme (lib/internal/bootstrap/realm.js schemelessBlockList).
+const __NODE_SCHEME_ONLY_BUILTINS = new Set(["sea", "sqlite", "test", "test/reporters"]);
+// The Node builtin \`specifier\` names, by its id, or null: what require,
+// import, module.isBuiltin, module.builtinModules and
+// process.getBuiltinModule read. The packages the process provides are in
+// the table but are not Node's.
+function __nimbusBuiltinId(specifier) {
+  const scheme = specifier.startsWith("node:");
+  const id = scheme ? specifier.slice(5) : specifier;
+  if (!Object.prototype.hasOwnProperty.call(builtins, id) || __nimbusFacetProvidedPackages.has(id)) return null;
+  return scheme || !__NODE_SCHEME_ONLY_BUILTINS.has(id) ? id : null;
+}
 // node:module. In Node \`require('module')\` IS the Module constructor, its
 // statics the module API, and \`Module.Module\` the same function: loaders
 // such as jiti (Nuxt's nuxt.config, c12) build a module by hand —
@@ -10644,11 +10671,11 @@ __NodeModule.prototype._compile = function _compile(content, filename) {
   return wrapper.call(this.exports, this.exports, moduleRequire, this, file, dir);
 };
 Object.defineProperty(__NodeModule, "builtinModules", {
-  get() { return Object.keys(builtins).filter((n) => !__nimbusFacetProvidedPackages.has(n)); },
+  get() { return Object.keys(builtins).filter((id) => __nimbusBuiltinId(id) !== null); },
   enumerable: true, configurable: true,
 });
 __NodeModule.createRequire = (specifier) => __makeRequire(__requireBaseDir(specifier));
-__NodeModule.isBuiltin = (specifier) => Object.hasOwn(builtins, String(specifier).replace(/^node:/, '')) && !__nimbusFacetProvidedPackages.has(String(specifier).replace(/^node:/, ''));
+__NodeModule.isBuiltin = (specifier) => typeof specifier === "string" && __nimbusBuiltinId(specifier) !== null;
 // Node 22.1's on-disk compile cache. There is no disk to cache into and
 // nothing to compile ahead: callers (pi's CLI entry calls it
 // unconditionally) get Node's own answer for a cache that is off.
@@ -10676,8 +10703,7 @@ __NodeModule._nodeModulePaths = (from) => {
   return paths;
 };
 __NodeModule._resolveFilename = (request, parent) => {
-  const id = String(request).replace(/^node:/, "");
-  if (Object.hasOwn(builtins, id) && !__nimbusFacetProvidedPackages.has(id)) return String(request);
+  if (__nimbusBuiltinId(String(request)) !== null) return String(request);
   const from = parent && (parent.filename || parent.id)
     ? __pathMod.dirname(parent.filename || parent.id)
     : (cwd || "/home/user");
@@ -10710,6 +10736,7 @@ builtins.module = __NodeModule;
 // timers.setInterval(...)), which clack's spinner — used by
 // create-cloudflare — triggers.
 builtins.timers = { setTimeout: globalThis.setTimeout.bind(globalThis), setInterval: globalThis.setInterval.bind(globalThis), clearTimeout: globalThis.clearTimeout.bind(globalThis), clearInterval: globalThis.clearInterval.bind(globalThis), setImmediate: (fn,...a) => globalThis.setTimeout(fn,0,...a), clearImmediate: globalThis.clearTimeout.bind(globalThis) };
+Object.defineProperty(builtins.timers, "promises", { get: () => builtins["timers/promises"], enumerable: true, configurable: true });
 // ──  zlib ───────────────────────────────────────────────────────────
 //
 // Two runtimes, one surface:
@@ -11296,15 +11323,12 @@ builtins["inspector/promises"] = (() => {
     open: __inspectorMod.open, close: __inspectorMod.close, waitForDebugger: __inspectorMod.waitForDebugger,
   };
 })();
-builtins["node:inspector/promises"] = builtins["inspector/promises"];
 // Subpath-style require() — the shim's __requireFrom strips a 'node:'
 // prefix to look up bare names, so we expose both bare and prefixed
 // keys explicitly for grep-friendliness and to handle any future call
 // site that bypasses the strip path.
 builtins["fs/promises"] = __fsMod.promises;
-builtins["node:fs/promises"] = __fsMod.promises;
 builtins["readline/promises"] = builtins.readline.promises;
-builtins["node:readline/promises"] = builtins.readline.promises;
 
 // stream/promises — promise-wrapped versions of pipeline + finished.
 // Surfaced by sv (svelte CLI, the new replacement for create-svelte
@@ -11332,7 +11356,6 @@ builtins["stream/promises"] = (() => {
     finished: promisifyOp(__streamMod.finished),
   };
 })();
-builtins["node:stream/promises"] = builtins["stream/promises"];
 
 // stream/consumers — Promise-returning helpers that drain a Readable.
 // Node 16.7+. Used by undici, tar-stream, multiple "consume the whole
@@ -11380,7 +11403,6 @@ builtins["stream/consumers"] = (() => {
     },
   };
 })();
-builtins["node:stream/consumers"] = builtins["stream/consumers"];
 
 // stream/web — Web Streams API namespace. Node 17+. Userland CLIs
 // occasionally pull \`ReadableStream\` from here for portability. The
@@ -11395,7 +11417,6 @@ builtins["stream/web"] = {
   ReadableStreamDefaultController: globalThis.ReadableStreamDefaultController,
   WritableStreamDefaultWriter: globalThis.WritableStreamDefaultWriter,
 };
-builtins["node:stream/web"] = builtins["stream/web"];
 builtins["timers/promises"] = (() => {
   return {
     setTimeout: (ms, value) => new Promise(res => setTimeout(() => res(value), ms || 0)),
@@ -11405,7 +11426,6 @@ builtins["timers/promises"] = (() => {
     },
   };
 })();
-builtins["node:timers/promises"] = builtins["timers/promises"];
 // util.promisify's for the timers: timers/promises' (lib/timers.js).
 for (const [owner, name] of [[builtins.timers, "setTimeout"], [builtins.timers, "setImmediate"], [globalThis, "setTimeout"], [globalThis, "setImmediate"]]) {
   const fn = owner[name];
@@ -11423,7 +11443,6 @@ for (const [owner, name] of [[builtins.timers, "setTimeout"], [builtins.timers, 
 // already a complete object (DoH-backed lookup/resolve/resolve4) —
 // re-exposing it as a subpath builtin is a 2-line registration.
 builtins["dns/promises"] = builtins.dns.promises;
-builtins["node:dns/promises"] = builtins["dns/promises"];
 
 
 // undici (npm, not node core) — Nimbus provides it instead of node_modules.
@@ -11537,6 +11556,7 @@ function __nimbusNodeErrorsAt(mod, { callbacks = false, prototypes = false, inPl
 }
 // Those whose functions throw workerd's NodeError (node-builtin-errors-match-node-workerd).
 for (const name of ["zlib", "crypto"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name], { callbacks: true, prototypes: true });
+builtins.string_decoder = __nimbusNodeErrorsAt(builtins.string_decoder, { prototypes: true });
 for (const name of ["url", "path", "vm"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name]);
 __nimbusNodeErrorsAt(builtins.events, { inPlace: true });
 __nimbusNodeErrorsAt(__BufferMod, { inPlace: true });
@@ -12181,10 +12201,6 @@ function __resolveFrom(id, fromDir) {
 // conditions, no extension probing, a directory refused by name, file: URLs,
 // Node's error codes and messages. What resolves loads through the same
 // module cache require uses, shaped as the namespace Node would give.
-// Node's builtins that exist only with the scheme; the rest of the table is
-// the process's own builtins, undici among them, which the process provides
-// in place of any installed copy (see builtins.undici above).
-const __ESM_SCHEME_ONLY_BUILTINS = new Set(["test", "test/reporters", "sqlite", "sea"]);
 // Node's ESM resolver (core/_shared/esm-resolver.ts, compiled once by
 // scripts/bundle-facet-workers.mjs): declares createEsmResolver.
 ${ESM_RESOLVER_PREAMBLE}
@@ -12197,11 +12213,10 @@ const __esmResolver = createEsmResolver({
     try { return __fsMod.realpathSync(path); } catch { return path; }
   },
   readText(path) { return __readFileOr(path, null); },
+  // Node's builtins, and the packages the process provides in place of any
+  // installed copy (builtins.undici), which load as builtins do.
   isBuiltin(specifier) {
-    const scheme = specifier.startsWith("node:");
-    const name = scheme ? specifier.slice(5) : specifier;
-    if (!scheme && __ESM_SCHEME_ONLY_BUILTINS.has(name)) return false;
-    return Object.prototype.hasOwnProperty.call(builtins, name);
+    return __nimbusBuiltinId(specifier) !== null || __nimbusFacetProvidedPackages.has(specifier.replace(/^node:/, ""));
   },
   cjsResolve(specifier, parentPath) {
     try {
@@ -12233,7 +12248,7 @@ function __esmLoad(resolution) {
   if (cached) return cached;
   let ns;
   if (resolution.format === "builtin") {
-    const mod = __requireFrom("node:" + resolution.builtin, "");
+    const mod = builtins[resolution.builtin];
     const names = new Set(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : []);
     names.add("default");
     ns = __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
@@ -12261,7 +12276,7 @@ function __esmLoad(resolution) {
       const requireData = (id) => {
         const resolved = __esmResolver.resolveSync(String(id), resolution.url);
         __esmResolver.assertLoadable(resolved);
-        if (resolved.format === "builtin") return __requireFrom("node:" + resolved.builtin, "");
+        if (resolved.format === "builtin") return builtins[resolved.builtin];
         if (resolved.path) return __loadModule(resolved.path.replace(/^\\/+/, ""), resolved.url);
         throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "Synchronous nested data-module import is unsupported");
       };
@@ -12454,7 +12469,7 @@ function __nimbusRequestTarget(kind, specifier, importer) {
     const resolution = __esmResolver.resolveSync(specifier, builtins.url.pathToFileURL("/" + importer).href);
     return resolution && resolution.path ? resolution.path : null;
   }
-  if (Object.prototype.hasOwnProperty.call(builtins, specifier) || (specifier.startsWith("node:") && Object.prototype.hasOwnProperty.call(builtins, specifier.slice(5)))) return null;
+  if (__nimbusBuiltinId(specifier) !== null || __nimbusFacetProvidedPackages.has(specifier)) return null;
   if (__stagedBinding(specifier)) return null;
   return __resolveFrom(specifier, importer.includes("/") ? importer.slice(0, importer.lastIndexOf("/")) : "");
 }
@@ -12720,12 +12735,10 @@ function __nimbusEsmJobCached(path) {
   return __moduleCache.has(key) && __nimbusModuleCellIsEsModule(key);
 }
 function __requireFrom(id, fromDir, required = true) {
-  // Check builtins first (always takes priority)
-  if (builtins[id]) return builtins[id];
-  if (id.startsWith("node:")) {
-    const bare = id.substring(5);
-    if (builtins[bare]) return builtins[bare];
-  }
+  const builtin = __nimbusBuiltinId(id);
+  if (builtin !== null) return builtins[builtin];
+  if (__nimbusFacetProvidedPackages.has(id)) return builtins[id];
+  if (id.startsWith("node:")) throw nodeError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", "No such built-in module: " + id);
   const staged = __stagedBinding(id);
   if (staged) return __loadStagedBinding(staged, fromDir);
   const notCarried = __stagedBindingNotCarried(id, fromDir);

@@ -241,6 +241,8 @@
  "path.resolve(Symbol(s))": "wording",
  "path.resolve([object Object])": "wording",
  "path.resolve(x,5)": "wording",
+ "string_decoder.StringDecoder(Symbol(s))": "uncoded",
+ "string_decoder.StringDecoder([object Object])": "wording",
  "tls.SecureContext()": "no-throw",
  "tls.SecureContext(5)": "no-throw",
  "tls.SecureContext(Symbol(s))": "no-throw",

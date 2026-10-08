@@ -1,7 +1,7 @@
 // @serial
 // The errors of the builtins a session's node takes from workerd (zlib,
 // crypto, buffer, events, url, path, util, vm, repl, diagnostics_channel,
-// tls, net, async_hooks, inspector) against host Node's, on the same
+// tls, net, async_hooks, inspector, string_decoder) against host Node's, on the same
 // script: every exported function and class of each, called with no
 // arguments and with arguments of the wrong type. Where both throw the same
 // code and words, the error has Node's shape: name, constructor, String(),
@@ -20,7 +20,7 @@ import { localTerminal, splitScenarioOutput, startLocalProbe } from './lib/worke
 
 const W = '/home/user/builtin-errors';
 const PROBE = String.raw`
-const MODULES = ['zlib', 'crypto', 'buffer', 'events', 'url', 'path', 'util', 'vm', 'repl', 'diagnostics_channel', 'tls', 'net', 'async_hooks', 'inspector'];
+const MODULES = ['zlib', 'crypto', 'buffer', 'events', 'url', 'path', 'util', 'vm', 'repl', 'diagnostics_channel', 'tls', 'net', 'async_hooks', 'inspector', 'string_decoder'];
 // What would start something rather than fail: a REPL on stdin, the
 // inspector's port, a connection, a server.
 const SKIP = new Set(['repl.start', 'inspector.open', 'inspector.waitForDebugger', 'inspector.close', 'net.connect', 'net.createConnection', 'tls.connect', 'net.createServer', 'tls.createServer', 'net.Server', 'tls.Server', 'net.Socket', 'tls.TLSSocket', 'repl.REPLServer', 'inspector.Session', 'events.on', 'events.once', 'util.debuglog', 'util.debug']);

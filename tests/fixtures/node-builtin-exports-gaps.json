@@ -7,36 +7,15 @@
    "_http_incoming",
    "_http_outgoing",
    "_http_server",
-   "_stream_duplex",
-   "_stream_passthrough",
-   "_stream_readable",
-   "_stream_transform",
    "_stream_wrap",
-   "_stream_writable",
    "_tls_common",
    "_tls_wrap",
    "cluster",
    "domain",
-   "path/posix",
-   "path/win32",
-   "sys",
    "trace_events",
    "wasi"
   ],
-  "extra": [
-   "node:constants",
-   "node:dns/promises",
-   "node:fs/promises",
-   "node:inspector/promises",
-   "node:readline/promises",
-   "node:sqlite",
-   "node:stream/consumers",
-   "node:stream/promises",
-   "node:stream/web",
-   "node:timers/promises",
-   "node:util/types",
-   "sqlite"
-  ]
+  "extra": []
  },
  "_http_agent": "absent",
  "_http_client": "absent",
@@ -44,12 +23,35 @@
  "_http_incoming": "absent",
  "_http_outgoing": "absent",
  "_http_server": "absent",
- "_stream_duplex": "absent",
- "_stream_passthrough": "absent",
- "_stream_readable": "absent",
- "_stream_transform": "absent",
+ "_stream_duplex": {
+  "missing": [
+   "from",
+   "fromWeb",
+   "toWeb"
+  ],
+  "extra": [],
+  "type": []
+ },
+ "_stream_readable": {
+  "missing": [
+   "ReadableState",
+   "_fromList",
+   "toWeb",
+   "wrap"
+  ],
+  "extra": [],
+  "type": []
+ },
  "_stream_wrap": "absent",
- "_stream_writable": "absent",
+ "_stream_writable": {
+  "missing": [
+   "WritableState",
+   "fromWeb",
+   "toWeb"
+  ],
+  "extra": [],
+  "type": []
+ },
  "_tls_common": "absent",
  "_tls_wrap": "absent",
  "child_process": {
@@ -315,8 +317,20 @@
   "extra": [],
   "type": []
  },
- "path/posix": "absent",
- "path/win32": "absent",
+ "path/posix": {
+  "missing": [
+   "_makeLong"
+  ],
+  "extra": [],
+  "type": []
+ },
+ "path/win32": {
+  "missing": [
+   "_makeLong"
+  ],
+  "extra": [],
+  "type": []
+ },
  "perf_hooks": {
   "missing": [
    "Performance",
@@ -455,13 +469,11 @@
   "extra": [],
   "type": []
  },
- "sys": "absent",
  "timers": {
   "missing": [
    "_unrefActive",
    "active",
    "enroll",
-   "promises",
    "unenroll"
   ],
   "extra": [],
