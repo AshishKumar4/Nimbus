@@ -30,14 +30,14 @@ import { z } from 'zod/v4';
 
 const approvedFailure = z.union([
   z.object({ status: z.number().int(), title: z.string().trim().min(1) }).strict(),
-  z.object({ detail: z.string().trim().min(1) }).strict(),
+  z.object({ detail: z.union([z.string().trim().min(1), z.array(z.string().trim().min(1)).min(1)]) }).strict(),
 ]);
 
 /**
  * @typedef {object} Deferral
  * @property {string} probe      the probe, as run-all names it: its path under tests/behavioral, without .mjs
  * @property {string} assertion  the one assertion that may fail, its exact label (makeAsserter's check name)
- * @property {{ status: number, title: string } | { detail: string }} failure  an exact HTTP status/page title or exact substring of the ✗ detail
+ * @property {{ status: number, title: string } | { detail: string | string[] }} failure  an exact HTTP status/page title or exact required fragments of the ✗ detail
  * @property {string} reason     what fails, and why it may ship anyway
  * @property {string} approved   "user, YYYY-MM-DD"
  * @property {string} owner      who fixes it
@@ -91,8 +91,9 @@ export const DEFERRED = validateDeferrals([
   {
     probe: 'frameworks/remix-real',
     assertion: 'react-router dev serves the app through the port route on its first run',
-    failure: { detail: '"last":"no resident process was launched"' },
-    reason: "React Router dev's config load exceeds the isolate memory limit before a resident server is launched. "
+    failure: { detail: ['"last":"no resident process was launched"', '[restart] Relaunching with --conditions=development'] },
+    reason: "React Router dev's config load exceeds the isolate memory limit after the development-condition relaunch. "
+      + "The memory error is invisible until RealFlea's boot-failure exit fix lands; the changed detail must then be re-pinned. "
       + 'Only the first-run serve assertion may fail; setup, install, conditional imports and cleanup must pass.',
     approved: 'user, 2026-10-08',
     owner: 'ContinuedMackerel',
