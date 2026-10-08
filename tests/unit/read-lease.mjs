@@ -81,10 +81,28 @@ function barrier(s, bridge, from) {
   await writing;
   assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/a.txt')), 'v2');
   assert.equal(s.files.delegations.stats().reads.answered, 1);
-  // The next barrier sees the write, and takes a new lease.
+  // The next barrier sees the write; recalled just now, it is leased nothing yet.
   const next = barrier(s, reader, taken);
   assert.ok(next.paths.some((entry) => entry.path === 'home/user/d/a.txt'));
-  assert.notEqual(next.readLease?.owner, readLease.owner);
+  assert.equal(next.readLease, undefined);
+}
+
+// ── Recalled, a reader is leased nothing for its trust: the writer's next change waits on no one ──
+{
+  const s = session();
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const writer = s.files.bind({ pid: 8, cred: USER });
+  const { readLease } = barrier(s, reader);
+  const first = withRecall(() => writer.writeFile('/home/user/d/a.txt', 'w1'));
+  assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
+  reader.recalled(readLease.owner, 'revoke');
+  await first;
+  assert.equal(barrier(s, reader).readLease, undefined, 'a reader recalled just now was leased again');
+  const started = Date.now();
+  await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'w2'));
+  assert.ok(Date.now() - started < 50, `the writer's next change waited ${Date.now() - started} ms`);
+  await sleep(READ_LEASE_TRUST_MS + 20);
+  assert.equal(typeof barrier(s, reader).readLease?.owner, 'string', 'a reader past the hold-off was not leased again');
 }
 
 // ── A holder that does not answer: the write waits out its trust, and no one is stopped ──
