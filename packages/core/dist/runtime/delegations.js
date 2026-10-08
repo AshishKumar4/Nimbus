@@ -67,6 +67,12 @@ export class Delegations {
     counts = { grants: 0, share: 0, revoke: 0, timedOut: 0, readGranted: 0, readAnswered: 0, readExpired: 0 };
     /** Each holder's leases. */
     byPid = new Map();
+    /**
+     * When each process's read lease was last recalled: it is granted none
+     * for READ_LEASE_TRUST_MS after, so the writer's next change (a save is
+     * several) waits on no one, and the reader asks at each barrier meanwhile.
+     */
+    readRecalled = new Map();
     recallTimeoutMs;
     constructor(options) {
         this.options = options;
@@ -136,6 +142,8 @@ export class Delegations {
             held.read.confirmedAt = now;
             return { owner, trustMs: READ_LEASE_TRUST_MS };
         }
+        if (now - (this.readRecalled.get(pid) ?? -Infinity) < READ_LEASE_TRUST_MS)
+            return null;
         let held = null;
         const terms = {
             reads: false,
@@ -231,8 +239,12 @@ export class Delegations {
         if (owned === undefined) {
             const made = owned = new Set();
             this.byPid.set(pid, made);
-            scope.subscriptions.add(() => { if (this.byPid.get(pid) === made)
-                this.byPid.delete(pid); });
+            scope.subscriptions.add(() => {
+                if (this.byPid.get(pid) !== made)
+                    return;
+                this.byPid.delete(pid);
+                this.readRecalled.delete(pid);
+            });
         }
         return owned;
     }
@@ -277,6 +289,7 @@ export class Delegations {
      * ran out already is not asked.
      */
     recallRead(held) {
+        this.readRecalled.set(held.pid, Date.now());
         const trustLeft = held.read.confirmedAt + READ_LEASE_TRUST_MS + READ_LEASE_MARGIN_MS - Date.now();
         if (trustLeft <= 0) {
             this.counts.readExpired++;

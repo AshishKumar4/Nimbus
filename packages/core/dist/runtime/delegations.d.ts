@@ -101,6 +101,12 @@ export declare class Delegations {
     private readonly counts;
     /** Each holder's leases. */
     private readonly byPid;
+    /**
+     * When each process's read lease was last recalled: it is granted none
+     * for READ_LEASE_TRUST_MS after, so the writer's next change (a save is
+     * several) waits on no one, and the reader asks at each barrier meanwhile.
+     */
+    private readonly readRecalled;
     private readonly recallTimeoutMs;
     constructor(options: DelegationsOptions);
     /**

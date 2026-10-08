@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "9d919fefc82b486f7949bb295f2bc906c8a3808ef890301fa3c2706a8184c967",
+  "fingerprint": "f2e79a18c5d5f46f21c20be1b7ee12bafbee3743123a7b274ed4cde6ddc221bc",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -305,9 +305,9 @@
     "packages/core/dist/runtime/css-syntax.d.ts": "05fa7d88441618ddc483920ed580dd362d8bd669d4fbdd6fc71a007f4730143c",
     "packages/core/dist/runtime/css-syntax.d.ts.map": "df50e5c167b9772e4227810a59bcf5d657cbd7198507db40b564318a03b2f5d5",
     "packages/core/dist/runtime/css-syntax.js": "f64cf8f613fd0ee565b6f0b1d9497ace8fd9242e8f714a6b7c14d6cfbf9b3c25",
-    "packages/core/dist/runtime/delegations.d.ts": "05061a98a038a55c50e32fb05200fc79c4092574b22cd0e0760d1598f1732f90",
-    "packages/core/dist/runtime/delegations.d.ts.map": "226271c3a6bdfc08ad199ac38ae6f08005b006af46dc61f71aa45169dc3112fb",
-    "packages/core/dist/runtime/delegations.js": "a177318ca852932cb6c1ebe14a08ee9a52725fe7664309b65f48c3eacd093861",
+    "packages/core/dist/runtime/delegations.d.ts": "7c8ad5b070dd51b0fc59ab45c05dc9d73640b90e5df6e90f79ede16a6768c777",
+    "packages/core/dist/runtime/delegations.d.ts.map": "b3554fa16dcd2cf8300bd81403ee073f9085bb88e0065114e9d09854fa41fa7b",
+    "packages/core/dist/runtime/delegations.js": "74cd7c7e3df92987fb41a8581b72735d29a5da0cd5b6dfdb880f7494e6c27696",
     "packages/core/dist/runtime/document-policy.d.ts": "cf81b3bcb4c15d1f863cafda7f66285d658b68d72ad7a735ec923826247dc055",
     "packages/core/dist/runtime/document-policy.d.ts.map": "d7d7ac7cbc3583387a6a2d0263930bcbe24f97627f63dbafec46f2561fcddd78",
     "packages/core/dist/runtime/document-policy.js": "de5f3d57f84fdbef04181aad0f123519e81973e6fe86d85d02c5b957c853e780",
@@ -1227,7 +1227,7 @@
     "packages/core/src/runtime/cpython-runner.ts": "91b430586c9bdda9b8f6b69998f82e21a9a4221cf452f26faedec42df3400950",
     "packages/core/src/runtime/css-bundle.ts": "fbe4b93ba2aaf5d9c4c2cf28b7c451abeddf391aee90219198b1a77d53b08ff0",
     "packages/core/src/runtime/css-syntax.ts": "44bbbbbdf2398d0c6af55df46b71ecc5a075495e3e120cdc363a9d15a01a9a8b",
-    "packages/core/src/runtime/delegations.ts": "629f4a521738dd51e47accffa4ebaebc402267fd8ee332b714cdbfe7d8c7e91f",
+    "packages/core/src/runtime/delegations.ts": "7795b2c2fe49ca97dc40c203378dc6b049e43c16b6002104386b276e1745a7fe",
     "packages/core/src/runtime/document-policy.ts": "9c2089c0747a3ada7acae22a8634e8495083e6bc3914650a4d863b64f665fce7",
     "packages/core/src/runtime/dynamic-import-rewrite.ts": "9334c0303a486249b852d67049640779ddcf1bac95e3def64dc65bf576aa807b",
     "packages/core/src/runtime/esbuild-cli.ts": "1ef1a390699ef9a1eeb8ad01e9df9be014f8b22637f0ae217fd8b22b8ea9de45",
