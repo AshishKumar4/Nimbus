@@ -779,7 +779,7 @@
         if (window.__nimbusMonacoEditor) {
           try { window.__nimbusMonacoEditor.layout(); } catch {}
         }
-        if (phoneLayout.matches && mode === 'terminal') term.focus();
+        if (phoneLayout.matches && mainPanel.dataset.pane === 'terminal') ProcSidebar.focusActive();
       }, 50);
     }
     for (const button of document.querySelectorAll('#toolbar [data-pane]')) {
@@ -3023,6 +3023,17 @@
         sendProcessResize(t);
       }
 
+      function focusActive() {
+        const t = activePid !== null ? procs.get(activePid) : null;
+        if (t?.term) {
+          refitActive();
+          t.term.focus();
+        } else if (activePid === null) {
+          refitTerminal();
+          term.focus();
+        }
+      }
+
       // Single source of truth for "should the sidebar be visible right
       // now?". It shows iff there's ≥1 entry AND the user hasn't
       // collapsed it. Collapsing while a process view is up returns the
@@ -3371,6 +3382,10 @@
       }
 
       window.addEventListener('resize', () => {
+        if (phoneLayout.matches) {
+          if (mainPanel.dataset.pane === 'terminal') refitActive();
+          return;
+        }
         for (const tab of procs.values()) {
           if (!tab.fit || !tab.term) continue;
           try { tab.fit.fit(); } catch {}
@@ -3452,7 +3467,7 @@
       shellItem.addEventListener('click', () => setActive(null));
 
       return {
-        upsert, markExit, hydrate, refitActive,
+        upsert, markExit, hydrate, refitActive, focusActive,
         has: (pid) => procs.has(pid),
       };
     })();

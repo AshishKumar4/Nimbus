@@ -57,7 +57,7 @@
  *       src/oxc-facet-artifact.generated.ts exports OXC_FACET_ASSET_PATH,
  *       OXC_FACET_BUILD_ID, OXC_FACET_SHA256.
  *
- * Runs as a postinstall + predev + predeploy step via package.json.
+ * Runs through the "bundle:facets" package script.
  */
 
 import { build } from 'esbuild';
@@ -65,7 +65,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 // core's own parser dependency, reached through the workspace hoist; the
-// script runs under plain node at postinstall, so nothing here is TypeScript.
+// script runs under plain node, so nothing here is TypeScript.
 import { parse } from 'acorn';
 
 import { FACET_GLOBALS, freeNames } from './free-names.mjs';

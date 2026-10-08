@@ -42,7 +42,7 @@
  * sha-verified, memoized per isolate).
  *
  * Run via: node scripts/bundle-node-shims.mjs
- * (wired into package.json bundle / predev / predeploy / postinstall)
+ * (wired into package.json bundle / predev / predeploy)
  */
 
 import { promises as fs } from 'node:fs';

@@ -134,6 +134,56 @@ try {
       && desktop.editor.x >= desktop.tree.x + desktop.tree.width && desktop.preview.x >= desktop.editor.x + desktop.editor.width
       && desktop.terminal.y > desktop.editor.y && desktop.phoneButton.width === 0, JSON.stringify(desktop));
   await screenshot('desktop-workspace-1440x900');
+
+  await page.setViewport({ width: 390, height: 844 });
+  await page.click('#btnTerminal');
+  const tui = `process.stdout.write('\\x1b[2J\\x1b[HPHONE_TUI_READY\\n');
+process.stdin.setRawMode?.(true);
+process.stdin.resume();
+let input = '';
+process.stdin.on('data', (chunk) => {
+  const text = String(chunk);
+  if (text.includes('q')) process.exit(0);
+  input += text;
+  process.stdout.write('INPUT ' + input.replace(/\\r/g, '<CR>').replace(/\\n/g, '<LF>') + '\\n');
+});
+setInterval(() => {}, 1000);`;
+  const files = {
+    'phone-tui/package.json': JSON.stringify({ name: 'phone-tui', version: '1.0.0', bin: { 'phone-tui': 'cli.js' }, nimbus: { terminal: 'attached' } }),
+    'phone-tui/cli.js': tui,
+    '.bin/phone-tui': "#!/usr/bin/env node\nrequire('../phone-tui/cli.js');\n",
+  };
+  const setup = ['mkdir -p node_modules/phone-tui node_modules/.bin', ...Object.entries(files).map(([path, content]) =>
+    `printf '%s' '${Buffer.from(content).toString('base64')}' | base64 -d > node_modules/${path}`),
+    `printf 'tui-files-%s\\n' "$((6*7))"`].join('; ');
+  await command(setup, /tui-files-42/);
+  await page.keyboard.type('phone-tui');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.querySelector('.logs-view.active.terminal-view .xterm-rows')?.innerText.includes('PHONE_TUI_READY'), { timeout: 60_000 });
+
+  for (const [away, viewport, text] of [
+    ['#btnFiles', { width: 390, height: 844 }, 'files-return'],
+    ['#btnEditor', { width: 640, height: 390 }, 'resize-return'],
+    ['#btnEditor', { width: 390, height: 844 }, 'portrait-return'],
+  ]) {
+    await page.click(away);
+    await page.setViewport(viewport);
+    await page.click('#btnTerminal');
+    await page.waitForFunction(() => {
+      const view = document.querySelector('.logs-view.active.terminal-view');
+      const screen = view?.querySelector('.xterm-screen')?.getBoundingClientRect();
+      const panel = document.getElementById('logsPanelBody').getBoundingClientRect();
+      return view?.contains(document.activeElement) && document.activeElement?.classList.contains('xterm-helper-textarea')
+        && screen.width >= innerWidth * 0.9 && screen.width <= panel.width && screen.height <= panel.height;
+    }, { timeout: 15_000 });
+    await page.keyboard.type(text);
+    await page.keyboard.press('Enter');
+    await page.waitForFunction((text) => document.querySelector('.logs-view.active.terminal-view .xterm-rows')?.innerText.includes(text + '<CR>'), { timeout: 15_000 }, text);
+    a.check(`${text}: returning to Terminal refits and focuses the TUI; typed input arrives there`, true);
+  }
+  await screenshot('phone-attached-tui-390x844');
+  await page.keyboard.type('q');
+  await page.waitForFunction(() => [...document.querySelectorAll('.proc-item.exited')].some((item) => item.textContent.includes('phone-tui')), { timeout: 30_000 });
   a.check('switching and resizing cause no browser runtime errors', ctx.pageErrors.length === 0, JSON.stringify(ctx.pageErrors));
 } catch (error) {
   if (page) {
