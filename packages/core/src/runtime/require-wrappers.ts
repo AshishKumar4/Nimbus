@@ -28,11 +28,36 @@ import { tokenizer, tokTypes } from 'acorn';
 import { RequestCollector, uniqueSpecifiers } from '../interpreter/module-requests.js';
 import { PROGRAM_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
 
-/** What each text answered, by a digest of it; bounded, the oldest dropped first. */
-const ANSWERS = new Map<string, readonly string[]>();
-const ANSWERS_MAX = 16_384;
+/**
+ * The bytes the kept answers may hold. They live in the session's isolate
+ * (128 MB, about 10 MB of it spare once a launch's map is built:
+ * platform/limits.ts ONE_SHOT_MODULE_MAP_MAX_BYTES), and a launch asks of
+ * them once per module it walks that names `require` (about 3,000 for a nuxt
+ * project, nearly all answering nothing, about 100 bytes each), so 2 MiB keeps
+ * a few projects' worth while costing that headroom little.
+ */
+export const REQUIRE_WRAPPER_ANSWERS_MAX_BYTES = 2 * 1024 * 1024;
+/** An answer larger than this is returned and not kept: no single module may take most of the bound. */
+const ANSWER_KEPT_MAX_BYTES = REQUIRE_WRAPPER_ANSWERS_MAX_BYTES / 4;
+/** What one kept answer costs beyond its strings: the Map entry, the record and the array (an estimate). */
+const ANSWER_OVERHEAD_BYTES = 128;
+
+/**
+ * What each text answered, by the first 128 bits of its SHA-256 (the text
+ * itself is never kept; the walk reads text through a filesystem that hands
+ * no content key with it, and a digest of the modules a vite launch walks
+ * costs about 4 ms): least recently used first out, within
+ * REQUIRE_WRAPPER_ANSWERS_MAX_BYTES.
+ */
+const ANSWERS = new Map<string, { calls: readonly string[]; bytes: number }>();
+let answersBytes = 0;
 const NONE: readonly string[] = Object.freeze([]);
 const encoder = new TextEncoder();
+
+/** The answers kept now: how many, and the bytes they hold (UTF-16 strings, and the estimated overhead). */
+export function requireWrapperAnswersHeld(): { entries: number; bytes: number } {
+  return { entries: ANSWERS.size, bytes: answersBytes };
+}
 
 /** What `code`'s require wrappers load, each once. */
 export async function requireWrapperCalls(code: string): Promise<readonly string[]> {
@@ -45,11 +70,20 @@ export async function requireWrapperCalls(code: string): Promise<readonly string
   if (known !== undefined) {
     ANSWERS.delete(key);
     ANSWERS.set(key, known);
-    return known;
+    return known.calls;
   }
   const calls = namesRequire(code) ? wrapperCallsOf(code) : NONE;
-  ANSWERS.set(key, calls);
-  if (ANSWERS.size > ANSWERS_MAX) ANSWERS.delete(ANSWERS.keys().next().value!);
+  let bytes = ANSWER_OVERHEAD_BYTES + key.length * 2;
+  for (const specifier of calls) bytes += specifier.length * 2;
+  if (bytes <= ANSWER_KEPT_MAX_BYTES) {
+    ANSWERS.set(key, { calls, bytes });
+    answersBytes += bytes;
+    for (const [oldest, answer] of ANSWERS) {
+      if (answersBytes <= REQUIRE_WRAPPER_ANSWERS_MAX_BYTES) break;
+      ANSWERS.delete(oldest);
+      answersBytes -= answer.bytes;
+    }
+  }
   return calls;
 }
 
