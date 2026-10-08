@@ -111,6 +111,17 @@ export declare function classifyMessage(msg: string): OomCause;
  */
 export declare function isTransientDoReset(input: unknown): boolean;
 /**
+ * The actor a call reached was reset or killed under it: a transient reset
+ * (isTransientDoReset), its memory or CPU limit ("isolate exceeded its memory
+ * limit and was reset", "Worker exceeded memory limit.", "… CPU time
+ * limit …"), or a failure carrying `durableObjectReset`. Whatever ran there
+ * is gone; a process hosted there is over (fabric process-host.ts). An
+ * exception the program itself threw is none of these, and neither is the
+ * guest's own "Memory limit exceeded" RangeError, which is caught where it
+ * happens.
+ */
+export declare function isHostReset(input: unknown): boolean;
+/**
  * A failure the platform reports without a cause: workerd's "internal error;
  * reference = <id>", whose reference only Cloudflare can look up. The error
  * may carry `durableObjectReset` (the object it reached was reset), and
