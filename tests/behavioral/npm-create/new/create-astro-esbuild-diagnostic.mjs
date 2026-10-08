@@ -36,7 +36,7 @@ try {
   await t.waitForPrompt(60_000);
 
   const r = await t.run(
-    'npm create astro@latest test-astro -- --template minimal --no-install --no-typescript --no-git --no-houston --yes 2>&1; echo RC=$?',
+    'npm create astro@latest test-astro -- --template minimal --no-install --no-typescript --no-git --no-houston --yes 2>&1',
     240_000,
   );
   const out = stripAnsi(r.output);

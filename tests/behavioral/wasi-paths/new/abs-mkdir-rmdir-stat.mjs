@@ -40,11 +40,11 @@ const compileOK = !/error:|Assertion failed/.test(stripAnsi(rc.output));
 a.check('clang compiles', compileOK, compileOK ? '' : JSON.stringify(stripAnsi(rc.output).slice(-400)));
 
 // Phase 1: run program, expect both DIR_CREATED and DIR_REMOVED on stdout.
-const rr = await t.run('/home/user/d ; echo RUN_EXIT=$?', 60_000);
+const rr = await t.run('/home/user/d', 60_000);
 const out = stripAnsi(rr.output);
 a.check('DIR_CREATED printed', /DIR_CREATED/.test(out), JSON.stringify(out.slice(-300)));
 a.check('DIR_REMOVED printed', /DIR_REMOVED/.test(out), JSON.stringify(out.slice(-300)));
-a.check('exit code 0', /RUN_EXIT=0/.test(out), JSON.stringify(out.slice(-200)));
+a.check('exit code 0', rr.exitCode === 0, JSON.stringify(out.slice(-200)));
 
 // Phase 2: post-run, dir should be absent (it was removed).
 const rExists = await t.run(`node -e "console.log(require('fs').existsSync('/home/user/new-dir') ? 'EXISTS' : 'ABSENT')"`, 15_000);

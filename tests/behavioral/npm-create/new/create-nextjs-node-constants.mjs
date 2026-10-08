@@ -71,7 +71,7 @@ function tail(s, n = 600) { return s.length > n ? '…' + s.slice(-n) : s; }
 // "Cannot find module 'node:constants'" must NOT surface.
 {
   const r = await t.run(
-    `npm create next-app@latest test-next -- --yes --use-npm --typescript=false --tailwind=false --eslint=false --src-dir=false --app=false --import-alias=@/* 2>&1; echo RC=$?`,
+    `npm create next-app@latest test-next -- --yes --use-npm --typescript=false --tailwind=false --eslint=false --src-dir=false --app=false --import-alias=@/* 2>&1`,
     240_000,
   );
   const out = stripAnsi(r.output);

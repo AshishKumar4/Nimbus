@@ -416,12 +416,12 @@ export class Terminal {
 
   send(line) {
     if (this.ws.readyState !== WebSocket.OPEN) throw new Error('WS not open');
+    if (/[\r\n]/.test(line)) this.submitCursor = this.stream.length;
     this.ws.send(JSON.stringify({ type: 'input', data: line }));
   }
 
   /** Send a command + carriage return. */
   cmd(line) {
-    this.submitCursor = this.stream.length;
     this.send(line + '\r');
   }
 

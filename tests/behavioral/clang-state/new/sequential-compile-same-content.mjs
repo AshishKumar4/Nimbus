@@ -24,16 +24,16 @@ await t.run('clang x.c -o x1', 240_000);
 await t.run(heredocCommand('y.c', CSRC), 10_000);
 await t.run('clang y.c -o x2', 240_000);
 
-const rX1 = await t.run('./x1 ; echo X1_RC=$?', 30_000);
+const rX1 = await t.run('./x1', 30_000);
 const outX1 = stripAnsi(rX1.output);
 a.check('./x1 prints SAME', /SAME/.test(outX1), JSON.stringify(outX1.slice(-300)));
-a.check('./x1 → X1_RC=42', /X1_RC=42\b/.test(outX1), JSON.stringify(outX1.slice(-200)));
+a.check('./x1 → X1_RC=42', rX1.exitCode === 42, JSON.stringify(outX1.slice(-200)));
 
-const rX2 = await t.run('./x2 ; echo X2_RC=$?', 30_000);
+const rX2 = await t.run('./x2', 30_000);
 const outX2 = stripAnsi(rX2.output);
 a.check('./x2 prints SAME (same content compiles to working binary)', /SAME/.test(outX2),
   JSON.stringify(outX2.slice(-300)));
-a.check('./x2 → X2_RC=42', /X2_RC=42\b/.test(outX2), JSON.stringify(outX2.slice(-200)));
+a.check('./x2 → X2_RC=42', rX2.exitCode === 42, JSON.stringify(outX2.slice(-200)));
 
 await t.close();
 const sum = a.summary();

@@ -52,7 +52,8 @@ try {
   ].join('\n')), 15_000);
 
   {
-    const out = stripAnsi((await t.run('node /home/user/handled.js; echo EXIT=$?', 90_000)).output);
+    const result = await t.run('node /home/user/handled.js', 90_000);
+    const out = stripAnsi(result.output);
     a.check('a caught fs.promises.truncate rejection reports ENOENT to the caller',
       /TRUNCATE_CAUGHT=ENOENT/.test(out) && !/TRUNCATE_RESOLVED/.test(out),
       JSON.stringify(out.slice(-600)));
@@ -60,7 +61,7 @@ try {
       /STILL_RUNNING/.test(out) && /READBACK=payload/.test(out),
       JSON.stringify(out.slice(-600)));
     a.check('the process exits 0 rather than dying on the handled rejection',
-      /EXIT=0/.test(out) && !/ENOENT: no such file or directory, truncate/.test(out),
+      result.exitCode === 0 && !/ENOENT: no such file or directory, truncate/.test(out),
       JSON.stringify(out.slice(-600)));
   }
 
@@ -74,9 +75,10 @@ try {
   ].join('\n')), 15_000);
 
   {
-    const out = stripAnsi((await t.run('node /home/user/unhandled.js; echo EXIT=$?', 90_000)).output);
+    const result = await t.run('node /home/user/unhandled.js', 90_000);
+    const out = stripAnsi(result.output);
     a.check('an fs rejection nobody handles still fails the process loudly',
-      /EXIT=1/.test(out) && /ENOENT/.test(out) && !/NEVER_REACHED/.test(out),
+      result.exitCode === 1 && /ENOENT/.test(out) && !/NEVER_REACHED/.test(out),
       JSON.stringify(out.slice(-600)));
   }
 } finally {
