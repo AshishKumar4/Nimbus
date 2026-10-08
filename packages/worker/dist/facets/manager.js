@@ -18,6 +18,7 @@
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, columnMapModuleName, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
+import { isTypescriptDeclarationFile } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
@@ -34,6 +35,7 @@ import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { sessionIdentity, unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire, requireFsOverBridge, resolveDeferredImport, ClosureBoundExceededError, } from '@nimbus-sh/core/runtime/require-resolver.js';
+import { typeScriptStripOptions } from '@nimbus-sh/core/runtime/node-cli.js';
 import { findStaticFsReferences } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { linkTargetOf, packageRootOf, planFacetData } from './data-plan.js';
@@ -50,7 +52,7 @@ import { onColdStart } from '@nimbus-sh/fabric/generation.js';
 import { isDynamicWorkerDeadlock, suspendLaunchAdmission } from '@nimbus-sh/fabric/budgets.js';
 import { FencedWork, FENCED_WORK_KEY_PREFIX, RESIDENT_PROVEN_MS, } from '@nimbus-sh/fabric/fenced-work.js';
 import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { bundleTypescriptLoader, esbuildDiagnosticShim, isBundleModuleCandidate, isTypescriptDeclarationFile, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
+import { bundleTypescriptLoader, esbuildDiagnosticShim, isBundleModuleCandidate, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
 import { TransformStore } from './transform-store.js';
 import { parseResolvablePackageJson, } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { requirePackageEntry } from '@nimbus-sh/core/runtime/require-resolution.js';
@@ -647,7 +649,7 @@ function entryModule(userCode, filename, cwd, esModule, esModuleMap) {
         },
         evaluate: `__nimbusEvaluateEntry(__nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user", ${esModule === true})`,
         // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
-        stackEntry: JSON.stringify([name, entryFrameFile(filename, cwd, esModule === true), wrapped.head, esModule === true ? 1 : 0]),
+        stackEntry: JSON.stringify([name, entryFrameFile(filename, cwd, esModule === true), wrapped.head, esModule === true ? 1 : 0, wrapped.tail]),
     };
 }
 /** A transform result's EsModuleMap (core async-module-lowering.ts), or null for none: an engine's emit, not the lowering's. */
@@ -2098,8 +2100,9 @@ export async function buildFacetVfsBundleSource(bundle, forceSideModules = false
         const adopt = code !== undefined && emit === undefined && commonJsCellReadsBack(path);
         if (code !== undefined) {
             // TypeScript is lowered too, and keeps CommonJS's names (bundle-cell-transform.ts).
-            const esModule = lowered?.has(path) === true && bundleTypescriptLoader(path) === null;
             const esModuleMap = emit === undefined ? null : esModuleMapOf(columnMaps?.get(path));
+            // An ES module the runtime lowered: JavaScript, or TypeScript Node strips (which has its map).
+            const esModule = lowered?.has(path) === true && (bundleTypescriptLoader(path) === null || esModuleMap !== null);
             const wrapped = wrapCommonJsCell(code, lowered?.has(path) ? 'block' : 'function', esModuleMap?.head);
             const name = commonJsCellModuleName(path);
             codeModules[name] = wrapped.text;
@@ -3663,7 +3666,7 @@ async function cellPackageTypes(vfs, paths) {
  * `lowered` (its module's block scope, commonjs-cell.ts THE WRAPPER). An ES
  * module is lowered in the launch's runtime's module `scope`.
  */
-async function transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, scope, esbuild, pacer, store) {
+async function transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, scope, stripTypes, esbuild, pacer, store) {
     // Snapshot the cells first — transforms await; never iterate-and-mutate.
     const cells = [];
     for (const path of Object.keys(bundle)) {
@@ -3673,7 +3676,7 @@ async function transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, s
         if (typeof source === 'string' && needsBundleCellTransform(path, source, packageType))
             cells.push({ path, source, packageType });
     }
-    return transformBundleCells(cells, { host: esbuild, store, pacer, scope }, (path, result) => {
+    return transformBundleCells(cells, { host: esbuild, store, pacer, scope, stripTypes }, (path, result) => {
         placeEmit(path, result.code, result.map);
         if (result.lowered)
             lowered.add(path);
@@ -3784,7 +3787,7 @@ export async function buildPrefetchBundle(vfs, options) {
         lease.release();
     }
 }
-async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, moduleScope = 'node', observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, executedModules, transformStore, conditions = [], preloads = [], }) {
+async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, moduleScope = 'node', observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, executedModules, transformStore, conditions = [], stripTypes = null, preloads = [], }) {
     // Read the cursor BEFORE the walk: a mutation that lands while the bundle
     // is being assembled must be reported as invalidated, not silently missed.
     const admitted = await vfs.acquire(null, 0);
@@ -3971,7 +3974,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
         // Transient failures propagate through the launch failure path before
         // serialization/cache/LOADER publication. Per-source verdicts still use
         // the lazy diagnostic cells installed by transformEsmInBundle.
-        transforms = await transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, moduleScope, esbuild, pacer, transformStore);
+        transforms = await transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, moduleScope, stripTypes, esbuild, pacer, transformStore);
     }
     else {
         // No esbuild service was given: the ESM cells stage as diagnostics that
@@ -5198,7 +5201,10 @@ export class FacetManager {
         const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
         // The program's conditions choose what it resolves, and its preloads what
         // it loads: a map walked under other ones is another map.
-        const launch = { conditions: spec.node?.conditions ?? [], require: spec.node?.require ?? [], import: spec.node?.import ?? [] };
+        const launch = {
+            conditions: spec.node?.conditions ?? [], require: spec.node?.require ?? [], import: spec.node?.import ?? [],
+            stripTypes: moduleScope === 'node' ? typeScriptStripOptions(spec.node ?? {}) : null,
+        };
         const key = `${profile}\x00${moduleScope}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}\x00${JSON.stringify(launch)}`;
         const revision = (await vfs.revision());
         // An entry built at an older revision can never be SERVED again — the
@@ -5259,6 +5265,7 @@ export class FacetManager {
             executedModules: executed,
             transformStore: this._transformStore(),
             conditions: launch.conditions,
+            stripTypes: launch.stripTypes,
             preloads: [
                 ...launch.require.map((specifier) => ({ preload: 'require', specifier })),
                 ...launch.import.map((specifier) => ({ preload: 'import', specifier })),
@@ -5314,7 +5321,7 @@ export class FacetManager {
             columnMaps: vfsState.columnMaps,
             lowered: vfsState.lowered,
             codeOnly: vfsState.codeOnly,
-            runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope),
+            runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope, launch.stripTypes),
         });
         vfsState.cacheHit = false;
         // Serialization is total: bundleSource/serializedManifest/serializedMetadata
@@ -5391,7 +5398,7 @@ export class FacetManager {
      * path as a cell: the guest looks a path up first and the key only for a
      * path the map lacks — the same text written under a fresh name.
      */
-    async _stagedRuntimeCode(learning, vfs, pacer, moduleScope) {
+    async _stagedRuntimeCode(learning, vfs, pacer, moduleScope, stripTypes) {
         const modules = new Map();
         for (const [codeKey, entry] of learning.code) {
             // An image is carried as a wasm member (learnedWasmImages), not as code.
@@ -5422,7 +5429,7 @@ export class FacetManager {
             const lowered = new Set();
             const packageTypeOf = await cellPackageTypes(vfs, [path]);
             if (this.esbuild)
-                await transformEsmInBundle(file, placeEmit, lowered, packageTypeOf, moduleScope, this.esbuild, pacer, this._transformStore());
+                await transformEsmInBundle(file, placeEmit, lowered, packageTypeOf, moduleScope, stripTypes, this.esbuild, pacer, this._transformStore());
             else
                 _markBundleEsmAsFailed(file, placeEmit, packageTypeOf, 'no esbuild service was given to this launch');
             let code = emits.get(path) ?? file[path];

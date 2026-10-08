@@ -4,8 +4,8 @@
 // runtime and generated code reach them as __nimbusNodeError and
 // __nimbusNodeSystemError.
 var nodeErrorClasses =   new Map();
-function nodeError(Base, code, message, props) {
-  return made(Base, code, message, props, nodeError);
+function nodeError(Base, code, message, props, above = nodeError) {
+  return made(Base, code, message, props, above);
 }
 function made(Base, code, message, props, above) {
   const NodeError = nodeErrorClass(Base, code);
@@ -175,9 +175,20 @@ function headStack(error, name, above) {
   else Object.defineProperty(error, "name", own);
 }
 Object.defineProperties(globalThis, {
-  __nimbusNodeError: { value: nodeError, configurable: true },
+  __nimbusNodeError: { value: __nimbusGeneratedNodeError, configurable: true },
   __nimbusNodeSystemError: { value: nodeSystemError, configurable: true },
 });
+// Generated code's: a `decoration` (null for none) marks the error as one whose
+// report has no arrow of the generated code, the decoration before its stack
+// where Node shows the source there (decorateErrorStack).
+function __nimbusGeneratedNodeError(Base, code, message, props, decoration) {
+  const error = nodeError(Base, code, message, props, __nimbusGeneratedNodeError);
+  if (decoration !== undefined) {
+    if (decoration !== null) error.stack = decoration + "\n" + error.stack;
+    __nimbusDecorated.add(error);
+  }
+  return error;
+}
 // What the shims call a program's functions with, captured before any
 // program runs: a program may replace Reflect's.
 const __nimbusReflectApply = Reflect.apply;
@@ -17917,6 +17928,13 @@ let __processUmask = Number(cred.umask) & 0o777;
 // process._eval. A host that passes none runs without them.
 const __nimbusNodeCommandLine = typeof nodeCommandLine === "undefined" ? undefined : nodeCommandLine;
 const __nimbusExecArgv = Array.isArray(__nimbusNodeCommandLine?.execArgv) ? __nimbusNodeCommandLine.execArgv.map(String) : [];
+// Node defines EventSource only with --experimental-eventsource; workerd's
+// lives on the global scope's prototype.
+if (__nimbusNodeCommandLine !== undefined && __nimbusNodeCommandLine !== null && __nimbusNodeCommandLine.experimentalEventSource !== true) {
+  for (let scope = globalThis; scope !== null && scope !== Object.prototype; scope = Object.getPrototypeOf(scope)) {
+    if (Object.hasOwn(scope, "EventSource")) delete scope.EventSource;
+  }
+}
 const __nimbusConditions = Array.isArray(__nimbusNodeCommandLine?.conditions) ? __nimbusNodeCommandLine.conditions.map(String) : [];
 const __nimbusEval = typeof __nimbusNodeCommandLine?.eval === "string" ? __nimbusNodeCommandLine.eval : undefined;
 const __processMod = {
@@ -17949,6 +17967,7 @@ const __processMod = {
     tls_ocsp: false,
     tls: true,
     openssl_is_boringssl: true,
+    ...(__nimbusNodeCommandLine ? { typescript: __nimbusNodeCommandLine.transformTypes ? "transform" : __nimbusNodeCommandLine.stripTypes !== false && "strip" } : {}),
   }),
   getBuiltinModule: (specifier) => {
     const key = String(specifier).replace(/^node:/, "");
@@ -18187,6 +18206,610 @@ const __NimbusUnhandledPromiseRejection = class UnhandledPromiseRejection extend
 };
 // A frame of a stack's text: [url, line, column], or null for one without a
 // place (a builtin's).
+
+const __NimbusSourceMap = (() => {
+  const uncurryThis = (fn) => Function.prototype.call.bind(fn);
+  const primordials = {
+    ArrayIsArray: Array.isArray,
+    ArrayPrototypePush: uncurryThis(Array.prototype.push),
+    ArrayPrototypeSlice: uncurryThis(Array.prototype.slice),
+    ArrayPrototypeSort: uncurryThis(Array.prototype.sort),
+    ObjectPrototypeHasOwnProperty: uncurryThis(Object.prototype.hasOwnProperty),
+    StringPrototypeCharAt: uncurryThis(String.prototype.charAt),
+    Symbol,
+  };
+  const validators = {
+    validateObject(value, name) {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) throw invalidArgType(name, "object", value);
+    },
+  };
+  const module = { exports: {} };
+  (function (exports, require, module, primordials) {
+// This file is a modified version of:
+// https://cs.chromium.org/chromium/src/v8/tools/SourceMap.js?rcl=dd10454c1d
+// from the V8 codebase. Logic specific to WebInspector is removed and linting
+// is made to match the Node.js style guide.
+
+// Copyright 2013 the V8 project authors. All rights reserved.
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are
+// met:
+//
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//     * Redistributions in binary form must reproduce the above
+//       copyright notice, this list of conditions and the following
+//       disclaimer in the documentation and/or other materials provided
+//       with the distribution.
+//     * Neither the name of Google Inc. nor the names of its
+//       contributors may be used to endorse or promote products derived
+//       from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+// This is a copy from blink dev tools, see:
+// http://src.chromium.org/viewvc/blink/trunk/Source/devtools/front_end/SourceMap.js
+// revision: 153407
+
+/*
+ * Copyright (C) 2012 Google Inc. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are
+ * met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ * notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following disclaimer
+ * in the documentation and/or other materials provided with the
+ * distribution.
+ *     * Neither the name of Google Inc. nor the names of its
+ * contributors may be used to endorse or promote products derived from
+ * this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+'use strict';
+
+const {
+  ArrayIsArray,
+  ArrayPrototypePush,
+  ArrayPrototypeSlice,
+  ArrayPrototypeSort,
+  ObjectPrototypeHasOwnProperty,
+  StringPrototypeCharAt,
+  Symbol,
+} = primordials;
+
+const { validateObject } = require('internal/validators');
+
+let base64Map;
+
+const VLQ_BASE_SHIFT = 5;
+const VLQ_BASE_MASK = (1 << 5) - 1;
+const VLQ_CONTINUATION_MASK = 1 << 5;
+
+const kMappings = Symbol('kMappings');
+
+class StringCharIterator {
+  /**
+   * @constructor
+   * @param {string} string
+   */
+  constructor(string) {
+    this._string = string;
+    this._position = 0;
+  }
+
+  /**
+   * @return {string}
+   */
+  next() {
+    return StringPrototypeCharAt(this._string, this._position++);
+  }
+
+  /**
+   * @return {string}
+   */
+  peek() {
+    return StringPrototypeCharAt(this._string, this._position);
+  }
+
+  /**
+   * @return {boolean}
+   */
+  hasNext() {
+    return this._position < this._string.length;
+  }
+}
+
+/**
+ * Implements Source Map V3 model.
+ * See https://github.com/google/closure-compiler/wiki/Source-Maps
+ * for format description.
+ */
+class SourceMap {
+  #payload;
+  #mappings = [];
+  #sources = {};
+  #sourceContentByURL = {};
+  #lineLengths = undefined;
+
+  /**
+   * @constructor
+   * @param {SourceMapV3} payload
+   */
+  constructor(payload, { lineLengths } = { __proto__: null }) {
+    if (!base64Map) {
+      const base64Digits =
+             'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+      base64Map = {};
+      for (let i = 0; i < base64Digits.length; ++i)
+        base64Map[base64Digits[i]] = i;
+    }
+    this.#payload = cloneSourceMapV3(payload);
+    this.#parseMappingPayload();
+    if (ArrayIsArray(lineLengths) && lineLengths.length) {
+      this.#lineLengths = lineLengths;
+    }
+  }
+
+  /**
+   * @return {object} raw source map v3 payload.
+   */
+  get payload() {
+    return cloneSourceMapV3(this.#payload);
+  }
+
+  get [kMappings]() {
+    return this.#mappings;
+  }
+
+  /**
+   * @return {number[] | undefined} line lengths of generated source code
+   */
+  get lineLengths() {
+    if (this.#lineLengths) {
+      return ArrayPrototypeSlice(this.#lineLengths);
+    }
+    return undefined;
+  }
+
+  #parseMappingPayload = () => {
+    if (this.#payload.sections) {
+      this.#parseSections(this.#payload.sections);
+    } else {
+      this.#parseMap(this.#payload, 0, 0);
+    }
+    ArrayPrototypeSort(this.#mappings, compareSourceMapEntry);
+  };
+
+  /**
+   * @param {Array.<SourceMapV3.Section>} sections
+   */
+  #parseSections = (sections) => {
+    for (let i = 0; i < sections.length; ++i) {
+      const section = sections[i];
+      this.#parseMap(section.map, section.offset.line, section.offset.column);
+    }
+  };
+
+  /**
+   * @param {number} lineOffset 0-indexed line offset in compiled resource
+   * @param {number} columnOffset 0-indexed column offset in compiled resource
+   * @return {object} representing start of range if found, or empty object
+   */
+  findEntry(lineOffset, columnOffset) {
+    let first = 0;
+    let count = this.#mappings.length;
+    while (count > 1) {
+      const step = count >> 1;
+      const middle = first + step;
+      const mapping = this.#mappings[middle];
+      if (lineOffset < mapping[0] ||
+          (lineOffset === mapping[0] && columnOffset < mapping[1])) {
+        count = step;
+      } else {
+        first = middle;
+        count -= step;
+      }
+    }
+    const entry = this.#mappings[first];
+    if (!first && entry && (lineOffset < entry[0] ||
+        (lineOffset === entry[0] && columnOffset < entry[1]))) {
+      return {};
+    } else if (!entry) {
+      return {};
+    }
+    return {
+      generatedLine: entry[0],
+      generatedColumn: entry[1],
+      originalSource: entry[2],
+      originalLine: entry[3],
+      originalColumn: entry[4],
+      name: entry[5],
+    };
+  }
+
+  /**
+   * @param {number} lineNumber 1-indexed line number in compiled resource call site
+   * @param {number} columnNumber 1-indexed column number in compiled resource call site
+   * @return {object} representing origin call site if found, or empty object
+   */
+  findOrigin(lineNumber, columnNumber) {
+    const range = this.findEntry(lineNumber - 1, columnNumber - 1);
+    if (
+      range.originalSource === undefined ||
+      range.originalLine === undefined ||
+      range.originalColumn === undefined ||
+      range.generatedLine === undefined ||
+      range.generatedColumn === undefined
+    ) {
+      return {};
+    }
+    const lineOffset = lineNumber - range.generatedLine;
+    const columnOffset = columnNumber - range.generatedColumn;
+    return {
+      name: range.name,
+      fileName: range.originalSource,
+      lineNumber: range.originalLine + lineOffset,
+      columnNumber: range.originalColumn + columnOffset,
+    };
+  }
+
+  /**
+   * @override
+   */
+  #parseMap(map, lineNumber, columnNumber) {
+    let sourceIndex = 0;
+    let sourceLineNumber = 0;
+    let sourceColumnNumber = 0;
+    let nameIndex = 0;
+
+    const sources = [];
+    const originalToCanonicalURLMap = {};
+    for (let i = 0; i < map.sources.length; ++i) {
+      const url = map.sources[i];
+      originalToCanonicalURLMap[url] = url;
+      ArrayPrototypePush(sources, url);
+      this.#sources[url] = true;
+
+      if (map.sourcesContent?.[i])
+        this.#sourceContentByURL[url] = map.sourcesContent[i];
+    }
+
+    const stringCharIterator = new StringCharIterator(map.mappings);
+    let sourceURL = sources[sourceIndex];
+    while (true) {
+      if (stringCharIterator.peek() === ',')
+        stringCharIterator.next();
+      else {
+        while (stringCharIterator.peek() === ';') {
+          lineNumber += 1;
+          columnNumber = 0;
+          stringCharIterator.next();
+        }
+        if (!stringCharIterator.hasNext())
+          break;
+      }
+
+      columnNumber += decodeVLQ(stringCharIterator);
+      if (isSeparator(stringCharIterator.peek())) {
+        ArrayPrototypePush(this.#mappings, [lineNumber, columnNumber]);
+        continue;
+      }
+
+      const sourceIndexDelta = decodeVLQ(stringCharIterator);
+      if (sourceIndexDelta) {
+        sourceIndex += sourceIndexDelta;
+        sourceURL = sources[sourceIndex];
+      }
+      sourceLineNumber += decodeVLQ(stringCharIterator);
+      sourceColumnNumber += decodeVLQ(stringCharIterator);
+
+      let name;
+      if (!isSeparator(stringCharIterator.peek())) {
+        nameIndex += decodeVLQ(stringCharIterator);
+        name = map.names?.[nameIndex];
+      }
+
+      ArrayPrototypePush(
+        this.#mappings,
+        [lineNumber, columnNumber, sourceURL, sourceLineNumber,
+         sourceColumnNumber, name],
+      );
+    }
+  }
+}
+
+/**
+ * @param {string} char
+ * @return {boolean}
+ */
+function isSeparator(char) {
+  return char === ',' || char === ';';
+}
+
+/**
+ * @param {SourceMap.StringCharIterator} stringCharIterator
+ * @return {number}
+ */
+function decodeVLQ(stringCharIterator) {
+  // Read unsigned value.
+  let result = 0;
+  let shift = 0;
+  let digit;
+  do {
+    digit = base64Map[stringCharIterator.next()];
+    result += (digit & VLQ_BASE_MASK) << shift;
+    shift += VLQ_BASE_SHIFT;
+  } while (digit & VLQ_CONTINUATION_MASK);
+
+  // Fix the sign.
+  const negative = result & 1;
+  // Use unsigned right shift, so that the 32nd bit is properly shifted to the
+  // 31st, and the 32nd becomes unset.
+  result >>>= 1;
+  if (!negative) {
+    return result;
+  }
+
+  // We need to OR here to ensure the 32nd bit (the sign bit in an Int32) is
+  // always set for negative numbers. If `result` were 1, (meaning `negate` is
+  // true and all other bits were zeros), `result` would now be 0. But -0
+  // doesn't flip the 32nd bit as intended. All other numbers will successfully
+  // set the 32nd bit without issue, so doing this is a noop for them.
+  return -result | (1 << 31);
+}
+
+/**
+ * @param {SourceMapV3} payload
+ * @return {SourceMapV3}
+ */
+function cloneSourceMapV3(payload) {
+  validateObject(payload, 'payload');
+  payload = { ...payload };
+  for (const key in payload) {
+    if (ObjectPrototypeHasOwnProperty(payload, key) &&
+        ArrayIsArray(payload[key])) {
+      payload[key] = ArrayPrototypeSlice(payload[key]);
+    }
+  }
+  return payload;
+}
+
+/**
+ * @param {Array} entry1 source map entry [lineNumber, columnNumber, sourceURL,
+ *  sourceLineNumber, sourceColumnNumber]
+ * @param {Array} entry2 source map entry.
+ * @return {number}
+ */
+function compareSourceMapEntry(entry1, entry2) {
+  const { 0: lineNumber1, 1: columnNumber1 } = entry1;
+  const { 0: lineNumber2, 1: columnNumber2 } = entry2;
+  if (lineNumber1 !== lineNumber2) {
+    return lineNumber1 - lineNumber2;
+  }
+  return columnNumber1 - columnNumber2;
+}
+
+module.exports = {
+  kMappings,
+  SourceMap,
+};
+
+  })(module.exports, () => validators, module, primordials);
+  return module.exports.SourceMap;
+})();
+const __nimbusSourceMapsAtLaunch = __nimbusNodeCommandLine?.enableSourceMaps === true;
+let __nimbusSourceMapsSupport = Object.freeze({
+  __proto__: null, enabled: __nimbusSourceMapsAtLaunch, nodeModules: __nimbusSourceMapsAtLaunch, generatedCode: __nimbusSourceMapsAtLaunch,
+});
+function __nimbusSetSourceMapsSupport(enabled, options = {}) {
+  if (typeof enabled !== "boolean") throw invalidArgType("enabled", "boolean", enabled);
+  if (options === null || typeof options !== "object" || Array.isArray(options)) throw invalidArgType("options", "object", options);
+  const { nodeModules = false, generatedCode = false } = options;
+  if (typeof nodeModules !== "boolean") throw invalidArgType("options.nodeModules", "boolean", nodeModules);
+  if (typeof generatedCode !== "boolean") throw invalidArgType("options.generatedCode", "boolean", generatedCode);
+  __nimbusSourceMapsSupport = Object.freeze({ __proto__: null, enabled, nodeModules, generatedCode });
+}
+Object.defineProperty(__processMod, "sourceMapsEnabled", {
+  get() { return __nimbusSourceMapsSupport.enabled; }, enumerable: true, configurable: true,
+});
+__processMod.setSourceMapsEnabled = function setSourceMapsEnabled(val) {
+  __nimbusSetSourceMapsSupport(val, { nodeModules: val, generatedCode: val });
+};
+function __nimbusUnderNodeModules(file) {
+  return /[\\/]node_modules[\\/]/.test(file);
+}
+// Node reads a module's map when it compiles it: the launch's modules at its
+// start, a CommonJS module when it is first required. By path, whether it did.
+const __nimbusSourceMapsAtCompile = new Map();
+function __nimbusCompiling(path) {
+  if (__nimbusSourceMapsAtCompile.has(path)) return;
+  const support = __nimbusSourceMapsSupport;
+  __nimbusSourceMapsAtCompile.set(path, support.enabled && (support.nodeModules || !__nimbusUnderNodeModules(path)));
+}
+const __nimbusSourceMapEntries = new Map();
+function __nimbusFindSourceMap(sourceURL) {
+  if (typeof sourceURL !== "string" || sourceURL.startsWith("node:")) return undefined;
+  if (!__nimbusSourceMapsSupport.nodeModules && __nimbusUnderNodeModules(sourceURL)) return undefined;
+  try {
+    const url = /^\w+:\/\//.test(sourceURL) ? sourceURL : __urlMod.pathToFileURL(sourceURL).href;
+    let entry = __nimbusSourceMapEntries.get(url);
+    if (entry === undefined) __nimbusSourceMapEntries.set(url, (entry = __nimbusSourceMapEntry(url)));
+    if (entry === null || entry.data == null) return undefined;
+    entry.sourceMap ??= new __NimbusSourceMap(entry.data, { lineLengths: entry.lineLengths });
+    return entry.sourceMap;
+  } catch {
+    return undefined;
+  }
+}
+function __nimbusSourceMapEntry(url) {
+  if (typeof __nimbusModuleOfFile !== "function") return null;
+  const module = __nimbusModuleOfFile(url) ?? (url.startsWith("file:") ? __nimbusModuleOfFile(builtins.url.fileURLToPath(url)) : null);
+  if (module === null) return null;
+  const compiled = !module.esModule && module.path !== null ? __nimbusSourceMapsAtCompile.get(module.path) : undefined;
+  if (!(compiled ?? __nimbusSourceMapsAtLaunch)) return null;
+  const content = __nimbusModuleSourceText(module);
+  if (content === null) return null;
+  const magic = /\/[*/]#\s+sourceMappingURL=(?<sourceMappingURL>[^\s]+)/g;
+  let last = null;
+  for (let match; (match = magic.exec(content)) !== null;) last = match;
+  if (last === null) return null;
+  return { data: __nimbusSourceMapData(url, last.groups.sourceMappingURL), lineLengths: __nimbusLineLengths(content) };
+}
+function __nimbusSourceMapData(sourceURL, sourceMappingURL) {
+  let url = null;
+  try { url = new URL(sourceMappingURL); } catch {}
+  if (url !== null) return url.protocol === "data:" ? __nimbusSourceMapFromDataUrl(sourceURL, url.pathname) : null;
+  try {
+    const mapURL = new URL(sourceMappingURL, sourceURL);
+    const text = __readFileOr(builtins.url.fileURLToPath(mapURL), null);
+    return text === null ? null : __nimbusSourcesToAbsolute(mapURL, JSON.parse(text));
+  } catch {
+    return null;
+  }
+}
+function __nimbusSourceMapFromDataUrl(sourceURL, url) {
+  const [format, data] = url.split(",", 2);
+  const parts = format.split(";");
+  if (parts[0] !== "application/json") return null;
+  try {
+    const text = parts[parts.length - 1] === "base64" ? __BufferMod.from(data, "base64").toString("utf8") : data;
+    return __nimbusSourcesToAbsolute(sourceURL, JSON.parse(text));
+  } catch {
+    return null;
+  }
+}
+function __nimbusSourcesToAbsolute(baseURL, data) {
+  data.sources = data.sources.map((source) => {
+    source = (data.sourceRoot || "") + source;
+    return __pathMod.isAbsolute(source) ? __urlMod.pathToFileURL(source).href : new URL(source, baseURL).href;
+  });
+  data.sourceRoot = "";
+  return data;
+}
+function __nimbusLineLengths(content) {
+  const output = [];
+  let lineLength = 0;
+  for (let i = 0; i < content.length; i++, lineLength++) {
+    const codePoint = content.codePointAt(i);
+    if (codePoint === 10 || codePoint === 0x2028 || codePoint === 0x2029) {
+      output.push(lineLength);
+      lineLength = -1;
+    }
+  }
+  output.push(lineLength);
+  return output;
+}
+// Generated places of an error's frames, where its stack reads original ones: the fatal report's.
+const __nimbusGeneratedFrames = new WeakMap();
+// Node's prepareStackTraceWithSourceMaps, over the cell runtime's call sites; null when source maps are off.
+function __nimbusSourceMappedStack(error, header, callSites) {
+  if (!__nimbusSourceMapsSupport.enabled) return null;
+  const sites = callSites.map(__NimbusCallSite.of);
+  let stack = header;
+  let lastFileName;
+  let lastSourceMap;
+  let mapped = false;
+  for (let i = 0; i < sites.length; i++) {
+    const site = sites[i];
+    let frame = null;
+    try {
+      let fileName = site.getFileName();
+      if (fileName === undefined) fileName = site.getEvalOrigin();
+      const sm = fileName === lastFileName ? lastSourceMap : __nimbusFindSourceMap(fileName);
+      if (sm) {
+        lastSourceMap = sm;
+        lastFileName = fileName;
+        frame = __nimbusSourceMappedFrame(sm, site, sites[i + 1]);
+        mapped = true;
+      }
+    } catch {}
+    stack += "\n    at " + (frame ?? String(site));
+  }
+  if (mapped) __nimbusGeneratedFrames.set(error, sites.map((site) => [site.getFileName(), site.getLineNumber(), site.getColumnNumber()]));
+  return stack;
+}
+if (typeof __nimbusUseStackFormatter === "function") __nimbusUseStackFormatter(__nimbusSourceMappedStack);
+function __nimbusSourceMappedFrame(sm, site, caller) {
+  const { originalLine, originalColumn, originalSource } = sm.findEntry(site.getLineNumber() - 1, site.getColumnNumber() - 1);
+  if (originalSource === undefined || originalLine === undefined || originalColumn === undefined) return String(site);
+  const name = __nimbusOriginalSymbolName(sm, site, caller);
+  const source = originalSource.startsWith("file://") ? builtins.url.fileURLToPath(originalSource) : originalSource;
+  const fnName = site.getFunctionName() ?? site.getMethodName();
+  const prefix = site.isAsync() ? "async " : site.isConstructor() ? "new " : "";
+  const typeName = site.getTypeName();
+  const namePrefix = typeName !== null && typeName !== "global" ? typeName + "." : "";
+  const mappedName = namePrefix + (name || (fnName || "<anonymous>")) || "";
+  return prefix + mappedName + " (" + source + ":" + (originalLine + 1) + ":" + (originalColumn + 1) + ")";
+}
+function __nimbusOriginalSymbolName(sm, site, caller) {
+  const enclosing = sm.findEntry(site.getEnclosingLineNumber() - 1, site.getEnclosingColumnNumber() - 1);
+  if (enclosing.name) return enclosing.name;
+  if (caller && site.getFileName() === caller.getFileName()) return sm.findEntry(caller.getLineNumber() - 1, caller.getColumnNumber() - 1).name;
+  return undefined;
+}
+// Node's getSourceMapErrorSource: the fatal report's arrow at the original
+// place of `offset` in a module's text, or null where the map has none.
+function __nimbusSourceMappedArrow(module, text, offset) {
+  if (!__nimbusSourceMapsSupport.enabled) return null;
+  const sm = __nimbusFindSourceMap(__nimbusFrameFile(module));
+  if (sm === undefined) return null;
+  try {
+    const lines = text.slice(0, offset).split(/\r\n|[\n\r\u2028\u2029]/);
+    const emittedLine = lines.length;
+    const emitted = lines[emittedLine - 1].length - (emittedLine === 1 ? module.head : 0);
+    const { originalLine, originalColumn, originalSource } = sm.findEntry(emittedLine - 1, __nimbusSourceColumn(module, emittedLine, emitted + 1) - 1);
+    const { sources, sourcesContent } = sm.payload;
+    const index = sources.indexOf(originalSource);
+    const source = sourcesContent?.[index]
+      || (originalSource.startsWith("file://") ? __readFileOr(builtins.url.fileURLToPath(originalSource), undefined) : undefined);
+    if (typeof source !== "string") return null;
+    const line = source.split(/\r?\n/, originalLine + 1)[originalLine];
+    if (!line) return null;
+    const getStringWidth = __nimbusNodeInspect().getStringWidth;
+    let prefix = "";
+    for (const character of line.slice(0, originalColumn + 1)) prefix += character === "\t" ? "\t" : " ".repeat(getStringWidth(character));
+    const path = originalSource.startsWith("file://") ? builtins.url.fileURLToPath(originalSource) : originalSource;
+    return path + ":" + (originalLine + 1) + "\n" + line + "\n" + prefix.slice(0, -1) + "^\n";
+  } catch {
+    return null;
+  }
+}
+
+// Node's "Transform Types" warning, once, when its loader first parses
+// TypeScript: the entry's, or a module's as it is required (an ES module's
+// imports are required before its body, as Node links them first).
+let __nimbusTransformTypesWarned = __nimbusNodeCommandLine?.transformTypes !== true;
+function __nimbusLoadsTypeScript(path) {
+  if (__nimbusTransformTypesWarned || !stripsTypeScript(path) || __nimbusUnderNodeModules(path)) return;
+  __nimbusTransformTypesWarned = true;
+  __processMod.emitWarning("Transform Types is an experimental feature and might change at any time", "ExperimentalWarning");
+}
 function __nimbusFrameAt(line) {
   if (!line.startsWith("    at ")) return null;
   let at = line.slice(7);
@@ -18262,10 +18885,13 @@ function __nimbusFatalArrow(error, fromPromise) {
   let stack;
   try { stack = error.stack; } catch { return null; }
   if (typeof stack !== "string") return null;
-  const frames = [];
-  for (const line of stack.split("\n")) {
-    const frame = __nimbusFrameAt(line);
-    if (frame !== null) frames.push(frame);
+  // A source-mapped stack reads original places; its frames are kept apart.
+  const frames = __nimbusGeneratedFrames.get(error)?.filter((frame) => frame[1] !== null) ?? [];
+  if (!__nimbusGeneratedFrames.has(error)) {
+    for (const line of stack.split("\n")) {
+      const frame = __nimbusFrameAt(line);
+      if (frame !== null) frames.push(frame);
+    }
   }
   // Thrown by the program, or by a builtin it called: its first frame with a place.
   const top = frames.length === 0 ? null : __nimbusModuleOfFile(frames[0][0]);
@@ -18282,14 +18908,14 @@ function __nimbusFatalArrow(error, fromPromise) {
       if (text === null) continue;
       const offset = __nimbusTextOffset(text, line, __nimbusEmittedColumn(module, line, column));
       const thrown = offset < 0 ? null : __nimbusFatalLocation(text, "script", offset);
-      if (thrown !== null) return __nimbusArrowOf(module, text, thrown[0], thrown[1]);
+      if (thrown !== null) return __nimbusSourceMappedArrow(module, text, thrown[0]) ?? __nimbusArrowOf(module, text, thrown[0], thrown[1]);
     }
   }
   const text = textOf(top);
   if (text === null) return null;
   const [, line, column] = frames[0];
   const offset = __nimbusTextOffset(text, line, __nimbusEmittedColumn(top, line, column));
-  return offset < 0 ? null : __nimbusArrowOf(top, text, offset, offset + 1);
+  return offset < 0 ? null : __nimbusSourceMappedArrow(top, text, offset) ?? __nimbusArrowOf(top, text, offset, offset + 1);
 }
 // Where a module that does not compile stops, for its stack (commonjs-cell.ts
 // __nimbusDecorateSyntaxError), or null.
@@ -19497,6 +20123,10 @@ __NodeModule._resolveFilename = (request, parent) => {
 };
 __NodeModule._load = (request, parent) => (parent instanceof __NodeModule ? parent.require(request) : __require(request));
 __NodeModule.Module = __NodeModule;
+__NodeModule.SourceMap = __NimbusSourceMap;
+__NodeModule.findSourceMap = function findSourceMap(sourceURL) { return __nimbusFindSourceMap(sourceURL); };
+__NodeModule.getSourceMapsSupport = function getSourceMapsSupport() { return __nimbusSourceMapsSupport; };
+__NodeModule.setSourceMapsSupport = function setSourceMapsSupport(enabled, options = {}) { __nimbusSetSourceMapsSupport(enabled, options); };
 Object.defineProperty(__NodeModule, "name", { value: "Module" });
 builtins.module = __NodeModule;
 // Bind to globalThis: workerd's timer globals throw "Illegal invocation"
@@ -20603,6 +21233,23 @@ function packageSelfReferenceSubpath(pkg, specifier) {
   return `.${specifier.slice(pkg.name.length)}`;
 }
 
+function vfsPathExtension(path) {
+  const base = path.slice(path.lastIndexOf("/") + 1);
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(dot) : "";
+}
+
+function typescriptLoader(path) {
+  const ext = vfsPathExtension(path);
+  if (ext === ".tsx") return "tsx";
+  return ext === ".ts" || ext === ".mts" || ext === ".cts" ? "ts" : null;
+}
+function isTypescriptDeclarationFile(path) {
+  return /\.d\.[mc]?ts$/.test(path.slice(path.lastIndexOf("/") + 1));
+}
+function stripsTypeScript(path) {
+  return typescriptLoader(path) === "ts" && !isTypescriptDeclarationFile(path);
+}
 var NON_MAPPING_EXTENSION = /\.(ts|tsx|mts|cts|json|node|cjs)$/;
 function typescriptFallbackCandidates(base) {
   if (NON_MAPPING_EXTENSION.test(base)) return [];
@@ -20941,6 +21588,8 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta("/" + resolvedPath, moduleUrl) });
   try {
     const normalizedPath = resolvedPath.replace(/^\/+/, "");
+    __nimbusCompiling("/" + normalizedPath);
+    __nimbusLoadsTypeScript(normalizedPath);
     let cell = __nimbusModuleCell(normalizedPath);
     if (!cell) {
       // Not in the launch's map: written after it started, or not reached by
@@ -21402,16 +22051,17 @@ function createEsmResolver(host, options = {}) {
     const base = path.slice(path.lastIndexOf("/") + 1);
     const dot = base.lastIndexOf(".");
     const ext = dot > 0 ? base.slice(dot) : "";
-    if (ext === ".mjs" || ext === ".mts") return "module";
-    if (ext === ".cjs" || ext === ".cts") return "commonjs";
+    const typeScript = options.stripTypes !== false;
+    if (ext === ".mjs" || ext === ".mts" && typeScript) return "module";
+    if (ext === ".cjs" || ext === ".cts" && typeScript) return "commonjs";
     if (ext === ".json") return "json";
-    if (ext === ".js" || ext === ".ts" || ext === "") {
+    if (ext === ".js" || ext === ".ts" && typeScript || ext === "") {
       const type = (yield* packageScopeConfig(url)).type;
       if (type === "module") return "module";
       if (type === "commonjs") return "commonjs";
       return "detect";
     }
-    throw nodeError(TypeError, "ERR_UNKNOWN_FILE_EXTENSION", `Unknown file extension "${ext}" for ${path}`);
+    return "unknown";
   }
   function* finalizeResolution(resolved, baseUrl) {
     const base = filePath(baseUrl);
@@ -21549,6 +22199,12 @@ Did you mean to import ${JSON.stringify(found)}?`;
       const { pjsonPath, type } = runSync(packageScopeConfig(new URL(url)));
       return { pjsonPath, type };
     },
+    assertLoadable({ format, path }) {
+      if (format !== "unknown" || path === void 0) return;
+      const base = path.slice(path.lastIndexOf("/") + 1);
+      const dot = base.lastIndexOf(".");
+      throw nodeError(TypeError, "ERR_UNKNOWN_FILE_EXTENSION", `Unknown file extension "${dot > 0 ? base.slice(dot) : ""}" for ${path}`);
+    },
     validateAttributes(url, format, attributes) {
       for (const key of Object.keys(attributes)) {
         if (key !== "type") {
@@ -21596,7 +22252,7 @@ const __esmResolver = createEsmResolver({
       return found ? "/" + String(found).replace(/^\/+/, "") : null;
     } catch { return null; }
   },
-}, { conditions: __nimbusConditions });
+}, { conditions: __nimbusConditions, stripTypes: __nimbusNodeCommandLine?.stripTypes !== false || __nimbusNodeCommandLine?.transformTypes === true });
 const __esmNamespaces = new Map();
 /** A module namespace: its names sorted, read through to the exports. */
 function __esmNamespaceOf(names, read) {
@@ -21610,6 +22266,8 @@ function __esmNamespaceOf(names, read) {
 function __esmLoad(resolution) {
   const cached = __esmNamespaces.get(resolution.url);
   if (cached) return cached;
+  // What require() loaded, Node's loader has: it is not loaded again.
+  if (!__moduleCache.has(String(resolution.path).replace(/^\/+/, ""))) __esmResolver.assertLoadable(resolution);
   let ns;
   if (resolution.format === "builtin") {
     const mod = __requireFrom("node:" + resolution.builtin, "");
@@ -21639,6 +22297,7 @@ function __esmLoad(resolution) {
       } });
       const requireData = (id) => {
         const resolved = __esmResolver.resolveSync(String(id), resolution.url);
+        __esmResolver.assertLoadable(resolved);
         if (resolved.format === "builtin") return __requireFrom("node:" + resolved.builtin, "");
         if (resolved.path) return __loadModule(resolved.path.replace(/^\/+/, ""), resolved.url);
         throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "Synchronous nested data-module import is unsupported");
@@ -22105,6 +22764,7 @@ function __nimbusEntryImport(id) {
 // own, its require its static imports, and what escapes its evaluation
 // explained (__nimbusExplainCommonJSGlobalLike).
 function __nimbusEvaluateEntry(wrapper, mod, filename, dirname, esModule) {
+  __nimbusLoadsTypeScript(filename);
   // A file's `this` is its exports, as Node's wrapper is called; -e and
   // stdin code is a script, whose `this` is the global object.
   if (!esModule) {

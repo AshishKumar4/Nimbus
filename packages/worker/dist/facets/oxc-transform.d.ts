@@ -6,7 +6,7 @@ export declare const OXC_FACET_WORKER_ID: string;
  * staged module's verified bytes, compiled by the loader at startup; `runtime`
  * is the facet's staged runtime script.
  */
-export declare function oxcFacetWorkerCode(wasm: ArrayBuffer, runtime: string): WorkerCode;
+export declare function oxcFacetWorkerCode(wasm: ArrayBuffer, runtime: string, amaroWasm: ArrayBuffer): WorkerCode;
 /**
  * The transform host a Durable Object's transforms run on: its transform
  * facet, a slice per call. Transforms are pure, so a slice whose call failed

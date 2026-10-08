@@ -41,7 +41,8 @@ export interface EsmResolverHost {
     /** What `require(specifier)` from `parentPath` would load, or null (for hints). */
     cjsResolve(specifier: string, parentPath: string): MaybePromise<string | null>;
 }
-export type EsmFormat = 'builtin' | 'module' | 'commonjs' | 'json' | 'detect' | 'data';
+/** `unknown`: an extension Node's loaders know no format of, which loading refuses (EsmResolver.assertLoadable). */
+export type EsmFormat = 'builtin' | 'module' | 'commonjs' | 'json' | 'detect' | 'data' | 'unknown';
 export interface EsmResolution {
     url: string;
     /** The file, for a `file:` URL. */
@@ -58,6 +59,8 @@ export interface EsmResolver {
     metaResolveSync(specifier: string, parentUrl: string): string;
     /** Node's import-attribute check, for the format a resolution loads as. */
     validateAttributes(url: string, format: EsmFormat, attributes: Record<string, unknown>): void;
+    /** Node's defaultLoad: a resolution of an `unknown` format, which Node resolves, does not load. */
+    assertLoadable(resolution: EsmResolution): void;
     /**
      * Node's getPackageScopeConfig for a file: URL, over a host whose every
      * answer is immediate: the package.json path its scope reads, and the
@@ -72,6 +75,8 @@ export interface EsmResolver {
 export interface EsmResolverOptions {
     /** The program's own conditions (`node --conditions`, `-C`, NODE_OPTIONS'), beside Node's defaults. */
     conditions?: readonly string[];
+    /** False under `--no-experimental-strip-types`: a TypeScript file has no format. */
+    stripTypes?: boolean;
 }
 export declare function createEsmResolver(host: EsmResolverHost, options?: EsmResolverOptions): EsmResolver;
 export {};

@@ -38,14 +38,15 @@
  *     observable behaviour, not implementation shape.
  */
 import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.js';
-import { typescriptLoader } from '../_shared/typescript-specifiers.js';
+import { stripsTypeScript, typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { errorText } from '../_shared/error-text.js';
-import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput } from './module-format.js';
+import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput, typeScriptFormat, typeScriptUnderNodeModules } from './module-format.js';
+import { nodeModulesRefusal, typeScriptRefusalShim, unknownExtensionRefusal } from './bundle-cell-transform.js';
 import { packageScopeType } from './require-resolution.js';
 import { isDirectory } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
-import { parseNodeCommandLine } from './node-cli.js';
+import { parseNodeCommandLine, typeScriptStripOptions } from './node-cli.js';
 import { nodeEvalProgram, nodeStdinPrintProgram } from './node-eval.js';
 /**
  * The nearest directory at or above `dir` that holds a package.json, or null.
@@ -282,6 +283,27 @@ export function buildRuntimeHandler(spec, ctx0) {
          * (module-format.ts esModuleSyntaxError). Null when the transform failed
          * otherwise, which it has reported.
          */
+        /**
+         * A TypeScript entry as Node takes it: its types stripped, and whether
+         * Node runs it as an ES module. A file Node refuses is code that throws
+         * Node's error. Null when the strip failed otherwise, which it has reported.
+         */
+        async function stripTypeScriptEntry(code, path, packageType, stripTypes, what) {
+            if (typeScriptUnderNodeModules(path))
+                return { code: typeScriptRefusalShim(nodeModulesRefusal('/' + path)), esModule: false };
+            try {
+                const [outcome] = await (await getEsbuild()).transformMany([{ code, options: { stripTypes, packageType, stripOnly: true, sourcefile: '/' + path } }]);
+                if ('typescript' in outcome)
+                    return { code: typeScriptRefusalShim(outcome.typescript), esModule: false };
+                if ('error' in outcome)
+                    throw new Error(outcome.error);
+                return { code: outcome.code, esModule: outcome.esModule === true };
+            }
+            catch (e) {
+                ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);
+                return null;
+            }
+        }
         async function lowerToCommonJs(code, loader, url, what, esm) {
             try {
                 const eb = await getEsbuild();
@@ -481,7 +503,7 @@ export function buildRuntimeHandler(spec, ctx0) {
         // its package imports or give it the file's own URL (commonjs-cell.ts).
         const scriptExt = vfsPathExtension(resolvedPath);
         // The package scope's "type", through the resolver's own lookup.
-        const packageType = scriptExt === '.js' || scriptExt === ''
+        const packageType = scriptExt === '.js' || scriptExt === '' || scriptExt === '.ts'
             ? await packageScopeType({
                 exists: (path) => fs.exists(path),
                 isDirectory: (path) => isDirectory(fs, path),
@@ -489,11 +511,30 @@ export function buildRuntimeHandler(spec, ctx0) {
                 stat: (path) => fs.stat(path),
             }, resolvedPath.slice(0, Math.max(0, resolvedPath.lastIndexOf('/'))))
             : null;
+        // Node's own TypeScript is stripped, then JavaScript of Node's format for it.
+        const stripTypes = spec.nodeCommandLine && moduleScope === 'node' && stripsTypeScript(resolvedPath) ? typeScriptStripOptions(launch) : null;
+        let stripped = null;
+        if (stripTypes === 'javascript') {
+            // JavaScript to Node's CommonJS loader, which hands an ES module (by
+            // Node's format for it) to its ES loader, which knows no TypeScript.
+            const source = code;
+            const esModule = typeScriptFormat(resolvedPath, () => packageType, () => source) === 'module';
+            stripped = { code: esModule ? typeScriptRefusalShim(unknownExtensionRefusal('/' + resolvedPath)) : source, esModule: false };
+        }
+        else if (stripTypes !== null) {
+            stripped = await stripTypeScriptEntry(code, resolvedPath, packageType, stripTypes, scriptPath);
+            if (stripped === null)
+                return 1;
+        }
+        if (stripped !== null)
+            code = stripped.code;
         // TypeScript by the same table the bundle's ESM pass reads.
-        const typescript = typescriptLoader(resolvedPath);
+        const typescript = stripped === null ? typescriptLoader(resolvedPath) : null;
         // esbuild transform for TypeScript / TSX / JSX (both node and bun)
         // AND for ESM entry scripts.
-        const esm = typescript === null && scriptExt !== '.jsx' && isEsModuleFile(resolvedPath, code, () => packageType);
+        const esm = stripped === null
+            ? typescript === null && scriptExt !== '.jsx' && isEsModuleFile(resolvedPath, code, () => packageType)
+            : stripped.esModule;
         // What the server-launch analysis reads: JavaScript as written (an ES module's
         // lowering requires through its own helper), TypeScript and JSX compiled.
         const written = code;

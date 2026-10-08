@@ -26,7 +26,8 @@ import type { NimbusFilesystemAuthority, RuntimeFsBridge } from '@nimbus-sh/core
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type PortVisibility } from '../session/port-capability.js';
 import { type PreloadModuleRoot, type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
-import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
+import { type NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
+import type { NodeTypeScript } from '@nimbus-sh/core/runtime/typescript-strip.js';
 import type { ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
@@ -772,6 +773,8 @@ export interface PrefetchBundleOptions {
     transformStore?: BundleCellResultStore;
     /** The program's own conditions (`node --conditions`), as the process resolves under them. */
     conditions?: readonly string[];
+    /** How Node takes the launch's TypeScript (node-cli.ts typeScriptStripOptions); null where it is compiled. */
+    stripTypes?: NodeTypeScript | null;
     /** What the command line preloads (`node -r`, `--import`): required roots, walked first, as they run first. */
     preloads?: readonly PreloadModuleRoot[];
 }

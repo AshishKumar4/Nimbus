@@ -61,6 +61,7 @@ import { NATIVE_HTTP_SOURCE } from './native-http.js';
 import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
 import { NODE_INSPECT_HOST_SOURCE, WORKERD_SLOTS_SOURCE } from './node-inspect-host.js';
 import { EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_INSPECT_SOURCE, NODE_PRIMORDIALS_SOURCE } from './node-inspect-source.js';
+import { NODE_SOURCE_MAPS_SOURCE } from './node-source-maps.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
 import { RUNTIME_INTERPRETER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
@@ -90,9 +91,20 @@ export function generateShimsCode() {
 // __nimbusNodeSystemError.
 ${NODE_ERROR_PREAMBLE}
 Object.defineProperties(globalThis, {
-  __nimbusNodeError: { value: nodeError, configurable: true },
+  __nimbusNodeError: { value: __nimbusGeneratedNodeError, configurable: true },
   __nimbusNodeSystemError: { value: nodeSystemError, configurable: true },
 });
+// Generated code's: a \`decoration\` (null for none) marks the error as one whose
+// report has no arrow of the generated code, the decoration before its stack
+// where Node shows the source there (decorateErrorStack).
+function __nimbusGeneratedNodeError(Base, code, message, props, decoration) {
+  const error = nodeError(Base, code, message, props, __nimbusGeneratedNodeError);
+  if (decoration !== undefined) {
+    if (decoration !== null) error.stack = decoration + "\\n" + error.stack;
+    __nimbusDecorated.add(error);
+  }
+  return error;
+}
 // What the shims call a program's functions with, captured before any
 // program runs: a program may replace Reflect's.
 const __nimbusReflectApply = Reflect.apply;
@@ -9862,6 +9874,13 @@ let __processUmask = Number(cred.umask) & 0o777;
 // process._eval. A host that passes none runs without them.
 const __nimbusNodeCommandLine = typeof nodeCommandLine === "undefined" ? undefined : nodeCommandLine;
 const __nimbusExecArgv = Array.isArray(__nimbusNodeCommandLine?.execArgv) ? __nimbusNodeCommandLine.execArgv.map(String) : [];
+// Node defines EventSource only with --experimental-eventsource; workerd's
+// lives on the global scope's prototype.
+if (__nimbusNodeCommandLine !== undefined && __nimbusNodeCommandLine !== null && __nimbusNodeCommandLine.experimentalEventSource !== true) {
+  for (let scope = globalThis; scope !== null && scope !== Object.prototype; scope = Object.getPrototypeOf(scope)) {
+    if (Object.hasOwn(scope, "EventSource")) delete scope.EventSource;
+  }
+}
 const __nimbusConditions = Array.isArray(__nimbusNodeCommandLine?.conditions) ? __nimbusNodeCommandLine.conditions.map(String) : [];
 const __nimbusEval = typeof __nimbusNodeCommandLine?.eval === "string" ? __nimbusNodeCommandLine.eval : undefined;
 const __processMod = {
@@ -9894,6 +9913,7 @@ const __processMod = {
     tls_ocsp: false,
     tls: true,
     openssl_is_boringssl: true,
+    ...(__nimbusNodeCommandLine ? { typescript: __nimbusNodeCommandLine.transformTypes ? "transform" : __nimbusNodeCommandLine.stripTypes !== false && "strip" } : {}),
   }),
   getBuiltinModule: (specifier) => {
     const key = String(specifier).replace(/^node:/, "");
@@ -10132,6 +10152,16 @@ const __NimbusUnhandledPromiseRejection = class UnhandledPromiseRejection extend
 };
 // A frame of a stack's text: [url, line, column], or null for one without a
 // place (a builtin's).
+${NODE_SOURCE_MAPS_SOURCE}
+// Node's "Transform Types" warning, once, when its loader first parses
+// TypeScript: the entry's, or a module's as it is required (an ES module's
+// imports are required before its body, as Node links them first).
+let __nimbusTransformTypesWarned = __nimbusNodeCommandLine?.transformTypes !== true;
+function __nimbusLoadsTypeScript(path) {
+  if (__nimbusTransformTypesWarned || !stripsTypeScript(path) || __nimbusUnderNodeModules(path)) return;
+  __nimbusTransformTypesWarned = true;
+  __processMod.emitWarning("Transform Types is an experimental feature and might change at any time", "ExperimentalWarning");
+}
 function __nimbusFrameAt(line) {
   if (!line.startsWith("    at ")) return null;
   let at = line.slice(7);
@@ -10207,10 +10237,13 @@ function __nimbusFatalArrow(error, fromPromise) {
   let stack;
   try { stack = error.stack; } catch { return null; }
   if (typeof stack !== "string") return null;
-  const frames = [];
-  for (const line of stack.split("\\n")) {
-    const frame = __nimbusFrameAt(line);
-    if (frame !== null) frames.push(frame);
+  // A source-mapped stack reads original places; its frames are kept apart.
+  const frames = __nimbusGeneratedFrames.get(error)?.filter((frame) => frame[1] !== null) ?? [];
+  if (!__nimbusGeneratedFrames.has(error)) {
+    for (const line of stack.split("\\n")) {
+      const frame = __nimbusFrameAt(line);
+      if (frame !== null) frames.push(frame);
+    }
   }
   // Thrown by the program, or by a builtin it called: its first frame with a place.
   const top = frames.length === 0 ? null : __nimbusModuleOfFile(frames[0][0]);
@@ -10227,14 +10260,14 @@ function __nimbusFatalArrow(error, fromPromise) {
       if (text === null) continue;
       const offset = __nimbusTextOffset(text, line, __nimbusEmittedColumn(module, line, column));
       const thrown = offset < 0 ? null : __nimbusFatalLocation(text, "script", offset);
-      if (thrown !== null) return __nimbusArrowOf(module, text, thrown[0], thrown[1]);
+      if (thrown !== null) return __nimbusSourceMappedArrow(module, text, thrown[0]) ?? __nimbusArrowOf(module, text, thrown[0], thrown[1]);
     }
   }
   const text = textOf(top);
   if (text === null) return null;
   const [, line, column] = frames[0];
   const offset = __nimbusTextOffset(text, line, __nimbusEmittedColumn(top, line, column));
-  return offset < 0 ? null : __nimbusArrowOf(top, text, offset, offset + 1);
+  return offset < 0 ? null : __nimbusSourceMappedArrow(top, text, offset) ?? __nimbusArrowOf(top, text, offset, offset + 1);
 }
 // Where a module that does not compile stops, for its stack (commonjs-cell.ts
 // __nimbusDecorateSyntaxError), or null.
@@ -10632,6 +10665,10 @@ __NodeModule._resolveFilename = (request, parent) => {
 };
 __NodeModule._load = (request, parent) => (parent instanceof __NodeModule ? parent.require(request) : __require(request));
 __NodeModule.Module = __NodeModule;
+__NodeModule.SourceMap = __NimbusSourceMap;
+__NodeModule.findSourceMap = function findSourceMap(sourceURL) { return __nimbusFindSourceMap(sourceURL); };
+__NodeModule.getSourceMapsSupport = function getSourceMapsSupport() { return __nimbusSourceMapsSupport; };
+__NodeModule.setSourceMapsSupport = function setSourceMapsSupport(enabled, options = {}) { __nimbusSetSourceMapsSupport(enabled, options); };
 Object.defineProperty(__NodeModule, "name", { value: "Module" });
 builtins.module = __NodeModule;
 // Bind to globalThis: workerd's timer globals throw "Illegal invocation"
@@ -11977,6 +12014,8 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta("/" + resolvedPath, moduleUrl) });
   try {
     const normalizedPath = resolvedPath.replace(/^\\/+/, "");
+    __nimbusCompiling("/" + normalizedPath);
+    __nimbusLoadsTypeScript(normalizedPath);
     let cell = __nimbusModuleCell(normalizedPath);
     if (!cell) {
       // Not in the launch's map: written after it started, or not reached by
@@ -12134,7 +12173,7 @@ const __esmResolver = createEsmResolver({
       return found ? "/" + String(found).replace(/^\\/+/, "") : null;
     } catch { return null; }
   },
-}, { conditions: __nimbusConditions });
+}, { conditions: __nimbusConditions, stripTypes: __nimbusNodeCommandLine?.stripTypes !== false || __nimbusNodeCommandLine?.transformTypes === true });
 const __esmNamespaces = new Map();
 /** A module namespace: its names sorted, read through to the exports. */
 function __esmNamespaceOf(names, read) {
@@ -12148,6 +12187,8 @@ function __esmNamespaceOf(names, read) {
 function __esmLoad(resolution) {
   const cached = __esmNamespaces.get(resolution.url);
   if (cached) return cached;
+  // What require() loaded, Node's loader has: it is not loaded again.
+  if (!__moduleCache.has(String(resolution.path).replace(/^\\/+/, ""))) __esmResolver.assertLoadable(resolution);
   let ns;
   if (resolution.format === "builtin") {
     const mod = __requireFrom("node:" + resolution.builtin, "");
@@ -12177,6 +12218,7 @@ function __esmLoad(resolution) {
       } });
       const requireData = (id) => {
         const resolved = __esmResolver.resolveSync(String(id), resolution.url);
+        __esmResolver.assertLoadable(resolved);
         if (resolved.format === "builtin") return __requireFrom("node:" + resolved.builtin, "");
         if (resolved.path) return __loadModule(resolved.path.replace(/^\\/+/, ""), resolved.url);
         throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "Synchronous nested data-module import is unsupported");
@@ -12643,6 +12685,7 @@ function __nimbusEntryImport(id) {
 // own, its require its static imports, and what escapes its evaluation
 // explained (__nimbusExplainCommonJSGlobalLike).
 function __nimbusEvaluateEntry(wrapper, mod, filename, dirname, esModule) {
+  __nimbusLoadsTypeScript(filename);
   // A file's \`this\` is its exports, as Node's wrapper is called; -e and
   // stdin code is a script, whose \`this\` is the global object.
   if (!esModule) {

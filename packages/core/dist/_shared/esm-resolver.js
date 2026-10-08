@@ -374,13 +374,14 @@ export function createEsmResolver(host, options = {}) {
         const base = path.slice(path.lastIndexOf('/') + 1);
         const dot = base.lastIndexOf('.');
         const ext = dot > 0 ? base.slice(dot) : '';
-        if (ext === '.mjs' || ext === '.mts')
+        const typeScript = options.stripTypes !== false;
+        if (ext === '.mjs' || (ext === '.mts' && typeScript))
             return 'module';
-        if (ext === '.cjs' || ext === '.cts')
+        if (ext === '.cjs' || (ext === '.cts' && typeScript))
             return 'commonjs';
         if (ext === '.json')
             return 'json';
-        if (ext === '.js' || ext === '.ts' || ext === '') {
+        if (ext === '.js' || (ext === '.ts' && typeScript) || ext === '') {
             const type = (yield* packageScopeConfig(url)).type;
             if (type === 'module')
                 return 'module';
@@ -388,7 +389,7 @@ export function createEsmResolver(host, options = {}) {
                 return 'commonjs';
             return 'detect';
         }
-        throw nodeError(TypeError, 'ERR_UNKNOWN_FILE_EXTENSION', `Unknown file extension "${ext}" for ${path}`);
+        return 'unknown';
     }
     function* finalizeResolution(resolved, baseUrl) {
         const base = filePath(baseUrl);
@@ -538,6 +539,13 @@ export function createEsmResolver(host, options = {}) {
         packageScopeSync(url) {
             const { pjsonPath, type } = runSync(packageScopeConfig(new URL(url)));
             return { pjsonPath, type };
+        },
+        assertLoadable({ format, path }) {
+            if (format !== 'unknown' || path === undefined)
+                return;
+            const base = path.slice(path.lastIndexOf('/') + 1);
+            const dot = base.lastIndexOf('.');
+            throw nodeError(TypeError, 'ERR_UNKNOWN_FILE_EXTENSION', `Unknown file extension "${dot > 0 ? base.slice(dot) : ''}" for ${path}`);
         },
         validateAttributes(url, format, attributes) {
             for (const key of Object.keys(attributes)) {

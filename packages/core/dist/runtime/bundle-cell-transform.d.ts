@@ -20,6 +20,7 @@
  */
 import { type EsbuildTransformOutcome, type EsbuildTransformRequest } from './esbuild-service.js';
 import { type ModuleScope, type PackageType } from './module-format.js';
+import type { NodeTypeScript, TypeScriptRefusal } from './typescript-strip.js';
 /**
  * An ES module this large is lowered in the session (async-module-lowering.ts
  * lowerEsModule, which reads it a statement at a time, in bounded memory)
@@ -60,8 +61,6 @@ export declare function isBundleModuleCandidate(path: string): boolean;
  * gone. So a declaration file is left exactly as it was staged.
  */
 export declare function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | null;
-/** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */
-export declare function isTypescriptDeclarationFile(path: string): boolean;
 /**
  * Whether Node runs a staged JavaScript file as an ES module
  * (module-format.ts isEsModuleFile: its extension, its package scope's
@@ -81,6 +80,17 @@ export declare function needsBundleCellTransform(path: string, src: string, pack
  * `require` with its cause rather than as a bare "Cannot use import statement".
  */
 export declare function esbuildDiagnosticShim(path: string, reason: string): string;
+/** What Node's ES loader says of TypeScript it does not take (`--no-experimental-strip-types`). */
+export declare function unknownExtensionRefusal(path: string): TypeScriptRefusal;
+/** The refusal of a file under node_modules, which Node does not strip. */
+export declare function nodeModulesRefusal(path: string): TypeScriptRefusal;
+/**
+ * The module of a TypeScript file Node refuses: requiring or importing it
+ * throws Node's error, with amaro's snippet before its stack where it shows
+ * the place, and no arrow of the generated code (node-shims.ts
+ * __nimbusGeneratedNodeError).
+ */
+export declare function typeScriptRefusalShim(refusal: TypeScriptRefusal): string;
 /** One cell part-way through the pipeline: the session's steps are done, the host's may remain. */
 export type BundleCell = {
     readonly path: string;
@@ -123,7 +133,7 @@ export interface BundleCellResult {
  * the provided-module pre-pass and, for large bundled ESM, its lowering to
  * CommonJS — so a paced caller accounts the source before it.
  */
-export declare function prepareBundleCell(path: string, source: string, packageType: PackageType, scope: ModuleScope): BundleCell;
+export declare function prepareBundleCell(path: string, source: string, packageType: PackageType, scope: ModuleScope, stripTypes?: NodeTypeScript | null): BundleCell;
 /**
  * The cell's result from the host's (or the session's) outcome. A transient
  * error is no verdict on the source — the host could not run the transform
@@ -153,9 +163,10 @@ export interface BundleCellResultStore {
      * The content address of `source` staged at `at` as a `kind`: a module
      * cell at its bundle path, under its package scope's `packageType` (which
      * decides whether it is an ES module) for a runtime whose ES modules run
-     * in `scope`, or an entry script at its URL.
+     * in `scope` and whose TypeScript is taken as `stripTypes` says, or an
+     * entry script at its URL.
      */
-    key(kind: 'cell' | 'entry', at: string, source: string, packageType?: PackageType, scope?: ModuleScope): Promise<string>;
+    key(kind: 'cell' | 'entry', at: string, source: string, packageType?: PackageType, scope?: ModuleScope, stripTypes?: NodeTypeScript | null): Promise<string>;
     /** The results held for `keys`; a key the store does not hold is absent. */
     getMany(keys: readonly string[]): Map<string, StoredBundleCell>;
     /**
@@ -215,11 +226,13 @@ export declare function transformBundleCells(cells: ReadonlyArray<{
     readonly path: string;
     readonly source: string;
     readonly packageType: PackageType;
-}>, { host, store, pacer, scope }: {
+}>, { host, store, pacer, scope, stripTypes }: {
     host: BundleCellHost;
     store?: BundleCellResultStore | null;
     pacer?: BundleCellPacer;
     scope: ModuleScope;
+    /** How Node takes its TypeScript (node-cli.ts typeScriptStripOptions); null where it is compiled. */
+    stripTypes?: NodeTypeScript | null;
 }, place: (path: string, result: BundleCellResult) => void): Promise<BundleCellTransformStats>;
 /**
  * The entry script as the facet compiles it (entryScriptRequest), read from

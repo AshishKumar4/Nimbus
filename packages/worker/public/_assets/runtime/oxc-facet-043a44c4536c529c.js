@@ -1,5 +1,601 @@
 "use strict";
 (() => {
+  var __create = Object.create;
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __getProtoOf = Object.getPrototypeOf;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __commonJS = (cb, mod) => function __require() {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+    isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+    mod
+  ));
+
+  var require_dist = __commonJS({
+    "../../node_modules/.bun/amaro@1.1.8/node_modules/amaro/dist/index.js"(exports, module) {
+      "use strict";
+      var __create2 = Object.create;
+      var __defProp2 = Object.defineProperty;
+      var __getOwnPropDesc2 = Object.getOwnPropertyDescriptor;
+      var __getOwnPropNames2 = Object.getOwnPropertyNames;
+      var __getProtoOf2 = Object.getPrototypeOf;
+      var __hasOwnProp2 = Object.prototype.hasOwnProperty;
+      var __commonJS2 = (cb, mod) => function __require() {
+        return mod || (0, cb[__getOwnPropNames2(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+      };
+      var __export = (target, all) => {
+        for (var name in all)
+          __defProp2(target, name, { get: all[name], enumerable: true });
+      };
+      var __copyProps2 = (to, from, except, desc) => {
+        if (from && typeof from === "object" || typeof from === "function") {
+          for (let key of __getOwnPropNames2(from))
+            if (!__hasOwnProp2.call(to, key) && key !== except)
+              __defProp2(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc2(from, key)) || desc.enumerable });
+        }
+        return to;
+      };
+      var __toESM2 = (mod, isNodeMode, target) => (target = mod != null ? __create2(__getProtoOf2(mod)) : {}, __copyProps2(
+        isNodeMode || !mod || !mod.__esModule ? __defProp2(target, "default", { value: mod, enumerable: true }) : target,
+        mod
+      ));
+      var __toCommonJS = (mod) => __copyProps2(__defProp2({}, "__esModule", { value: true }), mod);
+      var require_wasm = __commonJS2({
+        "lib/wasm.js"(exports2, module2) {
+          "use strict";
+          var imports = {};
+          imports["__wbindgen_placeholder__"] = module2.exports;
+          var wasm;
+          var { TextDecoder: TextDecoder2, TextEncoder: TextEncoder2 } = globalThis;
+          var heap = new Array(128).fill(void 0);
+          heap.push(void 0, null, true, false);
+          function getObject(idx) {
+            return heap[idx];
+          }
+          var heap_next = heap.length;
+          function addHeapObject(obj) {
+            if (heap_next === heap.length) heap.push(heap.length + 1);
+            const idx = heap_next;
+            heap_next = heap[idx];
+            heap[idx] = obj;
+            return idx;
+          }
+          function handleError(f, args) {
+            try {
+              return f.apply(this, args);
+            } catch (e) {
+              wasm.__wbindgen_export_0(addHeapObject(e));
+            }
+          }
+          var cachedTextDecoder = new TextDecoder2("utf-8", { ignoreBOM: true });
+          cachedTextDecoder.decode();
+          var cachedUint8ArrayMemory0 = null;
+          function getUint8ArrayMemory0() {
+            if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {
+              cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
+            }
+            return cachedUint8ArrayMemory0;
+          }
+          function getStringFromWasm0(ptr, len) {
+            ptr = ptr >>> 0;
+            return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
+          }
+          function getCachedStringFromWasm0(ptr, len) {
+            if (ptr === 0) {
+              return getObject(len);
+            } else {
+              return getStringFromWasm0(ptr, len);
+            }
+          }
+          function dropObject(idx) {
+            if (idx < 132) return;
+            heap[idx] = heap_next;
+            heap_next = idx;
+          }
+          function takeObject(idx) {
+            const ret = getObject(idx);
+            dropObject(idx);
+            return ret;
+          }
+          function isLikeNone(x) {
+            return x === void 0 || x === null;
+          }
+          var cachedDataViewMemory0 = null;
+          function getDataViewMemory0() {
+            if (cachedDataViewMemory0 === null || cachedDataViewMemory0.buffer.detached === true || cachedDataViewMemory0.buffer.detached === void 0 && cachedDataViewMemory0.buffer !== wasm.memory.buffer) {
+              cachedDataViewMemory0 = new DataView(wasm.memory.buffer);
+            }
+            return cachedDataViewMemory0;
+          }
+          var CLOSURE_DTORS = typeof FinalizationRegistry === "undefined" ? { register: () => {
+          }, unregister: () => {
+          } } : new FinalizationRegistry((state) => {
+            wasm.__wbindgen_export_1.get(state.dtor)(state.a, state.b);
+          });
+          function makeMutClosure(arg0, arg1, dtor, f) {
+            const state = { a: arg0, b: arg1, cnt: 1, dtor };
+            const real = (...args) => {
+              state.cnt++;
+              const a = state.a;
+              state.a = 0;
+              try {
+                return f(a, state.b, ...args);
+              } finally {
+                if (--state.cnt === 0) {
+                  wasm.__wbindgen_export_1.get(state.dtor)(a, state.b);
+                  CLOSURE_DTORS.unregister(state);
+                } else {
+                  state.a = a;
+                }
+              }
+            };
+            real.original = state;
+            CLOSURE_DTORS.register(real, state, state);
+            return real;
+          }
+          function debugString(val) {
+            const type = typeof val;
+            if (type == "number" || type == "boolean" || val == null) {
+              return `${val}`;
+            }
+            if (type == "string") {
+              return `"${val}"`;
+            }
+            if (type == "symbol") {
+              const description = val.description;
+              if (description == null) {
+                return "Symbol";
+              } else {
+                return `Symbol(${description})`;
+              }
+            }
+            if (type == "function") {
+              const name = val.name;
+              if (typeof name == "string" && name.length > 0) {
+                return `Function(${name})`;
+              } else {
+                return "Function";
+              }
+            }
+            if (Array.isArray(val)) {
+              const length = val.length;
+              let debug = "[";
+              if (length > 0) {
+                debug += debugString(val[0]);
+              }
+              for (let i = 1; i < length; i++) {
+                debug += ", " + debugString(val[i]);
+              }
+              debug += "]";
+              return debug;
+            }
+            const builtInMatches = /\[object ([^\]]+)\]/.exec(toString.call(val));
+            let className;
+            if (builtInMatches && builtInMatches.length > 1) {
+              className = builtInMatches[1];
+            } else {
+              return toString.call(val);
+            }
+            if (className == "Object") {
+              try {
+                return "Object(" + JSON.stringify(val) + ")";
+              } catch (_) {
+                return "Object";
+              }
+            }
+            if (val instanceof Error) {
+              return `${val.name}: ${val.message}
+${val.stack}`;
+            }
+            return className;
+          }
+          var WASM_VECTOR_LEN = 0;
+          var cachedTextEncoder = new TextEncoder2("utf-8");
+          var encodeString = typeof cachedTextEncoder.encodeInto === "function" ? function(arg, view) {
+            return cachedTextEncoder.encodeInto(arg, view);
+          } : function(arg, view) {
+            const buf = cachedTextEncoder.encode(arg);
+            view.set(buf);
+            return {
+              read: arg.length,
+              written: buf.length
+            };
+          };
+          function passStringToWasm0(arg, malloc, realloc) {
+            if (realloc === void 0) {
+              const buf = cachedTextEncoder.encode(arg);
+              const ptr2 = malloc(buf.length, 1) >>> 0;
+              getUint8ArrayMemory0().subarray(ptr2, ptr2 + buf.length).set(buf);
+              WASM_VECTOR_LEN = buf.length;
+              return ptr2;
+            }
+            let len = arg.length;
+            let ptr = malloc(len, 1) >>> 0;
+            const mem = getUint8ArrayMemory0();
+            let offset2 = 0;
+            for (; offset2 < len; offset2++) {
+              const code = arg.charCodeAt(offset2);
+              if (code > 127) break;
+              mem[ptr + offset2] = code;
+            }
+            if (offset2 !== len) {
+              if (offset2 !== 0) {
+                arg = arg.slice(offset2);
+              }
+              ptr = realloc(ptr, len, len = offset2 + arg.length * 3, 1) >>> 0;
+              const view = getUint8ArrayMemory0().subarray(ptr + offset2, ptr + len);
+              const ret = encodeString(arg, view);
+              offset2 += ret.written;
+              ptr = realloc(ptr, len, offset2, 1) >>> 0;
+            }
+            WASM_VECTOR_LEN = offset2;
+            return ptr;
+          }
+          module2.exports.transform = function(input, options) {
+            const ret = wasm.transform(addHeapObject(input), addHeapObject(options));
+            return takeObject(ret);
+          };
+          module2.exports.transformSync = function(input, options) {
+            try {
+              const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+              wasm.transformSync(retptr, addHeapObject(input), addHeapObject(options));
+              var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+              var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+              var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+              if (r2) {
+                throw takeObject(r1);
+              }
+              return takeObject(r0);
+            } finally {
+              wasm.__wbindgen_add_to_stack_pointer(16);
+            }
+          };
+          function __wbg_adapter_50(arg0, arg1, arg2) {
+            wasm.__wbindgen_export_4(arg0, arg1, addHeapObject(arg2));
+          }
+          function __wbg_adapter_95(arg0, arg1, arg2, arg3) {
+            wasm.__wbindgen_export_5(arg0, arg1, addHeapObject(arg2), addHeapObject(arg3));
+          }
+          module2.exports.__wbg_buffer_609cc3eee51ed158 = function(arg0) {
+            const ret = getObject(arg0).buffer;
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbg_call_672a4d21634d4a24 = function() {
+            return handleError(function(arg0, arg1) {
+              const ret = getObject(arg0).call(getObject(arg1));
+              return addHeapObject(ret);
+            }, arguments);
+          };
+          module2.exports.__wbg_call_7cccdd69e0791ae2 = function() {
+            return handleError(function(arg0, arg1, arg2) {
+              const ret = getObject(arg0).call(getObject(arg1), getObject(arg2));
+              return addHeapObject(ret);
+            }, arguments);
+          };
+          module2.exports.__wbg_done_769e5ede4b31c67b = function(arg0) {
+            const ret = getObject(arg0).done;
+            return ret;
+          };
+          module2.exports.__wbg_entries_3265d4158b33e5dc = function(arg0) {
+            const ret = Object.entries(getObject(arg0));
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbg_get_67b2ba62fc30de12 = function() {
+            return handleError(function(arg0, arg1) {
+              const ret = Reflect.get(getObject(arg0), getObject(arg1));
+              return addHeapObject(ret);
+            }, arguments);
+          };
+          module2.exports.__wbg_get_b9b93047fe3cf45b = function(arg0, arg1) {
+            const ret = getObject(arg0)[arg1 >>> 0];
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbg_getwithrefkey_1dc361bd10053bfe = function(arg0, arg1) {
+            const ret = getObject(arg0)[getObject(arg1)];
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbg_instanceof_ArrayBuffer_e14585432e3737fc = function(arg0) {
+            let result;
+            try {
+              result = getObject(arg0) instanceof ArrayBuffer;
+            } catch (_) {
+              result = false;
+            }
+            const ret = result;
+            return ret;
+          };
+          module2.exports.__wbg_instanceof_Map_f3469ce2244d2430 = function(arg0) {
+            let result;
+            try {
+              result = getObject(arg0) instanceof Map;
+            } catch (_) {
+              result = false;
+            }
+            const ret = result;
+            return ret;
+          };
+          module2.exports.__wbg_instanceof_Uint8Array_17156bcf118086a9 = function(arg0) {
+            let result;
+            try {
+              result = getObject(arg0) instanceof Uint8Array;
+            } catch (_) {
+              result = false;
+            }
+            const ret = result;
+            return ret;
+          };
+          module2.exports.__wbg_isArray_a1eab7e0d067391b = function(arg0) {
+            const ret = Array.isArray(getObject(arg0));
+            return ret;
+          };
+          module2.exports.__wbg_isSafeInteger_343e2beeeece1bb0 = function(arg0) {
+            const ret = Number.isSafeInteger(getObject(arg0));
+            return ret;
+          };
+          module2.exports.__wbg_iterator_9a24c88df860dc65 = function() {
+            const ret = Symbol.iterator;
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbg_length_a446193dc22c12f8 = function(arg0) {
+            const ret = getObject(arg0).length;
+            return ret;
+          };
+          module2.exports.__wbg_length_e2d2a49132c1b256 = function(arg0) {
+            const ret = getObject(arg0).length;
+            return ret;
+          };
+          module2.exports.__wbg_new_23a2665fac83c611 = function(arg0, arg1) {
+            try {
+              var state0 = { a: arg0, b: arg1 };
+              var cb0 = (arg02, arg12) => {
+                const a = state0.a;
+                state0.a = 0;
+                try {
+                  return __wbg_adapter_95(a, state0.b, arg02, arg12);
+                } finally {
+                  state0.a = a;
+                }
+              };
+              const ret = new Promise(cb0);
+              return addHeapObject(ret);
+            } finally {
+              state0.a = state0.b = 0;
+            }
+          };
+          module2.exports.__wbg_new_405e22f390576ce2 = function() {
+            const ret = new Object();
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbg_new_78feb108b6472713 = function() {
+            const ret = new Array();
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbg_new_a12002a7f91c75be = function(arg0) {
+            const ret = new Uint8Array(getObject(arg0));
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbg_newnoargs_105ed471475aaf50 = function(arg0, arg1) {
+            var v0 = getCachedStringFromWasm0(arg0, arg1);
+            const ret = new Function(v0);
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbg_next_25feadfc0913fea9 = function(arg0) {
+            const ret = getObject(arg0).next;
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbg_next_6574e1a8a62d1055 = function() {
+            return handleError(function(arg0) {
+              const ret = getObject(arg0).next();
+              return addHeapObject(ret);
+            }, arguments);
+          };
+          module2.exports.__wbg_queueMicrotask_97d92b4fcc8a61c5 = function(arg0) {
+            queueMicrotask(getObject(arg0));
+          };
+          module2.exports.__wbg_queueMicrotask_d3219def82552485 = function(arg0) {
+            const ret = getObject(arg0).queueMicrotask;
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbg_resolve_4851785c9c5f573d = function(arg0) {
+            const ret = Promise.resolve(getObject(arg0));
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbg_set_37837023f3d740e8 = function(arg0, arg1, arg2) {
+            getObject(arg0)[arg1 >>> 0] = takeObject(arg2);
+          };
+          module2.exports.__wbg_set_3f1d0b984ed272ed = function(arg0, arg1, arg2) {
+            getObject(arg0)[takeObject(arg1)] = takeObject(arg2);
+          };
+          module2.exports.__wbg_set_65595bdd868b3009 = function(arg0, arg1, arg2) {
+            getObject(arg0).set(getObject(arg1), arg2 >>> 0);
+          };
+          module2.exports.__wbg_static_accessor_GLOBAL_88a902d13a557d07 = function() {
+            const ret = typeof global === "undefined" ? null : global;
+            return isLikeNone(ret) ? 0 : addHeapObject(ret);
+          };
+          module2.exports.__wbg_static_accessor_GLOBAL_THIS_56578be7e9f832b0 = function() {
+            const ret = typeof globalThis === "undefined" ? null : globalThis;
+            return isLikeNone(ret) ? 0 : addHeapObject(ret);
+          };
+          module2.exports.__wbg_static_accessor_SELF_37c5d418e4bf5819 = function() {
+            const ret = typeof self === "undefined" ? null : self;
+            return isLikeNone(ret) ? 0 : addHeapObject(ret);
+          };
+          module2.exports.__wbg_static_accessor_WINDOW_5de37043a91a9c40 = function() {
+            const ret = typeof window === "undefined" ? null : window;
+            return isLikeNone(ret) ? 0 : addHeapObject(ret);
+          };
+          module2.exports.__wbg_then_44b73946d2fb3e7d = function(arg0, arg1) {
+            const ret = getObject(arg0).then(getObject(arg1));
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbg_toString_5285597960676b7b = function(arg0) {
+            const ret = getObject(arg0).toString();
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbg_value_cd1ffa7b1ab794f1 = function(arg0) {
+            const ret = getObject(arg0).value;
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbindgen_bigint_from_i64 = function(arg0) {
+            const ret = arg0;
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbindgen_bigint_from_u64 = function(arg0) {
+            const ret = BigInt.asUintN(64, arg0);
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbindgen_bigint_get_as_i64 = function(arg0, arg1) {
+            const v = getObject(arg1);
+            const ret = typeof v === "bigint" ? v : void 0;
+            getDataViewMemory0().setBigInt64(arg0 + 8 * 1, isLikeNone(ret) ? BigInt(0) : ret, true);
+            getDataViewMemory0().setInt32(arg0 + 4 * 0, !isLikeNone(ret), true);
+          };
+          module2.exports.__wbindgen_boolean_get = function(arg0) {
+            const v = getObject(arg0);
+            const ret = typeof v === "boolean" ? v ? 1 : 0 : 2;
+            return ret;
+          };
+          module2.exports.__wbindgen_cb_drop = function(arg0) {
+            const obj = takeObject(arg0).original;
+            if (obj.cnt-- == 1) {
+              obj.a = 0;
+              return true;
+            }
+            const ret = false;
+            return ret;
+          };
+          module2.exports.__wbindgen_closure_wrapper5029 = function(arg0, arg1, arg2) {
+            const ret = makeMutClosure(arg0, arg1, 668, __wbg_adapter_50);
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbindgen_debug_string = function(arg0, arg1) {
+            const ret = debugString(getObject(arg1));
+            const ptr1 = passStringToWasm0(ret, wasm.__wbindgen_export_2, wasm.__wbindgen_export_3);
+            const len1 = WASM_VECTOR_LEN;
+            getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
+            getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+          };
+          module2.exports.__wbindgen_error_new = function(arg0, arg1) {
+            const ret = new Error(getStringFromWasm0(arg0, arg1));
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbindgen_in = function(arg0, arg1) {
+            const ret = getObject(arg0) in getObject(arg1);
+            return ret;
+          };
+          module2.exports.__wbindgen_is_bigint = function(arg0) {
+            const ret = typeof getObject(arg0) === "bigint";
+            return ret;
+          };
+          module2.exports.__wbindgen_is_falsy = function(arg0) {
+            const ret = !getObject(arg0);
+            return ret;
+          };
+          module2.exports.__wbindgen_is_function = function(arg0) {
+            const ret = typeof getObject(arg0) === "function";
+            return ret;
+          };
+          module2.exports.__wbindgen_is_object = function(arg0) {
+            const val = getObject(arg0);
+            const ret = typeof val === "object" && val !== null;
+            return ret;
+          };
+          module2.exports.__wbindgen_is_string = function(arg0) {
+            const ret = typeof getObject(arg0) === "string";
+            return ret;
+          };
+          module2.exports.__wbindgen_is_undefined = function(arg0) {
+            const ret = getObject(arg0) === void 0;
+            return ret;
+          };
+          module2.exports.__wbindgen_jsval_eq = function(arg0, arg1) {
+            const ret = getObject(arg0) === getObject(arg1);
+            return ret;
+          };
+          module2.exports.__wbindgen_jsval_loose_eq = function(arg0, arg1) {
+            const ret = getObject(arg0) == getObject(arg1);
+            return ret;
+          };
+          module2.exports.__wbindgen_memory = function() {
+            const ret = wasm.memory;
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbindgen_number_get = function(arg0, arg1) {
+            const obj = getObject(arg1);
+            const ret = typeof obj === "number" ? obj : void 0;
+            getDataViewMemory0().setFloat64(arg0 + 8 * 1, isLikeNone(ret) ? 0 : ret, true);
+            getDataViewMemory0().setInt32(arg0 + 4 * 0, !isLikeNone(ret), true);
+          };
+          module2.exports.__wbindgen_number_new = function(arg0) {
+            const ret = arg0;
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbindgen_object_clone_ref = function(arg0) {
+            const ret = getObject(arg0);
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbindgen_object_drop_ref = function(arg0) {
+            takeObject(arg0);
+          };
+          module2.exports.__wbindgen_string_get = function(arg0, arg1) {
+            const obj = getObject(arg1);
+            const ret = typeof obj === "string" ? obj : void 0;
+            var ptr1 = isLikeNone(ret) ? 0 : passStringToWasm0(ret, wasm.__wbindgen_export_2, wasm.__wbindgen_export_3);
+            var len1 = WASM_VECTOR_LEN;
+            getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
+            getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+          };
+          module2.exports.__wbindgen_string_new = function(arg0, arg1) {
+            const ret = getStringFromWasm0(arg0, arg1);
+            return addHeapObject(ret);
+          };
+          module2.exports.__wbindgen_throw = function(arg0, arg1) {
+            throw new Error(getStringFromWasm0(arg0, arg1));
+          };
+          var wasmModule = globalThis.__nimbusAmaroWasm;
+          var wasmInstance = new WebAssembly.Instance(wasmModule, imports);
+          wasm = wasmInstance.exports;
+          module2.exports.__wasm = wasm;
+        }
+      });
+      var src_exports = {};
+      __export(src_exports, {
+        transformSync: () => transformSync
+      });
+      module.exports = __toCommonJS(src_exports);
+      var import_wasm = __toESM2(require_wasm());
+      var DEFAULT_OPTIONS = {
+        mode: "strip-only",
+        deprecatedTsModuleAsError: true,
+        transform: {
+          verbatimModuleSyntax: true,
+          nativeClassProperties: true,
+          noEmptyExport: true,
+          importNotUsedAsValues: "preserve"
+        }
+      };
+      function transformSync(source, options) {
+        const input = `${source ?? ""}`;
+        return import_wasm.default.transformSync(input, {
+          ...DEFAULT_OPTIONS,
+          ...options
+        });
+      }
+    }
+  });
+
   var LINE_END = {
     tsconfck: /\n/,
     esbuild: /[\n\r\u2028\u2029]/
@@ -649,12 +1245,12 @@ error: the Oxc transform crashed (${reason})`);
   var skipWhiteSpace = /(?:\s|\/\/.*|\/\*[^]*?\*\/)*/g;
   var ref = Object.prototype;
   var hasOwnProperty = ref.hasOwnProperty;
-  var toString = ref.toString;
+  var toString2 = ref.toString;
   var hasOwn = Object.hasOwn || (function(obj, propName) {
     return hasOwnProperty.call(obj, propName);
   });
   var isArray = Array.isArray || (function(obj) {
-    return toString.call(obj) === "[object Array]";
+    return toString2.call(obj) === "[object Array]";
   });
   var regexpCache =   Object.create(null);
   function wordsRegexp(words) {
@@ -5945,6 +6541,224 @@ error: the Oxc transform crashed (${reason})`);
     parser.parse();
   }
   var COMMONJS_WRAPPER_NAMES =   new Set(["exports", "require", "module", "__filename", "__dirname"]);
+  function containsModuleSyntax(source, scope = "file") {
+    const scan = unscopedAwaitScanner(source);
+    const bindings = lexicalBindingScanner(scope === "file" ? COMMONJS_WRAPPER_NAMES :   new Set());
+    let moduleSyntax = false;
+    let candidate = false;
+    walkTopLevelModuleTokens(source, (token, syntax, topLevel) => {
+      if (syntax !== null) moduleSyntax = true;
+      else if (bindings(token, topLevel) || scan(token)) candidate = true;
+      return moduleSyntax || candidate;
+    }, "script");
+    if (moduleSyntax) return true;
+    if (!candidate && !scan.atEnd()) return false;
+    const error = commonJsCompileError(source, scope);
+    if (error === null) return false;
+    if (error.esModuleSyntax) return true;
+    return compilesAsModuleAfter(source, error.at);
+  }
+  function lexicalBindingScanner(names) {
+    let declarator = "none";
+    let depth = 0;
+    let className = false;
+    let previous = types$1.eof;
+    return (token, topLevel) => {
+      const type = token.type;
+      const after = previous;
+      previous = type;
+      if (className) {
+        className = false;
+        if (type === types$1.name && names.has(tokenName(token))) return true;
+      }
+      if (topLevel && after !== types$1.dot && after !== types$1.questionDot) {
+        if (type === types$1._class) className = true;
+        else if (type === types$1._const || type === types$1.name && tokenName(token) === "let") {
+          declarator = "binding";
+          depth = 0;
+          return false;
+        }
+      }
+      if (declarator === "none") return false;
+      if (type === types$1.braceL || type === types$1.dollarBraceL || type === types$1.parenL || type === types$1.bracketL) depth++;
+      else if (type === types$1.braceR || type === types$1.parenR || type === types$1.bracketR) depth--;
+      if (depth < 0 || depth === 0 && type === types$1.semi) declarator = "none";
+      else if (depth === 0 && type === types$1.eq && declarator === "binding") declarator = "initializer";
+      else if (depth === 0 && type === types$1.comma) declarator = "binding";
+      return declarator === "binding" && type === types$1.name && names.has(tokenName(token));
+    };
+  }
+  function tokenName(token) {
+    const value = Reflect.get(token, "value");
+    return typeof value === "string" ? value : "";
+  }
+  var MODULE_SYNTAX_ERRORS =   new Set([
+    "'import' and 'export' may appear only with 'sourceType: module'",
+    "'import' and 'export' may only appear at the top level",
+    "Cannot use 'import.meta' outside a module"
+  ]);
+  function commonJsCompileError(source, scope) {
+    const parser = new CommonJsBodyParser({ ecmaVersion: "latest", sourceType: "commonjs", allowHashBang: true }, source);
+    parser.parameters = scope === "file" ? [...COMMONJS_WRAPPER_NAMES] : [];
+    try {
+      parser.parse();
+      return null;
+    } catch (e) {
+      const at2 = e.pos;
+      if (!(e instanceof SyntaxError) || typeof at2 !== "number") throw e;
+      const message = e.message.replace(/ \(\d+:\d+\)$/, "");
+      const keyword = /^(?:import(?!\s*[(.])|export)(?![\w$])/.test(source.slice(at2));
+      return { at: at2, esModuleSyntax: MODULE_SYNTAX_ERRORS.has(message) || message === "Unexpected token" && keyword };
+    }
+  }
+  var CommonJsBodyParser = class extends StatementParser {
+    parameters = [];
+    parseTopLevel(node) {
+      this.scopeStack[0].var.push(...this.parameters);
+      return super.parseTopLevel(node);
+    }
+  };
+  function compilesAsModuleAfter(source, at2) {
+    const holding = [];
+    try {
+      parseStatements(source, { ...MODULE_PARSE_OPTIONS, preserveParens: true }, {
+        onNode: (node) => {
+          if (node.start <= at2 && at2 < node.end) holding.push(node);
+        }
+      });
+    } catch {
+      return false;
+    }
+    return !templateAwaitAt(holding, at2);
+  }
+  function templateAwaitAt(holding, at2) {
+    const index = holding.findIndex((node) => node.type === "AwaitExpression" && node.start < at2);
+    if (index === -1) return false;
+    let child2 = holding[index];
+    for (const parent of holding.slice(index + 1)) {
+      const continues = parent.type === "BinaryExpression" || parent.type === "LogicalExpression" || parent.type === "SequenceExpression" || parent.type === "UnaryExpression" || parent.type === "AssignmentExpression" && parent.right === child2 || parent.type === "ConditionalExpression" && parent.consequent !== child2;
+      if (!continues) return parent.type === "TemplateLiteral";
+      child2 = parent;
+    }
+    return false;
+  }
+  function unscopedAwaitScanner(source) {
+    const functionBraces = [];
+    const functionParenDepths = [];
+    const methodParenCandidates = [];
+    const arrowExpressions = [];
+    let bracketDepth = 0;
+    let pendingMethodBody = false;
+    let pendingArrowBody = false;
+    let pendingFunctionKeyword = false;
+    let pendingAwait = false;
+    let previous = types$1.eof;
+    let previousEnd = 0;
+    const scan = (token) => {
+      const type = token.type;
+      if (pendingAwait) {
+        if (type !== types$1.colon) return true;
+        pendingAwait = false;
+      }
+      if (pendingMethodBody && type !== types$1.braceL) pendingMethodBody = false;
+      if (pendingArrowBody && type !== types$1.braceL) {
+        arrowExpressions.push({
+          parens: methodParenCandidates.length,
+          braces: functionBraces.length,
+          brackets: bracketDepth
+        });
+        pendingArrowBody = false;
+      }
+      if (pendingFunctionKeyword) {
+        if (type === types$1.colon || type === types$1.comma || type === types$1.braceR || type === types$1.parenR || type === types$1.bracketR || type === types$1.eq) functionParenDepths.pop();
+        pendingFunctionKeyword = false;
+      }
+      if (source.slice(previousEnd, token.start).includes("\n")) {
+        while (arrowExpressions.length > 0) {
+          const arrow = arrowExpressions[arrowExpressions.length - 1];
+          if (methodParenCandidates.length !== arrow.parens || functionBraces.length !== arrow.braces || bracketDepth !== arrow.brackets) break;
+          arrowExpressions.pop();
+        }
+      }
+      while (arrowExpressions.length > 0) {
+        const arrow = arrowExpressions[arrowExpressions.length - 1];
+        const delimited = (type === types$1.semi || type === types$1.comma) && methodParenCandidates.length === arrow.parens && functionBraces.length === arrow.braces && bracketDepth === arrow.brackets;
+        const closed = type === types$1.parenR && methodParenCandidates.length === arrow.parens || type === types$1.bracketR && bracketDepth === arrow.brackets || type === types$1.braceR && functionBraces.length === arrow.braces;
+        if (!delimited && !closed) break;
+        arrowExpressions.pop();
+      }
+      if (type === types$1.name && previous !== types$1.dot && previous !== types$1.questionDot && source.slice(token.start, token.end) === "await" && !functionBraces.includes(true) && arrowExpressions.length === 0) pendingAwait = true;
+      if (type === types$1._function || type === types$1._class) {
+        if (previous !== types$1.dot && previous !== types$1.questionDot) {
+          functionParenDepths.push(methodParenCandidates.length);
+          pendingFunctionKeyword = true;
+        }
+      } else if (type === types$1.arrow) {
+        pendingArrowBody = true;
+      } else if (type === types$1.parenL) {
+        methodParenCandidates.push(
+          functionBraces.length > 0 && (previous === types$1.name || previous === types$1.string || previous === types$1.num || previous === types$1.bracketR)
+        );
+      } else if (type === types$1.parenR) {
+        pendingMethodBody = methodParenCandidates.pop() === true;
+      } else if (type === types$1.bracketL) {
+        bracketDepth++;
+      } else if (type === types$1.bracketR) {
+        bracketDepth = Math.max(0, bracketDepth - 1);
+      } else if (type === types$1.dollarBraceL) {
+        functionBraces.push(false);
+      } else if (type === types$1.braceL) {
+        const functionBody = pendingArrowBody || pendingMethodBody || functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length;
+        if (functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length) {
+          functionParenDepths.pop();
+        }
+        functionBraces.push(functionBody);
+        pendingArrowBody = false;
+        pendingMethodBody = false;
+      } else if (type === types$1.braceR) {
+        functionBraces.pop();
+      }
+      previousEnd = token.end;
+      previous = type;
+      return false;
+    };
+    return Object.assign(scan, { atEnd: () => pendingAwait });
+  }
+  function walkTopLevelModuleTokens(source, visit, sourceType = "module") {
+    try {
+      const tokens = tokenizer2(source, { ecmaVersion: "latest", sourceType, allowHashBang: true });
+      let braces = 0;
+      let parens = 0;
+      let brackets = 0;
+      let previous = types$1.eof;
+      let ahead = null;
+      for (; ; ) {
+        const token = ahead ?? tokens.getToken();
+        ahead = null;
+        const type = token.type;
+        if (type === types$1.eof) return false;
+        const topLevel = braces === 0 && parens === 0 && brackets === 0;
+        const keyword = previous !== types$1.dot && previous !== types$1.questionDot;
+        previous = type;
+        let syntax = null;
+        if (keyword && topLevel && type === types$1._export) {
+          syntax = "export";
+        } else if (keyword && type === types$1._import) {
+          ahead = tokens.getToken();
+          if (ahead.type === types$1.dot) syntax = "import.meta";
+          else if (topLevel && ahead.type !== types$1.parenL) syntax = "import";
+        } else if (type === types$1.braceL || type === types$1.dollarBraceL) braces++;
+        else if (type === types$1.braceR) braces = Math.max(0, braces - 1);
+        else if (type === types$1.parenL) parens++;
+        else if (type === types$1.parenR) parens = Math.max(0, parens - 1);
+        else if (type === types$1.bracketL) brackets++;
+        else if (type === types$1.bracketR) brackets = Math.max(0, brackets - 1);
+        if (visit(token, syntax, topLevel)) return true;
+      }
+    } catch {
+      return null;
+    }
+  }
   function applySourceEdits(source, edits) {
     const ordered = [...edits].sort((a, b) => a.start - b.start || a.end - b.end);
     const parts = [];
@@ -8605,9 +9419,9 @@ error: the Oxc transform crashed (${reason})`);
     }
   }
   function parenthesisEnd(source, open) {
-    for (let window = 1024; ; window *= 2) {
+    for (let window2 = 1024; ; window2 *= 2) {
       try {
-        const tokens = tokenizer2(source.slice(open, open + window), { ecmaVersion: "latest" });
+        const tokens = tokenizer2(source.slice(open, open + window2), { ecmaVersion: "latest" });
         let depth = 0;
         for (let token = tokens.getToken(); token.type !== types$1.eof; token = tokens.getToken()) {
           if (token.type === types$1.parenL) depth++;
@@ -8616,7 +9430,7 @@ error: the Oxc transform crashed (${reason})`);
       } catch (error) {
         if (!(error instanceof SyntaxError)) throw error;
       }
-      if (open + window >= source.length) return null;
+      if (open + window2 >= source.length) return null;
     }
   }
   var BEFORE_AMBIGUOUS_SLASH = /(?:\}|\+\+|--|(?<![\w$.\\])(?:extends|of|default|yield|await))(?=[\s/])|\.(?=\s|\/[/*])/g;
@@ -9144,6 +9958,33 @@ error: the Oxc transform crashed (${reason})`);
     }
   }
 
+  function vfsPathExtension(path) {
+    const base = path.slice(path.lastIndexOf("/") + 1);
+    const dot = base.lastIndexOf(".");
+    return dot > 0 ? base.slice(dot) : "";
+  }
+
+  function typescriptLoader(path) {
+    const ext = vfsPathExtension(path);
+    if (ext === ".tsx") return "tsx";
+    return ext === ".ts" || ext === ".mts" || ext === ".cts" ? "ts" : null;
+  }
+  function isTypescriptDeclarationFile(path) {
+    return /\.d\.[mc]?ts$/.test(path.slice(path.lastIndexOf("/") + 1));
+  }
+  function stripsTypeScript(path) {
+    return typescriptLoader(path) === "ts" && !isTypescriptDeclarationFile(path);
+  }
+
+  function typeScriptFormat(path, packageType, stripped) {
+    if (!stripsTypeScript(path)) return null;
+    const ext = vfsPathExtension(path);
+    if (ext === ".mts") return "module";
+    if (ext === ".cts") return "commonjs";
+    const type = packageType();
+    if (type !== null) return type;
+    return containsModuleSyntax(stripped()) ? "module" : "commonjs";
+  }
   var ES_MODULE_SCOPE_GLOBAL = "__nimbusEsmScope";
   var ES_MODULE_UNBOUND_NAMES = Object.fromEntries(
     [...COMMONJS_WRAPPER_NAMES].map((name) => [name, `${ES_MODULE_SCOPE_GLOBAL}.${name}`])
@@ -9595,10 +10436,44 @@ error: the Oxc transform crashed (${reason})`);
     return names;
   }
 
+  var amaro = null;
+  async function stripTypeScript(code, filename, { mode, sourceMap }, packageType) {
+    const { transformSync } = await (amaro ??= Promise.resolve().then(() => __toESM(require_dist(), 1)));
+    let output;
+    try {
+      output = transformSync(code, { mode, filename, sourceMap });
+    } catch (error) {
+      const swc = typeof error === "object" && error !== null ? { ...error } : {};
+      const kind = swc.code === "UnsupportedSyntax" ? "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX" : swc.code === "InvalidSyntax" ? "ERR_INVALID_TYPESCRIPT_SYNTAX" : null;
+      if (kind === null) throw error;
+      return {
+        refusal: {
+          code: kind,
+          message: String(Reflect.get(error, "message")),
+          filename: String(swc.filename ?? filename),
+          startLine: Number(swc.startLine ?? 1),
+          snippet: String(swc.snippet ?? "")
+        }
+      };
+    }
+    const format = typeScriptFormat(filename, () => packageType, () => output.code) ?? "commonjs";
+    if (!output.map) return { code: output.code, format };
+    return { code: `${output.code}
+
+//# sourceMappingURL=data:application/json;base64,${base64Utf8(output.map)}`, format };
+  }
+  function base64Utf8(text) {
+    const bytes = new TextEncoder().encode(text);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
+    return btoa(binary);
+  }
+
   Object.assign(globalThis, {
     __nimbusCreateOxcTransform: createOxcTransform,
     __nimbusRewriteDynamicImports: rewriteDynamicImports,
     __nimbusLowerAsyncModule: lowerAsyncModule,
-    __nimbusLowerEsModule: lowerEsModule
+    __nimbusLowerEsModule: lowerEsModule,
+    __nimbusStripTypeScript: stripTypeScript
   });
 })();

@@ -1,5 +1,6 @@
 import { COMMONJS_WRAPPER_NAMES, MODULE_PARSE_OPTIONS, applySourceEdits, containsModuleSyntax, parseStatements } from './javascript-ast.js';
 import { vfsPathExtension } from '../vfs/path.js';
+import { stripsTypeScript } from '../_shared/typescript-specifiers.js';
 /** The "type" a parsed package.json declares. */
 export function packageTypeOf(pkg) {
     const type = typeof pkg === 'object' && pkg !== null && 'type' in pkg ? pkg.type : undefined;
@@ -28,6 +29,24 @@ export function isEsModuleFile(path, source, packageType) {
         return false;
     const type = ext === '.js' || ext === '' ? packageType() : null;
     return type === null ? containsModuleSyntax(source) : type === 'module';
+}
+/** Node 22.22.3's get_format.js for TypeScript; `stripped` is read only for a typeless `.ts`. */
+export function typeScriptFormat(path, packageType, stripped) {
+    if (!stripsTypeScript(path))
+        return null;
+    const ext = vfsPathExtension(path);
+    if (ext === '.mts')
+        return 'module';
+    if (ext === '.cts')
+        return 'commonjs';
+    const type = packageType();
+    if (type !== null)
+        return type;
+    return containsModuleSyntax(stripped()) ? 'module' : 'commonjs';
+}
+/** Node refuses to strip a file under node_modules (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING). */
+export function typeScriptUnderNodeModules(path) {
+    return /(^|\/)node_modules\//.test(path);
 }
 /**
  * Whether Node runs `--eval` code or a program read from stdin as an ES

@@ -10,7 +10,8 @@
  * plugin always runs here, over this service's view.
  */
 import type { Awaitable } from '../vfs/vfs.js';
-import { type ModuleScope } from './module-format.js';
+import { type ModuleScope, type PackageType } from './module-format.js';
+import type { TypeScriptRefusal, TypeScriptStripOptions } from './typescript-strip.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
  * the esbuild plugin's resolver logic, the shared-externals rules, the
@@ -111,6 +112,17 @@ export interface EsbuildTransformOptions {
     dynamicImportParent?: string;
     /** Only the dynamic `import()` rewrite: the code is already CommonJS. */
     rewriteOnly?: boolean;
+    /**
+     * TypeScript Node runs: its types stripped as Node strips them, then as
+     * Node's format for it (by its extension, `packageType`, else its stripped
+     * syntax) an ES module lowered in Node's scope or CommonJS whose import()
+     * is routed (typescript-strip.ts). `sourcefile` names it; dynamicImportParent
+     * and moduleMetadata are read too.
+     */
+    stripTypes?: TypeScriptStripOptions;
+    packageType?: PackageType;
+    /** Only the strip: the stripped code, `esModule` where Node runs it as an ES module. */
+    stripOnly?: true;
     /** Bind compiler-produced import.meta references to the wrapper module. */
     moduleMetadata?: boolean;
     /**
@@ -128,6 +140,8 @@ export interface TransformResult {
         text: string;
         location?: esbuild.Location | null;
     }[];
+    /** Stripped TypeScript Node runs as an ES module, lowered (EsbuildTransformOptions.stripTypes). */
+    esModule?: true;
 }
 /**
  * One emitted output. `bytes` is authoritative (UTF-8 fidelity for the
@@ -187,6 +201,11 @@ export type EsbuildTransformOutcome = TransformResult | {
     error: string;
     transient?: true;
     stackExhausted?: true;
+} | {
+    error: string;
+    typescript: TypeScriptRefusal;
+    transient?: never;
+    stackExhausted?: never;
 };
 /**
  * Runs transforms in another isolate: one call per batch, outcomes positional.
