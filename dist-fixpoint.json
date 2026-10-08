@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "292808db0205e8d19033fac645b4508252d59d64f5a26042c902b87644855d92",
+  "fingerprint": "bf0315d3589f832ccd6087b8d844b55b0804ac221a686dd5a0fa3bdc445e8758",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1594,7 +1594,7 @@
     "packages/fabric/dist/vendor/types.js": "f5f1383fd44a6abf7e0de84a446985ec01753feeb915ed8ed77301ea781f0fb1",
     "packages/fabric/dist/workerd-facet-host.d.ts": "274760eca951f709916b693380f62f70ad7ab9902737ce3fc4f0e7f8aaf7df27",
     "packages/fabric/dist/workerd-facet-host.d.ts.map": "7e065b851c91311231cfc02e23a7d4316a7fef7bbe8a8a124f8669f97fd1df4e",
-    "packages/fabric/dist/workerd-facet-host.js": "8898f103291b74bfebdf02724a939c888cb7839b10859660b01173fba360b487",
+    "packages/fabric/dist/workerd-facet-host.js": "34d9e6afa46bf935675c1c5cf22f03900379806ff9414e631c3ace5354a900d7",
     "packages/fabric/dist/ws-hibernation-config.d.ts": "f4f46ad8000086411e22775316587bf59af6cd4a9f0cc7cf2827583241ea2e38",
     "packages/fabric/dist/ws-hibernation-config.d.ts.map": "4da1c81bba56a210d85b937137c6215d24c0e0259b912e56dacea1ebe9bcec5a",
     "packages/fabric/dist/ws-hibernation-config.js": "0f6d330d5581a10c888f38100de2650f9c3fde59948bc5977db12998e02fbfc0",
@@ -1631,7 +1631,7 @@
     "packages/fabric/src/vendor/errors.ts": "012d824fa8854a47e1864af42595b729e5348635dd0965d28d8aaed04efa6434",
     "packages/fabric/src/vendor/serialize.ts": "b3cfef2f4c718fc87dfe7a9947f335cd00fe5d3465adc56f18954c06312fa8bd",
     "packages/fabric/src/vendor/types.ts": "e69ab29a503adf60fd7965d5391e7cc9a03934ecc6b407f14841833e29b76d77",
-    "packages/fabric/src/workerd-facet-host.ts": "dbc77c1dc85667693f32860a570d2ae047901a4287797a22115709106a199cd6",
+    "packages/fabric/src/workerd-facet-host.ts": "b9d94cdc49761b83c0da23718ed0f02961c151e8c1391054de6f164351c984f1",
     "packages/fabric/src/ws-hibernation-config.ts": "a1fab741b4e6dc6427ddb36f147156bcbc94d9aef8803d81b174b7d7e8d2a299",
     "packages/fabric/tsconfig.json": "ef97ba24f45ec9f5fc663b1cb11bcedce7dec30b65fc76bed8b0d11bf9411a7f",
     "packages/loom/LICENSE": "9abf902a70f15256b6d108767fc510341854ec2297e3874c5bc6df496a895617",
