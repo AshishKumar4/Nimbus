@@ -50,7 +50,7 @@ await new Promise((resolve) => server.once('listening', resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
 
 try {
-  for (const dir of ['tests/behavioral', 'apps/probe', 'apps/hosted-demo', '.wrangler/throwaway-targets']) mkdirSync(join(root, dir), { recursive: true });
+  for (const dir of ['tests/behavioral', 'apps/probe', 'apps/hosted-demo', '.wrangler/throwaway-targets', 'tmp']) mkdirSync(join(root, dir), { recursive: true });
   for (const file of ['_throwaway-target.mjs', '_deploy-target.mjs']) copyFileSync(join(REPO, 'tests/behavioral', file), join(root, 'tests/behavioral', file));
   for (const file of ['_driver.mjs', '_mint-probe-token.mjs', '_ledger.mjs']) symlinkSync(join(REPO, 'tests/behavioral', file), join(root, 'tests/behavioral', file));
   for (const dir of ['scripts', 'packages', 'node_modules', 'apps/probe/node_modules', 'apps/hosted-demo/node_modules']) symlinkSync(join(REPO, dir), join(root, dir));
@@ -73,7 +73,7 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     const child = spawn(process.execPath, ['drive.mjs', 'down', '--name', NAME], {
       cwd: root,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: ACCOUNT, CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_API_BASE_URL: origin + '/client/v4', XDG_STATE_HOME: join(root, 'state'), WRANGLER_SEND_METRICS: 'false' },
+      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: ACCOUNT, CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_API_BASE_URL: origin + '/client/v4', XDG_STATE_HOME: join(root, 'state'), TMPDIR: join(root, 'tmp'), WRANGLER_SEND_METRICS: 'false' },
     });
     let output = '';
     child.stdout.on('data', (chunk) => { output += chunk; });
