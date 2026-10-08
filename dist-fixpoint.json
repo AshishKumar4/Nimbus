@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "6948f71f71d8a7d61e2d0c729ce0d030ff5a7ec9a8d1c307caf2efe9437a818b",
+  "fingerprint": "7ae1a5db4d66695afebf8fc9c72da29ee8c827bc23bfd3b27e459df0f37e111c",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2324,8 +2324,8 @@
     "packages/worker/dist/session/loopback.d.ts.map": "aef77b23656e3a298ae3968473c965ca529f6b963f0a5657ba765fe63655a096",
     "packages/worker/dist/session/loopback.js": "fc9fbe233093362910048bdd6bcdfd2807cd091c53e318b076577b1c8fbc2056",
     "packages/worker/dist/session/nimbus-session.d.ts": "d6fde05d49c079b6a342b14c4748fb42b95a26f8ab3122f5bb7d1cb00cc72dc1",
-    "packages/worker/dist/session/nimbus-session.d.ts.map": "bb5f3634c69fb0869eba03d9c2fca226785ae176b21b16e11eae719e021f2b1f",
-    "packages/worker/dist/session/nimbus-session.js": "0eb5080d7a4633a76d423e43fa71d69325473c0b689e4e9a370e38b1726f4253",
+    "packages/worker/dist/session/nimbus-session.d.ts.map": "8e0c880f85406c56421cafb9758dd681924617bc89945e39935a16342091323d",
+    "packages/worker/dist/session/nimbus-session.js": "527d131d826bf5cb895e7d4b54e07d03c6a7bd004ff73443f7d5614767bc79fe",
     "packages/worker/dist/session/npm-install-port.d.ts": "8b783b3cd8c9b637895583a2f652065486a90f9292ad45b27e382722f8f67e5d",
     "packages/worker/dist/session/npm-install-port.d.ts.map": "7d42d35292d46524968317c941c00fd1cb81eaae4b5ff0dd7d070b59eebe4df6",
     "packages/worker/dist/session/npm-install-port.js": "5cd984d2bb64978e9d055f7dc400ee195994371dfd21a4a9d3b938716d713932",
@@ -2733,7 +2733,7 @@
     "packages/worker/src/session/keys.ts": "d91b78af90718783dfb2ab0d2af0b6273d2e1e874be2571d964ea9fb90920e7d",
     "packages/worker/src/session/legacy-reset.ts": "c854721d5de634c8a94549ec7ac15b8bf76c2f5aed55bbc3ae65736f9e90a6e8",
     "packages/worker/src/session/loopback.ts": "7fae20a125be3c8674ba21841e6b3ef87c80eeef3c3bc363202420d2e557b3c1",
-    "packages/worker/src/session/nimbus-session.ts": "e605df15d97174347f9e0eb826d2606972557d950d01f9e7ea5d954591170879",
+    "packages/worker/src/session/nimbus-session.ts": "6022bd26f034d6da11d64483d6924b5f23cd74b4fc73ed037a91b9609114f92e",
     "packages/worker/src/session/npm-install-port.ts": "264dba1ac5b738d7b3d94ac45ee5419994677f3b67272dcb789e4234750625db",
     "packages/worker/src/session/port-capability.ts": "a4f5ecdd0e8c436279cf2b2787a45ad031d3e9466de8aa64d742635fcbeae246",
     "packages/worker/src/session/process-journals.ts": "51f952d414c60aee166ad77c8838ba911e32764972a3ebecf7890a892b8e2ca6",
