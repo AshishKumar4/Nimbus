@@ -71,6 +71,8 @@ export interface EsmResolver {
         type: 'module' | 'commonjs' | 'none';
     };
 }
+/** Node's ERR_UNKNOWN_FILE_EXTENSION message for the file at `path`. */
+export declare function unknownFileExtensionMessage(path: string): string;
 /** What a resolver is created with beyond its host. */
 export interface EsmResolverOptions {
     /** The program's own conditions (`node --conditions`, `-C`, NODE_OPTIONS'), beside Node's defaults. */

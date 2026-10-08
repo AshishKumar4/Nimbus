@@ -12644,10 +12644,14 @@ function __requireFrom(id, fromDir, required = true) {
 
   const resolved = __resolveFrom(id, fromDir);
   if (!resolved) throw new Error("Cannot find module '" + id + "' (from " + fromDir + ")");
-  // An ES module's static import is the ES loader's.
+  // An ES module's static import is the ES loader's, which refuses it before the importer runs: no arrow of the importer's.
   if (!required && __nimbusTypeScriptAsJavaScript && stripsTypeScript(resolved)) {
-    const path = "/" + String(resolved).replace(/^\\/+/, "");
-    throw __nimbusGeneratedNodeError(TypeError, "ERR_UNKNOWN_FILE_EXTENSION", 'Unknown file extension "' + path.slice(path.lastIndexOf(".")) + '" for ' + path, undefined, null);
+    try {
+      __esmResolver.assertLoadable({ format: "unknown", path: "/" + String(resolved).replace(/^\\/+/, "") });
+    } catch (error) {
+      __nimbusDecorated.add(error);
+      throw error;
+    }
   }
   return __loadModule(resolved, resolved, required);
 }

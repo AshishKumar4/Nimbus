@@ -21,6 +21,12 @@
  * self-contained function: nothing inside may refer to this module.
  */
 import { invalidArgType, nodeError } from './node-error.js';
+/** Node's ERR_UNKNOWN_FILE_EXTENSION message for the file at `path`. */
+export function unknownFileExtensionMessage(path) {
+    const base = path.slice(path.lastIndexOf('/') + 1);
+    const dot = base.lastIndexOf('.');
+    return `Unknown file extension "${dot > 0 ? base.slice(dot) : ''}" for ${path}`;
+}
 export function createEsmResolver(host, options = {}) {
     const conditions = new Set(['node', 'import', 'module-sync', ...(options.conditions ?? [])]);
     // The host's questions, each yielded as-is and typed by what it answers.
@@ -543,9 +549,7 @@ export function createEsmResolver(host, options = {}) {
         assertLoadable({ format, path }) {
             if (format !== 'unknown' || path === undefined)
                 return;
-            const base = path.slice(path.lastIndexOf('/') + 1);
-            const dot = base.lastIndexOf('.');
-            throw nodeError(TypeError, 'ERR_UNKNOWN_FILE_EXTENSION', `Unknown file extension "${dot > 0 ? base.slice(dot) : ''}" for ${path}`);
+            throw nodeError(TypeError, 'ERR_UNKNOWN_FILE_EXTENSION', unknownFileExtensionMessage(path));
         },
         validateAttributes(url, format, attributes) {
             for (const key of Object.keys(attributes)) {
