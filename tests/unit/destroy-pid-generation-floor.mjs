@@ -21,7 +21,7 @@
 // setter, because the setter is not the contract — the refusal is.
 
 import assert from 'node:assert/strict';
-import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
+import { rpcDestroy, sessionProcesses } from '../../packages/worker/src/session/programmatic.ts';
 import { _rpcStdout, _rpcReportExit, PRIOR_GENERATION_EXIT_REASON }
   from '../../packages/worker/src/session/rpc.ts';
 import { SessionProcessSupervisor }
@@ -136,5 +136,33 @@ await _rpcStdout(host, fresh.pid, new TextEncoder().encode('hello\n'));
 const freshLogs = host.processes.tailLogs(fresh.pid, { lines: 10 });
 assert.equal(freshLogs.length, 1, 'current-generation output is still buffered');
 assert.equal(freshLogs[0].data, 'hello\n');
+
+// ── Pids never repeat through a destroy and a recreate ──────────────────
+// The session's supervisor is made by sessionProcesses, as the DO's is: a
+// pid minted into the next stride raises the persisted generation to it.
+// Destroy keeps that floor (not the generation it booted as), and the
+// supervisor it installs is wired the same way. Red before: the destroy
+// re-persisted the booted generation over the raise, its replacement
+// supervisor raised nothing, and the next boot's range held pids already
+// minted.
+{
+  const { host, storage } = makeHost();
+  host.processes = sessionProcesses(host.ctx);
+  host.processes.setPidBase((GEN + 1) * PID_GEN_STRIDE - 2);
+  const minted = [];
+  for (let i = 0; i < 4; i++) minted.push(host.processes.spawn('sh', [], '/home/user').pid);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(storage.get(GENERATION_KEY), GEN + 1, 'minting into the next stride raised nothing');
+  await rpcDestroy(host, { reason: 'test' });
+  assert.ok(host.processes.pidBase >= Math.max(...minted), `the post-destroy floor ${host.processes.pidBase} is not past the last pid ${Math.max(...minted)}`);
+  // The replacement supervisor raises too, near the end of its own range.
+  host.processes.setPidBase(host.processes.pidBase + PID_GEN_STRIDE - 2);
+  for (let i = 0; i < 4; i++) minted.push(host.processes.spawn('sh', [], '/home/user').pid);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // The recreated session's next boot starts past every pid either supervisor minted.
+  await adoptGeneration(host.ctx);
+  assert.ok(generation(host.ctx) * PID_GEN_STRIDE >= Math.max(...minted),
+    `the recreated session's base ${generation(host.ctx) * PID_GEN_STRIDE} is not past the last pid ${Math.max(...minted)}`);
+}
 
 console.log('destroy-pid-generation-floor: OK');

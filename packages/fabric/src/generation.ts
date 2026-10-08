@@ -86,6 +86,12 @@ export function raiseGeneration(ctx: GenerationContext, stride: number): Promise
   });
 }
 
+/** What the next incarnation must start past: this one's generation, or the stride its pids reached (raiseGeneration). */
+export function generationFloor(ctx: object): number {
+  const state = states.get(ctx);
+  return Math.max(state?.value ?? 0, state?.raised ?? 0);
+}
+
 /** Increment + persist the generation counter once per fresh isolate. */
 export async function adoptGeneration(ctx: GenerationContext): Promise<void> {
   const state = stateOf(ctx);

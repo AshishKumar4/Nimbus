@@ -32,7 +32,7 @@ import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/
 import { isPreviewHostSafeSid, previewHostUrl, readPreviewHostSuffix } from '../_shared/preview-host.js';
 import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy, SpawnedWorker } from '../facets/manager.js';
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
-import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
+import { GENERATION_KEY, assumeGeneration, generationFloor, raiseGeneration, type GenerationContext } from '@nimbus-sh/fabric/generation.js';
 import { timers, type TimerHost } from '@nimbus-sh/fabric/timers.js';
 import { parseShellState, type NamedShell, type NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
@@ -1395,7 +1395,8 @@ export async function rpcDestroy(
     // straggler facet from a HIGHER pre-destroy generation would classify as
     // current-generation (pid > pidBase) — landing its output on the
     // destroyed/recreated session. Keep {tombstone, isolateGen} consistent.
-    try { await self.ctx.storage.put(GENERATION_KEY, generation(self.ctx)); } catch { /* best-effort */ }
+    // The floor, not the generation: a stride this incarnation's pids reached (raiseGeneration) was wiped too.
+    try { await self.ctx.storage.put(GENERATION_KEY, generationFloor(self.ctx)); } catch { /* best-effort */ }
 
     resetInMemorySessionState(self);
     destroyed = true;
@@ -1424,7 +1425,18 @@ async function quiesceInMemorySessionState(self: ProgrammaticHost): Promise<void
  * so `adoptGeneration` reads it back and bumps once — landing here.
  */
 function successorGeneration(self: ProgrammaticHost): number {
-  return generation(self.ctx) + 1;
+  return generationFloor(self.ctx) + 1;
+}
+
+/**
+ * A session's process supervisor: the one way one is made, so each is
+ * wired to raise the persisted generation when its pids reach the next
+ * stride (pids never repeat across incarnations).
+ */
+export function sessionProcesses(ctx: GenerationContext): SessionProcessSupervisor {
+  const processes = new SessionProcessSupervisor();
+  processes.onPidStride((stride) => { void raiseGeneration(ctx, stride); });
+  return processes;
 }
 
 /**
@@ -1443,7 +1455,7 @@ function successorGeneration(self: ProgrammaticHost): number {
  * same set for the rest of its life, so it takes the same floor.
  */
 function installEmptyProcessState(self: ProgrammaticHost, generation: number): void {
-  self.processes = new SessionProcessSupervisor();
+  self.processes = sessionProcesses(self.ctx);
   self.processes.setPidBase(generation * PID_GEN_STRIDE);
   self.portRegistry = new PortRegistry((pid) => _acquireForRoutedRequest(self, pid));
   self._w9PersistWired = false;
