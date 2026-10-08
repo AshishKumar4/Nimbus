@@ -206,13 +206,17 @@ console.log('  [6] only the destroy result confirms a deletion');
 
   const refused = await probe('refused', 'await mintSession();', { plan: [500] });
   assert.equal(refused.deletes.length, 1, 'another failure is the verdict, not retried');
-  // Retry-After itself: delay-seconds, or an HTTP-date from now; nothing else.
+  // Retry-After itself: delay-seconds, or an IMF-fixdate from now; nothing else.
   const now = Date.parse('2026-10-08T00:00:00Z');
   assert.equal(retryAfterMs('5', now), 5000);
   assert.equal(retryAfterMs(' 0 ', now), 0);
   assert.equal(retryAfterMs('Thu, 08 Oct 2026 00:00:03 GMT', now), 3000);
   assert.equal(retryAfterMs('Wed, 07 Oct 2026 23:59:00 GMT', now), 0, 'a date past is no wait');
-  for (const bad of [null, '', '  ', '1.5', '-1', 'soon']) assert.equal(retryAfterMs(bad, now), null, `ignored: ${JSON.stringify(bad)}`);
+  // Text Date.parse accepts but HTTP doesn't, or the obsolete forms: the default, never an immediate retry.
+  for (const bad of [null, '', '  ', '1.5', '-1', 'soon', 'Jan 1 2000', '2026-10-08T00:00:03Z',
+    'Thursday, 08-Oct-26 00:00:03 GMT', 'Thu Oct  8 00:00:03 2026', 'Thu, 08 Oct 2026 00:00:03 +0000']) {
+    assert.equal(retryAfterMs(bad, now), null, `ignored: ${JSON.stringify(bad)}`);
+  }
   console.log('  [8] a 503 at exit is tried again, after Retry-After, at most 4 times; a leak only if every try fails');
 }
 
