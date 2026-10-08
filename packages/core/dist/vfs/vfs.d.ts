@@ -165,8 +165,15 @@ export interface VFS {
     /** Exactly that version, or a refusal; never the current file in its place. */
     readFileAtRevision?(path: string, revision: VfsRevision, range?: VfsRange): Awaitable<Uint8Array>;
     open?(path: string, flags: VfsOpenFlags): Awaitable<VfsHandle>;
-    /** This backend as another principal (`actor` names it finer than its uid). Absent: the backend has one identity. */
-    as?(cred: VfsCred, actor?: string): VFS;
+    /**
+     * This backend as another principal (`actor` names it finer than its uid).
+     * `options.holds`: the delegations the principal's process holds, asked at
+     * each call (its own lookups recall none of them). Absent: the backend has
+     * one identity.
+     */
+    as?(cred: VfsCred, actor?: string, options?: {
+        holds?: () => ReadonlySet<string>;
+    }): VFS;
     /**
      * Every mutation that lands on this backend, whoever made it, with what
      * it replaced (VfsWriteEvent); the returned function stops the reports.

@@ -4139,7 +4139,12 @@ export class SqliteVFS {
                             this.checkAccess(parent, 0o1, cred);
                         parentReachable = true;
                     }
-                    catch {
+                    catch (error) {
+                        // Another holder's delegation is recalled, never taken for a
+                        // directory the caller cannot reach: its names would be omitted
+                        // as absent while that holder may still be sending them.
+                        if (error instanceof RecallRequired)
+                            throw error;
                         parentReachable = false;
                     }
                 }

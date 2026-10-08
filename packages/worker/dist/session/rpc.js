@@ -39,6 +39,7 @@ import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { residentFacetOf } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { readHydrating } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { headerPairs, isolateToken, } from '@nimbus-sh/fabric/process-host.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '@nimbus-sh/platform/oom-discriminator.js';
@@ -569,7 +570,8 @@ export function _acquireForRoutedRequest(self, pid) {
  */
 export async function _rpcFsList(self, after, limit, pid) {
     const args = FsListArgsSchema.parse({ after: after ?? null, limit: limit ?? null });
-    return self.supervisorBridge(pid).list(args.after, args.limit ?? undefined);
+    // A page that reaches another holder's delegation waits for its recall, and is read again.
+    return withRecall(() => self.supervisorBridge(pid).list(args.after, args.limit ?? undefined));
 }
 export async function _rpcFsReadRange(self, path, offset, length, pid, cred) {
     return self.supervisorOp({ op: 'fsReadRange', args: [path, offset, length], pid, cred });

@@ -505,9 +505,10 @@ export class ProcessFiles {
         // reaches a backend, after the lookups it awaited: a write still
         // resolving when the process is released or killed, or its lease is
         // disposed, does not land.
-        const view = this.vfs.as(cred).scoped(() => assertScopeLive(scope, signal));
-        // A process's calls are made by the delegations it holds: its own lookups recall none of them.
+        // A process's calls are made by the delegations it holds: its own lookups
+        // recall none of them, on SQLite and through the namespace alike.
         const holds = pid === undefined ? undefined : () => this.delegations.heldBy(pid);
+        const view = this.vfs.as(cred).scoped(() => assertScopeLive(scope, signal), undefined, holds);
         const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds }), this.engine, scope, view, this.bufferedWriteBytes);
         const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations);
         // Every other method forwards to the guarded bridge.
