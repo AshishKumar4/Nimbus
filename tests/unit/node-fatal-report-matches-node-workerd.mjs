@@ -59,7 +59,7 @@ const FILES = {
   'input.js': 'throw new Error("in")\n',
 };
 const COMMANDS = [
-  'node sync.cjs', 'node rej.cjs', 'node rejstr.cjs', 'node rejundef.cjs', 'node rejobj.cjs', 'node timer.cjs',
+  'node sync.cjs', 'node rej.cjs', 'node rejstr.cjs', 'node rejundef.cjs', 'node rejobj.cjs', 'node rejproxy.cjs', 'node timer.cjs',
   'node handler.cjs', 'node exitcode.cjs', 'node handled.cjs', 'node rejhandled.cjs', 'node cause.cjs',
   'node minified.cjs', 'node noname.cjs', 'node tab.cjs', 'node uni.cjs', 'node multi.cjs', 'node fnthrow.cjs',
   'node this.cjs', 'node bad.cjs', 'node req.cjs', 'node code3.cjs', 'node code4.cjs',
