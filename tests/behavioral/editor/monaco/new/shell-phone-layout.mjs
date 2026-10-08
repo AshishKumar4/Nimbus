@@ -146,6 +146,7 @@ process.stdin.on('data', (chunk) => {
   if (text.includes('q')) process.exit(0);
   input += text;
   process.stdout.write('INPUT ' + input.replace(/\\r/g, '<CR>').replace(/\\n/g, '<LF>') + '\\r\\n');
+  if (text.includes('\\r') || text.includes('\\n')) input = '';
 });
 setInterval(() => {}, 1000);`;
   const files = {
