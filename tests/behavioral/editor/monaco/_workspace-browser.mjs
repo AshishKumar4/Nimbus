@@ -17,7 +17,8 @@ function workspaceInPage(surface) {
     terminal: box(document.querySelector('.panel-terminal')), preview: pane('previewPanel'),
     editorButton: button('btnEditor'), agentButton: button('btnAgent'),
     tab: document.getElementById('editorTab').textContent,
-    editorReady: !!window.__nimbusMonacoEditor && !!document.querySelector('.monaco-editor .view-lines'),
+    editorReady: !!window.__nimbusMonacoEditor && !!document.querySelector('.monaco-editor .view-lines')
+      && !document.getElementById('editorTab').classList.contains('editor-tab-empty'),
     agentReady: document.querySelector('#agentPanel .agent-title')?.textContent === 'Nimbus Agent'
       && !!document.getElementById('agentStatus')?.textContent && document.getElementById('agentStatus').textContent !== 'Checking...',
     connected: document.getElementById('statusDot').classList.contains('connected'),
