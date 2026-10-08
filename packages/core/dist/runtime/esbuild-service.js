@@ -18,6 +18,7 @@ import { bundlerConditions, createBundlerResolver } from './bundler-resolution.j
 import { lowerAsyncModule, lowerEsModule } from './async-module-lowering.js';
 import { ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs } from './module-format.js';
 import { rewriteProvidedCommonJsModules } from './provided-packages.js';
+import { withRecall } from '../vfs/recall.js';
 import { VITE_ASSET_QUERY_SUFFIXES, splitImportQuery, viteAssetLoader, } from './vite-assets.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
@@ -718,7 +719,16 @@ export class EsbuildService {
      * and — with `viteAssets` — Vite's asset/`?suffix` import semantics.
      */
     makeVfsPlugin(opts) {
-        const vfs = opts?.fs ?? this.requireVfs();
+        const project = opts?.fs ?? this.requireVfs();
+        // A build reads a project a process may be writing: each read waits for a
+        // delegation it meets to be recalled (withRecall), so a held file is read
+        // as its holder decided it, never taken for one that is not there.
+        const vfs = {
+            exists: (path) => withRecall(() => project.exists(path)),
+            isDirectory: (path) => withRecall(() => project.isDirectory(path)),
+            readFile: (path) => withRecall(() => project.readFile(path)),
+            readFileString: (path) => withRecall(() => project.readFileString(path)),
+        };
         const resolver = createBundlerResolver({
             isFile: async (path) => await vfs.exists(stripLeadingSlashes(path)) && !await vfs.isDirectory(stripLeadingSlashes(path)),
             isDirectory: async (path) => await vfs.exists(stripLeadingSlashes(path)) && await vfs.isDirectory(stripLeadingSlashes(path)),
