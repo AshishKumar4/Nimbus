@@ -521,7 +521,7 @@ export class ProcessFiles {
         // disposed, does not land.
         // A process's calls are made by the delegations it holds: its own lookups
         // recall none of them, on SQLite and through the namespace alike.
-        const holds = pid === undefined ? undefined : () => this.delegations.heldBy(pid);
+        const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid, scope);
         const view = this.vfs.as(cred).scoped(() => assertScopeLive(scope, signal), undefined, holds);
         const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds }), this.engine, scope, view, this.bufferedWriteBytes);
         const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations);

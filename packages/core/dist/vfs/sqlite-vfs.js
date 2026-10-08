@@ -7668,8 +7668,11 @@ export class SqliteVFS {
         }
     }
     writeStream(stream, options = {}, cred, origin = null) {
-        // The delegations its caller holds, read now, in the caller's turn: its records apply as them.
-        const holds = options.mutationOwner !== undefined ? new Set([options.mutationOwner, ...(this.activeHolds ?? [])]) : this.activeHolds;
+        // The delegations its caller holds, in the caller's turn: its records apply as them. A process's
+        // own set is live (one it takes meanwhile is its own too), and holds the lease it writes under.
+        const caller = this.activeHolds;
+        const owner = options.mutationOwner;
+        const holds = owner !== undefined && caller?.has(owner) !== true ? new Set([owner, ...(caller ?? [])]) : caller;
         return this.spanning(() => this.consumeStream(stream, options, cred, origin, holds), options.mutationOwner);
     }
     /**
@@ -7916,7 +7919,8 @@ export class SqliteVFS {
         // A delegation's holder's wave: the names it made are owned as the caller's.
         const delegatedWave = options.mutationOwner !== undefined && (this.exclusiveMutationLeases.get(options.mutationOwner)?.delegation ?? null) !== null;
         // Each group commits in its own turn, as the stream's caller (its lease, its principal).
-        const asCaller = (fn) => this.asOrigin(origin, () => this.withMutationOwner(options.mutationOwner, fn));
+        // As the stream's caller: its origin, the lease it writes under, and the delegations it holds.
+        const asCaller = (fn) => this.asOrigin(origin, () => this.withMutationOwner(options.mutationOwner, () => this.withHolds(holds, fn)));
         const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();
         const decodeDrainToken = {};
         this._decodeDrainStarts.set(decodeDrainToken, decodeDrainStartedAt);

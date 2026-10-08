@@ -140,6 +140,14 @@ export declare class Delegations {
     holds(pid: number, owner: string): boolean;
     /** The leases of every delegation `pid` holds: what its own calls are made by. */
     heldBy(pid: number): ReadonlySet<string>;
+    /**
+     * The leases process `pid` holds, as one set for as long as its `scope`
+     * lives: a call that began before it took one (a wave in flight when its
+     * read lease is granted) is made by that one too.
+     */
+    holdsOf(pid: number, scope: {
+        readonly subscriptions: Set<() => void>;
+    }): Set<string>;
     get size(): number;
     stats(): DelegationStats;
     private recall;
