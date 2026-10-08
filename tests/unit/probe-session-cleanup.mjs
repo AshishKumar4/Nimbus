@@ -17,7 +17,7 @@ let minted = 0;
 let deletes = [];
 let deleteStatus = 200;
 let deleteShape = 'destroy';
-/** Statuses for the next DELETEs, in order, before deleteStatus applies; a 503 carries deleteRetryAfter. */
+/** Statuses for the next DELETEs, in order, before deleteStatus applies; a 503 carries deleteRetryAfter (null: no header). */
 let deletePlan = [];
 let deleteRetryAfter = '0';
 let deleteTimes = [];
@@ -40,7 +40,7 @@ const target = Bun.serve({
       deleteTimes.push(Date.now());
       const planned = deletePlan.shift();
       if (planned === 503) {
-        return Response.json({ ok: false, error: 'Durable Object is overloaded.', code: 'E_NIMBUS_DO_OVERLOADED' }, { status: 503, headers: { 'Retry-After': deleteRetryAfter } });
+        return Response.json({ ok: false, error: 'Durable Object is overloaded.', code: 'E_NIMBUS_DO_OVERLOADED' }, { status: 503, headers: deleteRetryAfter === null ? {} : { 'Retry-After': deleteRetryAfter } });
       }
       if (planned !== undefined) return Response.json({ ok: false, error: 'boom' }, { status: planned });
       if (deleteShape === 'html') return new Response('<html>session shell</html>', { status: deleteStatus, headers: { 'content-type': 'text/html' } });
@@ -183,6 +183,21 @@ console.log('  [6] only the destroy result confirms a deletion');
   const waited = await probe('busy-retry-after', 'await mintSession();', { plan: [503], retryAfter: '1' });
   assert.equal(waited.events.at(-1), 'exit-delete fixture-1 200');
   assert.ok(deleteTimes[1] - deleteTimes[0] >= 900, `Retry-After: 1 is waited out (${deleteTimes[1] - deleteTimes[0]} ms)`);
+
+  // No Retry-After at all: the 1 s default, not an immediate retry (a missing
+  // header once read as 0 and spent every try at once).
+  const bare = await probe('busy-no-retry-after', 'await mintSession();', { plan: [503, 503], retryAfter: null });
+  assert.equal(bare.events.at(-1), 'exit-delete fixture-1 200');
+  assert.equal(deleteTimes.length, 3);
+  for (let i = 1; i < deleteTimes.length; i++) {
+    assert.ok(deleteTimes[i] - deleteTimes[i - 1] >= 900, `no Retry-After waits the 1 s default (try ${i + 1} after ${deleteTimes[i] - deleteTimes[i - 1]} ms)`);
+  }
+
+  // An HTTP-date is waited out until that moment (it has whole seconds, so 1-2 s from now).
+  const dated = await probe('busy-retry-after-date', 'await mintSession();', { plan: [503], retryAfter: new Date(Date.now() + 2000).toUTCString() });
+  assert.equal(dated.events.at(-1), 'exit-delete fixture-1 200');
+  const datedGap = deleteTimes[1] - deleteTimes[0];
+  assert.ok(datedGap >= 700 && datedGap < 4000, `Retry-After as an HTTP-date is waited out (${datedGap} ms)`);
 
   const stuck = await probe('busy-throughout', 'await mintSession();', { plan: [503, 503, 503, 503, 503, 503] });
   assert.equal(stuck.deletes.length, 4, 'at most 4 tries');

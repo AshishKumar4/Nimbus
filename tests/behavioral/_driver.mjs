@@ -200,8 +200,12 @@ const DELETE_SESSIONS = `
         const result = await deletionResult(response);
         last = { status: result.status, confirmed: result.ok, attempts: attempt };
         if (response.status !== 503) return last;
-        const after = Number(response.headers.get('retry-after'));
-        if (Number.isFinite(after) && after >= 0) waitMs = after * 1000;
+        // Retry-After is delay-seconds or an HTTP-date (RFC 9110 §10.2.3); an
+        // absent, empty or malformed one leaves the 1 s default.
+        const after = (response.headers.get('retry-after') ?? '').trim();
+        const afterMs = /^\\d+$/.test(after) ? Number(after) * 1000
+          : /[A-Za-z]{3}/.test(after) ? Date.parse(after) - Date.now() : NaN;
+        if (Number.isFinite(afterMs)) waitMs = Math.max(0, afterMs);
       } catch (error) {
         last = { status: 'error: ' + error.message, confirmed: false, attempts: attempt };
       }
