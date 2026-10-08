@@ -1282,13 +1282,17 @@ export class Shell {
     this.terminal.write(COMMAND_START);
     let status: number | null = null;
     try {
-      await this.historyManager.add(actualLine);
+      // Saved as the command runs, and by the time it ends: a reader's recall
+      // the save waits on (core README, process model) costs the line nothing.
+      const saved = this.historyManager.add(actualLine);
+      saved.catch(() => {});
       status = await this.interpreter.executeLine(actualLine, this.terminalStdin, {
         interactive: true,
         commandIdentity: this.resolveCommandIdentity(undefined),
         runAs: this.commandIdentity.runAs,
         signal: this.abortController.signal,
       });
+      await saved;
     } finally {
       this.terminalStdin?.close();
       this.terminalStdin = null;
