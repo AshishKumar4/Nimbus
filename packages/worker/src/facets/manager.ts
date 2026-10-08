@@ -157,6 +157,7 @@ import {
   type ResidentCodeSpec,
   type ResidentDiskReader,
   type StartContract,
+  type Supervise,
 } from '@nimbus-sh/fabric/process-fabric.js';
 import {
   createLoadedWorkerEntrypoint,
@@ -4772,6 +4773,11 @@ export interface FacetManagerHooks {
    */
   network?: () => WorkspaceNetwork;
   /**
+   * The host's own SUPERVISOR for a one-shot (Supervise), handed to it with
+   * the call that runs it. Absent, each gets its binding.
+   */
+  supervise?: Supervise;
+  /**
    * Fired when a process was terminated OUTSIDE the facet's own try/
    * finally (timeout via abort, explicit kill, etc.) — the facet never
    * runs its own `reportExit`, so the session side won't hear about the
@@ -5355,7 +5361,7 @@ export class FacetManager {
     this.hooks = hooks;
     // The workspace's network (FacetManagerHooks.network); a manager no workspace composed uses the isolate's.
     this.network = hooks.network ?? (() => ISOLATE_NETWORK);
-    this.processHost = host(ctx, env, () => this._residentDisk(), this.network);
+    this.processHost = host(ctx, env, () => this._residentDisk(), this.network, hooks.supervise);
     this.processJournals = new ProcessJournals(() => (this.ctx.storage as { sql?: SqlStorage }).sql);
     // Every resident logs its changes in its facet's store: the session
     // books the store when it opens, and drains it when the process is
