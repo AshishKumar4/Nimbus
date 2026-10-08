@@ -196,8 +196,19 @@ class ThrowFinder extends AcornParserClass {
     // The token a syntax error is at, as V8 marks it: the parser's current or
     // last token where one starts there (a reserved word is raised past it).
     raisedToken = null;
+    // The binding a declarator just parsed, which V8 marks where its initializer is missing.
+    declared = null;
+    parseVarId(decl, kind) {
+        this.declared = null;
+        super.parseVarId(decl, kind);
+        this.declared = { start: decl.id.start, end: decl.id.end, required: kind === 'const' || decl.id.type !== 'Identifier' };
+    }
     raise(pos, message) {
-        this.raisedToken = pos === this.start ? [pos, this.end] : pos === this.lastTokStart ? [pos, this.lastTokEnd] : null;
+        const declared = this.declared;
+        const missingInitializer = declared !== null && declared.required && declared.end === this.lastTokEnd
+            && this.type !== tokTypes.eq && (pos === this.start || pos === this.lastTokEnd);
+        this.raisedToken = missingInitializer ? [declared.start, declared.end]
+            : pos === this.start ? [pos, this.end] : pos === this.lastTokStart ? [pos, this.lastTokEnd] : null;
         return super.raise(pos, message);
     }
     // acorn's is its raise, not a call of it.

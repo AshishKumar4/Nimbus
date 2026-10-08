@@ -25,9 +25,9 @@ export const JS_INTERPRETER_PRIMORDIALS_ENTRY = "/_assets/runtime/js-interpreter
 export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID = "e620a61b7e9800fa";
 export const JS_INTERPRETER_PRIMORDIALS_SHA256 = "e620a61b7e9800fad31b82c28fe64bd149c0518dc8c614e512b88dc200096f48";
 /** @nimbus-sh/core src/interpreter, bundled by scripts/interpreter-bundle.mjs */
-export const JS_INTERPRETER_ENTRY = "/_assets/runtime/js-interpreter-cb493dd74fc91af5.js";
-export const JS_INTERPRETER_BUILD_ID = "cb493dd74fc91af5";
-export const JS_INTERPRETER_SHA256 = "cb493dd74fc91af5398847642db64d7baaa07ae052930415be221b3deef1b50a";
+export const JS_INTERPRETER_ENTRY = "/_assets/runtime/js-interpreter-4b7ae99fd31dc9ad.js";
+export const JS_INTERPRETER_BUILD_ID = "4b7ae99fd31dc9ad";
+export const JS_INTERPRETER_SHA256 = "4b7ae99fd31dc9ad5a70028776ff6cd14f5f6dd234fc775e138d728fc2e82222";
 /** @nimbus-sh/core src/interpreter/host-ops.ts HOST_OPS_SOURCE */
 export const JS_INTERPRETER_OPS_ENTRY = "/_assets/runtime/js-interpreter-ops-2f4dfec6798e70fc.js";
 export const JS_INTERPRETER_OPS_BUILD_ID = "2f4dfec6798e70fc";
