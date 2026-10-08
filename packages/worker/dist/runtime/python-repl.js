@@ -83,6 +83,16 @@ class PythonReplAdapter {
         return ('Python 3.13.14 (CPython, wasm32-wasi, Nimbus runtime)\r\n' +
             'Type "exit()" or press Ctrl-D to exit.\r\n');
     }
+    async initialize() {
+        const result = await this.push('');
+        if (result.kind === 'output')
+            return result;
+        if (result.kind === 'error')
+            throw new Error(result.stderr.trim());
+        if (result.kind === 'exit')
+            throw new Error(result.stderr?.trim() || `Python REPL startup exited ${result.exitCode}`);
+        throw new Error('Python REPL startup did not finish its driver');
+    }
     push(source) {
         const controller = new AbortController();
         const done = this.evaluate(source, controller.signal);
@@ -236,6 +246,7 @@ class PythonReplAdapter {
 export function pythonReplStep(deps, pythonHome, userCode) {
     return {
         userCode,
+        cred: deps.cred,
         pythonHome,
         pyArgv: ['python'],
         userEnv: { HOME: deps.home, PYTHONUNBUFFERED: '1' },
