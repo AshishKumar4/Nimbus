@@ -45,6 +45,7 @@ const cred = (uid) => ({ uid, gid: uid, groups: [uid] });
   const logged = [];
   const run = book.drainPending({
     reserved,
+    current: () => false,
     drain: async (row) => {
       if (drained.length === 0) assert.deepEqual([...reserved].sort(), ['proc-slot-0', 'proc-slot-4', 'proc-slot-7'], 'a name was drained before every pending one was reserved');
       drained.push(row.pid);
@@ -64,6 +65,28 @@ const cred = (uid) => ({ uid, gid: uid, groups: [uid] });
   assert.match(logged[0], /'proc-slot-4'/);
   assert.match(logged[0], /the facet did not answer/);
   assert.match(logged[0], /kept/);
+}
+
+// ── A row this incarnation's process wrote is its running log, never drained as a previous one's ──
+// Red before: a drain that ran after a resident was re-driven (into the
+// same facet name, after a reset) read the running process's row as
+// pending, aborted its facet to read the log, and the process was lost.
+{
+  const sql = createSqliteVfsTestHarness().sql;
+  const book = new ProcessJournals(() => sql);
+  book.opened('proc-slot-0', 1000002, cred(1000));
+  book.opened('proc-slot-1', 2000001, cred(1000));
+  const reserved = new Set();
+  const drained = [];
+  await book.drainPending({
+    reserved,
+    current: (pid) => pid > 2_000_000,
+    drain: async (row) => { drained.push(row.pid); },
+    log: () => {},
+  });
+  assert.deepEqual(drained, [1000002], 'a running process\'s log was drained as a previous incarnation\'s');
+  assert.deepEqual([...reserved], [], 'a running process\'s name was reserved');
+  assert.deepEqual(book.pending().map((row) => row.pid), [2000001]);
 }
 
 console.log('process-journals: ok');
