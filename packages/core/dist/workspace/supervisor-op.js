@@ -320,10 +320,11 @@ const NATIVE_OPS = {
         let admit;
         let mountReach;
         if (fence !== undefined) {
+            if (t.deliveries !== undefined && e.pid !== undefined)
+                t.bridge(e.pid, e.cred);
             if (t.deliveries === undefined || fence.hostIncarnation !== t.deliveries.incarnation || e.pid === undefined) {
                 throw Object.assign(new Error('ESTALE: writeBatchStream was sent through a binding another instance of this host minted'), { code: 'ESTALE' });
             }
-            t.bridge(e.pid, e.cred);
             const admission = t.deliveries.admitWave(e.pid, fence.writer, fence.wave, fence.attempt);
             admit = admission.check;
             mountReach = admission.reach;

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "0975e681fe9423823a763b705207b5aef7abb5d3956a08b3dd160a31c27f02ea",
+  "fingerprint": "7363a59c1d16aab79116b53065f2536ddc4106e5f72ecd9ba8c846ae6e252120",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1085,7 +1085,7 @@
     "packages/core/dist/workspace/supervisor-delivery.js": "b2814baeb56503732fb7022435a1b6df7f59416946d628777f635b1af34c6536",
     "packages/core/dist/workspace/supervisor-op.d.ts": "0c3e1f5fb1f2ed91ab696c079d167c09aacb811bdc290f12e6ee1e06a8ac0f80",
     "packages/core/dist/workspace/supervisor-op.d.ts.map": "d2dd7bec53476cf0cf159ff9ca0b2656d502d03ccabc627f54ca31307c06795e",
-    "packages/core/dist/workspace/supervisor-op.js": "404e24ffbf9414c0308e1602c44afa07725dd1897bd1524fb8cf6f954cd6095e",
+    "packages/core/dist/workspace/supervisor-op.js": "717893badbe5a997718a8c1b58fde1baf17e31a396488b0b92a2ef0eca43e77e",
     "packages/core/dist/workspace/workspace-fs.d.ts": "79e1fba69fe3a25cd1f776eb97f40a7e5cf2ca43239c5e7d95d6c59224727771",
     "packages/core/dist/workspace/workspace-fs.d.ts.map": "cfbcba275e0f25d36b9ee69b34c1fdfd3dbaf10c81a39cb76717eebe7e4c345a",
     "packages/core/dist/workspace/workspace-fs.js": "3b89fbd6bb943efed162344fe7a3c50353c45858491967621c0bf0a7d5848f44",
@@ -1439,7 +1439,7 @@
     "packages/core/src/workspace/named-shells.ts": "57f16b3f502d629ecd6f661c807e26a912ecc27c9d1cf165091e916bf765e0bc",
     "packages/core/src/workspace/nimbus-workspace.ts": "8f6504637393c8250eb57f7c224f19901a3ab7c667c518312ac2026ebaeaffd4",
     "packages/core/src/workspace/supervisor-delivery.ts": "4ea43f6ca3d4778c8aebc4509203ac7a6d1308b9def526ad2ea5d75717c5be09",
-    "packages/core/src/workspace/supervisor-op.ts": "d54a99cb2909ceb8aa9ff5a1cd7cfccccfe4e8d0265704b4c2db033e2d490572",
+    "packages/core/src/workspace/supervisor-op.ts": "07938ff61df6ae9c077a29e82a693aab46bc26766007ab03d1dc8a42eb82e5b9",
     "packages/core/src/workspace/workspace-fs.ts": "c540fc01f7eea3f6507a2ace5e2e279f55100d5915682dbdd85a7cb9460eb5da",
     "packages/core/tsconfig.json": "6dc680d90729597ee71dcaf78368fceb9f44638d4e301811dd4cff58bdb9b62f",
     "packages/fabric/LICENSE": "9abf902a70f15256b6d108767fc510341854ec2297e3874c5bc6df496a895617",
