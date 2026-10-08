@@ -24,6 +24,8 @@
 //   3. Every installed package's manifest is readable synchronously on the
 //      first run, nested installs and nested package.json files included, and
 //      the copy a launch is handed is never older than the file.
+//   4. A copy is never readable where the file is not: a manifest whose read
+//      a chmod or a chown revoked is refused, though its bytes are unchanged.
 
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -36,6 +38,7 @@ import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
@@ -211,11 +214,11 @@ const out = {};
 for (const name of names) out[name] = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'node_modules', name, 'package.json'), 'utf8')).name ?? 'nested';
 console.log(JSON.stringify(out));
 `;
-const runManifests = async (names) => {
+const runManifests = async (names, program = MANIFEST_PROGRAM) => {
   batchReads = [];
   delete globalThis.__nimbusVfsResidencyMisses;
   try {
-    return await manager.exec(MANIFEST_PROGRAM, { filename: `/${PROJECT}/entry.js`, dirname: `/${PROJECT}`, cwd: `/${PROJECT}`, captureOutput: true, env: { NAMES: names.join(',') } });
+    return await manager.exec(program, { filename: `/${PROJECT}/entry.js`, dirname: `/${PROJECT}`, cwd: `/${PROJECT}`, captureOutput: true, env: { NAMES: names.join(',') } });
   } finally {
     globalThis.console = real.console;
     globalThis.process = real.process;
@@ -250,6 +253,44 @@ await check('an install rereads the manifests once', async () => {
   assert.deepEqual(JSON.parse(third.stdout.trim()), { alpha: 'alpha-v2', '@scope/beta': '@scope/beta', late: 'late' });
   assert.deepEqual(manifestReads(), [], 'every manifest comes with the launch again');
 });
+
+// ── 4. A manifest whose read was revoked is refused, copies or not ──────────
+// The copies are kept against the install revision and held where the
+// listing shows the same content key; a chmod or a chown changes neither.
+// Equal bytes say nothing about who may read them.
+const REVOKED_PROGRAM = `
+const fs = require('fs');
+const path = require('path');
+const out = {};
+for (const name of process.env.NAMES.split(',')) {
+  const file = path.join(process.cwd(), 'node_modules', name, 'package.json');
+  try { out[name] = JSON.parse(fs.readFileSync(file, 'utf8')).name; } catch (error) { out[name] = error.code; }
+  try { fs.closeSync(fs.openSync(file, 'r')); } catch (error) { out[name + ' open'] = error.code; }
+}
+console.log(JSON.stringify(out));
+`;
+const revoked = async (name, revoke) => {
+  revoke(`${PROJECT}/node_modules/${name}/package.json`);
+  const result = await runManifests(['alpha', name], REVOKED_PROGRAM);
+  assert.equal(result.exitCode, 0, `the program handles the refusal itself: ${JSON.stringify(result)}`);
+  assert.deepEqual(
+    JSON.parse(result.stdout.trim()), { alpha: 'alpha-v2', [name]: 'EACCES', [`${name} open`]: 'EACCES' },
+    'readFileSync and openSync are refused, as the session refuses the read',
+  );
+  assert.deepEqual(
+    manifestReads(), [`${PROJECT}/node_modules/${name}/package.json`],
+    'the copies are warm (alpha comes with the launch), and the revoked manifest is not held from them: the session is asked, and refuses it',
+  );
+};
+
+await check('a manifest whose read a chmod revoked is refused, though the copies hold it', () =>
+  revoked('@scope/beta', (path) => kfs.chmod(path, 0o000)));
+
+await check('a manifest whose read a chown revoked is refused, though the copies hold it', () =>
+  revoked('alpha/node_modules/gamma', (path) => {
+    kfs.chmod(path, 0o600);
+    authority.rawVfs.as(CRED_KERNEL).chown(path, 0, 0);
+  }));
 
 if (failures.length > 0) {
   console.log(`oneshot-first-run-misses: ${failures.length} failed`);
