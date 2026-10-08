@@ -92,5 +92,45 @@ assert.ok(ticks >= result.committedGroupSequence / 2, `the apply held the isolat
 assert.ok(maxGap < applyMs / 2, `the longest turn (${Math.round(maxGap)} ms) is most of the apply (${Math.round(applyMs)} ms)`);
 // Lookups: read in batches.
 assert.ok(singlePathLookups < records / 10, `${singlePathLookups} single-path inode lookups for ${records} records`);
+// ── A wave of removals only, or of directories only, gives its turn up between groups too ──
+// Red before (FilthySwordtail on ac0bee664): only a wave's first native file
+// ended its leading phase through the turn-aware driver; a removal-only or
+// directory-only wave committed every leading group inside its batch-end, in
+// one turn (an rm -rf node_modules of hundreds of groups held the isolate).
+for (const kind of ['deletes', 'directories']) {
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = engine.as(CRED_KERNEL);
+  kernel.mkdir('home/user/proj/old', { recursive: true });
+  kernel.chown('home/user', 1000, 1000);
+  kernel.chown('home/user/proj', 1000, 1000);
+  kernel.chown('home/user/proj/old', 1000, 1000);
+  new ProcessFiles(engine);
+  const N = 60;
+  const payload = { inodes: [], chunks: [], deletePaths: [] };
+  for (let i = 0; i < N; i++) {
+    if (kind === 'deletes') {
+      kernel.writeFile(`home/user/proj/old/f${i}`, 'x');
+      kernel.chown(`home/user/proj/old/f${i}`, 1000, 1000);
+      payload.deletePaths.push(`home/user/proj/old/f${i}`);
+    } else {
+      for (let j = 0; j < 40; j++) payload.inodes.push({ path: `home/user/proj/d${i}/e${j}`, parentPath: `home/user/proj/d${i}`, kind: 'directory', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 });
+      payload.inodes.push({ path: `home/user/proj/d${i}`, parentPath: 'home/user/proj', kind: 'directory', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 });
+    }
+  }
+  payload.inodes.sort((a, b) => a.path.localeCompare(b.path));
+  let turns = 0;
+  const result = await engine.as(USER).writeStream(encodeWriteBatchStream(payload), {
+    turn: () => { turns++; return new Promise((resolve) => setTimeout(resolve, 0)); },
+  });
+  assert.equal(result.ok, true, JSON.stringify(result.error));
+  const groups = result.committedGroupSequence;
+  console.log(JSON.stringify({ kind, groups, turns }));
+  assert.ok(groups > 1, `${kind}: one group only (${groups}); the case proves nothing`);
+  assert.ok(turns >= groups - 1, `${kind}: ${turns} turns in ${groups} committed groups`);
+  if (kind === 'deletes') assert.equal(kernel.readdir('home/user/proj/old').length, 0);
+  else assert.equal(kernel.readdir(`home/user/proj/d${N - 1}`).length, 40);
+}
+
 console.log('wave-apply-turns: ok');
 process.exit(0);
