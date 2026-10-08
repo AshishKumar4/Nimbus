@@ -5308,14 +5308,24 @@ export class FacetManager {
    * or already booted (its resources are released like a kill).
    */
   private _endBySignal(pid: number, code: number, signal: string): void {
+    this._endFromOutside(pid, code, signal);
+  }
+
+  /**
+   * End a running process from outside it (a signal, a lost host): its ports,
+   * RPC resources and writers go, it exits with `code` and `reason`, and the
+   * host hears of it. `portEnding` is what a request to one of its ports is
+   * told from then on (PortRegistry.ended).
+   */
+  private _endFromOutside(pid: number, code: number, reason: string, portEnding?: string): void {
     if (this.processes.get(pid)?.state !== 'running') return;
-    this.portRegistry.unregisterByPid(pid);
+    this.portRegistry.unregisterByPid(pid, portEnding);
     this.releaseProcessRpcResources(pid);
     this.revokeProcessVfsWriters(pid);
     this.processes.exit(pid, code);
-    this.processes.markExit(pid, code, signal);
+    this.processes.markExit(pid, code, reason);
     this.processes.closeInput(pid);
-    try { this.hooks.onExternalExit?.(pid, code, signal); } catch {}
+    try { this.hooks.onExternalExit?.(pid, code, reason); } catch {}
     this._teardownPairedServeFacet(pid);
   }
 
@@ -5340,13 +5350,8 @@ export class FacetManager {
     if (entry?.state !== 'running') return;
     console.warn(`[facet-manager] pid ${pid} ("${entry.command}") ended: ${lost.message}`);
     this.hostLosses.set(pid, lost);
-    this.portRegistry.unregisterByPid(pid, `"${entry.command}" (pid ${pid}) ended: ${lost.message}`);
-    this.releaseProcessRpcResources(pid);
-    this.revokeProcessVfsWriters(pid);
-    this.processes.exit(pid, HOST_LOST_EXIT_CODE);
     this._w5RecordTermination(pid, HOST_LOST_EXIT_CODE, 'facet', lost.message);
-    try { this.hooks.onExternalExit?.(pid, HOST_LOST_EXIT_CODE, lost.message); } catch {}
-    this._teardownPairedServeFacet(pid);
+    this._endFromOutside(pid, HOST_LOST_EXIT_CODE, lost.message, `"${entry.command}" (pid ${pid}) ended: ${lost.message}`);
   }
 
   /**
@@ -7503,7 +7508,7 @@ export class FacetManager {
           this.revokeProcessVfsWriters(pid, writerId);
         },
       });
-      this._hosted(pid, handle);
+      this._watchHost(pid, handle);
       this.trackProcessRpcResources(
         pid,
         [handle],
@@ -7645,7 +7650,7 @@ export class FacetManager {
           this.revokeProcessVfsWriters(pid, writerId);
         },
       });
-      this._hosted(pid, handle);
+      this._watchHost(pid, handle);
       // The handle's route target resolves the RUNNING facet wherever it is
       // hosted; binding it for the pid before the port is announced is what
       // lets the shim's listen()→SUPERVISOR.registerPort back-fill.
@@ -7693,7 +7698,7 @@ export class FacetManager {
    * before any caller's own `done` handler, so the process has ended by name
    * when they look. The placement goes to the process log under NIMBUS_DEBUG.
    */
-  private _hosted(pid: number, handle: ResidentProcessHandle): void {
+  private _watchHost(pid: number, handle: ResidentProcessHandle): void {
     handle.done.catch((error: unknown) => {
       if (error instanceof ProcessHostLost) this._endByHostLoss(pid, error);
     });
@@ -7764,7 +7769,7 @@ export class FacetManager {
       },
       ...process,
     });
-    this._hosted(pid, handle);
+    this._watchHost(pid, handle);
     return handle;
   }
 
