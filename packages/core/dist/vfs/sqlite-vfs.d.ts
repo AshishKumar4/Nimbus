@@ -549,6 +549,8 @@ export interface WriteStreamOptions {
     mutationOwner?: string;
     /** Right before each commit: the fenced wave is still admitted (SupervisorDeliveries.admitWave). */
     admit?: () => void;
+    /** Between committed groups: the isolate is given to whatever else it hosts (another session), never to this one. */
+    turn?: () => Promise<void>;
     mountReach?: WaveMountReach;
     sequence?: WaveSequence;
     /** The writing process's open descriptions, for its `open`, `close` and description calls (W7Call description). */
@@ -917,6 +919,10 @@ export declare class SqliteVFS {
      * recorded as undefined. Valid for the turn it is read in.
      */
     private readPriors;
+    /** Not admitted to the cache. */
+    private loadInodes;
+    /** `keys` and every directory above them, read in a few statements, so a lookup scope's walks to them read nothing more. */
+    private readAlong;
     private loadInode;
     private inodeFromRow;
     /**
@@ -2052,6 +2058,7 @@ export declare class SqliteVFS {
     private createdPath;
     private normalizeBatchInode;
     private authorizeBatch;
+    private authorizeBatchNow;
     /**
      * Of the places `directories` are written at, the first that holds a
      * symbolic link `deletes` (the same batch's removals, at their places) do
