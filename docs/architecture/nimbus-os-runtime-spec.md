@@ -94,8 +94,11 @@ quickly. CPU accounting can accumulate across overlapping native invocations;
 separate tail events do not prove that their CPU budgets reset. Long-lived open work
 can keep one CPU accounting window alive, so a busy server can reach its CPU
 ceiling cumulatively.
-The Loader shim consumes the code's `NIMBUS_FACET_POLICY` kind/limits carrier,
-preserving native ceilings and lower caller start limits across loopback hops.
+The Loader shim serves a user's Worker (`nimbus wrangler dev`'s worker_loaders
+binding), so the code it is handed is the guest's: it runs under the worker
+kind's ceiling, lowered by any limits the code or a start asks for, and nothing
+in the code can claim another kind. The policy travels the loopback hops in
+their props, never in the guest's env.
 There is no shipping invocation-counter reserve or reportable early refusal;
 that consumer must land and be tested before a guest budget envelope is added.
 

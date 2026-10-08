@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { FACET_LIMITS, MAX_FACET_CPU_MS, applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey, facetPolicyKey, codeFacetPolicy } from '../../packages/fabric/src/facet-limits.ts';
+import { FACET_LIMITS, MAX_FACET_CPU_MS, applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey, facetPolicyKey } from '../../packages/fabric/src/facet-limits.ts';
 import { facetCpuViolations } from '../../scripts/deploy-isolation.mjs';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
@@ -14,9 +14,7 @@ for (const [kind, configured] of Object.entries(FACET_LIMITS)) {
   // A process has no wall deadline; a direct compute call has one, and it is not the old 30 s.
   if (kind === 'process' || kind === 'isolate' || kind === 'worker') assert.equal(facetCallDeadlineMs(kind), undefined, `${kind}: runs processes, no wall deadline`);
   else assert.ok(facetCallDeadlineMs(kind) > 30_000, `${kind}: a compute call's deadline`);
-  assert.deepEqual(codeFacetPolicy(applied), { kind, limits: applied.limits }, `${kind}: inner Loader preserves the code policy`);
-  assert.equal(applied.env.NIMBUS_FACET_LIMITS, undefined, 'no unconsumed budget envelope');
-  assert.equal(applied.env.PRESERVED, 'value');
+  assert.deepEqual(applied.env, { PRESERVED: 'value' }, `${kind}: the worker's env is its own, with nothing of the policy in it`);
   assert.deepEqual(code.limits, { cpuMs: 1, subRequests: 1 }, `${kind}: caller config is not mutated`);
   assert.ok(configured.subRequests > 12000 + 64);
   assert.ok(configured.subRequests <= 10_000_000, `${kind}: never claims more than the provider maximum`);
@@ -47,7 +45,6 @@ for (const kind of seen) {
     assert.equal((await response.json()).kind, kind);
     assert.deepEqual(loaded.limits, facetLimits(kind), `${kind}: actual Loader factory receives the policy`);
     assert.deepEqual(startLimits, facetLimits(kind), `${kind}: actual entrypoint start receives the same policy`);
-    assert.deepEqual(codeFacetPolicy(loaded), { kind, limits: startLimits });
     assert.equal(pool.defaultTimeoutMs, facetCallDeadlineMs(kind) ?? 0, `${kind}: the pool's deadline is the kind's, or none`);
   } finally {
     await pool.dispose();

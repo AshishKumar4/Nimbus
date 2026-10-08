@@ -85,21 +85,17 @@ export function effectiveFacetLimits(kind: FacetKind, requested?: Partial<FacetR
   };
 }
 
-/** Kind and code ceiling survive the inner-Loader RPC/loopback route. */
-export function codeFacetPolicy(code: { env?: Record<string, unknown>; limits?: Partial<FacetResourceLimits> }): FacetCodePolicy {
-  const raw = code.env?.NIMBUS_FACET_POLICY;
-  const carrier = typeof raw === 'string' ? JSON.parse(raw) as { kind?: string } : undefined;
-  const kind = carrier?.kind && Object.hasOwn(FACET_LIMITS, carrier.kind) ? carrier.kind as FacetKind : 'worker';
-  return { kind, limits: effectiveFacetLimits(kind, code.limits) };
+/**
+ * The policy of code a guest hands Nimbus's Worker Loader shim (a user's
+ * Worker under `nimbus wrangler dev`): the worker kind, lowered by the limits
+ * the code asks for. Nothing in the code can claim another kind; the guest
+ * is not who decides its own ceiling.
+ */
+export function guestFacetPolicy(code: { limits?: Partial<FacetResourceLimits> }): FacetCodePolicy {
+  return { kind: 'worker', limits: effectiveFacetLimits('worker', code.limits) };
 }
 
-/** Native policy and its consumed inner-Loader carrier; no unused guest budget. */
+/** `code` with `kind`'s native limits, lowered by `requested`. Nothing else in it changes, its env included. */
 export function applyFacetLimits<C extends object>(kind: FacetKind, code: C, requested?: Partial<FacetResourceLimits>) {
-  const limits = effectiveFacetLimits(kind, requested);
-  const env = (code as { env?: Record<string, unknown> }).env;
-  return {
-    ...code,
-    limits: { ...limits },
-    env: { ...env, NIMBUS_FACET_POLICY: JSON.stringify({ kind, limits }) },
-  };
+  return { ...code, limits: { ...effectiveFacetLimits(kind, requested) } };
 }
