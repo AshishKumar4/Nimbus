@@ -20,6 +20,7 @@
  * compiles it into loaders/generated-workers.ts), so the resolver is one
  * self-contained function: nothing inside may refer to this module.
  */
+import { invalidArgType, nodeError } from './node-error.js';
 export function createEsmResolver(host, options = {}) {
     const conditions = new Set(['node', 'import', 'module-sync', ...(options.conditions ?? [])]);
     // The host's questions, each yielded as-is and typed by what it answers.
@@ -41,9 +42,6 @@ export function createEsmResolver(host, options = {}) {
             return typeof found === 'string' ? found : null;
         },
     };
-    function codedError(Ctor, code, message) {
-        return Object.assign(new Ctor(message), { code });
-    }
     const codeOf = (error) => error !== null && typeof error === 'object' && 'code' in error ? error.code : undefined;
     const filePath = (url) => decodeURIComponent(new URL(String(url)).pathname);
     const fileUrl = (path) => {
@@ -69,7 +67,7 @@ export function createEsmResolver(host, options = {}) {
         }
         catch {
             // Node's message names the file and the import, not the parse error.
-            throw codedError(Error, 'ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${pjsonPath}` +
+            throw nodeError(Error, 'ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${pjsonPath}` +
                 (base ? ` while importing ${JSON.stringify(specifier)} from ${base}` : '') + '.');
         }
         const config = { exists: true, pjsonPath, type: 'none' };
@@ -107,7 +105,7 @@ export function createEsmResolver(host, options = {}) {
         const pkgPath = filePath(new URL('.', pjsonUrl));
         const related = !internal && text.length > 0 && !text.startsWith('./');
         const tail = `in the package config ${pkgPath}package.json imported from ${base}${related ? '; targets must start with "./"' : ''}`;
-        return codedError(Error, 'ERR_INVALID_PACKAGE_TARGET', key === '.'
+        return nodeError(Error, 'ERR_INVALID_PACKAGE_TARGET', key === '.'
             ? `Invalid "exports" main target ${JSON.stringify(text)} defined ${tail}`
             : `Invalid "${internal ? 'imports' : 'exports'}" target ${JSON.stringify(text)} defined for '${key}' ${tail}`);
     }
@@ -143,7 +141,7 @@ export function createEsmResolver(host, options = {}) {
             return resolved;
         if (invalidSegment.test(subpath) && deprecatedInvalidSegment.test(subpath) && !isPathMap) {
             const request = pattern ? match.replace('*', () => subpath) : match + subpath;
-            throw codedError(TypeError, 'ERR_INVALID_MODULE_SPECIFIER', `Invalid module "${request}" request is not a valid match in pattern "${match}" for the "${internal ? 'imports' : 'exports'}" resolution of ${filePath(pjsonUrl)} imported from ${base}`);
+            throw nodeError(TypeError, 'ERR_INVALID_MODULE_SPECIFIER', `Invalid module "${request}" request is not a valid match in pattern "${match}" for the "${internal ? 'imports' : 'exports'}" resolution of ${filePath(pjsonUrl)} imported from ${base}`);
         }
         if (pattern)
             return new URL(resolved.href.replace(/\*/g, () => subpath));
@@ -184,7 +182,7 @@ export function createEsmResolver(host, options = {}) {
             const keys = Object.getOwnPropertyNames(target);
             for (const condition of keys) {
                 if (/^\d+$/.test(condition) && String(Number(condition)) === condition && Number(condition) < 4294967295) {
-                    throw codedError(Error, 'ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${filePath(pjsonUrl)} while importing ${fileUrl(base).href}. "exports" cannot contain numeric property keys.`);
+                    throw nodeError(Error, 'ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${filePath(pjsonUrl)} while importing ${fileUrl(base).href}. "exports" cannot contain numeric property keys.`);
                 }
             }
             for (const condition of keys) {
@@ -238,7 +236,7 @@ export function createEsmResolver(host, options = {}) {
     }
     function exportsNotFound(subpath, pjsonUrl, base) {
         const pkgPath = filePath(new URL('.', pjsonUrl));
-        return codedError(Error, 'ERR_PACKAGE_PATH_NOT_EXPORTED', subpath === '.'
+        return nodeError(Error, 'ERR_PACKAGE_PATH_NOT_EXPORTED', subpath === '.'
             ? `No "exports" main defined in ${pkgPath}package.json imported from ${base}`
             : `Package subpath '${subpath}' is not defined by "exports" in ${pkgPath}package.json imported from ${base}`);
     }
@@ -256,7 +254,7 @@ export function createEsmResolver(host, options = {}) {
                 if (i++ === 0)
                     sugar = current;
                 else if (sugar !== current) {
-                    throw codedError(Error, 'ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${filePath(pjsonUrl)} while importing ${fileUrl(base).href}. "exports" cannot contain some keys starting with '.' and some not. The exports object must either be an object of package subpath keys or an object of main entry condition name keys only.`);
+                    throw nodeError(Error, 'ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${filePath(pjsonUrl)} while importing ${fileUrl(base).href}. "exports" cannot contain some keys starting with '.' and some not. The exports object must either be an object of package subpath keys or an object of main entry condition name keys only.`);
                 }
             }
             return sugar;
@@ -283,7 +281,7 @@ export function createEsmResolver(host, options = {}) {
     function* packageImportsResolve(name, baseUrl) {
         const base = filePath(baseUrl);
         if (name === '#' || name.startsWith('#/') || name.endsWith('/')) {
-            throw codedError(TypeError, 'ERR_INVALID_MODULE_SPECIFIER', `Invalid module "${name}" is not a valid internal imports specifier name imported from ${base}`);
+            throw nodeError(TypeError, 'ERR_INVALID_MODULE_SPECIFIER', `Invalid module "${name}" is not a valid internal imports specifier name imported from ${base}`);
         }
         const config = yield* packageScopeConfig(new URL(baseUrl));
         let pjsonUrl;
@@ -308,7 +306,7 @@ export function createEsmResolver(host, options = {}) {
             }
         }
         const where = pjsonUrl ? ` in package ${filePath(new URL('.', pjsonUrl))}package.json` : '';
-        throw codedError(TypeError, 'ERR_PACKAGE_IMPORT_NOT_DEFINED', `Package import specifier "${name}" is not defined${where} imported from ${base}`);
+        throw nodeError(TypeError, 'ERR_PACKAGE_IMPORT_NOT_DEFINED', `Package import specifier "${name}" is not defined${where} imported from ${base}`);
     }
     function* legacyMainResolve(pjsonUrl, config, base) {
         const tries = [];
@@ -326,7 +324,7 @@ export function createEsmResolver(host, options = {}) {
         // an empty package name's `node_modules//` is `node_modules/`).
         const dir = fileUrl(filePath(new URL('.', pjsonUrl)).replace(/\/+/g, '/'));
         const missing = filePath(new URL(config.main ?? 'index.js', dir));
-        throw codedError(Error, 'ERR_MODULE_NOT_FOUND', `Cannot find package '${missing}' imported from ${base}`);
+        throw nodeError(Error, 'ERR_MODULE_NOT_FOUND', `Cannot find package '${missing}' imported from ${base}`);
     }
     function* packageResolve(specifier, baseUrl) {
         if (host.isBuiltin(specifier))
@@ -346,7 +344,7 @@ export function createEsmResolver(host, options = {}) {
         if (/^\.|%|\\/.test(name))
             valid = false;
         if (!valid) {
-            throw codedError(TypeError, 'ERR_INVALID_MODULE_SPECIFIER', `Invalid module "${specifier}" is not a valid package name imported from ${base}`);
+            throw nodeError(TypeError, 'ERR_INVALID_MODULE_SPECIFIER', `Invalid module "${specifier}" is not a valid package name imported from ${base}`);
         }
         const subpath = '.' + (separator === -1 ? '' : specifier.slice(separator));
         const self = yield* packageScopeConfig(new URL(baseUrl));
@@ -370,7 +368,7 @@ export function createEsmResolver(host, options = {}) {
                 return yield* legacyMainResolve(pjsonUrl, config, base);
             return new URL(subpath, pjsonUrl);
         } while (pjsonPath.length !== lastPath.length);
-        throw codedError(Error, 'ERR_MODULE_NOT_FOUND', `Cannot find package '${name}' imported from ${base}`);
+        throw nodeError(Error, 'ERR_MODULE_NOT_FOUND', `Cannot find package '${name}' imported from ${base}`);
     }
     function* formatOf(url, path) {
         const base = path.slice(path.lastIndexOf('/') + 1);
@@ -390,12 +388,12 @@ export function createEsmResolver(host, options = {}) {
                 return 'commonjs';
             return 'detect';
         }
-        throw codedError(TypeError, 'ERR_UNKNOWN_FILE_EXTENSION', `Unknown file extension "${ext}" for ${path}`);
+        throw nodeError(TypeError, 'ERR_UNKNOWN_FILE_EXTENSION', `Unknown file extension "${ext}" for ${path}`);
     }
     function* finalizeResolution(resolved, baseUrl) {
         const base = filePath(baseUrl);
         if (/%2f|%5c/i.test(resolved.pathname)) {
-            throw codedError(TypeError, 'ERR_INVALID_MODULE_SPECIFIER', `Invalid module "${resolved.pathname}" must not include encoded "/" or "\\" characters imported from ${base}`);
+            throw nodeError(TypeError, 'ERR_INVALID_MODULE_SPECIFIER', `Invalid module "${resolved.pathname}" must not include encoded "/" or "\\" characters imported from ${base}`);
         }
         const path = filePath(resolved);
         // Node stats the path's last character when it ends in "/", which is
@@ -404,10 +402,10 @@ export function createEsmResolver(host, options = {}) {
         // These two carry the URL they were resolving: import.meta.resolve
         // answers with it, where import() rejects.
         if (kind === 'directory') {
-            throw Object.assign(codedError(Error, 'ERR_UNSUPPORTED_DIR_IMPORT', `Directory import '${path}' is not supported resolving ES modules imported from ${base}`), { url: resolved.href });
+            throw Object.assign(nodeError(Error, 'ERR_UNSUPPORTED_DIR_IMPORT', `Directory import '${path}' is not supported resolving ES modules imported from ${base}`), { url: resolved.href });
         }
         if (kind !== 'file') {
-            throw Object.assign(codedError(Error, 'ERR_MODULE_NOT_FOUND', `Cannot find module '${path}' imported from ${base}`), { url: resolved.href });
+            throw Object.assign(nodeError(Error, 'ERR_MODULE_NOT_FOUND', `Cannot find module '${path}' imported from ${base}`), { url: resolved.href });
         }
         // The module is its real file, as node's loader names it; the query and
         // fragment stay the specifier's.
@@ -441,14 +439,14 @@ export function createEsmResolver(host, options = {}) {
     function* loadable(resolved) {
         if (resolved.builtin !== undefined) {
             if (!host.isBuiltin('node:' + resolved.builtin)) {
-                throw codedError(Error, 'ERR_UNKNOWN_BUILTIN_MODULE', `No such built-in module: node:${resolved.builtin}`);
+                throw nodeError(Error, 'ERR_UNKNOWN_BUILTIN_MODULE', `No such built-in module: node:${resolved.builtin}`);
             }
             return { url: resolved.url, builtin: resolved.builtin, format: 'builtin' };
         }
         if (resolved.url.startsWith('data:'))
             return { url: resolved.url, format: 'data' };
         if (resolved.path === undefined) {
-            throw codedError(Error, 'ERR_UNSUPPORTED_ESM_URL_SCHEME', `Only URLs with a scheme in: file and data are supported by the default ESM loader. Received protocol '${new URL(resolved.url).protocol}'`);
+            throw nodeError(Error, 'ERR_UNSUPPORTED_ESM_URL_SCHEME', `Only URLs with a scheme in: file and data are supported by the default ESM loader. Received protocol '${new URL(resolved.url).protocol}'`);
         }
         return { url: resolved.url, path: resolved.path, format: yield* formatOf(new URL(resolved.url), resolved.path) };
     }
@@ -544,7 +542,7 @@ export function createEsmResolver(host, options = {}) {
         validateAttributes(url, format, attributes) {
             for (const key of Object.keys(attributes)) {
                 if (key !== 'type') {
-                    throw codedError(TypeError, 'ERR_IMPORT_ATTRIBUTE_UNSUPPORTED', `Import attribute "${key}" with value "${attributes[key]}" is not supported in ${url}`);
+                    throw nodeError(TypeError, 'ERR_IMPORT_ATTRIBUTE_UNSUPPORTED', `Import attribute "${key}" with value "${attributes[key]}" is not supported in ${url}`);
                 }
             }
             const type = attributes.type;
@@ -554,19 +552,19 @@ export function createEsmResolver(host, options = {}) {
                 if (type === 'json')
                     return;
                 if (!('type' in attributes)) {
-                    throw codedError(TypeError, 'ERR_IMPORT_ATTRIBUTE_MISSING', `Module "${url}" needs an import attribute of "type: json"`);
+                    throw nodeError(TypeError, 'ERR_IMPORT_ATTRIBUTE_MISSING', `Module "${url}" needs an import attribute of "type: json"`);
                 }
             }
             else if (type == null) {
                 return;
             }
             if (typeof type !== 'string') {
-                throw codedError(TypeError, 'ERR_INVALID_ARG_TYPE', `The "type" argument must be of type string. Received ${typeof type}`);
+                throw invalidArgType('type', 'string', type);
             }
             if (type !== 'json') {
-                throw codedError(TypeError, 'ERR_IMPORT_ATTRIBUTE_UNSUPPORTED', `Import attribute "type" with value "${type}" is not supported in ${url}`);
+                throw nodeError(TypeError, 'ERR_IMPORT_ATTRIBUTE_UNSUPPORTED', `Import attribute "type" with value "${type}" is not supported in ${url}`);
             }
-            throw codedError(TypeError, 'ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE', `Module "${url}" is not of type "json"`);
+            throw nodeError(TypeError, 'ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE', `Module "${url}" is not of type "json"`);
         },
     };
 }
