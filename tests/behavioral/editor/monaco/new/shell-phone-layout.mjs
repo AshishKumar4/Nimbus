@@ -69,6 +69,7 @@ try {
   a.check('real terminal keystrokes execute the computed command', true);
   await command(`printf '// Phone workspace\\nconst answer = 42;\\n' > phone-layout.js; printf 'file-ready-%s\\n' "$((6*7))"`, /file-ready-42/);
   await screenshot('phone-terminal-390x844');
+  const terminalSize = await page.evaluate(() => ({ cols: term.cols, rows: term.rows }));
 
   await page.click('#btnFiles');
   await pane('#treePanel');
@@ -93,6 +94,10 @@ try {
     return rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth && control.scrollWidth <= control.clientWidth + 1;
   }));
   a.check('Agent actions and status stay fully on screen', agentControls);
+  const hiddenTerminalSize = await page.evaluate(() => ({ cols: term.cols, rows: term.rows }));
+  a.check('hiding the terminal does not shrink the running shell to a hidden pane',
+    hiddenTerminalSize.cols === terminalSize.cols && hiddenTerminalSize.rows === terminalSize.rows,
+    JSON.stringify({ before: terminalSize, hidden: hiddenTerminalSize }));
   await screenshot('phone-agent-390x844');
   await page.click('#btnEditor');
   await pane('#editorPanel');
