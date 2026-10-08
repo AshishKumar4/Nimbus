@@ -5,13 +5,11 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { mapOnArmada } from './lib/armada.mjs';
 import { PUBLISH_ARTIFACTS } from './lib/state-dir.mjs';
+import { verifiedPublishArtifacts } from './lib/publish-artifacts.mjs';
 
 const argv = process.argv.slice(2);
-const phaseAt = argv.indexOf('--phase');
-const phase = phaseAt >= 0 ? argv[phaseAt + 1] : null;
-const position = argv.filter((_, index) => index !== phaseAt && index !== phaseAt + 1);
-if (!['runtime', 'packages'].includes(phase) || position.length > 1 || argv.length !== position.length + 2) {
-  console.error('usage: bun scripts/ci/remote-publish.mjs [<commit>] --phase runtime|packages');
+if (argv.length > 1 || argv.some((arg) => arg.startsWith('--'))) {
+  console.error('usage: bun scripts/ci/remote-publish.mjs [<commit>]');
   process.exit(2);
 }
 const git = (args) => {
@@ -21,18 +19,18 @@ const git = (args) => {
 };
 try {
   const repo = git(['rev-parse', '--show-toplevel']);
-  const sha = git(['rev-parse', '--verify', `${position[0] ?? 'HEAD'}^{commit}`]);
-  const mapped = await mapOnArmada({ repo, sha, files: ['scripts/ci/publish-pack.mjs', 'scripts/ci/lib/publish-packages.mjs'], items: [1], command: ['bun', 'scripts/ci/publish-pack.mjs', '--out', '{out}', '--phase', phase], label: `publish-pack ${sha.slice(0, 12)} ${phase}` });
+  const sha = git(['rev-parse', '--verify', `${argv[0] ?? 'HEAD'}^{commit}`]);
+  const mapped = await mapOnArmada({ repo, sha, files: ['scripts/ci/publish-pack.mjs', 'scripts/ci/lib/publish-packages.mjs'], items: [1], command: ['bun', 'scripts/ci/publish-pack.mjs', '--out', '{out}'], label: `publish-pack ${sha.slice(0, 12)}` });
   const outcome = mapped.outcomes[0];
   if (outcome?.kind !== 'exited' || mapped.outputs[0] === null) throw new Error(`armada publish packing was not graded (${mapped.jobId}): ${outcome?.tail ?? 'no outcome'}`);
   const result = JSON.parse(mapped.outputs[0]);
-  if (result.head !== mapped.commit || result.phase !== phase) throw new Error('publish artifact provenance does not match the requested commit and phase');
+  if (result.head !== mapped.commit) throw new Error('publish artifact provenance does not match the requested commit');
   const dir = join(PUBLISH_ARTIFACTS, sha);
   mkdirSync(dir, { recursive: true });
-  const manifest = { commit: sha, job: mapped.jobId, phase, rows: result.rows, tarballs: [] };
+  const manifest = { commit: sha, job: mapped.jobId, rows: result.rows, tarballs: [] };
   for (const row of result.rows) console.error(`${row.exitCode === 0 ? 'ok' : 'FAIL'} ${row.name}: ${row.exitCode}${row.exitCode ? '\n' + row.output : ''}`);
   if (outcome.exitCode !== 0 || result.rows.some((row) => row.exitCode !== 0)) {
-    writeFileSync(join(dir, `${phase}-verdict.json`), JSON.stringify(manifest, null, 2) + '\n');
+    writeFileSync(join(dir, 'publish-verdict.json'), JSON.stringify(manifest, null, 2) + '\n');
     process.exit(1);
   }
   for (const artifact of result.tarballs) {
@@ -43,8 +41,9 @@ try {
     const { base64, ...receipt } = artifact;
     manifest.tarballs.push(receipt);
   }
-  writeFileSync(join(dir, `${phase}.json`), JSON.stringify(manifest, null, 2) + '\n');
-  console.log(JSON.stringify({ dir, manifest: join(dir, `${phase}.json`), tarballs: manifest.tarballs }));
+  verifiedPublishArtifacts(repo, dir, sha, manifest);
+  writeFileSync(join(dir, 'publish.json'), JSON.stringify(manifest, null, 2) + '\n');
+  console.log(JSON.stringify({ dir, manifest: join(dir, 'publish.json'), tarballs: manifest.tarballs }));
 } catch (error) {
   console.error(`remote-publish: NOT GRADED — ${error.message}`);
   process.exit(2);

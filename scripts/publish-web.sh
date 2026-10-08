@@ -10,21 +10,22 @@ artifacts="$(node --input-type=module -e 'import {PUBLISH_ARTIFACTS} from "./scr
 dir="$artifacts/$sha"
 registry='https://registry.npmjs.org'
 work="$(mktemp -d)"
-trap 'rm -f "$work/runtime.tsv" "$work/packages.tsv" "$work/view.json" "$work/view.err"; rmdir "$work"' EXIT
+trap 'rm -f "$work/artifacts.tsv" "$work/cache.err" "$work/view.json" "$work/view.err"; rmdir "$work"' EXIT
 
-pack() {
-  local phase="$1"
-  bun scripts/ci/remote-publish.mjs "$sha" --phase "$phase" || { echo "STOP: armada $phase publish gates failed; nothing further will be signed" >&2; exit 1; }
+verified_artifacts() {
   node --input-type=module -e '
-    import {readFileSync} from "node:fs";
-    const m=JSON.parse(readFileSync(process.argv[1],"utf8"));
-    if(m.commit!==process.argv[2]||m.phase!==process.argv[3]||!m.rows.length||m.rows.some(r=>r.exitCode!==0)||!m.tarballs.length) throw new Error("unverified publish manifest");
-    for(const p of m.tarballs) {
-      if(!/^[A-Za-z0-9._-]+\.tgz$/.test(p.file)||!/^[a-f0-9]{64}$/.test(p.sha256)||!/^[a-f0-9]{40}$/.test(p.shasum)||!/^(?:@nimbus-sh\/[a-z0-9-]+|create-nimbus-app)$/.test(p.name)||!/^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/.test(p.version)) throw new Error("invalid publish artifact");
+    import {verifiedPublishArtifacts} from "./scripts/ci/lib/publish-artifacts.mjs";
+    for(const p of verifiedPublishArtifacts(process.cwd(),process.argv[1],process.argv[2])) {
       console.log([p.name,p.version,p.file,p.sha256,p.shasum,p.integrity].join("\t"));
     }
-  ' "$dir/$phase.json" "$sha" "$phase" > "$work/$phase.tsv"
+  ' "$dir" "$sha" > "$work/artifacts.tsv"
 }
+
+if ! verified_artifacts 2> "$work/cache.err"; then
+  echo 'Verified artifacts are missing or changed; requesting one armada pack for this commit.'
+  bun scripts/ci/remote-publish.mjs "$sha" || { echo 'STOP: armada publish gates failed; no package will be signed' >&2; exit 1; }
+  verified_artifacts || { echo 'STOP: armada returned no complete verified signing set' >&2; exit 1; }
+fi
 
 published() {
   local name="$1" version="$2" shasum="$3" integrity="$4"
@@ -42,9 +43,8 @@ published() {
   ' "$work/view.json" "$status" "$shasum" "$integrity"
 }
 
-sign_phase() {
-  local phase="$1"
-  while IFS=$'\t' read -r name version file sha256 shasum integrity; do
+sign() {
+    local name="$1" version="$2" file="$3" sha256="$4" shasum="$5" integrity="$6"
     [[ "$(sha256sum "$dir/$file" | awk '{print $1}')" = "$sha256" ]] || { echo "STOP: sha256 mismatch for $file" >&2; exit 1; }
     local state=0
     published "$name" "$version" "$shasum" "$integrity" || state=$?
@@ -52,22 +52,15 @@ sign_phase() {
       0) echo "already on npm, identical: $name@$version" ;;
       4)
         echo "Signing verified tarball: $name@$version ($sha256)"
-        if [[ "$phase" = runtime ]]; then
-          npm publish "$dir/$file" --registry "$registry" --ignore-scripts --auth-type=web --tag latest --access public
-        else
-          npm publish "$dir/$file" --registry "$registry" --ignore-scripts --auth-type=web --access public
-        fi
+        npm publish "$dir/$file" --registry "$registry" --ignore-scripts --auth-type=web --tag latest --access public
         ;;
       *) cat "$work/view.err" >&2; echo "STOP: unable to verify npm state for $name@$version" >&2; exit 1 ;;
     esac
-  done < "$work/$phase.tsv"
 }
 
-pack runtime
-[[ "$(wc -l < "$work/runtime.tsv")" = 1 ]] || { echo 'STOP: phase 1 must contain exactly the CPython runtime' >&2; exit 1; }
-IFS=$'\t' read -r runtime_name runtime_version runtime_file runtime_sha runtime_shasum runtime_integrity < "$work/runtime.tsv"
+IFS=$'\t' read -r -u 3 runtime_name runtime_version runtime_file runtime_sha runtime_shasum runtime_integrity 3< "$work/artifacts.tsv"
 [[ "$runtime_name" = '@nimbus-sh/runtime-cpython' && "$runtime_version" = '3.13.14-1' ]] || { echo 'STOP: phase 1 runtime identity is not the approved build' >&2; exit 1; }
-sign_phase runtime
+sign "$runtime_name" "$runtime_version" "$runtime_file" "$runtime_sha" "$runtime_shasum" "$runtime_integrity"
 confirmed=false
 for attempt in {1..60}; do
   latest="$(npm view --registry "$registry" --prefer-online "$runtime_name" dist-tags.latest)" || { echo 'STOP: npm latest confirmation failed; phase 2 will not run' >&2; exit 1; }
@@ -78,6 +71,8 @@ for attempt in {1..60}; do
   sleep 2
 done
 [[ "$confirmed" = true ]] || { echo 'STOP: the verified CPython build is not confirmed as npm latest; phase 2 will not run' >&2; exit 1; }
-pack packages
-sign_phase packages
+while IFS=$'\t' read -r -u 3 name version file sha256 shasum integrity; do
+  [[ "$name" != "$runtime_name" ]] || continue
+  sign "$name" "$version" "$file" "$sha256" "$shasum" "$integrity"
+done 3< "$work/artifacts.tsv"
 echo "Published verified tarballs from $sha; no local build, bundle or pack ran."

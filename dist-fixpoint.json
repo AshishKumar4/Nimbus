@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "9550a4d9c29e803be7b66562cf7bf21d77c3d7ec6a7ed8525073d9c6513577fa",
+  "fingerprint": "4acfca1d516a2a0476d4ec88a37afd8d84ae4499cae2f50a60c733530e4f4096",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1152,7 +1152,7 @@
     "packages/core/dist/workspace/workspace-fs.d.ts.map": "cfbcba275e0f25d36b9ee69b34c1fdfd3dbaf10c81a39cb76717eebe7e4c345a",
     "packages/core/dist/workspace/workspace-fs.js": "3b89fbd6bb943efed162344fe7a3c50353c45858491967621c0bf0a7d5848f44",
     "packages/core/package.json": "64737c3695c6f560bee01c88dee640cd5c666a77266225ad55039c8ec6362c18",
-    "packages/core/scripts/check-runtime-packages.mjs": "ae0ae5872958cbd499856b99d1750b93a40dd9eaca8804703b5756e02627f208",
+    "packages/core/scripts/check-runtime-packages.mjs": "852b492e8e822ad93114c870b9ca348e64995f813d5e284e080b6d3445f8ec4a",
     "packages/core/scripts/gen-node-cli-options.mjs": "6c0b90900818a4cbef82fb639f9875d79c791cdc51887aa14d376dec1b651627",
     "packages/core/scripts/generate-filesystem-mirrors.mjs": "09dda3219634b557e62b95d68d89dfb00aa8b0417a0a1a3a30ebd3d4e6674834",
     "packages/core/scripts/pin-transform-pipeline.mjs": "1f75e2146c5d68ca4ecfd7a679cdabfb91948686bd45338d15bec9d09eeb5711",
