@@ -14,6 +14,44 @@ published independently in the `@nimbus-sh` npm scope.
   during its restart backoff never came back. The cold-start alarm
   re-drove its launch, but the launch's next timer was armed into a
   dispatch that had already finished, so nothing ran it.
+- Fixed: `fs.promises.cp` of a single file the process held copied the held
+  bytes without checking the read: a file the process had made write-only
+  was copied, and a file the session had refused it was "copied" from the
+  refusal. It now copies a file as `fs.promises.copyFile` does, through the
+  read, and fails with EACCES where that read does.
+- Fixed: a node process could go on reading, synchronously, a file whose read
+  a chmod or a chown had revoked. The bytes it already held were kept under
+  the new revision because their content was unchanged (the same held for a
+  store kept from an earlier launch, and for a one-shot's package.json
+  copies), and readFileSync checked only the directories above the file.
+  A file is now kept or copied only while its mode and owner let the
+  process read it, and readFileSync and a read open judge the file's own
+  mode, as the session does: EACCES.
+- Fixed: a one-shot node process can read every installed package's
+  package.json synchronously on its first run, as a resident process can.
+  Package resolution reads manifests for names no closure walk sees: vite's
+  config load reads one for every import of the config to decide whether to
+  externalize it, and on a fresh create-react-router project every read
+  failed, so it bundled @react-router/dev, @tailwindcss/vite and babel into
+  the config and ran out of memory. The session reads the manifests once per
+  install and hands each launch the copies; a launch holds a copy only while
+  the file still has its content, and reads any other manifest itself.
+- Fixed: a one-shot node process reports the files it was refused, and the
+  code it produced, as they happen, as a resident process does, not only in
+  its exit report. A run the platform killed reported nothing, so its next
+  launch missed the same files and died the same way: a fresh
+  create-react-router project's config load was killed by memory ("Worker
+  exceeded memory limit") on every run. A killed run's failure now names the
+  reads it was refused, beside the platform's error, and its next launch
+  stages them.
+- Fixed: a node run that was refused a synchronous read of a file it had not
+  been staged (EAGAIN) fails at exit, naming the file, even when the program
+  swallowed the error and a later call on the same path succeeded. vite's
+  resolver swallows the EAGAIN of a package.json, bundles the package it took
+  to be missing, and later stats and reads the same path successfully; that
+  later answer cleared the miss, so the run reported success built on the
+  wrong answer. Only the remedy the error names, an asynchronous read of the
+  path, answers it now.
 - Fixed: a WebAssembly program whose memory grew past 128 MiB could no longer
   read or write at the top of it: rolldown pre-bundling React with
   lucide-react (152 MiB) failed "Bad address (os error 21)" writing its

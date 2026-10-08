@@ -373,6 +373,26 @@ export class NpmCache {
     return out;
   }
 
+  /**
+   * What changes when anything is installed in or removed from any project:
+   * a digest of every lockfile row. What is kept of what installs put on disk
+   * (the manifests a launch is handed, facets/manager.ts _installedManifests)
+   * is reread when it changes.
+   */
+  installRevision(): string {
+    this.ensureSchema();
+    let hash = 0x811c9dc5;
+    let rows = 0;
+    for (const r of this.sql.exec(
+      `SELECT project_path, name, resolved_ver, integrity, hoisted_path FROM pkg_lockfile ORDER BY project_path, name`,
+    )) {
+      rows++;
+      const row = `${r.project_path}\0${r.name}\0${r.resolved_ver}\0${r.integrity}\0${r.hoisted_path}\n`;
+      for (let i = 0; i < row.length; i++) hash = Math.imul(hash ^ row.charCodeAt(i), 16777619);
+    }
+    return `${rows}:${(hash >>> 0).toString(16)}`;
+  }
+
   /** Write/overwrite the lockfile for a project. Atomic via transaction. */
   writeLockfile(
     projectPath: string,

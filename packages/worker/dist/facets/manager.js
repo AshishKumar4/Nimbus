@@ -27,6 +27,7 @@ import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
 import { VFS_CURSOR_SEED_SOURCE, serializeFacetVfsCursor, } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { direntTypeOf } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { clearPortCapability, listPortReservations, readPortReservation, readPortReservationByOwner, releasePortReservation, restoreReservedPortCapability, } from '../session/port-capability.js';
 import { deriveResidentOwner, launchArgv } from './resident-identity.js';
@@ -38,7 +39,7 @@ import { prefetchForRequire, requireFsOverBridge, resolveDeferredImport, Closure
 import { typeScriptStripOptions } from '@nimbus-sh/core/runtime/node-cli.js';
 import { findStaticFsReferences } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
-import { linkTargetOf, packageRootOf, planFacetData } from './data-plan.js';
+import { isManifestKey, linkTargetOf, packageRootOf, planFacetData } from './data-plan.js';
 import { principalTag, profilePrincipal, ReadProfile, verifiedEvidence, } from './read-profile.js';
 /** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
 const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
@@ -57,7 +58,7 @@ import { TransformStore } from './transform-store.js';
 import { parseResolvablePackageJson, } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { requirePackageEntry } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
-import { LaunchLearningStore } from './launch-learning-store.js';
+import { LAUNCH_PROFILE_MAX_PATHS, LaunchLearningStore } from './launch-learning-store.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
@@ -78,7 +79,7 @@ import { persistDurableWorkerImage, purgeDurableWorkerImages, } from './durable-
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { CF_COMPAT_DATE, DEFAULT_HOME, GUEST_COMPAT_FLAGS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, } from '@nimbus-sh/core/constants.js';
+import { CF_COMPAT_DATE, DEFAULT_HOME, GUEST_COMPAT_FLAGS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, CHUNK_SIZE, } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
@@ -461,7 +462,6 @@ const ENTRYPOINT_TIMER_TRACKER = `
  * the only place that knows whether a miss was ever answered.
  */
 const RESIDENCY_MISS_REPORT = `
-const __NIMBUS_RESIDENCY_NAMED_MAX = 20;
 // What the next launch of this entry must stage, kept apart because they are
 // staged differently: files read synchronously and not answered (data), and
 // modules the program tried to execute that the map lacked (graph roots).
@@ -471,22 +471,29 @@ function __nimbusDataReadMisses() {
 function __nimbusExecutedModuleMisses() {
   return [...(globalThis.__nimbusModuleMisses || [])];
 }
+const __nimbusResidencyMissText = ${residencyMissReport.toString()};
 function __nimbusResidencyMissReport() {
-  const __missed = globalThis.__nimbusVfsResidencyMisses;
-  if (!__missed || __missed.size === 0) return "";
-  const __paths = [];
-  for (const __k of __missed) __paths.push("/" + __k);
-  const __named = __paths.slice(0, __NIMBUS_RESIDENCY_NAMED_MAX);
-  const __rest = __paths.length - __named.length;
-  return "node: " + __paths.length + " file(s) were read synchronously but their content was "
-    + "never staged into the process, so every one of those reads failed and the program "
-    + "carried on without the bytes. Failing rather than reporting a result built on them:\\n"
-    + __named.map((__p) => "  " + __p + "\\n").join("")
-    + (__rest > 0 ? "  ... and " + __rest + " more\\n" : "")
-    + "The files exist and an async read (fs.promises.readFile) returns them now; the next "
-    + "run of the same command stages them up front.\\n";
+  return __nimbusResidencyMissText(__nimbusDataReadMisses());
 }
 `;
+/**
+ * The words of that report for the refused reads `keys` (namespace keys, no
+ * leading slash): what the guest prints at its exit, and what a one-shot the
+ * platform killed is failed with from the misses it reported as it ran
+ * (exec). Empty when there are none. Runs in the guest as its own text.
+ */
+export function residencyMissReport(keys) {
+    if (keys.length === 0)
+        return '';
+    const named = keys.slice(0, 20);
+    return 'node: ' + keys.length + ' file(s) were read synchronously but their content was '
+        + 'never staged into the process, so every one of those reads failed and the program '
+        + 'carried on without the bytes. Failing rather than reporting a result built on them:\n'
+        + named.map((key) => '  /' + key + '\n').join('')
+        + (keys.length > named.length ? '  ... and ' + (keys.length - named.length) + ' more\n' : '')
+        + 'The files exist and an async read (fs.promises.readFile) returns them now; the next '
+        + 'run of the same command stages them up front.\n';
+}
 /**
  * Static `import * as __real_X from 'node:X'` block. Prepended to generated
  * runtime workers so the shims can forward to workerd's real `node:*` builtins.
@@ -521,6 +528,12 @@ function bundleUsesNodeSqlite(entryCode, bundle) {
     }
     return false;
 }
+/**
+ * The most manifest text a one-shot's copies carry (_installedManifests), and
+ * the session keeps of them; past it the process fetches the rest as it
+ * fetches any planned file.
+ */
+const MANIFEST_COPIES_MAX_BYTES = 4 * 1024 * 1024;
 /** Where inlined wasm images are staged, one kernel-owned file per content key. */
 const INLINE_WASM_DIR = '/var/lib/nimbus/inline-wasm';
 /**
@@ -715,7 +728,7 @@ class __ProcessExit extends Error {
 export default {
   async fetch(request, workerEnv, workerCtx) {
     const args = await request.json();
-    const { argv, nodeCommandLine, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan } = args;
+    const { argv, nodeCommandLine, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan, manifests } = args;
     const __nimbusProcessId = Number(args.pid || 1);
     // A pipe or redirect streams through this input channel (exec's
     // _pumpStdinPipe); node-shims' process.stdin and fd 0 read it.
@@ -762,6 +775,12 @@ ${VFS_CURSOR_SEED_SOURCE}
     // run that made one cannot stop to be run again.
     const __supervisor = workerEnv?.SUPERVISOR
       ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
+    // What the run misses, and the code it produces, reach the session as they
+    // happen, as a resident's do: a run the platform kills (its memory limit)
+    // sends no exit envelope, and its next launch must still stage what it
+    // lacked. The envelope stays the record of a run that ends, so a report
+    // that fails here is not this run's failure.
+    __nimbusRuntimeCodeReporter = () => __nimbusFlushRuntimeCode(__supervisor).catch(() => {});
     // Its network goes through its workspace's egress: node:tls refuses a TLS socket by name.
     globalThis.__nimbusEgress = workerEnv?.NIMBUS_EGRESS === true;
     // The same store, namespace and data plan a resident boots on, backed by
@@ -773,6 +792,7 @@ ${sources.residentStore}
     __residentSetStorage(undefined, __supervisor);
     __nsSetCred(cred);
     __residentSetPlan(dataPlan);
+    __residentSetManifests(manifests);
     __residentSetPushRoots([_cwd || "/home/user", "/tmp"]);
     // The module bundle stays at module scope: a reused isolate adopts it
     // again on its next run, and its text cells are shared, not copied.
@@ -4370,9 +4390,11 @@ export class FacetManager {
     // spawn created as an OS-child of the attach TUI. When the attach process
     // exits (reported / killed), its serve facet is torn down with it.
     _pairedServeFacet = new Map();
-    // The bundle a resident pid booted from, so the misses it reports at exit
-    // stage into the next launch of the same entry, as a one-shot's do.
-    residentBundleKeys = new Map();
+    // The bundle a running pid launched from, so the misses it reports as they
+    // happen, and a resident's at its exit, stage into the next launch of the
+    // same entry; and the reads it reported refused, which a one-shot that ends
+    // without its own exit report (the platform killed it) is failed naming.
+    launchBundles = new Map();
     /** Per resident pid: the shared read profile's entries its launch staged, settled at its exit. */
     residentProfileOffers = new Map();
     /**
@@ -4556,7 +4578,7 @@ export class FacetManager {
         // Rooted on waitUntil: the hook fires synchronously inside whatever turn
         // ended the process, and the delete must not be a floating promise there.
         this.processes.setOnTerminal((pid) => {
-            this.residentBundleKeys.delete(pid);
+            this.launchBundles.delete(pid);
             this.residentProfileOffers.delete(pid);
             // Its writers' cursors go with it, unless its log is still to be
             // drained (which numbers against them, and forgets them after).
@@ -5175,6 +5197,88 @@ export class FacetManager {
         return [...plan];
     }
     /**
+     * Per credential: the manifest copies read at one install revision, as the
+     * launch body carries them. Kept to MANIFEST_COPIES_MAX_BYTES in all, the
+     * most recently used first; one credential's are always kept.
+     */
+    manifestCopies = new Map();
+    /**
+     * Every package.json the process's credential can see (data-plan.ts's
+     * `package-json` rule, which a resident's plan applies itself), as copies a
+     * one-shot is handed beside its plan: its store holds each manifest its own
+     * listing names from boot (facet-resident-store's __residentSetManifests).
+     * A program resolves package names its closure never named, and reads each
+     * manifest synchronously to do it: vite's config load, for every import of
+     * the config it decides whether to externalize.
+     *
+     * Read once per install revision (NpmCache.installRevision) and kept as the
+     * JSON the body carries, so a launch costs the copies' bytes and no read of
+     * each. A copy carries its file's content key and the process holds it only
+     * where its listing shows the same key, so a manifest written since (or
+     * installed outside npm) is fetched rather than served old. One that is not
+     * a single chunk (its content key is not the sha256 of its bytes), or past
+     * MANIFEST_COPIES_MAX_BYTES, is fetched as well.
+     */
+    async _installedManifests(entry, pacer) {
+        if (!this.filesystem)
+            return '{"files":{}}';
+        const { cred } = entry;
+        const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
+        const sql = this.ctx.storage.sql;
+        const install = sql ? new NpmCache(sql).installRevision() : '';
+        const held = this.manifestCopies.get(credKey);
+        if (held !== undefined && held.install === install) {
+            this.manifestCopies.delete(credKey);
+            this.manifestCopies.set(credKey, held);
+            return held.json;
+        }
+        const vfs = this.filesystem.bind({ pid: entry.pid, cred });
+        // The text is the file's bytes, a byte order mark included.
+        const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+        const files = {};
+        let bytes = 0;
+        for (let after = null;;) {
+            const page = await vfs.list(after, FS_LIST_PAGE_LIMIT);
+            await pacer.spend(page.entries.length * 64);
+            for (const listed of page.entries) {
+                const k = stripLeadingSlashes(listed.path);
+                if (listed.kind !== 'file' || listed.contentKey === undefined || !isManifestKey(k))
+                    continue;
+                if (listed.size === 0 || listed.size > CHUNK_SIZE || bytes + listed.size > MANIFEST_COPIES_MAX_BYTES)
+                    continue;
+                const read = await filesOf(vfs).readBytes(k).catch(() => null);
+                if (read === null || await sha256Hex(read) !== listed.contentKey)
+                    continue;
+                let text;
+                try {
+                    text = decoder.decode(read);
+                }
+                catch {
+                    continue;
+                }
+                files[k] = [listed.contentKey, text];
+                bytes += read.byteLength;
+                await pacer.spend(read.byteLength);
+            }
+            if (page.next === null)
+                break;
+            after = page.next;
+        }
+        const json = JSON.stringify({ files });
+        this.manifestCopies.delete(credKey);
+        this.manifestCopies.set(credKey, { install, json });
+        let kept = 0;
+        for (const copies of this.manifestCopies.values())
+            kept += copies.json.length;
+        for (const [oldest, copies] of this.manifestCopies) {
+            if (kept <= MANIFEST_COPIES_MAX_BYTES || oldest === credKey)
+                break;
+            this.manifestCopies.delete(oldest);
+            kept -= copies.json.length;
+        }
+        return json;
+    }
+    /**
      * Paths earlier launches of the same build missed in this session. Other
      * sessions' misses (the shared read profile) join the module map instead,
      * in _buildProcessBundle, where a learned module brings its imports.
@@ -5626,14 +5730,18 @@ export class FacetManager {
     /** Acknowledge generated code only after storage has accepted it. The
      * launch key comes from the process table, never from guest arguments. */
     async noteProcessRuntimeCode(pid, entries, executedModules = [], dataReads = []) {
-        const key = this.residentBundleKeys.get(pid);
-        if (!key || this.processes.get(pid)?.state !== 'running')
+        const launch = this.launchBundles.get(pid);
+        if (!launch || this.processes.get(pid)?.state !== 'running')
             throw new Error('Runtime code report has no live launch');
-        await this._recordLaunchLearning(key, { code: entries, executedModules, dataReads });
+        for (const path of Array.isArray(dataReads) ? dataReads : []) {
+            if (typeof path === 'string' && launch.refused.size < LAUNCH_PROFILE_MAX_PATHS)
+                launch.refused.add(path);
+        }
+        await this._recordLaunchLearning(launch.key, { code: entries, executedModules, dataReads });
     }
     noteProcessReportedExit(pid, exitCode, dataReads, evidence, runtimeCode, executedModules) {
         // Filed before the exit marks the table: the terminal hook forgets the key.
-        this.ctx.waitUntil(this._recordLaunchLearning(this.residentBundleKeys.get(pid), { code: runtimeCode, executedModules, dataReads })
+        this.ctx.waitUntil(this._recordLaunchLearning(this.launchBundles.get(pid)?.key, { code: runtimeCode, executedModules, dataReads })
             .catch((error) => this._learningLost(pid, error)));
         const residencyMisses = [...(dataReads ?? []), ...(executedModules ?? [])];
         const exiting = this.processes.get(pid);
@@ -5793,6 +5901,9 @@ export class FacetManager {
             }
             throw err;
         }
+        // What it reports missing as it runs is filed against this bundle.
+        if (vfsState.bundleKey)
+            this.launchBundles.set(entry.pid, { key: vfsState.bundleKey, refused: new Set() });
         // Where the one-shot's listing of its namespace walks mounts: what its
         // launch names, the literal paths of its own code included.
         const cwd = opts.cwd || '/home/user';
@@ -5840,6 +5951,8 @@ export class FacetManager {
             // synchronously by a path its code spells out needs no listing, and is
             // its data plan.
             let dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+            // And every manifest it can see, from what the session read once per install.
+            const manifests = await this._installedManifests(entry, pacer);
             // A stoppable run's network goes through the session (SupervisorRPC's
             // fetch and connect), which records what it answers; its code is
             // digested, so a run after a stop that would load other code does not.
@@ -5856,7 +5969,7 @@ export class FacetManager {
             for (let stops = 0;; stops++) {
                 let outcome;
                 try {
-                    outcome = await this._execViaLoader(code, launch, entry, vfsState, dataPlan, runSignal, pacer, diagSink);
+                    outcome = await this._execViaLoader(code, launch, entry, vfsState, dataPlan, manifests, runSignal, pacer, diagSink);
                 }
                 catch (error) {
                     const changed = error instanceof ReplayCodeChanged;
@@ -5969,13 +6082,17 @@ export class FacetManager {
             }
             const exitCode = 1;
             const reason = `runtime worker error: ${errorMessage(err)}`;
+            // The run ended without its exit report (the platform killed it), so it
+            // is failed here naming what it reported refused as it ran: a cause the
+            // next launch removes, and one the platform's error does not name.
+            const refused = residencyMissReport([...(this.launchBundles.get(entry.pid)?.refused ?? [])]);
             this.processes.exit(entry.pid, exitCode);
             this._w5RecordTermination(entry.pid, exitCode, 'runtime-worker', reason);
             try {
                 this.hooks.onExternalExit?.(entry.pid, exitCode, reason);
             }
             catch { }
-            return { exitCode, stdout: '', stderr: `${errorMessage(err)}${unsettled ? `\n${unsettled}` : ''}` };
+            return { exitCode, stdout: '', stderr: `${errorMessage(err)}${unsettled ? `\n${unsettled}` : ''}${refused}` };
         }
         finally {
             opts.signal?.removeEventListener('abort', onShellAbort);
@@ -6492,7 +6609,9 @@ export class FacetManager {
         }
     }
     // ── One-shot dynamic Worker entrypoint ────────────────────────────────
-    async _execViaLoader(code, opts, entry, vfsState, dataPlan, signal, pacer, diagSink) {
+    async _execViaLoader(code, opts, entry, vfsState, dataPlan, 
+    /** _installedManifests' JSON. */
+    manifests, signal, pacer, diagSink) {
         // Answered by _buildProcessBundle while the raw cells were still in
         // hand; re-deriving it here is what forced them to be retained.
         const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
@@ -6504,7 +6623,7 @@ export class FacetManager {
         let writerActivated = false;
         let __loadStart = 0;
         let __runStart = 0;
-        const body = JSON.stringify({
+        const fields = JSON.stringify({
             pid: entry.pid,
             argv: opts.argv || [],
             nodeCommandLine: opts.node ?? null,
@@ -6532,6 +6651,8 @@ export class FacetManager {
             dataPlan,
             ...(diagSink ? { diag: true } : {}),
         });
+        // The manifests ride as the JSON they are kept as, not stringified again per run.
+        const body = `${fields.slice(0, -1)},"manifests":${manifests}}`;
         try {
             return await this.processHost.runOnce({
                 pid: entry.pid,
@@ -7606,7 +7727,7 @@ export class FacetManager {
         const cacheHit = vfsState.cacheHit ?? false;
         const vfsCursor = vfsState.cursor;
         if (vfsState.bundleKey)
-            this.residentBundleKeys.set(entry.pid, vfsState.bundleKey);
+            this.launchBundles.set(entry.pid, { key: vfsState.bundleKey, refused: new Set() });
         const profileOffer = vfsState.profileOffer;
         if (profileOffer !== undefined)
             this.residentProfileOffers.set(entry.pid, profileOffer);
