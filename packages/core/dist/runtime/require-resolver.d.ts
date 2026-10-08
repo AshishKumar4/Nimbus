@@ -28,7 +28,7 @@
  */
 import { type RequireFs, type WalkProgress } from './require-resolution.js';
 export { requireFsOverBridge, type BridgeRequireFs, type RequireFs } from './require-resolution.js';
-export { mayCallRequireWrapper, requireWrapperCalls } from './require-wrappers.js';
+export { requireWrapperCalls } from './require-wrappers.js';
 /**
  * Result of a prefetch walk: path → content for every reachable file.
  *

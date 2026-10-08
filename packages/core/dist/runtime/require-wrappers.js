@@ -1,16 +1,11 @@
 /**
  * require-wrappers.ts — what a module's require wrappers load, read by the
- * supervisor's walk (require-resolver.ts) and kept by file revision
- * (require-resolution.ts requireFsOverBridge).
- */
-import { tokenizer, tokTypes } from 'acorn';
-import { programWrapperCalls } from '../interpreter/module-requests.js';
-import { parseJavaScriptProgram } from './javascript-ast.js';
-/**
- * What a module's require wrappers load: a function that passes its first
- * parameter to a require (the module's own, or one createRequire made, by any
- * name), or to its `.resolve`, loads what each of its calls names with a
- * string. @vitejs/plugin-vue loads the project's compiler so:
+ * supervisor's walk (require-resolver.ts).
+ *
+ * A function that passes its first parameter to a require (the module's
+ * own, or one createRequire made, by any name), or to its `.resolve`, loads
+ * what each of its calls names with a string. @vitejs/plugin-vue loads the
+ * project's compiler so:
  *
  *   const _require = createRequire(import.meta.url);
  *   function tryRequire(id, from) {
@@ -19,171 +14,81 @@ import { parseJavaScriptProgram } from './javascript-ast.js';
  *   … tryRequire("vue/compiler-sfc", root) …
  *
  * No other grammar reads that call, and a Vue project's first `vite` and
- * `vite build` failed on what it loads. The calls are read by the analysis
- * the runtime's import() prefetch reads them with
- * (core/interpreter/module-requests.ts programWrapperCalls), over the parsed
- * module. Only a module whose tokens could hold one is parsed
- * (mayCallRequireWrapper): almost none do. The supervisor keeps what a
- * revision of a file answers (RequireFs.wrapperCalls), so a launch reads it
- * and only the first walk after a write pays.
+ * `vite build` failed on what it loads. Every such question is the shared
+ * analysis's, which the runtime's import() prefetch reads modules with
+ * (core/interpreter/module-requests.ts RequestCollector), over a parse
+ * that keeps no tree of the program (parseStatements: a whole tree is 13 to
+ * 24 times its source, and this runs in the session's isolate). A module is
+ * parsed only if its tokens hold an identifier `require` or `createRequire`,
+ * which every wrapper needs. What a text answers is kept by its content, so
+ * a launch that walks text it walked before reads nothing again, whatever
+ * its path or revision.
  */
-export function requireWrapperCalls(code) {
-    // `require` or `createRequire`, spelled without escapes, before any token is read.
-    if (!code.includes('equire') || !mayCallRequireWrapper(code))
-        return [];
-    // A module nested past the walk's stack names no load, as one acorn cannot parse.
-    try {
-        const program = parseJavaScriptProgram(code);
-        return program === null ? [] : programWrapperCalls(program);
+import { tokenizer, tokTypes } from 'acorn';
+import { RequestCollector, uniqueSpecifiers } from '../interpreter/module-requests.js';
+import { PROGRAM_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
+/** What each text answered, by a digest of it; bounded, the oldest dropped first. */
+const ANSWERS = new Map();
+const ANSWERS_MAX = 16_384;
+const NONE = Object.freeze([]);
+const encoder = new TextEncoder();
+/** What `code`'s require wrappers load, each once. */
+export async function requireWrapperCalls(code) {
+    // Neither identifier can be in a text that spells neither, unless it escapes one.
+    if (!code.includes('equire') && !code.includes('\\u'))
+        return NONE;
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(code)));
+    let key = '';
+    for (let i = 0; i < 16; i++)
+        key += String.fromCharCode(digest[i]);
+    const known = ANSWERS.get(key);
+    if (known !== undefined) {
+        ANSWERS.delete(key);
+        ANSWERS.set(key, known);
+        return known;
     }
-    catch {
-        return [];
-    }
+    const calls = namesRequire(code) ? wrapperCallsOf(code) : NONE;
+    ANSWERS.set(key, calls);
+    if (ANSWERS.size > ANSWERS_MAX)
+        ANSWERS.delete(ANSWERS.keys().next().value);
+    return calls;
 }
-// The tokens mayCallRequireWrapper reads, by acorn's token type; any other is OTHER.
-const OTHER = 0, NAME = 1, STRING = 2, BACKQUOTE = 3, TEMPLATE = 4, PAREN_L = 5, PAREN_R = 6, COMMA = 7, DOT = 8, QUESTION_DOT = 9, EQ = 10, ARROW = 11, STAR = 12, FUNCTION = 13, STATEMENT_END = 14;
-const TOKEN_KINDS = new Map([
-    [tokTypes.name, NAME], [tokTypes.string, STRING], [tokTypes.backQuote, BACKQUOTE], [tokTypes.template, TEMPLATE],
-    [tokTypes.parenL, PAREN_L], [tokTypes.parenR, PAREN_R], [tokTypes.comma, COMMA], [tokTypes.dot, DOT],
-    [tokTypes.questionDot, QUESTION_DOT], [tokTypes.eq, EQ], [tokTypes.arrow, ARROW], [tokTypes.star, STAR],
-    [tokTypes._function, FUNCTION], [tokTypes.semi, STATEMENT_END], [tokTypes.braceL, STATEMENT_END],
-    [tokTypes.braceR, STATEMENT_END],
-]);
-/** `source`'s tokens as acorn reads them (a module's, else a script's), each a kind and a name token's name; null if neither tokenizes. */
-function tokensOf(source) {
+/**
+ * Whether `code` has an identifier token `require` or `createRequire` (its
+ * escapes read; one in a string, a template, a regular expression or a
+ * comment is none), as a module or as a script; true if it tokenizes as
+ * neither, for the parse to settle.
+ */
+export function namesRequire(code) {
     for (const sourceType of ['module', 'script']) {
-        let kinds = new Uint8Array(1024);
-        const names = new Map();
-        let length = 0;
         try {
-            const tokens = tokenizer(source, { ecmaVersion: 'latest', sourceType, allowHashBang: true, allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true });
+            const tokens = tokenizer(code, { ...PROGRAM_PARSE_OPTIONS, sourceType });
             for (let token = tokens.getToken(); token.type !== tokTypes.eof; token = tokens.getToken()) {
-                if (length === kinds.length) {
-                    const grown = new Uint8Array(length * 2);
-                    grown.set(kinds);
-                    kinds = grown;
-                }
-                const kind = TOKEN_KINDS.get(token.type) ?? OTHER;
-                // A name token's value (acorn's declarations leave it out), its escapes read.
-                if (kind === NAME)
-                    names.set(length, String(Reflect.get(token, 'value')));
-                kinds[length++] = kind;
+                if (token.type !== tokTypes.name)
+                    continue;
+                // A name token's value (acorn's declarations leave it out).
+                const name = Reflect.get(token, 'value');
+                if (name === 'require' || name === 'createRequire')
+                    return true;
             }
-            return { kinds, names, length };
+            return false;
         }
         catch { /* the other source type */ }
     }
-    return null;
+    return true;
 }
-/**
- * Whether `source` could call a require wrapper as the analysis reads one,
- * read from its tokens (names with their escapes read, strings, regular
- * expressions and comments told apart, as the parse tells them): a require
- * (`require`, or a name createRequire's value is assigned to) called with a
- * name first, maybe parenthesized, optional or through `.resolve`; a named
- * function (a declaration, or a function or arrow assigned to a name) whose
- * first parameter has that name; and a call of that function's name with a
- * string first. Each is implied by a wrapper call the analysis reads, so a
- * module it turns away has none, whatever its forms.
- */
-export function mayCallRequireWrapper(source) {
-    const tokens = tokensOf(source);
-    if (tokens === null)
-        return false;
-    const { kinds, names, length } = tokens;
-    const kind = (i) => (i >= 0 && i < length ? kinds[i] : OTHER);
-    const member = (i) => kind(i) === DOT || kind(i) === QUESTION_DOT;
-    // The requires: the module's own, and each name a createRequire is assigned to within its statement.
-    const requires = new Set(['require']);
-    for (const [at, name] of names) {
-        if (name !== 'createRequire')
-            continue;
-        for (let i = at - 1; i > 0 && kind(i) !== STATEMENT_END; i--) {
-            if (kind(i) === EQ && kind(i - 1) === NAME && !member(i - 2)) {
-                requires.add(names.get(i - 1));
-                break;
-            }
+/** The shared analysis's wrapper calls in `code`, parsed as Node would run it (a module, else a script); none if neither parses. */
+function wrapperCallsOf(code) {
+    for (const sourceType of ['module', 'script']) {
+        const collector = new RequestCollector();
+        try {
+            parseStatements(code, { ...PROGRAM_PARSE_OPTIONS, sourceType }, { onNode: (node) => collector.visit(node) });
         }
-    }
-    // Names a require is passed first: `r(x`, `(r)(x`, `r?.(x`, `r.resolve(x`, `r?.resolve((x)`.
-    const params = new Set();
-    for (const [at, name] of names) {
-        if (!requires.has(name) || member(at - 1))
+        catch {
             continue;
-        let i = at + 1;
-        while (kind(i) === PAREN_R)
-            i++;
-        if (member(i) && names.get(i + 1) === 'resolve') {
-            i += 2;
-            while (kind(i) === PAREN_R)
-                i++;
         }
-        if (kind(i) === QUESTION_DOT)
-            i++;
-        if (kind(i) !== PAREN_L)
-            continue;
-        i++;
-        while (kind(i) === PAREN_L)
-            i++;
-        if (kind(i) === NAME && (kind(i + 1) === COMMA || kind(i + 1) === PAREN_R))
-            params.add(names.get(i));
+        const calls = uniqueSpecifiers(collector.finish().wrapperCalls);
+        return calls.length === 0 ? NONE : Object.freeze(calls);
     }
-    if (params.size === 0)
-        return false;
-    // The name `x` in `x = [(…] [async] …` ending just before `at`.
-    const assignedBefore = (at) => {
-        let i = at;
-        while (kind(i) === PAREN_L || (kind(i) === NAME && names.get(i) === 'async'))
-            i--;
-        return kind(i) === EQ && kind(i - 1) === NAME && !member(i - 2) ? names.get(i - 1) : undefined;
-    };
-    // Named functions with one of them first: `function f(x`, `function* f(x`,
-    // `f = function (x`, `f = (async (x`, `f = x =>`.
-    const candidates = new Set();
-    for (const [at, name] of names) {
-        if (!params.has(name))
-            continue;
-        let assigned;
-        if (kind(at - 1) === PAREN_L) {
-            const before = at - 2;
-            const star = kind(before) === STAR ? 1 : 0;
-            if (kind(before) === NAME && (kind(before - 1) === FUNCTION || (kind(before - 1) === STAR && kind(before - 2) === FUNCTION))) {
-                candidates.add(names.get(before));
-                assigned = assignedBefore(kind(before - 1) === STAR ? before - 3 : before - 2);
-            }
-            else if (kind(before - star) === FUNCTION) {
-                assigned = assignedBefore(before - star - 1);
-            }
-            else {
-                assigned = assignedBefore(before);
-            }
-        }
-        else if (kind(at + 1) === ARROW) {
-            assigned = assignedBefore(at - 1);
-        }
-        if (assigned !== undefined)
-            candidates.add(assigned);
-    }
-    for (const name of requires)
-        candidates.delete(name);
-    if (candidates.size === 0)
-        return false;
-    // One of them called with a string first: `f('x'`, `(f)(('x')`, f?.(`x`.
-    for (let at = 0; at < length; at++) {
-        if (kind(at) !== PAREN_L)
-            continue;
-        let i = at + 1;
-        while (kind(i) === PAREN_L)
-            i++;
-        if (kind(i) !== STRING && !(kind(i) === BACKQUOTE && (kind(i + 1) === BACKQUOTE || (kind(i + 1) === TEMPLATE && kind(i + 2) === BACKQUOTE))))
-            continue;
-        let callee = at - 1;
-        if (kind(callee) === QUESTION_DOT)
-            callee--;
-        while (kind(callee) === PAREN_R)
-            callee--;
-        if (kind(callee) === NAME && candidates.has(names.get(callee)) && !member(callee - 1))
-            return true;
-    }
-    return false;
+    return NONE;
 }
