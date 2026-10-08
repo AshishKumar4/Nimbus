@@ -12,9 +12,7 @@ const FILE_CONTENT = '// Phone workspace\nconst answer = 42;\n';
 const a = makeAsserter(label);
 console.log(`${label} — ${BASE}`);
 const sid = await mintSession();
-const browser = await launchBrowser({ timeout: 60_000, webSecurity: true });
-const ctx = await openPage(browser, sid);
-const page = ctx.page;
+let browser, ctx, page;
 
 async function screenshot(name) {
   if (process.env.NIMBUS_PROBE_SCREENSHOTS) await page.screenshot({ path: join(process.env.NIMBUS_PROBE_SCREENSHOTS, 'shell-' + name + '.png') });
@@ -51,6 +49,9 @@ async function command(text, output) {
 }
 
 try {
+  browser = await launchBrowser({ timeout: 60_000, webSecurity: true });
+  ctx = await openPage(browser, sid);
+  page = ctx.page;
   await page.setViewport({ width: 1440, height: 900 });
   await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 90_000 });
   await page.waitForFunction(() => document.getElementById('editorTab').textContent.includes('welcome.md')
@@ -79,8 +80,8 @@ try {
     && document.querySelector('.monaco-editor .view-lines')?.getBoundingClientRect().width > 0, { timeout: 60_000 }, FILE_CONTENT);
   await pane('#editorPanel');
   a.check('choosing a file opens its real content in the full-width editor',
-    await page.evaluate(() => document.getElementById('editorTab').textContent.includes('phone-layout.js')
-      && window.__nimbusMonacoEditor.getValue() === '// Phone workspace\nconst answer = 42;\n'));
+    await page.evaluate((content) => document.getElementById('editorTab').textContent.includes('phone-layout.js')
+      && window.__nimbusMonacoEditor.getValue() === content, FILE_CONTENT));
   await screenshot('phone-editor-390x844');
 
   await page.click('#btnAgent');
@@ -135,18 +136,22 @@ try {
   await screenshot('desktop-workspace-1440x900');
   a.check('switching and resizing cause no browser runtime errors', ctx.pageErrors.length === 0, JSON.stringify(ctx.pageErrors));
 } catch (error) {
-  await screenshot('failure');
-  console.error('[shell-phone] failure state', await page.evaluate(() => ({
-    pane: document.getElementById('mainPanel').dataset.pane,
-    tab: document.getElementById('editorTab').textContent,
-    status: document.getElementById('editorStatus').textContent,
-    content: window.__nimbusMonacoEditor?.getValue(),
-  })));
+  if (page) {
+    await screenshot('failure');
+    console.error('[shell-phone] failure state', await page.evaluate(() => ({
+      pane: document.getElementById('mainPanel').dataset.pane,
+      tab: document.getElementById('editorTab').textContent,
+      status: document.getElementById('editorStatus').textContent,
+      content: window.__nimbusMonacoEditor?.getValue(),
+    })));
+  }
   throw error;
 } finally {
-  await ctx.close();
-  await browser.close();
-  await deleteSession(sid);
+  try { await ctx?.close(); }
+  finally {
+    try { await browser?.close(); }
+    finally { await deleteSession(sid); }
+  }
 }
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);
