@@ -16,24 +16,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { filesUnder, sha256Hex } from './lib/fs-walk.mjs';
+import { publishPackages } from './ci/lib/publish-packages.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const REGISTRY = 'https://registry.npmjs.org';
-
-/** The packages a release publishes: each runs the publish gate before npm packs it. */
-async function releasePackages() {
-  const found = [];
-  for (const entry of await readdir(join(root, 'packages'), { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const dir = join(root, 'packages', entry.name);
-    let manifest;
-    try { manifest = JSON.parse(await readFile(join(dir, 'package.json'), 'utf8')); }
-    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-    if (manifest.private || !manifest.scripts?.prepublishOnly?.includes('dist-integrity.mjs --publish')) continue;
-    found.push({ dir, name: manifest.name, version: manifest.version });
-  }
-  return found;
-}
 
 const run = (command, args, cwd) => execFileSync(command, args, { cwd, stdio: ['ignore', 'pipe', 'inherit'], timeout: 300_000 });
 
@@ -61,7 +47,7 @@ const differences = (published, packed) => [...new Set([...published.keys(), ...
 const work = await mkdtemp(join(tmpdir(), 'nimbus-check-published-'));
 const stale = [];
 try {
-  for (const { dir, name, version } of await releasePackages()) {
+  for (const { dir, name, version } of publishPackages(root)) {
     const answer = await fetch(`${REGISTRY}/${name.replace('/', '%2f')}/${version}`);
     if (answer.status === 404) { console.log(`new       ${name}@${version}`); continue; }
     if (!answer.ok) throw new Error(`${name}@${version}: the registry answered ${answer.status}`);
