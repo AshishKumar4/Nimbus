@@ -747,7 +747,7 @@ async function runOneShot<T>(
         // The ledger learns a limit refusal from the hold it ends.
         endFetch(error);
         if (started || classifyError(error) !== 'dynamic_worker_cap') throw error;
-        // Refused before it started: sent again once the ledger lets it in.
+        // Refused before it started: an RPC-invoked worker stays counted until its session tears down, and workerd gives no signal for that.
         firstRefusal ??= Date.now();
         const readmitted = await readmitRefused(endFetch, { since: firstRefusal, signal: params.request.signal });
         if (readmitted === undefined) throw error;
