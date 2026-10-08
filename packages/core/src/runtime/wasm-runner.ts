@@ -49,7 +49,6 @@
 
 import type { RuntimeRunOpts, RuntimeRunResult, RuntimeSpec } from './runtime-registry.js';
 import type { Facet, FacetHost } from './facet-host.js';
-import { DEFAULT_FACET_TASK_TIMEOUT_MS } from './facet-host.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import { gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority } from './os-contracts.js';
 import { withHostView } from './process-files.js';
@@ -720,11 +719,8 @@ export function makeWasmRunner(deps: {
         submitArgs,
         {
           wasmModules: { 'user.wasm': buf },
-          // The hosting facet's task policy accounts for awaited WASI I/O,
-          // separately from the platform's CPU budget. Other hosts retain
-          // their own default when this contract is not present.
-          timeoutMs: facet.defaultTimeoutMs ?? DEFAULT_FACET_TASK_TIMEOUT_MS,
-          // A kill or Ctrl-C ends the facet too, where the host can.
+          // No deadline: a process runs until it exits or is killed. A kill
+          // or Ctrl-C ends the facet too, where the host can.
           signal: opts.signal,
         },
       )) as DispatchOutcome;

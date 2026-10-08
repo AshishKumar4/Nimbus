@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { FACET_LIMITS, MAX_FACET_CPU_MS, applyFacetLimits, facetLimits, facetLoaderKey, facetPolicyKey, codeFacetPolicy } from '../../packages/fabric/src/facet-limits.ts';
+import { FACET_LIMITS, MAX_FACET_CPU_MS, applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey, facetPolicyKey, codeFacetPolicy } from '../../packages/fabric/src/facet-limits.ts';
 import { facetCpuViolations } from '../../scripts/deploy-isolation.mjs';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
@@ -10,8 +10,10 @@ for (const [kind, configured] of Object.entries(FACET_LIMITS)) {
   const code = { mainModule: 'fixture.js', modules: { 'fixture.js': 'export default {};' }, env: { PRESERVED: 'value' }, limits: { cpuMs: 1, subRequests: 1 } };
   const applied = applyFacetLimits(kind, code);
   assert.deepEqual(applied.limits, facetLimits(kind), `${kind}: native limits come from the table`);
-  assert.deepEqual(applied.limits, { cpuMs: configured.cpuMs, subRequests: configured.subRequests }, `${kind}: native limits exclude the wall timeout`);
-  assert.ok(configured.taskTimeoutMs > 30_000, `${kind}: I/O wall time is not the old CPU default`);
+  assert.deepEqual(applied.limits, { cpuMs: configured.cpuMs, subRequests: configured.subRequests }, `${kind}: native limits are the table's, nothing else`);
+  // A process has no wall deadline; a direct compute call has one, and it is not the old 30 s.
+  if (kind === 'process' || kind === 'isolate' || kind === 'worker') assert.equal(facetCallDeadlineMs(kind), undefined, `${kind}: runs processes, no wall deadline`);
+  else assert.ok(facetCallDeadlineMs(kind) > 30_000, `${kind}: a compute call's deadline`);
   assert.deepEqual(codeFacetPolicy(applied), { kind, limits: applied.limits }, `${kind}: inner Loader preserves the code policy`);
   assert.equal(applied.env.NIMBUS_FACET_LIMITS, undefined, 'no unconsumed budget envelope');
   assert.equal(applied.env.PRESERVED, 'value');
@@ -46,7 +48,7 @@ for (const kind of seen) {
     assert.deepEqual(loaded.limits, facetLimits(kind), `${kind}: actual Loader factory receives the policy`);
     assert.deepEqual(startLimits, facetLimits(kind), `${kind}: actual entrypoint start receives the same policy`);
     assert.deepEqual(codeFacetPolicy(loaded), { kind, limits: startLimits });
-    assert.equal(pool.defaultTimeoutMs, FACET_LIMITS[kind].taskTimeoutMs);
+    assert.equal(pool.defaultTimeoutMs, facetCallDeadlineMs(kind) ?? 0, `${kind}: the pool's deadline is the kind's, or none`);
   } finally {
     await pool.dispose();
   }

@@ -9,7 +9,7 @@ import {
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
-import { FACET_LIMITS } from '@nimbus-sh/fabric/facet-limits.js';
+import { facetCallDeadlineMs } from '@nimbus-sh/fabric/facet-limits.js';
 import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
@@ -103,7 +103,7 @@ const oxcFacet = new SharedHelperFacet<OxcFacetRpc>({
 const STACK_FALLBACK_MODULES = 4;
 
 /** How long one stack-fallback call may take before its modules' answers are transient. */
-const STACK_FALLBACK_DEADLINE_MS = FACET_LIMITS.transform.taskTimeoutMs;
+const STACK_FALLBACK_DEADLINE_MS = facetCallDeadlineMs('transform')!;
 
 /** `call`, or a rejection once `ms` pass first. */
 async function withDeadline<T>(call: Promise<T>, ms: number): Promise<T> {

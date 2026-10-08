@@ -13,9 +13,21 @@ published independently in the `@nimbus-sh` npm scope.
 - Added explicit, evidence-based per-kind facet CPU and subrequest limits,
   replacing the implicit 30-second Loader CPU default. Resident filesystem
   transport retains its invocation budget across incoming HTTP requests, so
-  processes receive a deliberately generous finite lifetime ceiling. Wasm
-  dispatch uses the separate host task wall-time policy. This resource policy
-  is separate from batched filesystem write delivery.
+  processes receive a deliberately generous finite lifetime ceiling. This
+  resource policy is separate from batched filesystem write delivery.
+- Fixed: a process no longer has a wall-time deadline. A wasm program, WASI
+  included, was killed at 30 s ("Task exceeded 30000ms deadline"), which
+  ended clang over 10,000 files under load at 9,199. CPython was killed at
+  120 s, clang, Ruby and bash steps at 300 s, and a Python or Ruby REPL
+  evaluation at 60 s. A process now runs until it exits or is killed (kill,
+  Ctrl-C), and on Cloudflare the CPU limit ends a runaway one. Only a direct
+  compute call (a build, a transform, a git network step, a fan-out task)
+  still has a deadline.
+- Breaking for embedders running `@nimbus-sh/core` off Cloudflare:
+  `localFacetHost` no longer takes `defaultTimeoutMs`, and a facet call
+  given no `timeoutMs` has no deadline. Off Cloudflare there is no CPU
+  limit, so a program that never ends runs until it is killed, as it would
+  under Node. Pass `timeoutMs` to bound a call of your own.
 - Fixed: a write wave ignored mounts. A W7 wave (`writeBatchStream`, which
   `git clone`, `git checkout` and `npm install` use) wrote every record to
   the session's SQLite store, even under a mount. A file under a mount

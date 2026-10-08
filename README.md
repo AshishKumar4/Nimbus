@@ -12,8 +12,9 @@ are distinct from the filesystem write-delivery guarantees.
 The resident process filesystem transport retains its initiating invocation's
 subrequest budget across incoming HTTP calls. Its finite lifetime ceiling is
 deliberately much larger than one-shot build, transform, and generic isolate
-budgets; the native CPU ceiling still applies. Task wall time is a separate
-policy value because awaited filesystem I/O does not consume only CPU time.
+budgets; the native CPU ceiling still applies. A process has no wall-time
+deadline: it runs until it exits or is killed. Only a direct compute call (a
+build, a transform, a git network step, a fan-out task) has one.
 
 > This is a hobby/research project to see how far can we push Cloudflare durable objects to. Although it works, there are several rough edges, and I only work on it in my spare time. This README is edited and maintained with Claude (AI) and presented as-is.
 

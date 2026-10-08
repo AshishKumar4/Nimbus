@@ -104,6 +104,10 @@ export interface FacetSubmitOptions {
    * a dynamic worker, and the local host's worker thread
    * ({@link ./local-facet-host.ts}), which `terminate()` stops even in a
    * loop that never yields.
+   *
+   * Absent, there is none. A process's run passes none: it runs until it
+   * exits or is killed (`signal`), and on Cloudflare the platform's CPU limit
+   * ends a runaway one. Only a direct compute call passes a deadline.
    */
   timeoutMs?: number;
   /**
@@ -117,9 +121,6 @@ export interface FacetSubmitOptions {
   wasmModules?: Record<string, ArrayBuffer>;
 }
 
-/** Bounded fallback for non-workerd and legacy hosts; platform policy is separate. */
-export const DEFAULT_FACET_TASK_TIMEOUT_MS = 30_000;
-
 /**
  * One facet's scope, for as long as a runtime needs it.
  *
@@ -128,8 +129,6 @@ export const DEFAULT_FACET_TASK_TIMEOUT_MS = 30_000;
  * would hand the second call a shell that had never run.
  */
 export interface Facet {
-  /** Host task wall-clock default, distinct from any platform CPU limit. */
-  readonly defaultTimeoutMs?: number;
   submit<A, R>(fn: FacetFn<A, R>, args: A, options?: FacetSubmitOptions): Promise<Awaited<R>>;
   /**
    * The same call dispatched as a fetch Request through the host's fetch

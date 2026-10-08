@@ -72,9 +72,16 @@ Each fabric-created Loader worker and its entrypoint or Durable Object class
 receive explicit limits from that table. CPU is currently `300000` milliseconds
 for every kind. Subrequest ceilings are `10000000` for resident processes,
 `1000000` for git, and `100000` for build, esbuild, transform, generic isolate,
-fanout, and hosted Worker kinds. Task wall time is a separate policy value:
-awaited filesystem I/O does not consume only CPU time, so Wasm dispatch uses the
-hosting facet's task default rather than an independent 30-second deadline.
+fanout, and hosted Worker kinds.
+
+A process has no wall-time deadline: a program's run (a WASI binary, CPython,
+Ruby, clang, bash, a REPL's evaluation) ends when it exits or is killed, by kill
+or Ctrl-C, and on Cloudflare the CPU ceiling ends a runaway one. A deadline killed
+clang over 10,000 files at 30 s (9,199 done, 2026-10-07), and any fixed one would
+kill a process waiting on stdin or a long build. Only the compute kinds (build,
+esbuild, transform, git, fanout) carry a wall deadline per call
+(`facetCallDeadlineMs`): each call answers one request, and one that never answers
+is a fault. Off Cloudflare, nothing ends a runaway process but a kill.
 
 Resident filesystem transport retains its subrequest charging scope across
 incoming HTTP calls. Native tail telemetry showed separate HTTP invocations
@@ -84,8 +91,7 @@ long-lived servers, and never exceeds the documented Workers maximum of 10M.
 Acceptance of a larger Loader input does not prove a larger enforced ceiling.
 The lifetime ceiling eventually stops 10M transport operations, not necessarily
 quickly. CPU accounting can accumulate across overlapping native invocations;
-separate tail events do not prove that their CPU budgets reset. Task wall time
-bounds one-shot I/O, not an unlimited resident lifetime. Long-lived open work
+separate tail events do not prove that their CPU budgets reset. Long-lived open work
 can keep one CPU accounting window alive, so a busy server can reach its CPU
 ceiling cumulatively.
 The Loader shim consumes the code's `NIMBUS_FACET_POLICY` kind/limits carrier,

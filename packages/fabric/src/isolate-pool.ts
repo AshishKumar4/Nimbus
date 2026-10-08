@@ -29,7 +29,7 @@ import { loaderOutbound, requireNetwork, type WorkspaceNetwork } from '@nimbus-s
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { supervisorEntrypoint, hostRoute, type HostRoute } from './composition.js';
 import { supervisorLoaderKey } from './supervisor-props.js';
-import { applyFacetLimits, facetLimits, facetLoaderKey, FACET_LIMITS, type FacetKind } from './facet-limits.js';
+import { applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey, type FacetKind } from './facet-limits.js';
 import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
@@ -99,7 +99,11 @@ export interface IsolatePoolOptions {
    * it, and a refused one waits for a slot of the claim.
    */
   claim?: DynamicWorkerClaim;
-  /** Per-task wall timeout in ms. Defaults to this facet kind's policy. */
+  /**
+   * Per-task wall timeout in ms; 0 is none. Defaults to this facet kind's
+   * call deadline (facetCallDeadlineMs), and to none for a kind that runs
+   * processes, which have no wall deadline.
+   */
   timeoutMs?: number;
   /**
    * Per-task retry attempts AFTER the initial failure. Default 0.
@@ -545,7 +549,7 @@ export class IsolatePool {
     this.claim = opts.claim;
     this.concurrency = Math.max(1, opts.concurrency ?? 1);
     this.facetKind = opts.facetKind ?? 'isolate';
-    this.defaultTimeoutMs = opts.timeoutMs ?? FACET_LIMITS[this.facetKind].taskTimeoutMs;
+    this.defaultTimeoutMs = opts.timeoutMs ?? facetCallDeadlineMs(this.facetKind) ?? 0;
     this.defaultRetries = Math.max(0, opts.retries ?? 0);
     this.tag = opts.tag ?? 'facet';
     this.preamble = opts.preamble;

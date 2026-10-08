@@ -1,7 +1,5 @@
 /** Resource policy for every fabric-created Worker and Durable Object facet. */
 const FACET_CPU_MS = 300_000;
-// Wall time includes awaited I/O; it is not the platform's CPU accounting.
-const FACET_TASK_TIMEOUT_MS = 300_000;
 
 export const FACET_LIMITS = Object.freeze({
   // Resident filesystem transport retains its charging scope across HTTP
@@ -12,22 +10,48 @@ export const FACET_LIMITS = Object.freeze({
   // Acceptance of a larger input is not proof of a larger enforced ceiling.
   // This finite lifetime bound eventually stops 10M transport operations, not
   // necessarily quickly. Platform CPU accounting can span overlapping calls;
-  // separate tail events do not prove independent CPU windows. The separate
-  // task wall deadline bounds one-shot I/O. Neither setting promises an
-  // unlimited resident lifetime or fast shutdown of low-CPU work across calls.
-  process: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 10_000_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
-  build: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
-  esbuild: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
-  transform: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
-  git: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 1_000_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
-  isolate: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
-  fanout: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
-  worker: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
+  // separate tail events do not prove independent CPU windows. Neither setting
+  // promises an unlimited resident lifetime or fast shutdown of low-CPU work
+  // across calls.
+  process: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 10_000_000 }),
+  build: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000 }),
+  esbuild: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000 }),
+  transform: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000 }),
+  git: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 1_000_000 }),
+  isolate: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000 }),
+  fanout: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000 }),
+  worker: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000 }),
 });
 
 export type FacetKind = keyof typeof FACET_LIMITS;
 export interface FacetResourceLimits { cpuMs: number; subRequests: number }
 export interface FacetCodePolicy { kind: FacetKind; limits: FacetResourceLimits }
+
+/**
+ * Wall deadlines, for the kinds whose calls are direct compute: a build, an
+ * esbuild or Oxc transform, a git network step, a fan-out task. Each call
+ * answers one request, and one that never answers is a fault. Wall time
+ * includes awaited I/O; it is not the platform's CPU accounting.
+ *
+ * A process has none (`process`, and `isolate`, the kind a runtime's facet
+ * host opens for a program's run): it runs until it exits or is killed, by
+ * kill or Ctrl-C, and the platform's CPU limit ends a runaway one. Measured
+ * live (2026-10-07): a 30 s deadline killed clang over 10,000 files at 9,199,
+ * and any fixed one would kill a process waiting on stdin or a long build.
+ */
+const COMPUTE_CALL_DEADLINE_MS = 300_000;
+const CALL_DEADLINES: Readonly<Partial<Record<FacetKind, number>>> = Object.freeze({
+  build: COMPUTE_CALL_DEADLINE_MS,
+  esbuild: COMPUTE_CALL_DEADLINE_MS,
+  transform: COMPUTE_CALL_DEADLINE_MS,
+  git: COMPUTE_CALL_DEADLINE_MS,
+  fanout: COMPUTE_CALL_DEADLINE_MS,
+});
+
+/** One call's wall deadline for `kind`, or undefined: the kind runs processes, which have none. */
+export function facetCallDeadlineMs(kind: FacetKind): number | undefined {
+  return CALL_DEADLINES[kind];
+}
 
 /** Hosting Worker constraint; the policy remains the sole source of these values. */
 export const MAX_FACET_CPU_MS = Math.max(...Object.values(FACET_LIMITS).map(limits => limits.cpuMs));
