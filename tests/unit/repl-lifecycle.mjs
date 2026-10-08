@@ -44,6 +44,54 @@ function capture() {
 const output = (stdout = '') => ({ kind: 'output', stdout, stderr: '' });
 const baseAdapter = { ps1: '>>> ', ps2: '... ', banner: () => '', close: async () => {} };
 
+// The first prompt is a readiness signal, not a promise to boot on the first line.
+{
+  const view = capture();
+  const ready = Promise.withResolvers();
+  const calls = [];
+  const run = new ReplSession({
+    ...baseAdapter,
+    initialize: () => ready.promise,
+    push: async (line) => { calls.push(line); return output('FIRST\n'); },
+  }, view.terminal).run();
+  try {
+    await Promise.resolve();
+    assert.doesNotMatch(view.text(), />>>/, 'a prompt was published before the interpreter and driver were ready');
+    view.terminal.sendData('first\r');
+    assert.deepEqual(calls, [], 'input was evaluated before startup finished');
+    ready.resolve(output('BOOT\n'));
+    await view.seen('FIRST');
+    assert.deepEqual(calls, ['first'], 'input received during startup did not run once after readiness');
+    assert.ok(view.text().indexOf('BOOT') < view.text().indexOf('>>>'), 'startup output did not precede the first prompt');
+  } finally {
+    ready.resolve(output());
+    await bounded(view.terminal.disposeRepl(), 'starting REPL cleanup hung');
+    await bounded(run, 'starting REPL run did not end');
+    view.terminal.close();
+  }
+}
+
+// Failed startup never claims to be ready, and still closes the adapter.
+{
+  const view = capture();
+  let closes = 0;
+  const run = new ReplSession({
+    ...baseAdapter,
+    initialize: async () => ({ kind: 'error', stderr: 'interpreter bootstrap failed\n' }),
+    push: async () => { throw new Error('input reached an unready interpreter'); },
+    close: async () => { closes++; },
+  }, view.terminal).run();
+  try {
+    assert.equal(await bounded(run, 'failed startup did not end'), 1);
+    assert.doesNotMatch(view.text(), />>>/);
+    assert.match(view.text(), /interpreter bootstrap failed/);
+    assert.equal(closes, 1);
+  } finally {
+    await view.terminal.disposeRepl();
+    view.terminal.close();
+  }
+}
+
 // An abort acknowledgement cannot release the input queue before push settles.
 {
   const view = capture();
