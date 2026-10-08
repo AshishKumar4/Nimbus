@@ -3084,6 +3084,7 @@ export class SqliteVFS {
     hold(pipeline, paths, structural) {
         if (pipeline.publication === null) {
             pipeline.publication = { paths: new Set(), events: [], structural: new Map(), removedDirectories: [] };
+            pipeline.writer ??= this.activeHolds;
             this.heldPipelines++;
         }
         const publication = pipeline.publication;
@@ -8082,7 +8083,7 @@ export class SqliteVFS {
         const delegatedWave = options.mutationOwner !== undefined && (this.exclusiveMutationLeases.get(options.mutationOwner)?.delegation ?? null) !== null;
         // Each group commits in its own turn, as the stream's caller (its lease, its principal).
         // As the stream's writer: the delegations it holds, and what it commits ahead of a reader's recall (`pipeline`).
-        const asWriter = (fn) => this.inPipeline(pipeline, () => asWriter(fn));
+        const asWriter = (fn) => this.inPipeline(pipeline, () => this.withHolds(holds, fn));
         // As the stream's caller: its origin and the lease it writes under, too.
         const asCaller = (fn) => this.asOrigin(origin, () => this.withMutationOwner(options.mutationOwner, () => asWriter(fn)));
         const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();
