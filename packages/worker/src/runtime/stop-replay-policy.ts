@@ -17,7 +17,7 @@ const acquire = (value: unknown): unknown => {
   const v = omit(value, ['epoch', 'rev']) as { paths?: unknown[] } | null;
   return v && Array.isArray(v.paths) ? { ...v, paths: v.paths.map((p) => omit(p, ['rev'])) } : v;
 };
-const acquireArgs = (value: unknown): unknown => omit(value, ['epoch', 'cursor']);
+const acquireArgs = (value: unknown): unknown => omit(value, ['epoch', 'cursor', 'begin']);
 const delivered = (value: unknown): unknown => {
   if (!value || typeof value !== 'object') return value;
   const v = value as { args?: unknown; answer?: unknown };

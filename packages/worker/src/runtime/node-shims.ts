@@ -2405,30 +2405,25 @@ const __fsMod = (() => {
    * \`__nimbusVfsAcquireArgs\`) is exactly what fsAcquire would be asked.
    */
   function _acquireArgs() {
-    // Every build is the start of an answer the overlay may retire against.
+    // Every build is the start of an answer the overlay may retire against:
+    // its begin travels with it, and the answer to it comes back with it.
     const begin = ++_barrierBegins;
-    const key = _cursor.epoch + "@" + _cursor.rev;
-    if (!_argsBegins.has(key)) _argsBegins.set(key, begin);
     const options = _residentStorePresent() && typeof __residentAcquireOptions === "function"
       ? __residentAcquireOptions() : undefined;
     return options
-      ? { epoch: _cursor.epoch, cursor: _cursor.rev, options }
-      : { epoch: _cursor.epoch, cursor: _cursor.rev };
+      ? { epoch: _cursor.epoch, cursor: _cursor.rev, begin, options }
+      : { epoch: _cursor.epoch, cursor: _cursor.rev, begin };
   }
   /**
-   * The earliest begin of any arguments built at a cursor: a delivered answer
-   * may answer any of them, and retiring against the earliest is the one
-   * that is never too late. Cursors left behind are forgotten.
+   * When the arguments a delivered answer answers were built (_acquireArgs):
+   * what settled before then, the session had when it answered. Arguments
+   * this process did not build (a routed request's, the session's own)
+   * vouch for nothing it settled: 0. Keyed by the build itself, never by
+   * its cursor: two builds at one cursor are asked at different times, and
+   * an answer to the later one has what settled between them.
    */
-  const _argsBegins = new Map();
   function _argsBegin(args) {
-    const key = args.epoch + "@" + args.cursor;
-    const begin = _argsBegins.get(key) ?? 0;
-    for (const k of [..._argsBegins.keys()]) {
-      const [epoch, rev] = [k.slice(0, k.lastIndexOf("@")), Number(k.slice(k.lastIndexOf("@") + 1))];
-      if (epoch !== _cursor.epoch || rev < _cursor.rev) _argsBegins.delete(k);
-    }
-    return begin;
+    return typeof args.begin === "number" ? args.begin : 0;
   }
 
   /**
