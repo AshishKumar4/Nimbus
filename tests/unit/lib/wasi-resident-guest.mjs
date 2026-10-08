@@ -33,25 +33,33 @@ const enc = new TextEncoder();
 /** Whether this engine can park a guest: without JSPI a guest answers from the session, and these tests have nothing to test. */
 export const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
 
-/** @param {{ refuse?: (path: string) => boolean }} [options] */
-export async function residentGuest({ refuse = () => false } = {}) {
+/**
+ * @param {{ refuse?: (path: string) => boolean, of?: object }} [options]
+ * `of`: another guest whose session this one is a second process of (its
+ * own pid, its own WASI body and store).
+ */
+export async function residentGuest({ refuse = () => false, of } = {}) {
   const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
   writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites };`);
   let P;
   try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
 
-  const harness = createSqliteVfsTestHarness();
-  const raw = new SqliteVFS(harness.sql, harness.ctx);
-  const kernel = raw.as(CRED_KERNEL);
-  kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
-  kernel.chown('home/user', USER.uid, USER.gid);
-  const processes = new SessionProcessSupervisor();
+  const session = of?.session ?? (() => {
+    const harness = createSqliteVfsTestHarness();
+    const raw = new SqliteVFS(harness.sql, harness.ctx);
+    const kernel = raw.as(CRED_KERNEL);
+    kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
+    kernel.chown('home/user', USER.uid, USER.gid);
+    const processes = new SessionProcessSupervisor();
+    const authority = new ProcessFiles(raw);
+    const bridge = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
+    // Fenced waves, as a process's binding sends them: a refusal answers its own op.
+    const deliveries = new SupervisorDeliveries();
+    const dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge, host: {}, deliveries });
+    return { harness, raw, kernel, processes, authority, bridge, deliveries, dispatch };
+  })();
+  const { harness, raw, kernel, processes, authority, bridge, deliveries, dispatch } = session;
   const { pid } = processes.spawn('guest', ['guest'], '/home/user', { cred: USER });
-  const authority = new ProcessFiles(raw);
-  const bridge = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
-  // Fenced waves, as a process's binding sends them: a refusal answers its own op.
-  const deliveries = new SupervisorDeliveries();
-  const dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge, host: {}, deliveries });
   const own = authority.bind({ pid, cred: USER });
   const refusedHandles = new Set();
   const supervisor = { synchronous: () => { throw new Error('rpc stubs have no synchronous view'); } };
@@ -111,7 +119,7 @@ export async function residentGuest({ refuse = () => false } = {}) {
   const RIGHTS_ALL = 0x1fffffffn;
 
   const guest = {
-    P, kernel, raw, stats: () => P.__wasiFsStats(),
+    P, kernel, raw, session, pid, stats: () => P.__wasiFsStats(),
     /** path_open: the fd, or a thrown errno. `flags`: { create, truncate, exclusive, directory, write }. */
     async open(name, { create = false, truncate = false, exclusive = false, directory = false, write = false } = {}) {
       const n = putPath(name);
@@ -204,6 +212,8 @@ export async function residentGuest({ refuse = () => false } = {}) {
       return { nlink: Number(view().getBigUint64(OUT + 24, true)), size: Number(view().getBigUint64(OUT + 32, true)) };
     },
     async dispose() { await bridge.dispose(); await authority.releaseProcess(pid); harness.db.close(); },
+    /** This process ends (its writes settled, its grants given back); the session goes on for another. */
+    async end() { await P.__wasiSettleWrites(); await authority.releaseProcess(pid); },
   };
   // The store boots on the first call; wait until it answers.
   await guest.open('home/user', { directory: true }).then((fd) => guest.close(fd));

@@ -17,25 +17,28 @@ if (!canPark) {
 }
 
 const N = 20;
-const g = await residentGuest();
 const name = (i) => `home/user/d/f${String(i).padStart(4, '0')}.txt`;
-// What a first run left: the files are the session's, the guest has not listed their directory.
-g.kernel.mkdir('home/user/d', { mode: 0o755 });
-g.kernel.chown('home/user/d', USER.uid, USER.gid);
-for (let i = 0; i < N; i++) {
-  g.kernel.writeFile(name(i), String(i).repeat(10));
-  g.kernel.chown(name(i), USER.uid, USER.gid);
+/** python's run: os.makedirs(d, exist_ok=True), open(…, 'w') and a write of each, then os.listdir(d) and os.path.exists. */
+async function run(g, label) {
+  const made = await g.mkdir('home/user/d');
+  assert.ok(made === 0 || made === 20, `${label}: mkdir answered ${made}`);
+  for (let i = 0; i < N; i++) {
+    const fd = await g.open(name(i), { create: true, truncate: true, write: true });
+    assert.equal(await g.write(fd, String(i).repeat(10)), 0);
+    assert.equal(await g.close(fd), 0);
+  }
+  const listed = await g.listdir('home/user/d');
+  assert.equal(listed.length, N, `${label}: the directory it wrote listed ${listed.length} of ${N}: ${JSON.stringify(g.stats())}`);
+  for (const i of [0, 1, N - 1]) assert.equal(await g.statSize(name(i)), 10 * String(i).length, `${label}: ${name(i)}, just written, was not there`);
 }
-assert.equal(await g.mkdir('home/user/d'), 20, 'mkdir of a directory there is EEXIST (20)');
-for (let i = 0; i < N; i++) {
-  const fd = await g.open(name(i), { create: true, truncate: true, write: true });
-  assert.equal(await g.write(fd, String(i).repeat(10)), 0);
-  assert.equal(await g.close(fd), 0);
-}
-const listed = await g.listdir('home/user/d');
-assert.equal(listed.length, N, `the directory it rewrote listed ${listed.length} of ${N}: ${JSON.stringify(g.stats())}`);
-for (const i of [0, 1, N - 1]) assert.equal(await g.statSize(name(i)), 10 * String(i).length, `${name(i)}, just written, was not there`);
-await g.P.__wasiSettleWrites?.();
-await g.dispose();
+
+// A first process makes them under its grant, and ends; a second rewrites them without listing first.
+const first = await residentGuest();
+await run(first, 'run 1');
+await first.end();
+const second = await residentGuest({ of: first });
+await run(second, 'run 2');
+await second.end();
+await second.dispose();
 console.log('wasi-resident-rewrite: ok');
 process.exit(0);
