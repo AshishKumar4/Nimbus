@@ -59,4 +59,21 @@ assert.deepEqual(captured.loads[0].limits, worker, 'the validating load is under
   assert.deepEqual(code.env, { KEEP: 'value' }, 'nothing of Nimbus is added to a guest\'s env');
   assert.deepEqual(code.limits, worker);
 }
+// Two guest ids, one of which spells the other plus a policy: two workers,
+// each with its own code, under two native keys. (RoughWallaby on 0e29bfdc2:
+// a suffix-idempotent key aliased them, so the second ran the first's code.)
+{
+  const plain = { compatibilityDate: '2026-09-26', mainModule: 'a.js', modules: { 'a.js': 'export default { fetch() { return new Response("a"); } };' } };
+  const other = { compatibilityDate: '2026-09-26', mainModule: 'b.js', modules: { 'b.js': 'export default { fetch() { return new Response("b"); } };' } };
+  const aliasing = `get:foo:limits:worker:${worker.cpuMs}:${worker.subRequests}`.slice('get:'.length);
+  const first = await loader.get('foo', () => plain);
+  await first.getEntrypoint()._resolveEntrypoint();
+  const firstNative = captured.gets.at(-1);
+  const second = await loader.get(aliasing, () => other);
+  await second.getEntrypoint()._resolveEntrypoint();
+  const secondNative = captured.gets.at(-1);
+  assert.notEqual(secondNative.key, firstNative.key, 'distinct guest ids get distinct native keys');
+  assert.equal((await secondNative.code).mainModule, 'b.js', 'the second worker runs its own code');
+  assert.equal((await firstNative.code).mainModule, 'a.js');
+}
 console.log('loader-shim-facet-policy: ok');
