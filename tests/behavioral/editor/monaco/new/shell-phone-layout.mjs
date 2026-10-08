@@ -70,7 +70,7 @@ try {
   await command(`printf '// Phone workspace\\nconst answer = 42;\\n' > phone-layout.js; printf 'file-ready-%s\\n' "$((6*7))"`, /file-ready-42/);
   await screenshot('phone-terminal-390x844');
 
-  await page.click('#btnFiles');
+  await page.click('#btnPhoneFiles');
   await pane('#treePanel');
   await page.click('#btnTreeRefresh');
   await page.waitForSelector('.tree-node[data-path="/home/user/phone-layout.js"]', { visible: true, timeout: 30_000 });
@@ -101,11 +101,11 @@ try {
 
   const app = `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Phone preview</title><style>body{margin:24px;font:18px system-ui}button{padding:12px;font:inherit}</style><h1>Nimbus preview</h1><button id="counter">Clicks 0</button><script>let n=0;counter.onclick=()=>counter.textContent='Clicks '+(++n)</script>`;
   const server = `require('http').createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end(${JSON.stringify(app)});}).listen(3000,()=>console.log('phone-preview-ready'));`;
-  await page.click('#btnTerminal');
+  await page.click('#btnPhoneTerminal');
   await pane('#terminal-container');
   await command(`printf '%s' '${Buffer.from(server).toString('base64')}' | base64 -d > phone-server.js; node --watch phone-server.js`, /phone-preview-ready/);
   await page.waitForFunction(() => [...document.querySelectorAll('#previewTabs .preview-tab')].some((tab) => tab.textContent.includes(':3000')), { timeout: 60_000 });
-  await page.click('#btnPreview');
+  await page.click('#btnPhonePreview');
   await pane('#previewPanel');
   await page.waitForFunction(() => document.getElementById('preview-frame').src.includes('/port/3000/'), { timeout: 30_000 });
   const frame = await (await page.$('#preview-frame')).contentFrame();
@@ -115,7 +115,7 @@ try {
   a.check('the live port preview is usable and interactive on the phone',
     await frame.$eval('#counter', (button) => button.textContent) === 'Clicks 1');
   await screenshot('phone-preview-390x844');
-  await page.click('#btnTerminal');
+  await page.click('#btnPhoneTerminal');
   await pane('#terminal-container');
   await command(`printf 'switch-back-%s\\n' "$((6*7))"`, /switch-back-42/);
   await screenshot('phone-terminal-process-390x844');
@@ -127,7 +127,7 @@ try {
       const box = document.querySelector(selector).getBoundingClientRect();
       return { x: box.x, y: box.y, width: box.width, height: box.height };
     };
-    return { tree: rect('#treePanel'), editor: rect('#editorPanel'), terminal: rect('#terminal-container'), preview: rect('#previewPanel'), phoneButton: rect('#btnTerminal') };
+    return { tree: rect('#treePanel'), editor: rect('#editorPanel'), terminal: rect('#terminal-container'), preview: rect('#previewPanel'), phoneButton: rect('#btnPhoneTerminal') };
   });
   a.check('desktop keeps the explorer, editor/terminal stack and preview side by side',
     desktop.tree.width >= 160 && desktop.editor.width >= 250 && desktop.terminal.width >= 250 && desktop.preview.width >= 250
@@ -136,7 +136,7 @@ try {
   await screenshot('desktop-workspace-1440x900');
 
   await page.setViewport({ width: 390, height: 844 });
-  await page.click('#btnTerminal');
+  await page.click('#btnPhoneTerminal');
   const tui = `process.stdout.write('\\x1b[2J\\x1b[HPHONE_TUI_READY\\r\\n');
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
@@ -163,13 +163,13 @@ setInterval(() => {}, 1000);`;
   await page.waitForFunction(() => document.querySelector('.logs-view.active.terminal-view .xterm-rows')?.innerText.includes('PHONE_TUI_READY'), { timeout: 60_000 });
 
   for (const [away, viewport, text] of [
-    ['#btnFiles', { width: 390, height: 844 }, 'files-return'],
+    ['#btnPhoneFiles', { width: 390, height: 844 }, 'files-return'],
     ['#btnEditor', { width: 640, height: 390 }, 'resize-return'],
     ['#btnEditor', { width: 390, height: 844 }, 'portrait-return'],
   ]) {
     await page.click(away);
     await page.setViewport(viewport);
-    await page.click('#btnTerminal');
+    await page.click('#btnPhoneTerminal');
     await page.waitForFunction(() => {
       const view = document.querySelector('.logs-view.active.terminal-view');
       const screen = view?.querySelector('.xterm-screen')?.getBoundingClientRect();
