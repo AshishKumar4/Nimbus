@@ -4,7 +4,7 @@
  * Each is one child actor whose worker owns an engine's wasm, so the
  * object's own isolate never instantiates it.
  */
-import { applyFacetLimits, facetLimits, facetLoaderKey } from '@nimbus-sh/fabric/facet-limits.js';
+import { applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey } from '@nimbus-sh/fabric/facet-limits.js';
 /**
  * Load a helper facet: the worker `spec.id` from `env.LOADER`, its code
  * built from `env.ASSETS` the first time, and its class as the child facet
@@ -21,7 +21,44 @@ export async function loadHelperFacet(ctx, env, spec) {
     const kind = spec.kind ?? 'worker';
     const worker = await loader.get(facetLoaderKey(kind, spec.id), async () => applyFacetLimits(kind, await spec.code({ ASSETS: assets })));
     const facetClass = worker.getDurableObjectClass(spec.className, { limits: facetLimits(kind) });
-    return ctx.facets.get(spec.id, async () => ({ class: facetClass }));
+    return boundedCalls(ctx.facets.get(spec.id, async () => ({ class: facetClass })), spec, kind);
+}
+/**
+ * `stub`, with each compute call bounded by `kind`'s call deadline
+ * (facetCallDeadlineMs): one that has not answered by then fails, naming the
+ * facet, the method and the deadline. The call is released, not retried; the
+ * caller drops the stub as it does after any failed call. A process method
+ * (spec.processMethods) runs unbounded, as every process does. The one place
+ * a helper facet's calls are bounded, so no call site keeps its own timer.
+ */
+function boundedCalls(stub, spec, kind) {
+    const deadlineMs = facetCallDeadlineMs(kind);
+    if (deadlineMs === undefined)
+        return stub;
+    const processMethods = new Set(spec.processMethods ?? []);
+    return new Proxy(stub, {
+        get(target, property, receiver) {
+            const value = Reflect.get(target, property, receiver);
+            if (typeof value !== 'function')
+                return value;
+            // Called on the stub itself, never on this wrapper (Symbol.dispose included).
+            if (typeof property !== 'string' || processMethods.has(property))
+                return value.bind(target);
+            return (...args) => withinDeadline(Promise.resolve(Reflect.apply(value, target, args)), deadlineMs, `Nimbus: ${spec.what}'s ${property} gave no answer within ${deadlineMs} ms (the ${kind} kind's call deadline)`);
+        },
+    });
+}
+/** `call`, or a rejection with `message` once `ms` pass first. */
+async function withinDeadline(call, ms, message) {
+    let timer = null;
+    const expired = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); });
+    try {
+        return await Promise.race([call, expired]);
+    }
+    finally {
+        if (timer !== null)
+            clearTimeout(timer);
+    }
 }
 /**
  * One stub per Durable Object: a caller that starts while another is still

@@ -15,6 +15,12 @@ export interface HelperFacetSpec {
     className: string;
     /** How a missing binding names it: "the transform facet". */
     what: string;
+    /**
+     * The facet's methods that run a process (the esbuild CLI): they have no
+     * wall deadline. Every other method is a compute call, bounded by the
+     * kind's call deadline (boundedCalls).
+     */
+    processMethods?: readonly string[];
     code(assets: Required<StagedSourceEnv>): Promise<WorkerCode>;
 }
 /**
