@@ -70,7 +70,7 @@ function identifierNames(source) {
     try {
         for (const token of tokenizer(source, MODULE_PARSE_OPTIONS))
             if (token.type === tokTypes.name)
-                names.add(String(token.value));
+                names.add(String(Reflect.get(token, 'value')));
     }
     catch (error) {
         // The parse after this reports the module's syntax error.
@@ -319,7 +319,7 @@ function readModule(source, known) {
                 dynamicImports.push(node.start);
             }
             else if (node.type === 'MetaProperty') {
-                if (stringOf(node.meta, 'name') === 'import')
+                if (node.meta.name === 'import')
                     metas.push({ start: node.start, end: node.end });
             }
             else if (node.type === 'AwaitExpression' || (node.type === 'ForOfStatement' && node.await))

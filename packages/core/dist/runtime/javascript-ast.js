@@ -103,12 +103,6 @@ export function calleeName(callee) {
     return at.property.type === 'Literal' && typeof at.property.value === 'string' ? at.property.value : null;
 }
 /**
- * Where the first line of an ES module lowered to CommonJS turns from the
- * lowering's own code to the module's (async-module-lowering.ts emitCommonJs;
- * commonjs-cell.ts wrapCommonJsCell counts what precedes it as the head).
- */
-export const MODULE_BODY_MARK = '/*module*/';
-/**
  * The names Node's CommonJS wrapper binds: what a CommonJS module's top level
  * may not redeclare lexically, and what no ES module's scope has.
  */
