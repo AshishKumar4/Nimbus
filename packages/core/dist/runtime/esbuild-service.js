@@ -18,6 +18,7 @@ import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { packageNameFromSpecifier } from './barrel-detect.js';
 import { bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
 import { lowerAsyncModule, lowerEsModule } from './async-module-lowering.js';
+import { ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs } from './module-format.js';
 import { applySourceEdits, nodeList, nodeName, nodeProp, parseJavaScriptModule, walkTopLevelModuleTokens, } from './javascript-ast.js';
 import { VITE_ASSET_QUERY_SUFFIXES, splitImportQuery, viteAssetLoader, } from './vite-assets.js';
 /**
@@ -389,7 +390,8 @@ async function runTransformRequest(esbuildApi, code, options, rewrite, lower, lo
         catch (e) {
             // Nested past what a parse on this stack reaches (acorn, about 600
             // levels): the engine's CommonJS, which in the transform facet runs out
-            // too and so goes to the esbuild facet, whose parser does not.
+            // too and so goes to the esbuild facet, whose parser does not; the
+            // session's define (requestOptions) keeps Node's scope.
             if (!(e instanceof RangeError))
                 throw e;
             const { esModule: _scope, ...rest } = options;
@@ -550,6 +552,19 @@ async function remotePlugin(plugin, initialOptions) {
         },
     };
 }
+/**
+ * An ES module request in Node's scope carries the define that unbinds the
+ * CommonJS names, which the host's engine applies where the lowering's parse
+ * runs out of stack (runTransformRequest), and its result has a typeof of one
+ * 'undefined' (module-format.ts esModuleScopeTypeofs; for the lowering's own
+ * result, already so).
+ */
+function requestOptions(options) {
+    return options?.esModule === 'node' ? { ...options, define: { ...options.define, ...ES_MODULE_UNBOUND_NAMES } } : options;
+}
+function finishedTransform(result, options) {
+    return options?.esModule === 'node' ? { ...result, code: esModuleScopeTypeofs(result.code) } : result;
+}
 /** What a transform request is run on: a CJS emit of JavaScript has its bundled CommonJS records bound to the runtime's provided packages first. */
 function preparedTransformSource(code, options) {
     if (options?.rewriteOnly)
@@ -651,7 +666,7 @@ export class EsbuildService {
             return outcome;
         }
         // In the isolate the engine's own error propagates, diagnostics and all.
-        return this.transformInIsolate(preparedTransformSource(code, options), options);
+        return finishedTransform(await this.transformInIsolate(preparedTransformSource(code, options), requestOptions(options)), options);
     }
     /** One transform on the in-isolate engine, of source the provided-module pre-pass has seen. */
     async transformInIsolate(code, options) {
@@ -672,7 +687,7 @@ export class EsbuildService {
         const positions = [];
         requests.forEach(({ code, options }, i) => {
             try {
-                prepared.push({ code: preparedTransformSource(code, options), options });
+                prepared.push({ code: preparedTransformSource(code, options), options: requestOptions(options) });
                 positions.push(i);
             }
             catch (e) {
@@ -687,14 +702,14 @@ export class EsbuildService {
                 throw new Error(`esbuild transform host answered ${hosted.length} of ${prepared.length} requests`);
             }
             hosted.forEach((outcome, j) => {
-                outcomes[positions[j]] = outcome;
+                outcomes[positions[j]] = 'error' in outcome ? outcome : finishedTransform(outcome, requests[positions[j]].options);
             });
             return outcomes;
         }
         for (let j = 0; j < prepared.length; j++) {
             const { code, options } = prepared[j];
             try {
-                outcomes[positions[j]] = await this.transformInIsolate(code, options);
+                outcomes[positions[j]] = finishedTransform(await this.transformInIsolate(code, options), requests[positions[j]].options);
             }
             catch (e) {
                 outcomes[positions[j]] = { error: errorText(e) };

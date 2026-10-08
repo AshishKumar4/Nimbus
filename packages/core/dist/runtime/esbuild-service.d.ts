@@ -10,7 +10,7 @@
  * plugin always runs here, over this service's view.
  */
 import type { Awaitable } from '../vfs/vfs.js';
-import type { ModuleScope } from './module-format.js';
+import { type ModuleScope } from './module-format.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
  * the esbuild plugin's resolver logic, the shared-externals rules, the
@@ -115,8 +115,9 @@ export interface EsbuildTransformOptions {
     moduleMetadata?: boolean;
     /**
      * The code is an ES module, lowered to CommonJS in this runtime's scope
-     * (async-module-lowering.ts lowerEsModule); dynamicImportParent and
-     * moduleMetadata are the only other options read.
+     * (async-module-lowering.ts lowerEsModule); dynamicImportParent,
+     * moduleMetadata and, where the engine lowers it instead, define are the
+     * only other options read.
      */
     esModule?: ModuleScope;
 }
