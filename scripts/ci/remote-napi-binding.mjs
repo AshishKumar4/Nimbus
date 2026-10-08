@@ -2,10 +2,12 @@
 // One napi-wasm binding of a commit, built on armada: a container runs
 // packages/worker/scripts/napi-wasm/build.mjs --spec <name>@<version> (the
 // tag archive by digest, the toolchain its rust-toolchain.toml pins, cargo
-// --locked) and the binding's directory comes back: <name>.wasm,
-// provenance.json, and the lockfile when the build pruned it from
-// upstream's. Supporting a new version of a binding is a spec line
-// (scripts/napi-wasm/specs.mjs) and this run.
+// --locked), then scripts/bundle-napi-wasm.mjs over it and the commit's
+// other staged builds, and what that stages comes back: the binding's
+// <name>.wasm and provenance.json, and src/napi-wasm-artifacts.generated.ts
+// pinning its digest (the lockfile the build pruned from upstream's, when
+// it did, stays in the saved archive). Supporting a new version of a
+// binding is a spec line (scripts/napi-wasm/specs.mjs) and this run.
 //
 //   bun scripts/ci/remote-napi-binding.mjs <name>@<version> [<commit>]
 //
@@ -14,12 +16,10 @@
 // that text, so each toolchain is an environment of its own, prepared once.
 //
 // Run it in the lane's worktree. <commit> defaults to HEAD; what is built is
-// the commit, never the working tree. The binding is written under
-// packages/worker/public/_assets/napi-wasm/<name>/<version>/ only when
-// <commit> is the worktree's HEAD and that directory does not exist yet;
-// either way the archive is saved and its path printed. Then commit it, and
-// run scripts/ci/remote-build.mjs, whose bundle step stages it
-// (scripts/bundle-napi-wasm.mjs) and pins its digest.
+// the commit, never the working tree. The files are written into the
+// worktree only when <commit> is its HEAD and the binding's directory does
+// not exist yet; either way the archive is saved and its path printed. Then
+// commit them, and run scripts/ci/remote-build.mjs for the dist fixpoint.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -72,10 +72,18 @@ const script = String.raw`
     echo BUILD-FAILED after $(( $(date +%s) - start )) s; tail -80 "$W/build.log"; exit 1
   fi
   echo "built in $(( $(date +%s) - start )) s"
+  # Every other staged build as the commit has it, beside the new one: the
+  # whole tree bundle-napi-wasm.mjs stages and pins.
+  for d in packages/worker/public/_assets/napi-wasm/*/*/; do
+    rel=$(printf '%s' "$d" | sed 's#^packages/worker/public/_assets/napi-wasm/##')
+    case "$rel" in loader/*) continue ;; esac
+    [ -d "$W/out/$rel" ] || { mkdir -p "$W/out/$rel"; cp "$d"* "$W/out/$rel"; }
+  done
+  (cd packages/worker && NIMBUS_NAPI_WASM_ARTIFACTS="$W/out" bun scripts/bundle-napi-wasm.mjs)
   echo ---PROVENANCE---
   cat "$W/out/${name}/${version}/provenance.json"
   echo ---FILES---
-  tar cf - -C "$W/out" ${name}/${version} | xz -9 | base64 -w0
+  tar cf - packages/worker/src/napi-wasm-artifacts.generated.ts packages/worker/public/_assets/napi-wasm/loader ${dir} -C "$W/out" ${name}/${version} | xz -9 | base64 -w0
   echo
 } > {out} 2>&1`;
 const r = await mapOnArmada({ repo, sha, files: [], setup, items: [1], label: `napi-wasm ${key} of ${sha.slice(0, 12)}`, timeout: 3600, command: ['bash', '-c', script] });
@@ -98,10 +106,11 @@ if (head !== sha || existsSync(join(repo, dir))) {
   console.log(`remote-napi-binding: saved ${saved} (job ${r.jobId}); not written: ${head !== sha ? `${sha.slice(0, 12)} is not this worktree's HEAD` : `${dir} exists`}`);
   process.exit(0);
 }
-// The binding and its provenance are staged; a pruned lockfile stays in the
-// archive (provenance pins its digest), out of the Worker's static assets.
-mkdirSync(join(repo, dir), { recursive: true });
-const members = [`${name}/${version}/${name}.wasm`, `${name}/${version}/provenance.json`];
-const unpacked = spawnSync('tar', ['xJf', saved, '-C', join(repo, 'packages/worker/public/_assets/napi-wasm'), ...members], { encoding: 'utf8' });
+// What bundle-napi-wasm staged; the build's own out tree (its pruned
+// lockfile) stays in the archive, out of the Worker's static assets.
+const listed = spawnSync('tar', ['tJf', saved], { encoding: 'utf8' });
+if (listed.status !== 0) throw new Error(`tar failed: ${listed.stderr}`);
+const members = listed.stdout.split('\n').filter((member) => member.startsWith('packages/') && !member.endsWith('/'));
+const unpacked = spawnSync('tar', ['xJf', saved, '-C', repo, ...members], { encoding: 'utf8' });
 if (unpacked.status !== 0) throw new Error(`tar failed: ${unpacked.stderr}`);
 console.log(`remote-napi-binding: wrote ${dir} (job ${r.jobId}; archive ${saved}). Commit it, then run scripts/ci/remote-build.mjs.`);
