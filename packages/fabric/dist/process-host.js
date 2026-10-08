@@ -132,6 +132,10 @@ class FacetProcessHost {
             lost: loss.signal,
             handleHttpRequest: (request) => loss.route(() => facet.handleHttpRequest(request)),
             handleWebSocketRequest: (request) => loss.route(() => facet.handleWebSocketRequest(request)),
+            release: () => {
+                loss.release();
+                return facet.release();
+            },
             describe: () => `facet '${name}' (pid ${params.pid})`
                 + ` of session ${this.coordDoId.slice(-12)}`
                 + `; ${describeImageDelivery(this.imageDelivery)}`,
@@ -359,6 +363,7 @@ class PeerProcessHost {
                 if (released)
                     return;
                 released = true;
+                loss.release();
                 this.tokensInUse.delete(params.pid);
                 this.opens.delete(params.workerKey);
                 try {
@@ -481,11 +486,14 @@ class PeerProcessHost {
  */
 class HostLoss {
     gone = null;
+    /** Nimbus released the process itself (a kill, a stop): what fails after that is no loss. */
+    released = false;
     reject = () => { };
     signal = new Promise((_, reject) => { this.reject = reject; });
     constructor(held) {
         this.signal.catch(() => { });
-        held?.then(() => undefined, (error) => { this.lose(error); });
+        held?.then(() => undefined, (error) => { if (!this.released)
+            this.lose(error); });
     }
     lose(error) {
         if (this.gone === null) {
@@ -494,12 +502,16 @@ class HostLoss {
         }
         return this.gone;
     }
+    /** The host is being released on purpose: the facet or peer ending now is that, not a loss. */
+    release() {
+        this.released = true;
+    }
     /** A call to the host, which fails by the loss's name once the host is gone. */
     route(leg) {
         if (this.gone !== null)
             return Promise.reject(this.gone);
         const call = leg().catch((error) => {
-            throw this.gone ?? (isHostReset(error) ? this.lose(error) : error);
+            throw this.gone ?? (!this.released && isHostReset(error) ? this.lose(error) : error);
         });
         return Promise.race([call, this.signal]);
     }
