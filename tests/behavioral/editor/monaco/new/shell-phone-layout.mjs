@@ -87,6 +87,11 @@ try {
   await page.waitForFunction(() => document.getElementById('agentStatus')?.textContent
     && document.getElementById('agentStatus').textContent !== 'Checking...', { timeout: 30_000 });
   await pane('#agentPanel');
+  const agentControls = await page.evaluate(() => [...document.querySelectorAll('.agent-top button, .agent-top select, #agentStatus')].every((control) => {
+    const rect = control.getBoundingClientRect();
+    return rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth && control.scrollWidth <= control.clientWidth + 1;
+  }));
+  a.check('Agent actions and status stay fully on screen', agentControls);
   await screenshot('phone-agent-390x844');
   await page.click('#btnEditor');
   await pane('#editorPanel');
