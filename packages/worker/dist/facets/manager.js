@@ -868,8 +868,7 @@ ${RESIDENCY_MISS_REPORT}
       }
     } catch {}
 
-    const mod = { exports: {} };
-    Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta(filename || "/home/user/script.js") });
+    const mod = __nimbusEntryModuleOf(filename, ${entry.esModule});
     try {
       await __nimbusPrepareStdin();
       // From here on the program runs: a stop is possible while stdin can
@@ -877,8 +876,6 @@ ${RESIDENCY_MISS_REPORT}
       __nimbusStopReplay.arm(__nimbusStdinCanStop());
       // \`-r\` and \`--import\` modules first, before the entry is require.main.
       await __nimbusPreload();
-      // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
-      __require.main = mod;
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
       // where it is, as Node does. \`-p\`'s returns the value it prints.
@@ -1394,8 +1391,7 @@ ${RESIDENCY_MISS_REPORT}
       try { __processMod.stdin.__nimbusStartLivePump?.(); } catch {}
     }
 
-    const mod = { exports: {} };
-    Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta(filename || "/home/user/script.js") });
+    const mod = __nimbusEntryModuleOf(filename, ${entry.esModule});
     let __attachedCompletion = null;
     let __attachedExplicitExit = false;
     // \`--watch\` and \`--inspect-brk\` hold a process that has no handle left
@@ -1420,7 +1416,6 @@ ${RESIDENCY_MISS_REPORT}
     try {
       // \`-r\` and \`--import\` modules first, before the entry is require.main.
       await __nimbusPreload();
-      __require.main = mod;
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
       // where it is, as Node does. \`-p\`'s returns the value it prints.
