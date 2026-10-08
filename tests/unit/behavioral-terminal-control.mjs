@@ -165,6 +165,24 @@ try {
     assert.equal(input.exitCode, 5);
   });
 
+  await scenario('queued typeahead becomes stdin if the foreground command later reads', async ({ client, box, gate }) => {
+    const reading = gate();
+    box.commands.registry.register('later-read', async (ctx) => {
+      await ctx.stdout.write('BEFORE_READ\n');
+      await reading.promise;
+      await ctx.stdout.write('READ ' + await ctx.terminalStdin.readLine() + '\n');
+      return 9;
+    });
+    const command = client.run('later-read', 1000);
+    await client.waitFor((text) => text.includes('BEFORE_READ'), 1000, 'before read');
+    const input = client.run('true', 1000);
+    reading.resolve();
+    const result = await command;
+    assert.equal(result.exitCode, 9);
+    assert.match(result.output, /READ true/);
+    assert.equal((await input).exitCode, 9, 'stdin belongs to its foreground command, not a shell true');
+  });
+
   for (const command of ['echo "unfinished', "cat > /home/user/incomplete <<'EOF'"]) {
     await scenario('an incomplete line cancels without manufacturing an exit status: ' + command, async ({ client }) => {
       const pending = client.run(command, 1000);
