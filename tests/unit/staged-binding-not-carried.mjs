@@ -41,6 +41,13 @@ const FILES = {
   [`${APP}/node_modules/rolldown/dist/shared/binding.mjs`]: 'export {};\n',
   [`${APP}/node_modules/fsevents/package.json`]: JSON.stringify({ name: 'fsevents', version: '2.3.3' }),
 };
+// A rolldown at each staged version, and at one Nimbus has no build of, each nested in a package of its own.
+const UNBUILT = '9.9.99';
+const sharedAt = (version) => `${APP}/node_modules/at-${version}/node_modules/rolldown/dist/shared`;
+for (const version of [...versions, UNBUILT]) {
+  FILES[`${APP}/node_modules/at-${version}/node_modules/rolldown/package.json`] = JSON.stringify({ name: 'rolldown', version });
+  FILES[`${sharedAt(version)}/binding.mjs`] = 'export {};\n';
+}
 for (const [path, body] of Object.entries(FILES)) {
   vfs.mkdir('/' + path.slice(0, path.lastIndexOf('/')), { recursive: true });
   vfs.writeFile('/' + path, enc.encode(body));
@@ -98,16 +105,12 @@ assert.equal(lines.length, 1, `said once on stderr, however many candidates were
 assert.notEqual(named('./fsevents.node', `${APP}/node_modules/fsevents`).code, 'ERR_NIMBUS_BINDING_NOT_CARRIED');
 
 // ── a version Nimbus has no build of is named as that, with the versions it has ──
-const manifestPath = `${APP}/node_modules/rolldown/package.json`;
-const installed = (version) => { bundle[manifestPath] = JSON.stringify({ name: 'rolldown', version }); };
-installed('9.9.99');
 {
-  const error = named('@rolldown/binding-wasm32-wasi');
+  const error = named('@rolldown/binding-wasm32-wasi', sharedAt(UNBUILT));
   assert.equal(error.code, 'ERR_NIMBUS_BINDING_VERSION', error.message);
-  assert.ok(error.message.includes(`staged wasm builds of ${versions.join(', ')}`) && error.message.includes('rolldown@9.9.99')
+  assert.ok(error.message.includes(`staged wasm builds of ${versions.join(', ')}`) && error.message.includes(`rolldown@${UNBUILT}`)
     && error.message.includes(`npm install rolldown@${versions.at(-1)}`), error.message);
 }
-installed(rolldown.version);
 
 // ── the binding carried: the native candidates fail plainly, the wasi one is the build of the owner's version ──
 const built = new Map(builds.map((b) => [b.version, { owner: 'rolldown', version: b.version, exports: { build: b.version } }]));
@@ -115,18 +118,15 @@ globalThis.__nimbusStagedBindings = new Map([['@rolldown/binding-wasm32-wasi', b
 assert.notEqual(named('../rolldown-binding.linux-x64-gnu.node').code, 'ERR_NIMBUS_BINDING_NOT_CARRIED');
 assert.notEqual(named('@rolldown/binding-linux-x64-gnu').code, 'ERR_NIMBUS_BINDING_NOT_CARRIED');
 for (const build of builds) {
-  installed(build.version);
-  assert.deepEqual(require('@rolldown/binding-wasm32-wasi', shared), { build: build.version }, `rolldown@${build.version} is answered with its own build`);
+  assert.deepEqual(require('@rolldown/binding-wasm32-wasi', sharedAt(build.version)), { build: build.version }, `rolldown@${build.version} is answered with its own build`);
 }
-installed('9.9.99');
-assert.equal(named('@rolldown/binding-wasm32-wasi').code, 'ERR_NIMBUS_BINDING_VERSION', 'a carried launch names an unbuilt version too');
+assert.equal(named('@rolldown/binding-wasm32-wasi', sharedAt(UNBUILT)).code, 'ERR_NIMBUS_BINDING_VERSION', 'a carried launch names an unbuilt version too');
 // One build carried, and the owner at another staged version: the next launch carries it.
 globalThis.__nimbusStagedBindings = new Map([['@rolldown/binding-wasm32-wasi', new Map([[rolldown.version, built.get(rolldown.version)]])]]);
 if (builds.length > 1) {
-  installed(builds[1].version);
-  const error = named('@rolldown/binding-wasm32-wasi');
+  const error = named('@rolldown/binding-wasm32-wasi', sharedAt(builds[1].version));
   assert.ok(error.message.includes(`this launch carries ${rolldown.version}, not ${builds[1].version}`), error.message);
 }
-installed(rolldown.version);
+assert.deepEqual(require('@rolldown/binding-wasm32-wasi', shared), { build: rolldown.version }, 'the build carried answers its own version');
 
 console.log('staged-binding-not-carried: ok');
