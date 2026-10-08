@@ -1,17 +1,11 @@
 /** Resource policy for every fabric-created Worker and Durable Object facet. */
 const FACET_CPU_MS = 300_000;
 export const FACET_LIMITS = Object.freeze({
-    // Resident filesystem transport retains its charging scope across HTTP
-    // calls (native 10000 failed on the tenth 1000-write call). Workers documents
-    // a 10M maximum, and Loader custom limits only lower platform limits:
-    // https://developers.cloudflare.com/workers/platform/limits/#subrequests
-    // https://developers.cloudflare.com/dynamic-workers/usage/limits/
-    // Acceptance of a larger input is not proof of a larger enforced ceiling.
-    // This finite lifetime bound eventually stops 10M transport operations, not
-    // necessarily quickly. Platform CPU accounting can span overlapping calls;
-    // separate tail events do not prove independent CPU windows. Neither setting
-    // promises an unlimited resident lifetime or fast shutdown of low-CPU work
-    // across calls.
+    // A resident's whole life is one invocation, and every filesystem call it
+    // makes is a subrequest of it: 10,000 ran out within minutes (astro dev,
+    // 2026-10-08). 10M is the Workers maximum, and a Dynamic Worker's limits
+    // only lower its parent's, so the hosting Worker declares the same
+    // (MAX_FACET_SUBREQUESTS, enforced by deployment validation).
     process: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 10_000_000 }),
     build: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000 }),
     esbuild: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000 }),
@@ -45,8 +39,9 @@ const CALL_DEADLINES = Object.freeze({
 export function facetCallDeadlineMs(kind) {
     return CALL_DEADLINES[kind];
 }
-/** Hosting Worker constraint; the policy remains the sole source of these values. */
+/** What the hosting Worker must declare at least, since a facet's limits only lower its parent's. */
 export const MAX_FACET_CPU_MS = Math.max(...Object.values(FACET_LIMITS).map(limits => limits.cpuMs));
+export const MAX_FACET_SUBREQUESTS = Math.max(...Object.values(FACET_LIMITS).map(limits => limits.subRequests));
 export function facetLimits(kind) {
     const { cpuMs, subRequests } = FACET_LIMITS[kind];
     return { cpuMs, subRequests };

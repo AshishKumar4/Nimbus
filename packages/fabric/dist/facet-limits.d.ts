@@ -43,8 +43,9 @@ export interface FacetCodePolicy {
 }
 /** One call's wall deadline for `kind`, or undefined: the kind runs processes, which have none. */
 export declare function facetCallDeadlineMs(kind: FacetKind): number | undefined;
-/** Hosting Worker constraint; the policy remains the sole source of these values. */
+/** What the hosting Worker must declare at least, since a facet's limits only lower its parent's. */
 export declare const MAX_FACET_CPU_MS: number;
+export declare const MAX_FACET_SUBREQUESTS: number;
 export declare function facetLimits(kind: FacetKind): Readonly<FacetResourceLimits>;
 /** A cached worker must not retain an earlier policy's limits or guest binding. */
 export declare function facetPolicyKey(kind: FacetKind, limits?: Readonly<FacetResourceLimits>): string;

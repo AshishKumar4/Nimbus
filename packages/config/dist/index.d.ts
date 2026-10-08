@@ -58,6 +58,8 @@ export interface BuildWranglerOptions {
     name: string;
     /** Hosting Worker CPU budget. Must accommodate every fabric facet kind. */
     cpuMs?: number;
+    /** Hosting Worker subrequests per invocation. Must accommodate every fabric facet kind. */
+    subrequests?: number;
     /**
      * Compatibility date. Default `2026-09-26`. A date keeps every other
      * behavior it selects; the config names each flag Nimbus needs that the
@@ -137,6 +139,7 @@ export interface WranglerConfig {
     };
     limits: {
         cpu_ms: number;
+        subrequests: number;
     };
     vars?: Record<string, string>;
     assets: {
