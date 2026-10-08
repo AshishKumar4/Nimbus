@@ -33,8 +33,10 @@ import { isNativeBinPath } from './os-contracts.js';
 import { stripCommentsForImports } from './comment-strip.js';
 import { createEsmResolver } from '../_shared/esm-resolver.js';
 import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
+import { requireWrapperCalls } from './require-wrappers.js';
 // The CommonJS resolver this walk stages from (require-resolution.ts).
 export { requireFsOverBridge } from './require-resolution.js';
+export { requireWrapperCalls } from './require-wrappers.js';
 // Match literal-string require/require.resolve with single, double, or
 // template-literal-no-interp specifier. The plain-string variant is by
 // far the dominant npm pattern; the others catch a long tail of
@@ -277,11 +279,11 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     // loads the few its input names. Walking a table first spent the bound on
     // grammars the program never loads, and cut the deferral it does.
     const deferredDynamic = new Map();
-    function defer({ specifier, fromDir, alternatives, path }) {
+    function defer({ specifier, fromDir, alternatives, path, require }) {
         let queue = deferredDynamic.get(alternatives);
         if (queue === undefined)
             deferredDynamic.set(alternatives, queue = []);
-        queue.push({ specifier, fromDir, ...(path !== undefined ? { path } : {}) });
+        queue.push({ specifier, fromDir, ...(path !== undefined ? { path } : {}), ...(require ? { require } : {}) });
     }
     function nextDeferred() {
         let fewest = Infinity;
@@ -507,6 +509,12 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         }
         for (const specifier of deferrals)
             defer({ specifier, fromDir, alternatives: deferrals.size });
+        // What a require wrapper's calls name (@vitejs/plugin-vue's
+        // `tryRequire("vue/compiler-sfc", root)`): optional loads, as the
+        // wrapper's try says, so phase 2's, resolved as require() resolves them.
+        const loads = (await requireWrapperCalls(code)).filter((specifier) => !isFacetProvided(specifier));
+        for (const specifier of loads)
+            defer({ specifier, fromDir, alternatives: loads.length, require: true });
     }
     // A dynamic `import()` loads what Node's ESM resolver names (the process's
     // loader resolves it the same way, core/_shared/esm-resolver.ts): the
@@ -621,7 +629,9 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         // Phase 2: dynamic-import subtrees, fewest alternatives first; the queue grows as they are walked.
         lazy = true;
         for (let next = nextDeferred(); next !== undefined && bytesSeen < maxBundleBytes; next = nextDeferred()) {
-            const resolved = next.path ?? await resolveDynamicImport(next.specifier, next.fromDir);
+            const resolved = next.path ?? (next.require
+                ? (await resolveStaticDependency(next.specifier, next.fromDir))?.resolved ?? null
+                : await resolveDynamicImport(next.specifier, next.fromDir));
             if (!resolved)
                 continue;
             // An optional learned root is staged whole or not at all: a module in
@@ -744,15 +754,18 @@ conditions = []) {
             throw new WalkControlFailure('Dependency walk interrupted', { cause });
         }
     });
-    const esm = walkEsmResolver(vfs, paced, async (path) => {
+    const read = async (path) => {
         try {
             return await vfs.readFileString(stripLeadingSlashes(path));
         }
         catch {
             return null;
         }
-    }, conditions);
+    };
+    const esm = walkEsmResolver(vfs, paced, read, conditions);
     try {
+        if (deferral.require)
+            return (await resolveRequireEx(vfs, deferral.specifier, deferral.fromDir, read, paced, conditions))?.resolved ?? null;
         return await resolveImportWith(esm, deferral.specifier, deferral.fromDir);
     }
     catch (error) {
