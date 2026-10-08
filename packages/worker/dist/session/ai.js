@@ -48,7 +48,7 @@ export function routeSessionLoopback(host, port, request) {
     // A credential-backed gateway is private, not a shareable port entry.
     if (port === NIMBUS_AI_GATEWAY_PORT)
         return handleSessionAiRequest(host, request);
-    return routeRuntimeLoopback(host.portRegistry, port, request);
+    return routeRuntimeLoopback(host.portRegistry, port, request, host.ensureDurableAppOnPort);
 }
 /** DO storage key holding this session's Cloudflare credential of record. */
 export const SESSION_AI_CREDENTIAL_KEY = 'nimbus:ai:credential';

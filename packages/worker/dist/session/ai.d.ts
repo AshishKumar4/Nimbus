@@ -40,6 +40,7 @@
  */
 import type { LanguageModel } from 'ai';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { type EnsurePortServer } from './loopback.js';
 import { type NimbusCloudflareAccount } from './agent-oauth.js';
 export interface SessionAiHost {
     env: Record<string, unknown>;
@@ -53,6 +54,7 @@ export interface SessionAiHost {
 }
 export declare function routeSessionLoopback(host: SessionAiHost & {
     portRegistry: PortRegistry;
+    ensureDurableAppOnPort?: EnsurePortServer;
 }, port: number, request: Request): Promise<Response | null>;
 /** DO storage key holding this session's Cloudflare credential of record. */
 export declare const SESSION_AI_CREDENTIAL_KEY = "nimbus:ai:credential";

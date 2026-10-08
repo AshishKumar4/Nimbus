@@ -128,7 +128,9 @@ class RuntimeOwner {
         return this.readyPromise;
     }
     ensureSqliteFs() { return this.sqliteFs; }
-    routeLoopback(port, request) { return routeRuntimeLoopback(this.portRegistry, port, request); }
+    routeLoopback(port, request) {
+        return routeRuntimeLoopback(this.portRegistry, port, request, (dark) => this.ensureFacetManager().manager.ensureDurableAppOnPort(dark));
+    }
     ensureBundlePool() { this.assertOpen(); return this.services.ensureBundlePool(); }
     ensureFacetManager() { this.assertOpen(); return this.services.ensureFacetManager(); }
     ensureFetchProxy(log) { return this.services.ensureFetchProxy(log); }
