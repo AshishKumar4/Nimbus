@@ -238,7 +238,7 @@ class PythonReplAdapter {
             method: 'POST',
             body: JSON.stringify(pythonReplStep(this.deps, this.pythonHome, userCode)),
             signal,
-        }), { timeoutMs: 60_000 });
+        }));
         if (!response.ok) {
             const failure = PythonFacetFailure.parse(await response.json());
             throw new Error(failure.__nimbusFacetError);

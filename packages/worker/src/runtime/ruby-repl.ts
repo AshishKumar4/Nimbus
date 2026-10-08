@@ -229,9 +229,9 @@ class RubyReplAdapter implements ReplAdapter {
     if (!pool || !wasmBytesAB) throw new Error('Ruby REPL is not initialized');
     const { home, cwd, binName } = this.deps;
     const step: RubyReplStep = { userCode, home, cwd, binName };
+    // No deadline: an evaluation is the REPL process running the user's code.
     return await pool.submit(rubyReplStepFacetFn, step, {
       wasmModules: { 'ruby+stdlib.wasm': wasmBytesAB },
-      timeoutMs: 60_000,
     });
   }
 }

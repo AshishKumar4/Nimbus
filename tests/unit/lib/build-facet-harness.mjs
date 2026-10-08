@@ -97,7 +97,8 @@ export async function freshFacetClass() {
  * @param {{ deliveryDelayMs?: (call: number, argument: unknown) => number }} [options]
  */
 export function durableObject(BuildFacet, classFor = async () => BuildFacet, { deliveryDelayMs = () => 0 } = {}) {
-  const counts = { loaderGets: 0, facetInstances: 0, loaderIds: [], aborted: [], prebundling: 0, mostPrebundling: 0, calls: 0 };
+  // loaderIds: what LOADER.get was asked for (policy-keyed); facetNames: the facets those became.
+  const counts = { loaderGets: 0, facetInstances: 0, loaderIds: [], facetNames: [], aborted: [], prebundling: 0, mostPrebundling: 0, calls: 0 };
   const facets = new Map();
   const inFlight = new Map();
   let evaluating = 0;
@@ -130,6 +131,7 @@ export function durableObject(BuildFacet, classFor = async () => BuildFacet, { d
         inFlight.delete(name);
       },
       get(name, load) {
+        if (!facets.has(name)) counts.facetNames.push(name);
         if (!facets.has(name)) facets.set(name, load().then(({ class: FacetClass }) => { counts.facetInstances++; return new FacetClass({}, {}); }));
         const instance = facets.get(name);
         return {

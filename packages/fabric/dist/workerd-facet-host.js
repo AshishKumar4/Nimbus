@@ -20,6 +20,7 @@ import { getCtxExports, stagedBootAssembler, supervisorEntrypoint, supervisorEnt
 import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, withDynamicWorkerCapNamed, } from './budgets.js';
 import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
 import { supervisorLoaderKey, mintProcessSupervisor } from './supervisor-props.js';
+import { applyFacetLimits, facetLimits, facetLoaderKey } from './facet-limits.js';
 export function getNimbusCtxExports() {
     const ctxExports = getCtxExports();
     if (!ctxExports || typeof ctxExports !== 'object') {
@@ -422,8 +423,8 @@ function residentProcessClass(env, disk, supervisor, params, loaderKey) {
             + 'the Worker Loader binding; add it via worker_loaders in wrangler.jsonc.');
     }
     return loader
-        .get(loaderKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
-        .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
+        .get(facetLoaderKey('process', loaderKey), async () => applyFacetLimits('process', await residentWorkerConfig(env, disk, supervisor, params.boot)))
+        .getDurableObjectClass(RESIDENT_PROCESS_CLASS, { limits: facetLimits('process') });
 }
 async function runOneShot(ctx, env, supervisor, params, consume) {
     const loader = env.LOADER;
@@ -464,7 +465,7 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
             params.onWriterActivated(params.writerId);
             supervisorBinding = mintProcessSupervisor(supervisorRpc, supervisor);
         }
-        worker = loader.load({
+        worker = loader.load(applyFacetLimits('process', {
             compatibilityDate: spec.compatibilityDate,
             compatibilityFlags: spec.compatibilityFlags,
             mainModule: spec.mainModule,
@@ -475,11 +476,11 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
             ...(supervisorBinding && params.outbound
                 ? { globalOutbound: supervisorBinding }
                 : supervisor.egress !== undefined ? { globalOutbound: supervisor.egress } : {}),
-        });
+        }));
         // The loader has taken the map; holding it here would keep a second full
         // copy of the program alive for as long as the program runs.
         spec = undefined;
-        entrypoint = worker.getEntrypoint();
+        entrypoint = worker.getEntrypoint(undefined, { limits: facetLimits('process') });
         // Narrowed by the runtime check; kept as a property call on the stub —
         // extracting the method builds a pipelined `fetch.call` path workerd
         // refuses for dynamically-loaded workers.

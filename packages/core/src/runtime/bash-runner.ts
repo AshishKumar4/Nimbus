@@ -203,6 +203,7 @@ export async function createBashFacetSession(deps: {
       stepController = controller;
       const signal = deps.signal ? AbortSignal.any([controller.signal, deps.signal]) : controller.signal;
       let raw: unknown;
+      // No deadline: a process runs until it exits or is killed.
       try {
         if (facet.submitRequest) {
           const response = await facet.submitRequest(
@@ -213,11 +214,10 @@ export async function createBashFacetSession(deps: {
               body: JSON.stringify(args),
               signal,
             }),
-            { timeoutMs: 300_000 },
           );
           raw = await response.json();
         } else {
-          raw = await facet.submit<BashStepArgs, unknown>(bashFacetStep, args, { timeoutMs: 300_000, signal });
+          raw = await facet.submit<BashStepArgs, unknown>(bashFacetStep, args, { signal });
         }
       } catch (error) {
         // An aborted step leaves the facet's session dead.

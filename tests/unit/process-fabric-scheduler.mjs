@@ -27,6 +27,7 @@
 // Behavior is asserted through the public ProcessFabric surface only.
 
 import assert from 'node:assert/strict';
+import { facetLoaderKey } from '../../packages/fabric/src/facet-limits.ts';
 import {
   ProcessFabric,
   ResidentProcessHandle,
@@ -144,7 +145,7 @@ for (const mode of PROCESS_HOST_MODES) {
     // host, so it holds the first slot.
     assert.equal(boot.facetName, residentFacetName(0), 'the facet is named for its slot');
     assert.equal(boot.className, RESIDENT_PROCESS_CLASS, 'one class name for every runtime');
-    assert.equal(boot.loaderId, 'nimbus-process:coord-do-id:42', 'the loader id is the process key');
+    assert.equal(boot.loaderId, facetLoaderKey('process', 'nimbus-process:coord-do-id:42'), 'the loader id is the process key, under the process policy');
     // (2) syscalls route to the coordinator, whatever the process is and
     // wherever it runs — a peer mints the binding for the COORDINATOR's doId.
     const supervisor = boot.config.env.SUPERVISOR;
@@ -177,7 +178,7 @@ for (const mode of PROCESS_HOST_MODES) {
     assert.match(host.hostIncarnation, /^[0-9a-f-]{36}$/);
     assert.equal(boot.config.env.SUPERVISOR.props.hostIncarnation, host.hostIncarnation,
       'the binding does not name the coordinator instance');
-    assert.equal(boot.loaderId, `nimbus-process:coord-do-id:44:${host.hostIncarnation}`,
+    assert.equal(boot.loaderId, facetLoaderKey('process', `nimbus-process:coord-do-id:44:${host.hostIncarnation}`),
       'the loader key does not name the coordinator instance');
     console.log(`  [${mode}] case1b: a delivering coordinator's instance rides the binding and the loader key`);
   }

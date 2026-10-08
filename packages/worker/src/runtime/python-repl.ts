@@ -318,7 +318,7 @@ class PythonReplAdapter implements ReplAdapter {
         body: JSON.stringify(pythonReplStep(this.deps, this.pythonHome, userCode)),
         signal,
       }),
-      { timeoutMs: 60_000 },
+      // No deadline: an evaluation is the REPL process running the user's code.
     );
     if (!response.ok) {
       const failure = PythonFacetFailure.parse(await response.json());
