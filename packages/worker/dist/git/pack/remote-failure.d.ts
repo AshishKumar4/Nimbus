@@ -51,7 +51,9 @@ export declare function redactCredentials(text: string, secrets: readonly string
  * git's own.
  */
 export declare function remoteFailureText(url: string, failure: RemoteFailure, credentials: OfferedCredentials, secrets?: readonly string[]): string;
-/** The message of an answer's body, when its type is text/plain (show_http_message); the body is read. */
+/** What git says of a remote that names neither a configured remote nor a repository (transport.c, connect.c). */
+export declare function noSuchRemoteText(remote: string): string;
+/** The message of an answer's body, when its type is text/plain; the body is read (or cancelled). */
 export declare function plainTextMessage(contentType: string | null, body: ReadableStream<Uint8Array> | null): Promise<string | undefined>;
 /**
  * What `error`, the facet's failure, says failed at the git server: an

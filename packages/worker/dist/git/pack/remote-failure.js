@@ -98,36 +98,39 @@ export function remoteFailureText(url, failure, credentials, secrets = []) {
         return `${lines}fatal: Authentication failed for '${shown}'\n`;
     return `${lines}fatal: unable to access '${shown}': The requested URL returned error: ${failure.status}\n`;
 }
-/** The message of an answer's body, when its type is text/plain (show_http_message); the body is read. */
+/** What git says of a remote that names neither a configured remote nor a repository (transport.c, connect.c). */
+export function noSuchRemoteText(remote) {
+    return `fatal: '${remote}' does not appear to be a git repository\n`
+        + 'fatal: Could not read from remote repository.\n\n'
+        + 'Please make sure you have the correct access rights\n'
+        + 'and the repository exists.\n';
+}
+/** Whether an answer's type is text/plain, the only one git shows (show_http_message). */
+function isPlainText(contentType) {
+    return (contentType ?? '').split(';')[0].trim().toLowerCase() === 'text/plain';
+}
+/** A body's first MESSAGE_BYTES (what a failing answer's message is kept of), the rest left unread. */
+async function readBounded(body) {
+    const out = new Uint8Array(MESSAGE_BYTES);
+    let size = 0;
+    for await (const chunk of body) {
+        const take = Math.min(chunk.byteLength, MESSAGE_BYTES - size);
+        out.set(chunk.subarray(0, take), size);
+        size += take;
+        if (size === MESSAGE_BYTES)
+            break;
+    }
+    return out.slice(0, size);
+}
+/** The message of an answer's body, when its type is text/plain; the body is read (or cancelled). */
 export async function plainTextMessage(contentType, body) {
     if (body === null)
         return undefined;
-    const plain = (contentType ?? '').split(';')[0].trim().toLowerCase() === 'text/plain';
-    if (!plain) {
+    if (!isPlainText(contentType)) {
         await body.cancel();
         return undefined;
     }
-    const reader = body.getReader();
-    const chunks = [];
-    let size = 0;
-    for (;;) {
-        const { done, value } = await reader.read();
-        if (done)
-            break;
-        chunks.push(value);
-        size += value.byteLength;
-        if (size >= MESSAGE_BYTES) {
-            await reader.cancel();
-            break;
-        }
-    }
-    const bytes = new Uint8Array(size);
-    let at = 0;
-    for (const chunk of chunks) {
-        bytes.set(chunk.subarray(0, Math.min(chunk.byteLength, size - at)), at);
-        at += chunk.byteLength;
-    }
-    return new TextDecoder().decode(bytes.subarray(0, Math.min(size, MESSAGE_BYTES)));
+    return new TextDecoder().decode(await readBounded(body));
 }
 /**
  * What `error`, the facet's failure, says failed at the git server: an
@@ -143,26 +146,6 @@ export function remoteFailureOf(error, http) {
 /** A body of `bytes` again, as cf-git reads a response body (an async iterable of chunks). */
 async function* replay(bytes) {
     yield bytes;
-}
-/** Bytes from cf-git's response body (an async iterable), up to MESSAGE_BYTES. */
-async function collect(body) {
-    const chunks = [];
-    let size = 0;
-    if (body && Symbol.asyncIterator in body) {
-        for await (const chunk of body) {
-            chunks.push(chunk);
-            size += chunk.byteLength;
-            if (size >= MESSAGE_BYTES)
-                break;
-        }
-    }
-    const out = new Uint8Array(size);
-    let at = 0;
-    for (const chunk of chunks) {
-        out.set(chunk, at);
-        at += chunk.byteLength;
-    }
-    return out;
 }
 /**
  * `http` with each failure kept: a request that threw (the transport: that
@@ -185,11 +168,11 @@ export function observedGitHttp(http) {
             }
             if (response.statusCode < 400)
                 return response;
-            const bytes = await collect(response.body);
+            const body = response.body;
+            const bytes = body && Symbol.asyncIterator in body ? await readBounded(body) : new Uint8Array(0);
             const headers = (response.headers ?? {});
-            const contentType = Object.entries(headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1] ?? '';
-            const plain = contentType.split(';')[0].trim().toLowerCase() === 'text/plain';
-            answered = { kind: 'status', status: response.statusCode, ...(plain ? { message: new TextDecoder().decode(bytes) } : {}) };
+            const contentType = Object.entries(headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1];
+            answered = { kind: 'status', status: response.statusCode, ...(isPlainText(contentType) ? { message: new TextDecoder().decode(bytes) } : {}) };
             return { ...response, body: replay(bytes) };
         },
         failureOf(error) {

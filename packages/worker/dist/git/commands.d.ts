@@ -12,6 +12,7 @@ import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import { type ConfigOverrides } from './config-params.js';
 import { DirCache } from './worktree/dircache.js';
 type OutputStream = {
     write(s: string): void | Promise<void>;
@@ -34,14 +35,8 @@ export interface ParsedGitGlobals {
     subArgs: string[];
     /** The directory the subcommand runs in, after every `-C`. */
     dir: string;
-    /** `-c <name>=<value>`: each key (its section and name in lower case), its values in order. */
-    config: Map<string, string[]>;
-}
-/** A refusal of git's own options, in git's words, and the exit it takes. */
-export declare class GitGlobalsError extends Error {
-    readonly lines: string;
-    readonly code: number;
-    constructor(lines: string, code: number);
+    /** `-c <name>=<value>` (config-params.ts). */
+    config: ConfigOverrides;
 }
 /**
  * The options git accepts BEFORE the subcommand. `-C <path>` runs the

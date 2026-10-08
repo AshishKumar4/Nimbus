@@ -12,7 +12,8 @@ import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs } from '../runtime/project-fs.js';
 import { execGitNetwork, GIT_CLONE_JOB_MARKER } from './network-facet.js';
-import { remoteFailureText, urlCredentials } from './pack/remote-failure.js';
+import { noSuchRemoteText, remoteFailureText, urlCredentials } from './pack/remote-failure.js';
+import { GitGlobalsError, parseConfigParameter, withConfigOverrides } from './config-params.js';
 import { packsSeam } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -245,95 +246,6 @@ function createGitFs(vfs, worktree = null, promisor) {
 function getDir(ctx) {
     return '/' + (ctx.cwd || '/home/user').replace(/^\/+/, '');
 }
-/** A refusal of git's own options, in git's words, and the exit it takes. */
-export class GitGlobalsError extends Error {
-    lines;
-    code;
-    constructor(lines, code) {
-        super(lines.trimEnd());
-        this.lines = lines;
-        this.code = code;
-        this.name = 'GitGlobalsError';
-    }
-}
-/** iskeychar: what a config section and variable name are made of. */
-const isKeyChar = (c) => /^[A-Za-z0-9-]$/.test(c);
-/**
- * git_config_push_parameter and git_config_parse_key for one `-c` text: the
- * key before the first '=' (a missing '=' is a boolean's true), its section
- * and variable name in lower case, its subsection as written. An invalid one
- * is git's error, then "unable to parse command-line config" (128).
- */
-function configParameter(text) {
-    const eq = text.indexOf('=');
-    const key = eq < 0 ? text : text.slice(0, eq);
-    const value = eq < 0 ? 'true' : text.slice(eq + 1);
-    const refuse = (error) => {
-        throw new GitGlobalsError(`error: ${error}\nfatal: unable to parse command-line config\n`, 128);
-    };
-    // config_parse_pair, as git reads a split `-c` parameter back.
-    if (key === '')
-        refuse('empty config key');
-    const lastDot = key.lastIndexOf('.');
-    if (lastDot <= 0)
-        refuse(`key does not contain a section: ${key}`);
-    if (lastDot === key.length - 1)
-        refuse(`key does not contain variable name: ${key}`);
-    const firstDot = key.indexOf('.');
-    let stored = '';
-    for (let i = 0; i < key.length; i++) {
-        const c = key[i];
-        // The subsection, between the first dot and the last, is kept as written.
-        if (i > firstDot && i < lastDot) {
-            if (c === '\n')
-                refuse(`invalid key (newline): ${key}`);
-            stored += c;
-            continue;
-        }
-        if (c === '.') {
-            stored += c;
-            continue;
-        }
-        if (!isKeyChar(c) || (i === lastDot + 1 && !/^[A-Za-z]$/.test(c)))
-            refuse(`invalid key: ${key}`);
-        stored += c.toLowerCase();
-    }
-    return [stored, value];
-}
-/** A config key as `-c` stores it: section and variable name in lower case, the subsection kept. */
-function configKey(path) {
-    const first = path.indexOf('.');
-    const last = path.lastIndexOf('.');
-    if (first < 0)
-        return path.toLowerCase();
-    return path.slice(0, first).toLowerCase() + path.slice(first, last) + path.slice(last).toLowerCase();
-}
-/**
- * `git` with `-c`'s settings over every file's: a key `-c` set reads as its
- * last value, and all of them follow the files' for one read whole, for this
- * command only (nothing is written).
- */
-function withConfigOverrides(git, overrides) {
-    if (overrides.size === 0)
-        return git;
-    return new Proxy(git, {
-        get(target, property, receiver) {
-            if (property === 'getConfig') {
-                return async (args) => {
-                    const values = overrides.get(configKey(args.path));
-                    return values !== undefined ? values[values.length - 1] : await target.getConfig(args);
-                };
-            }
-            if (property === 'getConfigAll') {
-                return async (args) => {
-                    const base = await target.getConfigAll(args);
-                    return [...base, ...(overrides.get(configKey(args.path)) ?? [])];
-                };
-            }
-            return Reflect.get(target, property, receiver);
-        },
-    });
-}
 /**
  * The options git accepts BEFORE the subcommand. `-C <path>` runs the
  * command as if started from <path>; repeated, each is relative to the
@@ -351,7 +263,7 @@ export function parseGitGlobals(args, cwd) {
             const text = args[++i];
             if (text === undefined)
                 throw new GitGlobalsError(`-c expects a configuration string\n${GIT_USAGE}\n`, 129);
-            const [key, value] = configParameter(text);
+            const [key, value] = parseConfigParameter(text);
             config.set(key, [...(config.get(key) ?? []), value]);
         }
         else if (arg === '-C') {
@@ -2789,12 +2701,12 @@ async function remoteUrl(git, fs, dir, remote) {
     const value = await git.getConfig({ fs, dir, path: `remote.${remote}.url` });
     return typeof value === 'string' ? value : undefined;
 }
-/** What git says of a remote that names neither a configured remote nor a repository (transport.c, connect.c). */
-function noSuchRemote(remote) {
-    return `fatal: '${remote}' does not appear to be a git repository\n`
-        + 'fatal: Could not read from remote repository.\n\n'
-        + 'Please make sure you have the correct access rights\n'
-        + 'and the repository exists.\n';
+/** The URL `remote` names, or undefined, git's refusal of it written (pack/remote-failure.ts noSuchRemoteText). */
+async function knownRemote(ctx, git, fs, dir, remote) {
+    const url = await remoteUrl(git, fs, dir, remote);
+    if (url === undefined)
+        await ctx.stderr.write(noSuchRemoteText(remote));
+    return url;
 }
 /**
  * A network command that failed. When the git server could not be reached,
@@ -3259,11 +3171,9 @@ network = ISOLATE_NETWORK) {
                 const rest = fetchArgs.filter((arg, i) => !FETCH_DEPTH_FLAGS.includes(arg.split('=')[0]) &&
                     !(i > 0 && ['--depth', '--deepen'].includes(fetchArgs[i - 1])));
                 const remote = rest[0] || 'origin';
-                const fetchUrl = await remoteUrl(git, fs, dir, remote);
-                if (fetchUrl === undefined) {
-                    await ctx.stderr.write(noSuchRemote(remote));
+                const fetchUrl = await knownRemote(ctx, git, fs, dir, remote);
+                if (fetchUrl === undefined)
                     return 128;
-                }
                 if (!doCtx || !doEnv) {
                     ctx.stderr.write('[git] fetch requires DO ctx + env (internal configuration error)\n');
                     return 1;
@@ -3300,11 +3210,9 @@ network = ISOLATE_NETWORK) {
                 const remote = rest[0] || 'origin';
                 const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
                 // Its fetch, git's child, fails (128); pull says 1.
-                const pullUrl = await remoteUrl(git, fs, dir, remote);
-                if (pullUrl === undefined) {
-                    await ctx.stderr.write(noSuchRemote(remote));
+                const pullUrl = await knownRemote(ctx, git, fs, dir, remote);
+                if (pullUrl === undefined)
                     return 1;
-                }
                 if (!doCtx || !doEnv) {
                     ctx.stderr.write('[git] pull requires DO ctx + env (internal configuration error)\n');
                     return 1;
@@ -3346,11 +3254,9 @@ network = ISOLATE_NETWORK) {
                 const { quiet, rest } = takeQuiet(subArgs);
                 const remote = rest[0] || 'origin';
                 const branch = rest[1] || await git.currentBranch({ fs, dir }) || 'main';
-                const pushUrl = await remoteUrl(git, fs, dir, remote);
-                if (pushUrl === undefined) {
-                    await ctx.stderr.write(noSuchRemote(remote));
+                const pushUrl = await knownRemote(ctx, git, fs, dir, remote);
+                if (pushUrl === undefined)
                     return 128;
-                }
                 if (!doCtx || !doEnv) {
                     ctx.stderr.write('[git] push requires DO ctx + env (internal configuration error)\n');
                     return 1;
