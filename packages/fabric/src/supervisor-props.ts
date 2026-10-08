@@ -14,7 +14,7 @@
  */
 
 import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
-import { hostRoute, type HostRoute } from './composition.js';
+import { hostRoute, supervisorEntrypoint, supervisorEntrypointName, type HostRoute } from './composition.js';
 import type { WorkspaceEgress, WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 
 /** The props every SUPERVISOR binding for a process carries. */
@@ -72,6 +72,19 @@ export function mintProcessSupervisor<T>(mint: (options: { props: SupervisorBind
     throw new Error('cannot hand a process a supervisor binding without its run');
   }
   return mint({ props });
+}
+
+/**
+ * A process's SUPERVISOR as its binding, minted through the composed
+ * entrypoint: what a host that answers none in-process hands its one-shots
+ * (Supervise). Each call on it is a request to the host.
+ */
+export function bindingSupervisor(props: SupervisorBindingProps): object {
+  const mint = supervisorEntrypoint(undefined, props.route?.supervisorEntrypoint);
+  if (!mint) {
+    throw new Error(`Nimbus: ctx.exports.${props.route?.supervisorEntrypoint ?? supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`);
+  }
+  return mintProcessSupervisor<object>(mint, props);
 }
 
 /**

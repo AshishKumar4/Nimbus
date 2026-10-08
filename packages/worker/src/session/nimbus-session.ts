@@ -518,6 +518,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
       // egress), so it is there before the workspace is: a launch re-driven
       // by a cold alarm, or by the reconnect's recovery, goes out through it.
       network: () => workspaceNetwork(this.egressForWorkspace()),
+      supervisorOp: (envelope) => this.supervisorOp(envelope),
     });
     // In `wrangler dev`, the outer Worker and this DO share a single
     // workerd process, so the `adoptCtxExports(ctx.exports)` call in the
@@ -833,6 +834,12 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
 
   supervisorRewindBridge(pid: number): Promise<void> { return this._supervisorOps?.rewind(pid) ?? Promise.resolve(); }
+
+  // A storage wait: its input gate keeps this session's events out while the isolate's other objects run.
+  // (A timer under blockConcurrencyWhile never fires: the gate holds timers too, and the object resets.)
+  waveTurn(): Promise<void> {
+    return this.ctx.storage.sync();
+  }
   // Supervisor RPC (file/log/HMR/batch): what host stubs call, so an answer
   // leaves the session here and is counted (answerSupervisorOp).
   supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown> {

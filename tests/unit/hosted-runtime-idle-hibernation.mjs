@@ -83,21 +83,18 @@ const world = createFacetWorld(() => ({
   async startProcess() { return { ok: true }; },
   async handleHttpRequest() { return new Response('ok'); },
 }), { resolveConfig: false });
-/** The instance a loaded program's SUPERVISOR binding reaches. */
-let current = null;
 const env = {
   WORKSPACES: { idFromName() {}, idFromString() {}, get() {} },
   LOADER: {
     // A one-shot `node -e "console.log(1)"`. Like the node runner, the program
     // hands its output and its exit to the supervisor, which keeps them as the
     // process's log, and answers the run with the same.
-    load(config) {
-      const { pid } = config.env.SUPERVISOR.props;
+    load() {
       return {
         getEntrypoint: () => ({
-          async fetch() {
-            await current.runtime.supervisorOp({ op: 'stdout', args: [new TextEncoder().encode('1\n')], pid });
-            await current.runtime.supervisorOp({ op: 'reportExit', args: [0, '', [], null, [], []], pid });
+          async run(_request, supervisor) {
+            await supervisor.stdout(new TextEncoder().encode('1\n'));
+            await supervisor.reportExit(0, '', [], null, [], []);
             return Response.json({ exitCode: 0, stdout: '1\n', stderr: '' });
           },
           [Symbol.dispose]() {},
@@ -141,7 +138,7 @@ async function boot(generation) {
       async cancel(task) { tasks.delete(task); },
     },
   });
-  return current = {
+  return {
     runtime,
     waiting,
     /** The alarm handler: every due task, cancelled before it runs (it may schedule itself again). */

@@ -46,7 +46,7 @@ const env = {
     load() {
       return {
         getEntrypoint: () => ({
-          async fetch() { return Response.json({ exitCode: 0, stdout: '', stderr: '' }); },
+          async run() { return Response.json({ exitCode: 0, stdout: '', stderr: '' }); },
         }),
       };
     },

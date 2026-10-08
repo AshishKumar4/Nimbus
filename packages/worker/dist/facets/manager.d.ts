@@ -26,15 +26,16 @@ import type { NimbusFilesystemAuthority, RuntimeFsBridge } from '@nimbus-sh/core
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type PortVisibility } from '../session/port-capability.js';
 import { type PreloadModuleRoot, type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
-import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
+import { type NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
+import type { NodeTypeScript } from '@nimbus-sh/core/runtime/typescript-strip.js';
 import type { ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
-import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type BundleCellResultStore, type BundleCellTransformStats } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
 import { StdinTaken } from '../runtime/stop-replay-host.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
-import { type ProcessHostFactory, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
+import { type ProcessHostFactory, type ResidentCodeSpec, type Supervise } from '@nimbus-sh/fabric/process-fabric.js';
 import { ProcessJournals } from '../session/process-journals.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
@@ -278,10 +279,10 @@ interface FacetVfsState {
     /**
      * The cells lowered from ESM or compiled from TypeScript
      * (transformEsmInBundle), whose module wraps them in the block scope
-     * (commonjs-cell.ts, THE WRAPPER). Every other code cell is CommonJS as
-     * Node would run it.
+     * (commonjs-cell.ts, THE WRAPPER), each true where it is an ES module.
+     * Every other code cell is CommonJS as Node would run it.
      */
-    lowered?: Set<string>;
+    lowered?: Map<string, boolean>;
     /**
      * The files staged only to run whose module is an emit: the map carries the
      * emit and not the file, which no read asked for. A synchronous read of one
@@ -475,8 +476,8 @@ export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceS
     emits?: ReadonlyMap<string, string>;
     /** FacetVfsState.columnMaps. */
     columnMaps?: ReadonlyMap<string, string>;
-    /** Cells lowered from ESM or compiled from TypeScript, wrapped in the block scope. */
-    lowered?: ReadonlySet<string>;
+    /** FacetVfsState.lowered. */
+    lowered?: ReadonlyMap<string, boolean>;
     /** Files whose emit the map carries and not the file (FacetVfsState.codeOnly). */
     codeOnly?: ReadonlySet<string>;
     /** Runtime code staged for this launch: `{ cjs }` module text by key. */
@@ -773,6 +774,8 @@ export interface PrefetchBundleOptions {
     transformStore?: BundleCellResultStore;
     /** The program's own conditions (`node --conditions`), as the process resolves under them. */
     conditions?: readonly string[];
+    /** How Node takes the launch's TypeScript (node-cli.ts typeScriptStripOptions); null where it is compiled. */
+    stripTypes?: NodeTypeScript | null;
     /** What the command line preloads (`node -r`, `--import`): required roots, walked first, as they run first. */
     preloads?: readonly PreloadModuleRoot[];
 }
@@ -824,6 +827,11 @@ export interface FacetManagerHooks {
      * composition supplies it; absent, the isolate's own network.
      */
     network?: () => WorkspaceNetwork;
+    /**
+     * The host's own SUPERVISOR for a one-shot (Supervise), handed to it with
+     * the call that runs it. Absent, each gets its binding.
+     */
+    supervise?: Supervise;
     /**
      * Fired when a process was terminated OUTSIDE the facet's own try/
      * finally (timeout via abort, explicit kill, etc.) — the facet never

@@ -53,7 +53,7 @@ export interface StatementHooks {
 export interface AcornParser {
   type: unknown;
   inModule: boolean;
-  undefinedExports: Record<string, { start: number }>;
+  undefinedExports: Record<string, { start: number; end: number }>;
   parse(): Program;
   parseStatement(context: null, topLevel?: boolean, exports?: object): unknown;
   finishNode<T>(node: T, type: string): T;

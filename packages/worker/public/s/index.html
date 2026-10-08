@@ -455,11 +455,11 @@
   </div>
   <div class="toolbar" id="toolbar">
     <!-- Single workspace: file tree | editor/agent + terminal | preview. -->
-    <button id="btnTerminal" class="phone-only" data-pane="terminal" title="Terminal">Terminal</button>
-    <button id="btnFiles" class="phone-only" data-pane="files" title="Files">Files</button>
+    <button id="btnPhoneTerminal" class="phone-only" data-pane="terminal" title="Terminal">Terminal</button>
+    <button id="btnPhoneFiles" class="phone-only" data-pane="files" title="Files">Files</button>
     <button id="btnEditor" class="active" data-pane="editor" title="Editor">Editor</button>
     <button id="btnAgent" data-pane="agent" title="Agent chat">Agent</button>
-    <button id="btnPreview" class="phone-only" data-pane="preview" title="Preview">Preview</button>
+    <button id="btnPhonePreview" class="phone-only" data-pane="preview" title="Preview">Preview</button>
     <div class="sep"></div>
     <button id="btnProcs" title="Toggle the process sidebar">
       <span class="procs-dot"></span>
@@ -804,11 +804,7 @@
     // Perf-invariant: Monaco is loaded by runtime appending, not by an eager
     // <script src> in the served HTML.
     const Editor = (function() {
-      // CDN choice: cdnjs hosts Monaco's UMD AMD-loader (`loader.min.js`)
-      // which fetches the remaining vs/* chunks on demand. Total cold
-      // download is ~2 MB for the editor + lazy languages. Pinned to
-      // 0.52.0 (latest as of 2025-Q1) — same major as VSCode 1.95+.
-      const MONACO_VERSION = '0.52.0';
+      const MONACO_VERSION = '0.56.0';
       const MONACO_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/' + MONACO_VERSION + '/min';
       let loaded = false;
       let loading = null;
@@ -1248,7 +1244,7 @@
           }
         }
         paletteFiles = fileListCache.slice();
-        renderPalette('');
+        renderPalette(input.value);
       }
       function closePalette() {
         overlay.classList.remove('active');

@@ -73,10 +73,9 @@ const env = {
     load(config) {
       const file = writeModuleSet(join(runnerDir, `runner-${runnerN++}`), config.modules, 'runner.js');
       const loaded = import(pathToFileURL(file).href);
-      const supervisor = config.env?.SUPERVISOR;
       return {
         getEntrypoint: () => ({
-          async fetch(request) { return (await loaded).default.fetch(request, { SUPERVISOR: supervisor }); },
+          async run(request, supervisor) { return (await loaded).default.fetch(request, { SUPERVISOR: supervisor }); },
           [Symbol.dispose]() {},
         }),
         [Symbol.dispose]() {},
@@ -93,8 +92,8 @@ const manager = new FacetManager(
 manager.setVfs(rawVfs, processFiles(rawVfs));
 // The engine the transform facet runs (lib/oxc-engine.mjs); the service's
 // in-isolate path runs the same transform-then-rewrite.
-const { oxcEngine } = await import('./lib/oxc-engine.mjs');
-const esbuild = new EsbuildService(undefined, { engine: async () => oxcEngine });
+const { oxcTransforms } = await import('./lib/oxc-engine.mjs');
+const esbuild = new EsbuildService(undefined, oxcTransforms);
 manager.setEsbuildService(esbuild);
 
 for (const [rel, text] of Object.entries(files)) {

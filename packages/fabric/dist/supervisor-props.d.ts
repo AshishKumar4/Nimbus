@@ -64,6 +64,12 @@ export declare function mintProcessSupervisor<T>(mint: (options: {
     props: SupervisorBindingProps;
 }) => T, props: SupervisorBindingProps): T;
 /**
+ * A process's SUPERVISOR as its binding, minted through the composed
+ * entrypoint: what a host that answers none in-process hands its one-shots
+ * (Supervise). Each call on it is a request to the host.
+ */
+export declare function bindingSupervisor(props: SupervisorBindingProps): object;
+/**
  * `key`, for a loader cache entry whose worker holds a binding with `props`:
  * made specific to the host instance the binding names, since the loader
  * outlives that instance and the next one refuses every mutation the binding

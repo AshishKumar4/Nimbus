@@ -61,6 +61,7 @@ export function buildSessionSupervisorOps(host, store, methods) {
         readLease: withReadAllocation,
         extend,
         deliveries: host.supervisorDeliveries,
+        ...(host.waveTurn === undefined ? {} : { turn: () => host.waveTurn() }),
         // Joining is part of the canonical handler, BEFORE this logical-answer
         // seam. A transport hedge must not consume another journal occurrence.
         observe: (envelope, dispatch) => host.facetManager

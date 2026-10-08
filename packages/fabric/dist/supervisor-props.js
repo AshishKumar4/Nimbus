@@ -13,7 +13,7 @@
  * re-sent.
  */
 import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
-import { hostRoute } from './composition.js';
+import { hostRoute, supervisorEntrypoint, supervisorEntrypointName } from './composition.js';
 /**
  * The props of a SUPERVISOR binding minted in the Durable Object whose state
  * is `ctx`, for process `pid`, reaching `options.doId` (this object by
@@ -41,6 +41,18 @@ export function mintProcessSupervisor(mint, props) {
         throw new Error('cannot hand a process a supervisor binding without its run');
     }
     return mint({ props });
+}
+/**
+ * A process's SUPERVISOR as its binding, minted through the composed
+ * entrypoint: what a host that answers none in-process hands its one-shots
+ * (Supervise). Each call on it is a request to the host.
+ */
+export function bindingSupervisor(props) {
+    const mint = supervisorEntrypoint(undefined, props.route?.supervisorEntrypoint);
+    if (!mint) {
+        throw new Error(`Nimbus: ctx.exports.${props.route?.supervisorEntrypoint ?? supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`);
+    }
+    return mintProcessSupervisor(mint, props);
 }
 /**
  * `key`, for a loader cache entry whose worker holds a binding with `props`:

@@ -22,8 +22,8 @@ kfs.mkdir(root, { recursive: true });
 kfs.writeFile(root + '/value.mjs', 'export const value = "recovered after transient transform failure";');
 const program = 'console.log(require("./value.mjs").value);';
 kfs.writeFile(root + '/entry.cjs', program);
-const { oxcEngine } = await import('./lib/oxc-engine.mjs');
-const native = new EsbuildService(undefined, { engine: async () => oxcEngine });
+const { oxcTransforms } = await import('./lib/oxc-engine.mjs');
+const native = new EsbuildService(undefined, oxcTransforms);
 let attempts = 0;
 let fault = 'outcome';
 const evalProgram = 'import("node:path").then(path => console.log(path.default.basename("/tmp/eval-entry")));';
@@ -61,7 +61,7 @@ const env = {
       loaderPublications++;
       const file = writeModuleSet(join(directory, String(loaderPublications)), config.modules, 'runner.js');
       const loaded = import(pathToFileURL(file).href);
-      return { getEntrypoint: () => ({ fetch: async request => (await loaded).default.fetch(request, { SUPERVISOR: config.env?.SUPERVISOR }), [Symbol.dispose]() {} }), [Symbol.dispose]() {} };
+      return { getEntrypoint: () => ({ run: async (request, supervisor) => (await loaded).default.fetch(request, { SUPERVISOR: supervisor }), [Symbol.dispose]() {} }), [Symbol.dispose]() {} };
     },
     get() { throw new Error('unexpected keyed loader publication'); },
   },
