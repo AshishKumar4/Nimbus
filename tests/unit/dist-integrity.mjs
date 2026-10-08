@@ -122,7 +122,7 @@ const ROOTS = ['packages/worker'];
     const steps = BUILD_FIXPOINT.filter((step) => step.cwd === 'packages/core' || step.cwd === 'packages/worker');
     runBuildFixpoint({ root, steps });
     assert.equal(readFileSync(join(worker, 'public/client'), 'utf8'), 'new client', 'the asset consumer staged the pre-generation compiled client');
-    assert.deepEqual(rebuildDrift({ root, steps, roots: ['packages/core', 'packages/worker'] }), [], 'a generated client change took another rebuild to reach its fixpoint');
+    assert.deepEqual(rebuildDrift({ root, steps, roots: ['packages/core', 'packages/worker'] }), { changed: [], added: [], removed: [] }, 'a generated client change took another rebuild to reach its fixpoint');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
