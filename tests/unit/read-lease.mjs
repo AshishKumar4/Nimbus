@@ -177,6 +177,7 @@ function barrier(s, bridge, from) {
   const go = Promise.withResolvers();
   // Begun holding nothing; its records come after the lease is taken.
   const wave = reader.writeStream(new ReadableStream({
+    type: 'bytes',
     async pull(controller) {
       await go.promise;
       const { value, done } = await frames.read();
