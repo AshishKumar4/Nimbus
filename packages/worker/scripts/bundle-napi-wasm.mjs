@@ -122,6 +122,12 @@ for (const spec of Object.values(SPECS)) {
     wasm: asset(dir, file, facts),
   });
 }
+// The rolldown Nimbus itself depends on: the build facet bundles its
+// JavaScript (bundle-facet-workers.mjs) over this version's build.
+const ownRolldown = JSON.parse(await fs.readFile(path.join(ROOT, 'node_modules', 'rolldown', 'package.json'), 'utf8')).version;
+if (!bindings.some((b) => b.name === 'rolldown' && b.version === ownRolldown)) {
+  fail(`Nimbus depends on rolldown ${ownRolldown}, and specs.mjs builds no rolldown@${ownRolldown} for its build facet`);
+}
 // A version no spec builds any more is no longer staged.
 for (const name of new Set(Object.values(SPECS).map((spec) => spec.name))) {
   const kept = new Set(Object.values(SPECS).filter((spec) => spec.name === name).map((spec) => spec.version));
@@ -151,7 +157,7 @@ export interface NapiWasmAsset {
 export interface StagedBindingArtifact {
   /** The binding's name (scripts/napi-wasm/specs.mjs). */
   readonly name: string;
-  /** The one version of \`owner\` the binding is built from. */
+  /** The one version of \`owner\` this build is built from (a binding may have several builds). */
   readonly version: string;
   /** The package whose JavaScript loads the binding. */
   readonly owner: string;
@@ -165,6 +171,8 @@ export interface StagedBindingArtifact {
 export const NAPI_WASM_LOADER: NapiWasmAsset = ${JSON.stringify(asset(loaderDir, 'napi-wasm-loader.mjs', loaderFacts))};
 export const NAPI_WASM_TRAMPOLINE: NapiWasmAsset = ${JSON.stringify(asset(loaderDir, 'wasi-trampoline.wasm', loaderFacts))};
 export const STAGED_BINDING_ARTIFACTS: readonly StagedBindingArtifact[] = ${JSON.stringify(bindings, null, 2)};
+/** The rolldown Nimbus itself depends on, whose build the build facet runs. */
+export const OWN_ROLLDOWN_VERSION: string = ${JSON.stringify(ownRolldown)};
 `;
 await fs.writeFile(OUT_TS, ts);
 console.log(`[bundle-napi-wasm] staged loader ${buildId} and ${bindings.map((b) => `${b.name}@${b.version}`).join(', ')} -> ${path.relative(ROOT, ASSETS)}`);

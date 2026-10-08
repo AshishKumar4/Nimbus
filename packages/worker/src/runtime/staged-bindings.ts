@@ -9,6 +9,12 @@
  * the event loop), and scripts/bundle-napi-wasm.mjs stages them under
  * public/_assets/napi-wasm/ with every file's SHA-256 pinned.
  *
+ * A build is of one upstream version and loads only under its owner at that
+ * version, so a binding may be staged at several (`<name>@<version>`, a
+ * build's key): a launch carries the builds of the versions the program
+ * installed, and node-shims answers a require with the one its owner's
+ * package.json names.
+ *
  * A node process whose closure requires any of them carries the shared loader
  * (ESM), the shared wasi trampoline, and each binding it requires: by value in
  * a one-shot, by kernel-owned VFS path in a resident process, where a
@@ -39,7 +45,9 @@ export const STAGED_BINDING_LOADER_MODULE = 'nimbus-napi-wasm-loader.js';
 export const STAGED_BINDING_TRAMPOLINE_MODULE = 'nimbus-napi-wasm-trampoline.wasm';
 
 export interface StagedBinding extends StagedBindingArtifact {
-  /** The binding's module-map name in a node facet. */
+  /** `<name>@<version>`: the build, as specs.mjs keys it and a launch names it. */
+  readonly key: string;
+  /** The build's module-map name in a node facet. */
   readonly moduleName: string;
   /**
    * Where a resident process's boot spec names the binding. Kernel-owned and
@@ -60,30 +68,46 @@ const quoted = (name: string) => name.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 
 export const STAGED_BINDINGS: readonly StagedBinding[] = STAGED_BINDING_ARTIFACTS.map((artifact) => ({
   ...artifact,
-  moduleName: `nimbus-staged-${artifact.name}.wasm`,
+  key: `${artifact.name}@${artifact.version}`,
+  moduleName: `nimbus-staged-${artifact.name}-${artifact.version}.wasm`,
   vfsPath: `/var/lib/nimbus/staged/${artifact.name}/${artifact.version}/${artifact.name}.wasm`,
   specifier: new RegExp(`["'](?:${artifact.requiredAs.map(quoted).join('|')})["']`),
 }));
 
-/** The staged binding named `name`; a name no build produced is a programming error. */
-export function stagedBinding(name: string): StagedBinding {
-  const binding = STAGED_BINDINGS.find((b) => b.name === name);
-  if (!binding) throw new Error(`Nimbus: no staged napi binding named ${name}`);
+/** The staged build `key` (`<name>@<version>`); a key no build produced is a programming error. */
+export function stagedBinding(key: string): StagedBinding {
+  const binding = STAGED_BINDINGS.find((b) => b.key === key);
+  if (!binding) throw new Error(`Nimbus: no staged napi binding ${key} (staged: ${STAGED_BINDINGS.map((b) => b.key).join(', ')})`);
   return binding;
 }
 
-/** Names of the staged bindings a closure requires, in table order. */
+/**
+ * Keys of the staged builds a closure requires, in table order: a module
+ * that names a binding's package, at the version of the owner package the
+ * module is in (its package.json, which the walk stages beside it). A
+ * version with no staged build is none: node-shims names it when it is
+ * required.
+ */
 export function stagedBindingsRequiredBy(cells: Iterable<readonly [string, unknown]>): string[] {
+  const entries = [...cells];
+  const bundle = new Map(entries);
   const required = new Set<string>();
-  for (const [path, cell] of cells) {
+  const names = [...new Set(STAGED_BINDINGS.map((b) => b.name))];
+  for (const [path, cell] of entries) {
     if (typeof cell !== 'string') continue;
     if (!(path.endsWith('.js') || path.endsWith('.mjs') || path.endsWith('.cjs'))) continue;
-    for (const binding of STAGED_BINDINGS) {
-      if (!required.has(binding.name) && binding.specifier.test(cell)) required.add(binding.name);
+    for (const name of names) {
+      const builds = STAGED_BINDINGS.filter((b) => b.name === name);
+      if (!builds[0]!.specifier.test(cell)) continue;
+      const root = packageRootOf(path.replace(/^\/+/, ''));
+      const manifest = root === null ? undefined : bundle.get(root + '/package.json');
+      let owner: { name?: unknown; version?: unknown } = {};
+      try { if (typeof manifest === 'string') owner = JSON.parse(manifest) as typeof owner; } catch { /* not a manifest */ }
+      const build = builds.find((b) => owner.name === b.owner && owner.version === b.version);
+      if (build) required.add(build.key);
     }
-    if (required.size === STAGED_BINDINGS.length) break;
   }
-  return STAGED_BINDINGS.filter((b) => required.has(b.name)).map((b) => b.name);
+  return STAGED_BINDINGS.filter((b) => required.has(b.key)).map((b) => b.key);
 }
 
 /** Most filesystem questions stagedBindingsDeclaredBy asks: package.json reads and node_modules probes. */
@@ -99,8 +123,8 @@ export interface DeclaredBindingFs {
 const DECLARED_FIELDS = ['dependencies', 'optionalDependencies', 'peerDependencies'] as const;
 
 /**
- * Names of the staged bindings a launched bin's own dependency tree installs,
- * in table order: a binding's owner at the binding's version, reached through
+ * Keys of the staged builds a launched bin's own dependency tree installs,
+ * in table order: a binding's owner at a version it is built for, reached through
  * the declared dependencies (dependencies, optionalDependencies,
  * peerDependencies) of the bin's package and of every package those resolve
  * to. Each name resolves as Node's resolver finds it, from the package that
@@ -182,7 +206,7 @@ export async function stagedBindingsDeclaredBy(
   };
   const take = (manifest: Record<string, unknown>) => {
     for (const binding of typeof manifest.name === 'string' ? owners.get(manifest.name) ?? [] : []) {
-      if (manifest.version === binding.version) found.add(binding.name);
+      if (manifest.version === binding.version) found.add(binding.key);
     }
   };
   const seen = new Set<string>([root]);
@@ -208,7 +232,7 @@ export async function stagedBindingsDeclaredBy(
     }
   }
   if (stats) stats.probes = probes;
-  return STAGED_BINDINGS.filter((b) => found.has(b.name)).map((b) => b.name);
+  return STAGED_BINDINGS.filter((b) => found.has(b.key)).map((b) => b.key);
 }
 
 /**
@@ -234,20 +258,21 @@ export function fetchStagedBindingAsset(env: StagedSourceEnv, asset: NapiWasmAss
 }
 
 /**
- * The main-module block that registers `names`. It imports the shared loader
- * and trampoline and each binding, and hands node-shims one factory per
- * binding, registered under every package name it is required by; nothing is
- * instantiated until the program actually requires it.
+ * The main-module block that registers the builds `keys`. It imports the
+ * shared loader and trampoline and each build, and hands node-shims one
+ * factory per build, registered under every package name its binding is
+ * required by, by version; nothing is instantiated until the program
+ * actually requires it.
  */
-export function stagedBindingsFacetImport(names: readonly string[] | undefined): string {
-  if (!names || names.length === 0) return '';
+export function stagedBindingsFacetImport(keys: readonly string[] | undefined): string {
+  if (!keys || keys.length === 0) return '';
   const lines = [
     `import { createNapiWasmBinding as __nimbusCreateNapiWasmBinding } from ${JSON.stringify(STAGED_BINDING_LOADER_MODULE)};`,
     `import __nimbusNapiWasmTrampoline from ${JSON.stringify(STAGED_BINDING_TRAMPOLINE_MODULE)};`,
     `const __nimbusStagedBindingRegistry = (globalThis.__nimbusStagedBindings ??= new Map());`,
   ];
-  names.forEach((name, i) => {
-    const binding = stagedBinding(name);
+  keys.forEach((key, i) => {
+    const binding = stagedBinding(key);
     const module = `__nimbusStagedBinding${i}`;
     lines.push(
       `import ${module} from ${JSON.stringify(binding.moduleName)};`,
@@ -257,7 +282,10 @@ export function stagedBindingsFacetImport(names: readonly string[] | undefined):
       `    version: ${JSON.stringify(binding.version)},`,
       `    create: (host) => __nimbusCreateNapiWasmBinding({ ...host, binding: ${module}, trampoline: __nimbusNapiWasmTrampoline, memoryPages: ${binding.memoryPages}, name: ${JSON.stringify(binding.name)} }),`,
       `  };`,
-      ...binding.requiredAs.map((id) => `  __nimbusStagedBindingRegistry.set(${JSON.stringify(id)}, entry);`),
+      ...binding.requiredAs.flatMap((id) => [
+        `  if (!__nimbusStagedBindingRegistry.has(${JSON.stringify(id)})) __nimbusStagedBindingRegistry.set(${JSON.stringify(id)}, new Map());`,
+        `  __nimbusStagedBindingRegistry.get(${JSON.stringify(id)}).set(entry.version, entry);`,
+      ]),
       `}`,
     );
   });
