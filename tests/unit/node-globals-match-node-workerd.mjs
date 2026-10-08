@@ -1,7 +1,8 @@
 // @serial
 // The global object a session's `node` program sees, against host Node
-// 22.22.3's, and a `bun` program's against host Bun's: every own property
-// of globalThis and its typeof. A difference is a workerd-only global a
+// 22.22.3's, and a `bun` program's against host Bun's: every name globalThis
+// answers (its own and its prototypes', not Object.prototype's) and its
+// typeof. A difference is a workerd-only global a
 // node program should not see (caches, HTMLRewriter, WebSocketPair, …), a
 // Node global the runtime lacks, or one of another type. The differences
 // today are recorded in tests/fixtures/node-globals-gaps.json, for the
@@ -20,8 +21,15 @@ import { localTerminal, splitScenarioOutput, startLocalProbe } from './lib/worke
 
 const W = '/home/user/globals';
 const PROGRAM = String.raw`
+// A global is any name globalThis answers: its own properties and its
+// prototypes' (workerd's live on the global scope's prototype), but
+// Object.prototype's.
+const names = new Set();
+for (let o = globalThis; o !== null && o !== Object.prototype; o = Object.getPrototypeOf(o)) {
+  for (const name of Object.getOwnPropertyNames(o)) if (name !== 'constructor') names.add(name);
+}
 const out = {};
-for (const name of Object.getOwnPropertyNames(globalThis).sort()) {
+for (const name of [...names].sort()) {
   let type;
   try { type = typeof globalThis[name]; } catch { type = 'throws'; }
   out[name] = type;
