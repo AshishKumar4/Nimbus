@@ -248,6 +248,7 @@ interface BlockParser extends AcornParser {
   lastTokEnd: number;
   raise(pos: number, message: string): never;
   raiseRecoverable(pos: number, message: string): never;
+  parseVarId(decl: { id: { type: string; start: number; end: number } }, kind: string): void;
   startNode(): object;
   expect(type: unknown): void;
   enterScope(flags: number): void;
@@ -269,9 +270,21 @@ class ThrowFinder extends AcornParserClass {
   // The token a syntax error is at, as V8 marks it: the parser's current or
   // last token where one starts there (a reserved word is raised past it).
   raisedToken: [number, number] | null = null;
+  // The binding a declarator just parsed, which V8 marks where its initializer is missing.
+  declared: { start: number; end: number; required: boolean } | null = null;
+
+  parseVarId(decl: { id: { type: string; start: number; end: number } }, kind: string): void {
+    this.declared = null;
+    super.parseVarId(decl, kind);
+    this.declared = { start: decl.id.start, end: decl.id.end, required: kind === 'const' || decl.id.type !== 'Identifier' };
+  }
 
   raise(pos: number, message: string): never {
-    this.raisedToken = pos === this.start ? [pos, this.end] : pos === this.lastTokStart ? [pos, this.lastTokEnd] : null;
+    const declared = this.declared;
+    const missingInitializer = declared !== null && declared.required && declared.end === this.lastTokEnd
+      && this.type !== tokTypes.eq && (pos === this.start || pos === this.lastTokEnd);
+    this.raisedToken = missingInitializer ? [declared.start, declared.end]
+      : pos === this.start ? [pos, this.end] : pos === this.lastTokStart ? [pos, this.lastTokEnd] : null;
     return super.raise(pos, message);
   }
 

@@ -45,6 +45,11 @@ assert.equal(fatalLocation('const ok = 1;\n', 'script', -1), null);
 assert.deepEqual(fatalLocation('enum Color { Red, Green }\n', 'script', -1), [0, 4], 'a reserved word');
 assert.deepEqual(fatalLocation('const a = 1;\nconst a = 2;\n', 'script', -1), [19, 20], 'a redeclared name');
 assert.deepEqual(fatalLocation('export { nope };\n', 'module', -1), [9, 13], 'an undefined export');
+// A missing initializer marks the binding, a name or a pattern; an unexpected token after a let does not.
+for (const [text, mark] of [['const abc: number = 1;\n', 'abc'], ['const {a};\n', '{a}'], ['let [b];\n', '[b]'], ['const x y;\n', 'x'], ['const ok = 1, bad;\n', 'bad'], ['let x y;\n', 'y']]) {
+  const at = text.indexOf(mark, text.indexOf(' '));
+  assert.deepEqual(fatalLocation(text, 'script', -1), [at, at + mark.length], JSON.stringify(text));
+}
 
 // A multi-MiB bundle in a heap far smaller than acorn's whole tree of it
 // (17 to 24 times its source): only the throw is kept.
