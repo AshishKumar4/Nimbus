@@ -491,7 +491,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   /** Writer epochs given up whose retirement the session has not answered yet (lostEpoch). */
   const retiring: string[] = [];
   const failures: ProcessFsFailure[] = [];
-  let processGone: Error | null = null;
+  let processGone: (Error & { code: string }) | null = null;
   /** Entries logged, the last one answered (every one before it is), and the flushes waiting for a place in the log. */
   let logged = 0;
   let answered = 0;
@@ -748,7 +748,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     for (const entry of queue) entry.seq = 0;
   };
 
-  const endedProcess = (entries: Entry[], refusal: Error, writer: string | null): void => {
+  const endedProcess = (entries: Entry[], refusal: Error & { code: string }, writer: string | null): void => {
     processGone ??= refusal;
     const ended = [...entries, ...queue.splice(0)];
     for (const entry of ended) {

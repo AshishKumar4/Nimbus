@@ -1320,6 +1320,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     let wave = 0;
     const retiring = [];
     const failures = [];
+    let processGone = null;
     let logged = 0;
     let answered = 0;
     const marks = [];
@@ -1373,13 +1374,20 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       }
     };
     const opOf2 = (entry) => entry.op ?? journal.read(entry.jid);
+    const retirePending = async () => {
+      while (retiring.length > 0) {
+        try {
+          await session.retireWriter?.(retiring[0]);
+        } catch (error) {
+          if (processGone === null || !(error instanceof Error) || !("code" in error) || error.code !== "ESRCH") throw error;
+        }
+        retiring.shift();
+      }
+    };
     const writerFor = async (entries) => {
       const numberedPending = entries.some((entry) => entry.seq !== 0) || queue.some((entry) => entry.seq !== 0);
       if (epoch !== null && (epoch.writer === null || numberedPending || now() - epoch.openedAt < WAVE_EPOCH_TTL_MS / 2)) return epoch.writer;
-      while (retiring.length > 0) {
-        await session.retireWriter?.(retiring[0]);
-        retiring.shift();
-      }
+      await retirePending();
       const openedAt = now();
       const writer = await session.openWriter(counters.epochs === 0);
       epoch = { writer, openedAt, numbering: null };
@@ -1423,6 +1431,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       try {
         writer = await writerFor(entries);
       } catch (error2) {
+        if (error2 instanceof Error && "code" in error2 && error2.code === "ESRCH") {
+          endedProcess(entries, error2, epoch?.writer ?? null);
+          return;
+        }
         for (const entry of entries) fail(entry, "EIO", `the session gave this process no writer: ${error2 instanceof Error ? error2.message : String(error2)}`);
         journal.dropThrough(entries[entries.length - 1].jid);
         return;
@@ -1466,6 +1478,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           timers
         });
       } catch (error2) {
+        if (error2 instanceof Error && "code" in error2 && error2.code === "ESRCH") {
+          endedProcess(entries, error2, writer);
+          return;
+        }
         lostEpoch(entries, `the session did not answer this write: ${error2 instanceof Error ? error2.message : String(error2)}`, writer);
         return;
       }
@@ -1524,6 +1540,20 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       if (writer !== null) retiring.push(writer);
       epoch = null;
       for (const entry of queue) entry.seq = 0;
+    };
+    const endedProcess = (entries, refusal, writer) => {
+      processGone ??= refusal;
+      const ended = [...entries, ...queue.splice(0)];
+      for (const entry of ended) {
+        if (entry.op !== null) {
+          heapBytes -= entry.bytes;
+          entry.op = null;
+        }
+        fail(entry, "ESRCH", processGone.message);
+      }
+      journal.dropThrough(ended[ended.length - 1].jid);
+      if (writer !== null) retiring.push(writer);
+      epoch = null;
     };
     const pump = () => {
       scheduled = false;
@@ -1717,6 +1747,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         return queue.length > 0 || inFlight !== null;
       },
       submit(given, submitOptions) {
+        if (processGone !== null) throw processGone;
         const acknowledged = submitOptions?.acknowledged === true;
         const op = withUmaskOf(given, options.umask);
         const named = pathsOf(op);
@@ -1788,14 +1819,19 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       flush() {
         options.drain?.();
         const mark = logged;
-        if (answered >= mark) return Promise.resolve();
-        const flushed = new Promise((resolve) => {
+        const flushed = answered >= mark ? Promise.resolve() : new Promise((resolve) => {
           marks.push({ mark, resolve });
         });
         schedule();
-        return flushed;
+        return flushed.then(async () => {
+          if (processGone === null) return;
+          await retirePending().catch(() => {
+          });
+          throw processGone;
+        });
       },
       effect() {
+        if (processGone !== null) return null;
         options.drain?.();
         return answered >= logged ? null : client.flush();
       },
@@ -1820,6 +1856,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       },
       takeFailuresError() {
         const taken = failures.splice(0, failures.length);
+        if (processGone !== null) return processGone;
         return taken.length === 0 ? null : failuresError(taken);
       },
       noteFailure(failure) {
@@ -1836,6 +1873,8 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   }
   var DRAIN_WAVE_BASE = 2 ** 40;
   function failuresError(failures) {
+    const gone = failures.find((failure) => failure.errno === "ESRCH");
+    if (gone !== void 0) return Object.assign(new Error(gone.message), { code: "ESRCH", failures });
     return Object.assign(new Error(
       `${failures.length} filesystem change${failures.length === 1 ? "" : "s"} this process made did not reach the session:
 ` + failures.map((failure) => `  ${failure.op} ${failure.path}: ${failure.errno}: ${failure.message}`).join("\n")
