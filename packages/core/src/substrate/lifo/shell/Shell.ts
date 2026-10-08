@@ -1215,7 +1215,7 @@ export class Shell {
     this.activeSubmission = submission;
     this.running = true;
     this.abortController = new AbortController();
-    this.terminalStdin = new TerminalStdin(() => this.consumePastedStdin());
+    this.terminalStdin = new TerminalStdin(() => this.consumeQueuedStdin());
     // History expansion
     const expanded = this.historyManager.expand(line);
     const actualLine = expanded ?? line;
@@ -1255,18 +1255,21 @@ export class Shell {
     (await this.drainTypeAhead());
   }
 
-  private consumePastedStdin(): void {
+  private consumeQueuedStdin(): void {
     const stdin = this.terminalStdin;
     if (!stdin) return;
-    const next = this.pasteQueue.shift();
+    const pasted = this.pasteQueue.length > 0;
+    const next = pasted ? this.pasteQueue.shift() : this.typeAhead.shift();
     if (next === undefined) return;
-    const data = typeof next === 'string' ? next : next.data;
+    const queued = typeof next === 'string' ? next : next.data;
+    const data = pasted ? `${queued}\n` : queued.replace(/\r\n?|\n/g, '\n');
     if (typeof next !== 'string') {
       if (this.activeSubmission) next.submission.bind(this.activeSubmission);
       next.release();
+      next.resolve?.();
     }
     const eof = data.indexOf('\x04');
-    stdin.feed(eof < 0 ? `${data}\n` : data.slice(0, eof));
+    stdin.feed(eof < 0 ? data : data.slice(0, eof));
     if (eof >= 0) stdin.close();
   }
 
