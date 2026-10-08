@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -22,6 +22,33 @@ import { redactCredentials } from '../behavioral/_driver.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'ci-release-'));
 try {
+  {
+    // Run the real release entrypoint. Only its external upload/build/lease
+    // seams are replaced; no staging credentials or network are involved.
+    const entry = new URL('../../scripts/ci/release.mjs', import.meta.url).href;
+    const installed = new URL('../../scripts/ci/lib/installed.mjs', import.meta.url).href;
+    const bundles = new URL('../../scripts/ci/lib/release.mjs', import.meta.url).href;
+    const lease = new URL('../../scripts/ci/lib/lease.mjs', import.meta.url).href;
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    for (const exit of [2, 1]) {
+      writeFileSync(join(bin, 'bun'), `#!/bin/sh\n[ "$1" = tests/behavioral/_staging-target.mjs ] && [ "$2" = up ] || exit 99\necho 'upload readiness returned ${exit}' >&2\nexit ${exit}\n`);
+      chmodSync(join(bin, 'bun'), 0o700);
+      const check = spawnSync(process.execPath, ['-e', `
+        import { mock } from 'bun:test';
+        mock.module(${JSON.stringify(installed)}, () => ({ assertInstalled() {} }));
+        mock.module(${JSON.stringify(bundles)}, () => ({ fetchRelease: async () => ({ dir: '/fixture/bundle', release: {} }), releaseDigest() { throw new Error('an ungraded upload must not be sealed'); } }));
+        mock.module(${JSON.stringify(lease)}, () => ({ holdLease: () => require('node:fs').openSync('/dev/null', 'r') }));
+        process.env.CLOUDFLARE_ACCOUNT_ID = 'fixture-account';
+        process.argv = ['bun', 'release.mjs', 'staging'];
+        await import(${JSON.stringify(entry)});
+      `], { encoding: 'utf8', timeout: 10_000, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+      assert.equal(check.status, exit, `release propagates upload status ${exit}: ${check.stdout}\n${check.stderr}`);
+      if (exit === 2) assert.match(check.stderr, /NOT GRADED/, 'ungraded readiness remains ungraded at the release boundary');
+      else assert.match(check.stdout, /upload to staging failed/, 'a real upload failure remains red');
+    }
+    console.log('  ok  release: ungraded upload readiness stays exit 2; a failed upload stays exit 1');
+  }
   {
     const release = {
       commit: 'c0ffee', job: 'j1',

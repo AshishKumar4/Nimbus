@@ -94,6 +94,7 @@ const {
   randomSecret,
   readState,
   requireAccountPin,
+  TargetNotReadyError,
   waitForTarget,
   withSecretsFile,
   wrangle,
@@ -143,7 +144,13 @@ if (!run) {
   console.error(`usage: bun tests/behavioral/_throwaway-target.mjs <${Object.keys(COMMANDS).join('|')}> [flags]`);
   process.exit(2);
 }
-await run();
+try {
+  await run();
+} catch (error) {
+  if (!(error instanceof TargetNotReadyError)) throw error;
+  console.error(`readiness: NOT GRADED — ${error.message}`);
+  process.exitCode = error.exitCode;
+}
 
 // ── Commands ─────────────────────────────────────────────────────────
 
@@ -207,7 +214,7 @@ async function up() {
   log(`deploying apps/probe as Preview ${preview} of ${PREVIEW_PARENT}`);
   for (let i = 0; i < varOverrides.length; i += 2) log(`var override: ${varOverrides[i + 1]}`);
   const { base, deploymentId, startupMs } = await deployPreview({ account, token, preview, secret, before, config: bundle });
-  writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base, secret, secretPushed: true, createdAt });
+  writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base, secret, secretPushed: true, createdAt, versionId: deploymentId });
   // The platform's own measure of the script's startup, limit 1 s
   // (https://developers.cloudflare.com/workers/platform/limits/#worker-startup-time).
   log(`deployment ${deploymentId} is live at ${base} (startup ${startupMs ?? '?'} ms)`);
@@ -216,9 +223,9 @@ async function up() {
     : `deployed a new JWT_SECRET with ${name}`);
 
   const jwt = await mintProbeToken(secret, ttlMs());
-  await waitForTarget(base, jwt);
+  const readiness = await waitForTarget(base, jwt, undefined, deploymentId);
 
-  log(`ready: ${base}`);
+  log(`ready: ${base}; uploaded version ${readiness.versionId}; ${readiness.cycles} consecutive full cycles`);
   process.stdout.write([
     `export BASE=${base}`,
     `export NIMBUS_PROBE_TOKEN=${jwt}`,

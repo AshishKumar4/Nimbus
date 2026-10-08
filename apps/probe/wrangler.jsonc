@@ -21,6 +21,7 @@
     "traces": { "enabled": true, "head_sampling_rate": 1 }
   },
   "preview_urls": false,
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "vars": {
     // The SHA-256 of the runtime catalog in the NIMBUS_RUNTIME_CACHE bucket below:
     // `nimbus install` reads catalog/sha256/<this>.json and nothing else
@@ -102,6 +103,7 @@
   // secret lives here: JWT_SECRET is generated per Preview and uploaded
   // with its deployment (`--secrets-file`, `--ignore-base-config`).
   "previews": {
+    "version_metadata": { "binding": "CF_VERSION_METADATA" },
     "vars": {
       "NIMBUS_RUNTIME_CATALOG_SHA256": "11b4b6b174e87c044734207d7c8cd40a412a670e477cc99299e347559f8756fb",
       "NIMBUS_PROCESS_HOST": "facet",

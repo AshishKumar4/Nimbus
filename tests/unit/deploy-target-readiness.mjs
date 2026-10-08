@@ -2,12 +2,13 @@
 // Deployment readiness is a terminal round trip AND confirmed destruction.
 // A healthy /new, an HTTP 200 shell, or a rejected WebSocket is not ready.
 import assert from 'node:assert/strict';
-import { waitForTarget } from '../behavioral/_deploy-target.mjs';
+import { waitForTarget, READINESS_CYCLES } from '../behavioral/_deploy-target.mjs';
 
 const failures = [];
 for (const mode of ['ready', 'upgrade-503', 'wrong-command-output', 'delete-500', 'delete-html', 'delete-invalid-result']) {
   const events = [];
   let minted = 0;
+  const headers = { 'x-nimbus-probe-version': 'uploaded-version' };
   const server = Bun.serve({
     hostname: '127.0.0.1', port: 0,
     fetch(request, server) {
@@ -16,13 +17,13 @@ for (const mode of ['ready', 'upgrade-503', 'wrong-command-output', 'delete-500'
       if (url.pathname === '/new' && request.method === 'POST') {
         const sid = `ready-session-${++minted}`;
         events.push({ stage: 'mint', sid });
-        return new Response(null, { status: 302, headers: { Location: `/s/${sid}/` } });
+        return new Response(null, { status: 302, headers: { ...headers, Location: `/s/${sid}/` } });
       }
       if (url.pathname.endsWith('/ws')) {
         const sid = url.pathname.split('/')[2];
         events.push({ stage: 'upgrade', sid });
         if (mode === 'upgrade-503') return Response.json({ code: 'E_NIMBUS_DO_OVERLOADED' }, { status: 503 });
-        if (server.upgrade(request, { data: { sid } })) return;
+        if (server.upgrade(request, { data: { sid }, headers })) return;
         throw new Error('expected a terminal WebSocket upgrade');
       }
       if (request.method === 'DELETE') {
@@ -32,7 +33,7 @@ for (const mode of ['ready', 'upgrade-503', 'wrong-command-output', 'delete-500'
         if (mode === 'delete-html') return new Response('<title>session shell</title>', { headers: { 'Content-Type': 'text/html' } });
         return Response.json({ ok: true, result: {
           ok: mode !== 'delete-invalid-result', killed: 0, destroyedAt: Date.now(), reason: 'target-readiness',
-        } });
+        } }, { headers });
       }
       throw new Error(`unexpected readiness request: ${request.method} ${url.pathname}`);
     },
@@ -53,12 +54,12 @@ for (const mode of ['ready', 'upgrade-503', 'wrong-command-output', 'delete-500'
   });
   try {
     let error = null;
-    try { await waitForTarget(server.url.origin, 'readiness-token', mode === 'ready' ? 2_000 : 300); }
+    try { await waitForTarget(server.url.origin, 'readiness-token', mode === 'ready' ? 10_000 : 300, 'uploaded-version'); }
     catch (e) { error = e; }
     const stages = events.map((e) => e.stage);
     if (mode === 'ready') {
       if (error) failures.push(`${mode}: ${error.message}`);
-      if (stages.join(',') !== 'mint,upgrade,command,delete') failures.push(`${mode}: missing full readiness round trip: ${stages}`);
+      if (stages.join(',') !== Array(READINESS_CYCLES).fill('mint,upgrade,command,delete').join(',')) failures.push(`${mode}: missing full readiness cycles: ${stages}`);
       const command = events.find((e) => e.stage === 'command')?.command ?? '';
       if (!command.includes('$((6*7))')) failures.push(`${mode}: command must compute output, not accept its echoed source`);
     } else if (!error) {
