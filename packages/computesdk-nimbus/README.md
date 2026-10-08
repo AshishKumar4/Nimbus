@@ -50,7 +50,7 @@ const sandbox = await compute.sandbox.create();
 const result = await sandbox.runCommand('node -v');
 console.log(result.stdout);
 
-await sandbox.filesystem.writeFile('server.js', 'require("http").createServer().listen(3000)');
+await sandbox.filesystem.writeFile('server.cjs', 'require("http").createServer().listen(3000)');
 const url = await sandbox.getUrl({ port: 3000 });
 
 await sandbox.destroy();

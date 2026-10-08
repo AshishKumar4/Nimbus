@@ -68,6 +68,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // script runs under plain node at postinstall, so nothing here is TypeScript.
 import { parse } from 'acorn';
 
+import { FACET_GLOBALS, freeNames } from './free-names.mjs';
 import { resolvePackageDir } from './resolve-package-dir.mjs';
 import { stageRuntimeAsset } from './stage-asset.mjs';
 
@@ -246,6 +247,85 @@ async function bundleGitPack() {
   const src = withoutComments(result.outputFiles[0].text);
   if (!/^var __nimbusGitPack = /m.test(src)) {
     throw new Error('[bundle-facet-workers/git-pack] the bundle no longer binds __nimbusGitPack');
+  }
+  return src;
+}
+
+/**
+ * The node builtins npm's libraries require, each a namespace import the
+ * resolver facet's module makes (NPM_RESOLVE_NODE_IMPORTS), which an IIFE
+ * cannot make itself. `node:path/win32` is npm-package-arg's on Windows only.
+ */
+const NPM_RESOLVE_BUILTINS = {
+  'node:path': '__nimbusNodePath',
+  'node:path/win32': '__nimbusNodePath',
+  'node:os': '__nimbusNodeOs',
+  'node:url': '__nimbusNodeUrl',
+  url: '__nimbusNodeUrl',
+  'node:module': '__nimbusNodeModule',
+  module: '__nimbusNodeModule',
+};
+const NPM_RESOLVE_NODE_IMPORTS = [
+  "import * as __nimbusNodePath from 'node:path';",
+  "import * as __nimbusNodeOs from 'node:os';",
+  "import * as __nimbusNodeUrl from 'node:url';",
+  "import * as __nimbusNodeModule from 'node:module';",
+].join('\n');
+
+/**
+ * Versions and specs as npm reads them (@nimbus-sh/core _shared/npm-semver.ts
+ * and npm-spec.ts, over npm's own semver and npm-package-arg) as an IIFE
+ * bound to the module-local `__nimbusNpmResolve`, spliced into the resolver
+ * facets' preamble (loaders/npm-resolve-preamble.ts) after
+ * NPM_RESOLVE_NODE_IMPORTS. Its free names are checked: only the imports
+ * and a facet's own globals.
+ */
+async function bundleNpmResolve() {
+  const result = await build({
+    stdin: {
+      contents: [
+        "export { compareSemver, isSemverRange, parseSemver, pickPackumentVersion, resolveVersion, satisfiesRange } from './src/_shared/npm-semver.ts';",
+        "export { parseRegistryRequest } from './src/_shared/npm-spec.ts';",
+      ].join('\n'),
+      resolveDir: coreRoot,
+      loader: 'ts',
+    },
+    bundle: true,
+    format: 'iife',
+    globalName: '__nimbusNpmResolve',
+    target: 'esnext',
+    platform: 'neutral',
+    mainFields: ['main'],
+    // Minified: npm's libraries are a third of a resolver facet's module, and
+    // nothing reads this bundle's text or names but its one binding, which
+    // the check below holds (and the free-name guard after it).
+    minify: true,
+    absWorkingDir: root,
+    write: false,
+    logLevel: 'warning',
+    legalComments: 'none',
+    plugins: [{
+      name: 'facet-node-builtins',
+      setup(pluginBuild) {
+        pluginBuild.onResolve({ filter: /^(node:)?(path|path\/win32|os|url|module)$/ }, (args) => ({ path: args.path, namespace: 'facet-node-builtin' }));
+        pluginBuild.onLoad({ filter: /.*/, namespace: 'facet-node-builtin' }, (args) => {
+          const binding = NPM_RESOLVE_BUILTINS[args.path] ?? NPM_RESOLVE_BUILTINS[`node:${args.path}`];
+          return { contents: `module.exports = ${binding};`, loader: 'js' };
+        });
+      },
+    }],
+  });
+  if (!result.outputFiles || result.outputFiles.length === 0) {
+    throw new Error('[bundle-facet-workers/npm-resolve] esbuild produced no output');
+  }
+  const src = result.outputFiles[0].text;
+  if (!/^var __nimbusNpmResolve=/m.test(src)) {
+    throw new Error('[bundle-facet-workers/npm-resolve] the bundle no longer binds __nimbusNpmResolve');
+  }
+  const allowed = new Set([...FACET_GLOBALS, ...Object.values(NPM_RESOLVE_BUILTINS)]);
+  const stray = [...freeNames(src)].filter((name) => !allowed.has(name) && name !== '__nimbusNpmResolve');
+  if (stray.length > 0) {
+    throw new Error(`[bundle-facet-workers/npm-resolve] the bundle reads ${stray.join(', ')}, which a facet does not have: a ReferenceError inside the resolver`);
   }
   return src;
 }
@@ -856,6 +936,30 @@ async function main() {
     "export const GIT_PACK_NODE_IMPORTS: string = \"import * as __nimbusNodeCrypto from 'node:crypto';\\nimport * as __nimbusNodeZlib from 'node:zlib';\";",
     '',
     `export const GIT_PACK_SRC: string = ${JSON.stringify(gitPackSrc)};`,
+    '',
+  ].join('\n'));
+
+  const npmResolveSrc = await bundleNpmResolve();
+  const npmResolveOutPath = join(root, 'src', 'npm', 'resolve-libs.generated.ts');
+  writeFileSync(npmResolveOutPath, [
+    '/**',
+    ' * resolve-libs.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
+    ' *',
+    ' * Produced by scripts/bundle-facet-workers.mjs from:',
+    ' *   - @nimbus-sh/core src/_shared/npm-semver.ts (over semver)',
+    ' *   - @nimbus-sh/core src/_shared/npm-spec.ts (over npm-package-arg)',
+    ' *',
+    ' * An IIFE binding `__nimbusNpmResolve` in the module that splices it, the',
+    ' * resolver facets\' preamble (loaders/npm-resolve-preamble.ts), after',
+    ' * NPM_RESOLVE_NODE_IMPORTS. Its free names are those imports and a facet\'s',
+    ' * globals (scripts/free-names.mjs).',
+    ' *',
+    ` * Size: ${(npmResolveSrc.length / 1024).toFixed(2)} KiB`,
+    ' */',
+    '',
+    `export const NPM_RESOLVE_NODE_IMPORTS: string = ${JSON.stringify(NPM_RESOLVE_NODE_IMPORTS)};`,
+    '',
+    `export const NPM_RESOLVE_SRC: string = ${JSON.stringify(npmResolveSrc)};`,
     '',
   ].join('\n'));
 

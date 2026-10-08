@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // A full clone that fails late, with a hundred packs and their staged
-// files in .git, is aborted cleanly: the abort deletes .git file by file.
+// files in .git, is aborted cleanly: the abort deletes .git file by file
+// (and the destination it made: git-clone-abort-worktree).
 // As one recursive delete it passed a write group's row limit live (vscode
 // --no-shallow: "transaction exceeds logicalRows limit"), leaving the clone
 // marked "still being cloned". Red before: .git remained.

@@ -405,7 +405,7 @@ const NATIVE_OPS = {
   // A process's descriptors are O_SYNC here: each write is answered with what
   // the store did (SqliteVFS holds none of its appends), so a refusal is that
   // write's, and a delivered write's receipt records its outcome.
-  fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), { ...OpenOptions.parse(e.args?.[1]), sync: true }),
+  fsOpen: (e, t) => fsFor(e, t).open(FsPath.parse(e.args?.[0]), { ...OpenOptions.parse(e.args?.[1]), sync: true }, leaseOf(e)),
   fsRead: (e, t) => {
     const length = numberArg(e, 2);
     return readHydrating(t.hydrated, () => t.readLease(length, () => Promise.resolve(fsFor(e, t).read(numberArg(e, 0), nullableNumberArg(e, 1), length))));
@@ -457,9 +457,12 @@ const NATIVE_OPS = {
       return { revision };
     }
   },
-  mkdir: (e, t) => fsFor(e, t).mkdir(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional() }).default({ recursive: true }).parse(e.args?.[1])),
-  rmdir: (e, t) => fsFor(e, t).rmdir(FsPath.parse(e.args?.[0])),
-  unlink: (e, t) => fsFor(e, t).unlink(FsPath.parse(e.args?.[0])),
+  mkdir: (e, t) => fsFor(e, t).mkdir(FsPath.parse(e.args?.[0]), {
+    ...z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional() }).default({ recursive: true }).parse(e.args?.[1]),
+    ...leaseOf(e),
+  }),
+  rmdir: (e, t) => fsFor(e, t).rmdir(FsPath.parse(e.args?.[0]), leaseOf(e)),
+  unlink: (e, t) => fsFor(e, t).unlink(FsPath.parse(e.args?.[0]), leaseOf(e)),
   rename: (e, t) => fsFor(e, t).rename(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), leaseOf(e)),
   symlink: (e, t) => fsFor(e, t).symlink(stringArg(e, 0), FsPath.parse(e.args?.[1])),
   access: (e, t) => fsFor(e, t).access(FsPath.parse(e.args?.[0]), numberArg(e, 1)),

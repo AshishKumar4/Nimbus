@@ -4,7 +4,7 @@
 // The lock is flock(2) on a file in the checkout's git dir, so each worktree
 // has its own. It belongs to an open file description of this process: the
 // kernel releases it when the process ends, however it ends, and it means
-// the same in every PID namespace (run-bounded's bwrap included). So there
+// the same in every PID namespace (a bwrap sandbox's included). So there
 // is no owner to check and no stale lock to break. The file is never
 // removed, since a waiter would then hold a lock on a removed file while
 // another process takes a new one; what it holds only describes the holder,

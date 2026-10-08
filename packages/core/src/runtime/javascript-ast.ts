@@ -59,6 +59,7 @@ interface AcornParser {
   finishNode<T>(node: T, type: string): T;
   raiseRecoverable(pos: number, message: string): void;
   next(): void;
+  scopeStack: Array<{ var: string[] }>;
 }
 const AcornParserClass = Parser as unknown as new (options: Options, input: string) => AcornParser;
 
@@ -129,60 +130,379 @@ export function calleeName(callee: AnyNode): string | null {
   return at.property.type === 'Literal' && typeof at.property.value === 'string' ? at.property.value : null;
 }
 
-/** Whether `source` holds a top-level `import` or `export` declaration. */
-export function hasTopLevelModuleSyntax(source: string): boolean {
-  return walkTopLevelModuleTokens(source, (_token, declaration) => declaration !== null) === true;
+/** The module syntax a token opens: a top-level declaration, or `import.meta` anywhere. */
+export type ModuleSyntaxToken = 'import' | 'export' | 'import.meta';
+
+/**
+ * The names Node's CommonJS wrapper binds: what a CommonJS module's top level
+ * may not redeclare lexically, and what no ES module's scope has.
+ */
+export const COMMONJS_WRAPPER_NAMES: ReadonlySet<string> = new Set(['exports', 'require', 'module', '__filename', '__dirname']);
+
+/**
+ * Whether Node runs `source`, whose extension and package "type" leave it
+ * undecided, as an ES module: Node's syntax detection (doc/api/packages.md
+ * "Syntax detection", on by default from v22.7.0), as src/node_contextify.cc
+ * ContainsModuleSyntax decides it. Node compiles the source as CommonJS (a
+ * file as the body of the wrapper function, whose parameters are the
+ * wrapper's names; `--eval` code and stdin, `scope` 'eval', with none) and it
+ * is CommonJS if that compiles. Otherwise V8's first error decides: one at
+ * an `import` (not `import(`), an `export` or `import.meta` makes it a
+ * module; one Node retries (a lexical redeclaration of a wrapper name, and
+ * the errors a top-level `await` gives) makes it a module if it compiles as
+ * one; any other leaves it CommonJS.
+ *
+ * Only an `import`, an `export`, `import.meta`, a top-level `await` or a
+ * top-level lexical declaration can make the answer a module, so a walk of
+ * the tokens answers every other source CommonJS without a parse (a
+ * multi-MiB bundle must fit a 48 MiB heap). One that finds a top-level
+ * `import` or `export`, or `import.meta`, before either of the others
+ * answers module. Where that differs from Node (a syntax error before it;
+ * an `import` or `export` nested in a block) the source compiles under
+ * neither, and fails either way. The rest are compiled, by acorn in V8's
+ * place (commonJsCompileError).
+ */
+export function containsModuleSyntax(source: string, scope: 'file' | 'eval' = 'file'): boolean {
+  const scan = unscopedAwaitScanner(source);
+  const bindings = lexicalBindingScanner(scope === 'file' ? COMMONJS_WRAPPER_NAMES : new Set<string>());
+  let moduleSyntax = false;
+  let candidate = false;
+  // Tokenized as CommonJS is compiled: a script's tokens (a legacy octal is one).
+  walkTopLevelModuleTokens(source, (token, syntax, topLevel) => {
+    if (syntax !== null) moduleSyntax = true;
+    else if (bindings(token, topLevel) || scan(token)) candidate = true;
+    return moduleSyntax || candidate;
+  }, 'script');
+  if (moduleSyntax) return true;
+  if (!candidate && !scan.atEnd()) return false;
+  const error = commonJsCompileError(source, scope);
+  if (error === null) return false;
+  if (error.esModuleSyntax) return true;
+  return compilesAsModuleAfter(source, error.at);
+}
+
+/**
+ * A top-level lexical declaration's state, handed the tokens in order: true
+ * for each name token in a `let`, `const` or `class` declaration's binding
+ * part (its patterns, every declarator's, and a class's name) whose name,
+ * escapes read, is one of `names`. A key in a pattern counts too: it only
+ * asks for the compile, which settles it.
+ */
+function lexicalBindingScanner(names: ReadonlySet<string>): (token: Token, topLevel: boolean) => boolean {
+  // In a declarator's target, or its value, from a `let` or `const` to the `;` after it.
+  let declarator: 'none' | 'binding' | 'initializer' = 'none';
+  let depth = 0;
+  let className = false;
+  let previous: TokenType = tokTypes.eof;
+  return (token, topLevel) => {
+    const type = token.type;
+    const after = previous;
+    previous = type;
+    if (className) {
+      className = false;
+      if (type === tokTypes.name && names.has(tokenName(token))) return true;
+    }
+    if (topLevel && after !== tokTypes.dot && after !== tokTypes.questionDot) {
+      if (type === tokTypes._class) className = true;
+      else if (type === tokTypes._const || (type === tokTypes.name && tokenName(token) === 'let')) {
+        declarator = 'binding';
+        depth = 0;
+        return false;
+      }
+    }
+    if (declarator === 'none') return false;
+    if (type === tokTypes.braceL || type === tokTypes.dollarBraceL || type === tokTypes.parenL || type === tokTypes.bracketL) depth++;
+    else if (type === tokTypes.braceR || type === tokTypes.parenR || type === tokTypes.bracketR) depth--;
+    if (depth < 0 || (depth === 0 && type === tokTypes.semi)) declarator = 'none';
+    else if (depth === 0 && type === tokTypes.eq && declarator === 'binding') declarator = 'initializer';
+    else if (depth === 0 && type === tokTypes.comma) declarator = 'binding';
+    return declarator === 'binding' && type === tokTypes.name && names.has(tokenName(token));
+  };
+}
+
+/** A name token's name, escapes read (acorn sets `value`, which its declarations leave out). */
+function tokenName(token: Token): string {
+  const value: unknown = Reflect.get(token, 'value');
+  return typeof value === 'string' ? value : '';
+}
+
+/** acorn's messages for V8's errors at `import.meta` and at an `import` or `export` statement: a module's syntax. */
+const MODULE_SYNTAX_ERRORS = new Set([
+  "'import' and 'export' may appear only with 'sourceType: module'",
+  "'import' and 'export' may only appear at the top level",
+  "Cannot use 'import.meta' outside a module",
+]);
+
+/**
+ * acorn's first error compiling `source` as Node compiles CommonJS (in V8's
+ * place, which raises its first at the same token): at `at`, and whether V8
+ * names it module syntax (an `import` or `export` where neither can be, or
+ * `import.meta`). Null when it compiles. The wrapper's parameters are the top
+ * scope's names (acorn's "commonjs" source type is a function body's), so a
+ * lexical declaration of one is a redeclaration, through any pattern and
+ * escape, as V8 finds it.
+ */
+function commonJsCompileError(source: string, scope: 'file' | 'eval'): { at: number; esModuleSyntax: boolean } | null {
+  const parser = new CommonJsBodyParser({ ecmaVersion: 'latest', sourceType: 'commonjs', allowHashBang: true }, source);
+  parser.parameters = scope === 'file' ? [...COMMONJS_WRAPPER_NAMES] : [];
+  try {
+    parser.parse();
+    return null;
+  } catch (e) {
+    const at = (e as { pos?: unknown }).pos;
+    if (!(e instanceof SyntaxError) || typeof at !== 'number') throw e;
+    const message = e.message.replace(/ \(\d+:\d+\)$/, '');
+    // V8 names an `import` not followed by `(` or `.` and an `export` its own way wherever it stands.
+    const keyword = /^(?:import(?!\s*[(.])|export)(?![\w$])/.test(source.slice(at));
+    return { at, esModuleSyntax: MODULE_SYNTAX_ERRORS.has(message) || (message === 'Unexpected token' && keyword) };
+  }
+}
+
+/** acorn over the body of a function whose parameters are `parameters` (a CommonJS module's wrapper's). */
+class CommonJsBodyParser extends StatementParser {
+  parameters: readonly string[] = [];
+
+  parseTopLevel(node: Program): Program {
+    this.scopeStack[0]!.var.push(...this.parameters);
+    return super.parseTopLevel(node);
+  }
+}
+
+/**
+ * Whether `source` compiles as an ES module, and V8's first error compiling
+ * it as CommonJS, at `at`, is one Node retries it for. Every such error of a
+ * source that compiles as a module is a redeclaration of a wrapper name or
+ * an `await` read as CommonJS's identifier, whose next token V8 finds where
+ * the construct around it wants another. Each of those messages is on
+ * Node's list but one: V8 names an `await` whose expression a template's
+ * `${}` holds, as it closes, "Missing } in template expression"
+ * (templateAwaitAt).
+ */
+function compilesAsModuleAfter(source: string, at: number): boolean {
+  // The nodes holding `at`, innermost first: each finishes after those it holds.
+  const holding: AstNode[] = [];
+  try {
+    parseStatements(source, { ...MODULE_PARSE_OPTIONS, preserveParens: true }, {
+      onNode: (node) => {
+        if (node.start <= at && at < node.end) holding.push(node);
+      },
+    });
+  } catch {
+    return false;
+  }
+  return !templateAwaitAt(holding, at);
+}
+
+/**
+ * Whether the CommonJS compile's error at `at` is an `await` (read as an
+ * identifier) ending the expression of a template literal's `${}`: the
+ * innermost `await` before `at` holding it, up through the constructs V8
+ * leaves when the operand after it cannot continue the expression (an
+ * operator's either side, a sequence, a conditional's test or alternative,
+ * an assignment's value), to a template literal.
+ */
+function templateAwaitAt(holding: readonly AstNode[], at: number): boolean {
+  const index = holding.findIndex((node) => node.type === 'AwaitExpression' && node.start < at);
+  if (index === -1) return false;
+  let child = holding[index]!;
+  for (const parent of holding.slice(index + 1)) {
+    const continues = parent.type === 'BinaryExpression' || parent.type === 'LogicalExpression'
+      || parent.type === 'SequenceExpression' || parent.type === 'UnaryExpression'
+      || (parent.type === 'AssignmentExpression' && parent.right === child)
+      || (parent.type === 'ConditionalExpression' && parent.consequent !== child);
+    if (!continues) return parent.type === 'TemplateLiteral';
+    child = parent;
+  }
+  return false;
+}
+
+/**
+ * Whether `source` may hold an `await` outside every function body (a
+ * top-level await), read off its tokens: true when one is found, or when the
+ * source does not tokenize, so a false answer is certain.
+ */
+export function hasUnscopedAwait(source: string): boolean {
+  try {
+    const tokens = tokenizer(source, {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      allowHashBang: true,
+    });
+    const scan = unscopedAwaitScanner(source);
+    for (;;) {
+      const token = tokens.getToken();
+      if (token.type === tokTypes.eof) return scan.atEnd();
+      if (scan(token)) return true;
+    }
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * The state of {@link hasUnscopedAwait}'s walk, handed `source`'s tokens in
+ * order: true for the token after an `await` outside every function body
+ * that is not an object key (`{ await: 135 }`, as typescript's keyword table
+ * has), and `atEnd()` for one that ends the source.
+ */
+function unscopedAwaitScanner(source: string): ((token: Token) => boolean) & { atEnd(): boolean } {
+  const functionBraces: boolean[] = [];
+  const functionParenDepths: number[] = [];
+  const methodParenCandidates: boolean[] = [];
+  const arrowExpressions: Array<{ parens: number; braces: number; brackets: number }> = [];
+  let bracketDepth = 0;
+  let pendingMethodBody = false;
+  let pendingArrowBody = false;
+  let pendingFunctionKeyword = false;
+  let pendingAwait = false;
+  let previous = tokTypes.eof;
+  let previousEnd = 0;
+
+  const scan = (token: Token): boolean => {
+    const type = token.type;
+    if (pendingAwait) {
+      if (type !== tokTypes.colon) return true;
+      pendingAwait = false;
+    }
+
+    if (pendingMethodBody && type !== tokTypes.braceL) pendingMethodBody = false;
+    if (pendingArrowBody && type !== tokTypes.braceL) {
+      arrowExpressions.push({
+        parens: methodParenCandidates.length,
+        braces: functionBraces.length,
+        brackets: bracketDepth,
+      });
+      pendingArrowBody = false;
+    }
+
+    if (pendingFunctionKeyword) {
+      if (
+        type === tokTypes.colon || type === tokTypes.comma || type === tokTypes.braceR
+        || type === tokTypes.parenR || type === tokTypes.bracketR || type === tokTypes.eq
+      ) functionParenDepths.pop();
+      pendingFunctionKeyword = false;
+    }
+
+    if (source.slice(previousEnd, token.start).includes('\n')) {
+      while (arrowExpressions.length > 0) {
+        const arrow = arrowExpressions[arrowExpressions.length - 1];
+        if (
+          methodParenCandidates.length !== arrow.parens
+          || functionBraces.length !== arrow.braces
+          || bracketDepth !== arrow.brackets
+        ) break;
+        arrowExpressions.pop();
+      }
+    }
+
+    while (arrowExpressions.length > 0) {
+      const arrow = arrowExpressions[arrowExpressions.length - 1];
+      const delimited = (type === tokTypes.semi || type === tokTypes.comma)
+        && methodParenCandidates.length === arrow.parens
+        && functionBraces.length === arrow.braces
+        && bracketDepth === arrow.brackets;
+      const closed = (type === tokTypes.parenR && methodParenCandidates.length === arrow.parens)
+        || (type === tokTypes.bracketR && bracketDepth === arrow.brackets)
+        || (type === tokTypes.braceR && functionBraces.length === arrow.braces);
+      if (!delimited && !closed) break;
+      arrowExpressions.pop();
+    }
+
+    if (
+      type === tokTypes.name
+      && previous !== tokTypes.dot && previous !== tokTypes.questionDot
+      && source.slice(token.start, token.end) === 'await'
+      && !functionBraces.includes(true)
+      && arrowExpressions.length === 0
+    ) pendingAwait = true;
+
+    if (type === tokTypes._function || type === tokTypes._class) {
+      if (previous !== tokTypes.dot && previous !== tokTypes.questionDot) {
+        functionParenDepths.push(methodParenCandidates.length);
+        pendingFunctionKeyword = true;
+      }
+    } else if (type === tokTypes.arrow) {
+      pendingArrowBody = true;
+    } else if (type === tokTypes.parenL) {
+      methodParenCandidates.push(
+        functionBraces.length > 0
+          && (previous === tokTypes.name || previous === tokTypes.string
+            || previous === tokTypes.num || previous === tokTypes.bracketR),
+      );
+    } else if (type === tokTypes.parenR) {
+      pendingMethodBody = methodParenCandidates.pop() === true;
+    } else if (type === tokTypes.bracketL) {
+      bracketDepth++;
+    } else if (type === tokTypes.bracketR) {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+    } else if (type === tokTypes.dollarBraceL) {
+      functionBraces.push(false);
+    } else if (type === tokTypes.braceL) {
+      const functionBody = pendingArrowBody
+        || pendingMethodBody
+        || functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length;
+      if (functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length) {
+        functionParenDepths.pop();
+      }
+      functionBraces.push(functionBody);
+      pendingArrowBody = false;
+      pendingMethodBody = false;
+    } else if (type === tokTypes.braceR) {
+      functionBraces.pop();
+    }
+    previousEnd = token.end;
+    previous = type;
+    return false;
+  };
+  return Object.assign(scan, { atEnd: () => pendingAwait });
 }
 
 /**
  * Walk `source`'s tokens tracking brace, paren and bracket depth, without
  * building an AST (a multi-MiB bundle chunk must fit a 48 MiB heap). `visit`
- * sees each token with whether it sits at top level and, for a top-level
- * `import` or `export` keyword, which declaration it opens: not `import(`,
- * not `import.meta`, and not a member named so (after `.` or `?.`). The token
- * after an `import` keyword is read to decide that and not visited. `visit`
- * returns true to stop the walk.
+ * sees every token with whether it sits at top level and the module syntax
+ * it opens: for a top-level `import` or `export` keyword, the declaration
+ * (not `import(`), and for an `import` anywhere, `import.meta`; never for a
+ * member named so (after `.` or `?.`). `visit` returns true to stop the walk.
  *
  * Returns true when `visit` stopped it, false at the end of the source, and
- * null when the source does not tokenize.
+ * null when the source does not tokenize (as `sourceType` does).
  */
 export function walkTopLevelModuleTokens(
   source: string,
-  visit: (token: Token, declaration: 'import' | 'export' | null, topLevel: boolean) => boolean,
+  visit: (token: Token, syntax: ModuleSyntaxToken | null, topLevel: boolean) => boolean,
+  sourceType: 'module' | 'script' = 'module',
 ): boolean | null {
   try {
-    const tokens = tokenizer(source, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true });
+    const tokens = tokenizer(source, { ecmaVersion: 'latest', sourceType, allowHashBang: true });
     let braces = 0;
     let parens = 0;
     let brackets = 0;
     let previous: TokenType = tokTypes.eof;
-    const updateDepth = (type: TokenType): void => {
-      if (type === tokTypes.braceL || type === tokTypes.dollarBraceL) braces++;
+    // The token read past an `import` to tell its syntax, walked next.
+    let ahead: Token | null = null;
+    for (;;) {
+      const token = ahead ?? tokens.getToken();
+      ahead = null;
+      const type = token.type;
+      if (type === tokTypes.eof) return false;
+      const topLevel = braces === 0 && parens === 0 && brackets === 0;
+      const keyword = previous !== tokTypes.dot && previous !== tokTypes.questionDot;
+      previous = type;
+      let syntax: ModuleSyntaxToken | null = null;
+      if (keyword && topLevel && type === tokTypes._export) {
+        syntax = 'export';
+      } else if (keyword && type === tokTypes._import) {
+        ahead = tokens.getToken();
+        if (ahead.type === tokTypes.dot) syntax = 'import.meta';
+        else if (topLevel && ahead.type !== tokTypes.parenL) syntax = 'import';
+      } else if (type === tokTypes.braceL || type === tokTypes.dollarBraceL) braces++;
       else if (type === tokTypes.braceR) braces = Math.max(0, braces - 1);
       else if (type === tokTypes.parenL) parens++;
       else if (type === tokTypes.parenR) parens = Math.max(0, parens - 1);
       else if (type === tokTypes.bracketL) brackets++;
       else if (type === tokTypes.bracketR) brackets = Math.max(0, brackets - 1);
-    };
-    for (;;) {
-      const token = tokens.getToken();
-      const type = token.type;
-      if (type === tokTypes.eof) return false;
-      const topLevel = braces === 0 && parens === 0 && brackets === 0;
-      const keyword = topLevel && previous !== tokTypes.dot && previous !== tokTypes.questionDot;
-      previous = type;
-      let declaration: 'import' | 'export' | null = null;
-      if (keyword && type === tokTypes._export) {
-        declaration = 'export';
-      } else if (keyword && type === tokTypes._import) {
-        const next = tokens.getToken();
-        previous = next.type;
-        updateDepth(next.type);
-        if (next.type !== tokTypes.parenL && next.type !== tokTypes.dot) declaration = 'import';
-      } else {
-        updateDepth(type);
-      }
-      if (visit(token, declaration, topLevel)) return true;
+      if (visit(token, syntax, topLevel)) return true;
     }
   } catch {
     return null;

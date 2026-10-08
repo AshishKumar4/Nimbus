@@ -1,15 +1,16 @@
 #!/usr/bin/env bun
-// A module cell written with ESM `import` syntax that assigns
-// `module.exports` is lowered to CommonJS by esbuild's `format: 'cjs'`
-// pass, and `require()` gets the object the source assigned. That is the
-// lowering every ESM-shaped cell takes (transformEsmInBundle), including
-// one that `export ... from` a sibling and one too large for esbuild.
+// An ES module cell is lowered to CommonJS by esbuild's `format: 'cjs'`
+// pass, and `require()` gets its exports by name, as Node's require of an
+// ES module gives its namespace. That is the lowering every ESM-shaped cell
+// takes (transformEsmInBundle).
 //
 // The metadata pass for ESM cells ran esbuild's ESM printer first. For a
-// cell like this one that printer wraps the CommonJS body in `__commonJS`
-// and exports it as `default`, so `require('mypkg')` answered
-// `{ default: { hello } }` and `.hello` was undefined, printed with exit 0
-// (require-resolution/multiline-import on staging, 2026-09-27).
+// cell that printer wraps the CommonJS body in `__commonJS` and exports it
+// as `default`, so `require('mypkg')` answered `{ default: { hello } }` and
+// `.hello` was undefined, printed with exit 0
+// (require-resolution/multiline-import on staging, 2026-09-27). Those cells
+// assigned `module.exports` beside their imports, which Node refuses in an
+// ES module (ReferenceError, module-format-matches-node); these export.
 //
 // Drives a one-shot `node consume.js` through the real launch path: the
 // module-map walk, the ESM→CJS transform, the facet's metadata rewrite and
@@ -36,13 +37,13 @@ import { stagedAssets } from './lib/staged-assets.mjs';
 const ROOT = '/home/user/cellx';
 const files = {
   'node_modules/mypkg/package.json': JSON.stringify({ name: 'mypkg', type: 'module', main: './lib/index.js' }),
-  'node_modules/mypkg/lib/x.js': "module.exports = { hello: 'LINE_COMMENT_OK' };\n",
+  'node_modules/mypkg/lib/x.js': "export const hello = 'LINE_COMMENT_OK';\n",
   // The probe's shape: a multi-line import with a comment after the brace.
-  'node_modules/mypkg/lib/index.js': "import { // c\n  hello,\n} from './x.js';\nmodule.exports = { hello };\n",
+  'node_modules/mypkg/lib/index.js': "import { // c\n  hello,\n} from './x.js';\nexport { hello };\n",
   // The same shape reading import.meta, so the metadata rewrite has work.
   'node_modules/metapkg/package.json': JSON.stringify({ name: 'metapkg', type: 'module', main: './index.js' }),
-  'node_modules/metapkg/x.js': "module.exports = { hello: 'META_OK' };\n",
-  'node_modules/metapkg/index.js': "import { hello } from './x.js';\nmodule.exports = { hello, url: import.meta.url };\n",
+  'node_modules/metapkg/x.js': "export const hello = 'META_OK';\n",
+  'node_modules/metapkg/index.js': "import { hello } from './x.js';\nexport { hello };\nexport const url = import.meta.url;\n",
 };
 const SCRIPT = `
 const m = require('mypkg');
@@ -116,4 +117,4 @@ assert.deepEqual(JSON.parse(printed), {
   url: `file://${ROOT}/node_modules/metapkg/index.js`,
 });
 
-console.log('esm-cell-module-exports: an ESM-syntax cell\'s module.exports is what require() returns, with and without import.meta');
+console.log('esm-cell-module-exports: require() of an ES module cell gets its exports, with and without import.meta');

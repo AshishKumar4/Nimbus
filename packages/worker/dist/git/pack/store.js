@@ -39,6 +39,7 @@ class PackHandle {
 export class PackObjectStore {
     fs;
     gitdir;
+    /** The packs in search order; replaced, never changed in place (promote). */
     packs = null;
     cache;
     pages;
@@ -111,12 +112,21 @@ export class PackObjectStore {
         this.packs = packs;
         return packs;
     }
+    /**
+     * The pack holding `oid`, searched most recently used first, as git's
+     * packed_git_mru: neighbouring objects (a history's trees, a checkout's
+     * blobs) are mostly in one pack, and a clone has scores of packs. Each
+     * search walks the order as it was when it began (the list is never
+     * changed in place: concurrent searches each promote by replacing it).
+     */
     async locate(oid, retried = false) {
         const target = oidFromHex(oid);
         for (const pack of await this.list()) {
             const offset = await runAsync(this.find(pack, target), (range) => this.fetch(range));
-            if (offset !== null)
-                return { pack, offset };
+            if (offset === null)
+                continue;
+            this.promote(pack);
+            return { pack, offset };
         }
         // A pack written since the list was taken (git's reprepare_packed_git).
         if (!retried) {
@@ -124,6 +134,13 @@ export class PackObjectStore {
             return this.locate(oid, true);
         }
         return null;
+    }
+    /** `pack` first in the order, the rest as they were; a list refreshed since orders itself. */
+    promote(pack) {
+        const current = this.packs;
+        if (current === null || current[0] === pack || !current.includes(pack))
+            return;
+        this.packs = [pack, ...current.filter((other) => other !== pack)];
     }
     /** Binary search of one idx's fanout bucket, a page at a time; null when absent. */
     *find(pack, oid) {

@@ -1,7 +1,7 @@
 /-
   Nimbus.Refine.PipesCases — `lean/fixtures/pipes.json` for GitParityLane's
   `tests/unit/pipes-refinement.mjs` (`Nimbus.Runtime.Pipes`, the approved rules with a
-  per-pipe budget; /mnt/scratch/nimbus/verify/release/pipes-design.md).
+  per-pipe budget).
 
   Each case: `C` (capacity) and `B` (per-pipe budget; on a JSPI host it never binds and is
   set large), `pipes`, and `procs`, each `{pid, host: "jspi"|"local", kind: "bash"|"child",

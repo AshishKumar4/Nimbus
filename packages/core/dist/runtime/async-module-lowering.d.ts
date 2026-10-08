@@ -111,6 +111,17 @@ export declare function lowerAsyncModule(esm: string): string;
  * a name after code that may use it is parsed again, every name known.
  */
 export declare function readEsmRecords(source: string): EsmRecord[];
+/**
+ * readEsmRecords, and where the module uses a name the CommonJS wrapper
+ * binds (`require`, `module`, `exports`, `__filename`, `__dirname`) that
+ * neither its top level nor any scope around the use declares: no binding
+ * at all in an ES module's scope, which a lowering to CommonJS must keep so
+ * (module-format.ts ES_MODULE_UNBOUND_NAMES).
+ */
+export declare function readEsmModule(source: string): {
+    records: EsmRecord[];
+    wrapperUses: ReadonlyMap<string, readonly EsmReference[]>;
+};
 /** The CommonJS for ES module `source`, whose import and export declarations are `records`. */
 export declare function emitCommonJs(source: string, records: readonly EsmRecord[], options: CommonJsEmitOptions): string;
 //# sourceMappingURL=async-module-lowering.d.ts.map

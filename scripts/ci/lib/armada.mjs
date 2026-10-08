@@ -18,7 +18,7 @@ const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'
 // pin is checked against that main on every run, so a history rewritten
 // under it fails loudly rather than running a client no one can fetch. The
 // pin is the client the deployed Worker is proven with: move both together.
-const ARMADA_DIR = '/mnt/local/nimbus/armada-client';
+const ARMADA_DIR = join(homedir(), '.local/share/nimbus/armada-client');
 export const ARMADA_REPO = 'https://github.com/AshishKumar4/armada';
 export const ARMADA_CLIENT = 'f46fb8c74c893854f1e8c46993048bdc33d6a8a0';
 

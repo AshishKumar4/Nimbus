@@ -23,6 +23,8 @@ export interface FetchMissingObjectsRequest {
   /** Ids to fetch; the caller has already dropped those it holds. */
   oids: readonly string[];
   auth?: { username: string; password: string };
+  /** The repository is on a mounted filesystem (`dir` its namespace path). */
+  onMount?: boolean;
 }
 
 export interface FetchMissingObjectsResult {
@@ -55,6 +57,7 @@ export async function fetchMissingObjects(
     oids: [...request.oids],
     quiet: true,
     auth: request.auth,
+    ...(request.onMount === true ? { onMount: true } : {}),
   }, workspaceNetwork);
   if (!network.success) throw new PromisorFetchError(request.remote, network);
   return { fetched: network.fetchedObjects ?? 0, network };

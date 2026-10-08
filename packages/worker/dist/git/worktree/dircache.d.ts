@@ -122,6 +122,8 @@ export declare class DirCache {
     private tree;
     /** The cache tree changed: written, it saves the next command reading trees. */
     cacheTreeChanged: boolean;
+    /** Entries whose skip-worktree bit this command turned (setSkipWorktree), to the value they are written with. */
+    private readonly skipTurned;
     /** `bytes` are this index's own: a refresh patches them. */
     private constructor();
     get count(): number;
@@ -144,6 +146,16 @@ export declare class DirCache {
     /** CE_VALID: assume unchanged, never stat'd. */
     assumeValid(i: number): boolean;
     skipWorktree(i: number): boolean;
+    /**
+     * Set or clear entry `i`'s skip-worktree bit (CE_SKIP_WORKTREE), as a
+     * sparse checkout does to an entry it keeps: the entry is written so, its
+     * stat as it is.
+     */
+    setSkipWorktree(i: number, skip: boolean): void;
+    /** Whether any entry is skip-worktree: none in a version 2 file, which has no second flags word. */
+    hasSkipWorktree(): boolean;
+    /** Entry `i` laid out again with its skip-worktree bit turned: the second flags word comes or goes with it. */
+    private withSkipTurned;
     intentToAdd(i: number): boolean;
     ctimeSeconds(i: number): number;
     mtimeSeconds(i: number): number;
