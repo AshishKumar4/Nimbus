@@ -7,7 +7,7 @@ const header = 'x-nimbus-probe-version';
 const cycles = 64;
 const failures = [];
 
-for (const mode of ['ready', 'mint-mismatch', 'upgrade-mismatch', 'transient-500', 'bound']) {
+for (const mode of ['ready', 'mint-mismatch', 'upgrade-mismatch', 'delete-mismatch', 'transient-500', 'bound']) {
   let minted = 0;
   let upgrades = 0;
   let commands = 0;
@@ -36,7 +36,8 @@ for (const mode of ['ready', 'mint-mismatch', 'upgrade-mismatch', 'transient-500
           return new Response('internal error; reference fixture', { status: 500, headers: { [header]: uploaded } });
         }
         destroyed.add(sid);
-        return Response.json({ ok: true, result: { ok: true, killed: 0, destroyedAt: Date.now(), reason: 'target-readiness' } }, { headers: { [header]: uploaded } });
+        const stale = mode === 'delete-mismatch' && sid === 'session-1';
+        return Response.json({ ok: true, result: { ok: true, killed: 0, destroyedAt: Date.now(), reason: 'target-readiness' } }, { headers: { [header]: stale ? 'previous-version' : uploaded } });
       }
       throw new Error(`unexpected ${request.method} ${path}`);
     },
