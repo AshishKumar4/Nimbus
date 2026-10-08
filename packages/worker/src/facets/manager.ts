@@ -985,6 +985,97 @@ function entryFrameFile(filename: string | undefined, cwd: string, esModule: boo
 }
 
 /**
+ * A node program's runtime once its store has booted, the same for both
+ * lifetimes: its output relayed to the SUPERVISOR, the shims, the event loop
+ * and the globals, up to its entry module (`mod`).
+ */
+function nodeProgramRuntime(sources: NodeFacetSources): string {
+  return `
+    const __vfsBundle = __nimbusResidentBundle;
+    const __pendingIO = [];
+    let __rpcDrops = 0;
+    let __rpcDropBytes = 0;
+    let __rpcLastError = "";
+    const __onRpcDrop = (bytes, e) => {
+      __rpcDrops++;
+      __rpcDropBytes += bytes | 0;
+      if (e) __rpcLastError = (e && e.message) || String(e);
+    };
+    let __rpcWriteChain = Promise.resolve();
+    let __rpcWriteCount = 0;
+    // The relay carries bytes (see "Process output is bytes" in the shims).
+    // Each chunk goes with its offset in what this run printed and the run's
+    // number: what a replay prints again of the stopped run's output is
+    // checked and dropped here, and a chunk the session has not acknowledged
+    // when the run stops rides the stop (runtime/stop-replay.ts).
+    const __queueRpcWrite = (method, bytes) => {
+      const __chunk = __nimbusStopReplay.write(method, bytes);
+      if (__chunk === null) return;
+      __rpcWriteCount++;
+      // Released at the filesystem client's gate, taken now: once every
+      // change logged ahead of it is answered (ProcessFsClient.effect).
+      const __gate = __nimbusOutputGate();
+      const __task = __rpcWriteChain
+        .then(() => __gate)
+        .then(() => __supervisor[method](__chunk.b, __chunk.at, __chunk.run))
+        .then(() => __nimbusStopReplay.acked(__chunk))
+        .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
+      __rpcWriteChain = __task.then(() => {}, () => {});
+      __pendingIO.push(__task);
+    };
+    let cwd = _cwd || "/home/user";
+    let stdout = "", stderr = "";
+    let exitCode = 0;
+    const __nimbusDeferProcessExitReport = true;
+${sources.ledger}
+    const __vfsDirs = {};
+
+${ENTRYPOINT_TIMER_TRACKER}
+${sources.shims}
+
+${ENTRYPOINT_EVENT_LOOP}
+${RESIDENCY_MISS_REPORT}
+
+    // process.stdout/stderr stream live to the SUPERVISOR; console writes through them.
+    if (__supervisor && !captureOutput) {
+      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
+      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
+    }
+    // A fatal report goes to fd 2 as Node's does: past any write a program
+    // installs, after what the program wrote, and not program output that
+    // a stopped run's replay retraces (runtime/stop-replay.ts).
+    __nimbusFatalStderr = (__text) => {
+      stderr += __text;
+      if (!__supervisor || captureOutput) return;
+      const __bytes = __nimbusOutEnc.encode(__text);
+      // At the output gate, as all of the process's output is.
+      const __gate = __nimbusOutputGate();
+      const __task = __rpcWriteChain.then(() => __gate).then(() => __supervisor.stderr(__bytes)).catch((e) => __onRpcDrop(__bytes.byteLength, e));
+      __rpcWriteChain = __task.then(() => {}, () => {});
+      __pendingIO.push(__task);
+    };
+
+    try { globalThis.console = __consoleMod; } catch {}
+    try { globalThis.process = __processMod; } catch {}
+    try { globalThis.Buffer = __BufferMod; } catch {}
+    try { globalThis.global = globalThis; } catch {}
+    // undici's fetch (bundled by e.g. create-cloudflare) detaches
+    // performance.markResourceTiming and calls it with no receiver,
+    // which workerd rejects with "Illegal invocation" and crashes the
+    // process from an unhandled fetch-timing callback. Rebind it so a
+    // detached call keeps the correct receiver.
+    try {
+      const __perf = globalThis.performance;
+      if (__perf && typeof __perf.markResourceTiming === "function") {
+        __perf.markResourceTiming = __perf.markResourceTiming.bind(__perf);
+      }
+    } catch {}
+    const mod = { exports: {} };
+    Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta(filename || "/home/user/script.js") });
+`;
+}
+
+/**
  * Generate one-shot runtime code with a plain fetch handler. `filename`
  * names the entry's module, and so its stack frames; with `cwd` it is the
  * entry's importer (entryImporterUrl).
@@ -1102,90 +1193,7 @@ ${sources.residentStore}
     if (__namespaceFailure) {
       return __NimbusHostResponse.json({ exitCode: 1, stdout: "", stderr: __namespaceFailure + "\\n", residencyMisses: [] });
     }
-    const __vfsBundle = __nimbusResidentBundle;
-    const __pendingIO = [];
-    // Fix 6 orphan counters (same as NodeProcess.run) — count RPC writes
-    // that get dropped during isolate teardown so reportExit can report them.
-    let __rpcDrops = 0;
-    let __rpcDropBytes = 0;
-    let __rpcLastError = "";
-    const __onRpcDrop = (bytes, e) => {
-      __rpcDrops++;
-      __rpcDropBytes += bytes | 0;
-      if (e) { __rpcLastError = (e && e.message) || String(e); }
-    };
-    let __rpcWriteChain = Promise.resolve();
-    let __rpcWriteCount = 0;
-    // The relay carries bytes (see "Process output is bytes" in the shims).
-    // Each chunk goes with its offset in what this run printed and the run's
-    // number: what a replay prints again of the stopped run's output is
-    // checked and dropped here, and a chunk the session has not acknowledged
-    // when the run stops rides the stop (runtime/stop-replay.ts).
-    const __queueRpcWrite = (method, bytes) => {
-      const __chunk = __nimbusStopReplay.write(method, bytes);
-      if (__chunk === null) return;
-      __rpcWriteCount++;
-      // Released at the filesystem client's gate, taken now: once every
-      // change logged ahead of it is answered (ProcessFsClient.effect).
-      const __gate = __nimbusOutputGate();
-      const __task = __rpcWriteChain
-        .then(() => __gate)
-        .then(() => __supervisor[method](__chunk.b, __chunk.at, __chunk.run))
-        .then(() => __nimbusStopReplay.acked(__chunk))
-        .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
-      __rpcWriteChain = __task.then(() => {}, () => {});
-      __pendingIO.push(__task);
-    };
-    let cwd = _cwd || "/home/user";
-    let stdout = "", stderr = "";
-    let exitCode = 0;
-    const __nimbusDeferProcessExitReport = true;
-${sources.ledger}
-    const __vfsDirs = {};
-
-${ENTRYPOINT_TIMER_TRACKER}
-${sources.shims}
-
-${ENTRYPOINT_EVENT_LOOP}
-${RESIDENCY_MISS_REPORT}
-
-    // process.stdout/stderr stream live to the SUPERVISOR; console writes through them.
-    if (__supervisor && !captureOutput) {
-      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
-      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
-    }
-    // A fatal report goes to fd 2 as Node's does: past any write a program
-    // installs, after what the program wrote, and not program output that
-    // a stopped run's replay retraces (runtime/stop-replay.ts).
-    __nimbusFatalStderr = (__text) => {
-      stderr += __text;
-      if (!__supervisor || captureOutput) return;
-      const __bytes = __nimbusOutEnc.encode(__text);
-      // At the output gate, as all of the process's output is.
-      const __gate = __nimbusOutputGate();
-      const __task = __rpcWriteChain.then(() => __gate).then(() => __supervisor.stderr(__bytes)).catch((e) => __onRpcDrop(__bytes.byteLength, e));
-      __rpcWriteChain = __task.then(() => {}, () => {});
-      __pendingIO.push(__task);
-    };
-
-    try { globalThis.console = __consoleMod; } catch {}
-    try { globalThis.process = __processMod; } catch {}
-    try { globalThis.Buffer = __BufferMod; } catch {}
-    try { globalThis.global = globalThis; } catch {}
-    // undici's fetch (bundled by e.g. create-cloudflare) detaches
-    // performance.markResourceTiming and calls it with no receiver,
-    // which workerd rejects with "Illegal invocation" and crashes the
-    // process from an unhandled fetch-timing callback. Rebind it so a
-    // detached call keeps the correct receiver.
-    try {
-      const __perf = globalThis.performance;
-      if (__perf && typeof __perf.markResourceTiming === "function") {
-        __perf.markResourceTiming = __perf.markResourceTiming.bind(__perf);
-      }
-    } catch {}
-
-    const mod = { exports: {} };
-    Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta(filename || "/home/user/script.js") });
+${nodeProgramRuntime(sources)}
     try {
       await __nimbusPrepareStdin();
       // From here on the program runs: a stop is possible while stdin can
@@ -1668,88 +1676,11 @@ ${VFS_CURSOR_SEED_SOURCE}
     // namespace cannot be listed fails here, naming why.
     const __namespaceFailure = await __residentRequireNamespace(__supervisor, __residentBooted.failure);
     if (__namespaceFailure) throw new Error(__namespaceFailure);
-    const __vfsBundle = __nimbusResidentBundle;
-    const __pendingIO = [];
-    let __rpcDrops = 0;
-    let __rpcDropBytes = 0;
-    let __rpcLastError = "";
-    const __onRpcDrop = (bytes, e) => {
-      __rpcDrops++;
-      __rpcDropBytes += bytes | 0;
-      if (e) __rpcLastError = (e && e.message) || String(e);
-    };
-    let __rpcWriteChain = Promise.resolve();
-    let __rpcWriteCount = 0;
-    // The relay carries bytes (see "Process output is bytes" in the shims),
-    // each chunk placed in what this run printed (runtime/stop-replay.ts).
-    const __queueRpcWrite = (method, bytes) => {
-      const __chunk = __nimbusStopReplay.write(method, bytes);
-      if (__chunk === null) return;
-      __rpcWriteCount++;
-      // Released at the filesystem client's gate, taken now: once every
-      // change logged ahead of it is answered (ProcessFsClient.effect).
-      const __gate = __nimbusOutputGate();
-      const __task = __rpcWriteChain
-        .then(() => __gate)
-        .then(() => __supervisor[method](__chunk.b, __chunk.at, __chunk.run))
-        .then(() => __nimbusStopReplay.acked(__chunk))
-        .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
-      __rpcWriteChain = __task.then(() => {}, () => {});
-      __pendingIO.push(__task);
-    };
-    let cwd = _cwd || "/home/user";
-    let stdout = "", stderr = "";
-    let exitCode = 0;
-    const __nimbusDeferProcessExitReport = true;
-${sources.ledger}
-    const __vfsDirs = {};
-
-${ENTRYPOINT_TIMER_TRACKER}
-${sources.shims}
-
-${ENTRYPOINT_EVENT_LOOP}
-${RESIDENCY_MISS_REPORT}
-
-    // process.stdout/stderr stream live to the SUPERVISOR; console writes through them.
-    if (__supervisor && !captureOutput) {
-      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
-      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
-    }
-    // A fatal report goes to fd 2 as Node's does: past any write a program
-    // installs, after what the program wrote, and not program output that
-    // a stopped run's replay retraces (runtime/stop-replay.ts).
-    __nimbusFatalStderr = (__text) => {
-      stderr += __text;
-      if (!__supervisor || captureOutput) return;
-      const __bytes = __nimbusOutEnc.encode(__text);
-      // At the output gate, as all of the process's output is.
-      const __gate = __nimbusOutputGate();
-      const __task = __rpcWriteChain.then(() => __gate).then(() => __supervisor.stderr(__bytes)).catch((e) => __onRpcDrop(__bytes.byteLength, e));
-      __rpcWriteChain = __task.then(() => {}, () => {});
-      __pendingIO.push(__task);
-    };
-
-    try { globalThis.console = __consoleMod; } catch {}
-    try { globalThis.process = __processMod; } catch {}
-    try { globalThis.Buffer = __BufferMod; } catch {}
-    try { globalThis.global = globalThis; } catch {}
-    // undici's fetch (bundled by e.g. create-cloudflare) detaches
-    // performance.markResourceTiming and calls it with no receiver,
-    // which workerd rejects with "Illegal invocation" and crashes the
-    // process from an unhandled fetch-timing callback. Rebind it so a
-    // detached call keeps the correct receiver.
-    try {
-      const __perf = globalThis.performance;
-      if (__perf && typeof __perf.markResourceTiming === "function") {
-        __perf.markResourceTiming = __perf.markResourceTiming.bind(__perf);
-      }
-    } catch {}
+${nodeProgramRuntime(sources)}
     if (attachedTty) {
       try { __processMod.stdin.__nimbusStartLivePump?.(); } catch {}
     }
 
-    const mod = { exports: {} };
-    Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta(filename || "/home/user/script.js") });
     let __attachedCompletion = null;
     let __attachedExplicitExit = false;
     // \`--watch\` and \`--inspect-brk\` hold a process that has no handle left
