@@ -1205,6 +1205,7 @@ export class Shell {
    */
   private async acceptLine(rawLine: string, submission?: ShellInputSubmission): Promise<void> {
     this.primaryPrompt = false;
+    submission?.leavePrompt();
     if (!this.lineSubmission) this.lineSubmission = submission;
     let command: string;
     if (this.pendingLine === null) {
