@@ -135,4 +135,10 @@ for (const [source, async] of [
   assert.equal(module.exports.default, 'undefinedundefined');
 }
 
+// Generated names avoid an identifier written with escapes as one of them.
+{
+  const { module } = run(lowered('import { a } from "dep";\nconst \\u005f_nimbus_m0 = 1, \\u005f_nimbus_m1 = 2;\nexport const sum = a + __nimbus_m0 + __nimbus_m1;'), () => ({ a: 4 }));
+  assert.equal(module.exports.sum, 7);
+}
+
 console.log('esbuild-bundled-esm-rewrite: ok');

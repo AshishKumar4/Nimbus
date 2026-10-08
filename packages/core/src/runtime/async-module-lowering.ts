@@ -103,23 +103,29 @@ function blank(text: string): string {
   return text.replace(/[^\n\r\u2028\u2029]/g, ' ');
 }
 
+const GENERATED_NAME_PREFIX = '__nimbus_m';
+
 /**
  * Names for code generated around `source`: none of `names`, its identifiers
- * as the parse reads them (unicode escapes decoded); by default its tokens'.
+ * that start as they do, as the parse reads them (unicode escapes decoded);
+ * by default its tokens'.
  */
-export function generatedNames(source: string, names: ReadonlySet<string> = identifierNames(source)): () => string {
+export function generatedNames(source: string, names: ReadonlySet<string> = generatedLookingNames(source)): () => string {
   let count = 0;
   return () => {
     let name: string;
-    do name = `__nimbus_m${count++}`; while (names.has(name));
+    do name = `${GENERATED_NAME_PREFIX}${count++}`; while (names.has(name));
     return name;
   };
 }
 
-function identifierNames(source: string): Set<string> {
+function generatedLookingNames(source: string): Set<string> {
   const names = new Set<string>();
   try {
-    for (const token of tokenizer(source, MODULE_PARSE_OPTIONS)) if (token.type === tokTypes.name) names.add(String(Reflect.get(token, 'value')));
+    for (const token of tokenizer(source, MODULE_PARSE_OPTIONS)) {
+      const value: unknown = Reflect.get(token, 'value');
+      if (token.type === tokTypes.name && typeof value === 'string' && value.startsWith(GENERATED_NAME_PREFIX)) names.add(value);
+    }
   } catch (error) {
     // The parse after this reports the module's syntax error.
     if (!(error instanceof SyntaxError)) throw error;
@@ -241,7 +247,7 @@ export function readEsmModule(source: string): {
   /** Every import.meta, and where each import() starts. */
   metas: readonly Span[];
   dynamicImports: readonly number[];
-  /** Every identifier's name, unicode escapes decoded. */
+  /** Every identifier's name that starts as a generated one does (generatedNames), unicode escapes decoded. */
   names: ReadonlySet<string>;
 } {
   const first = readModule(source, null);
@@ -321,7 +327,7 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
   const onIdentifier = (identifier: EsNode) => {
     const name = stringOf(identifier, 'name');
     if (name === null) return;
-    names.add(name);
+    if (name.startsWith(GENERATED_NAME_PREFIX)) names.add(name);
     if (!tracked.has(name)) return;
     // Identifiers finish in source order; one out of it is put in its place.
     let at = mentions.length;

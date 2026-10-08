@@ -107,10 +107,11 @@ console.log('esbuild-transform-routing: ok');
       return { transform: async (code, options) => ({ code: `ENGINE(${options.format})`, map: '', warnings: [] }) };
     },
   });
-  const shallow = await service.transform('export const a = 1;', { esModule: 'node' });
+  const at = { esModule: 'node', dynamicImportParent: 'file:///app/m.mjs' };
+  const shallow = await service.transform('export const a = 1;', at);
   assert.match(shallow.code, /__esModule/);
   assert.equal(loads, 0, 'a lowered ES module loads no engine');
-  const deep = await service.transform(`export const x = ${'['.repeat(7000)}1${']'.repeat(7000)};`, { esModule: 'node' });
+  const deep = await service.transform(`export const x = ${'['.repeat(7000)}1${']'.repeat(7000)};`, at);
   assert.equal(deep.code, 'ENGINE(cjs)', 'one nested past the lowering is the engine\'s');
   assert.equal(loads, 1);
 }
