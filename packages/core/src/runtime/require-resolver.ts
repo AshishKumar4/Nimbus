@@ -42,7 +42,8 @@ import { stripLeadingSlashes } from '../vfs/path.js';
 import { isNativeBinPath } from './os-contracts.js';
 import { stripCommentsForImports } from './comment-strip.js';
 import { createEsmResolver } from '../_shared/esm-resolver.js';
-import { calleeName, forEachNode, isAstNode, parseJavaScriptProgram, type AstNode } from './javascript-ast.js';
+import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
+import { programWrapperCalls } from '../interpreter/module-requests.js';
 
 // The CommonJS resolver this walk stages from (require-resolution.ts).
 export { requireFsOverBridge, type BridgeRequireFs, type RequireFs } from './require-resolution.js';
@@ -135,10 +136,8 @@ const PASSED_TO_REQUIRE_RE = /require(?:\.resolve)?\s*\(\s*([A-Za-z_$][\w$]*)\s*
 const FUNCTION_HEAD_RE = /(?:\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)\s*|(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function\b\s*\*?\s*[\w$]*\s*)$/;
 // What precedes an arrow function's parameters: `f = `, `f = async `.
 const ARROW_HEAD_RE = /(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?$/;
-// A parenthesized parameter list an arrow follows.
-const ARROW_PARAMS_RE = /^\([^()]*\)\s*=>/;
 // A call's argument list that starts with a string, and the callee before it.
-const STRING_CALL_RE = /\(\s*(['"`])[^'"`$\n]+?\1\s*[,)]/g;
+const STRING_CALL_RE = /\(\s*['"`]/g;
 const CALLEE_RE = /(?<![\w$.])([A-Za-z_$][\w$]*)\s*$/;
 // What precedes `=>` in `f = id =>`, `f = async id =>`: the name, and the parameter.
 const ARROW_PARAM_RE = /(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*$/;
@@ -896,9 +895,10 @@ const identifierPattern = (names: Iterable<string>) => [...names].map((name) => 
  * `vite build` failed on what it loads. `stripped` (the module without its
  * comments) is read by patterns first, which find the calls a wrapper could
  * make: almost every module has none, and is never parsed. A module with
- * some is parsed, and only a function whose own body passes its parameter to
- * a require is a wrapper. The runtime's import() prefetch reads the same
- * calls (core/interpreter moduleRequests).
+ * some is parsed, and read by the analysis the runtime's import() prefetch
+ * reads it with (core/interpreter/module-requests.ts programWrapperCalls):
+ * only a function whose own body passes its parameter to a require is a
+ * wrapper. The patterns may admit more than it does, never less.
  */
 export function requireWrapperCalls(code: string, stripped: string = code): string[] {
   if (!stripped.includes('equire')) return [];
@@ -920,14 +920,15 @@ export function requireWrapperCalls(code: string, stripped: string = code): stri
   if (params.size === 0) return [];
   // Functions with one of them first: `function f(id`, `f = function (id`,
   // `f = (id) =>`, `f = id =>`. Found from the parameter, which a literal
-  // scan finds, and read back to the name the function is called by.
+  // scan finds, and read back to the name the function is called by. A
+  // parenthesized head is taken as an arrow's whatever follows it (a default
+  // may call: `(id = fallback()) =>`); the parse decides.
   const candidates = new Set<string>();
   for (const match of stripped.matchAll(new RegExp(`\\(\\s*(?:${identifierPattern(params)})\\s*[,)=]`, 'g'))) {
     const at = match.index ?? 0;
     const before = stripped.slice(Math.max(0, at - 160), at);
     const head = FUNCTION_HEAD_RE.exec(before);
-    const arrow = head === null && ARROW_PARAMS_RE.test(stripped.slice(at, at + 240)) ? ARROW_HEAD_RE.exec(before) : null;
-    const name = head?.[1] ?? head?.[2] ?? arrow?.[1];
+    const name = head !== null ? head[1] ?? head[2] : ARROW_HEAD_RE.exec(before)?.[1];
     if (name !== undefined) candidates.add(name);
   }
   // `f = id =>`: from each arrow, its one parameter read back.
@@ -937,7 +938,9 @@ export function requireWrapperCalls(code: string, stripped: string = code): stri
   }
   for (const name of requires) candidates.delete(name);
   if (candidates.size === 0) return [];
-  // And one of them called with a string: each such call read back to its callee.
+  // And one of them called with a string: each call whose first argument
+  // opens a string, read back to its callee (what the string holds is the
+  // parse's to read: a `$`, the other quote, an escape).
   let called = false;
   for (const match of stripped.matchAll(STRING_CALL_RE)) {
     const at = match.index ?? 0;
@@ -946,67 +949,12 @@ export function requireWrapperCalls(code: string, stripped: string = code): stri
   }
   if (!called) return [];
   // A module nested past the walk's stack names no load, as one acorn cannot parse.
-  try { return wrapperCallsOf(code); } catch { return []; }
-}
-
-/** requireWrapperCalls over the parsed module: the calls of its functions that pass their first parameter to a require. */
-function wrapperCallsOf(code: string): string[] {
-  const program = parseJavaScriptProgram(code);
-  if (program === null) return [];
-  const made = new Set<string>();
-  const functions: Array<{ name: string; param: string; body: AstNode }> = [];
-  const calls: Array<{ callee: string; specifier: string }> = [];
-  const name = (node: unknown): string | undefined => (isAstNode(node) && node.type === 'Identifier' ? String(node.name) : undefined);
-  const firstParameter = (fn: unknown): string | undefined => {
-    if (!isAstNode(fn) || !(fn.type === 'FunctionDeclaration' || fn.type === 'FunctionExpression' || fn.type === 'ArrowFunctionExpression')) return undefined;
-    const first = (fn.params as AstNode[])[0];
-    return isAstNode(first) && first.type === 'AssignmentPattern' ? name(first.left) : name(first);
-  };
-  const candidate = (named: string | undefined, fn: unknown) => {
-    const param = firstParameter(fn);
-    if (named !== undefined && param !== undefined) functions.push({ name: named, param, body: (fn as AstNode).body as AstNode });
-  };
-  // `x(…)` and `x.resolve(…)` are x's require.
-  const requireOf = (callee: AstNode): string | undefined => name(callee)
-    ?? (callee.type === 'MemberExpression' && !callee.computed && name(callee.property) === 'resolve' ? name(callee.object) : undefined);
-  forEachNode(program, (raw) => {
-    const node = raw as AstNode;
-    if (node.type === 'VariableDeclarator') {
-      const init = node.init as AstNode | null;
-      if (name(node.id) !== undefined && isAstNode(init) && init.type === 'CallExpression' && calleeName(init.callee as AstNode) === 'createRequire') made.add(name(node.id)!);
-      candidate(name(node.id), init);
-    } else if (node.type === 'AssignmentExpression' && node.operator === '=') {
-      candidate(name(node.left), node.right);
-    } else if (node.type === 'FunctionDeclaration') {
-      candidate(name(node.id), node);
-    } else if (node.type === 'CallExpression') {
-      const callee = name(node.callee);
-      const specifier = literalString((node.arguments as AstNode[])[0]);
-      if (callee !== undefined && specifier !== undefined) calls.push({ callee, specifier });
-    }
-  });
-  const isRequire = (callee: string | undefined) => callee === 'require' || (callee !== undefined && made.has(callee));
-  const wrappers = new Set<string>();
-  for (const fn of functions) {
-    if (isRequire(fn.name) || wrappers.has(fn.name)) continue;
-    let passes = false;
-    forEachNode(fn.body, (raw) => {
-      const node = raw as AstNode;
-      if (passes || node.type !== 'CallExpression') return;
-      passes = isRequire(requireOf(node.callee as AstNode)) && name((node.arguments as AstNode[])[0]) === fn.param;
-    });
-    if (passes) wrappers.add(fn.name);
+  try {
+    const program = parseJavaScriptProgram(code);
+    return program === null ? [] : programWrapperCalls(program);
+  } catch {
+    return [];
   }
-  return [...new Set(calls.filter((call) => wrappers.has(call.callee)).map((call) => call.specifier))];
-}
-
-/** A string literal, or a template with no substitutions. */
-function literalString(node: unknown): string | undefined {
-  if (!isAstNode(node)) return undefined;
-  if (node.type === 'Literal') return typeof node.value === 'string' ? node.value : undefined;
-  if (node.type !== 'TemplateLiteral' || (node.expressions as AstNode[]).length !== 0) return undefined;
-  const cooked = ((node.quasis as AstNode[])[0]?.value as { cooked?: unknown } | undefined)?.cooked;
-  return typeof cooked === 'string' ? cooked : undefined;
 }
 
 /**
