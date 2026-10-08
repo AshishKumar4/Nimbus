@@ -26,7 +26,7 @@ const token = Math.random().toString(36).slice(2, 10);
 
 /**
  * Run a command, reporting a dropped socket as the dropped socket it is.
- * Returns null when the terminal died, so the probe can assert on that rather
+ * Returns failure details when the terminal dies, so the probe can assert on that rather
  * than crash out of the run and skip its own cleanup.
  */
 async function step(t, command, timeoutMs) {
