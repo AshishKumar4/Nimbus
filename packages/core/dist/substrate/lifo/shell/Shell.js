@@ -23,6 +23,7 @@ import { readDefaultShell } from './default-shell.js';
 import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { runKill } from '../commands/system/kill.js';
+import { ShellInputSubmission, ShellInputExecution } from '../../../shell/input-submission.js';
 function shellPromptParts(env, cwd) {
     const home = env['HOME'] ?? DEFAULT_HOME;
     let displayPath = cwd;
@@ -44,6 +45,21 @@ export function formatShellPrompt(env, cwd) {
 }
 /** PS2 — shown while an accepted line has not closed into a command yet. */
 const CONTINUATION_PROMPT = '> ';
+/**
+ * Shell-integration marks (FinalTerm's OSC 133), the ones bash and zsh write
+ * for VS Code, iTerm2 and WezTerm: A where a fresh prompt starts, B where it
+ * ends and input begins, C when an accepted command starts executing, D with
+ * its status when it ends. A client learns from them that a command returned,
+ * and how, instead of matching text that looks like a prompt. Only a fresh
+ * prompt is marked; a redraw of the line being edited rewrites the row the
+ * marks already name and finishes no command. Terminals that do not know
+ * them ignore them, as xterm.js does.
+ */
+const PROMPT_START = '\x1b]133;A\x07';
+const PROMPT_END = '\x1b]133;B\x07';
+const COMMAND_START = '\x1b]133;C\x07';
+/** D, with the status when the command returned one. */
+const commandEnd = (status) => `\x1b]133;D${status === null ? '' : `;${status}`}\x07`;
 export class Shell {
     filesystem;
     terminal;
@@ -95,6 +111,11 @@ export class Shell {
     tabCount = 0;
     // Paste queue for multiline paste support
     pasteQueue = [];
+    lineSubmission;
+    activeInput;
+    lineInputs = [];
+    primaryPrompt = false;
+    exitNotices = new Map();
     /**
      * Accepted lines that do not form a complete command yet: an unclosed
      * quote or a trailing `\` keeps the shell reading under PS2, as bash
@@ -270,10 +291,54 @@ export class Shell {
             return;
         this.terminal.onData(() => { });
         this.terminal = terminal;
-        terminal.onData(async (data) => (await this.handleInput(data)));
+        this.bindTerminalInput();
     }
     takeQueuedInput() {
-        return this.pasteQueue.splice(0);
+        return this.pasteQueue.splice(0).map((entry) => {
+            if (typeof entry === 'string')
+                return entry;
+            this.activeInput?.bind(entry.submission);
+            entry.release();
+            return entry.data;
+        });
+    }
+    queuePasteInput(data, submission) {
+        this.pasteQueue.push(submission ? { data, submission, release: submission.retain() } : data);
+    }
+    rejectQueuedInput() {
+        this.lineSubmission?.inherit(null);
+        for (const { submission } of this.lineInputs)
+            submission.inherit(null);
+        for (const entry of this.pasteQueue.splice(0)) {
+            if (typeof entry === 'string')
+                continue;
+            entry.submission.inherit(null);
+            this.lineInputs.push(entry);
+        }
+    }
+    bindTerminalInput() {
+        this.terminal.onData((data, submission) => this.handleInput(data, submission));
+        this.terminal.onSubmission?.((data, id, deliver, repl) => {
+            const submission = new ShellInputSubmission(id, (event) => this.terminal.shellIntegration?.(event));
+            const stdin = this.running && (repl || this.terminalStdin?.rawMode || this.terminalStdin?.isWaiting);
+            const owner = stdin ? this.activeInput?.owner : (!this.running ? this.lineSubmission : undefined);
+            if (stdin)
+                this.activeInput?.bind(submission);
+            else if (owner)
+                this.lineInputs.push({ submission, release: submission.retain() });
+            if (!this.running && !this.lineSubmission)
+                this.lineSubmission = submission;
+            this.terminal.shellIntegration?.({ type: 'shell-integration', event: 'input', submissionId: id, ownerId: owner?.id ?? id });
+            try {
+                const pending = deliver(submission);
+                submission.release();
+                return pending;
+            }
+            catch (error) {
+                submission.release();
+                throw error;
+            }
+        });
     }
     /**
      * The `runAs` host this shell re-credentials through. A caller building a
@@ -450,7 +515,7 @@ export class Shell {
         // First shell gets PID 1, subsequent shells get PID 2, 3, etc.
         const pid = this.processRegistry.registerShell(this.cwd, this.env);
         this.env['$'] = String(pid);
-        this.terminal.onData(async (data) => (await this.handleInput(data)));
+        this.bindTerminalInput();
         // The saved history, so Up recalls the last session's commands, as bash's does.
         await this.historyManager.load();
         // Source rc files on startup (like bash/zsh)
@@ -489,6 +554,7 @@ export class Shell {
     }
     printPrompt() {
         if (this.pendingLine !== null) {
+            this.primaryPrompt = false;
             this.terminal.write(CONTINUATION_PROMPT);
             return;
         }
@@ -497,9 +563,30 @@ export class Shell {
             this.writeToTerminal(`[${job.id}] Done    ${job.command}\n`);
         }
         this.processRegistry.collectZombies();
-        this.terminal.write(formatShellPrompt(this.env, this.cwd));
+        for (const notice of this.exitNotices.values())
+            this.writeToTerminal(notice);
+        this.exitNotices.clear();
+        this.terminal.write(PROMPT_START + formatShellPrompt(this.env, this.cwd) + PROMPT_END);
+        this.primaryPrompt = true;
+        this.announcePrompt();
+        const submission = this.lineSubmission;
+        this.lineSubmission = undefined;
+        submission?.prompt();
+        for (const { submission: input, release } of this.lineInputs.splice(0)) {
+            input.prompt();
+            release();
+        }
     }
-    async handleInput(data) {
+    /** A newly attached client learns current readiness, never a replayed completion. */
+    announcePrompt() {
+        if (!this.running && this.primaryPrompt)
+            this.terminal.shellIntegration?.({ type: 'shell-integration', event: 'prompt' });
+    }
+    queueProcessExitNotice(pid, text) {
+        if (!this.exitNotices.has(pid))
+            this.exitNotices.set(pid, text);
+    }
+    async handleInput(data, submission) {
         // Raw mode: bypass all shell line editing, deliver keypresses directly
         if (this.running && this.terminalStdin?.rawMode) {
             this.terminalStdin.feed(data);
@@ -524,13 +611,13 @@ export class Shell {
             this.cursorPos = 0;
             this.historyIndex = -1;
             for (let j = 1; j < lines.length - 1; j++) {
-                this.pasteQueue.push(lines[j]);
+                this.queuePasteInput(lines[j], submission);
             }
             const lastSegment = lines[lines.length - 1];
             if (lastSegment) {
-                this.pasteQueue.push(lastSegment);
+                this.queuePasteInput(lastSegment, submission);
             }
-            (await this.acceptLine(line));
+            (await this.acceptLine(line, submission));
             return;
         }
         // ESC sequences. Cursor motion and history are line EDITING, so they only
@@ -628,12 +715,18 @@ export class Shell {
         // so this is type-ahead. Echo it — that is what a tty does, and it is the
         // only sign of life a wedged dispatch can give — then hold it for replay.
         if (this.running) {
-            this.typeAhead.push(data);
+            let pending;
+            if (submission) {
+                const release = submission.retain();
+                pending = new Promise((resolve, reject) => { this.typeAhead.push({ data, submission, release, resolve, reject }); });
+            }
+            else
+                this.typeAhead.push(data);
             if (data === '\r')
                 this.terminal.write('\r\n');
             else if (data >= ' ' && data !== '\x7f')
                 this.terminal.write(normalizeTerminalNewlines(data));
-            return;
+            return pending;
         }
         // Tab completion
         if (data === '\t') {
@@ -650,7 +743,7 @@ export class Shell {
             this.cursorPos = 0;
             this.screenCursorRow = 0;
             this.historyIndex = -1;
-            (await this.acceptLine(line));
+            (await this.acceptLine(line, submission));
             return;
         }
         // Backspace
@@ -891,16 +984,37 @@ export class Shell {
      */
     async drainTypeAhead() {
         while (!this.running && this.typeAhead.length > 0) {
-            (await this.handleInput(this.typeAhead.shift()));
+            const next = this.typeAhead.shift();
+            if (next === undefined)
+                return;
+            if (typeof next === 'string') {
+                await this.handleInput(next);
+                continue;
+            }
+            try {
+                const pending = this.handleInput(next.data, next.submission);
+                next.release();
+                await pending;
+                next.resolve?.();
+            }
+            catch (error) {
+                next.reject?.(error instanceof Error ? error : new Error(String(error)));
+                throw error;
+            }
         }
     }
     async drainPasteQueue() {
         const next = this.pasteQueue.shift();
         if (next === undefined)
             return;
-        this.terminal.write(next);
+        const data = typeof next === 'string' ? next : next.data;
+        const submission = typeof next === 'string' ? undefined : next.submission;
+        this.terminal.write(data);
         this.terminal.write('\r\n');
-        (await this.acceptLine(next));
+        const pending = this.acceptLine(data, submission);
+        if (typeof next !== 'string')
+            next.release();
+        await pending;
     }
     moveCursorLeft() {
         if (this.cursorPos > 0) {
@@ -964,7 +1078,11 @@ export class Shell {
      * PS2 and keeps reading, and so does this shell. A `\<newline>` join drops
      * both characters; a quoted join keeps the newline in the string.
      */
-    async acceptLine(rawLine) {
+    async acceptLine(rawLine, submission) {
+        this.primaryPrompt = false;
+        submission?.leavePrompt();
+        if (!this.lineSubmission)
+            this.lineSubmission = submission;
         let command;
         if (this.pendingLine === null) {
             command = rawLine.trim();
@@ -986,9 +1104,15 @@ export class Shell {
             return;
         }
         this.pendingLine = null;
-        (await this.executeLine(command));
+        (await this.executeLine(command, this.lineSubmission ?? submission));
     }
-    async executeLine(line) {
+    async executeLine(line, submission = this.lineSubmission) {
+        this.primaryPrompt = false;
+        const release = submission?.retain();
+        this.lineSubmission = undefined;
+        this.running = true;
+        this.abortController = new AbortController();
+        this.terminalStdin = new TerminalStdin(() => this.consumeQueuedStdin());
         // History expansion
         const expanded = this.historyManager.expand(line);
         const actualLine = expanded ?? line;
@@ -996,13 +1120,17 @@ export class Shell {
             // Show the expanded command
             this.writeToTerminal(actualLine + '\n');
         }
-        // Add to history
-        (await this.historyManager.add(actualLine));
-        this.running = true;
-        this.abortController = new AbortController();
-        this.terminalStdin = new TerminalStdin();
+        const execution = submission?.start() ?? new ShellInputExecution();
+        this.activeInput = execution;
+        for (const { submission: input, release } of this.lineInputs.splice(0)) {
+            execution?.bind(input);
+            release();
+        }
+        this.terminal.write(COMMAND_START);
+        let status = null;
         try {
-            await this.interpreter.executeLine(actualLine, this.terminalStdin, {
+            await this.historyManager.add(actualLine);
+            status = await this.interpreter.executeLine(actualLine, this.terminalStdin, {
                 interactive: true,
                 commandIdentity: this.resolveCommandIdentity(undefined),
                 runAs: this.commandIdentity.runAs,
@@ -1016,10 +1144,36 @@ export class Shell {
             this.stdinCursorPos = 0;
             this.running = false;
             this.abortController = null;
+            this.terminal.write(commandEnd(status));
+            execution?.finish(status);
+            release?.();
+            this.activeInput = undefined;
+            this.lineSubmission = submission;
+            this.printPrompt();
+            execution?.prompt();
         }
-        this.printPrompt();
         (await this.drainPasteQueue());
         (await this.drainTypeAhead());
+    }
+    consumeQueuedStdin() {
+        const stdin = this.terminalStdin;
+        if (!stdin)
+            return;
+        const pasted = this.pasteQueue.length > 0;
+        const next = pasted ? this.pasteQueue.shift() : this.typeAhead.shift();
+        if (next === undefined)
+            return;
+        const queued = typeof next === 'string' ? next : next.data;
+        const data = pasted ? `${queued}\n` : queued.replace(/\r\n?|\n/g, '\n');
+        if (typeof next !== 'string') {
+            this.activeInput?.bind(next.submission);
+            next.release();
+            next.resolve?.();
+        }
+        const eof = data.indexOf('\x04');
+        stdin.feed(eof < 0 ? data : data.slice(0, eof));
+        if (eof >= 0)
+            stdin.close();
     }
     // ─── Builtins (now with stdout/stderr params for pipe support) ───
     async builtinCd(args, stderr) {

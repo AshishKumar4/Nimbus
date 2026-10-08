@@ -36,6 +36,7 @@
     "NOTICE.md"
   ],
   "scripts": {
+    "prebuild": "bun scripts/generate-facet-limits.mjs",
     "build": "node ../../scripts/clean-dist.mjs && tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
     "prepublishOnly": "bun ../../scripts/dist-integrity.mjs --publish",
     "typecheck": "tsc --noEmit"

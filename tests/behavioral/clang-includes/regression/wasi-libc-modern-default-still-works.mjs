@@ -40,10 +40,10 @@ const rc = await t.run('clang cw.c -o cw', 240_000);
 a.check('compile/link succeeds', !/error:/i.test(stripAnsi(rc.output)),
   JSON.stringify(stripAnsi(rc.output).slice(-400)));
 
-const rr = await t.run('./cw ; echo RUN_EXIT=$?', 30_000);
+const rr = await t.run('./cw', 30_000);
 const outR = stripAnsi(rr.output);
 a.check('./cw prints DONE', /DONE/.test(outR), JSON.stringify(outR.slice(-300)));
-a.check('./cw exits 0', /RUN_EXIT=0/.test(outR), JSON.stringify(outR.slice(-200)));
+a.check('./cw exits 0', rr.exitCode === 0, JSON.stringify(outR.slice(-200)));
 
 // wasi-path-fix preservation: file at the correct location, no double-prefix.
 const rExist = await t.run(

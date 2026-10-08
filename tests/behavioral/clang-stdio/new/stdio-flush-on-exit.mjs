@@ -27,13 +27,13 @@ await t.run('nimbus install clang', 300_000);
 await t.run(heredocCommand('s.c', CSRC), 10_000);
 await t.run('clang s.c -o s', 240_000);
 
-const rr = await t.run('./s ; echo RUN_EXIT=$?', 30_000);
+const rr = await t.run('./s', 30_000);
 const out = stripAnsi(rr.output);
 for (let i = 1; i <= 5; i++) {
   a.check(`PRINT_${i} appears in stdout`, new RegExp(`PRINT_${i}`).test(out),
     JSON.stringify(out.slice(-400)));
 }
-a.check('exit code 0', /RUN_EXIT=0/.test(out), JSON.stringify(out.slice(-200)));
+a.check('exit code 0', rr.exitCode === 0, JSON.stringify(out.slice(-200)));
 
 await t.close();
 const sum = a.summary();

@@ -43,6 +43,7 @@ import {
   type ResidentSupervisorProps,
 } from './process-fabric.js';
 import { supervisorLoaderKey, mintProcessSupervisor, type SupervisorBindingProps } from './supervisor-props.js';
+import { applyFacetLimits, facetLimits, facetLoaderKey, type FacetResourceLimits } from './facet-limits.js';
 
 // ── Loaded-worker entrypoint plumbing ───────────────────────────────────────
 
@@ -130,7 +131,7 @@ interface FacetContainer {
 
 /** What an unkeyed `LOADER.load` hands back. */
 interface LoadedWorkerStub {
-  getEntrypoint(): LoadedWorkerEntrypointStub;
+  getEntrypoint(name?: string, opts?: { limits: FacetResourceLimits }): LoadedWorkerEntrypointStub;
 }
 
 /**
@@ -148,7 +149,7 @@ interface LoadedWorkerStub {
  * passes a string id and a promise callback.
  */
 interface WorkerLoaderBinding {
-  get(id: string | null, code: () => unknown): { getDurableObjectClass(name: string): unknown };
+  get(id: string | null, code: () => unknown): { getDurableObjectClass(name: string, opts?: { limits: FacetResourceLimits }): unknown };
   load(code: unknown): LoadedWorkerStub;
 }
 
@@ -454,15 +455,17 @@ function spawnResident(
   // is gone. Both cases are reported instead.
   let evaluated = false;
   let released = false;
+  let markLost: (error: Error) => void = () => {};
+  const lost = new Promise<never>((_, reject) => { markLost = reject; });
+  lost.catch(() => {});
   const start = async (): Promise<{ class: unknown }> => {
     if (released) {
       throw new Error(`Nimbus: resident process ${params.pid} is no longer running`);
     }
     if (evaluated) {
-      throw new Error(
-        `Nimbus: resident process ${params.pid} is no longer loaded (its facet was lost); `
-          + 'it is not restarted',
-      );
+      const gone = new Error(`Nimbus: resident process ${params.pid} is no longer loaded (its facet was lost)`);
+      markLost(gone);
+      throw gone;
     }
     evaluated = true;
     return { class: residentProcessClass(env, disk, supervisor, params, loaderKey) };
@@ -545,9 +548,7 @@ function spawnResident(
   started.catch(() => {});
   return {
     started,
-    // A facet cannot die without taking its Durable Object — and this object —
-    // with it, so there is no independent death to report.
-    lost: new Promise<never>(() => {}),
+    lost,
     // A request can arrive before the boot call; it creates the facet as that call would.
     handleHttpRequest: (request: Request) => facet.handleHttpRequest(request),
     handleWebSocketRequest: (request: Request) => facet.fetch(request),
@@ -595,8 +596,8 @@ function residentProcessClass(
     );
   }
   return loader
-    .get(loaderKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
-    .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
+    .get(facetLoaderKey('process', loaderKey), async () => applyFacetLimits('process', await residentWorkerConfig(env, disk, supervisor, params.boot)))
+    .getDurableObjectClass(RESIDENT_PROCESS_CLASS, { limits: facetLimits('process') });
 }
 
 async function runOneShot<T>(
@@ -646,7 +647,7 @@ async function runOneShot<T>(
       params.onWriterActivated(params.writerId);
       supervisorBinding = mintProcessSupervisor(supervisorRpc, supervisor);
     }
-    worker = loader.load({
+    worker = loader.load(applyFacetLimits('process', {
       compatibilityDate: spec.compatibilityDate,
       compatibilityFlags: spec.compatibilityFlags,
       mainModule: spec.mainModule,
@@ -657,11 +658,11 @@ async function runOneShot<T>(
       ...(supervisorBinding && params.outbound
         ? { globalOutbound: supervisorBinding }
         : supervisor.egress !== undefined ? { globalOutbound: supervisor.egress } : {}),
-    });
+    }));
     // The loader has taken the map; holding it here would keep a second full
     // copy of the program alive for as long as the program runs.
     spec = undefined;
-    entrypoint = worker.getEntrypoint();
+    entrypoint = worker.getEntrypoint(undefined, { limits: facetLimits('process') });
     // Narrowed by the runtime check; kept as a property call on the stub —
     // extracting the method builds a pipelined `fetch.call` path workerd
     // refuses for dynamically-loaded workers.

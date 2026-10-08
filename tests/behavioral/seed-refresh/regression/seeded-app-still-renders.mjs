@@ -39,18 +39,18 @@ await t.waitForPrompt(60_000);
 //    additions if they break JSX). esbuild is the same transform path
 //    Vite uses.
 {
-  const r = await t.run('esbuild /home/user/example-app/src/pages/Docs.tsx --format=esm --target=esnext > /tmp/docs.js; echo ESB_EXIT=$?', 30_000);
+  const r = await t.run('esbuild /home/user/example-app/src/pages/Docs.tsx --format=esm --target=esnext > /tmp/docs.js', 30_000);
   const out = stripAnsi(r.output);
-  const ok = /ESB_EXIT=0/.test(out) && !/\[ERROR\]|Syntax error|Unexpected/i.test(out);
+  const ok = r.exitCode === 0 && !/\[ERROR\]|Syntax error|Unexpected/i.test(out);
   a.check('Docs.tsx parses via esbuild (no syntax error from new sections)', ok,
     ok ? '' : JSON.stringify(out.slice(-500)));
 }
 
 // 3. Home.tsx parses cleanly (our Languages-icon swap).
 {
-  const r = await t.run('esbuild /home/user/example-app/src/pages/Home.tsx --format=esm --target=esnext > /tmp/home.js; echo ESB_EXIT=$?', 30_000);
+  const r = await t.run('esbuild /home/user/example-app/src/pages/Home.tsx --format=esm --target=esnext > /tmp/home.js', 30_000);
   const out = stripAnsi(r.output);
-  const ok = /ESB_EXIT=0/.test(out) && !/\[ERROR\]|Syntax error|Unexpected/i.test(out);
+  const ok = r.exitCode === 0 && !/\[ERROR\]|Syntax error|Unexpected/i.test(out);
   a.check('Home.tsx parses via esbuild (Languages-icon swap is valid)', ok,
     ok ? '' : JSON.stringify(out.slice(-500)));
 }

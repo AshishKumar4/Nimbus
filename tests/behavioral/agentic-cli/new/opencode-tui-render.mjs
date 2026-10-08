@@ -65,10 +65,10 @@ try {
     JSON.stringify(stripAnsi(install.output).slice(-300)));
 
   // ── RUNG 4 first (cheap, non-TUI): prove `opencode run` is UNAFFECTED ──
-  const run = await t.run('opencode run -m bogusprovider/nope "hi" 2>&1; echo RDONE=$?', 150_000);
+  const run = await t.run('opencode run -m bogusprovider/nope "hi" 2>&1', 150_000);
   const runOut = stripAnsi(run.output);
   a.check('[rung4] non-TUI `opencode run` still reaches model resolution cleanly (unaffected)',
-    /Model not found: bogusprovider\/nope/.test(runOut) && /RDONE=0/.test(runOut)
+    /Model not found: bogusprovider\/nope/.test(runOut) && run.exitCode === 0
       && !/Disallowed operation called within global scope|DatabaseSync \(node:sqlite\)|operation not permitted/.test(runOut),
     JSON.stringify(runOut.slice(-900)));
   a.check('[rung4] non-TUI `opencode run` emitted no alternate-screen TUI chrome',

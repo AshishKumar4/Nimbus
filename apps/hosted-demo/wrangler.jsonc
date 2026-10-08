@@ -152,7 +152,7 @@
   // automatically from the top level.
   "placement": { "mode": "smart" },
   // Shell commands run in the session DO; the 30 s default kills them. Facets keep their own ~30 s.
-  "limits": { "cpu_ms": 300000 },
+  "limits": { "cpu_ms": 300000, "subrequests": 10000000 },
   "vars": {
     // The SHA-256 of the runtime catalog in the NIMBUS_RUNTIME_CACHE bucket below:
     // `nimbus install` reads catalog/sha256/<this>.json and nothing else

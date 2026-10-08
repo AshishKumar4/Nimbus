@@ -75,13 +75,14 @@ try {
   //    floating async work is well inside the facet's real lifetime
   //    (FACET_TIMEOUT_MS); the fixed 8s entry budget cut it at ~8s, and every
   //    sequential-fetch script with it.
-  const longRun = stripAnsi((await t.run(
-    `node -e '(async () => { const t0 = Date.now(); for (let i = 0; i < 25; i++) await new Promise(r => setTimeout(r, 1000)); console.log("LONG-OK", Date.now() - t0 >= 25000); })();' ; echo "EXIT=$?"`,
+  const longResult = await t.run(
+    `node -e '(async () => { const t0 = Date.now(); for (let i = 0; i < 25; i++) await new Promise(r => setTimeout(r, 1000)); console.log("LONG-OK", Date.now() - t0 >= 25000); })();'`,
     90_000,
-  )).output);
+  );
+  const longRun = stripAnsi(longResult.output);
   a.check(
     '25s of floating async work is inside the facet lifetime and completes',
-    /LONG-OK true/.test(longRun) && /EXIT=0/.test(longRun),
+    /LONG-OK true/.test(longRun) && longResult.exitCode === 0,
     JSON.stringify(longRun.slice(-600)),
   );
 
@@ -102,13 +103,13 @@ try {
   //    shape — which npm CLIs produce routinely — burn the whole facet
   //    lifetime and then report that the program had not finished.
   const unsettled = await t.run(
-    `node -e 'Promise.resolve().then(() => new Promise(() => {})); console.log("PENDING-OK");' ; echo "EXIT=$?"`,
+    `node -e 'Promise.resolve().then(() => new Promise(() => {})); console.log("PENDING-OK");'`,
     90_000,
   );
   const unsettledOut = stripAnsi(unsettled.output);
   a.check(
     'an unsettled promise does not keep the program alive',
-    /PENDING-OK/.test(unsettledOut) && /EXIT=0\b/.test(unsettledOut)
+    /PENDING-OK/.test(unsettledOut) && unsettled.exitCode === 0
       && !/facet lifetime limit/.test(unsettledOut),
     JSON.stringify(unsettledOut.slice(-600)),
   );
@@ -116,13 +117,13 @@ try {
   // 7. process.exit is immediate whatever is outstanding — a live interval
   //    and an unsettleable promise both, here.
   const explicitExit = await t.run(
-    `node -e 'setInterval(() => {}, 1000); Promise.resolve().then(() => new Promise(() => {})); (async () => { await new Promise(r => setTimeout(r, 200)); process.exit(3); })();' ; echo "EXIT=$?"`,
+    `node -e 'setInterval(() => {}, 1000); Promise.resolve().then(() => new Promise(() => {})); (async () => { await new Promise(r => setTimeout(r, 200)); process.exit(3); })();'`,
     90_000,
   );
   const explicitExitOut = stripAnsi(explicitExit.output);
   a.check(
     'process.exit wins over everything still outstanding',
-    /EXIT=3\b/.test(explicitExitOut) && !/facet lifetime limit/.test(explicitExitOut),
+    explicitExit.exitCode === 3 && !/facet lifetime limit/.test(explicitExitOut),
     JSON.stringify(explicitExitOut.slice(-600)),
   );
 

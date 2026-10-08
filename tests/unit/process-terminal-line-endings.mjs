@@ -12,12 +12,15 @@ const bytes = (s) => new TextEncoder().encode(s);
 
 function createHost() {
   const writes = [];
+  const notices = [];
   const processes = new SessionProcessSupervisor();
   return {
     writes,
+    notices,
     host: {
       processes,
       terminal: { write: (data) => writes.push(data) },
+      shell: { queueProcessExitNotice(_pid, text) { notices.push(text); } },
       nimbusDebug: false,
     },
   };
@@ -55,13 +58,16 @@ function createHost() {
 }
 
 {
-  const { host, writes } = createHost();
+  const { host, writes, notices } = createHost();
   const entry = host.processes.spawn('failed-server', [], '/home/user', { longRunning: true });
   host.processes.appendOutput(entry.pid, 'stdout', 'first\nsecond\n');
 
   _emitExitDump(host, entry.pid, 1);
 
-  assert.ok(writes.includes('first\r\nsecond\r\n'), 'exit-dump chunks use terminal line endings');
+  assert.deepEqual(writes, [], 'exit dumps are queued for the shell\'s next primary prompt');
+  assert.equal(notices.length, 1);
+  assert.ok(notices[0].includes('first\r\nsecond\r\n'), 'queued exit-dump chunks use terminal line endings');
+  assert.ok(!/(^|[^\r])\n/.test(notices[0]), 'the entire notice has no bare line feed');
   assert.equal(host.processes.allLogs(entry.pid)[0].data, 'first\nsecond\n');
 }
 

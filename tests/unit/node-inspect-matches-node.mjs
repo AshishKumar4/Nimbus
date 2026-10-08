@@ -22,6 +22,7 @@ import {
   EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_INSPECT_SHA256, NODE_INSPECT_SOURCE, NODE_PRIMORDIALS_SHA256, NODE_PRIMORDIALS_SOURCE,
 } from '../../packages/worker/src/runtime/node-inspect-source.ts';
 import { NODE_INSPECT_HOST_SOURCE } from '../../packages/worker/src/runtime/node-inspect-host.ts';
+import { NODE_ERROR_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
 
 const sha256 = (text) => createHash('sha256').update(text).digest('hex');
 assert.equal(sha256(NODE_INSPECT_SOURCE), '2f2f01d7077800f8565d1be2bd1e6800f8ac02759482dc080eb6bc6005d67dd1', 'inspect.js is v22.22.3\'s, byte for byte');
@@ -33,6 +34,9 @@ const PROGRAM = String.raw`
 const util = require('util');
 const { internalBinding } = require('internal/test/binding');
 const wide = __WIDE__.split(',').flatMap((range) => { const [a, b = a] = range.split('-'); return [parseInt(a, 16), parseInt(b, 16)]; });
+// The shims' Node errors, which the host calls by name.
+__ERRORS__
+useNodeErrorInspect((value, options) => port.inspect(value, options));
 const port = (__HOST__)({
   util, slots: internalBinding('util'), Buffer, url: require('url'), process, builtinModules: require('module').builtinModules, builtinObjects: __BUILTINS__,
   eastAsianWide(code) {
@@ -119,6 +123,7 @@ try {
   const program = PROGRAM
     .replace('__WIDE__', JSON.stringify(EAST_ASIAN_WIDE_RANGES))
     .replace('__BUILTINS__', JSON.stringify(NODE_BUILTIN_OBJECTS))
+    .replace('__ERRORS__', () => NODE_ERROR_PREAMBLE)
     .replace('__HOST__', () => NODE_INSPECT_HOST_SOURCE)
     .replace('__PRIMORDIALS__', () => JSON.stringify(NODE_PRIMORDIALS_SOURCE))
     .replace('__INSPECT__', () => JSON.stringify(NODE_INSPECT_SOURCE));

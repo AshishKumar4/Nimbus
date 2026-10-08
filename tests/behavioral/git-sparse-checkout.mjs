@@ -20,14 +20,14 @@ const sid = await mintSession();
 console.log(`SID: ${sid}`);
 const t = new Terminal(sid);
 
-/** A command and its output, timed; its exit code is the last line's RC=. */
+/** A command and its output, timed. */
 async function step(label, command, timeoutMs = 600_000) {
   const started = Date.now();
-  const r = await t.run(`${command}; echo RC=$?`, timeoutMs);
+  const r = await t.run(command, timeoutMs);
   const out = stripAnsi(r.output);
   const secs = ((Date.now() - started) / 1000).toFixed(2);
   console.log(`  [${secs}s] ${label}`);
-  return { out, ok: [...out.matchAll(/RC=(\d+)/g)].pop()?.[1] === '0' };
+  return { out, ok: r.exitCode === 0 };
 }
 
 try {

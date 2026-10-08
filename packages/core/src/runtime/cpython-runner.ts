@@ -447,8 +447,8 @@ export function makeCPythonRunnerFactory(deps: {
       let result: CPythonFacetResult;
       try {
         result = await facet.submit(cpythonRunFacetFn, facetArgs, {
-          timeoutMs: 120_000,
-          // A kill or Ctrl-C ends the facet too, where the host can.
+          // No deadline: a process runs until it exits or is killed. A kill
+          // or Ctrl-C ends the facet too, where the host can.
           signal: ctx.signal,
         });
       } catch (e: unknown) {

@@ -9,6 +9,7 @@ import { type ProgramSpec, type ShellOptions, type TerminalFdState } from './int
 import { JobTable } from './jobs.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
 import { type HostProcessSignals } from '../commands/system/kill.js';
+import { ShellInputSubmission, type ShellQueuedInput } from '../../../shell/input-submission.js';
 export declare function formatShellPrompt(env: Record<string, string>, cwd: string): string;
 export interface ExecuteOptions {
     cwd?: string;
@@ -93,7 +94,12 @@ export declare class Shell {
     private arrays;
     private commandIdentity;
     private tabCount;
-    pasteQueue: string[];
+    pasteQueue: ShellQueuedInput[];
+    private lineSubmission;
+    private activeInput;
+    private lineInputs;
+    private primaryPrompt;
+    private readonly exitNotices;
     /**
      * Accepted lines that do not form a complete command yet: an unclosed
      * quote or a trailing `\` keeps the shell reading under PS2, as bash
@@ -108,7 +114,7 @@ export declare class Shell {
      * whatsoever. Held as whole chunks so a multi-byte escape sequence replays
      * as one keystroke rather than three.
      */
-    typeAhead: string[];
+    typeAhead: ShellQueuedInput[];
     constructor(terminal: ITerminal, filesystem: NimbusFilesystemAuthority, registry: CommandRegistry, env: Record<string, string>, processRegistry: ProcessRegistry, commandIdentity?: ShellCommandIdentity);
     /**
      * The Shell a builtin acts on: this one, or for a child shell (a subshell,
@@ -142,6 +148,9 @@ export declare class Shell {
     /** Transfer terminal I/O without replacing shell state or sourcing login files. */
     bindTerminal(terminal: ITerminal): void;
     takeQueuedInput(): string[];
+    queuePasteInput(data: string, submission?: ShellInputSubmission): void;
+    rejectQueuedInput(): void;
+    private bindTerminalInput;
     /**
      * The `runAs` host this shell re-credentials through. A caller building a
      * second Shell over the same kernel needs it, or its commands lose the
@@ -182,7 +191,10 @@ export declare class Shell {
     start(): Promise<void>;
     private sourceRcFiles;
     printPrompt(): void;
-    handleInput(data: string): Promise<void>;
+    /** A newly attached client learns current readiness, never a replayed completion. */
+    announcePrompt(): void;
+    queueProcessExitNotice(pid: number, text: string): void;
+    handleInput(data: string, submission?: ShellInputSubmission): Promise<void>;
     private handleTab;
     private handleStdinInput;
     private applyCompletion;
@@ -215,7 +227,8 @@ export declare class Shell {
      * both characters; a quoted join keeps the newline in the string.
      */
     private acceptLine;
-    executeLine(line: string): Promise<void>;
+    executeLine(line: string, submission?: ShellInputSubmission | undefined): Promise<void>;
+    private consumeQueuedStdin;
     private builtinCd;
     private builtinPwd;
     private builtinEcho;

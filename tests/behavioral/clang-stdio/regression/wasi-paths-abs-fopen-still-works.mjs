@@ -28,10 +28,10 @@ await t.run('nimbus install clang', 300_000);
 await t.run(heredocCommand('a.c', CSRC), 10_000);
 await t.run('clang a.c -o a', 240_000);
 
-const rr = await t.run('./a ; echo RUN_EXIT=$?', 30_000);
+const rr = await t.run('./a', 30_000);
 const out = stripAnsi(rr.output);
 a.check('DONE printed (stdio flush)', /DONE/.test(out), JSON.stringify(out.slice(-300)));
-a.check('exit code 0', /RUN_EXIT=0/.test(out), JSON.stringify(out.slice(-200)));
+a.check('exit code 0', rr.exitCode === 0, JSON.stringify(out.slice(-200)));
 
 const rE = await t.run(`node -e "console.log('correct=', require('fs').existsSync('/home/user/v13-abs.txt'), 'doubled=', require('fs').existsSync('/home/user/home/user/v13-abs.txt'))"`, 15_000);
 const outE = stripAnsi(rE.output);
