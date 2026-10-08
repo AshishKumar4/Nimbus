@@ -127,6 +127,39 @@ for (const [label, source] of Object.entries(CASES)) {
   }
 }
 
+// No semicolons, against real Node: a statement that starts with a call of
+// an import ends the one before it (a lowered call must not continue it),
+// the body of an if among them; `this` in the call stays undefined.
+{
+  const dir = mkdtempSync(join(tmpdir(), 'esm-to-cjs-asi-'));
+  try {
+    const dep = 'export const log = []\nexport function note(x) { log.push([x, this === undefined]); return Promise.resolve(x) }\n'
+      + 'export function tag(strings, n) { log.push(strings[0] + n); return () => "tagged" }\n';
+    const source = 'import { note, tag, log } from "./dep.mjs"\nconst first = [1]\nnote("a").then(() => {})\nnote("b")\nlet t = 0\ntag`n${t}`\n'
+      + 'if (first.length) note("c")\nif (!first.length) note("never")\nfor (const x of first) note(x)\nconst f = () =>\n  note("arrow")\nf()\nexport const seen = log.slice()\n';
+    writeFileSync(join(dir, 'dep.mjs'), dep);
+    writeFileSync(join(dir, 'main.mjs'), source);
+    const nodeRun = spawnSync('node', ['--input-type=module', '-e', `process.stdout.write(JSON.stringify((await import(${JSON.stringify(join(dir, 'main.mjs'))})).seen))`], { encoding: 'utf8' });
+    assert.equal(nodeRun.status, 0, nodeRun.stderr);
+    const depModule = { exports: {} };
+    new Function('module', 'exports', 'require', emitCommonJs(dep, readEsmRecords(dep), { body: 'sync' }))(depModule, depModule.exports, () => ({}));
+    for (const [body, code] of [
+      ['sync', emitCommonJs(source, readEsmRecords(source), { body: 'sync' })],
+      ['module', `return (function () { ${lowerEsModule(source, 'node').code} }).call(undefined, undefined, require, module);`],
+    ]) {
+      depModule.exports.log.length = 0;
+      const module = { exports: {} };
+      new Function('module', 'exports', 'require', code)(module, module.exports, (name) => {
+        assert.equal(name, './dep.mjs');
+        return depModule.exports;
+      });
+      assert.deepEqual(module.exports.seen, JSON.parse(nodeRun.stdout), `statements without semicolons (${body}) run as Node's`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // String export names, "*" among them, against real Node: a name "*" is a
 // name like any other, never the namespace, in an import, a re-export and
 // a re-export of the namespace beside it.

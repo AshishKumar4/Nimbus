@@ -73,8 +73,9 @@ function serviceWith(transform) {
   );
 }
 
-// transformMany is positional: a request the pre-pass cannot parse is its own
-// { error }, and the others still reach the host and keep their places.
+// transformMany is positional: a request the pre-pass cannot parse (one
+// binding __commonJS, which it reads) is its own { error }, and the others
+// still reach the host and keep their places.
 for (const hosted of [true, false]) {
   const sent = [];
   const transform = async (code) => { sent.push(code); return { code: `T(${code})`, map: '', warnings: [] }; };
@@ -84,7 +85,7 @@ for (const hosted of [true, false]) {
   const options = { loader: 'js', format: 'cjs' };
   const outcomes = await service.transformMany([
     { code: 'export const a = 1;', options },
-    { code: 'export const b = 2;\nimport, and otherwise;', options },
+    { code: 'import { __commonJS } from "./chunk.js";\nimport, and otherwise;', options },
     { code: 'export const c = 3;', options },
   ]);
   assert.equal(outcomes.length, 3);

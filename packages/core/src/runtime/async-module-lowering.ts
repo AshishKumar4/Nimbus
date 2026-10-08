@@ -60,14 +60,15 @@ export type EsmImportBinding =
   | { readonly kind: 'named'; readonly local: string; readonly imported: string; readonly references: readonly EsmReference[] };
 
 /**
- * A use of an imported binding: a read, a call (`this` stays undefined), a
- * shorthand property (`{ n }`), or a write, which throws as the language's
- * assignment to an import does.
+ * A use of an imported binding: a read, a call (`this` stays undefined), one
+ * that begins its expression statement (a leading-call), a shorthand property
+ * (`{ n }`), or a write, which throws as the language's assignment to an
+ * import does.
  */
 export interface EsmReference {
   readonly start: number;
   readonly end: number;
-  readonly use: 'read' | 'call' | 'shorthand' | 'write';
+  readonly use: 'read' | 'call' | 'leading-call' | 'shorthand' | 'write';
 }
 
 /**
@@ -226,6 +227,8 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
   let importsAfterCode = false;
   // Where each await finished so far starts; a function, once finished, takes back its own.
   const awaits: number[] = [];
+  // Where an expression statement starts with a tracked name: a call there is a leading-call.
+  const statementStarts = new Set<number>();
 
   const outside: Scope = { names: new Set(), parent: null };
   // Where an identifier spelled as an imported name starts, in order: code
@@ -354,7 +357,9 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
     onStatement: (statement) => onStatement(statement as Statement | ModuleDeclaration),
     onNode: (node) => {
       if (node.type === 'Identifier') onIdentifier(node);
-      else if (node.type === 'AwaitExpression' || (node.type === 'ForOfStatement' && node.await)) awaits.push(node.start);
+      else if (node.type === 'ExpressionStatement') {
+        if (mentioned(node.start, node.start + 1)) statementStarts.add(node.start);
+      } else if (node.type === 'AwaitExpression' || (node.type === 'ForOfStatement' && node.await)) awaits.push(node.start);
       // A function, once finished: its free uses, before its body is dropped.
       else if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
         freeIn.set(node, freeUses(node));
@@ -362,9 +367,12 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
       }
     },
   });
+  const leading = (references: readonly EsmReference[]) => references.map((reference) => (
+    reference.use === 'call' && statementStarts.has(reference.start) ? { ...reference, use: 'leading-call' as const } : reference
+  ));
   const withUses = records.map((record): EsmRecord => record.kind !== 'import' ? record : {
     ...record,
-    bindings: record.bindings.map((binding): EsmImportBinding => binding.kind === 'namespace' ? binding : { ...binding, references: uses.get(binding.local) ?? [] }),
+    bindings: record.bindings.map((binding): EsmImportBinding => binding.kind === 'namespace' ? binding : { ...binding, references: leading(uses.get(binding.local) ?? []) }),
   });
   const wrapperUses = new Map<string, EsmReference[]>();
   for (const name of COMMONJS_WRAPPER_NAMES) {
@@ -439,7 +447,9 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
       reads.set(binding.local, read);
       for (const { start, end, use } of binding.references) {
         if (use === 'write') continue;
-        uses.push({ start, end, text: use === 'call' ? `(0, ${read})` : use === 'shorthand' ? `${binding.local}: ${read}` : read });
+        // `(` would continue a statement before it that has no `;`; `void` cannot.
+        const callee = use === 'call' ? `(0, ${read})` : use === 'leading-call' ? `void 0, (0, ${read})` : null;
+        uses.push({ start, end, text: callee ?? (use === 'shorthand' ? `${binding.local}: ${read}` : read) });
       }
     }
   }

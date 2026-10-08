@@ -527,16 +527,16 @@ export function buildRuntimeHandler(
      * module (`--input-type=module`, or its syntax, module-format.ts) lowered,
      * which `-p` refuses as Node does (node-eval.ts); else Node's eval code.
      */
-    async function inputProgram(source: string, what: '[eval]' | '[stdin]'): Promise<{ code: string; refusedBeforeImports: boolean; esModule: boolean } | null> {
+    async function inputProgram(source: string, what: '[eval]' | '[stdin]'): Promise<{ code: string; written: string; refusedBeforeImports: boolean; esModule: boolean } | null> {
       const esModule = isEsModuleInput(source, inputType);
       if (esModule && !print) {
         const lowered = await lowerToCommonJs(source, 'js', evalUrl(), what, true);
-        return lowered === null ? null : { code: lowered, refusedBeforeImports: false, esModule: true };
+        return lowered === null ? null : { code: lowered, written: source, refusedBeforeImports: false, esModule: true };
       }
-      if (!spec.nodeCommandLine) return { code: source, refusedBeforeImports: false, esModule: false };
+      if (!spec.nodeCommandLine) return { code: source, written: source, refusedBeforeImports: false, esModule: false };
       const mode: NodeEvalMode = esModule ? 'module' : inputType === 'commonjs' ? 'commonjs' : 'default';
       const prepared = what === '[eval]' ? nodeEvalProgram(source, print, mode) : print ? nodeStdinPrintProgram(source, mode) : { code: source, refusedBeforeImports: false };
-      return { ...prepared, esModule: false };
+      return { ...prepared, written: prepared.code, esModule: false };
     }
 
     // ── --version ──
@@ -558,7 +558,7 @@ export function buildRuntimeHandler(
     if (line.eval !== undefined) {
       const program = await inputProgram(line.eval, '[eval]');
       if (program === null) return 1;
-      const { code, refusedBeforeImports, esModule } = program;
+      const { code, written, refusedBeforeImports, esModule } = program;
       const programArgs = args.slice(flagSpan);
       return runProgram(code, {
         print,
@@ -569,7 +569,7 @@ export function buildRuntimeHandler(
         dirname: ctx.cwd || '/home/user',
         command: binSpawn?.command || `${name} -e ...`,
         stdin: programStdin,
-        launchesServer: await launches(code, null, ctx.cwd || '/home/user', programArgs),
+        launchesServer: await launches(written, null, ctx.cwd || '/home/user', programArgs),
       });
     }
 
@@ -614,7 +614,7 @@ export function buildRuntimeHandler(
       // `-p` prints the value of the code it read (eval_stdin.js).
       const program = await inputProgram(input, '[stdin]');
       if (program === null) return 1;
-      const { code, refusedBeforeImports, esModule } = program;
+      const { code, written, refusedBeforeImports, esModule } = program;
       return runProgram(code, {
         print,
         refusedBeforeImports,
@@ -623,7 +623,7 @@ export function buildRuntimeHandler(
         filename: '[stdin]',
         dirname: ctx.cwd || '/home/user',
         command: binSpawn?.command || `${name} -`,
-        launchesServer: await launches(code, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]),
+        launchesServer: await launches(written, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]),
       });
     }
 
@@ -720,6 +720,9 @@ export function buildRuntimeHandler(
     // esbuild transform for TypeScript / TSX / JSX (both node and bun)
     // AND for ESM entry scripts.
     const esm = typescript === null && scriptExt !== '.jsx' && isEsModuleFile(resolvedPath, code, () => packageType);
+    // What the server-launch analysis reads: JavaScript as written (an ES module's
+    // lowering requires through its own helper), TypeScript and JSX compiled.
+    const written = code;
     if (typescript !== null || scriptExt === '.jsx' || esm) {
       const loader = typescript ?? (scriptExt === '.jsx' ? 'jsx' : 'js');
       const lowered = await lowerToCommonJs(code, loader, 'file:///' + resolvedPath.replace(/^\/+/, ''), scriptPath, esm);
@@ -738,8 +741,7 @@ export function buildRuntimeHandler(
       dirname,
       command: binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
       stdin: programStdin,
-      // Judged on the code as it will run, after any TypeScript/ESM transform.
-      launchesServer: await launches(code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]),
+      launchesServer: await launches(esm ? written : code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]),
     });
   }
 
