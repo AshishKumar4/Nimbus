@@ -40,7 +40,7 @@ adoptCtxExports({
 const env = {
   LOADER: {
     load() {
-      return { getEntrypoint: () => ({ async fetch() { return Response.json({ exitCode: 0, stdout: '', stderr: '' }); } }) };
+      return { getEntrypoint: () => ({ async run() { return Response.json({ exitCode: 0, stdout: '', stderr: '' }); } }) };
     },
     get() { throw new Error('unused'); },
   },

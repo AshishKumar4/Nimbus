@@ -19,6 +19,7 @@ import { notifyTerminalEvent } from "../runtime/process-logs-api.js";
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
 import { WebSocketRelay } from "../session/ws-relay.js";
+import { ProcessSupervisor } from "../session/process-supervisor.js";
 // ── Pure helpers in ../session/helpers.ts ────────
 //
 // renderNoDevServerHtml, BUNDLER_BIN_PREFIXES, NIMBUS_UNSUPPORTED_BINS,
@@ -84,6 +85,7 @@ export function ensureFacetManager(self, runtimeContext) {
             vfs: filesystem.engine,
             filesystem,
             network: runtimeContext.network,
+            supervise: (props) => new ProcessSupervisor(props, runtimeContext.env, runtimeContext.supervisorOp),
             ...(self.esbuildService ? { esbuild: self.esbuildService } : {}),
             hooks: {
                 onExternalExit: (pid, code, reason) => self._reportExternalExit(pid, code, reason),

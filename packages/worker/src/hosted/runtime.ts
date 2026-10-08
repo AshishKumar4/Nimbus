@@ -127,6 +127,7 @@ class RuntimeOwner {
       filesystem: () => options.workspace.filesystem,
       network: () => options.workspace.network,
       armResidentKeepalive: () => armResidentKeepalive(this, (at) => this.scheduleKeepalive(at)),
+      supervisorOp: (envelope) => this.supervisorOp(envelope),
     });
     options.workspace.shell.bindTerminal(this.terminal);
     installLogPersistence(this, options.ctx, () => this.scheduleLogs(), () => armLogJanitor(this, (at) => this.scheduleJanitor(at)));

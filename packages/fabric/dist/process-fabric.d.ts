@@ -517,7 +517,16 @@ export interface ProcessHost {
  * own selector (`processHostFor`) satisfies this type as it stands — the
  * workerd substrate is named, not wrapped.
  */
-export type ProcessHostFactory = (ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader, network: () => WorkspaceNetwork) => ProcessHost;
+export type ProcessHostFactory = (ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader, network: () => WorkspaceNetwork, supervise?: Supervise) => ProcessHost;
+/**
+ * The host's own SUPERVISOR for a one-shot, minted with its binding's props:
+ * a capability the program is handed in the call that runs it, answered
+ * inside the host (the worker's ProcessSupervisor). Calls on it are not
+ * requests to the host, so they never become the host's front request, whose
+ * subrequest depth every later call of the host inherits. A host that
+ * supplies none hands each one-shot its binding (bindingSupervisor).
+ */
+export type Supervise = (props: SupervisorBindingProps) => object;
 /**
  * Resource handle for one resident process — the whole surface the kernel
  * above this module sees: `booted()` for the boot payload, `done` for death,
