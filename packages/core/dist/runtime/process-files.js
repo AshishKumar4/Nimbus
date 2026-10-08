@@ -173,7 +173,22 @@ class GuardedProcessBridge {
     symlink(target, path) { this.guard(); return this.target.symlink(target, path); }
     fsync(handleId) { this.guard(); return this.target.fsync(handleId); }
     revision(path) { this.guard(); return this.target.revision(path); }
-    acquire(epoch, cursor, options) { this.guard(); return this.target.acquire(epoch, cursor, options); }
+    acquire(epoch, cursor, options) {
+        this.guard();
+        return this.withReadLease(this.target.acquire(epoch, cursor, options), options);
+    }
+    /**
+     * `answer`, with the process's read lease when it asked for one: in the
+     * turn the answer was made in, so it is granted at the revision the answer
+     * reports (Delegations.readLease).
+     */
+    withReadLease(answer, options) {
+        const target = this.target;
+        if (options?.lease !== true || this.pid === undefined || answer.poison || target.acquireReadLease === undefined)
+            return answer;
+        const lease = this.delegations.readLease(this.pid, (terms) => target.acquireReadLease(terms, { epoch: answer.epoch, cursor: answer.rev }), this.scope);
+        return lease === null ? answer : { ...answer, readLease: lease };
+    }
     list(after, limit) { this.guard(); return this.target.list(after, limit); }
     subscribe(path, listener) {
         this.guard();
@@ -661,10 +676,10 @@ class AwaitingProcessBridge {
                 continue;
             paths.push({ ...entry, path: entry.path.slice(1) });
         }
-        return {
+        return this.bridge.withReadLease({
             epoch: root.epoch, rev: root.cursor, paths, poison: answer.poison,
             ...(options?.namespace === true && !answer.poison ? { namespace: true } : {}),
-        };
+        }, options);
     }
     /**
      * The guarded bridge's answer, as it gives it (synchronously when it can),

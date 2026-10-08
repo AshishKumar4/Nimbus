@@ -1337,7 +1337,11 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       released: 0,
       widened: 0,
       renewed: 0,
-      folded: 0
+      folded: 0,
+      readLeases: 0,
+      readConfirms: 0,
+      readRecalls: 0,
+      readReleased: 0
     };
     const grantAfter = options.grantAfter ?? GRANT_AFTER;
     const grantIdleMs = options.grantIdleMs ?? GRANT_IDLE_MS;
@@ -1604,6 +1608,47 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         }
       }
     };
+    let readLease = null;
+    const endedReadLeases =   new Set();
+    const endReadLease = (owner) => {
+      endedReadLeases.add(owner);
+      if (endedReadLeases.size > 64) endedReadLeases.delete(endedReadLeases.values().next().value);
+      if (readLease?.owner === owner) readLease = null;
+    };
+    const releaseReadLease = () => {
+      const lease = readLease;
+      if (lease === null) return;
+      endReadLease(lease.owner);
+      counters.readReleased++;
+      void session.grants?.release(lease.owner).catch(() => {
+      });
+    };
+    const answerReadRecalls = async (owner) => {
+      const port = session.grants;
+      for (; ; ) {
+        const polled = now();
+        let kind;
+        try {
+          kind = await port.awaitRecall(owner, recallPollMs);
+        } catch {
+          endReadLease(owner);
+          return;
+        }
+        if (readLease?.owner !== owner) return;
+        if (kind === null) {
+          if (readLease.confirmedAt < polled) releaseReadLease();
+          if (readLease === null) return;
+          continue;
+        }
+        endReadLease(owner);
+        counters.readRecalls++;
+        try {
+          await port.recalled(owner, kind);
+        } catch {
+        }
+        return;
+      }
+    };
     const armIdle = () => {
       if (idleTimer !== null || live().length === 0) return;
       idleTimer = timers.setTimeout(() => {
@@ -1801,6 +1846,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       },
       async settle() {
         settling = true;
+        releaseReadLease();
         if (claiming !== null) await claiming;
         try {
           while (answered < logged) await client.flush();
@@ -1817,6 +1863,23 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       },
       takeFailures() {
         return failures.splice(0, failures.length);
+      },
+      readTrusted() {
+        return readLease !== null && now() < readLease.until;
+      },
+      readLeaseWanted() {
+        return session.grants !== void 0 && !settling;
+      },
+      readLeased(lease, askedAt) {
+        if (session.grants === void 0 || settling || endedReadLeases.has(lease.owner)) return;
+        const confirmed = readLease?.owner === lease.owner;
+        readLease = { owner: lease.owner, until: askedAt + lease.trustMs, confirmedAt: now() };
+        if (confirmed) {
+          counters.readConfirms++;
+          return;
+        }
+        counters.readLeases++;
+        void answerReadRecalls(lease.owner);
       },
       takeFailuresError() {
         const taken = failures.splice(0, failures.length);

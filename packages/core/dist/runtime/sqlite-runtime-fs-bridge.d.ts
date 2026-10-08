@@ -168,6 +168,12 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
      */
     acquireExclusiveMutation(path: RuntimeFsPath, options?: ExclusiveMutationRequest, terms?: DelegationTerms): ExclusiveMutationGrant;
     releaseExclusiveMutation(owner: string): void;
+    acquireReadLease(terms: DelegationTerms, at: {
+        readonly epoch: string;
+        readonly cursor: number;
+    }): {
+        readonly owner: string;
+    };
     /** No process, so no delegation: whatever `owner` names is not one of this bridge's (ESTALE). */
     awaitRecall(owner: string): never;
     recalled(owner: string): never;

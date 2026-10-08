@@ -171,6 +171,7 @@ declare const FsAcquireArgsSchema: z.ZodObject<{
     begin: z.ZodOptional<z.ZodNumber>;
     options: z.ZodOptional<z.ZodObject<{
         namespace: z.ZodOptional<z.ZodBoolean>;
+        lease: z.ZodOptional<z.ZodBoolean>;
         push: z.ZodOptional<z.ZodObject<{
             roots: z.ZodArray<z.ZodString>;
             exclude: z.ZodOptional<z.ZodArray<z.ZodString>>;

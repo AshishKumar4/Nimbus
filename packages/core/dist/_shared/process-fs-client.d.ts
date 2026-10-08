@@ -246,6 +246,24 @@ export interface ProcessFsClient {
     holds(key: string): boolean;
     /** Whether any op is logged and not yet answered. */
     pending(): boolean;
+    /**
+     * Whether the process's read lease is held and trusted now: nothing it
+     * covers has changed since the barrier that last confirmed it, or the
+     * change waits for this process to have answered its recall. A
+     * resumption's barrier need not ask the session.
+     */
+    readTrusted(): boolean;
+    /** Whether a barrier's ACQUIRE asks for the read lease too (VfsAcquireOptions.lease). */
+    readLeaseWanted(): boolean;
+    /**
+     * The barrier that asked at `askedAt` (this client's clock) applied an
+     * answer carrying `lease` (VfsAcquireResult.readLease): trusted until
+     * `askedAt + lease.trustMs`, and its recalls answered from now on.
+     */
+    readLeased(lease: {
+        owner: string;
+        trustMs: number;
+    }, askedAt: number): void;
     stats(): ProcessFsStats;
 }
 export interface ProcessFsStats {
@@ -264,6 +282,11 @@ export interface ProcessFsStats {
     renewed: number;
     /** Changes folded into the unsent change before them (the same file's next bytes). */
     folded: number;
+    /** Read leases taken (a new owner), confirmed (a barrier renewed one), recalled, and given back idle. */
+    readLeases: number;
+    readConfirms: number;
+    readRecalls: number;
+    readReleased: number;
 }
 /**
  * A synchronous loop's bytes held unanswered at once, at most

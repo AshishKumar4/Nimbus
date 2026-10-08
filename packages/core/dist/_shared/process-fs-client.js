@@ -247,6 +247,7 @@ export function processFsClient(options) {
     const counters = {
         ops: 0, waves: 0, resends: 0, epochs: 0, refused: 0, lost: 0, maxWaveOps: 0,
         grants: 0, grantsRefused: 0, recalls: 0, released: 0, widened: 0, renewed: 0, folded: 0,
+        readLeases: 0, readConfirms: 0, readRecalls: 0, readReleased: 0,
     };
     const grantAfter = options.grantAfter ?? GRANT_AFTER;
     const grantIdleMs = options.grantIdleMs ?? GRANT_IDLE_MS;
@@ -600,6 +601,77 @@ export function processFsClient(options) {
             }
         }
     };
+    /**
+     * The read lease (readLeased): its owner, until when it is trusted, and
+     * when a barrier last confirmed it. Untrusted the moment its recall
+     * arrives, before the session is told (answerReadRecalls).
+     */
+    let readLease = null;
+    /**
+     * Read leases recalled or given back: never trusted again. A barrier's
+     * answer that confirmed one can arrive after its recall was answered (the
+     * session confirmed it, then a writer recalled it), and trusting it then
+     * would read past a change published since.
+     */
+    const endedReadLeases = new Set();
+    const endReadLease = (owner) => {
+        endedReadLeases.add(owner);
+        // Owners are never reused; the oldest are forgotten past a bound.
+        if (endedReadLeases.size > 64)
+            endedReadLeases.delete(endedReadLeases.values().next().value);
+        if (readLease?.owner === owner)
+            readLease = null;
+    };
+    /** Give the read lease back (idle, or the process settling): the session's recall of it waits on no one. */
+    const releaseReadLease = () => {
+        const lease = readLease;
+        if (lease === null)
+            return;
+        endReadLease(lease.owner);
+        counters.readReleased++;
+        void session.grants?.release(lease.owner).catch(() => { });
+    };
+    /**
+     * The read lease's recalls, for as long as it is the process's: each poll
+     * that comes back empty while no barrier confirmed it gives it back (it is
+     * idle, and holds a poll open for nothing).
+     */
+    const answerReadRecalls = async (owner) => {
+        const port = session.grants;
+        for (;;) {
+            const polled = now();
+            let kind;
+            try {
+                kind = await port.awaitRecall(owner, recallPollMs);
+            }
+            catch {
+                // Ended by the session (released, or the process is ending).
+                endReadLease(owner);
+                return;
+            }
+            if (readLease?.owner !== owner)
+                return;
+            if (kind === null) {
+                if (readLease.confirmedAt < polled)
+                    releaseReadLease();
+                if (readLease === null)
+                    return;
+                continue;
+            }
+            // Untrusted first: a barrier from now on asks, and only then is the
+            // session told, so the change it waits to publish is one every later
+            // barrier of this process sees.
+            endReadLease(owner);
+            counters.readRecalls++;
+            try {
+                await port.recalled(owner, kind);
+            }
+            catch {
+                // Ended meanwhile.
+            }
+            return;
+        }
+    };
     /** Give back every grant unused for the idle period; armed while any is held. */
     const armIdle = () => {
         if (idleTimer !== null || live().length === 0)
@@ -846,6 +918,7 @@ export function processFsClient(options) {
         },
         async settle() {
             settling = true;
+            releaseReadLease();
             if (claiming !== null)
                 await claiming;
             try {
@@ -868,6 +941,24 @@ export function processFsClient(options) {
         },
         takeFailures() {
             return failures.splice(0, failures.length);
+        },
+        readTrusted() {
+            return readLease !== null && now() < readLease.until;
+        },
+        readLeaseWanted() {
+            return session.grants !== undefined && !settling;
+        },
+        readLeased(lease, askedAt) {
+            if (session.grants === undefined || settling || endedReadLeases.has(lease.owner))
+                return;
+            const confirmed = readLease?.owner === lease.owner;
+            readLease = { owner: lease.owner, until: askedAt + lease.trustMs, confirmedAt: now() };
+            if (confirmed) {
+                counters.readConfirms++;
+                return;
+            }
+            counters.readLeases++;
+            void answerReadRecalls(lease.owner);
         },
         takeFailuresError() {
             const taken = failures.splice(0, failures.length);

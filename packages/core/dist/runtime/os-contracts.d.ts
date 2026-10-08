@@ -1,4 +1,5 @@
 import type { VfsEvent } from '../vfs/events.js';
+import type { DelegationTerms } from '../vfs/sqlite-vfs.js';
 /**
  * A value SQLite can return in a row.
  *
@@ -409,6 +410,13 @@ export interface RuntimeFsBridge {
     awaitRecall(owner: string, waitMs?: number): Awaitable<RecallKind | null>;
     /** The process has sent what it decided under `owner`, and done what recall `kind` asked. */
     recalled(owner: string, kind: RecallKind): Awaitable<void>;
+    /** A read lease with `terms`, granted at `at` (SqliteVFS.acquireReadLease); absent where the engine has none. */
+    acquireReadLease?(terms: DelegationTerms, at: {
+        readonly epoch: string;
+        readonly cursor: number;
+    }): {
+        readonly owner: string;
+    };
 }
 /** What a lease is asked for (RuntimeFsBridge.acquireExclusiveMutation). */
 export interface ExclusiveMutationRequest {
@@ -498,6 +506,12 @@ export interface VfsInvalidatedPath {
 export interface VfsAcquireOptions {
     namespace?: boolean;
     /**
+     * The process's read lease, confirmed, or one taken at the revision this
+     * answer reports (VfsAcquireResult.readLease): until it is recalled, its
+     * barriers need not ask.
+     */
+    lease?: boolean;
+    /**
      * Carry the content of changed regular files under `roots` (caller path
      * space), skipping any path with a segment named in `exclude`. What a
      * process wrote after another launched is then readable synchronously by
@@ -516,6 +530,15 @@ export interface VfsAcquireResult {
     poison: boolean;
     /** True when every entry carries `stat` ({@link VfsAcquireOptions.namespace}). */
     namespace?: boolean;
+    /**
+     * The read lease asked for ({@link VfsAcquireOptions.lease}): its owner,
+     * and how long the process may trust it from the moment it asked.
+     * Absent when it was not asked, or its recall is pending.
+     */
+    readLease?: {
+        owner: string;
+        trustMs: number;
+    };
 }
 /**
  * One path in a {@link RuntimeFsBridge.list} page.

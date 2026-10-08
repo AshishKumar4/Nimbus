@@ -864,6 +864,9 @@ export class SqliteRuntimeFsBridge {
         });
     }
     releaseExclusiveMutation(owner) { this.rawVfs.releaseExclusiveMutation(owner); }
+    acquireReadLease(terms, at) {
+        return this.rawVfs.acquireReadLease(terms, at);
+    }
     /** No process, so no delegation: whatever `owner` names is not one of this bridge's (ESTALE). */
     awaitRecall(owner) {
         throw fsError('ESTALE', 'awaitRecall', owner, undefined, { detail: 'no delegation of this process under that lease' });

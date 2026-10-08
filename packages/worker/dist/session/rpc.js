@@ -398,6 +398,7 @@ const FsAcquireArgsSchema = z.object({
     begin: z.number().int().min(0).optional(),
     options: z.object({
         namespace: z.boolean().optional(),
+        lease: z.boolean().optional(),
         push: z.object({
             roots: z.array(z.string().max(4096)).max(64),
             exclude: z.array(z.string().max(255)).max(64).optional(),
@@ -556,10 +557,13 @@ export async function _acquireOnDelivery(self, args, pid) {
     if (!parsed.success)
         return undefined;
     const caller = pid !== undefined && pid > 0 ? pid : undefined;
+    // A delivery never takes a read lease: its process cannot time the trust
+    // of an answer it did not ask for (the barrier that asks does).
+    const { lease: _lease, ...options } = parsed.data.options ?? {};
     try {
         return {
             args: parsed.data,
-            answer: await _rpcFsAcquire(self, parsed.data.epoch, parsed.data.cursor, parsed.data.options, caller),
+            answer: await _rpcFsAcquire(self, parsed.data.epoch, parsed.data.cursor, parsed.data.options === undefined ? undefined : options, caller),
         };
     }
     catch {

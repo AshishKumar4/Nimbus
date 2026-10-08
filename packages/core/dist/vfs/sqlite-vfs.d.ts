@@ -78,6 +78,8 @@ export interface DelegationTerms {
     recall(kind: 'share' | 'revoke'): Promise<void>;
     /** Refuses (throws) a root its maker does not delegate; asked with the lease's resolved root, before anything else. */
     admit?(root: string): void;
+    /** A read lease's (acquireReadLease): the subtrees it does not cover, the session's own stores its synchronous use writes. */
+    readonly excludes?: readonly string[];
     /**
      * How many inode numbers to reserve for what the holder makes: it numbers
      * them itself (a stat shows the number before the session has the file)
@@ -789,6 +791,10 @@ export declare class SqliteVFS {
      */
     rotateIncarnation(): string;
     private readonly exclusiveMutationLeases;
+    /** Read leases (acquireReadLease), by owner. */
+    private readonly readLeases;
+    /** Read leases a publication found unrecalled and ended (a writer that skipped refusalAt): its staleness is the holder's trust window. */
+    private readLeasesBroken;
     private activeMutationOwner;
     /**
      * The delegations the running call is made by (callerView: a view bound
@@ -1265,6 +1271,12 @@ export declare class SqliteVFS {
      * additional coverage, since no facet view keys on a grandparent.
      */
     private bumpRevision;
+    /**
+     * A publication a read lease covers, by a writer that did not recall it
+     * (one that skipped refusalAt): the lease ends here, untold, and its
+     * holder's copy is stale for what remains of its trust (Delegations). Counted, and said.
+     */
+    private breakUnrecalledReadLeases;
     /** Commit a generation that writes nothing, so a publication has a tick of its own. */
     private advanceGeneration;
     /** UTF-16 payload plus a flat allowance for the entry object itself. */
@@ -1353,6 +1365,31 @@ export declare class SqliteVFS {
      */
     acquireGlobalExclusiveMutation(reason?: string): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
+    /**
+     * A read lease of the whole namespace, but the subtrees `terms.excludes`
+     * names, granted at `at`: refused (ESTALE) when anything was published
+     * since, so its holder is current at the moment it holds it. Its holder
+     * reads its own copy, asking nothing, until it is recalled.
+     */
+    acquireReadLease(terms: DelegationTerms, at: {
+        readonly epoch: string;
+        readonly cursor: number;
+    }): {
+        owner: string;
+    };
+    /** What read leases did since the engine started (the diag route's). */
+    readLeaseStats(): {
+        held: number;
+        broken: number;
+    };
+    /** Whether `lease` covers `key`: the whole namespace, but what it excludes. */
+    private readCovers;
+    /**
+     * The read leases a mutation at `key` must recall first (every holder's
+     * but the caller's own), as one recall: each asked at once, all answered
+     * (or their trust run out) before the retry, so a writer meets each at most once.
+     */
+    private readRecallAt;
     /** `owner`'s lease ends: the storage its holder had reserved and not used goes back to the ledger. */
     private endLease;
     /**
