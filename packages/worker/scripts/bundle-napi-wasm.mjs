@@ -8,7 +8,7 @@
  * scripts/napi-wasm/build.mjs builds each for plain wasm32-wasip1 from pinned
  * upstream source (specs.mjs) and writes
  *
- *   <name>/<name>.wasm, <name>/provenance.json           one per binding
+ *   <name>/<version>/<name>.wasm, provenance.json         one per binding version
  *   napi-wasm/napi-wasm-loader.mjs                       N-API (emnapi) + WASI loader
  *   napi-wasm/wasi-trampoline.wasm                       sync/JSPI dispatch for fs imports
  *   napi-wasm/provenance.json
@@ -55,17 +55,20 @@ async function sources() {
     const dir = path.resolve(built);
     return {
       loader: path.join(dir, 'napi-wasm'),
-      binding: async (name) => path.join(dir, name),
+      binding: (name, version) => path.join(dir, name, version),
     };
   }
   return {
     loader: await onlyChild(path.join(ASSETS, 'loader')),
-    binding: async (name) => onlyChild(path.join(ASSETS, name)),
+    binding: (name, version) => path.join(ASSETS, name, version),
   };
 }
 
-/** Read, digest and check `files` against provenance; copy them to `targetDir`. */
-async function stage(sourceDir, targetDir, files, provenance) {
+/**
+ * Read, digest and check `files` against provenance; copy them to
+ * `targetDir`, replacing its siblings when `alone` (the loader has one build).
+ */
+async function stage(sourceDir, targetDir, files, provenance, alone = false) {
   const facts = {};
   for (const file of files) {
     const bytes = await fs.readFile(path.join(sourceDir, file));
@@ -76,7 +79,7 @@ async function stage(sourceDir, targetDir, files, provenance) {
   }
   if (path.resolve(sourceDir) !== path.resolve(targetDir)) {
     const parent = path.dirname(targetDir);
-    for (const entry of await fs.readdir(parent).catch(() => [])) {
+    for (const entry of alone ? await fs.readdir(parent).catch(() => []) : []) {
       if (entry !== path.basename(targetDir)) await fs.rm(path.join(parent, entry), { recursive: true, force: true });
     }
     await fs.mkdir(targetDir, { recursive: true });
@@ -92,7 +95,7 @@ const loaderDigests = LOADER_FILES.filter((f) => f !== 'provenance.json').map((f
 if (loaderDigests.some((d) => typeof d !== 'string')) fail(`${src.loader}/provenance.json lacks output digests`);
 const buildId = sha256(loaderDigests.join('\n')).slice(0, 16);
 const loaderDir = path.join(ASSETS, 'loader', buildId);
-const loaderFacts = await stage(src.loader, loaderDir, LOADER_FILES, loaderProvenance);
+const loaderFacts = await stage(src.loader, loaderDir, LOADER_FILES, loaderProvenance, true);
 const asset = (dir, file, facts) => ({
   path: `/_assets/napi-wasm/${path.relative(ASSETS, dir).split(path.sep).join('/')}/${file}`,
   sha256: facts[file].sha256,
@@ -101,7 +104,7 @@ const asset = (dir, file, facts) => ({
 
 const bindings = [];
 for (const spec of Object.values(SPECS)) {
-  const sourceDir = await src.binding(spec.name);
+  const sourceDir = src.binding(spec.name, spec.version);
   if (!existsSync(path.join(sourceDir, 'provenance.json'))) fail(`${sourceDir} has no provenance.json`);
   const provenance = JSON.parse(await fs.readFile(path.join(sourceDir, 'provenance.json'), 'utf8'));
   if (provenance.artifact !== spec.name || provenance.version !== spec.version) {
@@ -118,6 +121,13 @@ for (const spec of Object.values(SPECS)) {
     memoryPages: provenance.wasm.memoryMinPages,
     wasm: asset(dir, file, facts),
   });
+}
+// A version no spec builds any more is no longer staged.
+for (const name of new Set(Object.values(SPECS).map((spec) => spec.name))) {
+  const kept = new Set(Object.values(SPECS).filter((spec) => spec.name === name).map((spec) => spec.version));
+  for (const version of await fs.readdir(path.join(ASSETS, name)).catch(() => [])) {
+    if (!kept.has(version)) await fs.rm(path.join(ASSETS, name, version), { recursive: true, force: true });
+  }
 }
 
 const ts = `/**
