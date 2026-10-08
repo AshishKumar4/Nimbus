@@ -27,6 +27,20 @@ export const STAGED_BINDING_ARTIFACTS = [
         }
     },
     {
+        "name": "rolldown",
+        "version": "1.2.13",
+        "owner": "rolldown",
+        "requiredAs": [
+            "@rolldown/binding-wasm32-wasi"
+        ],
+        "memoryPages": 86,
+        "wasm": {
+            "path": "/_assets/napi-wasm/rolldown/1.2.13/rolldown.wasm",
+            "sha256": "7d3047dab778ea7233dcedf9c15b01e2ac0ea5ac5845a9bd1e3c747c126feb22",
+            "bytes": 13740474
+        }
+    },
+    {
         "name": "satteri",
         "version": "0.10.5",
         "owner": "satteri",
@@ -55,3 +69,5 @@ export const STAGED_BINDING_ARTIFACTS = [
         }
     }
 ];
+/** The rolldown Nimbus itself depends on, whose build the build facet runs. */
+export const OWN_ROLLDOWN_VERSION = "1.2.11";
