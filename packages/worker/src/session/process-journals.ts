@@ -24,6 +24,8 @@ export interface PendingJournal {
   facet: string;
   pid: number;
   cred: VfsCred;
+  /** The session incarnation (generation) whose process wrote it. */
+  generation: number;
 }
 
 export class ProcessJournals {
@@ -39,6 +41,7 @@ export class ProcessJournals {
         facet TEXT PRIMARY KEY,
         pid INTEGER NOT NULL,
         cred TEXT NOT NULL,
+        generation INTEGER NOT NULL,
         opened_at INTEGER NOT NULL
       )`);
       this.ready = true;
@@ -46,11 +49,11 @@ export class ProcessJournals {
     return sql;
   }
 
-  /** `pid`'s facet `facet` opened: its log may hold changes from now on. */
-  opened(facet: string, pid: number, cred: VfsCred): void {
+  /** `pid`'s facet `facet` opened, in incarnation `generation`: its log may hold changes from now on. */
+  opened(facet: string, pid: number, cred: VfsCred, generation: number): void {
     this.table()?.exec(
-      'INSERT OR REPLACE INTO nimbus_process_journals (facet, pid, cred, opened_at) VALUES (?, ?, ?, ?)',
-      facet, pid, JSON.stringify(cred), Date.now(),
+      'INSERT OR REPLACE INTO nimbus_process_journals (facet, pid, cred, generation, opened_at) VALUES (?, ?, ?, ?, ?)',
+      facet, pid, JSON.stringify(cred), generation, Date.now(),
     );
   }
 
@@ -68,10 +71,11 @@ export class ProcessJournals {
   pending(): PendingJournal[] {
     const sql = this.table();
     if (sql === undefined) return [];
-    return [...sql.exec('SELECT facet, pid, cred FROM nimbus_process_journals ORDER BY opened_at')].map((row) => ({
+    return [...sql.exec('SELECT facet, pid, cred, generation FROM nimbus_process_journals ORDER BY opened_at')].map((row) => ({
       facet: String(row.facet),
       pid: Number(row.pid),
       cred: JSON.parse(String(row.cred)) as VfsCred,
+      generation: Number(row.generation),
     }));
   }
 
@@ -84,12 +88,12 @@ export class ProcessJournals {
    */
   async drainPending(io: {
     reserved: Set<string>;
-    /** Whether `pid` is this incarnation's: its row is a running process's log, never a previous one's to drain. */
-    current(pid: number): boolean;
+    /** This incarnation's generation: a row of it is a running process's log, never a previous one's to drain. */
+    generation: number;
     drain(row: PendingJournal): Promise<void>;
     log(message: string): void;
   }): Promise<void> {
-    const pending = this.pending().filter((row) => !io.current(row.pid));
+    const pending = this.pending().filter((row) => row.generation !== io.generation);
     for (const row of pending) io.reserved.add(row.facet);
     for (const row of pending) {
       try {
