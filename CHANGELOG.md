@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `fs.promises.cp` of a single file the process held copied the held
+  bytes without checking the read: a file the process had made write-only
+  was copied, and a file the session had refused it was "copied" from the
+  refusal. It now copies a file as `fs.promises.copyFile` does, through the
+  read, and fails with EACCES where that read does.
+
 - Fixed: a node process could go on reading, synchronously, a file whose read
   a chmod or a chown had revoked. The bytes it already held were kept under
   the new revision because their content was unchanged (the same held for a
