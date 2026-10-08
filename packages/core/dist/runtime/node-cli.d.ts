@@ -25,6 +25,7 @@
  * A refusal is Node's: its message (naming the option as it was typed) and
  * exit code 9.
  */
+import type { NodeTypeScript } from './typescript-strip.js';
 /** What a node program's run takes of its command line: its runner, its launch's walk and its process read it. */
 export interface NodeLaunch {
     /** The options before the program, as `process.execArgv` holds them (the command line's; not NODE_OPTIONS'). */
@@ -39,6 +40,14 @@ export interface NodeLaunch {
     eval?: string;
     /** `-p`/`--print`: the eval's completion value is printed when the process exits. */
     print: boolean;
+    /** `--experimental-eventsource`: the EventSource global exists (NODE_OPTIONS' or the command line's, the latter's last). */
+    experimentalEventSource?: boolean;
+    /** `--no-experimental-strip-types`: TypeScript is JavaScript to the loaders, unless transformTypes. */
+    stripTypes?: boolean;
+    /** `--experimental-transform-types`: TypeScript is transformed, not only stripped. */
+    transformTypes?: boolean;
+    /** `--enable-source-maps`, which `--experimental-transform-types` sets where it is read. */
+    enableSourceMaps?: boolean;
 }
 /** What node's command line says, for the program it runs. */
 export interface NodeCommandLine extends NodeLaunch {
@@ -56,6 +65,12 @@ export interface NodeCommandLineError {
 }
 /** NODE_OPTIONS split as Node splits it (ParseNodeOptionsEnvVar): spaces part, double quotes group, `\` escapes inside them. */
 export declare function splitNodeOptions(text: string): string[] | NodeCommandLineError;
+/**
+ * How Node's loaders take a TypeScript file under these options: by the
+ * strip flag as the options leave it, transformed or stripped, else as
+ * JavaScript (`--no-experimental-strip-types`).
+ */
+export declare function typeScriptStripOptions(launch: Pick<NodeLaunch, 'stripTypes' | 'transformTypes' | 'enableSourceMaps'>): NodeTypeScript;
 /** node's `args` (after `node` itself) and its NODE_OPTIONS, read as Node reads them. */
 export declare function parseNodeCommandLine(args: readonly string[], nodeOptions?: string): NodeCommandLine | NodeCommandLineError;
 //# sourceMappingURL=node-cli.d.ts.map

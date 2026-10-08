@@ -82,6 +82,10 @@ try {
   a.check('choosing a file opens its real content in the full-width editor',
     await page.evaluate((content) => document.getElementById('editorTab').textContent.includes('phone-layout.js')
       && window.__nimbusMonacoEditor.getValue() === content, FILE_CONTENT));
+  await page.waitForFunction(() => monaco.editor.tokenize('const answer = 42;', 'javascript')[0].some((token) => token.type.includes('keyword')), { timeout: 30_000 });
+  a.check('Monaco keeps the JavaScript language and syntax highlighting after file selection',
+    await page.evaluate(() => window.__nimbusMonacoEditor.getModel().getLanguageId() === 'javascript'
+      && monaco.editor.tokenize('const answer = 42;', 'javascript')[0].some((token) => token.type.includes('keyword'))));
   await screenshot('phone-editor-390x844');
 
   await page.click('#btnAgent');

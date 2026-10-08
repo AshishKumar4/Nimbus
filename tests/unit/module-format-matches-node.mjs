@@ -203,8 +203,8 @@ const { host, rawVfs, kfs } = createAuthority();
 let out = '';
 adoptSessionSupervisor(host, (text) => { out += text; });
 const manager = oneShotManager('module-format-matches-node', { host, rawVfs, loader: runnerLoader('module-format') });
-const { oxcEngine } = await import('./lib/oxc-engine.mjs');
-const esbuild = new EsbuildService(undefined, { engine: async () => oxcEngine });
+const { oxcTransforms } = await import('./lib/oxc-engine.mjs');
+const esbuild = new EsbuildService(undefined, oxcTransforms);
 manager.setEsbuildService(esbuild);
 for (const [rel, text] of Object.entries(files)) {
   const path = `${ROOT.slice(1)}/${rel}`;

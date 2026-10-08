@@ -65,7 +65,7 @@ import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 /** Bytes of a result kept in its own row; a larger one goes in parts of this size. */
 const PART_BYTES = MAX_TX_BLOB_BYTES;
 /** The layout of a key's preimage; a change to it is a change of every address. */
-const KEY_SCHEMA = 'nimbus-transform/3';
+const KEY_SCHEMA = 'nimbus-transform/4';
 /** Rows removed per transaction when a generation's rows are dropped. */
 const DROP_BATCH_ROWS = 128;
 const encoder = new TextEncoder();
@@ -171,10 +171,10 @@ export class TransformStore {
         this.maxEntryBytes = options.maxEntryBytes ?? TRANSFORM_STORE_MAX_ENTRY_BYTES;
         this.generation = JSON.stringify([KEY_SCHEMA, this.pipeline, this.host]);
     }
-    async key(kind, at, source, packageType = null, scope = null) {
+    async key(kind, at, source, packageType = null, scope = null, stripTypes = null) {
         const digest = sha256Incremental();
         // JSON, so no field can run into the next; the source follows the NUL.
-        await digest.update(encoder.encode(JSON.stringify([KEY_SCHEMA, this.pipeline, this.host, kind, at, packageType, scope]) + '\0'));
+        await digest.update(encoder.encode(JSON.stringify([KEY_SCHEMA, this.pipeline, this.host, kind, at, packageType, scope, stripTypes]) + '\0'));
         await digest.update(encoder.encode(source));
         return digest.hex();
     }
@@ -199,7 +199,8 @@ export class TransformStore {
                 }
                 // A result is its map's JSON, a line of its own (JSON escapes every line break), then its code.
                 const lineEnd = code.indexOf('\n');
-                found.set(key, { map: code.slice(0, lineEnd), code: code.slice(lineEnd + 1), lowered: Number(row.lowered) !== 0 });
+                // \`lowered\`: 0 not lowered, 1 lowered, 2 lowered and an ES module.
+                found.set(key, { map: code.slice(0, lineEnd), code: code.slice(lineEnd + 1), lowered: Number(row.lowered) !== 0, esModule: Number(row.lowered) === 2 });
             }
             // Recency to the hour: a launch within the hour of the last rewrites nothing.
             this.sql.exec(`UPDATE nimbus_transform_results SET used = ? WHERE used < ? AND key IN (${marks})`, hour, hour, ...batch);
@@ -241,7 +242,7 @@ export class TransformStore {
         // Content-addressed: a result already held is this one.
         if (this.holds(key))
             return null;
-        const row = { key, lowered: result.lowered ? 1 : 0, bytes: bytes.byteLength, charge };
+        const row = { key, lowered: result.esModule ? 2 : result.lowered ? 1 : 0, bytes: bytes.byteLength, charge };
         if (inline) {
             const refused = this.refusable(() => {
                 this.ledger.admit(charge);

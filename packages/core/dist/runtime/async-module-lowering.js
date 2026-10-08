@@ -109,15 +109,16 @@ export function lowerEsModule(source, scope, parentUrl) {
                 unbound.push({ start, end, text: use === 'typeof' ? '(void 0)' : use === 'shorthand' ? `${name}: ${to}` : to });
             }
         }
-    const { code, head, columns } = emitModule(module, records, {
+    const { code, head, end, columns } = emitModule(module, records, {
         body: topLevelAwait ? 'async' : 'sync',
         names: generatedNames(module, names),
         exportsObject: 'arguments[2].exports',
         requireFunction: 'arguments[1]',
         edits: unbound,
         bind: { metadata: 'arguments[2].__nimbusImportMeta', parentUrl, metas, dynamicImports },
+        sourceLength: source.length,
     });
-    const map = { head, columns };
+    const map = { head, tail: code.length - end, columns };
     return { code, map: JSON.stringify(map), warnings: [] };
 }
 /**
@@ -563,7 +564,12 @@ function emitModule(source, records, options) {
         ? `"use strict";${header.join(' ')} return (async () => { ${prologue}`
         : `"use strict";${header.join(' ')} ${prologue}`;
     const code = lead + applySourceEdits(source, allEdits) + (options.body === 'async' ? '\n})();\n' : '\n');
-    return { code, head: lead.length, columns: columnMap(source, allEdits) };
+    const sourceLength = options.sourceLength ?? source.length;
+    let end = lead.length + sourceLength;
+    for (const edit of allEdits)
+        if (edit.end <= sourceLength)
+            end += edit.text.length - (edit.end - edit.start);
+    return { code, head: lead.length, end, columns: columnMap(source, allEdits) };
 }
 const LINE_BREAK = /\r\n|[\n\r\u2028\u2029]/;
 /** The ColumnMap of `edits`, each of which keeps the module's line breaks: each line of the source is a line of the emit. */

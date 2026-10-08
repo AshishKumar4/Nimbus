@@ -22,10 +22,10 @@ const nodeErrorClasses = new Map<ErrorClass, Map<string, ErrorClass>>();
 /**
  * Node's error `code` on a `Base` (Error, TypeError, RangeError, …) with
  * `message`, and `props` set on it after (an `info`, a `cmd`). Its stack
- * starts at the caller: the frames above it are Node's own in Node.
+ * starts at the caller of `above`: the frames above it are Node's own in Node.
  */
-export function nodeError(Base: ErrorClass, code: string, message: string, props?: Record<string, unknown>): Error {
-  return made(Base, code, message, props, nodeError);
+export function nodeError(Base: ErrorClass, code: string, message: string, props?: Record<string, unknown>, above: Function = nodeError): Error {
+  return made(Base, code, message, props, above);
 }
 
 /** nodeError's error, its stack starting where `above` was called. */

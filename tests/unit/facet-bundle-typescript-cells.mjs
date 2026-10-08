@@ -33,8 +33,8 @@ import {
 import {
   bundleTypescriptLoader,
   isBundleModuleCandidate,
-  isTypescriptDeclarationFile,
 } from '../../packages/core/src/runtime/bundle-cell-transform.ts';
+import { isTypescriptDeclarationFile } from '../../packages/core/src/_shared/typescript-specifiers.ts';
 import { commonJsCellModuleName } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
@@ -130,6 +130,28 @@ assert.deepEqual(touched, ['ts'], 'esbuild ran once, for the one source; never f
 assert.equal(bundle[`${TS}/lib/_tsc.js`], files[`${TS}/lib/_tsc.js`]);
 assert.equal(bundle[`${TS}/bin/tsc`], files[`${TS}/bin/tsc`]);
 
+// Under Node's strip options a source is Node's: one strip request, its
+// emit the host's result (lowered: an ES module), the file kept as written,
+// and a declaration file never sent.
+{
+  const asked = [];
+  const stripping = new EsbuildService(undefined, {
+    transformHost: async (requests) => requests.map(({ code, options }) => {
+      asked.push(options);
+      return { code: code.replace(/: string/g, (types) => ' '.repeat(types.length)), map: '{"head":0,"columns":[]}', warnings: [], esModule: true };
+    }),
+  });
+  const stripTypes = { mode: 'strip-only', sourceMap: false };
+  const node = await buildPrefetchBundle(
+    vfs, { scriptPath: `${TS}/bin/tsc`, cwd: `/${PROJ}`, entryCode: files[`${TS}/bin/tsc`], esbuild: stripping, stripTypes },
+  );
+  assert.deepEqual(asked.map(({ stripTypes: strip, sourcefile }) => [strip, sourcefile]), [[stripTypes, `/${PROJ}/src/index.ts`]], 'one strip, for the one source');
+  assert.equal(node.bundle[`${PROJ}/src/index.ts`], INDEX_TS, 'the file is kept as written');
+  assert.equal(node.emits?.get(`${PROJ}/src/index.ts`), INDEX_TS.replace(/: string/g, (types) => ' '.repeat(types.length)), 'its emit is the host\'s');
+  assert.ok(node.lowered?.has(`${PROJ}/src/index.ts`), 'an ES module is lowered');
+  assert.equal(node.bundle[`${TS}/lib/lib.es5.d.ts`], LIB_ES5, 'a declaration file is staged verbatim');
+}
+
 // ── The facet's module map, as a launch generates it ─────────────────────
 const SHIMS = '/* __SHIMS_MARKER__ */';
 const set = generatedModuleSet(await generateEntrypointCode('', state, false, nodeFacetSources(SHIMS)), 'runner.js');
@@ -166,7 +188,7 @@ const extra = await buildFacetVfsBundleSource({
   [`${TS}/lib/runtime.js`]: '#!/usr/bin/env node\nconst require = () => 1;\nmodule.exports = { shebang: "stripped" };\n',
   [`${TS}/lib/legacy.js`]: 'var helper = 1;\nfunction helper() {}\nmodule.exports = typeof helper;\n',
   [`${TS}/LICENSE`]: 'Apache License 2.0\n',
-}, false, undefined, { lowered: new Set([`${TS}/lib/runtime.js`]) });
+}, false, undefined, { lowered: new Map([[`${TS}/lib/runtime.js`, false]]) });
 const extraSet = { 'runner.js': `const __NIMBUS_CODE_CELLS = ${extra.codeCells};\nconst __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${extra.expression});\n` };
 for (const [name, text] of Object.entries(extra.codeModules)) extraSet[name] = { cjs: text };
 const extraMain = writeModuleSet(join(dir, 'extra'), extraSet, 'runner.js');

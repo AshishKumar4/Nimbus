@@ -33,6 +33,7 @@ export interface AcornParser {
     inModule: boolean;
     undefinedExports: Record<string, {
         start: number;
+        end: number;
     }>;
     parse(): Program;
     parseStatement(context: null, topLevel?: boolean, exports?: object): unknown;
