@@ -61,8 +61,14 @@ function __nimbusReferrerUrl(name) {
   if (__pathMod.isAbsolute(name)) return __urlMod.pathToFileURL(name).href;
   return name.startsWith("file://") || URL.canParse(name) ? name : undefined;
 }
+// The last of a magic comment, as Node reads it (not one in a string before it).
+const __nimbusMagicComments = {
+  sourceMappingURL: /\\/[*/]#\\s+sourceMappingURL=(?<value>[^\\s]+)/g,
+  sourceURL: /\\/[*/]#\\s+sourceURL=(?<value>[^\\s]+)/g,
+};
 function __nimbusMagicComment(content, name) {
-  const magic = new RegExp("\\/[*/]#\\s+" + name + "=(?<value>[^\\s]+)", "g");
+  const magic = __nimbusMagicComments[name];
+  magic.lastIndex = 0;
   let last = null;
   for (let match; (match = magic.exec(content)) !== null;) last = match;
   return last === null ? null : last.groups.value;
