@@ -111,14 +111,14 @@ export declare function classifyMessage(msg: string): OomCause;
  */
 export declare function isTransientDoReset(input: unknown): boolean;
 /**
- * The actor a call reached was reset or killed under it: a transient reset
- * (isTransientDoReset), its memory or CPU limit ("isolate exceeded its memory
- * limit and was reset", "Worker exceeded memory limit.", "… CPU time
- * limit …"), or a failure carrying `durableObjectReset`. Whatever ran there
- * is gone; a process hosted there is over (fabric process-host.ts). An
- * exception the program itself threw is none of these, and neither is the
- * guest's own "Memory limit exceeded" RangeError, which is caught where it
- * happens.
+ * The actor a call reached was reset or killed under it: a failure carrying
+ * `durableObjectReset`, a transient reset (isTransientDoReset), or a kill at
+ * its memory or CPU limit (classifyError's 'oom' and 'cpu_exceeded').
+ * Whatever ran there is gone; a process hosted there is over (fabric
+ * process-host.ts). An exception the program itself threw is none of these,
+ * and neither is a guest's own failed allocation, the "Memory limit
+ * exceeded" RangeError, which 'oom' also covers: the program caught or
+ * reported that itself, and its host still stands.
  */
 export declare function isHostReset(input: unknown): boolean;
 /**

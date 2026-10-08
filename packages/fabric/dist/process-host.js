@@ -121,10 +121,10 @@ class FacetProcessHost {
         const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
         const { name, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
         // The platform can kill or reset the process's own facet (its memory or
-        // CPU limit, measured with astro dev on 2026-10-08) with the session
-        // left standing; the next call to the facet is what shows it.
-        // Its boot is left as the facet answers it: a run's own start and stop
-        // (a boot waiting on stdin is replayed) are not the host's to judge.
+        // CPU limit, measured with astro dev on 2026-10-08) with the session left
+        // standing; the next call to the facet is what shows it. Its boot is left
+        // as the facet answers it: a run's own start and stop (a boot waiting on
+        // stdin is replayed) are not the host's to judge.
         const loss = new HostLoss(facet.lost);
         return {
             ...facet,
