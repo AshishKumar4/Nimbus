@@ -284,7 +284,8 @@ for (const phase of ['openWriter', 'stream']) {
   assert.equal(s.calls.epochs, phase === 'stream' ? 1 : 0, `${phase}: the terminal process reopened a writer`);
   assert.equal(s.calls.retired?.length ?? 0, phase === 'stream' ? 1 : 0, `${phase}: the current writer was not retired`);
   const failures = c.takeFailures();
-  assert.equal(failures.length, 2);
+  assert.equal(failures.length, 1, 'the acknowledged change was not recorded exactly once');
+  assert.equal(failures[0].path, 'home/user/acknowledged');
   assert.ok(failures.every((failure) => failure.errno === 'ESRCH' && failure.message === gone.message));
   assert.equal(failuresError(failures).code, 'ESRCH');
   assert.equal(failuresError(failures).message, gone.message);

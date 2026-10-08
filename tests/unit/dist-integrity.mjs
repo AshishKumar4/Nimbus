@@ -103,6 +103,8 @@ const ROOTS = ['packages/worker'];
   const core = join(root, 'packages/core');
   const worker = join(root, 'packages/worker');
   try {
+    const initialized = spawnSync('git', ['init', '-q'], { cwd: root, encoding: 'utf8' });
+    assert.equal(initialized.status, 0, initialized.stderr);
     mkdirSync(join(core, 'src'), { recursive: true });
     mkdirSync(join(core, 'dist'), { recursive: true });
     mkdirSync(join(worker, 'public'), { recursive: true });
