@@ -804,11 +804,7 @@
     // Perf-invariant: Monaco is loaded by runtime appending, not by an eager
     // <script src> in the served HTML.
     const Editor = (function() {
-      // CDN choice: cdnjs hosts Monaco's UMD AMD-loader (`loader.min.js`)
-      // which fetches the remaining vs/* chunks on demand. Total cold
-      // download is ~2 MB for the editor + lazy languages. Pinned to
-      // 0.52.0 (latest as of 2025-Q1) — same major as VSCode 1.95+.
-      const MONACO_VERSION = '0.52.0';
+      const MONACO_VERSION = '0.56.0';
       const MONACO_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/' + MONACO_VERSION + '/min';
       let loaded = false;
       let loading = null;

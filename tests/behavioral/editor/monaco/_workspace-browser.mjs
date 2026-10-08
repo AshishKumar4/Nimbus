@@ -10,6 +10,7 @@ function workspaceInPage(surface) {
     const element = document.getElementById(id);
     return { ...box(element), active: element.classList.contains('active'), pressed: element.getAttribute('aria-pressed') };
   };
+  const monaco = document.querySelector('#editorPanel .monaco-editor');
   const state = {
     classes: [...document.getElementById('mainPanel').classList],
     agentSurface: document.getElementById('leftStack').classList.contains('agent-surface'),
@@ -17,7 +18,7 @@ function workspaceInPage(surface) {
     terminal: box(document.querySelector('.panel-terminal')), preview: pane('previewPanel'),
     editorButton: button('btnEditor'), agentButton: button('btnAgent'),
     tab: document.getElementById('editorTab').textContent,
-    editorReady: !!window.__nimbusMonacoEditor && !!document.querySelector('.monaco-editor .view-lines')
+    editorReady: !!window.__nimbusMonacoEditor && !!monaco && box(monaco).visible
       && !document.getElementById('editorTab').classList.contains('editor-tab-empty'),
     agentReady: document.querySelector('#agentPanel .agent-title')?.textContent === 'Nimbus Agent'
       && !!document.getElementById('agentStatus')?.textContent && document.getElementById('agentStatus').textContent !== 'Checking...',
