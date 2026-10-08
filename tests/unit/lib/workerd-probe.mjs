@@ -217,8 +217,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
  * running commands through the real shell. `run(command)` returns the
  * command's own output (the echo and prompts stripped) and its exit status.
  *
- * A command is done when its completion marker has printed its status and
- * the prompt is back, not at the first output that ends like a prompt.
+ * The driver reads completion and status from the shell's OSC 133 marks.
  * `timeoutMs` bounds the wait. Work a loaded machine can stretch past any
  * bound passes `{ progress, stalledMs }` too: `progress()` fingerprints what
  * the command is doing (the session's Dynamic Worker ledger, say), and the
@@ -228,19 +227,18 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
 export async function localTerminal(probe, { install = ['bash'] } = {}) {
   process.env.BASE = probe.base;
   process.env.NIMBUS_PROBE_TOKEN = probe.token;
-  const { mintSession, deleteSession, Terminal, requestHeaders } = await import('../../behavioral/_driver.mjs');
+  const { mintSession, deleteSession, Terminal, requestHeaders, stripAnsi } = await import('../../behavioral/_driver.mjs');
   const sid = await mintSession();
   const terminal = new Terminal(sid);
   await terminal.connect();
   await terminal.waitForPrompt(60_000);
-  const strip = (text) => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r/g, '');
+  const strip = (text) => stripAnsi(text).replace(/\r/g, '');
   /** Its answer, or `undefined` if it has none within `ms` (a session too busy to answer has not moved). */
   const within = (promise, ms) => {
     let timer;
     return Promise.race([promise, new Promise((resolve) => { timer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(timer));
   };
   const wait = async (line, done, timeoutMs, progress, stalledMs) => {
-    if (!progress) return terminal.waitFor(done, timeoutMs, line.slice(0, 80));
     const started = Date.now();
     const look = async () => JSON.stringify([await within(progress().catch((error) => `progress: ${error.message}`), 30_000), terminal.buf.length]);
     let seen = await look();
@@ -260,30 +258,19 @@ export async function localTerminal(probe, { install = ['bash'] } = {}) {
       }
     }
   };
-  let serial = 0;
   /**
    * @param {string} command
    * @param {number} [timeoutMs]
    * @param {{ progress?: () => Promise<unknown>, stalledMs?: number }} [options]
    */
   const run = async (command, timeoutMs = 120_000, { progress, stalledMs = 120_000 } = {}) => {
-    const mark = `__NIMBUS_DONE_${++serial}__`;
-    const line = `${command}; echo "${mark}$?"`;
-    // The echoed line carries the marker too, followed by `$?`, never by
-    // digits. The prompt after the marker's line is the shell's; it need not
-    // end the buffer, where a background job's banner may follow it.
-    const done = new RegExp(`${mark}\\d+\\s*\\n[\\s\\S]*?[$#>](\\s|$)`);
-    terminal.reset();
-    terminal.cmd(line);
-    await wait(line, (b) => done.test(b), timeoutMs, progress, stalledMs);
-    const text = strip(terminal.buf);
-    const end = text.lastIndexOf(mark);
-    if (end < 0) throw new Error(`${command}: no completion marker within ${timeoutMs} ms:\n${text.slice(-800)}`);
-    const status = Number(/^\d+/.exec(text.slice(end + mark.length))?.[0]);
-    // What the command printed: after the echoed command line, before the marker.
-    const echoed = text.lastIndexOf(`echo "${mark}$?"`);
-    const start = text.indexOf('\n', echoed) + 1;
-    return { stdout: text.slice(start, end), status };
+    const cursor = terminal.stream.length;
+    const pending = terminal.run(command, timeoutMs);
+    const [result] = await Promise.all([pending, ...(progress
+      ? [wait(command, () => terminal.promptAfter(cursor) !== null, timeoutMs, progress, stalledMs)] : [])]);
+    const raw = terminal.stream.slice(cursor, terminal.promptAfter(cursor).end);
+    const body = /\x1b\]133;C\x07([\s\S]*?)\x1b\]133;D(?:;-?\d+)?\x07/.exec(raw)?.[1] ?? '';
+    return { stdout: strip(body), status: result.exitCode };
   };
   for (const name of install) {
     const r = await run(`nimbus install ${name}`, 240_000);
