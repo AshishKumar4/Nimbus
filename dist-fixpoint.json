@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "24c7b3664935cf233504d27005b6ed54018fec01d30cdc131ca7215117d01723",
+  "fingerprint": "6d4456bb91ff6c8c1ea50be45c354b062b48450224eaa43dc2beb963e51b1dd4",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1075,8 +1075,8 @@
     "packages/core/dist/workspace/supervisor-delivery.d.ts.map": "ed85dfcaa80c62751526c22dc8112d3d23c5fe9c7f729576deede2cb1dde6049",
     "packages/core/dist/workspace/supervisor-delivery.js": "b2814baeb56503732fb7022435a1b6df7f59416946d628777f635b1af34c6536",
     "packages/core/dist/workspace/supervisor-op.d.ts": "0c3e1f5fb1f2ed91ab696c079d167c09aacb811bdc290f12e6ee1e06a8ac0f80",
-    "packages/core/dist/workspace/supervisor-op.d.ts.map": "48132c280ba26bb0264c292b7d67e1513c5632f7e98efa4cdfe29581e13b8312",
-    "packages/core/dist/workspace/supervisor-op.js": "acd691033fac1dbd13c798bd2b1f29ebf251e590ec09a173dcc71f71677afd48",
+    "packages/core/dist/workspace/supervisor-op.d.ts.map": "c18a839c7a14b7319e3389cf26b4994a6cf03839b508e2d5e9c0b6730dfac4f0",
+    "packages/core/dist/workspace/supervisor-op.js": "d5f8a9f4743e7238b53ef4d84747e8eee04cdc115c38b243e22992ec8d9feaf8",
     "packages/core/dist/workspace/workspace-fs.d.ts": "79e1fba69fe3a25cd1f776eb97f40a7e5cf2ca43239c5e7d95d6c59224727771",
     "packages/core/dist/workspace/workspace-fs.d.ts.map": "cfbcba275e0f25d36b9ee69b34c1fdfd3dbaf10c81a39cb76717eebe7e4c345a",
     "packages/core/dist/workspace/workspace-fs.js": "3b89fbd6bb943efed162344fe7a3c50353c45858491967621c0bf0a7d5848f44",
@@ -1426,7 +1426,7 @@
     "packages/core/src/workspace/named-shells.ts": "57f16b3f502d629ecd6f661c807e26a912ecc27c9d1cf165091e916bf765e0bc",
     "packages/core/src/workspace/nimbus-workspace.ts": "8f6504637393c8250eb57f7c224f19901a3ab7c667c518312ac2026ebaeaffd4",
     "packages/core/src/workspace/supervisor-delivery.ts": "4ea43f6ca3d4778c8aebc4509203ac7a6d1308b9def526ad2ea5d75717c5be09",
-    "packages/core/src/workspace/supervisor-op.ts": "20044166ff3cb9ae25864542b8e30dd440aa716821280e5325018d85e43d2973",
+    "packages/core/src/workspace/supervisor-op.ts": "d5d16adb321d893c876e016a4f526ad9c5e1e1c7dfa30155d59d2b683d90c4f2",
     "packages/core/src/workspace/workspace-fs.ts": "c540fc01f7eea3f6507a2ace5e2e279f55100d5915682dbdd85a7cb9460eb5da",
     "packages/core/tsconfig.json": "6dc680d90729597ee71dcaf78368fceb9f44638d4e301811dd4cff58bdb9b62f",
     "packages/fabric/LICENSE": "9abf902a70f15256b6d108767fc510341854ec2297e3874c5bc6df496a895617",
