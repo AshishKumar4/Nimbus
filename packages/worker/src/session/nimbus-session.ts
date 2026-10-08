@@ -511,7 +511,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
       ctx,
       env,
       notify: (line) => this._notifySession(line),
-      requestLaunchTurn: async (at) => { await this._scheduleLaunchTurn(at); },
+      requestLaunchTurn: (at) => this._scheduleLaunchTurn(at),
       armResidentKeepalive: () => _w1EnsureResidentKeepalive(this, ctx),
       filesystem: () => this.getFilesystemAuthority(),
       // The workspace's network is its egress's (workspaceNetwork: one per
@@ -675,8 +675,14 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    * it arrives as a new invocation, so the chunk runs against a fresh CPU
    * budget rather than the one the launch has already been spending.
    */
-  private _scheduleLaunchTurn(notBefore = 0): Promise<boolean> {
-    return timers(this, this.ctx).schedule('resident-launch', Math.max(Date.now(), notBefore));
+  /** A launch's next turn; one that cannot be armed throws, and fails the launch waiting on it (PacedWork). */
+  private _scheduleLaunchTurn(notBefore = 0): Promise<void> {
+    return timers(this, this.ctx).arm('resident-launch', Math.max(Date.now(), notBefore));
+  }
+
+  /** The hosting alarm (session/rpc.ts armHostingWatch), on this session's timer mux. */
+  scheduleHostingWatch(at: number): Promise<void> {
+    return timers(this, this.ctx).arm(_rpc.HOSTING_WATCH_REASON, at);
   }
 
   /**

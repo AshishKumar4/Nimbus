@@ -87,7 +87,6 @@ import { getSymlinkRegistry } from '@nimbus-sh/core/vfs/symlink-registry.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES, RESIDENT_KEEPALIVE_MS } from '@nimbus-sh/platform/limits.js';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
-import { timers } from '@nimbus-sh/fabric/timers.js';
 import {
   FS_LIST_PAGE_LIMIT,
   FS_READ_BATCH_PATH_LIMIT,
@@ -2104,20 +2103,18 @@ export const HOSTING_WATCH_REASON = 'hosting-watch';
  */
 export const HOSTING_WATCH_MS = RESIDENT_KEEPALIVE_MS;
 
-/** How many times a host tries to arm its watch before it refuses the process. */
-const HOSTING_WATCH_ARM_ATTEMPTS = 3;
-
 /**
- * Arm the hosting alarm. Timers.schedule answers false when the timer map or
- * the alarm could not be written, which is retried; still unarmed after
- * HOSTING_WATCH_ARM_ATTEMPTS, the host refuses the process rather than hold
- * one nothing would report the loss of.
+ * Arm the hosting alarm, through the host's own scheduler: a session's timer
+ * mux, or an embedder's lifecycle for a hosted runtime, which owns its alarm
+ * (scheduleHostingWatch). One that cannot be armed throws, and the host
+ * refuses the process rather than hold one nothing would report the loss of.
  */
 async function armHostingWatch(self: RpcHost): Promise<void> {
-  for (let attempt = 0; attempt < HOSTING_WATCH_ARM_ATTEMPTS; attempt++) {
-    if (await timers(self, self.ctx).schedule(HOSTING_WATCH_REASON, Date.now() + HOSTING_WATCH_MS)) return;
+  try {
+    await self.scheduleHostingWatch(Date.now() + HOSTING_WATCH_MS);
+  } catch (error) {
+    throw new Error(`Nimbus: this host could not arm the alarm that reports its own reset, so it does not host the process: ${errorText(error)}`);
   }
-  throw new Error(`Nimbus: this host could not arm the alarm that reports its own reset (${HOSTING_WATCH_ARM_ATTEMPTS} attempts), so it does not host the process`);
 }
 
 /** What a host keeps of a process it holds: whom to tell, and the proof it hosted it. */
