@@ -40,7 +40,7 @@ import path from 'node:path';
 const args=process.argv.slice(2), cmd=path.basename(process.argv[1]);
 const s=JSON.parse(fs.readFileSync(process.env.PUBLISH_STATE,'utf8'));
 const f=JSON.parse(fs.readFileSync(process.env.PUBLISH_FIXTURE,'utf8'));
-fs.appendFileSync(process.env.PUBLISH_LOG,JSON.stringify({cmd,args})+'\\n');
+fs.appendFileSync(process.env.PUBLISH_LOG,JSON.stringify({cmd,args,callerStdin:fs.fstatSync(0).isFIFO()})+'\\n');
 const save=()=>fs.writeFileSync(process.env.PUBLISH_STATE,JSON.stringify(s));
 if(cmd==='bun') {
   const phase=args[args.indexOf('--phase')+1];
@@ -81,6 +81,7 @@ throw new Error('unexpected npm command '+args.join(' '));
   const signing = first.filter((call) => call.cmd === 'npm' && call.args[0] === 'publish');
   assert.deepEqual(signing.map((call) => pathName(call.args[1])), [runtime.file, ...packages.map((pkg) => pkg.file)]);
   assert.ok(signing.every((call) => call.args.includes('--ignore-scripts') && call.args.includes('--auth-type=web') && call.args.includes('--access')));
+  assert.ok(first.filter((call) => call.cmd === 'npm').every((call) => call.callerStdin), 'every npm call keeps the caller stdin; a TSV cannot replace its terminal');
   const runtimeSigned = first.indexOf(signing[0]);
   const phase2 = first.findIndex((call) => call.cmd === 'bun' && call.args.includes('packages'));
   assert.ok(phase2 > runtimeSigned && first.slice(runtimeSigned, phase2).some((call) => call.args.includes('dist-tags.latest')), 'public latest confirmation precedes phase 2');
