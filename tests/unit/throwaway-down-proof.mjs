@@ -93,7 +93,7 @@ await import('./tests/behavioral/_throwaway-target.mjs');
   const cases = [
     { name: 'deleted: exact Preview-not-found', before: present, after: absent, confirmed: true },
     { name: 'already absent', before: absent, after: absent, confirmed: true },
-    { name: 'still exists', before: present, after: present, confirmed: false, detail: 'still answers' },
+    { name: 'still exists', before: present, after: present, confirmed: false, detail: 'HTTP 200' },
     ...unknown.flatMap(([detail, response]) => [
       { name: 'lookup: ' + detail + (response.body?.errors[0].code === 10025 ? ' with 10025' : ''), before: response, after: absent, confirmed: false, detail },
       { name: 'confirmation: ' + detail + (response.body?.errors[0].code === 10025 ? ' with 10025' : ''), before: present, after: response, confirmed: false, detail },

@@ -407,7 +407,7 @@ async function previewPresence({ preview, account, token }) {
   } catch (error) {
     return { kind: 'unknown', reason: `Preview ${preview}: transport error: ${error instanceof Error ? error.message : String(error)}` };
   }
-  if (got.ok) return { kind: 'exists', id: got.result?.id ?? null };
+  if (got.ok) return { kind: 'exists', status: got.status, id: got.result?.id ?? null };
   if (got.status === 404 && Array.isArray(got.errors) && got.errors.some((error) => error?.code === 10025)) {
     return { kind: 'not-found' };
   }
@@ -427,7 +427,7 @@ async function previewPresence({ preview, account, token }) {
  */
 async function confirmDeleted({ name, preview, account, token }) {
   const presence = await previewPresence({ preview, account, token });
-  if (presence.kind === 'exists') return { ok: false, reason: `the API still answers Preview ${preview}` };
+  if (presence.kind === 'exists') return { ok: false, reason: `the API still answers Preview ${preview} (HTTP ${presence.status})` };
   if (presence.kind === 'unknown') return { ok: false, reason: presence.reason };
 
   const base = readState(statePath(name))?.base;
