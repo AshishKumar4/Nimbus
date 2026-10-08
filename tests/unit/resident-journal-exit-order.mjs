@@ -168,11 +168,12 @@ world.die(oomRow.facet);
 await settle(() => processes.get(oom.pid)?.state !== 'running');
 processes.exit = realExit;
 assert.equal(processes.get(oom.pid)?.state, 'exited', 'a resident that died stayed running');
-assert.equal(processes.get(oom.pid)?.exitCode, 1);
+// Its isolate was lost to the platform: the host-loss status (facet-host-loss), told after its log drained.
+assert.equal(processes.get(oom.pid)?.exitCode, 137);
 assert.equal(out3AtExit.get(oom.pid), 200, `its exit was told with ${out3AtExit.get(oom.pid)} of the 200 files it was told landed`);
 await settle(() => !booked().some((entry) => entry.pid === oom.pid));
 assert.equal(booked().some((entry) => entry.pid === oom.pid), false);
-console.log('  [2] died on its own after its boot: drained, then its exit told (1)');
+console.log('  [2] died on its own after its boot: drained, then its exit told (137)');
 
 // ── An instance reset with a resident's log undrained: drained at the next start ──
 // The old instance never released its facet (it was reset); the new one
