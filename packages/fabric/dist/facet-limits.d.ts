@@ -51,19 +51,20 @@ export declare function facetPolicyKey(kind: FacetKind, limits?: Readonly<FacetR
 export declare function facetLoaderKey(kind: FacetKind, key: string, limits?: Readonly<FacetResourceLimits>): string;
 /** Callers can lower, never raise, a kind's native ceiling. */
 export declare function effectiveFacetLimits(kind: FacetKind, requested?: Partial<FacetResourceLimits>): FacetResourceLimits;
-/** Kind and code ceiling survive the inner-Loader RPC/loopback route. */
-export declare function codeFacetPolicy(code: {
-    env?: Record<string, unknown>;
+/**
+ * The policy of code a guest hands Nimbus's Worker Loader shim (a user's
+ * Worker under `nimbus wrangler dev`): the worker kind, lowered by the limits
+ * the code asks for. Nothing in the code can claim another kind; the guest
+ * is not who decides its own ceiling.
+ */
+export declare function guestFacetPolicy(code: {
     limits?: Partial<FacetResourceLimits>;
 }): FacetCodePolicy;
-/** Native policy and its consumed inner-Loader carrier; no unused guest budget. */
+/** `code` with `kind`'s native limits, lowered by `requested`. Nothing else in it changes, its env included. */
 export declare function applyFacetLimits<C extends object>(kind: FacetKind, code: C, requested?: Partial<FacetResourceLimits>): C & {
     limits: {
         cpuMs: number;
         subRequests: number;
-    };
-    env: {
-        NIMBUS_FACET_POLICY: string;
     };
 };
 //# sourceMappingURL=facet-limits.d.ts.map
