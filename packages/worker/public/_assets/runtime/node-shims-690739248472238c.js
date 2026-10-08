@@ -18224,8 +18224,9 @@ function __nimbusArrowOf(module, text, start, end) {
     to -= module.head;
   }
   // A lowered ES module's line reads its import uses rewritten; Node shows the file's.
-  if (module.esModule && module.path !== null) {
-    const file = __readFileOr(module.path, null);
+  const path = module.path ?? (module.file.startsWith("/") ? module.file : null);
+  if (module.esModule && path !== null) {
+    const file = __readFileOr(path, null);
     const own = typeof file === "string" ? file.split(/\r\n|[\n\r\u2028\u2029]/)[line - 1] : undefined;
     if (own !== undefined) source = own;
   }
