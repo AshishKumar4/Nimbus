@@ -32,12 +32,14 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { writeModuleSet } from './lib/module-map-bundle.mjs';
 import { opSender, supervisorDouble } from './lib/supervisor-double.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
@@ -98,10 +100,11 @@ const env = {
   ASSETS: stagedAssets,
 };
 
-const manager = new FacetManager(
-  createFacetCtx(createFacetWorld(() => ({})), 'oneshot-first-run'),
-  env, host.processes, new PortRegistry(), processHostFor, {},
-);
+// The session database npm's installs record their lockfiles in.
+const facetCtx = createFacetCtx(createFacetWorld(() => ({})), 'oneshot-first-run');
+facetCtx.storage.sql = createSqliteVfsTestHarness().sql;
+const npm = new NpmCache(facetCtx.storage.sql);
+const manager = new FacetManager(facetCtx, env, host.processes, new PortRegistry(), processHostFor, {});
 manager.setVfs(authority.rawVfs, processFiles(authority.rawVfs));
 host.facetManager = manager;
 
@@ -193,6 +196,12 @@ const manifests = {
 };
 for (const [path, manifest] of Object.entries(manifests)) write(path, JSON.stringify(manifest));
 write(`${PROJECT}/node_modules/alpha/index.js`, 'module.exports = 1;\n');
+// What `npm install` records of what it put there.
+const installed = (names) => npm.writeLockfile(`/${PROJECT}`, new Map(names.map((name) => [
+  `node_modules/${name}`,
+  { name, resolvedVer: '1.0.0', integrity: `sha512-${name}`, depsJson: '{}', hoistedPath: `/${PROJECT}/node_modules/${name}` },
+])));
+installed(['alpha', '@scope/beta', 'alpha/node_modules/gamma']);
 // Reads the manifests the way a resolver does: names the program computes.
 const MANIFEST_PROGRAM = `
 const fs = require('fs');
@@ -222,7 +231,7 @@ await check('every installed package.json reads synchronously on the first run',
   assert.deepEqual(manifestReads(), [], 'the manifests come with the launch, not one read each');
 });
 
-await check('a manifest changed or added since is read as it is now, and only it is read again', async () => {
+await check('a manifest changed or added outside an install is read as it is now, and only it is read again', async () => {
   write(`${PROJECT}/node_modules/alpha/package.json`, JSON.stringify({ name: 'alpha-v2', main: 'index.js' }));
   write(`${PROJECT}/node_modules/late/package.json`, JSON.stringify({ name: 'late' }));
   const second = await runManifests(['alpha', '@scope/beta', 'late']);
@@ -232,6 +241,14 @@ await check('a manifest changed or added since is read as it is now, and only it
     manifestReads(), [`${PROJECT}/node_modules/alpha/package.json`, `${PROJECT}/node_modules/late/package.json`],
     'the unchanged manifests come from what the first launch read; the changed and the new one are read',
   );
+});
+
+await check('an install rereads the manifests once', async () => {
+  installed(['alpha', '@scope/beta', 'alpha/node_modules/gamma', 'late']);
+  const third = await runManifests(['alpha', '@scope/beta', 'late']);
+  assert.equal(third.exitCode, 0, `the third run reads every manifest: ${JSON.stringify(third)}`);
+  assert.deepEqual(JSON.parse(third.stdout.trim()), { alpha: 'alpha-v2', '@scope/beta': '@scope/beta', late: 'late' });
+  assert.deepEqual(manifestReads(), [], 'every manifest comes with the launch again');
 });
 
 if (failures.length > 0) {
