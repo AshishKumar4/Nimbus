@@ -441,7 +441,8 @@ export class Terminal {
       };
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error(`waitFor(${label}) timeout after ${timeoutMs}ms; tail: ${JSON.stringify(stripAnsi(this.buf).slice(-300))}`));
+        const marks = [...this.marksAfter(this.submitCursor)].slice(-12).map((mark) => [mark[1], mark[2] ?? null]);
+        reject(new Error(`waitFor(${label}) timeout after ${timeoutMs}ms; tail: ${JSON.stringify(stripAnsi(this.buf).slice(-300))}; shell marks: ${JSON.stringify(marks)}`));
       }, timeoutMs);
       this.ws?.on('message', check);
       this.ws?.on('close', check);
