@@ -80,7 +80,7 @@ await assert.rejects(async () => listed(other), (error) => error.code === 'EAGAI
   const grant = await holder.acquireExclusiveMutation('/home/user/d', { delegate: { reads: true, inos: 16, bytes: 0 } });
   const recall = holder.awaitRecall(grant.owner, 300);
   assert.notEqual(await holder.stat('/alias/home/user/d/a.txt'), null);
-  assert.deepEqual(await holder.readdir('/alias/home/user/d'), ['a.txt']);
+  assert.deepEqual((await holder.readdir('/alias/home/user/d')).map((entry) => entry.name ?? entry), ['a.txt']);
   assert.equal(await recall, null, 'a lookup through the alias namespace recalled the process\'s own delegation');
 }
 
