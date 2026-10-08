@@ -1258,18 +1258,16 @@ export class Shell {
   private consumePastedStdin(): void {
     const stdin = this.terminalStdin;
     if (!stdin) return;
-    while (this.pasteQueue.length > 0) {
-      const next = this.pasteQueue.shift();
-      if (next === undefined) break;
-      const data = typeof next === 'string' ? next : next.data;
-      if (typeof next !== 'string') {
-        if (this.activeSubmission) next.submission.bind(this.activeSubmission);
-        next.release();
-      }
-      const eof = data.indexOf('\x04');
-      stdin.feed(eof < 0 ? `${data}\n` : data.slice(0, eof));
-      if (eof >= 0) { stdin.close(); break; }
+    const next = this.pasteQueue.shift();
+    if (next === undefined) return;
+    const data = typeof next === 'string' ? next : next.data;
+    if (typeof next !== 'string') {
+      if (this.activeSubmission) next.submission.bind(this.activeSubmission);
+      next.release();
     }
+    const eof = data.indexOf('\x04');
+    stdin.feed(eof < 0 ? `${data}\n` : data.slice(0, eof));
+    if (eof >= 0) stdin.close();
   }
 
   // ─── Builtins (now with stdout/stderr params for pipe support) ───

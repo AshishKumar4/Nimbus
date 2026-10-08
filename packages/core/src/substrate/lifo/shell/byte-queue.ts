@@ -19,6 +19,8 @@ export class ByteQueue {
     return this.waiting.length > 0;
   }
 
+  protected get buffered(): boolean { return this.buffer.length > 0; }
+
   /** Queue `bytes`, handing them to a waiting reader first. */
   protected deliver(bytes: Uint8Array): void {
     if (bytes.length === 0) return;

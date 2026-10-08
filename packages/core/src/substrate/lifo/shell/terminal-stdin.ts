@@ -11,7 +11,7 @@ export class TerminalStdin extends ByteQueue implements TerminalInputStream {
   constructor(private readonly beforeRead: () => void = () => {}) { super(); }
 
   protected override pull(): Promise<Uint8Array | null> {
-    this.beforeRead();
+    if (!this.buffered && !this.ended) this.beforeRead();
     return super.pull();
   }
 
