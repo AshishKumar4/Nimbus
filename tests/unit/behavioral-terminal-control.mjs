@@ -100,7 +100,7 @@ try {
     assert.equal((await initial).exitCode, 0);
     const result = await final;
     assert.equal(result.exitCode, 0);
-    assert.match(result.output, /first\nsecond/);
+    assert.match(result.output, /first\r?\nsecond/);
 
     const heredoc = client.run("cat > /home/user/parts.txt <<'EOF'", 1000);
     await client.waitFor((text) => text.endsWith('> '), 1000, 'heredoc continuation');
