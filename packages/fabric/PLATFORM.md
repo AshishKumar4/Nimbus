@@ -265,18 +265,18 @@ keeping storage takes an explicit `detach()`. A failed reclaim throws loudly,
 because storage not given back is a permanent charge against the shared
 quota.
 
-**A Durable Object gets 65,536 facet ids over its LIFETIME, append-only,
-never reclaimed** (source: workerd's FacetTreeIndex format, 2026-07-24).
-Reusing a NAME costs no new id; a fresh name always does. Crossing the wall
-is permanent for the object. The id count binds long before bytes. A fresh
-facet database is 4,096 bytes, so Proteus's leak (15 fresh names per search)
-would have hit the id wall at roughly 4,400 searches. A byte dashboard would
-have read healthy the whole way. Enforced: the process fabric names facets
-from a per-object free list (`proc-slot-<n>`, lowest first), so resident
-processes reuse names. `facetIdBudget(ctx)` reports `{ consumed, budget }`
-from a durable ledger that counts first uses only. `withFacetBudgetNamed`
-names the budget on a creation failure at the wall, and `facetPool` refuses
-a NEW name once the ledger reads 65,536.
+**On Cloudflare, facets kept are bounded; names used are not** (measured on
+a throwaway Worker, 2026-10-07). One object created 70,000 facet names,
+deleting each after use, and none failed. Another kept every facet and
+failed at 32,240: "internal error" with the object reset, after which its
+storage failed to start. Local workerd differs where an object's storage is
+on disk: its facet index (facet-tree-index.c++) gives 65,535 names over the
+object's LIFETIME, append-only. The first call to the next new name fails
+with "internal error; reference = …", and only workerd's log says "Maximum
+number of facets exceeded"; names already used still work. With storage in
+memory, 70,000 names created none failed (local workerd, 2026-10-07).
+Enforced: an ephemeral resident's facet is deleted with its process, and a
+failed start names the facet and process it was (`startFailure`).
 
 **`ctx.facets.clone` is O(1) copy-on-write in time and full price in quota**
 (probe). Measured flat across scale: 18 ms for a 4 MB facet, 54 ms for
