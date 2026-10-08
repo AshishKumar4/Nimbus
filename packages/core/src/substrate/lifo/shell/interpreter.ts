@@ -1561,7 +1561,7 @@ export class Interpreter {
     setMembership(
       terminalInputFds,
       0,
-      io.terminalFds?.stdin ?? (!stdin && Boolean(io.terminalStdin)),
+      io.terminalFds?.stdin ?? ((!stdin || stdin === io.terminalStdin) && Boolean(io.terminalStdin)),
     );
     if (io.terminalStdin) {
       for (const fd of terminalInputFds) {

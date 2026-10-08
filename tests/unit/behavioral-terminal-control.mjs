@@ -109,7 +109,13 @@ try {
     assert.equal((await delimiter).exitCode, 0);
   });
 
-  await scenario('a reader consumes following pasted input instead of executing it', async ({ client }) => {
+  await scenario('a reader consumes following pasted input instead of executing it', async ({ client, box }) => {
+    box.commands.registry.register('fd-kind', async (ctx) => {
+      await ctx.stdout.write('TTY ' + ctx.isFdTerminal(0) + '\n');
+      return 0;
+    });
+    assert.match((await client.run('fd-kind', 1000)).output, /TTY true/);
+    assert.match((await client.run('echo x | fd-kind', 1000)).output, /TTY false/);
     const result = await client.run('cat\necho NOT_A_COMMAND\n\x04', 1000);
     assert.equal(result.exitCode, 0);
     assert.match(result.output, /echo NOT_A_COMMAND/);
@@ -122,6 +128,7 @@ try {
     const redirected = await client.run('cat < /home/user/stdin-file', 1000);
     assert.equal(redirected.exitCode, 0);
     assert.match(redirected.output, /\nFILE_X\r?\n/);
+    assert.match((await client.run('fd-kind < /home/user/stdin-file', 1000)).output, /TTY false/);
   });
 
   await scenario('queued submissions own distinct completion and status', async ({ client, box, gate }) => {
