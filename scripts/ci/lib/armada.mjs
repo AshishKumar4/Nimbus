@@ -18,7 +18,7 @@ const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'
 // pin is checked against that main on every run, so a history rewritten
 // under it fails loudly rather than running a client no one can fetch. The
 // pin is the client the deployed Worker is proven with: move both together.
-const ARMADA_DIR = '/mnt/local/nimbus/armada-client';
+const ARMADA_DIR = join(homedir(), '.local/share/nimbus/armada-client');
 export const ARMADA_REPO = 'https://github.com/AshishKumar4/armada';
 export const ARMADA_CLIENT = 'f46fb8c74c893854f1e8c46993048bdc33d6a8a0';
 
@@ -107,10 +107,23 @@ export function armadaClient({ dir = process.env.ARMADA_DIR || ARMADA_DIR, repo 
     throw new Error(`the armada client must be a clean checkout of ${pin} at ${dir}; it is ${head.status === 0 ? head.stdout.trim() : 'not a checkout'}${dirty.stdout ? ', with local changes' : ''}. `
       + `Make one: git clone ${repo} ${dir}, git -C ${dir} checkout --detach ${pin}, then bun install --frozen-lockfile --production in it`);
   }
-  const fetched = run(['fetch', '--quiet', repo, 'main']);
-  if (fetched.status !== 0) throw new Error(`could not fetch main of ${repo} to check the pin: ${fetched.stderr.trim()}`);
-  if (run(['merge-base', '--is-ancestor', pin, 'FETCH_HEAD']).status !== 0) {
-    throw new Error(`the pinned armada client ${pin} is not on main of ${repo} (now ${run(['rev-parse', 'FETCH_HEAD']).stdout.trim()}): its history was rewritten under the pin. Re-pin ARMADA_CLIENT in scripts/ci/lib/armada.mjs to a commit on that main`);
+  // Every lane checks against this one client checkout at once: each check
+  // fetches main into a ref of its own, never FETCH_HEAD, which concurrent
+  // fetches overwrite (a lane then read another lane's fetch, or none, and
+  // was told the history was rewritten). Only a merge-base that answers
+  // "not an ancestor" says so; anything else that fails is not graded.
+  const ref = `refs/nimbus/pin-check/${process.pid}-${randomUUID()}`;
+  const quiet = ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false'];
+  try {
+    const fetched = run([...quiet, 'fetch', '--quiet', '--no-write-fetch-head', repo, `+main:${ref}`]);
+    if (fetched.status !== 0) throw new Error(`could not fetch main of ${repo} to check the pin (not graded; run again): ${fetched.stderr.trim()}`);
+    const onMain = run(['merge-base', '--is-ancestor', pin, ref]);
+    if (onMain.status === 1) {
+      throw new Error(`the pinned armada client ${pin} is not on main of ${repo} (now ${run(['rev-parse', ref]).stdout.trim()}): its history was rewritten under the pin. Re-pin ARMADA_CLIENT in scripts/ci/lib/armada.mjs to a commit on that main`);
+    }
+    if (onMain.status !== 0) throw new Error(`could not check the pin ${pin} against main of ${repo} (not graded; run again): ${onMain.stderr.trim()}`);
+  } finally {
+    run([...quiet, 'update-ref', '-d', ref]);
   }
   return dir;
 }

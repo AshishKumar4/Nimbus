@@ -138,7 +138,10 @@ export declare function withHostView<T>(authority: NimbusFilesystemAuthority, cr
  */
 export declare function engineKey(view: Pick<ProcessView, 'realpath' | 'stat'>, engine: Pick<SqliteVFS, 'deviceId'>, path: string): Promise<string | null>;
 /** POSIX access(2) modes. */
-export declare const F_OK = 0, X_OK = 1, W_OK = 2, R_OK = 4;
+export declare const F_OK = 0;
+export declare const X_OK = 1;
+export declare const W_OK = 2;
+export declare const R_OK = 4;
 /**
  * A process's namespace as a `VFS` over its bound bridge, plus the process
  * syscalls a `VFS` has no word for (access, realpath, append). Absent is

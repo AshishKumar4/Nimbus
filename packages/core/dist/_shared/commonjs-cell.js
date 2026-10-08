@@ -30,21 +30,13 @@
  *
  * THE WRAPPER
  * ───────────
- * The module a cell becomes exports a function of the module's own
- * `Function` that returns Node's module wrapper function, which the shims
- * call with their own exports, require, module, __filename and __dirname. A
- * cell of CommonJS runs as Node's own wrapper runs it, as the function body:
+ * The module a cell becomes exports Node's module wrapper function, which the
+ * shims call with their own exports, require, module, __filename and
+ * __dirname. A cell of CommonJS runs as Node's own wrapper runs it, as the
+ * function body:
  *
- *   module.exports = (function (Function) { return function (exports, require, module, __filename, __dirname) {<cell>
- *   }; });
- *
- * The module's `Function` is the Function constructor bound to the module's
- * URL (node-shims.ts, __nimbusCodeOrigin), which the guest passes when it
- * evaluates the cell: import() in code that constructor builds resolves
- * against this module, as Node resolves it against the module that called
- * the constructor (RUNTIME CODE). It is a closure binding, not a parameter
- * of the wrapper, so the wrapper's `arguments` are Node's five and a cell
- * may declare its own `Function` at its top level.
+ *   module.exports = (function (exports, require, module, __filename, __dirname) {<cell>
+ *   });
  *
  * An ES module lowered to CommonJS (esbuild, or the bounded rewrite of a large
  * bundle) is the one exception. As an ES module it could declare its own
@@ -54,8 +46,8 @@
  * SyntaxError. Such a cell sits in a BLOCK inside the function, where the
  * declaration shadows the parameter, which is what the module meant:
  *
- *   module.exports = (function (Function) { return function (exports, require, module, __filename, __dirname) {<"use strict";>{<cell>
- *   }}; });
+ *   module.exports = (function (exports, require, module, __filename, __dirname) {<"use strict";>{<cell>
+ *   }});
  *
  * Only a lowered module gets the block, because the block is not a function
  * body: a top-level function declaration in it is lexical, so `var f; function
@@ -107,28 +99,14 @@
  * text, `using` declarations) still throws EvalError code
  * ERR_NIMBUS_CODE_NEXT_LAUNCH, and runs from the next launch on.
  *
- * A constructor's code has an ORIGIN: the import() its code calls and the
- * `Function` its code sees (node-shims.ts, __nimbusCodeOrigin). Node resolves
- * that import() against the module that called the constructor; here that is
- * the module whose own `Function` (THE WRAPPER) built the code, and code it
- * builds in turn keeps the origin. A staged constructor module is a factory
- * of the origin (runtimeFunctionModule), so one content-addressed module
- * serves every module that builds the same code. vm's code has an origin
- * whose import() Node refuses (ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING), and
- * a constructor reached through a prototype (AsyncFunction) or globalThis is
- * no module's own, so its code's import() is refused by name
- * (ERR_NIMBUS_IMPORT_NO_IMPORTER).
- *
  * A process started with NIMBUS_RUNTIME_CODE=interpret interprets even code
  * an earlier launch staged: the same launch, natively or not, which is how
  * the interpreter's cost and behaviour are compared with V8's.
  */
 import { createHash } from 'node:crypto';
 import { parse, tokenizer, tokTypes } from 'acorn';
-import { RUNTIME_FUNCTION_HEADS, expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, runtimeFunctionSyntaxError as syntaxErrorIn, scriptExpression, } from './runtime-function-source.js';
+import { RUNTIME_FUNCTION_HEADS, expressionFunctionBody, runtimeFunctionSource, runtimeFunctionSyntaxError as syntaxErrorIn, scriptExpression, } from './runtime-function-source.js';
 import { INTERPRETER_UNSUPPORTED } from '../interpreter/unsupported-code.js';
-import { applySourceEdits, forEachNode } from '../runtime/javascript-ast.js';
-import { moduleImporterUrl } from './module-importer.js';
 /** This module's own built-ins, for the checks it shares with the interpreter. */
 const REALM = {
     SyntaxError,
@@ -196,12 +174,12 @@ export function commonJsEntryModuleName(filename) {
 export function commonJsCellReadsBack(key) {
     return !/[%\\]/.test(key);
 }
-const WRAPPER_HEAD = 'module.exports = (function (Function) { return function (exports, require, module, __filename, __dirname) {';
+const WRAPPER_HEAD = 'module.exports = (function (exports, require, module, __filename, __dirname) {';
 /**
- * Wrap a CommonJS cell as a `{ cjs }` module whose export, given the
- * module's `Function`, is Node's module wrapper function, in the given scope
- * (THE WRAPPER). A leading shebang becomes a line comment of the same length
- * (Node strips it too; `#!` is not valid inside a function).
+ * Wrap a CommonJS cell as a `{ cjs }` module whose export is Node's module
+ * wrapper function, in the given scope (THE WRAPPER). A leading shebang
+ * becomes a line comment of the same length (Node strips it too; `#!` is not
+ * valid inside a function).
  */
 export function wrapCommonJsCell(cell, scope = 'function') {
     const hashbang = cell.charCodeAt(0) === 35 && cell.charCodeAt(1) === 33;
@@ -209,7 +187,7 @@ export function wrapCommonJsCell(cell, scope = 'function') {
     const head = scope === 'function'
         ? WRAPPER_HEAD
         : WRAPPER_HEAD + (opensWithUseStrict(body) ? '"use strict";' : '') + '{';
-    const tail = scope === 'function' ? '\n}; });' : '\n}}; });';
+    const tail = scope === 'function' ? '\n});' : '\n}});';
     return { text: head + body + tail, head: head.length, tail: tail.length, hashbang };
 }
 const WRAPPER_NAMES = new Set(['exports', 'require', 'module', '__filename', '__dirname']);
@@ -332,6 +310,13 @@ export const RUNTIME_CODE_MAX_BYTES = 8 * 1024 * 1024;
 /** Pieces of runtime code one launch records, and the supervisor keeps. */
 export const RUNTIME_CODE_MAX_ENTRIES = 1024;
 /**
+ * The largest wasm image a launch learns (a `wasm` entry): one the program
+ * compiled from bytes the launch did not carry, which comes from no file the
+ * closure walk could record (node-shims' WebAssembly seam). Bigger images
+ * are named when refused, not learned: an image a package ships is a file.
+ */
+export const RUNTIME_WASM_MAX_BYTES = 1024 * 1024;
+/**
  * What each piece is charged beyond its text, against RUNTIME_CODE_MAX_BYTES:
  * its key, its bookkeeping, and the module it becomes. Without it a flood of
  * tiny pieces is nearly free by text and not at all by heap.
@@ -367,6 +352,8 @@ function runtimeCodeKeySource(entry) {
         return JSON.stringify(['module', ...runtimeModuleScope(entry.path), entry.text]);
     if (entry.kind === 'expression')
         return JSON.stringify(['expression', entry.code]);
+    if (entry.kind === 'wasm')
+        return JSON.stringify(['wasm', entry.bytes]);
     return JSON.stringify([entry.kind, entry.params, entry.body]);
 }
 /** The key of a piece of runtime code: SHA-256 of runtimeCodeKeySource, hex. */
@@ -395,6 +382,33 @@ export const RUNTIME_INTERPRETER_PRIMORDIALS_MODULE = 'nimbus/interpreter-primor
 export function runtimeCodeModuleName(key) {
     return `gen/${key}.js`;
 }
+/** Base64 of whole bytes: a `wasm` entry's. */
+const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+/**
+ * Whether a `wasm` entry's base64 is a module a launch may learn: the guest's
+ * limits held again where the entry is received, before it is learned, kept
+ * or staged (a report is the guest's word, not proof): whole base64 of at most
+ * RUNTIME_WASM_MAX_BYTES that WebAssembly.validate accepts.
+ */
+function isLearnableWasm(base64) {
+    if (base64.length > Math.ceil(RUNTIME_WASM_MAX_BYTES / 3) * 4 || !BASE64.test(base64))
+        return false;
+    let bytes;
+    try {
+        bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+    }
+    catch {
+        return false;
+    }
+    if (bytes.byteLength > RUNTIME_WASM_MAX_BYTES)
+        return false;
+    try {
+        return WebAssembly.validate(bytes);
+    }
+    catch {
+        return false;
+    }
+}
 /** A ledger entry as the supervisor receives it: shape-checked, or null. */
 export function parseRuntimeCodeEntry(value) {
     if (typeof value !== 'object' || value === null)
@@ -406,6 +420,8 @@ export function parseRuntimeCodeEntry(value) {
     }
     if (v.kind === 'expression')
         return typeof v.code === 'string' ? { kind: 'expression', code: v.code } : null;
+    if (v.kind === 'wasm')
+        return typeof v.bytes === 'string' && isLearnableWasm(v.bytes) ? { kind: 'wasm', bytes: v.bytes } : null;
     if (typeof v.kind !== 'string' || !isRuntimeFunctionKind(v.kind))
         return null;
     if (!Array.isArray(v.params) || !v.params.every((p) => typeof p === 'string') || typeof v.body !== 'string')
@@ -413,57 +429,32 @@ export function parseRuntimeCodeEntry(value) {
     return { kind: v.kind, params: [...v.params], body: v.body };
 }
 /**
- * The `{ cjs }` module text for a Function-constructor call: it exports a
- * factory of the code's origin (RUNTIME CODE), its import() and its
- * `Function`, that builds the function V8 builds for `new
- * <Kind>Function(...params, body)`. The function is named `anonymous`, its
- * source is `<head> anonymous(<params>\n) {\n<body>\n}` (the body from line
- * 3), and its import() calls are the origin's, through a parameter whose name
- * no identifier of the code uses; a function so rewritten carries its own
- * source as the export's `source`, which the guest gives
- * Function.prototype.toString. Code that names `Function` also exports
- * `unbound`, the same factory without that parameter, for an origin whose
- * code reads and writes the global's. For arguments the constructor refuses
- * (parseRuntimeFunction) the factory throws the SyntaxError the constructor
- * would. A constructor's function closes over the global scope, where a
- * CommonJS module's body would see workerd's five CommonJS names
+ * The `{ cjs }` module text for a Function-constructor call: it exports the
+ * function V8 builds for `new <Kind>Function(...params, body)` — named
+ * `anonymous`, its source `<head> anonymous(<params>\n) {\n<body>\n}`, the body
+ * from line 3 — or, for arguments the constructor refuses
+ * (runtimeFunctionSyntaxError), throws the SyntaxError it would. A
+ * constructor's function closes over the global scope, where a CommonJS
+ * module's body would see workerd's five CommonJS names
  * (src/workerd/api/commonjs.h CommonJsModuleContext: require, module,
- * exports, __filename, __dirname), so an enclosing function rebinds those
- * five to the global object's.
+ * exports, __filename, __dirname), so an enclosing function rebinds those five
+ * to the global object's.
  */
 export function runtimeFunctionModule(kind, params, body) {
-    let parsed;
-    try {
-        parsed = parseRuntimeFunction(kind, params, body, REALM);
-    }
-    catch (e) {
-        return `module.exports = function () { throw new SyntaxError(${JSON.stringify(REALM.messageOf(e))}); };`;
-    }
-    const imports = [];
-    const names = new Set();
-    forEachNode(parsed.node, (node) => {
-        if (node.type === 'ImportExpression')
-            imports.push({ start: node.start, end: node.start + 'import'.length, text: '' });
-        else if (node.type === 'Identifier')
-            names.add(node.name);
-    });
-    let capture = 'nimbusImport';
-    while (names.has(capture))
-        capture = `_${capture}`;
-    const fn = applySourceEdits(parsed.text, imports.map((edit) => ({ ...edit, text: capture })));
-    const factory = (params) => `function (${params}) { return (function (require, module, exports, __filename, __dirname) { return ${fn}; })`
-        + '(globalThis.require, globalThis.module, globalThis.exports, globalThis.__filename, globalThis.__dirname); }';
-    return `module.exports = ${factory(`${capture}, Function`)};`
-        + (names.has('Function') ? `\nmodule.exports.unbound = ${factory(capture)};` : '')
-        + (imports.length > 0 ? `\nmodule.exports.source = ${JSON.stringify(runtimeFunctionSource(kind, params, body))};` : '');
+    const refused = runtimeFunctionSyntaxError(kind, params, body);
+    if (refused !== null)
+        return `throw new SyntaxError(${JSON.stringify(refused)});`;
+    return 'module.exports = (function (require, module, exports, __filename, __dirname) { return ('
+        + `${runtimeFunctionSource(kind, params, body)}); })`
+        + '(globalThis.require, globalThis.module, globalThis.exports, globalThis.__filename, globalThis.__dirname);';
 }
 /**
- * The `{ cjs }` module text for vm.runInThisContext's code: a factory of its
- * origin, as a constructor's is (runtimeFunctionModule), of a function
- * returning the value of the one expression the script is (after its
- * directive prologue, which the function keeps), which node-shims calls
- * with the global object as `this`, a script's own. For code V8 refuses the
- * factory throws the SyntaxError V8 would, and for a script of another shape
+ * The `{ cjs }` module text for vm.runInThisContext's code: it exports a
+ * function returning the value of the one expression the script is (after
+ * its directive prologue, which the function keeps), in the global scope as
+ * a constructor's function is (runtimeFunctionModule), which node-shims
+ * calls with the global object as `this`, a script's own; or
+ * it throws the SyntaxError V8 would, or, for a script of another shape,
  * the error the interpreter answers it with in the first launch.
  */
 export function runtimeExpressionModule(code) {
@@ -472,10 +463,10 @@ export function runtimeExpressionModule(code) {
         at = scriptExpression(code, REALM);
     }
     catch (e) {
-        return `module.exports = function () { throw new SyntaxError(${JSON.stringify(REALM.messageOf(e))}); };`;
+        return `throw new SyntaxError(${JSON.stringify(REALM.messageOf(e))});`;
     }
     if (at === null)
-        return `module.exports = function () { throw new Error(${JSON.stringify(VM_SCRIPT_UNSUPPORTED)}); };`;
+        return `throw new Error(${JSON.stringify(VM_SCRIPT_UNSUPPORTED)});`;
     return runtimeFunctionModule('function', [], expressionFunctionBody(code.slice(0, at.prologueEnd), code.slice(at.start, at.end)));
 }
 /** Why a vm script that is not one expression does not run in a Worker. */
@@ -503,29 +494,27 @@ const __nimbusRegistryRequire = __nimbusCreateRequire(import.meta.url);
 // The built-ins the interpreter calls, captured now, before any program code
 // runs (core interpreter/primordials.ts): the interpreter itself loads only
 // when the program first produces code, by when it may have replaced them.
-const {
-  LAUNCH_PRIMORDIALS: __nimbusLaunchPrimordials,
-  registerSource: __nimbusRegisterSource,
-} = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_PRIMORDIALS_MODULE}");
+const { LAUNCH_PRIMORDIALS: __nimbusLaunchPrimordials } = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_PRIMORDIALS_MODULE}");
 const __nimbusCodeCells = new Map(__NIMBUS_CODE_CELLS.map((__row) => [__row[0], __row]));
 // Where node:fs shows the map's modules: beside this main module, /bundle/.
 const __NIMBUS_BUNDLE_FILES = decodeURIComponent(new URL("./", import.meta.url).pathname);
-// The URL import() in the module at a path resolves against (moduleImporterUrl).
-const __nimbusModuleImporterUrl = ${moduleImporterUrl.toString()};
 // The wrapper function of the cell at a VFS key, compiled by the registry the
-// first time it is asked for, with the module's own Function (THE WRAPPER);
-// null when the launch's map has no such cell.
+// first time it is asked for; null when the launch's map has no such cell.
 function __nimbusModuleCell(key) {
   const __row = __nimbusCodeCells.get(key);
-  return __row ? __nimbusRegistryRequire("./" + __row[1])(globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(key)).Function) : null;
+  return __row ? __nimbusRegistryRequire("./" + __row[1]) : null;
 }
-// The entry's wrapper function, with the Function of the entry's own URL,
-// importer. A SyntaxError from compiling it carries no location (the
-// registry compiles on require, and V8 reports the requiring frame), so its
-// stack leads with the file, as Node's report does.
-function __nimbusEntryWrapper(name, filename, importer) {
+// Whether the cell at a VFS key is an ES module the launch lowered (CommonJsCellRow).
+function __nimbusModuleCellIsEsModule(key) {
+  const __row = __nimbusCodeCells.get(key);
+  return __row !== undefined && __row[6] === 1;
+}
+// The entry's wrapper function. A SyntaxError from compiling it carries no
+// location (the registry compiles on require, and V8 reports the requiring
+// frame), so its stack leads with the file, as Node's report does.
+function __nimbusEntryWrapper(name, filename) {
   try {
-    return __nimbusRegistryRequire("./" + name)(globalThis.__nimbusCodeOrigin(importer).Function);
+    return __nimbusRegistryRequire("./" + name);
   } catch (e) {
     if (e instanceof SyntaxError && typeof e.stack === "string") e.stack = filename + "\\n\\n" + e.stack;
     throw e;
@@ -600,7 +589,9 @@ function __nimbusRuntimeCodeKey(entry) {
     ? JSON.stringify(["module", ...__nimbusRuntimeModuleScope(entry.path), entry.text])
     : entry.kind === "expression"
       ? JSON.stringify(["expression", entry.code])
-      : JSON.stringify([entry.kind, entry.params, entry.body]);
+      : entry.kind === "wasm"
+        ? JSON.stringify(["wasm", entry.bytes])
+        : JSON.stringify([entry.kind, entry.params, entry.body]);
   return { source: __source, key: __nimbusCreateHash("sha256").update(__source).digest("hex") };
 }
 // This launch's module for the code, or undefined when it was not staged (or
@@ -636,33 +627,19 @@ function __nimbusRuntimeInterpreter() {
   }
   return __nimbusInterpreter;
 }
-// A staged module's code from an origin (runtimeFunctionModule): a module
-// takes the origin's Function; a constructor's code takes its import() too,
-// or the shape that reads the global Function for an origin without one,
-// and a function whose import() calls were routed answers toString with the
-// source it was built from.
-function __nimbusRuntimeCodeStagedBuild(staged, kind, origin) {
-  if (kind === "module") return staged(origin.Function);
-  const fn = origin.Function === undefined && staged.unbound !== undefined
-    ? staged.unbound(origin.import)
-    : staged(origin.import, origin.Function);
-  if (staged.source !== undefined && typeof fn === "function") __nimbusRegisterSource(fn, staged.source);
-  return fn;
-}
-// The compiled code from its origin (RUNTIME CODE): this launch's module for
-// it when an earlier launch staged it; otherwise recorded for the next
-// launch and interpreted. A SyntaxError is what compiling it natively throws
-// too.
-function __nimbusRuntimeCodeCompile(entry, describe, origin) {
+// The compiled code: this launch's module for it when an earlier launch
+// staged it; otherwise recorded for the next launch and interpreted. A
+// SyntaxError is what compiling it natively throws too.
+function __nimbusRuntimeCodeCompile(entry, describe) {
   const __id = __nimbusRuntimeCodeKey(entry);
   const __staged = __nimbusRuntimeCodeStaged(__id.key);
-  if (__staged !== undefined) return __nimbusRuntimeCodeStagedBuild(__staged, entry.kind, origin);
+  if (__staged !== undefined) return __staged;
   __nimbusRuntimeCodeRecord(__id, entry);
   const __interpreter = __nimbusRuntimeInterpreter();
   try {
-    if (entry.kind === "module") return __interpreter.compileModule(entry.path, entry.text, origin);
-    if (entry.kind === "expression") return __interpreter.compileExpression(entry.code, origin);
-    return __interpreter.compileFunction(entry.kind, entry.params, entry.body, origin);
+    if (entry.kind === "module") return __interpreter.compileModule(entry.path, entry.text);
+    if (entry.kind === "expression") return __interpreter.compileExpression(entry.code);
+    return __interpreter.compileFunction(entry.kind, entry.params, entry.body);
   } catch (e) {
     if (!e || e.code !== "${INTERPRETER_UNSUPPORTED}") throw e;
     const __err = new EvalError(describe + " was produced after this launch started, and a Worker compiles code only from the module map it was launched with; it is staged, and the next launch of this command compiles it. (" + e.message + ")");
@@ -671,25 +648,35 @@ function __nimbusRuntimeCodeCompile(entry, describe, origin) {
     throw __err;
   }
 }
-// The wrapper function of a file that is not one of the launch's cells, with
-// its own Function and import() (THE WRAPPER).
+// The wrapper function of a file that is not one of the launch's cells.
 function __nimbusRuntimeModule(path, text) {
-  const __origin = globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(path));
-  return __nimbusRuntimeCodeCompile({ kind: "module", path, text: String(text) }, "Module '/" + path + "'", __origin);
+  return __nimbusRuntimeCodeCompile({ kind: "module", path, text: String(text) }, "Module '/" + path + "'");
 }
 globalThis.__nimbusRuntimeCode = Object.freeze({
-  // A constructor's code, from the origin the constructor carries (node-shims.ts).
-  compileFunction(kind, params, body, origin) {
+  compileFunction(kind, params, body) {
     if (!${JSON.stringify(Object.keys(RUNTIME_FUNCTION_HEADS))}.includes(kind)) throw new TypeError("compileFunction: unknown kind " + String(kind));
-    return __nimbusRuntimeCodeCompile({ kind, params: Array.from(params, String), body: String(body) }, "Code handed to the " + kind + " constructor", origin);
+    return __nimbusRuntimeCodeCompile({ kind, params: Array.from(params, String), body: String(body) }, "Code handed to the " + kind + " constructor");
   },
   // vm.runInThisContext's code (node-shims): a function returning its value,
   // which node-shims calls with the global object as \`this\`, a script's own.
-  compileExpression(code, origin) {
-    return __nimbusRuntimeCodeCompile({ kind: "expression", code: String(code) }, "Code handed to vm.runInThisContext", origin);
+  compileExpression(code) {
+    return __nimbusRuntimeCodeCompile({ kind: "expression", code: String(code) }, "Code handed to vm.runInThisContext");
   },
   compileModule(path, text) {
     return __nimbusRuntimeModule(String(path).replace(/^\\/+/, ""), text);
+  },
+  // A wasm image the WebAssembly seam (node-shims) refused, for the next
+  // launch to carry: whether it is recorded (not over the limit, and the
+  // ledger had room).
+  recordWasm(bytes) {
+    const __view = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (__view.byteLength > ${RUNTIME_WASM_MAX_BYTES}) return false;
+    let __binary = "";
+    for (let i = 0; i < __view.length; i += 0x8000) __binary += String.fromCharCode.apply(null, __view.subarray(i, i + 0x8000));
+    const __entry = { kind: "wasm", bytes: btoa(__binary) };
+    const __id = __nimbusRuntimeCodeKey(__entry);
+    __nimbusRuntimeCodeRecord(__id, __entry);
+    return __nimbusRuntimeLedger.has(__id.key);
   },
   // A line typed at the JavaScript REPL (core runtime/js-repl.ts): the async
   // function the interpreter's replLineBody makes of it, compiled as an
@@ -697,7 +684,7 @@ globalThis.__nimbusRuntimeCode = Object.freeze({
   compileReplLine(code) {
     const { replLineBody } = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}");
     const __body = replLineBody(String(code));
-    return __body === null ? null : __nimbusRuntimeCodeCompile({ kind: "async", params: [], body: __body }, "Code typed at the REPL", globalThis.__nimbusUnboundOrigin);
+    return __body === null ? null : __nimbusRuntimeCodeCompile({ kind: "async", params: [], body: __body }, "Code typed at the REPL");
   },
 });
 // What this launch could not compile, for the next launch of its command.

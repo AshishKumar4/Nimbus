@@ -16,8 +16,9 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { type RuntimeCodeEntry } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { ReadAheadBudget } from '@nimbus-sh/core/runtime/stdin-read.js';
-import { type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
+import { type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
@@ -26,6 +27,7 @@ import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type PortVisibility } from '../session/port-capability.js';
 import { type PreloadModuleRoot, type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
 import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
+import type { ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -169,17 +171,10 @@ interface GeneratedNodeFacetCode {
     codeModules: Record<string, string>;
 }
 /**
- * The URL an entry's import() resolves against and its `Function` carries:
- * the script's own, as Node names it (`-e` code is `<cwd>/[eval]`, stdin
- * `<cwd>/[stdin]`).
- */
-export declare function entryImporterUrl(filename: string | undefined, cwd: string): string;
-/**
  * Generate one-shot runtime code with a plain fetch handler. `filename`
- * names the entry's module, and so its stack frames; with `cwd` it is the
- * entry's importer (entryImporterUrl).
+ * names the entry's module, and so its stack frames.
  */
-export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string, cwd?: string): Promise<GeneratedNodeFacetCode>;
+export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string, esModule?: boolean): Promise<GeneratedNodeFacetCode>;
 /** One wasm image the generated main module imports from the module map. */
 export interface FacetWasmImport {
     /** The module-map name the boot spec carries the image under. */
@@ -205,6 +200,22 @@ export declare function facetWasmImports(named: readonly {
     vfsPath: string;
     digest: string | undefined;
 }[], closure: readonly WasmImageRecord[]): FacetWasmImport[];
+/**
+ * The wasm images earlier runs of a command learned (runtime code of kind
+ * `wasm`: bytes the program compiled that the launch did not carry, which
+ * the WebAssembly seam named and recorded), for this launch to carry.
+ */
+export declare function learnedWasmImages(code: ReadonlyMap<string, RuntimeCodeEntry>): Uint8Array[];
+/**
+ * A launch's wasm images, parked by VFS path and by digest for the
+ * node-shims WebAssembly seam, each as the compile of its map member: the
+ * seam runs it when the program first compiles those bytes. A static import
+ * compiled every image at load, used or not (lightningcss's 15.8 MB on every
+ * Vite 8 dev launch). Under new_module_registry a member compiles on first
+ * evaluation, and the registry's require() may evaluate it at request time,
+ * where a compile from bytes is refused.
+ */
+export declare function facetWasmImportsSource(wasmImports: readonly FacetWasmImport[]): string;
 export declare function generateLongRunningNodeCode(userCode: string, vfsState: FacetVfsState, opts: {
     argv?: string[];
     /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
@@ -213,6 +224,7 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
     cwd?: string;
     filename?: string;
     dirname?: string;
+    esModule?: boolean;
     stdin?: string;
     attachedTty?: boolean;
     cred: ProcessEntry['cred'];
@@ -286,6 +298,24 @@ interface FacetVfsState {
     truncated: boolean;
     /** Diagnostics: how the build's transforms were answered. */
     transforms?: BundleCellTransformStats;
+    /**
+     * Modules the program reaches only through an \`import()\` (phase 2 of the
+     * closure walk), which no static walk from the entry or a staged package
+     * entry reaches: they evaluate only if that call runs. Their synchronous
+     * reads are not planned at boot; the \`import()\` that evaluates them
+     * fetches them first (lazyReadsByTarget).
+     */
+    lazyModules?: readonly string[];
+    /** Each lazy module's lazy importers (PrefetchResult.edges, reversed, within lazyModules). */
+    lazyImporters?: Readonly<Record<string, readonly string[]>>;
+    /**
+     * The modules the snapshot's bound evicted that name a synchronous call
+     * (evictedReaders): modules the program may still load late, as runtime
+     * code through an \`import()\`. The data plan puts what each reads in the
+     * lazy-read table under its own path, for that import()'s closure walk to
+     * fetch.
+     */
+    evictedReaders?: readonly string[];
     /** Telemetry: served from the prefetch-bundle cache (no VFS walk). */
     cacheHit?: boolean;
     /**
@@ -645,6 +675,19 @@ export declare function addBinTargetSiblings(vfs: LaunchFs, scriptPath: string |
     wasmPaths: string[];
 }>;
 /**
+ * The table an \`import()\` reads its target's lazy synchronous reads from
+ * (FacetVfsState.lazyModules): for each lazy module that an \`import()\` may
+ * target, the synchronous reads (static-fs-refs' exact, sync) of every lazy
+ * module evaluating it evaluates, itself included, by its lazy importers.
+ * \`syncReadsOf\` holds each lazy module that reads; the table is keyed by
+ * each of its lazy ancestors. Vite 8's \`import("lightningcss")\` resolves to
+ * lightningcss-wasm's wasm-node.mjs, which reads lightningcss_node.wasm
+ * (15.8 MB) at module top level: an entry under that target, fetched when the
+ * import() runs (a dev server with css.transformer 'lightningcss', a build's
+ * CSS minify), never at a launch that does not import it.
+ */
+export declare function lazyReadsByTarget(syncReadsOf: ReadonlyMap<string, readonly string[]>, lazyImporters: Readonly<Record<string, readonly string[]>>): Record<string, string[]>;
+/**
  * The wasm images a program's closure holds, by path and content digest.
  *
  * Three sources, one record: a `.wasm` cell the walk already staged (digested
@@ -699,6 +742,8 @@ export interface PrefetchBundleOptions {
     /** The ESM→CJS pass's transform host; absent, ESM cells stage as diagnostics. */
     esbuild?: EsbuildService;
     bundleProfile?: FacetBundleProfile;
+    /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
+    moduleScope?: ModuleScope;
     /** Paths earlier runs of the same entry read synchronously and missed. */
     observedReads?: ReadonlySet<string>;
     /** The launch's pacer; a build without one runs in the caller's turn. */
@@ -746,6 +791,13 @@ export declare function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: 
  *
  */
 export declare function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOptions): Promise<FacetVfsState>;
+/**
+ * The evicted JavaScript modules whose text names a synchronous call: the
+ * ones the data plan reads (static-fs-refs.ts, from the VFS as written).
+ * Most of what a bound evicts is data or declarations (Astro's 575 shiki
+ * grammars and .d.ts files), which this costs a substring search.
+ */
+export declare function evictedReaders(cells: Readonly<Record<string, string | Uint8Array>>): string[];
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
  * FacetManager stays unaware of the session / log-store types.
@@ -915,6 +967,10 @@ export interface ResidentSpawnOptions {
     cwd?: string;
     filename?: string;
     dirname?: string;
+    /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+    esModule?: boolean;
+    /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
+    moduleScope?: ModuleScope;
     command?: string;
     port?: number;
     attachedTty?: boolean;
@@ -983,8 +1039,6 @@ export interface ResidentAppSummary {
     diagnostic: string | null;
     /** The exec id of `pid` (`ProcessEntry.execId`); absent when it has none. */
     execId?: string;
-    /** The process `pid` restarts (`ProcessEntry.restartedFrom`); absent when it is no restart. */
-    restartedFrom?: ProcessRestart;
 }
 /** What a pid's journal row says about who it is. */
 export interface ResidentIdentity {
@@ -1154,10 +1208,6 @@ export declare class FacetManager {
     private ensureInflight;
     /** Per-pid chain of journal-row amendments; see `_amendRow`. */
     private rowAmendments;
-    /** A process whose host the platform reset (_endByHostLoss), until its terminal hook reads why it ended. */
-    private hostLosses;
-    /** Each running resident's uptime proof timer (_proveByUptime). */
-    private uptimeProofs;
     /**
      * pid → the derived owner it duplicates: the second live instance of an
      * identity. Not journalled (nothing re-drives it), so this is the only
@@ -1173,37 +1223,12 @@ export declare class FacetManager {
      */
     private _endBySignal;
     /**
-     * The actor hosting `workerKey` reports, from its own next incarnation,
-     * that the platform reset it under the process (session/rpc.ts
-     * hostingWatchFired). True when it was this session's open process, which
-     * is now lost (ProcessHost.hostLost).
-     */
-    hostLost(workerKey: string, capability: string): boolean;
-    /**
-     * The platform reset the host of a running process (ProcessHostLost): the
-     * process is over, as if killed (137), and says why. Its ports answer with
-     * the cause at once, and its restart policy decides what follows, as for
-     * any process that ends on its own (_onResidentTerminal).
-     */
-    private _endByHostLoss;
-    /**
      * The process is over. Every end-of-life passes through here: a clean
      * exit, a kill, a timeout, a crash. Only one of them owes anything more
      * than the journal row's release — a crash under 'on-failure' is re-driven
      * from the row, after a backoff, while the row is still in storage so a
      * reset inside the backoff window recovers it like any other resident.
      */
-    /**
-     * The evidence a resident ran (fenced-work.ts RESIDENT_PROVEN_MS): this
-     * instance's timer, from the boot. If the process is still running with
-     * its row when it fires, the row's re-drive budget is whole again. A timer
-     * of an instance that died never fires, so time while the session was
-     * down never counts. Resolves when the row is amended, or at once when
-     * there is nothing to prove.
-     */
-    private _proveByUptime;
-    /** Stop `pid`'s uptime proof: the process ended, or its proof restarts. */
-    private _dropUptimeProof;
     private _onResidentTerminal;
     /** Claim identity AND write its recovery row in one serializable storage transaction. */
     private _claimResident;
@@ -1320,14 +1345,16 @@ export declare class FacetManager {
      */
     private _stagedBindingModulesByValue;
     /**
-     * Stage every wasm image the closure inlines as base64 (findInlineWasmImages)
-     * as a kernel-owned file named by its content key, and return the records
-     * the launch registers it under: by that path, which both launch forms read
-     * it from, and by digest, which is how the program's own compile of the
-     * decoded bytes is recognised. Small (es-module-lexer's parser is 11.8 KB)
-     * and written once per session per image.
+     * Stage wasm images that come from no file — those the closure inlines as
+     * base64 (findInlineWasmImages), and those earlier runs compiled from bytes
+     * in memory (learnedWasmImages) — each as a kernel-owned file named by its
+     * content key, and return the records the launch registers it under: by
+     * that path, which both launch forms read it from, and by digest, which is
+     * how the program's own compile of the decoded bytes is recognised. Small
+     * (es-module-lexer's parser is 11.8 KB; a learned one is at most
+     * RUNTIME_WASM_MAX_BYTES) and written once per session per image.
      */
-    private _stageInlineWasmImages;
+    private _stageWasmImageBytes;
     /** In-flight writes of the session's copies of staged bindings, by name; one writer each. */
     private stagedBindingWrites;
     /**
@@ -1490,6 +1517,10 @@ export declare class FacetManager {
         callerPid?: number;
         /** The process whose command runs the program: its parent, whose credential and exec id it takes. */
         invokerPid?: number;
+        /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+        esModule?: boolean;
+        /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
+        moduleScope?: ModuleScope;
         bundleProfile?: FacetBundleProfile;
         /** Return stdout/stderr in the result while keeping supervisor RPC
          *  available for VFS and child_process operations. */
@@ -1682,13 +1713,7 @@ export declare class FacetManager {
      * was scheduled. The manager logs an opaque description; only the fabric
      * knows what a placement is.
      */
-    /**
-     * A resident process's handle, as it comes back from the fabric: a host
-     * the platform resets under it ends the process (_endByHostLoss). Watched
-     * before any caller's own `done` handler, so the process has ended by name
-     * when they look. The placement goes to the process log under NIMBUS_DEBUG.
-     */
-    private _hosted;
+    private _noteProcessPlacement;
     /**
      * The reader the fabric completes a boot spec's by-path members with.
      *
@@ -1765,14 +1790,6 @@ export declare class FacetManager {
      * `hooks.resolveWorkerLaunch`.
      */
     private _redrive;
-    /**
-     * The process-table entry of a resident launch: a child of its invoker,
-     * under its credential, as exec's. A re-drive has no invoker (the journal
-     * never holds one): it runs as the row says, records the process it
-     * restarts and why, and says so as its first line of output. The terminal
-     * a session's restart disconnected is not where the user looks for it.
-     */
-    private _spawnLaunchEntry;
     /**
      * Spawn a long-running Node process with the same shimmed require/fs/http
      * environment used by foreground `node <script>` execution.

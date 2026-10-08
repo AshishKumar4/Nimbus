@@ -44,6 +44,8 @@ export interface NodeLaunch {
 export interface NodeCommandLine extends NodeLaunch {
     /** Where the program's own arguments start: its script (or `-`), or, for `-e`, its arguments; their end when there are none. */
     programIndex: number;
+    /** `--input-type`: what `-e` code and stdin are (`module`, `commonjs`), the command line's over NODE_OPTIONS'. */
+    inputType?: string;
     version: boolean;
     help: boolean;
 }

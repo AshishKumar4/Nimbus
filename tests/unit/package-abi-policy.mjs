@@ -27,23 +27,16 @@ import {
   lookupStagedArtifact,
   applyStagedArtifact,
 } from '../../packages/worker/src/facets/wasm-swap-registry.ts';
-import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-resolve-preamble.ts';
+import { importResolvePreamble } from './lib/npm-resolve-preamble-module.mjs';
 import { parseRegistryRequest } from '../../packages/core/src/_shared/npm-spec.ts';
 
 // ── 1. Preamble parity: extract the injected policy + functions ────────
 
-const facet = new Function(`${NPM_RESOLVE_PREAMBLE}
-return {
-  POLICY: __NIMBUS_PACKAGE_ABI_POLICY,
-  SHOULD_SWAP,
-  SHOULD_REJECT_FAIL,
-  NATIVE_EXECUTABLE_REJECT,
-  NATIVE_PLATFORM_REJECT,
-
-  IS_OPTIONAL_NATIVE_BINDING,
-  STAGED_ARTIFACT,
-  STAGED_ARTIFACT_APPLY,
-};`)();
+const facetModule = await importResolvePreamble([
+  '__NIMBUS_PACKAGE_ABI_POLICY', 'SHOULD_SWAP', 'SHOULD_REJECT_FAIL', 'NATIVE_EXECUTABLE_REJECT', 'NATIVE_PLATFORM_REJECT',
+  'IS_OPTIONAL_NATIVE_BINDING', 'STAGED_ARTIFACT', 'STAGED_ARTIFACT_APPLY',
+]);
+const facet = { ...facetModule, POLICY: facetModule.__NIMBUS_PACKAGE_ABI_POLICY };
 
 assert.deepEqual(
   JSON.parse(JSON.stringify(facet.POLICY)),

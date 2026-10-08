@@ -15,5 +15,7 @@ export { CheckoutPlan, encodeBatch, decodeBatch, parseTree } from './plan.js';
 export { oidToHex, oidFromHex, PackFormatError } from './format.js';
 export { cloneDiscover, cloneFast, cloneBatch, cloneFinish, clonePlanFromStore, fetchObjects } from './clone.js';
 export { historyStep, historyResume, historyPlan, treeSlices } from './history.js';
+export { graphFiltersPlan, graphFiltersPiece, graphFiltersAssemble, graphFiltersDiscard } from './graph-filters.js';
 export { facetPacks } from './facet-packs.js';
+export { mountWriter, replaceFile, withinDeadline, GitWriteFailure, PhaseDeadlineError, CHECKOUT_FAILED, MOUNT_WAVE_FILE_MAX } from './mount-writer.js';
 export { retryingGitHttp } from './transport.js';

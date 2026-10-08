@@ -189,7 +189,10 @@ export const SPECS = {
   //
   // Additive alongside python/0.29.4. Nothing reads these keys until
   // session/init.ts routes `python` at the cpython-runner factory.
-  'cpython/3.13.14': {
+  // -1: the same CPython 3.13.14 rebuilt by build-python.sh, now reproducible
+  // (fixed stamps), at neutral build paths: 3.13.14's files carried the build
+  // machine's paths (OpenSSL's directories, .pyc source paths, sysconfig).
+  'cpython/3.13.14-1': {
     license: 'PSF-2.0',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/python',

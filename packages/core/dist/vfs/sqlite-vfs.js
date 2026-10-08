@@ -840,6 +840,8 @@ export class SqliteVFS {
         return incarnation;
     }
     exclusiveMutationLeases = new Map();
+    /** Why a lease holds what it holds, where its holder said: what a write it refuses is told. */
+    exclusiveMutationReasons = new Map();
     activeMutationOwner = null;
     /** Shared by every concurrent stream targeting this session's VFS. */
     writeStreamCredits = new WeightedCreditPool(MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES);
@@ -1420,9 +1422,12 @@ export class SqliteVFS {
      * wherever they run: `principal` (else the calling view's, else `cred`'s)
      * is the one its write events name and its held appends are written as.
      */
-    openDescription(path, cred, rights, principal) {
+    openDescription(path, cred, rights, principal, 
+    /** The exclusive-mutation lease the open presented: the description's own mutations (write, truncate, chmod, chown, utimes) present it too. */
+    mutationOwner) {
         const origin = principal ?? this.activeOrigin ?? Object.freeze({ cred });
         const asOpener = (call) => (...args) => this.asOrigin(origin, () => call(...args));
+        const owned = (call) => asOpener((...args) => this.withMutationOwner(mutationOwner, () => call(...args)));
         const resolved = this.checkAccess(path, (rights.read ? 4 : 0) | (rights.write ? 2 : 0), cred);
         if (!resolved.inode)
             throw vfsKeyError('ENOENT', path);
@@ -1480,7 +1485,7 @@ export class SqliteVFS {
                 const run = this.appendRuns.get(node.ino);
                 return run === undefined ? node.size : run.base + run.bytes;
             },
-            write: asOpener((offset, bytes) => {
+            write: owned((offset, bytes) => {
                 if (!rights.write)
                     throw vfsKeyError('EBADF', path);
                 if (live().isDir)
@@ -1504,7 +1509,7 @@ export class SqliteVFS {
                 if (rights.write)
                     this.raiseAppendFailure(opened);
             },
-            truncate: asOpener((size) => {
+            truncate: owned((size) => {
                 if (!rights.write)
                     throw vfsKeyError('EBADF', path);
                 const node = writable();
@@ -1524,8 +1529,8 @@ export class SqliteVFS {
                     throw vfsKeyError('EBADF', path);
                 return opened.path === null ? [] : this.readdir(opened.path, CRED_KERNEL);
             },
-            chmod: asOpener((mode) => this.chmodInode(current(), mode, cred, opened.path)),
-            chown: asOpener((uid, gid) => {
+            chmod: owned((mode) => this.chmodInode(current(), mode, cred, opened.path)),
+            chown: owned((uid, gid) => {
                 if (cred.uid !== 0)
                     throw vfsKeyError('EPERM', path);
                 if (opened.path !== null)
@@ -1536,7 +1541,7 @@ export class SqliteVFS {
                     current().ctime = this.now();
                 }
             }),
-            utimes: asOpener((atime, mtime) => {
+            utimes: owned((atime, mtime) => {
                 if (cred.uid !== 0 && cred.uid !== current().uid && !rights.write)
                     throw vfsKeyError('EPERM', path);
                 if (opened.path !== null)
@@ -2755,17 +2760,24 @@ export class SqliteVFS {
         this.exclusiveMutationLeases.set(owner, root);
         return { root, owner };
     }
-    acquireGlobalExclusiveMutation() {
+    /**
+     * Hold the whole session for one owner. `reason`, when given, is what a
+     * write it refuses is told (EBUSY's detail), instead of the lease's root.
+     */
+    acquireGlobalExclusiveMutation(reason) {
         this.settleAppends();
         if (this.exclusiveMutationLeases.size > 0) {
             throw vfsError('EBUSY', 'session has an active exclusive filesystem mutation');
         }
         const owner = crypto.randomUUID();
         this.exclusiveMutationLeases.set(owner, '');
+        if (reason !== undefined)
+            this.exclusiveMutationReasons.set(owner, reason);
         return { root: '', owner };
     }
     releaseExclusiveMutation(owner) {
         this.exclusiveMutationLeases.delete(owner);
+        this.exclusiveMutationReasons.delete(owner);
     }
     /**
      * Hand `owner`'s lease, root unchanged, to a new owner in one step: from
@@ -2780,6 +2792,11 @@ export class SqliteVFS {
         this.exclusiveMutationLeases.delete(owner);
         const next = crypto.randomUUID();
         this.exclusiveMutationLeases.set(next, root);
+        const reason = this.exclusiveMutationReasons.get(owner);
+        if (reason !== undefined) {
+            this.exclusiveMutationReasons.delete(owner);
+            this.exclusiveMutationReasons.set(next, reason);
+        }
         return next;
     }
     hasExclusiveMutation() {
@@ -2813,25 +2830,33 @@ export class SqliteVFS {
      * mutations are refused with; a namespace that lays other filesystems over
      * this one asks it before it mutates one of them (CompositeVFS.guardMutations).
      */
-    mutationRefusal(path, cred) {
-        return this.refusalAt(this.storageKey(path, cred));
+    mutationRefusal(path, cred, owner) {
+        return this.refusalAt(this.storageKey(path, cred), owner ?? this.activeMutationOwner);
     }
-    refusalAt(key) {
+    /**
+     * `owner`: the lease the mutation presents (null for none). A routed or
+     * awaited mutation passes its own; a synchronous one inside
+     * withMutationOwner is presented by activeMutationOwner, the default.
+     */
+    refusalAt(key, owner = this.activeMutationOwner) {
         const normalized = normalizeVfsPath(key);
         // Another owner's lease first (EBUSY), whoever asks; then a lease
         // holder's own root (EPERM), which bounds where its work may land.
-        if (this.activeMutationOwner === null &&
+        if (owner === null &&
             normalized === LEGACY_SYMLINK_REGISTRY_PATH &&
             this.exclusiveMutationLeases.size > 0) {
-            return { code: 'EBUSY', detail: 'locked while an exclusive mutation is active' };
+            // A session-wide hold that says why says it here too.
+            const global = [...this.exclusiveMutationLeases].find(([, root]) => root === '');
+            const reason = global === undefined ? undefined : this.exclusiveMutationReasons.get(global[0]);
+            return { code: 'EBUSY', detail: reason ?? 'locked while an exclusive mutation is active' };
         }
-        for (const [owner, root] of this.exclusiveMutationLeases) {
-            if (!pathsOverlap(normalized, root) || owner === this.activeMutationOwner)
+        for (const [holder, root] of this.exclusiveMutationLeases) {
+            if (!pathsOverlap(normalized, root) || holder === owner)
                 continue;
-            return { code: 'EBUSY', detail: `locked by an exclusive mutation at /${root}` };
+            return { code: 'EBUSY', detail: this.exclusiveMutationReasons.get(holder) ?? `locked by an exclusive mutation at /${root}` };
         }
-        if (this.activeMutationOwner !== null) {
-            const ownedRoot = this.exclusiveMutationLeases.get(this.activeMutationOwner);
+        if (owner !== null) {
+            const ownedRoot = this.exclusiveMutationLeases.get(owner);
             if (ownedRoot === undefined || (ownedRoot !== '' && normalized !== ownedRoot && !normalized.startsWith(`${ownedRoot}/`))) {
                 return { code: 'EPERM', detail: `outside the exclusive mutation root /${ownedRoot ?? ''}` };
             }
@@ -7458,7 +7483,7 @@ export class SqliteVFS {
                 at.setPhase('publish');
                 at.settleBefore();
                 reached();
-                await router.apply({ type: 'delete', path: placed }, cred, at.guard);
+                await router.apply({ type: 'delete', path: placed }, cred, at.guard, at.owner);
                 at.committed(null);
                 return true;
             }
@@ -7470,7 +7495,7 @@ export class SqliteVFS {
                 at.settleBefore();
                 reached();
                 // A directory has no receipt, here as in a group.
-                await router.apply({ type: 'directory', path: placed, mode: record.inode.mode }, cred, at.guard);
+                await router.apply({ type: 'directory', path: placed, mode: record.inode.mode }, cred, at.guard, at.owner);
                 at.committed(null);
                 return true;
             }
@@ -7535,7 +7560,7 @@ export class SqliteVFS {
                     const bytes = concatBytes(file.held.map((chunk) => chunk.data));
                     const stat = await router.apply(file.link
                         ? { type: 'symlink', path: file.placed, target: new TextDecoder().decode(bytes), slot: `${at.waveId}-${file.index}` }
-                        : { type: 'file', path: file.placed, mode: file.mode, bytes }, cred, at.guard);
+                        : { type: 'file', path: file.placed, mode: file.mode, bytes }, cred, at.guard, at.owner);
                     at.committed(stat === null ? null : { path: file.named, ...stat });
                 }
                 finally {
@@ -8050,6 +8075,7 @@ export class SqliteVFS {
                     },
                     reserve: (bytes) => (bytes === 0 ? Promise.resolve(null) : acquireCredit(bytes, options.signal)),
                     setPhase: (next) => { phase = next; },
+                    owner: options.mutationOwner,
                     committed: (receipt) => {
                         progress.committedGroupSequence++;
                         progress.committedPathCount++;

@@ -5,6 +5,98 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a command's second run could fail before it started, where its
+  first had got further: what the first run executed and the launch lacked
+  is learned and rooted in the next launch's required closure, and on `nuxt
+  dev` that took the closure past the snapshot bound ("require closure for
+  …/@nuxt/cli/bin/nuxi.mjs exceeds the 18874368-byte snapshot bound"). Learned
+  modules that do not fit are now staged as optional, as far as the bound
+  allows.
+- Fixed: a module a launch's map had no room for (the bound evicts the
+  largest guesses first) that the program then loaded through an `import()`
+  could not read what it reads synchronously, nor compile its WebAssembly:
+  `nuxt dev` evicted rollup, and Nitro's load of it failed reading
+  `bindings_wasm_bg.wasm`. An evicted module's wasm images are now carried,
+  and the `import()` that reaches it fetches its synchronous reads.
+- Fixed: a launch that loads rolldown, satteri or the Astro compiler by a
+  name its code computes (`nuxt dev`: nuxi loads the project's nuxt, which
+  loads vite and rolldown) carried none of their staged bindings, and failed
+  with "Cannot find module '../rolldown-binding.linux-x64-gnu.node'". It now
+  fails by name: which binding, the version Nimbus stages, and that the next
+  launch of the command carries it.
+- Fixed: `nuxt dev` failed its first run with "Cannot find native binding":
+  Nuxt reaches Vite, and Vite rolldown, through an `import()` whose specifier
+  is a variable, so the launch never carried rolldown's staged wasm binding,
+  and a binding cannot be added after launch. A launched bin now also carries
+  the staged bindings its own declared dependencies install (resolved as Node
+  resolves them, at the binding's exact version). A carried binding is
+  registered, never instantiated, until a program requires it.
+- Fixed: a program that compiled a WebAssembly module from bytes built in
+  memory, rather than read from a file, was refused, and a caller that caught
+  the refusal carried on without it, silently, on every launch (one of 286
+  bytes during `nuxt dev`'s startup). The refusal is now named on stderr, once
+  per module, and a module that validates (up to 1 MiB) is staged: the next
+  launch of the command carries it. And `WebAssembly.instantiate(bytes)` that
+  fails after its compile (a link failure, a trap) keeps its own error, where
+  it was reported as a refused compile and lost its class.
+- Changed: a process compiles a wasm image its launch carries when the
+  program first compiles it, not when the process starts. A Vite 8 or Astro
+  dev server no longer compiles lightningcss's 15.8 MB image on every launch,
+  only when it transforms CSS with lightningcss.
+- Changed: a long-running launch no longer stages, at boot, what modules it
+  reaches only through an `import()` read synchronously; that `import()`
+  fetches them before the module evaluates. A Vite 8 dev server's boot drops
+  the 15.8 MB `lightningcss_node.wasm` it reads only when it transforms CSS
+  with lightningcss.
+- Fixed: a process whose file store was at its storage budget could be
+  refused files it read many at once, though the session granted all the room
+  they asked for: each grant served one fill of the batch, and a fill gave up
+  after eight. Waiting fills now get room in the order they asked, and one ask
+  covers them all (`astro dev`: "import() prefetch: could not fetch
+  …/zod/v4/locales/…; its fetches did not land").
+- Added: a git repository on a mounted filesystem. `git clone` onto a mount
+  (before: "writes a repository only on the workspace filesystem"), and
+  `git fetch`, `pull` and `push` in a repository there. A file over a wave's
+  4 MiB mount limit is written through the session's file API (open, write,
+  close), the index through `index.lock`. A failed or interrupted clone
+  there is cleaned up as on the session's own filesystem. A mount backend
+  without `rename`, `writeRange` or `truncate` fails the clone with the
+  namespace's refusal naming the call (EXDEV for a rename, ENOTSUP for the
+  others), and the destination is removed.
+- Fixed: a write wave routed onto a mount, and a lease holder's `mkdir`,
+  `open` for writing, `unlink` and `rmdir`, did not present the caller's
+  exclusive-mutation lease: under its own lease a holder was refused EBUSY
+  there. A file opened under a lease now writes and truncates under it.
+
+- Fixed: a write wave ignored mounts. A W7 wave (`writeBatchStream`, which
+  `git clone`, `git checkout` and `npm install` use) wrote every record to
+  the session's SQLite store, even under a mount. A file under a mount
+  point was written to SQLite, where the mount hid it, or failed with
+  ENOENT when its directory existed only on the mount. Now each record
+  goes where the namespace places it, as the matching single call would:
+  a file is one `writeFile`, a directory one `mkdir`, a removal one
+  `rm -r`, and a link one `symlink`. Removing a directory above a mount
+  point fails with EBUSY, and a file there with EISDIR, before anything is
+  written. If the namespace changes under a wave (a link repointed, a
+  mount made), the wave fails with ESTALE instead of writing where the
+  name no longer leads. Records that stay in SQLite cost what they did
+  before routing.
+  Limits:
+  - A wave writes a file to a mount in one call, up to 4 MiB
+    (`ROUTED_FILE_MAX`). A larger file fails with ENOTSUP before anything
+    is written. Write it to the mount directly.
+  - A link's target on a mount is at most 4,096 bytes
+    (`ROUTED_LINK_TARGET_MAX`); a longer one fails with ENAMETOOLONG.
+  - A mounted record cannot be applied twice. If a resent wave reaches a
+    mounted record that an earlier attempt may already have applied, the
+    wave stops there with EIO ("outcome unknown"). Check that path on the
+    mount before you write it again.
+  - A link on a mount is made under a temporary name first, then renamed
+    over its name. The temporary name is `.<name>.nimbus-wave-<wave>-<record>`,
+    in the link's directory. If the session crashes between the two steps,
+    that temporary link stays, at most one per link being written. Nimbus
+    does not remove it; delete it by that pattern.
+
 - Fixed: `npx create-react-router` stopped while copying its template with
   "TypeError: dest.write is not a function". `stream.pipeline` turned every
   stream without a `pipe` of its own into a Readable, its destination
@@ -74,6 +166,17 @@ published independently in the `@nimbus-sh` npm scope.
   read stays in the program's exit report. A floating `import(...).then(...)`
   keeps the process while it fetches, and an `import()` of a module already
   loaded fetches nothing.
+- A full clone (`git clone --no-shallow`) leaves a commit-graph with
+  changed-path filters, as `git commit-graph write --reachable
+  --changed-paths` writes it (generation data v2, filters version 2), byte
+  for byte. It is written after the clone answers, so the clone takes no
+  longer: on vscode (167,136 commits) the clone's finish took 1.1 s as
+  before, and the graph was complete about five minutes later. It is one
+  layer of a commit-graph chain, so the layers a later `git fetch` writes
+  stack on it as git's do. A history that does not parse as git parses it
+  gets no graph rather than a failed clone.
+- Reading objects from a repository with many packs (a full clone has
+  scores) searches the pack the last object came from first, as git does.
 - Fixed: `node` and `bun` with no script opened a REPL that evaluated
   nothing ("workerd CSP: cannot evaluate JS at request time"). The REPL is
   now a program the runtime runs, as Node's is, and each line compiles
@@ -238,6 +341,29 @@ published independently in the `@nimbus-sh` npm scope.
   dev server again exposes every key of a CommonJS `module.exports = {...}`
   literal as a named export (for example `color-name`'s `red`), checked
   against Vite 7.3.6.
+- Fixed: `create-nimbus-app` wrote a `wrangler.jsonc` without
+  `limits.cpu_ms`, so a scaffolded session ran under the 30 s default CPU
+  limit. The scaffold now writes the config that `@nimbus-sh/config`
+  builds, with `limits.cpu_ms` 300000.
+- Fixed: `nimbus wrangler dev` and its unsupported-binding warning refused a
+  `wrangler.jsonc` with a trailing comma, which wrangler accepts. Every
+  reader of the file now parses it as wrangler does, and refuses a config
+  that is not an object.
+- Fixed: a warm Worker Loader slot could run a stale WebAssembly image. An
+  image was identified by its name, its length and its first and last
+  bytes, so two images that matched there shared a slot. An image is now
+  identified by its SHA-256.
+- Fixed: the named preview host of a session whose id holds `--`
+  (`api--team--sandbox`) did not resolve, and a capability host accepted a
+  zero-padded port (`03000`) that no Nimbus URL contains. One grammar now
+  parses every preview host form, as the URL builders write it.
+- Fixed: the dev server served every HTML page but the root `index.html`
+  (a multi-page app's `/about/`) without the error overlay, the HMR client,
+  the Tailwind bundle or the mount base on its paths. Every page now gets
+  the root page's dev head; only the root page gets a `<base>`.
+- Fixed: an SDK sandbox whose id holds capitals, `_` or `.` (for example
+  `Build_7.a`) could not finish the Agent's Cloudflare login: its OAuth
+  start and callback were refused with 400.
 
 ### Breaking changes for embedders
 

@@ -195,6 +195,8 @@ export class CompositeVFS {
     viewed;
     /** Asked right before each of this view's mutations reaches a backend (scoped). */
     check;
+    /** The exclusive-mutation lease this view's mutations present (scoped's `owner`). */
+    owner;
     /**
      * Views per principal, held weakly: one per principal while someone holds
      * it, none once no one does (a table serving thousands of agents does not
@@ -205,6 +207,7 @@ export class CompositeVFS {
     constructor(root, options = {}, shared) {
         this.viewed = shared?.viewed ?? new WeakMap();
         this.check = shared?.check;
+        this.owner = shared?.owner;
         if (shared) {
             this.table = shared.table;
             this.viewer = shared.principal;
@@ -940,13 +943,20 @@ export class CompositeVFS {
      * reaches a backend, after every lookup and read the mutation waited on,
      * and refuses by throwing. A process's bridge passes its scope's liveness,
      * so a write whose lookup was still awaited when the process was released
-     * or killed (or its host lease disposed) does not land. Shares this view's
-     * table, principal and backend views; not cached, so the check is the
-     * holder's alone.
+     * or killed (or its host lease disposed) does not land. `owner`: the
+     * exclusive-mutation lease its mutations present to the guard (a wave's,
+     * routed onto a mount). Shares this view's table, principal and backend
+     * views; not cached, so the check is the holder's alone. A scoped view
+     * scoped again keeps the checks it had (they run first) and its lease,
+     * unless another is given.
      */
-    scoped(check) {
+    scoped(check, owner) {
+        const outer = this.check;
+        const composed = outer === undefined ? check : () => { outer(); check(); };
+        const lease = owner ?? this.owner;
         return new CompositeVFS(this.table.mounts.get(ROOT_POINT).source, undefined, {
-            table: this.table, principal: this.viewer, views: this.views, viewed: this.viewed, check,
+            table: this.table, principal: this.viewer, views: this.views, viewed: this.viewed, check: composed,
+            ...(lease === undefined ? {} : { owner: lease }),
         });
     }
     as(cred, actor) {
@@ -1590,7 +1600,7 @@ export class CompositeVFS {
         if (guard === undefined || cred === null)
             return;
         for (const path of paths) {
-            const refusal = guard(cred, normalizePath(path));
+            const refusal = guard(cred, normalizePath(path), this.owner);
             if (refusal !== null)
                 throw new Refusal(refusal.code, path, refusal.detail);
         }

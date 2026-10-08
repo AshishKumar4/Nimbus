@@ -169,10 +169,10 @@ const LEDGER_PATH = KEEP_LEDGER ? resolvePath(KEEP_LEDGER) : join(tmpdir(), `nim
 
 // The lock is an exclusive SQLite lock on HOLD_PATH, held for the run's
 // life: the kernel drops it when the run ends, however it ends. LOCK_PATH
-// only describes the holder. A pid cannot say whether a holder lives:
-// run-bounded starts each job in its own PID namespace, where the pid a
-// killed run recorded names some other process (a run killed at its
-// timeout on 2026-09-30 left "pid 12", which blocked every later suite).
+// only describes the holder. A pid cannot say whether a holder lives: a
+// run in a PID namespace of its own records a pid that, read outside it,
+// names some other process (a run killed at its timeout on 2026-09-30 left
+// "pid 12", which blocked every later suite).
 const LOCK_PATH = join(tmpdir(), 'nimbus-behavioral-run.lock');
 const HOLD_PATH = `${LOCK_PATH}.sqlite`;
 
