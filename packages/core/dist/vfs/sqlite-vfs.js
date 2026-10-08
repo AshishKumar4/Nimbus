@@ -3045,7 +3045,7 @@ export class SqliteVFS {
     newPipeline(writer) {
         let settle;
         const published = new Promise((resolve) => { settle = resolve; });
-        return { recalls: new Set(), publication: null, rows: new Map(), roots: new Map(), writer, published, settle };
+        return { recalls: new Set(), publication: null, roots: new Map(), writer, published, settle };
     }
     /** `run`, its commits `pipeline`'s. */
     inPipeline(pipeline, run) {
@@ -3093,9 +3093,6 @@ export class SqliteVFS {
             const key = normalizeVfsPath(path);
             if (key === '')
                 continue;
-            const committed = this.committedRows.get(key);
-            if (committed !== undefined)
-                pipeline.rows.set(key, committed);
             const parent = structural.has(path) ? this.parentPath(key) : '';
             const root = parent === '' ? key : parent;
             if (pipeline.roots.has(root))
@@ -3119,9 +3116,8 @@ export class SqliteVFS {
         for (const owner of pipeline.roots.values())
             this.endLease(owner);
         this.heldPipelines--;
-        for (const [key, row] of pipeline.rows)
-            if (!this.committedRows.has(key))
-                this.committedRows.set(key, row);
+        // Logged at its publication's revision: a cursor handed out since its
+        // commit (another's publication) is below it, so every reader hears of it.
         try {
             if (publication.paths.size > 0)
                 this.bumpRevision([...publication.paths], publication.structural);
