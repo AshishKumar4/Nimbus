@@ -1431,7 +1431,7 @@ export class Interpreter {
   ): ExecutionIo {
     const io: ExecutionIo = {};
     if (stdin) io.stdin = stdin;
-
+    else if (terminalStdin && !scriptMode) io.stdin = terminalStdin;
     if (terminalStdin) io.terminalStdin = terminalStdin;
     if (terminalFds) io.terminalFds = terminalFds;
     if (scriptMode) io.scriptMode = true;

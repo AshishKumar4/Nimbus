@@ -114,6 +114,14 @@ try {
     assert.equal(result.exitCode, 0);
     assert.match(result.output, /echo NOT_A_COMMAND/);
     assert.ok(!/(?:^|\n)NOT_A_COMMAND\r?(?:\n|$)/.test(result.output));
+
+    const pipeline = await client.run('echo PIPELINE_X | cat', 1000);
+    assert.equal(pipeline.exitCode, 0);
+    assert.match(pipeline.output, /\nPIPELINE_X\r?\n/);
+    await client.run("echo FILE_X > /home/user/stdin-file", 1000);
+    const redirected = await client.run('cat < /home/user/stdin-file', 1000);
+    assert.equal(redirected.exitCode, 0);
+    assert.match(redirected.output, /\nFILE_X\r?\n/);
   });
 
   await scenario('queued submissions own distinct completion and status', async ({ client, box, gate }) => {
