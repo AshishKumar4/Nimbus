@@ -12,8 +12,11 @@
  * batch is a set of nearby paths (the server deltifies within a request,
  * and nearby paths are the similar ones) and every path of a blob lands in
  * the blob's batch.
+ *
+ * A sparse checkout's plan still holds every path (the index lists them
+ * all); a path outside its cone is marked skip-worktree and never written.
  */
-import { OID_BYTES, PackFormatError, oidToHex } from './format.js';
+import { OID_BYTES, PackFormatError, oidFromHex, oidToHex } from './format.js';
 export const MODE_TREE = 0o040000;
 export const MODE_FILE = 0o100644;
 export const MODE_EXECUTABLE = 0o100755;
@@ -51,16 +54,18 @@ export function parseTree(tree) {
 class Columns {
     oids = new Uint8Array(OID_BYTES * 1024);
     modes = new Uint32Array(1024);
+    skips = new Uint8Array(1024);
     pathStarts = new Uint32Array(1025);
     pathBytes = new Uint8Array(64 * 1024);
     count = 0;
-    add(path, mode, oid, oidAt) {
+    add(path, mode, oid, oidAt, skip) {
         if (this.count === this.modes.length) {
             const capacity = this.count * 2;
             this.oids = growBytes(this.oids, capacity * OID_BYTES);
             const modes = new Uint32Array(capacity);
             modes.set(this.modes);
             this.modes = modes;
+            this.skips = growBytes(this.skips, capacity);
             const starts = new Uint32Array(capacity + 1);
             starts.set(this.pathStarts);
             this.pathStarts = starts;
@@ -72,6 +77,7 @@ class Columns {
         this.pathBytes.set(path, start);
         this.oids.set(oid.subarray(oidAt, oidAt + OID_BYTES), this.count * OID_BYTES);
         this.modes[this.count] = mode;
+        this.skips[this.count] = skip ? 1 : 0;
         this.pathStarts[++this.count] = start + path.byteLength;
     }
 }
@@ -85,17 +91,25 @@ export class CheckoutPlan {
     count;
     oids;
     modes;
+    skips;
     pathStarts;
     pathBytes;
-    constructor(count, oids, modes, pathStarts, pathBytes) {
+    constructor(count, oids, modes, 
+    /** 1 for a skip-worktree entry (outside a sparse checkout's cone). */
+    skips, pathStarts, pathBytes) {
         this.count = count;
         this.oids = oids;
         this.modes = modes;
+        this.skips = skips;
         this.pathStarts = pathStarts;
         this.pathBytes = pathBytes;
     }
-    /** Walk `rootTree`'s tree, each subtree read with `tree(oid)`; a path is kept when `keep` says so. */
-    static fromTrees(rootTree, tree, keep = () => true) {
+    /**
+     * Walk `rootTree`'s tree, each subtree read with `tree(oid)`. With
+     * `sparse`, a path outside its cone is skip-worktree; every tree is still
+     * walked, as the index holds every path.
+     */
+    static fromTrees(rootTree, tree, sparse) {
         const columns = new Columns();
         const stack = [
             { data: rootTree, entries: parseTree(rootTree), next: 0, prefix: '' },
@@ -109,8 +123,6 @@ export class CheckoutPlan {
             const entry = frame.entries[frame.next++];
             const path = frame.prefix + entry.name;
             if (entry.mode === MODE_TREE) {
-                if (!keep(path, entry.mode))
-                    continue;
                 const data = tree(frame.data, entry.oidAt);
                 stack.push({ data, entries: parseTree(data), next: 0, prefix: path + '/' });
                 continue;
@@ -119,19 +131,22 @@ export class CheckoutPlan {
                 entry.mode !== MODE_GITLINK && entry.mode !== 0o100664) {
                 throw new PackFormatError('tree entry ' + path + ' has mode ' + entry.mode.toString(8));
             }
-            if (!keep(path, entry.mode))
-                continue;
             // git reads the old group-writable mode as a plain file.
-            columns.add(utf8Encoder.encode(path), entry.mode === 0o100664 ? MODE_FILE : entry.mode, frame.data, entry.oidAt);
+            const skip = sparse !== undefined && !sparse.includes(path);
+            columns.add(utf8Encoder.encode(path), entry.mode === 0o100664 ? MODE_FILE : entry.mode, frame.data, entry.oidAt, skip);
         }
-        return new CheckoutPlan(columns.count, columns.oids.slice(0, columns.count * OID_BYTES), columns.modes.slice(0, columns.count), columns.pathStarts.slice(0, columns.count + 1), columns.pathBytes.slice(0, columns.pathStarts[columns.count]));
+        return new CheckoutPlan(columns.count, columns.oids.slice(0, columns.count * OID_BYTES), columns.modes.slice(0, columns.count), columns.skips.slice(0, columns.count), columns.pathStarts.slice(0, columns.count + 1), columns.pathBytes.slice(0, columns.pathStarts[columns.count]));
     }
     /** Bytes held, for the memory account. */
     get byteLength() {
-        return this.oids.byteLength + this.modes.byteLength + this.pathStarts.byteLength + this.pathBytes.byteLength;
+        return this.oids.byteLength + this.modes.byteLength + this.skips.byteLength + this.pathStarts.byteLength + this.pathBytes.byteLength;
     }
     mode(index) {
         return this.modes[index];
+    }
+    /** Whether the entry is outside the sparse checkout: in the index, skip-worktree, not written. */
+    skipWorktree(index) {
+        return this.skips[index] === 1;
     }
     path(index) {
         return utf8.decode(this.pathBytes.subarray(this.pathStarts[index], this.pathStarts[index + 1]));
@@ -147,25 +162,31 @@ export class CheckoutPlan {
     }
     /**
      * Each distinct blob, in walk order, and the entries it is checked out at.
-     * Gitlinks name commits of another repository and are never fetched.
+     * Gitlinks name commits of another repository and are never fetched. A
+     * skip-worktree entry is checked out nowhere; with `storeSkipped` a blob
+     * only such entries name is kept, at no entries (fetched and stored, as a
+     * clone that is not partial holds every object).
      */
-    blobPaths() {
+    blobPaths(options = {}) {
         const blobs = new Map();
         for (let i = 0; i < this.count; i++) {
             if (this.modes[i] === MODE_GITLINK)
                 continue;
+            const skipped = this.skips[i] === 1;
+            if (skipped && options.storeSkipped !== true)
+                continue;
             const hex = this.oidHex(i);
-            const paths = blobs.get(hex);
-            if (paths)
+            let paths = blobs.get(hex);
+            if (paths === undefined)
+                blobs.set(hex, (paths = []));
+            if (!skipped)
                 paths.push(i);
-            else
-                blobs.set(hex, [i]);
         }
         return blobs;
     }
     /** The distinct blobs not in `present`, split into at most `batches` runs (see the class comment). */
-    batches(batches, present = new Set()) {
-        const blobs = [...this.blobPaths()].filter(([oid]) => !present.has(oid));
+    batches(batches, present = new Set(), options = {}) {
+        const blobs = [...this.blobPaths(options)].filter(([oid]) => !present.has(oid));
         const count = Math.max(1, Math.min(batches, blobs.length));
         const out = [];
         for (let k = 0; k < count; k++) {
@@ -178,7 +199,8 @@ export class CheckoutPlan {
 }
 /**
  * A batch as one facet receives it: for each blob its id, then each path's
- * mode and repo-relative path. [oid 20][paths u16]([mode u32][length u16][utf-8])*
+ * mode and repo-relative path (none: the blob is fetched and stored only).
+ * [oid 20][paths u16]([mode u32][length u16][utf-8])*
  */
 export function encodeBatch(plan, batch) {
     let size = 0;
@@ -193,7 +215,7 @@ export function encodeBatch(plan, batch) {
     for (const blob of batch.blobs) {
         if (blob.entries.length > 0xffff)
             throw new PackFormatError('blob ' + blob.oid + ' is checked out at more than 65535 paths');
-        out.set(plan.oid(blob.entries[0]), p);
+        out.set(oidFromHex(blob.oid), p);
         p += OID_BYTES;
         view.setUint16(p, blob.entries.length);
         p += 2;

@@ -125,10 +125,13 @@ try {
     assert.deepEqual({ stdout: oid(mount.stdout), stderr: mount.stderr }, { stdout: oid(home.stdout), stderr: home.stderr }, 'git on the mount, as in the home');
     assert.equal((await workspace.filesystem.vfs.stat('/m/g2/.git/HEAD'))?.type, 'file', '.git is on the mount');
     assert.equal(onEngine('m'), false, 'and nothing of it in SQLite');
+    // A clone onto the mount is taken (not refused for where it is); one that cannot reach its
+    // remote fails, and leaves nothing there.
     const clone = await runtime.exec('cd /m && git clone https://example.invalid/r.git; echo clone=$?');
-    assert.equal(clone.stdout, 'clone=128\n', 'the network commands refuse a mounted repository by name');
-    assert.match(clone.stderr, /writes a repository only on the workspace filesystem; '\/m\/r' is on a mounted one/);
-    console.log('  [3] git works a repository on the mount through the namespace, as the caller');
+    assert.doesNotMatch(clone.stderr, /only on the workspace filesystem/, 'a mounted destination is not refused');
+    assert.match(clone.stdout, /clone=[1-9]/, clone.stderr);
+    assert.equal(await workspace.filesystem.vfs.stat('/m/r'), null, 'a failed clone there leaves nothing');
+    console.log('  [3] git works a repository on the mount through the namespace, as the caller; a clone there is taken');
   }
 
   // ── a mount's link into SQLite is the project it names ──────────────────

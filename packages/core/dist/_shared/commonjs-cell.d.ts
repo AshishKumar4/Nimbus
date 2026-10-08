@@ -54,16 +54,25 @@ export declare function declaresWrapperBinding(source: string): boolean;
 export declare function opensWithUseStrict(source: string): boolean;
 /**
  * One row of the table a launch's main module carries for its cells:
- * `[key, moduleName, head, tail, hashbang, adopt]`. `adopt` is 1 when the
- * process's store takes the cell's file content from the module text (read
- * back from the bundle filesystem) rather than from a data cell: the store's
- * one copy of that file, and the map's only.
+ * `[key, moduleName, head, tail, hashbang, adopt, esModule]`. `adopt` is 1
+ * when the process's store takes the cell's file content from the module text
+ * (read back from the bundle filesystem) rather than from a data cell: the
+ * store's one copy of that file, and the map's only. `esModule` is 1 for an
+ * ES module lowered to CommonJS (module-format.ts): its require is its static
+ * imports only, and an import() of it is its namespace.
  */
-export type CommonJsCellRow = [key: string, moduleName: string, head: number, tail: number, hashbang: 0 | 1, adopt: 0 | 1];
+export type CommonJsCellRow = [key: string, moduleName: string, head: number, tail: number, hashbang: 0 | 1, adopt: 0 | 1, esModule: 0 | 1];
 /** Bytes of runtime code one launch records, and the supervisor keeps. */
 export declare const RUNTIME_CODE_MAX_BYTES: number;
 /** Pieces of runtime code one launch records, and the supervisor keeps. */
 export declare const RUNTIME_CODE_MAX_ENTRIES = 1024;
+/**
+ * The largest wasm image a launch learns (a `wasm` entry): one the program
+ * compiled from bytes the launch did not carry, which comes from no file the
+ * closure walk could record (node-shims' WebAssembly seam). Bigger images
+ * are named when refused, not learned: an image a package ships is a file.
+ */
+export declare const RUNTIME_WASM_MAX_BYTES: number;
 /**
  * What each piece is charged beyond its text, against RUNTIME_CODE_MAX_BYTES:
  * its key, its bookkeeping, and the module it becomes. Without it a flood of
@@ -84,6 +93,11 @@ export type RuntimeCodeEntry = {
  | {
     kind: 'expression';
     code: string;
+}
+/** A wasm image compiled from bytes the launch did not carry, as base64 (RUNTIME_WASM_MAX_BYTES). */
+ | {
+    kind: 'wasm';
+    bytes: string;
 };
 /**
  * What of a file's path decides the module its text becomes: its directory

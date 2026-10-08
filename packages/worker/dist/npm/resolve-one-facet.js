@@ -25,6 +25,7 @@
  *       PARSE_SEMVER(v) → [maj, min, patch] | null
  *       COMPARE_SEMVER(a, b) → number
  *       RESOLVE_VERSION(versions, range) → string | null
+ *       PARSE_REGISTRY_REQUEST(name, range) → the registry request a spec makes
  *
  * What the task does NOT do (supervisor responsibility)
  * ─────────────────────────────────────────────────────
@@ -49,7 +50,6 @@
  *   7. Return {pkg, deps, peerDeps, optionalDeps, cacheWrites, messages,
  *      events, packumentBytesDecoded, packumentSource, error?}.
  */
-import { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 /**
  * Per-package fanout task body. Serialised via fn.toString() and
  * dispatched by Fanout.submitMany — see installer.ts
@@ -66,7 +66,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     const messages = [];
     const events = [];
     const cacheWrites = [];
-    const request = parseRegistryRequest(spec.name, spec.range);
+    const request = PARSE_REGISTRY_REQUEST(spec.name, spec.range);
     // cache-obs-2: per-resolve cache events. Filled by the L2/L3 path
     // (spliced from supervisor RPC return.events) and the L4 path
     // (post-network-fetch). Threaded through `out()` into the result.

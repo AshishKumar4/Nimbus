@@ -2,11 +2,12 @@
 // behind Bun.serve, serving the bare repositories under one root, with
 // filter and wants-by-id enabled as GitHub has them (`plain: true` keeps
 // http-backend's defaults, neither; a repository's own config can still
-// enable one). Counts requests by path.
+// enable one). Counts requests by path. `refuse(path, body)`: a request it
+// says so of is answered 403, as a server that stops serving answers.
 
 import { spawn } from 'node:child_process';
 
-export function startGitHttpServer(projectRoot, { plain = false } = {}) {
+export function startGitHttpServer(projectRoot, { plain = false, refuse = null } = {}) {
   const config = plain ? [] : ['-c', 'uploadpack.allowFilter=true', '-c', 'uploadpack.allowAnySHA1InWant=true'];
   const requests = [];
   const server = Bun.serve({
@@ -16,6 +17,7 @@ export function startGitHttpServer(projectRoot, { plain = false } = {}) {
       const url = new URL(request.url);
       requests.push({ method: request.method, path: url.pathname });
       const body = request.method === 'POST' ? new Uint8Array(await request.arrayBuffer()) : new Uint8Array(0);
+      if (refuse !== null && refuse(url.pathname, body)) return new Response('refused', { status: 403 });
       const child = spawn('git', [...config, 'http-backend'], {
         env: {
           ...process.env,

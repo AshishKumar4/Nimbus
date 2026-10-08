@@ -229,8 +229,14 @@ for (const shape of ['before-2026-09-25', 'throwing']) {
   assert.equal(await settles(w.rpc.readFile('/home/user/once.txt'), `${shape}: readFile`), 'hello');
   assert.equal(await settles(w.rpc.exists('/home/user/missing'), `${shape}: exists`), false);
 
-  // A refusal keeps its code; nothing is applied.
+  // Both process and binding refusals keep their codes; nothing is applied.
   w.restart();
+  await assert.rejects(
+    settles(w.rpc.writeFile('/home/user/refused.txt', 'x'), `${shape}: missing process`),
+    (error) => error.code === 'ESRCH',
+  );
+  assert.equal(kernel().exists('home/user/refused.txt'), false);
+  assert.equal(w.session.processes.spawn('python3', ['python3'], '/home/user').pid, w.pid);
   await assert.rejects(
     settles(w.rpc.writeFile('/home/user/refused.txt', 'x'), `${shape}: refused write`),
     (error) => error.code === 'ESTALE',

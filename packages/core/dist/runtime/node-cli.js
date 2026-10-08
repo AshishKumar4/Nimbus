@@ -149,6 +149,9 @@ function readOptions(tokens, env) {
             case '--eval':
                 read.eval = value;
                 break;
+            case '--input-type':
+                read.inputType = value;
+                break;
             case '--print':
                 read.print = !negation;
                 break;
@@ -186,6 +189,7 @@ export function parseNodeCommandLine(args, nodeOptions = '') {
         import: [...fromEnv.import, ...fromArgs.import],
         ...(fromArgs.eval !== undefined ? { eval: fromArgs.eval } : {}),
         print: fromArgs.print ?? fromEnv.print ?? false,
+        ...(fromArgs.inputType ?? fromEnv.inputType) !== undefined ? { inputType: fromArgs.inputType ?? fromEnv.inputType } : {},
         version: fromArgs.version,
         help: fromArgs.help,
     };
