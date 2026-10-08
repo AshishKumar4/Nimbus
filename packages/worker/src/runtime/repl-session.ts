@@ -130,6 +130,8 @@ export class ReplSession {
     if (banner) this.terminal.write(banner);
     if (banner && !banner.endsWith('\n')) this.terminal.write('\r\n');
 
+    const queued = this.shellRef?.takeQueuedInput() ?? [];
+    if (queued.length > 0) this.inputQueue += queued.join('\r') + '\r';
     const initialize = this.adapter.initialize;
     if (initialize) this.initializing = Promise.resolve().then(() => this.ending
       ? { stdout: '', stderr: '' }
@@ -179,8 +181,6 @@ export class ReplSession {
     if (this.ending) { await this.closedPromise; return this.exitCode; }
     this.terminal.write(this.adapter.ps1);
 
-    const queued = this.shellRef?.takeQueuedInput() ?? [];
-    if (queued.length > 0) this.inputQueue += queued.join('\r') + '\r';
     if (this.inputQueue.length > 0) {
       if (!this.draining) { this.draining = true; void this.drainInput(); }
     }

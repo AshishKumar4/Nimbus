@@ -71,6 +71,30 @@ const baseAdapter = { ps1: '>>> ', ps2: '... ', banner: () => '', close: async (
   }
 }
 
+// Shell paste predates WebSocket input received during initialization.
+{
+  const view = capture();
+  const ready = Promise.withResolvers();
+  const calls = [];
+  const run = new ReplSession({
+    ...baseAdapter,
+    initialize: () => ready.promise,
+    push: async (line) => { calls.push(line); return output(`ran ${line}\n`); },
+  }, view.terminal, { takeQueuedInput: () => ['x = 1'] }).run();
+  try {
+    view.terminal.sendData('x = 2\r');
+    ready.resolve(output());
+    await view.seen('ran x = 1');
+    await view.seen('ran x = 2');
+    assert.deepEqual(calls, ['x = 1', 'x = 2'], 'later WebSocket input overtook the earlier shell paste');
+  } finally {
+    ready.resolve(output());
+    await view.terminal.disposeRepl();
+    await run;
+    view.terminal.close();
+  }
+}
+
 // Failed startup never claims to be ready, and still closes the adapter.
 {
   const view = capture();

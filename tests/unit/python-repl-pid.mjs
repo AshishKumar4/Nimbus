@@ -9,11 +9,17 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 // Only the Cloudflare facet transport is stood in for. Startup still goes
 // through the real adapter, its artifact reads, and the REPL session.
 const pools = [];
+const evaluating = Promise.withResolvers();
+const finishEvaluation = Promise.withResolvers();
 mock.module('@nimbus-sh/fabric/isolate-pool.js', () => ({
   IsolatePool: class {
     constructor(_env, _ctx, options) { this.options = options; this.steps = []; this.disposed = false; pools.push(this); }
     async submitRequest(_fn, request) {
       this.steps.push(await request.json());
+      if (this.options.supervisorPid === 403 && this.steps.length === 2) {
+        evaluating.resolve();
+        await finishEvaluation.promise;
+      }
       return Response.json({ stdout: '', stderr: '', exitCode: 0 });
     }
     dispose() { this.disposed = true; }
@@ -41,7 +47,7 @@ try {
   assert.equal(pools[0].options.omitSupervisor, true);
   assert.equal(pools[0].disposed, true, 'the install-time pool stayed live');
 
-  for (const pid of [401, 402]) {
+  for (const pid of [401, 402, 403]) {
     const cred = { uid: pid, gid: pid, groups: [pid], umask: 0o022 };
     const ready = Promise.withResolvers();
     let text = '';
@@ -60,6 +66,17 @@ try {
       assert.equal(pool.steps.length, 1, 'the prompt was published without booting its driver');
       assert.deepEqual(pool.steps[0].cred, cred, 'the prompt boot did not carry this process credential');
       assert.match(pool.steps[0].userCode, /import base64, codeop, sys, traceback/, 'the interpreter boot did not initialize its REPL driver');
+      if (pid === 403) {
+        terminal.sendData('held\r');
+        await evaluating.promise;
+        terminal.sendData('\x03');
+        const closing = terminal.disposeRepl();
+        finishEvaluation.resolve();
+        await closing;
+        await running;
+        assert.equal(pools.length, 4, 'interruption booted a replacement interpreter after terminal closure');
+        assert.ok(pools.every((item) => item.disposed), 'closure leaked a late replacement interpreter');
+      }
     } finally {
       clearTimeout(timer);
       await terminal.disposeRepl();
@@ -67,7 +84,7 @@ try {
       terminal.close();
     }
   }
-  assert.equal(pools.length, 3, 'the REPL reused a pool across process lifetimes');
+  assert.equal(pools.length, 4, 'the REPL reused a pool across process lifetimes');
   assert.ok(pools.every((pool) => pool.disposed), 'a closed prompt kept its pool');
 } finally {
   harness.db.close();
