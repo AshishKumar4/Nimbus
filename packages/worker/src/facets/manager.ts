@@ -985,6 +985,43 @@ function entryFrameFile(filename: string | undefined, cwd: string, esModule: boo
 }
 
 /**
+ * A node program's module head, the same for both lifetimes: its imports,
+ * the SUPERVISOR's answering and the stop's replay, and its code cells.
+ */
+function nodeProgramModule(
+  bundleSource: FacetVfsBundleSource,
+  entry: { stackEntry: string },
+  usesSqlite: boolean,
+  stagedBindings: FacetVfsState['stagedBindings'],
+  wasmImports: readonly FacetWasmImport[],
+): string {
+  return `
+${bundleSource.imports}
+${REAL_NODE_IMPORTS}
+${COMMONJS_CELL_IMPORTS}
+${usesSqlite ? SQLITE_FACET_IMPORT : ''}
+${stagedBindingsFacetImport(stagedBindings)}
+${facetWasmImportsSource(wasmImports)}
+const __NimbusHostResponse = globalThis.Response;
+// The SUPERVISOR binding's filesystem calls answer a refusal as a value
+// (core vfs-supervisor.ts answeringSupervisor).
+${SUPERVISOR_ANSWERING_SRC}
+// A synchronous read of stdin that has to wait stops the run with the
+// isolate's ctx.abort; the run is run again once the input is there
+// (runtime/stop-replay.ts).
+${STOP_REPLAY_SOURCE}
+
+// The process's code: a module per cell, compiled when first required. The
+// only other way a string becomes code in a Worker is \`new Function\` at
+// module evaluation, which compiled the whole closure before the program ran.
+const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
+const __NIMBUS_RUNTIME_CODE = ${bundleSource.runtimeCode};
+const __NIMBUS_STACK_ENTRY = ${entry.stackEntry};
+${COMMONJS_CELL_RUNTIME_SOURCE}
+`;
+}
+
+/**
  * A node program's runtime once its store has booted, the same for both
  * lifetimes: its output relayed to the SUPERVISOR, the shims, the event loop
  * and the globals, up to its entry module (`mod`).
@@ -1095,25 +1132,7 @@ export async function generateEntrypointCode(
   const bundleSource = await facetVfsBundleSourceFor(vfsState);
   return {
     code: `
-${bundleSource.imports}
-${REAL_NODE_IMPORTS}
-${COMMONJS_CELL_IMPORTS}
-${usesSqlite ? SQLITE_FACET_IMPORT : ''}
-${stagedBindingsFacetImport(vfsState.stagedBindings)}
-${facetWasmImportsSource(wasmImports)}
-const __NimbusHostResponse = globalThis.Response;
-// The SUPERVISOR binding's filesystem calls answer a refusal as a value
-// (core vfs-supervisor.ts answeringSupervisor).
-${SUPERVISOR_ANSWERING_SRC}
-// A synchronous read of stdin that has to wait stops the run, which is run
-// again once the input is there (runtime/stop-replay.ts).
-${STOP_REPLAY_SOURCE}
-
-// The process's code: a module per cell, compiled when first required.
-const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
-const __NIMBUS_RUNTIME_CODE = ${bundleSource.runtimeCode};
-const __NIMBUS_STACK_ENTRY = ${entry.stackEntry};
-${COMMONJS_CELL_RUNTIME_SOURCE}
+${nodeProgramModule(bundleSource, entry, usesSqlite, vfsState.stagedBindings, wasmImports)}
 
 // The module bundle, at module level (startup time); the code cells the store
 // adopts are getters over the map's own text.
@@ -1475,29 +1494,9 @@ export async function generateLongRunningNodeCode(
   const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
   return {
     code: `
-${bundleSource.imports}
 import { DurableObject } from "cloudflare:workers";
-${REAL_NODE_IMPORTS}
-${COMMONJS_CELL_IMPORTS}
-${usesSqlite ? SQLITE_FACET_IMPORT : ''}
-${stagedBindingsFacetImport(vfsState.stagedBindings)}
-${facetWasmImportsSource(opts.wasmImports ?? [])}
+${nodeProgramModule(bundleSource, entry, usesSqlite, vfsState.stagedBindings, opts.wasmImports ?? [])}
 const __NIMBUS_ARGS = ${safeArgs};
-const __NimbusHostResponse = globalThis.Response;
-// The SUPERVISOR binding's filesystem calls answer a refusal as a value
-// (core vfs-supervisor.ts answeringSupervisor).
-${SUPERVISOR_ANSWERING_SRC}
-// A synchronous read of stdin that has to wait stops the run with the
-// facet's ctx.abort (runtime/stop-replay.ts).
-${STOP_REPLAY_SOURCE}
-
-// The process's code: a module per cell, compiled when first required. The
-// only other way a string becomes code in a Worker is \`new Function\` at
-// module evaluation, which compiled the whole closure before the program ran.
-const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
-const __NIMBUS_RUNTIME_CODE = ${bundleSource.runtimeCode};
-const __NIMBUS_STACK_ENTRY = ${entry.stackEntry};
-${COMMONJS_CELL_RUNTIME_SOURCE}
 
 // \`let\`, not \`const\`, so the parsed bundle can be dropped once the store has
 // adopted it. Holding both is the double materialisation: the module map's text
