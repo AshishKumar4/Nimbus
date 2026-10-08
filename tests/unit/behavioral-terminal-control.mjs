@@ -93,6 +93,22 @@ try {
     assert.match(result.output, /PROGRAM print\(42\)/);
   });
 
+  await scenario('continuation submissions complete with their one owning command', async ({ client }) => {
+    const initial = client.run('echo "first', 1000);
+    await client.waitFor((text) => text.endsWith('> '), 1000, 'quote continuation');
+    const final = client.run('second"', 1000);
+    assert.equal((await initial).exitCode, 0);
+    const result = await final;
+    assert.equal(result.exitCode, 0);
+    assert.match(result.output, /first\nsecond/);
+
+    const heredoc = client.run("cat > /home/user/parts.txt <<'EOF'", 1000);
+    await client.waitFor((text) => text.endsWith('> '), 1000, 'heredoc continuation');
+    const delimiter = client.run('data\nEOF', 1000);
+    assert.equal((await heredoc).exitCode, 0);
+    assert.equal((await delimiter).exitCode, 0);
+  });
+
   await scenario('a reader consumes following pasted input instead of executing it', async ({ client }) => {
     const result = await client.run('cat\necho NOT_A_COMMAND\n\x04', 1000);
     assert.equal(result.exitCode, 0);
