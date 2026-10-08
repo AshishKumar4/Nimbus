@@ -39,7 +39,7 @@
     "typecheck": "./node_modules/.bin/tsc --noEmit && bun scripts/typecheck-js.mjs",
     "test:behavioral": "bun tests/behavioral/run-all.mjs",
     "test:unit": "bun tests/unit/run-all.mjs",
-    "postinstall": "node packages/worker/scripts/patch-install-deps.mjs && node packages/worker/scripts/bundle-git.mjs && node packages/worker/scripts/bundle-facet-workers.mjs && node packages/worker/scripts/bundle-esbuild-wasm.mjs && node packages/worker/scripts/bundle-sqlite-wasm.mjs && node packages/worker/scripts/bundle-node-shims.mjs && node packages/worker/scripts/bundle-tailwind-play.mjs && node packages/worker/scripts/bundle-agent-chat.mjs"
+    "postinstall": "bun scripts/install-deps.mjs --patch-only"
   },
   "dependencies": {},
   "devDependencies": {

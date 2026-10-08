@@ -19,8 +19,7 @@
  *   public/_assets/runtime/git-<buildId>.js — byte-identical staged copy
  *   src/git-bundle.generated.ts — GIT_BUNDLE_ENTRY / _BUILD_ID / _SHA256 pins
  *
- * Runs as a postinstall step AND on every `bun run dev` / `bun run deploy`
- * via the "bundle:git" npm script.
+ * Runs through the "bundle:git" package script.
  */
 
 import { build } from 'esbuild';
