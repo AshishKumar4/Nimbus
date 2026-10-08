@@ -25,6 +25,16 @@
 // sys, path/posix, path/win32, _stream_* and timers.promises were missing.
 // string_decoder was TextDecoder's: hex, base64 and latin1 threw.
 //
+// A module is Node's Module (filename, id, paths, loaded, children, parent),
+// require.cache is Module._cache of them by file, every require is one
+// makeRequireFunction's (resolve with its paths option, resolve.paths,
+// extensions, main), and what it cannot find is MODULE_NOT_FOUND with the
+// require stack. Before, a module was { exports } and the entry had no
+// filename, require.cache was an internal Map, a module's require.resolve
+// answered a path without its leading slash and threw for a builtin, and
+// a missing module threw an Error without a code, so a program's
+// \`e.code === 'MODULE_NOT_FOUND'\` check for an optional dependency failed.
+//
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
 
@@ -227,6 +237,70 @@ show2('string_decoder', () => {
 });
 show2('string_decoder unknown', () => new StringDecoder('nope'));
 `,
+  'mods/main.cjs': SHOW + String.raw`
+const Module = require('module');
+const path = require('path');
+// Paths as the test's directory names them, the same on both sides.
+const rel = (p) => (typeof p === 'string' && p.startsWith('/') ? path.relative(__dirname, p) || '.' : p);
+const shape = (m) => m && { ctor: m.constructor.name, module: m instanceof Module, id: rel(m.id), path: rel(m.path), filename: rel(m.filename), loaded: m.loaded,
+  children: m.children.map((c) => rel(c.filename)), paths: m.paths?.slice(0, 2).map(rel), keys: Object.keys(m), parent: m.parent === undefined ? 'undefined' : m.parent === null ? 'null' : rel(m.parent.filename) };
+const notFound = (label, f) => {
+  try { f(); console.log(label + ': found'); } catch (e) {
+    console.log(label + ': ' + e.name + ' ' + e.code + ' ' + JSON.stringify(e.message.split(__dirname).join('<dir>')) + ' ' + JSON.stringify(Object.keys(e)) + ' ' + JSON.stringify(e.requireStack?.map(rel)));
+  }
+};
+console.log('entry ' + JSON.stringify(shape(module)));
+console.log('main ' + [require.main === module, process.mainModule === module, module.id, __filename === module.filename].join(' '));
+const child = require('./child.cjs');
+console.log('child ' + JSON.stringify(child));
+console.log('after ' + JSON.stringify(shape(module)));
+console.log('cache ' + JSON.stringify(Object.keys(require.cache).map(rel)));
+console.log('cache entries ' + [require.cache[require.resolve('./child.cjs')] instanceof Module, require.cache[__filename] === module, require.cache === Module._cache, require.extensions === Module._extensions].join(' '));
+console.log('again ' + (require('./child.cjs') === child) + ' ' + module.children.length);
+delete require.cache[require.resolve('./child.cjs')];
+console.log('fresh ' + require('./child.cjs').count);
+require.cache[path.join(__dirname, 'fake.cjs')] = { exports: 'from the cache' };
+console.log('injected ' + require('./fake.cjs') + ' ' + module.children.length);
+console.log('resolve ' + [rel(require.resolve('./child.cjs')), require.resolve('fs'), require.resolve('node:fs'), rel(require.resolve('dep')), rel(require.resolve('./nested.cjs', { paths: [path.join(__dirname, 'sub')] })), rel(require.resolve('dep', { paths: [path.join(__dirname, 'sub'), '/'] }))].join(' '));
+console.log('resolve paths ' + JSON.stringify([require.resolve.paths('dep').slice(0, 2).map(rel), require.resolve.paths('fs'), require.resolve.paths('./x').map(rel), require.resolve.paths('../x').map(rel)]));
+console.log('dep ' + JSON.stringify(require('dep')));
+console.log('json ' + JSON.stringify(require('./data.json')) + ' ' + (require.cache[path.join(__dirname, 'data.json')].loaded));
+notFound('json broken', () => require('./broken.json'));
+notFound('require missing', () => require('nope-pkg'));
+notFound('require missing relative', () => require('./nope'));
+notFound('resolve missing', () => require.resolve('nope-pkg'));
+notFound('resolve node:nope', () => require.resolve('node:nope'));
+notFound('nested missing', () => require('./sub/nested.cjs'));
+console.log('nested unloaded ' + (require.cache[path.join(__dirname, 'sub/nested.cjs')] === undefined) + ' ' + module.children.map((c) => rel(c.filename)).join(','));
+notFound('require empty', () => require(''));
+notFound('require number', () => require(5));
+notFound('resolve number', () => require.resolve(5));
+notFound('resolve bad paths', () => require.resolve('dep', { paths: 'x' }));
+const fromDir = Module.createRequire(path.join(__dirname, 'sub') + '/');
+notFound('createRequire dir', () => fromDir('zz'));
+console.log('createRequire ' + [rel(Module.createRequire(__filename).resolve('./child.cjs')), Module.createRequire(__filename).main === module, rel(Module.createRequire(require('url').pathToFileURL(__filename)).resolve('dep'))].join(' '));
+notFound('createRequire relative', () => Module.createRequire('rel.js'));
+notFound('createRequire number', () => Module.createRequire(5));
+const made = new Module(path.join(__dirname, 'made.js'), module);
+console.log('made ' + JSON.stringify(shape(made)));
+notFound('_resolveFilename', () => Module._resolveFilename('nope-pkg', null));
+console.log('loaded at the end ' + module.loaded);
+setTimeout(() => console.log('loaded after ' + module.loaded), 0);
+`,
+  'mods/child.cjs': `const path = require('path');
+const rel = (p) => path.relative(__dirname, p);
+globalThis.count = (globalThis.count ?? 0) + 1;
+module.exports = { count: globalThis.count, parent: rel(module.parent.filename), main: require.main === module, mainFile: rel(require.main.filename), id: rel(module.id), loaded: module.loaded, keys: Object.keys(module), resolved: rel(require.resolve('./sub/nested.cjs')) };
+`,
+  'mods/fake.cjs': "module.exports = 'from the file';\n",
+  'mods/sub/nested.cjs': "require('nope-nested');\n",
+  'mods/data.json': '\uFEFF{ "a": [1, 2] }',
+  'mods/broken.json': '{ "a": ',
+  'mods/node_modules/dep/package.json': '{"name":"dep","main":"lib/index.js"}',
+  'mods/node_modules/dep/lib/index.js': "const path = require('path');\nmodule.exports = { parent: path.basename(module.parent.filename), self: path.relative(__dirname, require.resolve('./index.js')), paths: module.paths.slice(0, 2).map((p) => path.relative(__dirname, p)) };\n",
+  'mods/pre.cjs': "try { require('nope-pre'); } catch (e) { console.log('preload ' + e.code + ' ' + JSON.stringify(e.requireStack.map((p) => require('path').basename(p))) + ' ' + (require.main === undefined) + ' ' + (process.mainModule === undefined) + ' ' + module.parent.id); }\n",
+  'mods/plain.cjs': "console.log('plain main ' + (require.main === module) + ' ' + module.id);\n",
+  'mods/stdin.cjs': "const path = require('path');\nconsole.log('stdin ' + [__filename, __dirname, module.id, path.basename(module.filename), require.main === undefined, process.mainModule === undefined, module.paths.length > 0].join(' '));\ntry { require('nope-stdin'); } catch (e) { console.log('stdin missing ' + JSON.stringify(e.requireStack.map((p) => path.basename(p)))); }\n",
   'deprecate.cjs': SHOW + String.raw`
 const util = require('util');
 const old = util.deprecate(function old(a, b) { return a + b; }, 'old() is going away', 'DEP_NIMBUS');
@@ -238,8 +312,8 @@ console.log(plain(), plain());
 attempt('deprecate code', () => util.deprecate(() => {}, 'm', 5));
 `,
 };
-// Each program and its arguments.
-const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs'];
+// Each program's command line, after \`node\`.
+const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs'];
 
 const host = mkdtempSync(join(tmpdir(), 'node-lib-'));
 process.on('exit', () => rmSync(host, { recursive: true, force: true }));
@@ -248,7 +322,7 @@ for (const [path, text] of Object.entries(FILES)) {
   writeFileSync(join(host, path), text);
 }
 const expected = new Map(PROGRAMS.map((program) => {
-  const ran = spawnSync('node', program.split(' '), { cwd: host, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: host } });
+  const ran = spawnSync('sh', ['-c', `node ${program}`], { cwd: host, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: host } });
   return [program, `${ran.stdout}exit ${ran.status}\n`];
 }));
 

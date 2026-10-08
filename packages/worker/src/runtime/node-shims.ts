@@ -10627,23 +10627,33 @@ function __nimbusBuiltinId(specifier) {
 // file honestly.
 function __NodeModule(id = "", parent) {
   if (!new.target) throw new TypeError("Class constructor Module cannot be invoked without 'new'");
-  this.id = String(id);
-  this.path = __pathMod.dirname(this.id || ".");
+  this.id = id;
+  this.path = __pathMod.dirname(id);
   this.exports = {};
+  __nimbusModuleParents.set(this, parent);
+  __nimbusUpdateChildren(parent, this, false);
   this.filename = null;
   this.loaded = false;
   this.children = [];
-  this.paths = [];
-  Object.defineProperty(this, "parent", { value: parent, writable: true, configurable: true, enumerable: false });
-  if (parent && Array.isArray(parent.children)) parent.children.push(this);
 }
-__NodeModule.prototype.require = function require(request) {
-  if (typeof request !== "string" || request === "") {
-    throw request === ""
-      ? nodeError(TypeError, "ERR_INVALID_ARG_VALUE", "The argument 'id' must be a non-empty string. Received ''")
-      : invalidArgType("id", "string", request);
-  }
-  return __requireFrom(request, __pathMod.dirname(this.filename || this.id || (cwd || "/home/user") + "/[module]").replace(/^\\/+/, ""));
+// The module that first required each (lib/internal/modules/cjs/loader.js moduleParentCache).
+const __nimbusModuleParents = new WeakMap();
+Object.defineProperty(__NodeModule.prototype, "parent", {
+  get() { return __nimbusModuleParents.get(this); },
+  set(value) { __nimbusModuleParents.set(this, value); },
+  configurable: true,
+});
+function __nimbusUpdateChildren(parent, child, scan) {
+  const children = parent?.children;
+  if (children && !(scan && children.includes(child))) children.push(child);
+}
+// Where a module's requests resolve from: its file's directory, or for one
+// with no file (Node's REPL, a hand-made Module) the working directory.
+function __nimbusModuleDir(module) {
+  return module?.filename ? __pathMod.dirname(module.filename) : (cwd || "/home/user");
+}
+__NodeModule.prototype.require = function require(id) {
+  return __requireFrom(id, __nimbusModuleDir(this), this);
 };
 __NodeModule.prototype._compile = function _compile(content, filename) {
   const file = String(filename ?? this.filename ?? this.id);
@@ -10664,17 +10674,34 @@ __NodeModule.prototype._compile = function _compile(content, filename) {
       throw e;
     }
   }
-  const moduleRequire = (request) => this.require(request);
-  moduleRequire.resolve = (request) => __NodeModule._resolveFilename(request, this);
-  moduleRequire.cache = __moduleCache;
-  moduleRequire.main = __require.main;
-  return wrapper.call(this.exports, this.exports, moduleRequire, this, file, dir);
+  return wrapper.call(this.exports, this.exports, __nimbusMakeRequire(this), this, file, dir);
 };
 Object.defineProperty(__NodeModule, "builtinModules", {
   get() { return Object.keys(builtins).filter((id) => __nimbusBuiltinId(id) !== null); },
   enumerable: true, configurable: true,
 });
-__NodeModule.createRequire = (specifier) => __makeRequire(__requireBaseDir(specifier));
+// lib/internal/modules/cjs/loader.js createRequire: the require of a module at
+// \`filename\` (a file URL or an absolute path; a directory's, with a trailing slash).
+__NodeModule.createRequire = function createRequire(filename) {
+  let filepath;
+  const url = filename !== null && typeof filename === "object" && filename.href && filename.protocol && filename.auth === undefined && filename.path === undefined;
+  if (url || (typeof filename === "string" && !filename.startsWith("/"))) {
+    try {
+      filepath = builtins.url.fileURLToPath(filename);
+    } catch {
+      throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("filename", filename, "must be a file URL object, file URL string, or absolute path string");
+    }
+  } else if (typeof filename !== "string") {
+    throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("filename", filename, "must be a file URL object, file URL string, or absolute path string");
+  } else {
+    filepath = filename;
+  }
+  const proxyPath = filepath.endsWith("/") ? __pathMod.join(filepath, "noop.js") : filepath;
+  const module = new __NodeModule(proxyPath);
+  module.filename = proxyPath;
+  module.paths = __NodeModule._nodeModulePaths(module.path);
+  return __nimbusMakeRequire(module);
+};
 __NodeModule.isBuiltin = (specifier) => typeof specifier === "string" && __nimbusBuiltinId(specifier) !== null;
 // Node 22.1's on-disk compile cache. There is no disk to cache into and
 // nothing to compile ahead: callers (pi's CLI entry calls it
@@ -10686,7 +10713,8 @@ __NodeModule.constants = { compileCacheStatus: { FAILED: 0, ENABLED: 1, ALREADY_
 __NodeModule.wrapper = ["(function (exports, require, module, __filename, __dirname) { ", "\\n});"];
 __NodeModule.wrap = (script) => __NodeModule.wrapper[0] + script + __NodeModule.wrapper[1];
 __NodeModule._extensions = { ".js": () => {}, ".json": () => {}, ".node": () => {} };
-__NodeModule._cache = {};
+// require.cache: each CommonJS module by its file, as it loads.
+__NodeModule._cache = { __proto__: null };
 __NodeModule.globalPaths = [];
 // Node's lookup path list: every ancestor's node_modules, nearest first,
 // never a node_modules/node_modules.
@@ -10702,20 +10730,66 @@ __NodeModule._nodeModulePaths = (from) => {
   }
   return paths;
 };
-__NodeModule._resolveFilename = (request, parent) => {
-  if (__nimbusBuiltinId(String(request)) !== null) return String(request);
-  const from = parent && (parent.filename || parent.id)
-    ? __pathMod.dirname(parent.filename || parent.id)
-    : (cwd || "/home/user");
-  const resolved = __resolveFrom(String(request), from.replace(/^\\/+/, ""));
-  if (!resolved) {
-    const e = new Error("Cannot find module '" + request + "'");
-    e.code = "MODULE_NOT_FOUND";
-    throw e;
+// Module._resolveFilename: a builtin's id as asked, a staged binding's name,
+// or the file \`request\` names from \`parent\` (or from each of
+// \`options.paths\`, in order); MODULE_NOT_FOUND with its require stack.
+__NodeModule._resolveFilename = function _resolveFilename(request, parent, isMain, options) {
+  if (__nimbusBuiltinId(request) !== null || __stagedBinding(request)) return request;
+  let dirs = [__nimbusModuleDir(parent)];
+  if (options !== null && typeof options === "object") {
+    if (Array.isArray(options.paths)) dirs = options.paths.map(String);
+    else if (options.paths !== undefined) throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("options.paths", options.paths);
   }
-  return "/" + String(resolved).replace(/^\\/+/, "");
+  for (const dir of dirs) {
+    const resolved = __resolveFrom(request, dir);
+    if (resolved) return "/" + resolved.replace(/^\\/+/, "");
+  }
+  throw __nimbusModuleNotFound(request, parent);
 };
-__NodeModule._load = (request, parent) => (parent instanceof __NodeModule ? parent.require(request) : __require(request));
+// Module._resolveLookupPaths: where a bare request is looked for (the
+// module's node_modules folders), a relative one's directory, or null for a
+// builtin. Named limit: NODE_PATH and Node's global folders ($HOME/.node_modules,
+// $HOME/.node_libraries, <prefix>/lib/node) are neither searched nor listed.
+__NodeModule._resolveLookupPaths = function _resolveLookupPaths(request, parent) {
+  if (__nimbusBuiltinId(request) !== null) return null;
+  if (request[0] !== "." || (request.length > 1 && request[1] !== "." && request[1] !== "/")) {
+    return parent?.paths?.length ? [...parent.paths] : null;
+  }
+  return [parent?.id && parent.filename ? __pathMod.dirname(parent.filename) : "."];
+};
+// Node's MODULE_NOT_FOUND: the request, and the files that required down to it.
+function __nimbusModuleNotFound(request, parent) {
+  const requireStack = [];
+  for (let cursor = parent; cursor; cursor = __nimbusModuleParents.get(cursor)) requireStack.push(cursor.filename || cursor.id);
+  let message = "Cannot find module '" + request + "'";
+  if (requireStack.length > 0) message += "\\nRequire stack:\\n- " + requireStack.join("\\n- ");
+  const error = new Error(message);
+  error.code = "MODULE_NOT_FOUND";
+  error.requireStack = requireStack;
+  return error;
+}
+// lib/internal/modules/helpers.js makeRequireFunction: \`module\`'s require,
+// resolving from \`fromDir\` (its file's directory). \`required\` false is an
+// ES module's, which only its static imports call.
+function __nimbusMakeRequire(module, fromDir = __nimbusModuleDir(module), required = true) {
+  const require = function require(id) {
+    return __requireFrom(id, fromDir, module, required);
+  };
+  function resolve(request, options) {
+    if (typeof request !== "string") throw invalidArgType("request", "string", request);
+    return __NodeModule._resolveFilename(request, module, false, options);
+  }
+  resolve.paths = function paths(request) {
+    if (typeof request !== "string") throw invalidArgType("request", "string", request);
+    return __NodeModule._resolveLookupPaths(request, module);
+  };
+  require.resolve = resolve;
+  require.main = __processMod.mainModule;
+  require.extensions = __NodeModule._extensions;
+  require.cache = __NodeModule._cache;
+  return require;
+}
+__NodeModule._load = (request, parent) => __requireFrom(request, __nimbusModuleDir(parent), parent ?? undefined);
 __NodeModule.Module = __NodeModule;
 // Node's class, from its library the first time it is read: then a value, as Node's.
 Object.defineProperty(__NodeModule, "SourceMap", {
@@ -11564,7 +11638,9 @@ __nimbusNodeErrorsAt(__BufferMod, { inPlace: true });
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-const __moduleCache = new Map();
+// A module's exports as a require() that meets it while it loads (a cycle)
+// reads them (__makeLoadingExports), by its Module.
+const __nimbusLoadingExports = new WeakMap();
 // A module cell's evaluation when it completes later (top-level await), by
 // its evaluation key: what an import of it waits for.
 const __moduleEvaluations = new Map();
@@ -12026,36 +12102,56 @@ function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filen
 const __nimbusAdvised = new WeakSet();
 // \`required\`: loaded by a require() call, not by an ES module's static
 // import, which the lowering makes a call of the module's own require.
-function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true) {
+function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true, parent = undefined) {
   if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\\/+/, ""));
-  if (__moduleCache.has(evaluationKey)) return __moduleCache.get(evaluationKey);
+  const filename = "/" + resolvedPath.replace(/^\\/+/, "");
+  // A query's or fragment's import is a job of its own, kept by its URL.
+  const cacheKey = evaluationKey === resolvedPath ? filename : evaluationKey;
+  const cached = __NodeModule._cache[cacheKey];
+  if (cached !== undefined) {
+    __nimbusUpdateChildren(parent, cached, true);
+    return cached.loaded ? cached.exports : (__nimbusLoadingExports.get(cached) ?? cached.exports);
+  }
 
-  const mod = { exports: {} };
-  __moduleCache.set(evaluationKey, __makeLoadingExports(mod));
+  const mod = new __NodeModule(filename, parent);
+  mod.filename = filename;
+  mod.paths = __NodeModule._nodeModulePaths(mod.path);
+  __NodeModule._cache[cacheKey] = mod;
+  __nimbusLoadingExports.set(mod, __makeLoadingExports(mod));
+  const unload = () => {
+    delete __NodeModule._cache[cacheKey];
+    __nimbusLoadingExports.delete(mod);
+    const siblings = parent?.children;
+    const at = Array.isArray(siblings) ? siblings.indexOf(mod) : -1;
+    if (at !== -1) siblings.splice(at, 1);
+  };
 
-  // JSON
+  // JSON (Module._extensions[".json"])
   if (resolvedPath.endsWith(".json")) {
     const code = __readFileOr(resolvedPath, null);
-    if (code === null) throw new Error("Cannot read module: " + resolvedPath);
-    mod.exports = JSON.parse(code);
-    __moduleCache.set(evaluationKey, mod.exports);
+    try {
+      if (code === null) throw new Error("Cannot read module: " + resolvedPath);
+      try {
+        mod.exports = JSON.parse(code.charCodeAt(0) === 0xFEFF ? code.slice(1) : code);
+      } catch (error) {
+        error.message = filename + ": " + error.message;
+        throw error;
+      }
+    } catch (error) {
+      unload();
+      throw error;
+    }
+    mod.loaded = true;
+    __nimbusLoadingExports.delete(mod);
     return mod.exports;
   }
 
-  // JS — the cell's wrapper, called with a scoped require
-  const modDir = resolvedPath.includes("/") ? resolvedPath.substring(0, resolvedPath.lastIndexOf("/")) : ".";
-  // A lowered ES module calls its require for its static imports only: it
-  // has no require of its own (module-format.ts ES_MODULE_UNBOUND_NAMES).
+  // JS — the cell's wrapper, called with the module's require. A lowered ES
+  // module calls its require for its static imports only: it has no require
+  // of its own (module-format.ts ES_MODULE_UNBOUND_NAMES).
+  const modDir = __pathMod.dirname(filename);
   const esModule = __nimbusModuleCellIsEsModule(resolvedPath.replace(/^\\/+/, ""));
-  const scopedRequire = (id) => __requireFrom(id, modDir, !esModule);
-  scopedRequire.resolve = (id) => {
-    const r = __resolveFrom(id, modDir);
-    if (!r) throw new Error("Cannot resolve '" + id + "'");
-    return r;
-  };
-  scopedRequire.cache = __moduleCache;
-  scopedRequire.main = __require.main;
-  mod.require = scopedRequire;
+  const scopedRequire = __nimbusMakeRequire(mod, modDir, !esModule);
 
   // X.5-M3: thread currently-loading module path through globalThis so the
   // URL shim null-base fallback (in node-shims url module) can compose
@@ -12089,13 +12185,13 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
     }
     __nimbusCompiling("/" + normalizedPath, () => compiledText ?? __nimbusModuleSourceText(__nimbusModuleAtPath(normalizedPath)));
     // A CommonJS module's \`this\` is its exports, as Node calls its wrapper.
-    const evaluation = __nimbusReflectApply(cell, esModule ? undefined : mod.exports, [mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir]);
+    const evaluation = __nimbusReflectApply(cell, esModule ? undefined : mod.exports, [mod.exports, scopedRequire, mod, filename, modDir]);
     // A module with top-level await completes later. require() returns its
     // exports now (static imports lowered to require cannot wait); import()
     // waits for it (__esmLoad).
     if (evaluation && typeof evaluation.then === "function") __moduleEvaluations.set(evaluationKey, evaluation);
   } catch (e) {
-    __moduleCache.delete(evaluationKey);
+    unload();
     // A ReferenceError for a CommonJS name is the module loader's to explain
     // where it leaves an ES module's job, and nothing else's: a require() of
     // an ES module is that module's job (Node's ModuleJobSync).
@@ -12124,8 +12220,8 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
     globalThis.__currentModulePath = __prevModulePath;
   }
 
-  // Update cache with final exports (module.exports may have been reassigned)
-  __moduleCache.set(evaluationKey, mod.exports);
+  mod.loaded = true;
+  __nimbusLoadingExports.delete(mod);
   return mod.exports;
 }
 
@@ -12353,7 +12449,7 @@ function __esmLoad(resolution) {
 // A bundled copy of a package the runtime provides, bound to the runtime's
 // (provided-packages.ts rewriteProvidedCommonJsModules, PROVIDED_PACKAGE_HOOK):
 // what require() serves for it, from any module, an ES module included.
-globalThis.__nimbusProvidedPackage = (name) => __require(name);
+globalThis.__nimbusProvidedPackage = (name) => builtins[name];
 
 // import() may reach installed files the launch did not stage. A launch's
 // store holds its closure and its data plan; anything else on disk is named
@@ -12578,7 +12674,9 @@ globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, spe
 // directory in order, then \`--import\` ones imported from it, each awaited.
 async function __nimbusPreload() {
   const fromDir = String(cwd || "/home/user").replace(/^\\/+/, "");
-  for (const specifier of __nimbusNodeCommandLine?.require ?? []) __requireFrom(String(specifier), fromDir);
+  const preload = new __NodeModule("internal/preload", null);
+  preload.paths = __NodeModule._nodeModulePaths("/" + fromDir);
+  for (const specifier of __nimbusNodeCommandLine?.require ?? []) __requireFrom(String(specifier), fromDir, preload);
   const imports = __nimbusNodeCommandLine?.import ?? [];
   if (imports.length === 0) return;
   const parentUrl = builtins.url.pathToFileURL("/" + fromDir + "/").href;
@@ -12732,9 +12830,12 @@ function __loadStagedBinding(builds, fromDir) {
 function __nimbusEsmJobCached(path) {
   if (typeof path !== "string") return false;
   const key = path.replace(/^\\/+/, "");
-  return __moduleCache.has(key) && __nimbusModuleCellIsEsModule(key);
+  return __NodeModule._cache["/" + key] !== undefined && __nimbusModuleCellIsEsModule(key);
 }
-function __requireFrom(id, fromDir, required = true) {
+// Module.prototype.require from \`parent\`, its requests resolving from \`fromDir\`.
+function __requireFrom(id, fromDir, parent, required = true) {
+  if (typeof id !== "string") throw invalidArgType("id", "string", id);
+  if (id === "") throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("id", id, "must be a non-empty string");
   const builtin = __nimbusBuiltinId(id);
   if (builtin !== null) return builtins[builtin];
   if (__nimbusFacetProvidedPackages.has(id)) return builtins[id];
@@ -12745,7 +12846,7 @@ function __requireFrom(id, fromDir, required = true) {
   if (notCarried) throw notCarried;
 
   const resolved = __resolveFrom(id, fromDir);
-  if (!resolved) throw new Error("Cannot find module '" + id + "' (from " + fromDir + ")");
+  if (!resolved) throw __nimbusModuleNotFound(id, parent);
   // An ES module's static import is the ES loader's, which refuses it before the importer runs: no arrow of the importer's.
   if (!required && __nimbusTypeScriptAsJavaScript && stripsTypeScript(resolved) && !__nimbusEsmJobCached(resolved)) {
     try {
@@ -12755,44 +12856,9 @@ function __requireFrom(id, fromDir, required = true) {
       throw error;
     }
   }
-  return __loadModule(resolved, resolved, required);
+  return __loadModule(resolved, resolved, required, parent);
 }
 
-function __requireBaseDir(specifier) {
-  const text = String(specifier || "");
-  const filePath = text.startsWith("file:")
-    ? builtins.url.fileURLToPath(text)
-    : text;
-  const normalized = filePath.replace(/^\\/+/, "");
-  const fullPath = normalized || (dirname || cwd || "/home/user").replace(/^\\/+/, "");
-  const slash = fullPath.lastIndexOf("/");
-  return slash >= 0 ? fullPath.substring(0, slash) : "";
-}
-
-function __makeRequire(fromDir) {
-  const localRequire = (id) => __requireFrom(id, fromDir);
-  localRequire.resolve = (id) => {
-    if (__stagedBinding(id)) return id;
-    const r = __resolveFrom(id, fromDir);
-    if (!r) throw new Error("Cannot resolve '" + id + "'");
-    return "/" + r;
-  };
-  localRequire.cache = __moduleCache;
-  localRequire.main = __require.main;
-  return localRequire;
-}
-
-/**
- * Top-level require() — resolves from cwd/dirname.
- * This is the require passed to the user's entry script.
- */
-function __require(id) {
-  return __requireFrom(id, dirname || cwd || "/home/user");
-}
-// An ES entry's own require: its static imports, part of its job.
-function __nimbusEntryImport(id) {
-  return __requireFrom(id, dirname || cwd || "/home/user", false);
-}
 // The program's entry evaluated as Node's loader runs it (manager.ts
 // entryModule): a CommonJS entry with require(); an ES entry as a job of its
 // own, its require its static imports, and what escapes its evaluation
@@ -12803,13 +12869,23 @@ function __nimbusEvaluateEntry(wrapper, mod, filename, dirname, esModule) {
   // A file's \`this\` is its exports, as Node's wrapper is called; -e and
   // stdin code is a script, whose \`this\` is the global object.
   if (!esModule) {
-    const self = filename === "<eval>" || filename === "[stdin]" ? globalThis : mod.exports;
-    return __nimbusReflectApply(wrapper, self, [mod.exports, __require, mod, filename, dirname]);
+    const evaluated = filename === "<eval>" || filename === "[stdin]";
+    // A file entry is process.mainModule and require.main (Module._load's
+    // isMain), after the preloads, whose are undefined; -e's and stdin's are too.
+    if (!evaluated) {
+      Object.defineProperty(__processMod, "mainModule", { value: mod, writable: true, enumerable: true, configurable: true });
+      mod.id = ".";
+      __NodeModule._cache[mod.filename] = mod;
+    }
+    const self = evaluated ? globalThis : mod.exports;
+    const result = __nimbusReflectApply(wrapper, self, [mod.exports, __nimbusMakeRequire(mod), mod, evaluated ? mod.id : filename, evaluated ? "." : dirname]);
+    if (!evaluated) mod.loaded = true;
+    return result;
   }
   const url = builtins.url.pathToFileURL(filename).href;
   let result;
   try {
-    result = wrapper(mod.exports, __nimbusEntryImport, mod, filename, dirname);
+    result = wrapper(mod.exports, __nimbusMakeRequire(mod, undefined, false), mod, filename, dirname);
   } catch (e) {
     __nimbusExplainCommonJSGlobalLike(e, url, false);
     throw e;
@@ -12819,15 +12895,19 @@ function __nimbusEvaluateEntry(wrapper, mod, filename, dirname, esModule) {
   }
   return result;
 }
-__require.resolve = (id) => {
-  if (__stagedBinding(id)) return id;
-  const r = __resolveFrom(id, dirname || cwd || "/home/user");
-  if (!r) throw new Error("Cannot resolve '" + id + "'");
-  return "/" + r;
-};
-__require.cache = __moduleCache;
-// Node's process.mainModule: none until the entry runs, so a \`-r\` module's is undefined.
-__require.main = undefined;
+// The program's entry as Node's run_main makes it: a file's Module; -e's
+// and stdin's "[eval]" and "[stdin]" at the working directory, an ES one's
+// import.meta there as "[eval1]".
+function __nimbusEntryModuleOf(filename, esModule) {
+  const evaluated = filename === undefined || filename === "<eval>" || filename === "[stdin]";
+  const id = evaluated ? (filename === "[stdin]" ? "[stdin]" : "[eval]") : filename;
+  const mod = new __NodeModule(id, evaluated ? undefined : null);
+  mod.filename = evaluated ? __pathMod.join(cwd || "/home/user", id) : filename;
+  mod.paths = __NodeModule._nodeModulePaths(__pathMod.dirname(mod.filename));
+  const metaFile = evaluated && esModule ? __pathMod.join(cwd || "/home/user", "[eval1]") : mod.filename;
+  Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta(metaFile) });
+  return mod;
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // ── END OF GENERATED SHIMS — closing marker ─────────────────────────
