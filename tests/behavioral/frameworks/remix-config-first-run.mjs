@@ -75,6 +75,9 @@ try {
   const loadOut = stripAnsi(load.output);
   const first = configOf(loadOut);
   console.log(`[remix-config-first-run] first config load: exit ${load.exitCode} ${JSON.stringify(first)}`);
+  // What it was refused, as the run names it.
+  const named = (out) => out.split(/\r?\n/).filter((l) => /^\s+\/\S+$/.test(l)).map((l) => l.trim());
+  console.log(`[remix-config-first-run] first config load refused: ${JSON.stringify(named(loadOut))}`);
   a.check('the first config load is not killed for memory', !/exceeded memory limit/i.test(loadOut) && first !== null,
     JSON.stringify({ exit: load.exitCode, out: loadOut.slice(-1500) }));
   // The config itself is a few hundred bytes; with its packages bundled in
@@ -92,7 +95,8 @@ try {
   if (load.exitCode !== 0) {
     const again = await t.run(`cd ${APP} && node --conditions=development config-load.mjs 2>&1`, 240_000);
     const againOut = stripAnsi(again.output);
-    console.log(`[remix-config-first-run] second config load: exit ${again.exitCode} ${JSON.stringify(configOf(againOut))} ${JSON.stringify(againOut.slice(-700))}`);
+    const why = againOut.split(/\r?\n/).find((l) => /^(?:Error|Nimbus:|failed to load config)/.test(l.trim()) && !/^failed to load config/.test(l.trim())) ?? '';
+    console.log(`[remix-config-first-run] second config load: exit ${again.exitCode} ${JSON.stringify(configOf(againOut))} refused ${JSON.stringify(named(againOut))} why ${JSON.stringify(why.trim().slice(0, 400))}`);
     // Tailwind v4's oxide has no Workers-compatible build: past the reads the
     // first run was refused, that is where this config stops, and it says so.
     a.check('the next run has what the first was refused: it loads, or fails on something other than a refused read',
