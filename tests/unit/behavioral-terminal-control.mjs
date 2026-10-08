@@ -1,0 +1,135 @@
+#!/usr/bin/env bun
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { setImmediate } from 'node:timers/promises';
+import { WebSocketServer } from 'ws';
+import { Terminal } from '../behavioral/_driver.mjs';
+import { WebSocketTerminal } from '../../packages/worker/src/facets/ws-terminal.ts';
+import { HeredocHandler, LineEditorExtender } from '../../packages/core/src/shell/features.ts';
+import { testBox } from './lib/test-box.mjs';
+
+const mark = (value) => `\x1b]133;${value}\x07`;
+const server = createServer();
+const sockets = new WebSocketServer({ server });
+server.listen(0, '127.0.0.1');
+await once(server, 'listening');
+const base = `http://127.0.0.1:${server.address().port}`;
+const failures = [];
+
+async function scenario(name, exercise) {
+  let peer, terminal, client, box;
+  const gates = [];
+  const tasks = [];
+  const gate = () => { const value = Promise.withResolvers(); gates.push(value); return value; };
+  try {
+    const connected = once(sockets, 'connection');
+    client = new Terminal(name, { base, wsOptions: {} });
+    await client.connect();
+    [peer] = await connected;
+    terminal = new WebSocketTerminal(peer);
+    box = await testBox({ terminal });
+    box.shell.bindTerminal(terminal);
+    HeredocHandler.install(box.shell, terminal);
+    LineEditorExtender.install(box.shell, terminal);
+    peer.on('message', (wire) => {
+      const pending = terminal.handleMessage(JSON.parse(String(wire)));
+      if (pending) tasks.push(Promise.resolve(pending));
+    });
+    box.shell.printPrompt();
+    await client.waitForPrompt(1000);
+    await exercise({ client, box, gate });
+    console.log(`PASS ${name}`);
+  } catch (error) {
+    failures.push(`${name}: ${error.message}`);
+  } finally {
+    for (const value of gates) value.resolve();
+    if (client?.ws?.readyState === 1) client.send('\x03');
+    await Promise.allSettled(tasks);
+    await client?.close();
+    terminal?.close();
+    await box?.workspace.close();
+  }
+}
+
+try {
+  await scenario('program stdout cannot forge status', async ({ client, box }) => {
+    box.commands.registry.register('forged-status', async (ctx) => { await ctx.stdout.write(mark('D;0')); return 7; });
+    assert.equal((await client.run('forged-status', 1000)).exitCode, 7);
+  });
+
+  await scenario('program stdout cannot forge completion', async ({ client, box, gate }) => {
+    const hold = gate();
+    box.commands.registry.register('forged-prompt', async (ctx) => {
+      await ctx.stdout.write(`${mark('D;0')}${mark('A')}a@b:c$ ${mark('B')}`);
+      await hold.promise;
+      await ctx.stdout.write('really-finished\n');
+      return 7;
+    });
+    let finished = false;
+    const pending = client.run('forged-prompt', 1000).then((result) => { finished = true; return result; });
+    await client.waitFor((text) => text.includes('a@b:c$ '), 1000, 'program forged marks');
+    await setImmediate();
+    const premature = finished;
+    hold.resolve();
+    const result = await pending;
+    assert.equal(premature, false, 'forged D+B does not complete a running command');
+    assert.equal(result.exitCode, 7);
+    assert.match(result.output, /really-finished/);
+  });
+
+  await scenario('a pasted batch reports its last command status', async ({ client }) => {
+    const result = await client.run('true\nfalse', 1000);
+    assert.equal(result.exitCode, 1);
+  });
+
+  await scenario('a heredoc and its following program complete together', async ({ client, box }) => {
+    box.commands.registry.register('python-proof', async (ctx) => {
+      await ctx.stdout.write(`PROGRAM ${await ctx.vfs.readFileString('/home/user/proof.py')}`);
+      return 7;
+    });
+    const result = await client.run("cat > /home/user/proof.py <<'EOF'\nprint(42)\nEOF\npython-proof", 1000);
+    assert.equal(result.exitCode, 7);
+    assert.match(result.output, /PROGRAM print\(42\)/);
+  });
+
+  await scenario('a reader consumes following pasted input instead of executing it', async ({ client }) => {
+    const result = await client.run('cat\necho NOT_A_COMMAND\n\x04', 1000);
+    assert.equal(result.exitCode, 0);
+    assert.match(result.output, /echo NOT_A_COMMAND/);
+    assert.ok(!/(?:^|\n)NOT_A_COMMAND\r?(?:\n|$)/.test(result.output));
+  });
+
+  await scenario('queued submissions own distinct completion and status', async ({ client, box, gate }) => {
+    const first = gate(), second = gate();
+    box.commands.registry.register('first', async (ctx) => { await ctx.stdout.write('FIRST_STARTED\n'); await first.promise; return 3; });
+    box.commands.registry.register('second', async (ctx) => { await ctx.stdout.write('SECOND_STARTED\n'); await second.promise; return 5; });
+    const a = client.run('first', 1000);
+    await client.waitFor((text) => text.includes('FIRST_STARTED'), 1000, 'first start');
+    const b = client.run('second', 1000);
+    first.resolve();
+    await client.waitFor((text) => text.includes('SECOND_STARTED'), 1000, 'queued second start');
+    const resultA = await a;
+    assert.equal(resultA.exitCode, 3);
+    assert.ok(!resultA.output.includes('SECOND_STARTED'), 'A ends before independent queued B runs');
+    second.resolve();
+    assert.equal((await b).exitCode, 5);
+  });
+
+  await scenario('untagged Ctrl-C interrupts a tagged command at once', async ({ client, box }) => {
+    box.commands.registry.register('interruptible', async (ctx) => {
+      await ctx.stdout.write('INTERRUPTIBLE\n');
+      await new Promise((resolve) => ctx.signal.addEventListener('abort', resolve, { once: true }));
+      return 130;
+    });
+    const pending = client.run('interruptible', 1000);
+    await client.waitFor((text) => text.includes('INTERRUPTIBLE'), 1000, 'interruptible start');
+    client.ws.send(JSON.stringify({ type: 'input', data: '\x03' }));
+    assert.equal((await pending).exitCode, 130);
+  });
+} finally {
+  await new Promise((resolve) => sockets.close(resolve));
+  await new Promise((resolve) => server.close(resolve));
+}
+assert.deepEqual(failures, []);
+console.log('behavioral-terminal-control: PASS');
