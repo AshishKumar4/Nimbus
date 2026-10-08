@@ -179,7 +179,7 @@ for (const mode of PROCESS_HOST_MODES) {
     assert.match(host.hostIncarnation, /^[0-9a-f-]{36}$/);
     assert.equal(boot.config.env.SUPERVISOR.props.hostIncarnation, host.hostIncarnation,
       'the binding does not name the coordinator instance');
-    assert.equal(boot.loaderId, `nimbus-process:coord-do-id:44:${host.hostIncarnation}`,
+    assert.equal(boot.loaderId, facetLoaderKey('process', `nimbus-process:coord-do-id:44:${host.hostIncarnation}`),
       'the loader key does not name the coordinator instance');
     console.log(`  [${mode}] case1b: a delivering coordinator's instance rides the binding and the loader key`);
   }

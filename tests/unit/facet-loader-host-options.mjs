@@ -96,7 +96,7 @@ const facetFn = async function probeFacetCall() { return { ok: true }; };
 
   assert.equal(dispatched.length, 1);
   const { id, code } = dispatched[0];
-  assert.match(id, /^nfp:probe-sealed:global:/, 'a sealed facet is warm for every tenant');
+  assert.ok(id.startsWith(`nfp:${facetLoaderKey('isolate', 'probe-sealed')}:global:`), `a sealed facet is warm for every tenant: ${id}`);
   assert.equal((await code).env, undefined, 'and holds no capability over any session');
   facet.dispose();
   console.log('  ok  reuse:global drops the session from the cache key, with no supervisor bound');
