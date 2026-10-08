@@ -10,6 +10,7 @@
 import type { AnyNode } from 'acorn';
 import { COMMONJS_WRAPPER_NAMES, MODULE_PARSE_OPTIONS, applySourceEdits, containsModuleSyntax, parseStatements, type SourceEdit } from './javascript-ast.js';
 import { vfsPathExtension } from '../vfs/path.js';
+import { stripsTypeScript } from '../_shared/typescript-specifiers.js';
 
 /** A package.json's "type", when it declares one. */
 export type PackageType = 'module' | 'commonjs' | null;
@@ -39,6 +40,34 @@ export function isEsModuleFile(path: string, source: string, packageType: () => 
   if (ext === '.cjs') return false;
   const type = ext === '.js' || ext === '' ? packageType() : null;
   return type === null ? containsModuleSyntax(source) : type === 'module';
+}
+
+/** Node 22.22.3's get_format.js for TypeScript; `stripped` is read only for a typeless `.ts`. */
+export function typeScriptFormat(path: string, packageType: () => PackageType, stripped: () => string): 'module' | 'commonjs' | null {
+  if (!stripsTypeScript(path)) return null;
+  const ext = vfsPathExtension(path);
+  if (ext === '.mts') return 'module';
+  if (ext === '.cts') return 'commonjs';
+  const type = packageType();
+  if (type !== null) return type;
+  return containsModuleSyntax(stripped()) ? 'module' : 'commonjs';
+}
+
+/**
+ * TypeScript Node does not strip (`--no-experimental-strip-types`) run as the
+ * program's entry: Node's ES loader takes it under `--import`, in a type:module
+ * package or with module syntax (run_main.js), and refuses its extension;
+ * otherwise its CommonJS loader runs it as JavaScript. Required, such a file is
+ * the CommonJS loader's whatever its package (its .js handler reads the type of
+ * .js alone): an ES module by its syntax.
+ */
+export function typeScriptEntryRefused(packageType: PackageType, source: string, imports: boolean): boolean {
+  return imports || packageType === 'module' || containsModuleSyntax(source);
+}
+
+/** Node refuses to strip a file under node_modules (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING). */
+export function typeScriptUnderNodeModules(path: string): boolean {
+  return /(^|\/)node_modules\//.test(path);
 }
 
 /**

@@ -33,15 +33,23 @@ assert.equal(fatalLocation("throw new Error('x');\n", 'script', 0), null);
 // CommonJS's goal takes a top-level return.
 throwAt("if (x) return;\nthrow new Error('cjs');\n", 'throw', 'new Error');
 
-// A syntax error: where acorn's whole parse stops, recoverable ones (an
-// undefined export) included.
-for (const [text, goal] of [['let x = ;\n', 'script'], ['export { nope };\n', 'module'], ['function f() { return 1 +; }\n', 'script'], ['await 1;\n', 'script']]) {
+// A syntax error at the token the parse stops at: where acorn's whole parse stops.
+for (const [text, goal] of [['let x = ;\n', 'script'], ['function f() { return 1 +; }\n', 'script'], ['await 1;\n', 'script']]) {
   let error;
   try { parse(text, { ecmaVersion: 'latest', allowHashBang: true, sourceType: goal, allowReturnOutsideFunction: goal === 'script' }); } catch (e) { error = e; }
   assert.ok(error, `premise: ${JSON.stringify(text)} does not parse`);
   assert.deepEqual(fatalLocation(text, goal, -1), [error.pos, Math.max(error.raisedAt, error.pos + 1)], JSON.stringify(text));
 }
 assert.equal(fatalLocation('const ok = 1;\n', 'script', -1), null);
+// Where acorn raises past the token, it is marked as V8 marks it: the token.
+assert.deepEqual(fatalLocation('enum Color { Red, Green }\n', 'script', -1), [0, 4], 'a reserved word');
+assert.deepEqual(fatalLocation('const a = 1;\nconst a = 2;\n', 'script', -1), [19, 20], 'a redeclared name');
+assert.deepEqual(fatalLocation('export { nope };\n', 'module', -1), [9, 13], 'an undefined export');
+// A missing initializer marks the binding, a name or a pattern; an unexpected token after a let does not.
+for (const [text, mark] of [['const abc: number = 1;\n', 'abc'], ['const {a};\n', '{a}'], ['let [b];\n', '[b]'], ['const x y;\n', 'x'], ['const ok = 1, bad;\n', 'bad'], ['let x y;\n', 'y']]) {
+  const at = text.indexOf(mark, text.indexOf(' '));
+  assert.deepEqual(fatalLocation(text, 'script', -1), [at, at + mark.length], JSON.stringify(text));
+}
 
 // A multi-MiB bundle in a heap far smaller than acorn's whole tree of it
 // (17 to 24 times its source): only the throw is kept.

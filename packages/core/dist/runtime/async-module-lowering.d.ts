@@ -107,6 +107,8 @@ export interface CommonJsEmitOptions {
         readonly metas: readonly Span[];
         readonly dynamicImports: readonly number[];
     };
+    /** Where the module's own text ends in `source` (esModuleSource appends to it): the emit's `end`. */
+    readonly sourceLength?: number;
 }
 interface Span {
     readonly start: number;
@@ -130,9 +132,14 @@ export declare function lowerEsModule(source: string, scope: ModuleScope, parent
     map: string;
     warnings: [];
 };
-/** What a lowered ES module's frames read back as its source's places: its emit's head and ColumnMap. */
+/**
+ * What a lowered ES module's frames read back as its source's places: where
+ * the module's own text starts (`head`) and ends (`tail` from the emit's end)
+ * in its emit, and the ColumnMap of its edits.
+ */
 export interface EsModuleMap {
     readonly head: number;
+    readonly tail: number;
     readonly columns: ColumnMap;
 }
 /**

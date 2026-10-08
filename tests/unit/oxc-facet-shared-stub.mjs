@@ -148,8 +148,10 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   const { generateTransformFacetRuntimeSource } = await import('../../packages/core/src/runtime/esbuild-service.ts');
   const { rewriteDynamicImports } = await import('../../packages/core/src/runtime/dynamic-import-rewrite.ts');
   const { lowerAsyncModule, lowerEsModule } = await import('../../packages/core/src/runtime/async-module-lowering.ts');
+  const { rewriteProvidedCommonJsModules } = await import('../../packages/core/src/runtime/provided-packages.ts');
   const { transformBundleCells } = await import('../../packages/core/src/runtime/bundle-cell-transform.ts');
   const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
+  const runtime = { rewriteDynamicImports, lowerAsyncModule, lowerEsModule, rewriteProvidedCommonJsModules };
   const { createRequire } = await import('node:module');
   const { readFile } = await import('node:fs/promises');
   const fromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
@@ -163,7 +165,7 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   const fallback = async (requests) => {
     calls.push(requests.length);
     const outcomes = [];
-    for (const { code, options } of requests) outcomes.push(await runTransformRequest(esbuild, code, options, rewriteDynamicImports, lowerAsyncModule, lowerEsModule));
+    for (const { code, options } of requests) outcomes.push(await runTransformRequest(esbuild, code, options, runtime));
     return outcomes;
   };
   // Arrays 7,000 deep: past Oxc's passes and the lowering's parse on Bun's stack (acorn's ~5,000), within esbuild's.
@@ -188,6 +190,41 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   }
   assert.ok(calls.every((n) => n <= 4) && calls.reduce((a, b) => a + b, 0) === 6, JSON.stringify(calls));
   console.log('  ok  six too-deep cells with no store or pacer are all placed, four per esbuild call at most');
+
+  // TypeScript the strip takes but the lowering cannot (in a facet, acorn's
+  // stack ends near 600 levels, amaro's past 1,000): the transform facet's
+  // retry is the stripped module, which the esbuild facet, with no amaro, lowers.
+  const stripped = 'export const t         = 1;';
+  const exhausted = { transform: async () => { throw Object.assign(new RangeError('Maximum call stack size exceeded'), { stackExhausted: true }); } };
+  const typed = { stripTypes: { mode: 'strip-only', sourceMap: false }, packageType: null, sourcefile: '/src/t.mts', dynamicImportParent: 'file:///src/t.mts' };
+  const thrown = await runTransformRequest(exhausted, 'export const t: unknown = 1;', typed, {
+    ...runtime,
+    stripTypeScript: async () => ({ code: stripped, format: 'module' }),
+    lowerEsModule: () => { throw new RangeError('Maximum call stack size exceeded'); },
+  }).then(() => null, (e) => e);
+  assert.equal(thrown?.stackExhausted, true);
+  assert.equal(thrown.retry.code, stripped);
+  assert.equal(thrown.retry.options.esModule, 'node');
+  assert.equal(thrown.retry.options.stripTypes, undefined);
+  const retried = [];
+  const { ctx: retryCtx, env: retryEnv } = durableObject(class {
+    async transformMany(requests) {
+      return requests.map(() => ({ error: 'Maximum call stack size exceeded', stackExhausted: true, retry: thrown.retry }));
+    }
+  });
+  console.warn = () => {};
+  try {
+    const [outcome] = await oxcTransformHost(retryCtx, retryEnv, async (requests) => {
+      retried.push(...requests);
+      return fallback(requests);
+    })([{ code: 'export const t: unknown = 1;', options: typed }]);
+    assert.equal(outcome.error, undefined, outcome.error);
+    assert.equal(outcome.esModule, 'node');
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepEqual(retried, [thrown.retry], 'the esbuild facet is sent the retry');
+  console.log('  ok  TypeScript too deep to lower after its strip is lowered by esbuild from its stripped code');
 }
 
 // ── A stub that threw is dropped: the retry mints a fresh one ───────────────

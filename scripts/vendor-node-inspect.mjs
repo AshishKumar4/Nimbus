@@ -28,6 +28,10 @@ const SOURCES = {
     url: `https://raw.githubusercontent.com/nodejs/node/${NODE_VERSION}/lib/internal/per_context/primordials.js`,
     sha256: '9e3fe2fe051667172d6ed9d997eee99b3454a7e4ec779dd63c1f19d44b25b1ca',
   },
+  sourceMap: {
+    url: `https://raw.githubusercontent.com/nodejs/node/${NODE_VERSION}/lib/internal/source_map/source_map.js`,
+    sha256: '8a5b739a9c886ccbeb73932ad9d37d666469e7b643039ba53482116a93859e91',
+  },
   eastAsianWidth: {
     url: `https://www.unicode.org/Public/${UNICODE_VERSION}/ucd/EastAsianWidth.txt`,
     sha256: 'ea7ce50f3444a050333448dffef1cadd9325af55cbb764b4a2280faf52170a33',
@@ -90,8 +94,8 @@ console.log(JSON.stringify({ version: process.version, builtin }));
   return builtin;
 }
 
-const [inspect, primordials, eastAsianWidth] = await Promise.all([
-  fetchPinned(SOURCES.inspect), fetchPinned(SOURCES.primordials), fetchPinned(SOURCES.eastAsianWidth),
+const [inspect, primordials, sourceMap, eastAsianWidth] = await Promise.all([
+  fetchPinned(SOURCES.inspect), fetchPinned(SOURCES.primordials), fetchPinned(SOURCES.sourceMap), fetchPinned(SOURCES.eastAsianWidth),
 ]);
 const builtinObjects = measureBuiltinObjects();
 const output = `/**
@@ -112,6 +116,12 @@ const output = `/**
  * on node ${NODE_VERSION}: inspect.js reads them off the global object when Node
  * loads it, before Node adds its own globals.
  *
+ * Node ${NODE_VERSION}'s SourceMap (lib/internal/source_map/source_map.js, its
+ * own Chromium BSD notice kept), which the shims' --enable-source-maps reads
+ * maps with:
+ *   ${SOURCES.sourceMap.url}
+ *   sha256 ${SOURCES.sourceMap.sha256} (NODE_SOURCE_MAP_SHA256)
+ *
  * The East Asian Wide and Fullwidth code points, for the column width
  * Node's ICU build counts (src/node_i18n.cc GetColumnWidth), are the W and F
  * ranges of the Unicode Character Database of Node's ICU (78.2, Unicode ${UNICODE_VERSION}):
@@ -126,6 +136,8 @@ export const NODE_INSPECT_SHA256 = '${SOURCES.inspect.sha256}';
 export const NODE_INSPECT_SOURCE: string = ${JSON.stringify(inspect)};
 export const NODE_PRIMORDIALS_SHA256 = '${SOURCES.primordials.sha256}';
 export const NODE_PRIMORDIALS_SOURCE: string = ${JSON.stringify(primordials)};
+export const NODE_SOURCE_MAP_SHA256 = '${SOURCES.sourceMap.sha256}';
+export const NODE_SOURCE_MAP_SOURCE: string = ${JSON.stringify(sourceMap)};
 /** The names inspect.js counts as built-in on node ${NODE_VERSION}, measured. */
 export const NODE_BUILTIN_OBJECTS: readonly string[] = ${JSON.stringify(builtinObjects)};
 /** The W and F ranges of EastAsianWidth.txt ${UNICODE_VERSION}, merged: \`first[-last]\` in hex, comma-separated, ascending. */

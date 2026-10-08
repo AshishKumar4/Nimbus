@@ -36,6 +36,7 @@ import {
   type RuntimeCodeEntry,
 } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
+import { isTypescriptDeclarationFile, stripsTypeScript } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import type { EsModuleMap } from '@nimbus-sh/core/runtime/async-module-lowering.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES, type ReadAheadAccount } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField, type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
@@ -71,7 +72,8 @@ import {
   prefetchForRequire, requireFsOverBridge, resolveDeferredImport, ClosureBoundExceededError,
   type BridgeRequireFs, type DeferredImport, type PreloadModuleRoot, type RequiredModuleRoot,
 } from '@nimbus-sh/core/runtime/require-resolver.js';
-import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
+import { typeScriptStripOptions, type NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
+import type { NodeTypeScript } from '@nimbus-sh/core/runtime/typescript-strip.js';
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
 import type { ModuleScope, PackageType } from '@nimbus-sh/core/runtime/module-format.js';
@@ -97,12 +99,12 @@ import {
   type FencedWorkRecord,
   type RedriveCause,
 } from '@nimbus-sh/fabric/fenced-work.js';
-import { type EsbuildService, rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/provided-packages.js';
 import {
   bundleTypescriptLoader,
   esbuildDiagnosticShim,
   isBundleModuleCandidate,
-  isTypescriptDeclarationFile,
   looksLikeEsm,
   needsBundleCellTransform,
   transformBundleCells,
@@ -932,7 +934,7 @@ function entryModule(
   const code = map ? userCode : rewriteProvidedCommonJsModules(userCode);
   const name = commonJsEntryModuleName(filename || '[eval]');
   const path = 'filename || "/home/user/script.js"';
-  const wrapped = wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function', map?.head);
+  const wrapped = wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function', map?.head, map?.tail);
   return {
     name,
     esModule: esModule === true,
@@ -942,7 +944,7 @@ function entryModule(
     },
     evaluate: `__nimbusEvaluateEntry(__nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user", ${esModule === true})`,
     // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
-    stackEntry: JSON.stringify([name, entryFrameFile(filename, cwd, esModule === true), wrapped.head, esModule === true ? 1 : 0]),
+    stackEntry: JSON.stringify([name, entryFrameFile(filename, cwd, esModule === true), wrapped.head, esModule === true ? 1 : 0, wrapped.tail]),
   };
 }
 
@@ -954,7 +956,8 @@ function esModuleMapOf(map: string | undefined): EsModuleMap | null {
 /** A data: URL module as a launch stages it: always an ES module to Node, in the runtime's scope. */
 export async function stagedDataUrlModule(text: string, moduleScope: ModuleScope, esbuild: EsbuildService): Promise<string> {
   const result = await esbuild.transform(text, { esModule: moduleScope, moduleMetadata: true, dynamicImportParent: 'data:text/javascript,' });
-  return wrapCommonJsCell(result.code, 'block', esModuleMapOf(result.map)?.head).text;
+  const map = esModuleMapOf(result.map);
+  return wrapCommonJsCell(result.code, 'block', map?.head, map?.tail).text;
 }
 
 /** What Node's stack names the entry's file: its path, an ES module's file: URL; -e and stdin are [eval] and [stdin], as an ES module [eval1] in the launch's directory. */
@@ -2036,10 +2039,10 @@ interface FacetVfsState {
   /**
    * The cells lowered from ESM or compiled from TypeScript
    * (transformEsmInBundle), whose module wraps them in the block scope
-   * (commonjs-cell.ts, THE WRAPPER). Every other code cell is CommonJS as
-   * Node would run it.
+   * (commonjs-cell.ts, THE WRAPPER), each true where it is an ES module.
+   * Every other code cell is CommonJS as Node would run it.
    */
-  lowered?: Set<string>;
+  lowered?: Map<string, boolean>;
   /**
    * The files staged only to run whose module is an emit: the map carries the
    * emit and not the file, which no read asked for. A synchronous read of one
@@ -2147,8 +2150,8 @@ interface ProcessBundleSpec {
   bundleProfile?: FacetBundleProfile;
   /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
   moduleScope?: ModuleScope;
-  /** The program's own conditions and preloads (`node -C`, `-r`, `--import`): the map is what it resolves and loads under them. */
-  node?: Pick<NodeLaunch, 'conditions' | 'require' | 'import'>;
+  /** The program's own conditions, preloads and TypeScript options: the map is what it resolves, loads and compiles under them. */
+  node?: Pick<NodeLaunch, 'conditions' | 'require' | 'import' | 'stripTypes' | 'transformTypes' | 'enableSourceMaps'>;
 }
 
 /**
@@ -2333,7 +2336,7 @@ function retainedVfsStateBytes(state: FacetVfsState): number {
   }
   for (const [path, emit] of state.emits ?? []) bytes += path.length + emit.length;
   for (const [path, map] of state.columnMaps ?? []) bytes += path.length + map.length;
-  for (const path of state.lowered ?? []) bytes += path.length;
+  for (const path of state.lowered?.keys() ?? []) bytes += path.length;
   for (const path of state.codeOnly ?? []) bytes += path.length;
   const source = state.bundleSource;
   if (source) {
@@ -2629,8 +2632,8 @@ export async function buildFacetVfsBundleSource(
     emits?: ReadonlyMap<string, string>;
     /** FacetVfsState.columnMaps. */
     columnMaps?: ReadonlyMap<string, string>;
-    /** Cells lowered from ESM or compiled from TypeScript, wrapped in the block scope. */
-    lowered?: ReadonlySet<string>;
+    /** FacetVfsState.lowered. */
+    lowered?: ReadonlyMap<string, boolean>;
     /** Files whose emit the map carries and not the file (FacetVfsState.codeOnly). */
     codeOnly?: ReadonlySet<string>;
     /** Runtime code staged for this launch: `{ cjs }` module text by key. */
@@ -2651,10 +2654,9 @@ export async function buildFacetVfsBundleSource(
     const code = emit ?? (typeof cell === 'string' && isCodeCellPath(path) ? cell : undefined);
     const adopt = code !== undefined && emit === undefined && commonJsCellReadsBack(path);
     if (code !== undefined) {
-      // TypeScript is lowered too, and keeps CommonJS's names (bundle-cell-transform.ts).
-      const esModule = lowered?.has(path) === true && bundleTypescriptLoader(path) === null;
       const esModuleMap = emit === undefined ? null : esModuleMapOf(columnMaps?.get(path));
-      const wrapped = wrapCommonJsCell(code, lowered?.has(path) ? 'block' : 'function', esModuleMap?.head);
+      const esModule = lowered?.get(path) === true;
+      const wrapped = wrapCommonJsCell(code, lowered?.has(path) ? 'block' : 'function', esModuleMap?.head, esModuleMap?.tail);
       const name = commonJsCellModuleName(path);
       codeModules[name] = wrapped.text;
       if (esModuleMap !== null && esModuleMap.columns.length > 0) codeModules[columnMapModuleName(name)] = JSON.stringify(esModuleMap.columns);
@@ -4186,15 +4188,17 @@ async function cellPackageTypes(vfs: LaunchFs, paths: Iterable<string>): Promise
  * sources; a script patching an installed ES module and writing it back).
  *
  * Every cell lowered from ESM or compiled from TypeScript is added to
- * `lowered` (its module's block scope, commonjs-cell.ts THE WRAPPER). An ES
- * module is lowered in the launch's runtime's module `scope`.
+ * `lowered` (its module's block scope, commonjs-cell.ts THE WRAPPER), true
+ * where it is an ES module. An ES module is lowered in the launch's
+ * runtime's module `scope`.
  */
 async function transformEsmInBundle(
   bundle: Record<string, string | Uint8Array>,
   placeEmit: (path: string, code: string, map: string) => void,
-  lowered: Set<string>,
+  lowered: Map<string, boolean>,
   packageTypeOf: (path: string) => PackageType,
   scope: ModuleScope,
+  stripTypes: NodeTypeScript | null,
   esbuild: EsbuildService,
   pacer?: TurnBudget,
   store?: BundleCellResultStore,
@@ -4207,9 +4211,9 @@ async function transformEsmInBundle(
     // hardening-r5: binary cells are not modules.
     if (typeof source === 'string' && needsBundleCellTransform(path, source, packageType)) cells.push({ path, source, packageType });
   }
-  return transformBundleCells(cells, { host: esbuild, store, pacer, scope }, (path, result) => {
+  return transformBundleCells(cells, { host: esbuild, store, pacer, scope, stripTypes }, (path, result) => {
     placeEmit(path, result.code, result.map);
-    if (result.lowered) lowered.add(path);
+    if (result.lowered) lowered.set(path, result.esModule);
   });
 }
 
@@ -4238,6 +4242,8 @@ export interface PrefetchBundleOptions {
   transformStore?: BundleCellResultStore;
   /** The program's own conditions (`node --conditions`), as the process resolves under them. */
   conditions?: readonly string[];
+  /** How Node takes the launch's TypeScript (node-cli.ts typeScriptStripOptions); null where it is compiled. */
+  stripTypes?: NodeTypeScript | null;
   /** What the command line preloads (`node -r`, `--import`): required roots, walked first, as they run first. */
   preloads?: readonly PreloadModuleRoot[];
 }
@@ -4344,6 +4350,7 @@ async function _buildPrefetchBundle(
     executedModules,
     transformStore,
     conditions = [],
+    stripTypes = null,
     preloads = [],
   }: PrefetchBundleOptions,
 ): Promise<FacetVfsState> {
@@ -4511,7 +4518,7 @@ async function _buildPrefetchBundle(
   //     cannot take the ES module itself).
   const emits = new Map<string, string>();
   const columnMaps = new Map<string, string>();
-  const lowered = new Set<string>();
+  const lowered = new Map<string, boolean>();
   // A file staged only to run carries its emit and not itself
   // (FacetVfsState.codeOnly): installed code is most of a map, and each ES
   // module carried twice would halve the closure the bound admits. One staged
@@ -4540,7 +4547,7 @@ async function _buildPrefetchBundle(
     // Transient failures propagate through the launch failure path before
     // serialization/cache/LOADER publication. Per-source verdicts still use
     // the lazy diagnostic cells installed by transformEsmInBundle.
-    transforms = await transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, moduleScope, esbuild, pacer, transformStore);
+    transforms = await transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, moduleScope, stripTypes, esbuild, pacer, transformStore);
   } else {
     // No esbuild service was given: the ESM cells stage as diagnostics that
     // say so, rather than as source the registry rejects without a reason.
@@ -4553,7 +4560,7 @@ async function _buildPrefetchBundle(
     const cell = bundle[path];
     const code = emits.get(path) ?? (isBundleModuleCandidate(path) && bundleTypescriptLoader(path) === null ? cell : undefined);
     // A lowered ES module was bound before it was lowered (esbuild-service.ts preparedTransformSource).
-    if (typeof code !== 'string' || columnMaps.has(path)) continue;
+    if (typeof code !== 'string' || lowered.get(path) === true) continue;
     await pacer?.spend(code.length);
     let bound: string;
     try {
@@ -6176,7 +6183,10 @@ export class FacetManager {
     const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
     // The program's conditions choose what it resolves, and its preloads what
     // it loads: a map walked under other ones is another map.
-    const launch = { conditions: spec.node?.conditions ?? [], require: spec.node?.require ?? [], import: spec.node?.import ?? [] };
+    const launch = {
+      conditions: spec.node?.conditions ?? [], require: spec.node?.require ?? [], import: spec.node?.import ?? [],
+      stripTypes: moduleScope === 'node' ? typeScriptStripOptions(spec.node ?? {}) : null,
+    };
     const key = `${profile}\x00${moduleScope}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}\x00${JSON.stringify(launch)}`;
     const revision = (await vfs.revision());
     // An entry built at an older revision can never be SERVED again — the
@@ -6236,6 +6246,7 @@ export class FacetManager {
       executedModules: executed,
       transformStore: this._transformStore(),
       conditions: launch.conditions,
+      stripTypes: launch.stripTypes,
       preloads: [
         ...launch.require.map((specifier) => ({ preload: 'require' as const, specifier })),
         ...launch.import.map((specifier) => ({ preload: 'import' as const, specifier })),
@@ -6290,7 +6301,7 @@ export class FacetManager {
         columnMaps: vfsState.columnMaps,
         lowered: vfsState.lowered,
         codeOnly: vfsState.codeOnly,
-        runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope),
+        runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope, launch.stripTypes),
       },
     );
     vfsState.cacheHit = false;
@@ -6369,7 +6380,7 @@ export class FacetManager {
    * path the map lacks — the same text written under a fresh name.
    */
   private async _stagedRuntimeCode(
-    learning: LaunchLearning, vfs: LaunchFs, pacer: TurnBudget, moduleScope: ModuleScope,
+    learning: LaunchLearning, vfs: LaunchFs, pacer: TurnBudget, moduleScope: ModuleScope, stripTypes: NodeTypeScript | null,
   ): Promise<Map<string, string> | undefined> {
     const modules = new Map<string, string>();
     for (const [codeKey, entry] of learning.code) {
@@ -6391,23 +6402,27 @@ export class FacetManager {
       const path = entry.path.replace(/^\/+/, '');
       const file: Record<string, string> = { [path]: entry.text };
       const emits = new Map<string, string>();
-      let head: number | undefined;
+      const maps = new Map<string, string>();
       const placeEmit = (at: string, code: string, map: string) => {
         emits.set(at, code);
-        head = esModuleMapOf(map)?.head;
+        maps.set(at, map);
       };
-      const lowered = new Set<string>();
+      const lowered = new Map<string, boolean>();
       const packageTypeOf = await cellPackageTypes(vfs, [path]);
-      if (this.esbuild) await transformEsmInBundle(file, placeEmit, lowered, packageTypeOf, moduleScope, this.esbuild, pacer, this._transformStore());
+      if (this.esbuild) await transformEsmInBundle(file, placeEmit, lowered, packageTypeOf, moduleScope, stripTypes, this.esbuild, pacer, this._transformStore());
       else _markBundleEsmAsFailed(file, placeEmit, packageTypeOf, 'no esbuild service was given to this launch');
       let code = emits.get(path) ?? file[path];
-      try {
-        code = rewriteProvidedCommonJsModules(code);
-      } catch {
-        // Unparseable: it stays as written, and requiring it says why.
+      // A lowered ES module was bound before it was lowered (core esbuild-service.ts preparedTransformSource).
+      if (lowered.get(path) !== true) {
+        try {
+          code = rewriteProvidedCommonJsModules(code);
+        } catch {
+          // Unparseable: it stays as written, and requiring it says why.
+        }
       }
+      const map = esModuleMapOf(maps.get(path));
       const scope = lowered.has(path) || declaresWrapperBinding(code) ? 'block' : 'function';
-      modules.set(codeKey, wrapCommonJsCell(code, scope, head).text);
+      modules.set(codeKey, wrapCommonJsCell(code, scope, map?.head, map?.tail).text);
     }
     return modules.size > 0 ? modules : undefined;
   }
