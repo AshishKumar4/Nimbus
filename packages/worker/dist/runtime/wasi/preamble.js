@@ -174,7 +174,7 @@ function __wasiStartResident(sup, cred) {
         listTree: (key) => (view === null ? Promise.resolve(false) : view.listTree(key)),
         content: (key) => (view === null ? undefined : view.content(key)),
         fill: (key, entry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
-        barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
+        barrier: (lease) => (view === null ? Promise.resolve({ ok: false }) : view.barrier(lease)),
         reserve: (bytes) => view !== null && view.reserve(bytes),
         release: (bytes) => { view?.release(bytes); },
     };
