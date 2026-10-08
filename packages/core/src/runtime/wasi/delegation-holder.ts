@@ -240,7 +240,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   // Changes logged, numbered; the last written through (the store answers for it once sent);
   // and the last a completed send covered: a send covers only what was logged when it began.
   let changes = 0;
-  let throughAt = 0;
+  let throughLogged = 0;
   let sentAt = 0;
 
   /**
@@ -634,7 +634,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
           file.length = Math.max(file.length, at + bytes.byteLength);
           if (offset === null) handle.position = at + bytes.byteLength;
         }
-        throughAt = ++changes;
+        throughLogged = ++changes;
         return bytes.byteLength;
       }
       const start = offset ?? handle.position;
@@ -664,7 +664,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if (file.through !== undefined) {
         client.submit({ type: 'call', call: { call: 'ftruncate', path: file.key, ino: file.through.ino, ...(handle.description === undefined ? {} : { description: handle.description }), size } }, { acknowledged: true });
         file.length = size;
-        throughAt = ++changes;
+        throughLogged = ++changes;
         return;
       }
       if (!room(file, size)) throw fsError('ENOSPC', 'ftruncate', handle.path);
@@ -693,7 +693,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if (handle.description === undefined) return;
       for (const other of handles.values()) if (other === handle) return;
       client.submit({ type: 'call', call: { call: 'close', path: handle.file.key, description: handle.description } }, { acknowledged: true });
-      throughAt = ++changes;
+      throughLogged = ++changes;
     },
 
     keyOf: (handleId) => handleOf(handleId).file.key,
@@ -817,7 +817,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     },
     reportRecorded: () => failed(),
 
-    throughPending: () => throughAt > sentAt,
+    throughPending: () => throughLogged > sentAt,
 
     changing: (keys) => throughAt(keys),
     settle: async () => {

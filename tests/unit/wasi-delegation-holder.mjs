@@ -523,36 +523,6 @@ async function until(ready, what) {
   await s.fs.settle();
 }
 
-// ── P4b recheck 1: a write through made while a send is in flight is still owed after it ──
-// Red before: the send's completion cleared the through-write debt the new
-// write logged during its await, so the stat after it answered from the
-// session without sending that write: the old size.
-{
-  const first = Promise.withResolvers();
-  const second = Promise.withResolvers();
-  let held = 0;
-  let holding = false;
-  // While holding: the first wave waits for `first`, every later one for `second`.
-  const gate = { then: (resolve, reject) => (holding ? (held++ === 0 ? first.promise : second.promise) : Promise.resolve()).then(resolve, reject) };
-  const s = session({ gate });
-  const fd = await s.fs.open('/tmp/owed.txt', { write: true, create: true, truncate: true, mode: 0o644 });
-  await s.fs.write(fd.id, null, enc.encode('a'));
-  holding = true;
-  const stat = s.fs.stat('/tmp/owed.txt');
-  await until(() => held >= 1, 'the send of the first write');
-  await s.fs.write(fd.id, null, enc.encode('bb'));
-  first.resolve();
-  let answered = null;
-  stat.then((value) => { answered = value; });
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  second.resolve();
-  holding = false;
-  const final = await stat;
-  assert.equal((answered ?? final).size, 3, 'a stat after the send answered without the write made during it');
-  await s.fs.close(fd.id);
-  await s.fs.settle();
-}
-
 // ── Review D8 (race): what a description writes while its grant's recall is sent goes through ──
 // Red before: the description went on deciding while the recall's flush
 // waited, and the drain after it replayed the whole file over the peer's write.

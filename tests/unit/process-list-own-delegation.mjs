@@ -66,15 +66,22 @@ await assert.rejects(async () => listed(other), (error) => error.code === 'EAGAI
 // nested namespace's as() took the credential and the actor only, and its
 // view recalled the process's own delegation.
 {
-  const alias = new CompositeVFS(sqliteFiles(engine, CRED_KERNEL));
-  files.vfs.mount('/alias', alias);
-  const recalled = [];
-  const watching = (async () => { const kind = await holder.awaitRecall(grant.owner, 200); if (kind) recalled.push(kind); })();
-  const seen = await holder.stat('/alias/home/user/d/a.txt');
-  assert.notEqual(seen, null);
-  assert.equal((await holder.readdir('/alias/home/user/d')).length, 3);
-  await watching;
-  assert.deepEqual(recalled, [], 'a lookup through the alias namespace recalled the process\'s own delegation');
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = engine.as(CRED_KERNEL);
+  kernel.mkdir('home/user/d', { recursive: true });
+  kernel.chown('home/user', USER.uid, USER.gid);
+  kernel.chown('home/user/d', USER.uid, USER.gid);
+  kernel.writeFile('home/user/d/a.txt', 'a.txt');
+  kernel.chown('home/user/d/a.txt', USER.uid, USER.gid);
+  const files = new ProcessFiles(engine);
+  files.vfs.mount('/alias', new CompositeVFS(sqliteFiles(engine, CRED_KERNEL)));
+  const holder = files.bind({ pid: 7, cred: USER });
+  const grant = await holder.acquireExclusiveMutation('/home/user/d', { delegate: { reads: true, inos: 16, bytes: 0 } });
+  const recall = holder.awaitRecall(grant.owner, 300);
+  assert.notEqual(await holder.stat('/alias/home/user/d/a.txt'), null);
+  assert.deepEqual(await holder.readdir('/alias/home/user/d'), ['a.txt']);
+  assert.equal(await recall, null, 'a lookup through the alias namespace recalled the process\'s own delegation');
 }
 
 console.log('process-list-own-delegation: ok');
