@@ -387,9 +387,18 @@ async function runTransformRequest(engine, code, options, rewrite, lower, lowerE
         if ('refusal' in stripped)
             return { error: stripped.refusal.message, typescript: stripped.refusal };
         if (stripOnly)
-            return { code: stripped.code, map: '', warnings: [], ...(stripped.format === 'module' ? { esModule: true } : {}) };
+            return { code: stripped.code, map: '', warnings: [], ...(stripped.format === 'module' ? { esModule: 'node' } : {}) };
         if (stripped.format === 'module') {
-            return { ...await runTransformRequest(engine, stripped.code, { ...rest, esModule: 'node' }, rewrite, lower, lowerEsModule), esModule: true };
+            const lowering = { ...rest, esModule: 'node' };
+            try {
+                return await runTransformRequest(engine, stripped.code, lowering, rewrite, lower, lowerEsModule);
+            }
+            catch (e) {
+                // Where the engine's stack runs out (oxc-transform.ts), the esbuild facet lowers the stripped code: it has no amaro.
+                if (typeof e === 'object' && e !== null && Reflect.get(e, 'stackExhausted') === true)
+                    Reflect.set(e, 'retry', { code: stripped.code, options: lowering });
+                throw e;
+            }
         }
         return { code: parent === undefined ? stripped.code : rewrite(stripped.code, parent), map: '', warnings: [] };
     }
@@ -402,7 +411,7 @@ async function runTransformRequest(engine, code, options, rewrite, lower, lowerE
         if (parent === undefined)
             throw new Error('an ES module transform needs dynamicImportParent');
         try {
-            return lowerEsModule(code, options.esModule, parent);
+            return { ...lowerEsModule(code, options.esModule, parent), esModule: options.esModule };
         }
         catch (e) {
             // Nested past what a parse on this stack reaches (acorn, about 600
@@ -411,8 +420,9 @@ async function runTransformRequest(engine, code, options, rewrite, lower, lowerE
             // session's define (requestOptions) keeps Node's scope.
             if (!(e instanceof RangeError))
                 throw e;
-            const { esModule: _scope, ...rest } = options;
-            return runTransformRequest(engine, code, { ...rest, loader: 'js', format: 'cjs', target: 'esnext' }, rewrite, lower, lowerEsModule);
+            const { esModule: scope, ...rest } = options;
+            const compiled = await runTransformRequest(engine, code, { ...rest, loader: 'js', format: 'cjs', target: 'esnext' }, rewrite, lower, lowerEsModule);
+            return { ...compiled, esModule: scope };
         }
     }
     const esbuildApi = typeof engine === 'function' ? await engine() : engine;
@@ -580,7 +590,7 @@ function requestOptions(options) {
     return options?.esModule === 'node' || options?.stripTypes ? { ...options, define: { ...options.define, ...ES_MODULE_UNBOUND_NAMES } } : options;
 }
 function finishedTransform(result, options) {
-    return options?.esModule === 'node' || result.esModule ? { ...result, code: esModuleScopeTypeofs(result.code) } : result;
+    return (options?.esModule ?? result.esModule) === 'node' ? { ...result, code: esModuleScopeTypeofs(result.code) } : result;
 }
 /** What a transform request is run on: a CJS emit of JavaScript has its bundled CommonJS records bound to the runtime's provided packages first. */
 function preparedTransformSource(code, options) {

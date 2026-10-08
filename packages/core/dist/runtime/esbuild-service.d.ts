@@ -11,7 +11,8 @@
  */
 import type { Awaitable } from '../vfs/vfs.js';
 import { type ModuleScope, type PackageType } from './module-format.js';
-import type { TypeScriptRefusal, TypeScriptStripOptions } from './typescript-strip.js';
+import type { TypeScriptStripOptions } from './typescript-strip.js';
+import type { TypeScriptRefusal } from './typescript-refusal.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
  * the esbuild plugin's resolver logic, the shared-externals rules, the
@@ -140,8 +141,8 @@ export interface TransformResult {
         text: string;
         location?: esbuild.Location | null;
     }[];
-    /** Stripped TypeScript Node runs as an ES module, lowered (EsbuildTransformOptions.stripTypes). */
-    esModule?: true;
+    /** An ES module this lowered, in this runtime's scope: its frames are an ES module's, and Node's its typeofs. */
+    esModule?: ModuleScope;
 }
 /**
  * One emitted output. `bytes` is authoritative (UTF-8 fidelity for the
@@ -201,6 +202,7 @@ export type EsbuildTransformOutcome = TransformResult | {
     error: string;
     transient?: true;
     stackExhausted?: true;
+    retry?: EsbuildTransformRequest;
 } | {
     error: string;
     typescript: TypeScriptRefusal;

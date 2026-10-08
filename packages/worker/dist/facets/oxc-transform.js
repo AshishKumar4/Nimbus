@@ -38,7 +38,7 @@ const OXC_FACET_BODY = [
     '        outcomes.push(await runTransformRequest(oxc, code, options, globalThis.__nimbusRewriteDynamicImports, globalThis.__nimbusLowerAsyncModule, globalThis.__nimbusLowerEsModule));',
     '      } catch (e) {',
     '        const error = String((e && e.message) || e);',
-    '        outcomes.push(e && e.stackExhausted === true ? { error, stackExhausted: true } : { error });',
+    '        outcomes.push(e && e.stackExhausted === true ? { error, stackExhausted: true, ...(e.retry ? { retry: e.retry } : {}) } : { error });',
     '      }',
     '    }',
     '    return outcomes;',
@@ -155,7 +155,11 @@ export function oxcTransformHost(ctx, env, stackFallback) {
                     console.warn(`[oxc-transform] ${requests[index].options?.dynamicImportParent ?? '<unnamed module>'}: ${reason}; transforming it with esbuild`);
                 }
                 // The esbuild facet's call is bounded where every helper facet's is (helper-facet.ts).
-                const answered = await stackFallback(group.map((index) => requests[index])).catch((error) => group.map(() => ({ error: `esbuild facet unavailable: ${errorText(error)}`, transient: true })));
+                // What the esbuild facet runs: the request, or the part of it this facet could not (its retry).
+                const answered = await stackFallback(group.map((index) => {
+                    const outcome = outcomes[index];
+                    return 'retry' in outcome && outcome.retry !== undefined ? outcome.retry : requests[index];
+                })).catch((error) => group.map(() => ({ error: `esbuild facet unavailable: ${errorText(error)}`, transient: true })));
                 group.forEach((index, i) => { outcomes[index] = answered[i]; });
             }
         }

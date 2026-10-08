@@ -27,6 +27,7 @@ import { lowerEsModule } from './async-module-lowering.js';
 import { rewriteProvidedCommonJsModules, transformSlices, } from './esbuild-service.js';
 import { MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
 import { isEsModuleFile, typeScriptFormat, typeScriptUnderNodeModules } from './module-format.js';
+import { nodeModulesRefusal, typeScriptRefusalShim } from './typescript-refusal.js';
 /**
  * An ES module this large is lowered in the session (async-module-lowering.ts
  * lowerEsModule, which reads it a statement at a time, in bounded memory)
@@ -115,34 +116,6 @@ export function esbuildDiagnosticShim(path, reason) {
     return '// framework-fixes-F4 diagnostic shim — esbuild rejected the ESM transform\n' +
         '(function () { throw new Error(' + escapedReason + '); })();\n';
 }
-/** What Node's ES loader says of TypeScript it does not take (`--no-experimental-strip-types`). */
-export function unknownExtensionRefusal(path) {
-    return {
-        code: 'ERR_UNKNOWN_FILE_EXTENSION',
-        message: `Unknown file extension "${path.slice(path.lastIndexOf('.'))}" for ${path}`,
-        filename: path, startLine: 0, snippet: '',
-    };
-}
-/** The refusal of a file under node_modules, which Node does not strip. */
-export function nodeModulesRefusal(path) {
-    return {
-        code: 'ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING',
-        message: `Stripping types is currently unsupported for files under node_modules, for "${path}"`,
-        filename: path, startLine: 0, snippet: '',
-    };
-}
-/**
- * The module of a TypeScript file Node refuses: requiring or importing it
- * throws Node's error, with amaro's snippet before its stack where it shows
- * the place, and no arrow of the generated code (node-shims.ts
- * __nimbusGeneratedNodeError).
- */
-export function typeScriptRefusalShim(refusal) {
-    const Base = refusal.code === 'ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING' ? 'Error'
-        : refusal.code === 'ERR_UNKNOWN_FILE_EXTENSION' ? 'TypeError' : 'SyntaxError';
-    const decoration = refusal.snippet === '' ? null : `${refusal.filename}:${refusal.startLine}\n${refusal.snippet}`;
-    return `throw __nimbusNodeError(${Base}, ${JSON.stringify(refusal.code)}, ${JSON.stringify(refusal.message)}, undefined, ${JSON.stringify(decoration)});\n`;
-}
 /**
  * Run the session's steps of the pipeline on `source`, staged at `path`, for
  * a runtime whose ES modules run in `scope` (module-format.ts ModuleScope).
@@ -228,7 +201,7 @@ export function settleBundleCell(cell, outcome) {
         const code = 'typescript' in outcome ? typeScriptRefusalShim(outcome.typescript) : esbuildDiagnosticShim(cell.path, outcome.error);
         return { code, map: '', lowered: cell.lowered, failed: true };
     }
-    return { code: outcome.code, map: outcome.map, lowered: cell.lowered || outcome.esModule === true, failed: false };
+    return { code: outcome.code, map: outcome.map, lowered: cell.lowered || outcome.esModule !== undefined, failed: false };
 }
 /**
  * The entry script as the facet compiles it: each dynamic `import()` routed to

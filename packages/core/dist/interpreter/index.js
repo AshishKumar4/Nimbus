@@ -193,6 +193,17 @@ const FOUND = objectCreate(null);
 class ThrowFinder extends AcornParserClass {
     offset = -1;
     found = null;
+    // The token a syntax error is at, as V8 marks it: the parser's current or
+    // last token where one starts there (a reserved word is raised past it).
+    raisedToken = null;
+    raise(pos, message) {
+        this.raisedToken = pos === this.start ? [pos, this.end] : pos === this.lastTokStart ? [pos, this.lastTokEnd] : null;
+        return super.raise(pos, message);
+    }
+    // acorn's is its raise, not a call of it.
+    raiseRecoverable(pos, message) {
+        return this.raise(pos, message);
+    }
     parseTopLevel(node) {
         const exports = objectCreate(null);
         while (this.type !== tokTypes.eof)
@@ -201,7 +212,9 @@ class ThrowFinder extends AcornParserClass {
             const names = objectKeys(this.undefinedExports);
             for (let i = 0; i < names.length; i++) {
                 const name = names[i];
-                this.raiseRecoverable(this.undefinedExports[name].start, "Export '" + name + "' is not defined");
+                const { start, end } = this.undefinedExports[name];
+                this.raisedToken = [start, end];
+                super.raise(start, "Export '" + name + "' is not defined");
             }
         }
         this.next();
@@ -255,6 +268,9 @@ export function fatalLocation(text, goal, offset) {
             return finder.found;
         if (offset !== -1 || !isObject(error))
             return null;
+        const token = finder.raisedToken;
+        if (token !== null && token[1] > token[0])
+            return token;
         const at = reflectGet(error, 'pos');
         const end = reflectGet(error, 'raisedAt');
         if (typeof at !== 'number')

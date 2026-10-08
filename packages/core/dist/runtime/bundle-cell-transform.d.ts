@@ -20,7 +20,7 @@
  */
 import { type EsbuildTransformOutcome, type EsbuildTransformRequest } from './esbuild-service.js';
 import { type ModuleScope, type PackageType } from './module-format.js';
-import type { NodeTypeScript, TypeScriptRefusal } from './typescript-strip.js';
+import type { NodeTypeScript } from './typescript-strip.js';
 /**
  * An ES module this large is lowered in the session (async-module-lowering.ts
  * lowerEsModule, which reads it a statement at a time, in bounded memory)
@@ -80,17 +80,6 @@ export declare function needsBundleCellTransform(path: string, src: string, pack
  * `require` with its cause rather than as a bare "Cannot use import statement".
  */
 export declare function esbuildDiagnosticShim(path: string, reason: string): string;
-/** What Node's ES loader says of TypeScript it does not take (`--no-experimental-strip-types`). */
-export declare function unknownExtensionRefusal(path: string): TypeScriptRefusal;
-/** The refusal of a file under node_modules, which Node does not strip. */
-export declare function nodeModulesRefusal(path: string): TypeScriptRefusal;
-/**
- * The module of a TypeScript file Node refuses: requiring or importing it
- * throws Node's error, with amaro's snippet before its stack where it shows
- * the place, and no arrow of the generated code (node-shims.ts
- * __nimbusGeneratedNodeError).
- */
-export declare function typeScriptRefusalShim(refusal: TypeScriptRefusal): string;
 /** One cell part-way through the pipeline: the session's steps are done, the host's may remain. */
 export type BundleCell = {
     readonly path: string;

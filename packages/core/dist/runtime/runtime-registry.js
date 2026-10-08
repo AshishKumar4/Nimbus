@@ -42,7 +42,7 @@ import { stripsTypeScript, typescriptLoader } from '../_shared/typescript-specif
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { errorText } from '../_shared/error-text.js';
 import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput, typeScriptFormat, typeScriptUnderNodeModules } from './module-format.js';
-import { nodeModulesRefusal, typeScriptRefusalShim, unknownExtensionRefusal } from './bundle-cell-transform.js';
+import { nodeModulesRefusal, typeScriptRefusalShim, unknownExtensionRefusal } from './typescript-refusal.js';
 import { packageScopeType } from './require-resolution.js';
 import { isDirectory } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
@@ -297,7 +297,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                     return { code: typeScriptRefusalShim(outcome.typescript), esModule: false };
                 if ('error' in outcome)
                     throw new Error(outcome.error);
-                return { code: outcome.code, esModule: outcome.esModule === true };
+                return { code: outcome.code, esModule: outcome.esModule !== undefined };
             }
             catch (e) {
                 ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);
