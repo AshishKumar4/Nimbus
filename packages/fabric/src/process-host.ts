@@ -80,6 +80,7 @@ import {
   type ResidentBootSpec,
   type ResidentDiskReader,
   type ResidentSupervisorProps,
+  type Supervise,
 } from './process-fabric.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import { BindingError } from './vendor/errors.js';
@@ -88,7 +89,7 @@ import {
   type ResidentFacetEnv,
 } from './workerd-facet-host.js';
 import type { HostRoute } from './composition.js';
-import { supervisorBindingProps } from './supervisor-props.js';
+import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
 
 /** The substrates this deployment can be configured for. */
 export type ProcessHostMode = 'facet' | 'peer';
@@ -108,10 +109,11 @@ export function createProcessHost(
   disk: () => ResidentDiskReader,
   /** The workspace's network: every process's binding carries it, and with it its egress. */
   network: () => WorkspaceNetwork,
+  supervise: Supervise = bindingSupervisor,
 ): ProcessHost {
   return mode === 'peer'
-    ? new PeerProcessHost(ctx, env, network)
-    : new FacetProcessHost(ctx, env, disk, network);
+    ? new PeerProcessHost(ctx, env, network, supervise)
+    : new FacetProcessHost(ctx, env, disk, network, supervise);
 }
 
 // ── facet: the process is a child of the user's own session DO ──────────────
@@ -137,17 +139,15 @@ class FacetProcessHost implements ProcessHost {
     env: unknown,
     private readonly disk: () => ResidentDiskReader,
     private readonly network: () => WorkspaceNetwork,
+    private readonly supervise: Supervise,
   ) {
     this.env = (env ?? {}) as ResidentFacetEnv;
     this.coordDoId = ctx.id.toString();
   }
 
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
-    return processes(this.ctx, this.env).run(
-      supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() }),
-      params,
-      consume,
-    );
+    const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
+    return processes(this.ctx, this.env).run(supervisor, this.supervise, params, consume);
   }
 
   async open(params: ProcessHostParams): Promise<HostedProcess> {
@@ -359,7 +359,12 @@ class PeerProcessHost implements ProcessHost {
   /** workerKey → how to end an open process whose host reports its reset (hostLost). */
   private readonly opens = new Map<string, { capability: string; lose: (cause: unknown) => void }>();
 
-  constructor(private readonly ctx: DurableObjectState, env: unknown, private readonly network: () => WorkspaceNetwork) {
+  constructor(
+    private readonly ctx: DurableObjectState,
+    env: unknown,
+    private readonly network: () => WorkspaceNetwork,
+    private readonly supervise: Supervise,
+  ) {
     if (env === null || (typeof env !== 'object' && typeof env !== 'function')) {
       throw new BindingError('ProcessFabric: a peer host requires environment bindings');
     }
@@ -377,11 +382,8 @@ class PeerProcessHost implements ProcessHost {
    * worker of the coordinator here exactly as it does on `facet`.
    */
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
-    return processes(this.ctx, this.env).run(
-      supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() }),
-      params,
-      consume,
-    );
+    const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId, network: this.network() });
+    return processes(this.ctx, this.env).run(supervisor, this.supervise, params, consume);
   }
   async open(params: ProcessHostParams): Promise<HostedProcess> {
     if (params.facet) {

@@ -198,10 +198,9 @@ const env = {
     load(config) {
       const file = writeModuleSet(join(runnerDir, `runner-${runnerN++}`), config.modules, 'runner.js');
       const loaded = import(pathToFileURL(file).href);
-      const supervisor = config.env?.SUPERVISOR;
       return {
         getEntrypoint: () => ({
-          async fetch(request) {
+          async run(request, supervisor) {
             return (await loaded).default.fetch(request, { SUPERVISOR: supervisor });
           },
           [Symbol.dispose]() {},

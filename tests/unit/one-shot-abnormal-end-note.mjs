@@ -45,7 +45,7 @@ const env = {
     get: world.loader.get,
     load: (code) => (code?.modules?.['reader.js'] ? world.loader.load(code) : {
       getEntrypoint: () => ({
-        async fetch() { runs++; throw new Error('Worker exceeded memory limit.'); },
+        async run() { runs++; throw new Error('Worker exceeded memory limit.'); },
       }),
     }),
   },

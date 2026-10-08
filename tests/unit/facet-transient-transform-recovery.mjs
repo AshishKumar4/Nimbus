@@ -61,7 +61,7 @@ const env = {
       loaderPublications++;
       const file = writeModuleSet(join(directory, String(loaderPublications)), config.modules, 'runner.js');
       const loaded = import(pathToFileURL(file).href);
-      return { getEntrypoint: () => ({ fetch: async request => (await loaded).default.fetch(request, { SUPERVISOR: config.env?.SUPERVISOR }), [Symbol.dispose]() {} }), [Symbol.dispose]() {} };
+      return { getEntrypoint: () => ({ run: async (request, supervisor) => (await loaded).default.fetch(request, { SUPERVISOR: supervisor }), [Symbol.dispose]() {} }), [Symbol.dispose]() {} };
     },
     get() { throw new Error('unexpected keyed loader publication'); },
   },

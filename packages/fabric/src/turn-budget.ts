@@ -124,10 +124,15 @@ export class TurnBudget {
 }
 
 /** `Promise.withResolvers` for the runtime the project targets. */
-export function withResolvers<T = void>(): { promise: Promise<T>; resolve: (value: T | PromiseLike<T>) => void } {
+export function withResolvers<T = void>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+} {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((r) => { resolve = r; });
-  return { promise, resolve };
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => { resolve = onResolve; reject = onReject; });
+  return { promise, resolve, reject };
 }
 
 /** What {@link PacedWork} needs from the Durable Object hosting it. */

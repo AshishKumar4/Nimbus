@@ -1266,9 +1266,9 @@ process.exit(0);
         return {
           getEntrypoint() {
             return {
-              async fetch(runRequest) {
+              async run(runRequest, supervisor) {
                 const generated = await importModuleSet(config.modules, 'runner.js');
-                return generated.default.fetch(runRequest, config.env);
+                return generated.default.fetch(runRequest, { ...config.env, SUPERVISOR: supervisor });
               },
             };
           },

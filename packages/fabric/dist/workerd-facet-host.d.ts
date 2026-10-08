@@ -12,7 +12,7 @@
  * that is not a Durable Object implements `ProcessHost` against the same
  * `HostedProcess` and never imports this file.
  */
-import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps } from './process-fabric.js';
+import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps, type Supervise } from './process-fabric.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import { type FacetResourceLimits } from './facet-limits.js';
 /** Structural surface of a NimbusLoadedEntrypoint RPC stub. */
@@ -186,7 +186,7 @@ export declare class Processes {
      * map across a sibling hop would meet the 32 MiB RPC ceiling that by-path
      * boot specs exist to avoid — for a run that gains nothing by moving.
      */
-    run<T>(supervisor: ResidentSupervisorProps, params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
+    run<T>(supervisor: ResidentSupervisorProps, supervise: Supervise, params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
 }
 /**
  * The write log a process left in its facet's store (process-fs-journal.ts),
