@@ -92,8 +92,7 @@ export interface ResidentFacetEnv {
  * The primitive itself, measured: a reflink, 18–31 ms for a 45.73 MB corpus
  * and 34–54 ms for 1 GB — flat, because nothing is copied — with the data
  * visible from the destination's constructor. Same-Durable-Object only.
- * Quiesce and await writes to the source first; the destination name consumes
- * a facet ID on first use like any other facet name; and the shared ~10 GiB
+ * Quiesce and await writes to the source first; and the shared ~10 GiB
  * storage budget grants no copy-on-write credit — crossing it resets the
  * object rather than raising an error.
  */
@@ -105,26 +104,28 @@ export declare function cloneStorage(ctx: DurableObjectState, clone: {
 /**
  * The facet name for an ephemeral slot.
  *
- * A Durable Object admits 65,536 facets over its LIFETIME: the IDs are
- * append-only and are never reclaimed, so every name ever created spends one,
- * and the lifetime ledger (budgets.ts) counts them and names the wall.
+ * On Cloudflare a name costs nothing once its facet is deleted: one object
+ * created 70,000 names, deleting each after use, and none failed. Facets
+ * kept are what is bounded: with none deleted, the object failed at 32,240
+ * (2026-10-07). Local workerd's on-disk facet index allows 65,535 names over
+ * the object's lifetime (facet-tree-index.c++). Either wall answers
+ * "internal error; reference = …", which startFailure names.
  *
- * A released name is not handed to a later process of the same incarnation,
- * though that would cost no new ID. Getting a name a just-released process
- * held, with the next process's class, failed on Cloudflare: the next
- * process's first call answered "internal error; reference = …" with
- * durableObjectReset. That was vite8 after vinext, 7 of 7 on a throwaway,
- * while 4 of 4 started on a fresh name (2026-10-07). An earlier reuse, of a
- * released name's kept store, reset the whole object (82894375b). The
- * platform gives no signal that a released facet is gone, so no reuse can be
- * timed to follow it. The pid stays what it always was: the process
- * identity in the ProcessTable.
+ * A released name is not handed to a later process of the same incarnation.
+ * Getting a name a just-released process held, with the next process's
+ * class, failed on Cloudflare: the next process's first call answered
+ * "internal error; reference = …" with durableObjectReset. That was vite8
+ * after vinext, 7 of 7 on a throwaway, while 4 of 4 started on a fresh name
+ * (2026-10-07). An earlier reuse, of a released name's kept store, reset the
+ * whole object (82894375b). The platform gives no signal that a released
+ * facet is gone, so no reuse can be timed to follow it. The pid stays what
+ * it always was: the process identity in the ProcessTable.
  *
- * The book shares the facet-ID space with one other namespace: durable
- * applications, which mint `app-slot-<n>` names of their own (one ID per app,
- * ever). The prefixes are disjoint BY CONSTRUCTION, and that disjointness is
- * load-bearing — a proc-slot name reissued onto a durable app's retained
- * storage would boot the wrong process into someone else's disk.
+ * The book shares the facet namespace with durable applications, which mint
+ * `app-slot-<n>` names of their own (one per app, ever). The prefixes are
+ * disjoint BY CONSTRUCTION, and that disjointness is load-bearing — a
+ * proc-slot name reissued onto a durable app's retained storage would boot
+ * the wrong process into someone else's disk.
  */
 export declare function residentFacetName(slot: number): string;
 /** The prefix every durable application's facet name carries. */

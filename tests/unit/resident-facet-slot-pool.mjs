@@ -1,11 +1,7 @@
 #!/usr/bin/env bun
 // Facet names are slots: `proc-slot-<n>`, numbered per hosting actor.
 //
-// A Durable Object admits 65,536 facets over its LIFETIME: the IDs are
-// append-only and never reclaimed, so every name ever created spends one, and
-// the lifetime ledger (budgets.ts) counts them and names the wall.
-//
-// A released name is still never handed to a later process of the same
+// A released name is never handed to a later process of the same
 // incarnation. Getting a name a just-released process held, with the next
 // process's class, failed on Cloudflare with "internal error" and
 // durableObjectReset: vite8 after vinext, 7 of 7 on a throwaway; with a fresh
@@ -19,15 +15,7 @@ import { processes, residentFacetName } from '../../packages/fabric/src/workerd-
 assert.equal(residentFacetName(0), 'proc-slot-0');
 assert.equal(residentFacetName(7), 'proc-slot-7');
 
-/**
- * A `ctx.facets` that records every DISTINCT name ever used.
- *
- * That is the quantity the platform's 65,536 bound applies to: facet IDs are
- * append-only and are assigned per name, so re-getting a name that was used
- * before costs nothing, while a name never seen before burns an ID that is
- * never given back. Counting `get` calls instead would measure spawns, which
- * is not what runs out.
- */
+/** A `ctx.facets` that records every DISTINCT name ever used, and which are live and stored. */
 function makeCtx(id = 'session-under-test') {
   const everCreated = [];
   const seen = new Set();
@@ -37,9 +25,7 @@ function makeCtx(id = 'session-under-test') {
   const reopenedStores = [];
   return {
     id: { toString: () => id },
-    // The lifetime ledger persists its high-water through here; this test's
-    // subject is the free list, so the rows themselves are not asserted.
-    storage: { async get() { return undefined; }, async put() {} },
+    storage: {},
     everCreated,
     live,
     reopenedStores,

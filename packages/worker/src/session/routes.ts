@@ -57,7 +57,7 @@ import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { dynamicWorkerHeadroom, facetIdBudget, loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
+import { dynamicWorkerHeadroom, loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
 import {
   HOSTED_WEBSOCKET_CAPABILITY_HEADER,
   HOSTED_WEBSOCKET_KEY_HEADER,
@@ -788,10 +788,6 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
           lastDispatch: getLastFacetId(),
           // Null until the first terminal attaches: the manager is built by initSession.
           prefetchCache: self.facetManager?.prefetchCacheDiag() ?? null,
-          // Facet IDs consumed over this DO's LIFETIME against the 65,536 the
-          // platform will ever grant it. Append-only and never reclaimed;
-          // crossing the wall is unrecoverable for the object.
-          idBudget: await facetIdBudget(self.ctx),
         },
 
         // ── v3 / C' observability foundation ──────────────────────

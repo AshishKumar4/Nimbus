@@ -14,10 +14,10 @@ import { processes } from '../../packages/fabric/src/workerd-facet-host.ts';
 const reset = Object.assign(new Error('internal error; reference = rt37uhceu8hlrdg0l0sbn6i6'), { durableObjectReset: true });
 const plain = new Error('internal error; reference = oc9dos10t18fer6v7j6rp9i8');
 
-function makeCtx(failure) {
+function makeCtx(failure, rows = new Map()) {
   return {
     id: { toString: () => 'named-failures' },
-    storage: { async get() { return undefined; }, async put() {} },
+    storage: { async get(key) { return rows.get(key); }, async put() {} },
     facets: {
       get() {
         return {
@@ -33,12 +33,12 @@ function makeCtx(failure) {
 
 const env = { LOADER: { get: () => ({ getDurableObjectClass: () => class {} }) } };
 
-async function failedStart(failure, pid) {
+async function failedStart(failure, pid, rows) {
   const logged = [];
   const consoleError = console.error;
   console.error = (...args) => { logged.push(args.map(String).join(' ')); };
   try {
-    const facet = processes(makeCtx(failure), env).spawn(
+    const facet = processes(makeCtx(failure, rows), env).spawn(
       () => ({}),
       { doId: 'named-failures', pid, writerId: `w${pid}` },
       { pid, writerId: `w${pid}`, startArgs: {}, boot: { kind: 'code', code: {} } },
@@ -73,6 +73,23 @@ async function failedStart(failure, pid) {
   assert.match(error.message, /process 1000004/);
   assert.doesNotMatch(error.message, /reset/);
   assert.match(error.message, /oc9dos10t18fer6v7j6rp9i8/);
+  assert.equal(logged.length, 1);
+}
+
+// An object whose storage holds an earlier release's count of facet names
+// at 65,536 is not told its failure is permanent. Cloudflare bounds facets
+// kept, not names used: one object created 70,000 names, deleting each after
+// use, and none failed (2026-10-07). Local workerd's index, which does
+// bound names, answers its 65,536th with the same "internal error;
+// reference = …" (its cause is only in workerd's own log).
+{
+  const rows = new Map([['fabric_facet_name_high_water', 65_536], ['fabric_facet_slot_high_water', 65_536]]);
+  const { error, logged } = await failedStart(plain, 1000005, rows);
+  assert.match(error.message, /proc-slot-0/);
+  assert.match(error.message, /process 1000005/);
+  assert.match(error.message, /oc9dos10t18fer6v7j6rp9i8/);
+  assert.doesNotMatch(error.message, /lifetime|permanent|budget/);
+  assert.equal(error.cause, plain, 'the platform error is the cause');
   assert.equal(logged.length, 1);
 }
 
