@@ -8,7 +8,7 @@
 // the journal reader class (facetJournal) and handed to the session's drain:
 // only once that drain lands is the store deleted and the release settled, so
 // the exit its caller reports after comes after the files. A drain that
-// fails keeps the store and its slot. Red before: release deleted the store
+// fails keeps the store. Red before: release deleted the store
 // at once, with whatever the process had logged and the session not answered.
 
 import assert from 'node:assert/strict';
@@ -114,12 +114,12 @@ function deferred() {
   assert.ok(at(`abort ${name}`) >= 0 && at(`abort ${name}`) < at(`read ${name}`), 'read while the process could still run');
   assert.ok(at(`read ${name}`) < at(`delete ${name}`), `the store was deleted before it was read: ${after.join(', ')}`);
   assert.ok(!ctx.stored.has(name));
-  // The slot is free again.
+  // Its name is never handed out again (a minted name may hold a previous incarnation's store).
   const next = open(ctx, 11);
-  assert.equal(next.slot, facet.slot);
+  assert.notEqual(next.slot, facet.slot);
 }
 
-// ── A drain that fails keeps the store and the slot, and says so, named ────
+// ── A drain that fails keeps the store, and says so, named ────
 {
   const ctx = makeCtx('drain-fails');
   const errors = [];
