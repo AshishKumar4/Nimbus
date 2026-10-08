@@ -375,7 +375,7 @@ async function transformWithEsbuild(esbuildApi, code, options, lower) {
  * function is serialized into the transform facet. `esbuildApi` is null only
  * before esbuild is loaded, which a rewrite-only request does not wait for.
  */
-async function runTransformRequest(esbuildApi, code, options, rewrite, lower, lowerEsModule) {
+async function runTransformRequest(engine, code, options, rewrite, lower, lowerEsModule) {
     const parent = options?.dynamicImportParent;
     if (options?.rewriteOnly) {
         if (parent === undefined)
@@ -395,10 +395,11 @@ async function runTransformRequest(esbuildApi, code, options, rewrite, lower, lo
             if (!(e instanceof RangeError))
                 throw e;
             const { esModule: _scope, ...rest } = options;
-            return runTransformRequest(esbuildApi, code, { ...rest, loader: 'js', format: 'cjs', target: 'esnext' }, rewrite, lower, lowerEsModule);
+            return runTransformRequest(engine, code, { ...rest, loader: 'js', format: 'cjs', target: 'esnext' }, rewrite, lower, lowerEsModule);
         }
         return parent === undefined ? lowered : { ...lowered, code: rewrite(lowered.code, parent, options.moduleMetadata) };
     }
+    const esbuildApi = typeof engine === 'function' ? await engine() : engine;
     if (esbuildApi === null)
         throw new Error('esbuild transform before esbuild is loaded');
     if (options?.moduleMetadata && parent !== undefined && code.includes('import')) {
@@ -670,9 +671,12 @@ export class EsbuildService {
     }
     /** One transform on the in-isolate engine, of source the provided-module pre-pass has seen. */
     async transformInIsolate(code, options) {
-        if (!options?.rewriteOnly && !options?.esModule)
+        // The engine loads for the first request that needs it (an ES module's lowering does not).
+        const engine = async () => {
             await this.ensureInit();
-        return runTransformRequest(this._esbuild, code, options, rewriteDynamicImports, lowerAsyncModule, lowerEsModule);
+            return this._esbuild;
+        };
+        return runTransformRequest(engine, code, options, rewriteDynamicImports, lowerAsyncModule, lowerEsModule);
     }
     /**
      * Transform many modules in one round trip to the transform host (or in

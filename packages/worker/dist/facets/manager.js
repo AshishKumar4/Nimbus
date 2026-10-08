@@ -630,7 +630,8 @@ export function entryImporterUrl(filename, cwd) {
  * runner evaluates it: an ES entry's require is its static imports, and what
  * escapes it is explained as Node's loader explains it.
  */
-function entryModule(userCode, filename, importer, esModule) {
+function entryModule(userCode, filename, cwd, esModule) {
+    const importer = entryImporterUrl(filename, cwd);
     const code = rewriteProvidedCommonJsModules(userCode);
     const name = commonJsEntryModuleName(filename || '[eval]');
     const path = 'filename || "/home/user/script.js"';
@@ -641,8 +642,17 @@ function entryModule(userCode, filename, importer, esModule) {
         text: wrapped.text,
         evaluate: `__nimbusEvaluateEntry(__nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user", ${esModule === true})`,
         // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
-        stackEntry: JSON.stringify([name, filename || '<eval>', wrapped.head, esModule === true ? 1 : 0]),
+        stackEntry: JSON.stringify([name, entryFrameFile(filename, cwd, esModule === true), wrapped.head, esModule === true ? 1 : 0]),
     };
+}
+/** What Node's stack names the entry's file: its path, an ES module's file: URL; -e and stdin are [eval] and [stdin], as an ES module [eval1] in the launch's directory. */
+function entryFrameFile(filename, cwd, esModule) {
+    const evaluated = filename === undefined || filename === '<eval>' || filename === '[stdin]';
+    if (!esModule)
+        return evaluated ? (filename === '[stdin]' ? '[stdin]' : '[eval]') : filename;
+    const url = new URL('file://');
+    url.pathname = evaluated ? `${cwd.replace(/\/+$/, '')}/[eval1]` : filename;
+    return url.href;
 }
 /**
  * Generate one-shot runtime code with a plain fetch handler. `filename`
@@ -650,7 +660,7 @@ function entryModule(userCode, filename, importer, esModule) {
  * entry's importer (entryImporterUrl).
  */
 export async function generateEntrypointCode(userCode, vfsState, usesSqlite, sources, wasmImports = [], filename, cwd = DEFAULT_HOME, esModule) {
-    const entry = entryModule(userCode, filename, entryImporterUrl(filename, cwd), esModule);
+    const entry = entryModule(userCode, filename, cwd, esModule);
     const bundleSource = await facetVfsBundleSourceFor(vfsState);
     return {
         code: `
@@ -1065,7 +1075,7 @@ export function facetWasmImportsSource(wasmImports) {
         + `\nglobalThis.__nimbusPrecompiledWasmByDigest = new Map([${byDigest.join(', ')}]);`;
 }
 export async function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, sources, pacer) {
-    const entry = entryModule(userCode, opts.filename, entryImporterUrl(opts.filename, opts.cwd || DEFAULT_HOME), opts.esModule);
+    const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule);
     const safeArgs = JSON.stringify({
         argv: opts.argv || [],
         nodeCommandLine: opts.node ?? null,

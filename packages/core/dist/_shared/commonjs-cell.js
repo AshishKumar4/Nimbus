@@ -588,8 +588,9 @@ function __nimbusEntryWrapper(name, importer) {
   }
 }
 // ── Frames, as Node names and places them ──
-// The launch's entry: [moduleName, the name Node gives it (its path, an ES
-// module's file: URL, [eval], [stdin]), the wrapper's head, 1 for an ES module].
+// The launch's entry: [moduleName, the name Node gives its frames' file (its
+// path, an ES module's file: URL, [eval], [stdin], an ES module of -e or stdin
+// [eval1] in the launch's directory), the wrapper's head, 1 for an ES module].
 const __nimbusStackEntry = typeof __NIMBUS_STACK_ENTRY === "undefined" ? null : __NIMBUS_STACK_ENTRY;
 const __NIMBUS_BUNDLE_URL = new URL("./", import.meta.url).href;
 let __nimbusCellsByName = null;
@@ -621,21 +622,72 @@ function __nimbusFileUrl(path) {
   url.pathname = path;
   return url.href;
 }
-// What a module's file is called in a stack: its path, an ES module's file:
-// URL; -e and stdin code are [eval] and [stdin], an ES module of either
-// [eval1] in the working directory.
+// What a module's file is called in a stack: its path, an ES module's file: URL.
 function __nimbusFrameFile(module) {
-  module.frameFile ??= (() => {
-    if (module.path !== null) return module.esModule ? __nimbusFileUrl(module.path) : module.path;
-    const named = module.file;
-    if (named === "<eval>" || named === "[stdin]") {
-      if (!module.esModule) return named === "<eval>" ? "[eval]" : "[stdin]";
-      const cwd = String(globalThis.process?.cwd?.() ?? "/home/user").replace(/\\/+$/, "");
-      return __nimbusFileUrl(cwd + "/[eval1]");
-    }
-    return module.esModule ? __nimbusFileUrl(named) : named;
-  })();
+  if (module.path === null) return module.file;
+  module.frameFile ??= module.esModule ? __nimbusFileUrl(module.path) : module.path;
   return module.frameFile;
+}
+// A lowered ES module's edits that moved its columns, by line: [source column,
+// generated length, source text, 1 for a call] (async-module-lowering.ts
+// columnMapComment), read once from the first line of its text; null for none.
+function __nimbusColumnEdits(module) {
+  if (module.columns !== undefined) return module.columns;
+  module.columns = null;
+  if (!module.esModule) return null;
+  const text = __nimbusFrameModuleText(module);
+  const lineEnd = text === null ? -1 : text.search(/[\\n\\r\\u2028\\u2029]/);
+  const first = text === null ? "" : text.slice(0, lineEnd === -1 ? text.length : lineEnd);
+  const at = first.indexOf("/*nimbus-columns ");
+  if (at === -1) return null;
+  const columns = new Map();
+  for (const entry of JSON.parse(first.slice(at + 17, first.indexOf("*/", at)))) {
+    const line = columns.get(entry[0]) ?? [];
+    line.push(entry);
+    columns.set(entry[0], line);
+  }
+  module.columns = columns;
+  return columns;
+}
+// A 1-based column of a module's line as its source has it, from where V8
+// places it in the emit (a first line's past the wrapper's head).
+function __nimbusSourceColumn(module, line, column) {
+  const edits = __nimbusColumnEdits(module)?.get(line);
+  if (edits === undefined) return column;
+  let delta = 0;
+  for (const [, at, length, text, call] of edits) {
+    const start = at + delta;
+    if (column - 1 < start) break;
+    if (column - 1 < start + length || (call === 1 && column - 1 === start + length)) return at + 1;
+    delta += length - text.length;
+  }
+  return column - delta;
+}
+// The inverse: where a source column of a module's line is in its emit.
+function __nimbusGeneratedColumn(module, line, column) {
+  const edits = __nimbusColumnEdits(module)?.get(line);
+  if (edits === undefined) return column;
+  let delta = 0;
+  for (const [, at, length, text] of edits) {
+    if (column - 1 < at) break;
+    if (column - 1 < at + text.length) return at + delta + 1;
+    delta += length - text.length;
+  }
+  return column + delta;
+}
+// A module's line as its source has it, from the emit's.
+function __nimbusSourceLine(module, line, emitted) {
+  const edits = __nimbusColumnEdits(module)?.get(line);
+  if (edits === undefined) return emitted;
+  let source = "";
+  let at = 0;
+  let delta = 0;
+  for (const [, column, length, text] of edits) {
+    source += emitted.slice(at, column + delta) + text;
+    at = column + delta + length;
+    delta += length - text.length;
+  }
+  return source + emitted.slice(at);
 }
 let __nimbusModulesByFile = null;
 // The module whose frames read \`file\` (__nimbusFrameFile), or null.
@@ -660,7 +712,8 @@ function __nimbusFrameLocation(site) {
   const line = site.getLineNumber();
   const column = site.getColumnNumber();
   if (line === null || column === null) return null;
-  return { from: fileName + ":" + line + ":" + column, module, file: __nimbusFrameFile(module), line, column: line === 1 ? column - module.head : column };
+  const at = __nimbusSourceColumn(module, line, line === 1 ? column - module.head : column);
+  return { from: fileName + ":" + line + ":" + column, module, file: __nimbusFrameFile(module), line, column: at };
 }
 function __nimbusFrameText(site, location) {
   const text = String(site);
@@ -697,15 +750,18 @@ class __NimbusCallSite {
   getColumnNumber() { return this.#location.column; }
   getEnclosingLineNumber() { return this.#site.getEnclosingLineNumber(); }
   getEnclosingColumnNumber() {
+    const line = this.#site.getEnclosingLineNumber();
     const column = this.#site.getEnclosingColumnNumber();
-    return this.#site.getEnclosingLineNumber() === 1 && column !== null ? column - this.#location.module.head : column;
+    if (line === null || column === null) return column;
+    return __nimbusSourceColumn(this.#location.module, line, line === 1 ? column - this.#location.module.head : column);
   }
   toString() { return __nimbusFrameText(this.#site, this.#location); }
 }
 {
   let __userPrepare;
   const __prepare = function prepareStackTrace(error, sites) {
-    if (typeof __userPrepare === "function") return __userPrepare(error, sites.map(__NimbusCallSite.of));
+    // As Node's prepareStackTraceCallback calls it: a method of Error.
+    if (typeof __userPrepare === "function") return __userPrepare.call(globalThis.Error, error, sites.map(__NimbusCallSite.of));
     let stack;
     try {
       stack = Error.prototype.toString.call(error);

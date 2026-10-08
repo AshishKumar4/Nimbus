@@ -8686,7 +8686,9 @@ error: the Oxc transform crashed (${reason})`);
   }
   var DYNAMIC_IMPORT = 2;
   var IMPORT_META = 3;
-  var METADATA_BINDING = "__nimbusMetadataModule";
+  var GENERATED_NAME_PREFIX = "$nimb";
+  var IMPORT_NAME = "$nimbI";
+  var METADATA_NAME = "$nimbusMeta";
   var IDENTIFIER_PART = /[$_\p{ID_Continue}\u200c\u200d]/u;
   var RETAINED_LEXER_CHARS = 256 * 1024;
   var moduleLexer = null;
@@ -8732,8 +8734,7 @@ error: the Oxc transform crashed (${reason})`);
       calls.push({ ss: at2, se: end, d: open, lexed: false });
     }
     calls.sort((a, b) => a.ss - b.ss);
-    const call = DYNAMIC_IMPORT_HELPER + "(" + JSON.stringify(parentUrl) + ", ";
-    const edits = [];
+    const importStarts = [];
     let validatedEnd = -1;
     for (const site of calls) {
       if (site.ss >= validatedEnd) {
@@ -8743,12 +8744,11 @@ error: the Oxc transform crashed (${reason})`);
         if (!validImportArguments(source.slice(site.ss, site.se))) return null;
         validatedEnd = site.se;
       }
-      edits.push({ start: site.ss, end: site.d + 1, text: call });
+      importStarts.push(site.ss);
     }
-    if (!edits.length && !metas.length) return code;
-    if (!metas.length) return applyEdits(code, edits, metas, null, 0, "");
-    const { insertion, separator } = afterDirectives(code);
-    return applyEdits(code, edits, metas, escapedCaptureNames(code), insertion, separator);
+    if (!importStarts.length && !metas.length) return code;
+    const { insertion, separator } = metas.length ? afterDirectives(code) : { insertion: 0, separator: "" };
+    return applyEdits(code, parentUrl, importStarts, metas, escapedCaptureNames(code), insertion, separator);
   }
   var CODE_MARK = " import.meta ";
   function passedOver(source, imports, hazards) {
@@ -8876,7 +8876,7 @@ error: the Oxc transform crashed (${reason})`);
       try {
         const token = tokenizer2(code.slice(start, end), { ecmaVersion: "latest" }).getToken();
         const value = Reflect.get(token, "value");
-        if (token.type === types$1.name && typeof value === "string" && value.startsWith(METADATA_BINDING)) names.add(value);
+        if (token.type === types$1.name && typeof value === "string" && value.startsWith(GENERATED_NAME_PREFIX)) names.add(value);
       } catch (error) {
         if (!(error instanceof SyntaxError)) throw error;
       }
@@ -8914,9 +8914,8 @@ error: the Oxc transform crashed (${reason})`);
     }
     collected;
     parseDynamicImport(node) {
-      const end = Reflect.get(this, "end");
       const parsed = produce(PARSE_DYNAMIC_IMPORT, this, [node]);
-      if (typeof end === "number") this.collected.edits.push({ start: node.start, end, text: this.collected.call });
+      this.collected.imports.push(node.start);
       return parsed;
     }
     parseStatement(context, topLevel, exports) {
@@ -8942,14 +8941,13 @@ error: the Oxc transform crashed (${reason})`);
   };
   function rewriteWithGrammar(code, parentUrl, metadata, imports) {
     const collected = {
-      call: DYNAMIC_IMPORT_HELPER + "(" + JSON.stringify(parentUrl) + ", ",
-      edits: [],
+      imports: [],
       metas: [],
       names: metadata ?   new Set() : null
     };
     const Collector = metadata ? MetadataCollector : ImportCollector;
     for (const sourceType of metadata ? ["module", "script"] : ["script", "module"]) {
-      collected.edits.length = 0;
+      collected.imports.length = 0;
       collected.metas.length = 0;
       collected.names?.clear();
       let program;
@@ -8964,8 +8962,8 @@ error: the Oxc transform crashed (${reason})`);
       } catch {
         continue;
       }
-      if (!imports) collected.edits.length = 0;
-      if (!collected.edits.length && !collected.metas.length) return code;
+      if (!imports) collected.imports.length = 0;
+      if (!collected.imports.length && !collected.metas.length) return code;
       let insertion = program.body[0]?.start ?? code.length;
       let separator = "";
       for (const statement of program.body) {
@@ -8973,18 +8971,37 @@ error: the Oxc transform crashed (${reason})`);
         insertion = statement.end;
         separator = code[statement.end - 1] === ";" ? "" : ";";
       }
-      return applyEdits(code, collected.edits, collected.metas, collected.names, insertion, separator);
+      return applyEdits(code, parentUrl, collected.imports, collected.metas, collected.names ?? escapedCaptureNames(code), insertion, separator);
     }
     return code;
   }
-  function applyEdits(code, edits, metas, names, insertion, separator) {
-    if (metas.length) {
-      let binding = METADATA_BINDING;
-      while (code.includes(binding) || names?.has(binding)) binding += "_";
-      for (const meta of metas) edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
-      edits.push({ start: insertion, end: insertion, text: `${separator}"use strict";const ${binding} = arguments[2];` });
+  function applyEdits(code, parentUrl, imports, metas, names, insertion, separator) {
+    const edits = [];
+    let tail = "";
+    if (imports.length) {
+      const name = generatedName(IMPORT_NAME, code, names);
+      for (const start of imports) edits.push({ start, end: start + "import".length, text: name });
+      tail = `
+function ${name}(...args) { return ${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(parentUrl)}, ...args); }`;
     }
-    return applySourceEdits(code, edits);
+    if (metas.length) {
+      const name = generatedName(METADATA_NAME, code, names);
+      for (const { start, end } of metas) edits.push({ start, end, text: inPlace(name, code.slice(start, end)) });
+      edits.push({ start: insertion, end: insertion, text: `${separator}"use strict";const ${name} = arguments[2].__nimbusImportMeta;` });
+    }
+    return applySourceEdits(code, edits) + tail;
+  }
+  function generatedName(stem, code, names) {
+    for (let i = 0; ; i++) {
+      const suffix = i === 0 ? "" : i.toString(36);
+      const name = stem.slice(0, stem.length - suffix.length) + suffix;
+      if (!code.includes(name) && !names.has(name)) return name;
+    }
+  }
+  function inPlace(name, span) {
+    const blank2 = span.replace(/[^\n\r\u2028\u2029]/g, " ");
+    const lineBreak2 = blank2.search(/[\n\r\u2028\u2029]/);
+    return name + blank2.slice(lineBreak2 === -1 || lineBreak2 >= name.length ? name.length : lineBreak2);
   }
 
   function isNode(value) {
@@ -9191,7 +9208,7 @@ error: the Oxc transform crashed (${reason})`);
       body: topLevelAwait ? "async" : "sync",
       exportsObject: "arguments[2].exports",
       requireFunction: "arguments[1]",
-      edits: unbound.filter((edit) => !records.some(({ start, end }) => edit.start >= start && edit.end <= end))
+      edits: unbound
     });
     return { code: scope === "node" ? esModuleScopeTypeofs(code) : code, map: "", warnings: [] };
   }
@@ -9419,11 +9436,10 @@ error: the Oxc transform crashed (${reason})`);
         for (const { start, end, use } of binding.references) {
           if (use === "write") continue;
           const callee = use === "call" ? `(0, ${read})` : use === "leading-call" ? `void 0, (0, ${read})` : null;
-          uses.push({ start, end, text: callee ?? (use === "shorthand" ? `${binding.local}: ${read}` : read) });
+          uses.push(callee === null ? { start, end, text: use === "shorthand" ? `${binding.local}: ${read}` : read } : { start, end, text: callee, call: true });
         }
       }
     }
-    const defaultExpressionUses =   new Set();
     const requires = [];
     const imported = [];
     const getters = [];
@@ -9431,7 +9447,7 @@ error: the Oxc transform crashed (${reason})`);
     const edits = [...options.edits ?? []];
     let exportsAnything = false;
     if (source.startsWith("#!")) edits.push({ start: 0, end: 2, text: "//" });
-    const remove = (start, end) => edits.push({ start, end, text: blank(source.slice(start, end)) });
+    const remove = (start, end) => edits.push({ start, end, text: ";" + blank(source.slice(start + 1, end)) });
     for (const record of records) {
       switch (record.kind) {
         case "import": {
@@ -9472,14 +9488,10 @@ error: the Oxc transform crashed (${reason})`);
           exportsAnything = true;
           const value = temp();
           const { start, end } = record.expression;
-          const within = uses.filter((use) => use.start >= start && use.end <= end);
-          for (const use of within) defaultExpressionUses.add(use);
-          const expression = applySourceEdits(source.slice(start, end), within.map((use) => ({ ...use, start: use.start - start, end: use.end - start })));
-          edits.push({
-            start: record.start,
-            end: record.end,
-            text: `var ${value} = ({ default: (${blank(source.slice(record.start, start)).replace(/ /g, "")}${expression}) }).default;` + blank(source.slice(end, record.end)).replace(/ /g, "")
-          });
+          const keyword = blank(source.slice(record.start, start));
+          const lineBreak2 = keyword.search(/[\n\r\u2028\u2029]/);
+          edits.push({ start: record.start, end: start, text: `var ${value} = ({ default: (` + (lineBreak2 === -1 ? "" : keyword.slice(lineBreak2)) });
+          edits.push({ start: end, end: record.end, text: ") }).default;" + blank(source.slice(end, record.end)) });
           getters.push(["default", value]);
           break;
         }
@@ -9507,12 +9519,38 @@ error: the Oxc transform crashed (${reason})`);
     }
     if (requires.length > 0) header.push(`const ${requireRef} = (specifier) => ${options.requireFunction ?? "require"}(specifier);`);
     const installed = getters.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([exported, value]) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`);
-    const prologue = [...installed, ...requires, ...imported, ...stars].join(" ");
-    const body = applySourceEdits(source, [...edits, ...uses.filter((use) => !defaultExpressionUses.has(use))]);
+    const allEdits = [...edits, ...uses];
+    const prologue = [...installed, ...requires, ...imported, ...stars].join(" ") + columnMapComment(source, allEdits);
+    const body = applySourceEdits(source, allEdits);
     return options.body === "async" ? `"use strict";${header.join(" ")} return (async () => { ${prologue}${MODULE_BODY_MARK}${body}
 })();
 ` : `"use strict";${header.join(" ")} ${prologue}${MODULE_BODY_MARK}${body}
 `;
+  }
+  var LINE_BREAK = /\r\n|[\n\r\u2028\u2029]/;
+  function columnMapComment(source, edits) {
+    const entries = [];
+    const ordered = [...edits].sort((a, b) => a.start - b.start);
+    let line = 1;
+    let lineStart = 0;
+    let scanned = 0;
+    for (const edit of ordered) {
+      const before = source.slice(scanned, edit.start).split(LINE_BREAK);
+      if (before.length > 1) {
+        line += before.length - 1;
+        lineStart = edit.start - before[before.length - 1].length;
+      }
+      scanned = edit.start;
+      const from = source.slice(edit.start, edit.end).split(LINE_BREAK);
+      const to = edit.text.split(LINE_BREAK);
+      for (let i = 0; i < from.length; i++) {
+        const column = i === 0 ? edit.start - lineStart : 0;
+        const text = i === from.length - 1 ? to.slice(i).join("") : to[i];
+        if (text === from[i]) continue;
+        entries.push(edit.call && i === from.length - 1 ? [line + i, column, text.length, from[i], 1] : [line + i, column, text.length, from[i]]);
+      }
+    }
+    return entries.length === 0 ? "" : `/*nimbus-columns ${JSON.stringify(entries).replace(/\*\//g, "*\\/")}*/`;
   }
   function declaredNames(declaration) {
     if (declaration.type !== "VariableDeclaration") return declaration.id ? [declaration.id.name] : [];
