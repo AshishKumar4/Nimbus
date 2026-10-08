@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a WebAssembly program whose memory grew past 128 MiB could no longer
+  read or write at the top of it: rolldown pre-bundling React with
+  lucide-react (152 MiB) failed "Bad address (os error 21)" writing its
+  pre-bundles, and "Invalid array buffer length" returning strings. In a
+  Worker, `subarray` refuses a begin past the 128 MiB an ArrayBuffer may
+  have; the WASI hosts and the napi-wasm loader (its emnapi included) now view
+  guest memory by offset instead.
 - The probe driver pings its terminal and process-log WebSockets every 30 s.
   A socket that carried nothing either way for about 270 s was dropped on the
   way to the session (close 1006, no close frame; the session was not reset),
