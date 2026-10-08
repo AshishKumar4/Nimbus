@@ -25,10 +25,12 @@ import { Parser, type Options } from 'acorn';
 import { type RuntimeFunctionKind } from '../_shared/runtime-function-source.js';
 import { type ModuleCell } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
+import { type ModuleRequest } from './module-requests.js';
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
 export type { ModuleCell } from './modules.js';
+export type { ModuleRequest } from './module-requests.js';
 export interface InterpreterHost {
     /** `import(specifier, options)` from code whose module URL is `parentUrl`, for code compiled without an origin. */
     dynamicImport(parentUrl: string | undefined, specifier: unknown, options: unknown): Promise<unknown>;
@@ -72,24 +74,11 @@ export interface Interpreter {
     runScript(text: string): void;
 }
 /**
- * One module a module's text asks for, and how: `static` (an import or
- * export-from declaration), `dynamic` (import()) or `require`. The kind
- * decides the resolution, as the loader makes it: a static import is
- * evaluated through the module's scoped require (modules.ts), so it resolves
- * under require's conditions; import() resolves under import's.
- */
-export interface ModuleRequest {
-    readonly specifier: string;
-    readonly kind: 'static' | 'dynamic' | 'require';
-}
-/**
- * The modules a file's text asks for, as this parser reads it: import and
- * export-from sources, `import()` of a string, and `require()` of a string
- * (any call of a `require` binding, the module's own or one createRequire
- * made). A specifier spelled with escapes or in a template is read as the
- * language reads it; one in a comment or a string is not a request. Text the
- * parser cannot read (TypeScript, JSX, a syntax error) asks for nothing.
- * The import() prefetch (node-shims.ts) finds what to fetch with it.
+ * The modules a file's text asks for, as this parser reads it
+ * (module-requests.ts programRequests: imports, import() and require() of a
+ * string, a createRequire binding's calls, and a require wrapper's). Text the
+ * parser cannot read (TypeScript, JSX, a syntax error) asks for nothing. The
+ * import() prefetch (node-shims.ts) finds what to fetch with it.
  */
 export declare function moduleRequests(path: string, text: string): ModuleRequest[];
 /**
