@@ -494,7 +494,7 @@ export class Interpreter {
       // controlling terminal for `/dev/tty`, but only the foreground job
       // owns the terminal's modes: a background REPL (`node &`) never takes
       // the Ctrl-C meant for the foreground.
-      if (io.terminalFds?.stdin ?? (!io.stdin && Boolean(io.terminalStdin))) {
+      if (io.terminalFds?.stdin ?? ((!io.stdin || io.stdin === io.terminalStdin) && Boolean(io.terminalStdin))) {
         backgroundIo.stdin = this.createEmptyReader();
         backgroundIo.terminalFds = { ...io.terminalFds, stdin: false };
       }
