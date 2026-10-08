@@ -65,7 +65,8 @@ async function stdinText(ctx) {
  * standard input as the byte stream it is, not a decoded string.
  */
 function textCommand(command) {
-    return wrap(withInvocationVfs(() => command));
+    const execute = withInvocationVfs(() => command);
+    return async (ctx) => await execute(ctx);
 }
 /** `factory`'s command over the invocation's own view, once the call carries a credential. */
 function withInvocationVfs(factory) {

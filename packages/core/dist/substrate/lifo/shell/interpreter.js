@@ -1137,6 +1137,8 @@ export class Interpreter {
         const io = {};
         if (stdin)
             io.stdin = stdin;
+        else if (terminalStdin && !scriptMode)
+            io.stdin = terminalStdin;
         if (terminalStdin)
             io.terminalStdin = terminalStdin;
         if (terminalFds)
