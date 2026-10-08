@@ -26,7 +26,8 @@
 
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -46,44 +47,70 @@ export const publishCommand = (dir) =>
  * in that version's tarball. `runThroughCore(dir)` throws when the core
  * refuses the package. Returns the problems, each with its fix.
  */
-export async function checkRuntimePackage({ name, version, dir, registry, runThroughCore }) {
+export async function checkRuntimePackage({ name, version, dir, registry, runThroughCore, tarball }) {
   const problems = [];
   const built = sha256(readFileSync(join(dir, 'manifest.json')));
+  const archive = tarball ? await unpackRuntime(tarball) : null;
 
   try {
-    await runThroughCore(dir);
-  } catch (error) {
-    problems.push({
-      problem: `the core being published refuses it: ${error instanceof Error ? error.message : error}`,
-      fix: 'no publish fixes this: rebuild the runtime for this core\'s runner contract '
-        + '(a new build number in packages/worker/scripts/runtime-specs.mjs), or do not ship the runner change',
-    });
-  }
+    try {
+      await runThroughCore(archive?.dir ?? dir);
+    } catch (error) {
+      problems.push({
+        problem: `the core being published refuses it: ${error instanceof Error ? error.message : error}`,
+        fix: 'no publish fixes this: rebuild the runtime for this core\'s runner contract '
+          + '(a new build number in packages/worker/scripts/runtime-specs.mjs), or do not ship the runner change',
+      });
+    }
+    if (archive) {
+      // Packing validates the actual artifact; signing confirms these same bytes as latest before core is signed.
+      const pkg = JSON.parse(readFileSync(join(archive.dir, 'package.json'), 'utf8'));
+      if (pkg.name !== name || pkg.version !== version) problems.push({ problem: `${tarball} is not ${name}@${version}`, fix: 'pack the runtime built by this commit' });
+      const packed = sha256(readFileSync(join(archive.dir, 'manifest.json')));
+      if (packed !== built) problems.push({ problem: `${tarball} carries manifest.json sha256 ${packed}; this tree builds ${built}`, fix: 'pack the runtime built by this commit' });
+      return problems;
+    }
 
-  const packument = await registry.packument(name);
-  const record = packument?.versions?.[version];
-  if (!record) {
-    problems.push({ problem: `${name}@${version} is not on the registry`, fix: publishCommand(dir) });
+    const packument = await registry.packument(name);
+    const record = packument?.versions?.[version];
+    if (!record) {
+      problems.push({ problem: `${name}@${version} is not on the registry`, fix: publishCommand(dir) });
+      return problems;
+    }
+    const published = await registry.manifestSha256(record);
+    if (published !== built) {
+      problems.push({
+        problem: `${name}@${version} on the registry carries manifest.json sha256 ${published}; `
+          + `this tree builds ${built}`,
+        fix: 'a published version cannot be replaced: give the spec a new build number in '
+          + 'packages/worker/scripts/runtime-specs.mjs, then rerun this check for the publish command',
+      });
+      return problems;
+    }
+    const latest = packument['dist-tags']?.latest;
+    if (latest !== version) {
+      problems.push({ problem: `dist-tags.latest of ${name} is ${latest ?? '(unset)'}, not ${version}`, fix: `npm dist-tag add ${name}@${version} latest --auth-type=web` });
+    }
     return problems;
+  } finally {
+    if (archive) rmSync(archive.dir, { recursive: true, force: true });
   }
-  const published = await registry.manifestSha256(record);
-  if (published !== built) {
-    problems.push({
-      problem: `${name}@${version} on the registry carries manifest.json sha256 ${published}; `
-        + `this tree builds ${built}`,
-      fix: 'a published version cannot be replaced: give the spec a new build number in '
-        + 'packages/worker/scripts/runtime-specs.mjs, then rerun this check for the publish command',
-    });
-    return problems;
+}
+
+async function unpackRuntime(tarball) {
+  const dir = mkdtempSync(join(tmpdir(), 'nimbus-runtime-tarball-'));
+  try {
+    const tar = Readable.toWeb(createReadStream(tarball)).pipeThrough(new DecompressionStream('gzip'));
+    for await (const entry of streamPackageEntries(readableStreamToAsyncIterable(tar))) {
+      const path = join(dir, entry.name);
+      mkdirSync(join(path, '..'), { recursive: true });
+      writeFileSync(path, entry.data);
+    }
+    return { dir };
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
   }
-  const latest = packument['dist-tags']?.latest;
-  if (latest !== version) {
-    problems.push({
-      problem: `dist-tags.latest of ${name} is ${latest ?? '(unset)'}, not ${version}`,
-      fix: `npm dist-tag add ${name}@${version} latest --auth-type=web`,
-    });
-  }
-  return problems;
 }
 
 /** The public registry, read-only. */
@@ -146,6 +173,9 @@ export async function runThroughCore(dir) {
 }
 
 async function main() {
+  const args = process.argv.slice(2);
+  if (args.length !== 0 && (args.length !== 2 || args[0] !== '--runtime-tarball')) throw new Error('usage: check-runtime-packages.mjs [--runtime-tarball <CPython tgz>]');
+  const tarball = args[1];
   const { npmRuntimeSpecs } = await import('../../worker/scripts/runtime-specs.mjs');
   const registry = npmRegistry();
   const root = mkdtempSync(join(tmpdir(), 'nimbus-runtime-release-'));
@@ -159,7 +189,7 @@ async function main() {
     const args = ['scripts/bundle-runtime.mjs', runtime, version, '--npm-package', dir];
     const build = spawnSync('node', args, { cwd: WORKER, encoding: 'utf8', maxBuffer: 1 << 26 });
     const problems = build.status === 0
-      ? await checkRuntimePackage({ name, version: npmVersion, dir, registry, runThroughCore })
+      ? await checkRuntimePackage({ name, version: npmVersion, dir, registry, runThroughCore, tarball: runtime === 'cpython' ? tarball : undefined })
       : [{
         problem: `building it failed:\n${build.stdout}${build.stderr}`,
         fix: `cd ${WORKER} && node ${args.join(' ')}`,
