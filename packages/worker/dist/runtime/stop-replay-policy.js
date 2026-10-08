@@ -7,7 +7,7 @@ const acquire = (value) => {
     const v = omit(value, ['epoch', 'rev']);
     return v && Array.isArray(v.paths) ? { ...v, paths: v.paths.map((p) => omit(p, ['rev'])) } : v;
 };
-const acquireArgs = (value) => omit(value, ['epoch', 'cursor']);
+const acquireArgs = (value) => omit(value, ['epoch', 'cursor', 'begin']);
 const delivered = (value) => {
     if (!value || typeof value !== 'object')
         return value;

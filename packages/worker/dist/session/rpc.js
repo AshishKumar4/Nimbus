@@ -378,6 +378,8 @@ const FsTruncateArgsSchema = z.object({
 const FsAcquireArgsSchema = z.object({
     epoch: z.string().max(64).nullable(),
     cursor: z.number().int().min(0),
+    /** The asking process's own count of when it built these (node-shims _acquireArgs): echoed with the answer, never read here. */
+    begin: z.number().int().min(0).optional(),
     options: z.object({
         namespace: z.boolean().optional(),
         push: z.object({
