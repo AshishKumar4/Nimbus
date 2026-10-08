@@ -53,6 +53,7 @@ import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
 import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
 import { wasmInterface } from './wasm-binary.js';
 import { errorText } from '../_shared/error-text.js';
+import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 export const WASM_RUNNER_VERSION = '0.3.0';
 export const WASM_RUNNER_HELP = 'Usage: wasm-runner [options] <file.wasm> [exportName] [int args...]\n' +
     '       wasm-runner --version\n' +
@@ -312,7 +313,10 @@ export function makeWasmRunner(deps) {
                 // Install the preopens. fd 3 = the user's session root preopen. The
                 // shim's fd table is reset by initFS each call.
                 if (args.wasiFs) {
-                    initFS({ root: args.wasiFs.root, preopens: args.wasiFs.preopens });
+                    // With its credential the process answers what it can from its own
+                    // store and sends its changes as waves (wasi/resident-filesystem.ts);
+                    // without, every call is a round trip to the session.
+                    initFS({ root: args.wasiFs.root, preopens: args.wasiFs.preopens, cred: args.wasiFs.cred });
                     // initFS resets the live state, so adoption has to follow it. Every
                     // file the guest touches is then read from and written to the
                     // authority through the stub.
@@ -436,6 +440,8 @@ export function makeWasmRunner(deps) {
                     exitCode: r.exitCode,
                     exports: Object.keys(inst.exports),
                     error: r.error,
+                    // Its filesystem calls and who answered them (ResidentFilesystemStats).
+                    fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
                 };
             }
             // ── Direct mode ──
@@ -518,7 +524,7 @@ export function makeWasmRunner(deps) {
         if (processFs) {
             // Session root = cwd of the shell invocation. Falls back to /home/user.
             const root = (opts.cwd || '/home/user').replace(/^\/+/, '');
-            wasiFs = { root, preopens: [{ wasiPath: '/', vfsPath: root }] };
+            wasiFs = { root, preopens: [{ wasiPath: '/', vfsPath: root }], cred: { uid: cred.uid, gid: cred.gid, groups: [...cred.groups] } };
         }
         let outcome;
         let facet = null;
@@ -554,18 +560,16 @@ export function makeWasmRunner(deps) {
                 : { mode: 'direct', exportName: exportName, intArgs: parsedArgs };
             outcome = (await facet.submit(facetFn, submitArgs, {
                 wasmModules: { 'user.wasm': buf },
-                // 30s ceiling for compute. Most wasm calls return in
-                // microseconds; runaway loops hit this and a host that can
-                // abandon the facet surfaces a timeout as exitCode 1 + stderr.
-                timeoutMs: 30_000,
-                // A kill or Ctrl-C ends the facet too, where the host can.
+                // No deadline: a process runs until it exits or is killed. A kill
+                // or Ctrl-C ends the facet too, where the host can.
                 signal: opts.signal,
             }));
         }
         catch (e) {
             // Killed: the program ends as an interrupted one does, with no error of its own.
+            // What it may have lost is said however it ended (unsettledEnd).
             outcome = opts.signal?.aborted
-                ? { ok: false, mode: 'wasi', exitCode: 130, stdout: '', stderr: '' }
+                ? { ok: false, mode: 'wasi', exitCode: 130, stdout: '', stderr: unsettledNoteOf(e) }
                 : { ok: false, error: `dispatch failed: ${errorText(e)}` };
         }
         finally {
@@ -591,6 +595,8 @@ export function makeWasmRunner(deps) {
                     `wasm-runner: wasi trap: ${outcome.error}\n`;
             }
             exitCode = outcome.exitCode ?? (outcome.ok ? 0 : 1);
+            if (opts.env?.NIMBUS_WASI_FS_STATS === '1')
+                stderr += `[wasi-fs] wasm ${JSON.stringify(outcome.fsStats ?? null)}\n`;
         }
         else if (!outcome.ok) {
             // Direct-mode failure or pre-instantiate dispatch failure — shell

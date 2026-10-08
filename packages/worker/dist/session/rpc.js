@@ -39,6 +39,7 @@ import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { residentFacetOf } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { readHydrating } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { headerPairs, isolateToken, } from '@nimbus-sh/fabric/process-host.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '@nimbus-sh/platform/oom-discriminator.js';
@@ -66,6 +67,22 @@ export async function _rpcCacheResult(self, ticket, result, pid, run) {
 export async function _rpcStdinPrepared(self, pid, run) {
     if (pid !== undefined)
         self.facetManager?.stdinPrepared(pid, run);
+}
+function queueExitNotice(self, notice) {
+    return Boolean(self.terminal && self.shell?.queueProcessExitNotice(notice, self.processes, renderExitNotice));
+}
+function renderExitNotice(notice, source) {
+    const { pid, code } = notice;
+    const cmd = source.get(pid)?.command || `pid ${pid}`;
+    if (notice.kind === 'facet')
+        return `${code === 0 ? '\x1b[2m' : '\x1b[2;31m'}[facet exited: pid=${pid} code=${code} cmd="${cmd}"]\x1b[0m\r\n`;
+    if (notice.kind === 'shell')
+        return `\x1b[2;31m[shell exited: pid=${pid} code=${code} duration=${notice.durationMs}ms]\x1b[0m\r\n`;
+    if (notice.kind === 'killed')
+        return `[process killed: pid=${pid} code=${code}]\r\n`;
+    const sep = '─'.repeat(60);
+    const color = code === 0 ? '\x1b[2;33m' : '\x1b[31m';
+    return `\r\n${color}${sep}\r\nProcess ${pid} (${cmd}) exited with code ${code}\r\n${sep}\x1b[0m\r\n`;
 }
 const WriteBatchInodeSchema = z.object({
     path: z.string(),
@@ -368,17 +385,6 @@ const FsWriteRangeArgsSchema = z.object({
     path: z.string(),
     offset: FsRangeOffsetSchema,
 });
-const FsAppendArgsSchema = z.object({
-    path: z.string(),
-    writerId: z.string().uuid(),
-    moduleId: z.string().uuid(),
-    operationId: z.string().regex(/^[1-9][0-9]*$/).max(32),
-});
-const FsAppendAckArgsSchema = FsAppendArgsSchema.pick({
-    writerId: true,
-    moduleId: true,
-    operationId: true,
-});
 const FsTruncateArgsSchema = z.object({
     path: z.string(),
     size: FsRangeOffsetSchema,
@@ -388,6 +394,8 @@ const FsTruncateArgsSchema = z.object({
 const FsAcquireArgsSchema = z.object({
     epoch: z.string().max(64).nullable(),
     cursor: z.number().int().min(0),
+    /** The asking process's own count of when it built these (node-shims _acquireArgs): echoed with the answer, never read here. */
+    begin: z.number().int().min(0).optional(),
     options: z.object({
         namespace: z.boolean().optional(),
         push: z.object({
@@ -582,7 +590,8 @@ export function _acquireForRoutedRequest(self, pid) {
  */
 export async function _rpcFsList(self, after, limit, pid) {
     const args = FsListArgsSchema.parse({ after: after ?? null, limit: limit ?? null });
-    return self.supervisorBridge(pid).list(args.after, args.limit ?? undefined);
+    // A page that reaches another holder's delegation waits for its recall, and is read again.
+    return withRecall(() => self.supervisorBridge(pid).list(args.after, args.limit ?? undefined));
 }
 export async function _rpcFsReadRange(self, path, offset, length, pid, cred) {
     return self.supervisorOp({ op: 'fsReadRange', args: [path, offset, length], pid, cred });
@@ -680,27 +689,6 @@ export async function _rpcFsReadBatch(self, requests, pid) {
 export async function _rpcFsWriteRange(self, path, offset, bytes, pid) {
     const args = FsWriteRangeArgsSchema.parse({ path, offset });
     return self.supervisorBridge(pid).writeRange(args.path, args.offset, normalizeWriteBatchChunkData(bytes));
-}
-export async function _rpcFsAppend(self, path, writerId, moduleId, operationId, bytes, pid) {
-    const args = FsAppendArgsSchema.parse({ path, writerId, moduleId, operationId });
-    const sequence = Number(args.operationId);
-    if (!Number.isSafeInteger(sequence)) {
-        throw new Error('filesystem append operation exceeds the safe integer range');
-    }
-    const processId = processPid(pid);
-    const data = normalizeWriteBatchChunkData(bytes);
-    const digestBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', data));
-    const digest = Array.from(digestBytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-    return self.supervisorBridge(pid).appendOnce(args.path, processId, args.writerId, args.moduleId, sequence, digest, data);
-}
-export async function _rpcFsAppendAck(self, writerId, moduleId, operationId, pid) {
-    const args = FsAppendAckArgsSchema.parse({ writerId, moduleId, operationId });
-    const sequence = Number(args.operationId);
-    if (!Number.isSafeInteger(sequence)) {
-        throw new Error('filesystem append operation exceeds the safe integer range');
-    }
-    const processId = processPid(pid);
-    await self.supervisorBridge(processId).acknowledgeAppend(processId, args.writerId, args.moduleId, sequence);
 }
 /**
  * Called by CirrusHmrRPC.hmrSend. Runs in the DO's own context so
@@ -974,6 +962,10 @@ export async function _rpcReportExit(self, pid, code, tail, dataReads, profileUn
         self.processes.markExit(pid, code, PRIOR_GENERATION_EXIT_REASON);
         return;
     }
+    // Exit callbacks may release the foreground launch; capture its ownership first.
+    const entry = self.processes.get(pid);
+    const normalForeground = code === 0
+        && (entry?.foreground === true || entry?.attachedTty === true || entry?.longRunning !== true);
     try {
         self.processes.closeInput(pid);
     }
@@ -1022,36 +1014,11 @@ export async function _rpcReportExit(self, pid, code, tail, dataReads, profileUn
         return;
     const cmdFromTable = self.processes.get(pid)?.command;
     notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, command: cmdFromTable });
-    // SHELL-FOLLOWUPS-5 (2026-05-11): only dump on non-zero exit.
-    //
-    // Pre-fix Fix-4 policy was "dump whenever the ring buffer has
-    // bytes, regardless of code" (intent: catch the
-    // clean-but-silent failure where stderr traceback was buffered
-    // but user wasn't watching). Real-world cost: every successful
-    // `node -e`, `python -c`, etc. printed stdout once live, then
-    // again as a post-exit dump — double-print on the happy path.
-    //
-    // New policy:
-    //   - Non-zero exit AND non-empty buffer → dump (failure context)
-    //   - Zero exit → no dump (live stream already showed it)
-    //
-    // Reconnect-replay path is preserved by the `logs <pid>` shell
-    // command + `/api/processes/<pid>/logs` endpoint, neither of
-    // which depends on the inline dump.
-    //
-    // NOTE: _emitShellExecDone (below) carries an identical gate;
-    // both paths must agree because either may fire first depending
-    // on facet vs. shell-finalizer ordering.
     if (code !== 0 && self.processes.logSize(pid) > 0) {
         self._emitExitDump(pid, code);
     }
-    // Fix 5: verbose exit trace gated on NIMBUS_DEBUG=1. Facets already
-    // get a spawn banner via FacetManager.onSpawn; this closes the loop.
-    if (self.nimbusDebug && self.terminal) {
-        const entry = self.processes.get(pid);
-        const cmd = entry?.command || `pid ${pid}`;
-        const colorExit = code === 0 ? '\x1b[2m' : '\x1b[2;31m';
-        self.terminal.write(`${colorExit}[facet exited: pid=${pid} code=${code} cmd="${cmd}"]\x1b[0m\r\n`);
+    if (!normalForeground && (self.nimbusDebug || code !== 0)) {
+        queueExitNotice(self, { pid, code, kind: 'facet' });
     }
 }
 /**
@@ -1067,78 +1034,22 @@ export async function _rpcReportExit(self, pid, code, tail, dataReads, profileUn
  *     log buffer still has everything, so `logs <pid>` recovers it.
  */
 export function _emitExitDump(self, pid, code) {
-    if (!self.terminal)
+    if (!queueExitNotice(self, { pid, code, kind: 'dump' }))
         return;
-    const entry = self.processes.get(pid);
-    const cmd = entry?.command || `pid ${pid}`;
-    const chunks = self.processes.tailLogs(pid, { lines: 30 });
-    const sep = '─'.repeat(60);
-    const color = code === 0 ? '\x1b[2;33m' : '\x1b[31m'; // yellow-dim for clean-silent
-    self.terminal.write(`\r\n${color}${sep}\r\n` +
-        `Process ${pid} (${cmd}) exited with code ${code}\r\n` +
-        `${sep}\x1b[0m\r\n`);
-    for (const c of chunks) {
-        const terminalData = normalizeTerminalNewlines(c.data);
-        const painted = c.stream === 'stderr' ? `\x1b[31m${terminalData}\x1b[0m` : terminalData;
-        self.terminal.write(painted);
+    let diagnostics = '';
+    for (const chunk of self.processes.tailLogs(pid, { lines: 30 })) {
+        const data = normalizeTerminalNewlines(chunk.data);
+        diagnostics += chunk.stream === 'stderr' ? `\x1b[31m${data}\x1b[0m` : data;
     }
-    self.terminal.write(`${color}${sep}\x1b[0m\r\n`);
+    self.shell?.writeNotice(diagnostics);
 }
-/**
- * Fix 3 + Fix 4 + Fix 5: finalizer for shellExecuteTracked.
- *
- * Runs after a tracked shell.execute finishes (any path). Chooses when
- * to emit the exit-dump banner and when to log the debug trace.
- *
- * Dump policy (Fix 4):
- *   - Non-zero exit AND any buffered output → always dump.
- *   - Zero exit AND buffered output has >0 bytes → dump anyway. Rationale:
- *     an npm run that returned "success" while the ring buffer still has
- *     a traceback is the exact "clean-but-silent failure" we're hunting.
- *     The replay is unique information the user didn't see live (e.g.
- *     because the terminal was reconnected after the fact).
- *   - Zero exit AND empty buffer → nothing to say. Skip.
- *
- * Trace policy (Fix 5):
- *   - NIMBUS_DEBUG=1: always print `[exited pid=N code=C duration=Xms]`.
- *   - Default: print only for non-zero OR long-running scripts (the
- *     cmd-start banner makes them expect an exit marker).
- *
- * Called with the already-marked pid (processes.exit + processes.markExit
- * ran in shellExecuteTracked's finally).
- */
-export function _emitShellExecDone(self, pid, cmd, code, durationMs) {
-    const bufSize = self.processes.logSize(pid);
-    // SHELL-FOLLOWUPS-5 (2026-05-11): only dump on non-zero exit.
-    //
-    // Pre-fix policy was "dump regardless of code when buffer non-empty"
-    // (Fix 4 from W3.5 era, intent: catch clean-but-silent failure
-    // where user couldn't see live output e.g. across reconnect).
-    //
-    // Real-world cost: for every successful `node -e`, `python -c`,
-    // `npx X --version`, etc., user saw output once live + once
-    // again in the post-exit dump. Annoying double-print for the
-    // common-case interactive session.
-    //
-    // New policy:
-    //   - Non-zero exit AND non-empty buffer → dump (failure context)
-    //   - Zero exit → no dump (live stream already showed it)
-    //
-    // Reconnect-replay path is preserved by the `logs <pid>` shell
-    // command + `/api/processes/<pid>/logs` endpoint, neither of
-    // which depends on the inline dump.
-    const shouldDump = bufSize > 0 && code !== 0;
-    if (shouldDump) {
+export function _emitShellExecDone(self, pid, _cmd, code, durationMs) {
+    if (code === 0)
+        return;
+    if (self.processes.logSize(pid) > 0) {
         self._emitExitDump(pid, code);
     }
-    if (self.terminal) {
-        const traceAlways = self.nimbusDebug;
-        const isLongRunning = /^(vite|wrangler|next|nuxt|astro|remix|dev|serve|start|watch)\b/.test(cmd);
-        if (traceAlways || code !== 0 || isLongRunning) {
-            const colorExit = code === 0 ? '\x1b[2m' : '\x1b[2;31m';
-            self.terminal.write(`${colorExit}[shell exited: pid=${pid} code=${code} duration=${durationMs}ms]\x1b[0m\r\n`);
-        }
-    }
+    queueExitNotice(self, { pid, code, kind: 'shell', durationMs });
 }
 /**
  * External-exit path: invoked by FacetManager when a process is killed
@@ -1172,6 +1083,9 @@ export function _reportExternalExit(self, pid, code, reason) {
         notifyTerminalEvent(self.terminal, { type: 'exit', pid, code, reason, command: cmdFromTable });
         if (self.terminal && self.processes.logSize(pid) > 0) {
             self._emitExitDump(pid, code);
+        }
+        else if (code !== 0) {
+            queueExitNotice(self, { pid, code, kind: 'killed' });
         }
     }
     // W5 Lever 5: ring entry for every external exit with a non-zero
@@ -1389,65 +1303,6 @@ export async function _rpcCpWait(self, childPid, waitMs, acquire, pid, knownStar
     const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
     return withDeliveredAcquire(self, status, status.done, acquire, pid);
 }
-// ── Legacy VFS RPC Entrypoints (direct method calls) ──────────────────
-// Kept for backward compatibility with direct DO stub callers.
-/** RPC: Read a file from the VFS. Returns ArrayBuffer or null. */
-export function vfsReadFile(self, path) {
-    self.ensureSqliteFs();
-    try {
-        const stripped = path.replace(/^\/+/, '');
-        const data = self.sqliteFs.as(CRED_KERNEL).readFile(stripped);
-        return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-    }
-    catch {
-        return null;
-    }
-}
-/** RPC: Read a file as string. Returns string or null. */
-export function vfsReadFileString(self, path) {
-    self.ensureSqliteFs();
-    try {
-        const stripped = path.replace(/^\/+/, '');
-        return self.sqliteFs.as(CRED_KERNEL).readFileString(stripped);
-    }
-    catch {
-        return null;
-    }
-}
-/** RPC: Stat a path. Returns file metadata or null. */
-export function vfsStat(self, path) {
-    self.ensureSqliteFs();
-    try {
-        const stripped = path.replace(/^\/+/, '');
-        return self.sqliteFs.as(CRED_KERNEL).stat(stripped);
-    }
-    catch {
-        return null;
-    }
-}
-/** RPC: Check if path exists. */
-export function vfsExists(self, path) {
-    self.ensureSqliteFs();
-    const stripped = path.replace(/^\/+/, '');
-    return self.sqliteFs.as(CRED_KERNEL).exists(stripped);
-}
-/** RPC: List directory contents. Returns array of { name, type }. */
-export function vfsReaddir(self, path) {
-    self.ensureSqliteFs();
-    try {
-        const stripped = path.replace(/^\/+/, '');
-        return self.sqliteFs.as(CRED_KERNEL).readdir(stripped);
-    }
-    catch {
-        return [];
-    }
-}
-/** RPC: Write a file to the VFS. */
-export function vfsWriteFile(self, path, data) {
-    self.ensureSqliteFs();
-    const stripped = path.replace(/^\/+/, '');
-    self.sqliteFs.as(CRED_KERNEL).writeFile(stripped, new Uint8Array(data));
-}
 /**
  * RPC: peer-DO execute leg of Fanout's peer-DO fanout topology.
  *
@@ -1487,6 +1342,8 @@ export async function _rpcFanoutExecute(self, fnSource, args, poolOpts = {}) {
     const concurrency = Math.max(1, Math.min(args.length, dynamicWorkerHeadroom(self.ctx)));
     const claim = claimDynamicWorkers(self.ctx, concurrency);
     const pool = new IsolatePool(self.env, self.ctx, {
+        // The coordinator's fan-out, run here: the same kind, so the same limits and deadline.
+        facetKind: 'fanout',
         concurrency,
         claim: claim ?? undefined,
         timeoutMs: poolOpts.timeoutMs,
@@ -1747,7 +1604,8 @@ export async function _rpcHostProcess(self, boot, opts) {
         });
         settleFacet(facet);
         facet.started.then(settleStarted, failStarted);
-        await cancelled;
+        // The facet lost here fails the held leg, which is how the session hears of it.
+        await Promise.race([cancelled, facet.lost]);
         return { ok: true };
     }
     catch (e) {

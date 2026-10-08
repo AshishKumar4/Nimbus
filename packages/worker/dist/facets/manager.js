@@ -16,8 +16,9 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, columnMapModuleName, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
+import { isTypescriptDeclarationFile } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
@@ -34,6 +35,7 @@ import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { sessionIdentity, unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire, requireFsOverBridge, resolveDeferredImport, ClosureBoundExceededError, } from '@nimbus-sh/core/runtime/require-resolver.js';
+import { typeScriptStripOptions } from '@nimbus-sh/core/runtime/node-cli.js';
 import { findStaticFsReferences } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { linkTargetOf, packageRootOf, planFacetData } from './data-plan.js';
@@ -46,11 +48,11 @@ import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platf
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
-import { onColdStart } from '@nimbus-sh/fabric/generation.js';
+import { generation, onColdStart } from '@nimbus-sh/fabric/generation.js';
 import { isDynamicWorkerDeadlock, suspendLaunchAdmission } from '@nimbus-sh/fabric/budgets.js';
 import { FencedWork, FENCED_WORK_KEY_PREFIX, RESIDENT_PROVEN_MS, } from '@nimbus-sh/fabric/fenced-work.js';
-import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { bundleTypescriptLoader, esbuildDiagnosticShim, isBundleModuleCandidate, isTypescriptDeclarationFile, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
+import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/provided-packages.js';
+import { bundleTypescriptLoader, esbuildDiagnosticShim, isBundleModuleCandidate, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
 import { TransformStore } from './transform-store.js';
 import { parseResolvablePackageJson, } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { requirePackageEntry } from '@nimbus-sh/core/runtime/require-resolution.js';
@@ -67,7 +69,10 @@ import { sqliteWasmModuleEntry } from './opencode-staging.js';
 import { FACET_IMAGE_WRITE_SLICE_BYTES, ImageStore, } from '@nimbus-sh/fabric/image-store.js';
 import { fetchStagedBindingAsset, NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_LOADER_MODULE, STAGED_BINDING_TRAMPOLINE_MODULE, stagedBinding, stagedBindingsFacetImport, stagedBindingsRequiredBy, stagedBindingsDeclaredBy, STAGED_BINDINGS, } from '../runtime/staged-bindings.js';
 import { encodeCommonJsPack, ProcessFabric, ProcessHostLost, } from '@nimbus-sh/fabric/process-fabric.js';
-import { createLoadedWorkerEntrypoint, getNimbusCtxExports, deleteFacetStorage, } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { createLoadedWorkerEntrypoint, getNimbusCtxExports, deleteFacetStorage, facetJournal, reservedFacetNames, } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { drainProcessFsJournal, UNSETTLED_END_NOTE } from '@nimbus-sh/core/_shared/process-fs-client.js';
+import { journalDrainSession } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import { ProcessJournals } from '../session/process-journals.js';
 import { acquireDurableFacetSlot, freeDurableFacetSlot, } from './durable-slots.js';
 import { persistDurableWorkerImage, purgeDurableWorkerImages, } from './durable-images.js';
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
@@ -301,26 +306,24 @@ function __nimbusReportBlockedState() {
 // module whose top-level await waits on a child's close is blocked on that
 // child as much as a callback would be. Once the evaluation settles, the
 // loop gives a settling chain its warm-up turns again; a rejected
-// evaluation is thrown once the loop ends.
+// evaluation is uncaught as it rejects.
 async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs) {
   let __evaluating = Boolean(__entryResult) && typeof __entryResult.then === "function";
-  let __failure = null;
   let __grace = 0;
   if (__evaluating) {
+    // A rejected evaluation is uncaught as it happens, as Node's loader
+    // rejects: the program ends there, or its handler takes it.
     __entryResult.then(
       () => { __evaluating = false; __grace = 4; },
-      (error) => { __evaluating = false; __failure = { error }; },
+      (error) => { __evaluating = false; __nimbusUncaughtException(error, true); },
     );
   }
   const __count = () => {
-    if (__failure) return 0;
     if (__evaluating) return 1 + __nimbusLiveHandles();
     if (__grace > 0) { __grace--; return 1 + __nimbusLiveHandles(); }
     return __nimbusLiveHandles();
   };
-  const __drain = await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
-  if (__failure && (typeof __nimbusProcessExitCode === "undefined" || __nimbusProcessExitCode === null)) throw __failure.error;
-  return __drain;
+  return await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
 }
 
 // Whether the program holds no live handle once a settling chain has had the
@@ -377,14 +380,15 @@ async function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {
     const __exit = {};
     const __late = {};
     let __timer = null;
+    // Its rejection is uncaught when it lands, during the budget or after it.
+    const __settled = __entryResult.then(() => null, (__error) => { __nimbusUncaughtException(__error, true); return null; });
     const __raced = await Promise.race([
-      __entryResult.then(() => null),
+      __settled,
       __nimbusProcessExitPromise.then(() => __exit, () => __exit),
       new Promise((resolve) => { __timer = __rawSetTimeout(() => resolve(__late), __deadlineMs); }),
     ]).finally(() => { try { __rawClearTimeout(__timer); } catch {} });
     if (__raced === __exit) return { passes: 0, pending: 0 };
     if (__raced === __late) {
-      __entryResult.then(undefined, (__error) => { queueMicrotask(() => { throw __error; }); });
       return { passes: 0, pending: __nimbusPendingStartupWork() };
     }
   }
@@ -631,23 +635,52 @@ export function entryImporterUrl(filename, cwd) {
  * runner evaluates it: an ES entry's require is its static imports, and what
  * escapes it is explained as Node's loader explains it.
  */
-function entryModule(userCode, filename, importer, esModule) {
-    const code = rewriteProvidedCommonJsModules(userCode);
+function entryModule(userCode, filename, cwd, esModule, esModuleMap) {
+    const importer = entryImporterUrl(filename, cwd);
+    const map = esModuleMapOf(esModuleMap);
+    // A lowered ES module was bound before it was lowered (core esbuild-service.ts preparedTransformSource).
+    const code = map ? userCode : rewriteProvidedCommonJsModules(userCode);
     const name = commonJsEntryModuleName(filename || '[eval]');
     const path = 'filename || "/home/user/script.js"';
+    const wrapped = wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function', map?.head, map?.tail);
     return {
         name,
-        text: wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function').text,
-        evaluate: `__nimbusEvaluateEntry(__nimbusEntryWrapper(${JSON.stringify(name)}, ${path}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user", ${esModule === true})`,
+        esModule: esModule === true,
+        modules: {
+            [name]: wrapped.text,
+            ...(map !== null && map.columns.length > 0 ? { [columnMapModuleName(name)]: JSON.stringify(map.columns) } : {}),
+        },
+        evaluate: `__nimbusEvaluateEntry(__nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)}), mod, ${path}, dirname || "/home/user", ${esModule === true})`,
+        // commonjs-cell.ts __NIMBUS_STACK_ENTRY: how its frames are named.
+        stackEntry: JSON.stringify([name, entryFrameFile(filename, cwd, esModule === true), wrapped.head, esModule === true ? 1 : 0, wrapped.tail]),
     };
+}
+/** A transform result's EsModuleMap (core async-module-lowering.ts), or null for none: an engine's emit, not the lowering's. */
+function esModuleMapOf(map) {
+    return map ? JSON.parse(map) : null;
+}
+/** A data: URL module as a launch stages it: always an ES module to Node, in the runtime's scope. */
+export async function stagedDataUrlModule(text, moduleScope, esbuild) {
+    const result = await esbuild.transform(text, { esModule: moduleScope, moduleMetadata: true, dynamicImportParent: 'data:text/javascript,' });
+    const map = esModuleMapOf(result.map);
+    return wrapCommonJsCell(result.code, 'block', map?.head, map?.tail).text;
+}
+/** What Node's stack names the entry's file: its path, an ES module's file: URL; -e and stdin are [eval] and [stdin], as an ES module [eval1] in the launch's directory. */
+function entryFrameFile(filename, cwd, esModule) {
+    const evaluated = filename === undefined || filename === '<eval>' || filename === '[stdin]';
+    if (!esModule)
+        return evaluated ? (filename === '[stdin]' ? '[stdin]' : '[eval]') : filename;
+    const url = new URL('file://');
+    url.pathname = evaluated ? `${cwd.replace(/\/+$/, '')}/[eval1]` : filename;
+    return url.href;
 }
 /**
  * Generate one-shot runtime code with a plain fetch handler. `filename`
  * names the entry's module, and so its stack frames; with `cwd` it is the
  * entry's importer (entryImporterUrl).
  */
-export async function generateEntrypointCode(userCode, vfsState, usesSqlite, sources, wasmImports = [], filename, cwd = DEFAULT_HOME, esModule) {
-    const entry = entryModule(userCode, filename, entryImporterUrl(filename, cwd), esModule);
+export async function generateEntrypointCode(userCode, vfsState, usesSqlite, sources, wasmImports = [], filename, cwd = DEFAULT_HOME, esModule, esModuleMap) {
+    const entry = entryModule(userCode, filename, cwd, esModule, esModuleMap);
     const bundleSource = await facetVfsBundleSourceFor(vfsState);
     return {
         code: `
@@ -668,6 +701,7 @@ ${STOP_REPLAY_SOURCE}
 // The process's code: a module per cell, compiled when first required.
 const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
 const __NIMBUS_RUNTIME_CODE = ${bundleSource.runtimeCode};
+const __NIMBUS_STACK_ENTRY = ${entry.stackEntry};
 ${COMMONJS_CELL_RUNTIME_SOURCE}
 
 // The module bundle, at module level (startup time); the code cells the store
@@ -775,7 +809,11 @@ ${sources.residentStore}
       const __chunk = __nimbusStopReplay.write(method, bytes);
       if (__chunk === null) return;
       __rpcWriteCount++;
+      // Released at the filesystem client's gate, taken now: once every
+      // change logged ahead of it is answered (ProcessFsClient.effect).
+      const __gate = __nimbusOutputGate();
       const __task = __rpcWriteChain
+        .then(() => __gate)
         .then(() => __supervisor[method](__chunk.b, __chunk.at, __chunk.run))
         .then(() => __nimbusStopReplay.acked(__chunk))
         .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
@@ -800,6 +838,19 @@ ${RESIDENCY_MISS_REPORT}
       __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
       __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
     }
+    // A fatal report goes to fd 2 as Node's does: past any write a program
+    // installs, after what the program wrote, and not program output that
+    // a stopped run's replay retraces (runtime/stop-replay.ts).
+    __nimbusFatalStderr = (__text) => {
+      stderr += __text;
+      if (!__supervisor || captureOutput) return;
+      const __bytes = __nimbusOutEnc.encode(__text);
+      // At the output gate, as all of the process's output is.
+      const __gate = __nimbusOutputGate();
+      const __task = __rpcWriteChain.then(() => __gate).then(() => __supervisor.stderr(__bytes)).catch((e) => __onRpcDrop(__bytes.byteLength, e));
+      __rpcWriteChain = __task.then(() => {}, () => {});
+      __pendingIO.push(__task);
+    };
 
     try { globalThis.console = __consoleMod; } catch {}
     try { globalThis.process = __processMod; } catch {}
@@ -830,8 +881,16 @@ ${RESIDENCY_MISS_REPORT}
       __require.main = mod;
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
-      // the file, as Node does. \`-p\`'s returns the value it prints.
-      const __entryResult = __nimbusEntryOutcome(${entry.evaluate});
+      // where it is, as Node does. \`-p\`'s returns the value it prints.
+      // What it throws is uncaught, as in Node: an ES module's as its
+      // evaluation's rejection.
+      let __entryResult;
+      try {
+        __entryResult = __nimbusEntryOutcome(${entry.evaluate});
+      } catch (__thrown) {
+        if (__thrown instanceof __ProcessExit) throw __thrown;
+        __nimbusUncaughtException(__thrown, ${entry.esModule});
+      }
       const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs);
       __drainPasses = __drain.passes;
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
@@ -844,17 +903,14 @@ ${RESIDENCY_MISS_REPORT}
     } catch (e) {
       if (e instanceof __ProcessExit) { exitCode = e.code; }
       else {
-        const trace = (e && e.stack) || (e && e.message) || String(e);
-        stderr += trace + "\\n";
-        exitCode = 1;
-        if (__supervisor && !captureOutput) {
-          try { const __traceBytes = __nimbusOutEnc.encode(trace + "\\n"); __pendingIO.push(__supervisor.stderr(__traceBytes).catch((e2) => __onRpcDrop(__traceBytes.byteLength, e2))); } catch {}
-        }
+        // The runtime's own failure (a preload, the loop): reported as one.
+        __nimbusUncaughtException(e, false);
+        if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
       }
     }
     // A program that ended without process.exit still gets its 'exit' event.
     if (__nimbusProcessExitCode === null) {
-      __nimbusEmitExit(exitCode);
+      exitCode = __nimbusExitAtEnd();
       if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
       __nimbusProgramStopped = true;
     }
@@ -889,10 +945,7 @@ ${RESIDENCY_MISS_REPORT}
     if (__replayShort) {
       stderr += __replayShort;
       exitCode = 1;
-      if (__supervisor && !captureOutput) {
-        const __shortBytes = __nimbusOutEnc.encode(__replayShort);
-        __pendingIO.push(__supervisor.stderr(__shortBytes).catch((e) => __onRpcDrop(__shortBytes.byteLength, e)));
-      }
+      if (__supervisor && !captureOutput) __nimbusReleaseStderr(__replayShort);
     }
     await __drainPendingIO();
 
@@ -903,11 +956,7 @@ ${RESIDENCY_MISS_REPORT}
         const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
         exitCode = 1;
-        if (!captureOutput) {
-          try {
-            await __supervisor.stderr(__nimbusOutEnc.encode(trace + "\\n"));
-          } catch {}
-        }
+        if (!captureOutput) await __nimbusReleaseStderr(trace + "\\n");
       }
     }
 
@@ -951,7 +1000,7 @@ ${RESIDENCY_MISS_REPORT}
 };
 `,
         modules: bundleSource.modules,
-        codeModules: { ...bundleSource.codeModules, ...interpreterModules(sources), [entry.name]: entry.text },
+        codeModules: { ...bundleSource.codeModules, ...interpreterModules(sources), ...entry.modules },
     };
 }
 /**
@@ -1045,7 +1094,7 @@ export function facetWasmImportsSource(wasmImports) {
         + `\nglobalThis.__nimbusPrecompiledWasmByDigest = new Map([${byDigest.join(', ')}]);`;
 }
 export async function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, sources, pacer) {
-    const entry = entryModule(userCode, opts.filename, entryImporterUrl(opts.filename, opts.cwd || DEFAULT_HOME), opts.esModule);
+    const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.esModuleMap);
     const safeArgs = JSON.stringify({
         argv: opts.argv || [],
         nodeCommandLine: opts.node ?? null,
@@ -1081,6 +1130,7 @@ ${STOP_REPLAY_SOURCE}
 // module evaluation, which compiled the whole closure before the program ran.
 const __NIMBUS_CODE_CELLS = ${bundleSource.codeCells};
 const __NIMBUS_RUNTIME_CODE = ${bundleSource.runtimeCode};
+const __NIMBUS_STACK_ENTRY = ${entry.stackEntry};
 ${COMMONJS_CELL_RUNTIME_SOURCE}
 
 // \`let\`, not \`const\`, so the parsed bundle can be dropped once the store has
@@ -1115,6 +1165,9 @@ const __nimbusPlatformSetTimeout = setTimeout;
 // guidance it would otherwise contradict is printed.
 async function __nimbusReportLearningFailure(supervisor, error) {
   try {
+    // At the process's output gate, as every diagnostic of a process is.
+    const gate = typeof __nimbusOutputGate === "function" ? __nimbusOutputGate() : null;
+    if (gate !== null) await gate;
     if (supervisor) await supervisor.stderr(new TextEncoder().encode("Nimbus: runtime code persistence failed: " + String(error?.message || error) + "\\n"));
   } catch {}
 }
@@ -1123,19 +1176,12 @@ async function __nimbusFlushRuntime() {
   const rt = __nimbusRuntime;
   if (!rt) return;
   const __pendingDrain = rt.pendingDrainChain.then(async () => {
-    const __vfsTasks = [];
-    if (rt.supervisor && Object.keys(rt.vfsWrites).length > 0) {
-      for (const path of Object.keys(rt.vfsWrites)) {
-        __vfsTasks.push(rt.flushVfsWrite(
-          path,
-          (content, snapshot) =>
-            rt.persistVfsWrite(rt.supervisor, path, content, snapshot),
-        ));
-      }
-    }
+    // Every change the program made is in its client's log already: the
+    // flush waits for their answers (the parked cells' claims among them).
     const __vfsOutcomes = await Promise.allSettled([
-      ...__vfsTasks,
+      ...(rt.supervisor ? Object.keys(rt.vfsWrites).map((path) => rt.flushVfsWrite(path)) : []),
       rt.drainVfsMutations(),
+      ...(globalThis.__nimbusProcessFs ? [globalThis.__nimbusProcessFs.flush()] : []),
     ]);
     for (let pass = 0; pass < 12; pass++) {
       const turn = Promise.withResolvers();
@@ -1156,6 +1202,10 @@ async function __nimbusFlushRuntime() {
     if (__learning.status === "rejected") await __nimbusReportLearningFailure(rt.supervisor, __learning.reason);
     const __vfsFailure = __vfsOutcomes.find((outcome) => outcome.status === "rejected");
     if (__vfsFailure) throw __vfsFailure.reason;
+    // A change the program was told succeeded that the session refused or
+    // never answered: this boundary (a response, the exit) reports it.
+    const __fsFailure = globalThis.__nimbusProcessFs ? globalThis.__nimbusProcessFs.takeFailuresError() : null;
+    if (__fsFailure) throw __fsFailure;
   });
   rt.pendingDrainChain = __pendingDrain.catch(() => {});
   await __pendingDrain;
@@ -1282,7 +1332,11 @@ ${VFS_CURSOR_SEED_SOURCE}
       const __chunk = __nimbusStopReplay.write(method, bytes);
       if (__chunk === null) return;
       __rpcWriteCount++;
+      // Released at the filesystem client's gate, taken now: once every
+      // change logged ahead of it is answered (ProcessFsClient.effect).
+      const __gate = __nimbusOutputGate();
       const __task = __rpcWriteChain
+        .then(() => __gate)
         .then(() => __supervisor[method](__chunk.b, __chunk.at, __chunk.run))
         .then(() => __nimbusStopReplay.acked(__chunk))
         .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
@@ -1307,6 +1361,19 @@ ${RESIDENCY_MISS_REPORT}
       __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
       __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
     }
+    // A fatal report goes to fd 2 as Node's does: past any write a program
+    // installs, after what the program wrote, and not program output that
+    // a stopped run's replay retraces (runtime/stop-replay.ts).
+    __nimbusFatalStderr = (__text) => {
+      stderr += __text;
+      if (!__supervisor || captureOutput) return;
+      const __bytes = __nimbusOutEnc.encode(__text);
+      // At the output gate, as all of the process's output is.
+      const __gate = __nimbusOutputGate();
+      const __task = __rpcWriteChain.then(() => __gate).then(() => __supervisor.stderr(__bytes)).catch((e) => __onRpcDrop(__bytes.byteLength, e));
+      __rpcWriteChain = __task.then(() => {}, () => {});
+      __pendingIO.push(__task);
+    };
 
     try { globalThis.console = __consoleMod; } catch {}
     try { globalThis.process = __processMod; } catch {}
@@ -1356,8 +1423,16 @@ ${RESIDENCY_MISS_REPORT}
       __require.main = mod;
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
-      // the file, as Node does. \`-p\`'s returns the value it prints.
-      const __entryResult = __nimbusEntryOutcome(${entry.evaluate});
+      // where it is, as Node does. \`-p\`'s returns the value it prints.
+      // What it throws is uncaught, as in Node: an ES module's as its
+      // evaluation's rejection.
+      let __entryResult;
+      try {
+        __entryResult = __nimbusEntryOutcome(${entry.evaluate});
+      } catch (__thrown) {
+        if (__thrown instanceof __ProcessExit) throw __thrown;
+        __nimbusUncaughtException(__thrown, ${entry.esModule});
+      }
       if (attachedTty) {
         // An attached entry owns the terminal until it returns, so its own
         // completion is awaited by the exit lifecycle below, never here.
@@ -1379,12 +1454,9 @@ ${RESIDENCY_MISS_REPORT}
         __attachedExplicitExit = true;
         exitCode = e.code;
       } else {
-        const trace = (e && e.stack) || (e && e.message) || String(e);
-        stderr += trace + "\\n";
-        exitCode = 1;
-        if (__supervisor && !captureOutput) {
-          try { const __traceBytes = __nimbusOutEnc.encode(trace + "\\n"); __pendingIO.push(__supervisor.stderr(__traceBytes).catch((e2) => __onRpcDrop(__traceBytes.byteLength, e2))); } catch {}
-        }
+        // The runtime's own failure (a preload, the loop): reported as one.
+        __nimbusUncaughtException(e, false);
+        if (__nimbusProcessExitCode !== null) exitCode = __nimbusProcessExitCode;
       }
     }
 
@@ -1395,7 +1467,6 @@ ${RESIDENCY_MISS_REPORT}
       settledIO: 0,
       vfsWrites: __vfsWrites,
       flushVfsWrite: __nimbusFlushVfsWrite,
-      persistVfsWrite: __nimbusPersistVfsWrite,
       drainVfsMutations: __nimbusDrainVfsMutations,
       pendingDrainChain: Promise.resolve(),
     };
@@ -1412,7 +1483,7 @@ ${RESIDENCY_MISS_REPORT}
       if (__residencyReport) {
         stderr += __residencyReport;
         if (Number(code ?? 0) === 0) code = 1;
-        try { await __supervisor.stderr(__nimbusOutEnc.encode(__residencyReport)); } catch {}
+        await __nimbusReleaseStderr(__residencyReport);
       }
       await __supervisor.reportExit(code, reason || "", __nimbusDataReadMisses(), [...(globalThis.__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger(), __nimbusExecutedModuleMisses());
       __nimbusProcessExitReported = true;
@@ -1421,7 +1492,7 @@ ${RESIDENCY_MISS_REPORT}
       const trace = (e && e.stack) || (e && e.message) || String(e);
       stderr += trace + "\\n";
       if (__supervisor) {
-        try { await __supervisor.stderr(__nimbusOutEnc.encode(trace + "\\n")); } catch {}
+        await __nimbusReleaseStderr(trace + "\\n");
         await __nimbusReportFinalExit(1, trace + "\\n");
       }
     };
@@ -1450,7 +1521,7 @@ ${RESIDENCY_MISS_REPORT}
           finalCode = Number(await Promise.race([__nimbusProcessExitPromise, __nimbusNaturalExit().then(() => 0)]));
         }
         if (__nimbusProcessExitCode === null) {
-          __nimbusEmitExit(finalCode);
+          finalCode = __nimbusExitAtEnd();
           if (__nimbusProcessExitCode !== null) finalCode = __nimbusProcessExitCode;
           __nimbusProgramStopped = true;
         }
@@ -1481,7 +1552,7 @@ ${RESIDENCY_MISS_REPORT}
       const tail = "[orphan output: " + __rpcDrops + " dropped RPC write(s), ~" +
         __rpcDropBytes + " bytes lost" +
         (__rpcLastError ? "; last error: " + __rpcLastError : "") + "]\\n";
-      try { await __supervisor.stderr(__nimbusOutEnc.encode(tail)); } catch {}
+      await __nimbusReleaseStderr(tail);
     }
     if (exitCode !== 0) {
       await __nimbusReportFinalExit(exitCode, stderr || ("exit " + exitCode + "\\n"));
@@ -1514,6 +1585,18 @@ async function __nimbusDispatchHttp(req, workerEnv, workerCtx) {
 let __nimbusStartArgs = null;
 
 export class NimbusProcess extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    // Its write log is kept in its own store (process-fs-journal.ts).
+    globalThis.__nimbusFsJournalSql = ctx.storage.sql;
+  }
+  // Pending while this isolate lives: the coordinator learns of its death
+  // (out of memory, out of CPU) by this call's rejection. Its resolver is
+  // kept on the object, so a collection never finds the promise unsettleable
+  // (which the runtime answers by rejecting it: "Promise will never complete").
+  held() {
+    return new Promise((resolve) => { (this.__nimbusHeld ??= []).push(resolve); });
+  }
   async startProcess(startArgs) {
     // Held so an HTTP-first entry (a restart re-entered by a routed request)
     // starts from the same payload startProcess would have used.
@@ -1540,7 +1623,7 @@ export class NimbusProcess extends DurableObject {
 }
 `,
         modules: bundleSource.modules,
-        codeModules: { ...bundleSource.codeModules, ...interpreterModules(sources), [entry.name]: entry.text },
+        codeModules: { ...bundleSource.codeModules, ...interpreterModules(sources), ...entry.modules },
     };
 }
 /**
@@ -1586,6 +1669,7 @@ export function releaseSerializedSources(vfsState) {
         return;
     vfsState.bundle = {};
     vfsState.emits = undefined;
+    vfsState.columnMaps = undefined;
     vfsState.lowered = undefined;
 }
 /**
@@ -1625,7 +1709,7 @@ async function facetVfsBundleSourceFor(vfsState, pacer) {
             + 'it cannot generate a second one');
     }
     return vfsState.bundleSource
-        ?? await buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired, pacer, { emits: vfsState.emits, lowered: vfsState.lowered, codeOnly: vfsState.codeOnly });
+        ?? await buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired, pacer, { emits: vfsState.emits, columnMaps: vfsState.columnMaps, lowered: vfsState.lowered, codeOnly: vfsState.codeOnly });
 }
 /**
  * hardening-r5: read a file from the VFS and decide whether to keep it
@@ -1711,7 +1795,9 @@ function retainedVfsStateBytes(state) {
     }
     for (const [path, emit] of state.emits ?? [])
         bytes += path.length + emit.length;
-    for (const path of state.lowered ?? [])
+    for (const [path, map] of state.columnMaps ?? [])
+        bytes += path.length + map.length;
+    for (const path of state.lowered?.keys() ?? [])
         bytes += path.length;
     for (const path of state.codeOnly ?? [])
         bytes += path.length;
@@ -2017,7 +2103,7 @@ function isCodeCellPath(path) {
  * split into ordered fragments; the merge expression concatenates those
  * fragments back to the original string or Uint8Array.
  */
-export async function buildFacetVfsBundleSource(bundle, forceSideModules = false, pacer, { consume = false, emits, lowered, codeOnly, runtimeCode, } = {}) {
+export async function buildFacetVfsBundleSource(bundle, forceSideModules = false, pacer, { consume = false, emits, columnMaps, lowered, codeOnly, runtimeCode, } = {}) {
     const storageBytes = moduleMapStorageBytes(bundle, codeOnly);
     const codeModules = {};
     const rows = [];
@@ -2033,11 +2119,13 @@ export async function buildFacetVfsBundleSource(bundle, forceSideModules = false
         const code = emit ?? (typeof cell === 'string' && isCodeCellPath(path) ? cell : undefined);
         const adopt = code !== undefined && emit === undefined && commonJsCellReadsBack(path);
         if (code !== undefined) {
-            const wrapped = wrapCommonJsCell(code, lowered?.has(path) ? 'block' : 'function');
+            const esModuleMap = emit === undefined ? null : esModuleMapOf(columnMaps?.get(path));
+            const esModule = lowered?.get(path) === true;
+            const wrapped = wrapCommonJsCell(code, lowered?.has(path) ? 'block' : 'function', esModuleMap?.head, esModuleMap?.tail);
             const name = commonJsCellModuleName(path);
-            // TypeScript is lowered too, and keeps CommonJS's names (bundle-cell-transform.ts).
-            const esModule = lowered?.has(path) === true && bundleTypescriptLoader(path) === null;
             codeModules[name] = wrapped.text;
+            if (esModuleMap !== null && esModuleMap.columns.length > 0)
+                codeModules[columnMapModuleName(name)] = JSON.stringify(esModuleMap.columns);
             rows.push([path, name, wrapped.head, wrapped.tail, wrapped.hashbang ? 1 : 0, adopt ? 1 : 0, esModule ? 1 : 0]);
             if (pacer)
                 await pacer.spend(code.length);
@@ -3561,7 +3649,7 @@ function _markBundleEsmAsFailed(bundle, placeEmit, packageTypeOf, reason) {
         // A TypeScript source is never runnable as staged, so it always needs
         // the emit it cannot get; a JavaScript file only if it is ESM.
         if (bundleTypescriptLoader(path) !== null || looksLikeEsm(path, src, packageTypeOf(path)))
-            placeEmit(path, esbuildDiagnosticShim(path, reason));
+            placeEmit(path, esbuildDiagnosticShim(path, reason), '');
     }
 }
 /**
@@ -3593,10 +3681,11 @@ async function cellPackageTypes(vfs, paths) {
  * sources; a script patching an installed ES module and writing it back).
  *
  * Every cell lowered from ESM or compiled from TypeScript is added to
- * `lowered` (its module's block scope, commonjs-cell.ts THE WRAPPER). An ES
- * module is lowered in the launch's runtime's module `scope`.
+ * `lowered` (its module's block scope, commonjs-cell.ts THE WRAPPER), true
+ * where it is an ES module. An ES module is lowered in the launch's
+ * runtime's module `scope`.
  */
-async function transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, scope, esbuild, pacer, store) {
+async function transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, scope, stripTypes, esbuild, pacer, store) {
     // Snapshot the cells first — transforms await; never iterate-and-mutate.
     const cells = [];
     for (const path of Object.keys(bundle)) {
@@ -3606,10 +3695,10 @@ async function transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, s
         if (typeof source === 'string' && needsBundleCellTransform(path, source, packageType))
             cells.push({ path, source, packageType });
     }
-    return transformBundleCells(cells, { host: esbuild, store, pacer, scope }, (path, result) => {
-        placeEmit(path, result.code);
+    return transformBundleCells(cells, { host: esbuild, store, pacer, scope, stripTypes }, (path, result) => {
+        placeEmit(path, result.code, result.map);
         if (result.lowered)
-            lowered.add(path);
+            lowered.set(path, result.esModule);
     });
 }
 /** A tool's config file: `<tool>.config.js|ts|mjs|cjs|mts|cts` (vite.config.ts, astro.config.mjs). */
@@ -3717,7 +3806,7 @@ export async function buildPrefetchBundle(vfs, options) {
         lease.release();
     }
 }
-async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, moduleScope = 'node', observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, executedModules, transformStore, conditions = [], preloads = [], }) {
+async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, moduleScope = 'node', observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, executedModules, transformStore, conditions = [], stripTypes = null, preloads = [], }) {
     // Read the cursor BEFORE the walk: a mutation that lands while the bundle
     // is being assembled must be reported as invalidated, not silently missed.
     const admitted = await vfs.acquire(null, 0);
@@ -3873,7 +3962,8 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     //     reaches the guest as CommonJS (commonjs-cell.ts says why the registry
     //     cannot take the ES module itself).
     const emits = new Map();
-    const lowered = new Set();
+    const columnMaps = new Map();
+    const lowered = new Map();
     // A file staged only to run carries its emit and not itself
     // (FacetVfsState.codeOnly): installed code is most of a map, and each ES
     // module carried twice would halve the closure the bound admits. One staged
@@ -3888,8 +3978,10 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // has one: the build never holds the file's bytes and its module both, and
     // what reads the cells for their code (bundleUsesNodeSqlite, the wasm and
     // binding scans) reads the module, which is all the map carries.
-    const placeEmit = (path, code) => {
+    const placeEmit = (path, code, map = '') => {
         emits.set(path, code);
+        if (map)
+            columnMaps.set(path, map);
         if (!runOnly(path))
             return;
         bundle[path] = code;
@@ -3901,7 +3993,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
         // Transient failures propagate through the launch failure path before
         // serialization/cache/LOADER publication. Per-source verdicts still use
         // the lazy diagnostic cells installed by transformEsmInBundle.
-        transforms = await transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, moduleScope, esbuild, pacer, transformStore);
+        transforms = await transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, moduleScope, stripTypes, esbuild, pacer, transformStore);
     }
     else {
         // No esbuild service was given: the ESM cells stage as diagnostics that
@@ -3914,7 +4006,8 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     for (const path of Object.keys(bundle)) {
         const cell = bundle[path];
         const code = emits.get(path) ?? (isBundleModuleCandidate(path) && bundleTypescriptLoader(path) === null ? cell : undefined);
-        if (typeof code !== 'string')
+        // A lowered ES module was bound before it was lowered (esbuild-service.ts preparedTransformSource).
+        if (typeof code !== 'string' || lowered.get(path) === true)
             continue;
         await pacer?.spend(code.length);
         let bound;
@@ -4066,6 +4159,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
             evictedCells[k] = bundle[k];
             delete bundle[k];
             emits.delete(k);
+            columnMaps.delete(k);
             lowered.delete(k);
             codeOnly.delete(k);
             size.remove(k);
@@ -4105,6 +4199,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     return {
         bundle,
         ...(emits.size > 0 ? { emits } : {}),
+        ...(columnMaps.size > 0 ? { columnMaps } : {}),
         ...(lowered.size > 0 ? { lowered } : {}),
         ...(codeOnly.size > 0 ? { codeOnly } : {}),
         cursor,
@@ -4214,6 +4309,12 @@ export class FacetManager {
      * workerd process a facet landed in.
      */
     processFabric;
+    /** The residents whose write log may still hold changes (process-journals.ts). */
+    processJournals;
+    /** Residents whose log is being drained as their facet is released. */
+    journalDraining = new Set();
+    /** An exit a signal decided, told once its process's log is drained (`_endBySignal`). */
+    endsAfterDrain = new Map();
     /**
      * The same substrate the fabric runs residents on, held directly because a
      * one-shot has no lifecycle for the fabric to own — it is started, read and
@@ -4370,7 +4471,31 @@ export class FacetManager {
         // The workspace's network (FacetManagerHooks.network); a manager no workspace composed uses the isolate's.
         this.network = hooks.network ?? (() => ISOLATE_NETWORK);
         this.processHost = host(ctx, env, () => this._residentDisk(), this.network);
-        this.processFabric = new ProcessFabric(this.processHost);
+        this.processJournals = new ProcessJournals(() => this.ctx.storage.sql);
+        // Every resident logs its changes in its facet's store: the session
+        // books the store when it opens, and drains it when the process is
+        // released, before its exit is told (process-fs-journal.ts).
+        this.processFabric = new ProcessFabric(this.processHost, {
+            journalFor: (pid) => ({
+                opened: (facet) => {
+                    const cred = this.processes.get(pid)?.cred;
+                    if (cred !== undefined)
+                        this.processJournals.opened(facet, pid, cred, generation(this.ctx));
+                },
+                drain: async (journal) => {
+                    this.journalDraining.add(pid);
+                    try {
+                        await this._drainProcessJournal(pid, journal);
+                    }
+                    finally {
+                        this.journalDraining.delete(pid);
+                        const end = this.endsAfterDrain.get(pid);
+                        this.endsAfterDrain.delete(pid);
+                        end?.();
+                    }
+                },
+            }),
+        });
         const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
             ? Reflect.get(env, 'NIMBUS_DEBUG')
             : undefined;
@@ -4407,7 +4532,23 @@ export class FacetManager {
         });
         // A reset that killed a resident launch left journal rows behind; the
         // first pump after the reset drains this reconciliation before any
-        // waiter resumes, OFF the constructor's init gate.
+        // waiter resumes, OFF the constructor's init gate. Before it: the write
+        // logs a previous incarnation's residents left undrained (their names
+        // reserved from minting until then). One that cannot be read is said in
+        // the worker's log and on the terminal, and kept.
+        onColdStart(ctx, () => this.processJournals.drainPending({
+            reserved: reservedFacetNames(this.ctx),
+            generation: generation(this.ctx),
+            drain: async (row) => {
+                await this._drainJournalAs(row.pid, row.cred, facetJournal(this.ctx, this.env, row.facet));
+                this.vfs?.forgetSequences(row.pid);
+                deleteFacetStorage(this.ctx, row.facet);
+            },
+            log: (message) => {
+                console.error(message);
+                this.hooks.notify?.(`\x1b[31m${message}\x1b[0m\r\n`);
+            },
+        }));
         onColdStart(ctx, () => this.launchJournal.recoverInterrupted());
         // The journal row of a resident lives for the PROCESS's lifetime, so its
         // release belongs on the one seam every end-of-life passes through —
@@ -4417,6 +4558,10 @@ export class FacetManager {
         this.processes.setOnTerminal((pid) => {
             this.residentBundleKeys.delete(pid);
             this.residentProfileOffers.delete(pid);
+            // Its writers' cursors go with it, unless its log is still to be
+            // drained (which numbers against them, and forgets them after).
+            if (this.processJournals.of(pid) === undefined)
+                this.vfs?.forgetSequences(pid);
             this.ctx.waitUntil(this.trackLaunchTask(this._onResidentTerminal(pid)));
         });
         this.processes.setDefaultSignalAction((pid, code, signal) => this._endBySignal(pid, code, signal));
@@ -4436,19 +4581,29 @@ export class FacetManager {
      * told from then on (PortRegistry.ended).
      */
     _endFromOutside(pid, code, reason, portEnding) {
-        if (this.processes.get(pid)?.state !== 'running')
+        if (this.processes.get(pid)?.state !== 'running' || this.endsAfterDrain.has(pid))
             return;
         this.portRegistry.unregisterByPid(pid, portEnding);
         this.releaseProcessRpcResources(pid);
         this.revokeProcessVfsWriters(pid);
-        this.processes.exit(pid, code);
-        this.processes.markExit(pid, code, reason);
-        this.processes.closeInput(pid);
-        try {
-            this.hooks.onExternalExit?.(pid, code, reason);
-        }
-        catch { }
-        this._teardownPairedServeFacet(pid);
+        const end = () => {
+            if (this.processes.get(pid)?.state !== 'running')
+                return;
+            this.processes.exit(pid, code);
+            this.processes.markExit(pid, code, reason);
+            this.processes.closeInput(pid);
+            try {
+                this.hooks.onExternalExit?.(pid, code, reason);
+            }
+            catch { }
+            this._teardownPairedServeFacet(pid);
+        };
+        // A resident's release drains its write log: its exit is told after,
+        // so what reads its files next (the next prompt, its parent) sees them.
+        if (this.journalDraining.has(pid))
+            this.endsAfterDrain.set(pid, end);
+        else
+            end();
     }
     /**
      * The actor hosting `workerKey` reports, from its own next incarnation,
@@ -4601,6 +4756,35 @@ export class FacetManager {
      *  manager credentials its processes through that one rather than a second
      *  authority over the same disk. */
     setVfs(vfs, filesystem) { this.vfs = vfs; this.filesystem = filesystem; }
+    /**
+     * Send what a released resident's write log still holds (it was killed,
+     * ran out of memory or CPU, or ended before its log was answered), as the
+     * process would have: under the numbers it gave each change, so the
+     * session's cursor answers what already landed and applies the rest once.
+     * A change the session refuses is said in the process's own output, named.
+     */
+    async _drainProcessJournal(pid, journal) {
+        const pending = this.processJournals.of(pid);
+        if (pending === undefined)
+            return;
+        await this._drainJournalAs(pending.pid, pending.cred, journal);
+        this.vfs?.forgetSequences(pid);
+        this.processJournals.settled(pid);
+    }
+    /** Drain `journal` into the session as process `pid` (with its credential) would have sent it. */
+    async _drainJournalAs(pid, cred, journal) {
+        if (!this.filesystem)
+            throw new Error('Process filesystem authority is not initialized');
+        // Under the process's credential, numbered as its own waves were.
+        const lease = this.filesystem.openHost(cred);
+        const drained = await drainProcessFsJournal({ journal, session: journalDrainSession(lease.fs, pid) }).finally(() => lease.dispose());
+        if (drained.landed > 0 || drained.failures.length > 0) {
+            const refused = drained.failures.map((failure) => `  ${failure.op} /${failure.path}: ${failure.errno}: ${failure.message}\n`).join('');
+            this.processes.appendOutput(pid, 'stderr', `[nimbus] process ${pid} ended with ${drained.landed + drained.failures.length} change${drained.landed + drained.failures.length === 1 ? '' : 's'} not yet in the session: `
+                + `${drained.landed} landed after it ended`
+                + (drained.failures.length === 0 ? '\n' : `, ${drained.failures.length} refused:\n${refused}`));
+        }
+    }
     /**
      * What every loader-backed runtime builds its facet pools from: the env and
      * ctx a pool is constructed over, and the workspace's network its facets go
@@ -5125,7 +5309,10 @@ export class FacetManager {
         const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
         // The program's conditions choose what it resolves, and its preloads what
         // it loads: a map walked under other ones is another map.
-        const launch = { conditions: spec.node?.conditions ?? [], require: spec.node?.require ?? [], import: spec.node?.import ?? [] };
+        const launch = {
+            conditions: spec.node?.conditions ?? [], require: spec.node?.require ?? [], import: spec.node?.import ?? [],
+            stripTypes: moduleScope === 'node' ? typeScriptStripOptions(spec.node ?? {}) : null,
+        };
         const key = `${profile}\x00${moduleScope}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}\x00${JSON.stringify(launch)}`;
         const revision = (await vfs.revision());
         // An entry built at an older revision can never be SERVED again — the
@@ -5186,6 +5373,7 @@ export class FacetManager {
             executedModules: executed,
             transformStore: this._transformStore(),
             conditions: launch.conditions,
+            stripTypes: launch.stripTypes,
             preloads: [
                 ...launch.require.map((specifier) => ({ preload: 'require', specifier })),
                 ...launch.import.map((specifier) => ({ preload: 'import', specifier })),
@@ -5238,9 +5426,10 @@ export class FacetManager {
         vfsState.bundleSource = await buildFacetVfsBundleSource(vfsState.bundle, vfsState.bundleSideModulesRequired, pacer, {
             consume: true,
             emits: vfsState.emits,
+            columnMaps: vfsState.columnMaps,
             lowered: vfsState.lowered,
             codeOnly: vfsState.codeOnly,
-            runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope),
+            runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer, moduleScope, launch.stripTypes),
         });
         vfsState.cacheHit = false;
         // Serialization is total: bundleSource/serializedManifest/serializedMetadata
@@ -5317,7 +5506,7 @@ export class FacetManager {
      * path as a cell: the guest looks a path up first and the key only for a
      * path the map lacks — the same text written under a fresh name.
      */
-    async _stagedRuntimeCode(learning, vfs, pacer, moduleScope) {
+    async _stagedRuntimeCode(learning, vfs, pacer, moduleScope, stripTypes) {
         const modules = new Map();
         for (const [codeKey, entry] of learning.code) {
             // An image is carried as a wasm member (learnedWasmImages), not as code.
@@ -5334,33 +5523,36 @@ export class FacetManager {
             if (entry.path.startsWith('data:')) {
                 if (!this.esbuild)
                     throw new Error('No transformer for a staged data URL module');
-                // A data: URL is always an ES module to Node, in the runtime's scope.
-                const result = await this.esbuild.transform(entry.text, {
-                    loader: 'js', format: 'cjs', target: 'esnext',
-                    moduleMetadata: true, dynamicImportParent: 'data:text/javascript,', ...(moduleScope === 'node' ? { esModuleScope: true } : {}),
-                });
-                modules.set(codeKey, wrapCommonJsCell(result.code, 'block').text);
+                modules.set(codeKey, await stagedDataUrlModule(entry.text, moduleScope, this.esbuild));
                 continue;
             }
             const path = entry.path.replace(/^\/+/, '');
             const file = { [path]: entry.text };
             const emits = new Map();
-            const placeEmit = (at, code) => { emits.set(at, code); };
-            const lowered = new Set();
+            const maps = new Map();
+            const placeEmit = (at, code, map) => {
+                emits.set(at, code);
+                maps.set(at, map);
+            };
+            const lowered = new Map();
             const packageTypeOf = await cellPackageTypes(vfs, [path]);
             if (this.esbuild)
-                await transformEsmInBundle(file, placeEmit, lowered, packageTypeOf, moduleScope, this.esbuild, pacer, this._transformStore());
+                await transformEsmInBundle(file, placeEmit, lowered, packageTypeOf, moduleScope, stripTypes, this.esbuild, pacer, this._transformStore());
             else
                 _markBundleEsmAsFailed(file, placeEmit, packageTypeOf, 'no esbuild service was given to this launch');
             let code = emits.get(path) ?? file[path];
-            try {
-                code = rewriteProvidedCommonJsModules(code);
+            // A lowered ES module was bound before it was lowered (core esbuild-service.ts preparedTransformSource).
+            if (lowered.get(path) !== true) {
+                try {
+                    code = rewriteProvidedCommonJsModules(code);
+                }
+                catch {
+                    // Unparseable: it stays as written, and requiring it says why.
+                }
             }
-            catch {
-                // Unparseable: it stays as written, and requiring it says why.
-            }
+            const map = esModuleMapOf(maps.get(path));
             const scope = lowered.has(path) || declaresWrapperBinding(code) ? 'block' : 'function';
-            modules.set(codeKey, wrapCommonJsCell(code, scope).text);
+            modules.set(codeKey, wrapCommonJsCell(code, scope, map?.head, map?.tail).text);
         }
         return modules.size > 0 ? modules : undefined;
     }
@@ -5422,10 +5614,6 @@ export class FacetManager {
     }
     revokeProcessVfsWriters(pid, writerId) {
         openSupervisorDeliveries(this.ctx).endReadRun(pid, writerId);
-        if (writerId === undefined)
-            this.vfs?.revokeAppendWriters(pid);
-        else
-            this.vfs?.revokeAppendWriter(pid, writerId);
     }
     /**
      * True while a resident facet holds this pid — it was adopted through the
@@ -5760,9 +5948,15 @@ export class FacetManager {
             // shell's Ctrl+C or `kill <pid>`. The process was not a crash and the
             // abort text is not its stderr: mark it killed and hand back 130 (the
             // shell's signalled status) with nothing for the terminal to print.
+            // A one-shot that ended abnormally may have lost writes it
+            // acknowledged and never sent: said, with the bound, every time (the
+            // session cannot know whether there were any: they never left).
+            const unsettled = `${UNSETTLED_END_NOTE}\n`;
             if (abortController.signal.aborted) {
                 this.processes.kill(entry.pid);
-                return { exitCode: 130, stdout: '', stderr: '' };
+                if (unsettled && !opts.captureOutput)
+                    await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(unsettled));
+                return { exitCode: 130, stdout: '', stderr: opts.captureOutput ? unsettled : '' };
             }
             // The ledger refused to start it (EAGAIN): it never ran. That is its
             // spawn failing, for whoever spawned it to report: a child_process
@@ -5781,7 +5975,7 @@ export class FacetManager {
                 this.hooks.onExternalExit?.(entry.pid, exitCode, reason);
             }
             catch { }
-            return { exitCode, stdout: '', stderr: errorMessage(err) };
+            return { exitCode, stdout: '', stderr: `${errorMessage(err)}${unsettled ? `\n${unsettled}` : ''}` };
         }
         finally {
             opts.signal?.removeEventListener('abort', onShellAbort);
@@ -6361,7 +6555,7 @@ export class FacetManager {
                     // own assets, for the same reason.
                     const stagedModules = await this._stagedBindingModulesByValue(vfsState.stagedBindings ?? []);
                     const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user', pacer);
-                    const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule);
+                    const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.esModuleMap);
                     const codeModules = {};
                     for (const [name, text] of Object.entries(generatedWorker.codeModules))
                         codeModules[name] = { cjs: text };
@@ -6587,6 +6781,7 @@ export class FacetManager {
             const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
             handle = await this.processFabric.startResidentProcess({
                 startContract: 'lifetime',
+                journaled: true,
                 pid,
                 workerKey,
                 boot: { kind: 'staged', stage: stageSpec },
@@ -6597,7 +6792,7 @@ export class FacetManager {
                     this.revokeProcessVfsWriters(pid, writerId);
                 },
             });
-            this._watchHost(pid, handle);
+            this._watchHost(pid, handle, false);
             this.trackProcessRpcResources(pid, [handle], { releaseOnReportExit: false });
             this.ctx.waitUntil(handle.done
                 .catch((e) => {
@@ -6724,6 +6919,7 @@ export class FacetManager {
             // the artifact sources exist only while this facet is loading.
             handle = await this.processFabric.startResidentProcess({
                 startContract: 'lifetime',
+                journaled: true,
                 pid,
                 workerKey,
                 boot: { kind: 'staged', stage: stageSpec },
@@ -6734,7 +6930,7 @@ export class FacetManager {
                     this.revokeProcessVfsWriters(pid, writerId);
                 },
             });
-            this._watchHost(pid, handle);
+            this._watchHost(pid, handle, false);
             // The handle's route target resolves the RUNNING facet wherever it is
             // hosted; binding it for the pid before the port is announced is what
             // lets the shim's listen()→SUPERVISOR.registerPort back-fill.
@@ -6795,10 +6991,22 @@ export class FacetManager {
      * before any caller's own `done` handler, so the process has ended by name
      * when they look. The placement goes to the process log under NIMBUS_DEBUG.
      */
-    _watchHost(pid, handle) {
+    /**
+     * The one watcher of a hosted process's lifecycle: a lost host ends it
+     * (ProcessHostLost), and `diesAlone`, a booted resident that logs its
+     * changes, dying on its own (out of memory, out of CPU) ends it too, its
+     * log drained as it is released and only then its exit told. A boot that
+     * fails or stops (to wait for stdin) is its launcher's to handle; a
+     * lifetime resident's caller watches its lifecycle itself.
+     */
+    _watchHost(pid, handle, diesAlone) {
         handle.done.catch((error) => {
-            if (error instanceof ProcessHostLost)
+            if (error instanceof ProcessHostLost) {
                 this._endByHostLoss(pid, error);
+                return;
+            }
+            if (diesAlone)
+                void handle.booted().then(() => this._residentDied(pid, error), () => { });
         });
         if (!this.debugEnabled)
             return;
@@ -6856,8 +7064,28 @@ export class FacetManager {
             },
             ...process,
         });
-        this._watchHost(pid, handle);
+        this._watchHost(pid, handle, spec.startContract === 'boot' && spec.journaled === true);
         return handle;
+    }
+    /** A booted resident died without anyone ending it: it exits 1, its reason on its stderr. */
+    _residentDied(pid, error) {
+        if (this.processes.get(pid)?.state !== 'running')
+            return;
+        const reason = `resident process died: ${errorMessage(error)}`;
+        this.processes.appendOutput(pid, 'stderr', `[nimbus] ${reason}\n`);
+        try {
+            this.processes.exit(pid, 1);
+        }
+        catch { }
+        try {
+            this._w5RecordTermination(pid, 1, 'facet', reason);
+        }
+        catch { }
+        try {
+            this.hooks.onExternalExit?.(pid, 1, reason);
+        }
+        catch { }
+        this.releaseProcessRpcResources(pid);
     }
     _activateProcessVfsWriter(pid, writerId) {
         // The run this writer is reads the process's stdin, and no run before it,
@@ -6876,9 +7104,6 @@ export class FacetManager {
                 recording: () => journal.recording,
                 disqualify: (why) => journal.disqualify(why + ` (REPLAY_JOURNAL_MAX_ENTRIES=${REPLAY_JOURNAL_MAX_ENTRIES}; REPLAY_READ_RECEIPT_MAX_BYTES=${REPLAY_READ_RECEIPT_MAX_BYTES})`),
             });
-        // ProcessTable PIDs are monotonic within a generation and generation-strided
-        // across resets, so this live entry is the sole positive authority root.
-        this.vfs?.activateAppendWriter(pid, writerId);
     }
     /**
      * Grant every suspended launch a chunk of this turn — the session's alarm
@@ -7450,6 +7675,7 @@ export class FacetManager {
                             // The attached-TTY runner holds startProcess open for the process's
                             // life; the server/watch runner returns once it is up.
                             startContract: opts.attachedTty ? 'lifetime' : 'boot',
+                            journaled: true,
                             startArgs: {
                                 pid: entry.pid, vfsCursor, dataPlan,
                                 ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
@@ -7793,6 +8019,9 @@ export class FacetManager {
                 // These runners answer startProcess with a boot payload (listening
                 // port, or a completed non-server run) and stay resident after it.
                 startContract: 'boot',
+                // A python or ruby resident logs its changes in its store; an
+                // application's own class keeps its store to itself.
+                journaled: opts.resident !== undefined,
                 startArgs: opts.resident && opts.startArgs && typeof opts.startArgs === 'object'
                     ? { ...opts.startArgs, supervisorPid: entry.pid,
                         ...(launchEnv ? { userEnv: { ...z.record(z.string(), z.unknown()).parse(Reflect.get(opts.startArgs, 'userEnv') ?? {}), ...launchEnv } } : {}) }
@@ -8279,9 +8508,13 @@ export class FacetManager {
             return 'absent';
         const [rowKey, record] = entry;
         if (record.pid > this.processes.pidBase) {
-            // This instance's own row: the launch is already building — waiting
-            // for its port registration is the entire ask, and driving the row
-            // again would boot a second copy.
+            // This instance's own row. A process still launching or running will
+            // bind the port: waiting for its registration is the entire ask, and
+            // driving the row again would boot a second copy. One that has ended
+            // is owed the port only if its restart policy runs it again; otherwise
+            // its row is being released (_onResidentTerminal), and nothing will.
+            if (this.processes.get(record.pid)?.state === 'exited' && record.restart !== 'on-failure')
+                return 'absent';
             return (await this._waitForPort(port, DURABLE_ENSURE_BOOT_BUDGET_MS))
                 ? 'started' : 'failed';
         }

@@ -42,6 +42,7 @@ if (spawnSync('python3', ['--version'], { encoding: 'utf8' }).status !== 0) {
 // Each run replays the interpreter's earlier lines, then the new one, and
 // keeps only what the new one printed.
 const ran = [];
+const credential = { uid: 1400, gid: 1500, groups: [1500, 1600], umask: 0o027 };
 const MARK = '__NIMBUS_TEST_MARK__';
 globalThis.__standInRun = (code) => {
   ran.push(code);
@@ -53,6 +54,7 @@ globalThis.__standInRun = (code) => {
   return out.status;
 };
 const stand = `async function __nimbusPyBoot(args) {
+  globalThis.__bootCredential = args.cred;
   globalThis.__session = [];
   return { run: async (code) => globalThis.__standInRun(code), flush: async () => {} };
 }`;
@@ -65,7 +67,7 @@ try {
   mkdirSync(join(dir, 'sub'));
   const line = async (cwd, userCode) => {
     ran.length = 0;
-    const body = pythonReplStep({ home: dir, start: { cwd, binName: 'python3' } }, '/py', userCode);
+    const body = pythonReplStep({ home: dir, cred: credential, start: { cwd, binName: 'python3' } }, '/py', userCode);
     const response = await pythonReplStepRequestFn(
       new Request('https://facet.internal/python-repl-step', { method: 'POST', body: JSON.stringify(body) }),
       { SUPERVISOR: {} },
@@ -75,6 +77,7 @@ try {
 
   // The first line: the prompt enters the shell's cwd, then runs the line there.
   const first = await line(dir, 'import os\nprint(open("hello.txt").read(), end="")\nprint(os.getcwd())');
+  assert.deepEqual(globalThis.__bootCredential, credential, 'the invoking credential did not reach the preamble boot');
   assert.deepEqual([first.exitCode, first.stdout, first.stderr], [0, `from the cwd\n${dir}\n`, ''], 'the prompt reads a file in its cwd');
   assert.equal(ran.length, 2, 'it entered the cwd, then ran the line');
 

@@ -281,15 +281,22 @@ await runScenarios(import.meta.path, {
   async 'a moved link reported before its rename is answered is the link the table holds'() {
     const renamed = Promise.withResolvers();
     const release = Promise.withResolvers();
+    // The rename's wave, held once the session has applied it.
+    let holding = false;
     const { authority, probe } = await boot((seeded) => seeded.kfs.symlink('self.txt', 'home/user/app/self.txt'), (forward) => ({
-      rename: async (...args) => {
-        const answer = await forward('rename', args);
-        renamed.resolve();
-        await release.promise;
+      writeBatchStream: async (...args) => {
+        const held = holding;
+        holding = false;
+        const answer = await forward('writeBatchStream', args);
+        if (held) {
+          renamed.resolve();
+          await release.promise;
+        }
         return answer;
       },
     }));
     const moved = `${APP}/moved-self.txt`;
+    holding = true;
     probe.fs.renameSync(`${APP}/self.txt`, moved);
     await renamed.promise;
     const committed = authority.rawVfs.revision();

@@ -67,6 +67,7 @@ import { Fanout, MAX_PEER_FANOUT } from '@nimbus-sh/fabric/fanout.js';
 import { runWaveBench } from '../git/wave-bench.js';
 import { decodeWriteBatchStream, encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
 import { z } from 'zod/v4';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 // `SessionPortHost`, `routeToSessionPort` and `routeCapabilityPort` live in
 // session/port-capability.ts so the composed manager's `apps` surface can
 // call the one implementation without importing this file (which reaches
@@ -716,6 +717,8 @@ async function routeFetch(self, request) {
             ts: Date.now(),
             // ── v2 / W5 additions (preserved) ─────────────────────────
             lastFailures,
+            // Subtrees processes hold, and the recalls asked of them (runtime/delegations.ts).
+            delegations: self.processFiles?.delegations.stats() ?? null,
             vfsDetail: {
                 lruBytes: cacheStats.hotBytes ?? 0,
                 lruMaxEntries: cacheStats.maxEntries ?? LRU_MAX_ENTRIES,
@@ -1214,14 +1217,17 @@ async function routeFetch(self, request) {
             const vfs = self.sqliteFs.as(CRED_KERNEL);
             const body = await parseJsonBody(request, WriteFileBodySchema);
             const path = body.path.replace(/^\/+/, '');
-            // Ensure parent dirs
-            const parts = path.split('/');
-            for (let i = 1; i < parts.length; i++) {
-                const dir = parts.slice(0, i).join('/');
-                if (dir && !vfs.exists(dir))
-                    vfs.mkdir(dir, { recursive: true });
-            }
-            vfs.writeFile(path, body.content);
+            // A delegation it meets is recalled first; the whole write is repeatable.
+            await withRecall(() => {
+                // Ensure parent dirs
+                const parts = path.split('/');
+                for (let i = 1; i < parts.length; i++) {
+                    const dir = parts.slice(0, i).join('/');
+                    if (dir && !vfs.exists(dir))
+                        vfs.mkdir(dir, { recursive: true });
+                }
+                vfs.writeFile(path, body.content);
+            });
             return Response.json({ ok: true, path });
         }
         catch (e) {
@@ -1233,7 +1239,7 @@ async function routeFetch(self, request) {
         try {
             const body = await parseJsonBody(request, MkdirBodySchema);
             const path = body.path.replace(/^\/+/, '');
-            self.sqliteFs.as(CRED_KERNEL).mkdir(path, { recursive: true });
+            await withRecall(() => self.sqliteFs.as(CRED_KERNEL).mkdir(path, { recursive: true }));
             return Response.json({ ok: true, path });
         }
         catch (e) {
@@ -1391,16 +1397,10 @@ async function routeFetch(self, request) {
         }
         // Polished placeholder — auto-reloads when vite starts.
         // Checks the VFS for the starter app so we can offer a context-aware hint.
-        const hasSeed = (() => {
-            try {
-                const vfs = self.sqliteFs.as(CRED_KERNEL);
-                return vfs.exists(SEED_PROJECT_DIR) &&
-                    vfs.exists(SEED_PROJECT_DIR + '/package.json');
-            }
-            catch {
-                return false;
-            }
-        })();
+        const hasSeed = await withRecall(() => {
+            const vfs = self.sqliteFs.as(CRED_KERNEL);
+            return vfs.exists(SEED_PROJECT_DIR) && vfs.exists(SEED_PROJECT_DIR + '/package.json');
+        }).catch(() => false);
         const hint = hasSeed
             ? `cd ${SEED_PROJECT_NAME} &amp;&amp; npm install &amp;&amp; npm run dev`
             : 'vite';
@@ -1430,18 +1430,13 @@ async function routeFetch(self, request) {
             // nimbus-wrangler starts. The placeholder references BOTH command
             // names so users coming from either `wrangler dev` or
             // `nimbus-wrangler dev` see a familiar hint.
-            const hasWranglerConfig = (() => {
-                try {
-                    self.ensureSqliteFs();
-                    const vfs = self.sqliteFs.as(CRED_KERNEL);
-                    return vfs.exists('home/user/wrangler.jsonc') ||
-                        vfs.exists('home/user/wrangler.json') ||
-                        vfs.exists('home/user/wrangler.toml');
-                }
-                catch {
-                    return false;
-                }
-            })();
+            const hasWranglerConfig = await withRecall(() => {
+                self.ensureSqliteFs();
+                const vfs = self.sqliteFs.as(CRED_KERNEL);
+                return vfs.exists('home/user/wrangler.jsonc') ||
+                    vfs.exists('home/user/wrangler.json') ||
+                    vfs.exists('home/user/wrangler.toml');
+            }).catch(() => false);
             const hint = hasWranglerConfig
                 ? 'npm run dev'
                 : 'wrangler dev';

@@ -7,6 +7,6 @@
  * this code, as the same text whatever toolchain later evaluates the shim.
  */
 export { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, packageSelfReferenceSubpath, resolveExports, resolvePackageEntry, } from './exports-resolver.js';
-export { TYPESCRIPT_INDEX_CANDIDATES, typescriptFallbackCandidates } from './typescript-specifiers.js';
+export { TYPESCRIPT_INDEX_CANDIDATES, stripsTypeScript, typescriptFallbackCandidates } from './typescript-specifiers.js';
 export { presentedCredential } from './ai-egress.js';
 //# sourceMappingURL=node-shim-resolution.d.ts.map

@@ -67,6 +67,7 @@ import {
 } from './ruby-gems.js';
 import { exists } from '../vfs/vfs.js';
 import { errorText } from '../_shared/error-text.js';
+import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 
 const RUBY_RUNTIME_BIN_NAMES = new Set(['ruby', 'ruby3', 'gem', 'bundle', 'bundler']);
 const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
@@ -234,6 +235,7 @@ export function makeRubyRunnerFactory(deps: {
         progName,
         binName,
         cwd,
+        cred: { uid: cred.uid, gid: cred.gid, groups: [...cred.groups] },
       };
 
       let result: RubyFacetResult;
@@ -586,6 +588,8 @@ interface RubyFacetArgs {
   /** The command that ran it (ruby, ruby3, gem, ...): what its own refusals name. */
   binName: string;
   cwd: string;
+  /** The credential it runs as: with it, its filesystem is its resident one (WasiInitOptions.cred). */
+  cred: { uid: number; gid: number; groups: number[] };
 }
 
 /** What one invocation hands the VM. Identical for both process shapes. */
@@ -596,6 +600,7 @@ export interface RubyFacetCallArgs {
   progName: string;
   binName: string;
   cwd: string;
+  cred: { uid: number; gid: number; groups: number[] };
 }
 
 export interface RubyFacetResult {
@@ -659,6 +664,7 @@ function toRubyCallArgs(args: RubyFacetArgs): RubyFacetCallArgs {
     progName: args.progName,
     binName: args.binName,
     cwd: args.cwd,
+    cred: args.cred,
   };
 }
 
@@ -718,8 +724,8 @@ async function dispatchRubyFacet(
       wasmModules: {
         'ruby+stdlib.wasm': image,
       },
-      timeoutMs: 300_000,
-      // A kill or Ctrl-C ends the facet too, where the host can.
+      // No deadline: a process runs until it exits or is killed. A kill or
+      // Ctrl-C ends the facet too, where the host can.
       signal,
     });
     return normalizeRubyFacetResult(rawResult) || {
@@ -730,7 +736,8 @@ async function dispatchRubyFacet(
     };
   } catch (e: unknown) {
     // Killed: the program ends as an interrupted one does.
-    if (signal.aborted) return { exitCode: 130, stdout: '', stderr: '' };
+    // What it may have lost is said however it ended (unsettledEnd).
+    if (signal.aborted) return { exitCode: 130, stdout: '', stderr: unsettledNoteOf(e) };
     return {
       exitCode: 1,
       stdout: '',
@@ -808,9 +815,12 @@ globalThis.__nimbusRubyStderr = globalThis.__nimbusRubyStderr || [];
 // built, and the scope is the only thing that knows.
 const __nimbusRubyParking = typeof WebAssembly.promising === 'function' ? 'jspi' : 'none';
 
-function __nimbusInstallRubyFs() {
+function __nimbusInstallRubyFs(cred) {
   // The VM sees the whole session tree at '/'; /tmp and /home are preopened
-  // as well because ruby.wasm's stdlib resolves them by preopen name.
+  // as well because ruby.wasm's stdlib resolves them by preopen name. With
+  // its credential the process answers what it can from its own store and
+  // sends its changes as waves (wasi/resident-filesystem.ts); without, every
+  // call is a round trip to the session.
   __wasiInitFS({
     root: '',
     preopens: [
@@ -818,6 +828,7 @@ function __nimbusInstallRubyFs() {
       { wasiPath: '/tmp',  vfsPath: 'tmp' },
       { wasiPath: '/home', vfsPath: 'home' },
     ],
+    cred,
   });
 }
 
@@ -1235,7 +1246,7 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   }
 
   try {
-    __nimbusInstallRubyFs();
+    __nimbusInstallRubyFs(args.cred);
     // AFTER the mount, never before. __wasiInitFS deliberately drops the
     // supervisor so a pooled isolate cannot serve the previous tenant's
     // filesystem, which means adopting first — as both ruby entry points do,

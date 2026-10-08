@@ -23,7 +23,7 @@
 // where some indirection rebinds `process`. Probe asserts that EVERY
 // path correctly flushes and surfaces the code.
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, sleep, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[G1] sid=${sid} BASE=${BASE}`);
@@ -36,24 +36,10 @@ await t.waitForPrompt(15_000).catch(() => {});
 await t.run('mkdir -p /home/user/g1-probe', 5_000);
 await t.run('cd /home/user/g1-probe', 5_000);
 
-// Exit-code surface: $? is the canonical, reliable signal (verified
-// live, 8/8). The "exited with code N" replay banner is a best-effort
-// failure-context dump intentionally gated on buffered output being
-// present at finalize time, so it races stdout delivery and is NOT a
-// dependable exit-code surface. Run the command and sample $? in the
-// SAME line, so one run captures both the flushed stdout marker and the
-// exit code.
-async function runWithExitCode(term, cmd) {
-  const r = await term.run(`${cmd}; echo NIMBUS_EX=$?`, 30_000);
-  const out = stripAnsi(r.output);
-  const m = out.match(/NIMBUS_EX=(-?\d+)/);
-  return { out, code: m ? parseInt(m[1], 10) : null };
-}
-
 // ── Test 1: node -e + process.exit(7) ──
-const e1 = await runWithExitCode(t, 'node -e "console.log(\'a-marker\'); process.exit(7);"');
-const t1Out = /a-marker/.test(e1.out);
-const t1Code = e1.code === 7;
+const e1 = await t.run('node -e "console.log(\'a-marker\'); process.exit(7);"', 30_000);
+const t1Out = /a-marker/.test(e1.output);
+const t1Code = e1.exitCode === 7;
 
 // ── Test 2: node script.js + process.exit(13) ──
 const code = "console.log('b-marker'); process.exit(13);";
@@ -62,9 +48,9 @@ await t.run(
   `node -e "require('fs').writeFileSync('exit13.js', Buffer.from('${codeB64}','base64').toString('utf8'))"`,
   10_000,
 );
-const e2 = await runWithExitCode(t, 'node exit13.js');
-const t2Out = /b-marker/.test(e2.out);
-const t2Code = e2.code === 13;
+const e2 = await t.run('node exit13.js', 30_000);
+const t2Out = /b-marker/.test(e2.output);
+const t2Code = e2.exitCode === 13;
 
 // ── Test 3: bin shim that calls process.exit(7) ──
 //
@@ -80,22 +66,22 @@ await t.run(
   `node -e "require('fs').writeFileSync('node_modules/.bin/exit21cli', Buffer.from('${cliCodeB64}','base64').toString('utf8'))"`,
   10_000,
 );
-const e3 = await runWithExitCode(t, 'exit21cli');
-const t3Out = /c-marker/.test(e3.out);
-const t3Code = e3.code === 21;
+const e3 = await t.run('exit21cli', 30_000);
+const t3Out = /c-marker/.test(e3.output);
+const t3Code = e3.exitCode === 21;
 
 // ── Test 4: process.exit(0) — success-path flush ──
-const e4 = await runWithExitCode(t, "node -e \"console.log('d-marker'); process.exit(0);\"");
-const t4Out = /d-marker/.test(e4.out);
-const t4Code = e4.code === 0;
+const e4 = await t.run("node -e \"console.log('d-marker'); process.exit(0);\"", 30_000);
+const t4Out = /d-marker/.test(e4.output);
+const t4Code = e4.exitCode === 0;
 
 // ── Test 5: stdout written via process.stdout.write (NOT console.log) ──
 //
 // Some libs go straight to process.stdout.write. Asserts that the
 // stdout-write shim chain also flushes before exit.
-const e5 = await runWithExitCode(t, "node -e \"process.stdout.write('e-marker\\n'); process.exit(2);\"");
-const t5Out = /e-marker/.test(e5.out);
-const t5Code = e5.code === 2;
+const e5 = await t.run("node -e \"process.stdout.write('e-marker\\n'); process.exit(2);\"", 30_000);
+const t5Out = /e-marker/.test(e5.output);
+const t5Code = e5.exitCode === 2;
 
 await t.close();
 

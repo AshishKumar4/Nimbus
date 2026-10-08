@@ -40,26 +40,26 @@ await t.run(heredocCommand('b.c',
 await t.run('clang b.c -o b', 240_000);
 
 // Run each and assert distinct, correct behavior.
-const rA = await t.run('./a ; echo A_RC=$?', 30_000);
+const rA = await t.run('./a', 30_000);
 const outA = stripAnsi(rA.output);
 a.check('./a prints XAPPLE', /XAPPLE/.test(outA), JSON.stringify(outA.slice(-300)));
-a.check('./a → A_RC=7', /A_RC=7\b/.test(outA), JSON.stringify(outA.slice(-200)));
+a.check('./a → A_RC=7', rA.exitCode === 7, JSON.stringify(outA.slice(-200)));
 
-const rB = await t.run('./b ; echo B_RC=$?', 30_000);
+const rB = await t.run('./b', 30_000);
 const outB = stripAnsi(rB.output);
 a.check('./b prints YBANAN (NOT XAPPLE — bug fix)', /YBANAN/.test(outB),
   JSON.stringify(outB.slice(-300)));
 a.check('./b does NOT print XAPPLE (state leakage check)', !/XAPPLE/.test(outB),
   JSON.stringify(outB.slice(-300)));
-a.check('./b → B_RC=11 (distinct from A)', /B_RC=11\b/.test(outB),
+a.check('./b → B_RC=11 (distinct from A)', rB.exitCode === 11,
   JSON.stringify(outB.slice(-200)));
 
 // Run in reverse order too — ./a should still print XAPPLE after ./b.
-const rA2 = await t.run('./a ; echo A2_RC=$?', 30_000);
+const rA2 = await t.run('./a', 30_000);
 const outA2 = stripAnsi(rA2.output);
 a.check('./a after ./b still prints XAPPLE (state didn\'t flip)', /XAPPLE/.test(outA2),
   JSON.stringify(outA2.slice(-300)));
-a.check('./a after ./b → A2_RC=7', /A2_RC=7\b/.test(outA2), JSON.stringify(outA2.slice(-200)));
+a.check('./a after ./b → A2_RC=7', rA2.exitCode === 7, JSON.stringify(outA2.slice(-200)));
 
 await t.close();
 const sum = a.summary();

@@ -35,9 +35,9 @@ const rc = await t.run('clang -O0 -o /home/user/tr /home/user/tr.c', 240_000);
 const compileOK = !/error:|Assertion failed/.test(stripAnsi(rc.output));
 a.check('clang compiles', compileOK, compileOK ? '' : JSON.stringify(stripAnsi(rc.output).slice(-400)));
 
-const rr = await t.run('/home/user/tr ; echo RUN_EXIT=$?', 60_000);
+const rr = await t.run('/home/user/tr', 60_000);
 a.check('PROGRAM_OK printed', /PROGRAM_OK/.test(stripAnsi(rr.output)), JSON.stringify(stripAnsi(rr.output).slice(-200)));
-a.check('exit code 0', /RUN_EXIT=0/.test(stripAnsi(rr.output)), JSON.stringify(stripAnsi(rr.output).slice(-200)));
+a.check('exit code 0', rr.exitCode === 0, JSON.stringify(stripAnsi(rr.output).slice(-200)));
 
 const rExists = await t.run(`node -e "console.log(require('fs').existsSync('/home/user/traversal-top.txt') ? 'EXISTS' : 'ABSENT')"`, 15_000);
 a.check('/home/user/traversal-top.txt EXISTS (../ resolved)', /EXISTS/.test(stripAnsi(rExists.output)),

@@ -12,7 +12,7 @@
   // and past `nodejs_compat` becoming the default (2026-08-04).
   "compatibility_date": "2026-09-26",
   // Shell commands run in the session DO; the 30 s default kills them. Facets keep their own ~30 s.
-  "limits": { "cpu_ms": 300000 },
+  "limits": { "cpu_ms": 300000, "subrequests": 10000000 },
   // Traces on every invocation: throwaways and nimbus-probe-staging are where
   // a lost supervisor call is diagnosed (see apps/hosted-demo/wrangler.jsonc).
   "observability": {
@@ -21,6 +21,7 @@
     "traces": { "enabled": true, "head_sampling_rate": 1 }
   },
   "preview_urls": false,
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "vars": {
     // The SHA-256 of the runtime catalog in the NIMBUS_RUNTIME_CACHE bucket below:
     // `nimbus install` reads catalog/sha256/<this>.json and nothing else
@@ -93,8 +94,7 @@
     }
   ],
   // Worker Previews (`wrangler preview`, wrangler >= 4.135): what every
-  // throwaway probe target — local `_throwaway-target.mjs up` and CI's
-  // `nimbus-tw-ci-*` — runs as. A Preview inherits NO binding or var from
+  // throwaway probe target runs as. A Preview inherits NO binding or var from
   // the top level (https://developers.cloudflare.com/workers/previews/configuration/),
   // so each one is redeclared here with the same name. Durable Objects get
   // a namespace and SQLite storage of their own per Preview, automatically;
@@ -103,6 +103,7 @@
   // secret lives here: JWT_SECRET is generated per Preview and uploaded
   // with its deployment (`--secrets-file`, `--ignore-base-config`).
   "previews": {
+    "version_metadata": { "binding": "CF_VERSION_METADATA" },
     "vars": {
       "NIMBUS_RUNTIME_CATALOG_SHA256": "11b4b6b174e87c044734207d7c8cd40a412a670e477cc99299e347559f8756fb",
       "NIMBUS_PROCESS_HOST": "facet",

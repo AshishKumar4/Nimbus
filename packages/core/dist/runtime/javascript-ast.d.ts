@@ -27,6 +27,23 @@ export interface StatementHooks {
      */
     readonly onNode?: (node: AstNode) => void;
 }
+/** The parts of acorn's Parser a plugin uses (acorn's plugin API, which its declarations leave out). */
+export interface AcornParser {
+    type: unknown;
+    inModule: boolean;
+    undefinedExports: Record<string, {
+        start: number;
+        end: number;
+    }>;
+    parse(): Program;
+    parseStatement(context: null, topLevel?: boolean, exports?: object): unknown;
+    finishNode<T>(node: T, type: string): T;
+    raiseRecoverable(pos: number, message: string): void;
+    next(): void;
+    scopeStack: Array<{
+        var: string[];
+    }>;
+}
 /**
  * acorn's parse of `source` with no tree of the whole program held: each
  * top-level statement goes to the hooks as it is parsed and is not kept,
@@ -72,12 +89,6 @@ export declare const COMMONJS_WRAPPER_NAMES: ReadonlySet<string>;
  * place (commonJsCompileError).
  */
 export declare function containsModuleSyntax(source: string, scope?: 'file' | 'eval'): boolean;
-/**
- * Whether `source` may hold an `await` outside every function body (a
- * top-level await), read off its tokens: true when one is found, or when the
- * source does not tokenize, so a false answer is certain.
- */
-export declare function hasUnscopedAwait(source: string): boolean;
 /**
  * Walk `source`'s tokens tracking brace, paren and bracket depth, without
  * building an AST (a multi-MiB bundle chunk must fit a 48 MiB heap). `visit`

@@ -5,7 +5,7 @@
 // same way; scripts/ci/remote-probes.mjs runs it on armada.
 //
 //   NIMBUS_PROBE_TOKEN=<jwt> bun scripts/ci/probes.mjs --out <file> --base <url>
-//       [--only a,b] [--skip c,d] [--part K/N] [--jobs J] [--start-by <epoch ms>]
+//       [--only a,b] [--skip c,d] [--part K/N] [--jobs J] [--start-by <epoch ms>] [--screenshots 1]
 //
 // --start-by is the latest a task may start and still finish within its
 // limit before the token expires; a task that starts later is not graded,
@@ -23,14 +23,15 @@
 // Exit: 0, every row green; 1, otherwise; 2, not graded (no token, the
 // target unreachable, or the runner produced no verdict).
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { readScreenshots } from './lib/probe-screenshots.mjs';
 
 // --anonymous: a hosted demo's checks, which take no token (remote-probes --target hosted:…).
 const anonymous = process.argv.includes('--anonymous');
 const argv = process.argv.slice(2).filter((arg) => arg !== '--anonymous');
-const FLAGS = ['--out', '--base', '--only', '--skip', '--part', '--jobs', '--start-by'];
+const FLAGS = ['--out', '--base', '--only', '--skip', '--part', '--jobs', '--start-by', '--screenshots'];
 const flags = {};
 for (let i = 0; i < argv.length; i += 2) {
   if (!FLAGS.includes(argv[i]) || argv[i + 1] === undefined) usage(`unexpected ${JSON.stringify(argv[i])}`);
@@ -104,11 +105,16 @@ try {
 
 const scratch = mkdtempSync(join(tmpdir(), 'ci-probes-'));
 try {
+  const captures = flags.screenshots ? join(scratch, 'screenshots') : null;
+  if (captures) mkdirSync(captures);
   const report = join(scratch, 'report.json');
   const args = ['tests/behavioral/run-all.mjs', '--no-retry', '--ledger', join(scratch, 'ledger.jsonl'), '--json', report];
   if (flags.part) args.push('--part', flags.part);
   if (flags.jobs) args.push('--jobs', flags.jobs);
-  const { code, tail } = await run('bun', args, { ...process.env, BASE: flags.base, NIMBUS_PROBE_ONLY: flags.only ?? '', NIMBUS_PROBE_SKIP: flags.skip ?? '' });
+  const { code, tail } = await run('bun', args, {
+    ...process.env, BASE: flags.base, NIMBUS_PROBE_ONLY: flags.only ?? '', NIMBUS_PROBE_SKIP: flags.skip ?? '',
+    ...(captures ? { NIMBUS_PROBE_SCREENSHOTS: captures } : {}),
+  });
   let verdict;
   try {
     verdict = JSON.parse(readFileSync(report, 'utf8'));
@@ -123,7 +129,7 @@ try {
     name: 'session-ledger', exitCode: leaks.length === 0 ? 0 : 1, seconds: 0,
     output: `${minted} minted, ${deleted} deleted${leaks.map((leak) => `\nleaked: ${leak.probe}: ${leak.sid} (last DELETE: ${leak.last})`).join('')}`,
   });
-  writeFileSync(flags.out, `${JSON.stringify({ base: flags.base, part: verdict.part, rows })}\n`);
+  writeFileSync(flags.out, `${JSON.stringify({ base: flags.base, part: verdict.part, rows, ...(captures ? { screenshots: readScreenshots(captures) } : {}) })}\n`);
   process.exitCode = rows.every((row) => row.exitCode === 0) ? 0 : 1;
 } finally {
   rmSync(scratch, { recursive: true, force: true });

@@ -12,7 +12,7 @@
  * the shell resolves them to the process's own descriptors before any read.
  * /dev/tcp is the WASI socket prefix, not a node here.
  */
-import type { SyncVFS, VFS, VfsDirent, VfsStat } from './vfs.js';
+import { type SyncVFS, type VFS, type VfsDirent, type VfsStat } from './vfs.js';
 export declare class DevVFS implements VFS {
     readonly sync: SyncVFS;
     /** The device at `path`; ENOENT for `syscall` when there is none. */

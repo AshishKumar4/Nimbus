@@ -9,17 +9,16 @@
  * grows to fit the working set and cannot shrink. build()'s VFS resolver
  * plugin always runs here, over this service's view.
  */
-import { FACET_PROVIDED_PACKAGE_ENTRYPOINTS } from '../constants.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
-import { tokenizer, tokTypes } from 'acorn';
 import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { packageNameFromSpecifier } from './barrel-detect.js';
 import { bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
-import { emitCommonJs, lowerAsyncModule, readEsmModule } from './async-module-lowering.js';
-import { ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs, esModuleSource } from './module-format.js';
-import { applySourceEdits, hasUnscopedAwait, nodeList, nodeName, nodeProp, parseJavaScriptModule, walkTopLevelModuleTokens, } from './javascript-ast.js';
+import { lowerAsyncModule, lowerEsModule } from './async-module-lowering.js';
+import { ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs } from './module-format.js';
+import { rewriteProvidedCommonJsModules } from './provided-packages.js';
+import { withRecall } from '../vfs/recall.js';
 import { VITE_ASSET_QUERY_SUFFIXES, splitImportQuery, viteAssetLoader, } from './vite-assets.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
@@ -141,225 +140,6 @@ export function getSharedRuntimeExternals(specifier) {
         return true;
     });
 }
-/** The top-level import and export declarations, each through its `;`; null when one is unterminated or the source does not tokenize. */
-function topLevelModuleDeclarationRanges(source) {
-    const ranges = [];
-    let active = null;
-    const walked = walkTopLevelModuleTokens(source, (token, syntax, topLevel) => {
-        if (active) {
-            if (token.type === tokTypes.semi && topLevel) {
-                ranges.push({ ...active, end: token.end });
-                active = null;
-            }
-        }
-        else if (syntax === 'import' || syntax === 'export') {
-            active = { start: token.start, kind: syntax };
-        }
-        return false;
-    });
-    return walked === null || active ? null : ranges;
-}
-function importMetaEdits(source, absoluteUrl, moduleFactory) {
-    // A module factory's import.meta is the module's metadata object, bound by
-    // the facet's rewrite of every MetaProperty (dynamic-import-rewrite.ts), so
-    // any property — Vite's chunks read `import.meta.dirname`, `.env`, `.hot` —
-    // is left for that pass, exactly as esbuild's output leaves it.
-    if (moduleFactory)
-        return [];
-    const edits = [];
-    const urlExpression = JSON.stringify(absoluteUrl);
-    try {
-        const tokens = tokenizer(source, {
-            ecmaVersion: 'latest',
-            sourceType: 'module',
-            allowHashBang: true,
-        });
-        while (true) {
-            const start = tokens.getToken();
-            if (start.type === tokTypes.eof)
-                return edits;
-            if (start.type !== tokTypes._import)
-                continue;
-            const dot1 = tokens.getToken();
-            if (dot1.type !== tokTypes.dot)
-                continue;
-            const meta = tokens.getToken();
-            if (meta.type !== tokTypes.name || source.slice(meta.start, meta.end) !== 'meta')
-                return null;
-            const dot2 = tokens.getToken();
-            if (dot2.type !== tokTypes.dot)
-                return null;
-            const property = tokens.getToken();
-            if (property.type !== tokTypes.name)
-                return null;
-            const propertyName = source.slice(property.start, property.end);
-            if (propertyName === 'url') {
-                edits.push({ start: start.start, end: property.end, text: urlExpression });
-            }
-            else if (propertyName === 'resolve') {
-                edits.push({
-                    start: start.start,
-                    end: property.end,
-                    text: `(specifier => globalThis.__nimbusImportMetaResolve(specifier, ${urlExpression}))`,
-                });
-            }
-            else {
-                return null;
-            }
-        }
-    }
-    catch {
-        return null;
-    }
-}
-/**
- * The runtime's function a bound record calls for its package: the one the
- * module system serves (node-shims.ts), named apart from the module's own
- * `require`, which an ES module does not have (module-format.ts).
- */
-export const PROVIDED_PACKAGE_HOOK = '__nimbusProvidedPackage';
-/** Bind canonical esbuild/Bun CommonJS records to the runtime's provided packages. */
-export function rewriteProvidedCommonJsModules(source) {
-    const helpers = new Set(['__commonJS']);
-    const declarations = topLevelModuleDeclarationRanges(source);
-    if (!declarations)
-        return source;
-    for (const range of declarations) {
-        const declaration = source.slice(range.start, range.end);
-        if (tokenizer(declaration, { ecmaVersion: 'latest', sourceType: 'module' }).getToken().type !== tokTypes._import)
-            continue;
-        const parsed = parseJavaScriptModule(declaration);
-        for (const statement of nodeList(parsed, 'body')) {
-            if (statement.type !== 'ImportDeclaration')
-                continue;
-            for (const specifier of nodeList(statement, 'specifiers')) {
-                if (nodeName(nodeProp(specifier, 'imported')) !== '__commonJS')
-                    continue;
-                const local = nodeName(nodeProp(specifier, 'local'));
-                if (local)
-                    helpers.add(local);
-            }
-        }
-    }
-    const tokens = tokenizer(source, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true });
-    let a = tokens.getToken();
-    let b = tokens.getToken();
-    let c = tokens.getToken();
-    let d = tokens.getToken();
-    let e = tokens.getToken();
-    let previous = tokTypes.eof;
-    const edits = [];
-    while (a.type !== tokTypes.eof) {
-        const labelValue = 'value' in d ? d.value : undefined;
-        const helperValue = 'value' in a ? a.value : undefined;
-        const label = d.type === tokTypes.string && typeof labelValue === 'string' ? labelValue : null;
-        const entry = label === null ? undefined : Object.entries(FACET_PROVIDED_PACKAGE_ENTRYPOINTS).find(([name, path]) => {
-            const suffix = 'node_modules/' + name + '/' + path;
-            return label === suffix || label.endsWith('/' + suffix);
-        });
-        if (a.type === tokTypes.name && typeof helperValue === 'string' && helpers.has(helperValue)
-            && previous !== tokTypes.dot && previous !== tokTypes.questionDot
-            && b.type === tokTypes.parenL && c.type === tokTypes.braceL && entry
-            && e.type === tokTypes.parenL) {
-            let parens = 2;
-            let braces = 1;
-            let singleModule = true;
-            let bodySeen = false;
-            let last = e;
-            let pendingComma = false;
-            while (parens > 0) {
-                const token = tokens.getToken();
-                if (token.type === tokTypes.eof)
-                    return source;
-                if (pendingComma && token.type !== tokTypes.braceR)
-                    singleModule = false;
-                pendingComma = false;
-                if (token.type === tokTypes.braceL || token.type === tokTypes.dollarBraceL) {
-                    if (braces === 1 && parens === 1)
-                        bodySeen = true;
-                    braces++;
-                }
-                else if (token.type === tokTypes.braceR)
-                    braces--;
-                if (token.type === tokTypes.parenL)
-                    parens++;
-                else if (token.type === tokTypes.parenR)
-                    parens--;
-                if (braces === 1 && parens === 1 && token.type === tokTypes.comma)
-                    pendingComma = true;
-                if (braces === 0 && parens === 1 && token.type !== tokTypes.braceR)
-                    singleModule = false;
-                last = token;
-            }
-            if (singleModule && bodySeen && braces === 0) {
-                edits.push({ start: a.start, end: last.end, text: `(() => ${PROVIDED_PACKAGE_HOOK}(${JSON.stringify(entry[0])}))` });
-            }
-            previous = last.type;
-            a = tokens.getToken();
-            b = tokens.getToken();
-            c = tokens.getToken();
-            d = tokens.getToken();
-            e = tokens.getToken();
-            continue;
-        }
-        previous = a.type;
-        a = b;
-        b = c;
-        c = d;
-        d = e;
-        e = tokens.getToken();
-    }
-    return edits.length === 0 ? source : applySourceEdits(source, edits);
-}
-/**
- * A large ES module (bundle-cell-transform.ts BUNDLED_ESM_REWRITE_MIN_BYTES)
- * lowered to CommonJS in the session, without the transform host: read a
- * statement at a time (readEsmRecords, bounded memory, imports live) and
- * emitted by the one emitter. Null for what it leaves to the host: top-level
- * await (its body is synchronous), an import.meta member it does not bind, a
- * module acorn cannot parse, and a source with no module syntax. In Bun's
- * `scope` (module-format.ts ModuleScope) the module keeps CommonJS's names.
- */
-export function rewriteBundledEsmToCjs(source, absoluteUrl, moduleFactory = false, scope = 'node') {
-    if (hasUnscopedAwait(source))
-        return null;
-    // Read a statement at a time (readEsmRecords), so a multi-MiB bundle reads
-    // in bounded memory, imports live. What acorn cannot parse is left to the
-    // transform host, which has the last word on syntax.
-    let read;
-    try {
-        read = readEsmModule(source);
-    }
-    catch {
-        return null;
-    }
-    const { records, wrapperUses } = read;
-    if (records.length === 0)
-        return null;
-    const metaEdits = importMetaEdits(source, absoluteUrl, moduleFactory);
-    if (!metaEdits)
-        return null;
-    // A free use of a CommonJS wrapper name binds nothing in an ES module, as
-    // the transform's define has it (ES_MODULE_UNBOUND_NAMES).
-    const unbound = [];
-    if (scope === 'node')
-        for (const [name, references] of wrapperUses) {
-            const to = ES_MODULE_UNBOUND_NAMES[name];
-            for (const { start, end, use } of references)
-                unbound.push({ start, end, text: use === 'shorthand' ? `${name}: ${to}` : to });
-        }
-    // Only generated references use wrapper arguments. Source declarations
-    // named module/require/exports retain their own meanings. An import.meta
-    // is one token run, so it is inside a record's range or outside every one.
-    const code = emitCommonJs(source, records, {
-        body: 'sync',
-        exportsObject: moduleFactory ? 'arguments[2].exports' : 'module.exports',
-        requireFunction: moduleFactory ? 'arguments[1]' : 'module.require',
-        edits: [...metaEdits, ...unbound].filter((edit) => !records.some(({ start, end }) => edit.start >= start && edit.end <= end)),
-    });
-    const strict = (moduleFactory ? '"use strict";\n' : '') + code;
-    return { code: scope === 'node' ? esModuleScopeTypeofs(strict) : strict, map: '', warnings: [] };
-}
 const __outputDecoder = new TextDecoder();
 /**
  * `lower` is async-module-lowering.ts's `lowerAsyncModule`, passed in because
@@ -470,18 +250,60 @@ async function transformWithEsbuild(esbuildApi, code, options, lower) {
  * One transform request as a transform host runs it: esbuild (unless the
  * code is already CommonJS), then, for a module whose dynamic `import()` is
  * the process's, the rewrite that routes each one to the process's ESM loader.
- * `rewrite` is dynamic-import-rewrite.ts's `rewriteDynamicImports` and `lower`
- * async-module-lowering.ts's `lowerAsyncModule`, passed in because this
- * function is serialized into the transform facet. `esbuildApi` is null only
- * before esbuild is loaded, which a rewrite-only request does not wait for.
+ * `engine` is null only before esbuild is loaded, which a rewrite-only
+ * request does not wait for.
  */
-async function runTransformRequest(esbuildApi, code, options, rewrite, lower) {
+async function runTransformRequest(engine, code, options, runtime) {
     const parent = options?.dynamicImportParent;
+    if (options?.stripTypes) {
+        if (runtime.stripTypeScript === undefined)
+            throw new Error('a type strip where amaro is not loaded');
+        const { stripTypes, packageType, stripOnly, ...rest } = options;
+        const stripped = await runtime.stripTypeScript(code, rest.sourcefile ?? '', stripTypes, packageType ?? null);
+        if ('refusal' in stripped)
+            return { error: stripped.refusal.message, typescript: stripped.refusal };
+        if (stripOnly)
+            return { code: stripped.code, map: '', warnings: [], ...(stripped.format === 'module' ? { esModule: 'node' } : {}) };
+        // JavaScript now: its bundled records of provided packages bound, as the session binds JavaScript's (preparedTransformSource).
+        const javaScript = runtime.rewriteProvidedCommonJsModules(stripped.code);
+        if (stripped.format === 'module') {
+            const lowering = { ...rest, esModule: 'node' };
+            try {
+                return await runTransformRequest(engine, javaScript, lowering, runtime);
+            }
+            catch (e) {
+                // Where the engine's stack runs out (oxc-transform.ts), the esbuild facet lowers the stripped code: it has no amaro.
+                if (typeof e === 'object' && e !== null && Reflect.get(e, 'stackExhausted') === true)
+                    Reflect.set(e, 'retry', { code: javaScript, options: lowering });
+                throw e;
+            }
+        }
+        return { code: parent === undefined ? javaScript : runtime.rewriteDynamicImports(javaScript, parent), map: '', warnings: [] };
+    }
     if (options?.rewriteOnly) {
         if (parent === undefined)
             throw new Error('a rewrite-only transform needs dynamicImportParent');
-        return { code: rewrite(code, parent, options.moduleMetadata), map: '', warnings: [] };
+        return { code: runtime.rewriteDynamicImports(code, parent, options.moduleMetadata), map: '', warnings: [] };
     }
+    if (options?.esModule) {
+        if (parent === undefined)
+            throw new Error('an ES module transform needs dynamicImportParent');
+        try {
+            return { ...runtime.lowerEsModule(code, options.esModule, parent), esModule: options.esModule };
+        }
+        catch (e) {
+            // Nested past what a parse on this stack reaches (acorn, about 600
+            // levels): the engine's CommonJS, which in the transform facet runs out
+            // too and so goes to the esbuild facet, whose parser does not; the
+            // session's define (requestOptions) keeps Node's scope.
+            if (!(e instanceof RangeError))
+                throw e;
+            const { esModule: scope, ...rest } = options;
+            const compiled = await runTransformRequest(engine, code, { ...rest, loader: 'js', format: 'cjs', target: 'esnext' }, runtime);
+            return { ...compiled, esModule: scope };
+        }
+    }
+    const esbuildApi = typeof engine === 'function' ? await engine() : engine;
     if (esbuildApi === null)
         throw new Error('esbuild transform before esbuild is loaded');
     if (options?.moduleMetadata && parent !== undefined && code.includes('import')) {
@@ -503,12 +325,12 @@ async function runTransformRequest(esbuildApi, code, options, rewrite, lower) {
             tsconfigRaw: options.tsconfigRaw, define: options.define,
             supported: { 'dynamic-import': true, 'import-meta': true },
         });
-        const bound = rewrite(javascript.code, parent, true, false);
-        const lowered = await transformWithEsbuild(esbuildApi, bound, { ...options, loader: 'js', moduleMetadata: false }, lower);
-        return { ...lowered, code: rewrite(lowered.code, parent) };
+        const bound = runtime.rewriteDynamicImports(javascript.code, parent, true, false);
+        const lowered = await transformWithEsbuild(esbuildApi, bound, { ...options, loader: 'js', moduleMetadata: false }, runtime.lowerAsyncModule);
+        return { ...lowered, code: runtime.rewriteDynamicImports(lowered.code, parent) };
     }
-    const result = await transformWithEsbuild(esbuildApi, code, options, lower);
-    return parent === undefined ? result : { ...result, code: rewrite(result.code, parent, options?.moduleMetadata) };
+    const result = await transformWithEsbuild(esbuildApi, code, options, runtime.lowerAsyncModule);
+    return parent === undefined ? result : { ...result, code: runtime.rewriteDynamicImports(result.code, parent, options?.moduleMetadata) };
 }
 /**
  * An esbuild diagnostic as RPC can carry it: everything but \`detail\`, which
@@ -635,28 +457,25 @@ async function remotePlugin(plugin, initialOptions) {
         },
     };
 }
-/** What a transform request hands the engine: its source after the provided-module pre-pass, unless it asks only for the rewrite. */
+/**
+ * An ES module request in Node's scope carries the define that unbinds the
+ * CommonJS names, which the host's engine applies where the lowering's parse
+ * runs out of stack (runTransformRequest), and its result has a typeof of one
+ * 'undefined' (module-format.ts esModuleScopeTypeofs; for the lowering's own
+ * result, already so).
+ */
+function requestOptions(options) {
+    return options?.esModule === 'node' || options?.stripTypes ? { ...options, define: { ...options.define, ...ES_MODULE_UNBOUND_NAMES } } : options;
+}
+function finishedTransform(result, options) {
+    return (options?.esModule ?? result.esModule) === 'node' ? { ...result, code: esModuleScopeTypeofs(result.code) } : result;
+}
+/** What a transform request is run on: a CJS emit of JavaScript has its bundled CommonJS records bound to the runtime's provided packages first. */
 function preparedTransformSource(code, options) {
     if (options?.rewriteOnly)
         return code;
-    return withProvidedModuleRewrite(options?.esModuleScope ? esModuleSource(code) : code, options);
-}
-/** What the engine is asked: an ES module's scope as the define that makes it. */
-function engineTransformOptions(options) {
-    if (!options?.esModuleScope || options.rewriteOnly)
-        return options;
-    const { esModuleScope: _scope, ...rest } = options;
-    return { ...rest, define: { ...rest.define, ...ES_MODULE_UNBOUND_NAMES } };
-}
-/** An engine's result for `options`, with an ES module's typeof of an unbound name 'undefined'. */
-function finishedTransform(result, options) {
-    return options?.esModuleScope && !options.rewriteOnly ? { ...result, code: esModuleScopeTypeofs(result.code) } : result;
-}
-/** A CJS emit of JavaScript binds bundled CommonJS records to the runtime's provided packages first. */
-function withProvidedModuleRewrite(code, options) {
-    return options?.format === 'cjs' && (!options.loader || options.loader === 'js' || options.loader === 'jsx')
-        ? rewriteProvidedCommonJsModules(code)
-        : code;
+    const javaScript = !options?.loader || options.loader === 'js' || options.loader === 'jsx';
+    return (options?.esModule || options?.format === 'cjs') && javaScript ? rewriteProvidedCommonJsModules(code) : code;
 }
 /**
  * Source bytes and files one transform host call carries. Bounds CPU work as
@@ -704,12 +523,15 @@ export class EsbuildService {
     /** The in-isolate engine, populated by ensureInit() from `engine`. */
     _esbuild = null;
     engine;
+    /** What an in-isolate transform runs besides its engine. */
+    runtime;
     /** Build reads use the caller-supplied view, or the one a build names; omit it for transform-only use. */
     constructor(vfs, options = {}) {
         this.vfs = vfs ?? null;
         this.transformHost = options.transformHost ?? null;
         this.buildHost = options.buildHost ?? null;
         this.engine = options.engine ?? null;
+        this.runtime = { rewriteDynamicImports, lowerAsyncModule, lowerEsModule, rewriteProvidedCommonJsModules, stripTypeScript: options.stripTypeScript };
         this.transformHostId = options.transformHost ? options.transformHostId ?? null : null;
     }
     /** Whether transforms run in this isolate (on its engine): true unless a transform host was given. */
@@ -752,14 +574,19 @@ export class EsbuildService {
             return outcome;
         }
         // In the isolate the engine's own error propagates, diagnostics and all.
-        const result = await this.transformInIsolate(preparedTransformSource(code, options), engineTransformOptions(options));
+        const result = await this.transformInIsolate(preparedTransformSource(code, options), requestOptions(options));
+        if ('error' in result)
+            throw new Error(result.error);
         return finishedTransform(result, options);
     }
     /** One transform on the in-isolate engine, of source the provided-module pre-pass has seen. */
     async transformInIsolate(code, options) {
-        if (!options?.rewriteOnly)
+        // The engine loads for the first request that needs it (an ES module's lowering does not).
+        const engine = async () => {
             await this.ensureInit();
-        return runTransformRequest(this._esbuild, code, options, rewriteDynamicImports, lowerAsyncModule);
+            return this._esbuild;
+        };
+        return runTransformRequest(engine, code, options, this.runtime);
     }
     /**
      * Transform many modules in one round trip to the transform host (or in
@@ -774,7 +601,7 @@ export class EsbuildService {
         const positions = [];
         requests.forEach(({ code, options }, i) => {
             try {
-                prepared.push({ code: preparedTransformSource(code, options), options: engineTransformOptions(options) });
+                prepared.push({ code: preparedTransformSource(code, options), options: requestOptions(options) });
                 positions.push(i);
             }
             catch (e) {
@@ -796,7 +623,8 @@ export class EsbuildService {
         for (let j = 0; j < prepared.length; j++) {
             const { code, options } = prepared[j];
             try {
-                outcomes[positions[j]] = finishedTransform(await this.transformInIsolate(code, options), requests[positions[j]].options);
+                const result = await this.transformInIsolate(code, options);
+                outcomes[positions[j]] = 'error' in result ? result : finishedTransform(result, requests[positions[j]].options);
             }
             catch (e) {
                 outcomes[positions[j]] = { error: errorText(e) };
@@ -891,7 +719,16 @@ export class EsbuildService {
      * and — with `viteAssets` — Vite's asset/`?suffix` import semantics.
      */
     makeVfsPlugin(opts) {
-        const vfs = opts?.fs ?? this.requireVfs();
+        const project = opts?.fs ?? this.requireVfs();
+        // A build reads a project a process may be writing: each read waits for a
+        // delegation it meets to be recalled (withRecall), so a held file is read
+        // as its holder decided it, never taken for one that is not there.
+        const vfs = {
+            exists: (path) => withRecall(() => project.exists(path)),
+            isDirectory: (path) => withRecall(() => project.isDirectory(path)),
+            readFile: (path) => withRecall(() => project.readFile(path)),
+            readFileString: (path) => withRecall(() => project.readFileString(path)),
+        };
         const resolver = createBundlerResolver({
             isFile: async (path) => await vfs.exists(stripLeadingSlashes(path)) && !await vfs.isDirectory(stripLeadingSlashes(path)),
             isDirectory: async (path) => await vfs.exists(stripLeadingSlashes(path)) && await vfs.isDirectory(stripLeadingSlashes(path)),

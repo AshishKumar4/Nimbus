@@ -37,7 +37,7 @@
 //
 // USAGE
 //   export CLOUDFLARE_ACCOUNT_ID=<account>            # account pin, required
-//   bun tests/behavioral/_throwaway-target.mjs up     # deploy + secret + token
+//   bun scripts/ci/remote-probes.mjs --deploy <name> # armada builds; upload + probes
 //   bun tests/behavioral/_throwaway-target.mjs session
 //   bun tests/behavioral/_throwaway-target.mjs down
 //
@@ -46,7 +46,7 @@
 //     BASE=<url> NIMBUS_PROBE_TOKEN=<jwt> bun tests/behavioral/run-all.mjs
 //
 // COMMANDS
-//   up      [--name <n>] [--no-build | --bundle <release dir>] [--ttl-ms <ms>] [--rotate-secrets]
+//   up      --bundle <release dir> [--name <n>] [--ttl-ms <ms>] [--rotate-secrets]
 //           [--var KEY:VALUE ...]  override a config var for this deploy —
 //           how one build is stood up twice to compare two settings of it.
 //           Every throwaway is deployed with the suite's target vars
@@ -94,6 +94,7 @@ const {
   randomSecret,
   readState,
   requireAccountPin,
+  TargetNotReadyError,
   waitForTarget,
   withSecretsFile,
   wrangle,
@@ -143,11 +144,21 @@ if (!run) {
   console.error(`usage: bun tests/behavioral/_throwaway-target.mjs <${Object.keys(COMMANDS).join('|')}> [flags]`);
   process.exit(2);
 }
-await run();
+try {
+  await run();
+} catch (error) {
+  if (!(error instanceof TargetNotReadyError)) throw error;
+  console.error(`readiness: NOT GRADED — ${error.message}`);
+  process.exitCode = error.exitCode;
+}
 
 // ── Commands ─────────────────────────────────────────────────────────
 
 async function up() {
+  if (!flags.bundle) {
+    throw new Error('up requires --bundle <release dir>: run `bun scripts/ci/remote-probes.mjs --deploy <name>` to build on armada and upload from here');
+  }
+  const bundle = uploadConfig(flags.bundle, 'apps/probe', { root: ROOT, preview: true, log });
   const account = requireAccountPin();
   const name = flags.name ? qualify(flags.name) : `${NAME_PREFIX}${randomSuffix()}`;
   const preview = previewName(name);
@@ -190,20 +201,6 @@ async function up() {
     rotate: Boolean(flags['rotate-secrets']),
   });
 
-  // --bundle: a release CI built for this commit, the dist gate included
-  // (scripts/ci/lib/release.mjs); this machine only uploads it.
-  // Without one, `wrangler preview` bundles here, after the gate builds:
-  // only a CI runner (GitHub's behavioral job) may do that. On the
-  // workstation it is remote-probes --deploy.
-  const bundle = flags.bundle ? uploadConfig(flags.bundle, 'apps/probe', { root: ROOT, preview: true, log }) : null;
-  if (!bundle && process.env.GITHUB_ACTIONS !== 'true') {
-    throw new Error('up without --bundle builds and bundles on this machine, which builds nothing: run `bun scripts/ci/remote-probes.mjs --deploy <name>`, which bundles on CI and uploads from here');
-  }
-  if (!bundle && flags.build !== false) {
-    const { assertDistMatchesSource } = await import('../../scripts/dist-integrity.mjs');
-    await assertDistMatchesSource({ root: ROOT, log });
-  }
-
   await ensurePreviewParent({ account, token });
 
   // Recorded before the deploy, not after: `wrangler preview` can create
@@ -217,7 +214,7 @@ async function up() {
   log(`deploying apps/probe as Preview ${preview} of ${PREVIEW_PARENT}`);
   for (let i = 0; i < varOverrides.length; i += 2) log(`var override: ${varOverrides[i + 1]}`);
   const { base, deploymentId, startupMs } = await deployPreview({ account, token, preview, secret, before, config: bundle });
-  writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base, secret, secretPushed: true, createdAt });
+  writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base, secret, secretPushed: true, createdAt, versionId: deploymentId });
   // The platform's own measure of the script's startup, limit 1 s
   // (https://developers.cloudflare.com/workers/platform/limits/#worker-startup-time).
   log(`deployment ${deploymentId} is live at ${base} (startup ${startupMs ?? '?'} ms)`);
@@ -226,9 +223,9 @@ async function up() {
     : `deployed a new JWT_SECRET with ${name}`);
 
   const jwt = await mintProbeToken(secret, ttlMs());
-  await waitForTarget(base, jwt);
+  const readiness = await waitForTarget(base, jwt, undefined, deploymentId);
 
-  log(`ready: ${base}`);
+  log(`ready: ${base}; uploaded version ${readiness.versionId}; ${readiness.cycles} consecutive full cycles`);
   process.stdout.write([
     `export BASE=${base}`,
     `export NIMBUS_PROBE_TOKEN=${jwt}`,
@@ -257,21 +254,24 @@ async function down() {
   const token = apiToken({ cwd: PROBE_APP, account });
 
   for (const name of names) {
-    const preview = readState(statePath(name))?.preview ?? previewName(name);
-    const base = readState(statePath(name))?.base ?? null;
-    const existing = await cfApi(`/workers/workers/${PREVIEW_PARENT}/previews/${encodeURIComponent(preview)}`, { account, token });
-    log(`deleting Preview ${preview} of ${PREVIEW_PARENT}`);
-    wrangle(WRANGLER, ['preview', 'delete', '--name', preview, '--worker-name', PREVIEW_PARENT, '--skip-confirmation'], {
-      cwd: PROBE_APP, account, allowFail: true,
-    });
-    const gone = await confirmDeleted({ name, preview, account, token });
-    // Its hostname may go on being served (spike/preview-stale): `list` looks.
-    if (existing.ok && base) recordDeleted({ name, preview, id: existing.result?.id ?? null, base });
-    rmSync(statePath(name), { force: true });
+    const recorded = readState(statePath(name));
+    const preview = recorded?.preview ?? previewName(name);
+    const existing = await previewPresence({ preview, account, token });
+    if (existing.kind === 'exists') {
+      log(`deleting Preview ${preview} of ${PREVIEW_PARENT}`);
+      wrangle(WRANGLER, ['preview', 'delete', '--name', preview, '--worker-name', PREVIEW_PARENT, '--skip-confirmation'], {
+        cwd: PROBE_APP, account, allowFail: true,
+      });
+    }
+    const gone = existing.kind === 'unknown' ? { ok: false, reason: existing.reason }
+      : await confirmDeleted({ name, preview, account, token });
     if (!gone.ok) {
-      console.error(`FAILED to confirm ${name} is gone: ${gone.reason}`);
+      console.error(`FAILED to confirm ${name} is gone: ${gone.reason}; receipt kept at ${statePath(name)}`);
       process.exitCode = 1;
     } else {
+      // Its hostname may go on being served (spike/preview-stale): `list` looks.
+      if (existing.kind === 'exists' && recorded?.base) recordDeleted({ name, preview, id: existing.id, base: recorded.base });
+      rmSync(statePath(name), { force: true });
       log(`confirmed gone: ${name} (${gone.reason})`);
     }
   }
@@ -279,8 +279,7 @@ async function down() {
 
 /**
  * Every Preview under the parent, with the ones this checkout holds a
- * record for marked. A cancelled CI run never reaches its teardown; its
- * Preview (`tw-ci-*`) shows up here unmarked.
+ * record for marked. Previews left by another checkout show up unmarked.
  */
 async function list() {
   const account = requireAccountPin();
@@ -371,12 +370,12 @@ async function ensurePreviewParent({ account, token }) {
  * deployment id, the API serves that id as the Preview's latest, and it
  * differs from the latest before.
  */
-async function deployPreview({ account, token, preview, secret, before, config = null }) {
+async function deployPreview({ account, token, preview, secret, before, config }) {
   // The secret travels with the deployment: each Preview deployment
   // carries its own env, so every deploy uploads it again.
   const result = withSecretsFile({ JWT_SECRET: secret }, (secretsFile) => wrangle(WRANGLER, [
     'preview', '--name', preview, '--worker-name', PREVIEW_PARENT,
-    '--ignore-base-config', '--json', '--secrets-file', secretsFile, ...varOverrides, ...(config ? ['--config', config] : []),
+    '--ignore-base-config', '--json', '--secrets-file', secretsFile, ...varOverrides, '--config', config,
   ], { cwd: PROBE_APP, account, allowFail: true }));
   const stdout = result.stdout || '';
   let printed = null;
@@ -407,6 +406,21 @@ function workersDevUrlOf(urls) {
 
 // ── Teardown ─────────────────────────────────────────────────────────
 
+/** Only the Preview-not-found API answer establishes absence. */
+async function previewPresence({ preview, account, token }) {
+  let got;
+  try {
+    got = await cfApi(`/workers/workers/${PREVIEW_PARENT}/previews/${encodeURIComponent(preview)}`, { account, token });
+  } catch (error) {
+    return { kind: 'unknown', reason: `Preview ${preview}: transport error: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (got.ok) return { kind: 'exists', status: got.status, id: got.result?.id ?? null };
+  if (got.status === 404 && Array.isArray(got.errors) && got.errors.some((error) => error?.code === 10025)) {
+    return { kind: 'not-found' };
+  }
+  return { kind: 'unknown', reason: `Preview ${preview}: HTTP ${got.status}, errors ${JSON.stringify(got.errors)}` };
+}
+
 /**
  * Is the Preview gone?
  *
@@ -419,18 +433,20 @@ function workersDevUrlOf(urls) {
  * 200 for ~30s after the API had stopped listing it.
  */
 async function confirmDeleted({ name, preview, account, token }) {
-  const got = await cfApi(`/workers/workers/${PREVIEW_PARENT}/previews/${encodeURIComponent(preview)}`, { account, token });
-  if (got.ok) return { ok: false, reason: `the API still answers Preview ${preview}` };
+  const presence = await previewPresence({ preview, account, token });
+  if (presence.kind === 'exists') return { ok: false, reason: `the API still answers Preview ${preview} (HTTP ${presence.status})` };
+  if (presence.kind === 'unknown') return { ok: false, reason: presence.reason };
 
   const base = readState(statePath(name))?.base;
-  if (!base) return { ok: true, reason: `Preview ${preview} is not listed (${got.status})` };
+  const absent = `Preview ${preview} is not found (HTTP 404, code 10025)`;
+  if (!base) return { ok: true, reason: absent };
 
   const status = await waitForHostnameGone(base);
   return {
     ok: true,
     reason: status === null
-      ? `Preview ${preview} is not listed (${got.status}) and the hostname no longer serves it`
-      : `Preview ${preview} is not listed; ${base} still answers ${status} after `
+      ? `${absent} and the hostname no longer serves it`
+      : `${absent}; ${base} still answers ${status} after `
         + `${HOSTNAME_SETTLE_MS}ms of edge propagation`,
   };
 }

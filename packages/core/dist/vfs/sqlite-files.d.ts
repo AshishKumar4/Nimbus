@@ -20,7 +20,9 @@ export declare class SqliteFiles implements VFS {
     constructor(engine: SqliteVFS, view: CredentialedVfs);
     /** The engine's credentialed view this speaks for (for the engine's own callers). */
     get credentialed(): CredentialedVfs;
-    as(cred: VfsCred, actor?: string): SqliteFiles;
+    as(cred: VfsCred, actor?: string, options?: {
+        holds?: () => ReadonlySet<string>;
+    }): SqliteFiles;
     /** Every mutation that lands on the database, through any view (SqliteVFS.observeWrites); paths absolute. */
     observeWrites(observer: VfsWriteObserver): () => void;
     /** `op`, its engine errors as Node's for `syscall` on `path` (and `dest`). */

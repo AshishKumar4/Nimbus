@@ -34,37 +34,39 @@ async function compileMtu(headerName, headerBody, libBody, mainBody, outName) {
   const compileOK = !/error:/i.test(stripAnsi(rc.output));
   a.check(`${outName} compile+link succeeds`, compileOK,
     compileOK ? '' : JSON.stringify(stripAnsi(rc.output).slice(-400)));
-  const rr = await t.run(`./${outName} ; echo ${outName.toUpperCase()}_RC=$?`, 30_000);
+  const rr = await t.run(`./${outName}`, 30_000);
   await t.close();
-  return stripAnsi(rr.output);
+  return rr;
 }
 
 // Round 1: greet.h declares g_one; lib.c defines g_one(prints ONE);
 // main.c calls g_one and returns 0.
-const outOne = await compileMtu(
+const one = await compileMtu(
   'greet.h',
   '#ifndef G\n#define G\nvoid g_one(void);\n#endif\n',
   '#include <stdio.h>\n#include "greet.h"\nvoid g_one(void){printf("ONE\\n");fflush(stdout);}\n',
   '#include "greet.h"\nint main(void){g_one();return 0;}\n',
   'one',
 );
+const outOne = stripAnsi(one.output);
 a.check('./one prints ONE', /ONE/.test(outOne), JSON.stringify(outOne.slice(-300)));
-a.check('./one → ONE_RC=0', /ONE_RC=0\b/.test(outOne), JSON.stringify(outOne.slice(-200)));
+a.check('./one → exit 0', one.exitCode === 0, JSON.stringify(outOne.slice(-200)));
 
 // Round 2: different greet2.h + different function name + different rc.
-const outTwo = await compileMtu(
+const two = await compileMtu(
   'greet2.h',
   '#ifndef G2\n#define G2\nvoid g_two(void);\n#endif\n',
   '#include <stdio.h>\n#include "greet2.h"\nvoid g_two(void){printf("TWO\\n");fflush(stdout);}\n',
   '#include "greet2.h"\nint main(void){g_two();return 5;}\n',
   'two',
 );
+const outTwo = stripAnsi(two.output);
 a.check('./two prints TWO (NOT ONE — sequential state isolated)',
   /TWO/.test(outTwo), JSON.stringify(outTwo.slice(-300)));
 a.check('./two does NOT print ONE (leakage check)',
   !/\bONE\b/.test(outTwo), JSON.stringify(outTwo.slice(-300)));
-a.check('./two → TWO_RC=5 (distinct from ./one)',
-  /TWO_RC=5\b/.test(outTwo), JSON.stringify(outTwo.slice(-200)));
+a.check('./two → exit 5 (distinct from ./one)',
+  two.exitCode === 5, JSON.stringify(outTwo.slice(-200)));
 
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);

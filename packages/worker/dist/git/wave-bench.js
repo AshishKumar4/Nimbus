@@ -13,6 +13,7 @@ import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import * as workers from 'cloudflare:workers';
 import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
+import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -74,11 +75,16 @@ export class Producer extends WorkerEntrypoint {
     const waves = [];
     const writer = __nimbusWaveWriter.createWaveWriter({ supervisor: observed(sender(mode, env, sink), waves), root, base });
     const pingStarted = Date.now();
+    const pingWalls = [];
     for (let index = 0; index < pings; index++) {
+      const one = Date.now();
       await writer.file('ping/p' + index, 0o644, new Uint8Array([index & 0xff]));
       await writer.flush();
+      pingWalls.push(Date.now() - one);
     }
     const pingMs = pings > 0 ? (Date.now() - pingStarted) / pings : 0;
+    pingWalls.sort((a, b) => a - b);
+    const pingAt = (q) => (pingWalls.length === 0 ? 0 : pingWalls[Math.min(pingWalls.length - 1, Math.floor(q * pingWalls.length))]);
     waves.length = 0;
     const started = Date.now();
     let bytes = 0;
@@ -94,7 +100,7 @@ export class Producer extends WorkerEntrypoint {
     await writer.flush();
     const stats = writer.stats();
     return {
-      pingMs, files, bytes, wallMs: Date.now() - started, waves: stats.waves,
+      pingMs, pingP50Ms: pingAt(0.5), pingP95Ms: pingAt(0.95), pingMaxMs: pingAt(1), files, bytes, wallMs: Date.now() - started, waves: stats.waves,
       rpcWallMs: stats.rpcWallMs, maxRpcWallMs: stats.maxRpcWallMs, producerWaitMs: stats.producerWaitMs,
       timeline: waves,
     };
@@ -169,14 +175,14 @@ export async function runWaveBench(ctx, env, options, session) {
             let worker;
             let entrypoint;
             try {
-                worker = env.LOADER.load({
+                worker = env.LOADER.load(applyFacetLimits('git', {
                     compatibilityDate: CF_COMPAT_DATE,
                     compatibilityFlags: [...GUEST_COMPAT_FLAGS],
                     mainModule: 'w7-bench-producer.js',
                     modules: { 'w7-bench-producer.js': PRODUCER_SOURCE },
                     env: { SUPERVISOR: supervisor },
-                });
-                entrypoint = worker.getEntrypoint('Producer');
+                }));
+                entrypoint = worker.getEntrypoint('Producer', { limits: facetLimits('git') });
                 const result = await entrypoint.run({
                     root: options.root,
                     base: `${options.root}/p${index}`,

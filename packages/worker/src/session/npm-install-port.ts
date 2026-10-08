@@ -14,6 +14,7 @@ import type { NpmInstallPort } from '@nimbus-sh/core/substrate/lifo/commands/sys
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { materializeNpmBinShims } from '../npm/bin-links.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import type { SessionInternal } from './internal.js';
 
 type InstallHost = Pick<SessionInternal, 'ensureSqliteFs' | 'ensureNpmInstaller' | 'ensureGlobalPrefixDirs' | 'processes'>;
@@ -25,7 +26,8 @@ export function createNpmInstallPort(self: InstallHost): NpmInstallPort {
       const globalBinDir = globalPrefix ? `${globalPrefix}/bin` : undefined;
       const sqliteFs = self.ensureSqliteFs();
       const installer = await self.ensureNpmInstaller();
-      if (globalPrefix) self.ensureGlobalPrefixDirs(globalPrefix);
+      // The session's own engine calls here wait for a delegation they meet: each is repeatable.
+      if (globalPrefix) await withRecall(() => self.ensureGlobalPrefixDirs(globalPrefix));
       const installCwd = globalPrefix ? `${globalPrefix}/lib` : spec.projectDir;
 
       const result = await installer.install(installCwd, {
@@ -47,11 +49,11 @@ export function createNpmInstallPort(self: InstallHost): NpmInstallPort {
         // a partial tree safely exposes exactly the bins that installed.
         const vfs: Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir' | 'lstat' | 'mkdir' | 'writeFile' | 'chmod'> =
           sqliteFs.as(CRED_KERNEL);
-        linkedBins = await materializeNpmBinShims(
+        linkedBins = await withRecall(() => materializeNpmBinShims(
           vfs,
           `${installCwd}/node_modules`,
           globalBinDir,
-        );
+        ));
       }
 
       return {

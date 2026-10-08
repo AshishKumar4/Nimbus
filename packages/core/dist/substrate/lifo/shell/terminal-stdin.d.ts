@@ -6,6 +6,9 @@ import { ByteQueue } from './byte-queue.js';
  * raw-mode switch a full-screen command flips.
  */
 export declare class TerminalStdin extends ByteQueue implements TerminalInputStream {
+    private readonly beforeRead;
+    constructor(beforeRead?: () => void);
+    protected pull(): Promise<Uint8Array | null>;
     private _rawMode;
     /** termios ISIG (TerminalInputStream.signalKeys). */
     signalKeys: boolean;

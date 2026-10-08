@@ -14,8 +14,9 @@ import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import { OXC_WASM_BUILD_ID } from '../oxc-wasm-artifact.generated.js';
 import { OXC_FACET_BUILD_ID } from '../oxc-facet-artifact.generated.js';
-import { fetchOxcFacetRuntime, fetchOxcWasmBytes } from '../runtime/oxc-wasm-bytes.js';
-import { SharedHelperFacet } from './helper-facet.js';
+import { AMARO_WASM_BUILD_ID } from '../amaro-wasm-artifact.generated.js';
+import { fetchAmaroWasmBytes, fetchOxcFacetRuntime, fetchOxcWasmBytes } from '../runtime/oxc-wasm-bytes.js';
+import { FacetCallDeadlineError, SharedHelperFacet } from './helper-facet.js';
 
 /**
  * The Oxc wasm's linear memory past which the facet drops its instance after
@@ -44,10 +45,10 @@ const OXC_FACET_BODY = [
   '    const outcomes = [];',
   '    for (const { code, options } of requests) {',
   '      try {',
-  '        outcomes.push(await runTransformRequest(oxc, code, options, globalThis.__nimbusRewriteDynamicImports, globalThis.__nimbusLowerAsyncModule));',
+  '        outcomes.push(await runTransformRequest(oxc, code, options, globalThis.__nimbusTransformRuntime));',
   '      } catch (e) {',
   '        const error = String((e && e.message) || e);',
-  '        outcomes.push(e && e.stackExhausted === true ? { error, stackExhausted: true } : { error });',
+  '        outcomes.push(e && e.stackExhausted === true ? { error, stackExhausted: true, ...(e.retry ? { retry: e.retry } : {}) } : { error });',
   '      }',
   '    }',
   '    return outcomes;',
@@ -56,7 +57,7 @@ const OXC_FACET_BODY = [
 ].join('\n');
 
 // The loader serves the code it cached under an id, so the id carries the code.
-export const OXC_FACET_WORKER_ID = `nimbus-oxc:${OXC_WASM_BUILD_ID}:${OXC_FACET_BUILD_ID}:${hashSource(OXC_FACET_BODY)}`;
+export const OXC_FACET_WORKER_ID = `nimbus-oxc:${OXC_WASM_BUILD_ID}:${AMARO_WASM_BUILD_ID}:${OXC_FACET_BUILD_ID}:${hashSource(OXC_FACET_BODY)}`;
 
 type OxcFacetRpc = DurableObject & {
   transformMany(requests: EsbuildTransformRequest[]): Promise<EsbuildTransformOutcome[]>;
@@ -67,10 +68,12 @@ type OxcFacetRpc = DurableObject & {
  * staged module's verified bytes, compiled by the loader at startup; `runtime`
  * is the facet's staged runtime script.
  */
-export function oxcFacetWorkerCode(wasm: ArrayBuffer, runtime: string): WorkerCode {
+export function oxcFacetWorkerCode(wasm: ArrayBuffer, runtime: string, amaroWasm: ArrayBuffer): WorkerCode {
   const source = [
     'import { DurableObject } from "cloudflare:workers";',
     'import oxcWasm from "oxc.wasm";',
+    'import amaroWasm from "amaro.wasm";',
+    'globalThis.__nimbusAmaroWasm = amaroWasm;',
     runtime,
     OXC_FACET_BODY,
   ].join('\n');
@@ -81,6 +84,7 @@ export function oxcFacetWorkerCode(wasm: ArrayBuffer, runtime: string): WorkerCo
     modules: {
       'worker.js': source,
       'oxc.wasm': { wasm },
+      'amaro.wasm': { wasm: amaroWasm },
     },
     globalOutbound: null,
   };
@@ -90,31 +94,17 @@ export function oxcFacetWorkerCode(wasm: ArrayBuffer, runtime: string): WorkerCo
 const oxcFacet = new SharedHelperFacet<OxcFacetRpc>({
   id: OXC_FACET_WORKER_ID,
   className: 'OxcFacet',
+  kind: 'transform',
   what: 'the transform facet',
   async code(assets) {
-    const [wasm, runtime] = await Promise.all([fetchOxcWasmBytes(assets), fetchOxcFacetRuntime(assets)]);
-    return oxcFacetWorkerCode(wasm, runtime);
+    const [wasm, runtime, amaroWasm] = await Promise.all([fetchOxcWasmBytes(assets), fetchOxcFacetRuntime(assets), fetchAmaroWasmBytes(assets)]);
+    return oxcFacetWorkerCode(wasm, runtime, amaroWasm);
   },
 });
 
 /** Modules one stack-fallback call carries; a batch with more makes more calls. */
 const STACK_FALLBACK_MODULES = 4;
 
-/** How long one stack-fallback call may take before its modules' answers are transient. */
-const STACK_FALLBACK_DEADLINE_MS = 30_000;
-
-/** `call`, or a rejection once `ms` pass first. */
-async function withDeadline<T>(call: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
-  });
-  try {
-    return await Promise.race([call, deadline]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 /** Calls per slice: a slice whose call failed is sent once more. */
 const SLICE_ATTEMPTS = 2;
@@ -139,7 +129,6 @@ export function oxcTransformHost(
   ctx: DurableObjectState,
   env: unknown,
   stackFallback?: EsbuildTransformHost,
-  { fallbackDeadlineMs = STACK_FALLBACK_DEADLINE_MS }: { fallbackDeadlineMs?: number } = {},
 ): EsbuildTransformHost {
   return async (requests) => {
     let facet: Promise<Fetcher<OxcFacetRpc>> | null = null;
@@ -162,7 +151,8 @@ export function oxcTransformHost(
             if (facet) oxcFacet.forget(ctx, facet);
             facet = null;
             failure = error;
-            if (classifyDoCall(error) === 'overloaded') break;
+            // An overloaded actor, or a call past its deadline (which aborted the facet): not retried.
+            if (classifyDoCall(error) === 'overloaded' || error instanceof FacetCallDeadlineError) break;
           }
         }
         if (answered === null) {
@@ -184,7 +174,12 @@ export function oxcTransformHost(
           const reason = 'error' in outcomes[index] ? outcomes[index].error.split('\n').at(-1) : '';
           console.warn(`[oxc-transform] ${requests[index].options?.dynamicImportParent ?? '<unnamed module>'}: ${reason}; transforming it with esbuild`);
         }
-        const answered = await withDeadline(stackFallback(group.map((index) => requests[index])), fallbackDeadlineMs).catch(
+        // The esbuild facet's call is bounded where every helper facet's is (helper-facet.ts).
+        // What the esbuild facet runs: the request, or the part of it this facet could not (its retry).
+        const answered = await stackFallback(group.map((index) => {
+          const outcome = outcomes[index];
+          return 'retry' in outcome && outcome.retry !== undefined ? outcome.retry : requests[index];
+        })).catch(
           (error: unknown) => group.map(() => ({ error: `esbuild facet unavailable: ${errorText(error)}`, transient: true as const })),
         );
         group.forEach((index, i) => { outcomes[index] = answered[i]; });

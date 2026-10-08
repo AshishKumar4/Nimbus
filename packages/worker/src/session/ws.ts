@@ -272,6 +272,7 @@ const WS_READY_STATE_OPEN = 1;
 const TerminalMessageSchema = z.object({
   type: z.string(),
   data: z.string().optional(),
+  submissionId: z.string().min(1).max(160).optional(),
   cols: z.number().optional(),
   rows: z.number().optional(),
   path: z.string().optional(),

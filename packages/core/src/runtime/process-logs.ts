@@ -313,6 +313,8 @@ export class ProcessLogStore {
     return this._maybeHydrateRead(pid) !== null;
   }
 
+  retains(pid: number): boolean { return this.pids.has(pid); }
+
   /** Current buffered bytes for this PID (post-eviction). */
   size(pid: number): number {
     return this.pids.get(pid)?.bytes ?? 0;

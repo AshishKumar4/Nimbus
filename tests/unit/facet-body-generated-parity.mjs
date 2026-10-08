@@ -102,7 +102,7 @@ for (const c of cases) {
     // A helper it reaches: the name import.meta is bound through.
     edit('dynamic-import-rewrite.ts', "'__nimbusMetadataModule'", "'__nimbusMetadataCell'"),
     // The service the host is called through: which requests it pre-rewrites.
-    edit('esbuild-service.ts', "options.loader === 'jsx')", "options.loader === 'jsx' || options.loader === 'ts')"),
+    edit('esbuild-service.ts', "options.loader === 'jsx';", "options.loader === 'jsx' || options.loader === 'ts';"),
   ];
   for (const change of changes) {
     assert.notEqual(await transformPipelineId({ plugins: [change] }), committed, `${change.name} moves the pipeline id`);

@@ -1,5 +1,6 @@
 import { COMMONJS_WRAPPER_NAMES, MODULE_PARSE_OPTIONS, applySourceEdits, containsModuleSyntax, parseStatements } from './javascript-ast.js';
 import { vfsPathExtension } from '../vfs/path.js';
+import { stripsTypeScript } from '../_shared/typescript-specifiers.js';
 /** The "type" a parsed package.json declares. */
 export function packageTypeOf(pkg) {
     const type = typeof pkg === 'object' && pkg !== null && 'type' in pkg ? pkg.type : undefined;
@@ -29,6 +30,35 @@ export function isEsModuleFile(path, source, packageType) {
     const type = ext === '.js' || ext === '' ? packageType() : null;
     return type === null ? containsModuleSyntax(source) : type === 'module';
 }
+/** Node 22.22.3's get_format.js for TypeScript; `stripped` is read only for a typeless `.ts`. */
+export function typeScriptFormat(path, packageType, stripped) {
+    if (!stripsTypeScript(path))
+        return null;
+    const ext = vfsPathExtension(path);
+    if (ext === '.mts')
+        return 'module';
+    if (ext === '.cts')
+        return 'commonjs';
+    const type = packageType();
+    if (type !== null)
+        return type;
+    return containsModuleSyntax(stripped()) ? 'module' : 'commonjs';
+}
+/**
+ * TypeScript Node does not strip (`--no-experimental-strip-types`) run as the
+ * program's entry: Node's ES loader takes it under `--import`, in a type:module
+ * package or with module syntax (run_main.js), and refuses its extension;
+ * otherwise its CommonJS loader runs it as JavaScript. Required, such a file is
+ * the CommonJS loader's whatever its package (its .js handler reads the type of
+ * .js alone): an ES module by its syntax.
+ */
+export function typeScriptEntryRefused(packageType, source, imports) {
+    return imports || packageType === 'module' || containsModuleSyntax(source);
+}
+/** Node refuses to strip a file under node_modules (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING). */
+export function typeScriptUnderNodeModules(path) {
+    return /(^|\/)node_modules\//.test(path);
+}
 /**
  * Whether Node runs `--eval` code or a program read from stdin as an ES
  * module: as `--input-type` says, and without it by its syntax, compiled as
@@ -53,8 +83,7 @@ export const ES_MODULE_SCOPE_GLOBAL = '__nimbusEsmScope';
  * ES_MODULE_SCOPE_GLOBAL, so reading, calling or assigning it throws as in
  * Node's ES module scope, which binds none of them, while the lowering's own
  * require and module.exports still reach the wrapper's. `typeof` of one is
- * 'undefined' (esModuleScopeTypeofs). The transform's `define` (and the
- * bounded rewrite's equivalent) applies it.
+ * 'undefined' (esModuleScopeTypeofs).
  */
 export const ES_MODULE_UNBOUND_NAMES = Object.fromEntries([...COMMONJS_WRAPPER_NAMES].map((name) => [name, `${ES_MODULE_SCOPE_GLOBAL}.${name}`]));
 /**
@@ -69,7 +98,8 @@ export function esModuleScopeTypeofs(code) {
     if (!code.includes(ES_MODULE_SCOPE_GLOBAL))
         return code;
     const edits = [];
-    parseStatements(code, { ecmaVersion: 'latest', sourceType: 'commonjs', allowHashBang: true }, {
+    // The lowering binds import.meta after this (dynamic-import-rewrite.ts).
+    parseStatements(code, { ecmaVersion: 'latest', sourceType: 'commonjs', allowHashBang: true, allowImportExportEverywhere: true }, {
         onNode: (node) => {
             const operand = node.type === 'UnaryExpression' && node.operator === 'typeof' ? node.argument : null;
             if (operand !== null && isUnboundNameAccessor(operand))
@@ -84,15 +114,9 @@ function isUnboundNameAccessor(node) {
         && node.object.type === 'Identifier' && node.object.name === ES_MODULE_SCOPE_GLOBAL
         && node.property.type === 'Identifier' && COMMONJS_WRAPPER_NAMES.has(node.property.name);
 }
-/**
- * `source`, which Node runs as an ES module, as one to the transform whatever
- * its syntax: strict (a directive after any hashbang, on the first line, so
- * line numbers stay), and a module (an empty export after it), so its
- * top-level `this` is undefined.
- */
+/** An ES module, as the lowering reads it: one, whatever its syntax (async-module-lowering.ts lowerEsModule). */
 export function esModuleSource(source) {
-    const hashbang = source.startsWith('#!') ? (source.indexOf('\n') + 1 || source.length) : 0;
-    return source.slice(0, hashbang) + '"use strict";' + source.slice(hashbang) + '\nexport {};\n';
+    return source + '\nexport {};\n';
 }
 /**
  * Code that throws, when the process evaluates it, the SyntaxError an ES

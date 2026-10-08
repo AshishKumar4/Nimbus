@@ -70,11 +70,23 @@ export interface WaveFence {
     writer: string;
     wave: number;
     attempt: number;
+    /**
+     * A sequenced writer's wave (a process's filesystem client): the number of
+     * its first op, each op after it the next, and the highest cursor the
+     * writer has had answered. The session keeps the writer's cursor with its
+     * commits, so an op a re-send carries again is answered, not applied twice.
+     */
+    seq?: number;
+    ack?: number;
 }
 /** The supervisor surface a writer publishes through. */
 export interface WaveSupervisor {
-    /** `fence` is absent when the supervisor issued no epoch: the session fences nothing. */
-    writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence): Promise<unknown>;
+    /**
+     * `fence` is absent when the supervisor issued no epoch: the session
+     * fences nothing. `owner`: the delegation the wave is written under, when
+     * it is not the one the binding was made with.
+     */
+    writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence, owner?: string): Promise<unknown>;
     /**
      * A writer epoch from the session, the only identity it admits fenced
      * waves under, or null when it fences nothing. Absent on a supervisor
@@ -267,6 +279,13 @@ export declare class WaveWriter<Meta = undefined> {
     private ownPath;
     /** collectDirectoryPaths' chain from `path` upward, to the first directory already owned. */
     private walkChain;
+    /**
+     * Send what is buffered when a removal of `path` is pending in it: a wave
+     * names a path once, and what is made there must land after the removal,
+     * as rm then create does (the directory's permission decides, not the old
+     * file's mode).
+     */
+    private afterRemoval;
     /** Cut waves until `path` (with its chain) and `bytes` fit beside what is buffered. */
     private admit;
     private buffer;
@@ -295,10 +314,7 @@ export declare class WaveWriter<Meta = undefined> {
      * encoder makes them.
      */
     private open;
-    /**
-     * Send one wave, again while its transport is lost (see the module's
-     * comment), and answer with what the session answered.
-     */
+    /** Send one wave (sendWaveAttempts) under this writer's epoch. */
     private sendAttempts;
     /**
      * The epoch this writer's waves are fenced under: opened before its first
@@ -310,5 +326,47 @@ export declare class WaveWriter<Meta = undefined> {
     private publishedDirectories;
     private bufferPin;
 }
+/** An attempt the session never read or never answered: its call did not arrive, or its answer was lost. */
+/** One wave's attempts (sendWaveAttempts). */
+export interface WaveAttempts {
+    supervisor: WaveSupervisor;
+    /** The epoch each attempt is fenced under, asked before each one (null: unfenced). */
+    writer: () => Promise<string | null>;
+    /** A fresh stream of the wave's bytes for each attempt. */
+    open: () => ReadableStream<Uint8Array>;
+    /** A wave with a streamed source is sent once: its source is spent. */
+    streamed: boolean;
+    wave: number;
+    /** A sequenced writer's numbering, on every attempt's fence (WaveFence `seq`, `ack`). */
+    sequence?: {
+        seq: number;
+        ack: number;
+    };
+    /** The delegation the wave is written under (WaveSupervisor.writeBatchStream's `owner`). */
+    owner?: string;
+    /** The lost-call policy's timings (lost-call.ts); tests shorten them. */
+    retry?: {
+        backoffMs: readonly number[];
+        stallMs: number;
+        answerDeadlineMs: number;
+    };
+    /** Told before each re-send, with its lost-call attributes. */
+    resent?: (lost: Record<string, string | number>) => void;
+    /** The timers the watch and the backoff run on: a program's own may be its shims'. */
+    timers?: WaveTimers;
+}
+/** setTimeout and clearTimeout, as a caller captured them. */
+export interface WaveTimers {
+    setTimeout(callback: () => void, ms: number): unknown;
+    clearTimeout(timer: unknown): void;
+}
+/**
+ * Send one wave, again while its transport is lost (see the module's
+ * comment), and answer with what the session answered. The one way every
+ * W7 producer sends: the wave writer, and a process's filesystem client.
+ */
+export declare function sendWaveAttempts(options: WaveAttempts): Promise<unknown>;
+/** A wave's encoded bytes as each attempt's stream (in SEND_SLICE_BYTES pieces, each a copy). */
+export declare function waveAttemptsOf(bytes: Uint8Array): () => ReadableStream<Uint8Array>;
 export declare function createWaveWriter<Meta = undefined>(options: WaveWriterOptions<Meta>): WaveWriter<Meta>;
 //# sourceMappingURL=wave-writer.d.ts.map

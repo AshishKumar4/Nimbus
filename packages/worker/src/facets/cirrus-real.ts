@@ -67,10 +67,12 @@ import {
   getCirrusPluginReactBundle,
 } from '../cirrus-plugin-react.generated.js';
 import { CIRRUS_NPM_CJS_VERSIONS, getCirrusNpmCjsBundles } from '../cirrus-npm-cjs.generated.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { getCtxExports, hostRoute } from '@nimbus-sh/fabric/composition.js';
 import { supervisorBindingProps, supervisorLoaderKey } from '@nimbus-sh/fabric/supervisor-props.js';
 import { deleteFacetStorage } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { applyFacetLimits, facetLimits, facetLoaderKey } from '@nimbus-sh/fabric/facet-limits.js';
 import {
   buildFsSnapshot,
   generateFsShimModuleCode,
@@ -689,7 +691,8 @@ export class CirrusReal {
     // (Lazy: eagerly seeds user project source + every package.json
     // under node_modules. Source files in node_modules are loaded on
     // demand via SUPERVISOR.readFile and cached in-facet.)
-    const snapshot = buildFsSnapshot(this.vfs, this.root);
+    // A read the walk meets in a process's delegation waits for its recall; the walk is made again.
+    const snapshot = await withRecall(() => buildFsSnapshot(this.vfs, this.root));
     this._snapshotStats = {
       fileCount: snapshot.fileCount,
       dirCount: snapshot.dirs.length,
@@ -817,7 +820,7 @@ export class CirrusReal {
     const stableLoaderId = supervisorLoaderKey(`${ctx.id.toString()}:cirrus-real-vite:${REAL_VITE_VERSION}:${pid}${this.network.id ? `:${this.network.id}` : ''}`, supervisorProps);
     const facetName = 'cirrus-real-vite';
     try {
-      const worker = this.env.LOADER.get(stableLoaderId, async () => ({
+      const worker = this.env.LOADER.get(facetLoaderKey('process', stableLoaderId), async () => applyFacetLimits('process', {
         compatibilityDate: CF_COMPAT_DATE,
         compatibilityFlags: REAL_VITE_COMPAT_FLAGS,
         mainModule: 'main.js',
@@ -877,7 +880,7 @@ export class CirrusReal {
       // env-var check (the flag is invisible from JS at runtime).
       let CirrusRealViteClass: any = null;
       try {
-        CirrusRealViteClass = (worker as any).getDurableObjectClass?.('CirrusRealVite');
+        CirrusRealViteClass = (worker as any).getDurableObjectClass?.('CirrusRealVite', { limits: facetLimits('process') });
       } catch (cls: any) {
         // Caller-side throw means the method exists but the class
         // lookup failed — surface as a real bootError so we don't
@@ -910,7 +913,7 @@ export class CirrusReal {
         // The fallback main.js export is `export default class
         // CirrusRealStateless extends WorkerEntrypoint { ... }` —
         // resolved as the DEFAULT, not as a named entrypoint.
-        this.facetStub = (worker as any).getEntrypoint?.();
+        this.facetStub = (worker as any).getEntrypoint?.(undefined, { limits: facetLimits('process') });
         if (!this.facetStub) {
           this.bootError =
             'cirrus-real fallback: worker.getEntrypoint() returned no stub. ' +

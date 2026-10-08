@@ -17,7 +17,7 @@ const acquire = (value: unknown): unknown => {
   const v = omit(value, ['epoch', 'rev']) as { paths?: unknown[] } | null;
   return v && Array.isArray(v.paths) ? { ...v, paths: v.paths.map((p) => omit(p, ['rev'])) } : v;
 };
-const acquireArgs = (value: unknown): unknown => omit(value, ['epoch', 'cursor']);
+const acquireArgs = (value: unknown): unknown => omit(value, ['epoch', 'cursor', 'begin']);
 const delivered = (value: unknown): unknown => {
   if (!value || typeof value !== 'object') return value;
   const v = value as { args?: unknown; answer?: unknown };
@@ -60,10 +60,12 @@ export const REPLAY_OPERATION_POLICY = {
   wsOpen: effect, wsPoll: read, wsSend: effect, wsClose: effect,
   fsOpen: { kind: 'open' }, fsRead: read, fsWrite: effect, fsClose: read,
   fsReadRange: read, fsReadRangeUncached: read, fsReadBatch: read,
-  fsWriteRange: effect, fsAppend: effect, fsAppendAck: effect,
+  fsWriteRange: effect,
   fsTruncate: effect, writeBatch: effect, writeBatchStream: effect,
   // Mints a write-wave epoch the session holds open for the live process (state on the host, not a read).
   openWaveWriter: effect,
+  // Ends a write-wave epoch the session holds open for the process.
+  retireWaveWriter: effect,
   putRegistryEntries: effect, stdout: output, stderr: output, prefetch: read,
   registerPort: effect, allocatePort: effect, unregisterPort: effect,
   reportExit: output, routeLoopback: effect, transform: read,
@@ -83,6 +85,8 @@ export const REPLAY_OPERATION_POLICY = {
   fsFchmod: effect, fsFchown: effect, fsFutimes: effect, fsSync: read,
   fsRealpath: read, fsRemove: effect, fsCopyFile: effect, fsCopyTree: effect,
   fsAcquireExclusiveMutation: effect, fsReleaseExclusiveMutation: effect,
+  // A recall is the session asking; the answer to one changes what it holds.
+  fsAwaitRecall: { kind: 'input' }, fsRecalled: effect,
   innerDoFetch: effect, innerDoCall: effect, fanoutExecute: effect, processHostProbe: effect,
   hostProcess: effect, awaitHostedOpen: effect, awaitHostedBoot: effect,
   routeHostedHttp: effect, cancelHostProcess: effect, hostLost: effect, hmrRelay: effect,

@@ -35,7 +35,7 @@
  * call with their own exports, require, module, __filename and __dirname. A
  * cell of CommonJS runs as Node's own wrapper runs it, as the function body:
  *
- *   module.exports = (function (Function) { return function (exports, require, module, __filename, __dirname) {<cell>
+ *   module.exports = (0, function (Function) { return function (exports, require, module, __filename, __dirname) {<cell>
  *   }; });
  *
  * The module's `Function` is the Function constructor bound to the module's
@@ -54,7 +54,7 @@
  * SyntaxError. Such a cell sits in a BLOCK inside the function, where the
  * declaration shadows the parameter, which is what the module meant:
  *
- *   module.exports = (function (Function) { return function (exports, require, module, __filename, __dirname) {<"use strict";>{<cell>
+ *   module.exports = (0, function (Function) { return function (exports, require, module, __filename, __dirname) {<"use strict";>{<cell>
  *   }}; });
  *
  * Only a lowered module gets the block, because the block is not a function
@@ -224,23 +224,33 @@ export interface WrappedCommonJsCell {
   hashbang: boolean;
 }
 
-const WRAPPER_HEAD = 'module.exports = (function (Function) { return function (exports, require, module, __filename, __dirname) {';
+// `(0, …)` keeps V8 from naming the wrapper `module.exports`: a frame reads
+// `Object.<anonymous>`, as Node's does.
+const WRAPPER_HEAD = 'module.exports = (0, function (Function) { return function (exports, require, module, __filename, __dirname) {';
 
 /**
  * Wrap a CommonJS cell as a `{ cjs }` module whose export, given the
  * module's `Function`, is Node's module wrapper function, in the given scope
  * (THE WRAPPER). A leading shebang becomes a line comment of the same length
- * (Node strips it too; `#!` is not valid inside a function).
+ * (Node strips it too; `#!` is not valid inside a function). `loweredHead`
+ * and `loweredTail` are a lowered ES module's (EsModuleMap): its own code
+ * around the module's text, which a frame counts as wrapper.
  */
-export function wrapCommonJsCell(cell: string, scope: CommonJsCellScope = 'function'): WrappedCommonJsCell {
+export function wrapCommonJsCell(cell: string, scope: CommonJsCellScope = 'function', loweredHead = 0, loweredTail = 0): WrappedCommonJsCell {
   const hashbang = cell.charCodeAt(0) === 35 && cell.charCodeAt(1) === 33;
   const body = hashbang ? '//' + cell.slice(2) : cell;
   const head = scope === 'function'
     ? WRAPPER_HEAD
     : WRAPPER_HEAD + (opensWithUseStrict(body) ? '"use strict";' : '') + '{';
   const tail = scope === 'function' ? '\n}; });' : '\n}}; });';
-  return { text: head + body + tail, head: head.length, tail: tail.length, hashbang };
+  return { text: head + body + tail, head: head.length + loweredHead, tail: tail.length + loweredTail, hashbang };
 }
+
+/** The module beside a code module that holds its emit's ColumnMap (core async-module-lowering.ts), read by its frames. */
+export function columnMapModuleName(name: string): string {
+  return name + COLUMN_MAP_SUFFIX;
+}
+const COLUMN_MAP_SUFFIX = '.columns';
 
 const WRAPPER_NAMES = new Set(['exports', 'require', 'module', '__filename', '__dirname']);
 /** Could the text declare a wrapper name lexically at all: the cheap test before a parse. */
@@ -571,10 +581,17 @@ const __NIMBUS_BUNDLE_FILES = decodeURIComponent(new URL("./", import.meta.url).
 const __nimbusModuleImporterUrl = ${moduleImporterUrl.toString()};
 // The wrapper function of the cell at a VFS key, compiled by the registry the
 // first time it is asked for, with the module's own Function (THE WRAPPER);
-// null when the launch's map has no such cell.
+// null when the launch's map has no such cell. A cell that does not compile
+// leads its SyntaxError's stack with where.
 function __nimbusModuleCell(key) {
   const __row = __nimbusCodeCells.get(key);
-  return __row ? __nimbusRegistryRequire("./" + __row[1])(globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(key)).Function) : null;
+  if (!__row) return null;
+  try {
+    return __nimbusRegistryRequire("./" + __row[1])(globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(key)).Function);
+  } catch (e) {
+    __nimbusDecorateSyntaxError(e, __row[1]);
+    throw e;
+  }
 }
 // Whether the cell at a VFS key is an ES module the launch lowered (CommonJsCellRow).
 function __nimbusModuleCellIsEsModule(key) {
@@ -584,14 +601,266 @@ function __nimbusModuleCellIsEsModule(key) {
 // The entry's wrapper function, with the Function of the entry's own URL,
 // importer. A SyntaxError from compiling it carries no location (the
 // registry compiles on require, and V8 reports the requiring frame), so its
-// stack leads with the file, as Node's report does.
-function __nimbusEntryWrapper(name, filename, importer) {
+// stack leads with where it is, as Node's does (__nimbusDecorateSyntaxError).
+function __nimbusEntryWrapper(name, importer) {
   try {
     return __nimbusRegistryRequire("./" + name)(globalThis.__nimbusCodeOrigin(importer).Function);
   } catch (e) {
-    if (e instanceof SyntaxError && typeof e.stack === "string") e.stack = filename + "\\n\\n" + e.stack;
+    __nimbusDecorateSyntaxError(e, name);
     throw e;
   }
+}
+// ── Frames, as Node names and places them ──
+// The launch's entry: [moduleName, the name Node gives its frames' file (its
+// path, an ES module's file: URL, [eval], [stdin], an ES module of -e or stdin
+// [eval1] in the launch's directory), the wrapper's head, 1 for an ES module,
+// the wrapper's tail].
+const __nimbusStackEntry = typeof __NIMBUS_STACK_ENTRY === "undefined" ? null : __NIMBUS_STACK_ENTRY;
+const __NIMBUS_BUNDLE_URL = new URL("./", import.meta.url).href;
+let __nimbusCellsByName = null;
+const __nimbusModules = new Map();
+// A stack frame's module, by its URL in the map: the cell's VFS path (or the
+// entry's name), whether it is an ES module, the wrapper's head on its first
+// line, and whether its first line was a shebang. Null for a frame of
+// anything else: this runner, the shims, a builtin.
+function __nimbusFrameModule(url) {
+  if (typeof url !== "string" || !url.startsWith(__NIMBUS_BUNDLE_URL)) return null;
+  return __nimbusModuleNamed(url.slice(__NIMBUS_BUNDLE_URL.length));
+}
+// The module of the launch's cell at \`path\` (no leading slash), and the entry's; null for none.
+let __nimbusCellsByPath = null;
+function __nimbusModuleAtPath(path) {
+  __nimbusCellsByPath ??= new Map(__NIMBUS_CODE_CELLS.map((row) => [row[0], row[1]]));
+  const name = __nimbusCellsByPath.get(path);
+  return name === undefined ? null : __nimbusModuleNamed(name);
+}
+function __nimbusEntryModule() {
+  return __nimbusStackEntry === null ? null : __nimbusModuleNamed(__nimbusStackEntry[0]);
+}
+function __nimbusModuleNamed(name) {
+  let module = __nimbusModules.get(name);
+  if (module !== undefined) return module;
+  if (__nimbusStackEntry !== null && name === __nimbusStackEntry[0]) {
+    module = { name, path: null, file: __nimbusStackEntry[1], head: __nimbusStackEntry[2], tail: __nimbusStackEntry[4], esModule: __nimbusStackEntry[3] === 1, hashbang: false };
+  } else {
+    __nimbusCellsByName ??= new Map(__NIMBUS_CODE_CELLS.map((row) => [row[1], row]));
+    const row = __nimbusCellsByName.get(name);
+    if (row === undefined) return null;
+    module = { name, path: "/" + row[0], file: null, head: row[2], tail: row[3], esModule: row[6] === 1, hashbang: row[4] === 1 };
+  }
+  __nimbusModules.set(name, module);
+  return module;
+}
+function __nimbusFileUrl(path) {
+  const url = new URL("file://");
+  url.pathname = path;
+  return url.href;
+}
+// What a module's file is called in a stack: its path, an ES module's file: URL.
+function __nimbusFrameFile(module) {
+  if (module.path === null) return module.file;
+  module.frameFile ??= module.esModule ? __nimbusFileUrl(module.path) : module.path;
+  return module.frameFile;
+}
+// A lowered ES module's edits that moved its columns, by line: [source column,
+// generated length, source text, 1 for a call] (async-module-lowering.ts
+// ColumnMap), read once from the module beside its own; null for none.
+function __nimbusColumnEdits(module) {
+  if (module.columns !== undefined) return module.columns;
+  module.columns = null;
+  if (!module.esModule) return null;
+  let entries;
+  try {
+    entries = JSON.parse(__nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + module.name + ${JSON.stringify(COLUMN_MAP_SUFFIX)}, "utf8"));
+  } catch {
+    return null;
+  }
+  const columns = new Map();
+  for (const entry of entries) {
+    const line = columns.get(entry[0]) ?? [];
+    line.push(entry);
+    columns.set(entry[0], line);
+  }
+  module.columns = columns;
+  return columns;
+}
+// A 1-based column of a module's line as its source has it, from where V8
+// places it in the emit (a first line's past the wrapper's head).
+function __nimbusSourceColumn(module, line, column) {
+  const edits = __nimbusColumnEdits(module)?.get(line);
+  if (edits === undefined) return column;
+  let delta = 0;
+  for (const [, at, length, text, call] of edits) {
+    const start = at + delta;
+    if (column - 1 < start) break;
+    if (column - 1 < start + length || (call === 1 && column - 1 === start + length)) return at + 1;
+    delta += length - text.length;
+  }
+  return column - delta;
+}
+// The inverse: where a source column of a module's line is in its emit.
+function __nimbusGeneratedColumn(module, line, column) {
+  const edits = __nimbusColumnEdits(module)?.get(line);
+  if (edits === undefined) return column;
+  let delta = 0;
+  for (const [, at, length, text] of edits) {
+    if (column - 1 < at) break;
+    if (column - 1 < at + text.length) return at + delta + 1;
+    delta += length - text.length;
+  }
+  return column + delta;
+}
+// A module's line as its source has it, from the emit's.
+// A module's text as it was compiled, before any lowering: where Node reads
+// its source map's URL from and measures its lines.
+function __nimbusModuleSourceText(module) {
+  if (module === null) return null;
+  const text = __nimbusFrameModuleText(module);
+  if (text === null) return null;
+  const body = text.slice(module.head, text.length - module.tail);
+  if (__nimbusColumnEdits(module) === null) return body;
+  const parts = body.split(/(\\r\\n|[\\n\\r\\u2028\\u2029])/);
+  for (let i = 0; i < parts.length; i += 2) parts[i] = __nimbusSourceLine(module, i / 2 + 1, parts[i]);
+  return parts.join("");
+}
+function __nimbusSourceLine(module, line, emitted) {
+  const edits = __nimbusColumnEdits(module)?.get(line);
+  if (edits === undefined) return emitted;
+  let source = "";
+  let at = 0;
+  let delta = 0;
+  for (const [, column, length, text] of edits) {
+    source += emitted.slice(at, column + delta) + text;
+    at = column + delta + length;
+    delta += length - text.length;
+  }
+  return source + emitted.slice(at);
+}
+let __nimbusModulesByFile = null;
+// The module whose frames read \`file\` (__nimbusFrameFile), or null.
+function __nimbusModuleOfFile(file) {
+  if (__nimbusModulesByFile === null) {
+    __nimbusModulesByFile = new Map();
+    const add = (name) => {
+      const module = __nimbusModuleNamed(name);
+      if (module !== null) __nimbusModulesByFile.set(__nimbusFrameFile(module), module);
+    };
+    for (const row of __NIMBUS_CODE_CELLS) add(row[1]);
+    if (__nimbusStackEntry !== null) add(__nimbusStackEntry[0]);
+  }
+  return __nimbusModulesByFile.get(file) ?? null;
+}
+// A frame in a module of the program: its place in the module's file, as
+// Node's frame names it (a first line's column without the wrapper's head).
+function __nimbusFrameLocation(site) {
+  const fileName = site.getFileName();
+  const module = __nimbusFrameModule(fileName);
+  if (module === null) return null;
+  const line = site.getLineNumber();
+  const column = site.getColumnNumber();
+  if (line === null || column === null) return null;
+  const at = __nimbusSourceColumn(module, line, line === 1 ? column - module.head : column);
+  return { from: fileName + ":" + line + ":" + column, module, file: __nimbusFrameFile(module), line, column: at };
+}
+function __nimbusFrameText(site, location) {
+  const text = String(site);
+  if (location === null) return text;
+  const at = text.lastIndexOf(location.from);
+  return at === -1 ? text : text.slice(0, at) + location.file + ":" + location.line + ":" + location.column + text.slice(at + location.from.length);
+}
+// A call site of the program's code as Node's reads: its file and place;
+// anything else, V8's own.
+class __NimbusCallSite {
+  #site;
+  #location;
+  constructor(site, location) {
+    this.#site = site;
+    this.#location = location;
+  }
+  static of(site) {
+    const location = __nimbusFrameLocation(site);
+    if (location === null) return site;
+    if (!__NimbusCallSite.delegates) {
+      __NimbusCallSite.delegates = true;
+      for (const name of Object.getOwnPropertyNames(Object.getPrototypeOf(site))) {
+        if (name === "constructor" || Object.hasOwn(__NimbusCallSite.prototype, name) || typeof site[name] !== "function") continue;
+        Object.defineProperty(__NimbusCallSite.prototype, name, {
+          value: function (...args) { return this.#site[name](...args); }, writable: true, configurable: true,
+        });
+      }
+    }
+    return new __NimbusCallSite(site, location);
+  }
+  getFileName() { return this.#location.file; }
+  getScriptNameOrSourceURL() { return this.#location.file; }
+  getLineNumber() { return this.#location.line; }
+  getColumnNumber() { return this.#location.column; }
+  getEnclosingLineNumber() { return this.#site.getEnclosingLineNumber(); }
+  getEnclosingColumnNumber() {
+    const line = this.#site.getEnclosingLineNumber();
+    const column = this.#site.getEnclosingColumnNumber();
+    if (line === null || column === null) return column;
+    return __nimbusSourceColumn(this.#location.module, line, line === 1 ? column - this.#location.module.head : column);
+  }
+  toString() { return __nimbusFrameText(this.#site, this.#location); }
+}
+// What a runtime's shims format a stack with instead (node --enable-source-maps): null to keep the hook's own.
+let __nimbusStackFormatter = null;
+function __nimbusUseStackFormatter(format) {
+  __nimbusStackFormatter = format;
+}
+{
+  let __userPrepare;
+  const __apply = Reflect.apply;
+  const __prepare = function prepareStackTrace(error, sites) {
+    // As Node's prepareStackTraceCallback calls it: a method of Error.
+    if (typeof __userPrepare === "function") return __apply(__userPrepare, globalThis.Error, [error, sites.map(__NimbusCallSite.of)]);
+    let stack;
+    try {
+      stack = Error.prototype.toString.call(error);
+    } catch {
+      stack = "<error>";
+    }
+    const formatted = __nimbusStackFormatter === null ? null : __nimbusStackFormatter(error, stack, sites);
+    if (formatted !== null) return formatted;
+    for (const site of sites) stack += "\\n    at " + __nimbusFrameText(site, __nimbusFrameLocation(site));
+    return stack;
+  };
+  Object.defineProperty(Error, "prepareStackTrace", {
+    get() { return __prepare; },
+    // Restoring the hook a program read restores the default.
+    set(value) { __userPrepare = value === __prepare ? undefined : value; },
+    configurable: true,
+  });
+}
+// A frame module's text as the registry compiled it, or null.
+function __nimbusFrameModuleText(module) {
+  try {
+    return __nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + module.name, "utf8");
+  } catch {
+    return null;
+  }
+}
+// Where V8 would report a throw at offset \`offset\` of a module's text, or the
+// syntax error that stops its compile (offset -1): the interpreter's parser
+// (core interpreter fatalLocation), loaded only for a report.
+function __nimbusFatalLocation(text, goal, offset) {
+  try {
+    return __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").fatalLocation(text, goal, offset);
+  } catch {
+    return null;
+  }
+}
+// What Node's stack carries for a module that does not compile: where
+// (decorateErrorStack: the arrow, then the stack), so its report prints it
+// once (node-shims.ts __nimbusFatalReport).
+const __nimbusDecorated = new WeakSet();
+function __nimbusDecorateSyntaxError(e, name) {
+  if (!(e instanceof SyntaxError) || typeof e.stack !== "string" || __nimbusDecorated.has(e)) return;
+  const arrow = typeof globalThis.__nimbusSyntaxErrorArrow === "function" ? globalThis.__nimbusSyntaxErrorArrow(__nimbusModuleNamed(name)) : null;
+  if (arrow === null) return;
+  e.stack = arrow + "\\n" + e.stack;
+  __nimbusDecorated.add(e);
 }
 // The cell's own text, read back from the module map under its module name.
 function __nimbusModuleCellSource(row) {
@@ -729,10 +998,7 @@ function __nimbusRuntimeCodeCompile(entry, describe, origin) {
     return __interpreter.compileFunction(entry.kind, entry.params, entry.body, origin);
   } catch (e) {
     if (!e || e.code !== "${INTERPRETER_UNSUPPORTED}") throw e;
-    const __err = new EvalError(describe + " was produced after this launch started, and a Worker compiles code only from the module map it was launched with; it is staged, and the next launch of this command compiles it. (" + e.message + ")");
-    __err.code = "ERR_NIMBUS_CODE_NEXT_LAUNCH";
-    __err.key = __id.key;
-    throw __err;
+    throw __nimbusNodeError(EvalError, "ERR_NIMBUS_CODE_NEXT_LAUNCH", describe + " was produced after this launch started, and a Worker compiles code only from the module map it was launched with; it is staged, and the next launch of this command compiles it. (" + e.message + ")", { key: __id.key });
   }
 }
 // The wrapper function of a file that is not one of the launch's cells, with

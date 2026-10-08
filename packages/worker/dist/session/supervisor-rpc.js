@@ -7,7 +7,8 @@
  * Props: { doId: string, pid: number, writerId: string, route: HostRoute, hostIncarnation?: string }
  *   doId — the supervisor DO's durable object ID (for routing)
  *   pid  — the process ID (for stdout/stderr routing)
- *   writerId — the active append-writer incarnation for this process
+ *   writerId — the run of the process the binding was minted for (its stdin
+ *           reads and replay journal are that run's)
  *   route — the host namespace and dispatch method, minted with the binding
  *           in the host's isolate; this entrypoint may answer from another
  *   hostIncarnation — the host instance that minted the binding, present
@@ -23,7 +24,7 @@
  *   mkdir(path) → void
  *   unlink(path) → void
  *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
- *   fsReadRange/fsWriteRange/fsAppend/fsAppendAck/fsTruncate
+ *   fsReadRange/fsWriteRange/fsTruncate
  *     → shared RuntimeFsBridge operations
  *   fsReadBatch(requests) → per-request results  (many reads and lstats, one round trip)
  *   fsList(after, limit) → one page of what EXISTS, with per-path revisions
@@ -60,7 +61,7 @@ import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { isSupervisorAnsweredMethod, supervisorAnswer, } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { fsReadBatchRequestBytes } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
-import { LOST_CALL_HEDGE_AFTER_MS } from '@nimbus-sh/platform/lost-call.js';
+import { LOST_CALL_HEDGE_AFTER_MS, WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 /**
  * W5 Lever 5: estimate the byte-cost of a writeBatch payload so the
  * /api/_diag/memory.rpc.lastFrame.payloadBytes field is meaningful.
@@ -299,13 +300,6 @@ export class SupervisorRPC extends WorkerEntrypoint {
         const run = this.ctx.props?.writerId;
         return typeof run === 'string' && run.length > 0 ? run : undefined;
     }
-    _writerId() {
-        const writerId = this.ctx.props?.writerId;
-        if (typeof writerId !== 'string' || writerId.length === 0) {
-            throw new Error('SupervisorRPC: missing VFS writer incarnation');
-        }
-        return writerId;
-    }
     // ── Filesystem RPC ────────────────────────────────────────────────────
     /**
      * The filesystem call `method` (one of SUPERVISOR_ANSWERED_METHODS), with a
@@ -518,6 +512,14 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async fsReleaseExclusiveMutation(...args) {
         return this._call(this._fsMutation('fsReleaseExclusiveMutation', args));
     }
+    /** A delegation's holder waits here for its next recall (a long poll, sent once: a lost one is asked again). */
+    async fsAwaitRecall(owner, waitMs) {
+        return this._call(this._fsOp('fsAwaitRecall', waitMs === undefined ? [owner] : [owner, waitMs]));
+    }
+    /** The holder has answered recall `kind`: delivered once. */
+    async fsRecalled(owner, kind) {
+        return this._call(this._fsMutation('fsRecalled', [owner, kind]));
+    }
     async fsClose(handleId) {
         return this._call(this._fsMutation('fsClose', [handleId]));
     }
@@ -572,18 +574,6 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async fsWriteRange(path, offset, bytes) {
         return this._call(this._fsMutation('fsWriteRange', [path, offset, bytes]));
     }
-    /**
-     * An append and its acknowledgement carry the append ledger's own identity
-     * (writer, module incarnation, operation sequence), whose receipt the host
-     * keeps until the acknowledgement: a repeat of either applies nothing twice,
-     * so a dropped one is simply re-sent.
-     */
-    async fsAppend(path, moduleId, operationId, bytes) {
-        return this._call(this._resent({ op: 'fsAppend', args: [path, moduleId, operationId, bytes], pid: this._pid(), writerId: this._writerId() }, { kind: 'append', operationId }));
-    }
-    async fsAppendAck(moduleId, operationId) {
-        return this._call(this._resent({ op: 'fsAppendAck', args: [moduleId, operationId], pid: this._pid(), writerId: this._writerId() }, { kind: 'append', operationId }));
-    }
     async fsTruncate(path, size) {
         return this._call(this._fsMutation('fsTruncate', [path, size]));
     }
@@ -636,11 +626,32 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * sent unfenced. Minting is harmless to repeat, so a lost call is hedged
      * like a read (lost-call.ts).
      */
-    async openWaveWriter() {
+    /**
+     * `first`: the process's first epoch, asked once per run by its writer
+     * (process-fs-client): the one minted with this binding answers it, with
+     * no round trip, while it is young (a quarter of its life). Any later one
+     * is minted anew: a writer that numbers afresh never reuses an epoch.
+     */
+    async openWaveWriter(first = false) {
         if (this._hostIncarnation() === undefined)
             return null;
+        const props = this.ctx.props;
+        if (first && typeof props?.waveWriter === 'string' && typeof props.waveWriterMintedAt === 'number'
+            && Date.now() - props.waveWriterMintedAt < WAVE_EPOCH_TTL_MS / 4) {
+            return props.waveWriter;
+        }
         const answer = await this._call(this._resent({ op: 'openWaveWriter', args: [], pid: this._pid() }, { kind: 'open' }, { hedgeAfterMs: LOST_CALL_HEDGE_AFTER_MS }));
         return answer.writer;
+    }
+    /**
+     * Retire write-wave epoch `writer` (SupervisorDeliveries.retireWaveWriter):
+     * its writer gave a wave of it up, and nothing of it may land after what
+     * it sends next. Harmless to repeat, so a lost call is re-sent.
+     */
+    async retireWaveWriter(writer) {
+        if (this._hostIncarnation() === undefined)
+            return;
+        await this._call(this._resent({ op: 'retireWaveWriter', args: [writer], pid: this._pid() }, { kind: 'open' }, { hedgeAfterMs: LOST_CALL_HEDGE_AFTER_MS }));
     }
     /**
      * A write wave, sent once: its stream is consumed by the attempt that
@@ -650,7 +661,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * and that host instance refuses an attempt older than one it has seen
      * from the same writer; any other instance refuses it outright.
      */
-    async writeBatchStream(stream, fence) {
+    /**
+     * `owner`: the lease the wave is written under, when it is not the one this
+     * binding was made with: a delegation the process took at run time.
+     */
+    async writeBatchStream(stream, fence, owner) {
         // The encoder emits one bounded v2 record per pull. This wrapper-isolate
         // estimate covers that record; the receiving VFS separately reports and
         // enforces its shared 8 MiB retained-payload credit.
@@ -663,7 +678,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
                 op: 'writeBatchStream',
                 args: [],
                 pid: this._pid(),
-                mutationOwner: this._mutationOwner(),
+                mutationOwner: owner ?? this._mutationOwner(),
                 stream,
                 waveFence: fence && hostIncarnation !== undefined ? { ...fence, hostIncarnation } : undefined,
             }, { kind: 'deliver', operationId: fence ? `${fence.writer}:${fence.wave}:${fence.attempt}` : undefined }, { maxAttempts: 1 }));

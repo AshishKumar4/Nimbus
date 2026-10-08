@@ -239,6 +239,7 @@ process.stdout.write(JSON.stringify(out));
       try {
         if (resolution.format === 'data') throw new Error('data: is loaded by the caller');
         resolver.validateAttributes(resolution.url, resolution.format, attributes ?? {});
+        resolver.assertLoadable(resolution);
         imported = { ok: true };
       } catch (e) { imported = { error: errorOf(e) }; }
     }

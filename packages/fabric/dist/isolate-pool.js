@@ -28,7 +28,9 @@ import { loaderOutbound, requireNetwork } from '@nimbus-sh/core/_shared/workspac
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { supervisorEntrypoint, hostRoute } from './composition.js';
 import { supervisorLoaderKey } from './supervisor-props.js';
+import { applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey } from './facet-limits.js';
 import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
+import { unsettledEnd } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
@@ -155,6 +157,7 @@ export class IsolatePool {
     claim;
     concurrency;
     defaultTimeoutMs;
+    facetKind;
     defaultRetries;
     tag;
     slotGenerations = new Map();
@@ -210,6 +213,8 @@ export class IsolatePool {
     scope;
     /** IsolatePoolOptions.network: each facet's outbound, and a loader-id segment. */
     network;
+    /** The process the pool's facets write as, when they are bound to one (supervisorPid). */
+    writerPid;
     constructor(env, ctx, opts) {
         // A host hands its whole env over; the binding is claimed here and the
         // claim is checked on the next line.
@@ -222,9 +227,11 @@ export class IsolatePool {
         this.ctx = ctx;
         this.claim = opts.claim;
         this.concurrency = Math.max(1, opts.concurrency ?? 1);
-        this.defaultTimeoutMs = opts.timeoutMs ?? 60_000;
+        this.facetKind = opts.facetKind ?? 'isolate';
+        this.defaultTimeoutMs = opts.timeoutMs ?? facetCallDeadlineMs(this.facetKind) ?? 0;
         this.defaultRetries = Math.max(0, opts.retries ?? 0);
         this.tag = opts.tag ?? 'facet';
+        this.writerPid = opts.omitSupervisor || opts.supervisorPid === undefined ? undefined : opts.supervisorPid;
         this.preamble = opts.preamble;
         // Include preamble in the cache-bucket key so changes to bundled helpers
         // invalidate warm slots. Empty preamble → '0' suffix (stable).
@@ -482,7 +489,7 @@ export class IsolatePool {
         // identity so a wake of that same session can never reuse a warm
         // worker whose SUPERVISOR binding still names the dead generation's
         // pid. See the supervisorKey field comment for the failure mode.
-        const buildId = (generation) => `nfp:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${wasmHash}:${perCallWasmHash}:${this.supervisorKey}:slot-${slotIndex}:g${generation}${this.scope ? `:${this.scope}` : ''}${this.network?.id ? `:${this.network.id}` : ''}`;
+        const buildId = (generation) => `nfp:${facetLoaderKey(this.facetKind, this.tag)}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${wasmHash}:${perCallWasmHash}:${this.supervisorKey}:slot-${slotIndex}:g${generation}${this.scope ? `:${this.scope}` : ''}${this.network?.id ? `:${this.network.id}` : ''}`;
         let id = buildId(this.slotGenerations.get(slotIndex) ?? 0);
         const code = this.#buildCode(fnSource, perCallWasmEntries);
         // W5 Lever 5: record the dispatch so /api/_diag/memory shows the
@@ -528,8 +535,8 @@ export class IsolatePool {
             const endFetch = admitted ?? (this.claim ? undefined : claimAdmission(this.ctx)) ?? beginLoaderFetch(this.ctx, id, this.claim);
             admitted = undefined;
             try {
-                const stub = this.loader.get(id, async () => code);
-                const entrypoint = stub.getEntrypoint();
+                const stub = this.loader.get(id, async () => applyFacetLimits(this.facetKind, code));
+                const entrypoint = stub.getEntrypoint(undefined, { limits: facetLimits(this.facetKind) });
                 // Direct property call, awaited by this frame — bracketed, never
                 // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
                 return await invoke(entrypoint, attempt);
@@ -691,7 +698,21 @@ export class IsolatePool {
     async submit(fn, arg, opts) {
         const { fnSource, fnHash } = this.#prepare(fn);
         const resilience = this.#resolve(opts);
-        return (await this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.execute(arg), resilience, opts?.wasmModules));
+        try {
+            return (await this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.execute(arg), resilience, opts?.wasmModules));
+        }
+        catch (error) {
+            throw this.#ended(error);
+        }
+    }
+    /**
+     * A run that failed (its facet died, was killed or timed out) of a process
+     * that writes (bound to a pid) ended abnormally: its error says what may be
+     * lost (unsettledEnd), every time; whether it acknowledged writes it never
+     * sent, the session cannot know.
+     */
+    #ended(error) {
+        return this.writerPid === undefined ? error : unsettledEnd(error);
     }
     /**
      * Dispatch `fn` through the fetch transport — the pool's only
@@ -712,7 +733,12 @@ export class IsolatePool {
         // Every attempt fetches a clone: a Request's body is consumed once,
         // so the caller's original stays unspent and retries get a fresh
         // body that follows the same signal.
-        return this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.fetch(request.clone()), resilience, opts?.wasmModules, request.signal);
+        try {
+            return await this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.fetch(request.clone()), resilience, opts?.wasmModules, request.signal);
+        }
+        catch (error) {
+            throw this.#ended(error);
+        }
     }
     /**
      * Run `fn` on every item in `items`, at most `concurrency` at a time,

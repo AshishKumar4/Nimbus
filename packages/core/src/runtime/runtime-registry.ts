@@ -41,16 +41,18 @@
 import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.js';
 import { CRED_KERNEL, type VfsCred } from './os-contracts.js';
 import type { EsbuildService } from './esbuild-service.js';
-import { typescriptLoader } from '../_shared/typescript-specifiers.js';
+import { stripsTypeScript, typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile, type FacetBundleProfile } from './bundle-profile.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { errorText } from '../_shared/error-text.js';
-import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput, type ModuleScope } from './module-format.js';
+import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput, typeScriptEntryRefused, typeScriptUnderNodeModules, type ModuleScope, type PackageType } from './module-format.js';
+import type { TypeScriptStripOptions } from './typescript-strip.js';
+import { nodeModulesRefusal, typeScriptRefusalShim, unknownExtensionRefusal } from './typescript-refusal.js';
 import { packageScopeType } from './require-resolution.js';
 import { exists, isDirectory } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerLaunchHost } from './server-launch.js';
-import { parseNodeCommandLine, type NodeCommandLine, type NodeLaunch } from './node-cli.js';
+import { parseNodeCommandLine, typeScriptStripOptions, type NodeCommandLine, type NodeLaunch } from './node-cli.js';
 import { nodeEvalProgram, nodeStdinPrintProgram, type NodeEvalMode } from './node-eval.js';
 
 /**
@@ -113,6 +115,8 @@ export interface RuntimeRunOpts {
    * explained as Node's loader explains it.
    */
   esModule?: boolean;
+  /** Its lowering's EsModuleMap (async-module-lowering.ts), as JSON: where its frames read the source's places. */
+  esModuleMap?: string;
   /** Whose scope its ES modules run in (RuntimeSpec.moduleScope): absent, Node's. */
   moduleScope?: ModuleScope;
   /**
@@ -467,6 +471,7 @@ export function buildRuntimeHandler(
       /** Node refuses the code before it loads `--import`'s modules (NodeEvalProgram.refusedBeforeImports): none load. */
       refusedBeforeImports?: boolean;
       esModule?: boolean;
+      esModuleMap?: string;
     }): Promise<number> => {
       const result = await spec.run(code, {
         cred: ctx.cred,
@@ -488,6 +493,7 @@ export function buildRuntimeHandler(
         ...(program.launchesServer ? { launchesServer: true } : {}),
         // Evaluated as Node's loader runs an ES module, in Node's scope.
         ...(program.esModule && moduleScope === 'node' ? { esModule: true } : {}),
+        ...(program.esModuleMap ? { esModuleMap: program.esModuleMap } : {}),
         moduleScope,
       });
       if (result.stdout) ctx.stdout.write(result.stdout);
@@ -506,16 +512,39 @@ export function buildRuntimeHandler(
      * (module-format.ts esModuleSyntaxError). Null when the transform failed
      * otherwise, which it has reported.
      */
-    async function lowerToCommonJs(code: string, loader: 'js' | 'jsx' | 'ts' | 'tsx', url: string, what: string, esm: boolean): Promise<string | null> {
+    /**
+     * A TypeScript entry as Node takes it: its types stripped, and whether
+     * Node runs it as an ES module. A file Node refuses is code that throws
+     * Node's error. Null when the strip failed otherwise, which it has reported.
+     */
+    async function stripTypeScriptEntry(
+      code: string, path: string, packageType: PackageType, stripTypes: TypeScriptStripOptions, what: string,
+    ): Promise<{ code: string; esModule: boolean } | null> {
+      if (typeScriptUnderNodeModules(path)) return { code: typeScriptRefusalShim(nodeModulesRefusal('/' + path)), esModule: false };
+      try {
+        const [outcome] = await (await getEsbuild()).transformMany([{ code, options: { stripTypes, packageType, stripOnly: true, sourcefile: '/' + path } }]);
+        if ('typescript' in outcome) return { code: typeScriptRefusalShim(outcome.typescript), esModule: false };
+        if ('error' in outcome) throw new Error(outcome.error);
+        return { code: outcome.code, esModule: outcome.esModule !== undefined };
+      } catch (e) {
+        ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);
+        return null;
+      }
+    }
+
+    async function lowerToCommonJs(
+      code: string, loader: 'js' | 'jsx' | 'ts' | 'tsx', url: string, what: string, esm: boolean,
+    ): Promise<{ code: string; map: string } | null> {
       try {
         const eb = await getEsbuild();
-        // An ES module keeps Node's scope (module-format.ts ModuleScope): strict, no CommonJS wrapper name.
-        return (await eb.transform(code, {
-          loader, format: 'cjs', dynamicImportParent: url, moduleMetadata: true, ...(esm && moduleScope === 'node' ? { esModuleScope: true } : {}),
-        })).code;
+        // An ES module keeps its runtime's scope (module-format.ts ModuleScope).
+        const { code: lowered, map } = await eb.transform(code, {
+          ...(esm && loader === 'js' ? { esModule: moduleScope } : { loader, format: 'cjs' }), dynamicImportParent: url, moduleMetadata: true,
+        });
+        return { code: lowered, map };
       } catch (e) {
         const syntaxError = esm && loader === 'js' ? esModuleSyntaxError(code, url) : null;
-        if (syntaxError !== null) return syntaxError;
+        if (syntaxError !== null) return { code: syntaxError, map: '' };
         ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);
         return null;
       }
@@ -527,16 +556,18 @@ export function buildRuntimeHandler(
      * module (`--input-type=module`, or its syntax, module-format.ts) lowered,
      * which `-p` refuses as Node does (node-eval.ts); else Node's eval code.
      */
-    async function inputProgram(source: string, what: '[eval]' | '[stdin]'): Promise<{ code: string; refusedBeforeImports: boolean; esModule: boolean } | null> {
+    async function inputProgram(
+      source: string, what: '[eval]' | '[stdin]',
+    ): Promise<{ code: string; written: string; refusedBeforeImports: boolean; esModule: boolean; esModuleMap?: string } | null> {
       const esModule = isEsModuleInput(source, inputType);
       if (esModule && !print) {
         const lowered = await lowerToCommonJs(source, 'js', evalUrl(), what, true);
-        return lowered === null ? null : { code: lowered, refusedBeforeImports: false, esModule: true };
+        return lowered === null ? null : { code: lowered.code, written: source, refusedBeforeImports: false, esModule: true, esModuleMap: lowered.map };
       }
-      if (!spec.nodeCommandLine) return { code: source, refusedBeforeImports: false, esModule: false };
+      if (!spec.nodeCommandLine) return { code: source, written: source, refusedBeforeImports: false, esModule: false };
       const mode: NodeEvalMode = esModule ? 'module' : inputType === 'commonjs' ? 'commonjs' : 'default';
       const prepared = what === '[eval]' ? nodeEvalProgram(source, print, mode) : print ? nodeStdinPrintProgram(source, mode) : { code: source, refusedBeforeImports: false };
-      return { ...prepared, esModule: false };
+      return { ...prepared, written: prepared.code, esModule: false };
     }
 
     // ── --version ──
@@ -558,18 +589,19 @@ export function buildRuntimeHandler(
     if (line.eval !== undefined) {
       const program = await inputProgram(line.eval, '[eval]');
       if (program === null) return 1;
-      const { code, refusedBeforeImports, esModule } = program;
+      const { code, written, refusedBeforeImports, esModule, esModuleMap } = program;
       const programArgs = args.slice(flagSpan);
       return runProgram(code, {
         print,
         refusedBeforeImports,
         esModule,
+        esModuleMap,
         argv: programArgs,
         filename: '<eval>',
         dirname: ctx.cwd || '/home/user',
         command: binSpawn?.command || `${name} -e ...`,
         stdin: programStdin,
-        launchesServer: await launches(code, null, ctx.cwd || '/home/user', programArgs),
+        launchesServer: await launches(written, null, ctx.cwd || '/home/user', programArgs),
       });
     }
 
@@ -614,16 +646,17 @@ export function buildRuntimeHandler(
       // `-p` prints the value of the code it read (eval_stdin.js).
       const program = await inputProgram(input, '[stdin]');
       if (program === null) return 1;
-      const { code, refusedBeforeImports, esModule } = program;
+      const { code, written, refusedBeforeImports, esModule, esModuleMap } = program;
       return runProgram(code, {
         print,
         refusedBeforeImports,
         esModule,
+        esModuleMap,
         argv: [...leadingFlags, '-', ...args.slice(scriptIdx + 1)],
         filename: '[stdin]',
         dirname: ctx.cwd || '/home/user',
         command: binSpawn?.command || `${name} -`,
-        launchesServer: await launches(code, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]),
+        launchesServer: await launches(written, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]),
       });
     }
 
@@ -706,7 +739,7 @@ export function buildRuntimeHandler(
     // its package imports or give it the file's own URL (commonjs-cell.ts).
     const scriptExt = vfsPathExtension(resolvedPath);
     // The package scope's "type", through the resolver's own lookup.
-    const packageType = scriptExt === '.js' || scriptExt === ''
+    const packageType = scriptExt === '.js' || scriptExt === '' || stripsTypeScript(resolvedPath)
       ? await packageScopeType({
         exists: (path) => fs.exists(path),
         isDirectory: (path) => isDirectory(fs, path),
@@ -714,17 +747,35 @@ export function buildRuntimeHandler(
         stat: (path) => fs.stat(path),
       }, resolvedPath.slice(0, Math.max(0, resolvedPath.lastIndexOf('/'))))
       : null;
+    // Node's own TypeScript is stripped, then JavaScript of Node's format for it.
+    const stripTypes = spec.nodeCommandLine && moduleScope === 'node' && stripsTypeScript(resolvedPath) ? typeScriptStripOptions(launch) : null;
+    let stripped: { code: string; esModule: boolean } | null = null;
+    if (stripTypes === 'javascript') {
+      const refused = typeScriptEntryRefused(packageType, code, launch.import.length > 0);
+      stripped = { code: refused ? typeScriptRefusalShim(unknownExtensionRefusal('/' + resolvedPath)) : code, esModule: false };
+    } else if (stripTypes !== null) {
+      stripped = await stripTypeScriptEntry(code, resolvedPath, packageType, stripTypes, scriptPath);
+      if (stripped === null) return 1;
+    }
+    if (stripped !== null) code = stripped.code;
     // TypeScript by the same table the bundle's ESM pass reads.
-    const typescript = typescriptLoader(resolvedPath);
+    const typescript = stripped === null ? typescriptLoader(resolvedPath) : null;
 
     // esbuild transform for TypeScript / TSX / JSX (both node and bun)
     // AND for ESM entry scripts.
-    const esm = typescript === null && scriptExt !== '.jsx' && isEsModuleFile(resolvedPath, code, () => packageType);
+    const esm = stripped === null
+      ? typescript === null && scriptExt !== '.jsx' && isEsModuleFile(resolvedPath, code, () => packageType)
+      : stripped.esModule;
+    // What the server-launch analysis reads: JavaScript as written (an ES module's
+    // lowering requires through its own helper), TypeScript and JSX compiled.
+    const written = code;
+    let esModuleMap: string | undefined;
     if (typescript !== null || scriptExt === '.jsx' || esm) {
       const loader = typescript ?? (scriptExt === '.jsx' ? 'jsx' : 'js');
       const lowered = await lowerToCommonJs(code, loader, 'file:///' + resolvedPath.replace(/^\/+/, ''), scriptPath, esm);
       if (lowered === null) return 1;
-      code = lowered;
+      code = lowered.code;
+      esModuleMap = lowered.map;
     }
 
     const filename = '/' + resolvedPath;
@@ -733,13 +784,13 @@ export function buildRuntimeHandler(
       : '/';
     return runProgram(code, {
       esModule: esm,
+      ...(esModuleMap ? { esModuleMap } : {}),
       argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
       filename,
       dirname,
       command: binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
       stdin: programStdin,
-      // Judged on the code as it will run, after any TypeScript/ESM transform.
-      launchesServer: await launches(code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]),
+      launchesServer: await launches(esm ? written : code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]),
     });
   }
 
