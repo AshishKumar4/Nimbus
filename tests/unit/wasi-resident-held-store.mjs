@@ -75,9 +75,9 @@ async function processOver(seed = {}) {
       recalled: async (owner, kind) => { authority.recalled(owner, kind); },
     },
   };
+  // The grant comes as it does live (GRANT_AFTER): after the first changes went to the session.
   const fs = residentFilesystem(authority, view, {
     session,
-    grantAfter: 1,
     isHomeRoot: (key) => key.startsWith('home/') && !key.slice(5).includes('/'),
   });
   return { fs, kernel, authority };
