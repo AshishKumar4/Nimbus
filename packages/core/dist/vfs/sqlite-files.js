@@ -70,8 +70,11 @@ export class SqliteFiles {
     get credentialed() {
         return this.view;
     }
-    as(cred, actor) {
-        return new SqliteFiles(this.engine, this.engine.as(cred, actor === undefined ? undefined : { actor }));
+    as(cred, actor, options) {
+        return new SqliteFiles(this.engine, this.engine.as(cred, {
+            ...(actor === undefined ? {} : { actor }),
+            ...(options?.holds === undefined ? {} : { holds: options.holds }),
+        }));
     }
     /** Every mutation that lands on the database, through any view (SqliteVFS.observeWrites); paths absolute. */
     observeWrites(observer) {

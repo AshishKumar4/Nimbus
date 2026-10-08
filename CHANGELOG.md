@@ -98,6 +98,28 @@ published independently in the `@nimbus-sh` npm scope.
   `open` for writing, `unlink` and `rmdir`, did not present the caller's
   exclusive-mutation lease: under its own lease a holder was refused EBUSY
   there. A file opened under a lease now writes and truncates under it.
+- Changed: what a process's writes survive. A resident (node, python,
+  ruby or opencode in a SQLite-backed facet) logs every change in its own
+  store before the program is told it succeeded. When the process is
+  killed or runs out of memory, the session drains that log, and only then
+  reports its exit status: 5,000 of 5,000 files after an OOM or a `kill -9`.
+  One limit remains: a resident that dies of CPU or memory partway through
+  one unbroken synchronous stretch loses what that stretch logged (958 of
+  5,000 in a live CPU-death run). No output ever gets ahead of it.
+  A one-shot (node, python, ruby or a WASI program run once) releases no
+  output, exit status or outbound message until every change it made
+  before it is in the session. A one-shot that ends abnormally (out of
+  memory or CPU, or killed) can lose an unknown number of the changes it
+  made since it last produced output or flushed. It always exits non-zero
+  and says so in its output, naming any subtree it held. No count is
+  promised: the session never saw the changes the process acknowledged and
+  never sent.
+- Fixed: a WASI program run with `./prog.wasm`, and ruby, ran without its
+  credential, so every file call was a round trip to the session. A C
+  program writing 10,000 files now takes 14.7 s, where before it stopped at
+  the 30 s limit with about 3,000 written.
+- Fixed: a resident that died on its own after it started (out of memory
+  or CPU) stayed listed as running, and its writes were never recovered.
 
 - Fixed: a write wave ignored mounts. A W7 wave (`writeBatchStream`, which
   `git clone`, `git checkout` and `npm install` use) wrote every record to
@@ -372,6 +394,16 @@ published independently in the `@nimbus-sh` npm scope.
   dev server again exposes every key of a CommonJS `module.exports = {...}`
   literal as a named export (for example `color-name`'s `red`), checked
   against Vite 7.3.6.
+- Removed the legacy synchronous filesystem methods on `NimbusSession`
+  (`vfsReadFile`, `vfsReadFileString`, `vfsStat`, `vfsExists`, `vfsReaddir`,
+  `vfsWriteFile`) and their functions in `@nimbus-sh/worker/session/rpc`.
+  They always acted as the kernel, stripped leading slashes and turned every
+  error into `null` or an empty answer; nothing in Nimbus called them. Use
+  the session's files API (`files.read`, `files.write`, and the rest) or the
+  credentialed `_rpc*` methods, which act as a process's credential and
+  report errors. A breaking change to a published API: `@nimbus-sh/worker`
+  moves to 0.14.0, and `@nimbus-sh/sdk` to its next minor, since its
+  `@nimbus-sh/sdk/worker` entry re-exports `NimbusSession`.
 - Fixed: `create-nimbus-app` wrote a `wrangler.jsonc` without
   `limits.cpu_ms`, so a scaffolded session ran under the 30 s default CPU
   limit. The scaffold now writes the config that `@nimbus-sh/config`

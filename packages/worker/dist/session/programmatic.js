@@ -25,13 +25,14 @@ import { clearPortCapability, isValidAppName, persistPortCapability, portRecordK
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
 import { isPreviewHostSafeSid, previewHostUrl, readPreviewHostSuffix } from '../_shared/preview-host.js';
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
-import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
+import { adoptGeneration, generation, raiseGeneration, releaseGeneration } from '@nimbus-sh/fabric/generation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
 import { parseShellState } from '@nimbus-sh/core/workspace';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { singleQuote } from '@nimbus-sh/core/_shared/shell-quote.js';
 import { collectExecStream, createExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { _acquireForRoutedRequest } from './rpc.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 /**
  * Run `body` in the named shell `options.shellId`, or with none when no
  * `shellId` was given. The named shells are the workspace's
@@ -101,6 +102,7 @@ function getHome(self) {
     catch { }
     return '/home/user';
 }
+/** What a runtime install writes with: as the kernel, repeatable, so its callers pass a delegation it meets by withRecall. */
 function runtimeDeps(self) {
     self.ensureSqliteFs();
     if (!self.sqliteFs)
@@ -120,7 +122,7 @@ export async function ensureProgrammaticReady(self, options = {}) {
         .map((s) => String(s).trim())
         .filter(Boolean);
     if (preinstall.length > 0) {
-        const results = await ensureRuntimesProgrammatic(runtimeDeps(self), preinstall);
+        const results = await withRecall(() => ensureRuntimesProgrammatic(runtimeDeps(self), preinstall));
         const failed = results.filter((r) => r.exitCode !== 0);
         if (failed.length > 0) {
             const details = failed.map((r) => `${r.spec}: ${r.stderr || r.stdout}`).join('\n');
@@ -432,11 +434,11 @@ export async function rpcRunCode(self, code, options = {}) {
 }
 export async function rpcInstallRuntime(self, spec, options = {}) {
     await ensureProgrammaticReady(self);
-    return installRuntimeProgrammatic(runtimeDeps(self), String(spec), options);
+    return withRecall(() => installRuntimeProgrammatic(runtimeDeps(self), String(spec), options));
 }
 export async function rpcEnsureRuntimes(self, specs, options = {}) {
     await ensureProgrammaticReady(self);
-    return ensureRuntimesProgrammatic(runtimeDeps(self), specs.map((s) => String(s)), options);
+    return withRecall(() => ensureRuntimesProgrammatic(runtimeDeps(self), specs.map((s) => String(s)), options));
 }
 export async function rpcListRuntimes(self) {
     await ensureProgrammaticReady(self);
@@ -961,17 +963,19 @@ export async function rpcDeleteFile(self, path, options = {}, cred) {
     await ensureProgrammaticReady(self);
     const p = String(path).replace(/^\/+/, '');
     const vfs = self.sqliteFs.as(cred === undefined ? CRED_KERNEL : requireVfsCred(cred, 'files.delete'));
-    if (!vfs.exists(p))
-        return;
-    if (vfs.isDirectory(p)) {
-        if (!options.recursive) {
-            vfs.rmdir(p);
+    // A delegation it meets is recalled first.
+    await withRecall(() => {
+        if (!vfs.exists(p))
+            return;
+        if (vfs.isDirectory(p)) {
+            if (!options.recursive)
+                vfs.rmdir(p);
+            else
+                vfs.removeRecursive(p);
             return;
         }
-        vfs.removeRecursive(p);
-        return;
-    }
-    vfs.unlink(p);
+        vfs.unlink(p);
+    });
 }
 export async function rpcDestroy(self, options = {}) {
     self.ensureSqliteFs();
@@ -1081,16 +1085,10 @@ export async function rpcDestroy(self, options = {}) {
             await self.ctx.storage.put(SESSION_DESTROYED_KEY, destroyedAt);
         }
         catch { /* best-effort */ }
-        // deleteAll also wiped the isolate-generation counter; without
-        // re-persisting it the next boot would restart at generation 1, and a
-        // straggler facet from a HIGHER pre-destroy generation would classify as
-        // current-generation (pid > pidBase) — landing its output on the
-        // destroyed/recreated session. Keep {tombstone, isolateGen} consistent.
-        try {
-            await self.ctx.storage.put(GENERATION_KEY, generation(self.ctx));
-        }
-        catch { /* best-effort */ }
-        resetInMemorySessionState(self);
+        // deleteAll also wiped the isolate-generation counter: the recreated
+        // session's supervisor reserves its generation again (installEmptyProcessState),
+        // past every pid this instance minted, before it mints any.
+        await resetInMemorySessionState(self);
         destroyed = true;
         return { ok: true, killed, destroyedAt, reason };
     }
@@ -1117,16 +1115,30 @@ async function quiesceInMemorySessionState(self) {
         self._cirrusHmrWsClients?.clear?.();
     }
     catch { }
-    installEmptyProcessState(self, successorGeneration(self));
+    await installEmptyProcessState(self);
 }
 /**
- * The generation the NEXT boot of this session will run as.
- *
- * rpcDestroy re-persists the pre-destroy generation after wiping storage,
- * so `adoptGeneration` reads it back and bumps once — landing here.
+ * A session's process supervisor: the one way one is made, so each is
+ * wired to raise the persisted generation when its pids reach the next
+ * stride (pids never repeat across incarnations). It mints no pid before
+ * reserveSessionProcesses gives it its range.
  */
-function successorGeneration(self) {
-    return generation(self.ctx) + 1;
+export function sessionProcesses(ctx) {
+    const processes = new SessionProcessSupervisor();
+    processes.onPidStride((stride) => { void raiseGeneration(ctx, stride); });
+    return processes;
+}
+/**
+ * Give `processes` (made by sessionProcesses) this incarnation's pid range:
+ * its generation durably reserved first (adoptGeneration: persisted past
+ * every one before it, and past every pid this context minted), then its
+ * pids start past that. The one way a live supervisor gets its range: at
+ * boot and at a destroy's recreate.
+ */
+export async function reserveSessionProcesses(ctx, processes) {
+    await adoptGeneration(ctx);
+    processes.setPidBase(generation(ctx) * PID_GEN_STRIDE);
+    return processes;
 }
 /**
  * Install the empty process/port state a destroyed session leaves behind.
@@ -1143,9 +1155,9 @@ function successorGeneration(self) {
  * generation could have issued. This instance has to refuse exactly the
  * same set for the rest of its life, so it takes the same floor.
  */
-function installEmptyProcessState(self, generation) {
-    self.processes = new SessionProcessSupervisor();
-    self.processes.setPidBase(generation * PID_GEN_STRIDE);
+async function installEmptyProcessState(self) {
+    releaseGeneration(self.ctx);
+    self.processes = await reserveSessionProcesses(self.ctx, sessionProcesses(self.ctx));
     self.portRegistry = new PortRegistry((pid) => _acquireForRoutedRequest(self, pid));
     self._w9PersistWired = false;
 }
@@ -1185,7 +1197,7 @@ async function closeAcceptedWebSockets(self) {
         await delay(25);
     }
 }
-function resetInMemorySessionState(self) {
+async function resetInMemorySessionState(self) {
     try {
         self._cirrusHmrWsClients?.clear?.();
     }
@@ -1223,14 +1235,8 @@ function resetInMemorySessionState(self) {
     self.sessionBasePathHydrated = false;
     self.wranglerAliasBannerShown = false;
     self._b4Phase = 'drained';
-    // Adopt the generation the next boot will derive from the counter
-    // rpcDestroy just re-persisted, so the in-memory pid floor and the
-    // persisted one agree. Deliberately left unpersisted: storage keeps the
-    // pre-destroy value, and adoptGeneration re-derives this one from it.
-    const successor = successorGeneration(self);
-    installEmptyProcessState(self, successor);
+    await installEmptyProcessState(self);
     self._w9SchemaInit = false;
-    assumeGeneration(self.ctx, successor);
     try {
         self._w9WireProcessLogPersist?.();
     }

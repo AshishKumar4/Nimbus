@@ -72,8 +72,11 @@ export class SqliteFiles implements VFS {
     return this.view;
   }
 
-  as(cred: VfsCred, actor?: string): SqliteFiles {
-    return new SqliteFiles(this.engine, this.engine.as(cred, actor === undefined ? undefined : { actor }));
+  as(cred: VfsCred, actor?: string, options?: { holds?: () => ReadonlySet<string> }): SqliteFiles {
+    return new SqliteFiles(this.engine, this.engine.as(cred, {
+      ...(actor === undefined ? {} : { actor }),
+      ...(options?.holds === undefined ? {} : { holds: options.holds }),
+    }));
   }
 
   /** Every mutation that lands on the database, through any view (SqliteVFS.observeWrites); paths absolute. */

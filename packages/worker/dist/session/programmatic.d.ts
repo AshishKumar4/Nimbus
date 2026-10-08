@@ -16,6 +16,7 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type PortVisibility } from './port-capability.js';
 import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy, SpawnedWorker } from '../facets/manager.js';
+import { type GenerationContext } from '@nimbus-sh/fabric/generation.js';
 import { type TimerHost } from '@nimbus-sh/fabric/timers.js';
 import { type NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { type ExecOutput, type ExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
@@ -398,5 +399,20 @@ export declare function rpcDeleteFile(self: ProgrammaticHost, path: string, opti
     recursive?: boolean;
 }, cred?: VfsCred): Promise<void>;
 export declare function rpcDestroy(self: ProgrammaticHost, options?: ProgrammaticDestroyOptions): Promise<ProgrammaticDestroyResult>;
+/**
+ * A session's process supervisor: the one way one is made, so each is
+ * wired to raise the persisted generation when its pids reach the next
+ * stride (pids never repeat across incarnations). It mints no pid before
+ * reserveSessionProcesses gives it its range.
+ */
+export declare function sessionProcesses(ctx: GenerationContext): SessionProcessSupervisor;
+/**
+ * Give `processes` (made by sessionProcesses) this incarnation's pid range:
+ * its generation durably reserved first (adoptGeneration: persisted past
+ * every one before it, and past every pid this context minted), then its
+ * pids start past that. The one way a live supervisor gets its range: at
+ * boot and at a destroy's recreate.
+ */
+export declare function reserveSessionProcesses(ctx: GenerationContext, processes: SessionProcessSupervisor): Promise<SessionProcessSupervisor>;
 export {};
 //# sourceMappingURL=programmatic.d.ts.map

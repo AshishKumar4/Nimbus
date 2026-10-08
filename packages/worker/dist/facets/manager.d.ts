@@ -36,6 +36,7 @@ import { type BundleCellResultStore, type BundleCellTransformStats } from '@nimb
 import { StdinTaken } from '../runtime/stop-replay-host.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
 import { type ProcessHostFactory, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
+import { ProcessJournals } from '../session/process-journals.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { type WasmImageRecord } from './wasm-image-digest.js';
@@ -1098,6 +1099,12 @@ export declare class FacetManager {
      * workerd process a facet landed in.
      */
     private processFabric;
+    /** The residents whose write log may still hold changes (process-journals.ts). */
+    readonly processJournals: ProcessJournals;
+    /** Residents whose log is being drained as their facet is released. */
+    private readonly journalDraining;
+    /** An exit a signal decided, told once its process's log is drained (`_endBySignal`). */
+    private readonly endsAfterDrain;
     /**
      * The same substrate the fabric runs residents on, held directly because a
      * one-shot has no lifecycle for the fabric to own — it is started, read and
@@ -1298,6 +1305,16 @@ export declare class FacetManager {
      *  manager credentials its processes through that one rather than a second
      *  authority over the same disk. */
     setVfs(vfs: SqliteVFS, filesystem: NimbusFilesystemAuthority): void;
+    /**
+     * Send what a released resident's write log still holds (it was killed,
+     * ran out of memory or CPU, or ended before its log was answered), as the
+     * process would have: under the numbers it gave each change, so the
+     * session's cursor answers what already landed and applies the rest once.
+     * A change the session refuses is said in the process's own output, named.
+     */
+    private _drainProcessJournal;
+    /** Drain `journal` into the session as process `pid` (with its credential) would have sent it. */
+    private _drainJournalAs;
     /**
      * What every loader-backed runtime builds its facet pools from: the env and
      * ctx a pool is constructed over, and the workspace's network its facets go
@@ -1776,6 +1793,14 @@ export declare class FacetManager {
      * before any caller's own `done` handler, so the process has ended by name
      * when they look. The placement goes to the process log under NIMBUS_DEBUG.
      */
+    /**
+     * The one watcher of a hosted process's lifecycle: a lost host ends it
+     * (ProcessHostLost), and `diesAlone`, a booted resident that logs its
+     * changes, dying on its own (out of memory, out of CPU) ends it too, its
+     * log drained as it is released and only then its exit told. A boot that
+     * fails or stops (to wait for stdin) is its launcher's to handle; a
+     * lifetime resident's caller watches its lifecycle itself.
+     */
     private _watchHost;
     /**
      * The reader the fabric completes a boot spec's by-path members with.
@@ -1803,6 +1828,8 @@ export declare class FacetManager {
      * decides anything about where a program runs.
      */
     private _startResidentProcess;
+    /** A booted resident died without anyone ending it: it exits 1, its reason on its stderr. */
+    private _residentDied;
     private _activateProcessVfsWriter;
     /**
      * Grant every suspended launch a chunk of this turn — the session's alarm

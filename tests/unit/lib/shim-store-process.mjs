@@ -12,6 +12,7 @@ import { generateShimsCode } from '../../../packages/worker/src/runtime/node-shi
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { processBridge } from './process-bridge.mjs';
 import { SHIMS_STORE_PRELUDE, declareNamespace } from './shims-namespace.mjs';
+import { waveSupervisor } from './wave-supervisor.mjs';
 
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 export const PROCESS_DIR = '/home/user/p';
@@ -19,9 +20,8 @@ export const PROCESS_DIR = '/home/user/p';
 /**
  * @param {{ seed?: (vfs: any) => void, writer?: string }} [options]
  *   `seed` adds kernel-written tree before it is handed to the user;
- *   `writer` activates that append writer and gives the supervisor the
- *   ranged, append and metadata ops (fsWriteRange, fsTruncate, fsAppend,
- *   fsAppendAck, utimes, chmod, chown) a FileHandle reaches.
+ *   `writer` gives the supervisor the ranged and metadata ops
+ *   (fsWriteRange, fsTruncate, utimes, chmod, chown) a FileHandle reaches.
  */
 export function shimStoreProcess({ seed, writer } = {}) {
   const harness = createSqliteVfsTestHarness();
@@ -31,7 +31,6 @@ export function shimStoreProcess({ seed, writer } = {}) {
   const dec = new TextDecoder();
   vfs.mkdir(PROCESS_DIR, { recursive: true });
   seed?.(vfs);
-  if (writer) rawVfs.activateAppendWriter(1, writer);
   const ownTree = (path = '') => {
     for (const entry of vfs.readdir(path)) {
       const at = path ? `${path}/${entry.name}` : entry.name;
@@ -55,17 +54,14 @@ export function shimStoreProcess({ seed, writer } = {}) {
     ...(writer ? {
       fsWriteRange: (p, o, b) => bridge.writeRange(p, o, b),
       fsTruncate: (p, s) => bridge.truncate(p, s),
-      async fsAppend(p, moduleId, operationId, bytes) {
-        const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-        const digest = Array.from(hash, (byte) => byte.toString(16).padStart(2, '0')).join('');
-        return bridge.appendOnce(p, 1, writer, moduleId, Number(operationId), digest, bytes);
-      },
-      fsAppendAck: (moduleId, operationId) => bridge.acknowledgeAppend(1, writer, moduleId, Number(operationId)),
       utimes: (p, a, m) => bridge.utimes(p, a, m),
       chmod: (p, m) => bridge.chmod(p, m),
       chown: (p, u, g, o) => bridge.chown(p, u, g, o),
     } : {}),
   };
+
+  // Its process's waves reach these calls (lib/wave-supervisor.mjs).
+  waveSupervisor(supervisor);
 
   // The supervisor stamps a facet's bundle with the cursor it was read at,
   // and the launcher seeds globalThis.__nimbusVfsCursor from it

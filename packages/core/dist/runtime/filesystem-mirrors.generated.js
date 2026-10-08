@@ -46,12 +46,12 @@ export const FILESYSTEM_RPC_METHODS = {
     fchmod: 'fsFchmod',
     fchown: 'fsFchown',
     futimes: 'fsFutimes',
-    appendOnce: 'fsAppend',
-    acknowledgeAppend: 'fsAppendAck',
     writeBatch: 'writeBatch',
     writeStream: 'writeBatchStream',
     acquireExclusiveMutation: 'fsAcquireExclusiveMutation',
     releaseExclusiveMutation: 'fsReleaseExclusiveMutation',
+    awaitRecall: 'fsAwaitRecall',
+    recalled: 'fsRecalled',
 };
 /** The RPC names a facet calls through `answer`: every method but a streamed one. */
 export const FILESYSTEM_ANSWERED_RPC_METHODS = [
@@ -94,11 +94,11 @@ export const FILESYSTEM_ANSWERED_RPC_METHODS = [
     'fsFchmod',
     'fsFchown',
     'fsFutimes',
-    'fsAppend',
-    'fsAppendAck',
     'writeBatch',
     'fsAcquireExclusiveMutation',
     'fsReleaseExclusiveMutation',
+    'fsAwaitRecall',
+    'fsRecalled',
 ];
 /** Local facets retain the process-bound bridge and its synchronous capability. */
 export function vfsSupervisor(fs) {
@@ -143,12 +143,12 @@ export function vfsSupervisor(fs) {
         fsFchmod: (...args) => fs.fchmod(...args),
         fsFchown: (...args) => fs.fchown(...args),
         fsFutimes: (...args) => fs.futimes(...args),
-        fsAppend: (...args) => fs.appendOnce(...args),
-        fsAppendAck: (...args) => fs.acknowledgeAppend(...args),
         writeBatch: (...args) => fs.writeBatch(...args),
         writeBatchStream: (...args) => fs.writeStream(...args),
         fsAcquireExclusiveMutation: (...args) => fs.acquireExclusiveMutation(...args),
         fsReleaseExclusiveMutation: (...args) => fs.releaseExclusiveMutation(...args),
+        fsAwaitRecall: (...args) => fs.awaitRecall(...args),
+        fsRecalled: (...args) => fs.recalled(...args),
     };
 }
 /**
@@ -198,11 +198,11 @@ export function bridgeOverSupervisor(supervisor, local) {
         fchmod: (...args) => answerValue(supervisor.fsFchmod(...args)),
         fchown: (...args) => answerValue(supervisor.fsFchown(...args)),
         futimes: (...args) => answerValue(supervisor.fsFutimes(...args)),
-        appendOnce: (...args) => answerValue(supervisor.fsAppend(...args)),
-        acknowledgeAppend: (...args) => answerValue(supervisor.fsAppendAck(...args)),
         writeBatch: (...args) => answerValue(supervisor.writeBatch(...args)),
         writeStream: (...args) => answerStream(supervisor.writeBatchStream(...args)),
         acquireExclusiveMutation: (...args) => answerValue(supervisor.fsAcquireExclusiveMutation(...args)),
         releaseExclusiveMutation: (...args) => answerValue(supervisor.fsReleaseExclusiveMutation(...args)),
+        awaitRecall: (...args) => answerValue(supervisor.fsAwaitRecall(...args)),
+        recalled: (...args) => answerValue(supervisor.fsRecalled(...args)),
     };
 }

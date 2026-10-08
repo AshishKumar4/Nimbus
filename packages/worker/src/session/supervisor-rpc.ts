@@ -7,7 +7,8 @@
  * Props: { doId: string, pid: number, writerId: string, route: HostRoute, hostIncarnation?: string }
  *   doId — the supervisor DO's durable object ID (for routing)
  *   pid  — the process ID (for stdout/stderr routing)
- *   writerId — the active append-writer incarnation for this process
+ *   writerId — the run of the process the binding was minted for (its stdin
+ *           reads and replay journal are that run's)
  *   route — the host namespace and dispatch method, minted with the binding
  *           in the host's isolate; this entrypoint may answer from another
  *   hostIncarnation — the host instance that minted the binding, present
@@ -23,7 +24,7 @@
  *   mkdir(path) → void
  *   unlink(path) → void
  *   fsOpen/fsRead/fsWrite/fsClose/readlink/symlink/rename/rmdir/fsRevision
- *   fsReadRange/fsWriteRange/fsAppend/fsAppendAck/fsTruncate
+ *   fsReadRange/fsWriteRange/fsTruncate
  *     → shared RuntimeFsBridge operations
  *   fsReadBatch(requests) → per-request results  (many reads and lstats, one round trip)
  *   fsList(after, limit) → one page of what EXISTS, with per-path revisions
@@ -68,7 +69,7 @@ import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counter
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   isSupervisorAnsweredMethod,
   supervisorAnswer,
@@ -78,7 +79,7 @@ import {
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { fsReadBatchRequestBytes, type FsAcquireArgs, type FsAcquiredAnswer, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
-import { LOST_CALL_HEDGE_AFTER_MS } from '@nimbus-sh/platform/lost-call.js';
+import { LOST_CALL_HEDGE_AFTER_MS, WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 // Cache hits and misses here would bump this isolate's counters, not the
 // DO's: each RPC returns its events with its result (CacheStatEvent), and
@@ -349,14 +350,6 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return typeof run === 'string' && run.length > 0 ? run : undefined;
   }
 
-  private _writerId(): string {
-    const writerId = (this.ctx as any).props?.writerId;
-    if (typeof writerId !== 'string' || writerId.length === 0) {
-      throw new Error('SupervisorRPC: missing VFS writer incarnation');
-    }
-    return writerId;
-  }
-
   // ── Filesystem RPC ────────────────────────────────────────────────────
 
   /**
@@ -608,6 +601,14 @@ export class SupervisorRPC extends WorkerEntrypoint {
   async fsReleaseExclusiveMutation(...args: Parameters<RuntimeFsBridge['releaseExclusiveMutation']>): Promise<Awaited<ReturnType<RuntimeFsBridge['releaseExclusiveMutation']>>> {
     return this._call(this._fsMutation('fsReleaseExclusiveMutation', args));
   }
+  /** A delegation's holder waits here for its next recall (a long poll, sent once: a lost one is asked again). */
+  async fsAwaitRecall(owner: string, waitMs?: number): Promise<RecallKind | null> {
+    return this._call(this._fsOp('fsAwaitRecall', waitMs === undefined ? [owner] : [owner, waitMs]));
+  }
+  /** The holder has answered recall `kind`: delivered once. */
+  async fsRecalled(owner: string, kind: RecallKind): Promise<void> {
+    return this._call(this._fsMutation('fsRecalled', [owner, kind]));
+  }
 
   async fsClose(handleId: number): Promise<void> {
     return this._call(this._fsMutation('fsClose', [handleId]));
@@ -667,35 +668,6 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._call(this._fsMutation('fsWriteRange', [path, offset, bytes]));
   }
 
-  /**
-   * An append and its acknowledgement carry the append ledger's own identity
-   * (writer, module incarnation, operation sequence), whose receipt the host
-   * keeps until the acknowledgement: a repeat of either applies nothing twice,
-   * so a dropped one is simply re-sent.
-   */
-  async fsAppend(
-    path: string,
-    moduleId: string,
-    operationId: string,
-    bytes: Uint8Array | ArrayBuffer,
-  ): Promise<number> {
-    return this._call(
-      this._resent(
-        { op: 'fsAppend', args: [path, moduleId, operationId, bytes], pid: this._pid(), writerId: this._writerId() },
-        { kind: 'append', operationId },
-      ),
-    );
-  }
-
-  async fsAppendAck(moduleId: string, operationId: string): Promise<void> {
-    return this._call(
-      this._resent(
-        { op: 'fsAppendAck', args: [moduleId, operationId], pid: this._pid(), writerId: this._writerId() },
-        { kind: 'append', operationId },
-      ),
-    );
-  }
-
   async fsTruncate(path: string, size: number): Promise<VfsMutationReceipt> {
     return this._call(this._fsMutation('fsTruncate', [path, size]));
   }
@@ -749,14 +721,39 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * sent unfenced. Minting is harmless to repeat, so a lost call is hedged
    * like a read (lost-call.ts).
    */
-  async openWaveWriter(): Promise<string | null> {
+  /**
+   * `first`: the process's first epoch, asked once per run by its writer
+   * (process-fs-client): the one minted with this binding answers it, with
+   * no round trip, while it is young (a quarter of its life). Any later one
+   * is minted anew: a writer that numbers afresh never reuses an epoch.
+   */
+  async openWaveWriter(first = false): Promise<string | null> {
     if (this._hostIncarnation() === undefined) return null;
+    const props = this.ctx.props as { waveWriter?: unknown; waveWriterMintedAt?: unknown } | undefined;
+    if (first && typeof props?.waveWriter === 'string' && typeof props.waveWriterMintedAt === 'number'
+      && Date.now() - props.waveWriterMintedAt < WAVE_EPOCH_TTL_MS / 4) {
+      return props.waveWriter;
+    }
     const answer = await this._call(this._resent<{ writer: string }>(
       { op: 'openWaveWriter', args: [], pid: this._pid() },
       { kind: 'open' },
       { hedgeAfterMs: LOST_CALL_HEDGE_AFTER_MS },
     ));
     return answer.writer;
+  }
+
+  /**
+   * Retire write-wave epoch `writer` (SupervisorDeliveries.retireWaveWriter):
+   * its writer gave a wave of it up, and nothing of it may land after what
+   * it sends next. Harmless to repeat, so a lost call is re-sent.
+   */
+  async retireWaveWriter(writer: string): Promise<void> {
+    if (this._hostIncarnation() === undefined) return;
+    await this._call(this._resent<void>(
+      { op: 'retireWaveWriter', args: [writer], pid: this._pid() },
+      { kind: 'open' },
+      { hedgeAfterMs: LOST_CALL_HEDGE_AFTER_MS },
+    ));
   }
 
   /**
@@ -767,9 +764,14 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * and that host instance refuses an attempt older than one it has seen
    * from the same writer; any other instance refuses it outright.
    */
+  /**
+   * `owner`: the lease the wave is written under, when it is not the one this
+   * binding was made with: a delegation the process took at run time.
+   */
   async writeBatchStream(
     stream: ReadableStream<Uint8Array>,
     fence?: WaveFence,
+    owner?: string,
   ): Promise<WriteBatchStreamResult> {
     // The encoder emits one bounded v2 record per pull. This wrapper-isolate
     // estimate covers that record; the receiving VFS separately reports and
@@ -783,7 +785,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         op: 'writeBatchStream',
         args: [],
         pid: this._pid(),
-        mutationOwner: this._mutationOwner(),
+        mutationOwner: owner ?? this._mutationOwner(),
         stream,
         waveFence: fence && hostIncarnation !== undefined ? { ...fence, hostIncarnation } : undefined,
       }, { kind: 'deliver', operationId: fence ? `${fence.writer}:${fence.wave}:${fence.attempt}` : undefined }, { maxAttempts: 1 }));

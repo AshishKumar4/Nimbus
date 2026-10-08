@@ -39,6 +39,7 @@ import { supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { residentFacetOf } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { readHydrating } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { headerPairs, isolateToken, } from '@nimbus-sh/fabric/process-host.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '@nimbus-sh/platform/oom-discriminator.js';
@@ -384,17 +385,6 @@ const FsWriteRangeArgsSchema = z.object({
     path: z.string(),
     offset: FsRangeOffsetSchema,
 });
-const FsAppendArgsSchema = z.object({
-    path: z.string(),
-    writerId: z.string().uuid(),
-    moduleId: z.string().uuid(),
-    operationId: z.string().regex(/^[1-9][0-9]*$/).max(32),
-});
-const FsAppendAckArgsSchema = FsAppendArgsSchema.pick({
-    writerId: true,
-    moduleId: true,
-    operationId: true,
-});
 const FsTruncateArgsSchema = z.object({
     path: z.string(),
     size: FsRangeOffsetSchema,
@@ -404,6 +394,8 @@ const FsTruncateArgsSchema = z.object({
 const FsAcquireArgsSchema = z.object({
     epoch: z.string().max(64).nullable(),
     cursor: z.number().int().min(0),
+    /** The asking process's own count of when it built these (node-shims _acquireArgs): echoed with the answer, never read here. */
+    begin: z.number().int().min(0).optional(),
     options: z.object({
         namespace: z.boolean().optional(),
         push: z.object({
@@ -598,7 +590,8 @@ export function _acquireForRoutedRequest(self, pid) {
  */
 export async function _rpcFsList(self, after, limit, pid) {
     const args = FsListArgsSchema.parse({ after: after ?? null, limit: limit ?? null });
-    return self.supervisorBridge(pid).list(args.after, args.limit ?? undefined);
+    // A page that reaches another holder's delegation waits for its recall, and is read again.
+    return withRecall(() => self.supervisorBridge(pid).list(args.after, args.limit ?? undefined));
 }
 export async function _rpcFsReadRange(self, path, offset, length, pid, cred) {
     return self.supervisorOp({ op: 'fsReadRange', args: [path, offset, length], pid, cred });
@@ -696,27 +689,6 @@ export async function _rpcFsReadBatch(self, requests, pid) {
 export async function _rpcFsWriteRange(self, path, offset, bytes, pid) {
     const args = FsWriteRangeArgsSchema.parse({ path, offset });
     return self.supervisorBridge(pid).writeRange(args.path, args.offset, normalizeWriteBatchChunkData(bytes));
-}
-export async function _rpcFsAppend(self, path, writerId, moduleId, operationId, bytes, pid) {
-    const args = FsAppendArgsSchema.parse({ path, writerId, moduleId, operationId });
-    const sequence = Number(args.operationId);
-    if (!Number.isSafeInteger(sequence)) {
-        throw new Error('filesystem append operation exceeds the safe integer range');
-    }
-    const processId = processPid(pid);
-    const data = normalizeWriteBatchChunkData(bytes);
-    const digestBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', data));
-    const digest = Array.from(digestBytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-    return self.supervisorBridge(pid).appendOnce(args.path, processId, args.writerId, args.moduleId, sequence, digest, data);
-}
-export async function _rpcFsAppendAck(self, writerId, moduleId, operationId, pid) {
-    const args = FsAppendAckArgsSchema.parse({ writerId, moduleId, operationId });
-    const sequence = Number(args.operationId);
-    if (!Number.isSafeInteger(sequence)) {
-        throw new Error('filesystem append operation exceeds the safe integer range');
-    }
-    const processId = processPid(pid);
-    await self.supervisorBridge(processId).acknowledgeAppend(processId, args.writerId, args.moduleId, sequence);
 }
 /**
  * Called by CirrusHmrRPC.hmrSend. Runs in the DO's own context so
@@ -1330,65 +1302,6 @@ export async function _rpcCpWait(self, childPid, waitMs, acquire, pid, knownStar
     const fpm = self._ensureFacetProcessManager();
     const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
     return withDeliveredAcquire(self, status, status.done, acquire, pid);
-}
-// ── Legacy VFS RPC Entrypoints (direct method calls) ──────────────────
-// Kept for backward compatibility with direct DO stub callers.
-/** RPC: Read a file from the VFS. Returns ArrayBuffer or null. */
-export function vfsReadFile(self, path) {
-    self.ensureSqliteFs();
-    try {
-        const stripped = path.replace(/^\/+/, '');
-        const data = self.sqliteFs.as(CRED_KERNEL).readFile(stripped);
-        return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-    }
-    catch {
-        return null;
-    }
-}
-/** RPC: Read a file as string. Returns string or null. */
-export function vfsReadFileString(self, path) {
-    self.ensureSqliteFs();
-    try {
-        const stripped = path.replace(/^\/+/, '');
-        return self.sqliteFs.as(CRED_KERNEL).readFileString(stripped);
-    }
-    catch {
-        return null;
-    }
-}
-/** RPC: Stat a path. Returns file metadata or null. */
-export function vfsStat(self, path) {
-    self.ensureSqliteFs();
-    try {
-        const stripped = path.replace(/^\/+/, '');
-        return self.sqliteFs.as(CRED_KERNEL).stat(stripped);
-    }
-    catch {
-        return null;
-    }
-}
-/** RPC: Check if path exists. */
-export function vfsExists(self, path) {
-    self.ensureSqliteFs();
-    const stripped = path.replace(/^\/+/, '');
-    return self.sqliteFs.as(CRED_KERNEL).exists(stripped);
-}
-/** RPC: List directory contents. Returns array of { name, type }. */
-export function vfsReaddir(self, path) {
-    self.ensureSqliteFs();
-    try {
-        const stripped = path.replace(/^\/+/, '');
-        return self.sqliteFs.as(CRED_KERNEL).readdir(stripped);
-    }
-    catch {
-        return [];
-    }
-}
-/** RPC: Write a file to the VFS. */
-export function vfsWriteFile(self, path, data) {
-    self.ensureSqliteFs();
-    const stripped = path.replace(/^\/+/, '');
-    self.sqliteFs.as(CRED_KERNEL).writeFile(stripped, new Uint8Array(data));
 }
 /**
  * RPC: peer-DO execute leg of Fanout's peer-DO fanout topology.

@@ -75,22 +75,6 @@ await authority.releaseProcess(1);
 assert.throws(() => fs.readFile('/moved'), { code: 'EBADF' });
 assert.throws(() => authority.bind({ pid: 1, cred: CRED_KERNEL }), { code: 'ESTALE' });
 
-// The same numeric pid in another logical workspace never shares append state.
-const shared = createSqliteVfsTestHarness();
-const a = new SqliteVFS(shared.sql, shared.ctx, 'a');
-const b = new SqliteVFS(shared.sql, shared.ctx, 'b');
-const writer = '11111111-1111-4111-8111-111111111111';
-const moduleId = '22222222-2222-4222-8222-222222222222';
-a.activateAppendWriter(7, writer);
-b.activateAppendWriter(7, writer);
-a.revokeAppendWritersThrough(7);
-const userB = b.as(CRED_KERNEL);
-userB.writeFile('/b', '');
-userB.appendOnce('/b', 7, writer, moduleId, 1, 'digest', bytes('once'));
-userB.appendOnce('/b', 7, writer, moduleId, 1, 'digest', bytes('once'));
-assert.equal(userB.readFileString('/b'), 'once');
-assert.throws(() => a.as(CRED_KERNEL).appendOnce('/a', 7, writer, moduleId, 1, 'digest', bytes('bad')), { code: 'ESTALE' });
-
 // A closed scope rejects new work and an interrupted in-flight commit
 // publishes nothing.
 {
@@ -167,15 +151,6 @@ assert.throws(() => a.as(CRED_KERNEL).appendOnce('/a', 7, writer, moduleId, 1, '
   assert.throws(() => view.readFile({ directory: app.id, path: '/proc/version', beneath: true }), { code: 'ENOTCAPABLE' });
   assert.throws(() => view.rename('/home/user/app', '/dev/app'), { code: 'EXDEV' });
   view.close(app.id);
-
-  // A denied append writes no journal row before the refusal.
-  root.writeFile('home/user/private', 'x', { mode: 0o600 });
-  const writer3 = '33333333-3333-4333-8333-333333333333';
-  raw3.activateAppendWriter(9, writer3);
-  const journal = () => [...h3.sql.exec('SELECT COUNT(*) AS n FROM vfs_append_module_state_v2')][0].n;
-  const before = journal();
-  assert.throws(() => view.appendOnce('/home/user/private', 9, writer3, moduleId, 1, 'digest', bytes('no')), { code: 'EACCES' });
-  assert.equal(journal(), before);
   h3.db.close();
 }
 

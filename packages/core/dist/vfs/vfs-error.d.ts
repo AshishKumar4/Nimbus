@@ -59,6 +59,14 @@ export declare function isVfsErrorCode(code: unknown): code is VfsErrorCode;
  */
 export declare function toVfsError(error: unknown, syscall: string, path: string, dest?: string): unknown;
 /**
+ * The codes that are a filesystem call's answer: the call was refused before
+ * it changed anything (the name is not there, it is a directory, the
+ * storage ledger has no room). Any other (EIO, ESTALE, EAGAIN, none at all)
+ * leaves the call's outcome unknown, which is a durability failure whatever
+ * the caller does with it.
+ */
+export declare const SYSCALL_VERDICTS: ReadonlySet<VfsErrorCode>;
+/**
  * What rename refuses with before it changes anything. A filesystem whose
  * rename fails after making part of it answers with another code (EIO), so
  * one of these means both names are as they were. EXDEV is among them, and

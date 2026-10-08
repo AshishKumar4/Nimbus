@@ -60,12 +60,13 @@ import {
   encodeWriteBatchStream,
   W7_MAX_OWNED_PATH_BYTES,
   W7_MAX_PATHS_PER_BATCH,
+  w7ChunkCount,
+  w7Chunks,
   type BatchChunkEntry,
   type BatchInodeEntry,
   type BatchStreamEntry,
   type BatchWritePayload,
 } from './w7-frame.js';
-import { CHUNK_SIZE } from './limits.js';
 import {
   LOST_CALL_RESEND_BACKOFF_MS,
   LOST_STREAM_ANSWER_MS,
@@ -75,6 +76,7 @@ import {
   lostCallAttributes,
 } from './lost-call.js';
 import { disposeRpcResource } from './rpc-dispose.js';
+import { retryDelayMs } from './retry.js';
 import { utf8Length } from './utf8.js';
 
 /** Paths a wave holds back from W7's bound, for its pinned marker and the marker's directories. */
@@ -97,12 +99,24 @@ export interface WaveFence {
   writer: string;
   wave: number;
   attempt: number;
+  /**
+   * A sequenced writer's wave (a process's filesystem client): the number of
+   * its first op, each op after it the next, and the highest cursor the
+   * writer has had answered. The session keeps the writer's cursor with its
+   * commits, so an op a re-send carries again is answered, not applied twice.
+   */
+  seq?: number;
+  ack?: number;
 }
 
 /** The supervisor surface a writer publishes through. */
 export interface WaveSupervisor {
-  /** `fence` is absent when the supervisor issued no epoch: the session fences nothing. */
-  writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence): Promise<unknown>;
+  /**
+   * `fence` is absent when the supervisor issued no epoch: the session
+   * fences nothing. `owner`: the delegation the wave is written under, when
+   * it is not the one the binding was made with.
+   */
+  writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence, owner?: string): Promise<unknown>;
   /**
    * A writer epoch from the session, the only identity it admits fenced
    * waves under, or null when it fences nothing. Absent on a supervisor
@@ -337,6 +351,7 @@ export class WaveWriter<Meta = undefined> {
     return this.exclusive(async () => {
       const key = this.key(path);
       this.assertOwnerHealthy(meta);
+      await this.afterRemoval(key);
       await this.admit(key, bytes.byteLength, true);
       this.buffer(key, { kind: 'file', mode: mode & 0o7777, bytes: ownedBytes(bytes), meta });
       await this.cutIfFull();
@@ -349,6 +364,7 @@ export class WaveWriter<Meta = undefined> {
       const key = this.key(path);
       const bytes = encoder.encode(target);
       this.assertOwnerHealthy(meta);
+      await this.afterRemoval(key);
       await this.admit(key, bytes.byteLength, true);
       this.buffer(key, { kind: 'symlink', mode: 0o777, bytes, meta });
       await this.cutIfFull();
@@ -382,6 +398,7 @@ export class WaveWriter<Meta = undefined> {
   directory(path: string): Promise<void> {
     return this.exclusive(async () => {
       const key = this.key(path);
+      await this.afterRemoval(key);
       await this.admit(key, 0, true);
       this.directories.add(key);
       this.deletes.delete(key);
@@ -554,6 +571,16 @@ export class WaveWriter<Meta = undefined> {
     }
   }
 
+  /**
+   * Send what is buffered when a removal of `path` is pending in it: a wave
+   * names a path once, and what is made there must land after the removal,
+   * as rm then create does (the directory's permission decides, not the old
+   * file's mode).
+   */
+  private async afterRemoval(path: string): Promise<void> {
+    if (this.deletes.has(path)) await this.cut();
+  }
+
   /** Cut waves until `path` (with its chain) and `bytes` fit beside what is buffered. */
   private async admit(path: string, bytes: number, withParents: boolean): Promise<void> {
     this.assertHealthy();
@@ -661,7 +688,7 @@ export class WaveWriter<Meta = undefined> {
     for (const [path, record] of this.records) {
       files.push({ path, meta: record.meta });
       const size = record.kind === 'stream' ? record.size : record.bytes.byteLength;
-      const chunkCount = size === 0 ? 0 : Math.ceil(size / CHUNK_SIZE);
+      const chunkCount = w7ChunkCount(size);
       waveBytes += size;
       inodes.push({
         path, parentPath: parentOf(path),
@@ -674,10 +701,7 @@ export class WaveWriter<Meta = undefined> {
       }
       // Views: the encoder copies a chunk's bytes into the buffers it
       // enqueues, so the record's bytes stay whole for a re-send.
-      const data = record.bytes;
-      for (let chunkId = 0; chunkId < chunkCount; chunkId++) {
-        chunks.push({ path, chunkId, data: data.subarray(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE) });
-      }
+      chunks.push(...w7Chunks(path, record.bytes));
     }
     const deletePaths = this.deletes.size > 0 ? [...this.deletes] : undefined;
     const ownedOnly = this.options.failPerOwner === true
@@ -777,39 +801,20 @@ export class WaveWriter<Meta = undefined> {
     return { open: piecesOf(whole, SEND_SLICE_BYTES), streamed: false };
   }
 
-  /**
-   * Send one wave, again while its transport is lost (see the module's
-   * comment), and answer with what the session answered.
-   */
-  private async sendAttempts(open: () => ReadableStream<Uint8Array>, streamed: boolean, wave: number): Promise<unknown> {
-    const { backoffMs, stallMs, answerDeadlineMs } = this.options.retry
-      ?? { backoffMs: LOST_CALL_RESEND_BACKOFF_MS, stallMs: LOST_STREAM_STALL_MS, answerDeadlineMs: LOST_STREAM_ANSWER_MS };
-    for (let attempt = 0; ; attempt++) {
-      const writer = await this.currentEpoch();
-      const attemptStream = abortable(open(), stallMs, answerDeadlineMs);
-      const fence: WaveFence | undefined = writer === null ? undefined : { writer, wave, attempt: attempt + 1 };
-      const answer = this.options.supervisor.writeBatchStream(attemptStream.stream, fence);
-      try {
-        return await Promise.race([answer, attemptStream.lost]);
-      } catch (error) {
-        const lost = error instanceof WaveLost || isLostFencedCall(error);
-        if (!lost || streamed || attempt >= backoffMs.length) throw error;
-        // The abandoned attempt can read nothing more, and its late answer is dropped.
-        attemptStream.abort(error);
-        answer.then(disposeRpcResource, () => {});
+  /** Send one wave (sendWaveAttempts) under this writer's epoch. */
+  private sendAttempts(open: () => ReadableStream<Uint8Array>, streamed: boolean, wave: number): Promise<unknown> {
+    return sendWaveAttempts({
+      supervisor: this.options.supervisor,
+      writer: () => this.currentEpoch(),
+      open,
+      streamed,
+      wave,
+      ...(this.options.retry === undefined ? {} : { retry: this.options.retry }),
+      resent: (lost) => {
         this.counters.retries++;
-        this.options.onResend?.(lostCallAttributes({
-          operation: 'writeBatchStream',
-          attempt: attempt + 1,
-          of: backoffMs.length,
-          reason: error instanceof Error ? error.message : String(error),
-        }));
-        const base = backoffMs[attempt]!;
-        await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.round(base * (0.75 + Math.random() * 0.5)))));
-      } finally {
-        attemptStream.settle();
-      }
-    }
+        this.options.onResend?.(lost);
+      },
+    });
   }
 
   /**
@@ -865,6 +870,84 @@ export class WaveWriter<Meta = undefined> {
 }
 
 /** An attempt the session never read or never answered: its call did not arrive, or its answer was lost. */
+/** One wave's attempts (sendWaveAttempts). */
+export interface WaveAttempts {
+  supervisor: WaveSupervisor;
+  /** The epoch each attempt is fenced under, asked before each one (null: unfenced). */
+  writer: () => Promise<string | null>;
+  /** A fresh stream of the wave's bytes for each attempt. */
+  open: () => ReadableStream<Uint8Array>;
+  /** A wave with a streamed source is sent once: its source is spent. */
+  streamed: boolean;
+  wave: number;
+  /** A sequenced writer's numbering, on every attempt's fence (WaveFence `seq`, `ack`). */
+  sequence?: { seq: number; ack: number };
+  /** The delegation the wave is written under (WaveSupervisor.writeBatchStream's `owner`). */
+  owner?: string;
+  /** The lost-call policy's timings (lost-call.ts); tests shorten them. */
+  retry?: { backoffMs: readonly number[]; stallMs: number; answerDeadlineMs: number };
+  /** Told before each re-send, with its lost-call attributes. */
+  resent?: (lost: Record<string, string | number>) => void;
+  /** The timers the watch and the backoff run on: a program's own may be its shims'. */
+  timers?: WaveTimers;
+}
+
+/** setTimeout and clearTimeout, as a caller captured them. */
+export interface WaveTimers {
+  setTimeout(callback: () => void, ms: number): unknown;
+  clearTimeout(timer: unknown): void;
+}
+
+const GLOBAL_TIMERS: WaveTimers = {
+  setTimeout: (callback, ms) => setTimeout(callback, ms),
+  clearTimeout: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+};
+
+/**
+ * Send one wave, again while its transport is lost (see the module's
+ * comment), and answer with what the session answered. The one way every
+ * W7 producer sends: the wave writer, and a process's filesystem client.
+ */
+export async function sendWaveAttempts(options: WaveAttempts): Promise<unknown> {
+  const { backoffMs, stallMs, answerDeadlineMs } = options.retry
+    ?? { backoffMs: LOST_CALL_RESEND_BACKOFF_MS, stallMs: LOST_STREAM_STALL_MS, answerDeadlineMs: LOST_STREAM_ANSWER_MS };
+  const timers = options.timers ?? GLOBAL_TIMERS;
+  for (let attempt = 0; ; attempt++) {
+    const writer = await options.writer();
+    const attemptStream = abortable(options.open(), stallMs, answerDeadlineMs, timers);
+    const fence: WaveFence | undefined = writer === null ? undefined : { writer, wave: options.wave, attempt: attempt + 1, ...options.sequence };
+    // Called as a method of the supervisor, never through .call/.apply: on an RPC stub those are remote method names too.
+    const answer = options.owner === undefined
+      ? options.supervisor.writeBatchStream(attemptStream.stream, fence)
+      : options.supervisor.writeBatchStream(attemptStream.stream, fence, options.owner);
+    try {
+      return await Promise.race([answer, attemptStream.lost]);
+    } catch (error) {
+      const lost = error instanceof WaveLost || isLostFencedCall(error);
+      // Given up: the attempt reads nothing more either (its writer retires its epoch).
+      if (lost && (options.streamed || attempt >= backoffMs.length)) attemptStream.abort(error);
+      if (!lost || options.streamed || attempt >= backoffMs.length) throw error;
+      // The abandoned attempt can read nothing more, and its late answer is dropped.
+      attemptStream.abort(error);
+      answer.then(disposeRpcResource, () => {});
+      options.resent?.(lostCallAttributes({
+        operation: 'writeBatchStream',
+        attempt: attempt + 1,
+        of: backoffMs.length,
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+      await new Promise<void>((resolve) => { timers.setTimeout(resolve, retryDelayMs(backoffMs, attempt)); });
+    } finally {
+      attemptStream.settle();
+    }
+  }
+}
+
+/** A wave's encoded bytes as each attempt's stream (in SEND_SLICE_BYTES pieces, each a copy). */
+export function waveAttemptsOf(bytes: Uint8Array): () => ReadableStream<Uint8Array> {
+  return piecesOf(bytes, SEND_SLICE_BYTES);
+}
+
 class WaveLost extends Error {
   constructor(message: string) {
     super(message);
@@ -909,7 +992,7 @@ function slices(bytes: Uint8Array, size: number): ReadableStream<Uint8Array> {
  * nothing more. Reading is the bytes drained from the stream's queue: a
  * reader taking a large piece in small reads drains it without a pull.
  */
-function abortable(stream: ReadableStream<Uint8Array>, stallMs: number, answerDeadlineMs: number): {
+function abortable(stream: ReadableStream<Uint8Array>, stallMs: number, answerDeadlineMs: number, timers: WaveTimers): {
   stream: ReadableStream<Uint8Array>;
   lost: Promise<never>;
   abort(reason: unknown): void;
@@ -917,21 +1000,21 @@ function abortable(stream: ReadableStream<Uint8Array>, stallMs: number, answerDe
 } {
   const reader = stream.getReader();
   let target: ReadableByteStreamController | null = null;
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  let timer: unknown = null;
   let declareLost: (error: WaveLost) => void = () => {};
   const lost = new Promise<never>((_, reject) => { declareLost = reject; });
   lost.catch(() => {});
   const watch = (ms: number, message: string): void => {
-    if (timer !== null) clearTimeout(timer);
-    timer = setTimeout(() => declareLost(new WaveLost(message)), ms);
+    if (timer !== null) timers.clearTimeout(timer);
+    timer = timers.setTimeout(() => declareLost(new WaveLost(message)), ms);
   };
   /** Bytes enqueued and not yet read (the queue's total, as desiredSize below a mark of 0). */
   const queued = (): number => Math.max(0, -(target?.desiredSize ?? 0));
   // Lost when a stall period passes with nothing drained from the queue.
   const watchReads = (): void => {
-    if (timer !== null) clearTimeout(timer);
+    if (timer !== null) timers.clearTimeout(timer);
     const unread = queued();
-    timer = setTimeout(() => {
+    timer = timers.setTimeout(() => {
       if (queued() < unread) watchReads();
       else declareLost(new WaveLost(`writeBatchStream stalled: nothing read it for ${stallMs} ms`));
     }, stallMs);
@@ -971,7 +1054,7 @@ function abortable(stream: ReadableStream<Uint8Array>, stallMs: number, answerDe
       reader.cancel(reason).catch(() => {});
     },
     settle() {
-      if (timer !== null) clearTimeout(timer);
+      if (timer !== null) timers.clearTimeout(timer);
       timer = null;
     },
   };

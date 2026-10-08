@@ -142,6 +142,12 @@ export interface WasiFsSnapshot {
         wasiPath: string;
         vfsPath: string;
     }>;
+    /** The credential the process runs as: with it, its filesystem is its resident one (WasiInitOptions.cred). */
+    cred?: {
+        uid: number;
+        gid: number;
+        groups: number[];
+    };
 }
 /**
  * Names of the WASI imports implemented by this shim.
