@@ -36,6 +36,7 @@
 // PROBE_TARGET_SKIPS. --repeat runs each named probe --times more times
 // (default 5), each alone and beside the suite, as the release matrix does
 // with write-heavy probes whose failure is intermittent.
+// --screenshots saves the existing capture hooks' PNGs under <dir>/<job>/<task>.
 //
 // It prints one line per task and every red row with its output tail, and
 // keeps the whole verdict under ~/.local/state/nimbus/remote-probes/.
@@ -77,7 +78,7 @@ const parts = count('parts', 4);
 const jobs = count('jobs', 4);
 const times = count('times', 5);
 function usage(why) {
-  console.error(`${why}\nusage: bun scripts/ci/remote-probes.mjs (--target staging|throwaway:<name> | --deploy <name>) [<commit>] [--only a,b] [--skip c,d] [--parts N] [--jobs J] [--repeat a,b --times T]`);
+  console.error(`${why}\nusage: bun scripts/ci/remote-probes.mjs (--target staging|throwaway:<name> | --deploy <name>) [<commit>] [--only a,b] [--skip c,d] [--parts N] [--jobs J] [--repeat a,b --times T] [--screenshots <local-dir>]`);
   process.exit(2);
 }
 
