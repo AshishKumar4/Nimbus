@@ -569,23 +569,35 @@ stage_sci() {
 	  -lc-printscan-long-double -lc++ -lc++abi
 }
 
-# A zip as `src` holds it, rewritten to `dest` with its entries sorted by name and
-# dated CPYTHON_SOURCE_DATE_EPOCH, at wasm_assets.py's compression level: it
-# writes the stdlib's in the order it walks and dates each entry by its .pyc
-# file's build-time mtime.
-normalize_zip() {
+# The one way an artifact zip is written: `dest` holds the files of `src` (a
+# zip, or a directory's files) sorted by name, each dated
+# CPYTHON_SOURCE_DATE_EPOCH and deflated at level 9 as wasm_assets.py does.
+# wasm_assets.py writes the stdlib's in the order it walks and dates each entry
+# by its .pyc file's build-time mtime; a directory walk has the filesystem's order.
+# <<- strips EVERY leading tab, so the body's own indentation is spaces: written
+# with tabs it arrives flush-left and Python refuses to parse it.
+write_zip() {
 	"$PYSRC/build-host/python" - "$1" "$2" "$CPYTHON_SOURCE_DATE_EPOCH" <<-'PYEOF'
+	import os
+	import pathlib
 	import sys
 	import time
 	import zipfile
 
-	stamp = time.gmtime(int(sys.argv[3]))[:6]
-	with zipfile.ZipFile(sys.argv[1]) as source, zipfile.ZipFile(sys.argv[2], 'w') as dest:
-	    for info in sorted(source.infolist(), key=lambda i: i.filename):
-	        entry = zipfile.ZipInfo(info.filename, stamp)
-	        entry.compress_type = info.compress_type
-	        entry.external_attr = info.external_attr
-	        dest.writestr(entry, source.read(info), compresslevel=9)
+	src, dest, stamp = sys.argv[1], sys.argv[2], time.gmtime(int(sys.argv[3]))[:6]
+	if os.path.isdir(src):
+	    root = pathlib.Path(src)
+	    files = sorted(p for p in root.rglob('*') if p.is_file())
+	    entries = [(p.relative_to(root).as_posix(), zipfile.ZIP_DEFLATED, (p.stat().st_mode & 0xFFFF) << 16, p.read_bytes) for p in files]
+	else:
+	    source = zipfile.ZipFile(src)
+	    entries = [(i.filename, i.compress_type, i.external_attr, lambda i=i: source.read(i)) for i in source.infolist()]
+	with zipfile.ZipFile(dest, 'w') as archive:
+	    for name, compress_type, external_attr, read in sorted(entries, key=lambda e: e[0]):
+	        entry = zipfile.ZipInfo(name, stamp)
+	        entry.compress_type = compress_type
+	        entry.external_attr = external_attr
+	        archive.writestr(entry, read(), compresslevel=9)
 	PYEOF
 }
 
@@ -605,7 +617,7 @@ stage_assets() {
 	  "$PYSRC/build-host/python" "$PYSRC/Tools/wasm/wasm_assets.py" \
 	    --buildroot . --prefix /usr/local )
 	"$STRIP" "$PYSRC/build-wasi/python.reactor.wasm" -o "$HERE/python.wasm"
-	normalize_zip "$PYSRC/build-wasi/usr/local/lib/python$PYTHON_XY.zip" "$HERE/python$PYTHON_XY.zip"
+	write_zip "$PYSRC/build-wasi/usr/local/lib/python$PYTHON_XY.zip" "$HERE/python$PYTHON_XY.zip"
 	cp "$PYSRC/Lib/ensurepip/_bundled"/pip-*.whl "$HERE/"
 
 	# The sci variant's Python half. Its compiled half is inside python-sci.wasm,
@@ -614,24 +626,7 @@ stage_assets() {
 	"$STRIP" "$PYSRC/build-wasi/python.sci.wasm" -o "$HERE/python-sci.wasm"
 	find "$NUMPY_SITE" -name '*.so' -delete
 	find "$NUMPY_SITE" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-	# <<- strips EVERY leading tab, so the body's own indentation is spaces:
-	# written with tabs it arrived flush-left and Python refused to parse it.
-	( cd "$NUMPY_SITE" && "$BUILD/buildenv/bin/python" - "$HERE/sci-packages.zip" "$CPYTHON_SOURCE_DATE_EPOCH" <<-'PYEOF'
-	import pathlib
-	import sys
-	import time
-	import zipfile
-
-	stamp = time.gmtime(int(sys.argv[2]))[:6]
-	with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-	    for path in sorted(pathlib.Path('.').rglob('*')):
-	        if path.is_file():
-	            info = zipfile.ZipInfo.from_file(path, path.as_posix())
-	            info.date_time = stamp
-	            info.compress_type = zipfile.ZIP_DEFLATED
-	            archive.writestr(info, path.read_bytes(), compresslevel=9)
-	PYEOF
-	)
+	write_zip "$NUMPY_SITE" "$HERE/sci-packages.zip"
 	log "built"
 	ls -l "$HERE/python.wasm" "$HERE/python-sci.wasm" "$HERE/python$PYTHON_XY.zip" \
 	  "$HERE/sci-packages.zip" "$HERE"/pip-*.whl
@@ -715,7 +710,11 @@ if [ ${#stages[@]} -eq 0 ]; then
 	# stage_wasi links the base variant itself, so `reactor` is not listed here.
 	stages=(fetch deps nimbus hostpy wasi extenv ext sci assets verify)
 fi
+# Checked once, before any stage runs: fetch and verify are the two that
+# compile nothing.
 for stage in "${stages[@]}"; do
-	case "$stage" in fetch|verify) ;; *) require_recipe ;; esac
+	case "$stage" in fetch|verify) ;; *) require_recipe; break ;; esac
+done
+for stage in "${stages[@]}"; do
 	"stage_$stage"
 done
