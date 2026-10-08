@@ -16,6 +16,7 @@ import { serveEditorFs } from '../../packages/worker/src/session/editor-fs.ts';
 import { rpcDeleteFile } from '../../packages/worker/src/session/programmatic.ts';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { testBox } from './lib/test-box.mjs';
 import { createRequire } from 'node:module';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { buildWithRolldown } from '../../packages/core/src/runtime/rolldown-build.ts';
@@ -181,6 +182,45 @@ function held(root, decided, stored = {}) {
   const under = (path) => SESSION_KERNEL_ROOTS.some((root) => path === root || path.startsWith(`${root}/`));
   for (const store of [DURABLE_IMAGE_DIR, '/var/lib/nimbus/inline-wasm'.slice(1), ...STAGED_BINDINGS.map((binding) => binding.vfsPath.slice(1))]) {
     assert.ok(under(store), `the session's store ${store} is not under a root it never delegates`);
+  }
+}
+
+// ── Class 9: a shell redirection (the session's shell, opening its file through the process's bridge) ──
+// Red before: the redirection's open met the delegation and was refused
+// EAGAIN ("delegated at …; recalling it"), and the command failed: a child
+// process's `printf x > file` into a subtree its parent holds.
+{
+  const harness = createSqliteVfsTestHarness();
+  const raw = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = raw.as(CRED_KERNEL);
+  kernel.mkdir('home/user/repo', { recursive: true });
+  kernel.chown('home/user', 1000, 1000);
+  kernel.chown('home/user/repo', 1000, 1000);
+  const recalls = [];
+  let owned;
+  const lease = raw.acquireExclusiveMutation('home/user/repo', {
+    delegation: {
+      reads: true,
+      async recall(kind) {
+        recalls.push(kind);
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        owned.writeFile('home/user/repo/decided', 'by the holder');
+      },
+    },
+  });
+  owned = raw.as(CRED_KERNEL, { mutationOwner: lease.owner });
+  const box = await testBox({ harness, vfs: raw });
+  try {
+    const result = await box.shell.execute('printf by-shell > /home/user/repo/redirected; echo RC=$?', {
+      commandContext: { pid: 71, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } },
+    });
+    assert.equal(result.stderr, '', 'the redirection was refused instead of waiting for the recall');
+    assert.equal(result.stdout, 'RC=0\n');
+    assert.deepEqual(recalls, ['revoke']);
+    assert.equal(dec.decode(kernel.readFile('home/user/repo/redirected')), 'by-shell');
+    assert.equal(dec.decode(kernel.readFile('home/user/repo/decided')), 'by the holder');
+  } finally {
+    box.destroy();
   }
 }
 
