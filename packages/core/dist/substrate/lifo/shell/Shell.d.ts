@@ -97,6 +97,8 @@ export declare class Shell {
     pasteQueue: ShellQueuedInput[];
     private lineSubmission;
     private activeSubmission;
+    private activeInput;
+    private lineInputs;
     private promptSubmission;
     private primaryPrompt;
     /**
@@ -148,6 +150,7 @@ export declare class Shell {
     bindTerminal(terminal: ITerminal): void;
     takeQueuedInput(): string[];
     queuePasteInput(data: string, submission?: ShellInputSubmission): void;
+    rejectQueuedInput(): void;
     private bindTerminalInput;
     /**
      * The `runAs` host this shell re-credentials through. A caller building a

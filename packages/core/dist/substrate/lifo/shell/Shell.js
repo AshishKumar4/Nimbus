@@ -23,7 +23,7 @@ import { readDefaultShell } from './default-shell.js';
 import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { runKill } from '../commands/system/kill.js';
-import { ShellInputSubmission } from '../../../shell/input-submission.js';
+import { ShellInputSubmission, ShellInputExecution } from '../../../shell/input-submission.js';
 function shellPromptParts(env, cwd) {
     const home = env['HOME'] ?? DEFAULT_HOME;
     let displayPath = cwd;
@@ -113,6 +113,8 @@ export class Shell {
     pasteQueue = [];
     lineSubmission;
     activeSubmission;
+    activeInput;
+    lineInputs = [];
     promptSubmission;
     primaryPrompt = false;
     /**
@@ -296,8 +298,7 @@ export class Shell {
         return this.pasteQueue.splice(0).map((entry) => {
             if (typeof entry === 'string')
                 return entry;
-            if (this.activeSubmission)
-                entry.submission.bind(this.activeSubmission);
+            this.activeInput?.bind(entry.submission);
             entry.release();
             return entry.data;
         });
@@ -305,20 +306,32 @@ export class Shell {
     queuePasteInput(data, submission) {
         this.pasteQueue.push(submission ? { data, submission, release: submission.retain() } : data);
     }
+    rejectQueuedInput() {
+        this.lineSubmission?.inherit(null);
+        for (const { submission } of this.lineInputs)
+            submission.inherit(null);
+        for (const entry of this.pasteQueue.splice(0)) {
+            if (typeof entry === 'string')
+                continue;
+            entry.submission.inherit(null);
+            this.lineInputs.push(entry);
+        }
+    }
     bindTerminalInput() {
         this.terminal.onData((data, submission) => this.handleInput(data, submission));
         this.terminal.onSubmission?.((data, id, deliver, repl) => {
             const submission = new ShellInputSubmission(id, (event) => this.terminal.shellIntegration?.(event));
             const stdin = this.running && (repl || this.terminalStdin?.rawMode || this.terminalStdin?.isWaiting);
             const owner = stdin ? this.activeSubmission : (!this.running ? this.lineSubmission : undefined);
-            if (owner)
-                submission.bind(owner);
-            const inputOwner = owner ?? submission;
-            if (!this.running)
-                this.lineSubmission = inputOwner;
-            this.terminal.shellIntegration?.({ type: 'shell-integration', event: 'input', submissionId: id, ownerId: inputOwner.id });
+            if (stdin)
+                this.activeInput?.bind(submission);
+            else if (owner)
+                this.lineInputs.push({ submission, release: submission.retain() });
+            if (!this.running && !this.lineSubmission)
+                this.lineSubmission = submission;
+            this.terminal.shellIntegration?.({ type: 'shell-integration', event: 'input', submissionId: id, ownerId: owner?.id ?? id });
             try {
-                const pending = deliver(inputOwner);
+                const pending = deliver(submission);
                 submission.release();
                 return pending;
             }
@@ -558,6 +571,10 @@ export class Shell {
         this.promptSubmission = undefined;
         this.lineSubmission = undefined;
         submission?.prompt();
+        for (const { submission: input, release } of this.lineInputs.splice(0)) {
+            input.prompt();
+            release();
+        }
     }
     /** A newly attached client learns current readiness, never a replayed completion. */
     announcePrompt() {
@@ -1081,7 +1098,7 @@ export class Shell {
             return;
         }
         this.pendingLine = null;
-        (await this.executeLine(command, submission));
+        (await this.executeLine(command, this.lineSubmission ?? submission));
     }
     async executeLine(line, submission = this.lineSubmission) {
         this.primaryPrompt = false;
@@ -1098,7 +1115,12 @@ export class Shell {
             // Show the expanded command
             this.writeToTerminal(actualLine + '\n');
         }
-        submission?.start();
+        const execution = submission?.start() ?? new ShellInputExecution();
+        this.activeInput = execution;
+        for (const { submission: input, release } of this.lineInputs.splice(0)) {
+            execution?.bind(input);
+            release();
+        }
         this.terminal.write(COMMAND_START);
         let status = null;
         try {
@@ -1118,11 +1140,13 @@ export class Shell {
             this.running = false;
             this.abortController = null;
             this.terminal.write(commandEnd(status));
-            submission?.finish(status);
+            execution?.finish(status);
             release?.();
             this.activeSubmission = undefined;
+            this.activeInput = undefined;
             this.promptSubmission = submission;
             this.printPrompt();
+            execution?.prompt();
         }
         (await this.drainPasteQueue());
         (await this.drainTypeAhead());
@@ -1138,8 +1162,7 @@ export class Shell {
         const queued = typeof next === 'string' ? next : next.data;
         const data = pasted ? `${queued}\n` : queued.replace(/\r\n?|\n/g, '\n');
         if (typeof next !== 'string') {
-            if (this.activeSubmission)
-                next.submission.bind(this.activeSubmission);
+            this.activeInput?.bind(next.submission);
             next.release();
             next.resolve?.();
         }

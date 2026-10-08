@@ -5,6 +5,7 @@ interface ShellLike {
     handleInput(data: string, submission?: ShellInputSubmission): void | Promise<void>;
     drainPasteQueue(): void | Promise<void>;
     queuePasteInput(data: string, submission?: ShellInputSubmission): void;
+    rejectQueuedInput(): void;
     redrawLine(): void;
     running: boolean;
     readonly history: readonly string[];

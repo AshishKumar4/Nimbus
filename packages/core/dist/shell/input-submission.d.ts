@@ -24,16 +24,24 @@ export declare class ShellInputSubmission {
     private atPrompt;
     private status;
     private ended;
-    private resolveCompletion;
-    readonly completion: Promise<number | null>;
     constructor(id: string, publish: (event: ShellIntegrationEvent) => void);
     retain(): () => void;
     release(): void;
-    bind(owner: ShellInputSubmission): void;
-    start(): void;
+    start(): ShellInputExecution;
     finish(status: number | null): void;
+    inherit(status: number | null): void;
     prompt(): void;
     private end;
+}
+/** A foreground execution finishes its stdin users before its batch's next line. */
+export declare class ShellInputExecution {
+    readonly owner?: ShellInputSubmission | undefined;
+    private status;
+    private readonly inputs;
+    constructor(owner?: ShellInputSubmission | undefined);
+    bind(submission: ShellInputSubmission): void;
+    finish(status: number | null): void;
+    prompt(): void;
 }
 export interface QueuedShellInput {
     readonly data: string;

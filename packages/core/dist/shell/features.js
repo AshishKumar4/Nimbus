@@ -200,6 +200,7 @@ export class HeredocHandler {
         const lines = this.bodies[this.currentHeredocIndex];
         if (!lines || lines.length >= HeredocHandler.MAX_HEREDOC_LINES) {
             this.terminal.write(`\x1b[31mheredoc: exceeded ${HeredocHandler.MAX_HEREDOC_LINES} line limit\x1b[0m\r\n`);
+            this.shell.rejectQueuedInput();
             this._cancel();
             this._printPrompt();
             return true; // stop accumulation
@@ -236,17 +237,14 @@ export class HeredocHandler {
                 break;
             const nextLine = typeof entry === 'string' ? entry : entry.data;
             this.terminal.write(nextLine + '\r\n');
+            if (typeof entry !== 'string')
+                entry.release();
             if (this._processLine(nextLine)) {
                 if (this.heredocInfo === null)
                     return; // limit exceeded
-                const pending = this._finishHeredoc();
-                if (typeof entry !== 'string')
-                    entry.release();
-                await pending;
+                await this._finishHeredoc();
                 return;
             }
-            if (typeof entry !== 'string')
-                entry.release();
             this.terminal.write('> ');
         }
     }
