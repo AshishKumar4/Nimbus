@@ -127,6 +127,15 @@ try {
     client.ws.send(JSON.stringify({ type: 'input', data: '\x03' }));
     assert.equal((await pending).exitCode, 130);
   });
+
+  for (const command of ['echo "unfinished', "cat > /home/user/incomplete <<'EOF'"]) {
+    await scenario('an incomplete line cancels without manufacturing an exit status: ' + command, async ({ client }) => {
+      const pending = client.run(command, 1000);
+      await client.waitFor((text) => text.endsWith('> '), 1000, 'continuation');
+      client.ws.send(JSON.stringify({ type: 'input', data: '\x03' }));
+      assert.equal((await pending).exitCode, null);
+    });
+  }
 } finally {
   await new Promise((resolve) => sockets.close(resolve));
   await new Promise((resolve) => server.close(resolve));

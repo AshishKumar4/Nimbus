@@ -1212,6 +1212,9 @@ export class Shell {
     const release = submission?.retain();
     this.lineSubmission = undefined;
     this.activeSubmission = submission;
+    this.running = true;
+    this.abortController = new AbortController();
+    this.terminalStdin = new TerminalStdin(() => this.consumePastedStdin());
     // History expansion
     const expanded = this.historyManager.expand(line);
     const actualLine = expanded ?? line;
@@ -1223,10 +1226,6 @@ export class Shell {
 
     // Add to history
     (await this.historyManager.add(actualLine));
-
-    this.running = true;
-    this.abortController = new AbortController();
-    this.terminalStdin = new TerminalStdin(() => this.consumePastedStdin());
 
     submission?.start();
     this.terminal.write(COMMAND_START);
