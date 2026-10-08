@@ -232,7 +232,7 @@ class PythonReplAdapter implements ReplAdapter {
     }
     return { kind: 'output', stdout: result.stdout, stderr: result.stderr };
   }
-  close(): Promise<void> { return this.interrupt(); }
+  close(): Promise<void> { return this.stop(); }
 
   private resetPool(): void {
     const pool = this.pool;
@@ -241,6 +241,10 @@ class PythonReplAdapter implements ReplAdapter {
     pool?.dispose();
   }
   async interrupt(): Promise<void> {
+    await this.stop();
+    await this.initialize();
+  }
+  private async stop(): Promise<void> {
     const active = this.active;
     active?.controller.abort();
     try { await active?.done; }

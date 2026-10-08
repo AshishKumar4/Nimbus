@@ -92,6 +92,32 @@ const baseAdapter = { ps1: '>>> ', ps2: '... ', banner: () => '', close: async (
   }
 }
 
+// Teardown owns the startup lifetime too, and cannot publish a late prompt.
+{
+  const view = capture();
+  const started = Promise.withResolvers();
+  const ready = Promise.withResolvers();
+  let closes = 0;
+  const run = new ReplSession({
+    ...baseAdapter,
+    initialize: () => { started.resolve(); return ready.promise; },
+    push: async () => output(),
+    close: async () => { closes++; },
+  }, view.terminal).run();
+  await bounded(started.promise, 'startup did not start');
+  const disposed = view.terminal.disposeRepl();
+  let finished = false;
+  disposed.then(() => { finished = true; });
+  await Promise.resolve();
+  assert.equal(finished, false, 'teardown abandoned an interpreter still starting');
+  ready.resolve(output('STALE BOOT\n'));
+  await bounded(disposed, 'starting interpreter teardown did not finish');
+  assert.equal(await bounded(run, 'starting interpreter run did not finish'), 0);
+  assert.equal(closes, 1);
+  assert.doesNotMatch(view.text(), />>>|STALE BOOT/);
+  view.terminal.close();
+}
+
 // An abort acknowledgement cannot release the input queue before push settles.
 {
   const view = capture();
