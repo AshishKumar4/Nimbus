@@ -30,8 +30,10 @@ export declare const WAVE_WRITER_PREAMBLE: string;
 /**
  * Declares `function nodeError(Base, code, message, props)`,
  * `function nodeSystemError(code, prefix, context)`,
- * `function invalidArgType(name, expected, actual)` and
- * `function useNodeErrorInspect(inspect)`: the node shims declare them
+ * `function invalidArgType(name, expected, actual)`,
+ * `function useNodeErrorInspect(inspect)`, `nodeErrorCodes`,
+ * `function hideStackFrames(fn)` and
+ * `function isErrorStackTraceLimitWritable()`: the node shims declare them
  * first, for themselves and the preambles below, which use them by name.
  */
 export declare const NODE_ERROR_PREAMBLE: string;

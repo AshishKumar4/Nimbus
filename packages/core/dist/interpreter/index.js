@@ -268,6 +268,10 @@ class ThrowFinder extends AcornParserClass {
  *   - `offset` -1: the syntax error that stops the parse, as [start, end]
  *     of the token it stops at; null when the text parses.
  */
+/** acorn's tokenizer, which Node's error_source.js reads an assert.ok() call's expression with. */
+export function tokenizer(code, options) {
+    return Parser.tokenizer(code, options);
+}
 export function fatalLocation(text, goal, offset) {
     const finder = new ThrowFinder(goal === 'module' ? MODULE_OPTIONS : COMMONJS_OPTIONS, text);
     finder.offset = offset;

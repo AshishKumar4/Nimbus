@@ -7,30 +7,11 @@
  * generated node shims, after the process and fatal report it extends; its
  * stack formatter is the cell runtime's (commonjs-cell.ts __nimbusUseStackFormatter).
  */
-import { NODE_SOURCE_MAP_SOURCE } from './node-inspect-source.js';
 export const NODE_SOURCE_MAPS_SOURCE = `
-const __NimbusSourceMap = (() => {
-  const uncurryThis = (fn) => Function.prototype.call.bind(fn);
-  const primordials = {
-    ArrayIsArray: Array.isArray,
-    ArrayPrototypePush: uncurryThis(Array.prototype.push),
-    ArrayPrototypeSlice: uncurryThis(Array.prototype.slice),
-    ArrayPrototypeSort: uncurryThis(Array.prototype.sort),
-    ObjectPrototypeHasOwnProperty: uncurryThis(Object.prototype.hasOwnProperty),
-    StringPrototypeCharAt: uncurryThis(String.prototype.charAt),
-    Symbol,
-  };
-  const validators = {
-    validateObject(value, name) {
-      if (value === null || typeof value !== "object" || Array.isArray(value)) throw invalidArgType(name, "object", value);
-    },
-  };
-  const module = { exports: {} };
-  (function (exports, require, module, primordials) {
-${NODE_SOURCE_MAP_SOURCE}
-  })(module.exports, () => validators, module, primordials);
-  return module.exports.SourceMap;
-})();
+// Node's SourceMap (lib/internal/source_map/source_map.js), from Node's library.
+function __nimbusSourceMapClass() {
+  return __nimbusNodeLib().require("internal/source_map/source_map").SourceMap;
+}
 const __nimbusSourceMapsAtLaunch = __nimbusNodeCommandLine?.enableSourceMaps === true;
 let __nimbusSourceMapsSupport = Object.freeze({
   __proto__: null, enabled: __nimbusSourceMapsAtLaunch, nodeModules: __nimbusSourceMapsAtLaunch, generatedCode: __nimbusSourceMapsAtLaunch,
@@ -96,7 +77,7 @@ function __nimbusFindSourceMap(sourceURL) {
   try {
     const entry = __nimbusSourceMapEntries.get(/^\\w+:\\/\\//.test(sourceURL) ? sourceURL : __urlMod.pathToFileURL(sourceURL).href);
     if (entry?.data == null) return undefined;
-    entry.sourceMap ??= new __NimbusSourceMap(entry.data, { lineLengths: entry.lineLengths });
+    entry.sourceMap ??= new (__nimbusSourceMapClass())(entry.data, { lineLengths: entry.lineLengths });
     return entry.sourceMap;
   } catch {
     return undefined;
@@ -205,12 +186,7 @@ function __nimbusSourceMappedArrow(module, text, offset) {
     const emittedLine = lines.length;
     const emitted = lines[emittedLine - 1].length - (emittedLine === 1 ? module.head : 0);
     const { originalLine, originalColumn, originalSource } = sm.findEntry(emittedLine - 1, __nimbusSourceColumn(module, emittedLine, emitted + 1) - 1);
-    const { sources, sourcesContent } = sm.payload;
-    const index = sources.indexOf(originalSource);
-    const source = sourcesContent?.[index]
-      || (originalSource.startsWith("file://") ? __readFileOr(builtins.url.fileURLToPath(originalSource), undefined) : undefined);
-    if (typeof source !== "string") return null;
-    const line = source.split(/\\r?\\n/, originalLine + 1)[originalLine];
+    const line = __nimbusOriginalSourceLine(sm, originalSource, originalLine);
     if (!line) return null;
     const getStringWidth = __nimbusNodeInspect().getStringWidth;
     let prefix = "";
@@ -220,5 +196,14 @@ function __nimbusSourceMappedArrow(module, text, offset) {
   } catch {
     return null;
   }
+}
+// Node's getSourceLine (source_map_cache.js): an original source's line, from
+// the map's sourcesContent or, for a file: URL, the file.
+function __nimbusOriginalSourceLine(sm, originalSource, originalLine) {
+  const index = sm.payload.sources.indexOf(originalSource);
+  const source = sm.payload.sourcesContent?.[index]
+    || (originalSource.startsWith("file://") ? __readFileOr(builtins.url.fileURLToPath(originalSource), undefined) : undefined);
+  if (typeof source !== "string") return undefined;
+  return source.split(/\\r?\\n/, originalLine + 1)[originalLine];
 }
 `;
