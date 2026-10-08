@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "f239d97ba47509618a985020d83d72ce5f8bdb525c9097d97f7b0b3d4cc15ac2",
+  "fingerprint": "4248afaada4e52e21e01b8872e7609d54c88515e317072e788aa19a1cebdffa3",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1643,8 +1643,8 @@
     "packages/platform/dist/lost-call.d.ts.map": "7eb4a3b3084f879d1b0969bf99deedda84f225bc7d5940cc5b1c14fd34861e16",
     "packages/platform/dist/lost-call.js": "37c66125a7e54b96d4b66d93dbad7f74a22c596e2a57955be405c43e22eaf0f1",
     "packages/platform/dist/oom-classify.d.ts": "ec164f0fde7a38f345b69653b2be2b7973ad883504490810e56790547e3c3e6e",
-    "packages/platform/dist/oom-classify.d.ts.map": "d913861f045f99d5b2584402bee2ffedff3ee49e1baf1764901073f8d27042b5",
-    "packages/platform/dist/oom-classify.js": "0d615e1bfdd78a5cb6cb4d0f00ca827564df8544c56cc6e10677f3a822daf51b",
+    "packages/platform/dist/oom-classify.d.ts.map": "92d983641ddf6792ebdc28e6eea54a982bacd606da9d70b74114733e682b0948",
+    "packages/platform/dist/oom-classify.js": "259d16f8cf805b289175a5e91715abc98555fb5f8e034158484b9d86b9ff37d6",
     "packages/platform/dist/oom-discriminator.d.ts": "2d506cc1f8b744bd4d2168741712e3328066b9c3c514ede2a8e6040c31c1233f",
     "packages/platform/dist/oom-discriminator.d.ts.map": "66b34cf1fd26a8a0e913d2c72528b2ca36147e5dde5891cb1e325934add16486",
     "packages/platform/dist/oom-discriminator.js": "bf2df318e5f19c0635c5d695b7cdd97bda23ba95db2161f5f80285f771a78109",
@@ -1679,7 +1679,7 @@
     "packages/platform/src/install-phase.ts": "f40ad125c410533d35e94f6dc00f33bb5aed3550584860ee036a619fd1cefcea",
     "packages/platform/src/limits.ts": "ed0cadc409d972fa32bd7d0b42d99ba64bb6b17a8a7e59d3cb2bec45024119f6",
     "packages/platform/src/lost-call.ts": "f8739643ab0503a21087cab6b7024faa2bc361e3de7307f47c7759aedae772db",
-    "packages/platform/src/oom-classify.ts": "9a71b43a48f917d532366cd6037e7891f85fb22f7443fe441d0152a710f6f9d0",
+    "packages/platform/src/oom-classify.ts": "d78715b909da0548e6b1a9dddea49e125437952baedd7817efc60f607b9c8c62",
     "packages/platform/src/oom-discriminator.ts": "3b8a24a117978117daca14a2a027c79d2af604c4c7a1da7180ff3a064e7bb56c",
     "packages/platform/src/retry.ts": "3392a28e2b7804a48dc82c76251b197138baa79755fc927ee9cbbcd5239b3805",
     "packages/platform/src/rpc-dispose.ts": "75dfe100d8bd8c83328ccc2feaacd58cfc33a3f8c2a243d3a0691eacc18081aa",
