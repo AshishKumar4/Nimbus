@@ -431,8 +431,7 @@ export class LineEditorExtender {
 
       // Reverse-i-search sub-mode owns ALL input until exited.
       if (this.rsearchActive) {
-        this._rsearchHandle(data);
-        return;
+        return this._rsearchHandle(data, submission);
       }
 
       // Yank-last-arg state is reset on any non-Alt+. input.
@@ -740,7 +739,7 @@ export class LineEditorExtender {
     this._rsearchRender();
   }
 
-  private _rsearchHandle(data: string): void {
+  private _rsearchHandle(data: string, submission?: ShellInputSubmission): void | Promise<void> {
     const s = this.shell;
 
     // Esc / Ctrl+G → abort, keep the partial line buffer as it was.
@@ -760,8 +759,7 @@ export class LineEditorExtender {
       s.redrawLine();
       // Defer to the original handler to execute the (now-restored)
       // line. Sending '\r' triggers the same path Enter would.
-      this.originalHandleInput!('\r');
-      return;
+      return this.originalHandleInput?.('\r', submission);
     }
 
     // Another Ctrl+R → step to the next-older match.
