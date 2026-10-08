@@ -732,6 +732,8 @@ const ops = (...list) => ({ inodes: [], chunks: [], ops: list });
   assert.notEqual(outcome, 'stuck', 'concurrent waves of gathered calls deadlocked on credit');
   for (const result of outcome) assert.equal(result.ok, true, JSON.stringify(result.error));
   assert.equal(s.engine.writeStreamCredits.stats.current, 0, 'credit was kept after the waves');
+}
+
 // ── A wave's lease on a mount: its own records land, another's are refused ──
 // (Red before: the router applied a routed record with no lease presented, so
 // a wave under its own lease was EBUSY on the mount it held.)
