@@ -587,7 +587,7 @@ function spawnResident(
   // it is the process lost too. Anything else that ends the call is not: a
   // run's own stop aborts the facet with its stop record, and a release ends it.
   if (params.journal) {
-    facet.held().catch((error: unknown) => {
+    Promise.resolve().then(() => facet.held()).catch((error: unknown) => {
       if (!released && isHostReset(error)) markLost(error instanceof Error ? error : new Error(String(error)));
     });
   }

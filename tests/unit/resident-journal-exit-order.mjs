@@ -87,6 +87,9 @@ const env = {
 };
 const ctx = createFacetCtx({ ...world, facets }, 'journal-exit-order');
 ctx.storage.sql = createSqliteVfsTestHarness().sql;
+// The session's incarnations, as each start adopts one (generation.ts): a write log is its incarnation's.
+const { assumeGeneration } = await import('../../packages/fabric/src/generation.ts');
+assumeGeneration(ctx, 1);
 
 const processes = new SessionProcessSupervisor();
 processes.setPidBase(PID_GEN_STRIDE);
@@ -198,6 +201,7 @@ for (let i = 0; i < 100; i++) {
 const { runColdStart } = await import('../../packages/fabric/src/generation.ts');
 const ctx2 = createFacetCtx({ ...world, facets }, 'journal-exit-order', ctx.storage.rows);
 ctx2.storage.sql = ctx.storage.sql;
+assumeGeneration(ctx2, 2);
 const processes2 = new SessionProcessSupervisor();
 processes2.setPidBase(2 * PID_GEN_STRIDE);
 const manager2 = new FacetManager(ctx2, env, processes2, new PortRegistry(), processHostFor, {
