@@ -204,9 +204,14 @@ setInterval(() => {}, 1000);`;
           focused: view?.contains(document.activeElement),
           view: rect(view), screen: rect(view?.querySelector('.xterm-screen')),
           panel: rect(document.getElementById('logsPanelBody')),
+          scroll: (() => {
+            const viewport = view?.querySelector('.xterm-viewport');
+            return viewport && { top: viewport.scrollTop, height: viewport.scrollHeight, client: viewport.clientHeight };
+          })(),
         };
       })(),
     })));
+
   }
   throw error;
 } finally {

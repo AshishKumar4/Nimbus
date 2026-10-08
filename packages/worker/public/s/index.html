@@ -3028,6 +3028,7 @@
         const t = activePid !== null ? procs.get(activePid) : null;
         if (t?.term) {
           refitActive();
+          t.term.scrollToBottom();
           t.term.focus();
         } else if (activePid === null) {
           refitTerminal();
