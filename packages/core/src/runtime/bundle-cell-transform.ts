@@ -27,8 +27,8 @@ import { moduleImporterUrl } from '../_shared/module-importer.js';
 import { lowerEsModule } from './async-module-lowering.js';
 import { transformSlices, type EsbuildTransformOutcome, type EsbuildTransformRequest } from './esbuild-service.js';
 import { rewriteProvidedCommonJsModules } from './provided-packages.js';
-import { MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
-import { isEsModuleFile, typeScriptFormat, typeScriptUnderNodeModules, type ModuleScope, type PackageType } from './module-format.js';
+import { MODULE_PARSE_OPTIONS, containsModuleSyntax, parseStatements } from './javascript-ast.js';
+import { isEsModuleFile, typeScriptUnderNodeModules, type ModuleScope, type PackageType } from './module-format.js';
 import type { NodeTypeScript } from './typescript-strip.js';
 import { nodeModulesRefusal, typeScriptRefusalShim } from './typescript-refusal.js';
 
@@ -167,7 +167,7 @@ export interface BundleCellResult {
 export function prepareBundleCell(
   path: string, source: string, packageType: PackageType, scope: ModuleScope, stripTypes: NodeTypeScript | null = null,
 ): BundleCell {
-  // TypeScript Node runs as JavaScript, in Node's format for it.
+  // TypeScript Node requires as JavaScript: an ES module by its syntax alone (module-format.ts typeScriptEntryRefused).
   const javaScript = stripTypes === 'javascript' && stripsTypeScript(path);
   const loader = javaScript ? null : bundleTypescriptLoader(path);
   const typescript = loader !== null;
@@ -188,7 +188,7 @@ export function prepareBundleCell(
   // scope (module-format.ts): strict, `this` undefined at the top, and no
   // CommonJS wrapper name; in Bun's, with CommonJS's names. TypeScript keeps
   // CommonJS's names, as tsx and ts-node give them.
-  const esm = javaScript ? typeScriptFormat(path, () => packageType, () => source, true) === 'module' : !typescript && looksLikeEsm(path, source, packageType);
+  const esm = javaScript ? containsModuleSyntax(source) : !typescript && looksLikeEsm(path, source, packageType);
   // Source is transformed once per path; import.meta reads metadata from
   // each evaluation's module object, including its query and fragment.
   // The source URL still supplies the static parent for rewritten dynamic

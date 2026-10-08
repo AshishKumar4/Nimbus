@@ -46,7 +46,7 @@ import { parseFacetBundleProfile, type FacetBundleProfile } from './bundle-profi
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { errorText } from '../_shared/error-text.js';
-import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput, typeScriptFormat, typeScriptUnderNodeModules, type ModuleScope, type PackageType } from './module-format.js';
+import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput, typeScriptEntryRefused, typeScriptUnderNodeModules, type ModuleScope, type PackageType } from './module-format.js';
 import type { TypeScriptStripOptions } from './typescript-strip.js';
 import { nodeModulesRefusal, typeScriptRefusalShim, unknownExtensionRefusal } from './typescript-refusal.js';
 import { packageScopeType } from './require-resolution.js';
@@ -751,11 +751,8 @@ export function buildRuntimeHandler(
     const stripTypes = spec.nodeCommandLine && moduleScope === 'node' && stripsTypeScript(resolvedPath) ? typeScriptStripOptions(launch) : null;
     let stripped: { code: string; esModule: boolean } | null = null;
     if (stripTypes === 'javascript') {
-      // JavaScript to Node's CommonJS loader, which hands an ES module (by
-      // Node's format for it) to its ES loader, which knows no TypeScript.
-      const source = code;
-      const esModule = typeScriptFormat(resolvedPath, () => packageType, () => source, true) === 'module';
-      stripped = { code: esModule ? typeScriptRefusalShim(unknownExtensionRefusal('/' + resolvedPath)) : source, esModule: false };
+      const refused = typeScriptEntryRefused(packageType, code, launch.import.length > 0);
+      stripped = { code: refused ? typeScriptRefusalShim(unknownExtensionRefusal('/' + resolvedPath)) : code, esModule: false };
     } else if (stripTypes !== null) {
       stripped = await stripTypeScriptEntry(code, resolvedPath, packageType, stripTypes, scriptPath);
       if (stripped === null) return 1;

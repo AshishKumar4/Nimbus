@@ -12205,14 +12205,16 @@ function __esmNamespaceOf(names, read) {
   Object.defineProperty(ns, Symbol.toStringTag, { value: "Module" });
   return Object.preventExtensions(ns);
 }
-// Node's defaultLoad: a module the ES loader does not have yet must have a format.
-function __nimbusAssertLoadable(resolution) {
-  if (!__esmNamespaces.has(resolution.url) && !__nimbusEsmJobCached(resolution.path)) __esmResolver.assertLoadable(resolution);
+// Node's defaultLoad: a module the ES loader has no job for must have a format.
+// Its jobs are keyed by URL and attribute type; only an implicit-type one can
+// have been loaded without a format (by require(esm)).
+function __nimbusAssertLoadable(resolution, type) {
+  if (type === undefined && (__esmNamespaces.has(resolution.url) || __nimbusEsmJobCached(resolution.path))) return;
+  __esmResolver.assertLoadable(resolution);
 }
 function __esmLoad(resolution) {
   const cached = __esmNamespaces.get(resolution.url);
   if (cached) return cached;
-  __nimbusAssertLoadable(resolution);
   let ns;
   if (resolution.format === "builtin") {
     const mod = __requireFrom("node:" + resolution.builtin, "");
@@ -12533,7 +12535,7 @@ globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, spe
     // the process while it fetches, as Node's loader keeps it while it reads.
     const resolution = await __nimbusTrackOp(__nimbusStageImport(text, parentUrl));
     // Loaded, then checked against its attributes, as Node's loader does.
-    __nimbusAssertLoadable(resolution);
+    __nimbusAssertLoadable(resolution, attributes.type);
     __esmResolver.validateAttributes(resolution.url, resolution.format, attributes);
     return __esmLoad(resolution);
   });
