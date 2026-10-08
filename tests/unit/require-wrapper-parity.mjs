@@ -1,17 +1,14 @@
 #!/usr/bin/env bun
 // A require wrapper's string calls, read by both walks alike: the import()
 // prefetch (core/interpreter moduleRequests, over the interpreter's parser)
-// and the supervisor's walk (require-resolver.ts requireWrapperCalls: a
-// literal-anchored prefilter, then the same analysis over acorn,
-// core/interpreter/module-requests.ts). The prefilter may admit more than
-// the analysis does, never less: what a string holds (a `$`, the other
-// quote, an escape) and how a parameter's default is spelled are the
-// parse's to read.
+// and the supervisor's walk (require-wrappers.ts requireWrapperCalls: a gate
+// over the module's tokens, then the same analysis over acorn,
+// core/interpreter/module-requests.ts). The gate may admit more than the
+// analysis does, never less, whatever a form's spelling.
 
 import assert from 'node:assert/strict';
 import { moduleRequests } from '../../packages/core/src/interpreter/index.ts';
 import { requireWrapperCalls } from '../../packages/core/src/runtime/require-resolver.ts';
-import { stripCommentsForImports } from '../../packages/core/src/runtime/comment-strip.ts';
 
 const cases = [
   ['a $ in the string', String.raw`function load(id) { try { return require(id); } catch {} }
@@ -74,6 +71,13 @@ export const d = load('second-declarator-dep');`, ['second-declarator-dep']],
 const req = module.createRequire(import.meta.url);
 const load = (id) => req.resolve(id);
 export const d = load('namespace-dep');`, ['namespace-dep']],
+  // (A \u-escaped \`require\` itself is not read: the gate's first test is the text \`equire\`.)
+  ['names spelled with escapes', String.raw`function \u006coad(\u{69}d) { return require(\u0069d); }
+export const d = load('escaped-dep');`, ['escaped-dep']],
+  ['a require in a string, a comment and a regular expression is none', String.raw`function load(id) { return "require(id)"; }
+// require(id)
+const re = /require\(id\)/;
+export const d = load('not-a-load');`, []],
   ['no wrapper', String.raw`function label(id) { return "[" + id + "]"; }
 function second(options, id) { return require(id); }
 export const a = label('not-a-module'), b = second('not-either', 'x');`, []],
@@ -85,7 +89,7 @@ export const d = viaMember('member-dep');`, []],
 
 for (const [name, code, expected] of cases) {
   const runtime = [...new Set(moduleRequests('pkg/index.js', code).filter((r) => r.kind === 'require').map((r) => r.specifier))].sort();
-  const walk = [...requireWrapperCalls(code, stripCommentsForImports(code))].sort();
+  const walk = [...requireWrapperCalls(code)].sort();
   assert.deepEqual(runtime, expected, `${name}: the import() prefetch reads ${JSON.stringify(runtime)}`);
   assert.deepEqual(walk, expected, `${name}: the supervisor's walk reads ${JSON.stringify(walk)}`);
 }

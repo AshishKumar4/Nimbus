@@ -4,7 +4,7 @@
  * One analysis over an ESTree program, whichever parser produced it: the
  * import() prefetch's (moduleRequests, over this interpreter's parser) and
  * the supervisor's walk (core/runtime/require-resolver.ts
- * requireWrapperCalls, over acorn) read the same calls with it. It reaches
+ * require-wrappers.ts requireWrapperCalls, over acorn) read the same calls with it. It reaches
  * nodes only through the interpreter's captured intrinsics, as the rest of
  * the interpreter does (intrinsics.ts), since the prefetch runs it in the
  * program's realm.
