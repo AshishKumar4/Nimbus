@@ -99,6 +99,24 @@ try {
     const empty = terminal.waitForPrompt(1000);
     output(`${mark('A')}${prompt}${mark('B')}`);
     await empty;
+
+    terminal.cmd('python');
+    output(`${mark('C')}>>> `);
+    await terminal.waitFor((text) => text.endsWith('>>> '), 1000, 'REPL ready');
+    terminal.reset();
+    terminal.cmd('exit()');
+    const exiting = terminal.waitForPrompt(1000);
+    output(`${mark('D;5')}${mark('A')}${prompt}${mark('B')}`);
+    await exiting;
+    assert.equal(terminal.promptAfter(terminal.submitCursor).exitCode, 5, 'stdin keeps the running command\'s C');
+
+    terminal.cmd('echo "open');
+    output('> ');
+    await terminal.waitFor((text) => text.endsWith('> '), 1000, 'PS2');
+    terminal.send('\x03');
+    const cancelled = terminal.waitForPrompt(1000);
+    output(`^C\n${mark('A')}${prompt}${mark('B')}`);
+    await cancelled;
   });
 
   try {

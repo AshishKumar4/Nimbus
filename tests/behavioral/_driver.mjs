@@ -454,16 +454,15 @@ export class Terminal {
   }
 
   promptAfter(cursor, needsCommand = this.submitCommand) {
-    let started = false;
-    let finished = false;
+    let execution = 'pending';
     let exitCode = null;
     for (const mark of this.marksAfter(cursor)) {
-      if (mark[1] === 'C') started = true;
-      if (mark[1] === 'D' && started && !finished) {
-        finished = true;
+      if (mark[1] === 'C' && execution === 'pending') execution = 'running';
+      if (mark[1] === 'D' && execution === 'running') {
+        execution = 'finished';
         exitCode = mark[2] === undefined ? null : Number(mark[2]);
       }
-      if (mark[1] === 'B' && (!needsCommand || finished)) {
+      if (mark[1] === 'B' && (!needsCommand || execution === 'finished')) {
         return { end: cursor + mark.index + mark[0].length, exitCode };
       }
     }
