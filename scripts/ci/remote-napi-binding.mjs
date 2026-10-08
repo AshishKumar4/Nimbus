@@ -108,8 +108,9 @@ writeFileSync(saved, archive);
 const listed = spawnSync('tar', ['tJf', saved], { encoding: 'utf8' });
 if (listed.status !== 0) throw new Error(`tar failed: ${listed.stderr}`);
 const members = listed.stdout.split('\n').filter((member) => member.startsWith('packages/') && !member.endsWith('/'));
-const head = git(['rev-parse', 'HEAD']);
-const changed = members.filter((member) => git(['status', '--porcelain', '--', member]) !== '');
+const head = git(['-C', repo, 'rev-parse', 'HEAD']);
+// Members are repository-relative, whatever directory this runs from.
+const changed = members.filter((member) => git(['-C', repo, 'status', '--porcelain', '--', member]) !== '');
 const refusal = head !== sha ? `${sha.slice(0, 12)} is not this worktree's HEAD`
   : existsSync(join(repo, dir)) ? `${dir} exists`
     : changed.length > 0 ? `these have changes of their own: ${changed.join(', ')}`
