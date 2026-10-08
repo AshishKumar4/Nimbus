@@ -2426,7 +2426,7 @@
     "packages/worker/public/_assets/tailwind-play.js": "176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15",
     "packages/worker/public/favicon.svg": "8b9e6679fd5f8a188498462eaa8dc966a4d18c160b5cedd2fec23128e339052b",
     "packages/worker/public/index.html": "b244caef0e983b1f28058b6d4db526728e9e494bfb2da18502fdf0466bc278c8",
-    "packages/worker/public/s/index.html": "010609690ff41205b4558523abababecd44b03c285ba4ab7fbd9f0eb2dd735f2",
+    "packages/worker/public/s/index.html": "627a58793e237e968ff279a244edc57105ac685e02c86474ed45bcf6d7105f95",
     "packages/worker/runtime-contracts/nimbus-threads.c": "f20fe40184b9b9664458b01a10536f4382f2141c468ffb8203cbb2649cc0a8be",
     "packages/worker/runtime-contracts/pyodide-workerd-adapter.json": "50b11f60f9bbf8d3e05a676ef19128e240ab53fc479d1f1a067b7799dd269410",
     "packages/worker/scripts/acorn-primordials.mjs": "e52174db5792a3c5adee5c9d2de7275da6362f912611af8264e25279656c508a",
