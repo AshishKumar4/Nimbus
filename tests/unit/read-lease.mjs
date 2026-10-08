@@ -170,20 +170,26 @@ function barrier(s, bridge, from) {
   const reader = s.files.bind({ pid: 7, cred: USER });
   const { encodeWriteBatchStream } = await import('../../packages/platform/src/w7-frame.ts');
   const data = new TextEncoder().encode('own wave');
-  const bytes = encodeWriteBatchStream({
+  const frames = encodeWriteBatchStream({
     inodes: [{ path: 'home/user/d/own-wave.txt', parentPath: 'home/user/d', kind: 'file', isDir: false, size: data.length, mtime: 1, mode: 0o644, chunkCount: 1 }],
     chunks: [{ path: 'home/user/d/own-wave.txt', chunkId: 0, data }],
-  });
+  }).getReader();
   const go = Promise.withResolvers();
   // Begun holding nothing; its records come after the lease is taken.
   const wave = reader.writeStream(new ReadableStream({
-    async pull(controller) { await go.promise; controller.enqueue(bytes); controller.close(); },
+    async pull(controller) {
+      await go.promise;
+      const { value, done } = await frames.read();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
   }));
   await sleep(5);
   const { readLease } = barrier(s, reader);
   go.resolve();
   const started = Date.now();
-  assert.equal((await wave).ok, true);
+  const result = await wave;
+  assert.equal(result.ok, true, JSON.stringify(result.error));
   assert.ok(Date.now() - started < 200, `the wave waited ${Date.now() - started} ms on its own lease`);
   const { reads } = s.files.delegations.stats();
   assert.deepEqual([reads.answered, reads.expired], [0, 0], 'the wave recalled its own process\'s lease');
