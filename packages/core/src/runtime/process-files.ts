@@ -201,7 +201,21 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   symlink(target: string, path: RuntimeFsPath): void { this.guard(); return this.target.symlink(target, path); }
   fsync(handleId?: number): void { this.guard(); return this.target.fsync(handleId); }
   revision(path?: RuntimeFsPath): number { this.guard(); return this.target.revision(path); }
-  acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult { this.guard(); return this.target.acquire(epoch, cursor, options); }
+  acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult {
+    this.guard();
+    return this.withReadLease(this.target.acquire(epoch, cursor, options), options);
+  }
+  /**
+   * `answer`, with the process's read lease when it asked for one: in the
+   * turn the answer was made in, so it is granted at the revision the answer
+   * reports (Delegations.readLease).
+   */
+  withReadLease(answer: VfsAcquireResult, options?: VfsAcquireOptions): VfsAcquireResult {
+    const target = this.target;
+    if (options?.lease !== true || this.pid === undefined || answer.poison || target.acquireReadLease === undefined) return answer;
+    const lease = this.delegations.readLease(this.pid, (terms) => target.acquireReadLease!(terms, { epoch: answer.epoch, cursor: answer.rev }), this.scope);
+    return lease === null ? answer : { ...answer, readLease: lease };
+  }
   list(after?: string | null, limit?: number): VfsListPage { this.guard(); return this.target.list(after, limit); }
   subscribe(path: string, listener: (event: VfsEvent) => void): () => void {
     this.guard();
@@ -719,10 +733,10 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       if (underKernelMount(entry.path)) continue;
       paths.push({ ...entry, path: entry.path.slice(1) });
     }
-    return {
+    return this.bridge.withReadLease({
       epoch: root.epoch, rev: root.cursor, paths, poison: answer.poison,
       ...(options?.namespace === true && !answer.poison ? { namespace: true } : {}),
-    };
+    }, options);
   }
 
   /**

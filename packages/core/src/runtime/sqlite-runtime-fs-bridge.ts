@@ -845,6 +845,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   releaseExclusiveMutation(owner: string): void { this.rawVfs.releaseExclusiveMutation(owner); }
 
+  acquireReadLease(terms: DelegationTerms, at: { readonly epoch: string; readonly cursor: number }): { readonly owner: string } {
+    return this.rawVfs.acquireReadLease(terms, at);
+  }
+
   /** No process, so no delegation: whatever `owner` names is not one of this bridge's (ESTALE). */
   awaitRecall(owner: string): never {
     throw fsError('ESTALE', 'awaitRecall', owner, undefined, { detail: 'no delegation of this process under that lease' });

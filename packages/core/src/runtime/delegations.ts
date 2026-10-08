@@ -50,6 +50,18 @@ export const SESSION_KERNEL_ROOTS: readonly string[] = ['.nimbus', 'var/lib/nimb
 /** How long one awaitRecall waits before it answers that nothing is asked (the holder asks again). */
 export const DELEGATION_RECALL_POLL_MS = 25_000;
 
+/**
+ * How long a read lease's holder trusts it after it asked the barrier that
+ * confirmed it (ProcessFsClient.readLeased): past it, the holder asks again.
+ * A recall its holder does not answer waits at most this long after the
+ * confirmation (plus READ_LEASE_MARGIN_MS), never a stopped process: the
+ * holder no longer answers from the lease by then. A holder that is not
+ * reading (no barrier within it) costs a writer nothing.
+ */
+export const READ_LEASE_TRUST_MS = 500;
+/** What a writer waits past a read lease's trust, for the holder's clock against the session's. */
+export const READ_LEASE_MARGIN_MS = 50;
+
 
 /** What the host is told when it must stop a holder that did not answer a recall in time. */
 export interface DelegationRevoked {
@@ -71,6 +83,8 @@ interface Held {
   pending: { kind: RecallKind; done: () => void; cancel: () => void } | null;
   /** Lets the engine's lease go and forgets it (the scope's disposer). */
   end(): void;
+  /** A read lease's (readLease): when the session last confirmed it to its holder. */
+  read: { confirmedAt: number } | null;
   /** The holder's scope, which disposes of it when the process ends. */
   readonly scope: { readonly subscriptions: Set<() => void> };
 }
@@ -98,11 +112,13 @@ export interface DelegationStats {
   readonly recalls: { readonly share: number; readonly revoke: number };
   /** Holders revoked for not answering within the recall timeout. */
   readonly timedOut: number;
+  /** Read leases granted, recalls of them answered, and recalls whose holder's trust ran out first. */
+  readonly reads: { readonly granted: number; readonly answered: number; readonly expired: number };
 }
 
 export class Delegations {
   private readonly held = new Map<string, Held>();
-  private readonly counts = { grants: 0, share: 0, revoke: 0, timedOut: 0 };
+  private readonly counts = { grants: 0, share: 0, revoke: 0, timedOut: 0, readGranted: 0, readAnswered: 0, readExpired: 0 };
   /** Each holder's leases. */
   private readonly byPid = new Map<number, Set<string>>();
   private readonly recallTimeoutMs: number;
@@ -149,7 +165,7 @@ export class Delegations {
       }
       this.options.release(lease.owner);
     };
-    held = { pid, owner: lease.owner, root: lease.root, asked: [], waiter: null, pending: null, end, scope };
+    held = { pid, owner: lease.owner, root: lease.root, asked: [], waiter: null, pending: null, end, scope, read: null };
     this.held.set(lease.owner, held);
     let owned = this.byPid.get(pid);
     if (owned === undefined) this.byPid.set(pid, owned = new Set());
@@ -160,6 +176,57 @@ export class Delegations {
       end();
     });
     return { ...lease, recallTimeoutMs: this.recallTimeoutMs };
+  }
+
+  /**
+   * Process `pid`'s read lease (SqliteVFS.acquireReadLease), confirmed: the
+   * one it holds, unless a recall of it is asked, or one `acquire` takes now.
+   * Asked at the barrier that brought the holder current (fsAcquire with
+   * `lease`), in the same turn, so it is granted at the revision that answer
+   * reported. Null when its recall is asked (the holder answers it first).
+   */
+  readLease(
+    pid: number,
+    acquire: (terms: DelegationTerms) => { readonly owner: string },
+    scope: { readonly subscriptions: Set<() => void> },
+  ): { owner: string; trustMs: number } | null {
+    const now = Date.now();
+    for (const owner of this.heldBy(pid)) {
+      const held = this.held.get(owner);
+      if (held?.read == null) continue;
+      if (held.pending !== null || held.asked.length > 0) return null;
+      held.read.confirmedAt = now;
+      return { owner, trustMs: READ_LEASE_TRUST_MS };
+    }
+    let held: Held | null = null;
+    const terms: DelegationTerms = {
+      reads: false,
+      // The session's own stores are written synchronously, and never leased.
+      excludes: SESSION_KERNEL_ROOTS,
+      recall: (kind) => {
+        if (held === null || this.held.get(held.owner) !== held) return Promise.resolve();
+        return this.recall(held, kind);
+      },
+    };
+    const lease = acquire(terms);
+    this.counts.readGranted++;
+    const end = (): void => {
+      if (this.held.get(lease.owner) !== held) return;
+      this.forget(held!);
+      if (held!.pending !== null) {
+        held!.pending.cancel();
+        held!.pending.done();
+      }
+      this.options.release(lease.owner);
+    };
+    held = { pid, owner: lease.owner, root: '', asked: [], waiter: null, pending: null, end, scope, read: { confirmedAt: now } };
+    this.held.set(lease.owner, held);
+    let owned = this.byPid.get(pid);
+    if (owned === undefined) this.byPid.set(pid, owned = new Set());
+    owned.add(lease.owner);
+    // Its holder decided nothing: ending with it loses nothing, and says nothing.
+    scope.subscriptions.add(end);
+    return { owner: lease.owner, trustMs: READ_LEASE_TRUST_MS };
   }
 
   /** The next recall of `owner`'s delegation, as soon as one is asked; null after `waitMs` with none, or once it has ended. */
@@ -188,6 +255,7 @@ export class Delegations {
     held.pending = null;
     pending.cancel();
     pending.done();
+    if (held.read !== null) this.counts.readAnswered++;
     // Revoked: the engine ends the lease; this forgets it.
     if (kind === 'revoke') this.forget(held);
   }
@@ -217,10 +285,12 @@ export class Delegations {
       grants: this.counts.grants,
       recalls: { share: this.counts.share, revoke: this.counts.revoke },
       timedOut: this.counts.timedOut,
+      reads: { granted: this.counts.readGranted, answered: this.counts.readAnswered, expired: this.counts.readExpired },
     };
   }
 
   private recall(held: Held, kind: RecallKind): Promise<void> {
+    if (held.read !== null) return this.recallRead(held);
     this.counts[kind]++;
     let resolve!: () => void;
     const promise = new Promise<void>((settle) => { resolve = settle; });
@@ -236,6 +306,33 @@ export class Delegations {
     held.pending = { kind, done: resolve, cancel: () => clearTimeout(timer) };
     if (held.waiter !== null) held.waiter(kind);
     else held.asked.push(kind);
+    return promise;
+  }
+
+  /**
+   * A read lease's recall: asked of its holder, and answered, or over once
+   * the holder's trust in it has run out (it reads nothing from it by then):
+   * the lease ends either way, and no one is stopped. A holder whose trust
+   * ran out already is not asked.
+   */
+  private recallRead(held: Held): Promise<void> {
+    const trustLeft = held.read!.confirmedAt + READ_LEASE_TRUST_MS + READ_LEASE_MARGIN_MS - Date.now();
+    if (trustLeft <= 0) {
+      this.counts.readExpired++;
+      held.end();
+      return Promise.resolve();
+    }
+    let resolve!: () => void;
+    const promise = new Promise<void>((settle) => { resolve = settle; });
+    const timer = setTimeout(() => {
+      held.pending = null;
+      this.counts.readExpired++;
+      held.end();
+      resolve();
+    }, trustLeft);
+    held.pending = { kind: 'revoke', done: resolve, cancel: () => clearTimeout(timer) };
+    if (held.waiter !== null) held.waiter('revoke');
+    else held.asked.push('revoke');
     return promise;
   }
 

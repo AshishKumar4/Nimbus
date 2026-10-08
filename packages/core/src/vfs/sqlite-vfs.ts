@@ -208,6 +208,8 @@ export interface DelegationTerms {
   recall(kind: 'share' | 'revoke'): Promise<void>;
   /** Refuses (throws) a root its maker does not delegate; asked with the lease's resolved root, before anything else. */
   admit?(root: string): void;
+  /** A read lease's (acquireReadLease): the subtrees it does not cover, the session's own stores its synchronous use writes. */
+  readonly excludes?: readonly string[];
   /**
    * How many inode numbers to reserve for what the holder makes: it numbers
    * them itself (a stat shows the number before the session has the file)
@@ -220,6 +222,17 @@ export interface DelegationTerms {
    * Past them, its waves are admitted as anyone's (ENOSPC when full).
    */
   readonly bytes?: number;
+}
+
+/**
+ * A read lease (acquireReadLease): the session's promise to its holder that
+ * nothing it covers changes without the holder being recalled first, and
+ * answering (or its trust running out: Delegations). It decides nothing and
+ * excludes no one: another caller's mutation recalls it ('revoke') and waits.
+ */
+interface ReadLease {
+  readonly delegation: DelegationTerms;
+  recalling: Promise<void> | null;
 }
 
 /** A lease: its root, and its terms when it is a delegation. */
@@ -1959,6 +1972,10 @@ export class SqliteVFS {
   }
 
   private readonly exclusiveMutationLeases = new Map<string, Lease>();
+  /** Read leases (acquireReadLease), by owner. */
+  private readonly readLeases = new Map<string, ReadLease>();
+  /** Read leases a publication found unrecalled and ended (a writer that skipped refusalAt): its staleness is the holder's trust window. */
+  private readLeasesBroken = 0;
   private activeMutationOwner: string | null = null;
   /**
    * The delegations the running call is made by (callerView: a view bound
@@ -3631,6 +3648,7 @@ export class SqliteVFS {
     paths: readonly string[],
     structural: ReadonlyMap<string, StructuralChange> = NO_STRUCTURAL_CHANGES,
   ): void {
+    if (this.readLeases.size > 0) this.breakUnrecalledReadLeases(paths);
     this.resolutionEpoch++;
     for (const opened of this.openNodes) {
       if (opened.path === null) continue;
@@ -3677,6 +3695,21 @@ export class SqliteVFS {
       dropped++;
     }
     if (dropped > 0) this._invalidations = this._invalidations.slice(dropped);
+  }
+
+  /**
+   * A publication a read lease covers, by a writer that did not recall it
+   * (one that skipped refusalAt): the lease ends here, untold, and its
+   * holder's copy is stale for what remains of its trust (Delegations). Counted, and said.
+   */
+  private breakUnrecalledReadLeases(paths: readonly string[]): void {
+    const keys = paths.map((path) => normalizeVfsPath(path)).filter((key) => key !== '');
+    for (const [owner, lease] of [...this.readLeases]) {
+      if (this.isHolder(owner) || !keys.some((key) => this.readCovers(lease, key))) continue;
+      this.readLeases.delete(owner);
+      this.readLeasesBroken++;
+      console.error(`[nimbus] a publication at /${keys[0]} did not recall the read lease it covers; ended`);
+    }
   }
 
   /** Commit a generation that writes nothing, so a publication has a tick of its own. */
@@ -3984,7 +4017,55 @@ export class SqliteVFS {
   }
 
   releaseExclusiveMutation(owner: string): void {
+    this.readLeases.delete(owner);
     this.endLease(owner);
+  }
+
+  /**
+   * A read lease of the whole namespace, but the subtrees `terms.excludes`
+   * names, granted at `at`: refused (ESTALE) when anything was published
+   * since, so its holder is current at the moment it holds it. Its holder
+   * reads its own copy, asking nothing, until it is recalled.
+   */
+  acquireReadLease(terms: DelegationTerms, at: { readonly epoch: string; readonly cursor: number }): { owner: string } {
+    this.settleAppends();
+    if (at.epoch !== this._epoch || at.cursor !== this._revision) {
+      throw vfsError('ESTALE', '/', `published since revision ${at.cursor}; a read lease is granted at the current one (${this._revision})`);
+    }
+    const owner = crypto.randomUUID();
+    this.readLeases.set(owner, { delegation: terms, recalling: null });
+    return { owner };
+  }
+
+  /** What read leases did since the engine started (the diag route's). */
+  readLeaseStats(): { held: number; broken: number } {
+    return { held: this.readLeases.size, broken: this.readLeasesBroken };
+  }
+
+  /** Whether `lease` covers `key`: the whole namespace, but what it excludes. */
+  private readCovers(lease: ReadLease, key: string): boolean {
+    return !(lease.delegation.excludes ?? []).some((excluded) => key === excluded || key.startsWith(`${excluded}/`) || excluded === '');
+  }
+
+  /**
+   * The read leases a mutation at `key` must recall first (every holder's
+   * but the caller's own), as one recall: each asked at once, all answered
+   * (or their trust run out) before the retry, so a writer meets each at most once.
+   */
+  private readRecallAt(key: string): RecallRequired | null {
+    const met = [...this.readLeases].filter(([owner, lease]) => this.readCovers(lease, key) && !this.isHolder(owner));
+    if (met.length === 0) return null;
+    const recall = (): Promise<void> => Promise.all(met.map(([owner, lease]) => {
+      lease.recalling ??= (async () => {
+        if (this.readLeases.get(owner) !== lease) return;
+        await lease.delegation.recall('revoke');
+        if (this.readLeases.get(owner) === lease) this.readLeases.delete(owner);
+      })().finally(() => { lease.recalling = null; });
+      return lease.recalling;
+    })).then(() => {});
+    // Started now, whether or not the caller can wait for it.
+    recall().catch(() => {});
+    return new RecallRequired('', 'revoke', key, recall);
   }
 
   /** `owner`'s lease ends: the storage its holder had reserved and not used goes back to the ledger. */
@@ -4083,6 +4164,7 @@ export class SqliteVFS {
 
   /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked); `holds`: the writer's own. */
   private async recallDelegationsAt(key: string, holds: ReadonlySet<string> | null): Promise<void> {
+    if (this.readLeases.size > 0) await this.withHolds(holds, () => this.readRecallAt(normalizeVfsPath(key)))?.recall();
     for (;;) {
       const normalized = normalizeVfsPath(key);
       const met = [...this.exclusiveMutationLeases].find(([id, lease]) => (
@@ -4189,6 +4271,11 @@ export class SqliteVFS {
       if (ownedRoot === undefined || (ownedRoot !== '' && normalized !== ownedRoot && !normalized.startsWith(`${ownedRoot}/`))) {
         return { code: 'EPERM', detail: `outside the exclusive mutation root /${ownedRoot ?? ''}` };
       }
+    }
+    // Readers that hold it are told first, and the mutation waits for them.
+    if (this.readLeases.size > 0) {
+      const recall = this.readRecallAt(normalized);
+      if (recall !== null) throw recall;
     }
     return null;
   }
@@ -9694,7 +9781,7 @@ export class SqliteVFS {
         // A record that lands in another holder's delegation waits for it to
         // be given up first, here between records, where the stream may wait:
         // its group's commit would otherwise be refused.
-        if (this.exclusiveMutationLeases.size > 0) {
+        if (this.exclusiveMutationLeases.size > 0 || this.readLeases.size > 0) {
           for (const lands of recordPaths(record)) await this.recallDelegationsAt(lands, holds);
         }
         // A record that is no call: the calls before it commit first.

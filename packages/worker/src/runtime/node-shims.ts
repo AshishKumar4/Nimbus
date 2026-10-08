@@ -1908,6 +1908,8 @@ const __fsMod = (() => {
       reconciles: 0, selfWrites: 0, misses: 0,
       // ACQUIREs that got no answer (see _acquireBarrier), and the last reason.
       barrierFailures: 0, lastBarrierFailure: "",
+      // Barriers a trusted read lease answered, asking nothing (_acquireBarrier).
+      leasedBarriers: 0,
       // Barriers that held their resumption on an own write's acknowledgement
       // (_awaitReportedOwnWrites).
       ownWriteWaits: 0,
@@ -2330,6 +2332,14 @@ const __fsMod = (() => {
    */
   async function _acquireBarrier(supervisor, delivered) {
     if (!supervisor || typeof supervisor.fsAcquire !== "function") return [];
+    // Under a trusted read lease nothing this process holds has changed: a
+    // change waits for the lease's recall, and the recall untrusts it first
+    // (ProcessFsClient.readTrusted). A delivered answer is still applied,
+    // and a store owed a repair still asks.
+    if (!delivered && !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted()) {
+      _stats.leasedBarriers++;
+      return [];
+    }
     const fromDelivery = _deliveredAnswer(delivered);
     // The overlay of this facet's own structural effects retires what settled
     // before the answer was asked for: a delivered answer was asked for when
@@ -2402,6 +2412,11 @@ const __fsMod = (() => {
       // A directory that became searchable has descendants no delta names.
       for (const dir of applied.relist) await __nsRelist(supervisor, dir);
       _nsRetire(begin);
+      // The read lease this answer carried, from the moment it was asked:
+      // what it vouches for is this answer, applied now.
+      if (!fromDelivery && result.readLease && typeof result.askedAt === "number") {
+        __nimbusProcessFs().readLeased(result.readLease, result.askedAt);
+      }
       _stats.invalidations += applied.dropped.length;
       _stats.selfWrites += applied.kept;
       _stats.pushes += applied.pushed || 0;
@@ -2475,14 +2490,18 @@ const __fsMod = (() => {
     // pending timer happened to hold the program open.
     try {
       const args = _acquireArgs();
+      // Asked of this barrier only, never of a long poll's delivery: its
+      // trust runs from the moment this asks.
+      const options = __nimbusProcessFs().readLeaseWanted() ? { ...(args.options || {}), lease: true } : args.options;
+      const askedAt = Date.now();
       const result = await __nimbusUseRpcResult(
-        args.options ? supervisor.fsAcquire(args.epoch, args.cursor, args.options) : supervisor.fsAcquire(args.epoch, args.cursor),
+        options ? supervisor.fsAcquire(args.epoch, args.cursor, options) : supervisor.fsAcquire(args.epoch, args.cursor),
         (r) => r,
       );
       if (!result || typeof result.rev !== "number" || typeof result.epoch !== "string") {
         throw new Error("fsAcquire answered without a cursor");
       }
-      return _currentAnswer(result);
+      return { ..._currentAnswer(result), askedAt };
     } catch (error) {
       _stats.barrierFailures++;
       _stats.lastBarrierFailure = (error && error.message) || String(error);
