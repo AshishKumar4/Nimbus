@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "027ead392b7a1c9ec44531e4ef87a31753287f0b75d430b8ab4a789b81209b61",
+  "fingerprint": "3563406ecdd440bef9beaebcdc8f89a3030d2a1310322bb62dfc1842c9865482",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1609,8 +1609,8 @@
     "packages/fabric/dist/vendor/types.d.ts.map": "632d87d10377d5307f080089204b34db05f518223d038dbe7e62749d7cebb145",
     "packages/fabric/dist/vendor/types.js": "f5f1383fd44a6abf7e0de84a446985ec01753feeb915ed8ed77301ea781f0fb1",
     "packages/fabric/dist/workerd-facet-host.d.ts": "33113f18ae5327b7e010cdb7c3048f1621952ca68aff9f903259ac03c18fe891",
-    "packages/fabric/dist/workerd-facet-host.d.ts.map": "380aeb785dfaed8d3c7159d7b34c094cd3308c2c3a783352c035ea17b0f0124b",
-    "packages/fabric/dist/workerd-facet-host.js": "d8e94b927e9d802acd02e0878b74f71ac939bb4ef2f0671ce96ed7a06b275f82",
+    "packages/fabric/dist/workerd-facet-host.d.ts.map": "169109a15a36aa569f91e776756466db4ceea95696a79c413dde74eef7573175",
+    "packages/fabric/dist/workerd-facet-host.js": "c0b1efcec8050bcd5aff238443f9d5b69c0d871800b75153750cf0a717630ddb",
     "packages/fabric/dist/ws-hibernation-config.d.ts": "f4f46ad8000086411e22775316587bf59af6cd4a9f0cc7cf2827583241ea2e38",
     "packages/fabric/dist/ws-hibernation-config.d.ts.map": "4da1c81bba56a210d85b937137c6215d24c0e0259b912e56dacea1ebe9bcec5a",
     "packages/fabric/dist/ws-hibernation-config.js": "0f6d330d5581a10c888f38100de2650f9c3fde59948bc5977db12998e02fbfc0",
@@ -1647,7 +1647,7 @@
     "packages/fabric/src/vendor/errors.ts": "012d824fa8854a47e1864af42595b729e5348635dd0965d28d8aaed04efa6434",
     "packages/fabric/src/vendor/serialize.ts": "b3cfef2f4c718fc87dfe7a9947f335cd00fe5d3465adc56f18954c06312fa8bd",
     "packages/fabric/src/vendor/types.ts": "e69ab29a503adf60fd7965d5391e7cc9a03934ecc6b407f14841833e29b76d77",
-    "packages/fabric/src/workerd-facet-host.ts": "6f9cf9f9d501f9c999e7ebcfa5ba5ee58590ce76f66d79c9613dbf742bd40920",
+    "packages/fabric/src/workerd-facet-host.ts": "addc77c2e0a938fbf05cbcd19f1afe12a5afea85ed399c0c350c7aff67011432",
     "packages/fabric/src/ws-hibernation-config.ts": "a1fab741b4e6dc6427ddb36f147156bcbc94d9aef8803d81b174b7d7e8d2a299",
     "packages/fabric/tsconfig.json": "ef97ba24f45ec9f5fc663b1cb11bcedce7dec30b65fc76bed8b0d11bf9411a7f",
     "packages/loom/LICENSE": "9abf902a70f15256b6d108767fc510341854ec2297e3874c5bc6df496a895617",
