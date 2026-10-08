@@ -66,6 +66,20 @@ try {
     assert.ok(!result.output.includes('\x1b]133;'), 'OSC marks are not visible output');
   });
 
+  await scenario('a resume prompt does not complete the command that woke the session', async (terminal, peer, output) => {
+    let finished = false;
+    const completion = terminal.run('held', 1000).then((result) => { finished = true; return result; });
+    output(`session resumed\n${mark('A')}${prompt}${mark('B')}`);
+    await terminal.waitFor((text) => text.includes('session resumed'), 1000, 'resume notice');
+    await setImmediate();
+    const premature = finished;
+    output(`${mark('C')}awake\n${mark('D;17')}${mark('A')}${prompt}${mark('B')}`);
+    const result = await completion;
+    assert.equal(premature, false, 'a resumed shell has not executed the submitted command at its initial B');
+    assert.equal(result.exitCode, 17);
+    assert.match(result.output, /awake/);
+  });
+
   await scenario('split marks survive reset; the first B owns the result', async (terminal, peer, output) => {
     const completion = terminal.run('held', 1000);
     output(`${mark('C')}first\n${mark('D;3', '\x1b\\')}${mark('A')}${prompt}\x1b]133;`);
