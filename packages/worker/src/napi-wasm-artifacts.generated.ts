@@ -19,7 +19,7 @@ export interface NapiWasmAsset {
 export interface StagedBindingArtifact {
   /** The binding's name (scripts/napi-wasm/specs.mjs). */
   readonly name: string;
-  /** The one version of `owner` the binding is built from. */
+  /** The one version of `owner` this build is built from (a binding may have several builds). */
   readonly version: string;
   /** The package whose JavaScript loads the binding. */
   readonly owner: string;
@@ -45,6 +45,20 @@ export const STAGED_BINDING_ARTIFACTS: readonly StagedBindingArtifact[] = [
       "path": "/_assets/napi-wasm/rolldown/1.2.11/rolldown.wasm",
       "sha256": "9e38287a3d6f106d50fa9eeb774f264130fd960a39f194d6380de731a4d7ed58",
       "bytes": 13472165
+    }
+  },
+  {
+    "name": "rolldown",
+    "version": "1.2.13",
+    "owner": "rolldown",
+    "requiredAs": [
+      "@rolldown/binding-wasm32-wasi"
+    ],
+    "memoryPages": 86,
+    "wasm": {
+      "path": "/_assets/napi-wasm/rolldown/1.2.13/rolldown.wasm",
+      "sha256": "7d3047dab778ea7233dcedf9c15b01e2ac0ea5ac5845a9bd1e3c747c126feb22",
+      "bytes": 13740474
     }
   },
   {
@@ -76,3 +90,5 @@ export const STAGED_BINDING_ARTIFACTS: readonly StagedBindingArtifact[] = [
     }
   }
 ];
+/** The rolldown Nimbus itself depends on, whose build the build facet runs. */
+export const OWN_ROLLDOWN_VERSION: string = "1.2.11";

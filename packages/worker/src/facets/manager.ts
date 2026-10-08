@@ -2117,9 +2117,9 @@ interface FacetVfsState {
    */
   usesNodeSqlite?: boolean;
   /**
-   * Names of the staged napi bindings the closure requires
-   * (stagedBindingsRequiredBy), answered with `usesNodeSqlite`: the launch
-   * carries each, and the main module registers them.
+   * Keys (`<name>@<version>`) of the staged napi binding builds the closure
+   * requires (stagedBindingsRequiredBy), answered with `usesNodeSqlite`: the
+   * launch carries each, and the main module registers them.
    */
   stagedBindings?: string[];
   /**
@@ -5838,11 +5838,11 @@ export class FacetManager {
   }
 
   /**
-   * The module-map members of the staged napi bindings `names`, by value, for
-   * a one-shot facet (it has no disk reader at load): the shared loader and
-   * trampoline, and each binding. Fetched from the worker's own assets —
-   * L2-cached, digest-verified — inside the scope that holds the map, and
-   * dropped with it.
+   * The module-map members of the staged napi binding builds `names` (each
+   * `<name>@<version>`), by value, for a one-shot facet (it has no disk
+   * reader at load): the shared loader and trampoline, and each build.
+   * Fetched from the worker's own assets — L2-cached, digest-verified —
+   * inside the scope that holds the map, and dropped with it.
    */
   private async _stagedBindingModulesByValue(names: readonly string[]): Promise<Record<string, string | { wasm: ArrayBuffer }>> {
     if (names.length === 0) return {};
@@ -5885,8 +5885,8 @@ export class FacetManager {
   private stagedBindingWrites = new Map<string, Promise<void>>();
 
   /**
-   * The staged napi bindings `names` for a resident facet: the shared
-   * loader's text (the caller stores it through the image store with the rest
+   * The staged napi binding builds `names` (each `<name>@<version>`) for a
+   * resident facet: the shared loader's text (the caller stores it through the image store with the rest
    * of the map), the trampoline by value, and each binding by PATH. A
    * multi-megabyte member inline in the boot spec would sit in this isolate's
    * heap for the process's life; named by path it is read only while the
@@ -6281,7 +6281,7 @@ export class FacetManager {
     const declaredBindings = await stagedBindingsDeclaredBy(declaredBindingFs(vfs), spec.scriptPath, undefined, declaredWalk);
     const namedBindings = stagedBindingsRequiredBy(Object.entries(vfsState.bundle));
     const requiredBindings = new Set([...namedBindings, ...declaredBindings]);
-    vfsState.stagedBindings = STAGED_BINDINGS.filter((b) => requiredBindings.has(b.name)).map((b) => b.name);
+    vfsState.stagedBindings = STAGED_BINDINGS.filter((b) => requiredBindings.has(b.key)).map((b) => b.key);
     if (this.debugEnabled) {
       this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] staged bindings: [${vfsState.stagedBindings.join(', ')}]`
         + ` (named by the closure: [${namedBindings.join(', ')}]; declared by the bin's dependencies: [${declaredBindings.join(', ')}],`

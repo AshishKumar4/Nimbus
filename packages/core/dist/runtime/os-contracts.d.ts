@@ -704,8 +704,11 @@ export interface PackageStagedBindingEntry {
     from: string;
     /** Stable artifact id the node runtime resolves to a staged asset path. */
     artifact: string;
-    /** The one upstream version the staged binding is built from. */
-    version: string;
+    /**
+     * The upstream versions staged builds of the binding exist for, oldest
+     * first: each build loads only under its owner at its version.
+     */
+    versions: readonly string[];
     /** One-line reason shown to the user. */
     reason: string;
 }
