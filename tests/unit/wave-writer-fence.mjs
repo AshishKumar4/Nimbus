@@ -183,9 +183,10 @@ const byteStream = (bytes) => new ReadableStream({
     idFromString: (id) => ({ toString: () => id }),
     get: () => ({ supervisorOp: (sent) => session.host.supervisorOp(sent) }),
   } };
-  const bind = (pid) => new SupervisorRPC({ props: { doId: 'session', pid, writerId: 'restart-stream', ...supervisorDeliveryProps(session.ctx) } }, env);
+  const bind = (pid, hostIncarnation) => new SupervisorRPC({ props: { doId: 'session', pid, writerId: 'restart-stream', hostIncarnation } }, env);
   const pid = session.processes.spawn('git', ['git'], '/home/user').pid;
-  const rpc = bind(pid);
+  const { hostIncarnation } = supervisorDeliveryProps(session.ctx);
+  const rpc = bind(pid, hostIncarnation);
   const epoch = await rpc.openWaveWriter();
   const path = 'home/user/wave.txt';
   const stream = (text) => {
@@ -195,18 +196,20 @@ const byteStream = (bytes) => new ReadableStream({
       chunks: [{ path, chunkId: 0, data }],
     });
   };
-  assert.equal((await rpc.writeBatchStream(stream('before'), { ...epoch, wave: 1, attempt: 1 })).ok, true);
+  assert.equal((await rpc.writeBatchStream(stream('before'), { writer: epoch, wave: 1, attempt: 1 })).ok, true);
   const revision = session.vfs.revision(path);
   session = open();
   session.processes.setPidBase(1_000_000);
-  const fence = { ...epoch, wave: 2, attempt: 1 };
+  const fence = { writer: epoch, wave: 2, attempt: 1 };
   await assert.rejects(rpc.writeBatchStream(stream('missing process'), fence), (error) => error.code === 'ESRCH');
-  const current = bind(session.processes.spawn('git', ['git'], '/home/user').pid);
-  await assert.rejects(current.writeBatchStream(stream('stale binding'), fence), (error) => error.code === 'ESTALE');
+  const currentPid = session.processes.spawn('git', ['git'], '/home/user').pid;
+  const current = bind(currentPid, supervisorDeliveryProps(session.ctx).hostIncarnation);
+  const stale = bind(currentPid, hostIncarnation);
+  await assert.rejects(stale.writeBatchStream(stream('stale binding'), fence), (error) => error.code === 'ESTALE');
   assert.equal(session.vfs.revision(path), revision, 'neither refused stream changed the file');
   assert.equal(dec.decode(session.vfs.as(CRED_KERNEL).readFile(path)), 'before');
   const next = await current.openWaveWriter();
-  assert.equal((await current.writeBatchStream(stream('after'), { ...next, wave: 1, attempt: 1 })).ok, true);
+  assert.equal((await current.writeBatchStream(stream('after'), { writer: next, wave: 1, attempt: 1 })).ok, true);
   assert.equal(dec.decode(session.vfs.as(CRED_KERNEL).readFile(path)), 'after');
   console.log('  ok  a missing process stream gets ESRCH, a live stale binding gets ESTALE, and the current writer still writes');
 }
