@@ -25,6 +25,7 @@
  *       PARSE_SEMVER(v) → [maj, min, patch] | null
  *       COMPARE_SEMVER(a, b) → number
  *       RESOLVE_VERSION(versions, range) → string | null
+ *       PARSE_REGISTRY_REQUEST(name, range) → the registry request a spec makes
  *
  * What the task does NOT do (supervisor responsibility)
  * ─────────────────────────────────────────────────────

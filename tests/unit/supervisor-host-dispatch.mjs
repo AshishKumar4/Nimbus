@@ -38,28 +38,31 @@ const processes = new SessionProcessSupervisor();
 const pid = processes.spawn('probe', ['probe'], '/').pid;
 const writerId = 'writer';
 // The fs ops mutate, so every one gets its own path — a shared fixture would
-// make the table's order load-bearing.
+// make the table's order load-bearing. Every op presents the lease on
+// home/user/owned; one that presents it to its mutation (rename, mkdir,
+// rmdir, unlink, an open for writing and its descriptor's mutations, the
+// ranged writes) acts inside that root, which bounds a lease holder's work.
 const path = '/home/user/file', from = '/home/user/owned/ren', to = '/home/user/owned/ren2';
 const target = '/home/user/file', symlinkPath = '/home/user/link2';
-const wPath = '/home/user/w', dirPath = '/home/user/dir', delPath = '/home/user/del';
+const wPath = '/home/user/w', dirPath = '/home/user/owned/dir', delPath = '/home/user/owned/del';
 const linkPath = '/home/user/link';
 const chmodPath = '/home/user/chmod', utimesPath = '/home/user/utimes', truncPath = '/home/user/owned/trunc';
 const rangePath = '/home/user/owned/range';
 // The descriptor ops all act on one open file, plus a directory for
 // readdirHandle; remove/copy/mutation each get their own subject.
-const handlePath = '/home/user/handle', handleDir = '/home/user/hdir';
+const handlePath = '/home/user/owned/handle', handleDir = '/home/user/hdir';
 const removePath = '/home/user/rm', copyPath = '/home/user/copy', mutationPath = '/home/user/mut';
 const handleContent = 'handle-bytes';
 const sessionFs = rawVfs.as(CRED_SESSION_USER);
 sessionFs.mkdir('home/user/owned');
 sessionFs.writeFile('home/user/owned/ren', 'x');
-sessionFs.writeFile('home/user/del', 'x');
+sessionFs.writeFile('home/user/owned/del', 'x');
 sessionFs.writeFile('home/user/chmod', 'x');
 sessionFs.writeFile('home/user/utimes', 'x');
 sessionFs.writeFile('home/user/owned/trunc', 'truncate me');
 sessionFs.writeFile('home/user/owned/range', 'xxxxxx');
 sessionFs.writeFile('home/user/file', 'seeded\n');
-sessionFs.writeFile('home/user/handle', handleContent);
+sessionFs.writeFile('home/user/owned/handle', handleContent);
 sessionFs.mkdir('home/user/hdir', { recursive: true });
 sessionFs.writeFile('home/user/hdir/child', 'c');
 sessionFs.mkdir('home/user/rm/inner', { recursive: true });
@@ -336,9 +339,9 @@ const nativeAssert = {
   exists: (r) => assert.equal(r, true, 'exists'),
   readdir: (r) => assert.ok(r.some((e) => e.name === 'file'), 'readdir sees the fixture'),
   rename: async () => assert.equal(dec.decode(kernelVfs.readFile('home/user/owned/ren2')), 'x', 'rename moved'),
-  mkdir: async () => assert.equal(kernelVfs.isDirectory('home/user/dir'), true, 'mkdir created'),
-  rmdir: async () => assert.equal(kernelVfs.exists('home/user/dir'), false, 'rmdir removed'),
-  unlink: async () => assert.equal(kernelVfs.exists('home/user/del'), false, 'unlink removed'),
+  mkdir: async () => assert.equal(kernelVfs.isDirectory('home/user/owned/dir'), true, 'mkdir created'),
+  rmdir: async () => assert.equal(kernelVfs.exists('home/user/owned/dir'), false, 'rmdir removed'),
+  unlink: async () => assert.equal(kernelVfs.exists('home/user/owned/del'), false, 'unlink removed'),
   readlink: (r) => assert.equal(r, 'file', 'readlink resolves the link'),
   symlink: async () => assert.equal(dec.decode(kernelVfs.readFile('home/user/link2')), 'seeded\n', 'symlink target reads'),
   fsReadRange: (r) => assert.deepEqual(Array.from(r), Array.from(new TextEncoder().encode('see')), 'fsReadRange'),
@@ -356,7 +359,7 @@ const nativeAssert = {
   // mints the handle every one of them addresses.
   fsOpen: (r) => {
     fileHandle = r;
-    assert.equal(r.path, 'home/user/handle', 'fsOpen names the file it opened');
+    assert.equal(r.path, 'home/user/owned/handle', 'fsOpen names the file it opened');
     assert.deepEqual([r.flags.read, r.flags.write, r.closed], [true, true, false], 'fsOpen honoured the flags');
   },
   fsFstat: (r) => {
@@ -370,7 +373,7 @@ const nativeAssert = {
   fsRead: (r) => assert.equal(dec.decode(r), handleContent.slice(offset, offset + length), 'fsRead returns the bytes at the offset'),
   fsWrite: (r) => {
     assert.equal(r, bytes.length, 'fsWrite returns the count written');
-    assert.deepEqual([...kernelVfs.readFile('home/user/handle').subarray(0, 3)], [...bytes], 'fsWrite landed through the descriptor');
+    assert.deepEqual([...kernelVfs.readFile('home/user/owned/handle').subarray(0, 3)], [...bytes], 'fsWrite landed through the descriptor');
   },
   fsClose: async (r) => {
     assert.equal(r, undefined, 'fsClose');
@@ -384,10 +387,10 @@ const nativeAssert = {
     assert.equal(duplicate.flags.append, true, 'fsSetStatus set append on the open descriptor');
   },
   fsReaddirHandle: (r) => assert.deepEqual(r.map((e) => e.name), ['child'], 'fsReaddirHandle lists the directory handle'),
-  fsFtruncate: () => assert.equal(kernelVfs.stat('home/user/handle').size, size, 'fsFtruncate sized the open file'),
-  fsFchmod: () => assert.equal(kernelVfs.stat('home/user/handle').mode & 0o777, mode, 'fsFchmod applied'),
+  fsFtruncate: () => assert.equal(kernelVfs.stat('home/user/owned/handle').size, size, 'fsFtruncate sized the open file'),
+  fsFchmod: () => assert.equal(kernelVfs.stat('home/user/owned/handle').mode & 0o777, mode, 'fsFchmod applied'),
   fsFutimes: () => {
-    const stat = kernelVfs.stat('home/user/handle');
+    const stat = kernelVfs.stat('home/user/owned/handle');
     assert.deepEqual([stat.atime, stat.mtime], [atimeMs, mtimeMs], 'fsFutimes applied');
   },
   fsSync: async (r) => {

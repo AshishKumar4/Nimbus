@@ -19,10 +19,24 @@
  * Refusals are reported together, as git reports them, before anything is
  * written. Then files go, directories go (deepest first), directories come,
  * files come, and the index is written once.
+ *
+ * In a sparse checkout (unpack-trees.c with its sparse patterns), a path
+ * outside the cone takes the target's entry in the index with skip-worktree
+ * set and nothing in the worktree: its blob is not read (nor fetched, in a
+ * partial clone), no directory is made for it, and what the worktree holds
+ * there is not looked at (verify_absent passes a new skip-worktree entry). A
+ * skip-worktree entry is up to date whatever the worktree holds
+ * (verify_uptodate skips it); one whose file is there is not skip-worktree
+ * by the time it is read (WorktreeRepo.readIndex). Then the cone is applied
+ * to every entry the trees left as it was (apply_sparse_checkout): one
+ * outside it leaves the worktree, if up to date (else it stays, and is
+ * named), and one inside comes back. A directory outside the cone goes once
+ * a removal empties it.
  */
 import { type DirCache, type IndexEdit } from './dircache.js';
 import type { Excludes } from './excludes.js';
 import { type ObjectStore } from './tree.js';
+import type { SparseMatcher } from '../pack/sparse.js';
 import { type Worktree } from './walk.js';
 /** The worktree writes a checkout makes, at absolute paths (createGitFs's checkout rules). */
 export interface CheckoutWriter {
@@ -32,6 +46,17 @@ export interface CheckoutWriter {
     rmdir(path: string): Promise<void>;
     mkdir(path: string): Promise<void>;
     chmod(path: string, mode: number): Promise<void>;
+}
+/** What moving the worktree takes: the objects, the worktree, the index, and where the writes go. */
+export interface SparsityContext {
+    store: ObjectStore;
+    tree: Worktree;
+    dc: DirCache;
+    /** The worktree's top, absolute. */
+    root: string;
+    writer: CheckoutWriter;
+    /** Where git's warnings go (display_warning_msgs): a checkout's and sparse-checkout's, not a reset's. */
+    warn?: (text: string) => Promise<void>;
 }
 /** What a refused checkout names, by git's kinds. */
 export interface Refusal {
@@ -55,15 +80,11 @@ export declare class UnmergedIndex extends Error {
     readonly paths: string[];
     constructor(paths: string[]);
 }
-export interface SwitchContext {
-    store: ObjectStore;
-    tree: Worktree;
-    dc: DirCache;
+export interface SwitchContext extends SparsityContext {
     excludes: Excludes;
-    /** The worktree's top, absolute. */
-    root: string;
-    writer: CheckoutWriter;
     operation: CheckoutOperation;
+    /** The worktree's sparse checkout (WorktreeRepo.sparseMatcher), or null. */
+    sparse?: SparseMatcher | null;
 }
 /**
  * Move the worktree from `head` (a tree; null when forced or unborn) to
@@ -71,4 +92,10 @@ export interface SwitchContext {
  * CheckoutRefused, having written nothing, when git would refuse.
  */
 export declare function switchTrees(ctx: SwitchContext, head: string | null, target: string, force: boolean): Promise<IndexEdit>;
+/**
+ * update_sparsity (sparse-checkout set, add, reapply, disable): `sparse`
+ * applied to every entry of the index, nothing else moved; what it leaves
+ * is named as git names it. Answers the index edit that goes with it.
+ */
+export declare function updateSparsity(ctx: SparsityContext, sparse: SparseMatcher): Promise<IndexEdit>;
 //# sourceMappingURL=checkout.d.ts.map

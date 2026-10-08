@@ -33,9 +33,12 @@ const server = http.createServer((req, res) => {
 server.listen(3000, '0.0.0.0', () => console.log('LISTENING 3000'));
 `.trim();
 
-await t.run(heredocCommand('server.js', serverJs), 15_000);
+// example-app's package.json is "type": "module" (the Vite starter), where a .js
+// file is an ES module and has no require: the CommonJS server is a .cjs, as
+// it must be under real node.
+await t.run(heredocCommand('server.cjs', serverJs), 15_000);
 
-const started = await t.run('node --watch server.js', 30_000);
+const started = await t.run('node --watch server.cjs', 30_000);
 const pid = Number(started.output.match(/pid=(\d+)/)?.[1] || 0);
 a.check('node --watch returns long-running pid', pid > 0, started.output.slice(-300));
 

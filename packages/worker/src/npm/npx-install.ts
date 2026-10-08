@@ -33,7 +33,7 @@ import { isStagedArtifactTarget, npxPackageBin } from './bin-links.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProjectFs } from '../runtime/project-fs.js';
 import { bundleProfileForNpmBin, type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { packageRangeSeparator } from '@nimbus-sh/core/_shared/npm-spec.js';
+import { splitPackageSpec } from '@nimbus-sh/core/_shared/npm-spec.js';
 
 /** Path where npx caches packages it installs. Matches the vendored substrate
  * cache layout so tooling that introspects npx state sees the expected path. */
@@ -133,14 +133,8 @@ function parseNpxArgs(rawArgs: string[]): ParsedNpx | { error: string } {
   const first = invocation.command;
   const pkgSpec = invocation.packageOverride ?? first;
   const command = invocation.packageOverride ? first : null;
-  const { name: pkgName } = splitSpec(pkgSpec);
+  const { name: pkgName } = splitPackageSpec(pkgSpec);
   return { pkgSpec, pkgName, command, binArgs: invocation.args, yes: invocation.yes };
-}
-
-/** Split `name@version` (or scoped `@scope/name@version`) into parts. */
-function splitSpec(spec: string): { name: string; version: string | null } {
-  const at = packageRangeSeparator(spec);
-  return at === -1 ? { name: spec, version: null } : { name: spec.slice(0, at), version: spec.slice(at + 1) };
 }
 
 /**
@@ -278,7 +272,7 @@ export async function resolveNpxBinary(
   //    Use the package's `<pkgSpec>` directly; NpmInstaller parses the
   //    `<name>@<version>` form same as `npm install <pkgSpec>`.
   log(`  ${parsed.pkgSpec}...`);
-  const { name: instName, version: instVer } = splitSpec(parsed.pkgSpec);
+  const { name: instName, range: instVer } = splitPackageSpec(parsed.pkgSpec);
   const installSpec = instVer ? `${instName}@${instVer}` : instName;
 
   // Synthesize npx-cache package.json so NpmInstaller has a project

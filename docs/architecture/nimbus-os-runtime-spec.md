@@ -213,7 +213,31 @@ These areas exist, but are not yet good enough for Nimbus OS quality:
   clone's batches and history pieces are retried on transport failures
   (at most three attempts); its finish is not.
   Not supported: `show`, `log -p`, `blame`, `switch`, `stash`, `rebase`,
-  `cat-file`, history-walking revisions (`HEAD~1`), sparse checkout.
+  `cat-file`, history-walking revisions (`HEAD~1`).
+
+  Sparse checkout is cone mode only (`clone --sparse [--filter=blob:none]`
+  makes one, `sparse-checkout set` another): outside the cone, entries are
+  skip-worktree and never written or fetched. `sparse-checkout list`, `set`,
+  `add`, `reapply`, `disable` and `init` work as git's do (a partial clone
+  fetches what the cone brings in, in one request); `--stdin`, `--no-cone`,
+  `--sparse-index`, `clean` and `check-rules` are refused. `status`, `diff`,
+  `add` (and `--sparse`), `commit -a`, `reset` and `checkout` treat it as git
+  does: a file there that the worktree holds is tracked again, and a
+  checkout applies the cone to every entry. A non-cone sparse checkout, and
+  `merge` or `pull` in any sparse checkout, are refused before anything
+  changes.
+
+  A repository may be on a mounted filesystem: `clone`, `fetch`, `pull` and
+  `push` write there through the namespace, under the clone's lease (the
+  namespace refuses everyone else's writes there meanwhile). A file a wave
+  could not carry to a mount (over 4 MiB) is written as any program writes
+  a large file (open, write in pieces, close), the index to `index.lock`
+  and renamed over it, as git does. A failed clone there is removed as on
+  the session's own filesystem. A mount backend without `rename`,
+  `writeRange` or `truncate` fails the clone with the namespace's refusal
+  naming the call (EXDEV for a rename it cannot make in place, ENOTSUP for
+  the others), and the destination is removed. Writers outside Nimbus are not
+  fenced by the lease.
 
   Its worktree commands (`status`, `diff`, `add`, `commit`, `ls-files`,
   `reset`, `checkout`, and the worktree side of `merge`) read the index as

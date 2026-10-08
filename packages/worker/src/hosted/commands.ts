@@ -125,7 +125,7 @@ registry.register('chsh', makeChshCommand({
 // first `git` invocation so it stays out of the cold script-eval graph.
 registry.register('git', async (ctx: any) => {
   const { runGitCommand } = await import('../git/commands.js');
-  return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network);
+  return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network, workspace.filesystem);
 });
 
 // ── runtime package manager: `nimbus install` package manager + runner registry.
@@ -438,6 +438,8 @@ const bunSpec: RuntimeSpec = {
   run: (code, opts) => runBunScript(facetMgr, code, opts),
   supportsBinSpawn: true,
   routesServers: true,
+  // Bun binds require, __filename and __dirname in an ES module.
+  moduleScope: 'bun',
   repl: jsReplProgram(`Welcome to Bun v${BUN_VERSION}\nType ".help" for more information.\n`),
   subcommands: {
     // bun install / i / add → npm install (same VFS, same R2 caches).
@@ -1192,26 +1194,12 @@ registry.register('npm', async (ctx: any) => {
     return 0;
   }
 
-  // npm init / npm init -y
-  if (sub === 'init') {
-    const cwd = cwdKey;
-    const pkgPath = cwd + '/package.json';
-    if (await ctx.vfs.exists(`/${pkgPath}`) && !args.includes('-y') && !args.includes('--yes')) {
-      ctx.stderr.write('package.json already exists. Use -y to overwrite.\n');
-      return 1;
-    }
-    const name = cwd.split('/').pop() || 'project';
-    const pkg = {
-      name, version: '1.0.0', description: '', main: 'index.js',
-      type: 'module',
-      scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview', test: 'echo "no test"' },
-      keywords: [], author: '', license: 'MIT', dependencies: {}, devDependencies: {},
-    };
+  // npm init, npm create, npm innit: core npm's (npm-init.ts), npm's own
+  // package.json or the initializer it names, run by npx.
+  if (sub === 'init' || sub === 'create' || sub === 'innit') {
     // Releases before 0.13.2 wrote package.json as root.
-    await handKernelArtifact(workspace.filesystem, ctx.vfs, requireVfsCred(ctx.cred, 'npm'), `/${pkgPath}`);
-    await ctx.vfs.writeFile(`/${pkgPath}`, JSON.stringify(pkg, null, 2) + '\n');
-    ctx.stdout.write('Wrote to ' + pkgPath + '\n');
-    return 0;
+    await handKernelArtifact(workspace.filesystem, ctx.vfs, requireVfsCred(ctx.cred, 'npm'), `/${cwdKey}/package.json`);
+    return coreNpmCmd(ctx);
   }
 
   // npm uninstall <pkg>
@@ -1261,93 +1249,6 @@ registry.register('npm', async (ctx: any) => {
     return failed ? 1 : 0;
   }
 
-
-  // ── npm create <pkg> / npm init <pkg> → npx create-<pkg> ─────────
-  //
-  // Per the npm spec, `npm create X args...` and `npm init X args...`
-  // (when X is supplied) are sugar for invoking the `create-X`
-  // initializer package via npx. Specifically:
-  //
-  //   npm create foo args...           → npx create-foo args...
-  //   npm create foo@1.2 args...       → npx create-foo@1.2 args...
-  //   npm create @scope/foo args...    → npx @scope/create-foo args...
-  //   npm create @scope args...        → npx @scope/create args...
-  //
-  // `npm init` (no args) is a different beast — it scaffolds a
-  // package.json interactively. The `sub === 'init'` branch above
-  // handles the no-arg case; here we only intercept the
-  // initializer-package case (1+ args after `init`).
-  //
-  // Without this routing, `npm create vite@latest mvp -- --template
-  // react-ts` hits the base npm dispatch which only knows
-  // {init, install/i/add, uninstall/remove/rm/un, list/ls,
-  // run/run-script, start, test, info/view/show, search, version}
-  // — and emits "npm: unknown command 'create'". Every modern
-  // framework's `create-*` flow (create-vite, create-next-app
-  // routed via "npm create", create-cloudflare, create-astro, etc.)
-  // depends on this.
-  //
-  // This is a primitive: one fix, every framework wins.
-  if (sub === 'create' || (sub === 'init' && args.length >= 2 && !args[1].startsWith('-'))) {
-    const arg1 = args[1];
-    if (!arg1) {
-      ctx.stderr.write('npm create: missing package name\n');
-      ctx.stderr.write('Usage: npm create <pkg> [args...]\n');
-      return 1;
-    }
-    // Parse pkg + version. Scope-aware:
-    //   @scope        → @scope/create
-    //   @scope/foo    → @scope/create-foo
-    //   foo           → create-foo
-    //   foo@1.2.3     → create-foo@1.2.3
-    //   foo@latest    → create-foo@latest
-    function rewriteToCreatePkg(spec: string): string {
-      // Strip an optional version range and re-append after the rewrite.
-      const atIdx = spec.lastIndexOf('@');
-      const hasVersion = atIdx > 0; // a leading @ is the scope; not a version
-      const bare = hasVersion ? spec.slice(0, atIdx) : spec;
-      const version = hasVersion ? spec.slice(atIdx) : '';
-      let pkg: string;
-      if (bare.startsWith('@')) {
-        const slash = bare.indexOf('/');
-        if (slash < 0) {
-          // @scope → @scope/create
-          pkg = bare + '/create';
-        } else {
-          // @scope/foo → @scope/create-foo
-          const scope = bare.slice(0, slash);
-          const name = bare.slice(slash + 1);
-          pkg = scope + '/create-' + name;
-        }
-      } else {
-        pkg = 'create-' + bare;
-      }
-      return pkg + version;
-    }
-    const createPkg = rewriteToCreatePkg(arg1);
-    const passThrough = args.slice(2);
-    // `npm create` accepts an optional `--` separator to push the
-    // remaining args to the create script; npx doesn't need a
-    // separator (positional args after the package name go to the
-    // package). We strip a single literal `--` token if present so
-    // `npm create vite@latest mvp -- --template react-ts` becomes
-    // `npx --yes create-vite@latest mvp --template react-ts`.
-    const stripped = passThrough.filter((a, i, arr) => !(a === '--' && i < arr.length - 1) && !(a === '--' && arr.indexOf('--') === i));
-    // Inform the user what we're routing to — matches npm's own
-    // visible "npx" line so the create flow is honest.
-    ctx.stdout.write(`> npx --yes ${createPkg}${stripped.length ? ' ' + stripped.join(' ') : ''}\n`);
-    // Dispatch through the npx registry entry. `--yes` skips the
-    // "Ok to proceed? (y)" prompt.
-    const npxHandler = await registry.resolve('npx');
-    if (!npxHandler) {
-      ctx.stderr.write('npm create: npx command unavailable\n');
-      return 1;
-    }
-    return await npxHandler({
-      ...ctx,
-      args: ['--yes', createPkg, ...stripped],
-    });
-  }
 
   // Fall through to core npm for other subcommands
   return coreNpmCmd(ctx);
