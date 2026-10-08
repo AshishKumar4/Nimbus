@@ -1,7 +1,7 @@
 /**
  * budgets.ts — per-DO accounting for the platform budgets the fabric spends:
- * the Durable Object's Dynamic Worker concurrency limit, the facet-ID
- * lifetime budget, and the dynamic-worker module-map ceiling.
+ * the Durable Object's Dynamic Worker concurrency limit and the
+ * dynamic-worker module-map ceiling.
  *
  * The Dynamic Worker model is Cloudflare's documented one
  * ({@link DO_DYNAMIC_WORKER_LIMIT}): a Durable Object may have a fixed number
@@ -315,69 +315,4 @@ export declare const DYNAMIC_WORKER_CODE_LIMIT_BYTES = 67108864;
  * then, sorted so the biggest lever is first.
  */
 export declare function assertModuleMapWithinCodeLimit(modules: Record<string, unknown>): void;
-/**
- * Facet IDs a Durable Object is granted over its LIFETIME. Append-only and
- * never reclaimed, so crossing it is unrecoverable for the object — which is
- * why the ledger below counts consumption durably instead of leaving the
- * bound as prose the slot book merely respects.
- */
-export declare const FACET_ID_LIFETIME_BUDGET = 65536;
-/** Where the ledger persists the count of facet names ever minted. */
-export declare const FACET_NAME_HIGH_WATER_KEY = "fabric_facet_name_high_water";
-/**
- * The slice of storage the facet-name ledger persists through. A multi-key
- * put is one atomic write, as Durable Object storage's is: a charge's counts
- * and its name's row land together or not at all.
- */
-interface FacetNameLedgerStorage {
-    storage: {
-        get(key: string): Promise<unknown> | unknown;
-        put(entries: Record<string, unknown>): Promise<void>;
-    };
-}
-/**
- * Charge the slot book's `slot` before its facet is created. A fresh
- * incarnation restarts the book at zero and issues the same `proc-slot-`
- * names again, so only a slot past the slot high-water is a name never
- * minted before; any other costs nothing, so a slot may be charged on every
- * use. Resolves once the charge is durable.
- */
-export declare function chargeFacetSlot(ctx: FacetNameLedgerStorage, slot: number): Promise<void>;
-/**
- * Charge an explicit facet name before its facet is created: its first use
- * ever consumes one lifetime ID, and any later use, in this incarnation or
- * another, costs nothing, so a caller may charge a name on every use.
- * `refuseAtWall` refuses a first use at the wall; without it the platform's
- * own failure at creation is what stops it, named by the ledger
- * (withFacetBudgetNamed). Resolves with the count once the charge is durable.
- */
-export declare function chargeFacetName(ctx: FacetNameLedgerStorage, name: string, { refuseAtWall }: {
-    refuseAtWall: boolean;
-}): Promise<number>;
-/** The count as last read or charged, without awaiting storage: 0 before the first read. */
-export declare function facetNameCount(ctx: FacetNameLedgerStorage): number;
-/** The count once every charge so far has settled, read from storage if no read has yet succeeded. */
-export declare function facetNameCountDurable(ctx: FacetNameLedgerStorage): Promise<number>;
-/**
- * The lifetime facet-ID ledger: how many facet names this fabric has ever
- * minted on the Durable Object, against the 65,536 the platform will ever
- * grant it. `consumed` only ever counts FIRST uses — a reused name, in this
- * incarnation or any earlier one, cost no new ID, which is the slot book's
- * whole reason to exist. Surfaced so an operator can see proximity to a wall
- * whose crossing is unrecoverable, instead of discovering it from the
- * platform's opaque failure.
- */
-export declare function facetIdBudget(ctx: FacetNameLedgerStorage): Promise<{
-    consumed: number;
-    budget: number;
-}>;
-/**
- * Name the facet-ID budget on a creation failure at the wall; below it, hand
- * the error back untouched. Exhaustion is the one failure here the platform
- * reports opaquely AND that no teardown, retry or reset can undo, so the
- * ledger — the only witness to the real cause — does the naming. Not a
- * threshold: the comparison is against the budget itself.
- */
-export declare function withFacetBudgetNamed(consumed: number, error: unknown): unknown;
-export {};
 //# sourceMappingURL=budgets.d.ts.map
