@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "66d10cb43f406ce2b3f8ba3bdbea20f153d49b3234629030c434cce9b7546cb4",
+  "fingerprint": "b3a4caaa07126f237f21e71efb52c9b601689640cd17134ec545dd5985efbd10",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1451,8 +1451,8 @@
     "packages/fabric/PLATFORM.md": "de27faa485f424465a53afe0561532b83cec0fdf93c930ff61bf79e65988913a",
     "packages/fabric/README.md": "aeff80b3ceb08bb3a973a1f4dc272ce230aa0a5087e3463ed00b747c5f8ed838",
     "packages/fabric/dist/bindings.d.ts": "a73b88a7ff028800af0203a23dccc175eebcee5fd3a4a5df81d496c6c4f0ed56",
-    "packages/fabric/dist/bindings.d.ts.map": "a0120e2333935d445c5ca7c291783b2c76869efa40d0ad893c4422202618ff67",
-    "packages/fabric/dist/bindings.js": "e7fdbb7875eb570c25489f7a7496223c9235f8f5e1e7b792ca773ab0a8b10c61",
+    "packages/fabric/dist/bindings.d.ts.map": "846173eba96e55126663b5939c099548ceceeca6ce539822769fd60485cb9dee",
+    "packages/fabric/dist/bindings.js": "04ec81107d7ef3a380a46a61c1f9b76df218198fee13daa076ccafb333413221",
     "packages/fabric/dist/budgets.d.ts": "211109f9f29f33528b5b870731a43271e98f2bf850f6d153e8b050860c70b1a9",
     "packages/fabric/dist/budgets.d.ts.map": "a1218eb85ee9db47f34e9de160ea73997e4bd8864388e5c95629921e7b5abd9a",
     "packages/fabric/dist/budgets.js": "c50a45669b1b8c1347e1e31f879fa6c86bf304793fae74d1a8fd464410de686c",
@@ -1548,7 +1548,7 @@
     "packages/fabric/dist/ws-hibernation-config.js": "0f6d330d5581a10c888f38100de2650f9c3fde59948bc5977db12998e02fbfc0",
     "packages/fabric/examples/agent-core-adapter.ts": "29e9f6fb6d5b05adf0c5e18a4ef78bc97c4fe18fc70e3736a1915b9d2968d875",
     "packages/fabric/package.json": "bd968ddcdf1e82b01e15287f8ded8825d484e3d3fd5b39dc19346df761665903",
-    "packages/fabric/src/bindings.ts": "807a89a0045ca7e16f0f4d54aaf9f1ee1d62e06598dbd12f42a464ee135b5897",
+    "packages/fabric/src/bindings.ts": "ddadf879724ca053f170eb0e916d346512ab155ab5f11a024bd9c4e3a2c07593",
     "packages/fabric/src/budgets.ts": "95af5144f0a41f873ba3b72eae0215f165747a94d291b489c0f9a8c4ea7d658a",
     "packages/fabric/src/composition.ts": "40216ae69e283b72d9e562a9b06d1c6ae608c99e433612203de743e06de9db2e",
     "packages/fabric/src/connections.ts": "76da74707f0d5507a70dea1004de1ade05fb16573ba6dc59a4398bc9087983e6",
