@@ -13,7 +13,7 @@
  * `HostedProcess` and never imports this file.
  */
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { describeError, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
+import { describeError, isHostReset, isUnexplainedPlatformError } from '@nimbus-sh/platform/oom-classify.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { getCtxExports, stagedBootAssembler, supervisorEntrypoint, supervisorEntrypointName, } from './composition.js';
@@ -418,12 +418,14 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     started.catch(() => { });
     // A facet's isolate dies on its own (out of memory, out of CPU) and this
     // object goes on (measured: the journal probe, 2026-10-07). A journaling
-    // resident's class holds held() open while its isolate lives: its
-    // rejection, unless this release ended it, is the process lost too.
+    // resident's class holds held() open while its isolate lives, from its
+    // creation (a lifetime run is watched while it runs): a platform reset of
+    // it is the process lost too. Anything else that ends the call is not: a
+    // run's own stop aborts the facet with its stop record, and a release ends it.
     if (params.journal) {
-        void started.then(() => facet.held()).then(() => markLost(new Error(`Nimbus: resident process ${params.pid}'s held() returned`)), (error) => {
-            if (!released)
-                markLost(new Error(`Nimbus: resident process ${params.pid} died: ${error instanceof Error ? error.message : String(error)}`));
+        facet.held().catch((error) => {
+            if (!released && isHostReset(error))
+                markLost(error instanceof Error ? error : new Error(String(error)));
         });
     }
     return {

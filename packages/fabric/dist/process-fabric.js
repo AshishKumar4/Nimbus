@@ -74,6 +74,7 @@
  * `ResidentDiskReader` it was given.
  */
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 import { z } from 'zod/v4';
 /**
  * The class every generated resident runner exports. One name for every
@@ -460,7 +461,9 @@ export class ProcessFabric {
         // on its host, so residency ends at a kill — or at the host dying, which
         // is the same thing happening to the process without anyone asking for it.
         const done = (spawn.startContract === 'lifetime'
-            ? hosted.started.then(() => undefined)
+            // A lifetime run ends with its start: a platform reset, said by the
+            // start or by the host, is its host lost; its own stop is not one.
+            ? Promise.race([hosted.started.then(() => undefined, (error) => { throw isHostReset(error) ? new ProcessHostLost(error) : error; }), hosted.lost])
             : hosted.started.then(() => Promise.race([held.promise, hosted.lost]))).finally(() => release());
         done.catch(() => { });
         return new ResidentProcessHandle({

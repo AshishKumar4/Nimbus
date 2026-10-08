@@ -46,7 +46,7 @@ import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platf
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
-import { onColdStart } from '@nimbus-sh/fabric/generation.js';
+import { generation, onColdStart } from '@nimbus-sh/fabric/generation.js';
 import { isDynamicWorkerDeadlock, suspendLaunchAdmission } from '@nimbus-sh/fabric/budgets.js';
 import { FencedWork, FENCED_WORK_KEY_PREFIX, RESIDENT_PROVEN_MS, } from '@nimbus-sh/fabric/fenced-work.js';
 import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -4441,7 +4441,7 @@ export class FacetManager {
                 opened: (facet) => {
                     const cred = this.processes.get(pid)?.cred;
                     if (cred !== undefined)
-                        this.processJournals.opened(facet, pid, cred);
+                        this.processJournals.opened(facet, pid, cred, generation(this.ctx));
                 },
                 drain: async (journal) => {
                     this.journalDraining.add(pid);
@@ -4499,7 +4499,7 @@ export class FacetManager {
         // the worker's log and on the terminal, and kept.
         onColdStart(ctx, () => this.processJournals.drainPending({
             reserved: reservedFacetNames(this.ctx),
-            current: (pid) => pid > this.processes.pidBase,
+            generation: generation(this.ctx),
             drain: async (row) => {
                 await this._drainJournalAs(row.pid, row.cred, facetJournal(this.ctx, this.env, row.facet));
                 this.vfs?.forgetSequences(row.pid);
