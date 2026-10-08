@@ -9213,6 +9213,7 @@ error: the Oxc transform crashed (${reason})`);
     let code = false;
     let importsAfterCode = false;
     const awaits = [];
+    const statementStarts =   new Set();
     const outside = { names:   new Set(), parent: null };
     const mentions = [];
     const mentioned = (start, end) => {
@@ -9345,16 +9346,19 @@ error: the Oxc transform crashed (${reason})`);
       onStatement: (statement) => onStatement(statement),
       onNode: (node) => {
         if (node.type === "Identifier") onIdentifier(node);
-        else if (node.type === "AwaitExpression" || node.type === "ForOfStatement" && node.await) awaits.push(node.start);
+        else if (node.type === "ExpressionStatement") {
+          if (mentioned(node.start, node.start + 1)) statementStarts.add(node.start);
+        } else if (node.type === "AwaitExpression" || node.type === "ForOfStatement" && node.await) awaits.push(node.start);
         else if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
           freeIn.set(node, freeUses(node));
           while (awaits.length > 0 && awaits[awaits.length - 1] >= node.start) awaits.pop();
         }
       }
     });
+    const leading = (references) => references.map((reference) => reference.use === "call" && statementStarts.has(reference.start) ? { ...reference, use: "leading-call" } : reference);
     const withUses = records.map((record) => record.kind !== "import" ? record : {
       ...record,
-      bindings: record.bindings.map((binding) => binding.kind === "namespace" ? binding : { ...binding, references: uses.get(binding.local) ?? [] })
+      bindings: record.bindings.map((binding) => binding.kind === "namespace" ? binding : { ...binding, references: leading(uses.get(binding.local) ?? []) })
     });
     const wrapperUses =   new Map();
     for (const name of COMMONJS_WRAPPER_NAMES) {
@@ -9414,7 +9418,8 @@ error: the Oxc transform crashed (${reason})`);
         reads.set(binding.local, read);
         for (const { start, end, use } of binding.references) {
           if (use === "write") continue;
-          uses.push({ start, end, text: use === "call" ? `(0, ${read})` : use === "shorthand" ? `${binding.local}: ${read}` : read });
+          const callee = use === "call" ? `(0, ${read})` : use === "leading-call" ? `void 0, (0, ${read})` : null;
+          uses.push({ start, end, text: callee ?? (use === "shorthand" ? `${binding.local}: ${read}` : read) });
         }
       }
     }

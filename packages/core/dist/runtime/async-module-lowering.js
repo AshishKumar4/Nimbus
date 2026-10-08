@@ -91,6 +91,8 @@ function readModule(source, known) {
     let importsAfterCode = false;
     // Where each await finished so far starts; a function, once finished, takes back its own.
     const awaits = [];
+    // Where an expression statement starts with a tracked name: a call there is a leading-call.
+    const statementStarts = new Set();
     const outside = { names: new Set(), parent: null };
     // Where an identifier spelled as an imported name starts, in order: code
     // with none in it uses no import, and is not walked.
@@ -234,6 +236,10 @@ function readModule(source, known) {
         onNode: (node) => {
             if (node.type === 'Identifier')
                 onIdentifier(node);
+            else if (node.type === 'ExpressionStatement') {
+                if (mentioned(node.start, node.start + 1))
+                    statementStarts.add(node.start);
+            }
             else if (node.type === 'AwaitExpression' || (node.type === 'ForOfStatement' && node.await))
                 awaits.push(node.start);
             // A function, once finished: its free uses, before its body is dropped.
@@ -244,9 +250,10 @@ function readModule(source, known) {
             }
         },
     });
+    const leading = (references) => references.map((reference) => (reference.use === 'call' && statementStarts.has(reference.start) ? { ...reference, use: 'leading-call' } : reference));
     const withUses = records.map((record) => record.kind !== 'import' ? record : {
         ...record,
-        bindings: record.bindings.map((binding) => binding.kind === 'namespace' ? binding : { ...binding, references: uses.get(binding.local) ?? [] }),
+        bindings: record.bindings.map((binding) => binding.kind === 'namespace' ? binding : { ...binding, references: leading(uses.get(binding.local) ?? []) }),
     });
     const wrapperUses = new Map();
     for (const name of COMMONJS_WRAPPER_NAMES) {
@@ -324,7 +331,9 @@ export function emitCommonJs(source, records, options) {
             for (const { start, end, use } of binding.references) {
                 if (use === 'write')
                     continue;
-                uses.push({ start, end, text: use === 'call' ? `(0, ${read})` : use === 'shorthand' ? `${binding.local}: ${read}` : read });
+                // `(` would continue a statement before it that has no `;`; `void` cannot.
+                const callee = use === 'call' ? `(0, ${read})` : use === 'leading-call' ? `void 0, (0, ${read})` : null;
+                uses.push({ start, end, text: callee ?? (use === 'shorthand' ? `${binding.local}: ${read}` : read) });
             }
         }
     }

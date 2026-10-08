@@ -17,14 +17,15 @@ export type EsmImportBinding = {
     readonly references: readonly EsmReference[];
 };
 /**
- * A use of an imported binding: a read, a call (`this` stays undefined), a
- * shorthand property (`{ n }`), or a write, which throws as the language's
- * assignment to an import does.
+ * A use of an imported binding: a read, a call (`this` stays undefined), one
+ * that begins its expression statement (a leading-call), a shorthand property
+ * (`{ n }`), or a write, which throws as the language's assignment to an
+ * import does.
  */
 export interface EsmReference {
     readonly start: number;
     readonly end: number;
-    readonly use: 'read' | 'call' | 'shorthand' | 'write';
+    readonly use: 'read' | 'call' | 'leading-call' | 'shorthand' | 'write';
 }
 /**
  * A name a module exports: one of its own bindings, or, re-exported from
