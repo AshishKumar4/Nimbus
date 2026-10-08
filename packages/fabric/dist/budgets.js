@@ -500,6 +500,8 @@ function queue(entry, key, claim, process, refused, signal) {
  * call that would never be admitted.
  */
 export const REFUSED_CALL_WAIT_MS = 15_000;
+/** Names a launch's run readmitted as a worker of its own, each distinct. */
+let ownRuns = 0;
 /**
  * The hold to send a call again on, after the platform refused it ("Dynamic
  * worker concurrency limit exceeded"): it refuses a call before the call
@@ -524,16 +526,22 @@ export async function readmitRefused(refused, options) {
     const timer = setTimeout(() => deadline.abort(), remainingMs);
     const signal = options.signal ? AbortSignal.any([deadline.signal, options.signal]) : deadline.signal;
     const process = terms.holder === null ? undefined : { pid: terms.holder };
-    const end = await queue(terms.entry, terms.key, terms.claim, process, true, signal)
-        .catch(() => undefined)
-        .finally(() => clearTimeout(timer));
-    if (end === undefined)
-        return undefined;
-    terms.entry.readmitted++;
+    const wait = (key) => queue(terms.entry, key, terms.claim, process, true, signal).catch(() => undefined);
+    let end = await wait(terms.key);
     const admission = terms.admission;
-    if (admission === undefined || admission.claimed || admission.closed)
-        return end;
-    return claimed(admission, end);
+    if (end !== undefined && admission !== undefined && !admission.closed) {
+        if (!admission.claimed)
+            end = claimed(admission, end);
+        else {
+            // Another run of the launch claimed its worker while this one waited: this run is a worker of its own.
+            end();
+            end = await wait(`${terms.key}:run-${++ownRuns}`);
+        }
+    }
+    clearTimeout(timer);
+    if (end !== undefined)
+        terms.entry.readmitted++;
+    return end;
 }
 /**
  * The admission of the launch whose async context this is. AsyncLocalStorage

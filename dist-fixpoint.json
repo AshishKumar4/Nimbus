@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "05cf4c7ef0fa023e67824fdab2f7de0e85b63ef09ba1f26a2ad0dcdb05929cc8",
+  "fingerprint": "027ead392b7a1c9ec44531e4ef87a31753287f0b75d430b8ab4a789b81209b61",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1522,8 +1522,8 @@
     "packages/fabric/dist/bindings.d.ts.map": "6dca2f1a79d9546d630bcb018a0ce8ca74a6ca7f564b14bfe2f593f7735df90d",
     "packages/fabric/dist/bindings.js": "069687a2a23de3f2224be2d7cafa8733d04ab0f2326555cb0c4a5deb81ae27f1",
     "packages/fabric/dist/budgets.d.ts": "42b67e79b97a2bf1ae2f4a838f12634bcf58820ff93592671657c604467072df",
-    "packages/fabric/dist/budgets.d.ts.map": "7f009aab12ef0322db7b117af48c7aa5d1ccd412860a155397ea57df05275a8d",
-    "packages/fabric/dist/budgets.js": "45fe6bb8e1848c35b3031fd1d538f2380ef87b507af20c73102ab9f0478b8e37",
+    "packages/fabric/dist/budgets.d.ts.map": "2a1c249d13d3955ac0e71e8800b5457c83250bebdfbc41555b69b3a29d78eb8c",
+    "packages/fabric/dist/budgets.js": "c3b4a5038705fd0241c32b121a7ba8fab933d3cf03ad30f5fda415eb50c52fa6",
     "packages/fabric/dist/composition.d.ts": "0c0f8b6d9dd14bc58cd7d1d409066ba55996d2210b84f4f7f8824d4afb5a3ccd",
     "packages/fabric/dist/composition.d.ts.map": "241fd7ead288b32f02ea5209d60cb78798af5e6717b235ff6edf5c85ff4f36e4",
     "packages/fabric/dist/composition.js": "310c8a79955fcb41c7837d75303e0c24fe881f54e67a8de79da8e25c1283476e",
@@ -1617,7 +1617,7 @@
     "packages/fabric/examples/agent-core-adapter.ts": "29e9f6fb6d5b05adf0c5e18a4ef78bc97c4fe18fc70e3736a1915b9d2968d875",
     "packages/fabric/package.json": "bd968ddcdf1e82b01e15287f8ded8825d484e3d3fd5b39dc19346df761665903",
     "packages/fabric/src/bindings.ts": "5f5adad2d79dbfde3a5828583d8da470a4f3c3e9bcc83d5ba17d371a99ab61bd",
-    "packages/fabric/src/budgets.ts": "a4fad9fa62b6605686f4de34e9a475827a474efe3b93f14b9bd9a60a450a46ef",
+    "packages/fabric/src/budgets.ts": "08987826b4599d1a6cb087de2f880de25fc72ef4f92cd7d71d2dba4d8abf55a4",
     "packages/fabric/src/composition.ts": "40216ae69e283b72d9e562a9b06d1c6ae608c99e433612203de743e06de9db2e",
     "packages/fabric/src/connections.ts": "76da74707f0d5507a70dea1004de1ade05fb16573ba6dc59a4398bc9087983e6",
     "packages/fabric/src/derived.ts": "a5277821af28ea74b571f41c5ff2460d7f72befc0b719a7fe328e11afcdace52",
