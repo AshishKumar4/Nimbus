@@ -177,9 +177,10 @@ export declare function configPackageNames(source: string): string[];
  * `vite build` failed on what it loads. `stripped` (the module without its
  * comments) is read by patterns first, which find the calls a wrapper could
  * make: almost every module has none, and is never parsed. A module with
- * some is parsed, and only a function whose own body passes its parameter to
- * a require is a wrapper. The runtime's import() prefetch reads the same
- * calls (core/interpreter moduleRequests).
+ * some is parsed, and read by the analysis the runtime's import() prefetch
+ * reads it with (core/interpreter/module-requests.ts programWrapperCalls):
+ * only a function whose own body passes its parameter to a require is a
+ * wrapper. The patterns may admit more than it does, never less.
  */
 export declare function requireWrapperCalls(code: string, stripped?: string): string[];
 //# sourceMappingURL=require-resolver.d.ts.map

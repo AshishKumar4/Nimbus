@@ -30,9 +30,9 @@ export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID: string = "e620a61b7e9800fa";
 export const JS_INTERPRETER_PRIMORDIALS_SHA256: string = "e620a61b7e9800fad31b82c28fe64bd149c0518dc8c614e512b88dc200096f48";
 
 /** @nimbus-sh/core src/interpreter, bundled by scripts/interpreter-bundle.mjs */
-export const JS_INTERPRETER_ENTRY: string = "/_assets/runtime/js-interpreter-4b7ae99fd31dc9ad.js";
-export const JS_INTERPRETER_BUILD_ID: string = "4b7ae99fd31dc9ad";
-export const JS_INTERPRETER_SHA256: string = "4b7ae99fd31dc9ad5a70028776ff6cd14f5f6dd234fc775e138d728fc2e82222";
+export const JS_INTERPRETER_ENTRY: string = "/_assets/runtime/js-interpreter-4cc97488c68a08b7.js";
+export const JS_INTERPRETER_BUILD_ID: string = "4cc97488c68a08b7";
+export const JS_INTERPRETER_SHA256: string = "4cc97488c68a08b78a44d861bf52e3c85be6e8eb6e22b5640bc22fbc3c5d875f";
 
 /** @nimbus-sh/core src/interpreter/host-ops.ts HOST_OPS_SOURCE */
 export const JS_INTERPRETER_OPS_ENTRY: string = "/_assets/runtime/js-interpreter-ops-2f4dfec6798e70fc.js";
