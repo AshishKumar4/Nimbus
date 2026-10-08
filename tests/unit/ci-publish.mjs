@@ -40,7 +40,8 @@ import path from 'node:path';
 const args=process.argv.slice(2), cmd=path.basename(process.argv[1]);
 const s=JSON.parse(fs.readFileSync(process.env.PUBLISH_STATE,'utf8'));
 const f=JSON.parse(fs.readFileSync(process.env.PUBLISH_FIXTURE,'utf8'));
-fs.appendFileSync(process.env.PUBLISH_LOG,JSON.stringify({cmd,args,callerStdin:fs.fstatSync(0).isFIFO()})+'\\n');
+const fd=fs.fstatSync(0);
+fs.appendFileSync(process.env.PUBLISH_LOG,JSON.stringify({cmd,args,stdin:{dev:fd.dev,ino:fd.ino,mode:fd.mode,rdev:fd.rdev}})+'\\n');
 const save=()=>fs.writeFileSync(process.env.PUBLISH_STATE,JSON.stringify(s));
 if(cmd==='bun') {
   if(s.failGate) {console.error('FAIL runtime-packages');process.exit(1);}
@@ -65,10 +66,11 @@ throw new Error('unexpected npm command '+args.join(' '));
 `;
   for (const command of ['bun', 'npm']) { writeFileSync(join(bin, command), program); chmodSync(join(bin, command), 0o700); }
   const run = (override = true) => {
-    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, NIMBUS_PUBLISH_ARTIFACTS: join(root, 'artifacts'), PUBLISH_STATE: stateFile, PUBLISH_FIXTURE: fixture, PUBLISH_LOG: logFile };
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, NIMBUS_PUBLISH_ARTIFACTS: join(root, 'artifacts'), PUBLISH_STATE: stateFile, PUBLISH_FIXTURE: fixture, PUBLISH_LOG: logFile, CALLER_STDIN: join(root, 'caller-stdin.json') };
     if (override) env.NIMBUS_PUBLISH_REPO = repo;
     else delete env.NIMBUS_PUBLISH_REPO;
-    return spawnSync('bash', [join(repo, 'scripts/publish-web.sh'), sha], { cwd: root, encoding: 'utf8', timeout: 20_000, env });
+    const launcher = `node -e 'const fs=require("node:fs"),fd=fs.fstatSync(0);fs.writeFileSync(process.env.CALLER_STDIN,JSON.stringify({dev:fd.dev,ino:fd.ino,mode:fd.mode,rdev:fd.rdev}));'\nexec bash "$1" "$2"`;
+    return spawnSync('bash', ['-c', launcher, 'publish-case', join(repo, 'scripts/publish-web.sh'), sha], { cwd: root, input: 'CALLER_STDIN\n', encoding: 'utf8', timeout: 20_000, env });
   };
   const calls = () => readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   const set = (value) => { writeFileSync(stateFile, JSON.stringify({ done: [], ...value })); writeFileSync(logFile, ''); rmSync(join(root, 'artifacts'), { recursive: true, force: true }); };
@@ -86,7 +88,8 @@ throw new Error('unexpected npm command '+args.join(' '));
   const signing = first.filter((call) => call.cmd === 'npm' && call.args[0] === 'publish');
   assert.deepEqual(signing.map((call) => pathName(call.args[1])), [runtime.file, ...packages.map((pkg) => pkg.file)]);
   assert.ok(signing.every((call) => call.args.includes('--ignore-scripts') && call.args.includes('--auth-type=web') && call.args.includes('--access')));
-  assert.ok(first.filter((call) => call.cmd === 'npm').every((call) => call.callerStdin), 'every npm call keeps the caller stdin; a TSV cannot replace its terminal');
+  const caller = JSON.parse(readFileSync(join(root, 'caller-stdin.json'), 'utf8'));
+  for (const call of first.filter((call) => call.cmd === 'npm')) assert.deepEqual(call.stdin, caller, 'every npm call keeps exactly the caller stdin; a TSV cannot replace its terminal');
   const runtimeSigned = first.indexOf(signing[0]);
   const nextSigned = first.indexOf(signing[1]);
   assert.ok(first.slice(runtimeSigned, nextSigned).some((call) => call.args.includes('dist-tags.latest')), 'public latest confirmation precedes signing anything after runtime');
@@ -100,7 +103,8 @@ throw new Error('unexpected npm command '+args.join(' '));
   set({}); prepared(); result = run();
   assert.equal(result.status, 0, result.stderr);
   assert.equal(calls().filter((call) => call.cmd === 'bun').length, 0, 'a prepacked commit is signing only');
-  assert.ok(calls().filter((call) => call.cmd === 'npm').every((call) => call.callerStdin), 'all metadata, tag and publish calls keep caller stdin');
+  const preparedCaller = JSON.parse(readFileSync(join(root, 'caller-stdin.json'), 'utf8'));
+  for (const call of calls().filter((call) => call.cmd === 'npm')) assert.deepEqual(call.stdin, preparedCaller, 'prepacked metadata, tag and publish calls keep exactly caller stdin');
 
   set({ failGate: true });
   result = run();
