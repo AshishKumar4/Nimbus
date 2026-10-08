@@ -20,17 +20,17 @@ cdp.on('Network.webSocketFrameReceived', ({ response }) => {
 
 async function execute(line) {
   return page.evaluate((command) => new Promise((resolve, reject) => {
+    const submissionId = crypto.randomUUID();
     let output = '';
     const cleanup = () => { clearTimeout(timer); ws.removeEventListener('message', receive); };
     const receive = (event) => {
       const frame = JSON.parse(event.data);
-      if (frame.type !== 'output') return;
-      output += frame.data;
-      if (output.includes('\x1b]133;B\x07')) { cleanup(); resolve(output); }
+      if (frame.type === 'output') output += frame.data;
+      if (frame.type === 'shell-integration' && frame.event === 'end' && frame.submissionId === submissionId) { cleanup(); resolve(output); }
     };
-    const timer = setTimeout(() => { cleanup(); reject(new Error('shell sent no B in 15 s')); }, 15_000);
+    const timer = setTimeout(() => { cleanup(); reject(new Error('shell did not confirm the submission in 15 s')); }, 15_000);
     ws.addEventListener('message', receive);
-    ws.send(JSON.stringify({ type: 'input', data: `${command}\r` }));
+    ws.send(JSON.stringify({ type: 'input', data: `${command}\r`, submissionId }));
   }), line);
 }
 

@@ -37,13 +37,17 @@ for (const mode of ['ready', 'upgrade-503', 'wrong-command-output', 'delete-500'
       throw new Error(`unexpected readiness request: ${request.method} ${url.pathname}`);
     },
     websocket: {
-      open(ws) { ws.send(JSON.stringify({ type: 'output', data: '\x1b]133;A\x07user@nimbus:~$ \x1b]133;B\x07' })); },
+      open(ws) {
+        ws.send(JSON.stringify({ type: 'output', data: '\x1b]133;A\x07user@nimbus:~$ \x1b]133;B\x07' }));
+        ws.send(JSON.stringify({ type: 'shell-integration', event: 'prompt' }));
+      },
       message(ws, wire) {
         const message = JSON.parse(String(wire));
         assert.equal(message.type, 'input');
         events.push({ stage: 'command', sid: ws.data.sid, command: message.data });
         const output = mode === 'wrong-command-output' ? '__NIMBUS_READY_0__' : '__NIMBUS_READY_42__';
         ws.send(JSON.stringify({ type: 'output', data: `\x1b]133;C\x07${output}\r\n\x1b]133;D;0\x07\x1b]133;A\x07user@nimbus:~$ \x1b]133;B\x07` }));
+        ws.send(JSON.stringify({ type: 'shell-integration', event: 'end', submissionId: message.submissionId, exitCode: 0 }));
       },
     },
   });
