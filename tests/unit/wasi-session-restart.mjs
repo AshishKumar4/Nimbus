@@ -36,6 +36,20 @@ try {
 } finally {
   await guest.dispose();
 }
+const writer = await residentGuest();
+try {
+  const fd = await writer.open('home/user/held.txt', { create: true, write: true });
+  assert.equal(await writer.write(fd, 'written before restart'), 0);
+  writer.restartSession();
+  assert.equal(await writer.sync(fd), ESRCH, 'a through-descriptor fsync reports the lost process, not a lost write epoch or EIO');
+  const ended = await writer.P.__wasiRunStartAsync({ exports: { _start: () => {} } });
+  assert.notEqual(ended.exitCode, 0);
+  assert.match(ended.error ?? '', /session no longer holds this process \(process pid \d+ does not exist\): it restarted, or ended the process, while the program ran/);
+  assert.doesNotMatch(ended.error ?? '', /\bEIO\b|I\/O error/);
+} finally {
+  await writer.dispose();
+}
+
 // bash's own scheduler maps its refusals through the same entry point and
 // ends the same way: it waits at a read, the session restarts, and its next
 // write is refused.

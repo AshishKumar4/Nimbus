@@ -61,7 +61,7 @@ export async function residentGuest({ refuse = () => false, of } = {}) {
   const { harness, raw, kernel, processes, authority } = session;
   const boundIncarnation = session.deliveries.incarnation;
   const { pid } = processes.spawn('guest', ['guest'], '/home/user', { cred: USER });
-  const own = authority.bind({ pid, cred: USER });
+
   const refusedHandles = new Set();
   const supervisor = { synchronous: () => { throw new Error('rpc stubs have no synchronous view'); } };
   for (const op of Object.values(FILESYSTEM_RPC_METHODS)) {
