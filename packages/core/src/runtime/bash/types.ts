@@ -355,6 +355,10 @@ export interface BashSession {
   missingWasi: Set<string>;
   stats: BashStats;
   error: string | null;
+  /** The session's refusal of this process, once one arrived (wasi/filesystem.ts refusalErrno): the run ends naming it. */
+  processGone: string | null;
+  /** Records that refusal; handed to every place a filesystem refusal becomes an errno. */
+  gone(refusal: string): void;
 }
 
 // ── syscall plumbing ────────────────────────────────────────────────────────

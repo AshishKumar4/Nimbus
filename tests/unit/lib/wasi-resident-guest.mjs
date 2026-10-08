@@ -40,7 +40,7 @@ export const canPark = typeof WebAssembly.Suspending === 'function' && typeof We
  */
 export async function residentGuest({ refuse = () => false, of } = {}) {
   const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
-  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites };`);
+  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync };`);
   let P;
   try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
 
@@ -56,11 +56,12 @@ export async function residentGuest({ refuse = () => false, of } = {}) {
     // Fenced waves, as a process's binding sends them: a refusal answers its own op.
     const deliveries = new SupervisorDeliveries();
     const dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge, host: {}, deliveries });
-    return { harness, raw, kernel, processes, authority, bridge, deliveries, dispatch };
+    return { harness, raw, kernel, processes, authority, bridge, deliveries, dispatch, retired: [] };
   })();
-  const { harness, raw, kernel, processes, authority, bridge, deliveries, dispatch } = session;
+  const { harness, raw, kernel, processes, authority } = session;
+  const boundIncarnation = session.deliveries.incarnation;
   const { pid } = processes.spawn('guest', ['guest'], '/home/user', { cred: USER });
-  const own = authority.bind({ pid, cred: USER });
+
   const refusedHandles = new Set();
   const supervisor = { synchronous: () => { throw new Error('rpc stubs have no synchronous view'); } };
   for (const op of Object.values(FILESYSTEM_RPC_METHODS)) {
@@ -70,7 +71,7 @@ export async function residentGuest({ refuse = () => false, of } = {}) {
       }
       try {
         if (globalThis.__guestTrace) globalThis.__guestTrace.push(op);
-        const value = await dispatch({ op, args, pid });
+        const value = await session.dispatch({ op, args, pid });
         const opened = /** @type {{ path?: string, id?: number } | undefined} */ (op === 'fsOpen' ? value : undefined);
         if (opened && refuse(String(opened.path))) refusedHandles.add(opened.id);
         return value;
@@ -81,26 +82,27 @@ export async function residentGuest({ refuse = () => false, of } = {}) {
     };
   }
   // What session/rpc.ts answers itself rather than through the op table.
-  supervisor.fsAcquire = async (epoch, cursor, options) => own.acquire(epoch, cursor, options);
+  supervisor.fsAcquire = async (epoch, cursor, options) => session.bridge.bridge(pid).acquire(epoch, cursor, options);
   // The process's waves (its filesystem client's), fenced as SupervisorRPC fences them.
-  supervisor.openWaveWriter = async () => /** @type {{ writer: string | null }} */ (await dispatch({ op: 'openWaveWriter', args: [], pid })).writer;
-  supervisor.retireWaveWriter = async (writer) => { await dispatch({ op: 'retireWaveWriter', args: [writer], pid }); };
+  supervisor.openWaveWriter = async () => /** @type {{ writer: string | null }} */ (await session.dispatch({ op: 'openWaveWriter', args: [], pid })).writer;
+  supervisor.retireWaveWriter = async (writer) => { await session.dispatch({ op: 'retireWaveWriter', args: [writer], pid }); };
   supervisor.writeBatchStream = async (stream, fence, owner) => {
     try {
-      return await dispatch({
+      return await session.dispatch({
         op: 'writeBatchStream', args: [], pid, stream,
-        ...(fence === undefined ? {} : { waveFence: { ...fence, hostIncarnation: deliveries.incarnation } }),
+        ...(fence === undefined ? {} : { waveFence: { ...fence, hostIncarnation: boundIncarnation } }),
         ...(owner === undefined ? {} : { mutationOwner: owner }),
       });
     } catch (error) { throw acrossRpc(error); }
   };
-  supervisor.fsList = async (...args) => own.list(...args);
+  supervisor.fsList = async (...args) => session.bridge.bridge(pid).list(...args);
   supervisor.fsReadBatch = async (requests) => {
+    const current = session.bridge.bridge(pid);
     const out = [];
     for (const request of requests) {
       try {
-        if (!('length' in request)) out.push({ stat: (await own.stat(request.path, { followSymlinks: false })) ?? null });
-        else out.push({ bytes: await own.readRange(request.path, request.offset, request.length) });
+        if (!('length' in request)) out.push({ stat: (await current.stat(request.path, { followSymlinks: false })) ?? null });
+        else out.push({ bytes: await current.readRange(request.path, request.offset, request.length) });
       } catch (error) { out.push({ error }); }
     }
     return out;
@@ -120,6 +122,19 @@ export async function residentGuest({ refuse = () => false, of } = {}) {
 
   const guest = {
     P, kernel, raw, session, pid, stats: () => P.__wasiFsStats(),
+    /**
+     * The session's isolate is replaced under the running guest: its calls
+     * reach a fresh process table, of the next generation, that never held it.
+     */
+    restartSession() {
+      const next = new SessionProcessSupervisor();
+      next.setPidBase(1_000_000);
+      session.retired.push(session.bridge);
+      session.processes = next;
+      session.bridge = createSupervisorBridgeStore({ vfs: raw, processes: next, filesystem: authority });
+      session.deliveries = new SupervisorDeliveries();
+      session.dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes: next, bridge: session.bridge, host: {}, deliveries: session.deliveries });
+    },
     /** path_open: the fd, or a thrown errno. `flags`: { create, truncate, exclusive, directory, write }. */
     async open(name, { create = false, truncate = false, exclusive = false, directory = false, write = false } = {}) {
       const n = putPath(name);
@@ -211,7 +226,7 @@ export async function residentGuest({ refuse = () => false, of } = {}) {
       if (errno !== 0) throw Object.assign(new Error(`fd_filestat_get: errno ${errno}`), { errno });
       return { nlink: Number(view().getBigUint64(OUT + 24, true)), size: Number(view().getBigUint64(OUT + 32, true)) };
     },
-    async dispose() { await bridge.dispose(); await authority.releaseProcess(pid); harness.db.close(); },
+    async dispose() { for (const b of [...session.retired, session.bridge]) await b.dispose(); await authority.releaseProcess(pid); harness.db.close(); },
     /** This process ends (its writes settled, its grants given back); the session goes on for another. */
     async end() { await P.__wasiSettleWrites(); await authority.releaseProcess(pid); },
   };
