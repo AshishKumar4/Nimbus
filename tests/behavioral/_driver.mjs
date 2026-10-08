@@ -350,6 +350,7 @@ export class Terminal {
     this.stream = '';
     this.bufferStart = 0;
     this.submitCursor = 0;
+    this.submitCommand = false;
     /** The `spawn` frames the session sent: one per process it started. */
     this.spawns = [];
     this.connected = false;
@@ -387,15 +388,26 @@ export class Terminal {
     await awaitSocketOpen(this.ws, timeoutMs, `terminal WebSocket /s/${this.sid}/ws`);
   }
 
-  send(line) {
+  send(line, isCommand = true) {
     if (this.ws.readyState !== WebSocket.OPEN) throw new Error('WS not open');
-    if (/[\r\n]/.test(line)) this.submitCursor = this.stream.length;
+    if (/[\r\n]/.test(line) || line === '\x03') {
+      let executing = false;
+      for (const mark of this.marksAfter(this.submitCursor)) {
+        if (mark[1] === 'C') executing = true;
+        if (mark[1] === 'D') executing = false;
+      }
+      // Input to an executing command is stdin, not another shell submission.
+      if (!executing) {
+        this.submitCursor = this.stream.length;
+        this.submitCommand = isCommand && line !== '\x03';
+      }
+    }
     this.ws.send(JSON.stringify({ type: 'input', data: line }));
   }
 
   /** Send a command + carriage return. */
   cmd(line) {
-    this.send(line + '\r');
+    this.send(line + '\r', line.trim() !== '');
   }
 
   get buf() { return this.stream.slice(this.bufferStart); }
@@ -437,20 +449,32 @@ export class Terminal {
     });
   }
 
-  promptAfter(cursor) {
+  marksAfter(cursor) {
+    return this.stream.slice(cursor).matchAll(/\x1b\]133;([ABCD])(?:;(-?\d+))?(?:\x07|\x1b\\)/g);
+  }
+
+  promptAfter(cursor, needsCommand = this.submitCommand) {
+    let started = false;
+    let finished = false;
     let exitCode = null;
-    for (const mark of this.stream.slice(cursor).matchAll(/\x1b\]133;([ABCD])(?:;(-?\d+))?(?:\x07|\x1b\\)/g)) {
-      if (mark[1] === 'C') exitCode = null;
-      if (mark[1] === 'D') exitCode = mark[2] === undefined ? null : Number(mark[2]);
-      if (mark[1] === 'B') return { end: cursor + mark.index + mark[0].length, exitCode };
+    for (const mark of this.marksAfter(cursor)) {
+      if (mark[1] === 'C') started = true;
+      if (mark[1] === 'D' && started && !finished) {
+        finished = true;
+        exitCode = mark[2] === undefined ? null : Number(mark[2]);
+      }
+      if (mark[1] === 'B' && (!needsCommand || finished)) {
+        return { end: cursor + mark.index + mark[0].length, exitCode };
+      }
     }
     return null;
   }
 
-  /** The first shell prompt-end mark after cmd(), even if it already arrived. */
+  /** A prompt, after execution when submitted: a resume's initial B is not completion. */
   async waitForPrompt(timeoutMs = 30_000) {
     const cursor = this.submitCursor;
-    return this.waitFor(() => this.promptAfter(cursor) !== null, timeoutMs, 'shell prompt-end mark');
+    const needsCommand = this.submitCommand;
+    return this.waitFor(() => this.promptAfter(cursor, needsCommand) !== null, timeoutMs, 'shell prompt-end mark');
   }
 
   /**
@@ -462,8 +486,9 @@ export class Terminal {
     const t0 = Date.now();
     this.cmd(line);
     const cursor = this.submitCursor;
+    const needsCommand = this.submitCommand;
     await this.waitForPrompt(timeoutMs);
-    const completion = this.promptAfter(cursor);
+    const completion = this.promptAfter(cursor, needsCommand);
     const elapsed = Date.now() - t0;
     return { elapsed, output: stripAnsi(this.stream.slice(cursor, completion.end)), exitCode: completion.exitCode };
   }
