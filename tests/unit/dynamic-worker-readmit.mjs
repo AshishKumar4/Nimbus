@@ -9,7 +9,8 @@
 //   (1) the call is let in again on the same key, and only after the pause,
 //       even while that key is still in flight (a launch keeps its own held);
 //   (2) after the pause it still waits for room;
-//   (3) a launch's run is let in again as that launch's run (claimed);
+//   (3) a launch's run is let in again as that launch's run (claimed), or,
+//       when another run claimed the launch meanwhile, as a worker of its own;
 //   (4) it gives up, holding nothing, once its first refusal is
 //       REFUSED_CALL_WAIT_MS old or its signal aborts;
 //   (5) only a hold the ledger gave can be readmitted.
@@ -85,6 +86,25 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
     const next = claimAdmission(ctx, 9);
     assert.equal(typeof next, 'function', 'and gives it back as it ends');
     next();
+  });
+  assert.deepEqual(loaderLedgerStats(ctx).inFlightWorkers, []);
+}
+
+{
+  // Another run of the launch claims its worker while the refused one waits:
+  // the refused run, let in, is a worker of its own, never counted with it.
+  const ctx = freshCtx();
+  await withLaunchAdmission(ctx, { pid: 11 }, undefined, async () => {
+    const first = claimAdmission(ctx, 11);
+    first(new Error(CAP_MESSAGE));
+    const waiting = readmitRefused(first, { since: Date.now() });
+    const second = claimAdmission(ctx, 11);
+    assert.equal(typeof second, 'function', 'the launch\'s worker was free to claim');
+    const again = await waiting;
+    assert.equal(typeof again, 'function');
+    assert.equal(loaderLedgerStats(ctx).inFlightWorkers.length, 2, 'two workers run, and two are counted');
+    again();
+    second();
   });
   assert.deepEqual(loaderLedgerStats(ctx).inFlightWorkers, []);
 }
