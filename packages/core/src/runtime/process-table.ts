@@ -113,6 +113,7 @@ export class ProcessTable {
   private nextPid = 1;
   private base = 0;
   private processes = new Map<number, ProcessEntry>();
+  private onStride: ((stride: number) => void) | null = null;
 
   /**
    * Move the pid space onto this instance generation's range. Called once at
@@ -130,6 +131,15 @@ export class ProcessTable {
     return this.base;
   }
 
+  /**
+   * Told the stride (pid / PID_GEN_STRIDE) a pid minted here enters past its
+   * generation's own: the next generation must start beyond it, or its pids
+   * would repeat this one's.
+   */
+  onPidStride(listener: (stride: number) => void): void {
+    this.onStride = listener;
+  }
+
   /** Allocate a PID and register a new process. */
   spawn(
     command: string,
@@ -143,6 +153,7 @@ export class ProcessTable {
     const execId = options.execId
       ?? (options.parentPid === undefined ? undefined : this.processes.get(options.parentPid)?.execId);
     const pid = this.nextPid++;
+    if (pid % PID_GEN_STRIDE === 0) this.onStride?.(pid / PID_GEN_STRIDE);
     const entry: ProcessEntry = {
       pid,
       command,

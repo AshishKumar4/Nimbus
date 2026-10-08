@@ -27,6 +27,9 @@ export interface SupervisorBindingProps {
   route?: HostRoute;
   /** The host instance that applies this binding's mutations once, when there is one. */
   hostIncarnation?: string;
+  /** A write-wave epoch that host minted with the binding, and when (supervisorDeliveryProps). */
+  waveWriter?: string;
+  waveWriterMintedAt?: number;
   bindingKind: 'process';
   writerId: string;
   /**
@@ -58,7 +61,7 @@ export function supervisorBindingProps(
   const own = ctx.id.toString();
   const doId = options.doId ?? own;
   const route = options.route ?? hostRoute() ?? undefined;
-  const delivery = pid > 0 && doId === own ? supervisorDeliveryProps(ctx) : {};
+  const delivery = pid > 0 && doId === own ? supervisorDeliveryProps(ctx, pid) : {};
   const egress = options.network.egress === undefined ? {} : { egress: options.network.egress, networkId: options.network.id };
   return { doId, pid, route, ...delivery, bindingKind: 'process', writerId: options.writerId, ...egress };
 }

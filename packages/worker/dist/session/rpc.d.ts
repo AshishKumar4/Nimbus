@@ -168,6 +168,7 @@ export type FsReadBatchEntry =
 declare const FsAcquireArgsSchema: z.ZodObject<{
     epoch: z.ZodNullable<z.ZodString>;
     cursor: z.ZodNumber;
+    begin: z.ZodOptional<z.ZodNumber>;
     options: z.ZodOptional<z.ZodObject<{
         namespace: z.ZodOptional<z.ZodBoolean>;
         push: z.ZodOptional<z.ZodObject<{
@@ -298,8 +299,6 @@ export declare function _rpcStdinFileRead(self: RpcHost, path: string, offset: n
  */
 export declare function _rpcFsReadBatch(self: RpcHost, requests: unknown, pid?: number): Promise<FsReadBatchEntry[]>;
 export declare function _rpcFsWriteRange(self: RpcHost, path: string, offset: number, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<VfsMutationReceipt>;
-export declare function _rpcFsAppend(self: RpcHost, path: string, writerId: string, moduleId: string, operationId: string, bytes: Uint8Array | ArrayBuffer | number[], pid?: number): Promise<number>;
-export declare function _rpcFsAppendAck(self: RpcHost, writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
 /**
  * Called by CirrusHmrRPC.hmrSend. Runs in the DO's own context so
  * we can legally write to hibernatable WS sockets owned by this
@@ -443,28 +442,6 @@ export declare function _rpcCpKill(self: RpcHost, childPid: number, signal: stri
  */
 export declare function _rpcCpBlocked(self: RpcHost, pid: number, report: unknown): Promise<void>;
 export declare function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean): Promise<any>;
-/** RPC: Read a file from the VFS. Returns ArrayBuffer or null. */
-export declare function vfsReadFile(self: RpcHost, path: string): ArrayBuffer | null;
-/** RPC: Read a file as string. Returns string or null. */
-export declare function vfsReadFileString(self: RpcHost, path: string): string | null;
-/** RPC: Stat a path. Returns file metadata or null. */
-export declare function vfsStat(self: RpcHost, path: string): {
-    type: string;
-    size: number;
-    atime: number;
-    ctime: number;
-    mtime: number;
-    mode: number;
-} | null;
-/** RPC: Check if path exists. */
-export declare function vfsExists(self: RpcHost, path: string): boolean;
-/** RPC: List directory contents. Returns array of { name, type }. */
-export declare function vfsReaddir(self: RpcHost, path: string): {
-    name: string;
-    type: string;
-}[];
-/** RPC: Write a file to the VFS. */
-export declare function vfsWriteFile(self: RpcHost, path: string, data: ArrayBuffer): void;
 /**
  * RPC: peer-DO execute leg of Fanout's peer-DO fanout topology.
  *

@@ -195,8 +195,7 @@ cases.readReceiptOwner = async () => {
   const { FacetManager } = await import('../../packages/worker/src/facets/manager.ts');
   const j = new ReplayJournal(() => {}), ctx = {};
   const owner = { ctx, journals: new Map([[7, j]]), stdinTaken: new Map(), outputGates: new Map(),
-    processes: { get: () => ({ state: 'running' }) },
-    vfs: { activateAppendWriter() {}, revokeAppendWriter() {}, revokeAppendWriters() {} } };
+    processes: { get: () => ({ state: 'running' }) } };
   // The actual manager activation/retirement methods, not a test-owned
   // retention registration, connect the receipt lifetime to the writer.
   FacetManager.prototype._activateProcessVfsWriter.call(owner, 7, 'a');

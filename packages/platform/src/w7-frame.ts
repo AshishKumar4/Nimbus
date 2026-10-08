@@ -1,6 +1,16 @@
 /**
- * W7 v3 — incremental typed records for streamed bulk filesystem writes.
- * The format is internal: every producer and consumer deploys together.
+ * W7 v4 — incremental typed records for streamed filesystem writes, in
+ * program order: the records are the operations a writer made, in the order
+ * it made them, and a stream that stops commits a prefix of them (each group
+ * whole). A path may be named by several operations (a file written, renamed,
+ * written again). Every producer speaks v4; the format is internal, and every
+ * producer and consumer deploys together. v3 (no rename, truncate or setattr,
+ * one operation per path, deletes then directories then files) is still
+ * decoded for the one release that rolls v4 out: delete it with W7_MAGIC_V3.
+ * Fields added to v4 since (each deploys with both ends, so the magic stays):
+ * a create call's `umask`; the `open` and `close` calls (a write
+ * description's), an `open`'s `ino`, and a description's `description` on
+ * its write, append and ftruncate calls.
  */
 
 import { crc32 } from './crc32.js';
@@ -27,6 +37,12 @@ export interface BatchInodeEntry {
   uid?: number;
   gid?: number;
   chunkCount: number;
+  /**
+   * The inode number a delegation's holder gave a file or directory it made
+   * (v4): one of the numbers its grant reserved, so the name keeps the
+   * number the holder already showed. Absent: the session numbers it.
+   */
+  ino?: number;
 }
 
 /** Entry for bulk chunk creation via writeBatch(). */
@@ -54,9 +70,106 @@ export interface BatchWritePayload {
   deletePaths?: string[];
   /** Files streamed from a source rather than given as chunks; encoder only. */
   streams?: BatchStreamEntry[];
+  /**
+   * The operations themselves, in program order (encoder only): a writer
+   * with an order to keep (a delegation's holder) gives these, and nothing
+   * in `inodes`, `chunks`, `deletePaths` or `streams`. Without them, a
+   * payload is encoded as its deletes, then its directories, then its files.
+   */
+  ops?: W7Op[];
 }
 
-export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x03]);
+/** One attribute change (setattr): the mode, the owner, or the times; what chmod, chown and utimes each make. */
+export type W7Attrs =
+  | { mode: number }
+  | { uid: number; gid: number }
+  | { atime: number; mtime: number };
+
+/**
+ * A process's filesystem call as a record (v4), applied by the session's own
+ * operation of that name with that operation's semantics and refusals: a
+ * writeFile follows a link at its name and refuses a directory (EISDIR), a
+ * new file is `mode` less the process's umask and an existing one keeps its
+ * mode, owner and inode, a mkdir refuses a name that exists (EEXIST), and
+ * nothing makes a missing parent. The program-order counterpart of the
+ * syscall, where `file` and `directory` are a checkout's upserts.
+ */
+export type W7Call =
+  /**
+   * `ino`, on a call that makes a name (writeFile, appendFile, mkdir,
+   * symlink): the number a delegation's holder gave the name it made, from
+   * its grant's range, kept when the call makes it (W7 v4 `ino`).
+   */
+  /**
+   * `umask`, on a call that makes a name with a mode (writeFile, appendFile,
+   * mkdir): the process's umask when it made the call, applied in place of
+   * the session's record of it (which a later change may have moved).
+   */
+  | { call: 'writeFile'; path: string; mode: number; ino?: number; umask?: number; data: Uint8Array }
+  | { call: 'appendFile'; path: string; mode: number; ino?: number; umask?: number; data: Uint8Array }
+  /**
+   * A write through an open description (pwrite(2)) at `offset`: through
+   * the session's description `description` when given (opened by an `open`
+   * call: its access was decided then, and no later chmod, chown, rename or
+   * unlink changes it), else of the file whose inode is `ino` (wherever that
+   * file is named now, and nowhere once no name has it), else of the file at
+   * `path`. Past its end, the gap reads as zeros.
+   */
+  | { call: 'write'; path: string; ino?: number; description?: string; offset: number; data: Uint8Array }
+  /** A write through an O_APPEND description: at the file's end as it is when the write lands. */
+  | { call: 'append'; path: string; ino?: number; description?: string; data: Uint8Array }
+  /** ftruncate(2) through an open description: `description`'s file, else the file `ino` names, else the one at `path`. */
+  | { call: 'ftruncate'; path: string; ino?: number; description?: string; size: number }
+  /** `existing: 'ok'`: a directory already there answers success, as `mkdir -p` takes it (anything else there is still EEXIST). */
+  | { call: 'mkdir'; path: string; mode: number; ino?: number; umask?: number; existing?: 'ok' }
+  | { call: 'unlink'; path: string }
+  | { call: 'rmdir'; path: string }
+  | { call: 'symlink'; path: string; target: string; ino?: number }
+  /**
+   * rm(1) as fs.rm makes it: a file or link unlinked, a directory with all
+   * it holds when `recursive` (else EISDIR's refusal, as unlink's), and a
+   * name not there no refusal when `force`.
+   */
+  | { call: 'rm'; path: string; recursive?: true; force?: true }
+  /** chown(2) of the link itself (lchown): the name's own entry, never what it names. */
+  | { call: 'lchown'; path: string; uid: number; gid: number }
+  /** utimes of the link itself (lutimes). */
+  | { call: 'lutimes'; path: string; atime: number; mtime: number }
+  /**
+   * open(2) of a file to write it (and to read it when `read`), as the
+   * session's own open decides it: a name made (`create`, `mode` less
+   * `umask`) or refused (EEXIST when `exclusive`, ENOENT without `create`,
+   * EISDIR, EACCES for any access asked that the file's mode refuses),
+   * emptied when `truncate`, a link at the name followed unless `nofollow`
+   * (ELOOP). Its answer is the file's stat. With `description` (an id the
+   * process chose), the session keeps the open description under it, its
+   * access fixed now; the description's write, append and ftruncate calls
+   * name it, and its `close` ends it. `ino`: the number a name it makes is
+   * given (a delegation's, as a mkdir's).
+   */
+  | { call: 'open'; path: string; mode: number; ino?: number; umask?: number; read?: true; create?: true; truncate?: true; exclusive?: true; nofollow?: true; description?: string }
+  /** close(2) of the session's open description `description` (an `open` call's). */
+  | { call: 'close'; path: string; description: string };
+
+/** A call whose bytes travel as a file's chunks. */
+export type W7DataCall = Extract<W7Call, { data: Uint8Array }>['call'];
+/** A call that is one metadata record. */
+export type W7PathCall = Exclude<W7Call, { data: Uint8Array }>;
+
+/** One operation of a program-order payload (BatchWritePayload.ops). */
+export type W7Op =
+  | { type: 'delete'; path: string }
+  | { type: 'directory'; inode: BatchInodeEntry }
+  | { type: 'file'; inode: BatchInodeEntry; data: Uint8Array }
+  | { type: 'file'; inode: BatchInodeEntry; source: AsyncIterable<Uint8Array> }
+  | { type: 'rename'; from: string; to: string }
+  | { type: 'truncate'; path: string; size: number }
+  | { type: 'setattr'; path: string; attrs: W7Attrs }
+  | { type: 'call'; call: W7Call };
+
+export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x04]);
+/** v3's magic: decoded, never encoded, for the release that rolls v4 out. Delete with v3 decoding. */
+const W7_MAGIC_V3 = new Uint8Array([0x4e, 0x57, 0x37, 0x03]);
 
 const ENCODER_QUEUE_HWM = 0;
 const ENCODER_PULL_BYTES = 256 * 1024;
@@ -75,6 +188,20 @@ export const W7_MAX_PATHS_PER_BATCH = 1024;
 export const W7_MAX_OWNED_PATH_BYTES = 256 * 1024;
 export const W7_MAX_RECORD_BYTES = 5 + 4 + MAX_CONTENT_ID_BYTES + 8 + CHUNK_SIZE;
 
+/** The wire chunks a file or link of `size` bytes travels as: CHUNK_SIZE each, the last short, none when empty. */
+export function w7ChunkCount(size: number): number {
+  return size === 0 ? 0 : Math.ceil(size / CHUNK_SIZE);
+}
+
+/** `data`, the content at `path`, as its wire chunks (w7ChunkCount): views of it, not copies. */
+export function w7Chunks(path: string, data: Uint8Array): BatchChunkEntry[] {
+  const chunks: BatchChunkEntry[] = [];
+  for (let chunkId = 0, count = w7ChunkCount(data.byteLength); chunkId < count; chunkId++) {
+    chunks.push({ path, chunkId, data: data.subarray(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE) });
+  }
+  return chunks;
+}
+
 const enum RecordTag {
   BatchBegin = 1,
   Delete = 2,
@@ -83,13 +210,21 @@ const enum RecordTag {
   FileChunk = 5,
   FileEnd = 6,
   BatchEnd = 7,
+  Rename = 8,
+  Truncate = 9,
+  SetAttr = 10,
+  /** A W7PathCall (v4). A data call is a FileBegin whose metadata names its call. */
+  Call = 11,
 }
 
-const MODE = 'path-atomic-committed-prefix' as const;
+const MODE = 'program-order-committed-prefix' as const;
+/** v3's batch mode. Delete with v3 decoding. */
+const MODE_V3 = 'path-atomic-committed-prefix' as const;
+type W7Mode = typeof MODE | typeof MODE_V3;
 
 interface BatchBeginMetadata {
   id: string;
-  mode: typeof MODE;
+  mode: W7Mode;
 }
 
 interface DeleteMetadata {
@@ -101,6 +236,7 @@ interface InodeMetadata {
   atime?: number;
   mtime: number;
   mode: number;
+  ino?: number;
 }
 
 interface DirectoryMetadata extends InodeMetadata {
@@ -112,6 +248,13 @@ interface FileBeginMetadata extends InodeMetadata {
   contentId: string;
   size: number;
   chunkCount: number;
+  call?: W7DataCall;
+  /** A 'write' call's offset. */
+  offset?: number;
+  /** A writeFile's or appendFile's umask (W7Call umask). */
+  umask?: number;
+  /** A write's or append's open description (W7Call description). */
+  description?: string;
 }
 
 interface FileEndMetadata {
@@ -129,6 +272,8 @@ export interface W7BatchSummary {
   fileCount: number;
   chunkCount: number;
   byteCount: number;
+  /** Renames, truncates, attribute changes and path calls (v4; none in v3). */
+  opCount: number;
   check: number;
 }
 
@@ -143,7 +288,8 @@ export interface W7DecodeOptions {
 }
 
 type W7DirectoryInode = BatchInodeEntry & { kind: 'directory'; isDir: true };
-type W7ContentInode = BatchInodeEntry & { kind: 'file' | 'symlink'; isDir: false };
+/** `call`: the file is a W7DataCall's bytes (its path, mode and size), not an upsert's inode. */
+type W7ContentInode = BatchInodeEntry & { kind: 'file' | 'symlink'; isDir: false; call?: W7DataCall; offset?: number; umask?: number; description?: string };
 
 export type W7DecodedRecord =
   | { type: 'delete'; path: string }
@@ -169,13 +315,27 @@ export type W7DecodedRecord =
       chunkCount: number;
       check: number;
     }
+  | { type: 'rename'; from: string; to: string }
+  | { type: 'truncate'; path: string; size: number }
+  | { type: 'setattr'; path: string; attrs: W7Attrs }
+  | { type: 'call'; call: W7PathCall }
   | { type: 'batch-end'; summary: W7BatchSummary };
 
 export interface W7DecodedStream {
   readonly batchId: string;
-  readonly mode: typeof MODE;
+  readonly mode: W7Mode;
   readonly records: AsyncIterable<W7DecodedRecord>;
 }
+
+/** An operation as the encoder writes it, in the payload's program order. */
+type EncoderOp =
+  | { kind: 'delete'; path: string }
+  | { kind: 'directory'; inode: W7DirectoryInode }
+  | { kind: 'file'; file: EncoderFile }
+  | { kind: 'rename'; from: string; to: string }
+  | { kind: 'truncate'; path: string; size: number }
+  | { kind: 'setattr'; path: string; attrs: W7Attrs }
+  | { kind: 'call'; call: W7PathCall };
 
 interface EncoderFile {
   inode: W7ContentInode;
@@ -198,8 +358,7 @@ interface EncoderState {
  */
 export function encodeWriteBatchStream(payload: BatchWritePayload): ReadableStream<Uint8Array> {
   const batchId = crypto.randomUUID();
-  const { deletes, directories, files } = preparePayload(payload, batchId);
-  const iterator = encodeRecords(batchId, deletes, directories, files);
+  const iterator = encodeRecords(batchId, preparePayload(payload, batchId));
   let closed = false;
   let magicEmitted = false;
   const source: UnderlyingByteSource = {
@@ -254,10 +413,9 @@ export function encodeWriteBatchStream(payload: BatchWritePayload): ReadableStre
 export async function encodeWriteBatch(payload: BatchWritePayload): Promise<Uint8Array> {
   if ((payload.streams?.length ?? 0) > 0) throw new Error('w7-frame: a payload with streamed sources is never encoded whole');
   const batchId = crypto.randomUUID();
-  const { deletes, directories, files } = preparePayload(payload, batchId);
   const parts: Uint8Array[] = [W7_MAGIC];
   let length = W7_MAGIC.byteLength;
-  for await (const record of encodeRecords(batchId, deletes, directories, files)) {
+  for await (const record of encodeRecords(batchId, preparePayload(payload, batchId))) {
     for (const part of record) {
       parts.push(part);
       length += part.byteLength;
@@ -292,15 +450,16 @@ export async function decodeWriteBatchStream(
   try {
     throwIfAborted(options.signal);
     const magic = await buffer.readExact(W7_MAGIC.length, 'magic');
-    if (!bytesEqual(magic, W7_MAGIC)) {
+    const v3 = bytesEqual(magic, W7_MAGIC_V3);
+    if (!v3 && !bytesEqual(magic, W7_MAGIC)) {
       const version = magic.length === 4
         && magic[0] === 0x4e && magic[1] === 0x57 && magic[2] === 0x37
         ? magic[3]
         : null;
       if (version !== null) {
-        throw new Error(`w7-frame: unsupported protocol version ${version}; expected 3`);
+        throw new Error(`w7-frame: unsupported protocol version ${version}; expected 4`);
       }
-      throw new Error(`w7-frame: bad magic, expected NW7\\x03, got ${hex(magic)}`);
+      throw new Error(`w7-frame: bad magic, expected NW7\\x04, got ${hex(magic)}`);
     }
     const beginEnvelope = await readEnvelope(buffer, 'batch-begin');
     if (beginEnvelope.tag !== RecordTag.BatchBegin) {
@@ -312,13 +471,13 @@ export async function decodeWriteBatchStream(
       );
     }
     const beginPayload = await buffer.readExact(beginEnvelope.length, 'batch-begin payload');
-    const begin = parseBatchBegin(beginPayload);
+    const begin = parseBatchBegin(beginPayload, v3 ? MODE_V3 : MODE);
     const initialCheck = updateRecordCheck(0, beginEnvelope.header, beginPayload);
     handedOff = true;
     return {
       batchId: begin.id,
       mode: begin.mode,
-      records: decodeRecords(stream, reader, buffer, options, initialCheck),
+      records: decodeRecords(stream, reader, buffer, options, initialCheck, v3),
     };
   } catch (error) {
     if (!handedOff) await cancelReader(reader, error);
@@ -332,8 +491,10 @@ async function* decodeRecords(
   buffer: ExactByteReader,
   options: W7DecodeOptions,
   initialCheck: number,
+  /** A v3 stream: no renames, truncates or attribute changes, and each path once. */
+  v3: boolean,
 ): AsyncGenerator<W7DecodedRecord> {
-  const ownedPaths = new PathOwnership();
+  const ownedPaths = new PathOwnership(!v3);
   const contentIds = new Set<string>();
   let active: {
     metadata: FileBeginMetadata;
@@ -353,6 +514,7 @@ async function* decodeRecords(
     fileCount: 0,
     chunkCount: 0,
     byteCount: 0,
+    opCount: 0,
   };
   let completed = false;
   let failure: unknown = new DOMException('W7 consumer cancelled', 'AbortError');
@@ -447,23 +609,23 @@ async function* decodeRecords(
       switch (envelope.tag) {
         case RecordTag.Delete: {
           const metadata = parseDelete(payload);
-          claimPath(ownedPaths, metadata.path);
+          ownedPaths.claim(metadata.path);
           summary.pathCount++;
           summary.deleteCount++;
           yield { type: 'delete', path: metadata.path };
           break;
         }
         case RecordTag.Directory: {
-          const metadata = parseDirectory(payload);
-          claimPath(ownedPaths, metadata.path);
+          const metadata = parseDirectory(payload, v3);
+          ownedPaths.claim(metadata.path);
           summary.pathCount++;
           summary.directoryCount++;
           yield { type: 'directory', inode: directoryInode(metadata) };
           break;
         }
         case RecordTag.FileBegin: {
-          const metadata = parseFileBegin(payload);
-          claimPath(ownedPaths, metadata.path);
+          const metadata = parseFileBegin(payload, v3);
+          ownedPaths.claim(metadata.path);
           if (contentIds.has(metadata.contentId)) {
             throw new Error(`w7-frame: duplicate stream content id ${metadata.contentId}`);
           }
@@ -511,9 +673,39 @@ async function* decodeRecords(
           yield record;
           break;
         }
+        case RecordTag.Call: {
+          if (v3) throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
+          summary.pathCount++;
+          summary.opCount++;
+          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'read', 'create', 'truncate', 'exclusive', 'nofollow', 'description']);
+          yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
+          break;
+        }
+        case RecordTag.Rename:
+        case RecordTag.Truncate:
+        case RecordTag.SetAttr: {
+          if (v3) throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
+          summary.pathCount++;
+          summary.opCount++;
+          if (envelope.tag === RecordTag.Rename) {
+            const value = parseObject(payload, 'rename', ['from', 'to']);
+            const from = ownedPaths.claim(canonicalPath(value.from, 'rename source'));
+            const to = ownedPaths.claim(canonicalPath(value.to, 'rename target'));
+            yield { type: 'rename', from, to };
+          } else if (envelope.tag === RecordTag.Truncate) {
+            const value = parseObject(payload, 'truncate', ['path', 'size']);
+            yield { type: 'truncate', path: ownedPaths.claim(canonicalPath(value.path, 'truncate path')), size: safeInteger(value.size, 'truncate size') };
+          } else {
+            const value = parseObject(payload, 'setattr', ['path'], ['mode', 'uid', 'gid', 'atime', 'mtime']);
+            const path = ownedPaths.claim(canonicalPath(value.path, 'setattr path'));
+            const { path: _path, ...attrs } = value;
+            yield { type: 'setattr', path, attrs: parseAttrs(attrs, 'setattr') };
+          }
+          break;
+        }
         case RecordTag.BatchEnd: {
           if (active) throw new Error(`w7-frame: batch-end while file ${active.inode.path} is active`);
-          const actual = parseBatchEnd(payload);
+          const actual = parseBatchEnd(payload, v3);
           const expected = { ...summary, check: batchCheck };
           if (!sameSummary(actual, expected)) {
             throw new Error(
@@ -543,12 +735,7 @@ async function* decodeRecords(
   }
 }
 
-async function* encodeRecords(
-  batchId: string,
-  deletes: string[],
-  directories: W7DirectoryInode[],
-  files: EncoderFile[],
-): AsyncGenerator<Uint8Array[]> {
+async function* encodeRecords(batchId: string, ops: readonly EncoderOp[]): AsyncGenerator<Uint8Array[]> {
   const state: EncoderState = {
     batchCheck: 0,
     summary: {
@@ -559,62 +746,93 @@ async function* encodeRecords(
       fileCount: 0,
       chunkCount: 0,
       byteCount: 0,
+      opCount: 0,
     },
   };
   yield encodeMetadataRecord(RecordTag.BatchBegin, { id: batchId, mode: MODE }, state);
-  for (const path of deletes) {
-    state.summary.pathCount++;
-    state.summary.deleteCount++;
-    yield encodeMetadataRecord(RecordTag.Delete, { path }, state);
-  }
-  for (const inode of directories) {
-    state.summary.pathCount++;
-    state.summary.directoryCount++;
-    yield encodeMetadataRecord(RecordTag.Directory, {
-      ...inodeMetadata(inode),
-      kind: inode.kind,
-    }, state);
-  }
-  for (const file of files) {
-    state.summary.pathCount++;
-    state.summary.fileCount++;
-    yield encodeMetadataRecord(RecordTag.FileBegin, {
-      ...inodeMetadata(file.inode),
-      kind: file.inode.kind,
-      contentId: file.contentId,
-      size: file.inode.size,
-      chunkCount: file.inode.chunkCount,
-    }, state);
-    let fileCheck = 0;
-    let chunkId = 0;
-    const pieces = file.source === null ? givenChunks(file.chunks) : fixedChunks(file.inode, file.source);
-    for await (const data of pieces) {
-      const contentBytes = new TextEncoder().encode(file.contentId);
-      const prefix = new Uint8Array(4 + contentBytes.length + 8);
-      writeU32LE(prefix, 0, contentBytes.length);
-      prefix.set(contentBytes, 4);
-      writeU32LE(prefix, 4 + contentBytes.length, chunkId++);
-      writeU32LE(prefix, 8 + contentBytes.length, data.byteLength);
-      const header = recordHeader(RecordTag.FileChunk, prefix.byteLength + data.byteLength);
-      state.batchCheck = updateRecordCheck(state.batchCheck, header, prefix, data);
-      state.summary.recordCount++;
-      state.summary.chunkCount++;
-      state.summary.byteCount += data.byteLength;
-      fileCheck = crc32(data, fileCheck);
-      yield [concatBytes(header, prefix), data];
+  for (const op of ops) {
+    switch (op.kind) {
+      case 'delete':
+        state.summary.pathCount++;
+        state.summary.deleteCount++;
+        yield encodeMetadataRecord(RecordTag.Delete, { path: op.path }, state);
+        break;
+      case 'directory':
+        state.summary.pathCount++;
+        state.summary.directoryCount++;
+        yield encodeMetadataRecord(RecordTag.Directory, { ...inodeMetadata(op.inode), kind: op.inode.kind }, state);
+        break;
+      case 'file':
+        yield* encodeFile(op.file, state);
+        break;
+      case 'rename':
+        state.summary.pathCount++;
+        state.summary.opCount++;
+        yield encodeMetadataRecord(RecordTag.Rename, { from: op.from, to: op.to }, state);
+        break;
+      case 'truncate':
+        state.summary.pathCount++;
+        state.summary.opCount++;
+        yield encodeMetadataRecord(RecordTag.Truncate, { path: op.path, size: op.size }, state);
+        break;
+      case 'setattr':
+        state.summary.pathCount++;
+        state.summary.opCount++;
+        yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs }, state);
+        break;
+      case 'call':
+        state.summary.pathCount++;
+        state.summary.opCount++;
+        yield encodeMetadataRecord(RecordTag.Call, { ...op.call }, state);
+        break;
     }
-    yield encodeMetadataRecord(RecordTag.FileEnd, {
-      contentId: file.contentId,
-      size: file.inode.size,
-      chunkCount: file.inode.chunkCount,
-      check: fileCheck,
-    }, state);
   }
   const end: W7BatchSummary = {
     ...state.summary,
     check: state.batchCheck,
   };
   yield encodeMetadataRecord(RecordTag.BatchEnd, end);
+}
+
+/** One file's records: its begin, its chunks, its end. */
+async function* encodeFile(file: EncoderFile, state: EncoderState): AsyncGenerator<Uint8Array[]> {
+  state.summary.pathCount++;
+  state.summary.fileCount++;
+  yield encodeMetadataRecord(RecordTag.FileBegin, {
+    ...inodeMetadata(file.inode),
+    kind: file.inode.kind,
+    contentId: file.contentId,
+    size: file.inode.size,
+    chunkCount: file.inode.chunkCount,
+    ...(file.inode.call === undefined ? {} : { call: file.inode.call }),
+    ...(file.inode.offset === undefined ? {} : { offset: file.inode.offset }),
+    ...(file.inode.umask === undefined ? {} : { umask: file.inode.umask }),
+    ...(file.inode.description === undefined ? {} : { description: file.inode.description }),
+  }, state);
+  let fileCheck = 0;
+  let chunkId = 0;
+  const pieces = file.source === null ? givenChunks(file.chunks) : fixedChunks(file.inode, file.source);
+  for await (const data of pieces) {
+    const contentBytes = new TextEncoder().encode(file.contentId);
+    const prefix = new Uint8Array(4 + contentBytes.length + 8);
+    writeU32LE(prefix, 0, contentBytes.length);
+    prefix.set(contentBytes, 4);
+    writeU32LE(prefix, 4 + contentBytes.length, chunkId++);
+    writeU32LE(prefix, 8 + contentBytes.length, data.byteLength);
+    const header = recordHeader(RecordTag.FileChunk, prefix.byteLength + data.byteLength);
+    state.batchCheck = updateRecordCheck(state.batchCheck, header, prefix, data);
+    state.summary.recordCount++;
+    state.summary.chunkCount++;
+    state.summary.byteCount += data.byteLength;
+    fileCheck = crc32(data, fileCheck);
+    yield [concatBytes(header, prefix), data];
+  }
+  yield encodeMetadataRecord(RecordTag.FileEnd, {
+    contentId: file.contentId,
+    size: file.inode.size,
+    chunkCount: file.inode.chunkCount,
+    check: fileCheck,
+  }, state);
 }
 
 /** Each chunk's bytes, read as the encoder reaches it (a producer's `data` may copy on access). */
@@ -674,16 +892,19 @@ function encodeMetadataRecord(
   return [concatBytes(header, payload)];
 }
 
-function preparePayload(
-  payload: BatchWritePayload,
-  batchId: string,
-): { deletes: string[]; directories: W7DirectoryInode[]; files: EncoderFile[] } {
+/**
+ * The payload's operations in the order they are encoded: its `ops` as
+ * given, or its deletes, then its directories, then its files (one per path,
+ * since chunks are matched to their file by path).
+ */
+function preparePayload(payload: BatchWritePayload, batchId: string): EncoderOp[] {
   if (!payload || !Array.isArray(payload.inodes) || !Array.isArray(payload.chunks)) {
     throw new Error('w7-frame: payload must contain inode and chunk arrays');
   }
-  const ownedPaths = new PathOwnership();
+  if (payload.ops !== undefined) return prepareOps(payload, batchId);
+  const ownedPaths = new PathOwnership(false);
   const deletes = [...(payload.deletePaths ?? [])];
-  for (const path of deletes) claimPath(ownedPaths, canonicalPath(path, 'delete path'));
+  for (const path of deletes) ownedPaths.claim(canonicalPath(path, 'delete path'));
   const streamsByPath = new Map<string, AsyncIterable<Uint8Array>>();
   for (const stream of payload.streams ?? []) {
     const path = canonicalPath(stream.path, 'stream path');
@@ -697,27 +918,25 @@ function preparePayload(
     if (list) list.push(chunk);
     else chunksByPath.set(path, [chunk]);
   }
-  const directories: W7DirectoryInode[] = [];
-  const files: EncoderFile[] = [];
+  const directories: EncoderOp[] = [];
+  const files: EncoderOp[] = [];
   let fileIndex = 0;
   for (const inode of payload.inodes) {
     const path = canonicalPath(inode.path, 'inode path');
     if (path !== inode.path) throw new Error(`w7-frame: noncanonical inode path ${inode.path}`);
-    claimPath(ownedPaths, path);
+    ownedPaths.claim(path);
     const normalizedInode = normalizeInode(inode);
     const fileChunks = chunksByPath.get(path) ?? [];
     const streamed = streamsByPath.get(path) ?? null;
     if (normalizedInode.kind === 'directory') {
       if (fileChunks.length > 0 || streamed !== null) throw new Error(`w7-frame: directory ${path} has chunks`);
-      directories.push(normalizedInode);
+      directories.push({ kind: 'directory', inode: normalizedInode });
     } else {
       if (streamed === null) validateChunks(normalizedInode, fileChunks);
       else if (fileChunks.length > 0) throw new Error(`w7-frame: streamed file ${path} also has chunks`);
       files.push({
-        inode: normalizedInode,
-        contentId: `${batchId}:${fileIndex++}`,
-        chunks: fileChunks,
-        source: streamed,
+        kind: 'file',
+        file: { inode: normalizedInode, contentId: `${batchId}:${fileIndex++}`, chunks: fileChunks, source: streamed },
       });
     }
     chunksByPath.delete(path);
@@ -729,14 +948,81 @@ function preparePayload(
   if (streamsByPath.size > 0) {
     throw new Error(`w7-frame: stream has no inode: ${streamsByPath.keys().next().value}`);
   }
-  return { deletes, directories, files };
+  return [...deletes.map((path): EncoderOp => ({ kind: 'delete', path })), ...directories, ...files];
 }
 
-function parseBatchBegin(bytes: Uint8Array): BatchBeginMetadata {
+/** A program-order payload's operations, each checked as the decoder will check it. */
+function prepareOps(payload: BatchWritePayload, batchId: string): EncoderOp[] {
+  if (payload.inodes.length > 0 || payload.chunks.length > 0 || (payload.deletePaths?.length ?? 0) > 0 || (payload.streams?.length ?? 0) > 0) {
+    throw new Error('w7-frame: a payload of ops carries nothing else');
+  }
+  const ownedPaths = new PathOwnership(true);
+  let fileIndex = 0;
+  return payload.ops!.map((op): EncoderOp => {
+    switch (op.type) {
+      case 'delete':
+        return { kind: 'delete', path: ownedPaths.claim(canonicalPath(op.path, 'delete path')) };
+      case 'directory': {
+        const inode = normalizeInode({ ...op.inode, path: ownedPaths.claim(canonicalPath(op.inode.path, 'inode path')) });
+        if (inode.kind !== 'directory') throw new Error(`w7-frame: directory op ${inode.path} is a ${inode.kind}`);
+        return { kind: 'directory', inode };
+      }
+      case 'file': {
+        const inode = normalizeInode({ ...op.inode, path: ownedPaths.claim(canonicalPath(op.inode.path, 'inode path')) });
+        if (inode.kind === 'directory') throw new Error(`w7-frame: file op ${inode.path} is a directory`);
+        const contentId = `${batchId}:${fileIndex++}`;
+        if ('source' in op) return { kind: 'file', file: { inode, contentId, chunks: [], source: op.source } };
+        const chunks = w7Chunks(inode.path, op.data);
+        validateChunks(inode, chunks);
+        return { kind: 'file', file: { inode, contentId, chunks, source: null } };
+      }
+      case 'rename':
+        return {
+          kind: 'rename',
+          from: ownedPaths.claim(canonicalPath(op.from, 'rename source')),
+          to: ownedPaths.claim(canonicalPath(op.to, 'rename target')),
+        };
+      case 'truncate':
+        return { kind: 'truncate', path: ownedPaths.claim(canonicalPath(op.path, 'truncate path')), size: safeInteger(op.size, 'truncate size') };
+      case 'setattr':
+        return { kind: 'setattr', path: ownedPaths.claim(canonicalPath(op.path, 'setattr path')), attrs: parseAttrs(op.attrs as Record<string, unknown>, 'setattr') };
+      case 'call': {
+        const call = op.call;
+        if ('data' in call) {
+          const path = ownedPaths.claim(canonicalPath(call.path, `${call.call} path`));
+          // A call's file stamps no time of its own: the session's operation does.
+          const inode = normalizeInode({
+            path, parentPath: parentPath(path), kind: 'file', isDir: false,
+            size: call.data.byteLength, mtime: 0, mode: 'mode' in call ? u32(call.mode, `${call.call} mode`) : 0, chunkCount: w7ChunkCount(call.data.byteLength),
+            ...('ino' in call && call.ino !== undefined ? { ino: inodeNumber(call.ino, `${call.call} ino`) } : {}),
+          }) as W7ContentInode;
+          inode.call = call.call;
+          if (call.call === 'write') inode.offset = safeInteger(call.offset, 'write offset');
+          if ('umask' in call && call.umask !== undefined) inode.umask = umaskOf(call.umask, `${call.call} umask`);
+          if ('description' in call && call.description !== undefined) inode.description = descriptionId(call.description, `${call.call} description`);
+          const chunks = w7Chunks(path, call.data);
+          return { kind: 'file', file: { inode, contentId: `${batchId}:${fileIndex++}`, chunks, source: null } };
+        }
+        return { kind: 'call', call: parsePathCall({ ...call } as Record<string, unknown>, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
+      }
+    }
+  });
+}
+
+function parseBatchBegin(bytes: Uint8Array, mode: W7Mode): BatchBeginMetadata {
   const value = parseObject(bytes, 'batch-begin', ['id', 'mode']);
   const id = boundedString(value.id, 'batch id', MAX_BATCH_ID_BYTES);
-  if (value.mode !== MODE) throw new Error(`w7-frame: unsupported batch mode ${String(value.mode)}`);
-  return { id, mode: MODE };
+  if (value.mode !== mode) throw new Error(`w7-frame: unsupported batch mode ${String(value.mode)}`);
+  return { id, mode };
+}
+
+/** One attribute change: exactly the mode, the owner (uid and gid), or the times (atime and mtime). */
+function parseAttrs(value: Record<string, unknown>, label: string): W7Attrs {
+  const keys = Object.keys(value).sort().join(',');
+  if (keys === 'mode') return { mode: u32(value.mode, `${label} mode`) };
+  if (keys === 'gid,uid') return { uid: u32(value.uid, `${label} uid`), gid: u32(value.gid, `${label} gid`) };
+  if (keys === 'atime,mtime') return { atime: safeInteger(value.atime, `${label} atime`), mtime: safeInteger(value.mtime, `${label} mtime`) };
+  throw new Error(`w7-frame: ${label} changes the mode, the owner or the times, one of them: got ${keys || 'nothing'}`);
 }
 
 function parseDelete(bytes: Uint8Array): DeleteMetadata {
@@ -744,20 +1030,25 @@ function parseDelete(bytes: Uint8Array): DeleteMetadata {
   return { path: canonicalPath(value.path, 'delete path') };
 }
 
-function parseDirectory(bytes: Uint8Array): DirectoryMetadata {
-  const value = parseObject(bytes, 'directory', ['path', 'kind', 'mtime', 'mode'], ['atime']);
+/** A v3 record names no inode number; a v4 one may. */
+function inodeOptional(v3: boolean): string[] {
+  return v3 ? ['atime'] : ['atime', 'ino'];
+}
+
+function parseDirectory(bytes: Uint8Array, v3: boolean): DirectoryMetadata {
+  const value = parseObject(bytes, 'directory', ['path', 'kind', 'mtime', 'mode'], inodeOptional(v3));
   if (value.kind !== 'directory') {
     throw new Error(`w7-frame: unsupported directory kind ${String(value.kind)}`);
   }
   return { ...parseInodeMetadata(value, 'directory'), kind: 'directory' };
 }
 
-function parseFileBegin(bytes: Uint8Array): FileBeginMetadata {
+function parseFileBegin(bytes: Uint8Array, v3: boolean): FileBeginMetadata {
   const value = parseObject(
     bytes,
     'file-begin',
     ['path', 'kind', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'],
-    ['atime'],
+    v3 ? inodeOptional(v3) : [...inodeOptional(v3), 'call', 'offset', 'umask', 'description'],
   );
   const base = parseInodeMetadata(value, 'file-begin');
   if (value.kind !== 'file' && value.kind !== 'symlink') {
@@ -769,11 +1060,108 @@ function parseFileBegin(bytes: Uint8Array): FileBeginMetadata {
   }
   const size = safeInteger(value.size, 'file size');
   const chunkCount = u32(value.chunkCount, 'file chunk count');
-  const expected = size === 0 ? 0 : Math.ceil(size / CHUNK_SIZE);
+  const expected = w7ChunkCount(size);
   if (chunkCount !== expected) {
     throw new Error(`w7-frame: ${base.path}: expected ${expected} chunks, got ${chunkCount}`);
   }
-  return { ...base, kind: value.kind, contentId, size, chunkCount };
+  const call = value.call;
+  if (call !== undefined && call !== 'writeFile' && call !== 'appendFile' && call !== 'write' && call !== 'append') {
+    throw new Error(`w7-frame: ${base.path}: unknown data call ${String(call)}`);
+  }
+  if (call !== undefined && value.kind !== 'file') throw new Error(`w7-frame: ${base.path}: a ${String(call)} writes a file`);
+  // An offset is a write's, and only a description's writes name an inode.
+  if ((call === 'write') !== (value.offset !== undefined)) throw new Error(`w7-frame: ${base.path}: a write, and only a write, has an offset`);
+  // A umask is a call's that makes a name with a mode; a description, a description's write's.
+  if (value.umask !== undefined && call !== 'writeFile' && call !== 'appendFile') throw new Error(`w7-frame: ${base.path}: only a writeFile or appendFile has a umask`);
+  if (value.description !== undefined && call !== 'write' && call !== 'append') throw new Error(`w7-frame: ${base.path}: only a write or append names a description`);
+  return {
+    ...base, kind: value.kind, contentId, size, chunkCount,
+    ...(call === undefined ? {} : { call }),
+    ...(value.offset === undefined ? {} : { offset: safeInteger(value.offset, 'write offset') }),
+    ...(value.umask === undefined ? {} : { umask: umaskOf(value.umask, 'file-begin umask') }),
+    ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'file-begin description') }),
+  };
+}
+
+/** A path call's fields, exactly: its paths made canonical (and claimed) by `path`. */
+function parsePathCall(value: Record<string, unknown>, path: (value: unknown, label: string) => string): W7PathCall {
+  const keys = Object.keys(value).sort().join(',');
+  switch (value.call) {
+    case 'mkdir': {
+      const optional = keys.replace(',existing', '').replace(',ino', '').replace(',umask', '');
+      if (optional !== 'call,mode,path') break;
+      if (value.existing !== undefined && value.existing !== 'ok') throw new Error(`w7-frame: mkdir existing is 'ok' or absent, not ${String(value.existing)}`);
+      return {
+        call: 'mkdir', path: path(value.path, 'mkdir path'), mode: u32(value.mode, 'mkdir mode'),
+        ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'mkdir ino') }),
+        ...(value.umask === undefined ? {} : { umask: umaskOf(value.umask, 'mkdir umask') }),
+        ...(value.existing === undefined ? {} : { existing: 'ok' as const }),
+      };
+    }
+    case 'unlink':
+    case 'rmdir':
+      if (keys !== 'call,path') break;
+      return { call: value.call, path: path(value.path, `${value.call} path`) };
+    case 'symlink':
+      if (keys !== 'call,path,target' && keys !== 'call,ino,path,target') break;
+      return {
+        call: 'symlink', path: path(value.path, 'symlink path'), target: boundedString(value.target, 'symlink target', MAX_PATH_BYTES),
+        ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'symlink ino') }),
+      };
+    case 'ftruncate':
+      if (keys.replace(',description', '').replace(',ino', '') !== 'call,path,size') break;
+      return {
+        call: 'ftruncate', path: path(value.path, 'ftruncate path'), size: safeInteger(value.size, 'ftruncate size'),
+        ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'ftruncate ino') }),
+        ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'ftruncate description') }),
+      };
+    case 'close':
+      if (keys !== 'call,description,path') break;
+      return { call: 'close', path: path(value.path, 'close path'), description: descriptionId(value.description, 'close description') };
+    case 'rm': {
+      if (keys.replace(',force', '').replace(',recursive', '') !== 'call,path') break;
+      for (const flag of ['recursive', 'force'] as const) {
+        if (value[flag] !== undefined && value[flag] !== true) throw new Error(`w7-frame: rm ${flag} is true or absent`);
+      }
+      return {
+        call: 'rm', path: path(value.path, 'rm path'),
+        ...(value.recursive === true ? { recursive: true as const } : {}),
+        ...(value.force === true ? { force: true as const } : {}),
+      };
+    }
+    case 'lchown':
+      if (keys !== 'call,gid,path,uid') break;
+      return { call: 'lchown', path: path(value.path, 'lchown path'), uid: u32(value.uid, 'lchown uid'), gid: u32(value.gid, 'lchown gid') };
+    case 'open': {
+      const flags = ['create', 'exclusive', 'nofollow', 'read', 'truncate'] as const;
+      let required = keys;
+      for (const flag of ['create', 'description', 'exclusive', 'ino', 'nofollow', 'read', 'truncate', 'umask']) required = required.replace(`,${flag}`, '');
+      if (required !== 'call,mode,path') break;
+      for (const flag of flags) {
+        if (value[flag] !== undefined && value[flag] !== true) throw new Error(`w7-frame: open ${flag} is true or absent`);
+      }
+      return {
+        call: 'open', path: path(value.path, 'open path'), mode: u32(value.mode, 'open mode'),
+        ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'open ino') }),
+        ...(value.umask === undefined ? {} : { umask: umaskOf(value.umask, 'open umask') }),
+        ...(value.create === true ? { create: true as const } : {}),
+        ...(value.truncate === true ? { truncate: true as const } : {}),
+        ...(value.exclusive === true ? { exclusive: true as const } : {}),
+        ...(value.nofollow === true ? { nofollow: true as const } : {}),
+        ...(value.read === true ? { read: true as const } : {}),
+        ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'open description') }),
+      };
+    }
+    case 'lutimes':
+      if (keys !== 'atime,call,mtime,path') break;
+      return {
+        call: 'lutimes', path: path(value.path, 'lutimes path'),
+        atime: safeInteger(value.atime, 'lutimes atime'), mtime: safeInteger(value.mtime, 'lutimes mtime'),
+      };
+    default:
+      throw new Error(`w7-frame: unknown call ${String(value.call)}`);
+  }
+  throw new Error(`w7-frame: ${String(value.call)} takes other fields: got ${keys}`);
 }
 
 function parseFileEnd(bytes: Uint8Array): FileEndMetadata {
@@ -786,10 +1174,10 @@ function parseFileEnd(bytes: Uint8Array): FileEndMetadata {
   };
 }
 
-function parseBatchEnd(bytes: Uint8Array): W7BatchSummary {
+function parseBatchEnd(bytes: Uint8Array, v3: boolean): W7BatchSummary {
   const keys = [
     'recordCount', 'pathCount', 'deleteCount', 'directoryCount',
-    'fileCount', 'chunkCount', 'byteCount', 'check',
+    'fileCount', 'chunkCount', 'byteCount', 'check', ...(v3 ? [] : ['opCount']),
   ];
   const value = parseObject(bytes, 'batch-end', keys);
   return {
@@ -800,6 +1188,7 @@ function parseBatchEnd(bytes: Uint8Array): W7BatchSummary {
     fileCount: safeInteger(value.fileCount, 'batch file count'),
     chunkCount: safeInteger(value.chunkCount, 'batch chunk count'),
     byteCount: safeInteger(value.byteCount, 'batch byte count'),
+    opCount: v3 ? 0 : safeInteger(value.opCount, 'batch op count'),
     check: u32(value.check, 'batch check'),
   };
 }
@@ -810,7 +1199,29 @@ function parseInodeMetadata(value: Record<string, unknown>, label: string): Inod
     ...(value.atime === undefined ? {} : { atime: safeInteger(value.atime, `${label} atime`) }),
     mtime: safeInteger(value.mtime, `${label} mtime`),
     mode: u32(value.mode, `${label} mode`),
+    ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, `${label} ino`) }),
   };
+}
+
+/** An open description's id, as a process chose it: up to 64 characters of [A-Za-z0-9_-]. */
+function descriptionId(value: unknown, label: string): string {
+  const id = boundedString(value, label, 64);
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`w7-frame: ${label} is not a description id`);
+  return id;
+}
+
+/** A umask: permission bits, 0 to 0o777. */
+function umaskOf(value: unknown, label: string): number {
+  const mask = u32(value, label);
+  if (mask > 0o777) throw new Error(`w7-frame: ${label} must be at most 0o777`);
+  return mask;
+}
+
+/** An inode number: an integer from 2 (1 is the root's). */
+function inodeNumber(value: unknown, label: string): number {
+  const ino = safeInteger(value, label);
+  if (ino < 2) throw new Error(`w7-frame: ${label} must be at least 2`);
+  return ino;
 }
 
 function parseObject(
@@ -846,6 +1257,7 @@ function normalizeInode(inode: BatchInodeEntry): W7DirectoryInode | W7ContentIno
   u32(inode.chunkCount, `${inode.path} chunk count`);
   safeInteger(inode.mtime, `${inode.path} mtime`);
   if (inode.atime !== undefined) safeInteger(inode.atime, `${inode.path} atime`);
+  if (inode.ino !== undefined) inodeNumber(inode.ino, `${inode.path} ino`);
   u32(inode.mode, `${inode.path} mode`);
   const rawKind: unknown = inode.kind ?? (inode.isDir ? 'directory' : 'file');
   if (rawKind !== 'file' && rawKind !== 'directory' && rawKind !== 'symlink') {
@@ -862,7 +1274,7 @@ function normalizeInode(inode: BatchInodeEntry): W7DirectoryInode | W7ContentIno
     throw new Error(`w7-frame: directory ${inode.path} must have zero size and chunks`);
   }
   if (kind !== 'directory') {
-    const expected = inode.size === 0 ? 0 : Math.ceil(inode.size / CHUNK_SIZE);
+    const expected = w7ChunkCount(inode.size);
     if (inode.chunkCount !== expected) {
       throw new Error(`w7-frame: ${inode.path}: expected ${expected} chunks, got ${inode.chunkCount}`);
     }
@@ -899,6 +1311,7 @@ function directoryInode(metadata: DirectoryMetadata): W7DirectoryInode {
     mtime: metadata.mtime,
     mode: metadata.mode,
     chunkCount: 0,
+    ...(metadata.ino === undefined ? {} : { ino: metadata.ino }),
   };
 }
 
@@ -913,6 +1326,11 @@ function fileInode(metadata: FileBeginMetadata): W7ContentInode {
     mtime: metadata.mtime,
     mode: metadata.mode,
     chunkCount: metadata.chunkCount,
+    ...(metadata.ino === undefined ? {} : { ino: metadata.ino }),
+    ...(metadata.call === undefined ? {} : { call: metadata.call }),
+    ...(metadata.offset === undefined ? {} : { offset: metadata.offset }),
+    ...(metadata.umask === undefined ? {} : { umask: metadata.umask }),
+    ...(metadata.description === undefined ? {} : { description: metadata.description }),
   };
 }
 
@@ -922,6 +1340,7 @@ function inodeMetadata(inode: BatchInodeEntry): InodeMetadata {
     ...(inode.atime === undefined ? {} : { atime: inode.atime }),
     mtime: inode.mtime,
     mode: inode.mode,
+    ...(inode.ino === undefined ? {} : { ino: inode.ino }),
   };
 }
 
@@ -933,12 +1352,22 @@ function canonicalPath(value: unknown, label: string): string {
   return path;
 }
 
+/**
+ * The distinct paths a batch names, within W7's bounds. A program-order
+ * batch (v4) may name a path in several operations; a v3 batch, and a payload
+ * matched to its chunks by path, names each once.
+ */
 class PathOwnership {
   private readonly paths = new Set<string>();
   private pathBytes = 0;
 
-  claim(path: string): void {
-    if (this.paths.has(path)) throw new Error(`w7-frame: duplicate path ownership: ${path}`);
+  constructor(private readonly repeats: boolean) {}
+
+  claim(path: string): string {
+    if (this.paths.has(path)) {
+      if (this.repeats) return path;
+      throw new Error(`w7-frame: duplicate path ownership: ${path}`);
+    }
     if (this.paths.size >= W7_MAX_PATHS_PER_BATCH) {
       throw new Error(`w7-frame: batch exceeds ${W7_MAX_PATHS_PER_BATCH} owned paths`);
     }
@@ -950,11 +1379,8 @@ class PathOwnership {
     }
     this.paths.add(path);
     this.pathBytes = nextPathBytes;
+    return path;
   }
-}
-
-function claimPath(paths: PathOwnership, path: string): void {
-  paths.claim(path);
 }
 
 function normalizePath(path: string): string {
@@ -1003,6 +1429,7 @@ function sameSummary(left: W7BatchSummary, right: W7BatchSummary): boolean {
     && left.fileCount === right.fileCount
     && left.chunkCount === right.chunkCount
     && left.byteCount === right.byteCount
+    && left.opCount === right.opCount
     && left.check === right.check;
 }
 

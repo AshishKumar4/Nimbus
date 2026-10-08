@@ -41,6 +41,7 @@
  * program that wrote a file and then raised still wrote the file.
  */
 import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
+import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CPYTHON_PREAMBLE_TAIL } from './cpython-preamble.js';
@@ -377,8 +378,11 @@ export function makeCPythonRunnerFactory(deps) {
             }
             catch (e) {
                 // Killed: the program ends as an interrupted one does.
-                if (ctx.signal.aborted)
+                if (ctx.signal.aborted) {
+                    // What it may have lost is said however it ended (unsettledEnd).
+                    ctx.stderr.write(unsettledNoteOf(e));
                     return exitCodeForAbortSignal(ctx.signal);
+                }
                 ctx.stderr.write(`${binName}: ${errorMessage(e)}\n`);
                 return 1;
             }
