@@ -323,7 +323,7 @@ const NATIVE_OPS = {
             mountReach = admission.reach;
         }
         const sequence = fence === undefined || e.pid === undefined ? undefined : processWaveSequence(e.pid, fence);
-        const applying = Promise.resolve(fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit, mountReach, sequence }));
+        const applying = Promise.resolve(fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit, mountReach, sequence, turn: t.turn }));
         // A fenced wave is its epoch's until it settles: retiring the epoch waits for it.
         return fence === undefined || t.deliveries === undefined || e.pid === undefined ? applying : t.deliveries.applyingWave(e.pid, fence.writer, applying);
     },
@@ -419,6 +419,7 @@ export function createSupervisorOpHandler(deps) {
         readLease: deps.readLease ?? ((_bytes, read) => read()),
         hydrated: (path) => (deps.filesystem instanceof ProcessFiles ? deps.filesystem.hydrated(path) : Promise.resolve()),
         deliveries: deps.deliveries,
+        turn: deps.turn,
     };
     const extend = deps.extend ?? {};
     const perform = (op, envelope) => {

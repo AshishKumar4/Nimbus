@@ -109,8 +109,9 @@ export class TurnBudget {
 /** `Promise.withResolvers` for the runtime the project targets. */
 export function withResolvers() {
     let resolve;
-    const promise = new Promise((r) => { resolve = r; });
-    return { promise, resolve };
+    let reject;
+    const promise = new Promise((onResolve, onReject) => { resolve = onResolve; reject = onReject; });
+    return { promise, resolve, reject };
 }
 /**
  * The granting side of {@link TurnScheduler}: parks suspended launches

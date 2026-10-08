@@ -138,6 +138,7 @@ export interface SupervisorOpDeps {
    * predates delivery does not, and mints no binding that would send one.
    */
   readonly deliveries?: SupervisorDeliveries;
+  readonly turn?: () => Promise<void>;
   /**
    * Observe one logical answer, after transport read attempts have joined or
    * delivered mutations have found their receipt. A repeated pending read
@@ -275,6 +276,7 @@ export interface SupervisorOpTools {
   readonly hydrated: (path: string) => Promise<void>;
   /** The host instance's delivery store, absent on a host that applies nothing once. */
   readonly deliveries?: SupervisorDeliveries;
+  readonly turn?: () => Promise<void>;
 }
 
 /**
@@ -490,7 +492,7 @@ const NATIVE_OPS = {
       mountReach = admission.reach;
     }
     const sequence = fence === undefined || e.pid === undefined ? undefined : processWaveSequence(e.pid, fence);
-    const applying = Promise.resolve(fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit, mountReach, sequence }));
+    const applying = Promise.resolve(fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit, mountReach, sequence, turn: t.turn }));
     // A fenced wave is its epoch's until it settles: retiring the epoch waits for it.
     return fence === undefined || t.deliveries === undefined || e.pid === undefined ? applying : t.deliveries.applyingWave(e.pid, fence.writer, applying);
   },
@@ -612,6 +614,7 @@ export function createSupervisorOpHandler(
     readLease: deps.readLease ?? ((_bytes, read) => read()),
     hydrated: (path) => (deps.filesystem instanceof ProcessFiles ? deps.filesystem.hydrated(path) : Promise.resolve()),
     deliveries: deps.deliveries,
+    turn: deps.turn,
   };
   const extend = deps.extend ?? {};
   const perform = (op: SupervisorOpName, envelope: SupervisorOpEnvelope): unknown => {

@@ -702,6 +702,8 @@ export interface WriteStreamOptions {
   mutationOwner?: string;
   /** Right before each commit: the fenced wave is still admitted (SupervisorDeliveries.admitWave). */
   admit?: () => void;
+  /** Between committed groups: the isolate is given to whatever else it hosts (another session), never to this one. */
+  turn?: () => Promise<void>;
   mountReach?: WaveMountReach;
   sequence?: WaveSequence;
   /** The writing process's open descriptions, for its `open`, `close` and description calls (W7Call description). */
@@ -1672,6 +1674,9 @@ class InodeTable {
   private old = new Map<string, INode>();
   /** Counts the changes to what a path's entry is (set, delete, clear); a cache fill is no change. */
   epoch = 0;
+  // Valid only while the epoch is still absentAt: any change to an entry voids them.
+  private absent: Set<string> | null = null;
+  private absentAt = 0;
 
   constructor(
     readonly capacity: number,
@@ -1692,9 +1697,36 @@ class InodeTable {
       this.admit(path, old);
       return old;
     }
+    if (this.knownAbsent(path)) return undefined;
     const loaded = this.load(path);
     if (loaded !== undefined) this.admit(path, loaded);
+    else this.noteAbsent(path);
     return loaded;
+  }
+
+  /** Runs `body`, which must write nothing, with each path found missing remembered as missing for the rest of it. */
+  lookingUp<T>(body: () => T): T {
+    if (this.absent !== null) return body();
+    this.absent = new Set();
+    this.absentAt = this.epoch;
+    try {
+      return body();
+    } finally {
+      this.absent = null;
+    }
+  }
+
+  noteAbsent(path: string): void {
+    if (this.absent === null) return;
+    if (this.absentAt !== this.epoch) {
+      this.absent.clear();
+      this.absentAt = this.epoch;
+    }
+    this.absent.add(path);
+  }
+
+  knownAbsent(path: string): boolean {
+    return this.absent !== null && this.absentAt === this.epoch && this.absent.has(path);
   }
 
   /** The cached object, if any, without reading SQLite. */
@@ -2356,24 +2388,49 @@ export class SqliteVFS {
       if (priors.has(path)) continue;
       const cached = this.inodes.peek(path);
       if (cached !== undefined) priors.set(path, cached);
+      else if (this.inodes.knownAbsent(path)) priors.set(path, undefined);
       else missing.push(path);
     }
     if (missing.length === 1) {
       priors.set(missing[0]!, this.inodes.get(missing[0]!));
       return;
     }
-    for (let at = 0; at < missing.length; at += SQL_MAX_BOUND_PARAMETERS) {
-      const slice = missing.slice(at, at + SQL_MAX_BOUND_PARAMETERS);
+    const read = this.loadInodes(missing);
+    for (const path of missing) {
+      const inode = read.get(path);
+      if (inode !== undefined) {
+        priors.set(path, this.inodes.fill(inode));
+      } else {
+        priors.set(path, undefined);
+        this.inodes.noteAbsent(path);
+      }
+    }
+  }
+
+  /** Not admitted to the cache. */
+  private loadInodes(paths: readonly string[]): Map<string, INode> {
+    const read = new Map<string, INode>();
+    for (let at = 0; at < paths.length; at += SQL_MAX_BOUND_PARAMETERS) {
+      const slice = paths.slice(at, at + SQL_MAX_BOUND_PARAMETERS);
       const rows = this.sql.exec(
         `SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path IN (${slice.map(() => '?').join(', ')})`,
         ...slice,
       );
       for (const row of rows) {
         const inode = this.inodeFromRow(row);
-        priors.set(inode.path, this.inodes.fill(inode));
+        read.set(inode.path, inode);
       }
-      for (const path of slice) if (!priors.has(path)) priors.set(path, undefined);
     }
+    return read;
+  }
+
+  /** `keys` and every directory above them, read in a few statements, so a lookup scope's walks to them read nothing more. */
+  private readAlong(keys: Iterable<string>): void {
+    const paths = new Set<string>();
+    for (const key of keys) {
+      for (let at = key; at !== '' && !paths.has(at); at = this.parentPath(at)) paths.add(at);
+    }
+    this.readPriors([...paths], new Map());
   }
 
   private loadInode(path: string): INode | undefined {
@@ -8059,8 +8116,20 @@ export class SqliteVFS {
     cred: VfsCred,
     priors: Map<string, INode | undefined> = new Map(),
   ): BatchWritePayload {
+    return this.inodes.lookingUp(() => this.authorizeBatchNow(payload, cred, priors));
+  }
+
+  private authorizeBatchNow(
+    payload: BatchWritePayload,
+    cred: VfsCred,
+    priors: Map<string, INode | undefined>,
+  ): BatchWritePayload {
     const placed = new Map<string, string>();
     const staged = new Map<string, { mode: number; gid: number; defaultAcl: number | null }>();
+    this.readAlong([
+      ...payload.inodes.map((entry) => this.storageKey(entry.path, cred)),
+      ...(payload.deletePaths ?? []).map((path) => this.storageKey(path, cred)),
+    ]);
     // What stands at every place the batch writes, in one read rather than one per row.
     this.readPriors(payload.inodes.map((entry) => this.createdPath(this.storageKey(entry.path, cred), cred, placed)), priors);
     const inodes = payload.inodes.map((entry) => this.normalizeBatchInode(entry, cred, placed, staged, priors));
@@ -8474,7 +8543,7 @@ export class SqliteVFS {
       signal?: AbortSignal;
       reach?: WaveMountReach;
       guard: () => void;
-      settleBefore: () => void;
+      settleBefore: () => Promise<void>;
       /** The credit a mounted record's whole bytes take, granted before any of them is decoded. */
       reserve: (bytes: number) => Promise<CreditLease | null>;
       setPhase: (phase: WriteBatchStreamFailurePhase) => void;
@@ -8528,7 +8597,7 @@ export class SqliteVFS {
         const placed = await mountOf('delete', record.path);
         if (placed === null) return false;
         at.setPhase('publish');
-        at.settleBefore();
+        await at.settleBefore();
         reached();
         await router.apply({ type: 'delete', path: placed }, cred, at.guard, at.owner);
         at.committed(null);
@@ -8538,7 +8607,7 @@ export class SqliteVFS {
         const placed = await mountOf('directory', record.inode.path);
         if (placed === null) return false;
         at.setPhase('publish');
-        at.settleBefore();
+        await at.settleBefore();
         reached();
         // A directory has no receipt, here as in a group.
         await router.apply({ type: 'directory', path: placed, mode: record.inode.mode }, cred, at.guard, at.owner);
@@ -8557,7 +8626,7 @@ export class SqliteVFS {
         );
         if (placed === null) return false;
         at.setPhase('publish');
-        at.settleBefore();
+        await at.settleBefore();
         reached();
         // Made under the umask the process made it with, as on this filesystem (W7Call umask).
         const stat = await router.apply({ type: 'call', call: { ...call, path: placed } }, withUmask(cred, 'umask' in call ? call.umask : undefined), at.guard, at.owner);
@@ -8578,7 +8647,7 @@ export class SqliteVFS {
           throw vfsError('EXDEV', record.from, `a rename to '${record.to}' crosses a mount`);
         }
         at.setPhase('publish');
-        at.settleBefore();
+        await at.settleBefore();
         reached();
         await router.apply({ type: 'rename', from, to }, cred, at.guard, at.owner);
         at.committed(null);
@@ -8591,7 +8660,7 @@ export class SqliteVFS {
         const placed = await mountOf('file', record.path);
         if (placed === null) return false;
         at.setPhase('publish');
-        at.settleBefore();
+        await at.settleBefore();
         reached();
         await router.apply(record.type === 'truncate' ? { type: 'truncate', path: placed, size: record.size } : { type: 'setattr', path: placed, attrs: record.attrs }, cred, at.guard, at.owner);
         at.committed(null);
@@ -8653,7 +8722,7 @@ export class SqliteVFS {
         }
         at.setPhase('publish');
         try {
-          at.settleBefore();
+          await at.settleBefore();
           reached();
           const bytes = concatBytes(file.held.map((chunk) => chunk.data));
           const stat = await router.apply(file.call !== undefined
@@ -9028,6 +9097,12 @@ export class SqliteVFS {
       const parent = this.parentPath(named);
       const epoch = viewEpoch();
       let route = routes.get(parent);
+      // A directory this wave placed in this view, not made yet: its names go under where it was placed.
+      const made = placedHere.directory.get(parent);
+      if ((route === undefined || route.epoch !== epoch) && made !== undefined && made.epoch === epoch) {
+        route = { resolved: made.resolved, epoch };
+        routes.set(parent, route);
+      }
       if (route === undefined || route.epoch !== epoch) {
         let answer: string | Promise<string>;
         try {
@@ -9263,12 +9338,13 @@ export class SqliteVFS {
       }
     };
 
-    const flushDirectories = (): void => {
-      if (pendingDirectories.length === 0) return;
+    let directoryBatches: BatchInodeEntry[][] = [];
+    const commitDirectoryBatch = (): boolean => {
+      const inodes = directoryBatches.shift() ?? pendingDirectories;
+      if (inodes === pendingDirectories) pendingDirectories = [];
+      if (inodes.length === 0) return false;
       options.admit?.();
-      recheck(placedHere.directory, pendingDirectories.map((inode) => inode.path));
-      const inodes = pendingDirectories;
-      pendingDirectories = [];
+      recheck(placedHere.directory, inodes.map((inode) => inode.path));
       const result = asCaller(() => (
         this.writeBatch({ inodes, chunks: [] }, cred)
       ));
@@ -9276,6 +9352,11 @@ export class SqliteVFS {
       progress.committedPathCount += inodes.length;
       progress.committedOps += inodes.length;
       progress.inodes += result.inodes;
+      return true;
+    };
+    const flushDirectories = (): void => {
+      if (leading) throw new Error('internal: the leading directories commit only through endLeading');
+      while (commitDirectoryBatch());
     };
 
     // A removal observes everything the stream wrote before it.
@@ -9301,32 +9382,66 @@ export class SqliteVFS {
     // the directories, in batches the plan's accounting bounds.
     let leading = true;
     let leadingDeletes: string[] = [];
-    const endLeading = (): void => {
+    // Once checked: the removals to commit, then the directories (held aside until the removals are in).
+    let deletesToCommit: string[] = [];
+    let directoriesToBatch: BatchInodeEntry[] | null = null;
+    /** Commit the leading phase's next group: whether one was there. */
+    const commitLeadingStep = (): boolean => {
+      const path = deletesToCommit.shift();
+      if (path !== undefined) {
+        commitDelete(path);
+        return true;
+      }
+      if (directoriesToBatch !== null) {
+        let batch: BatchInodeEntry[] = [];
+        for (const inode of directoriesToBatch) {
+          if (this.newPlan().wouldExceedInodes(batch.length + 1) !== null) {
+            directoryBatches.push(batch);
+            batch = [];
+          }
+          batch.push(inode);
+        }
+        if (batch.length > 0) directoryBatches.push(batch);
+        directoriesToBatch = null;
+      }
+      return commitDirectoryBatch();
+    };
+    /**
+     * The one way the leading phase ends, whatever ends it (a file, a call,
+     * a routed record, the batch's end): checked, then committed a group a
+     * turn when the caller gives turns.
+     */
+    const endLeading = async (): Promise<void> => {
+      phase = 'publish';
+      this.withHolds(holds, queueLeading);
+      while (this.withHolds(holds, commitLeadingStep)) {
+        if (options.turn !== undefined && (deletesToCommit.length > 0 || directoriesToBatch !== null || directoryBatches.length > 0)) await options.turn();
+      }
+    };
+    const queueLeading = (): void => {
       if (!leading) return;
       leading = false;
       const deletes = leadingDeletes;
       leadingDeletes = [];
-      asCaller(() => {
+      asCaller(() => this.inodes.lookingUp(() => {
+        const keys = [...pendingDirectories.map((inode) => this.storageKey(inode.path, cred)), ...deletes.map((path) => this.storageKey(path, cred))];
+        this.readAlong(keys);
+        const placed = new Map<string, string>();
         const placedAt = (path: string): string => {
           const key = this.storageKey(path, cred);
-          return this.inodes.get(key) ? key : this.createdPath(key, cred);
+          return this.inodes.get(key) ? key : this.createdPath(key, cred, placed);
         };
         const linked = this.linkReplacedByDirectory(
-          pendingDirectories.map((inode) => this.createdPath(this.storageKey(inode.path, cred), cred)),
+          pendingDirectories.map((inode) => this.createdPath(this.storageKey(inode.path, cred), cred, placed)),
           deletes.map(placedAt),
         );
         if (linked !== null) throw linkedDirectoryRefusal(linked);
-      });
-      // Held aside while the removals commit: commitDelete flushes what is
-      // pending, and the directories go in the bounded batches below.
-      const directories = pendingDirectories;
+      }));
+      // Held aside while the removals commit (commitDelete flushes what is
+      // pending), then batched as the plan's accounting bounds (commitLeadingStep).
+      directoriesToBatch = pendingDirectories;
       pendingDirectories = [];
-      for (const path of deletes) commitDelete(path);
-      for (const inode of directories) {
-        if (this.newPlan().wouldExceedInodes(pendingDirectories.length + 1) !== null) flushDirectories();
-        pendingDirectories.push(inode);
-      }
-      flushDirectories();
+      deletesToCommit = deletes;
     };
 
     const stagePiece = (file: NonNullable<typeof activeFile>, piece: Piece): void => {
@@ -9528,7 +9643,6 @@ export class SqliteVFS {
      * before it.
      */
     const queueCall = (path: string, apply: PendingCall['apply'], options: { bytes?: number; paths?: number; receipt?: boolean; alone?: boolean } = {}): void => {
-      endLeading();
       flushGroup();
       flushDirectories();
       pendingCalls.push({ index: recordIndex, seq: applying, path, paths: options.paths ?? 1, apply, receipt: options.receipt === true });
@@ -9558,7 +9672,12 @@ export class SqliteVFS {
         retainChunk,
       });
       recordIterator = decoded.records[Symbol.asyncIterator]();
+      let turnAt = 0;
       while (true) {
+        if (options.turn !== undefined && progress.committedGroupSequence !== turnAt) {
+          turnAt = progress.committedGroupSequence;
+          await options.turn();
+        }
         phase = 'decode';
         const waitStartedAt = performance.now();
         let next: IteratorResult<W7DecodedRecord>;
@@ -9630,9 +9749,9 @@ export class SqliteVFS {
             options.admit?.();
           },
           // Whatever the wave wrote here before the record commits first.
-          settleBefore: () => {
+          settleBefore: async () => {
             flushCalls();
-            endLeading();
+            await endLeading();
             flushDirectories();
             flushGroup();
             options.admit?.();
@@ -9653,6 +9772,9 @@ export class SqliteVFS {
             }
           },
         })) continue;
+        // Only removals and directories are held in the leading phase: anything
+        // else that lands here ends it first (a routed record ends it in settleBefore).
+        if (leading && record.type !== 'delete' && record.type !== 'directory') await endLeading();
         // A call's bytes are gathered whole, and the call made at its end.
         if (record.type === 'file-begin' && record.inode.call !== undefined) {
           phase = 'validation';
@@ -9662,7 +9784,6 @@ export class SqliteVFS {
           }
           // What is ahead of it commits first, giving its credit back, so the
           // reservation below never waits on credit this wave holds.
-          endLeading();
           flushGroup();
           flushDirectories();
           const lease = record.inode.size === 0 ? null : await acquireCredit(record.inode.size, options.signal);
@@ -9753,7 +9874,6 @@ export class SqliteVFS {
               phase = 'publish';
               // Authorising a file reads its parent from the committed inode
               // tree, so pending directories become visible first.
-              endLeading();
               flushDirectories();
               phase = 'validation';
               // The file lands where its name resolves (links followed, as a
@@ -9936,7 +10056,6 @@ export class SqliteVFS {
             }
             case 'batch-end':
               phase = 'publish';
-              endLeading();
               flushDirectories();
               flushGroup();
               return true;
@@ -11561,11 +11680,14 @@ export class SqliteVFS {
     // What stood at each published path before this transaction. Read now,
     // while it is still true: after the commit, a lookup finds the row the
     // commit wrote. Not admitted: replacing a file is not a use of it.
-    const priors = plan.inodes.map((entry) => (
-      entry.knownPrior !== undefined && entry.knownPrior.gen === this._gen
-        ? entry.knownPrior.inode
-        : this.inodes.peek(entry.path) ?? this.loadInode(entry.path)
-    ));
+    const known = (entry: StoredInodeEntry): INode | undefined | null => (
+      entry.knownPrior !== undefined && entry.knownPrior.gen === this._gen ? entry.knownPrior.inode : this.inodes.peek(entry.path) ?? null
+    );
+    const unknown = this.loadInodes(plan.inodes.filter((entry) => known(entry) === null).map((entry) => entry.path));
+    const priors = plan.inodes.map((entry) => {
+      const prior = known(entry);
+      return prior === null ? unknown.get(entry.path) : prior;
+    });
     try {
       this.executeTransactionPlan(plan, execution, onCommit, priors);
     } catch (error) {
@@ -11622,6 +11744,7 @@ export class SqliteVFS {
         defaultAcl: entry.defaultAcl ?? null,
       };
       this.inodes.set(entry.path, node);
+      if (node.isDir) this.inodes.fill(node);
       published.set(entry.path, node);
       changes[index] = { before: prior ?? null, after: node };
 

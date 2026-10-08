@@ -175,7 +175,7 @@ try {
 
   // ── a phone-width window keeps the offer and ↗ on screen, words whole ──
   await page.setViewport({ width: 390, height: 844 });
-  await page.click('#btnPreview');
+  await page.click('#btnPhonePreview');
   const narrow = await page.evaluate(() => {
     const onScreen = (element) => {
       const rect = element.getBoundingClientRect();
@@ -280,7 +280,7 @@ try {
   );
   await screenshot(page, 'final-desktop-isolated-app-in-pane');
   await page.setViewport({ width: 390, height: 844 });
-  await page.click('#btnPreview');
+  await page.click('#btnPhonePreview');
   await screenshot(page, 'final-mobile-isolated-app-in-pane');
   await page.setViewport({ width: 1280, height: 800 });
 
