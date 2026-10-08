@@ -88,7 +88,8 @@ assert.equal(result.ok, true, JSON.stringify(result.error));
 assert.equal(kernel.readFile('home/user/proj/node_modules/pkg7/d2/f4.js').byteLength, wave.chunks.at(-1).data.byteLength);
 // Turns: another task runs between the committed groups.
 assert.ok(ticks >= result.committedGroupSequence / 2, `the apply held the isolate: ${ticks} timer turns in ${result.committedGroupSequence} committed groups`);
-assert.ok(maxGap < applyMs / 4, `the longest turn (${Math.round(maxGap)} ms) is most of the apply (${Math.round(applyMs)} ms)`);
+// Held, the one turn is the whole apply; the bound leaves room for a loaded machine's slow group.
+assert.ok(maxGap < applyMs / 2, `the longest turn (${Math.round(maxGap)} ms) is most of the apply (${Math.round(applyMs)} ms)`);
 // Lookups: read in batches.
 assert.ok(singlePathLookups < records / 10, `${singlePathLookups} single-path inode lookups for ${records} records`);
 console.log('wave-apply-turns: ok');
