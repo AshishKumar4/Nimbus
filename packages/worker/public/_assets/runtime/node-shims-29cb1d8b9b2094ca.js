@@ -5846,6 +5846,19 @@ const __fsMod = (() => {
     }
   }
 
+  /**
+   * The file's own read permission, judged on its mode and owner as statSync
+   * reports them now (this process's own chmod included), for bytes this
+   * process holds: they may predate a chmod or a chown that revoked the read
+   * (the store keeps its own writes whatever a barrier reports), and holding
+   * them is no grant. The check a read open(2) makes, as _ensureWritable is
+   * a write's.
+   */
+  function _ensureReadable(absPath, syscall, p) {
+    const stat = _statLadder(absPath);
+    if (stat !== undefined && !_modeAllows(stat, 4)) throw _fsErr("EACCES", syscall, p);
+  }
+
   /** `live`: the caller asks the authority next, so a path the namespace cannot judge is left to it. */
   function _ensureWritable(absPath, syscall, p, live, dest) {
     _ensureAncestorsTraversable(absPath, syscall, p, dest);
@@ -5944,6 +5957,7 @@ const __fsMod = (() => {
     }
     const denial = _denialCode(content);
     if (denial) throw _fsErr(denial, "open", p);
+    _ensureReadable(absPath, "open", p);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     if (encoding) {
       // An encoding requested: a string, whatever the cell's shape.
@@ -6967,6 +6981,7 @@ const __fsMod = (() => {
     if (!exists && !fl.create) throw _fsErr("ENOENT", "open", path);
     // O_EXCL does not follow a final symlink: a dangling link is there.
     if (fl.create && fl.exclusive && (exists || lstatSync(path, { throwIfNoEntry: false }) !== undefined)) throw _fsErr("EEXIST", "open", path);
+    if (fl.read && exists) _ensureReadable(absPath, "open", path);
     if (fl.write || !exists) _ensureWritable(absPath, "open", path);
     if (!exists) _noteCreation(_strip(absPath));
     let size = exists ? st.size : 0;

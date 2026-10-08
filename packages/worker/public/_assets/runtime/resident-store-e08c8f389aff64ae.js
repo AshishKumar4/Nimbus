@@ -959,8 +959,10 @@ function __residentAdmit(result) {
         __residentForgetHeld(path);
       }
       // The same bytes under a newer revision (a chmod, a touch, a rewrite
-      // with identical content): kept, and dated at the report.
-      if (held && heldKey !== null && entry.contentKey != null && heldKey === String(entry.contentKey)) {
+      // with identical content): kept, and dated at the report, while the
+      // report says this credential may still read them. A chmod or chown
+      // that revoked the read drops them, and the session answers the read.
+      if (held && heldKey !== null && entry.contentKey != null && heldKey === String(entry.contentKey) && __nsReadable(entry.stat)) {
         t.fileSetRev(path, Number(entry.rev));
         kept++;
         continue;
@@ -1536,17 +1538,41 @@ function __nsChildren(k) {
   return __residentRequire().nsChildren(k).map((row) => ({ name: String(row.name), kind: Number(row.kind), mode: Number(row.mode) }));
 }
 
+/**
+ * Whether the credential may `want` (r=4, w=2, x=1) what `meta` describes
+ * (a namespace row, or a listing's or a delta's stat): POSIX's owner, group,
+ * other rule over its mode, uid and gid, as the session's own check answers
+ * a read (SqliteVFS.checkAccess). Root reads and writes anything, and
+ * searches what anyone may.
+ */
+function __nsAllows(meta, want) {
+  const cred = __nsCred;
+  if (!cred) return true;
+  const mode = Number(meta?.mode) & 0o777;
+  if (Number(cred.uid) === 0) return (want & 1) === 0 || (mode & 0o111) !== 0;
+  const groups = Array.isArray(cred.groups) ? cred.groups.map(Number) : [];
+  const shift = Number(cred.uid) === Number(meta?.uid) ? 6
+    : (Number(cred.gid) === Number(meta?.gid) || groups.includes(Number(meta?.gid))) ? 3 : 0;
+  return ((mode >> shift) & want) === want;
+}
+
 /** Whether the credential may search directory `row` (POSIX x). */
 function __nsTraversable(row) {
-  const cred = __nsCred;
   if (!row || Number(row.kind) !== __NS_DIR) return false;
-  const mode = Number(row.mode) & 0o777;
-  if (!cred) return true;
-  if (Number(cred.uid) === 0) return (mode & 0o111) !== 0;
-  const groups = Array.isArray(cred.groups) ? cred.groups.map(Number) : [];
-  const shift = Number(cred.uid) === Number(row.uid) ? 6
-    : (Number(cred.gid) === Number(row.gid) || groups.includes(Number(row.gid))) ? 3 : 0;
-  return ((mode >> shift) & 1) === 1;
+  return __nsAllows(row, 1);
+}
+
+/**
+ * Whether the credential may read the file `stat` describes: what decides
+ * whether bytes the store already has are kept for it under a new revision,
+ * or a copy is held for it, rather than asked of the session. Equal content
+ * keys prove the bytes are the file's, not that this credential may read
+ * them, and a chmod or a chown changes no byte. A stat that does not state
+ * the mode and owner is no grant: the session is asked instead, and answers.
+ */
+function __nsReadable(stat) {
+  if (!stat || !Number.isInteger(Number(stat.mode)) || !Number.isInteger(Number(stat.uid)) || !Number.isInteger(Number(stat.gid))) return false;
+  return __nsAllows(stat, 4);
 }
 
 /**
@@ -2270,8 +2296,10 @@ function __residentSetPlan(paths) {
  *
  * The launch hands over the manifests the session read once per install
  * (manager.ts _installedManifests), by path, each with its content key. A
- * listed manifest whose content key is its copy's is held from the copy, so
- * a copy is never older than the file; any other is fetched with the plan.
+ * listed manifest whose content key is its copy's, and whose listed mode and
+ * owner let this credential read it, is held from the copy, so a copy is
+ * never older than the file nor readable where the file is not; any other
+ * is fetched with the plan.
  * Null: no such rule (a resident's plan names its manifests itself).
  */
 let __residentManifests = null;
@@ -2668,9 +2696,11 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
     const keep = vouches(entry, row.rev) || !judgeable;
     if (keep) { current.add(row.path); continue; }
     // The listing names the same bytes (a revision moved, the content did
-    // not, or another epoch): kept and dated at the listing. Equal keys are
-    // equal bytes, so this needs no comparable clock.
-    if (entry !== undefined && row.ckey !== null && entry.ckey != null && row.ckey === entry.ckey) {
+    // not, or another epoch): kept and dated at the listing, while its stat
+    // says this credential may read them (a chmod or chown moves the
+    // revision and no byte). Equal keys are equal bytes, so this needs no
+    // comparable clock.
+    if (entry !== undefined && row.ckey !== null && entry.ckey != null && row.ckey === entry.ckey && __nsReadable(entry.stat)) {
       t.fileSetRev(row.path, entry.rev);
       current.add(row.path);
       rekeyed++;
@@ -2723,8 +2753,11 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   for (const file of listing.entries) {
     if (current.has(file.path)) continue;
     if (manifests !== null && __residentIsManifest(file.path)) {
+      // A copy is the file's bytes (equal content keys) and is held only
+      // where the listing says this credential may read them; otherwise the
+      // session is asked, and answers.
       const copy = manifests.get(file.path);
-      if (Array.isArray(copy) && file.ckey !== null && copy[0] === file.ckey) copied.push({ file, text: String(copy[1]) });
+      if (Array.isArray(copy) && file.ckey !== null && copy[0] === file.ckey && __nsReadable(file.stat)) copied.push({ file, text: String(copy[1]) });
       else fetch.push(file);
       continue;
     }
