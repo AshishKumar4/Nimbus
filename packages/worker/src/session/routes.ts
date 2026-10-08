@@ -1706,8 +1706,9 @@ async function handleCacheTestEndpoint(
     for (let i = 0; i < digest.length; i++) bin += String.fromCharCode(digest[i]);
     const integrity = `sha512-${btoa(bin)}`;
     const address = parseTarballAddress(integrity)!;
-    await purgeL2(tarballL2Url(address));
+    // putTarball fills L2 as well: purge after it, so the bench starts from L3 cold.
     const ok = await r2.putTarball(integrity, bytes);
+    await purgeL2(tarballL2Url(address));
     return Response.json({ seeded: ok, integrity, sizeBytes: bytes.length });
   }
 

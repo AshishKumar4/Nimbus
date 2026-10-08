@@ -65,6 +65,10 @@ export function* patternNames(node) {
     }
 }
 const FUNCTIONS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
+/** The names a program's top-level statement binds in its scope: its `var`s and its lexical declarations. */
+export function programNames(statement) {
+    return [...varNames([statement], false), ...lexicalNames([statement])];
+}
 /** The names a list of statements binds lexically: let, const, class, function and import. */
 function* lexicalNames(statements) {
     for (const statement of statements) {
@@ -108,8 +112,9 @@ function varNames(value, sloppy, top = true, names = []) {
 }
 /**
  * The scope `node`'s children are in, given the one it is in. A function's
- * parameters are in a scope of their own, its body's `var`s in its body's
- * (a parameter's default value does not see them).
+ * parameters are in a scope of their own, with `arguments` unless it is an
+ * arrow, its body's `var`s in its body's (a parameter's default value does
+ * not see them).
  */
 function scopeOf(node, scope, sloppy, functionBody) {
     const within = (names) => ({ names: new Set(names), parent: scope });
@@ -122,6 +127,7 @@ function scopeOf(node, scope, sloppy, functionBody) {
         case 'ArrowFunctionExpression':
             return within([
                 ...(node.type === 'FunctionExpression' ? patternNames(child(node, 'id')) : []),
+                ...(node.type === 'ArrowFunctionExpression' ? [] : ['arguments']),
                 ...list(node, 'params').flatMap((parameter) => [...patternNames(parameter)]),
             ]);
         case 'BlockStatement':

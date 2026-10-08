@@ -19,4 +19,15 @@ export declare function npmBinName(key: string): string | null;
  * A plain relative path, such as a staged-artifact sentinel, is unchanged.
  */
 export declare function npmBinMap(packageName: string, bin: unknown): Map<string, string>;
+/**
+ * A package.json's `bin` as npm writes it back (@npmcli/package-json 6.2.0
+ * normalizePackageBin, which `npm init` and `npm pkg fix` run), in place on
+ * `pkg`: a string under the package's name, an array's entries under their
+ * base names, then each entry under {@link npmBinName}'s name for its key
+ * (moved to the end when that renames it, as npm's delete and set do) and a
+ * target inside the package, `\` and `:` read as `/`. An entry that is not
+ * a string, or names nothing, is dropped, and a `bin` left empty, or of no
+ * kind npm reads, is deleted.
+ */
+export declare function normalizePackageJsonBin(pkg: Record<string, unknown>): void;
 //# sourceMappingURL=npm-bin-map.d.ts.map

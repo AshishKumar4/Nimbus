@@ -61,7 +61,8 @@ class PackHandle {
 }
 
 export class PackObjectStore {
-  private packs: PackHandle[] | null = null;
+  /** The packs in search order; replaced, never changed in place (promote). */
+  private packs: readonly PackHandle[] | null = null;
   private readonly cache: ByteLru<string, CachedObject>;
   private readonly pages: ByteLru<string, Page>;
   private readonly packPages = new ByteLru<string, Page>(PACK_PAGE_CACHE_BYTES);
@@ -111,7 +112,7 @@ export class PackObjectStore {
     this.packs = null;
   }
 
-  private async list(): Promise<PackHandle[]> {
+  private async list(): Promise<readonly PackHandle[]> {
     if (this.packs !== null) return this.packs;
     const dir = this.gitdir + '/objects/pack';
     const listed = await this.fs.readdir(dir);
@@ -137,11 +138,20 @@ export class PackObjectStore {
     return packs;
   }
 
+  /**
+   * The pack holding `oid`, searched most recently used first, as git's
+   * packed_git_mru: neighbouring objects (a history's trees, a checkout's
+   * blobs) are mostly in one pack, and a clone has scores of packs. Each
+   * search walks the order as it was when it began (the list is never
+   * changed in place: concurrent searches each promote by replacing it).
+   */
   private async locate(oid: string, retried = false): Promise<{ pack: PackHandle; offset: number } | null> {
     const target = oidFromHex(oid);
     for (const pack of await this.list()) {
       const offset = await runAsync(this.find(pack, target), (range) => this.fetch(range));
-      if (offset !== null) return { pack, offset };
+      if (offset === null) continue;
+      this.promote(pack);
+      return { pack, offset };
     }
     // A pack written since the list was taken (git's reprepare_packed_git).
     if (!retried) {
@@ -149,6 +159,13 @@ export class PackObjectStore {
       return this.locate(oid, true);
     }
     return null;
+  }
+
+  /** `pack` first in the order, the rest as they were; a list refreshed since orders itself. */
+  private promote(pack: PackHandle): void {
+    const current = this.packs;
+    if (current === null || current[0] === pack || !current.includes(pack)) return;
+    this.packs = [pack, ...current.filter((other) => other !== pack)];
   }
 
   /** Binary search of one idx's fanout bucket, a page at a time; null when absent. */

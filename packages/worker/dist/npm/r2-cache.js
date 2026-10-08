@@ -185,7 +185,8 @@ async function l2Get(key) {
  * Best-effort `caches.default` write. The body Response must have a
  * `Cache-Control` header with `max-age` for the cache layer to honour
  * a TTL — without it, the cache MAY refuse to store. We always set it
- * at call sites (eternal for tarball/asset; 5 min for packument).
+ * at call sites (eternal for tarball/asset; until the R2 entry expires
+ * for a packument).
  *
  * Returns true on success, false on any thrown error. Failure here
  * MUST NOT block the L3 hit — the wrap is a perf optimisation only.
@@ -376,26 +377,34 @@ export class R2CacheClient {
             return null;
         }
         this._recordHit('L3', 'tarball', ab.byteLength);
-        // Write through to L2. Best-effort: failure is silent.
-        const writeBack = new Response(wb, {
+        // Write through to L2, awaited so subsequent reads of the same key
+        // strictly hit L2 (no double-fetch race during fill). See the
+        // matching note in getPackument below.
+        if (!this.readOnly)
+            await this.fillTarballL2(l2Key, wb);
+        return wb;
+    }
+    /**
+     * The colo copy of verified tarball bytes, kept as long as the cache layer
+     * will: a content address never changes what it names. Best-effort: a
+     * failed put is silent.
+     */
+    async fillTarballL2(l2Key, bytes) {
+        await l2Put(l2Key, new Response(bytes, {
             headers: {
                 'Content-Type': 'application/gzip',
                 'Cache-Control': 'public, max-age=31536000, immutable',
             },
-        });
-        // Await the put so subsequent reads of the same key strictly
-        // hit L2 (no double-fetch race during fill). See the matching
-        // note in getPackument above.
-        if (!this.readOnly)
-            await l2Put(l2Key, writeBack);
-        return wb;
+        }));
     }
     /**
-     * Store a tarball at `integrity`'s content address. Bytes are stored
-     * as-is (gzipped tar). No-op if the bucket binding is missing, if the
-     * integrity string is not a verifiable SRI, or if the bytes do not
-     * hash to the address — a caller cannot place bytes under someone
-     * else's key, which keeps the store's contract absolute.
+     * Store a tarball at `integrity`'s content address, in R2 and in this
+     * colo's L2. Bytes are stored as-is (gzipped tar). No-op if the bucket
+     * binding is missing, if the integrity string is not a verifiable SRI,
+     * or if the bytes do not hash to the address — a caller cannot place
+     * bytes under someone else's key, which keeps the store's contract
+     * absolute. Filling R2 alone sent the next session in the colo to R2
+     * for bytes this one had just fetched from the registry.
      *
      * Returns true on success, false otherwise (the cache is best-effort;
      * failure must not break the install).
@@ -411,15 +420,18 @@ export class R2CacheClient {
             return false;
         if (!await bytesMatchAddress(view, address))
             return false;
+        let stored;
         try {
             await this.tarballBucket.put(tarballKey(address), view, {
                 httpMetadata: { contentType: 'application/gzip' },
             });
-            return true;
+            stored = true;
         }
         catch {
-            return false;
+            stored = false;
         }
+        await this.fillTarballL2(new Request(tarballL2Url(address)), view);
+        return stored;
     }
     /**
      * Get a cached packument with its TTL state.
@@ -433,10 +445,10 @@ export class R2CacheClient {
      * On hit, we read both the packument JSON and the absolute
      * `expiresAt` timestamp from the L2 entry's headers — the absolute
      * timestamp matters because L2 may serve a cached response near
-     * the end of its 5-min TTL, and the caller's `expired` check still
-     * needs to fire correctly. On miss, we fall through to R2 and
-     * write back to L2 with a 5-min `Cache-Control: max-age=300`
-     * (matching the existing R2 customMetadata.expiresAt semantic).
+     * the end of its TTL, and the caller's `expired` check still needs
+     * to fire correctly. On miss, we fall through to R2 and write back
+     * to L2 until the R2 entry's customMetadata.expiresAt
+     * (fillPackumentL2).
      */
     async getPackument(name, registry = NPM_REGISTRY_ORIGIN) {
         // ── L2 fast path (per-colo) ───────────────────────────────────
@@ -491,30 +503,30 @@ export class R2CacheClient {
         const expired = expiresAt > 0
             ? now >= expiresAt
             : ageMs >= PACKUMENT_TTL_MS;
-        // Write through to L2 — bounded by max-age=300 to match the
-        // existing R2 customMetadata.expiresAt 5-min TTL. We pass the
-        // absolute expiresAt as a custom header so reads can re-check
-        // the boundary even if the cache layer extends our entry.
-        // Best-effort: failure is silent (false return ignored).
-        if (!expired) {
-            const ttlSec = Math.max(1, Math.floor((expiresAt > 0 ? expiresAt - now : PACKUMENT_TTL_MS) / 1000));
-            const writeBack = new Response(json, {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Cache-Control': `public, max-age=${ttlSec}`,
-                    'X-Nimbus-ExpiresAt': String(expiresAt > 0 ? expiresAt : now + PACKUMENT_TTL_MS),
-                },
-            });
-            // Await the L2 put so the entry is durable before we return.
-            // Two callers reading the same key back-to-back during the
-            // fill window would otherwise both miss L2 and double-fetch
-            // L3. The cost (~1-3 ms in workerd local; sub-ms at edge) is
-            // bounded by the response size and only paid on cold reads.
-            // Errors are swallowed by l2Put — failure is silent.
-            if (!this.readOnly)
-                await l2Put(l2Key, writeBack);
+        // Write through to L2, good until the R2 entry expires. Awaited so
+        // two callers reading the same key back-to-back during the fill
+        // window do not both miss L2 and double-fetch L3; the cost (~1-3 ms
+        // in workerd local, sub-ms at edge) is paid only on cold reads.
+        if (!expired && !this.readOnly) {
+            await this.fillPackumentL2(l2Key, json, expiresAt > 0 ? expiresAt : now + PACKUMENT_TTL_MS);
         }
         return { json, ageMs, expired };
+    }
+    /**
+     * The colo copy of a packument, kept until `expiresAt`: the cache layer
+     * drops it at its max-age, and the absolute time rides in a header so a
+     * read can re-check the boundary even if the cache layer extends the
+     * entry. Best-effort: a failed put is silent.
+     */
+    async fillPackumentL2(l2Key, json, expiresAt) {
+        const ttlSec = Math.max(1, Math.floor((expiresAt - Date.now()) / 1000));
+        await l2Put(l2Key, new Response(json, {
+            headers: {
+                'Content-Type': 'application/json',
+                'Cache-Control': `public, max-age=${ttlSec}`,
+                'X-Nimbus-ExpiresAt': String(expiresAt),
+            },
+        }));
     }
     /**
      * Resolve a packument through the whole stack: cache read, and on a
@@ -582,10 +594,15 @@ export class R2CacheClient {
         if (resp.ok) {
             const json = await resp.text();
             this._recordHit('L4', 'packument', json.length);
-            // Best-effort fill, awaited so a follow-up read in the same
-            // install sees it; never of what an egress answered.
-            if (!this.readOnly && shared)
-                await this.putPackument(name, json, registry);
+            // Best-effort fill of R2 and of this colo's L2, good until the same
+            // time and awaited so a follow-up read sees it; never of what an
+            // egress answered. Filling R2 alone left the colo cold until a later
+            // session read R2 back: a session each for registry, R2, then L2.
+            if (!this.readOnly && shared) {
+                const expiresAt = Date.now() + PACKUMENT_TTL_MS;
+                await this.putPackument(name, json, registry, expiresAt);
+                await this.fillPackumentL2(new Request(packumentL2Url(name, registry)), json, expiresAt);
+            }
             return { json, source: 'network' };
         }
         if (resp.status >= 400 && resp.status < 500) {
@@ -599,8 +616,9 @@ export class R2CacheClient {
         return { json: null, source: 'network', failure: `HTTP ${resp.status}` };
     }
     /**
-     * Write a packument JSON to R2 with a TTL stamp in customMetadata.
-     * No-op if the bucket binding is missing.
+     * Write a packument JSON to R2 with a TTL stamp (`expiresAt`, by default
+     * the packument TTL from now) in customMetadata. No-op if the bucket
+     * binding is missing.
      *
      * Only `readThroughPackument` (and the debug bench seeder) call this:
      * it is a storage primitive, never an RPC. See readThroughPackument
@@ -609,10 +627,9 @@ export class R2CacheClient {
      * Returns true on success, false on failure (same best-effort posture
      * as putTarball).
      */
-    async putPackument(name, json, registry = NPM_REGISTRY_ORIGIN) {
+    async putPackument(name, json, registry = NPM_REGISTRY_ORIGIN, expiresAt = Date.now() + PACKUMENT_TTL_MS) {
         if (!this.packumentBucket)
             return false;
-        const expiresAt = Date.now() + PACKUMENT_TTL_MS;
         try {
             await this.packumentBucket.put(packumentKey(name, registry), json, {
                 httpMetadata: { contentType: 'application/json' },

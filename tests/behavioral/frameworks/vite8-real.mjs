@@ -3,7 +3,10 @@
 // Nimbus's bare `vite` command and not a configFile:false API wrapper).
 // Each command runs once, as a user types it: a build or a dev server that
 // only works on a second run fails. Assertions cover production output and
-// actual HTML/TSX served through the public port route.
+// actual HTML/TSX served through the public port route. The dev server runs
+// with css.transformer 'lightningcss', so its first CSS request imports
+// lightningcss (Nimbus's wasm build), whose 15.8 MB image the launch does
+// not stage at boot: the import() fetches what it reads.
 // HMR uses Nimbus's built-in vite path: inbound WebSocket upgrade to a Node
 // guest server is not implemented in Nimbus, before or after native HTTP.
 // That implementation gap is not a prohibition on a Workers adapter.
@@ -46,6 +49,8 @@ try{
   const again=await t.run(`cd ${APP} && ./node_modules/.bin/vite build 2>&1`,300000);
   a.check('a subsequent build succeeds at once',again.exitCode===0,tail(again.output));
 
+  // The dev server transforms CSS with lightningcss, not postcss.
+  await t.run(heredocCommand(APP+'/vite.config.ts',"import { defineConfig } from 'vite';\nimport react from '@vitejs/plugin-react';\nexport default defineConfig({ plugins: [react()], css: { transformer: 'lightningcss' } });\n"),15000);
   const dev=await launchFrameworkDev({terminal:t,sid,cwd:APP,command:`./node_modules/.bin/vite --host 0.0.0.0 --port ${PORT}`,port:PORT,accepts:r=>r.status===200&&r.body.includes('<div id="root">')&&r.body.includes('/@vite/client')});
   proc=dev.process;
   a.check('the project CLI serves index.html with the Vite client through the port route on its first run',dev.ok,`${dev.last}\n${tail(dev.output,30)}`);
@@ -54,6 +59,9 @@ try{
     a.check('the served entry is transformed JavaScript, not raw TSX',entry.status===200&&entry.body.includes('jsxDEV')&&!entry.body.includes('<StrictMode>'),entry.body.slice(0,400));
     const app=await readPort(sid,'src/App.tsx');
     a.check('the served component carries the edited application content',app.status===200&&app.body.includes(MARKER),app.body.slice(0,400));
+    // lightningcss's output: a CSS module as JS, its sheet run through the transformer.
+    const css=await readPort(sid,'src/App.css');
+    a.check('the dev server transforms CSS with lightningcss on its first run',css.status===200&&css.body.includes('__vite__updateStyle')&&!/lightningcss|WebAssembly|EAGAIN/i.test(css.body.slice(0,2000)),`${css.status} ${css.body.slice(0,400)}`);
   }
 }finally{
   if(proc){try{proc.signal('SIGKILL');proc.ws.close();}catch{}}

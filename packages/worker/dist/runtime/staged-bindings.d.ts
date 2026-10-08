@@ -49,6 +49,45 @@ export declare const STAGED_BINDINGS: readonly StagedBinding[];
 export declare function stagedBinding(name: string): StagedBinding;
 /** Names of the staged bindings a closure requires, in table order. */
 export declare function stagedBindingsRequiredBy(cells: Iterable<readonly [string, unknown]>): string[];
+/** Most filesystem questions stagedBindingsDeclaredBy asks: package.json reads and node_modules probes. */
+export declare const DECLARED_BINDING_PROBES = 1024;
+/** What the declared-dependency walk asks, by absolute path: a file's text, whether a path exists, and its real location; null or false where there is none. */
+export interface DeclaredBindingFs {
+    readText(path: string): Promise<string | null>;
+    exists(path: string): Promise<boolean>;
+    realpath(path: string): Promise<string | null>;
+}
+/**
+ * Names of the staged bindings a launched bin's own dependency tree installs,
+ * in table order: a binding's owner at the binding's version, reached through
+ * the declared dependencies (dependencies, optionalDependencies,
+ * peerDependencies) of the bin's package and of every package those resolve
+ * to. Each name resolves as Node's resolver finds it, from the package that
+ * declares it: its own node_modules, then each ancestor's, through links to
+ * where the package really is. So the version matched is the one installed
+ * where the requiring code would load it (__loadStagedBinding checks the
+ * same), and a nested copy at another version is not taken for a hoisted
+ * one.
+ *
+ * A closure names a binding only when its owner is in it, and a program can
+ * reach the owner by a specifier no walk follows: Nuxt 4 loads its builder
+ * with `if (builder === "@nuxt/vite-builder") return await import(builder)`,
+ * and Vite then loads rolldown. The binding is compiled with the launch or not
+ * at all, so a launch decided by its closure alone failed `nuxt dev` on its
+ * first run ("Cannot find native binding"). Registering a binding creates
+ * nothing (stagedBindingsFacetImport); only a require of it does.
+ *
+ * Asks at most `limit` questions (a package.json read, or whether a
+ * directory has node_modules), and stops once every binding is found; a
+ * declared name that is a binding's owner is checked when it is declared,
+ * not when the breadth-first walk reaches it. A bin outside node_modules (a
+ * program of the user's own) declares nothing here.
+ */
+export declare function stagedBindingsDeclaredBy(fs: DeclaredBindingFs, scriptPath: string | undefined, limit?: number, 
+/** Filled in with the questions asked, for a launch's diagnostics. */
+stats?: {
+    probes: number;
+}): Promise<string[]>;
 /**
  * The colo-cache key of one staged file: its path and its own digest. A
  * binding rebuilt at the same version keeps its path, and a key shared with

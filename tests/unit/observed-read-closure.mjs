@@ -5,7 +5,6 @@
 import assert from 'node:assert/strict';
 import { addObservedReads, buildPrefetchBundle } from '../../packages/worker/src/facets/manager.ts';
 import { launchFs } from './lib/launch-fs.mjs';
-import { ClosureBoundExceededError } from '../../packages/core/src/runtime/require-resolver.ts';
 const root='home/user/app/node_modules/plugin';
 const files={
   [root+'/package.json']:JSON.stringify({name:'plugin',type:'module'}),
@@ -42,11 +41,15 @@ const bounded = launchFs({
   assert.equal(scanned.bundle[learned], small, 'the read file is staged as the bytes it was read as');
   assert.equal(scanned.bundle[app + '/node_modules/plugin/dep.cjs'], undefined, 'its imports are not required');
 }
-await assert.rejects(
-  buildPrefetchBundle(bounded, { scriptPath: '/' + app + '/entry.cjs', cwd: '/' + app, entryCode: 'module.exports = 1;', maxBundleBytes: 1024, executedModules: [{ path: learned }] }),
-  error => error instanceof ClosureBoundExceededError && error.outcome.lastPath === app + '/node_modules/plugin/dep.cjs',
-  'a learned executable graph that cannot fit is refused, never published with a missing import',
-);
+// A learned executable graph that cannot fit is never published with a
+// missing import: it is staged whole or not at all, and the launch starts
+// without it (learned-roots-over-bound.mjs), loading it late as the run that
+// learned it did.
+{
+  const over = await buildPrefetchBundle(bounded, { scriptPath: '/' + app + '/entry.cjs', cwd: '/' + app, entryCode: 'module.exports = 1;', maxBundleBytes: 1024, executedModules: [{ path: learned }] });
+  assert.equal(over.bundle[learned], undefined, 'a learned module whose closure cannot fit is not staged');
+  assert.equal(over.bundle[app + '/node_modules/plugin/dep.cjs'], undefined, 'nor any of its closure');
+}
 const complete = await buildPrefetchBundle(bounded, { scriptPath: '/' + app + '/entry.cjs', cwd: '/' + app, entryCode: 'module.exports = 1;', maxBundleBytes: 4096, executedModules: [{ path: learned }] });
 const evaluate = filename => {
   const module = { exports: {} };

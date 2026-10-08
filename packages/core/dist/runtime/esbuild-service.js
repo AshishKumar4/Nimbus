@@ -17,8 +17,9 @@ import { tokenizer, tokTypes } from 'acorn';
 import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { packageNameFromSpecifier } from './barrel-detect.js';
 import { bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
-import { emitCommonJs, lowerAsyncModule, readEsmRecords } from './async-module-lowering.js';
-import { applySourceEdits, nodeList, nodeName, nodeProp, parseJavaScriptModule, walkTopLevelModuleTokens, } from './javascript-ast.js';
+import { emitCommonJs, lowerAsyncModule, readEsmModule } from './async-module-lowering.js';
+import { ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs, esModuleSource } from './module-format.js';
+import { applySourceEdits, hasUnscopedAwait, nodeList, nodeName, nodeProp, parseJavaScriptModule, walkTopLevelModuleTokens, } from './javascript-ast.js';
 import { VITE_ASSET_QUERY_SUFFIXES, splitImportQuery, viteAssetLoader, } from './vite-assets.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
@@ -144,133 +145,19 @@ export function getSharedRuntimeExternals(specifier) {
 function topLevelModuleDeclarationRanges(source) {
     const ranges = [];
     let active = null;
-    const walked = walkTopLevelModuleTokens(source, (token, declaration, topLevel) => {
+    const walked = walkTopLevelModuleTokens(source, (token, syntax, topLevel) => {
         if (active) {
             if (token.type === tokTypes.semi && topLevel) {
                 ranges.push({ ...active, end: token.end });
                 active = null;
             }
         }
-        else if (declaration) {
-            active = { start: token.start, kind: declaration };
+        else if (syntax === 'import' || syntax === 'export') {
+            active = { start: token.start, kind: syntax };
         }
         return false;
     });
     return walked === null || active ? null : ranges;
-}
-function hasUnscopedAwait(source) {
-    try {
-        const tokens = tokenizer(source, {
-            ecmaVersion: 'latest',
-            sourceType: 'module',
-            allowHashBang: true,
-        });
-        const functionBraces = [];
-        const functionParenDepths = [];
-        const methodParenCandidates = [];
-        const arrowExpressions = [];
-        let bracketDepth = 0;
-        let pendingMethodBody = false;
-        let pendingArrowBody = false;
-        let pendingFunctionKeyword = false;
-        let previous = tokTypes.eof;
-        let previousEnd = 0;
-        while (true) {
-            const token = tokens.getToken();
-            const type = token.type;
-            if (type === tokTypes.eof)
-                return false;
-            if (pendingMethodBody && type !== tokTypes.braceL)
-                pendingMethodBody = false;
-            if (pendingArrowBody && type !== tokTypes.braceL) {
-                arrowExpressions.push({
-                    parens: methodParenCandidates.length,
-                    braces: functionBraces.length,
-                    brackets: bracketDepth,
-                });
-                pendingArrowBody = false;
-            }
-            if (pendingFunctionKeyword) {
-                if (type === tokTypes.colon || type === tokTypes.comma || type === tokTypes.braceR
-                    || type === tokTypes.parenR || type === tokTypes.bracketR || type === tokTypes.eq)
-                    functionParenDepths.pop();
-                pendingFunctionKeyword = false;
-            }
-            if (source.slice(previousEnd, token.start).includes('\n')) {
-                while (arrowExpressions.length > 0) {
-                    const arrow = arrowExpressions[arrowExpressions.length - 1];
-                    if (methodParenCandidates.length !== arrow.parens
-                        || functionBraces.length !== arrow.braces
-                        || bracketDepth !== arrow.brackets)
-                        break;
-                    arrowExpressions.pop();
-                }
-            }
-            while (arrowExpressions.length > 0) {
-                const arrow = arrowExpressions[arrowExpressions.length - 1];
-                const delimited = (type === tokTypes.semi || type === tokTypes.comma)
-                    && methodParenCandidates.length === arrow.parens
-                    && functionBraces.length === arrow.braces
-                    && bracketDepth === arrow.brackets;
-                const closed = (type === tokTypes.parenR && methodParenCandidates.length === arrow.parens)
-                    || (type === tokTypes.bracketR && bracketDepth === arrow.brackets)
-                    || (type === tokTypes.braceR && functionBraces.length === arrow.braces);
-                if (!delimited && !closed)
-                    break;
-                arrowExpressions.pop();
-            }
-            if (type === tokTypes.name
-                && source.slice(token.start, token.end) === 'await'
-                && !functionBraces.includes(true)
-                && arrowExpressions.length === 0)
-                return true;
-            if (type === tokTypes._function || type === tokTypes._class) {
-                if (previous !== tokTypes.dot && previous !== tokTypes.questionDot) {
-                    functionParenDepths.push(methodParenCandidates.length);
-                    pendingFunctionKeyword = true;
-                }
-            }
-            else if (type === tokTypes.arrow) {
-                pendingArrowBody = true;
-            }
-            else if (type === tokTypes.parenL) {
-                methodParenCandidates.push(functionBraces.length > 0
-                    && (previous === tokTypes.name || previous === tokTypes.string
-                        || previous === tokTypes.num || previous === tokTypes.bracketR));
-            }
-            else if (type === tokTypes.parenR) {
-                pendingMethodBody = methodParenCandidates.pop() === true;
-            }
-            else if (type === tokTypes.bracketL) {
-                bracketDepth++;
-            }
-            else if (type === tokTypes.bracketR) {
-                bracketDepth = Math.max(0, bracketDepth - 1);
-            }
-            else if (type === tokTypes.dollarBraceL) {
-                functionBraces.push(false);
-            }
-            else if (type === tokTypes.braceL) {
-                const functionBody = pendingArrowBody
-                    || pendingMethodBody
-                    || functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length;
-                if (functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length) {
-                    functionParenDepths.pop();
-                }
-                functionBraces.push(functionBody);
-                pendingArrowBody = false;
-                pendingMethodBody = false;
-            }
-            else if (type === tokTypes.braceR) {
-                functionBraces.pop();
-            }
-            previousEnd = token.end;
-            previous = type;
-        }
-    }
-    catch {
-        return true;
-    }
 }
 function importMetaEdits(source, absoluteUrl, moduleFactory) {
     // A module factory's import.meta is the module's metadata object, bound by
@@ -325,6 +212,12 @@ function importMetaEdits(source, absoluteUrl, moduleFactory) {
         return null;
     }
 }
+/**
+ * The runtime's function a bound record calls for its package: the one the
+ * module system serves (node-shims.ts), named apart from the module's own
+ * `require`, which an ES module does not have (module-format.ts).
+ */
+export const PROVIDED_PACKAGE_HOOK = '__nimbusProvidedPackage';
 /** Bind canonical esbuild/Bun CommonJS records to the runtime's provided packages. */
 export function rewriteProvidedCommonJsModules(source) {
     const helpers = new Set(['__commonJS']);
@@ -399,7 +292,7 @@ export function rewriteProvidedCommonJsModules(source) {
                 last = token;
             }
             if (singleModule && bodySeen && braces === 0) {
-                edits.push({ start: a.start, end: last.end, text: '(() => require(' + JSON.stringify(entry[0]) + '))' });
+                edits.push({ start: a.start, end: last.end, text: `(() => ${PROVIDED_PACKAGE_HOOK}(${JSON.stringify(entry[0])}))` });
             }
             previous = last.type;
             a = tokens.getToken();
@@ -424,26 +317,37 @@ export function rewriteProvidedCommonJsModules(source) {
  * statement at a time (readEsmRecords, bounded memory, imports live) and
  * emitted by the one emitter. Null for what it leaves to the host: top-level
  * await (its body is synchronous), an import.meta member it does not bind, a
- * module acorn cannot parse, and a source with no module syntax.
+ * module acorn cannot parse, and a source with no module syntax. In Bun's
+ * `scope` (module-format.ts ModuleScope) the module keeps CommonJS's names.
  */
-export function rewriteBundledEsmToCjs(source, absoluteUrl, moduleFactory = false) {
+export function rewriteBundledEsmToCjs(source, absoluteUrl, moduleFactory = false, scope = 'node') {
     if (hasUnscopedAwait(source))
         return null;
     // Read a statement at a time (readEsmRecords), so a multi-MiB bundle reads
     // in bounded memory, imports live. What acorn cannot parse is left to the
     // transform host, which has the last word on syntax.
-    let records;
+    let read;
     try {
-        records = readEsmRecords(source);
+        read = readEsmModule(source);
     }
     catch {
         return null;
     }
+    const { records, wrapperUses } = read;
     if (records.length === 0)
         return null;
     const metaEdits = importMetaEdits(source, absoluteUrl, moduleFactory);
     if (!metaEdits)
         return null;
+    // A free use of a CommonJS wrapper name binds nothing in an ES module, as
+    // the transform's define has it (ES_MODULE_UNBOUND_NAMES).
+    const unbound = [];
+    if (scope === 'node')
+        for (const [name, references] of wrapperUses) {
+            const to = ES_MODULE_UNBOUND_NAMES[name];
+            for (const { start, end, use } of references)
+                unbound.push({ start, end, text: use === 'shorthand' ? `${name}: ${to}` : to });
+        }
     // Only generated references use wrapper arguments. Source declarations
     // named module/require/exports retain their own meanings. An import.meta
     // is one token run, so it is inside a record's range or outside every one.
@@ -451,9 +355,10 @@ export function rewriteBundledEsmToCjs(source, absoluteUrl, moduleFactory = fals
         body: 'sync',
         exportsObject: moduleFactory ? 'arguments[2].exports' : 'module.exports',
         requireFunction: moduleFactory ? 'arguments[1]' : 'module.require',
-        edits: metaEdits.filter((edit) => !records.some(({ start, end }) => edit.start >= start && edit.end <= end)),
+        edits: [...metaEdits, ...unbound].filter((edit) => !records.some(({ start, end }) => edit.start >= start && edit.end <= end)),
     });
-    return { code: (moduleFactory ? '"use strict";\n' : '') + code, map: '', warnings: [] };
+    const strict = (moduleFactory ? '"use strict";\n' : '') + code;
+    return { code: scope === 'node' ? esModuleScopeTypeofs(strict) : strict, map: '', warnings: [] };
 }
 const __outputDecoder = new TextDecoder();
 /**
@@ -732,7 +637,20 @@ async function remotePlugin(plugin, initialOptions) {
 }
 /** What a transform request hands the engine: its source after the provided-module pre-pass, unless it asks only for the rewrite. */
 function preparedTransformSource(code, options) {
-    return options?.rewriteOnly ? code : withProvidedModuleRewrite(code, options);
+    if (options?.rewriteOnly)
+        return code;
+    return withProvidedModuleRewrite(options?.esModuleScope ? esModuleSource(code) : code, options);
+}
+/** What the engine is asked: an ES module's scope as the define that makes it. */
+function engineTransformOptions(options) {
+    if (!options?.esModuleScope || options.rewriteOnly)
+        return options;
+    const { esModuleScope: _scope, ...rest } = options;
+    return { ...rest, define: { ...rest.define, ...ES_MODULE_UNBOUND_NAMES } };
+}
+/** An engine's result for `options`, with an ES module's typeof of an unbound name 'undefined'. */
+function finishedTransform(result, options) {
+    return options?.esModuleScope && !options.rewriteOnly ? { ...result, code: esModuleScopeTypeofs(result.code) } : result;
 }
 /** A CJS emit of JavaScript binds bundled CommonJS records to the runtime's provided packages first. */
 function withProvidedModuleRewrite(code, options) {
@@ -834,7 +752,8 @@ export class EsbuildService {
             return outcome;
         }
         // In the isolate the engine's own error propagates, diagnostics and all.
-        return this.transformInIsolate(preparedTransformSource(code, options), options);
+        const result = await this.transformInIsolate(preparedTransformSource(code, options), engineTransformOptions(options));
+        return finishedTransform(result, options);
     }
     /** One transform on the in-isolate engine, of source the provided-module pre-pass has seen. */
     async transformInIsolate(code, options) {
@@ -855,7 +774,7 @@ export class EsbuildService {
         const positions = [];
         requests.forEach(({ code, options }, i) => {
             try {
-                prepared.push({ code: preparedTransformSource(code, options), options });
+                prepared.push({ code: preparedTransformSource(code, options), options: engineTransformOptions(options) });
                 positions.push(i);
             }
             catch (e) {
@@ -869,13 +788,15 @@ export class EsbuildService {
             if (hosted.length !== prepared.length) {
                 throw new Error(`esbuild transform host answered ${hosted.length} of ${prepared.length} requests`);
             }
-            hosted.forEach((outcome, j) => { outcomes[positions[j]] = outcome; });
+            hosted.forEach((outcome, j) => {
+                outcomes[positions[j]] = 'error' in outcome ? outcome : finishedTransform(outcome, requests[positions[j]].options);
+            });
             return outcomes;
         }
         for (let j = 0; j < prepared.length; j++) {
             const { code, options } = prepared[j];
             try {
-                outcomes[positions[j]] = await this.transformInIsolate(code, options);
+                outcomes[positions[j]] = finishedTransform(await this.transformInIsolate(code, options), requests[positions[j]].options);
             }
             catch (e) {
                 outcomes[positions[j]] = { error: errorText(e) };

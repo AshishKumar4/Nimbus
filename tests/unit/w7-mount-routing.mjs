@@ -599,4 +599,61 @@ function scripted(overrides) {
   assert.deepEqual(s.sqliteNames('shared'), []);
 }
 
+// ── A wave's lease on a mount: its own records land, another's are refused ──
+// (Red before: the router applied a routed record with no lease presented, so
+// a wave under its own lease was EBUSY on the mount it held.)
+{
+  const s = session();
+  await s.op({ op: 'mkdir', args: ['/shared/held'], cred: CRED_SESSION_USER });
+  const lease = s.engine.as(CRED_SESSION_USER).acquireExclusiveMutation('shared/held');
+  const owned = await s.op({
+    op: 'writeBatchStream', args: [], cred: CRED_SESSION_USER, mutationOwner: lease.owner,
+    stream: encodeWriteBatchStream({ inodes: [{ path: 'shared/held/a.txt', parentPath: 'shared/held', isDir: false, size: 'mine'.length, mtime: 1, mode: 0o644, chunkCount: 1 }], chunks: [{ path: 'shared/held/a.txt', chunkId: 0, data: enc.encode('mine') }] }),
+  });
+  assert.equal(owned.ok, true, `the lease holder's wave lands: ${JSON.stringify(owned.error)}`);
+  assert.equal(s.inMount(s.shared, '/held/a.txt'), 'mine');
+  const other = await s.send({ inodes: [{ path: 'shared/held/b.txt', parentPath: 'shared/held', isDir: false, size: 'theirs'.length, mtime: 1, mode: 0o644, chunkCount: 1 }], chunks: [{ path: 'shared/held/b.txt', chunkId: 0, data: enc.encode('theirs') }] });
+  assert.equal(other.ok, false, 'a wave with no lease is refused there');
+  assert.match(other.error.message, /EBUSY/);
+  const outside = await s.op({
+    op: 'writeBatchStream', args: [], cred: CRED_SESSION_USER, mutationOwner: lease.owner,
+    stream: encodeWriteBatchStream({ inodes: [{ path: 'shared/elsewhere.txt', parentPath: 'shared', isDir: false, size: 'x'.length, mtime: 1, mode: 0o644, chunkCount: 1 }], chunks: [{ path: 'shared/elsewhere.txt', chunkId: 0, data: enc.encode('x') }] }),
+  });
+  assert.equal(outside.ok, false, 'a routed record outside its own lease root');
+  assert.match(outside.error.message, /EPERM/);
+  assert.equal(s.inMount(s.shared, '/elsewhere.txt'), null);
+  s.engine.releaseExclusiveMutation(lease.owner);
+}
+
+// ── A lease holder's mkdir, open, unlink and rmdir on a mount and on SQLite present its lease ──
+// (Red before: the bridge's mkdir, open for writing, unlink and rmdir presented none:
+// under its own lease the holder was EBUSY.)
+{
+  const s = session();
+  // A mount the session user owns: what it may write there is the lease's question, not its mode's.
+  const mine = new MemoryVFS({ uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid });
+  s.files.vfs.mount('/mine', mine);
+  for (const [root, at] of [['mine/held', (p) => s.inMount(mine, '/held/' + p)], ['home/user/held', (p) => s.inSqlite('home/user/held/' + p)]]) {
+    await s.op({ op: 'mkdir', args: ['/' + root], cred: CRED_SESSION_USER });
+    await s.op({ op: 'mkdir', args: ['/' + root + '/d'], cred: CRED_SESSION_USER });
+    const lease = s.engine.as(CRED_SESSION_USER).acquireExclusiveMutation(root);
+    const leased = (op, args) => s.op({ op, args, cred: CRED_SESSION_USER, mutationOwner: lease.owner });
+    const handle = await leased('fsOpen', ['/' + root + '/big.bin', { write: true, create: true, truncate: true }]);
+    await leased('fsWrite', [handle.id, 0, enc.encode('written in place')]);
+    await leased('fsClose', [handle.id]);
+    assert.equal(at('big.bin'), 'written in place', `${root}: open, write, close under the lease`);
+    await assert.rejects(s.op({ op: 'fsOpen', args: ['/' + root + '/other.bin', { write: true, create: true }], cred: CRED_SESSION_USER }), /EBUSY/, `${root}: an open for writing without it`);
+    const read = await s.op({ op: 'fsOpen', args: ['/' + root + '/big.bin', { read: true }], cred: CRED_SESSION_USER });
+    await s.op({ op: 'fsClose', args: [read.id], cred: CRED_SESSION_USER });
+    await assert.rejects(s.op({ op: 'unlink', args: ['/' + root + '/big.bin'], cred: CRED_SESSION_USER }), /EBUSY/, `${root}: an unlink without it`);
+    await leased('unlink', ['/' + root + '/big.bin']);
+    assert.equal(at('big.bin'), null, `${root}: unlinked under the lease`);
+    await assert.rejects(s.op({ op: 'rmdir', args: ['/' + root + '/d'], cred: CRED_SESSION_USER }), /EBUSY/, `${root}: an rmdir without it`);
+    await leased('rmdir', ['/' + root + '/d']);
+    await assert.rejects(s.op({ op: 'mkdir', args: ['/' + root + '/e'], cred: CRED_SESSION_USER }), /EBUSY/, `${root}: a mkdir without it`);
+    await leased('mkdir', ['/' + root + '/e/f', { recursive: true }]);
+    s.engine.releaseExclusiveMutation(lease.owner);
+  }
+}
+
 console.log('w7-mount-routing: ok');

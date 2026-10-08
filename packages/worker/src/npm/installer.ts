@@ -97,7 +97,7 @@ import {
 } from '@nimbus-sh/platform/limits.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier, splitBareSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
-import { packageRangeSeparator, parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
+import { parseRegistryRequest, splitPackageSpec } from '@nimbus-sh/core/_shared/npm-spec.js';
 import {
   scanProjectImports,
   transformParser,
@@ -2728,23 +2728,10 @@ async function nodeModulesNames(view: ProcessView, dir: string): Promise<string[
   return names;
 }
 
+/** A command-line `name[@range]` (an `npm:` alias's range kept whole), with no range `latest`. */
 function parseExplicitPackageSpec(spec: string): { name: string; range: string } {
-  const aliasMarker = spec.indexOf('@npm:');
-  if (aliasMarker > 0) {
-    return {
-      name: spec.slice(0, aliasMarker),
-      range: 'npm:' + spec.slice(aliasMarker + '@npm:'.length),
-    };
-  }
-
-  const rangeAt = packageRangeSeparator(spec);
-  if (rangeAt >= 0) {
-    return {
-      name: spec.slice(0, rangeAt),
-      range: spec.slice(rangeAt + 1) || 'latest',
-    };
-  }
-  return { name: spec, range: 'latest' };
+  const { name, range } = splitPackageSpec(spec);
+  return { name, range: range || 'latest' };
 }
 
 function safeJsonParse<T>(json: string, fallback: T): T {

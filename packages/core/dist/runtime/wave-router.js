@@ -32,9 +32,9 @@ import { VfsError } from '../vfs/vfs-error.js';
 /** The suffix of a link's slot: `.<name>${LINK_SLOT_SUFFIX}-<wave>-<record>`. */
 export const LINK_SLOT_SUFFIX = '.nimbus-wave';
 export function namespaceWaveRouter(namespace, credential) {
-    const view = (cred, guard) => {
+    const view = (cred, guard, owner) => {
         const as = namespace.as(credential(cred));
-        return guard === undefined ? as : as.scoped(guard);
+        return guard === undefined && owner === undefined ? as : as.scoped(guard ?? (() => { }), owner);
     };
     return {
         mounts: () => namespace.mountGeneration(),
@@ -71,10 +71,11 @@ export function namespaceWaveRouter(namespace, credential) {
         composes(path) {
             return namespace.isAboveMount(path);
         },
-        async apply(record, cred, guard) {
-            const ns = view(cred, guard);
-            // Removing its own slot after a failure is the record's own, unguarded.
-            const cleanup = view(cred);
+        async apply(record, cred, guard, owner) {
+            // The wave's lease, presented to the namespace's lease check as its group commits present it.
+            const ns = view(cred, guard, owner);
+            // Removing its own slot after a failure is the record's own: not admitted again, under the same lease.
+            const cleanup = view(cred, undefined, owner);
             return applyRecord(ns, cleanup, record, pinOf(ns, parentOf(record.path)));
         },
     };
