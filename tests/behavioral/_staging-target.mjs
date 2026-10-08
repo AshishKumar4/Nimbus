@@ -39,8 +39,7 @@
 //                           time, for wrangler to drift.
 //
 //   Neither is `nimbus-probe`, the long-lived probe target, nor `nimbus`.
-//   CI deploys its own `nimbus-tw-ci-*` throwaway per run and grades that,
-//   so nothing here is a target a branch should land on.
+//   Use `remote-probes --deploy` for a branch's isolated throwaway.
 //
 // USAGE
 //   export CLOUDFLARE_ACCOUNT_ID=<account>       # account pin, required

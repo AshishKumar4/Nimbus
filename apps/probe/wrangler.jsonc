@@ -94,8 +94,7 @@
     }
   ],
   // Worker Previews (`wrangler preview`, wrangler >= 4.135): what every
-  // throwaway probe target — local `_throwaway-target.mjs up` and CI's
-  // `nimbus-tw-ci-*` — runs as. A Preview inherits NO binding or var from
+  // throwaway probe target runs as. A Preview inherits NO binding or var from
   // the top level (https://developers.cloudflare.com/workers/previews/configuration/),
   // so each one is redeclared here with the same name. Durable Objects get
   // a namespace and SQLite storage of their own per Preview, automatically;
