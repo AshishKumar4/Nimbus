@@ -45,9 +45,10 @@ export const d = load?.('./optional.cjs');`, ['./optional.cjs']],
 export const d = load('dep');`, ['dep']],
   ['an arrow in parentheses', String.raw`const load = ((id) => require(id));
 export const d = load('paren-arrow-dep');`, ['paren-arrow-dep']],
-  ['a Unicode name', String.raw`function λ(id) { return require(id); }
+  // Not String.raw: Bun hands a raw template's non-ASCII back as \u escapes.
+  ['a Unicode name', `function λ(id) { return require(id); }
 export const d = λ('dep');`, ['dep']],
-  ['a Unicode parameter', String.raw`function load(ñame) { return require(ñame); }
+  ['a Unicode parameter', `function load(ñame) { return require(ñame); }
 export const d = load('unicode-param-dep');`, ['unicode-param-dep']],
   ['an async arrow', String.raw`const load = async (id) => require(id);
 export const d = load('async-dep');`, ['async-dep']],
