@@ -25,7 +25,7 @@ for (const file of ['home/user/proj/x.txt', 'home/user/proj/a/y.txt', 'home/user
 kernel.chmod('home/user/proj/closed', 0o700);
 const bridge = new ProcessFiles(engine).bind({ pid: 7, cred: USER });
 
-const snapshot = subtreeSnapshot(bridge, '/home/user/proj', 100);
+const snapshot = await subtreeSnapshot(bridge, '/home/user/proj', 100);
 assert.equal(snapshot.rev, engine.revision());
 assert.deepEqual(snapshot.entries.map((entry) => entry.path.replace(/^\/+/, '')), [
   'home/user/proj/a',
@@ -36,7 +36,7 @@ assert.deepEqual(snapshot.entries.map((entry) => entry.path.replace(/^\/+/, ''))
   'home/user/proj/x.txt',
 ], 'the subtree whole, in path order: not the root, not a sibling sharing its prefix, not what the credential cannot search');
 assert.ok(snapshot.entries.every((entry) => entry.stat && typeof entry.rev === 'number'));
-assert.deepEqual(subtreeSnapshot(bridge, 'home/user/proj/a/b', 1).entries.map((entry) => entry.path.replace(/^\/+/, '')), ['home/user/proj/a/b/z.txt'], 'exactly the bound');
-assert.throws(() => subtreeSnapshot(bridge, '/home/user/proj', 5), (error) => error.code === 'E2BIG', 'past the bound it is refused, not cut short');
-assert.deepEqual(subtreeSnapshot(bridge, '/home/user/proj/a/b/z.txt', 10).entries, [], 'a file has nothing beneath it');
+assert.deepEqual((await subtreeSnapshot(bridge, 'home/user/proj/a/b', 1)).entries.map((entry) => entry.path.replace(/^\/+/, '')), ['home/user/proj/a/b/z.txt'], 'exactly the bound');
+await assert.rejects(subtreeSnapshot(bridge, '/home/user/proj', 5), (error) => error.code === 'E2BIG', 'past the bound it is refused, not cut short');
+assert.deepEqual((await subtreeSnapshot(bridge, '/home/user/proj/a/b/z.txt', 10)).entries, [], 'a file has nothing beneath it');
 console.log('fs-snapshot: ok');
