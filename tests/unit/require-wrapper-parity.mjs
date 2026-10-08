@@ -37,9 +37,43 @@ const _require = createRequire(import.meta.url);
 function tryRequire(id, from) {
   try { return from ? _require(_require.resolve(id, { paths: [from] })) : _require(id); } catch (e) {}
 }`, ['vue/compiler-sfc', 'vue/package.json']],
+  ['a parenthesized callee', String.raw`function load(id) { try { return require(id); } catch {} }
+export const d = (load)('./private.cjs');`, ['./private.cjs']],
+  ['an optional call', String.raw`function load(id) { try { return require(id); } catch {} }
+export const d = load?.('./optional.cjs');`, ['./optional.cjs']],
+  ['a function expression in parentheses', String.raw`const load = (function (id) { return require(id); });
+export const d = load('dep');`, ['dep']],
+  ['an arrow in parentheses', String.raw`const load = ((id) => require(id));
+export const d = load('paren-arrow-dep');`, ['paren-arrow-dep']],
+  ['a Unicode name', String.raw`function λ(id) { return require(id); }
+export const d = λ('dep');`, ['dep']],
+  ['a Unicode parameter', String.raw`function load(ñame) { return require(ñame); }
+export const d = load('unicode-param-dep');`, ['unicode-param-dep']],
+  ['an async arrow', String.raw`const load = async (id) => require(id);
+export const d = load('async-dep');`, ['async-dep']],
+  ['a generator', String.raw`function* load(id) { yield require(id); }
+export const d = load('generator-dep');`, ['generator-dep']],
+  ['a parenthesized require', String.raw`function load(id) { return (require)(id); }
+export const d = load('paren-require-dep');`, ['paren-require-dep']],
+  ['an optionally called require', String.raw`function load(id) { return require?.(id); }
+export const d = load('optional-require-dep');`, ['optional-require-dep']],
+  ['a parenthesized argument', String.raw`function load(id) { return require((id)); }
+export const d = load('paren-arg-dep');`, ['paren-arg-dep']],
+  ['a createRequire after another declarator', String.raw`import { createRequire } from 'node:module';
+const base = import.meta.url, req = createRequire(base);
+function load(id) { return req(id); }
+export const d = load('second-declarator-dep');`, ['second-declarator-dep']],
+  ['a createRequire on a namespace', String.raw`import module from 'node:module';
+const req = module.createRequire(import.meta.url);
+const load = (id) => req.resolve(id);
+export const d = load('namespace-dep');`, ['namespace-dep']],
   ['no wrapper', String.raw`function label(id) { return "[" + id + "]"; }
 function second(options, id) { return require(id); }
 export const a = label('not-a-module'), b = second('not-either', 'x');`, []],
+  ['a method, an unnamed callback and a member require are no wrappers', String.raw`const o = { load(id) { return require(id); } };
+export const a = o.load('method-dep'), b = [1].map((id) => require(id)), c = ((id) => require(id))('iife-dep');
+function viaMember(id) { return host.require(id); }
+export const d = viaMember('member-dep');`, []],
 ];
 
 for (const [name, code, expected] of cases) {
