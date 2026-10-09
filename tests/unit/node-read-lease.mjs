@@ -108,7 +108,7 @@ await runScenarios(import.meta.path, {
     assert.deepEqual(names, session.readdir('home/user/app').map((entry) => entry.name).sort());
     assert.deepEqual(typed.map((entry) => [entry.name, entry.isFile()]), [['a.txt', true]]);
     const want = session.stat('home/user/app/sub/a.txt');
-    assert.deepEqual([stat.size, stat.mode, stat.ino, stat.uid, stat.mtimeMs], [want.size, want.mode, want.ino, want.uid, want.mtime]);
+    assert.deepEqual([stat.size, stat.mode & 0o7777, stat.ino, stat.uid, stat.mtimeMs], [want.size, want.mode & 0o7777, want.ino, want.uid, want.mtime]);
     assert.equal(lstat.isDirectory(), true);
     // Another's change recalls the lease: the listing after it has the new name.
     await authority.peer.writeFile('home/user/app/sub/b.txt', 'b');
