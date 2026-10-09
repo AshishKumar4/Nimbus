@@ -496,6 +496,82 @@ t.ref();
 console.log('hasRef ' + t.hasRef() + ' ' + t.ref.name + ' ' + t.unref.name);
 console.log('main done');
 `,
+  'process.cjs': SHOW + String.raw`
+const EventEmitter = require('events');
+const show2 = (label, f) => { try { const r = f(); console.log(label + ': ' + (typeof r === 'string' ? r : JSON.stringify(r))); } catch (e) { show(label, e); } };
+show2('emitter', () => [process instanceof EventEmitter, process.constructor.name, Object.getPrototypeOf(Object.getPrototypeOf(process)) === EventEmitter.prototype,
+  Object.hasOwn(process, 'on'), typeof process._events, typeof process._eventsCount, process.listenerCount('nimbus-x')]);
+let heard;
+process.on('nimbus-x', (v) => { heard = v; });
+show2('emit', () => [process.emit('nimbus-x', 7), heard, process.listenerCount('nimbus-x'), process.eventNames().includes('nimbus-x')]);
+show2('identity', () => [process.argv0, process.argv[0] === process.execPath, process.release.name, process.release.lts, process.debugPort, process.domain]);
+show2('hrtime', () => { const a = process.hrtime(); const d = process.hrtime(a); return [a.length, typeof a[0], d[0] >= 0 && d[1] >= 0 && d[1] < 1e9, typeof process.hrtime.bigint()]; });
+show2('hrtime array', () => process.hrtime(5));
+show2('hrtime length', () => process.hrtime([1]));
+show2('cpuUsage shape', () => Object.keys(process.cpuUsage()));
+show2('cpuUsage prev', () => process.cpuUsage({ user: -1, system: 0 }));
+show2('cpuUsage type', () => process.cpuUsage({ user: 'x', system: 0 }));
+show2('cpuUsage object', () => process.cpuUsage(5));
+show2('threadCpuUsage shape', () => Object.keys(process.threadCpuUsage()));
+show2('resourceUsage shape', () => Object.keys(process.resourceUsage()));
+show2('memoryUsage shape', () => [Object.keys(process.memoryUsage()), typeof process.memoryUsage.rss()]);
+show2('kill float', () => process.kill(1.5));
+show2('kill string pid', () => process.kill('abc'));
+show2('kill signal', () => process.kill(process.pid, 'SIGNOPE'));
+show2('kill probe', () => process.kill(process.pid, 0));
+show2('assert', () => process.assert(false, 'm'));
+show2('assert ok', () => process.assert(true));
+show2('capture', () => { process.setUncaughtExceptionCaptureCallback(() => {}); const had = process.hasUncaughtExceptionCaptureCallback(); try { process.setUncaughtExceptionCaptureCallback(() => {}); } catch (e) { return [had, e.code, e.message]; } });
+show2('capture bad', () => process.setUncaughtExceptionCaptureCallback(5));
+show2('capture clear', () => [process.setUncaughtExceptionCaptureCallback(null), process.hasUncaughtExceptionCaptureCallback()]);
+show2('ref', () => { const calls = []; process.ref({ [Symbol.for('nodejs.ref')]() { calls.push('sym'); }, ref() { calls.push('ref'); } }); process.unref({ unref() { calls.push('unref'); } }); process.ref(null); return calls; });
+show2('flags', () => { const f = process.allowedNodeEnvironmentFlags; return [f.size > 50, f.has('--max-old-space-size'), f.has('max_old_space_size'), f.has('--max-old-space-size=4'), f.has('--no-warnings'), f.has('--expose-gc'), f.has('inspect'), Object.isFrozen(f), f instanceof Set]; });
+show2('loadEnvFile missing', () => process.loadEnvFile('nope.env'));
+show2('loadEnvFile type', () => process.loadEnvFile(5));
+process.env.KEEP = 'mine';
+show2('loadEnvFile', () => [process.loadEnvFile('envs/app.env'), process.env.FROM_FILE, process.env.QUOTED, process.env.KEEP]);
+show2('uptime', () => typeof process.uptime() === 'number' && process.uptime() >= 0);
+show2('memory', () => [typeof process.availableMemory(), typeof process.constrainedMemory()]);
+show2('rawDebug', () => typeof process._rawDebug);
+`,
+  'envs/app.env': 'FROM_FILE=yes\nQUOTED="a b"\nKEEP=file\n',
+  'capture.cjs': String.raw`
+process.on('uncaughtExceptionMonitor', (e, type) => console.log('monitor ' + e.message + ' ' + type));
+process.on('uncaughtException', () => console.log('uncaughtException (should not)'));
+process.setUncaughtExceptionCaptureCallback((e) => console.log('captured ' + e.message));
+setTimeout(() => { throw new Error('later'); }, 1);
+setTimeout(() => console.log('still running'), 20);
+`,
+  'fsstats.cjs': SHOW + String.raw`
+const fs = require('fs');
+const show2 = (label, f) => { try { const r = f(); console.log(label + ': ' + (typeof r === 'string' ? r : JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? v.toString() + 'n' : v)))); } catch (e) { show(label, e); } };
+fs.writeFileSync('statted.txt', 'x'.repeat(5000));
+fs.mkdirSync('stattedDir', { recursive: true });
+const shape = (s) => [s.constructor.name, s instanceof fs.Stats, Object.keys(s).join(','), s.isFile(), s.isDirectory(), s.isSymbolicLink(), s.isCharacterDevice(), typeof s.mtime, s.mtime instanceof Date, s.size, s.blksize, s.blocks, typeof s.dev, typeof s.ino, s.nlink > 0];
+show2('file', () => shape(fs.statSync('statted.txt')));
+show2('dir', () => shape(fs.statSync('stattedDir')).slice(0, 6));
+show2('dates lazy', () => { const s = fs.statSync('statted.txt'); const before = Object.keys(s).includes('mtime'); const m = s.mtime; return [before, Object.keys(s).includes('mtime'), m.getTime() === Math.round(s.mtimeMs)]; });
+show2('bigint', () => { const s = fs.statSync('statted.txt', { bigint: true }); return [s.constructor.name, typeof s.size, typeof s.mtimeNs, s.isFile(), s instanceof fs.Stats, s.mtimeNs / 1000000n === s.mtimeMs]; });
+show2('lstat bigint', () => fs.lstatSync('statted.txt', { bigint: true }).constructor.name);
+show2('fstat bigint', () => { const fd = fs.openSync('statted.txt', 'r'); try { return fs.fstatSync(fd, { bigint: true }).constructor.name; } finally { fs.closeSync(fd); } });
+show2('constants', () => [fs.F_OK, fs.R_OK, fs.W_OK, fs.X_OK, fs.F_OK === fs.constants.F_OK]);
+show2('lchmod', () => [typeof fs.lchmod, typeof fs.lchmodSync, 'lchmod' in fs, typeof fs.promises.lchmod]);
+show2('toUnixTimestamp', () => [fs._toUnixTimestamp(new Date(1500)), fs._toUnixTimestamp('12'), fs._toUnixTimestamp(3.5), fs._toUnixTimestamp(-1) > 1e9]);
+show2('toUnixTimestamp bad', () => fs._toUnixTimestamp({}));
+show2('Stats ctor', () => { const s = new fs.Stats(1, 0o100644, 1, 0, 0, 0, 4096, 1, 10, 1, 0, 0, 0, 0); return [s.isFile(), s.size, s instanceof fs.Stats]; });
+(async () => {
+  await new Promise((resolve) => fs.stat('statted.txt', { bigint: true }, (e, s) => { console.log('stat cb bigint: ' + (e ? e.code : s.constructor.name)); resolve(); }));
+  console.log('promises bigint: ' + (await fs.promises.stat('statted.txt', { bigint: true })).constructor.name);
+  try { await fs.promises.lchmod('statted.txt', 0o600); } catch (e) { console.log('promises lchmod: ' + e.code + ' ' + e.message); }
+})();
+`,
+  'dnsconst.cjs': String.raw`
+const dns = require('dns');
+const p = require('dns/promises');
+const names = Object.keys(dns).filter((k) => /^[A-Z0-9_]+$/.test(k));
+console.log(JSON.stringify(names.map((k) => [k, dns[k]])));
+console.log(JSON.stringify(Object.keys(p).filter((k) => /^[A-Z0-9_]+$/.test(k)).map((k) => [k, p[k] === dns[k]])));
+`,
   'deprecate.cjs': SHOW + String.raw`
 const util = require('util');
 const old = util.deprecate(function old(a, b) { return a + b; }, 'old() is going away', 'DEP_NIMBUS');
@@ -508,7 +584,7 @@ attempt('deprecate code', () => util.deprecate(() => {}, 'm', 5));
 `,
 };
 // Each program's command line, after \`node\`.
-const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs'];
+const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs', 'process.cjs', 'capture.cjs', 'fsstats.cjs', 'dnsconst.cjs'];
 
 const host = mkdtempSync(join(tmpdir(), 'node-lib-'));
 process.on('exit', () => rmSync(host, { recursive: true, force: true }));

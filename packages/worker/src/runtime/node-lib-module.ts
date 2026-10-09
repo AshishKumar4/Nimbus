@@ -11,6 +11,7 @@
 
 import { NODE_LIB_HOST_SOURCE, WORKERD_SLOTS_SOURCE } from './node-lib-host.js';
 import { EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_LIB_SOURCES, NODE_PRIMORDIALS_SOURCE, NODE_UV_ERRORS } from './node-lib-source.js';
+import { NODE_OPTION_ALIASES, NODE_OPTIONS_TABLE } from '@nimbus-sh/core/runtime/node-cli-options.generated.js';
 
 export function generateNodeLibModule(): string {
   const sources = Object.entries(NODE_LIB_SOURCES)
@@ -26,6 +27,9 @@ ${NODE_PRIMORDIALS_SOURCE}
   eastAsianWideRanges: ${JSON.stringify(EAST_ASIAN_WIDE_RANGES)},
   builtinObjects: ${JSON.stringify(NODE_BUILTIN_OBJECTS)},
   uvErrors: ${JSON.stringify(NODE_UV_ERRORS)},
+  // node's options and their aliases (core node-cli-options.generated.ts): [name, kind, allowed in NODE_OPTIONS].
+  cliOptions: ${JSON.stringify([...NODE_OPTIONS_TABLE].map(([name, { kind, env }]) => [name, kind, env]))},
+  cliAliases: ${JSON.stringify([...NODE_OPTION_ALIASES])},
   sources: {
 ${sources}
   },

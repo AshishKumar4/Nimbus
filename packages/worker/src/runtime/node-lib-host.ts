@@ -676,7 +676,30 @@ export const NODE_LIB_HOST_SOURCE = String.raw`function createNodeLib(platform) 
   const hosted = {
     "internal/util": internalUtil,
     "internal/errors": { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable, isStackOverflowError, ErrnoException, ExceptionWithHostPort, AbortError },
-    "internal/options": { getOptionValue: (name) => platform.optionValue(name) },
+    "internal/options": {
+      getOptionValue: (name) => platform.optionValue(name),
+      // Over the CLI's option table (core node-cli-options.generated.ts), as src/node_options.cc gives it.
+      getCLIOptionsInfo() {
+        const optionTypes = { noop: 0, v8: 1, boolean: 2, value: 5 };
+        return {
+          options: new Map(platform.cliOptions.map(([name, kind, env]) => [name, { envVarSettings: env ? 0 : 1, type: optionTypes[kind] }])),
+          aliases: new Map(platform.cliAliases.map(([from, expansion]) => [from, [...expansion]])),
+        };
+      },
+    },
+    "internal/worker": { isMainThread: true },
+    "internal/fs/utils": {
+      // lib/internal/fs/utils.js getValidatedPath: a path string or bytes, or a file: URL's path.
+      getValidatedPath(fileURLOrPath, propName = "path") {
+        const path = fileURLOrPath != null && fileURLOrPath.href && fileURLOrPath.protocol ? platform.url.fileURLToPath(fileURLOrPath) : fileURLOrPath;
+        if (typeof path !== "string" && !types.isUint8Array(path)) throw new nodeErrorCodes.ERR_INVALID_ARG_TYPE(propName, ["string", "Buffer", "URL"], path);
+        if ((typeof path === "string" ? path : String.fromCharCode(...path)).includes("\u0000")) {
+          throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE(propName, path, "must be a string, Uint8Array, or URL without null bytes");
+        }
+        return path;
+      },
+    },
+    diagnostics_channel: platform.diagnosticsChannel,
     "internal/constants": { CHAR_LOWERCASE_B: 98, CHAR_LOWERCASE_E: 101, CHAR_LOWERCASE_N: 110 },
     "internal/abort_controller": abortController,
     "internal/console/global": platform.console,
@@ -699,7 +722,13 @@ export const NODE_LIB_HOST_SOURCE = String.raw`function createNodeLib(platform) 
     icu: icuBinding,
     constants: { os: { signals: platform.signals } },
     buffer: { compare: (a, b) => platform.Buffer.compare(a, b) },
-    errors: { getErrorSourcePositions: (error) => platform.errorSourcePositions(error) },
+    errors: { getErrorSourcePositions: (error) => platform.errorSourcePositions(error), exitCodes: { kNoFailure: 0, kGenericUserError: 1 } },
+    process_methods: platform.processMethods,
+    // src/node_options.h's enums, as getCLIOptionsInfo's entries use them.
+    options: {
+      envSettings: { kAllowedInEnvvar: 0, kDisallowedInEnvvar: 1 },
+      types: { kNoOp: 0, kV8Option: 1, kBoolean: 2, kInteger: 3, kUInteger: 4, kString: 5, kHostPort: 6, kStringList: 7 },
+    },
     // Node's tracing is off: no category is enabled, and nothing traces.
     trace_events: { getCategoryEnabledBuffer: () => new Uint8Array(1), trace() {} },
   };
