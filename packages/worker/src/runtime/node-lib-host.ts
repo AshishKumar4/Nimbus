@@ -11,8 +11,8 @@
  * What Node's modules require of its internals that is not itself one of
  * them is ported here: lib/internal/util.js join, removeColors, isError,
  * deprecate, setOwnProperty and normalizeEncoding; lib/internal/errors.js
- * codes (core _shared/node-error.ts nodeErrorCodes, Node's messages),
- * hideStackFrames, isErrorStackTraceLimitWritable and isStackOverflowError;
+ * codes, hideStackFrames and isErrorStackTraceLimitWritable (platform.errors:
+ * core _shared/node-error.ts's, Node's messages) and isStackOverflowError;
  * lib/internal/url.js isURL; lib/internal/util/types.js's typed-array
  * checks; src/node_i18n.cc GetStringWidth; and the bindings below. The
  * errors are the shims' (node-error.ts), which the text calls by name. Of
@@ -38,7 +38,8 @@
  * a proxy on its prototype chain, shows its slot as unknown, since reading
  * it would run that code once more than Node.
  *
- * `platform`: { util (the platform's node:util), slots, Buffer, url ({ URL,
+ * `platform`: { util (the platform's node:util), errors ({ codes,
+ * hideStackFrames, isErrorStackTraceLimitWritable }), slots, Buffer, url ({ URL,
  * pathToFileURL }), process, builtinModules, builtinObjects (Node's
  * NODE_BUILTIN_OBJECTS), eastAsianWide(code), signals (os.constants.signals),
  * insideNodeModules() (whether the caller's code is a package's),
@@ -54,6 +55,7 @@ export const NODE_LIB_HOST_SOURCE = String.raw`function createNodeLib(platform) 
   "use strict";
   const platformUtil = platform.util;
   const primordials = platform.primordials;
+  const { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable } = platform.errors;
   const customInspectSymbol = Symbol.for("nodejs.util.inspect.custom");
   const typedArrayTag = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;
   const typedArrayKind = (value) => Reflect.apply(typedArrayTag, value, []);

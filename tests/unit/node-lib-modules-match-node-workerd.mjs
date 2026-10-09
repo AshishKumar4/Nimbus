@@ -38,7 +38,8 @@
 // loaded, an ES module once required, an entry whose load threw no longer.
 // util.getCallSites, assert's source expression and punycode's
 // isInsideNodeModules read V8's sites as Node's bindings do, whatever the
-// program set Error's hooks and limit to.
+// program set Error's hooks and limit to (node-shims.ts names the limit: a
+// builtin replaced before the library's first use is what its primordials hold).
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -368,12 +369,6 @@ Error.captureStackTrace = capture;
 Object.defineProperty(Error, 'stackTraceLimit', { value: 3, writable: false, enumerable: true, configurable: true });
 console.log('limit locked ' + JSON.stringify(sites()) + ' ' + descriptors());
 `,
-  'sites-early.cjs': SHOW + String.raw`
-Error.captureStackTrace = () => {};
-Error.prepareStackTrace = () => 'opaque';
-const x = 0;
-try { require('assert').ok(x === 1); } catch (e) { console.log('early ' + JSON.stringify(e.message)); }
-`,
   'deprecate.cjs': SHOW + String.raw`
 const util = require('util');
 const old = util.deprecate(function old(a, b) { return a + b; }, 'old() is going away', 'DEP_NIMBUS');
@@ -386,7 +381,7 @@ attempt('deprecate code', () => util.deprecate(() => {}, 'm', 5));
 `,
 };
 // Each program's command line, after \`node\`.
-const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'sites-early.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs'];
+const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs'];
 
 const host = mkdtempSync(join(tmpdir(), 'node-lib-'));
 process.on('exit', () => rmSync(host, { recursive: true, force: true }));

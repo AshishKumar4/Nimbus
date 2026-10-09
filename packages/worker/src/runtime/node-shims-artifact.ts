@@ -1,7 +1,7 @@
 /**
  * node-shims-artifact.ts — supervisor-side fetcher for the staged sources of
  * the node-compat layer: the shims, the VFS write ledger, the resident store,
- * and the runtime-code interpreter with its host module.
+ * the runtime-code interpreter with its host module, and Node's library.
  *
  * All three are staged as static assets by scripts/bundle-node-shims.mjs and
  * promoted out of the worker bundle for its size gate: only a node facet ever
@@ -22,6 +22,9 @@ import {
   JS_INTERPRETER_OPS_ENTRY,
   JS_INTERPRETER_OPS_SHA256,
   JS_INTERPRETER_SHA256,
+  NODE_LIB_BUILD_ID,
+  NODE_LIB_ENTRY,
+  NODE_LIB_SHA256,
   NODE_SHIMS_BUILD_ID,
   NODE_SHIMS_ENTRY,
   NODE_SHIMS_SHA256,
@@ -53,6 +56,8 @@ export interface NodeFacetSources {
   interpreter: string;
   /** The interpreter's host module (core interpreter/host-ops.ts HOST_OPS_SOURCE), a module of the map. */
   interpreterOps: string;
+  /** Node's library (runtime/node-lib-module.ts generateNodeLibModule()), a module of the map. */
+  nodeLib: string;
 }
 
 const STAGED_BY = 'scripts/bundle-node-shims.mjs';
@@ -107,6 +112,14 @@ const JS_INTERPRETER_OPS = stagedRuntimeSource({
   stagedBy: STAGED_BY,
   requiredBy: REQUIRED_BY,
 });
+const NODE_LIB = stagedRuntimeSource({
+  label: 'node-lib',
+  entry: NODE_LIB_ENTRY,
+  buildId: NODE_LIB_BUILD_ID,
+  sha256: NODE_LIB_SHA256,
+  stagedBy: STAGED_BY,
+  requiredBy: REQUIRED_BY,
+});
 
 /**
  * The node-compat layer's sources for facet worker codegen. Memoized per
@@ -115,13 +128,14 @@ const JS_INTERPRETER_OPS = stagedRuntimeSource({
  */
 export const fetchNodeFacetSources: (env: StagedSourceEnv) => Promise<NodeFacetSources> =
   memoizeUntilRejected(async (env: StagedSourceEnv) => {
-    const [shims, ledger, residentStore, interpreterPrimordials, interpreter, interpreterOps] = await Promise.all([
+    const [shims, ledger, residentStore, interpreterPrimordials, interpreter, interpreterOps, nodeLib] = await Promise.all([
       fetchStagedText(env, NODE_SHIMS),
       fetchStagedText(env, VFS_WRITE_LEDGER),
       fetchStagedText(env, RESIDENT_STORE),
       fetchStagedText(env, JS_INTERPRETER_PRIMORDIALS),
       fetchStagedText(env, JS_INTERPRETER),
       fetchStagedText(env, JS_INTERPRETER_OPS),
+      fetchStagedText(env, NODE_LIB),
     ]);
-    return { shims, ledger, residentStore, interpreterPrimordials, interpreter, interpreterOps };
+    return { shims, ledger, residentStore, interpreterPrimordials, interpreter, interpreterOps, nodeLib };
   });
