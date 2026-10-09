@@ -29,6 +29,7 @@
 
 import {
   METADATA_CANDIDATE_WORK,
+  heldCellText,
   packageJsonVisible,
   resolveRequireEx,
   type PkgJsonSink,
@@ -353,8 +354,9 @@ export async function prefetchForRequire(
     if (bundle[path] !== undefined) return bundle[path];
     if (progress) await progress(METADATA_CANDIDATE_WORK + path.length);
     const held = policy?.held[path];
+    const heldText = held === undefined ? undefined : heldCellText(held);
     const authorize = vfs.assertReadable;
-    const reuseHeld = typeof held === 'string' && authorize !== undefined;
+    const reuseHeld = heldText !== undefined && authorize !== undefined;
     if (reuseHeld) {
       try { await authorize.call(vfs, path); }
       catch { declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' }; return null; }
@@ -371,12 +373,12 @@ export async function prefetchForRequire(
       }
     }
     let content: string;
-    try { content = reuseHeld ? held : await vfs.readFileString(path); }
+    try { content = reuseHeld ? heldText : await vfs.readFileString(path); }
     catch {
       if (policy) declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' };
       return null;
     }
-    if (held !== undefined && content !== held) {
+    if (heldText !== undefined && content !== heldText) {
       declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' };
       return null;
     }
