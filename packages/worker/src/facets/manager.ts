@@ -7011,8 +7011,8 @@ export class FacetManager {
           if (inputChannel > 0) this.stdinTaken.get(inputChannel)?.release();
           this.stdinTaken.delete(inputChannel);
           held.give();
+          this.outputGates.delete(entry.pid);
           if (stoppable) {
-            this.outputGates.delete(entry.pid);
             this.journals.get(entry.pid)?.close();
             this.journals.delete(entry.pid);
             this._dropNetTargets(entry.pid);
@@ -7047,9 +7047,10 @@ export class FacetManager {
     stop: StopRecord,
   ): Promise<FacetExecResult> {
     const pid = entry.pid;
+    // The gate stays while the resident boots: a late chunk of the stopped
+    // run is dropped, the resident's are delivered (exec's finally ends it).
     const gate = this.outputGates.get(pid);
     const stopped = gate?.stopped(stop) ?? { fresh: [], prefix: null };
-    this.outputGates.delete(pid);
     for (const { stream, bytes } of stopped.fresh) await this._deliverOutput(pid, stream, bytes);
     if (stopped.prefix === null) {
       const message = `node: this program listens as a server, so Nimbus runs it again as one, but it printed more than `
