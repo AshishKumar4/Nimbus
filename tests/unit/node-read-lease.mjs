@@ -14,6 +14,7 @@ import {
   launchResident,
   runScenarios,
   residentDataPlan,
+  sleep as rawSleep,
 } from './lib/resident-body.mjs';
 
 const F = '/home/user/app/f.txt';
@@ -87,6 +88,8 @@ await runScenarios(import.meta.path, {
     const { authority, probe, log } = await boot();
     await authority.peer.mkdir('home/user/app/sub', { mode: 0o755 });
     await authority.peer.writeFile('home/user/app/sub/a.txt', 'aa');
+    // Past the hold-off a recall leaves (the process is leased nothing for a trust's length).
+    await rawSleep(READ_LEASE_TRUST_MS + 20);
     await probe.resume();
     await probe.resume();
     assert.ok(globalThis.__nimbusProcessFs.readTrusted(), 'the barrier took no lease');
