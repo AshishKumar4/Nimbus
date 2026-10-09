@@ -900,8 +900,7 @@ async function main() {
   }
 
   // 7. What a read lease vouches for, which the node shims embed as source
-  //    inside their fs scope: the WASI instance's body bundles the same
-  //    module at its top level, and the two meet in one module (opencode's).
+  //    in the fs scope that answers by it.
   const readLeaseCover = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'read-lease-cover.ts'),
     'read-lease-cover',
@@ -982,7 +981,7 @@ async function main() {
     '',
     '/**',
     ' * Declares SESSION_KERNEL_ROOTS, READ_LEASE_UNCOVERED_ROOTS and readLeaseCovers;',
-    ' * the node shims splice it inside their fs scope, not at their top level.',
+    ' * the node shims splice it into their fs scope.',
     ' */',
     `export const READ_LEASE_COVER_PREAMBLE: string = ${JSON.stringify(readLeaseCover)};`,
     '',

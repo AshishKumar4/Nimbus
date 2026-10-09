@@ -9,7 +9,9 @@
  *    holder answered the recall (or the holder's trust in it ran out: it is
  *    never stopped for not answering). The holder's own writes recall nothing.
  *  - A holder that has not confirmed it within its trust costs a writer no wait.
- *  - The session's own stores are not leased: their synchronous writes never meet one.
+ *  - The session's own stores are leased too: a synchronous write to one is
+ *    made at once, never refused, and published once the lease is recalled;
+ *    meanwhile the process it was written for and the kernel read it.
  */
 
 import assert from 'node:assert/strict';
@@ -205,11 +207,10 @@ function barrier(s, bridge, from) {
   const from = other.acquire(s.engine.epoch, s.engine.revision());
   const writing = withRecall(() => writer.writeFile('/home/user/d/a.txt', 'held'));
   await sleep(10);
-  // Recalled just now: the reader holds no lease, and the kernel's own store writes without one.
-  s.kernel.mkdir('.nimbus', { recursive: true });
-  s.kernel.writeFile('.nimbus/elsewhere', 'x');
+  // The reader's own write recalls nothing: it is published at once, ahead of the held one.
+  reader.writeFile('/home/user/elsewhere', 'x');
   const later = other.acquire(s.engine.epoch, from.rev);
-  assert.ok(later.paths.some((entry) => entry.path === '.nimbus/elsewhere'));
+  assert.ok(later.paths.some((entry) => entry.path === 'home/user/elsewhere'));
   assert.ok(!later.paths.some((entry) => entry.path === 'home/user/d/a.txt'), 'the held write was reported with the later one');
   reader.recalled(readLease.owner, 'revoke');
   await writing;
@@ -361,15 +362,26 @@ function barrier(s, bridge, from) {
   await writing;
 }
 
-// ── The session's own stores are not leased ──
+// ── The session's stores: a synchronous write is held, not refused; the process it is for and the kernel read it, anyone else waits ──
 {
   const s = session();
   const reader = s.files.bind({ pid: 7, cred: USER });
-  barrier(s, reader);
-  const started = Date.now();
-  s.kernel.mkdir('.nimbus/images', { recursive: true });
-  s.kernel.writeFile('.nimbus/images/x', 'image');
-  assert.ok(Date.now() - started < 50);
+  const other = s.files.bind({ pid: 9, cred: USER });
+  const { readLease } = barrier(s, reader);
+  const from = other.acquire(s.engine.epoch, s.engine.revision());
+  // As a launch writes process 8's boot image: the kernel, through 8's binding.
+  const launching = s.files.bind({ pid: 8, cred: CRED_KERNEL }).synchronous;
+  launching.mkdir('/var/lib/nimbus/facet-images', { recursive: true, mode: 0o755 });
+  launching.writeFile('/var/lib/nimbus/facet-images/a.js', 'image');
+  const image = '/var/lib/nimbus/facet-images/a.js';
+  const decode = (bytes) => new TextDecoder().decode(bytes);
+  assert.equal(decode(s.files.bind({ pid: 8, cred: USER }).readFile(image)), 'image', 'the process it was written for waited');
+  assert.equal(decode(s.kernel.readFile(image.slice(1))), 'image', 'the kernel waited');
+  assert.throws(() => other.readFile(image), (error) => error.code === 'EAGAIN', 'another read what is held for publication');
+  assert.ok(!other.acquire(s.engine.epoch, from.rev).paths.some((entry) => entry.path.startsWith('var/lib/nimbus')), 'a barrier reported it before the recall');
+  assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
+  reader.recalled(readLease.owner, 'revoke');
+  assert.equal(decode(await withRecall(() => other.readFile(image))), 'image');
   assert.equal(s.engine.readLeaseStats().broken, 0);
 }
 

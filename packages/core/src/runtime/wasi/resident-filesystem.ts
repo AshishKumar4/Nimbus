@@ -47,7 +47,6 @@ import type {
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { delegationHolder, type DelegationHolder } from './delegation-holder.js';
-import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../../_shared/read-lease-cover.js';
 import type { ProcessFsJournal, ProcessFsOp, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
@@ -317,32 +316,20 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       };
     },
   });
-  /** Whether the store has answered for the session's stores, which change with no recall: its barriers are asked from then on. */
-  let storesViewed = false;
-  const viewed = (key: string, listing: boolean): void => {
-    if (!storesViewed && !readLeaseCovers(key, listing, SESSION_KERNEL_ROOTS)) storesViewed = true;
-  };
   const store: ResidentNamespace = {
     get device() { return resident.device; },
     get cred() { return resident.cred; },
     ready: () => resident.ready(),
     // What this process decided in a subtree it holds is what it sees there.
     entry: (key) => {
-      viewed(key, false);
       const own = holder?.entry(key);
       return own !== undefined ? own : resident.entry(key);
     },
-    children: (key) => {
-      viewed(key, true);
-      return holder === null ? resident.children(key) : holder.children(key, resident.children(key));
-    },
+    children: (key) => (holder === null ? resident.children(key) : holder.children(key, resident.children(key))),
     list: (key) => timed(resident.list(key)),
     lookup: (keys, content) => timed(resident.lookup(keys, content)),
     listTree: (key) => timed(resident.listTree(key)),
-    content: (key) => {
-      viewed(key, false);
-      return resident.content(key);
-    },
+    content: (key) => resident.content(key),
     fill: (key, entry) => timed(resident.fill(key, entry)),
     barrier: (lease) => timed(resident.barrier(lease)),
     reserve: (bytes) => resident.reserve(bytes),
@@ -493,7 +480,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    */
   const asking = (): boolean => {
     if (!owed) return false;
-    if (changed || storesViewed || holder === null || !holder.client.readTrusted()) return true;
+    if (changed || holder === null || !holder.client.readTrusted()) return true;
     owed = false;
     counts.leasedBarriers++;
     return false;

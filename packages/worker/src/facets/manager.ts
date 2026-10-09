@@ -51,8 +51,9 @@ import {
   serializeFacetVfsCursor,
 } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { NimbusFilesystemAuthority, RuntimeFsBridge, RuntimeVfsDirEntry, RuntimeVfsStat, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { NimbusFilesystemAuthority, RuntimeFsBridge, RuntimeSynchronousFs, RuntimeVfsDirEntry, RuntimeVfsStat, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { direntTypeOf, type KnownDirentType } from '@nimbus-sh/core/vfs/dirent-type.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -5409,7 +5410,7 @@ export class FacetManager {
    * live process table.
    */
   private readonly imageStore = new ImageStore(
-    () => this._imageBlobs(),
+    (pid) => this._imageBlobs(pid),
     (pid) => this.processes.get(pid)?.state === 'running',
   );
   /**
@@ -5882,28 +5883,39 @@ export class FacetManager {
   }
 
   /**
-   * The image store's disk: this session's VFS, as the kernel — the store is
-   * written by the kernel and read by processes through supervisor bindings
-   * that enforce their own credential. Mode 0644 at creation, as POSIX has
-   * it, is what makes the read succeed for any process by construction; the
-   * store itself decides nothing about modes.
+   * The image store's disk for process `pid`'s images: this session's VFS,
+   * as the kernel writing on its behalf (_kernelFor) — the store is written
+   * by the kernel and read by processes through supervisor bindings that
+   * enforce their own credential. Mode 0644 at creation (0666 under the
+   * kernel's umask), as POSIX has it, is what makes the read succeed for any
+   * process by construction; the store itself decides nothing about modes.
    */
-  private _imageBlobs(): ImageBlobStore {
-    const vfs = this.vfs;
-    if (!vfs) {
+  private _imageBlobs(pid: number): ImageBlobStore {
+    if (!this.filesystem) {
       throw new Error(
         'Nimbus: a resident process needs a session filesystem to materialize its boot image',
       );
     }
-    const fs = vfs.as(CRED_KERNEL);
+    const fs = this._kernelFor(pid);
+    const at = (path: string) => `/${stripLeadingSlashes(path)}`;
     return {
-      mkdirp: (dir) => fs.mkdir(dir, { recursive: true, mode: 0o755 }),
-      sizeOf: (path) => (fs.exists(path) ? fs.lstat(path).size : null),
-      writeFile: (path, bytes) => fs.writeFile(path, bytes, { mode: 0o644 }),
-      writeRange: (path, offset, bytes) => fs.writeRange(path, offset, bytes),
-      list: (dir) => fs.readdir(dir).map((entry) => entry.name),
-      unlink: (path) => fs.unlink(path),
+      mkdirp: (dir) => fs.mkdir(at(dir), { recursive: true, mode: 0o755 }),
+      sizeOf: (path) => fs.stat(at(path), { followSymlinks: false })?.size ?? null,
+      writeFile: (path, bytes) => { fs.writeFile(at(path), bytes); },
+      writeRange: (path, offset, bytes) => { fs.writeRange(at(path), offset, bytes); },
+      list: (dir) => fs.readdir(at(dir)).map((entry) => entry.name),
+      unlink: (path) => fs.unlink(at(path)),
     };
+  }
+
+  /**
+   * The session's filesystem as the kernel, writing what process `pid`
+   * boots from (its images, the session's copies it loads) on its behalf,
+   * through its binding: a write a read lease's recall holds back
+   * (SqliteVFS.readRecallAt) is its to read before it is published.
+   */
+  private _kernelFor(pid: number): RuntimeSynchronousFs {
+    return this.filesystem!.bind({ pid, cred: CRED_KERNEL }).synchronous!;
   }
 
   /**
@@ -6015,7 +6027,8 @@ export class FacetManager {
     if (!this.filesystem) throw new Error('Process filesystem authority is not initialized');
     const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
     for (const image of wasmImports) {
-      const bytes = await filesOf(vfs).readBytes(stripLeadingSlashes(image.vfsPath)).catch(() => null);
+      // One another launch staged moments ago is read once it is published (a read lease's recall held it).
+      const bytes = await withRecall(() => filesOf(vfs).readBytes(stripLeadingSlashes(image.vfsPath))).catch(() => null);
       if (bytes === null) continue;
       modules[image.moduleName] = {
         wasm: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
@@ -6056,14 +6069,14 @@ export class FacetManager {
    * (es-module-lexer's parser is 11.8 KB; a learned one is at most
    * RUNTIME_WASM_MAX_BYTES) and written once per session per image.
    */
-  private _stageWasmImageBytes(images: readonly Uint8Array[]): WasmImageRecord[] {
-    if (images.length === 0 || !this.vfs) return [];
-    const fs = this.vfs.as(CRED_KERNEL);
+  private _stageWasmImageBytes(images: readonly Uint8Array[], pid: number): WasmImageRecord[] {
+    if (images.length === 0 || !this.filesystem) return [];
+    const fs = this._kernelFor(pid);
     fs.mkdir(INLINE_WASM_DIR, { recursive: true, mode: 0o755 });
     return images.map((bytes) => {
       const digest = wasmImageDigest(bytes);
       const vfsPath = `${INLINE_WASM_DIR}/${digest.replace(':', '-')}.wasm`;
-      if (!(fs.exists(vfsPath) && fs.lstat(vfsPath).size === bytes.byteLength)) fs.writeFile(vfsPath, bytes, { mode: 0o644 });
+      if (fs.stat(vfsPath, { followSymlinks: false })?.size !== bytes.byteLength) fs.writeFile(vfsPath, bytes);
       return { vfsPath, digest };
     });
   }
@@ -6087,17 +6100,17 @@ export class FacetManager {
    */
   private async _residentStagedBindingMembers(
     names: readonly string[],
+    pid: number,
     pacer: TurnBudget,
   ): Promise<ResidentStagedBindings | null> {
     if (names.length === 0) return null;
-    const vfs = this.vfs;
-    if (!vfs) throw new Error('Nimbus: a resident process needs a session filesystem to boot');
-    const fs = vfs.as(CRED_KERNEL);
+    if (!this.filesystem) throw new Error('Nimbus: a resident process needs a session filesystem to boot');
+    const fs = this._kernelFor(pid);
     const bindingPaths: Record<string, string> = {};
     for (const name of names) {
       const binding = stagedBinding(name);
       const path = binding.vfsPath;
-      const complete = () => fs.exists(path) && fs.lstat(path).size === binding.wasm.bytes;
+      const complete = () => fs.stat(path, { followSymlinks: false })?.size === binding.wasm.bytes;
       if (!complete()) {
         let write = this.stagedBindingWrites.get(name);
         if (!write) {
@@ -6110,7 +6123,7 @@ export class FacetManager {
                 const slice = bytes.subarray(offset, offset + FACET_IMAGE_WRITE_SLICE_BYTES);
                 // The first slice replaces the file, truncating an interrupted
                 // write's remains to a known length.
-                if (offset === 0) fs.writeFile(path, slice, { mode: 0o644 });
+                if (offset === 0) fs.writeFile(path, slice);
                 else fs.writeRange(path, offset, slice);
                 offset += slice.byteLength;
                 await pacer.spend(slice.byteLength);
@@ -6439,8 +6452,8 @@ export class FacetManager {
     if (!this.vfs) {
       return { bundle: {}, reachableCount: 0, truncated: false };
     }
-    this.imageStore.ensureDir();
     if (!this.filesystem) throw new Error('Process filesystem authority is not initialized');
+    this.imageStore.ensureDir(entry.pid);
     const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
     const { cred } = entry;
     const profile = spec.bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
@@ -6552,7 +6565,7 @@ export class FacetManager {
     // es-module-lexer) never passes through the filesystem, so the closure
     // walk's by-path records cannot name it; it is staged here instead.
     // And so do the images earlier runs compiled from bytes in memory (learnedWasmImages).
-    const inlineWasm = this._stageWasmImageBytes([...findInlineWasmImages(vfsState.bundle), ...learnedWasmImages(learning.code)]);
+    const inlineWasm = this._stageWasmImageBytes([...findInlineWasmImages(vfsState.bundle), ...learnedWasmImages(learning.code)], entry.pid);
     if (inlineWasm.length > 0) vfsState.wasmImages = [...(vfsState.wasmImages ?? []), ...inlineWasm];
     // And what the module map costs the facet's store, which adopts it at boot
     // (N18): taken now, while the cells exist, for every launch this state
@@ -8028,7 +8041,7 @@ export class FacetManager {
     // directory manifest so readdir/stat are coherent. opencode creates its
     // home dirs (~/.local/share/opencode, …) via fs.promises.mkdir; those and
     // other writes flush live through the SUPERVISOR RPC bridge.
-    if (this.vfs) this.imageStore.ensureDir();
+    if (this.vfs) this.imageStore.ensureDir(entry.pid);
     const processVfs = this.filesystem ? this.filesystem.bind({ pid: entry.pid, cred: entry.cred }) : null;
     const vfsState: FacetVfsState = processVfs
       ? await buildPrefetchBundle(processVfs, { cwd: opts.cwd, entryCode: '', esbuild: this.esbuild || undefined })
@@ -8920,7 +8933,7 @@ export class FacetManager {
       const images = wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
       // The staged napi bindings: the shared loader is module text like the
       // rest of the map, the trampoline a 2 KB asset, each binding a path.
-      staged = await this._residentStagedBindingMembers(vfsState.stagedBindings ?? [], pacer);
+      staged = await this._residentStagedBindingMembers(vfsState.stagedBindings ?? [], entry.pid, pacer);
       try {
         generatedWorker = await this._generateUnderCeiling(
           entry.pid, vfsState, this._residentMemberBytes(sqlite, staged, images),

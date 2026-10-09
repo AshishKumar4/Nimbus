@@ -58,6 +58,6 @@ export const NODE_SHIM_RESOLUTION_PREAMBLE: string = "var DEFAULT_ESM_CONDITIONS
 
 /**
  * Declares SESSION_KERNEL_ROOTS, READ_LEASE_UNCOVERED_ROOTS and readLeaseCovers;
- * the node shims splice it inside their fs scope, not at their top level.
+ * the node shims splice it into their fs scope.
  */
-export const READ_LEASE_COVER_PREAMBLE: string = "var SESSION_KERNEL_ROOTS = [\".nimbus\", \"var/lib/nimbus\"];\nvar READ_LEASE_UNCOVERED_ROOTS = [...SESSION_KERNEL_ROOTS, \"proc\", \"dev\"];\nfunction readLeaseCovers(key, listing, roots) {\n  for (const root of roots) {\n    if (key.startsWith(root) && (key.length === root.length || key.charCodeAt(root.length) === 47)) return false;\n    if (listing && (key === \"\" || root.startsWith(key) && root.charCodeAt(key.length) === 47)) return false;\n  }\n  return true;\n}";
+export const READ_LEASE_COVER_PREAMBLE: string = "var SESSION_KERNEL_ROOTS = [\".nimbus\", \"var/lib/nimbus\"];\nvar READ_LEASE_UNCOVERED_ROOTS = [\"proc\", \"dev\"];\nfunction readLeaseCovers(key, listing, roots) {\n  for (const root of roots) {\n    if (key.startsWith(root) && (key.length === root.length || key.charCodeAt(root.length) === 47)) return false;\n    if (listing && (key === \"\" || root.startsWith(key) && root.charCodeAt(key.length) === 47)) return false;\n  }\n  return true;\n}";

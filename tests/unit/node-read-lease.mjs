@@ -56,8 +56,6 @@ async function bootTrusted(seed) {
   return booted;
 }
 
-/** A store of the session's (its kernel writes it, with no recall). */
-const storeMade = (authority) => authority.rawVfs.as(CRED_KERNEL).mkdir('.nimbus/state', { recursive: true, mode: 0o755 });
 const asked = (log) => log.calls.fsAcquire ?? 0;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -148,18 +146,21 @@ await runScenarios(import.meta.path, {
     assert.ok(asked(log) - before <= 1, `10 timers asked ${asked(log) - before} times after a look at /dev and /proc`);
   },
 
-  async 'an async listing of the session\'s store, which changes with no recall, is the session\'s'() {
-    const { authority, probe } = await bootTrusted(storeMade);
-    authority.rawVfs.as(CRED_KERNEL).writeFile('.nimbus/state/x', 'x');
-    assert.deepEqual(await probe.fs.promises.readdir('/.nimbus/state'), ['x'], 'the view listed the session\'s store');
-  },
-
-  async 'once the view answered for the session\'s store, the next timer asks'() {
-    const { authority, probe } = await bootTrusted(storeMade);
-    assert.deepEqual(probe.fs.readdirSync('/.nimbus/state'), []);
-    authority.rawVfs.as(CRED_KERNEL).writeFile('.nimbus/state/x', 'x');
+  async 'a synchronous write to the session\'s stores after skipped barriers is in the next timer\'s reads, of / and under /.nimbus'() {
+    const { authority, probe, log } = await bootTrusted();
+    const before = asked(log);
+    for (let i = 0; i < 3; i++) await probe.resume();
+    assert.equal(asked(log), before, 'a barrier under the trusted lease asked');
+    // As a launch writes the session's stores: synchronously, never refused.
+    const kernel = authority.rawVfs.as(CRED_KERNEL);
+    kernel.mkdir('.nimbus/images', { recursive: true, mode: 0o755 });
+    kernel.writeFile('.nimbus/images/x', 'x');
+    // Published once the process answered the recall: another's read waits for it.
+    await authority.peer.readFile('.nimbus/images/x');
     await probe.resume();
-    assert.deepEqual(probe.fs.readdirSync('/.nimbus/state'), ['x'], 'the view answered for the session\'s store from a barrier it skipped');
+    assert.ok(probe.fs.readdirSync('/').includes('.nimbus'), 'the root listing missed a store made since');
+    assert.deepEqual(probe.fs.readdirSync('/.nimbus/images'), ['x'], 'the store\'s listing missed a file written since');
+    assert.deepEqual(await probe.fs.promises.readdir('/.nimbus/images'), ['x']);
   },
 
   async 'past its trust, the next timer asks again'() {
