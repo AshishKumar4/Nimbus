@@ -55,7 +55,7 @@ const __nimbusStopReplay = (() => {
   const WRITE_BYTES_MAX = ${REPLAY_TAPE_MAX_WRITE_BYTES};
   const WRITE_ENTRY_MAX = ${REPLAY_WRITE_ENTRY_MAX_CHARS};
   // The session's digest (stop-replay-journal.ts), the same function.
-  const digest = ${answerDigest};
+  const digest = ${answerDigest.toString()};
   const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   const lengthOf = (bytes) => ReflectApply(TypedArrayLength, bytes, []);
 
