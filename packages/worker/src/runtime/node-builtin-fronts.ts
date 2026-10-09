@@ -73,7 +73,7 @@ function __nimbusFrontUrl(url) {
   url.fileURLToPathBuffer = function fileURLToPathBuffer(path, options) {
     const windows = options?.windows ?? false;
     if (typeof path === "string") path = new url.URL(path);
-    else if (!(path instanceof url.URL)) throw invalidArgType("path", ["string", "URL"], path);
+    else if (!(path?.href && path.protocol && path.auth === undefined && path.path === undefined)) throw invalidArgType("path", ["string", "URL"], path);
     if (path.protocol !== "file:") throw nodeError(TypeError, "ERR_INVALID_URL_SCHEME", "The URL must be of scheme file");
     if (!windows && path.hostname !== "") throw nodeError(TypeError, "ERR_INVALID_FILE_URL_HOST", 'File URL host must be "localhost" or empty on linux');
     const pathname = windows ? path.pathname.replace(/\//g, "\\") : path.pathname;

@@ -927,7 +927,7 @@ try {
     }
     const bound = await session.run(`cd ${W} && node aborted-bound.cjs 2>&1`, 120_000);
     const line = splitScenarioOutput(bound.stdout).lines.find((l) => l.startsWith('BOUND '));
-    assert.deepEqual(line && JSON.parse(line.slice(6)), { followers: 1, settled: 1000 }, `util.aborted keeps one follower per signal: ${bound.stdout.slice(-400)}`);
+    assert.deepEqual(line && JSON.parse(line.slice(6)), { followers: 1, settled: 1000 }, `util.aborted keeps one follower per signal: ${bound.stdout.slice(-4000)}`);
     const locked = await session.run(`cd ${W} && node locked.cjs 2>&1`, 120_000);
     assert.ok(splitScenarioOutput(locked.stdout).lines.includes('LOCKED []'), `a locked Error reads no sites: ${locked.stdout.slice(-400)}`);
   } finally {
