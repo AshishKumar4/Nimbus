@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: `util`, `assert`, `querystring` and `punycode` in node programs
+  are Node 22.22.3's own library code, loaded on first use. Modules are
+  Node's `Module` objects (`require.cache` is `Module._cache`), and a
+  missing module throws `MODULE_NOT_FOUND` with its `requireStack`, so the
+  try/catch pattern for optional dependencies works. Known limit:
+  `util.getCallSites` returns `[]` when a program has made both
+  `Error.stackTraceLimit` and `Error.prepareStackTrace` non-writable and
+  non-configurable.
 - Fixed: a second `astro dev` in the same session reset the session (the
   dev server never answered, 502). The launch carries what the first one
   learned, and its larger code pack outgrew the session's memory twice:

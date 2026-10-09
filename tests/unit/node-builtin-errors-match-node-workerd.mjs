@@ -1,7 +1,7 @@
 // @serial
 // The errors of the builtins a session's node takes from workerd (zlib,
 // crypto, buffer, events, url, path, util, vm, repl, diagnostics_channel,
-// tls, net, async_hooks, inspector) against host Node's, on the same
+// tls, net, async_hooks, inspector, string_decoder) against host Node's, on the same
 // script: every exported function and class of each, called with no
 // arguments and with arguments of the wrong type. Where both throw the same
 // code and words, the error has Node's shape: name, constructor, String(),
@@ -20,7 +20,7 @@ import { localTerminal, splitScenarioOutput, startLocalProbe } from './lib/worke
 
 const W = '/home/user/builtin-errors';
 const PROBE = String.raw`
-const MODULES = ['zlib', 'crypto', 'buffer', 'events', 'url', 'path', 'util', 'vm', 'repl', 'diagnostics_channel', 'tls', 'net', 'async_hooks', 'inspector'];
+const MODULES = ['zlib', 'crypto', 'buffer', 'events', 'url', 'path', 'util', 'vm', 'repl', 'diagnostics_channel', 'tls', 'net', 'async_hooks', 'inspector', 'string_decoder'];
 // What would start something rather than fail: a REPL on stdin, the
 // inspector's port, a connection, a server.
 const SKIP = new Set(['repl.start', 'inspector.open', 'inspector.waitForDebugger', 'inspector.close', 'net.connect', 'net.createConnection', 'tls.connect', 'net.createServer', 'tls.createServer', 'net.Server', 'tls.Server', 'net.Socket', 'tls.TLSSocket', 'repl.REPLServer', 'inspector.Session', 'events.on', 'events.once', 'util.debuglog', 'util.debug']);
@@ -31,6 +31,12 @@ const shape = (e) => {
   let string; try { string = String(e); } catch { string = '<toString threw>'; }
   return { name: e.name, code: e.code, ctor: e.constructor && e.constructor.name, header, string, keys: Object.keys(e), ownName: Object.prototype.hasOwnProperty.call(e, 'name'), message: e.message };
 };
+// Each call starts with V8's stack limit: util._errnoException that throws
+// leaves it 0, in Node as here, and a stackless error reads differently.
+const stackTraceLimit = Error.stackTraceLimit;
+// An error a call raises later, out of band (workerd's crypto keygen calls the
+// callback it was not given), is no call's: it does not end the measurement.
+process.on('uncaughtException', (e) => process.stderr.write('uncaught: ' + e.message + '\n'));
 (async () => {
   for (const name of MODULES) {
     const mod = require(name);
@@ -40,6 +46,7 @@ const shape = (e) => {
       const isClass = /^[A-Z]/.test(key);
       for (const args of ARGS) {
         const row = { id, args: args.map(String) };
+        Error.stackTraceLimit = stackTraceLimit;
         let result;
         try {
           result = isClass ? new mod[key](...args) : mod[key].apply(mod, args);

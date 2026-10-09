@@ -25,7 +25,8 @@
 
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../../packages/worker/src/vfs/facet-resident-store.ts';
-import { declaresWrapperBinding, wrapCommonJsCell } from '../../../packages/core/src/_shared/commonjs-cell.ts';
+import { RUNTIME_NODE_LIB_MODULE, declaresWrapperBinding, wrapCommonJsCell } from '../../../packages/core/src/_shared/commonjs-cell.ts';
+import { generateNodeLibModule } from '../../../packages/worker/src/runtime/node-lib-module.ts';
 import { moduleImporterUrl } from '../../../packages/core/src/_shared/module-importer.ts';
 
 const SEED = `
@@ -146,8 +147,23 @@ function __nimbusRuntimeModule(path) {
 }
 `;
 
+// The launch map's runtime modules the shims require (manager.ts
+// runtimeModules), as the map's require gives them: Node's library.
+globalThis.__nimbusTestNodeLib = () => {
+  const moduleObject = { exports: {} };
+  new Function('module', 'exports', generateNodeLibModule())(moduleObject, moduleObject.exports);
+  return moduleObject.exports;
+};
+const RUNTIME_MODULES = `
+let __nimbusTestNodeLibrary;
+function __nimbusRegistryRequire(id) {
+  if (id !== "./${RUNTIME_NODE_LIB_MODULE}") throw new Error("a standalone shims factory's map has no " + id);
+  return (__nimbusTestNodeLibrary ??= globalThis.__nimbusTestNodeLib());
+}
+`;
+
 /** Splice ahead of generateShimsCode() in a standalone shims factory. */
-export const SHIMS_STORE_PRELUDE = `\n${FACET_RESIDENT_STORE_SOURCE}\n${SEED}\n${MODULE_CELLS}\n`;
+export const SHIMS_STORE_PRELUDE = `\n${FACET_RESIDENT_STORE_SOURCE}\n${SEED}\n${MODULE_CELLS}\n${RUNTIME_MODULES}\n`;
 
 /**
  * List a test authority (a SqliteVFS) as the session would for a launch, into

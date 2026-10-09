@@ -18,7 +18,7 @@
 // V8 slots user land cannot read (a promise's state and result, a proxy's
 // target and handler, an iterator's and a weak collection's entries) are
 // read as values through workerd's inspect, the binding
-// (node-inspect-host.ts), and formatted by inspect.js: each kind is printed
+// (node-lib-host.ts), and formatted by inspect.js: each kind is printed
 // here through console.log, util.inspect with showProxy and showHidden, and
 // console.dir (customInspect false), with proxies among them, and code that
 // runs while they are read, which inspects and throws. workerd's
@@ -67,7 +67,7 @@ console.log(many);
 console.log({ get value() { return 1; }, set value(v) {}, get only() { return 2; } }, { f() {}, async g() {}, *h() {} });
 console.log(Array.from({ length: 30 }, (_, i) => 'item' + i), ['日本', '語', 'テキスト', 'abc', 'de', 'f', 'g', 'h', 'i', 'j']);
 console.log(new URL('http://user:pw@host:8080/p?q=s#h'), Buffer.from('hello'), new Float64Array([0.5, -0]), new WeakMap());
-// V8's slots (node-inspect-host.ts THE BINDING): promise states, a null-prototype
+// V8's slots (node-lib-host.ts THE BINDING): promise states, a null-prototype
 // promise and iterator, proxies (and showProxy), iterators, weak collections
 // with showHidden; through console.log, util.inspect and console.dir (customInspect false).
 const weakKey = { weak: 1 };
