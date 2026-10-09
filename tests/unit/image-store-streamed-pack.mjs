@@ -100,6 +100,31 @@ assert.equal(writes.length, 0, 'an image already stored is not written again');
 assert.ok(largest <= allowed, `nor encoded whole to be recognized: the largest buffer was ${largest} bytes`);
 console.log('  a pack already stored is recognized without a whole copy and not rewritten');
 
+// A character whose bytes straddle a slice's end is split across two
+// slices, and every slice but the last stays whole.
+{
+  const SLICE = FACET_IMAGE_WRITE_SLICE_BYTES;
+  const tail = '😀é'.repeat(64);
+  // The emoji's four bytes start two before the slice ends: the index's
+  // length depends on n's digits, so n settles in a step or two.
+  let n = SLICE - 2;
+  let pack;
+  for (let step = 0; step < 4; step++) {
+    pack = encodeCommonJsPack({ 'straddle.js': 'a'.repeat(n) + tail });
+    n = SLICE - 2 - new TextEncoder().encode(pack[0]).byteLength;
+  }
+  pack = encodeCommonJsPack({ 'straddle.js': 'a'.repeat(n) + tail });
+  assert.equal(new TextEncoder().encode(pack[0]).byteLength + n, SLICE - 2, 'the emoji starts two bytes before the slice ends');
+  const whole = new TextEncoder().encode(pack.join(''));
+  writes.length = 0;
+  const straddled = await store.materialize(6, [['code pack', pack]], pacer);
+  const at = straddled['code pack'].replace(/^\/+/, '');
+  assert.equal(straddled['code pack'], facetImagePath(await facetImageDigest(whole)), 'its digest is the whole pack\'s');
+  assert.ok(sameBytes(contents(at), whole), 'and its bytes are');
+  assert.equal(writes[0], SLICE, 'the first slice is whole, holding the first two bytes of the four');
+  console.log('  a character straddling a slice is split across two');
+}
+
 // A pack cut short by a reset (a shorter file at its path) is written again.
 const cut = path.replace(/^\/+/, '');
 files.set(cut, [contents(cut).slice(0, FACET_IMAGE_WRITE_SLICE_BYTES)]);

@@ -203,11 +203,14 @@ export class ImageStore {
   }
 
   /**
-   * One image given as parts: its digest read a part at a time, then, unless
+   * One image given as parts: its digest read a slice at a time, then, unless
    * a complete image is already stored there, its bytes written a slice at a
-   * time from one slice-sized buffer, each part emptied as it is encoded. The
-   * root is claimed before the first byte, as every image's is. What it holds
-   * at once is one part's encoding and one slice, whatever the image's size.
+   * time, each part emptied once it is written. Both passes encode the parts
+   * into one slice-sized buffer (encodeInto: no part's encoding is made on
+   * its own) and hand it on whole, so the digest is fed and the disk written
+   * a slice at a time. The root is claimed before the first byte, as every
+   * image's is. What it holds at once is that buffer, whatever the image's
+   * size.
    */
   private async materializeParts(
     fs: ImageBlobStore,
@@ -215,14 +218,9 @@ export class ImageStore {
     rooted: string[],
     pacer: TurnBudget,
   ): Promise<{ path: string; written: number }> {
-    const encoder = new TextEncoder();
+    const slice = new Uint8Array(FACET_IMAGE_WRITE_SLICE_BYTES);
     const digest = sha256Incremental();
-    let length = 0;
-    for (const part of parts) {
-      const bytes = encoder.encode(part);
-      length += bytes.byteLength;
-      await digest.update(bytes);
-    }
+    const length = await encodeSlices(parts, slice, (bytes) => digest.update(bytes), false);
     const path = facetImagePath(await digest.hex());
     rooted.push(path);
     const stored = path.replace(/^\/+/, '');
@@ -232,31 +230,15 @@ export class ImageStore {
       await pacer.spend(length);
       return { path, written: length };
     }
-    const slice = new Uint8Array(Math.min(FACET_IMAGE_WRITE_SLICE_BYTES, Math.max(length, 1)));
-    let filled = 0;
     let offset = 0;
-    const flush = async () => {
-      const bytes = slice.subarray(0, filled);
+    const written = await encodeSlices(parts, slice, async (bytes) => {
       // The first slice REPLACES the file, as materialize's does.
       if (offset === 0) fs.writeFile(stored, bytes);
       else fs.writeRange(stored, offset, bytes);
-      offset += filled;
-      filled = 0;
+      offset += bytes.byteLength;
       await pacer.spend(bytes.byteLength);
-    };
-    for (let i = 0; i < parts.length; i++) {
-      const bytes = encoder.encode(parts[i]);
-      parts[i] = '';
-      for (let at = 0; at < bytes.byteLength;) {
-        const n = Math.min(bytes.byteLength - at, slice.byteLength - filled);
-        slice.set(bytes.subarray(at, at + n), filled);
-        filled += n;
-        at += n;
-        if (filled === slice.byteLength) await flush();
-      }
-    }
-    if (filled > 0 || offset === 0) await flush();
-    if (offset !== length) throw new Error(`Nimbus: an image's parts encoded to ${offset} bytes, digested as ${length}`);
+    }, true);
+    if (written !== length) throw new Error(`Nimbus: an image's parts encoded to ${written} bytes, digested as ${length}`);
     return { path, written: length };
   }
 
@@ -287,4 +269,55 @@ export class ImageStore {
       try { fs.unlink(`${FACET_IMAGE_DIR}/${name}`); } catch { /* already gone */ }
     }
   }
+}
+
+/**
+ * `parts` as UTF-8, handed to `sink` a full `slice` at a time (and the rest
+ * last; an empty image as one empty slice), encoded into `slice` itself. A
+ * character that does not fit the slice's end is split across two slices,
+ * so every slice but the last is whole. With `release`, each part is
+ * emptied once its bytes are in the slice. Returns the bytes encoded.
+ */
+async function encodeSlices(
+  parts: string[],
+  slice: Uint8Array,
+  sink: (bytes: Uint8Array) => Promise<void> | void,
+  release: boolean,
+): Promise<number> {
+  const encoder = new TextEncoder();
+  let filled = 0;
+  let total = 0;
+  const flush = async () => {
+    await sink(slice.subarray(0, filled));
+    total += filled;
+    filled = 0;
+  };
+  for (let i = 0; i < parts.length; i++) {
+    let rest = parts[i]!;
+    if (release) parts[i] = '';
+    while (rest.length > 0) {
+      const { read, written } = encoder.encodeInto(rest, slice.subarray(filled));
+      filled += written;
+      rest = rest.slice(read);
+      if (rest.length === 0) break;
+      if (read === 0) {
+        // The next character needs more bytes than the slice has left: its
+        // bytes fill the slice and start the next.
+        const units = (rest.codePointAt(0) ?? 0) > 0xffff ? 2 : 1;
+        const bytes = encoder.encode(rest.slice(0, units));
+        rest = rest.slice(units);
+        const head = slice.length - filled;
+        slice.set(bytes.subarray(0, head), filled);
+        filled = slice.length;
+        await flush();
+        slice.set(bytes.subarray(head), 0);
+        filled = bytes.byteLength - head;
+      } else if (filled === slice.length) {
+        await flush();
+      }
+    }
+    if (filled === slice.length) await flush();
+  }
+  if (filled > 0 || total === 0) await flush();
+  return total;
 }
