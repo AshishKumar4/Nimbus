@@ -244,9 +244,10 @@ export function installNpmBinFallbackResolver(
         writeThrough('stderr', ctx.stderr)(`bin error: ${formatError(e)}\n`);
         exitCode = 1;
       } finally {
-        // Still running: a resident has it now, started as one or run on as
-        // one once it listened (FacetManager._promote).
-        const handedOffToLongRunningFacet = exitCode === 0 && deps.processes.get(pid)?.state === 'running';
+        // A resident has it now, started as one or run on as one once it
+        // listened (FacetManager._promote).
+        const resident = deps.processes.get(pid);
+        const handedOffToLongRunningFacet = exitCode === 0 && resident?.longRunning === true && resident.state === 'running';
         if (!handedOffToLongRunningFacet) {
           try { deps.processes.exit(pid, exitCode); } catch {}
           try {
