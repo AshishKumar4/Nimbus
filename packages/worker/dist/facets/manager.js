@@ -433,16 +433,20 @@ const ENTRYPOINT_TIMER_TRACKER = `
     if (proto === null || patched.has(proto)) return;
     patched.add(proto);
     const { ref, unref } = proto;
-    if (typeof unref === "function") proto.unref = function unref_() {
-      const entry = live.get(this);
-      if (entry?.held) { entry.held = false; drop(); }
-      return Reflect.apply(unref, this, arguments);
+    const counted = {
+      unref() {
+        const entry = live.get(this);
+        if (entry?.held) { entry.held = false; drop(); }
+        return Reflect.apply(unref, this, arguments);
+      },
+      ref() {
+        const entry = live.get(this);
+        if (entry !== undefined && !entry.held) { entry.held = true; g.__nimbusPendingTimers++; }
+        return Reflect.apply(ref, this, arguments);
+      },
     };
-    if (typeof ref === "function") proto.ref = function ref_() {
-      const entry = live.get(this);
-      if (entry !== undefined && !entry.held) { entry.held = true; g.__nimbusPendingTimers++; }
-      return Reflect.apply(ref, this, arguments);
-    };
+    if (typeof unref === "function") proto.unref = counted.unref;
+    if (typeof ref === "function") proto.ref = counted.ref;
   };
   const hold = (id, clear) => {
     live.set(id, { clear, held: true });
