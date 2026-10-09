@@ -16309,15 +16309,38 @@ builtins.zlib = (() => {
   const __real = (typeof __real_zlib !== "undefined") ? (__real_zlib.default ?? __real_zlib) : null;
   if (__real && typeof __real.gzipSync === "function") {
     const mod = {};
-    // Constants, lookup tables, crc32, and the stream factories/classes pass
+    // lib/zlib.js: the functions, the classes, `constants` and `codes` are
+    // the module's enumerable exports; each constant but Brotli's is on the
+    // module too, read-only and not enumerable (deprecated); there is no
+    // `default`. workerd exports every constant by name, enumerable, and two
+    // zstd modes of its own (ZSTD_ENCODE, ZSTD_DECODE) beside Node's
+    // ZSTD_COMPRESS and ZSTD_DECOMPRESS. Named limit: ZLIB_VERNUM and
+    // Z_MAX_CHUNK are the engine's values, not Node's.
+    const workerdOnly = { ZSTD_ENCODE: true, ZSTD_DECODE: true };
+    const constants = Object.create(null);
+    for (const [name, value] of Object.entries(__real.constants)) {
+      if (!Object.hasOwn(workerdOnly, name)) Object.defineProperty(constants, name, { value, enumerable: true });
+    }
+    // The lookup tables, crc32, and the stream factories/classes pass
     // through bound to the native module (capitalized names are classes —
     // binding would strip their prototype and break `new`).
     for (const k of Object.keys(__real)) {
+      if (k === "constants" || k === "codes" || k in constants || Object.hasOwn(workerdOnly, k)) continue;
       const v = __real[k];
-      mod[k] = (typeof v === "function" && /^[a-z]/.test(k)) ? v.bind(__real) : v;
+      // lib/zlib.js defines each create* factory read-only.
+      Object.defineProperty(mod, k, {
+        value: (typeof v === "function" && /^[a-z]/.test(k)) ? v.bind(__real) : v,
+        writable: !/^create[A-Z]/.test(k), enumerable: true, configurable: true,
+      });
+    }
+    Object.defineProperties(mod, {
+      constants: { value: constants, enumerable: true },
+      codes: { value: __real.codes, enumerable: true },
+    });
+    for (const [name, value] of Object.entries(constants)) {
+      if (!name.startsWith("BROTLI")) Object.defineProperty(mod, name, { value });
     }
     if (__real.promises) mod.promises = __real.promises;
-    mod.default = mod;
     return mod;
   }
   function _c(i,a) { return new Response(new Blob([i]).stream().pipeThrough(new CompressionStream(a))).arrayBuffer().then(ab=>__BufferMod.from(new Uint8Array(ab))); }
