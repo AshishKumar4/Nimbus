@@ -550,9 +550,9 @@ assert.equal(retraced.stopped, null, 'the same changes, in order: it passes its 
 assert.equal(retraced.echoed, null, 'what the run before printed is checked, not shown again');
 assert.equal(retraced.early, '', 'it may finish booting before it reaches its listen');
 assert.equal(retraced.after, 9, 'past its listen its output is its own');
-const changed = listenReplay(`sr.mutation({ type: 'call', call: { call: 'writeFile', path: 'home/user/out.txt', data: enc('two'), mode: 0o644 } });`);
-assert.equal(changed.stopped.kind, 'diverged');
-assert.match(changed.stopped.why, /changed the filesystem otherwise than the run before it: writeFile home\/user\/out\.txt/);
+const rewritten = listenReplay(`sr.mutation({ type: 'call', call: { call: 'writeFile', path: 'home/user/out.txt', data: enc('two'), mode: 0o644 } });`);
+assert.equal(rewritten.stopped.kind, 'diverged');
+assert.match(rewritten.stopped.why, /changed the filesystem otherwise than the run before it: writeFile home\/user\/out\.txt/);
 const skipped = listenReplay('');
 assert.equal(skipped.stopped.kind, 'diverged');
 assert.match(skipped.stopped.why, /by its listen it had changed the filesystem 0 times, where the run before it had 1/);
