@@ -4,12 +4,20 @@
 // worktree, the index (entries, stages, skip-worktree bits as read and as
 // written) and status. For worktree commands, whose results host git can
 // read back from a copy of the VFS.
+//
+// The mirror is the same repository to git: each file keeps its times, and
+// the index records our copies' stat where it recorded host git's files
+// (syncIndexStat), its own time kept. So a status or diff rewrites the index
+// on our side exactly when git's rewrites it on the host (what it refreshed,
+// or a racy index), and what such a rewrite persists, a present file's
+// cleared skip-worktree bit, is the same on both.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
   chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -17,6 +25,7 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../../packages/core/src/runti
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
 import { runGitCommand } from '../../../packages/worker/src/git/commands.ts';
+import { DirCache } from '../../../packages/worker/src/git/worktree/dircache.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 export const GIT_ENV = {
@@ -81,20 +90,61 @@ export function createMirror(label) {
   const files = new ProcessFiles(vfs);
   const counts = { checks: 0, copies: 0 };
 
-  /** Copy a disk tree (its .git included) into the VFS at `to`, modes and all. */
+  /** Copy a disk tree (its .git included) into the VFS at `to`, modes and times and all. */
   const mirror = (from, to) => {
     user.mkdir(to, { recursive: true });
     for (const name of readdirSync(from)) {
       const src = join(from, name);
       const dst = `${to}/${name}`;
       const st = lstatSync(src);
-      if (st.isDirectory()) mirror(src, dst);
-      else if (st.isSymbolicLink()) user.symlink(readlinkSync(src), dst);
-      else {
+      if (st.isDirectory()) {
+        mirror(src, dst);
+        continue;
+      }
+      if (st.isSymbolicLink()) {
+        user.symlink(readlinkSync(src), dst);
+      } else {
         user.writeFile(dst, new Uint8Array(readFileSync(src)));
         user.chmod(dst, st.mode & 0o777);
       }
+      user.utimes(dst, st.atimeMs, st.mtimeMs, { followSymlinks: false });
     }
+  };
+
+  /** A tracked path's content as git hashes it: a file's bytes, a link's target. */
+  const contentId = (path) => {
+    const st = user.lstat(path);
+    const bytes = st.type === 'symlink' ? new TextEncoder().encode(user.readlink(path)) : user.readFile(path);
+    return createHash('sha1').update(`blob ${bytes.byteLength}\0`).update(bytes).digest('hex');
+  };
+
+  /**
+   * The mirrored index of the repository at `repo` (a VFS path) made to
+   * describe our copies: each tracked file there with the index's content
+   * takes our copy's stat, as git's refresh_index records a file it proved
+   * clean. Our copies are new files to the VFS, their inodes and change
+   * times its own; without this our first status or diff would refresh, and
+   * rewrite, an index git's left alone. Nothing else changes, the
+   * skip-worktree bits as written included, and the index keeps host git's
+   * time.
+   */
+  const syncIndexStat = (repo) => {
+    const index = `${repo}/.git/index`;
+    if (!user.exists(index)) return;
+    const { atimeMs, mtimeMs } = user.lstat(index);
+    const dc = DirCache.parse(user.readFile(index), 0);
+    for (let i = 0; i < dc.count; i++) {
+      if (dc.stage(i) !== 0 || dc.skipWorktree(i)) continue;
+      const path = `${repo}/${dc.path(i)}`;
+      let st;
+      try { st = user.lstat(path); } catch { continue; }
+      if (st.type === 'directory' || contentId(path) !== dc.oid(i)) continue;
+      dc.refresh(i, {
+        ctimeMs: st.ctimeMs ?? 0, mtimeMs: st.mtimeMs, dev: st.dev ?? 0, ino: st.ino ?? 0, uid: st.uid ?? 0, gid: st.gid ?? 0, size: st.size,
+      });
+    }
+    user.writeFile(index, dc.encode());
+    user.utimes(index, atimeMs ?? mtimeMs, mtimeMs);
   };
 
   /** Copy a VFS tree (its .git included) back to disk, links as links. */
@@ -146,6 +196,7 @@ export function createMirror(label) {
       this.disk = disk;
       this.virtual = `/home/user/${name}`;
       mirror(disk, this.virtual);
+      syncIndexStat(this.virtual);
     }
 
     /**

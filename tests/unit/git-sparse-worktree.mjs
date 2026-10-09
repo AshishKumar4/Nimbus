@@ -96,6 +96,17 @@ try {
   }
 
   {
+    // A status that refreshes an entry rewrites the index, and its present file's cleared
+    // skip-worktree bit with it, as git's does; one that refreshes nothing (above) writes none.
+    const p = new Pair('present-refreshed', seed('present-refreshed'));
+    p.write('b/x.txt', 'changed\n');
+    p.touch('a/x.txt', SEEDED_AT + 60);
+    await p.run(['status', '--porcelain'], { stdout: true });
+    p.same('a status that refreshed an entry');
+    console.log('  ok  a status that refreshes an entry: the index rewritten, the present file\'s skip-worktree bit cleared in it');
+  }
+
+  {
     // The cone applied to what the switch leaves alone.
     const p = new Pair('cone', seed('cone'));
     p.write('b/keep.txt', 'bk\n');
