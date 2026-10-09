@@ -293,11 +293,11 @@ export class SessionProcessSupervisor {
   whenEnded(pid: number): Promise<number> {
     const entry = this.table.get(pid);
     if (entry?.state !== 'running') return Promise.resolve(entry?.exitCode ?? 0);
-    const ended = Promise.withResolvers<number>();
-    const waiters = this.endWaiters.get(pid);
-    if (waiters) waiters.push(ended.resolve);
-    else this.endWaiters.set(pid, [ended.resolve]);
-    return ended.promise;
+    return new Promise((resolve) => {
+      const waiters = this.endWaiters.get(pid);
+      if (waiters) waiters.push(resolve);
+      else this.endWaiters.set(pid, [resolve]);
+    });
   }
 
   private fireTerminal(pid: number, wasRunning: boolean): void {
