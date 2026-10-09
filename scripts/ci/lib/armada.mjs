@@ -20,7 +20,7 @@ const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'
 // pin is the client the deployed Worker is proven with: move both together.
 const ARMADA_DIR = join(homedir(), '.local/share/nimbus/armada-client');
 export const ARMADA_REPO = 'https://github.com/AshishKumar4/armada';
-export const ARMADA_CLIENT = '9df0e7bcb9b41954e28ac10e41cdb6020898bdd0';
+export const ARMADA_CLIENT = 'f8725d7760164878a978795a2dd39ffa3bd60f9d';
 
 // Nimbus's own armada deployment (`nimbus-armada`, its own Worker, bucket
 // and fleet cap): every Nimbus script reaches it, and only it, through here.
