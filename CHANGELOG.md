@@ -7,9 +7,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 - Fixed: a second `astro dev` in the same session reset the session (the
   dev server never answered, 502). The launch carries what the first one
-  learned, and writing its larger code pack encoded the whole pack beside
-  the module text it came from, past the session's memory. A code pack is
-  now digested and written a module at a time.
+  learned, and its larger code pack outgrew the session's memory twice:
+  writing it encoded the whole pack beside the module text it came from,
+  and booting it read the pack's bytes beside the process's wasm images and
+  decoded them into one string, two bytes a character throughout if any
+  module held a non-Latin-1 one. A code pack is now written a module at a
+  time, and read first at boot and decoded a module at a time.
 
 ## 2026-10-08: platform 0.8.0, config 0.2.4, core 0.16.0, fabric 0.11.0, worker 0.14.0, loom 0.2.3, sdk 0.12.0, react 0.2.3, cli 0.2.3, create-nimbus-app 0.2.1, runtime-cpython 3.13.14-1
 

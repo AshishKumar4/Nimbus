@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { ImageStore, FACET_IMAGE_WRITE_SLICE_BYTES } from '../../packages/fabric/src/image-store.ts';
-import { decodeCommonJsPack, encodeCommonJsPack, facetImageDigest, facetImagePath } from '../../packages/fabric/src/process-fabric.ts';
+import { decodeCommonJsPackBytes, encodeCommonJsPack, facetImageDigest, facetImagePath } from '../../packages/fabric/src/process-fabric.ts';
 
 // The disk: each file its written pieces, kept as the store hands them over
 // (copied with the native constructor, so the disk's own copies are not
@@ -84,7 +84,7 @@ const path = paths['code pack'];
 assert.equal(path, facetImagePath(await facetImageDigest(expected)), 'the pack is named by the digest of its bytes');
 const stored = contents(path.replace(/^\/+/, ''));
 assert.ok(sameBytes(stored, expected), 'and holds exactly them');
-assert.deepEqual(Object.keys(decodeCommonJsPack(new TextDecoder().decode(stored))), Object.keys(modules), 'which decode to every module');
+assert.deepEqual(Object.keys(decodeCommonJsPackBytes(stored)), Object.keys(modules), 'which decode to every module');
 assert.ok(largest <= allowed, `no buffer the size of the image: the largest was ${largest} bytes, the pack ${expected.byteLength}`);
 assert.ok(writes.every((n) => n <= FACET_IMAGE_WRITE_SLICE_BYTES), 'each write is one slice at most');
 assert.ok(writes.slice(0, -1).every((n) => n === FACET_IMAGE_WRITE_SLICE_BYTES), 'and every slice but the last is whole, so no write reads a partial chunk back');
