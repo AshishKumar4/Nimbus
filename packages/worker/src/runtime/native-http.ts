@@ -280,6 +280,9 @@ Object.defineProperty(builtins, "http", {
       const port = Number(request.headers.get("X-Nimbus-Port") || 0);
       return serveHttp(request, port ? ports.get(port) : ports.values().next().value, false);
     };
+    // Answers a request from the server this runtime runs on that port, or null
+    // when it runs none. Whether the request may be answered so is the caller's:
+    // the fetch shim's claim (__ownPortOf, and no foreign body open).
     __nimbusTryOwnHttp = (port, input, init) => {
       const server = ports.get(port);
       if (!server?.listening) return null;
