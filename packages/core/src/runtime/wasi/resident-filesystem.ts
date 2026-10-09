@@ -47,7 +47,7 @@ import type {
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { delegationHolder, type DelegationHolder } from './delegation-holder.js';
-import { READ_LEASE_UNCOVERED_ROOTS, readLeaseCovers } from '../delegations.js';
+import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../delegations.js';
 import type { ProcessFsJournal, ProcessFsOp, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
@@ -317,10 +317,10 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       };
     },
   });
-  /** Whether the store has answered for what a read lease does not cover: its barriers are asked from then on. */
-  let uncoveredViewed = false;
+  /** Whether the store has answered for the session's stores, which change with no recall: its barriers are asked from then on. */
+  let storesViewed = false;
   const viewed = (key: string, listing: boolean): void => {
-    if (!uncoveredViewed && !readLeaseCovers(key, listing, READ_LEASE_UNCOVERED_ROOTS)) uncoveredViewed = true;
+    if (!storesViewed && !readLeaseCovers(key, listing, SESSION_KERNEL_ROOTS)) storesViewed = true;
   };
   const store: ResidentNamespace = {
     get device() { return resident.device; },
@@ -493,7 +493,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    */
   const asking = (): boolean => {
     if (!owed) return false;
-    if (changed || uncoveredViewed || holder === null || !holder.client.readTrusted()) return true;
+    if (changed || storesViewed || holder === null || !holder.client.readTrusted()) return true;
     owed = false;
     counts.leasedBarriers++;
     return false;

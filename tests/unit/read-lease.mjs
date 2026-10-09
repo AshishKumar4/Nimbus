@@ -15,7 +15,7 @@
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { READ_LEASE_MARGIN_MS, READ_LEASE_TRUST_MS } from '../../packages/core/src/runtime/delegations.ts';
+import { READ_LEASE_MARGIN_MS, READ_LEASE_TRUST_MS, READ_LEASE_UNCOVERED_ROOTS, readLeaseCovers } from '../../packages/core/src/runtime/delegations.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -40,6 +40,15 @@ function session() {
 /** A barrier of `bridge`'s that asks for the lease, from `from` (an answer it applied) or from now. */
 function barrier(s, bridge, from) {
   return bridge.acquire(s.engine.epoch, from?.rev ?? s.engine.revision(), { lease: true });
+}
+
+// ── What a lease vouches for: nothing at or under an uncovered root, nor the names of a directory above one ──
+{
+  const covers = (key, listing = false) => readLeaseCovers(key, listing, READ_LEASE_UNCOVERED_ROOTS);
+  assert.deepEqual(['.nimbus', '.nimbus/images/x', 'var/lib/nimbus', 'var/lib/nimbus/staged', 'dev', 'dev/null', 'proc/self'].filter((key) => covers(key)), []);
+  assert.deepEqual(['', 'var', 'var/lib'].filter((key) => covers(key, true)), []);
+  assert.deepEqual(['', 'var', 'var/lib', '.nimbusx', 'var/lib/nimbus2', 'devices', 'home/user/a'].filter((key) => !covers(key)), []);
+  assert.deepEqual(['var/lib/x', 'home', 'devices', 'var/library'].filter((key) => !covers(key, true)), []);
 }
 
 // ── Taken by a barrier, at its revision; confirmed by the next ──

@@ -3,7 +3,8 @@
  * A WASI process's barrier under its read lease (core
  * runtime/wasi/resident-filesystem.ts): the barrier input owes it asks
  * nothing while the lease is trusted, and asks again once another's change
- * recalled it, or once the process changed something itself. Red before:
+ * recalled it, or once the process changed something itself, or looked at
+ * the session's own stores, which change with no recall. Red before:
  * every input cost the next answer an ACQUIRE round trip.
  */
 
@@ -100,6 +101,22 @@ await fs.mkdir('/home/user/proj/made', { mode: 0o755 });
 fs.inbound();
 await fs.stat(A);
 assert.equal(asked, 4, 'input after its own change was answered by the lease');
+// Its change answered, and confirmed by the next barrier: trusted from here.
+await fs.flush();
+fs.inbound();
+await fs.stat(A);
+const trusted = asked;
+// A mount is the session's to answer, never the store's: a look at one leaves input to the lease.
+assert.ok(await fs.stat('/dev/null'));
+fs.inbound();
+await fs.stat(A);
+assert.equal(asked, trusted, 'input after a look at /dev asked the session');
+// The session's own stores change with no recall: once the process has looked at one, input asks.
+kernel.mkdir('.nimbus/state', { recursive: true });
+assert.ok(await fs.stat('/.nimbus/state'));
+fs.inbound();
+await fs.stat(A);
+assert.equal(asked, trusted + 1, 'input after a look at the session\'s store was answered by the lease');
 await fs.settle();
 console.log('wasi-read-lease: ok');
 process.exit(0);

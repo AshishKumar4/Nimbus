@@ -7,6 +7,7 @@
 
 import assert from 'node:assert/strict';
 import { READ_LEASE_MARGIN_MS, READ_LEASE_TRUST_MS } from '../../packages/core/src/runtime/delegations.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
 import {
   createAuthority,
@@ -47,7 +48,7 @@ async function boot() {
 /** Booted, `seed` made, then holding a trusted read lease (past the hold-off a recall leaves). */
 async function bootTrusted(seed) {
   const booted = await boot();
-  seed?.(booted.authority);
+  await seed?.(booted.authority);
   await rawSleep(READ_LEASE_TRUST_MS + 20);
   await booted.probe.resume();
   await booted.probe.resume();
@@ -55,6 +56,8 @@ async function bootTrusted(seed) {
   return booted;
 }
 
+/** A store of the session's (its kernel writes it, with no recall). */
+const storeMade = (authority) => authority.rawVfs.as(CRED_KERNEL).mkdir('.nimbus/state', { recursive: true, mode: 0o755 });
 const asked = (log) => log.calls.fsAcquire ?? 0;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -127,22 +130,32 @@ await runScenarios(import.meta.path, {
     assert.equal((await probe.fs.promises.stat('/home/user/app/sub/b.txt')).size, 1);
   },
 
-  async 'the kernel\'s mounts and the root\'s names are the session\'s under a trusted lease'() {
-    const { probe } = await bootTrusted();
+  async 'the kernel\'s mounts and the root\'s names are the session\'s under a trusted lease, through a link too'() {
+    const { probe } = await bootTrusted((authority) => authority.peer.symlink('/dev/null', 'home/user/app/null'));
     assert.equal((await probe.fs.promises.stat('/dev/null')).isCharacterDevice(), true);
+    assert.equal((await probe.fs.promises.stat('/home/user/app/null')).isCharacterDevice(), true);
     assert.ok((await probe.fs.promises.readdir('/')).includes('dev'));
   },
 
+  async 'a look at the kernel\'s mounts, which no barrier reports, leaves timers to the lease'() {
+    const { probe, log } = await bootTrusted();
+    probe.fs.existsSync('/dev/null');
+    probe.fs.existsSync('/proc/self');
+    const before = asked(log);
+    for (let i = 0; i < 10; i++) await probe.resume();
+    assert.ok(asked(log) - before <= 1, `10 timers asked ${asked(log) - before} times after a look at /dev and /proc`);
+  },
+
   async 'an async listing of the session\'s store, which changes with no recall, is the session\'s'() {
-    const { authority, probe } = await bootTrusted((authority) => authority.kfs.mkdir('.nimbus/state', { recursive: true }));
-    authority.kfs.writeFile('.nimbus/state/x', 'x');
+    const { authority, probe } = await bootTrusted(storeMade);
+    authority.rawVfs.as(CRED_KERNEL).writeFile('.nimbus/state/x', 'x');
     assert.deepEqual(await probe.fs.promises.readdir('/.nimbus/state'), ['x'], 'the view listed the session\'s store');
   },
 
   async 'once the view answered for the session\'s store, the next timer asks'() {
-    const { authority, probe } = await bootTrusted((authority) => authority.kfs.mkdir('.nimbus/state', { recursive: true }));
+    const { authority, probe } = await bootTrusted(storeMade);
     assert.deepEqual(probe.fs.readdirSync('/.nimbus/state'), []);
-    authority.kfs.writeFile('.nimbus/state/x', 'x');
+    authority.rawVfs.as(CRED_KERNEL).writeFile('.nimbus/state/x', 'x');
     await probe.resume();
     assert.deepEqual(probe.fs.readdirSync('/.nimbus/state'), ['x'], 'the view answered for the session\'s store from a barrier it skipped');
   },

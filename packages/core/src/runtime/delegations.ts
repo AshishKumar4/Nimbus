@@ -55,17 +55,20 @@ export const SESSION_KERNEL_ROOTS: readonly string[] = ['.nimbus', 'var/lib/nimb
 export const READ_LEASE_UNCOVERED_ROOTS: readonly string[] = [...SESSION_KERNEL_ROOTS, 'proc', 'dev'];
 
 /**
- * Whether a process's read lease vouches for what it knows of `key`: its
- * entry, or with `listing` its names. Nothing at or under an uncovered root
- * is, nor the names of a directory above one (they include the root's own).
- * The one rule a process's view answers by under a trusted lease; written
- * without references beyond its arguments, so a runtime prelude carries it
- * as source.
+ * Whether what a process knows of `key`, its entry or with `listing` its
+ * names, is clear of every root in `roots`: nothing at or under one is, nor
+ * the names of a directory above one (they include the root's own). Under a
+ * trusted read lease a process's view answers in the session's place only
+ * what is clear of READ_LEASE_UNCOVERED_ROOTS, and once it has answered what
+ * is not clear of SESSION_KERNEL_ROOTS (changed with no recall) it asks every
+ * barrier. Asked on every lookup a view makes, so it allocates nothing; and
+ * written without references beyond its arguments, so a runtime prelude
+ * carries it as source.
  */
-export function readLeaseCovers(key: string, listing: boolean, uncovered: readonly string[]): boolean {
-  for (const root of uncovered) {
-    if (key === root || key.startsWith(root + '/')) return false;
-    if (listing && (key === '' || root.startsWith(key + '/'))) return false;
+export function readLeaseCovers(key: string, listing: boolean, roots: readonly string[]): boolean {
+  for (const root of roots) {
+    if (key.startsWith(root) && (key.length === root.length || key.charCodeAt(root.length) === 47)) return false;
+    if (listing && (key === '' || (root.startsWith(key) && root.charCodeAt(key.length) === 47))) return false;
   }
   return true;
 }

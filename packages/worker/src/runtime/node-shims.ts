@@ -57,7 +57,7 @@ import { LOOPBACK_HOSTNAMES } from '@nimbus-sh/core/_shared/loopback.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { SYSTEM_IDENTITY } from '@nimbus-sh/core/constants.js';
-import { READ_LEASE_UNCOVERED_ROOTS, readLeaseCovers } from '@nimbus-sh/core/runtime/delegations.js';
+import { READ_LEASE_UNCOVERED_ROOTS, SESSION_KERNEL_ROOTS, readLeaseCovers } from '@nimbus-sh/core/runtime/delegations.js';
 import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
@@ -1069,19 +1069,22 @@ const __fsMod = (() => {
     return null;
   }
 
-  /**
-   * What a process's read lease vouches for (core runtime/delegations.ts
-   * readLeaseCovers): its view answers anything else only from a barrier.
-   */
+  /** What the view answers for under a trusted read lease (core runtime/delegations.ts readLeaseCovers). */
   const _readLeaseCovers = ${readLeaseCovers.toString()};
   const _READ_LEASE_UNCOVERED = ${JSON.stringify(READ_LEASE_UNCOVERED_ROOTS)};
-  /** Whether the view has answered for what the lease does not cover: its barriers are asked from then on. */
-  let _uncoveredViewed = false;
-  /** \`__nsResolve\`, where it landed viewed: \`k\`'s entry, or with \`listing\` its names, through any link. */
+  const _SESSION_STORES = ${JSON.stringify(SESSION_KERNEL_ROOTS)};
+  /** Lookups that landed where the lease does not vouch: a leased answer that made one is the session's (_leasedRead). */
+  let _uncoveredLandings = 0;
+  /** Whether the view has answered for the session's stores, which change with no recall: its barriers are asked from then on. */
+  let _storesViewed = false;
+  /** \`__nsResolve\`, where it landed counted: \`k\`'s entry, or with \`listing\` its names, through any link. */
   function _nsResolveViewed(k, follow, listing) {
     const found = __nsLookup(k, follow);
     if (found === "ELOOP") return found;
-    if (!_uncoveredViewed && !_readLeaseCovers(found.path, listing, _READ_LEASE_UNCOVERED)) _uncoveredViewed = true;
+    if (!_readLeaseCovers(found.path, listing, _READ_LEASE_UNCOVERED)) {
+      _uncoveredLandings++;
+      if (!_readLeaseCovers(found.path, listing, _SESSION_STORES)) _storesViewed = true;
+    }
     return found.row !== undefined ? found : null;
   }
 
@@ -2364,7 +2367,7 @@ const __fsMod = (() => {
     // change waits for the lease's recall, and the recall untrusts it first
     // (ProcessFsClient.readTrusted). A delivered answer is still applied,
     // and a store owed a repair still asks.
-    if (!delivered && !_storeRepairOwed && !_uncoveredViewed && _nsActive() && __nimbusProcessFs().readTrusted()) {
+    if (!delivered && !_storeRepairOwed && !_storesViewed && _nsActive() && __nimbusProcessFs().readTrusted()) {
       _stats.leasedBarriers++;
       return [];
     }
@@ -3483,7 +3486,7 @@ const __fsMod = (() => {
    * a path (its overlay, a write parked there), the session answers it.
    */
   function _leasedView() {
-    return !_storeRepairOwed && !_uncoveredViewed && _nsActive() && __nimbusProcessFs().readTrusted();
+    return !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted();
   }
   /** Whether the process's own effects are at \`k\` (or its landing, \`follow\`): what the session answers, not the view. */
   function _ownAt(k, follow) {
@@ -3503,15 +3506,15 @@ const __fsMod = (() => {
   }
   /** \`read\`, the sync view's answer, counted; undefined when the view cannot say (EAGAIN: a mount it did not list). */
   function _leasedRead(read) {
-    // An answer that reached what the lease does not cover (a link out of it) is the session's.
-    const covered = () => !_uncoveredViewed;
+    // An answer that landed where the lease does not vouch (a link out of it) is the session's.
+    const landings = _uncoveredLandings;
     try {
       const value = read();
-      if (!covered()) return undefined;
+      if (_uncoveredLandings !== landings) return undefined;
       _stats.leasedReads++;
       return value;
     } catch (error) {
-      if ((error && error.code === "EAGAIN") || !covered()) return undefined;
+      if ((error && error.code === "EAGAIN") || _uncoveredLandings !== landings) return undefined;
       _stats.leasedReads++;
       throw error;
     }
