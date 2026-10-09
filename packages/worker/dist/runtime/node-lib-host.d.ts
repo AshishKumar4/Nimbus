@@ -43,9 +43,7 @@
  * pathToFileURL }), process, builtinModules, builtinObjects (Node's
  * NODE_BUILTIN_OBJECTS), eastAsianWide(code), signals (os.constants.signals),
  * insideNodeModules() (whether the caller's code is a package's),
- * currentFrames(count, skip) (the current stack's \`count\` frames below
- * \`skip\` of the caller's callers: { functionName, scriptName, lineNumber,
- * columnNumber }),
+ * callSites(count, above) (V8's call sites of \`count\` frames below \`above\`),
  * errorSourcePositions(error) (where V8 places the frame an error was
  * captured at: { sourceLine, scriptResourceName, lineNumber, startColumn }),
  * tokenizer(code, options) (acorn's), sourceMaps

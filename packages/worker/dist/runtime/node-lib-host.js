@@ -43,9 +43,7 @@
  * pathToFileURL }), process, builtinModules, builtinObjects (Node's
  * NODE_BUILTIN_OBJECTS), eastAsianWide(code), signals (os.constants.signals),
  * insideNodeModules() (whether the caller's code is a package's),
- * currentFrames(count, skip) (the current stack's \`count\` frames below
- * \`skip\` of the caller's callers: { functionName, scriptName, lineNumber,
- * columnNumber }),
+ * callSites(count, above) (V8's call sites of \`count\` frames below \`above\`),
  * errorSourcePositions(error) (where V8 places the frame an error was
  * captured at: { sourceLine, scriptResourceName, lineNumber, startColumn }),
  * tokenizer(code, options) (acorn's), sourceMaps
@@ -470,14 +468,22 @@ export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform)
     return result;
   }
   utilBinding.parseEnv = parseEnv;
-  // Node's util binding GetCallSites: the frames below util.getCallSites (it
-  // and this binding skipped), as V8's StackFrame reads them; a script's id
-  // is its own number here.
+  // Node's util binding GetCallSites: the frames below util.getCallSites, as
+  // V8's StackFrame reads them; a script's id is its own number here.
   const scriptIds = new Map();
   utilBinding.getCallSites = function getCallSites(frameCount) {
-    return platform.currentFrames(frameCount, 2).map(({ functionName, scriptName, lineNumber, columnNumber }) => {
+    return platform.callSites(frameCount + 1, getCallSites).slice(1).map((site) => {
+      const scriptName = site.getScriptNameOrSourceURL?.() ?? site.getFileName() ?? "";
       if (!scriptIds.has(scriptName)) scriptIds.set(scriptName, String(scriptIds.size + 1));
-      return { functionName, scriptId: scriptIds.get(scriptName), scriptName, lineNumber, columnNumber, column: columnNumber };
+      const column = site.getColumnNumber() ?? 0;
+      return {
+        functionName: site.getFunctionName() ?? "",
+        scriptId: scriptIds.get(scriptName),
+        scriptName,
+        lineNumber: site.getLineNumber() ?? 0,
+        columnNumber: column,
+        column,
+      };
     });
   };
 

@@ -788,43 +788,52 @@ class __NimbusCallSite {
 }
 // What a runtime's shims format a stack with instead (node --enable-source-maps): null to keep the hook's own.
 let __nimbusStackFormatter = null;
-// V8's call sites of the stack \`holder\` captured and nothing read yet, the
-// program's at their file's places, as Node's errors binding reads them
-// natively: the program's Error.prepareStackTrace takes no part, and is left
-// as it was. JavaScript reads a captured stack's sites only through that hook:
-// named limit, a hook the program made non-configurable is the one that
-// formats it, and the holder has no sites here.
+// V8's call sites, the program's at their file's places, as Node's bindings
+// read them natively: of the stack \`holder\` captured and nothing read yet,
+// or, given \`count\`, of \`count\` frames captured now below \`above\`. The
+// program's Error.prepareStackTrace, Error.stackTraceLimit and
+// Error.captureStackTrace take no part, and Error's own properties are left
+// as they were.
+//
+// Named limit: V8 hands JavaScript a stack's sites only through those two
+// properties, so with either made non-configurable and non-writable there is
+// none to read, and this answers [] (util.getCallSites [],
+// isInsideNodeModules false, assert's message without its source
+// expression) where Node's bindings read V8 directly. workerd's native
+// node:util getCallSites ignores both, but drops every frame with no function
+// name (an arrow, a module's top level), which Node keeps.
+const __nimbusCaptureStackTrace = Error.captureStackTrace;
 const __nimbusSites = (error, sites) => sites.map(__NimbusCallSite.of);
-function __nimbusStackSites(holder) {
-  const prepare = Object.getOwnPropertyDescriptor(Error, "prepareStackTrace");
+function __nimbusStackSites(holder, count, above) {
+  const set = (name, value) => {
+    const descriptor = Object.getOwnPropertyDescriptor(Error, name);
+    if (descriptor === undefined || descriptor.configurable) {
+      Object.defineProperty(Error, name, { value, writable: true, enumerable: name === "stackTraceLimit", configurable: true });
+    } else if (descriptor.writable) {
+      Error[name] = value;
+    } else {
+      throw new TypeError("Error." + name + " is locked");
+    }
+    return () => {
+      if (descriptor === undefined) delete Error[name];
+      else if (descriptor.configurable) Object.defineProperty(Error, name, descriptor);
+      else Error[name] = descriptor.value;
+    };
+  };
+  const restores = [];
   try {
-    Object.defineProperty(Error, "prepareStackTrace", { value: __nimbusSites, writable: true, configurable: true });
-  } catch {
-    return [];
-  }
-  try {
+    restores.push(set("prepareStackTrace", __nimbusSites));
+    if (count !== undefined) {
+      restores.push(set("stackTraceLimit", count));
+      Reflect.apply(__nimbusCaptureStackTrace, Error, [holder, above]);
+    }
     const sites = holder.stack;
     return Array.isArray(sites) ? sites : [];
+  } catch {
+    return [];
   } finally {
-    if (prepare === undefined) delete Error.prepareStackTrace;
-    else Object.defineProperty(Error, "prepareStackTrace", prepare);
+    for (const restore of restores.reverse()) restore();
   }
-}
-// The current stack as V8 holds it, whatever Error's hooks and limit are, as
-// Node's util binding reads it (workerd's node:util getCallSites, native):
-// \`count\` frames below \`skip\` frames of this function's callers, each
-// { functionName, scriptName, lineNumber, columnNumber }, the program's at
-// their file's places. Named limit: workerd reads at most 200 frames, the
-// callers skipped among them.
-function __nimbusCurrentFrames(getCallSites, count, skip) {
-  return getCallSites(Math.min(200, count + skip + 1)).slice(skip + 1).map((frame) => {
-    const location = __nimbusFrameLocation({
-      getFileName: () => frame.scriptName,
-      getLineNumber: () => frame.lineNumber,
-      getColumnNumber: () => frame.columnNumber,
-    });
-    return location === null ? frame : { functionName: frame.functionName, scriptName: location.file, lineNumber: location.line, columnNumber: location.column };
-  });
 }
 function __nimbusUseStackFormatter(format) {
   __nimbusStackFormatter = format;
