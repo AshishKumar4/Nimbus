@@ -1,20 +1,11 @@
 #!/usr/bin/env bun
-// Which npm-bin invocations stay resident.
-//
-// Only the keyed long-running facet exposes a route stub that
-// PortRegistry.routeRequest can re-resolve in a later request, so this
-// decision is what makes a bound port reachable at all. A server sent down
-// the one-shot path holds until the facet lifetime expires and then reports
-// the limit it hit — live-observed as `astro preview` sitting for 27s and
-// exiting 1 with "reached the 30s facet lifetime limit", while
-// /s/<sid>/port/4321/ answered 502.
-//
-// `preview` used to sit in the one-shot exclusion beside `build`. It does not
-// belong there: it binds a port and serves the built output, exactly as `dev`
-// binds one and serves the source.
+// Which programs start as residents directly (facets/server-hints.ts): hints
+// only. A program that listens runs on as a resident however it started
+// (FacetManager._promote); a hint saves a known server's first launch the
+// run up to its listen.
 
 import assert from 'node:assert/strict';
-import { looksLongRunningNpmBin } from '../../packages/worker/src/shell/npm-bin-entrypoints.ts';
+import { firstPositional, knownServerBin, LearnedServers, LEARNED_SERVERS_MAX } from '../../packages/worker/src/facets/server-hints.ts';
 
 // ── serving subcommands stay resident ───────────────────────────────────────
 // `preview` is a serving verb wherever it exists, so it is pinned across every
@@ -22,19 +13,18 @@ import { looksLongRunningNpmBin } from '../../packages/worker/src/shell/npm-bin-
 for (const bin of ['astro', 'nuxt', 'remix', 'next', 'vite']) {
   for (const argv of [[], ['dev'], ['preview'], ['preview', '--port', '4321']]) {
     assert.equal(
-      looksLongRunningNpmBin(bin, argv), true,
+      knownServerBin(bin, argv), true,
       `${bin} ${argv.join(' ')} serves and must be routed long-running`,
     );
   }
 }
 
 // ── the subcommand that ends ────────────────────────────────────────────────
-// `build` produces an artifact and exits. Classifying it resident is not a
-// harmless over-approximation: a long-running bin that exits 0 is never
-// reaped, so it stays `running` in `ps` for the life of the session.
+// `build` produces an artifact and exits: started as a resident it would pay
+// for a facet it does not need.
 for (const bin of ['astro', 'nuxt', 'remix', 'vite']) {
   assert.equal(
-    looksLongRunningNpmBin(bin, ['build']), false,
+    knownServerBin(bin, ['build']), false,
     `${bin} build exits and must stay one-shot`,
   );
 }
@@ -42,21 +32,43 @@ for (const bin of ['astro', 'nuxt', 'remix', 'vite']) {
 // ── queries answer and exit ─────────────────────────────────────────────────
 for (const arg of ['--help', '-h', 'help', '--version', '-v', 'version']) {
   assert.equal(
-    looksLongRunningNpmBin('astro', [arg]), false,
+    knownServerBin('astro', [arg]), false,
     `astro ${arg} is a query, not a server`,
   );
   assert.equal(
-    looksLongRunningNpmBin('astro', ['preview', arg]), false,
+    knownServerBin('astro', ['preview', arg]), false,
     `astro preview ${arg} is a query, not a server`,
   );
 }
 
 // ── bins outside the known-server set ───────────────────────────────────────
-// They are judged only by flags that ask for residency, so an ordinary CLI
-// invocation cannot become a ghost process.
-assert.equal(looksLongRunningNpmBin('tsc', ['--noEmit']), false);
-assert.equal(looksLongRunningNpmBin('tsc', ['--watch']), true);
-assert.equal(looksLongRunningNpmBin('some-cli', ['preview']), false,
+// Judged only by flags that ask for residency; one that listens anyway is
+// run on as a resident, and learned.
+assert.equal(knownServerBin('tsc', ['--noEmit']), false);
+assert.equal(knownServerBin('tsc', ['--watch']), true);
+assert.equal(knownServerBin('some-cli', ['preview']), false,
   'an unknown bin is not promoted by a subcommand name alone');
 
-console.log('npm-bin-long-running-classification: OK');
+// ── learned: a bin that listened, in this workspace ─────────────────────────
+assert.equal(firstPositional([]), '');
+assert.equal(firstPositional(['--open', 'dev', '--port', '3000']), 'dev');
+{
+  const kept = new Map();
+  const storage = {
+    async get(key) { return kept.get(key); },
+    async put(key, value) { kept.set(key, structuredClone(value)); },
+  };
+  const vite = { package: 'vite@8.0.0', bin: 'vite', arg0: '' };
+  const learned = new LearnedServers(storage);
+  assert.equal(await learned.has(vite), false);
+  await learned.learn(vite);
+  assert.equal(await learned.has(vite), true);
+  assert.equal(await new LearnedServers(storage).has(vite), true, 'kept in the workspace\'s storage, for a later isolate');
+  assert.equal(await learned.has({ ...vite, arg0: 'build' }), false, 'by its first positional argument');
+  assert.equal(await learned.has({ ...vite, package: 'vite@8.0.1' }), false, 'and by its version');
+  for (let i = 0; i < LEARNED_SERVERS_MAX; i++) await learned.learn({ package: `p${i}@1`, bin: 'b', arg0: '' });
+  assert.equal(await learned.has(vite), false, 'the least recently learned leaves past the bound');
+  assert.equal(kept.get('server-hints').length, LEARNED_SERVERS_MAX);
+}
+
+console.log('server-hints: known servers by name, learned ones by package, bin and first argument');

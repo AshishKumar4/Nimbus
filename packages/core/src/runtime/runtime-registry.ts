@@ -51,7 +51,7 @@ import type { TypeScriptStripOptions } from './typescript-strip.js';
 import { nodeModulesRefusal, typeScriptRefusalShim, unknownExtensionRefusal } from './typescript-refusal.js';
 import { packageScopeType } from './require-resolution.js';
 import { exists, isDirectory } from '../vfs/vfs.js';
-import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerLaunchHost } from './server-launch.js';
+import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerIdentity, type ServerLaunchHost } from './server-launch.js';
 import { parseNodeCommandLine, typeScriptStripOptions, type NodeCommandLine, type NodeLaunch } from './node-cli.js';
 import { nodeEvalProgram, nodeStdinPrintProgram, type NodeEvalMode } from './node-eval.js';
 
@@ -85,6 +85,8 @@ export interface RuntimeRunOpts {
   captureOutput?: boolean;
   forceLongRunning?: boolean;
   attachedTty?: boolean;
+  /** The bin it runs, learned a server when it runs on as one (worker facets/server-hints.ts). */
+  server?: ServerIdentity;
   /**
    * A resident whose stdin its launcher writes and ends without waiting for
    * the boot: a synchronous read of stdin while it boots waits for that
@@ -351,6 +353,7 @@ export function buildRuntimeHandler(
         command?: string;
         forceLongRunning?: boolean;
         attachedTty?: boolean;
+        server?: ServerIdentity;
         /**
          * Whoever started the reserved process writes its stdin and ends it,
          * and does not wait for it to boot (the SDK's startProcess): its boot
@@ -391,6 +394,7 @@ export function buildRuntimeHandler(
     const reservedProcess = binSpawn ? {
       skipSpawn: true, callerPid: binSpawn.callerPid,
       forceLongRunning: binSpawn.forceLongRunning === true, attachedTty: binSpawn.attachedTty === true,
+      ...(binSpawn.server ? { server: binSpawn.server } : {}),
       ...(binSpawn.stdinWriter === true ? { stdinWriter: true } : {}),
     } : {};
     const bundleProfile = parseFacetBundleProfile(nimbusCtx.__nimbusBundleProfile);

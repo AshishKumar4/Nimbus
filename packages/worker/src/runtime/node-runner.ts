@@ -43,6 +43,7 @@
 import type { FacetManager, FacetExecResult } from '../facets/manager.js';
 import { parsePortFromArgv } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import type { FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
+import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
 import type { ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
 import type { StdinBytes } from '../facets/manager.js';
@@ -100,6 +101,8 @@ export interface RunFreshOpts {
   invokerPid?: number;
   forceLongRunning?: boolean;
   attachedTty?: boolean;
+  /** RuntimeRunOpts.server. */
+  server?: ServerIdentity;
   /** Its launcher writes and ends its stdin (RuntimeRunOpts.stdinWriter). */
   stdinWriter?: boolean;
   bundleProfile?: FacetBundleProfile;

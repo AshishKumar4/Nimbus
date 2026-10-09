@@ -122,6 +122,8 @@ import {
 import { requirePackageEntry } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { LAUNCH_PROFILE_MAX_PATHS, LaunchLearningStore, type LaunchLearning, type LaunchReport } from './launch-learning-store.js';
+import { LearnedServers } from './server-hints.js';
+import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
@@ -5266,6 +5268,8 @@ export class FacetManager {
    * same file again (Vite's node_modules/ms/index.js on every launch).
    */
   private learning: LaunchLearningStore;
+  /** The bins this workspace learned are servers (server-hints.ts). */
+  readonly learnedServers: LearnedServers;
   /**
    * Misses shared across sessions per installed package (read-profile.ts),
    * kept in the npm tarball cache bucket (NPM_TARBALL_CACHE) beside the
@@ -5334,6 +5338,7 @@ export class FacetManager {
   ) {
     this.ctx = ctx;
     this.learning = new LaunchLearningStore(ctx.storage);
+    this.learnedServers = new LearnedServers(ctx.storage);
     this.env = parseFacetManagerEnv(env);
     this.processes = processes;
     this.portRegistry = portRegistry;
@@ -6711,6 +6716,8 @@ export class FacetManager {
       stdinFile?: { path: string; offset: number; syncRead: boolean };
       /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
       node?: NodeLaunch;
+      /** The bin it runs: learned a server when it runs on as one (_promote). */
+      server?: ServerIdentity;
     },
   ): Promise<FacetExecResult> {
     const command = opts.command
@@ -7067,6 +7074,8 @@ export class FacetManager {
       command: opts.command, invokerPid: opts.invokerPid, bundleProfile: opts.bundleProfile, node: opts.node,
       skipSpawn: true, callerPid: pid, replay,
     });
+    // Its next launch starts as a server directly (server-hints.ts).
+    if (opts.server) await this.learnedServers.learn(opts.server).catch((error) => this._learningLost(pid, error));
     return { exitCode: 0, stdout: '', stderr: '', promotedPid: pid };
   }
 
