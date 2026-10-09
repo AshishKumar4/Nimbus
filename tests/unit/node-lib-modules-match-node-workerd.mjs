@@ -519,6 +519,7 @@ show2('kill float', () => process.kill(1.5));
 show2('kill string pid', () => process.kill('abc'));
 show2('kill signal', () => process.kill(process.pid, 'SIGNOPE'));
 show2('kill probe', () => process.kill(process.pid, 0));
+show2('kill probe by string', () => process.kill(String(process.pid), 0));
 show2('assert', () => process.assert(false, 'm'));
 show2('assert ok', () => process.assert(true));
 show2('capture', () => { process.setUncaughtExceptionCaptureCallback(() => {}); const had = process.hasUncaughtExceptionCaptureCallback(); try { process.setUncaughtExceptionCaptureCallback(() => {}); } catch (e) { return [had, e.code, e.message]; } });
@@ -530,7 +531,7 @@ show2('loadEnvFile missing', () => process.loadEnvFile('nope.env'));
 show2('loadEnvFile type', () => process.loadEnvFile(5));
 process.env.KEEP = 'mine';
 show2('loadEnvFile', () => [process.loadEnvFile('envs/app.env'), process.env.FROM_FILE, process.env.QUOTED, process.env.KEEP]);
-show2('uptime', () => typeof process.uptime() === 'number' && process.uptime() >= 0);
+show2('uptime', () => typeof process.uptime() === 'number' && process.uptime() >= 0 && process.uptime() < 600);
 show2('memory', () => [typeof process.availableMemory(), typeof process.constrainedMemory()]);
 show2('rawDebug', () => typeof process._rawDebug);
 `,
@@ -553,6 +554,12 @@ show2('dir', () => shape(fs.statSync('stattedDir')).slice(0, 6));
 show2('dates lazy', () => { const s = fs.statSync('statted.txt'); const before = Object.keys(s).includes('mtime'); const m = s.mtime; return [before, Object.keys(s).includes('mtime'), m.getTime() === Math.round(s.mtimeMs)]; });
 show2('bigint', () => { const s = fs.statSync('statted.txt', { bigint: true }); return [s.constructor.name, typeof s.size, typeof s.mtimeNs, s.isFile(), s instanceof fs.Stats, s.mtimeNs / 1000000n === s.mtimeMs]; });
 show2('lstat bigint', () => fs.lstatSync('statted.txt', { bigint: true }).constructor.name);
+// An epoch's milliseconds, exactly, in nanoseconds: 1700000000001 is no multiple of 4.
+fs.utimesSync('statted.txt', new Date(1700000000001), new Date(1700000000001));
+show2('bigint ms exact', () => BigInt(Math.trunc(fs.statSync('statted.txt').mtimeMs)) === fs.statSync('statted.txt', { bigint: true }).mtimeMs);
+const throwing = { get bigint() { throw new Error('options read'); } };
+show2('stat options throw', () => fs.stat('statted.txt', throwing, () => console.log('stat called back (should not)')));
+show2('statSync options throw', () => fs.statSync('statted.txt', throwing));
 show2('fstat bigint', () => { const fd = fs.openSync('statted.txt', 'r'); try { return fs.fstatSync(fd, { bigint: true }).constructor.name; } finally { fs.closeSync(fd); } });
 show2('constants', () => [fs.F_OK, fs.R_OK, fs.W_OK, fs.X_OK, fs.F_OK === fs.constants.F_OK]);
 show2('lchmod', () => [typeof fs.lchmod, typeof fs.lchmodSync, 'lchmod' in fs, typeof fs.promises.lchmod]);
@@ -563,6 +570,8 @@ show2('Stats ctor', () => { const s = new fs.Stats(1, 0o100644, 1, 0, 0, 0, 4096
   await new Promise((resolve) => fs.stat('statted.txt', { bigint: true }, (e, s) => { console.log('stat cb bigint: ' + (e ? e.code : s.constructor.name)); resolve(); }));
   console.log('promises bigint: ' + (await fs.promises.stat('statted.txt', { bigint: true })).constructor.name);
   try { await fs.promises.lchmod('statted.txt', 0o600); } catch (e) { console.log('promises lchmod: ' + e.code + ' ' + e.message); }
+  const settled = fs.promises.stat('statted.txt', throwing).then(() => 'resolved', (e) => 'rejected ' + e.message);
+  console.log('promises options throw: ' + await Promise.race([settled, new Promise((resolve) => setTimeout(() => resolve('pending'), 200))]));
 })();
 `,
   'dnsconst.cjs': String.raw`
