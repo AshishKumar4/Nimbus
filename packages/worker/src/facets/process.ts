@@ -922,9 +922,9 @@ export class FacetProcessManager {
     void this.deps.processes.releaseOutput(child.pid, () => this._announceExit(child));
   }
 
-  /** Whether the child's end is published (SessionProcessSupervisor.published): what wait and its streams report. */
+  /** Whether the child's end is published (SessionProcessSupervisor.endHeld): what wait and its streams report. */
   private _ended(child: ChildEntry): boolean {
-    return child.exitCode !== null && this.deps.processes.published(child.pid)?.state !== 'running';
+    return child.exitCode !== null && !this.deps.processes.endHeld(child.pid);
   }
 
   /** The child's published end, to its waiters: wakes all of them (exit, output, stdin) so callers don't hang. */
@@ -1006,12 +1006,12 @@ export class FacetProcessManager {
 
   // ── housekeeping ────────────────────────────────────────────────────────
 
-  /** Reap entries older than maxAgeMs whose exit slot is stamped. */
+  /** Reap entries older than maxAgeMs whose end is published. */
   reap(maxAgeMs = 60_000): number {
     const now = Date.now();
     let n = 0;
     for (const [pid, child] of this.children) {
-      if (child.exitCode !== null && child.endedAt && now - child.endedAt > maxAgeMs) {
+      if (this._ended(child) && child.endedAt && now - child.endedAt > maxAgeMs) {
         this.children.delete(pid);
         n++;
       }

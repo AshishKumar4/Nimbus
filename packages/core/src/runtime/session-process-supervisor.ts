@@ -91,7 +91,11 @@ export class SessionProcessSupervisor {
   private readonly heldOutput = new Map<number, Promise<void>>();
   /** The pids whose output is being delivered now: their own output made meanwhile goes with it. */
   private readonly releasing = new Set<number>();
-  /** The pids whose end is decided but not yet published: observers are told they run. */
+  /**
+   * The pids whose end is decided but not yet published: observers are told
+   * they run. A pid's own slot, kept until its end is published, whatever
+   * becomes of its table entry.
+   */
   private readonly unpublishedEnds = new Set<number>();
 
   // ── Lifecycle / PID authority ─────────────────────────────────────────
@@ -140,6 +144,11 @@ export class SessionProcessSupervisor {
 
   private asPublished(entry: ProcessEntry): ProcessEntry {
     return this.unpublishedEnds.has(entry.pid) ? { ...entry, state: 'running', exitCode: null, endTime: null } : entry;
+  }
+
+  /** Whether `pid`'s end is decided and still held from its observers (see {@link published}). */
+  endHeld(pid: number): boolean {
+    return this.unpublishedEnds.has(pid);
   }
 
   getRunning(): ProcessEntry[] {
@@ -357,11 +366,14 @@ export class SessionProcessSupervisor {
    * A prune serves whoever runs next, not the processes it removes, so a
    * release that fails goes to that process's own stderr log, where its
    * output is read; every expired entry is still released and forgotten.
+   * One whose end is still held from its observers has not ended to them,
+   * and waits for a prune after it is published.
    */
   async reap(maxAge?: number): Promise<number> {
     const release = this.release;
     if (!release) return 0;
-    const { reaped, failures } = await this.releaseAndForget(release, this.table.expired(maxAge));
+    const expired = this.table.expired(maxAge).filter((entry) => !this.unpublishedEnds.has(entry.pid));
+    const { reaped, failures } = await this.releaseAndForget(release, expired);
     for (const { pid, error } of failures) this.appendOutput(pid, 'stderr', `${error instanceof Error ? error.message : String(error)}\n`);
     return reaped;
   }
@@ -382,14 +394,14 @@ export class SessionProcessSupervisor {
    * that waited for its children does: what a caller ran to completion has
    * nothing left to report. Each is released first (see {@link setRelease}),
    * so what it bound goes with its entry rather than outliving it; with no
-   * release set this refuses. One still running is kept. Logs are
-   * orphaned as by {@link reap}.
+   * release set this refuses. One still running, or whose end is still held
+   * from its observers, is kept. Logs are orphaned as by {@link reap}.
    */
   async reapTree(pid: number): Promise<number> {
     const release = this.release;
     if (!release) throw new Error('reapTree: this process table has no filesystem release; compose a workspace over it');
     const ended = [this.table.get(pid), ...this.table.descendantsOf(pid)]
-      .filter((entry): entry is ProcessEntry => entry !== undefined && entry.state !== 'running');
+      .filter((entry): entry is ProcessEntry => entry !== undefined && entry.state !== 'running' && !this.unpublishedEnds.has(entry.pid));
     const { reaped, failures } = await this.releaseAndForget(release, ended);
     // The caller waited for this tree: it hears every failure, once all of it is gone.
     if (failures.length === 1) throw failures[0].error;
