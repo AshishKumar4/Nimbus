@@ -58,6 +58,11 @@ published independently in the `@nimbus-sh` npm scope.
   - Known limits: `perf_hooks.createHistogram` and `monitorEventLoopDelay`
     throw `ERR_METHOD_NOT_IMPLEMENTED`. `os.getPriority` and `setPriority`
     on another process throw ENOSYS.
+- Fixed: a module the launch staged because earlier runs executed it, or as
+  a guess at a package's main, came without what its require wrapper loads.
+  nuxt's `nuxt dev` failed "Failed to resolve vue/compiler-sfc" when
+  `@vitejs/plugin-vue` was staged that way. Such a module now brings its
+  static imports and its wrappers' loads together, or is left to load late.
 
 ## 2026-10-09: platform 0.8.0, config 0.2.4, core 0.16.0, fabric 0.11.0, worker 0.14.0, loom 0.2.3, sdk 0.12.0, react 0.2.3, cli 0.2.3, create-nimbus-app 0.2.1, runtime-cpython 3.13.14-1
 
