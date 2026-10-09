@@ -210,6 +210,8 @@ function formatNodeMessage(template, args) {
  */
 const nodeErrorMessages = {
     ERR_AMBIGUOUS_ARGUMENT: ['The "%s" argument is ambiguous. %s', TypeError],
+    ERR_ASSERTION: ['%s', Error],
+    ERR_FEATURE_UNAVAILABLE_ON_PLATFORM: ['The feature %s is unavailable on the current platform, which is being used to run Node.js', TypeError],
     ERR_CONSTRUCT_CALL_REQUIRED: ['Class constructor %s cannot be invoked without `new`', TypeError],
     ERR_FALSY_VALUE_REJECTION: [function (reason) {
             this.reason = reason;
@@ -232,6 +234,7 @@ const nodeErrorMessages = {
     ERR_INVALID_RETURN_VALUE: [(input, name, value) => `Expected ${input} to be returned from the "${name}" function but got ${determineSpecificType(value)}.`, TypeError, RangeError],
     ERR_INVALID_THIS: ['Value of "this" must be of type %s', TypeError],
     ERR_INVALID_URI: ['URI malformed', URIError],
+    ERR_METHOD_NOT_IMPLEMENTED: ['The %s method is not implemented', Error],
     ERR_MISSING_ARGS: [(...names) => {
             const wrapped = names.map((name) => (Array.isArray(name) ? name.map((n) => `"${n}"`).join(' or ') : `"${name}"`));
             return `The ${formatList(wrapped, 'and')} argument${names.length > 1 ? 's' : ''} must be specified`;
@@ -241,6 +244,7 @@ const nodeErrorMessages = {
     ERR_PARSE_ARGS_UNKNOWN_OPTION: [(option, allowPositionals) => `Unknown option '${option}'${allowPositionals
             ? `. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- ${JSON.stringify(option)}`
             : ''}`, TypeError],
+    ERR_OPERATION_FAILED: ['Operation failed: %s', Error, TypeError],
     ERR_OUT_OF_RANGE: [(str, range, input, replaceDefaultBoolean = false) => {
             let received;
             if (Number.isInteger(input) && Math.abs(input) > 2 ** 32) {
@@ -259,6 +263,7 @@ const nodeErrorMessages = {
         }, RangeError],
     ERR_SOCKET_BAD_PORT: [(name, port, allowZero = true) => `${name} should be ${allowZero ? '>=' : '>'} 0 and < 65536. Received ${determineSpecificType(port)}.`, RangeError],
     ERR_UNAVAILABLE_DURING_EXIT: ['Cannot call function in process exit handler', Error],
+    ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET: ['`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active', Error],
     ERR_UNKNOWN_SIGNAL: ['Unknown signal: %s', TypeError],
     ERR_WORKER_UNSUPPORTED_OPERATION: ['%s is not supported in workers', TypeError],
 };
