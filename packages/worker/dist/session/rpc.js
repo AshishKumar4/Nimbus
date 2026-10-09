@@ -978,20 +978,10 @@ export async function _rpcReportExit(self, pid, code, tail, dataReads, profileUn
         self.processes.markExit(pid, code, PRIOR_GENERATION_EXIT_REASON);
         return;
     }
-    // Exit callbacks may release the foreground launch; capture its ownership first.
-    const entry = self.processes.get(pid);
-    const normalForeground = code === 0
-        && (entry?.foreground === true || entry?.attachedTty === true || entry?.longRunning !== true);
     try {
         self.processes.closeInput(pid);
     }
     catch { }
-    for (const stream of ['stdout', 'stderr']) {
-        const rest = _terminalTeeDecoders.drop(`${pid}:${stream}`);
-        if (rest.length > 0 && self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
-            self.terminal.write(normalizeTerminalNewlines(rest));
-        }
-    }
     // A relayed socket is held open by the supervisor on the process's behalf,
     // so it does not die when the facet does. Nothing else would ever close
     // it, and a live one keeps buffering into the supervisor's heap.
@@ -1000,6 +990,20 @@ export async function _rpcReportExit(self, pid, code, tail, dataReads, profileUn
     }
     catch { }
     self.supervisorForgetBridge?.(pid);
+    await self.processes.releaseOutput(pid, () => reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules));
+}
+/** A process's own exit report, to everything that observes it. */
+function reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules) {
+    // Exit callbacks may release the foreground launch; capture its ownership first.
+    const entry = self.processes.get(pid);
+    const normalForeground = code === 0
+        && (entry?.foreground === true || entry?.attachedTty === true || entry?.longRunning !== true);
+    for (const stream of ['stdout', 'stderr']) {
+        const rest = _terminalTeeDecoders.drop(`${pid}:${stream}`);
+        if (rest.length > 0 && self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
+            self.terminal.write(normalizeTerminalNewlines(rest));
+        }
+    }
     if (tail)
         self.processes.appendOutput(pid, 'stderr', tail);
     // Guard against double-reporting: if we've already recorded exit
@@ -1062,10 +1066,12 @@ export function _emitExitDump(self, pid, code) {
 export function _emitShellExecDone(self, pid, _cmd, code, durationMs) {
     if (code === 0)
         return;
-    if (self.processes.logSize(pid) > 0) {
-        self._emitExitDump(pid, code);
-    }
-    queueExitNotice(self, { pid, code, kind: 'shell', durationMs });
+    void self.processes.releaseOutput(pid, () => {
+        if (self.processes.logSize(pid) > 0) {
+            self._emitExitDump(pid, code);
+        }
+        queueExitNotice(self, { pid, code, kind: 'shell', durationMs });
+    });
 }
 /**
  * External-exit path: invoked by FacetManager when a process is killed
@@ -1088,6 +1094,12 @@ export function _reportExternalExit(self, pid, code, reason) {
     }
     catch { }
     self.supervisorForgetBridge?.(pid);
+    void self.processes.releaseOutput(pid, () => reportExternalExit(self, pid, code, reason));
+}
+/** An exit the process did not report itself, to everything that observes it. */
+function reportExternalExit(self, pid, code, reason) {
+    if (self.processes.getExit(pid))
+        return;
     if (reason) {
         self.processes.appendOutput(pid, 'stderr', `[process killed: ${reason}]\n`);
     }

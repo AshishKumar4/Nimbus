@@ -41,6 +41,12 @@ export class SessionProcessSupervisor {
     release = null;
     /** Ends a process by a signal's default action; see setDefaultSignalAction. */
     defaultSignalAction = null;
+    /** Holds a process's output until its writes are published; see setOutputGate. */
+    outputGate = null;
+    /** Each pid's latest output still held: what its next output goes after. */
+    heldOutput = new Map();
+    /** The pids whose output is being delivered now: their own output made meanwhile goes with it. */
+    releasing = new Set();
     // ── Lifecycle / PID authority ─────────────────────────────────────────
     /** Allocate a PID and register a new process. */
     spawn(command, argv, cwd, opts = {}) {
@@ -449,20 +455,68 @@ export class SessionProcessSupervisor {
         };
     }
     // ── Output / exit records ─────────────────────────────────────────────
+    /**
+     * Hold each process's output (its log and live sinks, a pipe to another
+     * process, the terminal, its exit) until `gate` lets it through. One slot.
+     */
+    setOutputGate(gate) {
+        this.outputGate = gate;
+    }
+    /**
+     * `deliver` once `pid`'s output may reach its observers: now, when the
+     * gate holds nothing of pid's, else after the gate and after pid's output
+     * before it, in the order the process made it. Every observer of a
+     * process's output and its exit is reached through here.
+     */
+    releaseOutput(pid, deliver) {
+        if ((this.outputGate === null && this.heldOutput.size === 0) || this.releasing.has(pid))
+            return deliver();
+        const prior = this.heldOutput.get(pid);
+        const gated = this.outputGate?.before(pid) ?? null;
+        if (prior === undefined && gated === null)
+            return this.deliverOutput(pid, deliver);
+        const turn = prior === undefined ? gated : gated === null ? prior : Promise.all([prior, gated]);
+        let delivery;
+        const admitted = turn.then(() => { delivery = this.deliverOutput(pid, deliver); });
+        // What comes after waits for this to be let through, not for its readers.
+        const held = admitted.then(() => { }, () => { });
+        this.heldOutput.set(pid, held);
+        void held.then(() => { if (this.heldOutput.get(pid) === held)
+            this.heldOutput.delete(pid); });
+        return (async () => {
+            await admitted;
+            return await delivery;
+        })();
+    }
+    deliverOutput(pid, deliver) {
+        this.releasing.add(pid);
+        try {
+            return deliver();
+        }
+        finally {
+            this.releasing.delete(pid);
+        }
+    }
     appendOutput(pid, stream, data) {
-        this.logs.append(pid, stream, data);
-        this.logActivity?.();
+        void this.releaseOutput(pid, () => {
+            this.logs.append(pid, stream, data);
+            this.logActivity?.();
+        });
     }
     /** Store bytes once, and await the live byte sink's pipe backpressure. */
     appendOutputBytes(pid, stream, data) {
-        const delivery = this.logs.appendBytes(pid, stream, data);
-        this.logActivity?.();
-        return delivery;
+        return this.releaseOutput(pid, () => {
+            const delivery = this.logs.appendBytes(pid, stream, data);
+            this.logActivity?.();
+            return delivery;
+        });
     }
-    /** Record exit in the log store. Idempotent: the first record wins. */
+    /** Record exit in the log store, after the output before it. Idempotent: the first record wins. */
     markExit(pid, code, reason) {
-        this.logs.markExit(pid, code, reason);
-        this.logActivity?.();
+        void this.releaseOutput(pid, () => {
+            this.logs.markExit(pid, code, reason);
+            this.logActivity?.();
+        });
     }
     getExit(pid) {
         return this.logs.getExit(pid);

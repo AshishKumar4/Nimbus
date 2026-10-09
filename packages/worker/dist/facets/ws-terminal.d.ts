@@ -27,7 +27,9 @@ export declare class WebSocketTerminal {
      *  into nimbus_terminal_scrollback. Single-frame granularity (not
      *  per-write) coalesces writes from one JavaScript turn. */
     private onFlush;
-    constructor(ws?: WebSocket | null, onFlush?: (data: string) => void);
+    /** Sends a frame once the shell's output may go (SessionProcessSupervisor.releaseOutput), in order. */
+    private readonly release;
+    constructor(ws?: WebSocket | null, onFlush?: (data: string) => void, release?: (send: () => void) => void);
     /**
      * [B'.5] Swap the underlying WebSocket on a warm rejoin. The Shell
      * keeps `terminal` as a stable instance reference (it stored

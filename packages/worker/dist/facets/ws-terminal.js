@@ -27,9 +27,12 @@ export class WebSocketTerminal {
      *  into nimbus_terminal_scrollback. Single-frame granularity (not
      *  per-write) coalesces writes from one JavaScript turn. */
     onFlush;
-    constructor(ws = null, onFlush) {
+    /** Sends a frame once the shell's output may go (SessionProcessSupervisor.releaseOutput), in order. */
+    release;
+    constructor(ws = null, onFlush, release = (send) => send()) {
         this.ws = ws;
         this.onFlush = onFlush ?? null;
+        this.release = release;
     }
     /**
      * [B'.5] Swap the underlying WebSocket on a warm rejoin. The Shell
@@ -124,20 +127,22 @@ export class WebSocketTerminal {
             return;
         const combined = this.buffer.join('');
         this.buffer = [];
-        try {
-            this.ws?.send(JSON.stringify({ type: 'output', data: combined }));
-        }
-        catch { }
-        // [B'.3] Tee to scrollback. Runs AFTER the WS send so a thrown
-        // tee can't break the live stream. Fail-soft on the call: any
-        // throw is swallowed; appendScrollback itself catches its own
-        // SQL errors via try/catch in initSession's wrapper.
-        if (this.onFlush) {
+        this.release(() => {
             try {
-                this.onFlush(combined);
+                this.ws?.send(JSON.stringify({ type: 'output', data: combined }));
             }
             catch { }
-        }
+            // [B'.3] Tee to scrollback. Runs AFTER the WS send so a thrown
+            // tee can't break the live stream. Fail-soft on the call: any
+            // throw is swallowed; appendScrollback itself catches its own
+            // SQL errors via try/catch in initSession's wrapper.
+            if (this.onFlush) {
+                try {
+                    this.onFlush(combined);
+                }
+                catch { }
+            }
+        });
     }
     onData(callback) { this.dataCallback = callback; }
     onSubmission(callback) {
@@ -145,10 +150,12 @@ export class WebSocketTerminal {
     }
     shellIntegration(event) {
         this.flushNow();
-        try {
-            this.ws?.send(JSON.stringify(event));
-        }
-        catch { /* the socket closed */ }
+        this.release(() => {
+            try {
+                this.ws?.send(JSON.stringify(event));
+            }
+            catch { /* the socket closed */ }
+        });
     }
     handleMessage(msg) {
         switch (msg.type) {

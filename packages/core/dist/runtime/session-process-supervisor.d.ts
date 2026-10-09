@@ -23,6 +23,7 @@ import { ProcessTable, type ProcessEntry, type ProcessRestart } from './process-
 import { type ProcessInputPacket } from './process-input.js';
 import { ProcessLogStore, type LogChunk, type ByteLogChunk, type LogStream, type PersistAdapter, type ProcessExitInfo, type ProcessLogReadOptions, type SequencedLogChunk } from './process-logs.js';
 import type { ProcessSignalName } from './process-io-protocol.js';
+import type { OutputGate } from './output-gate.js';
 import type { VfsCred } from './os-contracts.js';
 export interface ProcessSpawnOptions {
     /** Long-lived process (dev server, watcher, attached CLI). Surfaces a process tab. */
@@ -69,6 +70,12 @@ export declare class SessionProcessSupervisor {
     private release;
     /** Ends a process by a signal's default action; see setDefaultSignalAction. */
     private defaultSignalAction;
+    /** Holds a process's output until its writes are published; see setOutputGate. */
+    private outputGate;
+    /** Each pid's latest output still held: what its next output goes after. */
+    private readonly heldOutput;
+    /** The pids whose output is being delivered now: their own output made meanwhile goes with it. */
+    private readonly releasing;
     /** Allocate a PID and register a new process. */
     spawn(command: string, argv: string[], cwd: string, opts?: ProcessSpawnOptions): ProcessEntry;
     /** Mark an existing entry as long-running. Idempotent. */
@@ -248,10 +255,23 @@ export declare class SessionProcessSupervisor {
     setDefaultSignalAction(cb: (pid: number, code: number, signal: ProcessSignalName) => void): void;
     /** Controlling-terminal descriptor; null when no input channel is open. */
     terminal(pid: number): ProcessTerminalDescriptor | null;
+    /**
+     * Hold each process's output (its log and live sinks, a pipe to another
+     * process, the terminal, its exit) until `gate` lets it through. One slot.
+     */
+    setOutputGate(gate: OutputGate | null): void;
+    /**
+     * `deliver` once `pid`'s output may reach its observers: now, when the
+     * gate holds nothing of pid's, else after the gate and after pid's output
+     * before it, in the order the process made it. Every observer of a
+     * process's output and its exit is reached through here.
+     */
+    releaseOutput<T>(pid: number, deliver: () => T): T | Promise<Awaited<T>>;
+    private deliverOutput;
     appendOutput(pid: number, stream: LogStream, data: string): void;
     /** Store bytes once, and await the live byte sink's pipe backpressure. */
     appendOutputBytes(pid: number, stream: LogStream, data: Uint8Array): Promise<void>;
-    /** Record exit in the log store. Idempotent: the first record wins. */
+    /** Record exit in the log store, after the output before it. Idempotent: the first record wins. */
     markExit(pid: number, code: number, reason?: string): void;
     getExit(pid: number): ProcessExitInfo | null;
     hasLogs(pid: number): boolean;
