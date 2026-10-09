@@ -88,6 +88,7 @@ import {
 const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
 import { NpmCache } from '../npm/cache.js';
 import { mayHaveDynamicImport } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
+import { relativeWasmPaths } from '@nimbus-sh/core/_shared/relative-wasm-paths.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -3804,13 +3805,6 @@ export async function addBinTargetSiblings(
 }
 
 /**
- * A string literal naming a `.wasm` file by a relative path: how a package
- * loads its image from beside its own module (`new URL('x.wasm',
- * import.meta.url)`, `path.join(__dirname, 'x.wasm')`).
- */
-const RELATIVE_WASM_LITERAL_RE = /["'`]((?:\.{1,2}\/)*[\w@.-]+(?:\/[\w@.-]+)*\.wasm)["'`]/g;
-
-/**
  * The table an \`import()\` reads its target's lazy synchronous reads from
  * (FacetVfsState.lazyModules): for each lazy module that an \`import()\` may
  * target, the synchronous reads (static-fs-refs' exact, sync) of every lazy
@@ -3879,15 +3873,7 @@ export async function collectClosureWasmImages(
     for (const ref of findStaticFsReferences(cell, '/' + stripLeadingSlashes(path)).exact) {
       if (ref.path.endsWith('.wasm')) named.add(stripLeadingSlashes(ref.path));
     }
-    const dir = stripLeadingSlashes(path).split('/').slice(0, -1);
-    for (const match of cell.matchAll(RELATIVE_WASM_LITERAL_RE)) {
-      const segments = [...dir];
-      for (const segment of match[1].split('/')) {
-        if (segment === '..') segments.pop();
-        else if (segment !== '.') segments.push(segment);
-      }
-      named.add(segments.join('/'));
-    }
+    for (const image of relativeWasmPaths(cell, path)) named.add(image);
   }
   for (const path of named) {
     if (byPath.has(path)) continue;
