@@ -57,6 +57,13 @@
  *                         block in node-shims.ts serves that API from here and
  *                         keeps its own pathToFileURL/fileURLToPath, which
  *                         answer against the guest's cwd.
+ *   - node:dns          — resolve/resolve4/resolve6/lookup transport only
+ *                         (v1.20260926.1): resolve* return [] on any failure
+ *                         and lookup ignores family/all and answers
+ *                         127.0.0.1 for literals and misses. The dns block
+ *                         in node-shims.ts keeps this transport and adds
+ *                         Node's validation, errors, typed queries,
+ *                         Resolver and lookupService over DoH JSON.
  */
 /**
  * Native imports shared by generated node and opencode guests: events, url,
