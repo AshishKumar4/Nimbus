@@ -607,7 +607,7 @@ export function makeWasmRunner(deps: {
           stderr: '',
           exitCode: lost && r.exitCode === 0 ? 1 : r.exitCode,
           exports: Object.keys(inst.exports),
-          error: r.error ?? lost,
+          error: r.error ?? lost ?? undefined,
           // Its filesystem calls and who answered them (ResidentFilesystemStats).
           fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
         };

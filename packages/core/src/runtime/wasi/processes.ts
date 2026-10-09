@@ -32,7 +32,7 @@
  * (git-wasi-compat.c) turns that into errno.
  */
 
-import { filesystemErrno } from './filesystem.js';
+import { refusalErrno as filesystemErrno } from './filesystem.js';
 import { PIPE_CAPACITY, decideWrite } from '../bash/pipe-rules.js';
 import type { Errno, FdEntry, SyscallResult, WasiSupervisorStub, WasiInputPacket } from './types.js';
 import type { Awaitable } from '../os-contracts.js';

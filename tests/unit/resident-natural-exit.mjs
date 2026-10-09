@@ -60,6 +60,21 @@ function commanderFiles() {
 const SERVER = 'const server = require("http").createServer((req, res) => res.end("hi"));';
 
 await runScenarios(import.meta.filename, {
+  async bootExceptionIsNotSuccess() {
+    const authority = createAuthority();
+    const events = [];
+    const { supervisor, log } = facetSupervisor(authority, {
+      stderr: async bytes => { log.stderr += new TextDecoder().decode(bytes); events.push('stderr'); },
+      reportExit: async (code, reason) => { log.exit = { code, reason }; events.push('exit'); },
+    });
+    const launched = launchResident({ authority, program: 'throw new RangeError("RESIDENT_BOOT_FAILURE");', env: { SUPERVISOR: supervisor }, cursor: authority.cursor() });
+    await launched.catch(() => {});
+    await until(() => log.exit !== null, 'resident boot failure exit', 5_000);
+    assert.match(log.stderr, /RangeError: RESIDENT_BOOT_FAILURE/);
+    assert.equal(log.exit.code, 1);
+    assert.ok(events.indexOf('stderr') >= 0 && events.indexOf('stderr') < events.indexOf('exit'), 'error bytes precede the nonzero exit');
+  },
+
   async finishedProgramExits() {
     const { log } = await launch('console.log("done");');
     assert.deepEqual(log.exit, { code: 0, reason: '' }, 'reported before its boot answered');
