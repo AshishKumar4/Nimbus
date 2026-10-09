@@ -19,6 +19,8 @@ export class ByteQueue {
     return this.waiting.length > 0;
   }
 
+  protected get buffered(): boolean { return this.buffer.length > 0; }
+
   /** Queue `bytes`, handing them to a waiting reader first. */
   protected deliver(bytes: Uint8Array): void {
     if (bytes.length === 0) return;
@@ -39,7 +41,7 @@ export class ByteQueue {
   }
 
   /** Next queued chunk, a delivery waited for, or null once ended and empty. */
-  private pull(): Promise<Uint8Array | null> {
+  protected pull(): Promise<Uint8Array | null> {
     if (this.buffer.length > 0) return Promise.resolve(this.buffer.shift() ?? null);
     if (this.ended) return Promise.resolve(null);
     return new Promise<Uint8Array | null>((resolve) => { this.waiting.push(resolve); });

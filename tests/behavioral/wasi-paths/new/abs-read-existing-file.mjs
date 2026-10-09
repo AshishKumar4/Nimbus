@@ -40,11 +40,11 @@ const rc = await t.run('clang -O0 -o /home/user/rd /home/user/rd.c', 240_000);
 const compileOK = !/error:|Assertion failed/.test(stripAnsi(rc.output));
 a.check('clang compiles', compileOK, compileOK ? '' : JSON.stringify(stripAnsi(rc.output).slice(-400)));
 
-const rr = await t.run('/home/user/rd ; echo RUN_EXIT=$?', 60_000);
+const rr = await t.run('/home/user/rd', 60_000);
 const out = stripAnsi(rr.output);
 a.check('no FOPEN_FAIL (file was opened)', !/FOPEN_FAIL/.test(out), JSON.stringify(out.slice(-300)));
 a.check('READ: hello-from-shell printed', /READ: hello-from-shell/.test(out), JSON.stringify(out.slice(-300)));
-a.check('exit code 0', /RUN_EXIT=0/.test(out), JSON.stringify(out.slice(-200)));
+a.check('exit code 0', rr.exitCode === 0, JSON.stringify(out.slice(-200)));
 
 await t.close();
 const sum = a.summary();

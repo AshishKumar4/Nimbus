@@ -38,15 +38,15 @@
  *     observable behaviour, not implementation shape.
  */
 import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.js';
-import { typescriptLoader } from '../_shared/typescript-specifiers.js';
+import { stripsTypeScript, typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { errorText } from '../_shared/error-text.js';
-import { SinkWriter } from '../_shared/byte-stream.js';
-import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput } from './module-format.js';
+import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput, typeScriptEntryRefused, typeScriptUnderNodeModules } from './module-format.js';
+import { nodeModulesRefusal, typeScriptRefusalShim, unknownExtensionRefusal } from './typescript-refusal.js';
 import { packageScopeType } from './require-resolution.js';
 import { isDirectory } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
-import { parseNodeCommandLine } from './node-cli.js';
+import { parseNodeCommandLine, typeScriptStripOptions } from './node-cli.js';
 import { nodeEvalProgram, nodeStdinPrintProgram } from './node-eval.js';
 /**
  * The nearest directory at or above `dir` that holds a package.json, or null.
@@ -212,15 +212,10 @@ export function buildRuntimeHandler(spec, ctx0) {
         // synchronous read that needs more than has arrived waits for it in the
         // runner, which stops the run and runs it again once the input is there
         // (worker runtime/stop-replay.ts).
-        const outputStreams = { stdout: new SinkWriter(ctx.stdout), stderr: new SinkWriter(ctx.stderr) };
-        const programStdin = {
-            ...(nimbusCtx.__nimbusBinSpawn?.liveInput ? { stdinPid: nimbusCtx.__nimbusBinSpawn.callerPid } : {}),
-            output: nimbusCtx.__nimbusBinSpawn?.liveInput ? undefined : (stream, bytes) => outputStreams[stream].write(bytes),
-            ...(pipedStdin === undefined ? (spec.bypassesScriptRead && ctx.stdin ? { stdin: ctx.stdin } : {})
-                : pipedStdin.file
-                    ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
-                    : { stdin: pipedStdin }),
-        };
+        const programStdin = pipedStdin === undefined ? {}
+            : pipedStdin.file
+                ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
+                : { stdin: pipedStdin };
         // ── Flag-span computation (primitive #1) ──
         //
         // Real-Node only treats args UP TO the first non-flag token as
@@ -248,37 +243,29 @@ export function buildRuntimeHandler(spec, ctx0) {
          * a bin wrapper reserved (wasm-runner's).
          */
         const runProgram = async (code, program) => {
-            let result;
-            try {
-                result = await spec.run(code, {
-                    cred: ctx.cred,
-                    invokerPid: ctx.pid,
-                    signal: ctx.signal,
-                    argv: program.argv,
-                    env: ctx.env,
-                    cwd: ctx.cwd,
-                    filename: program.filename,
-                    dirname: program.dirname,
-                    command: program.command,
-                    output: programStdin.output,
-                    ...(spec.nodeCommandLine
-                        ? { node: { ...launch, print: program.print === true, ...(program.refusedBeforeImports ? { import: [] } : {}) } }
-                        : {}),
-                    ...program.stdin,
-                    ...(program.reserved === false ? {} : reservedProcess),
-                    ...(captureOutput ? { captureOutput: true } : {}),
-                    ...(bundleProfile ? { bundleProfile } : {}),
-                    ...(program.launchesServer ? { launchesServer: true } : {}),
-                    ...(program.esModule && moduleScope === 'node' ? { esModule: true } : {}),
-                    moduleScope,
-                });
-            }
-            finally {
-                // Flush a trailing incomplete character at the actual display edge,
-                // including a runner that failed after publishing some output.
-                await outputStreams.stdout.end();
-                await outputStreams.stderr.end();
-            }
+            const result = await spec.run(code, {
+                cred: ctx.cred,
+                invokerPid: ctx.pid,
+                signal: ctx.signal,
+                argv: program.argv,
+                env: ctx.env,
+                cwd: ctx.cwd,
+                filename: program.filename,
+                dirname: program.dirname,
+                command: program.command,
+                ...(spec.nodeCommandLine
+                    ? { node: { ...launch, print: program.print === true, ...(program.refusedBeforeImports ? { import: [] } : {}) } }
+                    : {}),
+                ...program.stdin,
+                ...(program.reserved === false ? {} : reservedProcess),
+                ...(captureOutput ? { captureOutput: true } : {}),
+                ...(bundleProfile ? { bundleProfile } : {}),
+                ...(program.launchesServer ? { launchesServer: true } : {}),
+                // Evaluated as Node's loader runs an ES module, in Node's scope.
+                ...(program.esModule && moduleScope === 'node' ? { esModule: true } : {}),
+                ...(program.esModuleMap ? { esModuleMap: program.esModuleMap } : {}),
+                moduleScope,
+            });
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
             if (result.stderr)
@@ -296,18 +283,40 @@ export function buildRuntimeHandler(spec, ctx0) {
          * (module-format.ts esModuleSyntaxError). Null when the transform failed
          * otherwise, which it has reported.
          */
+        /**
+         * A TypeScript entry as Node takes it: its types stripped, and whether
+         * Node runs it as an ES module. A file Node refuses is code that throws
+         * Node's error. Null when the strip failed otherwise, which it has reported.
+         */
+        async function stripTypeScriptEntry(code, path, packageType, stripTypes, what) {
+            if (typeScriptUnderNodeModules(path))
+                return { code: typeScriptRefusalShim(nodeModulesRefusal('/' + path)), esModule: false };
+            try {
+                const [outcome] = await (await getEsbuild()).transformMany([{ code, options: { stripTypes, packageType, stripOnly: true, sourcefile: '/' + path } }]);
+                if ('typescript' in outcome)
+                    return { code: typeScriptRefusalShim(outcome.typescript), esModule: false };
+                if ('error' in outcome)
+                    throw new Error(outcome.error);
+                return { code: outcome.code, esModule: outcome.esModule !== undefined };
+            }
+            catch (e) {
+                ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);
+                return null;
+            }
+        }
         async function lowerToCommonJs(code, loader, url, what, esm) {
             try {
                 const eb = await getEsbuild();
-                // An ES module keeps Node's scope (module-format.ts ModuleScope): strict, no CommonJS wrapper name.
-                return (await eb.transform(code, {
-                    loader, format: 'cjs', dynamicImportParent: url, moduleMetadata: true, ...(esm && moduleScope === 'node' ? { esModuleScope: true } : {}),
-                })).code;
+                // An ES module keeps its runtime's scope (module-format.ts ModuleScope).
+                const { code: lowered, map } = await eb.transform(code, {
+                    ...(esm && loader === 'js' ? { esModule: moduleScope } : { loader, format: 'cjs' }), dynamicImportParent: url, moduleMetadata: true,
+                });
+                return { code: lowered, map };
             }
             catch (e) {
                 const syntaxError = esm && loader === 'js' ? esModuleSyntaxError(code, url) : null;
                 if (syntaxError !== null)
-                    return syntaxError;
+                    return { code: syntaxError, map: '' };
                 ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);
                 return null;
             }
@@ -323,13 +332,13 @@ export function buildRuntimeHandler(spec, ctx0) {
             const esModule = isEsModuleInput(source, inputType);
             if (esModule && !print) {
                 const lowered = await lowerToCommonJs(source, 'js', evalUrl(), what, true);
-                return lowered === null ? null : { code: lowered, refusedBeforeImports: false, esModule: true };
+                return lowered === null ? null : { code: lowered.code, written: source, refusedBeforeImports: false, esModule: true, esModuleMap: lowered.map };
             }
             if (!spec.nodeCommandLine)
-                return { code: source, refusedBeforeImports: false, esModule: false };
+                return { code: source, written: source, refusedBeforeImports: false, esModule: false };
             const mode = esModule ? 'module' : inputType === 'commonjs' ? 'commonjs' : 'default';
             const prepared = what === '[eval]' ? nodeEvalProgram(source, print, mode) : print ? nodeStdinPrintProgram(source, mode) : { code: source, refusedBeforeImports: false };
-            return { ...prepared, esModule: false };
+            return { ...prepared, written: prepared.code, esModule: false };
         }
         // ── --version ──
         if (line.version) {
@@ -350,18 +359,19 @@ export function buildRuntimeHandler(spec, ctx0) {
             const program = await inputProgram(line.eval, '[eval]');
             if (program === null)
                 return 1;
-            const { code, refusedBeforeImports, esModule } = program;
+            const { code, written, refusedBeforeImports, esModule, esModuleMap } = program;
             const programArgs = args.slice(flagSpan);
             return runProgram(code, {
                 print,
                 refusedBeforeImports,
                 esModule,
+                esModuleMap,
                 argv: programArgs,
                 filename: '<eval>',
                 dirname: ctx.cwd || '/home/user',
                 command: binSpawn?.command || `${name} -e ...`,
                 stdin: programStdin,
-                launchesServer: await launches(code, null, ctx.cwd || '/home/user', programArgs),
+                launchesServer: await launches(written, null, ctx.cwd || '/home/user', programArgs),
             });
         }
         // ── script path (or .wasm path for bypassesScriptRead) ──
@@ -404,17 +414,17 @@ export function buildRuntimeHandler(spec, ctx0) {
             const program = await inputProgram(input, '[stdin]');
             if (program === null)
                 return 1;
-            const { code, refusedBeforeImports, esModule } = program;
+            const { code, written, refusedBeforeImports, esModule, esModuleMap } = program;
             return runProgram(code, {
                 print,
                 refusedBeforeImports,
                 esModule,
+                esModuleMap,
                 argv: [...leadingFlags, '-', ...args.slice(scriptIdx + 1)],
                 filename: '[stdin]',
                 dirname: ctx.cwd || '/home/user',
                 command: binSpawn?.command || `${name} -`,
-                stdin: { output: programStdin.output },
-                launchesServer: await launches(code, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]),
+                launchesServer: await launches(written, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]),
             });
         }
         // ── bypassesScriptRead branch (wasm-runner) ──
@@ -435,7 +445,6 @@ export function buildRuntimeHandler(spec, ctx0) {
                 filename,
                 dirname,
                 command: `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
-                stdin: programStdin,
                 reserved: false,
             });
         }
@@ -494,7 +503,7 @@ export function buildRuntimeHandler(spec, ctx0) {
         // its package imports or give it the file's own URL (commonjs-cell.ts).
         const scriptExt = vfsPathExtension(resolvedPath);
         // The package scope's "type", through the resolver's own lookup.
-        const packageType = scriptExt === '.js' || scriptExt === ''
+        const packageType = scriptExt === '.js' || scriptExt === '' || stripsTypeScript(resolvedPath)
             ? await packageScopeType({
                 exists: (path) => fs.exists(path),
                 isDirectory: (path) => isDirectory(fs, path),
@@ -502,17 +511,38 @@ export function buildRuntimeHandler(spec, ctx0) {
                 stat: (path) => fs.stat(path),
             }, resolvedPath.slice(0, Math.max(0, resolvedPath.lastIndexOf('/'))))
             : null;
+        // Node's own TypeScript is stripped, then JavaScript of Node's format for it.
+        const stripTypes = spec.nodeCommandLine && moduleScope === 'node' && stripsTypeScript(resolvedPath) ? typeScriptStripOptions(launch) : null;
+        let stripped = null;
+        if (stripTypes === 'javascript') {
+            const refused = typeScriptEntryRefused(packageType, code, launch.import.length > 0);
+            stripped = { code: refused ? typeScriptRefusalShim(unknownExtensionRefusal('/' + resolvedPath)) : code, esModule: false };
+        }
+        else if (stripTypes !== null) {
+            stripped = await stripTypeScriptEntry(code, resolvedPath, packageType, stripTypes, scriptPath);
+            if (stripped === null)
+                return 1;
+        }
+        if (stripped !== null)
+            code = stripped.code;
         // TypeScript by the same table the bundle's ESM pass reads.
-        const typescript = typescriptLoader(resolvedPath);
+        const typescript = stripped === null ? typescriptLoader(resolvedPath) : null;
         // esbuild transform for TypeScript / TSX / JSX (both node and bun)
         // AND for ESM entry scripts.
-        const esm = typescript === null && scriptExt !== '.jsx' && isEsModuleFile(resolvedPath, code, () => packageType);
+        const esm = stripped === null
+            ? typescript === null && scriptExt !== '.jsx' && isEsModuleFile(resolvedPath, code, () => packageType)
+            : stripped.esModule;
+        // What the server-launch analysis reads: JavaScript as written (an ES module's
+        // lowering requires through its own helper), TypeScript and JSX compiled.
+        const written = code;
+        let esModuleMap;
         if (typescript !== null || scriptExt === '.jsx' || esm) {
             const loader = typescript ?? (scriptExt === '.jsx' ? 'jsx' : 'js');
             const lowered = await lowerToCommonJs(code, loader, 'file:///' + resolvedPath.replace(/^\/+/, ''), scriptPath, esm);
             if (lowered === null)
                 return 1;
-            code = lowered;
+            code = lowered.code;
+            esModuleMap = lowered.map;
         }
         const filename = '/' + resolvedPath;
         const dirname = filename.includes('/')
@@ -520,13 +550,13 @@ export function buildRuntimeHandler(spec, ctx0) {
             : '/';
         return runProgram(code, {
             esModule: esm,
+            ...(esModuleMap ? { esModuleMap } : {}),
             argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
             filename,
             dirname,
             command: binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
             stdin: programStdin,
-            // Judged on the code as it will run, after any TypeScript/ESM transform.
-            launchesServer: await launches(code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]),
+            launchesServer: await launches(esm ? written : code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]),
         });
     }
     return async function runtimeHandler(ctx) {

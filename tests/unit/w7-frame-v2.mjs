@@ -124,7 +124,7 @@ function frameRecords(value) {
   const encoded = await collect(encodeWriteBatchStream(payload));
   for (const fragment of [encoded.length, 1]) {
     const { decoded, records } = await decodeAll(encoded, fragment);
-    assert.equal(decoded.mode, 'path-atomic-committed-prefix');
+    assert.equal(decoded.mode, 'program-order-committed-prefix');
     assert.ok(decoded.batchId.length > 0);
     assert.deepEqual(
       records.map((record) => record.type),
@@ -212,10 +212,11 @@ async function expectDecodeFailure(value, pattern) {
 // Old, malformed, truncated, duplicate, and out-of-order frames fail loudly.
 {
   await expectDecodeFailure(new Uint8Array([0x4e, 0x57, 0x37, 0x01]), /unsupported protocol version 1/);
-  await expectDecodeFailure(new Uint8Array([0x4e, 0x57, 0x37, 0x02]), /unsupported protocol version 2; expected 3/);
+  await expectDecodeFailure(new Uint8Array([0x4e, 0x57, 0x37, 0x02]), /unsupported protocol version 2; expected 4/);
+  await expectDecodeFailure(new Uint8Array([0x4e, 0x57, 0x37, 0x05]), /unsupported protocol version 5; expected 4/);
 
   const oversizedBegin = new Uint8Array(9);
-  oversizedBegin.set([0x4e, 0x57, 0x37, 0x03, 1], 0);
+  oversizedBegin.set([0x4e, 0x57, 0x37, 0x04, 1], 0);
   oversizedBegin.set([1, 0, 1, 0], 5); // 65,537 bytes; reject before allocation/read.
   await expectDecodeFailure(oversizedBegin, /batch-begin length 65537 exceeds 65536/);
 
@@ -248,16 +249,18 @@ async function expectDecodeFailure(value, pattern) {
   unknown[unknownRecord.offset] = 99;
   await expectDecodeFailure(unknown, /unknown record tag 99/);
 
-  const duplicatePath = encoded.slice();
-  const deleteRecord = frameRecords(duplicatePath).find((record) => record.tag === 2);
+  // A path named twice is a program-order batch's (v4) to have; altered in
+  // place, these bytes no longer match the batch's check.
+  const repeatedPath = encoded.slice();
+  const deleteRecord = frameRecords(repeatedPath).find((record) => record.tag === 2);
   const deleteJson = new TextDecoder().decode(
-    duplicatePath.subarray(deleteRecord.payloadOffset, deleteRecord.payloadOffset + deleteRecord.length),
+    repeatedPath.subarray(deleteRecord.payloadOffset, deleteRecord.payloadOffset + deleteRecord.length),
   );
   assert.equal(deleteJson.includes('old.txt'), true);
   const replacement = new TextEncoder().encode(deleteJson.replace('old.txt', 'one.bin'));
   assert.equal(replacement.length, deleteRecord.length);
-  duplicatePath.set(replacement, deleteRecord.payloadOffset);
-  await expectDecodeFailure(duplicatePath, /duplicate path ownership/);
+  repeatedPath.set(replacement, deleteRecord.payloadOffset);
+  await expectDecodeFailure(repeatedPath, /batch-end summary mismatch/);
 
   const outOfOrder = encoded.slice();
   const chunkRecords = frameRecords(outOfOrder).filter((record) => record.tag === 5);

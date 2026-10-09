@@ -9,9 +9,10 @@
  * javascript-string-literal.ts).
  *
  * Node's own functions are ported: lib/internal/util.js join, removeColors
- * and isError; lib/internal/errors.js isStackOverflowError and the message
- * of ERR_INVALID_ARG_TYPE; lib/internal/validators.js validateObject and
- * validateString; src/node_i18n.cc GetStringWidth. Of the util binding, the
+ * and isError; lib/internal/errors.js isStackOverflowError;
+ * lib/internal/validators.js validateObject and validateString; src/
+ * node_i18n.cc GetStringWidth. Its errors are the shims' (core _shared/
+ * node-error.ts), which the text calls by name. Of the util binding, the
  * property and constructor-name readers are JavaScript, and every brand
  * check is intrinsic (util.types), never the prototype chain.
  *

@@ -4,6 +4,7 @@ import { type NimbusFilesystemAuthority } from "@nimbus-sh/core/runtime/os-contr
 import { PrebundlePool } from "../facets/prebundle-pool.js";
 import type { NpmInstaller } from "../npm/installer.js";
 import { WebSocketRelay } from "../session/ws-relay.js";
+import type { SupervisorOpEnvelope } from "@nimbus-sh/core/workspace/supervisor-op.js";
 import type { SessionInternal } from '../session/internal.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { IsolatePoolEnv } from '@nimbus-sh/fabric/isolate-pool.js';
@@ -30,6 +31,8 @@ export interface RuntimeServiceContext {
     filesystem: () => NimbusFilesystemAuthority;
     /** The workspace's network (`workspace.network`): its egress, when the host supplied one. */
     network: () => WorkspaceNetwork;
+    /** The host's own answer to an envelope: what its one-shots' supervisors call (ProcessSupervisor). */
+    supervisorOp: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
 }
 export declare function ensureBundlePool(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): PrebundlePool;
 export declare function ensureFacetManager(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): ComposedFacetManager;

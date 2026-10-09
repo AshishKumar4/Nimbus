@@ -8,7 +8,8 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { dec } from '../../packages/core/src/_shared/bytes.ts';
-import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
+import { SupervisorDeliveries, supervisorDeliveredOp, supervisorJoinedReadOp } from '../../packages/core/src/workspace/supervisor-delivery.ts';
+import { SUPERVISOR_OP_TABLE } from '../../packages/core/src/workspace/supervisor-ops.ts';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 // The entrypoint and composeFabric in one graph, so the bundle's composition
@@ -81,7 +82,7 @@ const options = { followSymlinks: false }, epoch = 'epoch', cursor = 9, after = 
 const url = 'https://remote.test/', protocols = ['protocol'], id = 7, waitMs = 25, text = 'text';
 const wsHeaders = [['Authorization', 'Bearer t']];
 const code = 0, reason = 'closed', offset = 0, length = 3;
-const requests = [{ path, offset, length }], moduleId = 'module', operationId = 'operation';
+const requests = [{ path, offset, length }];
 const payload = { inodes: [], chunks: [] }, stream = encodeWriteBatchStream({ inodes: [], chunks: [] });
 const entries = [], data = new TextEncoder().encode('output'), tail = 'tail', cwd = '/cwd', entryCode = 'export {}', port = 8080;
 const request = new Request('https://loopback.test/'), loader = 'js', req = { parentPid: 999, command: 'cat' };
@@ -90,7 +91,7 @@ const childPid = 42, fd = 1, sinceSeq = 3, signal = 'SIGTERM', kind = 'pure-buil
 // that act on a descriptor, a thunk the loop resolves once the op that mints
 // the handle has run. `fsOpen` is that op, and the canonical list orders it
 // ahead of every op that needs one.
-let fileHandle = null, mutationLease = null;
+let fileHandle = null, mutationLease = null, delegation = null;
 const openHandle = (subject, openFlags) => ops.dispatch({ op: 'fsOpen', args: [subject, openFlags], pid });
 const INPUTS = {
   readFile: [path],
@@ -140,6 +141,9 @@ const INPUTS = {
   fsCopyTree: ['/home/user/tree-src', '/home/user/tree-copy'],
   fsAcquireExclusiveMutation: [mutationPath],
   fsReleaseExclusiveMutation: () => [mutationLease.owner],
+  // A delegation the release's check grants: nothing recalls it, so the poll answers null at once.
+  fsAwaitRecall: () => [delegation.owner, 0],
+  fsRecalled: () => [delegation.owner, 'share'],
   fsRead: () => [fileHandle.id, offset, length],
   fsWrite: () => [fileHandle.id, offset, bytes],
   // Closes a handle of its own: the shared one stays open for the descriptor
@@ -149,12 +153,11 @@ const INPUTS = {
   fsReadRangeUncached: [path, offset, length],
   fsReadBatch: [requests],
   fsWriteRange: [rangePath, 2, bytes],
-  fsAppend: [path, moduleId, operationId, bytes],
-  fsAppendAck: [moduleId, operationId],
   fsTruncate: [truncPath, size],
   writeBatch: [payload],
   writeBatchStream: [stream],
   openWaveWriter: [],
+  retireWaveWriter: ['00000000-0000-4000-8000-000000000000'],
   putRegistryEntries: [entries],
   stdout: [data],
   stderr: [data],
@@ -215,6 +218,14 @@ assert.deepEqual(Object.keys(INPUTS).sort(), [...SUPERVISOR_OPS].sort(),
 // an _rpc* method, never both and never neither.
 assert.deepEqual([...SUPERVISOR_NATIVE_OPS, ...Object.keys(SUPERVISOR_OP_ROUTES)].sort(), [...SUPERVISOR_OPS].sort(),
   'the native table and the route table partition SUPERVISOR_OPS');
+
+// How a resend of each op is met is its entry in the one op table: the
+// delivery store applies exactly the 'once' ops once, and joins exactly the
+// 'joined' reads, so no op can be added without saying which it is.
+for (const op of SUPERVISOR_OPS) {
+  assert.equal(supervisorDeliveredOp(op) !== undefined, SUPERVISOR_OP_TABLE[op] === 'once', `${op}: delivered once disagrees with the op table`);
+  assert.equal(supervisorJoinedReadOp(op) !== undefined, SUPERVISOR_OP_TABLE[op] === 'joined', `${op}: joined read disagrees with the op table`);
+}
 
 // The session's supervisor handler, on the session's real filesystem. The
 // host delegates — _rpcStdout/_rpcStderr and every routed non-fs op — are
@@ -418,9 +429,19 @@ const nativeAssert = {
     const relet = await ops.dispatch({ op: 'fsAcquireExclusiveMutation', args: [mutationPath], pid });
     assert.notEqual(relet.owner, mutationLease.owner, 'the released root leases again');
     await ops.dispatch({ op: 'fsReleaseExclusiveMutation', args: [relet.owner], pid });
+    delegation = await ops.dispatch({ op: 'fsAcquireExclusiveMutation', args: [mutationPath, { delegate: { reads: true } }], pid });
+    assert.equal(typeof delegation.recallTimeoutMs, 'number', 'a delegation says how long a recall waits');
+  },
+  fsAwaitRecall: (r) => assert.equal(r, null, 'fsAwaitRecall answers null when nothing is recalled'),
+  fsRecalled: async (r) => {
+    assert.equal(r, undefined, 'fsRecalled');
+    await ops.dispatch({ op: 'fsReleaseExclusiveMutation', args: [delegation.owner], pid });
+    const relet = await ops.dispatch({ op: 'fsAcquireExclusiveMutation', args: [mutationPath], pid });
+    await ops.dispatch({ op: 'fsReleaseExclusiveMutation', args: [relet.owner], pid });
   },
   writeBatchStream: (r) => assert.ok(r && typeof r === 'object', 'writeBatchStream returned its result'),
   openWaveWriter: (r) => assert.match(r, /^[0-9a-f-]{36}$/, 'openWaveWriter answered an epoch'),
+  retireWaveWriter: (r) => assert.equal(r, undefined, 'retireWaveWriter answers nothing'),
   stdout: () => assert.deepEqual(delegateCalls.at(-1), ['_rpcStdout', pid, data], 'stdout delegate args'),
   stderr: () => assert.deepEqual(delegateCalls.at(-1), ['_rpcStderr', pid, data], 'stderr delegate args'),
 };
@@ -456,7 +477,7 @@ for (const [op, route] of cases) {
   try {
     if (!droveDirect) {
       // An epoch is issued only through a binding that names its host instance.
-      if (op === 'openWaveWriter') supervisor.ctx.props.hostIncarnation = host.supervisorDeliveries.incarnation;
+      if (op === 'openWaveWriter' || op === 'retireWaveWriter') supervisor.ctx.props.hostIncarnation = host.supervisorDeliveries.incarnation;
       result = await supervisor[op](...input);
       delete supervisor.ctx.props.hostIncarnation;
       assert.equal(receivedEnvelope.op, op);
@@ -501,9 +522,6 @@ supervisor.ctx.props.pid = 0;
 await assert.rejects(supervisor.writeFile('/a', 'bad'), /invalid process pid/);
 await assert.rejects(supervisor.cpSpawn({ parentPid: 999 }), /invalid process pid/);
 supervisor.ctx.props.pid = pid;
-supervisor.ctx.props.writerId = '';
-await assert.rejects(supervisor.fsAppend('/a', 'm', 'op', bytes), /writer incarnation|requires a run/);
-supervisor.ctx.props.writerId = writerId;
 supervisor.ctx.props.doId = '';
 await assert.rejects(supervisor.readFile('/a'), /missing doId/);
 supervisor.ctx.props.doId = 'host-id';

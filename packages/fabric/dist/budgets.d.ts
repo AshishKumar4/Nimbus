@@ -196,6 +196,29 @@ export declare function beginLoaderFetchWhenFree(ctx: object, workerKey: string,
     process?: LedgerProcess;
 }): Promise<EndLoaderFetch>;
 /**
+ * How long one call waits, in all, on the ledger after the platform first
+ * refused it before the refusal surfaces ({@link readmitRefused}). A deployed
+ * Durable Object admitted a refused batch after a 6 s pause; 15 s bounds a
+ * call that would never be admitted.
+ */
+export declare const REFUSED_CALL_WAIT_MS = 15000;
+/**
+ * The hold to send a call again on, after the platform refused it ("Dynamic
+ * worker concurrency limit exceeded"): it refuses a call before the call
+ * starts, so nothing ran. It still counts workers the ledger has given back
+ * (one called over RPC stays counted until its session has closed, which no
+ * release here can show), so `refused`, the call's hold, ended with that
+ * refusal, paused admission. The new hold is taken on the same terms (key,
+ * claim, process; a launch's run is that launch's run again), once the
+ * ledger lets it in: after the pause, even when its key is still in flight,
+ * and when there is room. Undefined once `signal` aborts or the call's first
+ * refusal (`since`) is {@link REFUSED_CALL_WAIT_MS} old.
+ */
+export declare function readmitRefused(refused: EndLoaderFetch, options: {
+    since: number;
+    signal?: AbortSignal;
+}): Promise<EndLoaderFetch | undefined>;
+/**
  * Run a launch admitted once on the ledger. It waits, as
  * {@link beginLoaderFetchWhenFree} with its process does, for one Dynamic
  * Worker, and holds it until `body` settles. Everything the launch puts in
@@ -266,6 +289,8 @@ export declare function loaderLedgerStats(ctx: object, probeTurn?: boolean): {
     claimed: number;
     headroom: number;
     peak: number;
+    /** Calls the platform refused that were let in again. */
+    readmitted: number;
     /** Waits not yet admitted. */
     waiting: number;
     /** Length of the pause a limit refusal started, while it lasts; 0 when admitting. */

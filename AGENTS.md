@@ -123,7 +123,7 @@ died; it loads esbuild's wasm from staged assets, so no other isolate holds
 it. Nothing per-process chooses:
 no spawn site, program name, mode or payload size reaches the selection, and an
 unrecognised value is refused rather than defaulted. Flip it on a target with
-`bun tests/behavioral/_throwaway-target.mjs up --var NIMBUS_PROCESS_HOST:peer`,
+`bun tests/behavioral/_throwaway-target.mjs up --bundle <release dir> --var NIMBUS_PROCESS_HOST:peer`,
 and read back where a process actually landed in the process log: every
 probe target, each throwaway included, is deployed with `NIMBUS_DEBUG=1`
 (`PROBE_TARGET_VARS` in `tests/behavioral/_deploy-target.mjs`).
@@ -383,8 +383,8 @@ again.
   `bun tests/behavioral/_throwaway-target.mjs down --name <name>`, which
   builds nothing.
 - The container commands are `scripts/ci/{unit,build,bundle,probes}.mjs`.
-  Any runner can run them in a clean checkout after `bun install
-  --frozen-lockfile`. The environment is `.armada.json` and
+  Any runner can run them in a clean checkout after
+  `bun scripts/install-deps.mjs`. The environment is `.armada.json` and
   `scripts/ci/recipe/`; the probe environment adds Chromium.
   `scripts/ci/lib/armada.mjs` is the only file that knows armada.
 - The armada client is pinned to one commit of
@@ -395,9 +395,8 @@ again.
   longer on that repository's main (a rewritten history). It runs on
   Nimbus's own armada deployment, `nimbus-armada` (its own Worker, bucket
   and fleet cap), through `~/.config/armada/nimbus-armada.json`
-  (`ARMADA_CONNECTION` in `scripts/ci/lib/armada.mjs`). `ARMADA_URL` and
-  `ARMADA_TOKEN` override it; the GitHub unit job reads both from repo
-  secrets. Never print the token.
+  (`ARMADA_CONNECTION` in `scripts/ci/lib/armada.mjs`). `ARMADA_CONNECTION`
+  overrides the connection file. Never print its token.
 
 **Tiers.** A file's leading comment block may carry one marker:
 
@@ -439,9 +438,8 @@ when you are done:
 ```bash
 export CLOUDFLARE_ACCOUNT_ID=<account>
 
-eval "$(bun tests/behavioral/_throwaway-target.mjs up)"   # exports BASE + NIMBUS_PROBE_TOKEN
-bun tests/behavioral/run-all.mjs --no-retry
-bun tests/behavioral/_throwaway-target.mjs down           # delete, and confirm it is gone
+bun scripts/ci/remote-probes.mjs --deploy one-off
+bun tests/behavioral/_throwaway-target.mjs down --name one-off  # delete, and confirm it is gone
 ```
 
 `_throwaway-target.mjs session` prints `{base, sessionId, token}` for driving
@@ -515,9 +513,9 @@ lifecycle docs say such a shutdown terminates WebSockets.
 end `aborted` with "Application called abort() to reset Durable Object.".
 Such a row is the probe working, not a session death.
 
-This is also what CI runs: the `behavioral` workflow deploys the commit
-under test to its own throwaway (Preview `tw-ci-*`), grades that, and deletes
-it. `nimbus` is production and is never a target here.
+`remote-probes --deploy` builds the commit on armada and grades its own
+throwaway Preview. Delete the Preview after the run. `nimbus` is production
+and is never a target here.
 
 **Running alongside other agents.** `run-all.mjs` takes a machine-wide lock
 and refuses to start while another suite holds it, naming the holder;
@@ -546,7 +544,7 @@ Agent-specific probes:
 
 | Task | Command |
 |---|---|
-| Install deps on the workstation (no build) | `bun install --frozen-lockfile --ignore-scripts` |
+| Install deps on the workstation (no build) | `bun scripts/install-deps.mjs` |
 | Bundle worker assets | `bun run bundle` |
 | Dev server | `bun run dev` |
 | Deploy the dev stack (`nimbus-dev`) | `bun run deploy` |
@@ -564,11 +562,14 @@ The root `predev` script regenerates worker bundles.
 **Lanes do not build on the workstation.** No typecheck, tsc, bundling or
 `dist-integrity` runs there: `remote-build`, `remote-probes --deploy`,
 `release.mjs staging` and `promote.mjs` do that work on CI (Tests § CI) and
-only upload from here. Install a worktree's dependencies with
-`bun install --frozen-lockfile --ignore-scripts`. A plain `bun install` runs
-the root postinstall, which bundles. The upload and release scripts need
-only the `--ignore-scripts` install, and refuse with that command when it
-is missing (`scripts/ci/lib/installed.mjs`).
+only upload from here. Install a fresh worktree's dependencies with
+`bun scripts/install-deps.mjs`: a frozen install without lifecycle scripts,
+then the keyed dependency patches. The root postinstall calls this same
+script in patch-only mode; it builds no source. Armada's environment uses
+the same script, and its key covers everything it reads. Unit tests use
+the committed generated assets; builds regenerate them in the dist task.
+Upload and release scripts refuse with this command when dependencies are
+missing (`scripts/ci/lib/installed.mjs`).
 
 Every deploy's bundle is built behind `scripts/dist-integrity.mjs`, instead
 of a plain build: on CI for staging, production and the throwaways

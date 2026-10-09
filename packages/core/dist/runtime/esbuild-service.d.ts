@@ -10,7 +10,9 @@
  * plugin always runs here, over this service's view.
  */
 import type { Awaitable } from '../vfs/vfs.js';
-import { type ModuleScope } from './module-format.js';
+import { type ModuleScope, type PackageType } from './module-format.js';
+import type { StrippedTypeScript, TypeScriptStripOptions } from './typescript-strip.js';
+import type { TypeScriptRefusal } from './typescript-refusal.js';
 /**
  * Bundler version tag. BUMP THIS whenever bundling semantics change —
  * the esbuild plugin's resolver logic, the shared-externals rules, the
@@ -68,24 +70,6 @@ export declare const BUNDLER_VERSION = "v12";
  * doesn't need it).
  */
 export declare function getSharedRuntimeExternals(specifier: string): string[];
-/**
- * The runtime's function a bound record calls for its package: the one the
- * module system serves (node-shims.ts), named apart from the module's own
- * `require`, which an ES module does not have (module-format.ts).
- */
-export declare const PROVIDED_PACKAGE_HOOK = "__nimbusProvidedPackage";
-/** Bind canonical esbuild/Bun CommonJS records to the runtime's provided packages. */
-export declare function rewriteProvidedCommonJsModules(source: string): string;
-/**
- * A large ES module (bundle-cell-transform.ts BUNDLED_ESM_REWRITE_MIN_BYTES)
- * lowered to CommonJS in the session, without the transform host: read a
- * statement at a time (readEsmRecords, bounded memory, imports live) and
- * emitted by the one emitter. Null for what it leaves to the host: top-level
- * await (its body is synchronous), an import.meta member it does not bind, a
- * module acorn cannot parse, and a source with no module syntax. In Bun's
- * `scope` (module-format.ts ModuleScope) the module keeps CommonJS's names.
- */
-export declare function rewriteBundledEsmToCjs(source: string, absoluteUrl: string, moduleFactory?: boolean, scope?: ModuleScope): TransformResult | null;
 import type * as esbuild from 'esbuild-wasm/esm/browser.js';
 /** What an in-isolate engine offers: esbuild's transform and build, ready to call. */
 export type EsbuildEngine = Pick<typeof esbuild, 'transform' | 'build'>;
@@ -121,14 +105,26 @@ export interface EsbuildTransformOptions {
     dynamicImportParent?: string;
     /** Only the dynamic `import()` rewrite: the code is already CommonJS. */
     rewriteOnly?: boolean;
+    /**
+     * TypeScript Node runs: its types stripped as Node strips them, then as
+     * Node's format for it (by its extension, `packageType`, else its stripped
+     * syntax) an ES module lowered in Node's scope or CommonJS whose import()
+     * is routed (typescript-strip.ts). `sourcefile` names it; dynamicImportParent
+     * and moduleMetadata are read too.
+     */
+    stripTypes?: TypeScriptStripOptions;
+    packageType?: PackageType;
+    /** Only the strip: the stripped code, `esModule` where Node runs it as an ES module. */
+    stripOnly?: true;
     /** Bind compiler-produced import.meta references to the wrapper module. */
     moduleMetadata?: boolean;
     /**
-     * The code is an ES module, as Node runs it (module-format.ts): lowered
-     * strict, its top-level \`this\` undefined, and with none of CommonJS's
-     * names (esModuleSource, ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs).
+     * The code is an ES module, lowered to CommonJS in this runtime's scope
+     * at dynamicImportParent (async-module-lowering.ts lowerEsModule), its
+     * result's map the EsModuleMap; where the engine lowers it instead,
+     * moduleMetadata and define are read too.
      */
-    esModuleScope?: boolean;
+    esModule?: ModuleScope;
 }
 export interface TransformResult {
     code: string;
@@ -137,6 +133,8 @@ export interface TransformResult {
         text: string;
         location?: esbuild.Location | null;
     }[];
+    /** An ES module this lowered, in this runtime's scope: its frames are an ES module's, and Node's its typeofs. */
+    esModule?: ModuleScope;
 }
 /**
  * One emitted output. `bytes` is authoritative (UTF-8 fidelity for the
@@ -160,6 +158,19 @@ export interface BuildResult {
 }
 type EsbuildBuildApi = Pick<typeof esbuild, 'build'>;
 /**
+ * What a transform request runs besides its engine: the functions the
+ * transform facet's preamble installs (oxc-facet/preamble.ts), passed in
+ * because runTransformRequest is serialized into the facet. Only the
+ * transform facet strips TypeScript.
+ */
+export interface TransformRuntime {
+    rewriteDynamicImports(code: string, parentUrl: string, moduleMetadata?: boolean, routeImports?: boolean): string;
+    lowerAsyncModule(esm: string): string;
+    lowerEsModule(source: string, scope: ModuleScope, parentUrl: string): TransformResult;
+    rewriteProvidedCommonJsModules(source: string): string;
+    stripTypeScript?(code: string, filename: string, options: TypeScriptStripOptions, packageType: PackageType): Promise<StrippedTypeScript>;
+}
+/**
  * One esbuild build in which `plugin` resolves and loads every module: an
  * EsbuildService without a build host builds this way in its own isolate,
  * the esbuild facet so for a build whose rolldown binding died (serialized
@@ -181,21 +192,23 @@ export interface EsbuildTransformRequest {
     options?: EsbuildTransformOptions;
 }
 /**
- * A host's answer for one request: the output, or why esbuild rejected the
- * module. A `transient` error is no verdict on the source: the host could not
- * run the transform this time.
- */
-/**
  * A transform's answer. `transient` marks a failure that is no verdict on the
  * source (retry); `stackExhausted` one where the engine ran out of native
  * stack on the module's nesting, which another engine may still answer
  * (oxc-transform.ts's driver sets it from the RangeError it caught, never
- * from message text).
+ * from message text), with `retry` the request that engine should run where
+ * it differs (stripped TypeScript); `typescript` Node's refusal of a TypeScript file.
  */
 export type EsbuildTransformOutcome = TransformResult | {
     error: string;
     transient?: true;
     stackExhausted?: true;
+    retry?: EsbuildTransformRequest;
+} | {
+    error: string;
+    typescript: TypeScriptRefusal;
+    transient?: never;
+    stackExhausted?: never;
 };
 /**
  * Runs transforms in another isolate: one call per batch, outcomes positional.
@@ -263,6 +276,8 @@ export interface EsbuildServiceOptions {
      * such a call rejects.
      */
     engine?: () => Promise<EsbuildEngine>;
+    /** The type strip a call without a host runs, beside `engine` (a test's amaro): the transform facet's. */
+    stripTypeScript?: TransformRuntime['stripTypeScript'];
     /**
      * The transform host's code identity, given with the host: equal ids
      * transform equal requests to equal outcomes. It is what lets a launch keep
@@ -312,6 +327,8 @@ export declare class EsbuildService {
     /** The in-isolate engine, populated by ensureInit() from `engine`. */
     private _esbuild;
     private readonly engine;
+    /** What an in-isolate transform runs besides its engine. */
+    private readonly runtime;
     /** Build reads use the caller-supplied view, or the one a build names; omit it for transform-only use. */
     constructor(vfs?: EsbuildReadFs, options?: EsbuildServiceOptions);
     /** Whether transforms run in this isolate (on its engine): true unless a transform host was given. */

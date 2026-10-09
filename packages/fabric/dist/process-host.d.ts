@@ -64,7 +64,7 @@
  * that pair unforgeable by anything that did not open the process.
  */
 import { type WorkspaceNetwork, type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { type ProcessHost, type ResidentDiskReader } from './process-fabric.js';
+import { type ProcessHost, type ResidentDiskReader, type Supervise } from './process-fabric.js';
 import type { HostRoute } from './composition.js';
 /** The substrates this deployment can be configured for. */
 export type ProcessHostMode = 'facet' | 'peer';
@@ -78,7 +78,7 @@ export type ProcessHostMode = 'facet' | 'peer';
  */
 export declare function createProcessHost(mode: ProcessHostMode, ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader, 
 /** The workspace's network: every process's binding carries it, and with it its egress. */
-network: () => WorkspaceNetwork): ProcessHost;
+network: () => WorkspaceNetwork, supervise?: Supervise): ProcessHost;
 export declare function isolateToken(): string;
 /** Options the coordinator hands a hosting peer. */
 export interface HostProcessOpts {

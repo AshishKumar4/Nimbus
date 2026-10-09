@@ -30,7 +30,6 @@ import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import { toArrayBuffer } from '@nimbus-sh/core/_shared/bytes.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 class RubyReplAdapter {
     pool = null;
@@ -120,7 +119,7 @@ class RubyReplAdapter {
         }
         // Sentinel handling: if stdout ends with __NIMBUS_INCOMPLETE__ marker,
         // signal incomplete.
-        if (result.control?.incomplete !== undefined) {
+        if (result.stdout && result.stdout.includes('__NIMBUS_INCOMPLETE__')) {
             return { kind: 'incomplete' };
         }
         // Non-zero exit code from Ruby = user called exit / process aborted.
@@ -168,7 +167,6 @@ class RubyReplAdapter {
             tag: 'ruby-repl',
             concurrency: 1,
             supervisorPid: this.deps.pid,
-            processSupervisor: supervisorBindingProps(ctx, this.deps.pid, { writerId: crypto.randomUUID(), network }),
             preamble,
             // The workspace's, as every facet a manager's runtimes open (facetHostForManager).
             network,
@@ -179,10 +177,10 @@ class RubyReplAdapter {
         if (!pool || !wasmBytesAB)
             throw new Error('Ruby REPL is not initialized');
         const { home, cwd, binName } = this.deps;
-        const step = { userCode, home, cwd, binName, supervisorPid: this.deps.pid };
+        const step = { userCode, home, cwd, binName };
+        // No deadline: an evaluation is the REPL process running the user's code.
         return await pool.submit(rubyReplStepFacetFn, step, {
             wasmModules: { 'ruby+stdlib.wasm': wasmBytesAB },
-            timeoutMs: 60_000,
         });
     }
 }
@@ -223,15 +221,12 @@ export function rubyReplStepFacetFn(args, facetEnv) {
             progName: 'ruby',
             binName: args.binName,
             cwd: started ? undefined : args.cwd,
-            supervisorPid: args.supervisorPid,
-            outputControls: [{ key: 'incomplete', prefix: '__NIMBUS_INCOMPLETE__' }],
         });
         return {
             stdout: r.stdout || '',
             stderr: r.stderr || '',
             exitCode: typeof r.exitCode === 'number' ? r.exitCode : 0,
             error: r.error,
-            control: r.control,
         };
     })();
 }

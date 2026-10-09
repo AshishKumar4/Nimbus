@@ -12,6 +12,7 @@ import { readFile } from 'node:fs/promises';
 import { oxcFacetWorkerCode } from '../../../packages/worker/src/facets/oxc-transform.ts';
 import { OXC_WASM_ASSET_PATH } from '../../../packages/worker/src/oxc-wasm-artifact.generated.ts';
 import { OXC_FACET_ASSET_PATH } from '../../../packages/worker/src/oxc-facet-artifact.generated.ts';
+import { AMARO_WASM_ASSET_PATH } from '../../../packages/worker/src/amaro-wasm-artifact.generated.ts';
 
 const staged = (path) => readFile(new URL(`../../../packages/worker/public${path}`, import.meta.url));
 
@@ -31,6 +32,8 @@ resetInstances();
 export const wasmBytes = await staged(OXC_WASM_ASSET_PATH);
 const wasmModule = await WebAssembly.compile(wasmBytes);
 const runtime = (await staged(OXC_FACET_ASSET_PATH)).toString('utf8');
+const amaroBytes = await staged(AMARO_WASM_ASSET_PATH);
+const amaroModule = await WebAssembly.compile(amaroBytes);
 
 // The facet's driver instantiates through the global constructor; this one
 // counts, enforces the case's memory limit, and can arm a trap.
@@ -59,10 +62,11 @@ function CountedInstance(module, imports) {
   return { exports };
 }
 
-const facetSource = /** @type {string} */ (oxcFacetWorkerCode(wasmBytes.buffer, runtime)
+const facetSource = /** @type {string} */ (oxcFacetWorkerCode(wasmBytes.buffer, runtime, amaroBytes.buffer)
   .modules['worker.js'])
   .replace('import { DurableObject } from "cloudflare:workers";', 'const { DurableObject } = globalThis.__facetImports;')
-  .replace('import oxcWasm from "oxc.wasm";', 'const { oxcWasm } = globalThis.__facetImports;');
+  .replace('import oxcWasm from "oxc.wasm";', 'const { oxcWasm } = globalThis.__facetImports;')
+  .replace('import amaroWasm from "amaro.wasm";', 'const { amaroWasm } = globalThis.__facetImports;');
 if (/^import /m.test(facetSource)) throw new Error('oxc-facet-harness: the facet module still has an import to bind');
 
 let moduleCopy = 0;
@@ -71,6 +75,7 @@ export async function freshFacetClass() {
   /** @type {any} */ (globalThis).__facetImports = {
     DurableObject: class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } },
     oxcWasm: wasmModule,
+    amaroWasm: amaroModule,
   };
   WebAssembly.Instance = /** @type {any} */ (CountedInstance);
   const source = `${facetSource}\n// copy ${++moduleCopy}`;

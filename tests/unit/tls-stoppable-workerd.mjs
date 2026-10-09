@@ -345,7 +345,7 @@ try {
     const put = (name, text) => t.run(`node -e "require('fs').writeFileSync('${W}/${name}', Buffer.from('${Buffer.from(text).toString('base64')}', 'base64'))"`, 60_000);
     await t.run(`mkdir -p ${W}`, 60_000);
     await put('parent.js', PARENT);
-    const { output } = await t.run(`cd ${W} && node parent.js; echo __TLS_DONE__`, 900_000);
+    const { output } = await t.run(`cd ${W} && node parent.js`, 900_000);
     nimbus = results(strip(output));
     check(await cancelledConnections() === cancelledBeforeNimbus,
       'destroyBeforeAck: no cancelled carrier reached the TLS server');

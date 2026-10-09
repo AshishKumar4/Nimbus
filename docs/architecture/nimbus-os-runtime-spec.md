@@ -60,6 +60,53 @@ External platform constraints checked for this spec:
 - ruby.wasm is a CRuby port for WASI and edge/browser runtimes, not a Linux
   native Ruby.
 
+## Facet Resource Contract
+
+On Cloudflare, an embedder's hosting Worker must set `limits.cpu_ms >= 300000`
+and `limits.subrequests >= 10000000`: a facet's limits only lower its parent's.
+The pure config builder and deployment validation reject a smaller value,
+reporting both the host's configured ceiling and the facet policy maximum.
+`packages/fabric/src/facet-limits.ts` is the single policy source; the config
+package's constant is generated from it, not a runtime dependency on fabric.
+
+Each fabric-created Loader worker and its entrypoint or Durable Object class
+receive explicit limits from that table. CPU is currently `300000` milliseconds
+for every kind. Subrequest ceilings are `10000000` for resident processes,
+`1000000` for git, and `100000` for build, esbuild, transform, generic isolate,
+fanout, and hosted Worker kinds.
+
+A process has no wall-time deadline: a program's run (a WASI binary, CPython,
+Ruby, clang, bash, a REPL's evaluation) ends when it exits or is killed, by kill
+or Ctrl-C, and on Cloudflare the CPU ceiling ends a runaway one. A deadline killed
+clang over 10,000 files at 30 s (9,199 done, 2026-10-07), and any fixed one would
+kill a process waiting on stdin or a long build. Only the compute kinds (build,
+esbuild, transform, git, fanout) carry a wall deadline per call
+(`facetCallDeadlineMs`): each call answers one request, and one that never answers
+is a fault. Off Cloudflare, nothing ends a runaway process but a kill.
+
+Resident filesystem transport retains its subrequest charging scope across
+incoming HTTP calls. Native tail telemetry showed separate HTTP invocations
+while a default `10000` budget failed on the tenth 1000-write call to one
+resident process. The deliberately generous but finite process ceiling permits
+long-lived servers, and never exceeds the documented Workers maximum of 10M.
+Acceptance of a larger Loader input does not prove a larger enforced ceiling.
+The lifetime ceiling eventually stops 10M transport operations, not necessarily
+quickly. CPU accounting can accumulate across overlapping native invocations;
+separate tail events do not prove that their CPU budgets reset. Long-lived open work
+can keep one CPU accounting window alive, so a busy server can reach its CPU
+ceiling cumulatively.
+The Loader shim serves a user's Worker (`nimbus wrangler dev`'s worker_loaders
+binding), so the code it is handed is the guest's: it runs under the worker
+kind's ceiling, lowered by any limits the code or a start asks for, and nothing
+in the code can claim another kind. The policy travels the loopback hops in
+their props, never in the guest's env.
+There is no shipping invocation-counter reserve or reportable early refusal;
+that consumer must land and be tested before a guest budget envelope is added.
+
+Resource ceilings and filesystem delivery are separate contracts. Raising a
+ceiling does not establish that a deferred or batched write has reached its
+owner, and must not be presented as a fix for lost writes.
+
 ## Current State
 
 ### Implemented And Substantial
@@ -836,6 +883,77 @@ Python, Ruby, and WASI still need direct long-lived bridge integration.
   preserve ordering per path.
 - `fsync` and process exit are durability boundaries.
 - Hibernation may close runtime caches, but it must not lose committed writes.
+
+### Durability Of A Process's Writes
+
+A process's filesystem client (`_shared/process-fs-client.ts`) tells the
+program a change succeeded once the change is logged, before the session has
+answered it. The client may run ahead of the session by at most
+`DECIDED_BACKLOG_OPS` (2,032) changes or `DECIDED_BACKLOG_BYTES` (16 MiB).
+Beyond that, a write waits. Processes come in two kinds, and they differ in
+what a death can cost.
+
+- **Residents lose nothing they have committed.** This covers node, python, ruby and opencode
+  processes in a SQLite-backed facet. The client logs every change in the
+  facet's own store before the program is told it succeeded
+  (`process-fs-journal.ts`). The session books the facet when it opens
+  (`nimbus_process_journals`). When the process is released (it exited, was
+  killed, or ran out of memory or CPU), the session drains whatever the log
+  still holds. It numbers each change exactly as the process did, so a change
+  that already landed is answered and is not applied twice. A change made
+  through an open description (a WASI process's descriptor that writes
+  through) lands through the description the session kept for the process:
+  its file and the access its open decided, stored with the open's number
+  (`vfs_wave_descriptions`). That holds even if the open was answered and
+  dropped from the log long before, and even if the session restarted.
+  Only after the drain is the store deleted and the exit status reported. A log that a reset
+  left behind is drained at the next start, before anything runs. A log that
+  cannot be read is reported by name and kept. It is never dropped silently.
+  One limit is measured. The facet's SQLite commits only when its isolate
+  yields to the event loop. If the isolate dies of CPU or memory partway
+  through one unbroken synchronous stretch, the rows that stretch logged
+  are rolled back. A live CPU-death run lost 958 of 5,000. That stretch
+  holds whatever the program acknowledged since it last yielded, and no
+  count of it is promised. The platform's
+  output gate holds every message the facet sends until its rows commit,
+  so no effect is ever seen ahead of a lost change. A resident's output on
+  the gated channels below also waits for the changes made before it to be
+  in the session, not only in the facet's log.
+- **One-shots lose an unreported tail at most, and say so.** This covers
+  node, python, ruby and WASI programs run once in a Dynamic Worker, which
+  has no store of its own.
+
+  Causal visibility holds over gated channels only. On these, nothing the
+  process (one-shot or resident) emits is released before every change it
+  logged ahead of that emission has been answered:
+  - stdout and stderr, and every diagnostic Nimbus prints for the process
+    (`ProcessFsClient.effect()`);
+  - its exit status;
+  - a resident server's HTTP response, an outbound `fetch` and a child
+    spawn (each waits for the process's changes to be answered first).
+
+  Raw TCP and TLS sockets (`node:net`, `node:tls`, WASI sockets) are not
+  gated: a peer reading what such a socket said can miss changes made
+  before it. There is no causal claim beyond the gated channels.
+
+  An awaited call (`fs.promises.*`, a WASI process's calls that make or
+  remove names) settles on the session's verdict for it, with its own
+  errno. A write the program was told succeeded before the session answered
+  (a synchronous one, or a WASI descriptor's write) that the session then
+  refuses is reported at the process's next sync, its next close of a
+  descriptor and its exit, never dropped.
+
+  If the process dies or
+  is killed, any change it made since it last produced output or finished
+  a flush may be lost, and no count of them is promised. The client sends
+  only when the program yields, so a loop of `writeFileSync` that dies
+  before it yields sent none of them, and the session never saw them.
+  Nothing it released ever claims a change that was lost. So every
+  abnormal end of a one-shot is reported every time, whatever the session
+  saw: its exit status is non-zero, its output carries `UNSETTLED_END_NOTE`
+  (an unknown number of the changes it made since it last produced output
+  or flushed may be lost), and every subtree it held is named
+  (`delegationOrphaned`).
 
 ### Performance Rules
 

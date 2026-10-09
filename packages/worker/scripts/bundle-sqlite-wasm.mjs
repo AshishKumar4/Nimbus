@@ -34,7 +34,7 @@
  *
  * Run via:
  *   node scripts/bundle-sqlite-wasm.mjs
- *   (wired into package.json bundle/predev/predeploy/postinstall)
+ *   (wired into package.json bundle/predev/predeploy)
  *
  * The version is pinned in src/constants.ts (SQLJS_VERSION); this script
  * asserts the installed sql.js matches so an accidental dependency bump

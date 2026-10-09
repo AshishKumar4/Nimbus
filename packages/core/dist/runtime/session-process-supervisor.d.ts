@@ -192,6 +192,7 @@ export declare class SessionProcessSupervisor {
     /** See ProcessTable.residentRunning — running long-running process count. */
     get residentRunning(): number;
     /** See ProcessTable.setPidBase — generation-unique pid allocation. */
+    onPidStride(listener: (stride: number) => void): void;
     setPidBase(base: number): void;
     /** The current generation's pid floor: pids <= base are prior-generation. */
     get pidBase(): number;
@@ -253,6 +254,7 @@ export declare class SessionProcessSupervisor {
     markExit(pid: number, code: number, reason?: string): void;
     getExit(pid: number): ProcessExitInfo | null;
     hasLogs(pid: number): boolean;
+    retainsLogs(pid: number): boolean;
     logSize(pid: number): number;
     readLogs(pid: number, opts?: ProcessLogReadOptions): {
         chunks: SequencedLogChunk[];

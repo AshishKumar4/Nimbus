@@ -28,6 +28,7 @@ import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worke
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
+import { waveSupervisor } from './lib/wave-supervisor.mjs';
 
 const PORT = 4471;
 
@@ -40,13 +41,15 @@ const order = [];
 let writeDelayMs = 0;
 
 function makeSupervisor(props) {
-  return {
+  // Its process's waves reach writeFile (lib/wave-supervisor.mjs).
+  return waveSupervisor({
     props,
     async writeFile(path, content) {
       // Slow the write down so ordering has to be REAL. If the response could
       // overtake it, this is where the race would open.
       if (writeDelayMs > 0) await new Promise((r) => setTimeout(r, writeDelayMs));
-      durable.set(String(path).replace(/^\/+/, ''), String(content));
+      // A process's write carries bytes (its call's data); text from an older caller.
+      durable.set(String(path).replace(/^\/+/, ''), typeof content === 'string' ? content : new TextDecoder().decode(content));
       order.push('write');
     },
     async registerPort() {},
@@ -59,7 +62,7 @@ function makeSupervisor(props) {
     fsList: (after, limit) => _rpcFsList(sessionHost(), after ?? null, limit ?? null),
     fsReadBatch: (requests) => _rpcFsReadBatch(sessionHost(), requests),
     fsAcquire: (epoch, cursor, options) => _rpcFsAcquire(sessionHost(), epoch, cursor, options),
-  };
+  });
 }
 let _sessionHost = null;
 const sessionHost = () => _sessionHost

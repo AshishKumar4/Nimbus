@@ -1,5 +1,6 @@
 import { staticStdinReader } from "@nimbus-sh/core/shell/stdin-adapter.js";
 import { loaderOutbound, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { composeFacetManager, type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
 import { FacetProcessManager, textBytes, type ChildOrigin, type OutputHooks } from "../facets/process.js";
 import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
@@ -27,6 +28,8 @@ import { notifyTerminalEvent } from "../runtime/process-logs-api.js";
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
 import { WebSocketRelay } from "../session/ws-relay.js";
+import { ProcessSupervisor } from "../session/process-supervisor.js";
+import type { SupervisorOpEnvelope } from "@nimbus-sh/core/workspace/supervisor-op.js";
 // ── Pure helpers in ../session/helpers.ts ────────
 //
 // renderNoDevServerHtml, BUNDLER_BIN_PREFIXES, NIMBUS_UNSUPPORTED_BINS,
@@ -74,6 +77,8 @@ export interface RuntimeServiceContext {
   filesystem: () => NimbusFilesystemAuthority;
   /** The workspace's network (`workspace.network`): its egress, when the host supplied one. */
   network: () => WorkspaceNetwork;
+  /** The host's own answer to an envelope: what its one-shots' supervisors call (ProcessSupervisor). */
+  supervisorOp: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
 }
 
 const CpFacetDirectPayloadSchema = z.object({
@@ -126,6 +131,7 @@ export function ensureFacetManager(self: RuntimeServiceHost, runtimeContext: Run
         vfs: filesystem.engine,
         filesystem,
         network: runtimeContext.network,
+        supervise: (props) => new ProcessSupervisor(props, runtimeContext.env, runtimeContext.supervisorOp),
         ...(self.esbuildService ? { esbuild: self.esbuildService } : {}),
         hooks: {
           onExternalExit: (pid, code, reason) => self._reportExternalExit(pid, code, reason),
@@ -512,15 +518,15 @@ export function ensureFetchProxy(self: RuntimeServiceHost, runtimeContext: Runti
         '};',
       ].join('\n');
 
-      const worker = env.LOADER.load({
+      const worker = env.LOADER.load(applyFacetLimits('worker', {
         compatibilityDate: CF_COMPAT_DATE,
         compatibilityFlags: [...GUEST_COMPAT_FLAGS],
         mainModule: 'fetch-proxy.js',
         modules: { 'fetch-proxy.js': proxyCode },
         // The registry is reached through the workspace's egress, when it has one.
         ...loaderOutbound(runtimeContext.network()),
-      });
-      self.fetchProxyEntrypoint = worker.getEntrypoint();
+      }));
+      self.fetchProxyEntrypoint = worker.getEntrypoint(undefined, { limits: facetLimits('worker') });
       log?.('Fetch proxy worker created (singleton)');
       return self.fetchProxyEntrypoint;
     } catch (e: any) {

@@ -3,6 +3,7 @@ export class WebSocketTerminal {
     /** Null while the terminal is headless (composed before any attach). */
     ws;
     dataCallback = null;
+    submissionCallback = null;
     /**
      * editor/monaco (2026-05-13): Editor-pane file-system bridge.
      *
@@ -80,6 +81,7 @@ export class WebSocketTerminal {
         this.buffer = [];
         this.onFlush = null;
         this.dataCallback = null;
+        this.submissionCallback = null;
         this.fsCallback = null;
         try {
             this.ws?.close(1000, 'terminal closed');
@@ -138,11 +140,25 @@ export class WebSocketTerminal {
         }
     }
     onData(callback) { this.dataCallback = callback; }
+    onSubmission(callback) {
+        this.submissionCallback = callback;
+    }
+    shellIntegration(event) {
+        this.flushNow();
+        try {
+            this.ws?.send(JSON.stringify(event));
+        }
+        catch { /* the socket closed */ }
+    }
     handleMessage(msg) {
         switch (msg.type) {
             case 'input':
-                if (msg.data)
+                if (msg.data) {
+                    if (msg.submissionId && this.submissionCallback) {
+                        return this.submissionCallback(msg.data, msg.submissionId, (submission) => this.sendData(msg.data ?? '', submission), this.replBinding !== null);
+                    }
                     return this.sendData(msg.data);
+                }
                 return;
             case 'resize':
                 if (msg.cols)
@@ -201,10 +217,10 @@ export class WebSocketTerminal {
     onFs(cb) {
         this.fsCallback = cb;
     }
-    sendData(data) {
+    sendData(data, submission) {
         if (this.replBinding)
             return this.replBinding.input(data);
-        return this.dataCallback?.(data);
+        return this.dataCallback?.(data, submission);
     }
     attachRepl(input, dispose) {
         if (this.replTeardown)

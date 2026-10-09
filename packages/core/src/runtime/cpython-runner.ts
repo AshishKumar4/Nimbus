@@ -42,6 +42,7 @@
  */
 
 import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
+import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { resolveVfsPath } from '../vfs/path.js';
@@ -458,8 +459,6 @@ export function makeCPythonRunnerFactory(deps: {
       });
 
         const result = await facet.submit(cpythonRunFacetFn, facetArgs, {
-          timeoutMs: 120_000,
-          // A kill or Ctrl-C ends the facet too, where the host can.
           signal: stdio.signal,
         });
         exitCode = result.error ? result.exitCode || 1 : result.exitCode;
@@ -467,7 +466,11 @@ export function makeCPythonRunnerFactory(deps: {
         return exitCode;
       } catch (e: unknown) {
         // Killed: the program ends as an interrupted one does.
-        if (stdio.signal.aborted) return exitCode = exitCodeForAbortSignal(stdio.signal);
+        if (stdio.signal.aborted) {
+          // What it may have lost is said however it ended (unsettledEnd).
+          ctx.stderr.write(unsettledNoteOf(e));
+          return exitCode = exitCodeForAbortSignal(stdio.signal);
+        }
         ctx.stderr.write(`${binName}: ${errorMessage(e)}\n`);
         return 1;
       } finally {

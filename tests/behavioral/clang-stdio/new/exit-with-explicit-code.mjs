@@ -28,11 +28,11 @@ await t.run('nimbus install clang', 300_000);
 await t.run(heredocCommand('e.c', CSRC), 10_000);
 await t.run('clang e.c -o e', 240_000);
 
-const rr = await t.run('./e ; echo RUN_EXIT=$?', 30_000);
+const rr = await t.run('./e', 30_000);
 const out = stripAnsi(rr.output);
 a.check('before-exit-A printed', /before-exit-A/.test(out), JSON.stringify(out.slice(-400)));
 a.check('before-exit-B printed', /before-exit-B/.test(out), JSON.stringify(out.slice(-400)));
-a.check('exit code 73 propagated to shell', /RUN_EXIT=73/.test(out),
+a.check('exit code 73 propagated to shell', rr.exitCode === 73,
   JSON.stringify(out.slice(-200)));
 
 await t.close();

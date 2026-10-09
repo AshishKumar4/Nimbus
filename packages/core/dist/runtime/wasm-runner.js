@@ -46,7 +46,6 @@
  *   - NO direct WebAssembly.instantiate(bytes) at request time — workerd
  *     CSP rejects that path, and the facet host exists to make it moot.
  */
-import { stdinBytesOf } from '../shell/stdin-adapter.js';
 import { gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { withHostView } from './process-files.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
@@ -54,6 +53,7 @@ import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
 import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
 import { wasmInterface } from './wasm-binary.js';
 import { errorText } from '../_shared/error-text.js';
+import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 export const WASM_RUNNER_VERSION = '0.3.0';
 export const WASM_RUNNER_HELP = 'Usage: wasm-runner [options] <file.wasm> [exportName] [int args...]\n' +
     '       wasm-runner --version\n' +
@@ -313,7 +313,10 @@ export function makeWasmRunner(deps) {
                 // Install the preopens. fd 3 = the user's session root preopen. The
                 // shim's fd table is reset by initFS each call.
                 if (args.wasiFs) {
-                    initFS({ root: args.wasiFs.root, preopens: args.wasiFs.preopens, pid: args.processPid });
+                    // With its credential the process answers what it can from its own
+                    // store and sends its changes as waves (wasi/resident-filesystem.ts);
+                    // without, every call is a round trip to the session.
+                    initFS({ root: args.wasiFs.root, preopens: args.wasiFs.preopens, cred: args.wasiFs.cred });
                     // initFS resets the live state, so adoption has to follow it. Every
                     // file the guest touches is then read from and written to the
                     // authority through the stub.
@@ -327,17 +330,11 @@ export function makeWasmRunner(deps) {
                 }
                 const memRef = { mem: null };
                 const abi = args.wasiAbi || 'preview1';
-                const sup = facetEnv?.SUPERVISOR;
-                if (typeof sup?.stdout !== 'function')
-                    return { ok: false, mode: 'wasi', error: 'WASI process output capability is missing' };
-                const live = __wasiSupervisorOutput(sup);
                 const wasi = mk({
                     argv: args.wasiArgv || [],
                     env: args.wasiEnv || {},
                     abi,
                     threads: !!args.threads,
-                    stdoutBytes: live.stdoutBytes, stderrBytes: live.stderrBytes,
-                    ...(typeof sup?.cpReadStdin === 'function' ? { stdinRead: (maxBytes) => sup.cpReadStdin(args.processPid, 8000, undefined, maxBytes) } : {}),
                     // Non-null by ordering, not by check. The import table is only ever
                     // CALLED from inside the guest, and the guest cannot run before
                     // `_start` below, by which point memRef.mem is assigned or the call
@@ -357,8 +354,6 @@ export function makeWasmRunner(deps) {
                 // describe an import object as an untyped index signature. Widening
                 // here keeps the precision on the shim's side of the boundary.
                 const importObject = {
-                    nimbus_proc: wasi.procImport,
-                    nimbus_fs: wasi.fsImport,
                     [args.wasiNamespace || 'wasi_snapshot_preview1']: wasi.wasiImport,
                 };
                 // A threads build imports its memory instead of defining one, because
@@ -437,17 +432,16 @@ export function makeWasmRunner(deps) {
                     : runStartAsync
                         ? await runStartAsync(inst, { memory: memRef.mem })
                         : runStart(inst, { memory: memRef.mem });
-                const lost = await live?.drain();
-                wasi.procDispose();
                 return {
-                    ok: r.exitCode === 0 && !r.error && !lost,
+                    ok: r.exitCode === 0 && !r.error,
                     mode: 'wasi',
-                    streamedOutput: live !== null,
-                    stdout: '',
-                    stderr: '',
-                    exitCode: lost && r.exitCode === 0 ? 1 : r.exitCode,
+                    stdout: wasi.getStdout(),
+                    stderr: wasi.getStderr(),
+                    exitCode: r.exitCode,
                     exports: Object.keys(inst.exports),
-                    error: lost ?? r.error,
+                    error: r.error,
+                    // Its filesystem calls and who answered them (ResidentFilesystemStats).
+                    fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
                 };
             }
             // ── Direct mode ──
@@ -509,24 +503,8 @@ export function makeWasmRunner(deps) {
             (opts.filename || '').replace(/^\/+/, '/') +
             ' ' +
             argv.join(' ');
-        const brokerPid = opts.stdinPid;
-        const owned = brokerPid === undefined;
-        const procEntry = owned ? deps.processes.spawn(cmdLabel.trim(), ['wasm-runner', ...argv], opts.cwd || '/home/user', { parentPid: opts.invokerPid, cred }) : deps.processes.get(brokerPid);
-        if (!procEntry || procEntry.state !== 'running')
-            throw new Error('WASI broker process is not running');
+        const procEntry = deps.processes.spawn(cmdLabel.trim(), ['wasm-runner', ...argv], opts.cwd || '/home/user', { parentPid: opts.invokerPid, cred });
         const pid = procEntry.pid;
-        const killed = new AbortController();
-        const runSignal = opts.signal ? AbortSignal.any([opts.signal, killed.signal]) : killed.signal;
-        deps.processes.setTerminator(pid, () => killed.abort());
-        const inputPump = !owned ? null : opts.stdin ? deps.processes.pumpInput(pid, stdinBytesOf(opts.stdin)) : null;
-        if (!deps.processes.hasInput(pid)) {
-            deps.processes.openInput(pid);
-            deps.processes.endInput(pid);
-        }
-        const releaseOutput = opts.output
-            ? deps.processes.subscribeOutputBytes(pid, chunk => opts.output(chunk.stream, chunk.data)) : null;
-        if (releaseOutput)
-            deps.processes.setForeground(pid, true);
         // Pass-through env vars (Nimbus shell sets HOME/USER/PATH/etc.). The
         // runtime-registry's RuntimeRunOpts carries env on the way in; we
         // forward to the WASI shim. Direct mode doesn't use env.
@@ -546,7 +524,7 @@ export function makeWasmRunner(deps) {
         if (processFs) {
             // Session root = cwd of the shell invocation. Falls back to /home/user.
             const root = (opts.cwd || '/home/user').replace(/^\/+/, '');
-            wasiFs = { root, preopens: [{ wasiPath: '/', vfsPath: root }] };
+            wasiFs = { root, preopens: [{ wasiPath: '/', vfsPath: root }], cred: { uid: cred.uid, gid: cred.gid, groups: [...cred.groups] } };
         }
         let outcome;
         let facet = null;
@@ -563,7 +541,7 @@ export function makeWasmRunner(deps) {
                 // filesystem with the live session VFS instead of a spawn-time copy.
                 // Direct (compute-only) mode has no filesystem at all, so it asks for
                 // no capability and the facet boots fast.
-                syscalls: processFs ? { vfs: processFs, pid, processes: deps.processes } : undefined,
+                syscalls: processFs ? { vfs: processFs, pid } : undefined,
                 // WASI mode: ship the WASI shim source as a facet preamble so
                 // `__wasiMakeImports` is in scope when the facet fn runs. Direct mode:
                 // no preamble (saves a few KB per submit).
@@ -571,8 +549,6 @@ export function makeWasmRunner(deps) {
             });
             const submitArgs = isWasi
                 ? {
-                    processPid: pid,
-                    liveOutput: true,
                     mode: 'wasi',
                     wasiArgv,
                     wasiEnv,
@@ -584,28 +560,20 @@ export function makeWasmRunner(deps) {
                 : { mode: 'direct', exportName: exportName, intArgs: parsedArgs };
             outcome = (await facet.submit(facetFn, submitArgs, {
                 wasmModules: { 'user.wasm': buf },
-                // 30s ceiling for compute. Most wasm calls return in
-                // microseconds; runaway loops hit this and a host that can
-                // abandon the facet surfaces a timeout as exitCode 1 + stderr.
-                timeoutMs: 30_000,
-                // A kill or Ctrl-C ends the facet too, where the host can.
-                signal: runSignal,
+                // No deadline: a process runs until it exits or is killed. A kill
+                // or Ctrl-C ends the facet too, where the host can.
+                signal: opts.signal,
             }));
         }
         catch (e) {
             // Killed: the program ends as an interrupted one does, with no error of its own.
-            outcome = runSignal.aborted
-                ? { ok: false, mode: 'wasi', exitCode: 130, stdout: '', stderr: '' }
+            // What it may have lost is said however it ended (unsettledEnd).
+            outcome = opts.signal?.aborted
+                ? { ok: false, mode: 'wasi', exitCode: 130, stdout: '', stderr: unsettledNoteOf(e) }
                 : { ok: false, error: `dispatch failed: ${errorText(e)}` };
         }
         finally {
             facet?.dispose();
-            inputPump?.stop();
-            if (owned)
-                deps.processes.closeInput(pid);
-            releaseOutput?.();
-            if (releaseOutput)
-                deps.processes.setForeground(pid, false);
         }
         let exitCode;
         let stdout;
@@ -627,6 +595,8 @@ export function makeWasmRunner(deps) {
                     `wasm-runner: wasi trap: ${outcome.error}\n`;
             }
             exitCode = outcome.exitCode ?? (outcome.ok ? 0 : 1);
+            if (opts.env?.NIMBUS_WASI_FS_STATS === '1')
+                stderr += `[wasi-fs] wasm ${JSON.stringify(outcome.fsStats ?? null)}\n`;
         }
         else if (!outcome.ok) {
             // Direct-mode failure or pre-instantiate dispatch failure — shell
@@ -650,10 +620,16 @@ export function makeWasmRunner(deps) {
         // append-then-markExit ordering matches what shellExecuteTracked
         // does in init.ts:1559+ (Fix 5 contract).
         if (stdout) {
-            await deps.processes.appendOutputBytes(pid, 'stdout', new TextEncoder().encode(stdout));
+            try {
+                deps.processes.appendOutput(pid, 'stdout', stdout);
+            }
+            catch { }
         }
         if (stderr) {
-            await deps.processes.appendOutputBytes(pid, 'stderr', new TextEncoder().encode(stderr));
+            try {
+                deps.processes.appendOutput(pid, 'stderr', stderr);
+            }
+            catch { }
         }
         try {
             deps.processes.exit(pid, exitCode);
@@ -665,8 +641,7 @@ export function makeWasmRunner(deps) {
             }
         }
         catch { }
-        const streamed = 'streamedOutput' in outcome && outcome.streamedOutput === true;
-        return { exitCode, stdout: streamed ? '' : stdout, stderr };
+        return { exitCode, stdout, stderr };
     };
 }
 /**

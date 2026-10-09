@@ -235,7 +235,6 @@ class RubyReplAdapter implements ReplAdapter {
     const step: RubyReplStep = { userCode, home, cwd, binName, supervisorPid: this.deps.pid };
     return await pool.submit(rubyReplStepFacetFn, step, {
       wasmModules: { 'ruby+stdlib.wasm': wasmBytesAB },
-      timeoutMs: 60_000,
     });
   }
 }

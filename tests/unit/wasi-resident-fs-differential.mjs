@@ -228,9 +228,10 @@ await adapter.write(handle.id, 0, enc.encode('XYZ'));
 await adapter.close(handle.id);
 await compareAll('own-writes');
 
-// A file the process creates or truncates is held until close (HeldWrite):
-// the process reads its own bytes back at once, a peer sees them from the
-// close, and they arrive as the program wrote them, seeks and holes included.
+// An adapter with no client of its own (no delegation) holds nothing: a
+// file it writes is the session's descriptor's, written as the program
+// wrote it, seeks and holes included, and every reader sees it at once.
+// (With a client, the same writes go through it: wasi-delegation-holder.)
 {
   const out = await adapter.open(beneath('out.o'), { read: true, write: true, create: true, truncate: true });
   await adapter.write(out.id, null, enc.encode('header..'));
@@ -245,7 +246,7 @@ await compareAll('own-writes');
   assert.deepEqual(await adapter.read(out.id, 0, 200), expected, 'a held file reads back through its descriptor');
   assert.deepEqual(await adapter.readFile(beneath('out.o')), expected, 'and by name, before close');
   assert.equal((await adapter.stat(beneath('out.o'))).size, 104, 'and stats at its held size');
-  assert.equal((await authority.stat(beneath('out.o'))).size, 0, 'a peer sees the file from the open, empty until close');
+  assert.equal((await authority.stat(beneath('out.o'))).size, 104, 'a peer sees what was written');
   assert.equal(await adapter.seek(out.id, 0, 'current'), 104, 'the position is where the program left it');
   const wo = await adapter.open(beneath('wo.txt'), { write: true, create: true, truncate: true });
   await assert.rejects(async () => adapter.read(wo.id, 0, 1), { code: 'EBADF' }, 'a write-only held descriptor refuses a read');
@@ -279,14 +280,13 @@ await compareAll('own-writes');
 }
 await compareAll('held-writes');
 
-// A run that ends without closing what it wrote still leaves it in the session
-// (settle, which the runtime calls at every run's end and before a send).
+// A run that ends without closing what it wrote leaves it in the session;
+// without a client nothing is held to settle.
 {
   const open = await adapter.open(beneath('unclosed.txt'), { write: true, create: true, truncate: true });
   await adapter.write(open.id, null, enc.encode('kept'));
-  assert.equal(adapter.holding(), true);
+  assert.equal(adapter.holding(), false, 'an adapter without a client held a write');
   assert.deepEqual(await adapter.settle(), [], 'nothing refused');
-  assert.equal(adapter.holding(), false);
   assert.deepEqual(await authority.readFile(beneath('unclosed.txt')), enc.encode('kept'), 'settled bytes are in the session');
   await adapter.write(open.id, null, enc.encode('+more'));
   await adapter.close(open.id);
@@ -294,8 +294,8 @@ await compareAll('held-writes');
   PATHS.push('unclosed.txt');
 }
 
-// A write the session refuses is never lost silently: the close reports it,
-// or, for a file the run never closed, the run's settle does.
+// A write the session refuses is never lost silently: without a client it
+// is the write's own error.
 {
   const enospc = () => Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
   const refusing = new Proxy(authority, {
@@ -307,16 +307,10 @@ await compareAll('held-writes');
   });
   const full = residentFilesystem(refusing, store.__residentNamespaceView(supervisor, device, USER));
   const a = await full.open(beneath('full-a.txt'), { write: true, create: true, truncate: true });
-  await full.write(a.id, null, enc.encode('lost'));
-  await assert.rejects(async () => full.close(a.id), { code: 'ENOSPC' }, 'close reports the refused write');
-  await assert.rejects(async () => authority.fstat(a.id), { code: 'EBADF' }, 'and the descriptor is closed anyway');
+  await assert.rejects(async () => full.write(a.id, null, enc.encode('lost')), { code: 'ENOSPC' }, 'the write reports its refusal');
+  await full.close(a.id);
   const b = await full.open(beneath('full-b.txt'), { write: true, create: true, truncate: true });
-  await full.write(b.id, null, enc.encode('lost too'));
-  const failures = await full.settle();
-  assert.equal(failures.length, 1, 'the run reports the file it never closed');
-  assert.equal(failures[0].path, `${ROOT}/full-b.txt`);
-  assert.equal(failures[0].error.code, 'ENOSPC');
-  // Reported once: its close afterwards succeeds.
+  assert.deepEqual(await full.settle(), [], 'nothing held, nothing to report at the end');
   await full.close(b.id);
   PATHS.push('full-a.txt', 'full-b.txt');
 }

@@ -104,7 +104,7 @@ await t.run('node -e "console.log(42)" > /home/user/node.txt', 30_000);
   a.check('stdout reaches the terminal while the process is still running',
     liveBeforeExit,
     'nothing appeared before exit — output is being buffered until the process ends');
-  await t.waitForNewPrompt(30_000).catch(() => {});
+  await t.waitForPrompt(30_000).catch(() => {});
 }
 
 await t.close();

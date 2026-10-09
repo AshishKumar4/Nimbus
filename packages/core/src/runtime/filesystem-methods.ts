@@ -67,12 +67,12 @@ export const FILESYSTEM_METHODS = {
   fchmod: { rpc: 'fsFchmod', answer: 'value' },
   fchown: { rpc: 'fsFchown', answer: 'value' },
   futimes: { rpc: 'fsFutimes', answer: 'value' },
-  appendOnce: { rpc: 'fsAppend', answer: 'value' },
-  acknowledgeAppend: { rpc: 'fsAppendAck', answer: 'value' },
   writeBatch: { rpc: 'writeBatch', answer: 'value' },
   writeStream: { rpc: 'writeBatchStream', answer: 'stream' },
   acquireExclusiveMutation: { rpc: 'fsAcquireExclusiveMutation', answer: 'value' },
   releaseExclusiveMutation: { rpc: 'fsReleaseExclusiveMutation', answer: 'value' },
+  awaitRecall: { rpc: 'fsAwaitRecall', answer: 'value' },
+  recalled: { rpc: 'fsRecalled', answer: 'value' },
 } as const satisfies Record<BridgeMethod, { readonly rpc: string; readonly answer: FilesystemAnswer }>;
 
 export type FilesystemMethod = keyof typeof FILESYSTEM_METHODS;

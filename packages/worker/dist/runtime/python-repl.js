@@ -1,5 +1,4 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { toArrayBuffer } from '@nimbus-sh/core/_shared/bytes.js';
 import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import { z } from 'zod/v4';
@@ -19,7 +18,7 @@ const INCOMPLETE_MARKER = '__NIMBUS_PY_INCOMPLETE__';
  * ordinary output and never leaves.
  */
 const EXIT_MARKER = '__NIMBUS_PY_EXIT__';
-const PythonFacetResult = z.object({ stdout: z.string(), stderr: z.string(), exitCode: z.number().int(), error: z.string().optional(), control: z.record(z.string(), z.string()).optional() });
+const PythonFacetResult = z.object({ stdout: z.string(), stderr: z.string(), exitCode: z.number().int(), error: z.string().optional() });
 const PythonFacetFailure = z.object({ __nimbusFacetError: z.string() });
 /** Where cpython-runner's catalog spec stages the interpreter. */
 const CPYTHON_WASM_REL = 'share/cpython/python.wasm';
@@ -70,6 +69,7 @@ function buildReplDriver(source) {
 }
 class PythonReplAdapter {
     pool = null;
+    closed = false;
     /** Which interpreter variant the cached pool holds; see ensurePool. */
     poolUsesSci = false;
     deps;
@@ -84,7 +84,19 @@ class PythonReplAdapter {
         return ('Python 3.13.14 (CPython, wasm32-wasi, Nimbus runtime)\r\n' +
             'Type "exit()" or press Ctrl-D to exit.\r\n');
     }
+    async initialize() {
+        const result = await this.push('');
+        if (result.kind === 'output')
+            return result;
+        if (result.kind === 'error')
+            throw new Error(result.stderr.trim());
+        if (result.kind === 'exit')
+            throw new Error(result.stderr?.trim() || `Python REPL startup exited ${result.exitCode}`);
+        throw new Error('Python REPL startup did not finish its driver');
+    }
     push(source) {
+        if (this.closed)
+            return Promise.reject(new Error('Python REPL is closed'));
         const controller = new AbortController();
         const done = this.evaluate(source, controller.signal);
         const active = { controller, done };
@@ -116,15 +128,17 @@ class PythonReplAdapter {
             const message = e instanceof Error ? e.message : String(e);
             return { kind: 'error', stderr: `[python-repl] dispatch failed: ${message}\n` };
         }
-        if (result.control?.incomplete !== undefined)
+        if (result.stdout.includes(INCOMPLETE_MARKER))
             return { kind: 'incomplete' };
-        if (result.control?.exit !== undefined) {
-            const code = Number.parseInt(result.control.exit, 10);
+        const exitAt = result.stdout.indexOf(EXIT_MARKER);
+        if (exitAt >= 0) {
+            const rest = result.stdout.slice(exitAt + EXIT_MARKER.length);
+            const code = Number.parseInt(rest.slice(0, rest.indexOf(':')), 10);
             return {
                 kind: 'exit',
                 exitCode: Number.isFinite(code) ? code : 0,
                 // Whatever the line printed before exiting is still the user's output.
-                stdout: result.stdout,
+                stdout: result.stdout.slice(0, exitAt),
                 stderr: result.stderr,
             };
         }
@@ -141,7 +155,7 @@ class PythonReplAdapter {
         }
         return { kind: 'output', stdout: result.stdout, stderr: result.stderr };
     }
-    close() { return this.interrupt(); }
+    close() { this.closed = true; return this.stop(); }
     resetPool() {
         const pool = this.pool;
         this.pool = null;
@@ -149,6 +163,11 @@ class PythonReplAdapter {
         pool?.dispose();
     }
     async interrupt() {
+        await this.stop();
+        if (!this.closed)
+            await this.initialize();
+    }
+    async stop() {
         const active = this.active;
         active?.controller.abort();
         try {
@@ -204,11 +223,11 @@ class PythonReplAdapter {
         };
         const pid = this.deps.pid;
         this.pool = typeof pid === 'number' && pid > 0
-            ? new IsolatePool(host.env, host.ctx, { ...base, supervisorPid: pid, network: host.network, processSupervisor: supervisorBindingProps(host.ctx, pid, { writerId: crypto.randomUUID(), network: host.network }) })
+            ? new IsolatePool(host.env, host.ctx, { ...base, supervisorPid: pid })
             // The install-time warm-up has no invoking process. It boots the
             // interpreter and never touches a file, so it asks for no supervisor
             // rather than binding one it cannot authenticate to.
-            : new IsolatePool(host.env, host.ctx, { ...base, omitSupervisor: true, network: host.network });
+            : new IsolatePool(host.env, host.ctx, { ...base, omitSupervisor: true });
     }
     active = null;
     async submit(userCode, signal) {
@@ -219,7 +238,7 @@ class PythonReplAdapter {
             method: 'POST',
             body: JSON.stringify(pythonReplStep(this.deps, this.pythonHome, userCode)),
             signal,
-        }), { timeoutMs: 60_000 });
+        }));
         if (!response.ok) {
             const failure = PythonFacetFailure.parse(await response.json());
             throw new Error(failure.__nimbusFacetError);
@@ -235,8 +254,7 @@ class PythonReplAdapter {
 export function pythonReplStep(deps, pythonHome, userCode) {
     return {
         userCode,
-        supervisorPid: deps.pid || 0,
-        outputControls: [{ key: 'incomplete', prefix: INCOMPLETE_MARKER }, { key: 'exit', prefix: EXIT_MARKER, suffix: ':' }],
+        cred: deps.cred,
         pythonHome,
         pyArgv: ['python'],
         userEnv: { HOME: deps.home, PYTHONUNBUFFERED: '1' },

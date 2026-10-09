@@ -228,6 +228,7 @@ export declare class ProcessLogStore {
     setBroadcast(onChunk: (pid: number, chunk: LogChunk) => void, onExit: (pid: number, exit: ProcessExitInfo) => void): void;
     /** Is there ANY state for this pid (including exit-only)? */
     has(pid: number): boolean;
+    retains(pid: number): boolean;
     /** Current buffered bytes for this PID (post-eviction). */
     size(pid: number): number;
     getExit(pid: number): ProcessExitInfo | null;

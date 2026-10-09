@@ -24,7 +24,7 @@ import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
-import { type NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type NimbusFilesystemAuthority, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 export interface PythonReplDeps {
     facetMgr: FacetManager;
     /** Owns the installed interpreter blobs the prompt is booted from. */
@@ -56,6 +56,8 @@ export interface PythonReplDeps {
      * never touches a file.
      */
     pid?: number;
+    /** The invoking process's credential; absent only for the install-time warm-up. */
+    cred?: Readonly<VfsCred>;
     /**
      * Where the prompt starts: the shell's working directory, entered once
      * per interpreter, and the command that started it, which a refusal to
@@ -71,19 +73,10 @@ export interface PythonReplDeps {
  * interpreter's setup, and `enter`, the source that starts the prompt in the
  * shell's working directory, which the facet runs once per interpreter.
  */
-export declare function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'start' | 'pid'>, pythonHome: string, userCode: string): {
+export declare function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'start' | 'cred'>, pythonHome: string, userCode: string): {
     enter?: string | undefined;
     userCode: string;
-    supervisorPid: number;
-    outputControls: ({
-        key: string;
-        prefix: string;
-        suffix?: undefined;
-    } | {
-        key: string;
-        prefix: string;
-        suffix: string;
-    })[];
+    cred: Readonly<VfsCred> | undefined;
     pythonHome: string;
     pyArgv: string[];
     userEnv: {

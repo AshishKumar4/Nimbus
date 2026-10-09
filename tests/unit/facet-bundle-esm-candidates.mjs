@@ -14,6 +14,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { lowerEsModule } from '../../packages/core/src/runtime/async-module-lowering.ts';
 import { buildPrefetchBundle } from '../../packages/worker/src/facets/manager.ts';
 import {
   EsbuildService,
@@ -50,7 +51,7 @@ const files = {
 // bundle shows which cells the pass actually reached.
 const cjsEsbuild = new EsbuildService(undefined, {
   transformHost: async (requests) => requests.map(({ code, options }) => {
-    assert.equal(options.format, 'cjs');
+    assert.ok(options.esModule === 'node' || options.format === 'cjs', JSON.stringify(options));
     return { code: '/* cjs */\n' + code.replace(/^import .*$/gm, ''), map: '', warnings: [] };
   }),
 });
@@ -112,7 +113,7 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
     [`${root}/package.json`]: JSON.stringify({ name: 'large-esm', type: 'module' }),
     [entry]: 'import "./large.js";\nimport "./unsupported.js";\nimport "./small.js";\nimport "./broken.js";\n',
     [large]: `const payload = "${'x'.repeat(600_000)}";\nexport{payload};\n`,
-    // Top-level await: a large module the session leaves to the host (its body is synchronous).
+    // Top-level await: a large module the session lowers to an async body.
     [unsupported]: `export const payload = await Promise.resolve("${'x'.repeat(600_000)}");\n`,
     [small]: 'export const small = 1;\n',
     [broken]: 'export const BROKEN = ;\n',
@@ -131,25 +132,53 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
     launchFs(largeFiles).fs, { scriptPath: `/${entry}`, cwd: 'home/user', entryCode: largeFiles[entry], esbuild: hosted },
   );
   const sent = calls.flat();
-  assert.equal(sent.length, 4, 'the entry, the unsupported large cell, the small one and the broken one');
+  assert.equal(sent.length, 3, 'the entry, the small cell and the broken one');
   for (const slice of calls) {
     assert.ok(slice.length <= TRANSFORM_SLICE_FILES, 'no call carries more files than a slice');
     assert.ok(slice.length === 1 || slice.reduce((n, code) => n + code.length, 0) <= TRANSFORM_SLICE_SOURCE_BYTES,
       'a call carries one slice: under the byte bound, or a single larger cell alone');
   }
-  assert.ok(calls.some((slice) => slice.length === 1 && slice[0].length > TRANSFORM_SLICE_SOURCE_BYTES),
-    'the unsupported large cell travels alone');
   const compiled = { exports: {} };
   new Function('exports', 'require', 'module', moduleOf(state, large))(compiled.exports, null, compiled);
   assert.equal(compiled.exports.payload, 'x'.repeat(600_000), 'the bounded module exports its original value');
-  for (const cell of [entry, unsupported, small]) assert.equal(moduleOf(state, cell), '/* hosted-cjs */\n', cell);
+  const awaited = { exports: {} };
+  await new Function('exports', 'require', 'module', moduleOf(state, unsupported))(awaited.exports, null, awaited);
+  assert.equal(awaited.exports.payload, 'x'.repeat(600_000), 'a large module with top-level await runs its async body');
+  for (const cell of [entry, small]) assert.equal(moduleOf(state, cell), '/* hosted-cjs */\n', cell);
   assert.throws(() => new Function(moduleOf(state, broken))(), /esbuild transform failed for .*broken\.js: Unexpected ";"/,
     'a rejected module throws its reason when required, and costs the others nothing');
 
 
 }
 
-// A cell the pre-pass cannot parse fails alone; the rest of the launch still transforms.
+// A large module nested past the session's parse goes to the host as an ES
+// module, which lowers it or hands it to its engine.
+{
+  const root = 'home/user/node_modules/deep-large';
+  const deep = `export const x = ${'['.repeat(7000)}"${'y'.repeat(600_000)}"${']'.repeat(7000)};\n`;
+  const files = {
+    'home/user/package.json': JSON.stringify({ name: 'deep-large-test' }),
+    [`${root}/package.json`]: JSON.stringify({ name: 'deep-large', type: 'module' }),
+    [`${root}/cli.js`]: 'import "./deep.js";\n',
+    [`${root}/deep.js`]: deep,
+  };
+  const sent = [];
+  const host = new EsbuildService(undefined, {
+    transformHost: async (requests) => {
+      sent.push(...requests);
+      return requests.map(() => ({ code: '/* hosted-cjs */\n', map: '', warnings: [] }));
+    },
+  });
+  const state = await buildPrefetchBundle(
+    launchFs(files).fs, { scriptPath: `/${root}/cli.js`, cwd: 'home/user', entryCode: files[`${root}/cli.js`], esbuild: host },
+  );
+  const request = sent.find(({ code }) => code === deep);
+  assert.ok(request, 'the deep module reaches the host');
+  assert.equal(request.options.esModule, 'node');
+  assert.equal(moduleOf(state, `${root}/deep.js`), '/* hosted-cjs */\n');
+}
+
+// A cell that does not parse fails alone, with the lowering's reason; the rest of the launch still transforms.
 {
   const root = 'home/user/node_modules/prepass-esm';
   const prepassFiles = {
@@ -163,7 +192,14 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
   const host = new EsbuildService(undefined, {
     transformHost: async (requests) => {
       sent.push(...requests.map(({ code }) => code));
-      return requests.map(() => ({ code: '/* hosted-cjs */\n', map: '', warnings: [] }));
+      return requests.map(({ code, options }) => {
+        try {
+          lowerEsModule(code, options.esModule, options.dynamicImportParent);
+        } catch (e) {
+          return { error: e.message };
+        }
+        return { code: '/* hosted-cjs */\n', map: '', warnings: [] };
+      });
     },
   });
   const state = await buildPrefetchBundle(
@@ -175,7 +211,6 @@ assert.equal(state.bundle[`${TS}/LICENSE`], files[`${TS}/LICENSE`]);
   assert.throws(() => new Function(moduleOf(state, `${root}/unreadable.js`))(),
     /esbuild transform failed for .*unreadable\.js: Unexpected token/,
     'the unreadable cell throws its own reason when required');
-  assert.ok(!sent.some((code) => code.includes('and otherwise')), 'the unreadable cell never reaches the host');
 }
 
 

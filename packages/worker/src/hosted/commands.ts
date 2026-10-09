@@ -158,7 +158,7 @@ workspace.runtimes.registerRunner(
 // pass through to the existing handler unchanged.
 workspace.runtimes.registerRunner(
   'cpython-runner',
-  (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx: any): Promise<number> {
+  (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx: CommandContext): Promise<number> {
     const argv: string[] = ctx.args || [];
     // No args at all → REPL session. Hand off to runPythonRepl
     // which builds its own IsolatePool (separate from the
@@ -179,6 +179,7 @@ workspace.runtimes.registerRunner(
         // The supervisor derives the write credential from this; without
         // it the prompt cannot write to the session filesystem.
         pid: ctx.pid,
+        cred: requireVfsCred(ctx.cred, 'Python REPL'),
         start: { cwd: ctx.cwd || shell.getCwd(), binName },
       });
     }

@@ -186,10 +186,6 @@ export interface NimbusFilesystemAuthority {
      * from the first as the run before's were. The pid stays live.
      */
     rewindProcess?(pid: number): Promise<void>;
-    activateAppendWriter(pid: number, writerId: string): Promise<void>;
-    revokeAppendWriter(pid: number, writerId: string): Promise<void>;
-    revokeAppendWriters(pid: number): Promise<void>;
-    revokeAppendWritersThrough(maxPid: number): Promise<void>;
     /**
      * The mounts `cred` sees, in mount order. Synchronous so `/proc/mounts`
      * can read it; only usage is async. A wrapper exposing its own mounts
@@ -225,7 +221,7 @@ export declare function gateSyncLaunch(gate: {
 export declare function launchNamedPaths(cwd: string, program: string | null, argv: readonly string[]): string[];
 /** A live view sharing namespace, credentials and descriptor state. */
 export type RuntimeSynchronousFs = {
-    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeBatch' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
+    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeBatch' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch' | 'awaitRecall'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
 };
 /**
  * The path's revision immediately before and after one mutation, read in
@@ -387,8 +383,6 @@ export interface RuntimeFsBridge {
     fchmod(handleId: number, mode: number): Awaitable<void>;
     fchown(handleId: number, uid: number, gid: number): Awaitable<void>;
     futimes(handleId: number, atimeMs: number, mtimeMs: number): Awaitable<void>;
-    appendOnce(path: RuntimeFsPath, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): Awaitable<number>;
-    acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): Awaitable<void>;
     /** `signal`: cancels it before its commit (a released process publishes nothing). */
     writeBatch(payload: import('@nimbus-sh/platform/w7-frame.js').BatchWritePayload, options?: {
         signal?: AbortSignal;
@@ -402,14 +396,54 @@ export interface RuntimeFsBridge {
      * since re-sent: SupervisorDeliveries.admitWave).
      */
     writeStream(stream: ReadableStream<Uint8Array>, options?: import('../vfs/sqlite-vfs.js').WriteStreamOptions): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
-    acquireExclusiveMutation(path: RuntimeFsPath, options?: {
-        includeMissingAncestors?: boolean;
-    }): Awaitable<{
-        root: string;
-        owner: string;
-    }>;
+    /**
+     * An exclusive-mutation lease on the subtree at `path`. With `delegate`,
+     * a delegation: the process decides the subtree's operations itself and
+     * sends them later under the lease, and another caller's access recalls
+     * them (awaitRecall, recalled) rather than being refused; its answer says
+     * how long the process has to answer a recall (recallTimeoutMs).
+     */
+    acquireExclusiveMutation(path: RuntimeFsPath, options?: ExclusiveMutationRequest): Awaitable<ExclusiveMutationGrant>;
     releaseExclusiveMutation(owner: string): Awaitable<void>;
+    /** The next recall of the process's delegation `owner`; null when none is asked within `waitMs` (ask again), or once it has ended. */
+    awaitRecall(owner: string, waitMs?: number): Awaitable<RecallKind | null>;
+    /** The process has sent what it decided under `owner`, and done what recall `kind` asked. */
+    recalled(owner: string, kind: RecallKind): Awaitable<void>;
 }
+/** What a lease is asked for (RuntimeFsBridge.acquireExclusiveMutation). */
+export interface ExclusiveMutationRequest {
+    readonly includeMissingAncestors?: boolean;
+    /**
+     * Delegate the subtree to the process. `reads`: another caller's reads
+     * recall it too, not only its writes. `inos`: inode numbers to reserve for
+     * what it makes (it numbers them itself); `bytes`: storage to reserve for
+     * what it writes.
+     */
+    readonly delegate?: {
+        readonly reads: boolean;
+        readonly inos?: number;
+        readonly bytes?: number;
+    };
+}
+/**
+ * A lease granted: its root and owner, and for a delegation, how long a
+ * recall waits for the holder, the inode numbers reserved for it [first,
+ * end), and the storage bytes reserved for it.
+ */
+export interface ExclusiveMutationGrant {
+    readonly root: string;
+    readonly owner: string;
+    readonly recallTimeoutMs?: number;
+    readonly inos?: {
+        readonly first: number;
+        readonly end: number;
+    };
+    readonly bytes?: number;
+    /** The umask the session applies to what the holder creates (its process's): the holder decides creates with it. */
+    readonly umask?: number;
+}
+/** What a recall asks of a delegation's holder: keep sending each operation ('share'), or give the subtree up ('revoke'). */
+export type RecallKind = 'share' | 'revoke';
 /**
  * One path in an {@link RuntimeFsBridge.acquire} delta, with the revision it
  * was last mutated at. The revision is what makes the delta usable by the

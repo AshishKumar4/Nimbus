@@ -106,6 +106,10 @@ export interface FacetSubmitOptions {
    * a dynamic worker, and the local host's worker thread
    * ({@link ./local-facet-host.ts}), which `terminate()` stops even in a
    * loop that never yields.
+   *
+   * Absent, there is none. A process's run passes none: it runs until it
+   * exits or is killed (`signal`), and on Cloudflare the platform's CPU limit
+   * ends a runaway one. Only a direct compute call passes a deadline.
    */
   timeoutMs?: number;
   /**

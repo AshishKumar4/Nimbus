@@ -11,6 +11,19 @@ export declare function declaredPackageType(packageJson: string): PackageType;
  * (containsModuleSyntax), in node_modules as anywhere.
  */
 export declare function isEsModuleFile(path: string, source: string, packageType: () => PackageType): boolean;
+/** Node 22.22.3's get_format.js for TypeScript; `stripped` is read only for a typeless `.ts`. */
+export declare function typeScriptFormat(path: string, packageType: () => PackageType, stripped: () => string): 'module' | 'commonjs' | null;
+/**
+ * TypeScript Node does not strip (`--no-experimental-strip-types`) run as the
+ * program's entry: Node's ES loader takes it under `--import`, in a type:module
+ * package or with module syntax (run_main.js), and refuses its extension;
+ * otherwise its CommonJS loader runs it as JavaScript. Required, such a file is
+ * the CommonJS loader's whatever its package (its .js handler reads the type of
+ * .js alone): an ES module by its syntax.
+ */
+export declare function typeScriptEntryRefused(packageType: PackageType, source: string, imports: boolean): boolean;
+/** Node refuses to strip a file under node_modules (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING). */
+export declare function typeScriptUnderNodeModules(path: string): boolean;
 /**
  * Whether Node runs `--eval` code or a program read from stdin as an ES
  * module: as `--input-type` says, and without it by its syntax, compiled as
@@ -20,8 +33,8 @@ export declare function isEsModuleInput(source: string, inputType: string | unde
 /**
  * Whose scope a runtime runs an ES module in. Node's binds none of
  * CommonJS's wrapper names, and is strict with `this` undefined at the top
- * (ES_MODULE_UNBOUND_NAMES, esModuleSource, esModuleScopeTypeofs: the
- * transform's EsbuildTransformOptions.esModuleScope). Bun's binds `require`,
+ * (ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs: async-module-lowering.ts
+ * lowerEsModule). Bun's binds `require`,
  * `__filename` and `__dirname` in every module (bun.sh/docs/runtime/modules),
  * and a module is lowered as CommonJS, all of whose names it keeps.
  */
@@ -38,8 +51,7 @@ export declare const ES_MODULE_SCOPE_GLOBAL = "__nimbusEsmScope";
  * ES_MODULE_SCOPE_GLOBAL, so reading, calling or assigning it throws as in
  * Node's ES module scope, which binds none of them, while the lowering's own
  * require and module.exports still reach the wrapper's. `typeof` of one is
- * 'undefined' (esModuleScopeTypeofs). The transform's `define` (and the
- * bounded rewrite's equivalent) applies it.
+ * 'undefined' (esModuleScopeTypeofs).
  */
 export declare const ES_MODULE_UNBOUND_NAMES: Readonly<Record<string, string>>;
 /**
@@ -51,12 +63,7 @@ export declare const ES_MODULE_UNBOUND_NAMES: Readonly<Record<string, string>>;
  * never text in a string, template, comment or regular expression).
  */
 export declare function esModuleScopeTypeofs(code: string): string;
-/**
- * `source`, which Node runs as an ES module, as one to the transform whatever
- * its syntax: strict (a directive after any hashbang, on the first line, so
- * line numbers stay), and a module (an empty export after it), so its
- * top-level `this` is undefined.
- */
+/** An ES module, as the lowering reads it: one, whatever its syntax (async-module-lowering.ts lowerEsModule). */
 export declare function esModuleSource(source: string): string;
 /**
  * Code that throws, when the process evaluates it, the SyntaxError an ES

@@ -75,8 +75,6 @@ if (line1Ok) {
     await t.waitFor((b) => />>>\s*$/.test(b.trimEnd()), 15_000, '>>> after block');
 
     // Call foo() — should print 42.
-    // This command belongs to Python, not the shell whose prompt t.run waits
-    // for. Require its exact fresh primary prompt after the result line.
     t.reset();
     t.cmd('foo()');
     await t.waitFor((b) => /(?:^|\n)>>>[ \t]*$/.test(b), 15_000, '>>> after foo()');

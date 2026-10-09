@@ -25,7 +25,8 @@ export let AUTH_TOKEN = process.env.NIMBUS_PROBE_TOKEN || '';
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function stripAnsi(s) {
-  return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b[\(\)][AB012]/g, '');
+  return s.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b[\(\)][AB012]/g, '');
 }
 
 function authHeaders() {
@@ -124,6 +125,20 @@ async function awaitSocketOpen(ws, timeoutMs, what) {
   if (open) return;
   const why = rejected ?? closed ?? `no response in ${timeoutMs}ms`;
   throw new Error(`${what} did not open: ${why}`);
+}
+
+// A WebSocket silent both ways for ~270 s is dropped before the session (1006, no close frame).
+const SOCKET_KEEPALIVE_MS = 30_000;
+
+function keepSocketAlive(ws, everyMs = SOCKET_KEEPALIVE_MS) {
+  const timer = setInterval(() => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    try { ws.ping(); } catch { /* closing under us: its close stops this */ }
+  }, everyMs);
+  timer.unref?.();
+  const stop = () => clearInterval(timer);
+  ws.on('close', stop);
+  ws.on('error', stop);
 }
 
 const sessionAttachPaths = new Map();
@@ -344,8 +359,15 @@ export class Terminal {
     // it must not inherit BASE from another suite in the caller's env.
     this.wsBase = (options.base ?? BASE).replace(/^http/, 'ws');
     this.wsOptions = options.wsOptions ?? wsHeaders();
+    this.keepaliveMs = options.keepaliveMs ?? SOCKET_KEEPALIVE_MS;
     this.ws = null;
-    this.buf = '';
+    // reset() clears the caller's view, never the shell protocol stream.
+    this.stream = '';
+    this.bufferStart = 0;
+    this.submission = null;
+    this.submissions = new Map();
+    this.protocol = [];
+    this.promptCursor = 0;
     /** The `spawn` frames the session sent: one per process it started. */
     this.spawns = [];
     this.connected = false;
@@ -357,7 +379,10 @@ export class Terminal {
   }
 
   async connect(timeoutMs = 15_000) {
+    this.submission = null;
+    this.promptCursor = this.protocol.length;
     this.ws = new WebSocket(`${this.wsBase}/s/${this.sid}/ws`, this.wsOptions);
+    keepSocketAlive(this.ws, this.keepaliveMs);
     this.connected = false;
     this.closed = false;
     this.closeDetail = null;
@@ -374,7 +399,15 @@ export class Terminal {
       try {
         const m = JSON.parse(data.toString('utf8'));
         if (m.type === 'output' && typeof m.data === 'string') {
-          this.buf += m.data;
+          this.stream += m.data;
+        } else if (m.type === 'shell-integration') {
+          this.protocol.push({ ...m, at: this.stream.length });
+          const submission = this.submissions.get(m.submissionId);
+          if (m.event === 'input' && submission) submission.ownerId = m.ownerId;
+          if (m.event === 'end' && submission && submission.end === null && (m.exitCode === null || Number.isSafeInteger(m.exitCode))) {
+            submission.end = this.stream.length;
+            submission.exitCode = m.exitCode;
+          }
         } else if (m.type === 'spawn') {
           this.spawns.push(m);
         }
@@ -385,6 +418,17 @@ export class Terminal {
 
   send(line) {
     if (this.ws.readyState !== WebSocket.OPEN) throw new Error('WS not open');
+    if (/[\r\n]/.test(line)) {
+      const submission = { id: crypto.randomUUID(), start: this.stream.length, end: null, exitCode: null, ownerId: null };
+      this.submissions.set(submission.id, submission);
+      this.submission = submission;
+      this.ws.send(JSON.stringify({ type: 'input', data: line, submissionId: submission.id }));
+      return;
+    }
+    if (line === '\x03') {
+      this.promptCursor = this.protocol.length;
+      this.submission = null;
+    }
     this.ws.send(JSON.stringify({ type: 'input', data: line }));
   }
 
@@ -393,7 +437,9 @@ export class Terminal {
     this.send(line + '\r');
   }
 
-  reset() { this.buf = ''; }
+  get buf() { return this.stream.slice(this.bufferStart); }
+
+  reset() { this.bufferStart = this.stream.length; }
 
   /** Wait until predicate(stripped buf) returns true. */
   async waitFor(predicate, timeoutMs = 30_000, label = 'pattern') {
@@ -422,7 +468,7 @@ export class Terminal {
       };
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error(`waitFor(${label}) timeout after ${timeoutMs}ms; tail: ${JSON.stringify(stripAnsi(this.buf).slice(-300))}`));
+        reject(new Error(`waitFor(${label}) timeout after ${timeoutMs}ms; tail: ${JSON.stringify(stripAnsi(this.buf).slice(-300))}; shell control: ${JSON.stringify(this.protocol.slice(-8))}`));
       }, timeoutMs);
       this.ws?.on('message', check);
       this.ws?.on('close', check);
@@ -430,40 +476,27 @@ export class Terminal {
     });
   }
 
-  /** Wait until the most recent line ends with a shell prompt ($ or # or >). */
+  /** Trusted server completion for this input, or a fresh primary prompt on connect. */
   async waitForPrompt(timeoutMs = 30_000) {
-    return this.waitFor(
-      (b) => /[$#>]\s*$/.test(b.trimEnd().slice(-3)),
-      timeoutMs,
-      'prompt',
-    );
-  }
-
-  /** Wait for a NEW prompt after sending input (avoids returning on the prior prompt). */
-  async waitForNewPrompt(timeoutMs = 30_000) {
-    const startLen = this.buf.length;
-    return this.waitFor(
-      (b) => b.length > 0 && this.buf.length > startLen
-        // A redraw begins with CR, not a new prompt line. Arbitrary output
-        // such as Python's <module> header must not complete the command.
-        && /(?:^|\n)[^\r\n]*@[^:\r\n]+:[^\r\n]*[$#][ \t]*$/.test(b),
-      timeoutMs,
-      'new prompt',
-    );
+    const submission = this.submission;
+    const promptCursor = this.promptCursor;
+    return this.waitFor(() => submission
+      ? submission.end !== null
+      : this.protocol.slice(promptCursor).some((frame) => frame.event === 'prompt'), timeoutMs, 'shell completion');
   }
 
   /**
-   * Run a shell command + wait for the prompt to return; return the
-   * stdout chunk produced (output between this command's echo and the
-   * next prompt). Best-effort: we strip the command echo from the head.
+   * Run one submitted batch through its server-confirmed end. Output includes
+   * echoes and prompts; exitCode is the last executed command's status, or null.
    */
   async run(line, timeoutMs = 60_000) {
     this.reset();
     const t0 = Date.now();
     this.cmd(line);
-    await this.waitForNewPrompt(timeoutMs);
+    const submission = this.submission;
+    await this.waitFor(() => submission.end !== null, timeoutMs, 'submitted shell batch');
     const elapsed = Date.now() - t0;
-    return { elapsed, output: stripAnsi(this.buf) };
+    return { elapsed, output: stripAnsi(this.stream.slice(submission.start, submission.end)), exitCode: submission.exitCode };
   }
 
   /** Write `content` to `path` with a quoted heredoc (heredocCommand). */
@@ -491,6 +524,7 @@ export class Terminal {
 export async function connectProcessTerminal(sid, pid, options = {}) {
   const timeoutMs = options.timeoutMs ?? 15_000;
   const ws = new WebSocket(`${WS_BASE}/s/${sid}/api/logs/${pid}`, wsHeaders());
+  keepSocketAlive(ws, options.keepaliveMs);
   let closed = false;
   let closeDetail = null;
   let exit = null;

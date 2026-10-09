@@ -44,6 +44,104 @@ function capture() {
 const output = (stdout = '') => ({ kind: 'output', stdout, stderr: '' });
 const baseAdapter = { ps1: '>>> ', ps2: '... ', banner: () => '', close: async () => {} };
 
+// The first prompt is a readiness signal, not a promise to boot on the first line.
+{
+  const view = capture();
+  const ready = Promise.withResolvers();
+  const calls = [];
+  const run = new ReplSession({
+    ...baseAdapter,
+    initialize: () => ready.promise,
+    push: async (line) => { calls.push(line); return output('FIRST\n'); },
+  }, view.terminal).run();
+  try {
+    await Promise.resolve();
+    assert.doesNotMatch(view.text(), />>>/, 'a prompt was published before the interpreter and driver were ready');
+    view.terminal.sendData('first\r');
+    assert.deepEqual(calls, [], 'input was evaluated before startup finished');
+    ready.resolve(output('BOOT\n'));
+    await view.seen('FIRST');
+    assert.deepEqual(calls, ['first'], 'input received during startup did not run once after readiness');
+    assert.ok(view.text().indexOf('BOOT') < view.text().indexOf('>>>'), 'startup output did not precede the first prompt');
+  } finally {
+    ready.resolve(output());
+    await bounded(view.terminal.disposeRepl(), 'starting REPL cleanup hung');
+    await bounded(run, 'starting REPL run did not end');
+    view.terminal.close();
+  }
+}
+
+// Shell paste predates WebSocket input received during initialization.
+{
+  const view = capture();
+  const ready = Promise.withResolvers();
+  const calls = [];
+  const run = new ReplSession({
+    ...baseAdapter,
+    initialize: () => ready.promise,
+    push: async (line) => { calls.push(line); return output(`ran ${line}\n`); },
+  }, view.terminal, { takeQueuedInput: () => ['x = 1'] }).run();
+  try {
+    view.terminal.sendData('x = 2\r');
+    ready.resolve(output());
+    await view.seen('ran x = 1');
+    await view.seen('ran x = 2');
+    assert.deepEqual(calls, ['x = 1', 'x = 2'], 'later WebSocket input overtook the earlier shell paste');
+  } finally {
+    ready.resolve(output());
+    await view.terminal.disposeRepl();
+    await run;
+    view.terminal.close();
+  }
+}
+
+// Failed startup never claims to be ready, and still closes the adapter.
+{
+  const view = capture();
+  let closes = 0;
+  const run = new ReplSession({
+    ...baseAdapter,
+    initialize: async () => { throw new Error('interpreter bootstrap failed'); },
+    push: async () => { throw new Error('input reached an unready interpreter'); },
+    close: async () => { closes++; },
+  }, view.terminal).run();
+  try {
+    assert.equal(await bounded(run, 'failed startup did not end'), 1);
+    assert.doesNotMatch(view.text(), />>>/);
+    assert.match(view.text(), /interpreter bootstrap failed/);
+    assert.equal(closes, 1);
+  } finally {
+    await view.terminal.disposeRepl();
+    view.terminal.close();
+  }
+}
+
+// Teardown owns the startup lifetime too, and cannot publish a late prompt.
+{
+  const view = capture();
+  const started = Promise.withResolvers();
+  const ready = Promise.withResolvers();
+  let closes = 0;
+  const run = new ReplSession({
+    ...baseAdapter,
+    initialize: () => { started.resolve(); return ready.promise; },
+    push: async () => output(),
+    close: async () => { closes++; },
+  }, view.terminal).run();
+  await bounded(started.promise, 'startup did not start');
+  const disposed = view.terminal.disposeRepl();
+  let finished = false;
+  disposed.then(() => { finished = true; });
+  await Promise.resolve();
+  assert.equal(finished, false, 'teardown abandoned an interpreter still starting');
+  ready.resolve(output('STALE BOOT\n'));
+  await bounded(disposed, 'starting interpreter teardown did not finish');
+  assert.equal(await bounded(run, 'starting interpreter run did not finish'), 0);
+  assert.equal(closes, 1);
+  assert.doesNotMatch(view.text(), />>>|STALE BOOT/);
+  view.terminal.close();
+}
+
 // An abort acknowledgement cannot release the input queue before push settles.
 {
   const view = capture();

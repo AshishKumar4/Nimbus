@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { PROVIDED_PACKAGE_HOOK, rewriteBundledEsmToCjs, rewriteProvidedCommonJsModules } from '../../packages/core/src/runtime/esbuild-service.ts';
+import { PROVIDED_PACKAGE_HOOK, rewriteProvidedCommonJsModules } from '../../packages/core/src/runtime/provided-packages.ts';
+import { lowerEsModule } from '../../packages/core/src/runtime/async-module-lowering.ts';
 
 const commonJs = `const __commonJS = init => {
   let cached;
@@ -64,14 +65,13 @@ for (const source of [
     const load=wrap({"node_modules/undici/index.js"(e,m){throw new Error('native factory ran')}});
     export { load };`;
   const bound = rewriteProvidedCommonJsModules(source);
-  const transformed = rewriteBundledEsmToCjs(bound, 'file:///app/bundle.js');
-  assert.ok(transformed);
+  const transformed = lowerEsModule(bound, 'node', 'file:///app/bundle.js');
   const require = (name) => {
     assert.equal(name, './helper.js');
     return { __commonJS() { throw new Error('factory was not externalized'); } };
   };
   const module = { exports: {}, require };
-  new Function('module', 'exports', 'require', transformed.code)(module, module.exports, require);
+  new Function('exports', 'require', 'module', transformed.code)(module.exports, require, module);
   assert.equal(module.exports.load(), provided, 'an imported helper alias uses the same package binding');
 }
 
@@ -85,3 +85,27 @@ for (const source of [
   assert.equal(rewriteProvidedCommonJsModules(source), source, 'a member named import or export is not a declaration');
 }
 console.log('bundled provided packages: scoped binding, identity, aliases, syntax boundaries, and private subpaths pass');
+
+// Stripped TypeScript is JavaScript to the transform facet: its bundled
+// records are bound before it is lowered, as a session binds JavaScript's.
+{
+  const { generateTransformFacetRuntimeSource } = await import('../../packages/core/src/runtime/esbuild-service.ts');
+  const { rewriteDynamicImports } = await import('../../packages/core/src/runtime/dynamic-import-rewrite.ts');
+  const { lowerAsyncModule } = await import('../../packages/core/src/runtime/async-module-lowering.ts');
+  const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
+  const typed = `${commonJs}
+    const load = __commonJS({"node_modules/undici/index.js"(exports, module) { module.exports = { transport: 'native' }; }});
+    export const transport: unknown = load();`;
+  const runtime = {
+    rewriteDynamicImports, lowerAsyncModule, lowerEsModule, rewriteProvidedCommonJsModules,
+    stripTypeScript: async (code) => ({ code: code.replace(': unknown', '         '), format: 'module' }),
+  };
+  const options = { stripTypes: { mode: 'strip-only', sourceMap: false }, packageType: null, sourcefile: '/app/bundle.mts', dynamicImportParent: 'file:///app/bundle.mts' };
+  const { code } = await runTransformRequest(null, typed, options, runtime);
+  calls = [];
+  const module = { exports: {} };
+  new Function('exports', 'require', 'module', code)(module.exports, () => { throw new Error('no require'); }, module);
+  assert.deepEqual(calls, ['undici']);
+  assert.equal(module.exports.transport, provided, 'the stripped module runs the provided package');
+}
+console.log('bundled provided packages: stripped TypeScript is bound before it is lowered');

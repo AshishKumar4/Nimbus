@@ -50,7 +50,7 @@ const boot = async (stage, env = {}) => {
   // One module instance is one process, and its state lives on globalThis.
   for (const key of Object.keys(globalThis)) if (key.startsWith('__nimbus')) delete globalThis[key];
   const { NimbusProcess } = await import(join(dir, `worker.mjs?${stage}`));
-  const proc = new NimbusProcess({}, env);
+  const proc = new NimbusProcess({ storage: {} }, env);
   const control = outputControlReader([{key:'resume',prefix:'__NIMBUS_RESUMED_',suffix:'\n'}]);
   globalThis.__testOutput = wasiOutputRelay({stdout:b=>env.SUPERVISOR?.stdout(b),stderr:b=>{const data=control.feed(b);if(data.length)return env.SUPERVISOR?.stderr(data);}});
   const state = { boot: null };

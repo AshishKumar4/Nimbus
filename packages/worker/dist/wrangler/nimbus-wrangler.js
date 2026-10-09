@@ -14,6 +14,7 @@
  * Cloudflare Workers runtime, not a simulation.
  */
 import { loaderOutbound } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
@@ -388,17 +389,17 @@ export class NimbusWrangler {
             // (inner-do-env.ts): the bundle's first import replaces it in the env
             // every handler, entrypoint and object of the isolate sees.
             const { mainModule, modules, classesEntrypoint } = innerWorkerModules(bundledCode, doBindings.map((b) => b.name));
-            const worker = this.loaderEnv.LOADER.load({
+            const worker = this.loaderEnv.LOADER.load(applyFacetLimits('worker', {
                 compatibilityDate: wrangCompatDate,
                 compatibilityFlags: wrangCompatFlags,
                 mainModule,
                 modules,
                 env: this.buildInnerEnv(),
                 ...loaderOutbound(this.network),
-            });
+            }));
             if (classesEntrypoint !== null && !(await this.registerDoClasses(worker, classesEntrypoint, doBindings)))
                 return false;
-            this.workerStub = worker.getEntrypoint();
+            this.workerStub = worker.getEntrypoint(undefined, { limits: facetLimits('worker') });
             for (const w of result.warnings || []) {
                 this.onLog(`  \x1b[33mwarning: ${w.text}\x1b[0m\n`);
             }
@@ -433,7 +434,7 @@ export class NimbusWrangler {
      * logged, when one is missing.
      */
     async registerDoClasses(worker, classesEntrypoint, bindings) {
-        const missing = new Set(await worker.getEntrypoint(classesEntrypoint).missing(bindings.map((b) => b.class_name)));
+        const missing = new Set(await worker.getEntrypoint(classesEntrypoint, { limits: facetLimits('worker') }).missing(bindings.map((b) => b.class_name)));
         for (const b of bindings) {
             if (missing.has(b.class_name)) {
                 this.onLog(`  \x1b[31merror: durable_objects binding '${b.name}' => class '${b.class_name}' is not exported by the Worker\x1b[0m\n`);
@@ -445,7 +446,7 @@ export class NimbusWrangler {
         if (doId)
             clearInnerDoClasses(doId);
         for (const b of bindings) {
-            const cls = worker.getDurableObjectClass(b.class_name);
+            const cls = worker.getDurableObjectClass(b.class_name, { limits: facetLimits('worker') });
             this.doClassMap.set(b.name, cls);
             if (doId)
                 registerInnerDoClass(doId, b.name, cls);

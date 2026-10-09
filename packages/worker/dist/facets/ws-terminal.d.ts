@@ -1,7 +1,9 @@
+import type { ShellInputSubmission, ShellIntegrationEvent } from '@nimbus-sh/core/shell/input-submission.js';
 export declare class WebSocketTerminal {
     /** Null while the terminal is headless (composed before any attach). */
     ws: WebSocket | null;
     private dataCallback;
+    private submissionCallback;
     /**
      * editor/monaco (2026-05-13): Editor-pane file-system bridge.
      *
@@ -58,10 +60,13 @@ export declare class WebSocketTerminal {
      */
     flushNow(): void;
     private flush;
-    onData(callback: (data: string) => void | Promise<void>): void;
+    onData(callback: (data: string, submission?: ShellInputSubmission) => void | Promise<void>): void;
+    onSubmission(callback: (data: string, id: string, deliver: (submission: ShellInputSubmission) => void | Promise<void>, repl: boolean) => void | Promise<void>): void;
+    shellIntegration(event: ShellIntegrationEvent): void;
     handleMessage(msg: {
         type: string;
         data?: string;
+        submissionId?: string;
         cols?: number;
         rows?: number;
         path?: string;
@@ -77,7 +82,7 @@ export declare class WebSocketTerminal {
      * reinstalls on warm rejoin via `attach()`.
      */
     onFs(cb: (msg: any, reply: (frame: any) => void) => void): void;
-    sendData(data: string): void | Promise<void>;
+    sendData(data: string, submission?: ShellInputSubmission): void | Promise<void>;
     attachRepl(input: (data: string) => void | Promise<void>, dispose?: () => Promise<void>): () => void;
     focus(): void;
     clear(): void;

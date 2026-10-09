@@ -1,49 +1,96 @@
-#!/usr/bin/env bun
-// editor/monaco/new/workspace-surface-toggle — HTML structural assertion for
-// the single workspace with editor/agent switching in the center pane.
-
-import { mintSession, BASE, makeAsserter, requestHeaders } from '../../../_driver.mjs';
+// R — Desktop Editor/Agent buttons replace only the center surface at
+// /s/<sid>/. The explorer, terminal, preview and file palette remain usable.
+import { join } from 'node:path';
+import { BASE, deleteSession, makeAsserter, mintSession } from '../../../_driver.mjs';
+import { launchBrowser, openPage } from '../../../_runtime-behavioral-template.mjs';
+import { waitForWorkspace, workspaceState } from '../_workspace-browser.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
-const a = makeAsserter('editor/monaco/new/workspace-surface-toggle');
-console.log(`editor/monaco/new/workspace-surface-toggle — ${process.env.BASE}`);
-
+const label = 'editor/monaco/new/workspace-surface-toggle';
+const a = makeAsserter(label);
+console.log(`${label} — ${BASE}`);
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
-const html = await r.text();
+let browser, ctx, page;
+try {
+  browser = await launchBrowser({ webSecurity: true });
+  ctx = await openPage(browser, sid);
+  page = ctx.page;
+  await page.setViewport({ width: 1440, height: 900 });
+  await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await waitForWorkspace(page, 'editor');
+  const editor = await workspaceState(page);
+  a.check('Editor selects a rendered Monaco surface in the single workspace',
+    editor.classes.join(' ') === 'main editor' && editor.editorReady && editor.editor.visible && !editor.agent.visible,
+    JSON.stringify(editor));
 
-a.check("setLayout('editor') wiring present",
-  /setLayout\(['"]editor['"]\)/.test(html),
-  `setLayout('editor') missing`);
-a.check("setLayout('agent') wiring present",
-  /setLayout\(['"]agent['"]\)/.test(html),
-  `setLayout('agent') missing`);
-a.check('setLayout keeps main panel on .main.editor',
-  /mainPanel\.className\s*=\s*['"]main editor['"]/.test(html),
-  `main editor assignment missing`);
-a.check('Agent selection toggles leftStack.agent-surface',
-  /leftStack\.classList\.toggle\(['"]agent-surface['"][\s\S]{0,120}workSurface\s*===\s*['"]agent['"]/.test(html),
-  `agent-surface toggle missing`);
+  await page.click('#btnAgent');
+  await waitForWorkspace(page, 'agent');
+  const agent = await workspaceState(page);
+  a.check('Agent button selects the loaded chat surface in the center stack',
+    agent.agentButton.active && agent.agentSurface && agent.agentReady && agent.agent.visible && !agent.editor.visible,
+    JSON.stringify(agent));
+  a.check('Agent replaces the editor only, keeping the workspace and surrounding panes',
+    agent.classes.join(' ') === 'main editor' && agent.tree.visible && agent.terminal.visible && agent.preview.visible,
+    JSON.stringify(agent));
+  a.check('Agent occupies the editor slot without moving the outer panes',
+    Math.abs(agent.agent.x - editor.editor.x) <= 1 && Math.abs(agent.agent.width - editor.editor.width) <= 1
+      && Math.abs(agent.tree.width - editor.tree.width) <= 1 && Math.abs(agent.preview.x - editor.preview.x) <= 1,
+    JSON.stringify({ editor, agent }));
 
-a.check('.main.editor rule present',
-  /\.main\.editor\b/.test(html),
-  `.main.editor CSS missing`);
-a.check('Agent surface CSS hides the editor pane only',
-  /\.panel-left-stack\.agent-surface\s+\.panel-editor\s*\{\s*display:\s*none/.test(html)
-  && /\.panel-left-stack\.agent-surface\s+\.panel-agent[\s\S]{0,120}display:\s*flex/.test(html),
-  `agent-surface CSS missing`);
+  await page.click('#btnEditor');
+  await waitForWorkspace(page, 'editor');
+  const restored = await workspaceState(page);
+  a.check('Editor button restores Monaco and hides Agent without changing the open file',
+    restored.editorButton.active && restored.editor.visible && !restored.agent.visible && restored.tab === editor.tab,
+    JSON.stringify(restored));
 
-a.check('Workspace DOM contains tree, editor, agent, terminal, and preview',
-  /id=["']treePanel["']/.test(html)
-  && /id=["']editorPanel["']/.test(html)
-  && /id=["']agentPanel["']/.test(html)
-  && /class=["']panel-terminal["']/.test(html)
-  && /id=["']previewPanel["']/.test(html),
-  `workspace DOM incomplete`);
+  // Paste in the same turn that opens the uncached palette, before fs-list can return.
+  await page.evaluate(async () => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, bubbles: true }));
+    await Promise.resolve();
+    const input = document.getElementById('paletteInput');
+    input.value = 'hello.js';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.waitForSelector('.palette-item', { visible: true, timeout: 15_000 });
+  const earlyMatches = await page.$$eval('.palette-item', (items) => items.map((item) => item.textContent));
+  a.check('a query entered while files load remains applied to the loaded results',
+    earlyMatches.length > 0 && earlyMatches.every((path) => path.includes('hello.js')), JSON.stringify(earlyMatches));
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.getElementById('paletteOverlay').classList.contains('active'), { timeout: 15_000 });
 
-a.check('Palette overlay DOM present',
-  /id=["']paletteOverlay["']/.test(html) && /id=["']paletteInput["']/.test(html),
-  `palette overlay missing`);
-
+  await page.keyboard.down('Control');
+  await page.keyboard.press('p');
+  await page.keyboard.up('Control');
+  await page.waitForSelector('#paletteOverlay.active #paletteInput', { visible: true, timeout: 15_000 });
+  await page.type('#paletteInput', 'hello.js');
+  await page.waitForFunction(() => [...document.querySelectorAll('.palette-item')].some((item) => item.textContent.includes('hello.js')), { timeout: 15_000 });
+  a.check('the workspace file palette opens and renders matching results', true);
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.getElementById('editorTab').textContent.includes('hello.js')
+    && !document.getElementById('paletteOverlay').classList.contains('active'), { timeout: 30_000 });
+  a.check('choosing a palette result opens its file in Monaco',
+    await page.evaluate(() => window.__nimbusMonacoEditor.getValue().length > 0));
+  a.check('surface switching and file selection cause no browser errors', ctx.pageErrors.length === 0, JSON.stringify(ctx.pageErrors));
+} catch (error) {
+  if (page) {
+    console.error('[workspace-toggle] failure', JSON.stringify(await page.evaluate(() => ({
+      tab: document.getElementById('editorTab').textContent,
+      status: document.getElementById('editorStatus').textContent,
+      paletteOpen: document.getElementById('paletteOverlay').classList.contains('active'),
+      paletteInput: document.getElementById('paletteInput').value,
+      selected: document.querySelector('.palette-item.active')?.textContent,
+      focused: document.activeElement?.id,
+      unsavedPath: Editor.unsavedPath(),
+      content: window.__nimbusMonacoEditor.getValue(),
+    }))));
+    console.error('[workspace-toggle] console', JSON.stringify(ctx.consoleMessages));
+    if (process.env.NIMBUS_PROBE_SCREENSHOTS) await page.screenshot({ path: join(process.env.NIMBUS_PROBE_SCREENSHOTS, 'workspace-toggle-failure.png') });
+  }
+  throw error;
+} finally {
+  try { await browser?.close(); }
+  finally { await deleteSession(sid); }
+}
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);

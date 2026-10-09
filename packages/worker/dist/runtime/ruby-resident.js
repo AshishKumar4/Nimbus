@@ -233,6 +233,19 @@ export function buildRubySocketProcessWorker(preamble) {
         '  __wasiAdoptSupervisor(supervisor);',
         '}',
         'export class NimbusProcess extends DurableObject {',
+        '  constructor(ctx, env) {',
+        '    super(ctx, env);',
+        // Its write log is kept in its own store (process-fs-journal.ts).
+        '    globalThis.__nimbusFsJournalSql = ctx.storage.sql;',
+        '  }',
+        // Pending while this isolate lives: the coordinator learns of its death
+        // (out of memory, out of CPU) by this call's rejection. Its resolver is
+        // kept on the object, so a collection never finds the promise
+        // unsettleable (which the runtime answers by rejecting it: "Promise will
+        // never complete").
+        '  held() {',
+        '    return new Promise((resolve) => { (this.__nimbusHeld ??= []).push(resolve); });',
+        '  }',
         '  async startProcess(args) {',
         '    __nimbusAdoptRubySupervisor(this.env);',
         '    return __nimbusStartRubyProcess(args || {});',

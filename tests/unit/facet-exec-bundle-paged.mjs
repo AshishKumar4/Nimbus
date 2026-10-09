@@ -70,7 +70,7 @@ function makeManager(label, turns, { chunkBytes = '2048' } = {}) {
         oneShotMaps.push(config);
         return {
           getEntrypoint: () => ({
-            async fetch() { return Response.json({ exitCode: 0, stdout: 'ran\n', stderr: '' }); },
+            async run() { return Response.json({ exitCode: 0, stdout: 'ran\n', stderr: '' }); },
             [Symbol.dispose]() {},
           }),
           [Symbol.dispose]() {},

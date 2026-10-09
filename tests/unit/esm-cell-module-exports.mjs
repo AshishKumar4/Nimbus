@@ -31,7 +31,7 @@ import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
 import { writeModuleSet } from './lib/module-map-bundle.mjs';
-import { supervisorDouble } from './lib/supervisor-double.mjs';
+import { opSender, supervisorDouble } from './lib/supervisor-double.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 
 const ROOT = '/home/user/cellx';
@@ -56,11 +56,14 @@ const { host, rawVfs, kfs } = authority;
 const dec = new TextDecoder();
 let out = '';
 adoptCtxExports({
-  SupervisorRPC: ({ props }) => supervisorDouble(async (name, args) => {
-    if (name === 'stdout' || name === 'stderr') { out += dec.decode(args[0]); return; }
-    if (name === 'reportExit') return;
-    return host.supervisorOp({ op: name, args, pid: props?.pid });
-  }),
+  SupervisorRPC: ({ props }) => {
+    const send = opSender((envelope) => host.supervisorOp({ ...envelope, pid: props?.pid }));
+    return supervisorDouble(async (name, args) => {
+      if (name === 'stdout' || name === 'stderr') { out += dec.decode(args[0]); return; }
+      if (name === 'reportExit') return;
+      return send(name, args);
+    });
+  },
 });
 const runnerDir = mkdtempSync(join(tmpdir(), 'nimbus-esm-cell-module-exports-'));
 process.on('exit', () => rmSync(runnerDir, { recursive: true, force: true }));
@@ -70,10 +73,9 @@ const env = {
     load(config) {
       const file = writeModuleSet(join(runnerDir, `runner-${runnerN++}`), config.modules, 'runner.js');
       const loaded = import(pathToFileURL(file).href);
-      const supervisor = config.env?.SUPERVISOR;
       return {
         getEntrypoint: () => ({
-          async fetch(request) { return (await loaded).default.fetch(request, { SUPERVISOR: supervisor }); },
+          async run(request, supervisor) { return (await loaded).default.fetch(request, { SUPERVISOR: supervisor }); },
           [Symbol.dispose]() {},
         }),
         [Symbol.dispose]() {},
@@ -90,8 +92,8 @@ const manager = new FacetManager(
 manager.setVfs(rawVfs, processFiles(rawVfs));
 // The engine the transform facet runs (lib/oxc-engine.mjs); the service's
 // in-isolate path runs the same transform-then-rewrite.
-const { oxcEngine } = await import('./lib/oxc-engine.mjs');
-const esbuild = new EsbuildService(undefined, { engine: async () => oxcEngine });
+const { oxcTransforms } = await import('./lib/oxc-engine.mjs');
+const esbuild = new EsbuildService(undefined, oxcTransforms);
 manager.setEsbuildService(esbuild);
 
 for (const [rel, text] of Object.entries(files)) {

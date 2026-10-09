@@ -15,6 +15,7 @@ export declare class ByteQueue {
     constructor(consumed?: (length: number) => void);
     /** True when a reader is waiting for input. */
     get isWaiting(): boolean;
+    protected get buffered(): boolean;
     /** Queue `bytes`, handing them to a waiting reader first. */
     protected deliver(bytes: Uint8Array): void;
     /** No more input: every waiting reader, and every later one, sees the end. */
@@ -22,7 +23,7 @@ export declare class ByteQueue {
     /** Drop what is queued and unread. */
     protected discard(): void;
     /** Next queued chunk, a delivery waited for, or null once ended and empty. */
-    private pull;
+    protected pull(): Promise<Uint8Array | null>;
     /** The next text the input holds, or null at its end. */
     read(): Promise<string | null>;
     /** Everything to the end, as text. */
