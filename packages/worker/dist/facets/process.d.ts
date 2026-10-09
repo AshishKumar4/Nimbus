@@ -33,8 +33,9 @@
  * (a facet program's Dynamic Worker is admitted by the fabric's ledger).
  *
  * Lifecycle invariants:
- *   - exitCode is stamped exactly once (first writer wins). kill() and
- *     reportExit() race-free.
+ *   - A child's end is decided once (first writer wins), kill() and
+ *     reportExit() race-free, and published (exitCode) with its output,
+ *     once the session's output gate lets it through.
  *   - kill() runs the session's kill of the pid (its launch's terminator,
  *     and the release of what it held) before it stamps the exit, which
  *     wakes every pending waiter, so cpWait/cpReadOutput don't hang and
@@ -104,6 +105,8 @@ interface ChildEntry {
         resolve: (r: ReadOutputResult) => void;
         expiresAt: number;
     }>;
+    /** Its end is decided (first writer wins); exitCode publishes it once its output is let through. */
+    ending: boolean;
     exitCode: number | null;
     signal: string | null;
     killed: boolean;
@@ -348,10 +351,15 @@ export declare class FacetProcessManager {
      */
     kill(childPid: number, signal?: string | number): boolean;
     /**
-     * Stamp the exit slot. Idempotent — first call wins.
-     * Wakes all waiters (exit, output, stdin) so callers don't hang.
+     * Decide the child's end. Idempotent: the first call wins. A normal exit
+     * waits for the writes the command issued without awaiting them; a kill
+     * cuts them off. The end is published as the child's output is, after the
+     * output before it, once the session's output gate lets it through
+     * (SessionProcessSupervisor.releaseOutput): no reader sees it ended sooner.
      */
     private _stampExit;
+    /** The child's end, to every reader: wakes all waiters (exit, output, stdin) so callers don't hang. */
+    private _publishExit;
     /** A stamped child's end, as Node reports it (ChildExitStatus), with the news it delivers. */
     private _exitStatus;
     /**

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "64cee88ad4dd64427d0a05e75dd1df25fc10426abbdc0bd82318b039559f7cfb",
+  "fingerprint": "51111f1d467fc15cb9fdfd2947753432842f716b789861f149ec2437dae290a2",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1955,9 +1955,9 @@
     "packages/worker/dist/facets/prebundle-pool.d.ts": "cbe26e9ab2890154549feb145d29573b535c3accbf871eecaa5f14b1564c59d0",
     "packages/worker/dist/facets/prebundle-pool.d.ts.map": "04957a6dba2e64518af2d1739d95a764422dd69db16f4c5edc9559e43a5b49f1",
     "packages/worker/dist/facets/prebundle-pool.js": "4335ff27e1915f57373a585777c72b1b46088044ed073b600589e4bcf827d45a",
-    "packages/worker/dist/facets/process.d.ts": "5dff72ec2990c8c9240de6c6793d111d95444cbe2c00d5b353821aea2bd3a2b7",
-    "packages/worker/dist/facets/process.d.ts.map": "6fa2a1c50b7ae93a442a6434a2f9ca43a8b5051c75b45987ebc64b744985a6f6",
-    "packages/worker/dist/facets/process.js": "850e5915d432ffe61a9080fbcf0497ec25054244f3b0da9222904127bdf31229",
+    "packages/worker/dist/facets/process.d.ts": "7923bf68574b66ea21da2cd2723141721cba358dce328a0287085536c4d5601c",
+    "packages/worker/dist/facets/process.d.ts.map": "c848d6afa6071da33f283de95d8535b578b113762ccc5d6a6437aae38c7a4923",
+    "packages/worker/dist/facets/process.js": "6805eaf8b099a394983134c0c2f4f0ba1ddd995840d5f562a1e29e59a3c41d4a",
     "packages/worker/dist/facets/read-profile.d.ts": "b8443343e76f1feffd0a90076d5c0164bbd7b1b3368a3dfa8a9c6cbfbc760a08",
     "packages/worker/dist/facets/read-profile.d.ts.map": "7901d375a99779f3ed207395e00e69da2f965963c2d3360959abdce15679696a",
     "packages/worker/dist/facets/read-profile.js": "9ad0c784d4d47a471bf3f87dc2cfa29d85856361ce7ae2670005d1456aa5d799",
@@ -2667,7 +2667,7 @@
     "packages/worker/src/facets/opencode-staging.ts": "3697f24a4228d79d93501215a616a9cbbacc0f2552ec371817905037b0ba3b34",
     "packages/worker/src/facets/oxc-transform.ts": "9b70805c4b433291650a0c5fbcdede6cf8295793164dec80328c673f32f9813a",
     "packages/worker/src/facets/prebundle-pool.ts": "543fd016de8fe51e6c60eec26154a5079ce1a1a6e891e681fe2f95185faf7286",
-    "packages/worker/src/facets/process.ts": "794cdfb2c8868514e1f7295ebffee5eb0e3dff1f6e8e8e0924ded718a85a9008",
+    "packages/worker/src/facets/process.ts": "7a82bf0257d2fdbfe08136c2aa03d53d4bfed0695fe9c48d648ce90b519cfb0c",
     "packages/worker/src/facets/read-profile.ts": "e8c7e9e3a9692907decedd8fea472633196f190f3565b9b36d6077d36c3946da",
     "packages/worker/src/facets/real-vite-fs-shim.ts": "62543eeea667a320a55400a4d4c4f5beb27536b864db47f321ea19b8408c007d",
     "packages/worker/src/facets/real-vite-hmr.ts": "934b0418b66ddb7064c1e89515b54a226a4cec834d85c339199deb8de76b63da",
