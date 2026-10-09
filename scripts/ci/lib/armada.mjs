@@ -18,15 +18,15 @@ const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'
 // pin is checked against that main on every run, so a history rewritten
 // under it fails loudly rather than running a client no one can fetch. The
 // pin is the client the deployed Worker is proven with: move both together.
-const ARMADA_DIR = join(homedir(), '.local/share/nimbus/armada-client');
+const ARMADA_DIR = join(homedir(), '.local/share/nimbus/armada-client-v2');
 export const ARMADA_REPO = 'https://github.com/AshishKumar4/armada';
 export const ARMADA_CLIENT = 'f8725d7760164878a978795a2dd39ffa3bd60f9d';
 
-// Nimbus's own armada deployment (`nimbus-armada`, its own Worker, bucket
+// Nimbus's own armada deployment (`nimbus-armada-v2`, its own Worker, bucket
 // and fleet cap): every Nimbus script reaches it, and only it, through here.
 // ARMADA_CONNECTION overrides the default connection file.
 // The token is in that file and is never printed.
-export const ARMADA_CONNECTION = join(homedir(), '.config', 'armada', 'nimbus-armada.json');
+export const ARMADA_CONNECTION = join(homedir(), '.config', 'armada', 'nimbus-armada-v2.json');
 
 /**
  * The environment an armada client (the SDK here, or the CLI a script
@@ -137,7 +137,7 @@ export function armadaClient({ dir = process.env.ARMADA_DIR || ARMADA_DIR, repo 
  * keeps a job's spec while the job lives, so a credential put here must be
  * one minted for this run and short-lived. Interrupting the process cancels
  * the job. The commit made for it is held by a ref of its own
- * (refs/nimbus-armada/) until the job is done, so no prune can take it while
+ * (refs/nimbus-armada-v2/) until the job is done, so no prune can take it while
  * armada packs it. Resolves to that commit, each outcome in item order and
  * each task's {out} text (null when it wrote none); throws when the job
  * could not be started.
@@ -165,7 +165,7 @@ export async function mapOnArmada({ repo, sha, files, setup, items, command, env
       { path: joined, bytes: text });
   }
   const commit = overlayCommit(repo, sha, overlay);
-  const ref = `refs/nimbus-armada/${randomUUID()}`;
+  const ref = `refs/nimbus-armada-v2/${randomUUID()}`;
   git(repo, ['update-ref', ref, commit]);
   // An interrupt exits from the cancel handler, past the finally below.
   const dropRef = () => spawnSync('git', ['update-ref', '-d', ref], { cwd: repo });
