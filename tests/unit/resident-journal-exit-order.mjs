@@ -51,6 +51,9 @@ const facetSql = (name) => {
   return facetStores.get(name);
 };
 const READER = Symbol('NimbusFsJournalReader');
+// A facet name whose store's reads wait, until released: its drain is stuck.
+const stuck = new Map();
+const unstuck = async (name) => { await stuck.get(name)?.promise; };
 
 const world = createFacetWorld(() => ({
   async startProcess() { return { ok: true }; },
@@ -62,6 +65,7 @@ const facets = {
   get(name, start) {
     const program = world.facets.get(name, start);
     const reader = async () => {
+      await unstuck(name);
       const { class: cls } = await start();
       assert.equal(cls, READER, `facet '${name}' was read with another class`);
       return sqlJournal(facetSql(name));
@@ -178,6 +182,45 @@ await settle(() => !booked().some((entry) => entry.pid === oom.pid));
 assert.equal(booked().some((entry) => entry.pid === oom.pid), false);
 console.log('  [2] died on its own after its boot: drained, then its exit told (137)');
 
+// ── A kill while an exit waits for its drain: the kill takes effect at once ──
+// A signal's default action waits for the drain to record its end; a kill
+// then is not acknowledged and dropped. Red before: the queued end swallowed
+// the kill, so the process stayed running until the drain finished, and then
+// recorded the signal's end, not the kill's.
+kernel.mkdir('home/user/app/out4', { recursive: true, mode: 0o755 });
+kernel.chown('home/user/app/out4', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+const slow = await manager.spawnNode("require('http').createServer(() => {}).listen(8083);", {
+  filename: '/home/user/app/slow.js', cwd: '/home/user/app', command: 'node slow.js',
+  argv: ['/home/user/app/slow.js'], invokerPid: invoker.pid,
+});
+await settle(() => booked().some((entry) => entry.pid === slow.pid));
+const slowRow = booked().find((entry) => entry.pid === slow.pid);
+const slowClient = processFsClient({
+  session: { openWriter: () => never, writeBatchStream: () => never },
+  journal: sqlJournal(facetSql(slowRow.facet)),
+  retry: { backoffMs: [1], stallMs: 60_000, answerDeadlineMs: 60_000 },
+});
+for (let i = 0; i < 10; i++) {
+  slowClient.submit({ type: 'call', call: { call: 'writeFile', path: `home/user/app/out4/k${i}`, mode: 0o644, data: enc.encode(`${i}`) } }, { acknowledged: true });
+}
+stuck.set(slowRow.facet, Promise.withResolvers());
+const exits = [];
+const realExternalExit = manager.hooks.onExternalExit;
+manager.hooks.onExternalExit = (pid, code, cause) => { if (pid === slow.pid) exits.push({ code, cause }); realExternalExit?.(pid, code, cause); };
+processes.signal(slow.pid, 'SIGKILL');
+await new Promise((resolve) => setTimeout(resolve, 20));
+assert.equal(processes.get(slow.pid)?.state, 'running', 'the signal\'s end did not wait for the drain');
+assert.equal(manager.kill(slow.pid), true);
+assert.notEqual(processes.get(slow.pid)?.state, 'running', 'a kill during a drain-pending exit did not take effect');
+assert.equal(processes.get(slow.pid)?.exitCode, 137);
+stuck.get(slowRow.facet).resolve();
+stuck.delete(slowRow.facet);
+await settle(() => !booked().some((entry) => entry.pid === slow.pid));
+assert.equal(processes.get(slow.pid)?.exitCode, 137, 'the drain recorded the earlier end over the kill');
+assert.deepEqual(exits, [{ code: 137, cause: 'killed' }], `its end was told ${JSON.stringify(exits)}`);
+assert.equal(kernel.readdir('home/user/app/out4').length, 10, 'the drain after the kill lost the log');
+console.log('  [3] killed while its exit waits for the drain: the kill takes effect at once, recorded once');
+
 // ── An instance reset with a resident's log undrained: drained at the next start ──
 // The old instance never released its facet (it was reset); the new one
 // drains the log from the store the book names before anything runs, and no
@@ -215,7 +258,7 @@ await runColdStart(ctx2);
 assert.equal(kernel.readdir('home/user/app/out2').length, 100, 'the next start did not drain the log a reset left');
 assert.equal(booked().some((entry) => entry.pid === lost.pid), false, 'the drained log stayed booked');
 assert.equal(facetStores.has(lostRow.facet), false, 'the drained store was kept');
-console.log('  [3] reset with a log undrained: the next start drains it, books it off and drops its store');
+console.log('  [4] reset with a log undrained: the next start drains it, books it off and drops its store');
 
 console.log('resident-journal-exit-order: ok');
 process.exit(0);
