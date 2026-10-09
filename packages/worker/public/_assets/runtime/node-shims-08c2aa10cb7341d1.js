@@ -18503,6 +18503,22 @@ function __nimbusRequestTarget(kind, specifier, importer) {
   return __resolveFrom(specifier, importer.includes("/") ? importer.slice(0, importer.lastIndexOf("/")) : "");
 }
 
+const __nimbusRelativeWasmPaths = function relativeWasmPaths(source, filename) {
+    const literals = /["'`]((?:\.{1,2}\/)*[\w@.-]+(?:\/[\w@.-]+)*\.wasm)["'`]/g;
+    const dir = filename.replace(/^\/+/, '').split('/').slice(0, -1);
+    const paths = new Set();
+    for (const match of source.matchAll(literals)) {
+        const segments = [...dir];
+        for (const segment of match[1].split('/')) {
+            if (segment === '..')
+                segments.pop();
+            else if (segment !== '.')
+                segments.push(segment);
+        }
+        paths.add(segments.join('/'));
+    }
+    return [...paths];
+};
 function __nimbusImportStager(quota) {
   // The fill a synchronous read's miss starts (the fs's residency fault-in),
   // which only a process with a supervisor has.
@@ -18523,17 +18539,26 @@ function __nimbusImportStager(quota) {
       const visited = new Set();
       let frontier = [strip(root)];
       while (frontier.length > 0) {
-        const round = frontier.filter((k) => !visited.has(k) && !(typeof __nimbusCodeCells !== "undefined" && __nimbusCodeCells.has(k)));
-        for (const k of round) visited.add(k);
+        const unseen = frontier.filter((k) => !visited.has(k));
+        for (const k of unseen) visited.add(k);
+        const round = unseen.filter((k) => !(typeof __nimbusCodeCells !== "undefined" && __nimbusCodeCells.has(k)));
         const texts = await __nimbusHydrated(() => round.map((k) => __readFileOr(k, null)), quota);
         const wanted = [];
+        const images = new Set();
         for (let i = 0; i < round.length; i++) {
           const text = texts[i];
           if (typeof text !== "string") continue;
           if (!/\.[cm]?js$/.test(round[i])) continue;
+          // A late module's image was not in the launch's data-read table.
+          // Read it ahead by the same relative-path rule the image collector
+          // uses; the file/byte quota applies before any fill is issued.
+          for (const image of __nimbusRelativeWasmPaths(text, round[i])) images.add(image);
           // An import() in the closure is its own: it prefetches when it runs.
           for (const request of __nimbusModuleRequests(round[i], text)) if (request.kind !== "dynamic") wanted.push([request, round[i]]);
         }
+        if (images.size > 0) await __nimbusHydrated(() => {
+          for (const image of images) { try { __fsMod.readFileSync("/" + image); } catch {} }
+        }, quota);
         const found = await __nimbusHydrated(() => wanted.map(([request, k]) => target(request, k)), quota);
         const next = new Set();
         for (const path of found) if (path !== null && !visited.has(path)) next.add(path);

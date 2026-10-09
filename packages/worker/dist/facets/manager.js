@@ -44,7 +44,9 @@ import { principalTag, profilePrincipal, ReadProfile, verifiedEvidence, } from '
 /** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
 const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
 import { NpmCache } from '../npm/cache.js';
+import { NPM_BIN_MANIFEST_NAME, parseNpmBinManifest } from '../npm/bin-links.js';
 import { mayHaveDynamicImport } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
+import { relativeWasmPaths } from '@nimbus-sh/core/_shared/relative-wasm-paths.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
@@ -3233,12 +3235,6 @@ export async function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState,
     return { added, wasmPaths };
 }
 /**
- * A string literal naming a `.wasm` file by a relative path: how a package
- * loads its image from beside its own module (`new URL('x.wasm',
- * import.meta.url)`, `path.join(__dirname, 'x.wasm')`).
- */
-const RELATIVE_WASM_LITERAL_RE = /["'`]((?:\.{1,2}\/)*[\w@.-]+(?:\/[\w@.-]+)*\.wasm)["'`]/g;
-/**
  * The table an \`import()\` reads its target's lazy synchronous reads from
  * (FacetVfsState.lazyModules): for each lazy module that an \`import()\` may
  * target, the synchronous reads (static-fs-refs' exact, sync) of every lazy
@@ -3305,17 +3301,8 @@ export async function collectClosureWasmImages(vfs, bundle, unstagedPaths) {
             if (ref.path.endsWith('.wasm'))
                 named.add(stripLeadingSlashes(ref.path));
         }
-        const dir = stripLeadingSlashes(path).split('/').slice(0, -1);
-        for (const match of cell.matchAll(RELATIVE_WASM_LITERAL_RE)) {
-            const segments = [...dir];
-            for (const segment of match[1].split('/')) {
-                if (segment === '..')
-                    segments.pop();
-                else if (segment !== '.')
-                    segments.push(segment);
-            }
-            named.add(segments.join('/'));
-        }
+        for (const image of relativeWasmPaths(cell, path))
+            named.add(image);
     }
     for (const path of named) {
         if (byPath.has(path))
@@ -3810,6 +3797,19 @@ export async function toolConfigRoots(vfs, cwd, scriptPath) {
     }
     catch {
         return [];
+    }
+    // Nimbus's bins are require() shims, not links: realpath still names
+    // .bin/tool. Its manifest names the package entry whose tool dependencies
+    // decide which configs to stage, exactly as a direct invocation does.
+    const slash = script.lastIndexOf('/');
+    if (slash >= 0) {
+        try {
+            const manifest = parseNpmBinManifest(await filesOf(vfs).readFileString(`${script.slice(0, slash)}/${NPM_BIN_MANIFEST_NAME}`));
+            const linked = manifest?.bins[script.slice(slash + 1)];
+            if (linked && await filesOf(vfs).exists(linked.targetPath))
+                script = await vfs.realpath(linked.targetPath);
+        }
+        catch { /* no readable bin manifest: an ordinary script */ }
     }
     const root = packageRootOf(script.replace(/^\/+/, ''));
     if (root === null)
@@ -5481,6 +5481,17 @@ export class FacetManager {
                 }
                 await pacer.spend(source.length);
                 refs = findStaticFsReferences(source, '/' + path);
+                // A registered sibling image is also bytes its loader may read.
+                // CommonJS import.meta.url polyfills can hide that path from folding;
+                // the image collector's same relative-literal rule still names it.
+                for (const image of relativeWasmPaths(source, path)) {
+                    const name = '/' + image;
+                    const existing = refs.exact.find((ref) => ref.path === name);
+                    if (existing)
+                        existing.sync = true;
+                    else
+                        refs.exact.push({ path: name, sync: true });
+                }
                 this.staticRefsMemo.delete(path);
                 this.staticRefsMemo.set(path, { rev, refs });
                 for (const oldest of this.staticRefsMemo.keys()) {
