@@ -215,6 +215,7 @@ const nodeErrorMessages = {
             this.reason = reason;
             return 'Promise was rejected with falsy value';
         }, Error],
+    ERR_ILLEGAL_CONSTRUCTOR: ['Illegal constructor', TypeError],
     ERR_INTERNAL_ASSERTION: [(message) => {
             const suffix = 'This is caused by either a bug in Node.js or incorrect usage of Node.js internals.\n'
                 + 'Please open an issue with this stack trace at https://github.com/nodejs/node/issues\n';

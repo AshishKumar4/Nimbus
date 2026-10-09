@@ -674,43 +674,83 @@ async function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {
 
 /**
  * Patch the global timer functions so the startup drain can tell when
- * macrotask work is still in flight. One-shot setTimeout decrements the
- * pending count when it fires or is cleared; setInterval counts as one
- * live handle until cleared (the drain deadline bounds genuinely-infinite
- * intervals). Without this the drain — which only follows promise chains
- * — abandons sequential awaited timer work and the facet exits before
- * timer-driven CLIs (create-astro, nuxi) finish scaffolding.
+ * macrotask work is still in flight. A timer, interval or immediate is a live
+ * handle until it fires (an interval until it is cleared), as in Node, and
+ * holds the process open while it is referenced: unref() lets the program
+ * end without it and ref() holds it again. Without this the drain, which
+ * only follows promise chains, abandons sequential awaited timer work and the
+ * facet exits before timer-driven CLIs (create-astro, nuxi) finish
+ * scaffolding.
  */
 const ENTRYPOINT_TIMER_TRACKER = `
 (function(g){
   if (g.__nimbusTimerTrackerInstalled) return;
   g.__nimbusTimerTrackerInstalled = true; g.__nimbusPendingTimers = 0;
-  const st = g.setTimeout, ct = g.clearTimeout, si = g.setInterval, ci = g.clearInterval;
+  const st = g.setTimeout, ct = g.clearTimeout, si = g.setInterval, ci = g.clearInterval, sim = g.setImmediate, cim = g.clearImmediate;
   if (typeof st !== "function") return;
   g.__nimbusRawSetTimeout = st;
   g.__nimbusRawClearTimeout = ct;
-  const one = new Set(), iv = new Set();
+  // Each live handle: the call that clears it, and whether it holds the process.
+  const live = new Map();
+  const drop = () => { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); };
+  const release = (id) => {
+    const entry = live.get(id);
+    if (entry === undefined) return;
+    live.delete(id);
+    if (entry.held) drop();
+  };
+  // The platform's handle classes, their ref() and unref() made to count.
+  const patched = new WeakSet();
+  const patch = (handle) => {
+    const proto = Object.getPrototypeOf(handle);
+    if (proto === null || patched.has(proto)) return;
+    patched.add(proto);
+    const { ref, unref } = proto;
+    const counted = {
+      unref() {
+        const entry = live.get(this);
+        if (entry?.held) { entry.held = false; drop(); }
+        return Reflect.apply(unref, this, arguments);
+      },
+      ref() {
+        const entry = live.get(this);
+        if (entry !== undefined && !entry.held) { entry.held = true; g.__nimbusPendingTimers++; }
+        return Reflect.apply(ref, this, arguments);
+      },
+    };
+    if (typeof unref === "function") proto.unref = counted.unref;
+    if (typeof ref === "function") proto.ref = counted.ref;
+  };
+  const hold = (id, clear) => {
+    live.set(id, { clear, held: true });
+    g.__nimbusPendingTimers++;
+    if (id !== null && typeof id === "object") patch(id);
+    return id;
+  };
   g.setTimeout = function(fn, ms, ...a){
     if (typeof fn !== "function") return st(fn, ms, ...a);
     // Counted once the timer exists: a delay the platform refuses throws, and
     // a caught throw leaves no timer to wait for.
-    const id = st(function(){
-      if (one.delete(id)) { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); }
-      return fn.apply(this, arguments);
-    }, ms, ...a);
-    g.__nimbusPendingTimers++; one.add(id); return id;
+    const id = st(function(){ release(id); return fn.apply(this, arguments); }, ms, ...a);
+    return hold(id, ct);
   };
-  g.clearTimeout = function(id){ if (one.delete(id)) { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); } return ct(id); };
+  g.clearTimeout = function(id){ release(id); return ct(id); };
   if (typeof si === "function") {
-    g.setInterval = function(fn, ms, ...a){ const id = si(fn, ms, ...a); iv.add(id); g.__nimbusPendingTimers++; return id; };
-    g.clearInterval = function(id){ if (iv.delete(id)) { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); } return ci(id); };
+    g.setInterval = function(fn, ms, ...a){ return hold(si(fn, ms, ...a), ci); };
+    g.clearInterval = function(id){ release(id); return ci(id); };
   }
-  // process.exit: the program's pending timers and intervals never fire again.
+  if (typeof sim === "function") {
+    g.setImmediate = function(fn, ...a){
+      if (typeof fn !== "function") return sim(fn, ...a);
+      const id = sim(function(){ release(id); return fn.apply(this, arguments); }, ...a);
+      return hold(id, cim);
+    };
+    g.clearImmediate = function(id){ release(id); return cim(id); };
+  }
+  // process.exit: the program's pending timers, intervals and immediates never fire again.
   g.__nimbusStopProgramTimers = function(){
-    for (const id of one) ct(id);
-    one.clear();
-    if (typeof ci === "function") for (const id of iv) ci(id);
-    iv.clear();
+    for (const [id, entry] of live) entry.clear(id);
+    live.clear();
     g.__nimbusPendingTimers = 0;
   };
 })(globalThis);

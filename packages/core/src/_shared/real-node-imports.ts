@@ -47,6 +47,10 @@
  *                         __BufferMod.isBuffer recognizes.
  *   - node:string_decoder — Node's StringDecoder, every encoding; forwarded
  *                         as the string_decoder builtin.
+ *   - node:perf_hooks   — Node's surface over the platform's performance
+ *                         (its classes are the globals); forwarded as the
+ *                         perf_hooks builtin. createHistogram and
+ *                         monitorEventLoopDelay throw ERR_METHOD_NOT_IMPLEMENTED.
  *   - node:url          — full surface, including the legacy parse/format/
  *                         resolve/resolveObject/Url API (workerd's
  *                         node-internal:legacy_url, v1.20260926.1). The url
@@ -85,6 +89,7 @@ import * as __real_vm from 'node:vm';
 import * as __real_inspector from 'node:inspector';
 import * as __real_zlib from 'node:zlib';
 import * as __real_string_decoder from 'node:string_decoder';
+import * as __real_perf_hooks from 'node:perf_hooks';
 ${getRealNodeSharedImportsCode()}
 `.trim();
 }
