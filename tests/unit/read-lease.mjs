@@ -304,6 +304,29 @@ function barrier(s, bridge, from) {
   assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/a.txt')), 'later');
 }
 
+// ── A file written from a source publishes past a lease taken while it streamed: held for its recall, not refused ──
+{
+  const s = session();
+  const size = 3 * 65536;
+  let release;
+  const streamed = new Promise((resolve) => { release = resolve; });
+  async function* source() {
+    yield new Uint8Array(size / 2).fill(1);
+    await streamed;
+    yield new Uint8Array(size / 2).fill(2);
+  }
+  // As `nimbus install` writes a runtime's blob.
+  const writing = s.engine.as(USER).writeFileFrom('home/user/d/blob.wasm', size, source());
+  await sleep(10);
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const { readLease } = barrier(s, reader);
+  release();
+  assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke', 'the publication did not recall the lease taken meanwhile');
+  reader.recalled(readLease.owner, 'revoke');
+  await writing;
+  assert.equal(s.kernel.stat('home/user/d/blob.wasm').size, size);
+}
+
 // ── Recalled, a reader is leased nothing for its trust: the writer's next change waits on no one ──
 {
   const s = session();
