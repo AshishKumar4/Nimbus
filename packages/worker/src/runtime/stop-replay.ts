@@ -398,6 +398,10 @@ const __nimbusStopReplay = (() => {
         canStop: false,
         whyNot: null,
         why: null,
+        // Why a change to the filesystem keeps it from waiting for stdin: a
+        // run that waits is run again over what it changed. One that listens
+        // is run again checked change by change (listen).
+        changedWhy: null,
         boundaryPassed: replay === null,
         boundaryNotice: null,
         prefix: replay && replay.prefix && !launch.captured
@@ -493,10 +497,13 @@ const __nimbusStopReplay = (() => {
     // recorded while the run can be run again, which makes it again, as it
     // made it; a run again checks each against the run before it.
     mutation(op) {
-      if (!run || !run.armed || !run.tape) return;
+      if (!run || !run.armed) return;
       const call = op.type === "call" ? op.call : op;
       const name = op.type === "call" ? "" + call.call : "" + op.type;
       const path = typeof call.path === "string" ? call.path : typeof call.from === "string" ? call.from : "";
+      if (replaying() && run.replay.listen !== true) return effect(name + (path ? " " + path : ""));
+      if (run.changedWhy === null) run.changedWhy = "did something outside itself first (" + name + (path ? " " + path : "") + "), which a second run would do again";
+      if (!run.tape) return;
       const data = call.data;
       const size = data && typeof data.byteLength === "number" ? data.byteLength : 0;
       if (replaying() && run.writesAt < run.replayedWrites) {
@@ -507,6 +514,8 @@ const __nimbusStopReplay = (() => {
         return;
       }
       if (replaying()) diverge("it changed the filesystem more than the run before it had by then (" + name + " " + path + ")");
+      // Made again, an append lands twice: its bytes check, and are wrong.
+      if (name === "appendFile" || name === "append") unreplayable("appended to " + path + ", which a second run would append again");
       if (!recording()) return;
       run.writeBytes += size;
       if (run.tape.writes.length >= WRITES_MAX) unreplayable("changed the filesystem more than " + WRITES_MAX + " times first");
@@ -542,6 +551,7 @@ const __nimbusStopReplay = (() => {
       if (replaying()) diverge("it waited for stdin at a read the run before it did not wait at");
       if (!run.canStop) return run.whyNot;
       if (run.why !== null) return run.why;
+      if (run.changedWhy !== null) return run.changedWhy;
       for (const body of run.bodies) if (body !== null) return "received headers of " + body + ", but its response body was still unfinished";
       // Captured output rides the stop, so a stop that cannot go on still
       // hands it back: bounded.

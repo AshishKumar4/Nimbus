@@ -12,7 +12,7 @@ export function supervisorCallEffect(op: string, args: readonly unknown[] | unde
     if (!(flags && (flags.write || flags.append || flags.create || flags.truncate))) return null;
     return describeCall(op, args) + ' for writing';
   }
-  return policy && policy.kind !== 'effect' ? null : describeCall(op, args);
+  return policy && policy.kind !== 'effect' && policy.kind !== 'mutation' ? null : describeCall(op, args);
 }
 
 /**
@@ -278,8 +278,6 @@ export class ReplayJournal {
     }
     if (this.boundaryPassed && this.entries === null) return dispatch();
     const policy = operationPolicy(op)!;
-    // The changes it carries are the guest's to record and check (stop-replay.ts).
-    if (policy.kind === 'mutation') return dispatch();
     if (op === 'stdinFileRead') {
       const prep = this.preparation;
       const [path, offset, length] = args ?? [];

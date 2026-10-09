@@ -6896,7 +6896,7 @@ export class FacetManager {
             if (!('stop' in outcome)) { result = outcome; break; }
             if (outcome.stop.kind === 'listen') {
               promoted = true;
-              return await this._promote(entry, code, opts, outcome.stop, journal);
+              return await this._promote(entry, code, opts, outcome.stop);
             }
             // The session decides whether the run may go again: what it did
             // outside itself is counted here, whatever the guest counted.
@@ -7038,7 +7038,6 @@ export class FacetManager {
     code: string,
     opts: Parameters<FacetManager['exec']>[1],
     stop: StopRecord,
-    journal: ReplayJournal | undefined,
   ): Promise<FacetExecResult> {
     const pid = entry.pid;
     const gate = this.outputGates.get(pid);
@@ -7061,7 +7060,6 @@ export class FacetManager {
       tape: stop.tape!,
       listen: true,
       prefix: { stdout: encodeBase64(stopped.prefix.stdout), stderr: encodeBase64(stopped.prefix.stderr) },
-      ...(journal ? { observations: journal.observations } : {}),
     };
     await this.spawnNode(code, {
       argv: opts.argv, env: opts.env, cwd: opts.cwd, filename: opts.filename, dirname: opts.dirname,

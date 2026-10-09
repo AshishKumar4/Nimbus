@@ -8,7 +8,9 @@
 //   plain: `node srv.js`, where srv.js builds its server through a helper
 //     the static server check cannot follow: it serves on its port.
 //   wrote: it writes a file before it listens: the resident makes the same
-//     write again, the file holds the one write, and it serves.
+//     write again, checked against the first, and serves.
+//   appended: it appends to a file before it listens. Made again, the append
+//     would land twice: it cannot be run again, and its listen says why.
 //   child: a child_process child that listens: its parent reaches it.
 //   spawned: it starts a child before it listens: it cannot be run again,
 //     and its listen fails, naming why.
@@ -30,8 +32,13 @@ const FILES = {
   'plain.js': SERVE(4101, 'plain'),
   'wrote.js': [
     "const fs = require('fs');",
-    "fs.appendFileSync('wrote.log', 'once\\n');",
+    "fs.mkdirSync('state', { recursive: true });",
+    "fs.writeFileSync('state/wrote.txt', 'written ' + process.argv.length);",
     SERVE(4102, 'wrote'),
+  ].join('\n'),
+  'appended.js': [
+    "require('fs').appendFileSync('appended.log', 'once\\n');",
+    SERVE(4105, 'appended'),
   ].join('\n'),
   'child-server.js': SERVE(4103, 'child'),
   'parent.js': [
@@ -72,8 +79,12 @@ try {
     check(wrote.status === 0 && /LISTENING 4102/.test(wrote.stdout), `wrote: started and listened\n  ${JSON.stringify(wrote.stdout.slice(-400))}`);
     const wroteGot = await curl(4102);
     check(/GOT 200 wrote/.test(wroteGot), `wrote: it serves\n  ${JSON.stringify(wroteGot)}`);
-    const log = await run(`cat ${W}/wrote.log`);
-    check(log.stdout === 'once\n', `wrote: its write before the listen is made once\n  ${JSON.stringify(log.stdout)}`);
+    const written = await run(`cat ${W}/state/wrote.txt`);
+    check(written.stdout === 'written 2', `wrote: what it wrote before its listen is there\n  ${JSON.stringify(written.stdout)}`);
+
+    const appended = await run(`cd ${W} && node appended.js`, 120_000);
+    check(appended.status !== 0 && /before it listened it appended to .*appended\.log, which a second run would append again/.test(appended.stdout),
+      `appended: an append before its listen fails it loudly\n  ${JSON.stringify(appended.stdout.slice(-600))}`);
 
     const child = await run(`cd ${W} && node parent.js`, 120_000);
     check(/PARENT GOT 200 child/.test(child.stdout), `child: a child_process child that listens is reachable\n  ${JSON.stringify(child.stdout.slice(-600))}`);
