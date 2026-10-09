@@ -1402,9 +1402,10 @@ export declare class SqliteVFS {
      * but the caller's own), as one recall: each asked at once, all answered
      * (or their trust run out) before the retry, so a writer meets each at most once.
      * A write to the session's own stores (the kernel's, as it launches a
-     * process), which cannot wait, is never refused: the view's synchronous
-     * mutation making it is held instead, its own pipeline published once the
-     * recalls are over (callerView), and a check ahead of it asks nothing.
+     * process), or to a directory they are made in, which cannot wait, is
+     * never refused: the view's synchronous mutation making it is held
+     * instead, its own pipeline published once the recalls are over
+     * (callerView), and a check ahead of it asks nothing.
      */
     private readRecallAt;
     /**

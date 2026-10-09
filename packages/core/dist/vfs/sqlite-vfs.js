@@ -3032,15 +3032,16 @@ export class SqliteVFS {
      * but the caller's own), as one recall: each asked at once, all answered
      * (or their trust run out) before the retry, so a writer meets each at most once.
      * A write to the session's own stores (the kernel's, as it launches a
-     * process), which cannot wait, is never refused: the view's synchronous
-     * mutation making it is held instead, its own pipeline published once the
-     * recalls are over (callerView), and a check ahead of it asks nothing.
+     * process), or to a directory they are made in, which cannot wait, is
+     * never refused: the view's synchronous mutation making it is held
+     * instead, its own pipeline published once the recalls are over
+     * (callerView), and a check ahead of it asks nothing.
      */
     readRecallAt(key) {
         const met = [...this.readLeases].filter(([owner, lease]) => !this.isHolder(owner) && lease.delegation.lapsed?.() !== true);
         if (met.length === 0)
             return null;
-        if (this.activePipeline === null && !readLeaseCovers(key, false, SESSION_KERNEL_ROOTS)) {
+        if (this.activePipeline === null && !readLeaseCovers(key, true, SESSION_KERNEL_ROOTS)) {
             if (!this.activeStoreHolding)
                 return null;
             this.activePipeline = this.newPipeline(this.activeHolds, true);
