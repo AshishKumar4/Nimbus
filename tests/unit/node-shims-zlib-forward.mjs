@@ -140,13 +140,16 @@ function shimScope(extraParams) {
   assert.equal(Buffer.isBuffer({}), false);
   assert.equal(Buffer.isBuffer(undefined), false);
 
-  // Constants and lookup tables pass through untouched.
+  // Native values with Node's public names and property descriptors.
   assert.equal(zlib.constants.Z_FINISH, 4);
-  assert.equal(zlib.constants, realZlib.constants, 'constants is the native table');
-  assert.equal(zlib.codes?.Z_FINISH, realZlib.codes?.Z_FINISH);
-
-  // ESM interop shape: .default points back at the module itself.
-  assert.equal(zlib.default, zlib);
+  assert.equal(Object.getPrototypeOf(zlib.constants), null);
+  assert.deepEqual(Object.keys(zlib.constants).sort(), Object.keys(realZlib.constants).filter((name) => name !== 'ZSTD_ENCODE' && name !== 'ZSTD_DECODE').sort());
+  for (const [name, value] of Object.entries(zlib.constants)) {
+    assert.equal(value, realZlib.constants[name]);
+    assert.deepEqual(Object.getOwnPropertyDescriptor(zlib.constants, name), { value, enumerable: true, configurable: false, writable: false });
+  }
+  assert.equal(zlib.codes, realZlib.codes, 'status-code lookup remains the native table');
+  assert.equal(Object.hasOwn(zlib, 'default'), false, 'the CommonJS module has no default export');
 }
 
 // ── fallback branch: no real-import block in scope (opencode runner) ─────────

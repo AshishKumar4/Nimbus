@@ -651,6 +651,14 @@ await show('prom-lookup', () => P.lookup('localhost', 4));
 await show('promisified-lookup', () => util.promisify(dns.lookup)('localhost', 4));
 await show('prom-resolve6', () => P.resolve6('example.com').then(sorted));
 await show('resolver-instance', () => new Promise((res, rej) => new dns.Resolver().resolve4('example.com', (e, a) => e ? rej(e) : res(sorted(a)))));
+await new Promise((resolve) => {
+  const done = (kind, error) => { process.removeListener('uncaughtException', uncaught); process.removeListener('unhandledRejection', rejected); console.log('lookup callback ' + kind + ' ' + error.message); resolve(); };
+  const uncaught = (error) => done('uncaughtException', error);
+  const rejected = (error) => done('unhandledRejection', error);
+  process.once('uncaughtException', uncaught);
+  process.once('unhandledRejection', rejected);
+  dns.lookup('example.com', () => { throw new Error('from lookup callback'); });
+});
 }
 main().then(() => process.exit(0), (e) => { console.error('FATAL', e); process.exit(1); });
 `,

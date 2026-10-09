@@ -88,7 +88,7 @@ export const NODE_DNS_BINDING_SOURCE = String.raw `function createCaresBinding(p
       return value.length === servers.length && value.every((entry, i) => entry[1] === servers[i] && entry[2] === 53) ? 0 : 5;
     }
     setLocalAddress(first, second) {
-      const family = first.includes("%") ? 0 : isIP(first), other = second === undefined ? 0 : second.includes("%") ? 0 : isIP(second);
+      const family = isIP(first), other = second === undefined ? 0 : isIP(second);
       if (!family || (second !== undefined && !other)) throw Object.assign(new TypeError("Invalid IP address."), { code: "ERR_INVALID_ARG_VALUE" });
       if (family === other) throw Object.assign(new TypeError("Cannot specify two IPv" + family + " addresses."), { code: "ERR_INVALID_ARG_VALUE" });
       this.local = [first, second].some((address) => address !== undefined && address !== "0.0.0.0" && address !== "::");
@@ -134,9 +134,9 @@ export const NODE_DNS_BINDING_SOURCE = String.raw `function createCaresBinding(p
     }
     getHostByAddr(req, address) {
       const family = isIP(address);
-      if (!family || address.includes("%")) return -22;
+      if (!family) return -22;
       if (family === 4) return this.run(req, address.split(".").reverse().join(".") + ".in-addr.arpa", 12);
-      let ip = address;
+      let ip = address.split("%")[0];
       if (ip.includes(".")) {
         const colon = ip.lastIndexOf(":");
         const bytes = ip.slice(colon + 1).split(".").map(Number);
