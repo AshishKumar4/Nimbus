@@ -61,21 +61,23 @@ export interface LoadedWorkerEntrypointStub {
 }
 
 interface NimbusCtxExports {
-  NimbusLoadedEntrypoint?: (options: { props: { key: string; name: null; depth: number; stage: unknown } }) => LoadedWorkerEntrypointStub;
+  NimbusLoadedEntrypoint?: (options: {
+    props: { key: string; name: null; depth: number; stage: unknown; supervisor: SupervisorBindingProps };
+  }) => LoadedWorkerEntrypointStub;
 }
 
 /**
  * A staged one-shot's entrypoint (OneShotCode `stage`): a NimbusLoadedEntrypoint
- * whose `run` assembles the program on its loader's miss, in that stateless
- * isolate, never in the host. Keyed by the run: its program's module state
- * is one run's.
+ * that assembles the program on its loader's miss, in that stateless isolate,
+ * never in the host, with a SUPERVISOR binding minted there. Keyed by the
+ * run: its program's module state is one run's.
  */
-async function stagedOneShot(key: string, stage: unknown): Promise<LoadedWorkerEntrypointStub> {
+async function stagedOneShot(key: string, stage: unknown, supervisor: SupervisorBindingProps): Promise<LoadedWorkerEntrypointStub> {
   const ctxExports = getCtxExports() as NimbusCtxExports | undefined;
   if (!ctxExports?.NimbusLoadedEntrypoint) {
     throw new Error('Nimbus: ctx.exports.NimbusLoadedEntrypoint unavailable');
   }
-  return await ctxExports.NimbusLoadedEntrypoint({ props: { key, name: null, depth: 0, stage } });
+  return await ctxExports.NimbusLoadedEntrypoint({ props: { key, name: null, depth: 0, stage, supervisor } });
 }
 
 // ── Facet plumbing ──────────────────────────────────────────────────────────
@@ -667,12 +669,21 @@ async function runOneShot<T>(
     let code: OneShotCode | undefined = await params.code();
     if (!('stage' in code)) assertModuleMapWithinCodeLimit(code.modules);
     params.onWriterActivated(params.writerId);
-    capability = supervise(supervisor);
+    // How the run is entered: a call on the stub, never an extracted method —
+    // that builds a pipelined `fetch.call` path workerd refuses for
+    // dynamically-loaded workers.
+    let enter: (request: Request, ended: () => Promise<string | null>) => Promise<Response>;
     if ('stage' in code) {
-      // Assembled and loaded in a stateless isolate, on its loader's miss:
-      // never here (NimbusLoadedEntrypoint.run).
-      entrypoint = await stagedOneShot(`nimbus-run:${supervisor.doId}:${params.pid}:${params.writerId}`, code.stage);
+      // Assembled and loaded in a stateless isolate, on its loader's miss,
+      // never here, and entered by fetch with a binding minted there: a stub
+      // of this object's carried through that hop into the program reset
+      // this object, mid-run (NimbusLoadedEntrypoint).
+      const staged = await stagedOneShot(`nimbus-run:${supervisor.doId}:${params.pid}:${params.writerId}`, code.stage, supervisor);
+      entrypoint = staged;
+      if (typeof staged.fetch !== 'function') throw new Error('Nimbus: staged one-shot entrypoint has no fetch method');
+      enter = (request) => staged.fetch!(request);
     } else {
+      capability = supervise(supervisor);
       // A network the session answers (SupervisorRPC.fetch/connect) is the
       // binding's: a globalOutbound is a service binding, never a capability.
       if (params.outbound) supervisorBinding = bindingSupervisor(supervisor);
@@ -684,20 +695,17 @@ async function runOneShot<T>(
           ? { globalOutbound: supervisorBinding }
           : supervisor.egress !== undefined ? { globalOutbound: supervisor.egress } : {}),
       }));
-      entrypoint = worker.getEntrypoint(undefined, { limits: facetLimits('process') });
+      const ep = worker.getEntrypoint(undefined, { limits: facetLimits('process') }) as LoadedWorkerEntrypointStub & {
+        run(request: Request, supervisor: unknown, ended: () => Promise<string | null>): Promise<Response>;
+      };
+      entrypoint = ep;
+      if (typeof ep.run !== 'function') throw new Error('Nimbus: one-shot runtime entrypoint has no run method');
+      const handed = capability;
+      enter = (request, ended) => ep.run(request, handed, ended);
     }
     // The loader has taken the map; holding it here would keep a second full
     // copy of the program alive for as long as the program runs.
     code = undefined;
-    // Narrowed by the runtime check; kept as a property call on the stub —
-    // extracting the method builds a pipelined `fetch.call` path workerd
-    // refuses for dynamically-loaded workers.
-    const ep = entrypoint as LoadedWorkerEntrypointStub & {
-      run(request: Request, supervisor: unknown, ended: () => Promise<string | null>): Promise<Response>;
-    };
-    if (typeof ep.run !== 'function') {
-      throw new Error('Nimbus: one-shot runtime entrypoint has no run method');
-    }
     params.onLoaded?.();
     let firstRefusal: number | undefined;
     for (;;) {
@@ -708,7 +716,7 @@ async function runOneShot<T>(
         // A clone each time: a refused run is sent again with the same body.
         const request = new Request(params.request.clone(), { signal: null });
         return await untilEnded(params.request.signal, async (ended) => {
-          const response = await ep.run(request, capability, ended);
+          const response = await enter(request, ended);
           started = true;
           try {
             return await consume(response);

@@ -32,7 +32,7 @@ import { hostNamespaceBinding, hostOpDispatch, type HostOpDispatch } from './hos
 import { innerDoIdFromName } from './inner-do-env.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { applyFacetLimits, facetLimits, guestFacetPolicy, effectiveFacetLimits, facetLoaderKey, FACET_LIMITS, type FacetCodePolicy, type FacetKind } from './facet-limits.js';
-import { enteredByRun } from './one-shot-entry.js';
+import { bindingSupervisor, type SupervisorBindingProps } from './supervisor-props.js';
 import type { EntrypointLoopbackFactory } from './composition.js';
 import type { WorkerCode, EntrypointOptions } from './vendor/types.js';
 
@@ -329,13 +329,15 @@ const NimbusLoadedEntrypointPropsSchema = z.object({
   policy: FacetPolicySchema.optional(),
   options: EntrypointOptionsSchema.optional(),
   /**
-   * Staged-artifact spec, for a ONE-SHOT run (runOneShot, `run`). The module
-   * map — ~23 MB for Nimbus's largest stage — is assembled HERE, in this
-   * stateless entrypoint's isolate, on the Worker-Loader cache-miss path, so
-   * a one-shot run never materializes the artifact sources anywhere else.
-   * Validated by the registered assembler.
+   * Staged-artifact spec, for a ONE-SHOT run (runOneShot). The module map —
+   * ~23 MB for Nimbus's largest stage — is assembled HERE, in this stateless
+   * entrypoint's isolate, on the Worker-Loader cache-miss path, so a one-shot
+   * run never materializes the artifact sources anywhere else. Validated by
+   * the registered assembler.
    */
   stage: z.unknown().optional(),
+  /** The staged run's SUPERVISOR binding props, minted into its program here. */
+  supervisor: z.custom<SupervisorBindingProps>((value) => typeof value === 'object' && value !== null).optional(),
 }).passthrough();
 
 type NimbusLoadedEntrypointProps = z.infer<typeof NimbusLoadedEntrypointPropsSchema>;
@@ -577,13 +579,17 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv
     let outerStub: LoadedWorker;
     if (props.stage !== undefined) {
       // Staged artifact: assemble the full module map lazily, ONLY on a
-      // loader miss, in THIS stateless isolate, entered by `run`: its
-      // SUPERVISOR is the capability its host hands each run.
-      const stage = props.stage;
+      // loader miss, in THIS stateless isolate. Its SUPERVISOR is a binding
+      // minted here, in this request's context, which its host holds open
+      // for the whole run: a stub of the host's carried through this hop
+      // into the program reset the host mid-run.
+      const { stage, supervisor } = props;
       outerStub = outerLoader.get(facetLoaderKey(policy.kind, props.key, policy.limits), async () => {
         const assembled = await stagedBootAssembler()(this.env, stage) as WorkerCode & { modules: Record<string, unknown> };
         assertModuleMapWithinCodeLimit(assembled.modules);
-        return applyFacetLimits(policy.kind, enteredByRun(assembled), policy.limits);
+        if (!supervisor) return applyFacetLimits(policy.kind, assembled, policy.limits);
+        const SUPERVISOR = bindingSupervisor(supervisor, ctxExportsOf(this.ctx));
+        return applyFacetLimits(policy.kind, { ...assembled, env: { ...assembled.env, SUPERVISOR } }, policy.limits);
       });
     } else {
       // No spec in props: resolve the ALREADY-LOADED worker. First the inner
@@ -684,22 +690,6 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv
     try {
       const response = await ep.fetch(await materializeNestedRpcRequest(request));
       return this._relayNestedRpcResponse(ep, response);
-    } catch (e) {
-      disposeRpcResource(ep);
-      throw e;
-    }
-  }
-
-  /**
-   * A staged one-shot's run (runOneShot): forwarded to the program assembled
-   * here, with its host's capability and its `ended`, in this one request.
-   */
-  async run(request: Request, supervisor: unknown, ended: unknown): Promise<Response> {
-    const ep = await this._resolveEntrypoint() as LoadedEntrypoint & {
-      run(request: Request, supervisor: unknown, ended: unknown): Promise<Response>;
-    };
-    try {
-      return this._relayNestedRpcResponse(ep, await ep.run(await materializeNestedRpcRequest(request), supervisor, ended));
     } catch (e) {
       disposeRpcResource(ep);
       throw e;

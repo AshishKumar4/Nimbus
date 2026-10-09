@@ -1,7 +1,8 @@
 /**
- * one-shot-entry.ts — how every one-shot program is entered: by `run`, from
- * its host (runOneShot), whether its module map was built there or assembled
- * from a stage in a stateless isolate (NimbusLoadedEntrypoint).
+ * one-shot-entry.ts — how a one-shot program its host builds is entered: by
+ * `run`, from that host (runOneShot), with the host's capability. A staged
+ * program, assembled in a stateless isolate, is entered by fetch with a
+ * binding instead (NimbusLoadedEntrypoint).
  */
 
 /** The entry module's name in a one-shot's module map. */

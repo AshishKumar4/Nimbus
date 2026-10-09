@@ -113,16 +113,17 @@ const params = (request) => ({
 
 {
   // A staged program (opencode) is assembled in the stateless hop, never
-  // here, and run the same way: by `run`, with the capability.
+  // here, and entered there by fetch, with the binding props the hop mints
+  // its SUPERVISOR from: no stub of this host's crosses that hop.
   const hops = [];
   stagedHop = ({ props }) => {
-    const hop = { props, async run(...args) { hop.args = args; return Response.json({ exitCode: 0 }); } };
+    const hop = { props, async fetch(...args) { hop.args = args; return Response.json({ exitCode: 0 }); } };
     hops.push(hop);
     return hop;
   };
-  const capability = { capability: 'staged' };
+  let minted = 0;
   const env = { LOADER: { load() { throw new Error('a staged program is never loaded here'); } } };
-  const result = await processes(ctx, env).run(PROPS, () => capability, {
+  const result = await processes(ctx, env).run(PROPS, () => { minted++; return { capability: 'staged' }; }, {
     ...params(new Request('http://run.local/', { method: 'POST' })),
     code: async () => ({ stage: { argv: ['opencode', '--version'] } }),
   }, (response) => response.json());
@@ -130,7 +131,9 @@ const params = (request) => ({
   assert.equal(hops.length, 1);
   assert.deepEqual(hops[0].props.stage, { argv: ['opencode', '--version'] }, 'its stage goes to the hop');
   assert.equal(hops[0].props.key, 'nimbus-run:session-do:7:run-1', 'keyed by its run');
-  assert.equal(hops[0].args[1], capability, 'and its run gets its host\'s capability');
+  assert.equal(hops[0].props.supervisor, PROPS, 'with the props its binding is minted from');
+  assert.equal(hops[0].args.length, 1, 'entered by fetch, with its request alone');
+  assert.equal(minted, 0, 'and no capability is minted for it');
 }
 
 // ── 3. A run the platform refused is sent again; one the program failed, never ──
