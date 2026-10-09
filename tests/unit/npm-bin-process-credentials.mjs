@@ -52,6 +52,9 @@ installNpmBinFallbackResolver(registry, {
   getFacetManager() {
     throw new Error('unexpected staged artifact');
   },
+  async learnedServer() {
+    return false;
+  },
   notifyTerminalEvent() {},
   async runtimeCommandHint() {
     return null;

@@ -39,6 +39,7 @@ async function workspace(env) {
     getCwd: () => ws.shell.getCwd(),
     processes: ws.processes,
     getFacetManager() { throw new Error('unexpected staged artifact'); },
+    async learnedServer() { return false; },
     notifyTerminalEvent() {},
     // Runtimes the workspace knows how to install, and has not.
     async runtimeCommandHint(name) { return ['hintedtool', 'clang'].includes(name) ? { installSpec: name } : null; },

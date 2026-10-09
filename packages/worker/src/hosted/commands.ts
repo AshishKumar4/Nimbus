@@ -1042,6 +1042,10 @@ installNpmBinFallbackResolver(registry, {
     self.ensureFacetManager();
     return facetMgr!;
   },
+  learnedServer: (server) => {
+    self.ensureFacetManager();
+    return facetMgr!.learnedServers.has(server);
+  },
   terminal: terminal,
   notifyTerminalEvent: (event) => notifyTerminalEvent(terminal, event),
   runtimeCommandHint,

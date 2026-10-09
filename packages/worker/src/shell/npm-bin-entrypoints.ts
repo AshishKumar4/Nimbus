@@ -11,6 +11,7 @@ import {
 import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { OPENCODE_TREE_SITTER_DIAG_ARG } from '../runtime/opencode-facet-runner.js';
 import { firstPositional, isNonInteractiveArg, knownServerBin } from '../facets/server-hints.js';
+import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { resolveContext, type ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
@@ -69,6 +70,8 @@ export function installNpmBinFallbackResolver(
     getCwd(): string;
     processes: SessionProcessSupervisor;
     getFacetManager(): FacetManager;
+    /** Whether this workspace learned the bin is a server (facets/server-hints.ts). */
+    learnedServer(server: ServerIdentity): Promise<boolean>;
     terminal?: Output | null;
     notifyTerminalEvent(event: { type: 'spawn' | 'exit'; pid: number; command: string; longRunning?: boolean; attachedTty?: boolean; code?: number }): void;
     runtimeCommandHint(name: string): Promise<RuntimeCommandHint>;
@@ -191,7 +194,7 @@ export function installNpmBinFallbackResolver(
       const attachedTty = looksAttachedTtyNpmBin(metadata, argv, ctx.env);
       // A hint: a bin that listens runs on as a resident however it started.
       const server = { package: `${metadata?.name ?? bin.packagePath}@${metadata?.version ?? ''}`, bin: name, arg0: firstPositional(argv) };
-      const longRunning = attachedTty || knownServerBin(name, argv) || await deps.getFacetManager().learnedServers.has(server);
+      const longRunning = attachedTty || knownServerBin(name, argv) || await deps.learnedServer(server);
       const runtimeCmd = await upstreamResolve(runtimeName, from);
       if (typeof runtimeCmd !== 'function') {
         ctx.stderr.write(`${name}: ${runtimeName} command unavailable\n`);

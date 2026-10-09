@@ -33,6 +33,7 @@ installNpmBinFallbackResolver(ws.registry, {
   getCwd: () => '/home/user',
   processes: ws.processes,
   getFacetManager() { throw new Error('unexpected staged artifact'); },
+  async learnedServer() { return false; },
   notifyTerminalEvent(event) { terminalEvents.push(event); },
   async runtimeCommandHint() { return null; },
   emitShellExecDone() {},

@@ -62,6 +62,7 @@ installNpmBinFallbackResolver(registry, {
   getCwd: () => `/${project}`,
   processes: new SessionProcessSupervisor(),
   getFacetManager() { throw new Error('unexpected staged artifact'); },
+  async learnedServer() { return false; },
   notifyTerminalEvent() {},
   async runtimeCommandHint() { return null; },
   emitShellExecDone() {},
