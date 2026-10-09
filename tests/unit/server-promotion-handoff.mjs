@@ -22,7 +22,7 @@ function handoff({ took = null, resident = async () => {}, signal, stdin, stdinF
   const entry = processes.spawn('node srv.js', ['node', 'srv.js'], '/');
   const unread = [], spawned = [], announced = [], learned = [];
   const manager = Object.assign(Object.create(FacetManager.prototype), {
-    ctx: {}, processes, filesystem: { bind: () => ({ stat: async (path) => stat(path) }) },
+    ctx: {}, processes, filesystem: { bind: () => ({ stat: (path) => stat(path) }) },
     hooks: {
       rewindProcessFiles: async () => {},
       onSpawn: (pid) => announced.push(pid),
@@ -105,6 +105,38 @@ function handoff({ took = null, resident = async () => {}, signal, stdin, stdinF
   const result = await h.done;
   assert.equal(result.exitCode, 1, JSON.stringify(result));
   assert.match(h.processes.getExit(h.entry.pid)?.reason ?? '', /its stdin, \/home\/user\/in\.txt, changed while it was run again/);
+}
+
+// Its file's stat throws (EACCES) as the run launches: the process fails
+// through the launch's own cleanup, not left running.
+{
+  const h = handoff({
+    stdinFile: { path: '/home/user/in.txt', offset: 0, syncRead: false },
+    stat: () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); },
+  });
+  const result = await h.done.catch((error) => ({ error }));
+  assert.notEqual(h.processes.get(h.entry.pid).state, 'running', `the process ended: ${JSON.stringify(result)}`);
+}
+
+// Aborted while its file is checked after the resident booted: the resident
+// is ended and the abort honored, not a live server returned.
+{
+  const controller = new AbortController();
+  let calls = 0, release;
+  const h = handoff({
+    signal: controller.signal,
+    stdinFile: { path: '/home/user/in.txt', offset: 0, syncRead: false },
+    stat: () => (++calls === 1 ? { ino: 1, revision: 1, size: 5, mtime: 1, ctime: 1 }
+      : new Promise((resolve) => { release = () => resolve({ ino: 1, revision: 1, size: 5, mtime: 1, ctime: 1 }); })),
+  });
+  while (!release) await null;
+  controller.abort();
+  release();
+  const result = await h.done;
+  assert.equal(result.promotedPid, undefined, `not a server: ${JSON.stringify(result)}`);
+  assert.equal(result.exitCode, 130);
+  assert.equal(h.processes.get(h.entry.pid).state, 'killed');
+  assert.deepEqual(h.announced, []);
 }
 
 // A resident that ended while it booted: its exit, no server.
