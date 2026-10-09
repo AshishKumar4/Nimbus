@@ -302,8 +302,9 @@ export class FacetProcessManager {
         });
         try {
             const code = await this.deps.facetMgr.execStream(payload, { cwd, env, argv: req.args, stdin: this._stdinOf(child) }, hooks);
-            // Still running: it listened, and runs on as a resident (FacetManager._promote), whose exit is its own.
-            const ended = this.deps.processes.get(child.pid)?.state === 'running' ? await this.deps.processes.whenEnded(child.pid) : code;
+            // A resident now (it listened, FacetManager._promote): its exit is its own.
+            const entry = this.deps.processes.get(child.pid);
+            const ended = entry?.longRunning === true && entry.state === 'running' ? await this.deps.processes.whenEnded(child.pid) : code;
             this._stampExit(child, typeof ended === 'number' ? ended : 0, null);
         }
         catch (e) {

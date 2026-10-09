@@ -1,6 +1,7 @@
 import { type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { FacetManager } from '../facets/manager.js';
+import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
 import { type ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 type Output = {
     write(data: string): void;
@@ -19,6 +20,8 @@ export declare function installNpmBinFallbackResolver(registry: RegistryLike, de
     getCwd(): string;
     processes: SessionProcessSupervisor;
     getFacetManager(): FacetManager;
+    /** Whether this workspace learned the bin is a server (facets/server-hints.ts). */
+    learnedServer(server: ServerIdentity): Promise<boolean>;
     terminal?: Output | null;
     notifyTerminalEvent(event: {
         type: 'spawn' | 'exit';

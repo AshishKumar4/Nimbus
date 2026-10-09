@@ -142,7 +142,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
             const attachedTty = looksAttachedTtyNpmBin(metadata, argv, ctx.env);
             // A hint: a bin that listens runs on as a resident however it started.
             const server = { package: `${metadata?.name ?? bin.packagePath}@${metadata?.version ?? ''}`, bin: name, arg0: firstPositional(argv) };
-            const longRunning = attachedTty || knownServerBin(name, argv) || await deps.getFacetManager().learnedServers.has(server);
+            const longRunning = attachedTty || knownServerBin(name, argv) || await deps.learnedServer(server);
             const runtimeCmd = await upstreamResolve(runtimeName, from);
             if (typeof runtimeCmd !== 'function') {
                 ctx.stderr.write(`${name}: ${runtimeName} command unavailable\n`);
@@ -197,9 +197,10 @@ export function installNpmBinFallbackResolver(registry, deps) {
                 exitCode = 1;
             }
             finally {
-                // Still running: a resident has it now, started as one or run on as
-                // one once it listened (FacetManager._promote).
-                const handedOffToLongRunningFacet = exitCode === 0 && deps.processes.get(pid)?.state === 'running';
+                // A resident has it now, started as one or run on as one once it
+                // listened (FacetManager._promote).
+                const resident = deps.processes.get(pid);
+                const handedOffToLongRunningFacet = exitCode === 0 && resident?.longRunning === true && resident.state === 'running';
                 if (!handedOffToLongRunningFacet) {
                     try {
                         deps.processes.exit(pid, exitCode);

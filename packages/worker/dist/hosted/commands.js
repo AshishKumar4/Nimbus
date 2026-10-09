@@ -962,6 +962,10 @@ export async function registerHostedCommands(self, workspace) {
             self.ensureFacetManager();
             return facetMgr;
         },
+        learnedServer: (server) => {
+            self.ensureFacetManager();
+            return facetMgr.learnedServers.has(server);
+        },
         terminal: terminal,
         notifyTerminalEvent: (event) => notifyTerminalEvent(terminal, event),
         runtimeCommandHint,
