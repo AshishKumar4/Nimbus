@@ -44,6 +44,17 @@ async function boot() {
   return { authority, probe, log: handle.log };
 }
 
+/** Booted, `seed` made, then holding a trusted read lease (past the hold-off a recall leaves). */
+async function bootTrusted(seed) {
+  const booted = await boot();
+  seed?.(booted.authority);
+  await rawSleep(READ_LEASE_TRUST_MS + 20);
+  await booted.probe.resume();
+  await booted.probe.resume();
+  assert.ok(globalThis.__nimbusProcessFs.readTrusted(), 'the barrier took no lease');
+  return booted;
+}
+
 const asked = (log) => log.calls.fsAcquire ?? 0;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -116,17 +127,20 @@ await runScenarios(import.meta.path, {
     assert.equal((await probe.fs.promises.stat('/home/user/app/sub/b.txt')).size, 1);
   },
 
-  async 'what the lease does not cover is not the view\'s: the session\'s stores and the kernel\'s mounts'() {
-    const { authority, probe } = await boot();
-    authority.kfs.mkdir('.nimbus/state', { recursive: true });
-    await rawSleep(READ_LEASE_TRUST_MS + 20);
-    await probe.resume();
-    await probe.resume();
-    assert.ok(globalThis.__nimbusProcessFs.readTrusted(), 'the barrier took no lease');
-    // The kernel's mounts and the root's names are the session's, under a trusted lease too.
+  async 'the kernel\'s mounts and the root\'s names are the session\'s under a trusted lease'() {
+    const { probe } = await bootTrusted();
     assert.equal((await probe.fs.promises.stat('/dev/null')).isCharacterDevice(), true);
     assert.ok((await probe.fs.promises.readdir('/')).includes('dev'));
-    // The session's store changes with no recall: once it was read, the next timer asks.
+  },
+
+  async 'an async listing of the session\'s store, which changes with no recall, is the session\'s'() {
+    const { authority, probe } = await bootTrusted((authority) => authority.kfs.mkdir('.nimbus/state', { recursive: true }));
+    authority.kfs.writeFile('.nimbus/state/x', 'x');
+    assert.deepEqual(await probe.fs.promises.readdir('/.nimbus/state'), ['x'], 'the view listed the session\'s store');
+  },
+
+  async 'once the view answered for the session\'s store, the next timer asks'() {
+    const { authority, probe } = await bootTrusted((authority) => authority.kfs.mkdir('.nimbus/state', { recursive: true }));
     assert.deepEqual(probe.fs.readdirSync('/.nimbus/state'), []);
     authority.kfs.writeFile('.nimbus/state/x', 'x');
     await probe.resume();

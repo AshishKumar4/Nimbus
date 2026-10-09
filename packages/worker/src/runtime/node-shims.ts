@@ -1070,6 +1070,22 @@ const __fsMod = (() => {
   }
 
   /**
+   * What a process's read lease vouches for (core runtime/delegations.ts
+   * readLeaseCovers): its view answers anything else only from a barrier.
+   */
+  const _readLeaseCovers = ${readLeaseCovers.toString()};
+  const _READ_LEASE_UNCOVERED = ${JSON.stringify(READ_LEASE_UNCOVERED_ROOTS)};
+  /** Whether the view has answered for what the lease does not cover: its barriers are asked from then on. */
+  let _uncoveredViewed = false;
+  /** \`__nsResolve\`, where it landed viewed: \`k\`'s entry, or with \`listing\` its names, through any link. */
+  function _nsResolveViewed(k, follow, listing) {
+    const found = __nsLookup(k, follow);
+    if (found === "ELOOP") return found;
+    if (!_uncoveredViewed && !_readLeaseCovers(found.path, listing, _READ_LEASE_UNCOVERED)) _uncoveredViewed = true;
+    return found.row !== undefined ? found : null;
+  }
+
+  /**
    * The key an operation that follows symlinks lands on: every link on \`k\`
    * followed, the last one too, as open(2) and chmod(2) follow them; null on
    * a loop. It is the name a barrier reports when that file changes, so
@@ -1082,18 +1098,6 @@ const __fsMod = (() => {
    * namespace cannot say: it is not active, or this process's own unsettled
    * rename, unlink or mkdir is on the path, which the table does not show.
    */
-  /**
-   * What a process's read lease vouches for (core runtime/delegations.ts
-   * readLeaseCovers): its view answers anything else only from a barrier.
-   */
-  const _readLeaseCovers = ${readLeaseCovers.toString()};
-  const _READ_LEASE_UNCOVERED = ${JSON.stringify(READ_LEASE_UNCOVERED_ROOTS)};
-  /** Whether the view has answered for what the lease does not cover: its barriers are asked from then on. */
-  let _uncoveredViewed = false;
-  function _viewed(k, listing) {
-    if (!_uncoveredViewed && !_readLeaseCovers(k, listing, _READ_LEASE_UNCOVERED)) _uncoveredViewed = true;
-  }
-
   function _nsLandingKey(k) {
     if (!_nsActive() || _nsOwnView(k) !== null) return k;
     const found = __nsLookup(k, true);
@@ -1164,11 +1168,6 @@ const __fsMod = (() => {
    * caught up with.
    */
   function _nsMeta(k, follow) {
-    _viewed(k, false);
-    if (follow && _nsActive()) {
-      const found = __nsLookup(k, true);
-      if (found !== "ELOOP") _viewed(found.path, false);
-    }
     if (k === "") return _nsRowMeta(__nsResolve("", true).row);
     if (__vfsWrites && k in __vfsWrites && _denialCode(__vfsWrites[k]) === null) {
       const size = _byteLen(__vfsWrites[k]);
@@ -1178,7 +1177,7 @@ const __fsMod = (() => {
       // A rewrite of a file that was there: its owner and mode stay what the
       // authority says they are, under the name it had before a rename.
       const renamed = _nsOwnView(k);
-      const found = __nsResolve(renamed && renamed.alias !== undefined ? renamed.alias : k, follow);
+      const found = _nsResolveViewed(renamed && renamed.alias !== undefined ? renamed.alias : k, follow, false);
       if (found && found !== "ELOOP" && Number(found.row.kind) === 0) return { ..._nsRowMeta(found.row), size };
     }
     const own = _nsOwnView(k);
@@ -1186,7 +1185,7 @@ const __fsMod = (() => {
     if (own && own.dir) return { type: "directory", size: 0, mode: 0o40777 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
     // A symlink this process moved is still a link to lstat.
     if (!follow && own && own.link !== undefined) {
-      const found = __nsResolve(_nsMovedEntry(k, own), false);
+      const found = _nsResolveViewed(_nsMovedEntry(k, own), false, false);
       if (found === "ELOOP") return "ELOOP";
       return found ? _nsRowMeta(found.row) : "absent";
     }
@@ -1194,7 +1193,7 @@ const __fsMod = (() => {
     // name before, but not what this process has put there since: those rows
     // are its own writes, recorded when the authority accepted them.
     if (!own || own.alias !== undefined || (own.hide && _createdHere.has(k))) {
-      const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, follow);
+      const found = _nsResolveViewed(own && own.alias !== undefined ? own.alias : k, follow, false);
       if (found === "ELOOP") return "ELOOP";
       if (found) return _nsRowMeta(found.row);
       // Followed to a name the table does not list yet: a file this process
@@ -1212,11 +1211,10 @@ const __fsMod = (() => {
 
   /** Names directly under directory \`k\`: Map name → type. */
   function _nsList(k) {
-    _viewed(k, true);
     const names = new Map();
     const own = _nsOwnView(k);
     if (own !== "absent" && !(own && own.hide) && !(own && own.dir && _nsOwn.get(k)?.hide)) {
-      const real = __nsResolve(own && own.alias !== undefined ? own.alias : k, true);
+      const real = _nsResolveViewed(own && own.alias !== undefined ? own.alias : k, true, true);
       if (real && real !== "ELOOP") {
         for (const child of __nsChildren(real.path)) {
           names.set(child.name, child.kind === 1 ? "directory" : child.kind === 2 ? "symlink" : _direntTypeOfMode(child.mode, "file"));
@@ -6369,7 +6367,7 @@ const __fsMod = (() => {
           // to byte cells here invents two changes: leaving and re-entering
           // the namespace, even when the watched inode never changed.
           if (!_nsActive()) return null;
-          const found = __nsResolve(key, true);
+          const found = _nsResolveViewed(key, true, false);
           if (!found || found === "ELOOP") return { stamp: "absent", absent: true };
           const row = found.row;
           return { stamp: [row.ino, row.kind, row.size, row.mtime, row.ctime, row.mode, row.uid, row.gid].join(":"), absent: false };
