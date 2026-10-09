@@ -3924,11 +3924,12 @@ const __fsMod = (() => {
     const links = nlink ?? ((mode & _S_IFMT) === 0o040000 ? 2 : 1);
     return new Stats(_STAT_DEVICE, mode, links, Number(uid), Number(gid), 0, _STAT_BLKSIZE, ino ?? 0, size, blocks, atimeMs, mtimeMs, ctimeMs, ctimeMs);
   }
-  // A stat call's answer as its options ask (`bigint`: BigIntStats, in nanoseconds).
-  function _statsAs(stats, opts) {
-    if (stats === undefined || !opts?.bigint) return stats;
+  // A stat call's answer, BigIntStats in nanoseconds where `bigint` (its
+  // options' bigint, read before its I/O, as Node reads it).
+  function _statsAs(stats, bigint) {
+    if (stats === undefined || !bigint) return stats;
     const big = (value) => BigInt(Math.trunc(Number(value)));
-    const ns = (ms) => BigInt(Math.round(Number(ms) * 1e6));
+    const ns = __nimbusMsToNs;
     return new BigIntStats(big(stats.dev), big(stats.mode), big(stats.nlink), big(stats.uid), big(stats.gid), big(stats.rdev), big(stats.blksize),
       big(stats.ino), big(stats.size), big(stats.blocks), ns(stats.atimeMs), ns(stats.mtimeMs), ns(stats.ctimeMs), ns(stats.birthtimeMs));
   }
@@ -6237,8 +6238,9 @@ const __fsMod = (() => {
   // ── statSync ──
   function statSync(p, opts) {
     const absPath = _resolve(p);
+    const bigint = Boolean(opts?.bigint);
     _ensureAncestorsTraversable(absPath, "stat", p);
-    return _statsAs(_statResolved(absPath, p, opts), opts);
+    return _statsAs(_statResolved(absPath, p, opts), bigint);
   }
 
   // The stat ladder for a path whose ancestors the caller has already
@@ -6282,10 +6284,11 @@ const __fsMod = (() => {
   // ── lstatSync (alias for statSync in our VFS — no symlinks) ──
   function lstatSync(p, opts) {
     const absPath = _resolve(p);
+    const bigint = Boolean(opts?.bigint);
     _nsRequire("lstat", p, "fs.promises.lstat");
     _ensureAncestorsTraversable(absPath, "lstat", p);
     const stat = _statLadder(absPath, true);
-    if (stat !== undefined) return _statsAs(stat, opts);
+    if (stat !== undefined) return _statsAs(stat, bigint);
     const mount = _nsUnlisted(absPath, false, false);
     if (mount !== null) throw _nsUnlistedErr(mount, "lstat", p, "fs.promises.lstat");
     if (opts && opts.throwIfNoEntry === false) return undefined;
@@ -6762,11 +6765,13 @@ const __fsMod = (() => {
   // fs.stat and fs.lstat: (path[, options], callback).
   function stat(p, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
-    _statAsync(p).then((s) => cb(null, _statsAs(s, opts)), (e) => cb(e));
+    const bigint = Boolean(opts?.bigint);
+    _statAsync(p).then((s) => cb(null, _statsAs(s, bigint)), (e) => cb(e));
   }
   function lstat(p, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
-    _lstatAsync(p).then((s) => cb(null, _statsAs(s, opts)), (e) => cb(e));
+    const bigint = Boolean(opts?.bigint);
+    _lstatAsync(p).then((s) => cb(null, _statsAs(s, bigint)), (e) => cb(e));
   }
   function readdir(p, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
@@ -6987,7 +6992,10 @@ const __fsMod = (() => {
       await _appendFileAsync(this._path, data, opts);
       this._size += _byteLen(typeof data === "string" || data instanceof Uint8Array ? data : String(data));
     }
-    async stat(opts) { return _statsAs(await _statAsync(this._path), opts); }
+    async stat(opts) {
+      const bigint = Boolean(opts?.bigint);
+      return _statsAs(await _statAsync(this._path), bigint);
+    }
     async truncate(len) {
       this._assertOpen("ftruncate");
       if (!this._flags.write) throw _fsErr("EBADF", "ftruncate", this._path);
@@ -7266,7 +7274,7 @@ const __fsMod = (() => {
   }
 
   function fstatSync(fd, opts) {
-    if (_isStdioFd(fd)) return _statsAs(_stdioStat(), opts);
+    if (_isStdioFd(fd)) return _statsAs(_stdioStat(), Boolean(opts?.bigint));
     return statSync(_fdHandle(fd, "fstat")._path, opts);
   }
 
@@ -7403,9 +7411,10 @@ const __fsMod = (() => {
   }
   function fstat(fd, opts, cb) {
     if (typeof opts === "function") { cb = opts; opts = undefined; }
+    const bigint = Boolean(opts?.bigint);
     let stats = null;
     let err = null;
-    try { stats = fstatSync(fd, opts); } catch (e) { err = e; }
+    try { stats = fstatSync(fd, { bigint }); } catch (e) { err = e; }
     queueMicrotask(() => cb(err, stats));
   }
   function ftruncate(fd, len, cb) {
@@ -10683,17 +10692,26 @@ const __realUtil = typeof __real_util !== "undefined"
 // Named limit: a Worker exposes no CPU time or memory readings, so
 // cpuUsage, threadCpuUsage, resourceUsage and memoryUsage read 0.
 const __nimbusHrtimeBuffer = new Uint32Array(4);
+// When the process started, on performance.now's clock (an epoch-based one in workerd).
+const __nimbusStartedAt = performance.now();
+// Milliseconds as BigInt nanoseconds, the whole milliseconds converted exactly
+// (an epoch's milliseconds times 1e6 are past a double's integers).
+function __nimbusMsToNs(ms) {
+  const value = Number(ms);
+  const whole = Math.trunc(value);
+  return BigInt(whole) * 1000000n + BigInt(Math.round((value - whole) * 1e6));
+}
 const __nimbusProcessMethods = {
   hrtimeBuffer: __nimbusHrtimeBuffer,
   hrtime() {
-    const ns = BigInt(Math.round(performance.now() * 1e6));
+    const ns = __nimbusMsToNs(performance.now());
     const sec = ns / 1000000000n;
     __nimbusHrtimeBuffer[0] = Number(sec >> 32n);
     __nimbusHrtimeBuffer[1] = Number(sec & 0xffffffffn);
     __nimbusHrtimeBuffer[2] = Number(ns % 1000000000n);
   },
   hrtimeBigInt() {
-    new BigUint64Array(__nimbusHrtimeBuffer.buffer, 0, 1)[0] = BigInt(Math.round(performance.now() * 1e6));
+    new BigUint64Array(__nimbusHrtimeBuffer.buffer, 0, 1)[0] = __nimbusMsToNs(performance.now());
   },
   _rawDebug(text) { __nimbusWriteFatal(text + "\n"); },
   cpuUsage(values) { values.fill(0); },
@@ -14353,7 +14371,7 @@ const __processMod = Object.setPrototypeOf({
   nextTick: (fn, ...a) => queueMicrotask(() => fn(...a)),
   emitWarning: __nimbusProcessEmitWarning,
   // Seconds since the process started.
-  uptime: () => performance.now() / 1000,
+  uptime: () => (performance.now() - __nimbusStartedAt) / 1000,
   // The signal syscall process.kill makes (Node's binding): 0, or the errno.
   // This process and its own children are signalled (tree-kill and similar
   // helpers kill a child by its pid); a pid that has exited is ESRCH. Named
@@ -14361,6 +14379,9 @@ const __processMod = Object.setPrototypeOf({
   // is no cross-isolate process table), and that is ENOSYS, not an ESRCH
   // that would tell a lockfile probe a live pid is gone.
   _kill(pid, signum) {
+    // Node's binding reads both as int32s.
+    pid |= 0;
+    signum |= 0;
     const signal = signum === 0 ? 0 : Object.keys(__signalConstants).find((name) => __signalConstants[name] === signum);
     if (signal === undefined) return -__errnoConstants.EINVAL;
     if (pid === __processMod.pid || pid === 0) {
