@@ -17,6 +17,7 @@
  * credentials.
  */
 
+import { sha256Incremental } from '@nimbus-sh/core/_shared/crypto.js';
 import { MAX_TX_BLOB_BYTES, CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
 import { FACET_IMAGE_DIR, facetImageDigest, facetImagePath } from './process-fabric.js';
 import type { TurnBudget } from './turn-budget.js';
@@ -44,9 +45,12 @@ export interface ImageBlobStore {
   mkdirp(dir: string): void;
   /** The file's current size in bytes, or null when it does not exist. */
   sizeOf(path: string): number | null;
-  /** Create or REPLACE the file with exactly these bytes (truncating). */
+  /**
+   * Create or REPLACE the file with exactly these bytes (truncating). The
+   * bytes are taken during the call: the store reuses their buffer after.
+   */
   writeFile(path: string, bytes: Uint8Array): void;
-  /** Write bytes at an offset, growing the file. */
+  /** Write bytes at an offset, growing the file; taken during the call, as writeFile's. */
   writeRange(path: string, offset: number, bytes: Uint8Array): void;
   /** Entry names directly under `dir`. Throws when the dir is unreadable. */
   list(dir: string): string[];
@@ -119,10 +123,18 @@ export class ImageStore {
    *
    * Writing the sources here, once, is what lets the session stop holding
    * them: after this returns, the only thing it keeps is a path.
+   *
+   * An image given as parts (a code pack: process-fabric.ts
+   * encodeCommonJsPack) is never encoded whole: it is digested a part at a
+   * time, and written a part at a time only if no complete image is stored
+   * at that digest, each part released (emptied in place) as it is written.
+   * Encoded whole, an astro project's second launch held its pack's 33.6 MiB
+   * of strings and their 25 MiB of UTF-8 at once, and reset the session's
+   * isolate.
    */
   async materialize(
     pid: number,
-    images: AsyncIterable<readonly [string, string | readonly string[]]> | Iterable<readonly [string, string | readonly string[]]>,
+    images: AsyncIterable<readonly [string, string | string[]]> | Iterable<readonly [string, string | string[]]>,
     pacer: TurnBudget,
   ): Promise<Record<string, string>> {
     const fs = this.blobs();
@@ -138,7 +150,18 @@ export class ImageStore {
     fs.mkdirp(FACET_IMAGE_DIR);
     let count = 0;
     for await (const [moduleName, source] of images) {
-      const bytes = typeof source === 'string' ? new TextEncoder().encode(source) : encodeParts(source);
+      if (typeof source !== 'string') {
+        const { path, written } = await this.materializeParts(fs, source, rooted, pacer);
+        paths[moduleName] = path;
+        count++;
+        console.log(
+          '[image-store] pid=' + pid + ' image ' + count + ' ' + moduleName + ' → '
+          + path.slice(-12) + ' ' + written + ' bytes in parts, slice=' + FACET_IMAGE_WRITE_SLICE_BYTES
+          + ' turns=' + pacer.chunks,
+        );
+        continue;
+      }
+      const bytes = new TextEncoder().encode(source);
       const path = facetImagePath(await facetImageDigest(bytes));
       paths[moduleName] = path;
       rooted.push(path);
@@ -180,6 +203,46 @@ export class ImageStore {
   }
 
   /**
+   * One image given as parts: its digest read a slice at a time, then, unless
+   * a complete image is already stored there, its bytes written a slice at a
+   * time, each part emptied once it is written. Both passes encode the parts
+   * into one slice-sized buffer (encodeInto: no part's encoding is made on
+   * its own) and hand it on whole, so the digest is fed and the disk written
+   * a slice at a time. The root is claimed before the first byte, as every
+   * image's is. What it holds at once is that buffer, whatever the image's
+   * size.
+   */
+  private async materializeParts(
+    fs: ImageBlobStore,
+    parts: string[],
+    rooted: string[],
+    pacer: TurnBudget,
+  ): Promise<{ path: string; written: number }> {
+    const slice = new Uint8Array(FACET_IMAGE_WRITE_SLICE_BYTES);
+    const digest = sha256Incremental();
+    const length = await encodeSlices(parts, slice, (bytes) => digest.update(bytes), false);
+    const path = facetImagePath(await digest.hex());
+    rooted.push(path);
+    const stored = path.replace(/^\/+/, '');
+    // A complete image is already these bytes (see materialize).
+    if (fs.sizeOf(stored) === length) {
+      parts.fill('');
+      await pacer.spend(length);
+      return { path, written: length };
+    }
+    let offset = 0;
+    const written = await encodeSlices(parts, slice, async (bytes) => {
+      // The first slice REPLACES the file, as materialize's does.
+      if (offset === 0) fs.writeFile(stored, bytes);
+      else fs.writeRange(stored, offset, bytes);
+      offset += bytes.byteLength;
+      await pacer.spend(bytes.byteLength);
+    }, true);
+    if (written !== length) throw new Error(`Nimbus: an image's parts encoded to ${written} bytes, digested as ${length}`);
+    return { path, written: length };
+  }
+
+  /**
    * Drop every image no running process boots from.
    *
    * Content addressing means a changed program writes a NEW image rather than
@@ -209,28 +272,52 @@ export class ImageStore {
 }
 
 /**
- * UTF-8 bytes of an image given as ordered parts, encoded into one buffer a
- * part at a time: joining the parts first would hold the whole image twice as
- * text.
+ * `parts` as UTF-8, handed to `sink` a full `slice` at a time (and the rest
+ * last; an empty image as one empty slice), encoded into `slice` itself. A
+ * character that does not fit the slice's end is split across two slices,
+ * so every slice but the last is whole. With `release`, each part is
+ * emptied once its bytes are in the slice. Returns the bytes encoded.
  */
-function encodeParts(parts: readonly string[]): Uint8Array {
-  let length = 0;
-  for (const part of parts) {
-    for (let i = 0; i < part.length; i++) {
-      const code = part.charCodeAt(i);
-      if (code < 0x80) length += 1;
-      else if (code < 0x800) length += 2;
-      else if (code >= 0xd800 && code <= 0xdbff && (part.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { length += 4; i++; }
-      else length += 3;
-    }
-  }
-  const bytes = new Uint8Array(length);
+async function encodeSlices(
+  parts: string[],
+  slice: Uint8Array,
+  sink: (bytes: Uint8Array) => Promise<void> | void,
+  release: boolean,
+): Promise<number> {
   const encoder = new TextEncoder();
-  let offset = 0;
-  for (const part of parts) {
-    const encoded = encoder.encode(part);
-    bytes.set(encoded, offset);
-    offset += encoded.byteLength;
+  let filled = 0;
+  let total = 0;
+  const flush = async () => {
+    await sink(slice.subarray(0, filled));
+    total += filled;
+    filled = 0;
+  };
+  for (let i = 0; i < parts.length; i++) {
+    let rest = parts[i]!;
+    if (release) parts[i] = '';
+    while (rest.length > 0) {
+      const { read, written } = encoder.encodeInto(rest, slice.subarray(filled));
+      filled += written;
+      rest = rest.slice(read);
+      if (rest.length === 0) break;
+      if (read === 0) {
+        // The next character needs more bytes than the slice has left: its
+        // bytes fill the slice and start the next.
+        const units = (rest.codePointAt(0) ?? 0) > 0xffff ? 2 : 1;
+        const bytes = encoder.encode(rest.slice(0, units));
+        rest = rest.slice(units);
+        const head = slice.length - filled;
+        slice.set(bytes.subarray(0, head), filled);
+        filled = slice.length;
+        await flush();
+        slice.set(bytes.subarray(head), 0);
+        filled = bytes.byteLength - head;
+      } else if (filled === slice.length) {
+        await flush();
+      }
+    }
+    if (filled === slice.length) await flush();
   }
-  return bytes;
+  if (filled > 0 || total === 0) await flush();
+  return total;
 }

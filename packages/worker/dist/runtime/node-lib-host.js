@@ -366,19 +366,22 @@ export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform)
   }
 
   // lib/internal/abort_controller.js's functions util exports, over the platform's AbortSignal.
+  // A signal's one follower (AbortSignal.any), whose abort none of the
+  // signal's own listeners can stop (Node's kResistStopPropagation), kept as
+  // long as the signal is.
   const followers = new WeakMap();
+  function followerOf(signal) {
+    let follower = followers.get(signal);
+    if (follower === undefined) followers.set(signal, (follower = AbortSignal.any([signal])));
+    return follower;
+  }
   const abortController = {
     async aborted(signal, resource) {
       if (signal === undefined) throw new nodeErrorCodes.ERR_INVALID_ARG_TYPE("signal", "AbortSignal", signal);
       require("internal/validators").validateAbortSignal(signal, "signal");
       require("internal/validators").validateObject(resource, "resource", require("internal/validators").kValidateObjectAllowObjects);
       if (signal.aborted) return Promise.resolve();
-      // On the signal's one follower, which none of the signal's own
-      // listeners can stop (Node's kResistStopPropagation), kept as long as
-      // the signal is.
-      let follower = followers.get(signal);
-      if (follower === undefined) followers.set(signal, (follower = AbortSignal.any([signal])));
-      return new Promise((resolve) => follower.addEventListener("abort", () => resolve(), { once: true }));
+      return new Promise((resolve) => followerOf(signal).addEventListener("abort", () => resolve(), { once: true }));
     },
     transferableAbortSignal(signal) {
       if (!(signal instanceof AbortSignal)) throw new nodeErrorCodes.ERR_INVALID_ARG_TYPE("signal", "AbortSignal", signal);
@@ -386,6 +389,188 @@ export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform)
     },
     transferableAbortController: () => new AbortController(),
   };
+
+  // lib/internal/errors.js AbortError.
+  class AbortError extends Error {
+    constructor(message = "The operation was aborted", options = undefined) {
+      if (options !== undefined && typeof options !== "object") throw new nodeErrorCodes.ERR_INVALID_ARG_TYPE("options", "Object", options);
+      super(message, options);
+      this.code = "ABORT_ERR";
+      this.name = "AbortError";
+    }
+  }
+
+  // lib/timers/promises.js over the platform's timers (platform.timers): its
+  // validation, its AbortError and its scheduler; an abort is heard on the
+  // signal's follower, as Node hears it past a stopped dispatch.
+  function timersPromises() {
+    const { validateAbortSignal, validateBoolean, validateObject, validateNumber } = require("internal/validators");
+    const { kEmptyObject } = internalUtil;
+    const timers = platform.timers;
+    const validate = (after, options) => {
+      if (after !== undefined) validateNumber(after, "delay");
+      validateObject(options, "options");
+      if (options?.signal !== undefined) validateAbortSignal(options.signal, "options.signal");
+      if (options?.ref !== undefined) validateBoolean(options.ref, "options.ref");
+    };
+    // The promise of a handle \`start\` makes, settled by it, rejected with an
+    // AbortError (and the handle cleared) if \`signal\` aborts first.
+    function settle(signal, ref, start, clear) {
+      if (signal?.aborted) return Promise.reject(new AbortError(undefined, { cause: signal.reason }));
+      const { promise, resolve, reject } = Promise.withResolvers();
+      const handle = start(resolve);
+      if (!ref) handle?.unref?.();
+      if (!signal) return promise;
+      const follower = followerOf(signal);
+      const cancel = () => {
+        clear(handle);
+        reject(new AbortError(undefined, { cause: signal.reason }));
+      };
+      follower.addEventListener("abort", cancel, { once: true });
+      return promise.finally(() => follower.removeEventListener("abort", cancel));
+    }
+    function setTimeout(after, value, options = kEmptyObject) {
+      try {
+        validate(after, options);
+      } catch (err) {
+        return Promise.reject(err);
+      }
+      const { signal, ref = true } = options;
+      return settle(signal, ref, (resolve) => timers.setTimeout(resolve, after, value), timers.clearTimeout);
+    }
+    function setImmediate(value, options = kEmptyObject) {
+      try {
+        validate(undefined, options);
+      } catch (err) {
+        return Promise.reject(err);
+      }
+      const { signal, ref = true } = options;
+      return settle(signal, ref, (resolve) => timers.setImmediate(resolve, value), timers.clearImmediate);
+    }
+    async function* setInterval(after, value, options = kEmptyObject) {
+      validate(after, options);
+      const { signal, ref = true } = options;
+      if (signal?.aborted) throw new AbortError(undefined, { cause: signal.reason });
+      let onCancel;
+      let interval;
+      const follower = signal && followerOf(signal);
+      try {
+        let notYielded = 0;
+        let callback;
+        interval = timers.setInterval(() => {
+          notYielded++;
+          if (callback) {
+            callback();
+            callback = undefined;
+          }
+        }, after);
+        if (!ref) interval?.unref?.();
+        if (follower) {
+          onCancel = () => {
+            timers.clearInterval(interval);
+            if (callback) {
+              callback(Promise.reject(new AbortError(undefined, { cause: signal.reason })));
+              callback = undefined;
+            }
+          };
+          follower.addEventListener("abort", onCancel, { once: true });
+        }
+        while (!signal?.aborted) {
+          if (notYielded === 0) await new Promise((resolve) => (callback = resolve));
+          for (; notYielded > 0; notYielded--) yield value;
+        }
+        throw new AbortError(undefined, { cause: signal?.reason });
+      } finally {
+        timers.clearInterval(interval);
+        follower?.removeEventListener("abort", onCancel);
+      }
+    }
+    const kScheduler = Symbol("kScheduler");
+    class Scheduler {
+      constructor() {
+        throw new nodeErrorCodes.ERR_ILLEGAL_CONSTRUCTOR();
+      }
+      yield() {
+        if (!this[kScheduler]) throw new nodeErrorCodes.ERR_INVALID_THIS("Scheduler");
+        return setImmediate();
+      }
+      wait(delay, options) {
+        if (!this[kScheduler]) throw new nodeErrorCodes.ERR_INVALID_THIS("Scheduler");
+        return setTimeout(delay, undefined, options);
+      }
+    }
+    return {
+      setTimeout,
+      setImmediate,
+      setInterval,
+      scheduler: Reflect.construct(function () {
+        this[kScheduler] = true;
+      }, [], Scheduler),
+    };
+  }
+
+  // lib/timers.js's deprecated item timers (enroll, unenroll, active,
+  // _unrefActive): an object's _onTimeout run _idleTimeout ms after it is
+  // made active, on a platform timer of its own.
+  function legacyTimers() {
+    const { validateNumber } = require("internal/validators");
+    const TIMEOUT_MAX = 2 ** 31 - 1;
+    const handles = new WeakMap();
+    function getTimerDuration(msecs, name) {
+      validateNumber(msecs, name);
+      if (msecs < 0 || !Number.isFinite(msecs)) throw new nodeErrorCodes.ERR_OUT_OF_RANGE(name, "a non-negative finite number", msecs);
+      if (msecs > TIMEOUT_MAX) {
+        platform.process.emitWarning(msecs + " does not fit into a 32-bit signed integer.\nTimer duration was truncated to " + TIMEOUT_MAX + ".", "TimeoutOverflowWarning");
+        return TIMEOUT_MAX;
+      }
+      return msecs;
+    }
+    const stop = (item) => {
+      const handle = handles.get(item);
+      if (handle !== undefined) platform.timers.clearTimeout(handle);
+      handles.delete(item);
+    };
+    function unenroll(item) {
+      if (item._destroyed) return;
+      item._destroyed = true;
+      stop(item);
+      item._idleNext = null;
+      item._idlePrev = null;
+      item._idleTimeout = -1;
+    }
+    function enroll(item, msecs) {
+      msecs = getTimerDuration(msecs, "msecs");
+      if (item._idleNext) unenroll(item);
+      item._idleNext = item;
+      item._idlePrev = item;
+      item._idleTimeout = msecs;
+    }
+    function insertGuarded(item, refed) {
+      const msecs = item._idleTimeout;
+      if (msecs < 0 || msecs === undefined) return;
+      stop(item);
+      item._destroyed = false;
+      const handle = platform.timers.setTimeout(() => {
+        handles.delete(item);
+        item._idleNext = null;
+        item._idlePrev = null;
+        try {
+          if (typeof item._onTimeout === "function") item._onTimeout();
+        } finally {
+          if (!handles.has(item)) item._destroyed = true;
+        }
+      }, msecs);
+      if (!refed) handle?.unref?.();
+      handles.set(item, handle);
+    }
+    const { deprecate } = internalUtil;
+    return {
+      _unrefActive: deprecate((item) => insertGuarded(item, false), "timers._unrefActive() is deprecated. Please use timeout.refresh() instead.", "DEP0127"),
+      active: deprecate((item) => insertGuarded(item, true), "timers.active() is deprecated. Please use timeout.refresh() instead.", "DEP0126"),
+      unenroll: deprecate(unenroll, "timers.unenroll() is deprecated. Please use clearTimeout instead.", "DEP0096"),
+      enroll: deprecate(enroll, "timers.enroll() is deprecated. Please use setTimeout instead.", "DEP0095"),
+    };
+  }
 
   // src/node_dotenv.cc Dotenv::ParseContent, as util.parseEnv and
   // process.loadEnvFile read a .env file: keys in their bytes' order.
@@ -490,7 +675,7 @@ export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform)
   // Node's internal modules that are not its own text here, by id.
   const hosted = {
     "internal/util": internalUtil,
-    "internal/errors": { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable, isStackOverflowError, ErrnoException, ExceptionWithHostPort },
+    "internal/errors": { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable, isStackOverflowError, ErrnoException, ExceptionWithHostPort, AbortError },
     "internal/options": { getOptionValue: (name) => platform.optionValue(name) },
     "internal/constants": { CHAR_LOWERCASE_B: 98, CHAR_LOWERCASE_E: 101, CHAR_LOWERCASE_N: 110 },
     "internal/abort_controller": abortController,
@@ -532,8 +717,15 @@ export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform)
   // Node's own, each run once, its exports cached before it runs (a cycle
   // reads what it has exported so far), as Node's BuiltinModule does.
   const loaded = new Map();
+  // Node's modules ported here, each made the first time it is required.
+  const ported = { "timers/promises": timersPromises, "internal/timers/legacy": legacyTimers };
   function require(id) {
     if (Object.prototype.hasOwnProperty.call(hosted, id)) return hosted[id];
+    if (Object.prototype.hasOwnProperty.call(ported, id)) {
+      const made = ported[id]();
+      hosted[id] = made;
+      return made;
+    }
     const cached = loaded.get(id);
     if (cached !== undefined) return cached.exports;
     const source = platform.sources[id];

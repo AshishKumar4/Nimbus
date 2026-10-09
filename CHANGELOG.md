@@ -5,6 +5,41 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a second `astro dev` in the same session reset the session (the
+  dev server never answered, 502). The launch carries what the first one
+  learned, and its larger code pack outgrew the session's memory twice:
+  writing it encoded the whole pack beside the module text it came from,
+  and booting it read the pack's bytes beside the process's wasm images and
+  decoded them into one string, two bytes a character throughout if any
+  module held a non-Latin-1 one. A code pack is now written a module at a
+  time, and read first at boot and decoded a module at a time. Past those,
+  its module map, 68.5 MB with what the first run learned beside 39.4 MB of
+  wasm, was over the platform's 64 MiB ceiling on a dynamic Worker's map:
+  it was refused at start, and the session reset holding it. A launch's map
+  now carries what earlier runs learned only as far as that ceiling allows,
+  what they needed first kept first; what does not fit runs as it did in
+  the run that learned it.
+- Fixed: an unreferenced timer, interval or immediate (`.unref()`) kept a
+  node program running until it fired, and an unreferenced interval kept it
+  running forever. They now let the program exit, as in Node.
+- Changed: `timers`, `timers/promises`, `os`, `perf_hooks` and `stream/web`
+  in node programs are Node's.
+  - `require('timers').setTimeout` is the global `setTimeout`.
+  - `timers/promises` validates its arguments, rejects with `AbortError` when
+    its signal aborts, and has `scheduler`.
+  - The deprecated `timers.enroll`, `unenroll`, `active` and `_unrefActive`
+    are present.
+  - `os` adds `machine()`, `version()`, `devNull`, `getPriority()` and
+    `setPriority()`. `os.release()` and `uname -r` now report the same
+    release, `6.0.0-nimbus`; `uname -r` used to print `1.0.0`.
+  - `perf_hooks` adds Node's classes and `constants`.
+  - `stream/web` exports every Node class.
+  - Known limits: `perf_hooks.createHistogram` and `monitorEventLoopDelay`
+    throw `ERR_METHOD_NOT_IMPLEMENTED`. `os.getPriority` and `setPriority`
+    on another process throw ENOSYS.
+
+## 2026-10-09: platform 0.8.0, config 0.2.4, core 0.16.0, fabric 0.11.0, worker 0.14.0, loom 0.2.3, sdk 0.12.0, react 0.2.3, cli 0.2.3, create-nimbus-app 0.2.1, runtime-cpython 3.13.14-1
+
 - Changed: `util`, `assert`, `querystring` and `punycode` in node programs
   are Node 22.22.3's own library code, loaded on first use. Modules are
   Node's `Module` objects (`require.cache` is `Module._cache`), and a
@@ -13,9 +48,6 @@ published independently in the `@nimbus-sh` npm scope.
   `util.getCallSites` returns `[]` when a program has made both
   `Error.stackTraceLimit` and `Error.prepareStackTrace` non-writable and
   non-configurable.
-
-## 2026-10-08: platform 0.8.0, config 0.2.4, core 0.16.0, fabric 0.11.0, worker 0.14.0, loom 0.2.3, sdk 0.12.0, react 0.2.3, cli 0.2.3, create-nimbus-app 0.2.1, runtime-cpython 3.13.14-1
-
 - Fixed: the first `vite` or `vite build` of a create-vite Vue project
   failed. `@vitejs/plugin-vue` loads `vue/compiler-sfc` through a function
   that wraps `createRequire`, and the first run staged no module reached
