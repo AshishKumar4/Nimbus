@@ -87,6 +87,7 @@ import {
 /** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
 const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
 import { NpmCache } from '../npm/cache.js';
+import { NPM_BIN_MANIFEST_NAME, parseNpmBinManifest } from '../npm/bin-links.js';
 import { mayHaveDynamicImport } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
 import { relativeWasmPaths } from '@nimbus-sh/core/_shared/relative-wasm-paths.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
@@ -4394,6 +4395,17 @@ export async function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: st
   // A bin is usually launched by its node_modules/.bin link.
   let script: string;
   try { script = await vfs.realpath(scriptPath); } catch { return []; }
+  // Nimbus's bins are require() shims, not links: realpath still names
+  // .bin/tool. Its manifest names the package entry whose tool dependencies
+  // decide which configs to stage, exactly as a direct invocation does.
+  const slash = script.lastIndexOf('/');
+  if (slash >= 0) {
+    try {
+      const manifest = parseNpmBinManifest(await filesOf(vfs).readFileString(`${script.slice(0, slash)}/${NPM_BIN_MANIFEST_NAME}`));
+      const linked = manifest?.bins[script.slice(slash + 1)];
+      if (linked && await filesOf(vfs).exists(linked.targetPath)) script = await vfs.realpath(linked.targetPath);
+    } catch { /* no readable bin manifest: an ordinary script */ }
+  }
   const root = packageRootOf(script.replace(/^\/+/, ''));
   if (root === null) return [];
   let manifest: Record<string, unknown>;
