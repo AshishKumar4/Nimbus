@@ -2569,7 +2569,7 @@ export class SqliteVFS {
      * Recording every ancestor would cost O(depth) entries per write for no
      * additional coverage, since no facet view keys on a grandparent.
      */
-    bumpRevision(paths, structural = NO_STRUCTURAL_CHANGES) {
+    bumpRevision(paths, structural = NO_STRUCTURAL_CHANGES, committed) {
         this.resolutionEpoch++;
         for (const opened of this.openNodes) {
             if (opened.path === null)
@@ -2600,9 +2600,13 @@ export class SqliteVFS {
         }
         if (this.readLeases.size > 0)
             this.breakUnrecalledReadLeases(paths);
-        if (this._gen <= this._revision)
+        // A held commit's publication is at the generation it committed, while
+        // nothing published since passed it: a later commit still held is not in
+        // it, and it needs no generation (no write) of its own.
+        const own = committed !== undefined && committed > this._revision ? committed : null;
+        if (own === null && this._gen <= this._revision)
             this.advanceGeneration();
-        const rev = this._gen;
+        const rev = own ?? this._gen;
         this._revision = rev;
         const keys = paths.map((path) => normalizeVfsPath(path)).filter((key) => key !== '');
         this.pathRevisions.stamp(keys, rev);
@@ -3048,7 +3052,7 @@ export class SqliteVFS {
     newPipeline(writer) {
         let settle;
         const published = new Promise((resolve) => { settle = resolve; });
-        return { recalls: new Set(), publication: null, roots: new Map(), writer, published, settle };
+        return { recalls: new Set(), publication: null, committed: 0, roots: new Map(), writer, published, settle };
     }
     /** `run`, its commits `pipeline`'s. */
     inPipeline(pipeline, run) {
@@ -3090,6 +3094,7 @@ export class SqliteVFS {
             pipeline.writer ??= this.activeHolds;
             this.heldPipelines++;
         }
+        pipeline.committed = this._gen;
         const publication = pipeline.publication;
         for (const path of paths) {
             publication.paths.add(path);
@@ -3123,7 +3128,7 @@ export class SqliteVFS {
         // commit (another's publication) is below it, so every reader hears of it.
         try {
             if (publication.paths.size > 0)
-                this.bumpRevision([...publication.paths], publication.structural);
+                this.bumpRevision([...publication.paths], publication.structural, pipeline.committed);
             this.deliverEvents(publication.removedDirectories, () => {
                 for (const event of publication.events)
                     this.deliverMutation(event);
