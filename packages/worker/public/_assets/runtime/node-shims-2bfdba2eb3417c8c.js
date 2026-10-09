@@ -2679,6 +2679,15 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     // through the guest's proxy, it cannot pass the replay boundary notice.
     const afterRead = __nimbusReplay && __nimbusReplay.afterBoundary();
     if (afterRead) await afterRead;
+    const url = __fetchUrl(input);
+    if (url && (url.protocol === "http:" || url.protocol === "https:") && __loopbackHosts.has(url.hostname)
+      && __headerOf(input, init, "upgrade")?.toLowerCase() !== "websocket") {
+      const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
+      const own = __nimbusTryOwnHttp(port, input, init);
+      // No transport or coherence boundary: the client, native HTTP handler
+      // and response body all live in one process. Other ports still route.
+      if (own) return own;
+    }
     const release = globalThis.__nimbusVfsReleaseBarrier;
     if (typeof release === "function") await release();
     const pending = __resumeCoherent(__dispatch(input, init));
@@ -2710,6 +2719,7 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     if (typeof __orig !== "function") continue;
     try {
       Response.prototype[__name] = function(...args) {
+        if (__nimbusOwnHttpResponses.has(this)) return __nimbusTrackOp(__orig.apply(this, args));
         if (!__recordingNetwork) return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args)));
         const body = this.body;
         const pending = __orig.apply(this, args).then((value) => { __observeBody(body); return value; }, (error) => { __observeBody(body); throw error; });
@@ -14947,6 +14957,10 @@ builtins.console = __consoleMod;
 
 const __nativeHttpResponse = globalThis.Response;
 const __nativeHttpRequest = globalThis.Request;
+// Only this runtime's listener registrations can claim a local request. Neither
+// guest-writable globals nor a request/response header can select this path.
+let __nimbusTryOwnHttp = () => null;
+const __nimbusOwnHttpResponses = new WeakSet();
 const __nativeSplitHeaderFields = new Set(["host", "content-type", "user-agent", "referer", "authorization",
   "proxy-authorization", "if-modified-since", "if-unmodified-since", "from", "location", "max-forwards"]);
 Object.defineProperty(builtins, "http", {
@@ -14956,7 +14970,12 @@ Object.defineProperty(builtins, "http", {
       ? (__real_http.default ?? __real_http) : globalThis.process.getBuiltinModule("http");
     const net = typeof __real_net !== "undefined"
       ? (__real_net.default ?? __real_net) : globalThis.process.getBuiltinModule("net");
-    const ports = globalThis.__portRegistry ??= new Map();
+    const ports = new Map();
+    // The event loop reads listening handles; this is a view, not admission.
+    globalThis.__portRegistry = Object.freeze({
+      get: port => ports.get(port), has: port => ports.has(port),
+      values: () => ports.values(), get size() { return ports.size; },
+    });
     const pendingListeners = globalThis.__nimbusPendingHttpListeners ??= new Set();
     const context = { ports, get supervisor() { return __supervisor; }, get pending() { return __pendingIO; } };
     // Native clients keep consuming their IncomingMessage after fetch has
@@ -15134,13 +15153,13 @@ Object.defineProperty(builtins, "http", {
         return Reflect.apply(unref, this, []);
       };
     } else http.Server.prototype[patchKey](context);
-    globalThis.__nimbusServeHttp = async (request) => {
-      const port = Number(request.headers.get("X-Nimbus-Port") || 0);
-      const server = port ? ports.get(port) : ports.values().next().value;
+    const serveHttp = async (request, server, sameProcess) => {
       if (!server) return new __nativeHttpResponse("Nimbus: no HTTP server is listening in this process", { status: 502 });
       let acquired;
       try { acquired = JSON.parse(request.headers.get("X-Nimbus-Vfs-Acquired") || "null"); } catch {}
-      await __nimbusInboundBarrier(acquired);
+      // A local client and handler use the very same process filesystem view.
+      // External deliveries still acquire before the handler sees the request.
+      if (!sameProcess) await __nimbusInboundBarrier(acquired);
       const headers = new Headers(request.headers);
       headers.delete("X-Nimbus-Vfs-Acquired");
       const controller = new AbortController();
@@ -15196,6 +15215,21 @@ Object.defineProperty(builtins, "http", {
       try {
         return await Promise.race([dispatch(), deadline.promise]);
       } finally { clearTimeout(timer); detach(); server.removeListener("request", captureResponse); }
+    };
+    globalThis.__nimbusServeHttp = request => {
+      const port = Number(request.headers.get("X-Nimbus-Port") || 0);
+      return serveHttp(request, port ? ports.get(port) : ports.values().next().value, false);
+    };
+    __nimbusTryOwnHttp = (port, input, init) => {
+      const server = ports.get(port);
+      if (!server?.listening) return null;
+      const request = new __nativeHttpRequest(input, init);
+      // Dispatch after the caller's stack (including ClientRequest's finish
+      // listeners), as a native HTTP exchange does, never inside fetch().
+      return Promise.resolve().then(() => serveHttp(request, server, true)).then(response => {
+        __nimbusOwnHttpResponses.add(response);
+        return response;
+      });
     };
     Object.defineProperty(builtins, "http", { value: http, writable: true, enumerable: true, configurable: true });
     return http;

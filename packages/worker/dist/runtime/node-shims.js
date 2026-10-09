@@ -585,6 +585,15 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     // through the guest's proxy, it cannot pass the replay boundary notice.
     const afterRead = __nimbusReplay && __nimbusReplay.afterBoundary();
     if (afterRead) await afterRead;
+    const url = __fetchUrl(input);
+    if (url && (url.protocol === "http:" || url.protocol === "https:") && __loopbackHosts.has(url.hostname)
+      && __headerOf(input, init, "upgrade")?.toLowerCase() !== "websocket") {
+      const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
+      const own = __nimbusTryOwnHttp(port, input, init);
+      // No transport or coherence boundary: the client, native HTTP handler
+      // and response body all live in one process. Other ports still route.
+      if (own) return own;
+    }
     const release = globalThis.__nimbusVfsReleaseBarrier;
     if (typeof release === "function") await release();
     const pending = __resumeCoherent(__dispatch(input, init));
@@ -616,6 +625,7 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     if (typeof __orig !== "function") continue;
     try {
       Response.prototype[__name] = function(...args) {
+        if (__nimbusOwnHttpResponses.has(this)) return __nimbusTrackOp(__orig.apply(this, args));
         if (!__recordingNetwork) return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args)));
         const body = this.body;
         const pending = __orig.apply(this, args).then((value) => { __observeBody(body); return value; }, (error) => { __observeBody(body); throw error; });
