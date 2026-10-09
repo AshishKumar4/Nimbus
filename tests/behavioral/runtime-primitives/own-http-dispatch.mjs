@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mintSession, deleteSession, connectProcessTerminal, Terminal, heredocCommand } from '../_driver.mjs';
 
-async function exercise() {
+async function exercise(peerUrl) {
   const http = require('node:http');
   const fs = require('node:fs');
   const { spawn } = require('node:child_process');
@@ -12,7 +12,6 @@ async function exercise() {
   const deferred = () => Promise.withResolvers();
   const streamEnd = deferred();
   let phase = 'idle';
-  let peer;
   const closed = child => new Promise((resolve, reject) => {
     child.once('error', reject);
     child.once('close', (code) => code === 0 ? resolve() : reject(new Error('writer exit ' + code)));
@@ -61,12 +60,14 @@ async function exercise() {
     const url = 'http://localhost:' + server.address().port;
     const ready = async (base, body) => {
       const until = Date.now() + 30_000;
+      let last = '';
       for (;;) {
         try {
           const reply = await fetch(base + '/ready');
-          if (reply.ok && await reply.text() === body) return;
+          last = reply.status + ':' + await reply.text();
+          if (last === '200:' + body) return;
         } catch (error) { if (Date.now() >= until) throw error; }
-        if (Date.now() >= until) throw new Error('port did not become ready');
+        if (Date.now() >= until) throw new Error('port did not become ready: ' + last);
         await new Promise(resolve => setTimeout(resolve, 10));
       }
     };
@@ -137,16 +138,7 @@ async function exercise() {
     const seenPeer = await (await fetch(url + '/peer-write')).text();
     const seenPeerAtClient = fs.readFileSync(file, 'utf8');
 
-    const peerFile = work + '/peer.js';
-    fs.writeFileSync(peerFile, 'const h=require("node:http");const s=h.createServer((q,r)=>r.end("peer"));s.listen(0,"0.0.0.0",()=>console.log("PEER_PORT="+s.address().port));');
-    peer = spawn('node', [peerFile]);
-    const peerPort = await new Promise((resolve, reject) => {
-      let output = '';
-      peer.on('error', reject);
-      peer.stdout.on('data', part => { output += part; const match = /PEER_PORT=(\d+)/.exec(output); if (match) resolve(Number(match[1])); });
-      peer.once('exit', code => reject(new Error('peer exited before listen: ' + code)));
-    });
-    const peerUrl = 'http://localhost:' + peerPort;
+    if (!peerUrl) throw new Error('a separately launched serving process is required');
     await ready(peerUrl, 'peer');
     const crossFetch = await (await fetch(peerUrl + '/fetch')).text();
     const crossHttp = await new Promise((resolve, reject) => {
@@ -164,17 +156,28 @@ async function exercise() {
       coherence: [seenClient, seenServer, seenPeer, seenPeerAtClient], crossPid: [crossFetch, crossHttp], invalidHeader };
   } finally {
     streamEnd.resolve();
-    if (peer) {
-      const done = new Promise(resolve => peer.once('close', resolve));
-      peer.kill('SIGTERM'); await done;
-    }
     if (server.listening) await new Promise(resolve => server.close(resolve));
     fs.rmSync(work, { recursive: true, force: true });
   }
 }
 
-const program = `(${exercise.toString()})().then(result => console.log('OWN_HTTP_DIFFERENTIAL ' + JSON.stringify(result))).catch(error => { console.error(error.stack); process.exit(1); });`;
-const node = spawnSync('node', ['-e', program], { encoding: 'utf8', timeout: 60_000 });
+const program = `(${exercise.toString()})(process.env.OWN_HTTP_PEER_URL).then(result => console.log('OWN_HTTP_DIFFERENTIAL ' + JSON.stringify(result))).catch(error => { console.error('OWN_HTTP_DIFFERENTIAL_ERROR ' + error.stack); process.exit(1); });`;
+const peerProgram = 'const h=require("node:http");const s=h.createServer((q,r)=>r.end("peer"));s.listen(0,"0.0.0.0",()=>console.log("PEER_PORT="+s.address().port));';
+const hostPeer = spawn('node', ['-e', peerProgram]);
+let node;
+try {
+  const port = await new Promise((resolve, reject) => {
+    let output = '';
+    hostPeer.on('error', reject);
+    hostPeer.stdout.on('data', part => { output += part; const match = /PEER_PORT=(\d+)/.exec(output); if (match) resolve(Number(match[1])); });
+    hostPeer.once('exit', code => reject(new Error('host peer exited before listen: ' + code)));
+  });
+  node = spawnSync('node', ['-e', program], { encoding: 'utf8', timeout: 60_000,
+    env: { ...process.env, OWN_HTTP_PEER_URL: 'http://localhost:' + port } });
+} finally {
+  const done = new Promise(resolve => hostPeer.once('close', resolve));
+  hostPeer.kill('SIGTERM'); await done;
+}
 assert.equal(node.status, 0, node.stderr);
 const expected = JSON.parse(node.stdout.split('OWN_HTTP_DIFFERENTIAL ')[1]);
 assert.deepEqual(expected.coherence, ['client', 'server', 'peer-v2', 'peer-v2']);
@@ -187,13 +190,24 @@ const sid = await mintSession();
 const terminal = new Terminal(sid);
 try {
   await terminal.connect(); await terminal.waitForPrompt(30_000);
+  await terminal.run(heredocCommand('/home/user/own-http-peer.js', peerProgram), 30_000);
+  const peerStarted = await terminal.run('node /home/user/own-http-peer.js', 60_000);
+  let peerOutput = peerStarted.output;
+  if (!/PEER_PORT=\d+/.test(peerOutput)) {
+    const peerPid = Number(peerOutput.match(/(?:long-running\): |started[^\n]*?)pid=(\d+)/)?.[1] ?? 0);
+    assert.ok(peerPid, peerOutput);
+    const peerTerminal = await connectProcessTerminal(sid, peerPid);
+    await peerTerminal.waitFor(text => /PEER_PORT=\d+/.test(text), 30_000, 'peer listener');
+    peerOutput += '\n' + peerTerminal.output; peerTerminal.ws.close();
+  }
+  const peerPort = Number(peerOutput.match(/PEER_PORT=(\d+)/)[1]);
   await terminal.run(heredocCommand('/home/user/own-http.js', program), 30_000);
-  const started = await terminal.run('node /home/user/own-http.js', 120_000);
+  const started = await terminal.run('OWN_HTTP_PEER_URL=http://localhost:' + peerPort + ' node /home/user/own-http.js', 120_000);
   let output = started.output;
   const pid = Number(output.match(/(?:long-running\): |started[^\n]*?)pid=(\d+)/)?.[1] ?? 0);
   if (!output.includes('OWN_HTTP_DIFFERENTIAL ') && pid > 0) {
     const processTerminal = await connectProcessTerminal(sid, pid);
-    await processTerminal.waitFor(text => text.includes('OWN_HTTP_DIFFERENTIAL '), 180_000, 'own HTTP differential');
+    await processTerminal.waitFor(text => /OWN_HTTP_DIFFERENTIAL(?: |_ERROR )/.test(text), 180_000, 'own HTTP differential');
     output += '\n' + processTerminal.output; processTerminal.ws.close();
   }
   const actualLine = output.match(/OWN_HTTP_DIFFERENTIAL ([^\r\n]+)/)?.[1];
