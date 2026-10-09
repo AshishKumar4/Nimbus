@@ -5,6 +5,18 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: a program that listens serves, however it was started.
+  - `node app.js`, an npm bin or a `child_process` child whose server Nimbus could not see in its code used to run as a one-shot. Its port answered 501, or 502 once it was gone.
+  - Now its first `listen()` stops it, and Nimbus runs it on as a server (the same pid), replaying it up to that listen. What it printed before is shown once.
+  - Files it changed before it listened are checked against the first run, one by one, as the replay makes them again.
+  - A program that appended to a file, started a child, opened a connection or made a request before it listened cannot be run again. Its `listen()` throws an error naming what it did.
+- Changed: a bin that served once in a workspace starts as a server directly next time.
+  - Learned by its package's name and version, the bin, and its first argument.
+  - The known server CLIs (vite, next, astro, and the others) still start that way from their first launch.
+- Fixed: a `kill` sent while a process's earlier end was still waiting for its writes to drain was acknowledged but did nothing; the process kept running until the drain finished. The kill now takes effect at once, and its status is the one recorded.
+- Fixed: `opencode` run once (`opencode --version`, `opencode run …`) could reset the session; repeated runs reset it within a few dozen. Killing such a run now also ends the program, which used to run on after the session had let it go.
+- Fixed: a resident process whose filesystem could not be listed at boot reported a stale cause ("a change reported without the stat every name needs"). It now names the listing's own failure.
+
 - Fixed: a second `astro dev` in the same session reset the session (the
   dev server never answered, 502). The launch carries what the first one
   learned, and its larger code pack outgrew the session's memory twice:
