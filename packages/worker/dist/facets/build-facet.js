@@ -5,7 +5,9 @@ import { FacetCallDeadlineError, loadHelperFacet } from './helper-facet.js';
 import { ROLLDOWN_FACET_ASSET_PATH, ROLLDOWN_FACET_BUILD_ID, ROLLDOWN_FACET_SHA256 } from '../rolldown-facet-artifact.generated.js';
 import { fetchStagedText, stagedAsset } from '../runtime/staged-source.js';
 import { NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, fetchStagedBindingAsset, stagedBinding, } from '../runtime/staged-bindings.js';
-const ROLLDOWN = stagedBinding('rolldown');
+import { OWN_ROLLDOWN_VERSION } from '../napi-wasm-artifacts.generated.js';
+// The build of the rolldown Nimbus itself depends on, whose JavaScript the facet bundles.
+const ROLLDOWN = stagedBinding(`rolldown@${OWN_ROLLDOWN_VERSION}`);
 /**
  * The binding's linear memory past which the facet asks to be retired after
  * a call. It starts at 5.4 MiB and grows to the largest graph built, and never

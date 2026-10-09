@@ -1,9 +1,7 @@
-import { after, filesystemErrno, installAuthorityFilesystem } from '../wasi/filesystem.js';
+import { after, installAuthorityFilesystem, processGoneMessage, refusalErrno } from '../wasi/filesystem.js';
 import { supervisorFilesystem } from '../vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
-import { wasiOutputRelay } from '../wasi/stdio.js';
-import { outputControlReader } from '../wasi/output-control.js';
 const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
 // Sizing is measurement-grounded (local pre-gate stats): bash's deepest
 // observed asyncify capture is ~25 KiB (full control suite), so 8 MiB
@@ -47,8 +45,6 @@ function pipeLimitExceeded(s) { return new Error(pipeLimitMessage(s.pipeBudget))
 const pipeHost = (s) => (s.parking === 'jspi' ? 'jspi' : 'local');
 let S = null;
 let filesystem = null;
-let outputSupervisor = null;
-let inputSupervisor = null;
 function norm(p) {
     const parts = [];
     for (const seg of String(p).split('/')) {
@@ -82,25 +78,21 @@ function newSession(args) {
     if (!filesystem)
         throw new Error('bash requires a process filesystem capability');
     const cwd = args.cwd;
-    const outputControl = args.outputControls?.length ? outputControlReader(args.outputControls) : null;
-    const target = outputSupervisor;
-    if (!target)
-        throw new Error('bash requires a process stdio capability');
-    return {
+    const session = {
         mod, coreutils, coreutilsRoot: norm(args.coreutilsRoot), fs: filesystem, cwd, cred: args.cred, parking: args.parking, pipeBudget: pipeBudget(args.memoryBudgetBytes), pending: new Set(),
         argv: args.argv, environ: args.environ,
         stdinTty: !!args.stdinTty,
         stdin: { chunks: args.stdinData ? [te.encode(args.stdinData)] : [], queued: 0, closed: !!args.stdinClosed, waiters: [] },
-        processPid: args.processPid || 0, sharedInput: args.sharedInput === true,
         procs: new Map(), idle: [], pipes: new Map(), runnable: [], deferred: [], wake: null, suspended: new Set(), exitStatus: new Map(), heldExits: new Map(), waiters: [],
         pidNext: 100, pipeNext: 1, rootPid: 0, rootExit: null, steps: 0,
-        outputControl,
-        output: wasiOutputRelay({ stdout: bytes => target.stdout(bytes), stderr: bytes => { const data = outputControl ? outputControl.feed(bytes) : bytes; if (data.length)
-                return target.stderr(data); } }),
+        out: '', err: '',
         missingWasi: new Set(),
         stats: { instances: 0, reused: 0, memPeak: 0, mainHi: 0, slotHi: 0 },
         error: null,
+        processGone: null,
+        gone: (refusal) => { session.processGone ??= refusal; },
     };
+    return session;
 }
 function initStdinQueued(s) { s.stdin.queued = s.stdin.chunks.reduce((a, c) => a + c.length, 0); }
 function newPipe(s) { const id = s.pipeNext++; s.pipes.set(id, { chunks: [], queued: 0, readers: 1, writers: 1, readW: [], writeW: [] }); return id; }
@@ -388,7 +380,7 @@ function makeWasiFs(s, proc, DV, U8, io, memory, synchronous = false, resident) 
             crypto.getRandomValues(U8().subarray(p + i, p + Math.min(i + 65536, n))); return 0; },
         proc_exit(code) { throw new Exit(code); },
     };
-    installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, resident });
+    installAuthorityFilesystem(imports, { fs: () => s.fs, memory, fds: proc.fds, allocateFd: () => lowestFd(proc), synchronous, umask: () => s.cred.umask, residentBytes: WASI_RESIDENT_FILE_CAP_BYTES, resident, processGone: s.gone });
     installPreopenRehoming(proc, imports);
     return imports;
 }
@@ -429,12 +421,11 @@ function writeThroughFd(s, proc, fd, bytes) {
         wakePipe(s, pp);
         return bytes.length;
     }
-    if (!e || (e.kind !== 'stdout' && e.kind !== 'stderr'))
-        return null;
-    const owned = bytes.slice();
-    const delivered = e.kind === 'stderr' ? s.output.stderrBytes(owned) : s.output.stdoutBytes(owned);
-    if (delivered && typeof delivered.then === 'function')
-        queueSessionTask(s, Promise.resolve(delivered));
+    const text = td.decode(bytes);
+    if (e.kind === 'stderr')
+        s.err += text;
+    else
+        s.out += text;
     return bytes.length;
 }
 // Synchronous read for non-parking consumers (files, buffered pipes).
@@ -600,31 +591,8 @@ function blockTarget(s, proc, fd) {
     if (e && e.kind === 'pipe')
         return { list: s.pipes.get(e.pipeId).readW, wake: () => wakePipe(s, s.pipes.get(e.pipeId)) };
     if (e && e.kind === 'stdin')
-        return { list: s.stdin.waiters, wake: () => { wakeStdin(s); requestSharedInput(s); } };
+        return { list: s.stdin.waiters, wake: () => wakeStdin(s) };
     return null;
-}
-// A guest read takes at most one bounded packet from the common fd0 store.
-// Bash's pending read/fork table shares the unread remainder within this VM.
-function requestSharedInput(s) {
-    if (!s.sharedInput || s.inputPending || s.stdin.closed || s.stdin.queued)
-        return;
-    const read = inputSupervisor?.cpReadStdin;
-    if (!read)
-        throw new Error('bash requires the shared process stdin capability');
-    const pending = Promise.resolve(read.call(inputSupervisor, s.processPid, 5000, undefined, 64 * 1024)).then(packet => {
-        if (packet.data?.length) {
-            s.stdin.chunks.push(packet.data);
-            s.stdin.queued += packet.data.length;
-        }
-        if (packet.ended)
-            s.stdin.closed = true;
-        s.inputPending = undefined;
-        wakeStdin(s);
-        if (!s.stdin.queued && !s.stdin.closed)
-            requestSharedInput(s);
-    });
-    s.inputPending = pending;
-    queueSessionTask(s, pending);
 }
 // ── per-process bash instance ─────────────────────────────────────────
 function makeProc(s, pid, ppid, fds) {
@@ -659,7 +627,7 @@ function makeProc(s, pid, ppid, fds) {
             if (!(result instanceof Promise))
                 return result;
             const pending = { name, settled: false, value: 0, promise: Promise.resolve() };
-            pending.promise = result.then(value => { pending.value = value; pending.settled = true; }, error => { pending.value = filesystemErrno(error); pending.settled = true; });
+            pending.promise = result.then(value => { pending.value = value; pending.settled = true; }, error => { pending.value = refusalErrno(error, s.gone); pending.settled = true; });
             proc.pendingFs = pending;
             c.reason = 'filesystem';
             initHdr(proc.MAIN_BUF, MAIN_SIZE);
@@ -699,14 +667,6 @@ function makeProc(s, pid, ppid, fds) {
             // Only a host whose readers can wait lets a writer wait (pipes-design).
             if (s.parking !== 'jspi')
                 return undefined;
-            const outputWait = s.output.ready();
-            if (!writePipe(s, proc, fd) && outputWait) {
-                c.reason = 'blockwrite';
-                c.outputWait = outputWait;
-                initHdr(proc.MAIN_BUF, MAIN_SIZE);
-                proc.inst.exports.asyncify_start_unwind(proc.MAIN_BUF);
-                return WRITE_UNWOUND;
-            }
             const pp = writePipe(s, proc, fd);
             if (!pp || !atCapacity(pp))
                 return undefined;
@@ -900,7 +860,7 @@ function makeProc(s, pid, ppid, fds) {
             return 0;
         },
         // nimbus-proc.c reads these two as `errno = -r` on a negative return, so a
-        // failure has to arrive negated; filesystemErrno's positive value would be
+        // failure has to arrive negated; refusalErrno's positive value would be
         // handed back to bash as a live descriptor.
         dup: suspend('dup', async (o) => {
             const e = proc.fds.get(o);
@@ -914,7 +874,7 @@ function makeProc(s, pid, ppid, fds) {
                 return nf;
             }
             catch (error) {
-                return -filesystemErrno(error);
+                return -refusalErrno(error, s.gone);
             }
         }),
         dup2: suspend('dup2', async (o, n) => {
@@ -948,7 +908,7 @@ function makeProc(s, pid, ppid, fds) {
                 return n;
             }
             catch (error) {
-                return -filesystemErrno(error);
+                return -refusalErrno(error, s.gone);
             }
         }),
         kill: (pid, signal) => signalProc(s, proc, pid, signal),
@@ -1198,15 +1158,6 @@ function step(s, proc) {
     }
     else if (r === 'blockwrite') {
         trackArena(s, proc, proc.MAIN_BUF, MAIN_SIZE, false);
-        if (c.outputWait) {
-            const pending = c.outputWait;
-            c.outputWait = undefined;
-            queueSessionTask(s, pending.then(() => { if (s.procs.has(proc.pid)) {
-                proc.writeResumed = true;
-                resumeProc(proc);
-            } }));
-            return;
-        }
         const pp = writePipe(s, proc, c.writeFd);
         if (pp && atCapacity(pp))
             pp.writeW.push({ proc });
@@ -1270,7 +1221,7 @@ async function doExec(s, proc) {
             proc.ctx.resume = -45;
         }
         catch (error) {
-            proc.ctx.resume = -filesystemErrno(error);
+            proc.ctx.resume = -refusalErrno(error, s.gone);
         }
         resumeProc(proc);
         return;
@@ -1350,8 +1301,6 @@ async function doExec(s, proc) {
             if (!canPark)
                 return undefined;
             const pp = writePipe(s, proc, fd);
-            if (!pp)
-                return s.output.ready();
             if (!pp || !atCapacity(pp))
                 return undefined;
             // Parks until the pipe drains below its capacity or its readers leave;
@@ -1432,10 +1381,10 @@ async function doExec(s, proc) {
     const result = (produce, finish) => {
         try {
             const next = after(produce(), finish);
-            return next instanceof Promise ? next.catch(filesystemErrno) : next;
+            return next instanceof Promise ? next.catch((error) => refusalErrno(error, s.gone)) : next;
         }
         catch (error) {
-            return filesystemErrno(error);
+            return refusalErrno(error, s.gone);
         }
     };
     const native = {
@@ -1720,7 +1669,7 @@ async function pump(s) {
     try {
         while (s.runnable.length || s.pending.size || s.deferred.length) {
             if (!s.runnable.length) {
-                if (!s.sharedInput && s.stdin.waiters.length && !s.stdin.closed && s.stdin.queued === 0)
+                if (s.stdin.waiters.length && !s.stdin.closed && s.stdin.queued === 0)
                     break;
                 // A deferred child starts only once every pending fork and exec has
                 // settled, so the stages it reads from exist and have run what they can.
@@ -1742,27 +1691,24 @@ async function pump(s) {
     catch (e) {
         s.error = String(e && e.stack || e && e.message || e);
     }
-    const lost = await s.output.drain();
-    if (lost)
-        s.error = s.error || lost;
-    const out = '', err = '';
-    const control = s.outputControl ? { ...s.outputControl.values } : undefined;
-    if (s.outputControl)
-        for (const key of Object.keys(s.outputControl.values))
-            delete s.outputControl.values[key];
+    const out = s.out, err = s.err;
+    s.out = '';
+    s.err = '';
     const stats = { ...s.stats, steps: s.steps, missingWasi: [...s.missingWasi] };
     if (s.error) {
         S = null;
-        return { state: 'error', exitCode: 1, stdout: out, stderr: err, error: s.error, stats, control };
+        return { state: 'error', exitCode: 1, stdout: out, stderr: err, error: s.error, stats };
     }
     if (s.rootExit !== null || s.procs.size === 0) {
         const code = s.rootExit === null ? 0 : s.rootExit;
         await Promise.all(s.pending);
         S = null;
-        return { state: 'exited', exitCode: code, stdout: out, stderr: err, stats, control };
+        if (s.processGone !== null)
+            return { state: 'error', exitCode: code || 1, stdout: out, stderr: err, error: processGoneMessage(s.processGone), stats };
+        return { state: 'exited', exitCode: code, stdout: out, stderr: err, stats };
     }
     if (s.stdin.waiters.length > 0) {
-        return { state: 'need-input', exitCode: 0, stdout: out, stderr: err, stats, control };
+        return { state: 'need-input', exitCode: 0, stdout: out, stderr: err, stats };
     }
     S = null;
     return { state: 'error', exitCode: 1, stdout: out, stderr: err, error: 'bash-runner: deadlock — live procs with empty run queue', stats };
@@ -1793,11 +1739,8 @@ globalThis.__bashStep = async function __bashStep(raw, supervisor) {
         // A synchronous view exists only in the isolate that owns the filesystem,
         // which is where a guest that cannot park runs; across a hop the stub
         // answers the property with a callable, so it is read only for that host.
-        if (supervisor) {
+        if (supervisor)
             filesystem = supervisorFilesystem(supervisor, a.parking === 'none' ? supervisor.synchronous : undefined);
-            outputSupervisor = supervisor;
-            inputSupervisor = supervisor;
-        }
         return globalThis.__bashBoot(raw);
     }
     return { state: 'error', exitCode: 1, stdout: '', stderr: '', error: `bash-runner: unknown step op ${JSON.stringify(raw.op)}` };
@@ -1838,6 +1781,6 @@ globalThis.__bashFeed = async function __bashFeed(args) {
     catch (e) {
         const s = S;
         S = null;
-        return { state: 'error', exitCode: 1, stdout: '', stderr: '', error: 'feed failed: ' + String(e && e.message || e) };
+        return { state: 'error', exitCode: 1, stdout: s ? s.out : '', stderr: s ? s.err : '', error: 'feed failed: ' + String(e && e.message || e) };
     }
 };

@@ -130,6 +130,7 @@ export declare class SessionProcessSupervisor {
     setTerminator(pid: number, terminate: () => void): void;
     private terminate;
     cred(pid: number): VfsCred;
+    liveCred(pid: number): VfsCred;
     setUmask(pid: number, umask: number): number;
     /**
      * Observe every pid's FIRST transition out of `running`, whichever door it

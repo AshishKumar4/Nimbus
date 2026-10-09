@@ -359,9 +359,9 @@ interface FacetVfsState {
      */
     usesNodeSqlite?: boolean;
     /**
-     * Names of the staged napi bindings the closure requires
-     * (stagedBindingsRequiredBy), answered with `usesNodeSqlite`: the launch
-     * carries each, and the main module registers them.
+     * Keys (`<name>@<version>`) of the staged napi binding builds the closure
+     * requires (stagedBindingsRequiredBy), answered with `usesNodeSqlite`: the
+     * launch carries each, and the main module registers them.
      */
     stagedBindings?: string[];
     /**
@@ -1414,11 +1414,11 @@ export declare class FacetManager {
      */
     private _wasmModulesByValue;
     /**
-     * The module-map members of the staged napi bindings `names`, by value, for
-     * a one-shot facet (it has no disk reader at load): the shared loader and
-     * trampoline, and each binding. Fetched from the worker's own assets —
-     * L2-cached, digest-verified — inside the scope that holds the map, and
-     * dropped with it.
+     * The module-map members of the staged napi binding builds `names` (each
+     * `<name>@<version>`), by value, for a one-shot facet (it has no disk
+     * reader at load): the shared loader and trampoline, and each build.
+     * Fetched from the worker's own assets — L2-cached, digest-verified —
+     * inside the scope that holds the map, and dropped with it.
      */
     private _stagedBindingModulesByValue;
     /**
@@ -1435,8 +1435,8 @@ export declare class FacetManager {
     /** In-flight writes of the session's copies of staged bindings, by name; one writer each. */
     private stagedBindingWrites;
     /**
-     * The staged napi bindings `names` for a resident facet: the shared
-     * loader's text (the caller stores it through the image store with the rest
+     * The staged napi binding builds `names` (each `<name>@<version>`) for a
+     * resident facet: the shared loader's text (the caller stores it through the image store with the rest
      * of the map), the trampoline by value, and each binding by PATH. A
      * multi-megabyte member inline in the boot spec would sit in this isolate's
      * heap for the process's life; named by path it is read only while the

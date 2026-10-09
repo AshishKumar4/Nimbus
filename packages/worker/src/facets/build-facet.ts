@@ -19,8 +19,10 @@ import {
   fetchStagedBindingAsset,
   stagedBinding,
 } from '../runtime/staged-bindings.js';
+import { OWN_ROLLDOWN_VERSION } from '../napi-wasm-artifacts.generated.js';
 
-const ROLLDOWN = stagedBinding('rolldown');
+// The build of the rolldown Nimbus itself depends on, whose JavaScript the facet bundles.
+const ROLLDOWN = stagedBinding(`rolldown@${OWN_ROLLDOWN_VERSION}`);
 
 /**
  * The binding's linear memory past which the facet asks to be retired after

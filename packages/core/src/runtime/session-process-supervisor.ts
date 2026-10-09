@@ -256,6 +256,10 @@ export class SessionProcessSupervisor {
     return this.table.credOf(pid);
   }
 
+  liveCred(pid: number): VfsCred {
+    return this.table.liveCred(pid);
+  }
+
   setUmask(pid: number, umask: number): number {
     return this.table.setUmask(pid, umask);
   }

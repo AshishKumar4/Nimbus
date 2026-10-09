@@ -207,6 +207,9 @@ export class SessionProcessSupervisor {
     cred(pid) {
         return this.table.credOf(pid);
     }
+    liveCred(pid) {
+        return this.table.liveCred(pid);
+    }
     setUmask(pid, umask) {
         return this.table.setUmask(pid, umask);
     }

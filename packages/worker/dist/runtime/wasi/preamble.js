@@ -1,12 +1,9 @@
-import { installAuthorityFilesystem, WASI_ACCEPTED_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_TCP_PATH_PREFIX, } from '@nimbus-sh/core/runtime/wasi/filesystem.js';
+import { installAuthorityFilesystem, processGoneMessage, WASI_ACCEPTED_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_TCP_PATH_PREFIX, } from '@nimbus-sh/core/runtime/wasi/filesystem.js';
 import { answeringSupervisor, supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 import { residentFilesystem, } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
 import { sqlJournal } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
-import { processHost } from '@nimbus-sh/core/runtime/wasi/processes.js';
-import { wasiOutputRelay } from '@nimbus-sh/core/runtime/wasi/stdio.js';
-import { outputControlReader } from '@nimbus-sh/core/runtime/wasi/output-control.js';
 // errno constants
 const __WASI_ESUCCESS = 0;
 const __WASI_EAGAIN = 6;
@@ -15,7 +12,6 @@ const __WASI_EBADF = 8;
 const __WASI_ECONNREFUSED = 14;
 const __WASI_EEXIST = 20;
 const __WASI_EHOSTUNREACH = 23;
-const __WASI_EINTR = 27;
 const __WASI_EINVAL = 28;
 const __WASI_EIO = 29;
 const __WASI_EISDIR = 31;
@@ -116,7 +112,7 @@ const __WASI_STREAM_DEV = 1n << 32n;
 // before init answers EBADF against an empty descriptor table, which is true,
 // rather than trapping the guest.
 function __wasiEmptyFS() {
-    return { root: '', residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES, cred: null, pid: 0 };
+    return { root: '', residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES, cred: null };
 }
 let __wasiFS = __wasiEmptyFS();
 let __wasiPreopens = [];
@@ -136,6 +132,10 @@ let __wasiThreads = null;
 // compute-only instances) the guest has stdio, sockets and clocks but no
 // files, and a file syscall answers EBADF.
 let __wasiSup = null;
+// The session's refusal of this process (it no longer holds the pid: the
+// session restarted, or ended the process, while it ran). Each call it refuses
+// answers ESRCH; the run ends naming it (__wasiSettled).
+let __wasiProcessGone = null;
 // ── The process's own copy of the namespace ──────────────────────────────
 //
 // A filesystem syscall is a round trip to the session (5.9-12.7 ms for one
@@ -235,14 +235,21 @@ export function __wasiFsStats() {
  * reports one did not do what it said it did, and exits non-zero.
  */
 export async function __wasiSettleWrites() {
-    if (__wasiResident === null)
-        return null;
-    const failures = await __wasiResident.fs.settle();
-    if (failures.length === 0)
-        return null;
-    return failures
-        .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
-        .join('; ');
+    let failed = null;
+    try {
+        if (__wasiResident !== null) {
+            const failures = await __wasiResident.fs.settle();
+            if (failures.length > 0)
+                failed = failures
+                    .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
+                    .join('; ');
+        }
+    }
+    catch (error) {
+        if (__wasiProcessGone === null)
+            throw error;
+    }
+    return __wasiProcessGone === null ? failed : processGoneMessage(__wasiProcessGone);
 }
 /** Anything about to leave the process waits until what it wrote is in the session. */
 function __wasiSettleFirst(body) {
@@ -291,12 +298,12 @@ export function __wasiInitFS(opts) {
     // isolate across calls, so the previous tenant's stub must not answer the
     // next program's syscalls.
     __wasiSup = null;
+    __wasiProcessGone = null;
     __wasiFS = {
         root: __wasiCanonicalize(opts.root || ''),
         // Largest regular file the codec answers from a resident copy.
         residentFileCap: Number(opts.residentFileCap ?? WASI_RESIDENT_FILE_CAP_BYTES),
         cred: opts.cred ? { uid: Number(opts.cred.uid), gid: Number(opts.cred.gid), groups: [...(opts.cred.groups || [])].map(Number) } : null,
-        pid: Number(opts.pid ?? 0),
     };
     // A new process holds nothing of the last one's filesystem. Its run settled
     // what it held (__wasiSettleWrites); anything still held goes to the session
@@ -595,33 +602,6 @@ function __wasiAllocateFd() { return nextFd++; }
 const __WASI_PARK_CEILING_MS = 15000; // measured; deadline must stay under
 const __WASI_PARK_DEADLINE_MS = 10000;
 void __WASI_PARK_CEILING_MS;
-/**
- * A process's stdout and stderr live, through the session's stdout and
- * stderr calls, as a node process's go: in order, byte for byte, and without
- * a round trip per write. Past __WASI_OUTPUT_IN_FLIGHT_BYTES in flight a
- * write waits for the session to take some (its bytes are queued either way,
- * so the wait is bounded and never repeats a write). `drain` settles once
- * everything was taken, with the error of a call the session refused, whose
- * output is lost.
- */
-function __wasiSupervisorOutput(sup) {
-    return wasiOutputRelay(sup);
-}
-/**
- * This process's news tracker. Its reports reach the session in order, and
- * one the session cannot take is dropped: it says the process is not work,
- * and must not make it fail.
- */
-function __wasiChildNews() {
-    let chain = Promise.resolve();
-    return __wasiCreateChildNews((report) => {
-        chain = chain.then(async () => {
-            const sup = __wasiSup;
-            if (typeof sup?.cpBlocked === 'function')
-                await sup.cpBlocked(report);
-        }).catch(() => { });
-    });
-}
 function withParkDeadline(fn) {
     return function parkGuarded(...args) {
         const r = fn.apply(this, args);
@@ -690,7 +670,10 @@ export function __wasiMakeImports(opts) {
         dv.setUint32(off + 4, hi, true);
     }
     function readPath(ptr, len) {
-        const bytes = u8().subarray(ptr, ptr + len);
+        // By the constructor, not subarray: past 128 MiB of guest memory a
+        // Worker refuses a subarray's begin (wasi/filesystem.ts, guestBytes).
+        const mem = u8();
+        const bytes = new Uint8Array(mem.buffer, mem.byteOffset + ptr, Math.max(0, Math.min(len, mem.length - ptr)));
         return utf8dec.decode(bytes);
     }
     let stdoutBuf = '';
@@ -700,10 +683,6 @@ export function __wasiMakeImports(opts) {
     // it too would grow stdoutBuf/stderrBuf without bound inside the facet. Absent
     // a sink the buffer stays readable via getStdout()/getStderr().
     function appendStream(kind, bytes) {
-        const raw = kind === 'stdout' ? opts.stdoutBytes : opts.stderrBytes;
-        // fd_write hands over a copy of the guest's buffer: it is the sink's to keep.
-        if (raw)
-            return raw(bytes);
         const s = utf8dec.decode(bytes);
         if (kind === 'stdout') {
             if (opts.stdoutWrite)
@@ -718,25 +697,6 @@ export function __wasiMakeImports(opts) {
                 stderrBuf += s;
         }
     }
-    // Children and pipes (wasi/processes.ts): the nimbus_proc imports, and the
-    // pipe descriptors they make, answered ahead of every other kind (below,
-    // after the watchdog) and polled with the rest (poll_oneoff). A wait on a
-    // child or a pipe is bounded there (EINTR at PROCESS_PARK_MS), so the guest
-    // retries instead of being handed the watchdog's EAGAIN.
-    const proc = processHost({
-        fds: fdTable,
-        input: opts.stdinRead,
-        allocateFd: __wasiAllocateFd,
-        memory: opts.getMemory,
-        supervisor: () => __wasiSup,
-        pid: __wasiFS.pid,
-        output: (fd, bytes) => appendStream(fd === 1 ? 'stdout' : 'stderr', bytes),
-        release: async () => { if (__wasiResident?.fs.holding())
-            await __wasiResident.fs.flush(); },
-        inbound: () => { __wasiResident?.fs.inbound(); },
-        news: __wasiChildNews(),
-        cred: () => __wasiFS.cred ?? null,
-    });
     const imports = {
         // ── args / env ──
         args_get(argvPtr, argvBufPtr) {
@@ -833,11 +793,7 @@ export function __wasiMakeImports(opts) {
             if (sockEntry && sockEntry.kind === 'socket') {
                 return __rawSockSend(fd, iovsPtr, iovsLen, 0, nwrittenPtr);
             }
-            // The guest's stdout or stderr, under whatever number it dup'd it to.
-            const stream = sockEntry?.kind === 'stdout' || sockEntry?.kind === 'stderr'
-                ? sockEntry.kind
-                : fd === 1 ? 'stdout' : fd === 2 ? 'stderr' : null;
-            if (stream === null)
+            if (fd !== 1 && fd !== 2)
                 return __WASI_EBADF;
             const dv = view();
             const memU8 = u8();
@@ -865,10 +821,9 @@ export function __wasiMakeImports(opts) {
                     off += p.length;
                 }
             }
-            const taken = appendStream(stream, combined);
+            appendStream(fd === 1 ? 'stdout' : 'stderr', combined);
             writeU32LE(nwrittenPtr, total);
-            // A sink that pushes back hands a promise; any other value it returns is no answer.
-            return taken && typeof taken.then === 'function' ? Promise.resolve(taken).then(() => __WASI_ESUCCESS) : __WASI_ESUCCESS;
+            return __WASI_ESUCCESS;
         },
         fd_seek(fd, _offsetArg, _whence, _newOffsetPtr) {
             // Seeking a pipe/tty is ESPIPE — lets guests detect non-seekable
@@ -923,7 +878,7 @@ export function __wasiMakeImports(opts) {
                 return __WASI_EBADF;
             // Sockets track the mask too: guests set O_NONBLOCK on a socket and
             // then read it back through fd_fdstat_get.
-            if (entry.kind === 'socket' || entry.kind === 'listener' || entry.kind === 'pipe')
+            if (entry.kind === 'socket' || entry.kind === 'listener')
                 entry.fdflags = flags;
             return __WASI_ESUCCESS;
         },
@@ -1043,10 +998,6 @@ export function __wasiMakeImports(opts) {
                 // Guests fstat a socket fd to learn it is not a regular file (Ruby's
                 // IO layer keys buffering and seekability off exactly this).
                 ftype = __WASI_FT_SOCKET_STREAM;
-            }
-            else if (entry.kind === 'pipe') {
-                // WASI has no FIFO type; wasmtime calls a pipe unknown too.
-                ftype = __WASI_FT_UNKNOWN;
             }
             else
                 return __WASI_EBADF;
@@ -1169,7 +1120,7 @@ export function __wasiMakeImports(opts) {
             let off = 0;
             while (off < bufLen) {
                 const n = Math.min(bufLen - off, CHUNK);
-                crypto.getRandomValues(memU8.subarray(bufPtr + off, bufPtr + off + n));
+                crypto.getRandomValues(new Uint8Array(memU8.buffer, memU8.byteOffset + bufPtr + off, n));
                 off += n;
             }
             return __WASI_ESUCCESS;
@@ -1253,8 +1204,6 @@ export function __wasiMakeImports(opts) {
             // readerLocks[i] holds a {reader, fd} pair so we can releaseLock
             // after the race.
             const timerIds = new Array(subs.length).fill(null);
-            // Waits on pipes, cancelled once the poll returns without them.
-            const pipeWaits = new Array(subs.length);
             const readerLocks = [];
             const monoNowNs = () => {
                 const ms = (typeof performance !== 'undefined' && performance.now)
@@ -1303,19 +1252,6 @@ export function __wasiMakeImports(opts) {
                     return Promise.resolve({
                         idx: s.idx, error: __WASI_EBADF, type: s.tag, nbytes: 0n, flags: 0,
                     });
-                }
-                // A pipe (wasi/processes.ts): ready as its other end makes it. One
-                // that waited PROCESS_PARK_MS gives up, and so does the poll (EINTR,
-                // below), before the watchdog's EAGAIN, which git's poll loop dies on.
-                if (entry.kind === 'pipe') {
-                    const toEvent = (r) => r === null
-                        ? { idx: s.idx, error: __WASI_EINTR, type: s.tag, nbytes: 0n, flags: 0 }
-                        : { idx: s.idx, error: __WASI_ESUCCESS, type: s.tag, nbytes: BigInt(r.nbytes), flags: r.hangup ? 1 : 0 };
-                    const found = proc.readiness(s.fd, s.tag === __WASI_EVENTTYPE_FD_READ ? 'read' : 'write');
-                    if (!('ready' in found))
-                        return Promise.resolve(toEvent(found));
-                    pipeWaits[s.idx] = found.cancel;
-                    return found.ready.then(toEvent);
                 }
                 // Regular files, dirs, stdio: always ready (POSIX: regular files
                 // never block — read returns immediately even if at EOF). Files and
@@ -1458,13 +1394,7 @@ export function __wasiMakeImports(opts) {
                         catch { }
                         timerIds[i] = null;
                     }
-                    pipeWaits[i]?.();
                 }
-            }
-            // Only a pipe's wait that gave up wins with EINTR: nothing else was ready.
-            if (winnerResult.error === __WASI_EINTR) {
-                writeU32LE(retNeventsPtr, 0);
-                return __WASI_EINTR;
             }
             // Write events.
             let nevents = 0;
@@ -1737,32 +1667,6 @@ export function __wasiMakeImports(opts) {
             }
         },
     };
-    // The Nimbus filesystem extension (core wasi/types.ts NimbusFsImports):
-    // the codec answers its files and directories; a stream's (stdio, a pipe,
-    // a socket) status is preview1's, with the mode its kind has.
-    const fsImport = {
-        fd_stat(fd, out) {
-            const kind = fdTable.get(fd)?.kind;
-            const format = kind === 'stdin' || kind === 'stdout' || kind === 'stderr' ? 0o020620
-                : kind === 'pipe' ? 0o010600
-                    : kind === 'socket' || kind === 'listener' ? 0o140777
-                        : null;
-            if (format === null)
-                return __WASI_EBADF;
-            const answered = filestatGet(fd, out);
-            const finish = (errno) => {
-                if (errno !== __WASI_ESUCCESS)
-                    return errno;
-                const dv = view();
-                dv.setUint32(out + 64, format, true);
-                dv.setUint32(out + 68, __wasiFS.cred?.uid ?? 0, true);
-                dv.setUint32(out + 72, __wasiFS.cred?.gid ?? 0, true);
-                dv.setUint32(out + 76, 0, true);
-                return __WASI_ESUCCESS;
-            };
-            return answered instanceof Promise ? answered.then(finish) : finish(answered);
-        },
-    };
     installAuthorityFilesystem(imports, {
         fs: () => __wasiFilesystem(opts.parking),
         memory: opts.getMemory,
@@ -1771,11 +1675,8 @@ export function __wasiMakeImports(opts) {
         abi: opts.abi,
         synchronous: opts.parking === 'none',
         residentBytes: __wasiFS.residentFileCap,
-        extension: fsImport,
+        processGone: (refusal) => { __wasiProcessGone ??= refusal; },
     });
-    // fd_filestat_get as answered, before the guest's table is made Suspending:
-    // a Suspending function called from JS is not a wasm call, and traps.
-    const filestatGet = imports.fd_filestat_get;
     // Where something leaves the guest: a socket's bytes (fd_write on a socket
     // comes here too, through the raw capture below). A peer that hears from
     // the guest then finds what the guest wrote before it spoke.
@@ -1833,51 +1734,6 @@ export function __wasiMakeImports(opts) {
             const result = readAny.apply(this, args);
             return kind === 'socket' || kind === 'listener' ? __wasiInbound(result) : result;
         };
-    }
-    {
-        const readAll = imports.fd_read;
-        const writeAll = imports.fd_write;
-        const closeAll = imports.fd_close;
-        const fdstat = imports.fd_fdstat_get;
-        imports.fd_read = function pipeRead(...args) {
-            const [fd, iovs, iovsLen, nread] = args;
-            return proc.read(fd, iovs, iovsLen, nread) ?? readAll.apply(this, args);
-        };
-        imports.fd_write = function pipeWrite(...args) {
-            const [fd, iovs, iovsLen, nwritten] = args;
-            return proc.write(fd, iovs, iovsLen, nwritten) ?? writeAll.apply(this, args);
-        };
-        imports.fd_close = function pipeClose(...args) {
-            return proc.close(args[0]) ?? closeAll.apply(this, args);
-        };
-        imports.fd_fdstat_get = function pipeFdstat(...args) {
-            const [fd, statPtr] = args;
-            const entry = fdTable.get(fd);
-            if (entry?.kind !== 'pipe')
-                return fdstat.apply(this, args);
-            // A pipe: no file type of its own in WASI, read/write per its end.
-            const dv = view();
-            dv.setUint8(statPtr, __WASI_FT_UNKNOWN);
-            dv.setUint8(statPtr + 1, 0);
-            dv.setUint16(statPtr + 2, entry.fdflags ?? 0, true);
-            dv.setBigUint64(statPtr + 8, 0x3fffffffn, true);
-            dv.setBigUint64(statPtr + 16, 0n, true);
-            return __WASI_ESUCCESS;
-        };
-    }
-    const procImport = { ...proc.imports };
-    // The extension's calls park as the filesystem's do, under the same watchdog.
-    const fsTable = fsImport;
-    for (const name of Object.keys(fsTable))
-        fsTable[name] = withParkDeadline(fsTable[name]);
-    if (opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function') {
-        for (const name of Object.keys(fsTable))
-            fsTable[name] = new WebAssembly.Suspending(fsTable[name]);
-    }
-    if (opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function') {
-        for (const name of Object.keys(procImport)) {
-            procImport[name] = new WebAssembly.Suspending(procImport[name]);
-        }
     }
     // How this instance is allowed to block — a parameter, because it is a
     // property of the CALLER, not of WASI.
@@ -1956,9 +1812,6 @@ export function __wasiMakeImports(opts) {
     }
     return {
         wasiImport: imports,
-        procImport,
-        procDispose: () => proc.dispose(),
-        fsImport: fsImport,
         getStdout: () => stdoutBuf,
         getStderr: () => stderrBuf,
     };
@@ -2039,6 +1892,4 @@ async function __wasiSettled(result) {
 // not typecheck in the supervisor bundle the body is authored in.
 globalThis.__wasiAdoptSupervisor = __wasiAdoptSupervisor;
 globalThis.__wasiSettleWrites = __wasiSettleWrites;
-globalThis.__wasiSupervisorOutput = __wasiSupervisorOutput;
-globalThis.__wasiOutputControl = outputControlReader;
 // ── END: wasi-instance preamble ─────────────────────────────────────────

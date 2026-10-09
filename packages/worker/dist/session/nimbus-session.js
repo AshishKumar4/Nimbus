@@ -218,7 +218,12 @@ export class NimbusSession extends CloudflareDurableObject {
         return this.runtimeWorkspace.runtimes;
     }
     async routeLoopback(port, request) {
-        return routeSessionLoopback({ ctx: this.ctx, env: this.env, portRegistry: this.portRegistry }, port, request);
+        return routeSessionLoopback({
+            ctx: this.ctx,
+            env: this.env,
+            portRegistry: this.portRegistry,
+            ensureDurableAppOnPort: (dark) => this.ensureDurableAppOnPort(dark),
+        }, port, request);
     }
     async ensureRuntimeReady() {
         if (this.shell)
