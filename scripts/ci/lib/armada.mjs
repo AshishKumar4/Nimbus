@@ -20,7 +20,7 @@ const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'
 // pin is the client the deployed Worker is proven with: move both together.
 const ARMADA_DIR = join(homedir(), '.local/share/nimbus/armada-client');
 export const ARMADA_REPO = 'https://github.com/AshishKumar4/armada';
-export const ARMADA_CLIENT = 'f46fb8c74c893854f1e8c46993048bdc33d6a8a0';
+export const ARMADA_CLIENT = '9df0e7bcb9b41954e28ac10e41cdb6020898bdd0';
 
 // Nimbus's own armada deployment (`nimbus-armada`, its own Worker, bucket
 // and fleet cap): every Nimbus script reaches it, and only it, through here.
@@ -150,7 +150,7 @@ export async function mapOnArmada({ repo, sha, files, setup, items, command, env
   Object.assign(process.env, armadaEnv());
   const { connect } = await import(join(armadaDir, 'src', 'sdk.ts'));
   const { argvOf, cancelOnInterrupt, onCommit } = await import(join(armadaDir, 'src', 'ci.ts'));
-  const { cmd } = await import(join(armadaDir, 'src', 'task.ts'));
+  const { commandTask } = await import(join(armadaDir, 'src', 'task.ts'));
   /** @type {OverlayFile[]} */
   const overlay = [...RECIPE, ...files];
   if (setup) {
@@ -172,7 +172,7 @@ export async function mapOnArmada({ repo, sha, files, setup, items, command, env
   process.once('exit', dropRef);
   try {
     log(`armada: ${sha.slice(0, 12)} as ${commit.slice(0, 12)} (its tree plus ${overlay.map((file) => (typeof file === 'string' ? file : file.path)).join(', ')})`);
-    return { commit, ...await runJob({ armada: connect(), client: { argvOf, cancelOnInterrupt, cmd, onCommit }, repo, commit, items, command, env, label, pool, timeout, log }) };
+    return { commit, ...await runJob({ armada: connect(), client: { argvOf, cancelOnInterrupt, commandTask, onCommit }, repo, commit, items, command, env, label, pool, timeout, log }) };
   } finally {
     process.off('exit', dropRef);
     dropRef();
@@ -196,8 +196,8 @@ async function runJob({ armada, client, repo, commit, items, command, env, label
   } finally {
     process.chdir(cwd);
   }
-  const task = client.cmd(where.recipe, client.argvOf(command, where.recipe), { output: 'text', timeout });
-  const job = task.map(items, { armada, pool, label, env: { ...where.env, ...env }, tmpfs: where.tmpfs });
+  const task = client.commandTask(where.recipe, client.argvOf(command, where.recipe), { output: 'text', timeout });
+  const job = task.stream(items, { armada, pool, label, env: { ...where.env, ...env }, tmpfs: where.tmpfs });
   const id = await job.id;
   log(`armada: job ${id}`);
   let phase = '';
