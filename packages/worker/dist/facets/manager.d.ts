@@ -317,6 +317,12 @@ interface FacetVfsState {
     reachableCount: number;
     /** Diagnostics: was the bundle truncated by the encoded-size cap? */
     truncated: boolean;
+    /**
+     * The raw bytes the snapshot's guard counted for the cells it kept: a
+     * cell's file where the map carries it, and its emit. What a build again
+     * under the ceiling on the map lowers its bound from (_rebuildUnderCeiling).
+     */
+    rawBytes?: number;
     /** Diagnostics: how the build's transforms were answered. */
     transforms?: BundleCellTransformStats;
     /**
@@ -422,6 +428,38 @@ export declare function releaseSerializedSources(vfsState: FacetVfsState): void;
  * marks the state instead of trusting callers to stop.
  */
 export declare function releaseGeneratedSources(vfsState: FacetVfsState): void;
+/**
+ * A launch's map is over the ceiling with none of the runtime code earlier
+ * runs learned in it, by `over` bytes: its walked modules take it there. The
+ * launch is built again once under a bound that much lower
+ * (_rebuildUnderCeiling); a map still over fails the launch here, by name,
+ * before any of it is stored or loaded.
+ */
+export declare class ModuleMapOverCeilingError extends Error {
+    readonly over: number;
+    constructor(over: number);
+}
+/**
+ * The UTF-8 bytes of a generated map's text (its main module, data modules
+ * and code modules), as the platform counts them; null when they cannot
+ * reach `room`. Text of N UTF-16 units is at most 3N bytes, so a map that
+ * small is answered without being read.
+ */
+export declare function generatedMapTextBytes(generated: GeneratedNodeFacetCode, room: number): number | null;
+/**
+ * The learned runtime code (`gen/<key>.js`) a map of `bytes` keeps under
+ * `room`: in the order its runs first needed it (the guest's ledger, kept by
+ * the launch's profile), each piece that still fits beside what the map holds
+ * without any of it. `learned` is each piece's key and module bytes; a piece
+ * also costs its key in the main module's list of staged keys (`"<key>"`, and
+ * a comma after the first). `over` is what the map holds past `room` with
+ * none of it. What is not kept runs as it did in the run that learned it:
+ * interpreted (core/_shared/commonjs-cell.ts, RUNTIME CODE).
+ */
+export declare function learnedRuntimeCodeWithin(bytes: number, learned: ReadonlyArray<readonly [key: string, bytes: number]>, room: number): {
+    kept: string[];
+    over: number;
+};
 interface FacetVfsBundleSource {
     /** The data cells: an inline expression, or one joining the side modules. */
     expression: string;
@@ -1528,6 +1566,33 @@ export declare class FacetManager {
      */
     private _closureStaticRefs;
     private _buildProcessBundle;
+    /**
+     * Generate a launch's map under the ceiling on it. `others` is what the rest
+     * of the map holds (its wasm images, staged bindings and sidecars), sized
+     * by the caller; `generate` makes the map's text from a state. A map over
+     * the ceiling keeps the learned runtime code learnedRuntimeCodeWithin
+     * keeps and is made again from the state without the rest; one over it
+     * with none of it throws ModuleMapOverCeilingError.
+     */
+    private _generateUnderCeiling;
+    /**
+     * Build a launch's state again when its map was over the ceiling with none
+     * of its learned code (ModuleMapOverCeilingError), `over` bytes past it:
+     * under a bound on its walked modules that much below what the state's
+     * took, what earlier runs executed as optional roots (staged as far as the
+     * bound allows, the first-learned first; the rest load late, as the run
+     * that learned them loaded them), in place of what the cache held. Every
+     * cell costs the map at least its raw bytes, so the map comes in at least
+     * `over` lower; a closure that does not fit the bound fails by name
+     * (ClosureBoundExceededError), as one past its bound always has.
+     */
+    private _rebuildUnderCeiling;
+    /**
+     * What a resident's map holds beside its generated text: its sidecars, its
+     * staged bindings' loader and trampoline, and the wasm images and bindings
+     * it reads by path at boot, at their size on the session's disk.
+     */
+    private _residentMemberBytes;
     /**
      * Admit an entry and evict, oldest first, until the LRU is inside BOTH its
      * entry count and its byte bound.

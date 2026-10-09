@@ -298,17 +298,6 @@
   "extra": [],
   "type": []
  },
- "os": {
-  "missing": [
-   "devNull",
-   "getPriority",
-   "machine",
-   "setPriority",
-   "version"
-  ],
-  "extra": [],
-  "type": []
- },
  "path": {
   "missing": [
    "_makeLong"
@@ -326,22 +315,6 @@
  "path/win32": {
   "missing": [
    "_makeLong"
-  ],
-  "extra": [],
-  "type": []
- },
- "perf_hooks": {
-  "missing": [
-   "Performance",
-   "PerformanceEntry",
-   "PerformanceMark",
-   "PerformanceMeasure",
-   "PerformanceObserver",
-   "PerformanceObserverEntryList",
-   "PerformanceResourceTiming",
-   "constants",
-   "createHistogram",
-   "monitorEventLoopDelay"
   ],
   "extra": [],
   "type": []
@@ -450,38 +423,6 @@
    "_Transform",
    "_Writable"
   ],
-  "type": []
- },
- "stream/web": {
-  "missing": [
-   "CompressionStream",
-   "DecompressionStream",
-   "ReadableByteStreamController",
-   "ReadableStreamBYOBReader",
-   "ReadableStreamBYOBRequest",
-   "TextDecoderStream",
-   "TextEncoderStream",
-   "TransformStreamDefaultController",
-   "WritableStreamDefaultController"
-  ],
-  "extra": [],
-  "type": []
- },
- "timers": {
-  "missing": [
-   "_unrefActive",
-   "active",
-   "enroll",
-   "unenroll"
-  ],
-  "extra": [],
-  "type": []
- },
- "timers/promises": {
-  "missing": [
-   "scheduler"
-  ],
-  "extra": [],
   "type": []
  },
  "tls": {

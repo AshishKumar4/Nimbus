@@ -394,6 +394,108 @@ Object.defineProperty(Error, 'stackTraceLimit', { value: 0, writable: true, enum
 Object.defineProperty(Error, 'prepareStackTrace', { value: (e, s) => { formatted++; return 'pinned'; }, writable: true, enumerable: false, configurable: false });
 console.log('pinned writable ' + JSON.stringify(sites()) + ' ' + message() + ' ' + formatted + ' ' + descriptors() + ' ' + new Error('e').stack);
 `,
+  'os.cjs': SHOW + String.raw`
+const os = require('os');
+const { execFile } = require('child_process');
+const show2 = (label, f) => { try { const r = f(); console.log(label + ': ' + JSON.stringify(r)); } catch (e) { show(label, e); } };
+// The system's identity is uname's (on each side its own system's).
+const uname = (flag) => new Promise((resolve, reject) => execFile('uname', [flag], { encoding: 'utf8' }, (e, out) => (e ? reject(e) : resolve(out.trim()))));
+(async () => {
+const [s, r, v, m, n] = await Promise.all(['-s', '-r', '-v', '-m', '-n'].map(uname));
+show2('identity is uname', () => [os.type() === s, os.release() === r, os.version() === v, os.machine() === m, os.hostname() === n]);
+show2('devNull', () => os.devNull);
+show2('getPriority', () => [os.getPriority(), os.getPriority(process.pid)]);
+show2('getPriority type', () => os.getPriority('x'));
+show2('getPriority float', () => os.getPriority(1.5));
+show2('setPriority range', () => os.setPriority(30));
+show2('setPriority float', () => os.setPriority(0, 1.5));
+show2('setPriority none', () => os.setPriority());
+show2('setPriority raise', () => [os.setPriority(10), os.getPriority()]);
+show2('setPriority lower', () => os.setPriority(5));
+show2('setPriority lower info', () => { try { os.setPriority(0, 0); } catch (e) { return [e.info, e.errno, e.syscall]; } });
+show2('still', () => os.getPriority());
+})();
+`,
+  'perf.cjs': SHOW + String.raw`
+const ph = require('perf_hooks');
+const show2 = (label, f) => { try { const r = f(); console.log(label + ': ' + JSON.stringify(r)); } catch (e) { show(label, e); } };
+show2('identity', () => [ph.performance === globalThis.performance, ph.PerformanceEntry === globalThis.PerformanceEntry, ph.PerformanceObserver === globalThis.PerformanceObserver, ph.PerformanceMark === globalThis.PerformanceMark]);
+show2('kinds', () => Object.keys(ph).map((k) => k + ':' + typeof ph[k]));
+show2('mark', () => { const m = ph.performance.mark('m1', { detail: { a: 1 } }); return [m.name, m.entryType, m.detail, m instanceof ph.PerformanceMark]; });
+show2('measure', () => { ph.performance.mark('m2'); const m = ph.performance.measure('span', 'm1', 'm2'); return [m.name, m.entryType, typeof m.duration]; });
+show2('entries', () => ph.performance.getEntriesByType('mark').map((e) => e.name));
+show2('constants', () => [ph.constants.NODE_PERFORMANCE_GC_MAJOR, ph.constants.NODE_PERFORMANCE_GC_MINOR]);
+show2('timerify', () => ph.performance.timerify(function f() { return 1; })());
+`,
+  'streamweb.cjs': SHOW + String.raw`
+const sw = require('stream/web');
+console.log('names ' + Object.keys(sw).join(','));
+console.log('globals ' + Object.keys(sw).every((k) => sw[k] === globalThis[k]));
+(async () => {
+  const r = new sw.ReadableStream({ start(c) { c.enqueue('a'); c.enqueue('b'); c.close(); } });
+  const out = [];
+  for await (const chunk of r.pipeThrough(new sw.TextEncoderStream()).pipeThrough(new sw.TextDecoderStream())) out.push(chunk);
+  console.log('piped ' + JSON.stringify(out.join('')));
+})();
+`,
+  'timers.cjs': SHOW + String.raw`
+const timers = require('timers');
+const tp = require('timers/promises');
+const show2 = (label, f) => { try { const r = f(); console.log(label + ': ' + JSON.stringify(r)); } catch (e) { show(label, e); } };
+show2('identity', () => ['setTimeout', 'clearTimeout', 'setImmediate', 'clearImmediate', 'setInterval', 'clearInterval'].map((k) => timers[k] === globalThis[k]));
+show2('promises', () => [timers.promises === tp, require('node:timers/promises') === tp, typeof tp.scheduler.wait, typeof tp.scheduler.yield]);
+show2('names', () => Object.keys(timers));
+show2('scheduler construct', () => new (Object.getPrototypeOf(tp.scheduler).constructor)());
+show2('scheduler this', () => tp.scheduler.wait.call({}, 1));
+let itemFired;
+const fired = new Promise((resolve) => { itemFired = resolve; });
+const item = { _onTimeout() { console.log('enrolled item fired ' + this._idleTimeout); itemFired(); } };
+show2('enroll bad', () => timers.enroll(item, -1));
+timers.enroll(item, 5);
+timers.active(item);
+const gone = { _onTimeout() { console.log('unenrolled item fired (should not)'); } };
+timers.enroll(gone, 5);
+timers.active(gone);
+timers.unenroll(gone);
+show2('unenrolled', () => [gone._idleTimeout, gone._destroyed]);
+(async () => {
+  await fired;
+  console.log('setTimeout ' + await tp.setTimeout(1, 'v'));
+  console.log('setImmediate ' + await tp.setImmediate('i'));
+  console.log('wait ' + await tp.scheduler.wait(1));
+  for (const [label, run] of [
+    ['delay type', () => tp.setTimeout('x')],
+    ['options type', () => tp.setTimeout(1, 1, 5)],
+    ['signal type', () => tp.setTimeout(1, 1, { signal: {} })],
+    ['ref type', () => tp.setImmediate(1, { ref: 1 })],
+    ['aborted', () => tp.setTimeout(1, 1, { signal: AbortSignal.abort('why') })],
+  ]) {
+    try { await run(); console.log(label + ': resolved'); } catch (e) { show(label, e); console.log('  cause ' + JSON.stringify(e.cause)); }
+  }
+  const controller = new AbortController();
+  controller.signal.addEventListener('abort', (event) => event.stopImmediatePropagation());
+  const pending = tp.setTimeout(10000, 'late', { signal: controller.signal });
+  controller.abort(new Error('stop'));
+  try { await pending; } catch (e) { console.log('aborted past a stopped dispatch: ' + e.name + ' ' + e.cause.message); }
+  const values = [];
+  for await (const v of tp.setInterval(1, 'tick')) { values.push(v); if (values.length === 3) break; }
+  console.log('interval ' + JSON.stringify(values));
+  const stop = new AbortController();
+  setTimeout(() => stop.abort(), 5);
+  try { for await (const v of tp.setInterval(1, 'x', { signal: stop.signal })); } catch (e) { console.log('interval aborted ' + e.name + ' ' + e.code); }
+})();
+`,
+  // An unreferenced timer, interval or immediate lets the program end: Node
+  // exits without running them.
+  'unref.cjs': String.raw`
+setTimeout(() => console.log('unref timeout fired (should not)'), 2000).unref();
+setInterval(() => console.log('unref interval fired (should not)'), 500).unref();
+const t = setTimeout(() => console.log('re-referenced timeout fired'), 20);
+t.unref();
+t.ref();
+console.log('hasRef ' + t.hasRef() + ' ' + t.ref.name + ' ' + t.unref.name);
+console.log('main done');
+`,
   'deprecate.cjs': SHOW + String.raw`
 const util = require('util');
 const old = util.deprecate(function old(a, b) { return a + b; }, 'old() is going away', 'DEP_NIMBUS');
@@ -406,7 +508,7 @@ attempt('deprecate code', () => util.deprecate(() => {}, 'm', 5));
 `,
 };
 // Each program's command line, after \`node\`.
-const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs'];
+const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs'];
 
 const host = mkdtempSync(join(tmpdir(), 'node-lib-'));
 process.on('exit', () => rmSync(host, { recursive: true, force: true }));
