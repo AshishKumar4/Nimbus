@@ -8,6 +8,7 @@ const supervisor = {
   registerPort() {}, unregisterPort() {},
   routeLoopback(port, request) {
     routed.push({ port, url: request.url });
+    if (new URL(request.url).pathname === '/nobody') return new Response(null, { status: 204 });
     return new Response('peer', { headers: { 'X-Nimbus-Same-Process': '1' } });
   },
 };
@@ -115,6 +116,13 @@ try {
   assert.equal(free.value, 'own', 'read to the end through a barriered method, it no longer gates');
   assert.deepEqual(free.delta, [0, 0, 0]);
 
+  // A foreign answer with no body has nothing to carry into a response of the process's own.
+  const nobody = await fetch('http://localhost:7422/nobody');
+  assert.equal(nobody.status, 204);
+  const afterNobody = await during(async () => (await fetch('http://localhost:7421/gated')).text());
+  assert.equal(afterNobody.value, 'own', 'a foreign response without a body gates nothing');
+  assert.deepEqual(afterNobody.delta, [0, 0, 0]);
+
   // Opened while the handler runs and never read: the response it feeds is read behind the ACQUIRE.
   let leaked;
   const relay = http.createServer(async (_request, response) => {
@@ -137,6 +145,14 @@ try {
   assert.equal(cleaned.value, 'clean:peer');
   assert.deepEqual(cleaned.delta, [1, 2, 1], 'the handler\'s fetch and its body; its own response takes no barrier');
   for (const extra of [relay, clean]) await new Promise(resolve => extra.close(resolve));
+
+  // A barriered method that fails on a body already taken raw proves nothing about that body: it stays open.
+  const raw = await fetch('http://localhost:7422/raw');
+  raw.body.getReader();
+  await assert.rejects(raw.text());
+  const stillGated = await during(async () => (await fetch('http://localhost:7421/gated')).text());
+  assert.equal(stillGated.value, 'peer', 'a failed read does not close the foreign body');
+  assert.deepEqual(stillGated.delta, [1, 2, 1]);
   routedAtEnd = routed.length;
 } finally {
   if (server.listening) await new Promise(resolve => server.close(resolve));
