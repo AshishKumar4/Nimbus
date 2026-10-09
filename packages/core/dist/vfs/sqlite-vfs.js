@@ -3127,8 +3127,9 @@ export class SqliteVFS {
         // Logged at its publication's revision: a cursor handed out since its
         // commit (another's publication) is below it, so every reader hears of it.
         try {
+            // As its writer: a read lease of the writer's own is not another's, and stays.
             if (publication.paths.size > 0)
-                this.bumpRevision([...publication.paths], publication.structural, pipeline.committed);
+                this.withHolds(pipeline.writer, () => this.bumpRevision([...publication.paths], publication.structural, pipeline.committed));
             this.deliverEvents(publication.removedDirectories, () => {
                 for (const event of publication.events)
                     this.deliverMutation(event);
@@ -7867,7 +7868,9 @@ export class SqliteVFS {
                 state = { cursor: Number(row.seq), refused: null };
                 return;
             }
-            this.sql.exec('UPDATE vfs_wave_cursors SET touched_at = ? WHERE writer = ?', now, sequence.writer);
+            // Read, not written: a write in the wave's first turn would hold every
+            // message the object sends in it (a reader's recall) until durable. Its
+            // commit stamps the cursor.
             state = {
                 cursor: Number(row.seq),
                 refused: refusedSeq === null ? null : { seq: refusedSeq, errno: String(row.refused_errno), message: String(row.refused_message) },
