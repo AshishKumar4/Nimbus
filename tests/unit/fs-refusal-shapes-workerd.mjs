@@ -6,7 +6,8 @@
 // refusal as a value (`answer`) and the process's client rethrows it; what a
 // node program and bash print for each refused call below is what they
 // printed on 1bf0d609, where the entrypoint threw (EXPECTED, recorded there
-// with this file).
+// with this file), each error's own keys since in Node's uvException order
+// (errno, code, syscall, path).
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -46,22 +47,22 @@ const BASH_SCRIPT = "cat /home/user/file/child; cat < /home/user/full; mkdir /ho
 
 const EXPECTED = {
   node: [
-    "SHAPE stat Error Error message=\"ENOTDIR: not a directory, stat '/home/user/file/child'\"~ code=\"ENOTDIR\" errno=-20 syscall=\"stat\" path=\"/home/user/file/child\"",
-    "SHAPE lstat Error Error message=\"ENOENT: no such file or directory, lstat '/home/user/file/child'\"~ code=\"ENOENT\" errno=-2 syscall=\"lstat\" path=\"/home/user/file/child\"",
-    "SHAPE readFile Error Error message=\"EISDIR: illegal operation on a directory, read '/home/user/full'\"~ code=\"EISDIR\" errno=-21 syscall=\"read\" path=\"/home/user/full\"",
-    "SHAPE readdir Error Error message=\"ENOTDIR: not a directory, scandir '/home/user/file'\"~ code=\"ENOTDIR\" errno=-20 syscall=\"scandir\" path=\"/home/user/file\"",
-    "SHAPE writeFile Error Error message=\"ENOENT: no such file or directory, open '/home/user/missing/f'\"~ code=\"ENOENT\" errno=-2 syscall=\"open\" path=\"/home/user/missing/f\"",
-    "SHAPE appendFile Error Error message=\"EISDIR: illegal operation on a directory, write '/home/user/full'\"~ code=\"EISDIR\" errno=-21 syscall=\"write\" path=\"/home/user/full\"",
-    "SHAPE mkdir Error Error message=\"EEXIST: file already exists, mkdir '/home/user/file'\"~ code=\"EEXIST\" errno=-17 syscall=\"mkdir\" path=\"/home/user/file\"",
-    "SHAPE rmdir Error Error message=\"ENOTEMPTY: directory not empty, rmdir '/home/user/full'\"~ code=\"ENOTEMPTY\" errno=-39 syscall=\"rmdir\" path=\"/home/user/full\"",
-    "SHAPE unlink Error Error message=\"EISDIR: illegal operation on a directory, unlink '/home/user/full'\"~ code=\"EISDIR\" errno=-21 syscall=\"unlink\" path=\"/home/user/full\"",
-    "SHAPE rename Error Error message=\"ENOENT: no such file or directory, rename '/home/user/nope' -> '/home/user/else'\"~ code=\"ENOENT\" errno=-2 syscall=\"rename\" path=\"/home/user/nope\" dest=\"/home/user/else\"",
-    "SHAPE open Error Error message=\"ENOENT: no such file or directory, open '/home/user/nope'\"~ code=\"ENOENT\" errno=-2 syscall=\"open\" path=\"/home/user/nope\"",
-    "SHAPE access Error Error message=\"ENOENT: no such file or directory, access '/home/user/nope'\"~ code=\"ENOENT\" errno=-2 syscall=\"access\" path=\"/home/user/nope\"",
-    "SHAPE truncate Error Error message=\"ENOENT: no such file or directory, truncate '/home/user/nope'\"~ code=\"ENOENT\" errno=-2 syscall=\"truncate\" path=\"/home/user/nope\"",
-    "SHAPE readlink Error Error message=\"EINVAL: invalid argument, readlink '/home/user/file'\"~ code=\"EINVAL\" errno=-22 syscall=\"readlink\" path=\"/home/user/file\"",
-    "SHAPE copyFile Error Error message=\"ENOENT: no such file or directory, copyfile '/home/user/nope' -> '/home/user/copy'\"~ code=\"ENOENT\" errno=-2 syscall=\"copyfile\" path=\"/home/user/nope\" dest=\"/home/user/copy\"",
-    "SHAPE symlink Error Error message=\"EEXIST: file already exists, symlink '/x' -> '/home/user/file'\"~ code=\"EEXIST\" errno=-17 syscall=\"symlink\" path=\"/x\" dest=\"/home/user/file\"",
+    "SHAPE stat Error Error message=\"ENOTDIR: not a directory, stat '/home/user/file/child'\"~ errno=-20 code=\"ENOTDIR\" syscall=\"stat\" path=\"/home/user/file/child\"",
+    "SHAPE lstat Error Error message=\"ENOENT: no such file or directory, lstat '/home/user/file/child'\"~ errno=-2 code=\"ENOENT\" syscall=\"lstat\" path=\"/home/user/file/child\"",
+    "SHAPE readFile Error Error message=\"EISDIR: illegal operation on a directory, read '/home/user/full'\"~ errno=-21 code=\"EISDIR\" syscall=\"read\" path=\"/home/user/full\"",
+    "SHAPE readdir Error Error message=\"ENOTDIR: not a directory, scandir '/home/user/file'\"~ errno=-20 code=\"ENOTDIR\" syscall=\"scandir\" path=\"/home/user/file\"",
+    "SHAPE writeFile Error Error message=\"ENOENT: no such file or directory, open '/home/user/missing/f'\"~ errno=-2 code=\"ENOENT\" syscall=\"open\" path=\"/home/user/missing/f\"",
+    "SHAPE appendFile Error Error message=\"EISDIR: illegal operation on a directory, write '/home/user/full'\"~ errno=-21 code=\"EISDIR\" syscall=\"write\" path=\"/home/user/full\"",
+    "SHAPE mkdir Error Error message=\"EEXIST: file already exists, mkdir '/home/user/file'\"~ errno=-17 code=\"EEXIST\" syscall=\"mkdir\" path=\"/home/user/file\"",
+    "SHAPE rmdir Error Error message=\"ENOTEMPTY: directory not empty, rmdir '/home/user/full'\"~ errno=-39 code=\"ENOTEMPTY\" syscall=\"rmdir\" path=\"/home/user/full\"",
+    "SHAPE unlink Error Error message=\"EISDIR: illegal operation on a directory, unlink '/home/user/full'\"~ errno=-21 code=\"EISDIR\" syscall=\"unlink\" path=\"/home/user/full\"",
+    "SHAPE rename Error Error message=\"ENOENT: no such file or directory, rename '/home/user/nope' -> '/home/user/else'\"~ errno=-2 code=\"ENOENT\" syscall=\"rename\" path=\"/home/user/nope\" dest=\"/home/user/else\"",
+    "SHAPE open Error Error message=\"ENOENT: no such file or directory, open '/home/user/nope'\"~ errno=-2 code=\"ENOENT\" syscall=\"open\" path=\"/home/user/nope\"",
+    "SHAPE access Error Error message=\"ENOENT: no such file or directory, access '/home/user/nope'\"~ errno=-2 code=\"ENOENT\" syscall=\"access\" path=\"/home/user/nope\"",
+    "SHAPE truncate Error Error message=\"ENOENT: no such file or directory, truncate '/home/user/nope'\"~ errno=-2 code=\"ENOENT\" syscall=\"truncate\" path=\"/home/user/nope\"",
+    "SHAPE readlink Error Error message=\"EINVAL: invalid argument, readlink '/home/user/file'\"~ errno=-22 code=\"EINVAL\" syscall=\"readlink\" path=\"/home/user/file\"",
+    "SHAPE copyFile Error Error message=\"ENOENT: no such file or directory, copyfile '/home/user/nope' -> '/home/user/copy'\"~ errno=-2 code=\"ENOENT\" syscall=\"copyfile\" path=\"/home/user/nope\" dest=\"/home/user/copy\"",
+    "SHAPE symlink Error Error message=\"EEXIST: file already exists, symlink '/x' -> '/home/user/file'\"~ errno=-17 code=\"EEXIST\" syscall=\"symlink\" path=\"/x\" dest=\"/home/user/file\"",
   ],
   bash: [
     "cat: can't open '/home/user/file/child': Not a directory",
