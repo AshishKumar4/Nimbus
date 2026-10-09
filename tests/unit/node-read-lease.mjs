@@ -132,8 +132,10 @@ await runScenarios(import.meta.path, {
 
   async 'the kernel\'s mounts and the root\'s names are the session\'s under a trusted lease, through a link too'() {
     const { probe } = await bootTrusted((authority) => authority.peer.symlink('/dev/null', 'home/user/app/null'));
-    assert.equal((await probe.fs.promises.stat('/dev/null')).isCharacterDevice(), true);
-    assert.equal((await probe.fs.promises.stat('/home/user/app/null')).isCharacterDevice(), true);
+    // A character device, as the session's /dev says (the view lists no /dev).
+    const device = (stat) => stat.mode & 0o170000;
+    assert.equal(device(await probe.fs.promises.stat('/dev/null')), 0o020000);
+    assert.equal(device(await probe.fs.promises.stat('/home/user/app/null')), 0o020000);
     assert.ok((await probe.fs.promises.readdir('/')).includes('dev'));
   },
 

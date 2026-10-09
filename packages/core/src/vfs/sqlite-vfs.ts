@@ -4307,11 +4307,15 @@ export class SqliteVFS {
     }
   }
 
-  /** Whether a read at `key` meets `lease`: its subtree, or its root's own entry and names only (entries). */
+  /**
+   * Whether an access at `key` meets `lease`: anything in its subtree; for a
+   * held directory's names (entries), a read of the directory itself, and
+   * never a mutation's, whose own walk reads it (mutationMeets).
+   */
   private holdsKey(lease: Lease, key: string): boolean {
     const { root } = lease;
-    if (key === root) return true;
-    return lease.entries !== true && (root === '' || key.startsWith(`${root}/`));
+    if (lease.entries === true) return key === root && !this.activeWrite;
+    return key === root || root === '' || key.startsWith(`${root}/`);
   }
 
   /**
