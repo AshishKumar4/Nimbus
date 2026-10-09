@@ -7302,11 +7302,18 @@ export class FacetManager {
    * one-shot printed is shown once; the resident prints it again only to be
    * checked (the prefix).
    */
-  /** A file's identity as the process sees it: which file, and its version (null: none). */
+  /**
+   * A file's identity as the process sees it: which file, and its version;
+   * null when it has none to see (gone, or refused, synchronously or not).
+   */
   private async _stdinFileIdentity(entry: ProcessEntry, path: string): Promise<string | null> {
     if (!this.filesystem) return null;
-    const stat = await Promise.resolve(this.filesystem.bind({ pid: entry.pid, cred: entry.cred }).stat(path)).catch(() => null);
-    return stat ? `${stat.ino}:${stat.revision}:${stat.size}:${stat.mtime}:${stat.ctime}` : null;
+    try {
+      const stat = await this.filesystem.bind({ pid: entry.pid, cred: entry.cred }).stat(path);
+      return stat ? `${stat.ino}:${stat.revision}:${stat.size}:${stat.mtime}:${stat.ctime}` : null;
+    } catch {
+      return null;
+    }
   }
 
   private async _promote(
@@ -7369,6 +7376,9 @@ export class FacetManager {
     const abort = () => this._end(pid, { code: 137, killed: true });
     if (run.signal.aborted) abort();
     run.signal.addEventListener('abort', abort, { once: true });
+    // Held until the resident is accepted as the process: through its boot
+    // and the check of what it read.
+    let changed = false;
     try {
       await this.spawnNode(code, {
         argv: opts.argv, env: opts.env, cwd: opts.cwd, filename: opts.filename, dirname: opts.dirname,
@@ -7377,6 +7387,10 @@ export class FacetManager {
         ...(opts.stdin !== undefined ? { stdin: opts.stdin } : {}),
         skipSpawn: true, callerPid: pid, resume,
       });
+      // Its \`< file\` changed between the run that read it and the resident
+      // that read it again: they did not read the same input.
+      changed = this.processExitCode(pid) === null && run.stdinFile !== undefined
+        && await this._stdinFileIdentity(entry, opts.stdinFile!.path) !== run.stdinFile;
       run.signal.throwIfAborted();
     } finally {
       run.signal.removeEventListener('abort', abort);
@@ -7384,9 +7398,7 @@ export class FacetManager {
     // Ended while it booted: that is its exit, and it is no server.
     const ended = this.processExitCode(pid);
     if (ended !== null) return { exitCode: ended, stdout: '', stderr: '' };
-    // Its \`< file\` changed between the run that read it and the resident
-    // that read it again: they did not read the same input.
-    if (run.stdinFile !== undefined && await this._stdinFileIdentity(entry, opts.stdinFile!.path) !== run.stdinFile) {
+    if (changed) {
       return fail(`its stdin, ${opts.stdinFile!.path}, changed while it was run again, so the two runs did not read the same input.`, true);
     }
     // Said as any resident's start is: it runs on, and serves.

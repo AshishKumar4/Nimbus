@@ -107,15 +107,18 @@ function handoff({ took = null, resident = async () => {}, signal, stdin, stdinF
   assert.match(h.processes.getExit(h.entry.pid)?.reason ?? '', /its stdin, \/home\/user\/in\.txt, changed while it was run again/);
 }
 
-// Its file's stat throws (EACCES) as the run launches: the process fails
-// through the launch's own cleanup, not left running.
+// Its file's stat throws (EACCES), as the bridge throws it, synchronously:
+// that is no identity, the same before and after, and the launch goes on
+// through its own end; it never escapes it and leaves the process half run.
 {
   const h = handoff({
     stdinFile: { path: '/home/user/in.txt', offset: 0, syncRead: false },
     stat: () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); },
   });
-  const result = await h.done.catch((error) => ({ error }));
-  assert.notEqual(h.processes.get(h.entry.pid).state, 'running', `the process ended: ${JSON.stringify(result)}`);
+  const result = await h.done.catch((error) => ({ error: error.message }));
+  assert.equal(result.error, undefined, `the launch ended on its own path: ${JSON.stringify(result)}`);
+  assert.equal(result.promotedPid, h.entry.pid);
+  assert.equal(h.processes.get(h.entry.pid).state, 'running', 'its resident runs, as the process');
 }
 
 // Aborted while its file is checked after the resident booted: the resident
