@@ -26,7 +26,7 @@
  * legacy `buildVfsBundle` walked every file in node_modules. W2.6a
  * de-quarantines it as the primary content-bundle source.
  */
-import { METADATA_CANDIDATE_WORK, packageJsonVisible, resolveRequireEx, } from './require-resolution.js';
+import { METADATA_CANDIDATE_WORK, heldCellText, packageJsonVisible, resolveRequireEx, } from './require-resolution.js';
 import { FACET_PROVIDED_PACKAGES, VFS_BUNDLE_MAX_BYTES } from '../constants.js';
 import { stripLeadingSlashes } from '../vfs/path.js';
 import { isNativeBinPath } from './os-contracts.js';
@@ -212,8 +212,9 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         if (progress)
             await progress(METADATA_CANDIDATE_WORK + path.length);
         const held = policy?.held[path];
+        const heldText = held === undefined ? undefined : heldCellText(held);
         const authorize = vfs.assertReadable;
-        const reuseHeld = typeof held === 'string' && authorize !== undefined;
+        const reuseHeld = heldText !== undefined && authorize !== undefined;
         if (reuseHeld) {
             try {
                 await authorize.call(vfs, path);
@@ -242,14 +243,14 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         }
         let content;
         try {
-            content = reuseHeld ? held : await vfs.readFileString(path);
+            content = reuseHeld ? heldText : await vfs.readFileString(path);
         }
         catch {
             if (policy)
                 declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' };
             return null;
         }
-        if (held !== undefined && content !== held) {
+        if (heldText !== undefined && content !== heldText) {
             declined = { kind: 'dependency-closure-declined', path, reason: 'unreadable' };
             return null;
         }

@@ -20,6 +20,7 @@ import { type PackageType } from './module-format.js';
 export interface RequireFs {
     exists(path: string): Awaitable<boolean>;
     isDirectory(path: string): Awaitable<boolean>;
+    /** The file decoded as UTF-8 with TextDecoder's defaults (an invalid sequence replaced, a leading BOM dropped). */
     readFileString(path: string): Awaitable<string>;
     stat(path: string): Awaitable<{
         size: number;
@@ -47,6 +48,14 @@ export interface BridgeRequireFs extends RequireFs {
  * the launch's speculative root selection both take it.
  */
 export declare function requirePackageEntry(pkg: ResolvablePackageJson, subpath: string, conditions: readonly string[]): string | null;
+/**
+ * The text RequireFs.readFileString answers for a file whose content is
+ * `cell`, a cell a module map already holds: a text cell is that text; a
+ * byte cell (a file that is not valid UTF-8, facets/manager.ts
+ * _readBundleCell) is decoded as readFileString decodes it. A walk reuses
+ * and compares a held cell through this, in the one representation it reads.
+ */
+export declare function heldCellText(cell: string | Uint8Array): string;
 export declare function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs;
 /**
  * Sink for package.json files consulted during LOAD_AS_DIRECTORY

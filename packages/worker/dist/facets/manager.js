@@ -3469,14 +3469,18 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
         budgetState.fileCount++;
         added++;
     }
-    // A module brings what it loads synchronously, as one dependency closure
-    // staged whole or not at all: its static imports (learned one miss per
-    // launch, nuxt's on-change alone would have cost a relaunch for each of
-    // its files) and its require wrappers' loads (a learned @vitejs/plugin-vue
-    // without vue/compiler-sfc failed "Failed to resolve vue/compiler-sfc").
-    // A part of a closure is no use: the module it leaves out fails its
-    // synchronous read. What the module defers with import() is fetched when
-    // it runs, and what the runs executed is evidence of its own.
+    // A module brings what it loads synchronously, its closure staged whole or
+    // not at all: its static imports (learned one miss per launch, nuxt's
+    // on-change alone would have cost a relaunch for each of its files) and
+    // its require wrappers' loads (a learned @vitejs/plugin-vue without
+    // vue/compiler-sfc failed "Failed to resolve vue/compiler-sfc"). A part of
+    // a closure is no use: the module it leaves out fails its synchronous read.
+    // The file itself was read, so it stays, as data, whether its closure fits
+    // or not (observed-read-closure.mjs: Tailwind v3 reads .js content files as
+    // text); executed without its closure, the run fails naming what it missed
+    // and the next launch stages that (facet-observed-residency.mjs). What the
+    // module defers with import() is fetched when it runs, and what the runs
+    // executed is evidence of its own.
     for (const path of observed) {
         if (!/\.[cm]?js$/.test(path) || bundle[path] === undefined)
             continue;
