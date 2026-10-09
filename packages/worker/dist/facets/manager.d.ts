@@ -1079,9 +1079,11 @@ export interface ResidentSpawnOptions {
     /**
      * A one-shot that stopped at its first listen (FacetManager._promote): its
      * run, which this boot replays up to that listen before it serves, and the
-     * stdin that run took, handed back.
+     * stdin that run took, handed back: its pipe's bytes, or its `< file`.
      */
     resume?: StoppedRunNext;
+    /** Its stdin, given whole (exec's `stdin`): a promoted one-shot's, given again. */
+    stdin?: string;
     /**
      * Its launcher writes its stdin and ends it, and does not wait for the
      * boot (RuntimeRunOpts.stdinWriter): the boot may stop at a synchronous
@@ -1779,6 +1781,8 @@ export declare class FacetManager {
      * one-shot printed is shown once; the resident prints it again only to be
      * checked (the prefix).
      */
+    /** A file's identity as the process sees it: which file, and its version (null: none). */
+    private _stdinFileIdentity;
     private _promote;
     /**
      * A process stopped at a synchronous read of stdin that needs input not

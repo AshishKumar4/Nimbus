@@ -1283,6 +1283,8 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     const __MODULE_VFS_CURSOR = (__startArgs && __startArgs.vfsCursor) || null;
 ${VFS_CURSOR_SEED_SOURCE}
     const __nimbusStdinAtLeast = Number((__startArgs && __startArgs.stdinAtLeast) || 0);
+    // A \`< file\` redirect: fd 0 is this file (node-shims' stdin helpers).
+    const __nimbusStdinFile = __startArgs && __startArgs.stdinFile && typeof __startArgs.stdinFile.path === "string" ? __startArgs.stdinFile : null;
     const __ctxAbort = workerCtx && typeof workerCtx.abort === "function" ? workerCtx.abort : null;
     const __apply = Reflect.apply;
     __nimbusStopReplay.begin({
@@ -1382,10 +1384,10 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     // A resident whose launcher writes its stdin takes what has arrived
     // before the entry runs, and a boot after a stop takes all of it (it has
     // ended), for its synchronous reads of fd 0; so does a one-shot run on
-    // as a server, the stdin it read before it listened. Any other
+    // as a server, the stdin it read before it listened, or its file. Any other
     // resident's stdin is read only as the program reads it: an attached
     // one's carries the terminal's resizes and signals too.
-    if (__startArgs && (__startArgs.stdinWriter || __nimbusStdinAtLeast > 0)) await __nimbusPrepareStdin();
+    if (__startArgs && (__startArgs.stdinWriter || __nimbusStdinAtLeast > 0 || __nimbusStdinFile)) await __nimbusPrepareStdin();
     // From here on the program runs. Its boot can stop while stdin can still
     // come short of a read, when its launcher writes that stdin
     // (FacetManager._residentLaunchBody); nothing else would ever end it.
@@ -6094,6 +6096,8 @@ export class FacetManager {
                 // run again as a resident that serves (_promote): its output is
                 // delivered once across the two, through the same gate.
                 const promotable = !opts.captureOutput;
+                // What its \`< file\` is as it starts: a promoted run reads it again.
+                const stdinFileIdentity = promotable && opts.stdinFile ? await this._stdinFileIdentity(entry, opts.stdinFile.path) : undefined;
                 const held = this.stdinReadAhead.open();
                 // A run after a stop that strays is ended here, as a kill ends one, but
                 // it is not a kill: the process fails, naming how it strayed.
@@ -6164,7 +6168,7 @@ export class FacetManager {
                             break;
                         }
                         if (outcome.stop.kind === 'listen') {
-                            const promotion = await this._promote(entry, code, opts, outcome.stop, { inputChannel, held, signal: abortController.signal });
+                            const promotion = await this._promote(entry, code, opts, outcome.stop, { inputChannel, held, signal: abortController.signal, stdinFile: stdinFileIdentity });
                             promoted = promotion.promotedPid !== undefined;
                             return promotion;
                         }
@@ -6312,14 +6316,25 @@ export class FacetManager {
      * one-shot printed is shown once; the resident prints it again only to be
      * checked (the prefix).
      */
+    /** A file's identity as the process sees it: which file, and its version (null: none). */
+    async _stdinFileIdentity(entry, path) {
+        if (!this.filesystem)
+            return null;
+        const stat = await Promise.resolve(this.filesystem.bind({ pid: entry.pid, cred: entry.cred }).stat(path)).catch(() => null);
+        return stat ? `${stat.ino}:${stat.revision}:${stat.size}:${stat.mtime}:${stat.ctime}` : null;
+    }
     async _promote(entry, code, opts, stop, 
-    /** The run's input channel and read-ahead account, and its abort (a kill, Ctrl-C). */
+    /**
+     * The run's input channel and read-ahead account, its abort (a kill,
+     * Ctrl-C), and the identity its \`< file\` had when it started.
+     */
     run) {
         const pid = entry.pid;
-        const fail = async (message) => {
+        // `killed`: its resident is running, and is stopped.
+        const fail = async (message, killed = false) => {
             const text = `node: this program listens as a server, so Nimbus runs it again as one, but ${message}\n`;
             await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(text));
-            this._end(pid, { code: 1, cause: text.trimEnd() });
+            this._end(pid, { code: 1, cause: text.trimEnd(), killed });
             return { exitCode: 1, stdout: '', stderr: '' };
         };
         // The gate stays while the resident boots: a late chunk of the stopped
@@ -6338,8 +6353,6 @@ export class FacetManager {
         const before = taken ? taken.take() : { chunks: [], bytes: 0 };
         if (before === null)
             return fail(`it read more than ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB of stdin before it listened, more than a second run is handed back.`);
-        if (opts.stdinFile && stop.tape.reads.length > 0)
-            return fail('it read its redirected stdin before it listened, which a server is not handed again.');
         if (before.bytes > 0) {
             const channel = this._stdinChannel(run.inputChannel);
             if (channel === null)
@@ -6359,6 +6372,9 @@ export class FacetManager {
                 prefix: { stdout: encodeBase64(stopped.prefix.stdout), stderr: encodeBase64(stopped.prefix.stderr) },
             },
             ...(before.bytes > 0 ? { stdinAtLeast: before.bytes } : {}),
+            // A \`< file\` is read again from where the run read it: the same
+            // bytes, unless the file changed since the run started (checked below).
+            ...(opts.stdinFile ? { stdinFile: { ...opts.stdinFile, syncRead: true } } : {}),
         };
         // Its abort during the hand-off ends it: the resident's launch stops at
         // its next ownership gate.
@@ -6371,6 +6387,7 @@ export class FacetManager {
                 argv: opts.argv, env: opts.env, cwd: opts.cwd, filename: opts.filename, dirname: opts.dirname,
                 esModule: opts.esModule, esModuleMap: opts.esModuleMap, moduleScope: opts.moduleScope,
                 command: opts.command, invokerPid: opts.invokerPid, bundleProfile: opts.bundleProfile, node: opts.node,
+                ...(opts.stdin !== undefined ? { stdin: opts.stdin } : {}),
                 skipSpawn: true, callerPid: pid, resume,
             });
             run.signal.throwIfAborted();
@@ -6382,6 +6399,11 @@ export class FacetManager {
         const ended = this.processExitCode(pid);
         if (ended !== null)
             return { exitCode: ended, stdout: '', stderr: '' };
+        // Its \`< file\` changed between the run that read it and the resident
+        // that read it again: they did not read the same input.
+        if (run.stdinFile !== undefined && await this._stdinFileIdentity(entry, opts.stdinFile.path) !== run.stdinFile) {
+            return fail(`its stdin, ${opts.stdinFile.path}, changed while it was run again, so the two runs did not read the same input.`, true);
+        }
         // Said as any resident's start is: it runs on, and serves.
         try {
             this.hooks.onSpawn?.(pid, entry.command, true);
@@ -7990,6 +8012,7 @@ export class FacetManager {
                                 // A boot after a stop: what the stopped boot drew and printed, and
                                 // the stdin it is handed back.
                                 ...(rerun !== null ? { replay: rerun.replay, stdinAtLeast: rerun.stdinAtLeast ?? 0, ...(rerun.stdinWhole ? { stdinWhole: true } : {}) } : {}),
+                                ...(rerun?.stdinFile ? { stdinFile: rerun.stdinFile } : {}),
                             },
                             // Each boot after a stop is a fresh isolate: a keyed loader keeps the
                             // stopped one's module state.
