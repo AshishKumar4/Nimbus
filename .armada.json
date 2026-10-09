@@ -3,7 +3,7 @@
   "environment": {
     "setup": "scripts/ci/recipe/setup.sh",
     "install": "scripts/ci/recipe/install.sh",
-    "key": ["bun.lock", "bunfig.toml", "package.json", "apps/*/package.json", "packages/*/package.json", "scripts/install-deps.mjs", "packages/worker/scripts/patch-install-deps.mjs", "packages/worker/patches/**", "lean/lean-toolchain"]
+    "key": ["bun.lock", "bunfig.toml", "package.json", "apps/*/package.json", "packages/*/package.json", "scripts/install-deps.mjs", "packages/worker/scripts/patch-install-deps.mjs", "packages/worker/scripts/cf-git-patch.mjs", "packages/worker/patches/**", "lean/lean-toolchain"]
   },
   "history": "commit",
   "env": {
