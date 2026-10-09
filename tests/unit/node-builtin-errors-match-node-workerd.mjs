@@ -129,6 +129,7 @@ for (const [call, node] of want) {
   }
 }
 console.log(`compared ${compared} coded errors: ${compared - Object.keys(gaps).length} as Node words them, ${Object.keys(gaps).length} recorded gaps`);
+console.log('BUILTIN_ERROR_GAPS ' + JSON.stringify(gaps));
 assert.deepEqual(shapes, [], `Node's shape:\n${shapes.join('\n')}`);
 const changed = [...new Set([...Object.keys(gaps), ...Object.keys(GAPS)])].filter((call) => gaps[call] !== GAPS[call])
   .map((call) => `${call}: recorded ${GAPS[call] ?? 'none'}, now ${gaps[call] ?? 'none'}`);

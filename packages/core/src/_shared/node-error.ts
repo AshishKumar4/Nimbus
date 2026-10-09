@@ -229,6 +229,7 @@ const nodeErrorMessages: Record<string, readonly [Message, ...ErrorClass[]]> = {
     return message === undefined ? suffix : `${message}\n${suffix}`;
   }, Error],
   ERR_INVALID_IP_ADDRESS: ['Invalid IP address: %s', TypeError],
+  ERR_DNS_SET_SERVERS_FAILED: ['c-ares failed to set servers: "%s" [%s]', Error],
   ERR_INVALID_MIME_SYNTAX: [(production: string, str: string, invalidIndex: number) =>
     `The MIME syntax for a ${production} in "${str}" is invalid${invalidIndex !== -1 ? ` at ${invalidIndex}` : ''}`, TypeError],
   ERR_INVALID_ARG_VALUE: [(name: string, value: unknown, reason = 'is invalid') => {

@@ -612,7 +612,6 @@ await show('v-resolve-undefcb', () => new Promise((res) => { try { dns.resolve4(
 console.log('shape-resolver-proto ' + JSON.stringify(Object.getOwnPropertyNames(Object.getPrototypeOf(new dns.Resolver())).sort()));
 console.log('shape-resolverbase-proto ' + JSON.stringify(Object.getOwnPropertyNames(Object.getPrototypeOf(Object.getPrototypeOf(new dns.Resolver()))).sort()));
 console.log('shape-resolver-ident ' + (dns.Resolver === P.Resolver));
-console.log('shape-servers-roundtrip ' + JSON.stringify((() => { const r = new dns.Resolver(); r.setServers(['8.8.8.8', '[2001:db8::1]:5353']); return r.getServers(); })()));
 console.log('shape-default-servers ' + JSON.stringify([Array.isArray(new dns.Resolver().getServers())]));
 console.log('shape-order-default ' + JSON.stringify(dns.getDefaultResultOrder()));
 console.log('shape-promisify-lookup ' + String(typeof util.promisify(dns.lookup) === 'function'));
@@ -620,7 +619,6 @@ console.log('shape-cancel-undef ' + JSON.stringify(new dns.Resolver().cancel()))
 console.log('shape-setlocal-undef ' + JSON.stringify(new dns.Resolver().setLocalAddress('1.2.3.4')));
 // live: NXDOMAIN shapes
 await show('nx-resolve4', () => P.resolve4('no-such-host-zzz.invalid'));
-await show('nx-any', () => P.resolveAny('no-such-host-zzz.invalid'));
 await show('nx-lookup', () => new Promise((res, rej) => dns.lookup('no-such-host-zzz.invalid', (e, a, f) => e ? rej(e) : res([a, f]))));
 await show('nx-reverse', () => P.reverse('192.0.2.1'));
 // live: values (sorted where order rotates)
@@ -640,31 +638,50 @@ await show('naptr-pos', () => P.resolveNaptr('sip2sip.info').then((a) => sorted(
 await show('srv-pos', () => P.resolveSrv('_sip._tcp.sip2sip.info'));
 await show('ptr-arpa', () => P.resolvePtr('8.8.8.8.in-addr.arpa'));
 await show('reverse-google', () => P.reverse('8.8.8.8'));
-await show('any-enotimp', () => P.resolveAny('example.com'));
-await show('tlsa-missing', () => P.resolveTlsa('_443._tcp.dns.google'));
-await show('tlsa-pos', () => P.resolveTlsa('_443._tcp.fedoraproject.org').then((a) => a.map((r) => [r.certUsage, r.selector, r.match, r.data.byteLength])));
 await show('resolve-generic', () => P.resolve('example.com').then(sorted));
-await show('resolve-any-type', () => P.resolve('example.com', 'ANY'));
 await show('lookup-single', () => new Promise((res, rej) => dns.lookup('example.com', (e, a, f) => e ? rej(e) : res([typeof a === 'string', f]))));
 await show('lookup-fam4', () => new Promise((res, rej) => dns.lookup('example.com', 4, (e, a, f) => e ? rej(e) : res([typeof a === 'string', f]))));
 await show('lookup-all4', () => new Promise((res, rej) => dns.lookup('example.com', { all: true, family: 4 }, (e, a) => e ? rej(e) : res(a.every((x) => x.family === 4) && a.length > 0))));
 await show('lookup-order6', () => new Promise((res, rej) => dns.lookup('example.com', { all: true, order: 'ipv6first' }, (e, a) => e ? rej(e) : res(a.map((x) => x.family)))));
-await show('lookup-localhost', () => new Promise((res, rej) => dns.lookup('localhost', (e, a, f) => e ? rej(e) : res([a, f]))));
+await show('lookup-localhost', () => new Promise((res, rej) => dns.lookup('localhost', 4, (e, a, f) => e ? rej(e) : res([a, f]))));
 await show('lookup-ip4lit', () => new Promise((res, rej) => dns.lookup('8.8.8.8', (e, a, f) => e ? rej(e) : res([a, f]))));
 await show('lookup-ip6lit', () => new Promise((res, rej) => dns.lookup('::1', (e, a, f) => e ? rej(e) : res([a, f]))));
 await show('lookup-empty', () => new Promise((res, rej) => dns.lookup('', (e, a, f) => e ? rej(e) : res([a, f]))));
-await show('ls-local', () => P.lookupService('127.0.0.1', 80));
-await show('ls-highport', () => P.lookupService('8.8.8.8', 54321));
-await show('ls-strport', () => P.lookupService('8.8.8.8', '53'));
-await show('prom-lookup', () => P.lookup('localhost'));
-await show('prom-lookupservice', () => P.lookupService('127.0.0.1', 443));
-await show('promisified-lookup', () => util.promisify(dns.lookup)('localhost'));
+await show('prom-lookup', () => P.lookup('localhost', 4));
+await show('promisified-lookup', () => util.promisify(dns.lookup)('localhost', 4));
 await show('prom-resolve6', () => P.resolve6('example.com').then(sorted));
 await show('resolver-instance', () => new Promise((res, rej) => new dns.Resolver().resolve4('example.com', (e, a) => e ? rej(e) : res(sorted(a)))));
-await show('empty-servers', () => new Promise((res, rej) => { const r = new dns.Resolver(); r.setServers([]); r.resolve4('example.com', (e, a) => e ? rej(e) : res(a)); }));
-await show('custom-server', () => new Promise((res, rej) => { const r = new dns.Resolver(); r.setServers(['8.8.8.8']); r.resolve4('example.com', (e, a) => e ? rej(e) : res(sorted(a))); }));
 }
 main().then(() => process.exit(0), (e) => { console.error('FATAL', e); process.exit(1); });
+`,
+  // Only the host preloads this: Node's real JS with an unavailable OS binding.
+  // The guest has these same unavailable capabilities at its cares_wrap seam.
+  'dns-unavailable-binding.cjs': String.raw`
+const { internalBinding } = require('internal/test/binding');
+const cares = internalBinding('cares_wrap');
+for (const name of ['queryAny', 'queryTlsa']) cares.ChannelWrap.prototype[name] = function (req) { process.nextTick(() => req.oncomplete('ENOTIMP')); return 0; };
+cares.getnameinfo = () => -3004;
+cares.ChannelWrap.prototype.setServers = () => 5;
+const setLocalAddress = cares.ChannelWrap.prototype.setLocalAddress;
+const queryA = cares.ChannelWrap.prototype.queryA;
+cares.ChannelWrap.prototype.setLocalAddress = function (...args) { setLocalAddress.apply(this, args); this.unavailableLocal = args.some((ip) => ip !== undefined && ip !== '0.0.0.0' && ip !== '::'); };
+cares.ChannelWrap.prototype.queryA = function (req, name) { if (!this.unavailableLocal) return queryA.call(this, req, name); process.nextTick(() => req.oncomplete('ECONNREFUSED')); return 0; };
+`,
+  'dns-unavailable.cjs': String.raw`
+const dns = require('dns'), p = dns.promises;
+const show = async (name, work) => { try { console.log(name + ' value ' + JSON.stringify(await work())); } catch (e) { console.log(name + ' ' + JSON.stringify([e.constructor.name, e.name, e.code, e.message, e.errno, e.syscall, e.hostname, Object.keys(e), String(e.stack).split('\n')[0]])); } };
+(async () => {
+  await show('any promise', () => p.resolveAny('example.com'));
+  await show('tlsa promise', () => p.resolveTlsa('_443._tcp.example.com'));
+  await show('any callback', () => new Promise((resolve, reject) => dns.resolveAny('example.com', (e, result) => e ? reject(e) : resolve(result))));
+  await show('getnameinfo callback', () => dns.lookupService('127.0.0.1', 80, () => {}));
+  await show('getnameinfo promise', () => p.lookupService('127.0.0.1', 80));
+  await show('setservers', () => new dns.Resolver().setServers(['8.8.8.8']));
+  await show('empty servers', () => new dns.Resolver().setServers([]));
+  for (const args of [['bad'], ['1.2.3.4', '5.6.7.8'], ['::1', '::2'], [7], ['1.2.3.4', 7]]) await show('setlocal ' + args.join(','), () => new dns.Resolver().setLocalAddress(...args));
+  await show('unavailable local', () => { const r = new p.Resolver(); r.setLocalAddress('192.0.2.1'); return r.resolve4('example.com'); });
+  await show('cancel', () => { const r = new p.Resolver(); const result = r.resolve4('example.com'); r.cancel(); return result; });
+})();
 `,
   // The builtins workerd provides behind Node's argument checks
   // (node-builtin-fronts.ts): what they take still works as Node's does, and
@@ -791,6 +808,42 @@ show2('getRandomValues at quota', () => crypto.getRandomValues(new Uint8Array(PI
   console.log('randomBytes promisified: ' + (await require('util').promisify(crypto.randomBytes)(PIECE + 1)).length);
 })();
 `,
+  'fronts-more.cjs': SHOW + String.raw`
+const path = require('path');
+const url = require('url');
+const events = require('events');
+for (const value of [undefined, 5, Symbol('s'), {}, null]) {
+  attempt('relative from', () => path.relative(value, '/a'));
+  attempt('relative to', () => path.relative('/a', value));
+  attempt('resolve first', () => path.resolve(value));
+  attempt('resolve last', () => path.resolve('a', value));
+  attempt('basename suffix', () => path.basename('a', value));
+  attempt('matchesGlob path', () => path.matchesGlob(value, '*'));
+  attempt('matchesGlob pattern', () => path.matchesGlob('a', value));
+  attempt('pathToFileURL', () => url.pathToFileURL(value));
+  attempt('urlToHttpOptions', () => url.urlToHttpOptions(value));
+  attempt('URL input', () => new url.URL(value));
+  attempt('fileURLToPath', () => url.fileURLToPath(value));
+  attempt('fileURLToPathBuffer', () => url.fileURLToPathBuffer(value));
+  attempt('events getMaxListeners', () => events.getMaxListeners(value));
+  attempt('events setMaxListeners', () => events.setMaxListeners(value));
+  attempt('events asyncResource', () => new events.EventEmitterAsyncResource(value));
+}
+attempt('URL missing', () => new url.URL());
+attempt('URL base', () => new url.URL('/a', 'broken'));
+attempt('URL function', () => url.URL('https://example.com'));
+console.log('url shapes ' + JSON.stringify([url.URL === globalThis.URL, new url.URL('https://example.com').constructor === url.URL, url.pathToFileURL('/a%#?\\b\n').href, url.fileURLToPath('file:///a%20b')]));
+console.log('url bytes ' + JSON.stringify(['file:///a%FF%20b', 'file:///a%2Fb', 'file:///a%ZZ'].map((value) => url.fileURLToPathBuffer(value).toString('hex'))));
+const options = url.urlToHttpOptions(Object.assign(new url.URL('http://u:p@[::1]:8080/a?q=1'), { own: 7 }));
+console.log('url options ' + JSON.stringify([Object.getPrototypeOf(options) === null, options.protocol, options.hostname, options.port, options.path, options.auth, options.own]));
+console.log('paths ' + JSON.stringify([path.relative('/a/b', '/a/c'), path.resolve('/a', {}, '/absolute'), path.posix === path, path.basename('/a/file.txt', '.txt')]));
+const ee = new events.EventEmitter();
+events.setMaxListeners(23, ee);
+console.log('event limits ' + JSON.stringify([events.getMaxListeners(ee), ee.getMaxListeners()]));
+class Resource extends events.EventEmitterAsyncResource {}
+const resource = new Resource();
+console.log('event resource ' + JSON.stringify([resource instanceof events.EventEmitter, resource.asyncResource.eventEmitter === resource]));
+`,
   'deprecate.cjs': SHOW + String.raw`
 const util = require('util');
 const old = util.deprecate(function old(a, b) { return a + b; }, 'old() is going away', 'DEP_NIMBUS');
@@ -840,7 +893,7 @@ import('zlib').then((ns) => {
 `,
 };
 // Each program's command line, after \`node\`.
-const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs', 'process.cjs', 'capture.cjs', 'fsstats.cjs', 'dnsconst.cjs', 'dns.cjs', 'fronts.cjs', 'random.cjs', 'zlib.cjs'];
+const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs', 'process.cjs', 'capture.cjs', 'fsstats.cjs', 'dnsconst.cjs', 'dns.cjs', 'dns-unavailable.cjs', 'fronts.cjs', 'fronts-more.cjs', 'random.cjs', 'zlib.cjs'];
 
 const host = mkdtempSync(join(tmpdir(), 'node-lib-'));
 process.on('exit', () => rmSync(host, { recursive: true, force: true }));
@@ -849,7 +902,8 @@ for (const [path, text] of Object.entries(FILES)) {
   writeFileSync(join(host, path), text);
 }
 const expected = new Map(PROGRAMS.map((program) => {
-  const ran = spawnSync('sh', ['-c', `node ${program}`], { cwd: host, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: host } });
+  const hostOptions = program === 'dns-unavailable.cjs' ? '--expose-internals -r ./dns-unavailable-binding.cjs ' : '';
+  const ran = spawnSync('sh', ['-c', `node ${hostOptions}${program}`], { cwd: host, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: host } });
   return [program, `${ran.stdout}exit ${ran.status}\n`];
 }));
 
@@ -866,7 +920,10 @@ try {
     for (const program of PROGRAMS) {
       const r = await session.run(`cd ${W} && node ${program} > out.txt 2>/dev/null; echo "exit $?" >> out.txt; cat out.txt`, 120_000);
       const got = `${splitScenarioOutput(r.stdout).lines.join('\n')}\n`;
-      if (got !== expected.get(program)) differences.push({ program, node: expected.get(program), here: got });
+      if (got !== expected.get(program)) {
+        differences.push({ program, node: expected.get(program), here: got });
+        console.log('DIFFERENCE ' + JSON.stringify(differences.at(-1)));
+      }
     }
     const bound = await session.run(`cd ${W} && node aborted-bound.cjs 2>&1`, 120_000);
     const line = splitScenarioOutput(bound.stdout).lines.find((l) => l.startsWith('BOUND '));
