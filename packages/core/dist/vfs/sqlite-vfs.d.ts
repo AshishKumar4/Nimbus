@@ -78,8 +78,6 @@ export interface DelegationTerms {
     recall(kind: 'share' | 'revoke'): Promise<void>;
     /** Refuses (throws) a root its maker does not delegate; asked with the lease's resolved root, before anything else. */
     admit?(root: string): void;
-    /** A read lease's (acquireReadLease): the subtrees it does not cover, the session's own stores its synchronous use writes. */
-    readonly excludes?: readonly string[];
     /**
      * A read lease's: whether its holder no longer trusts it (no barrier of
      * its confirmed it within its trust), and if so it is ended here, at
@@ -814,6 +812,8 @@ export declare class SqliteVFS {
     private heldPipelines;
     /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
     private activeWrite;
+    /** Whether the running call is a view's synchronous mutation, whose writes to the session's stores a read recall holds rather than refuses (readRecallAt). */
+    private activeStoreHolding;
     /** Whether the running call reads what has landed (a `landed` view): its reads ask no holder to send. */
     private activeLanded;
     /** Shared by every concurrent stream targeting this session's VFS. */
@@ -1381,10 +1381,10 @@ export declare class SqliteVFS {
     acquireGlobalExclusiveMutation(reason?: string): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
     /**
-     * A read lease of the whole namespace, but the subtrees `terms.excludes`
-     * names, granted at `at`: refused (ESTALE) when anything was published
-     * since, so its holder is current at the moment it holds it. Its holder
-     * reads its own copy, asking nothing, until it is recalled.
+     * A read lease of the whole namespace, granted at `at`: refused (ESTALE)
+     * when anything was published since, so its holder is current at the
+     * moment it holds it. Its holder reads its own copy, asking nothing, until
+     * it is recalled.
      */
     acquireReadLease(terms: DelegationTerms, at: {
         readonly epoch: string;
@@ -1397,12 +1397,14 @@ export declare class SqliteVFS {
         held: number;
         broken: number;
     };
-    /** Whether `lease` covers `key`: the whole namespace, but what it excludes. */
-    private readCovers;
     /**
      * The read leases a mutation at `key` must recall first (every holder's
      * but the caller's own), as one recall: each asked at once, all answered
      * (or their trust run out) before the retry, so a writer meets each at most once.
+     * A write to the session's own stores (the kernel's, as it launches a
+     * process), which cannot wait, is never refused: the view's synchronous
+     * mutation making it is held instead, its own pipeline published once the
+     * recalls are over (callerView), and a check ahead of it asks nothing.
      */
     private readRecallAt;
     /**
@@ -1413,7 +1415,7 @@ export declare class SqliteVFS {
      * pass what it holds.
      */
     private pipelined;
-    /** A pipeline for `writer`'s commits (pipelined, or a wave's). */
+    /** A pipeline for `writer`'s commits (pipelined, a wave's, or a `store` write's). */
     private newPipeline;
     /** `run`, its commits `pipeline`'s. */
     private inPipeline;

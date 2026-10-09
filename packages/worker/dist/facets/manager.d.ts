@@ -1377,13 +1377,21 @@ export declare class FacetManager {
         network: WorkspaceNetwork;
     };
     /**
-     * The image store's disk: this session's VFS, as the kernel — the store is
-     * written by the kernel and read by processes through supervisor bindings
-     * that enforce their own credential. Mode 0644 at creation, as POSIX has
-     * it, is what makes the read succeed for any process by construction; the
-     * store itself decides nothing about modes.
+     * The image store's disk for process `pid`'s images: this session's VFS,
+     * as the kernel writing on its behalf (_kernelFor) — the store is written
+     * by the kernel and read by processes through supervisor bindings that
+     * enforce their own credential. Mode 0644 at creation (0666 under the
+     * kernel's umask), as POSIX has it, is what makes the read succeed for any
+     * process by construction; the store itself decides nothing about modes.
      */
     private _imageBlobs;
+    /**
+     * The session's filesystem as the kernel, writing what process `pid`
+     * boots from (its images, the session's copies it loads) on its behalf,
+     * through its binding: a write a read lease's recall holds back
+     * (SqliteVFS.readRecallAt) is its to read before it is published.
+     */
+    private _kernelFor;
     /**
      * The kernel-scoped VFS the durable image store reads and writes through —
      * `.nimbus/images/<sha256>` is session kernel data, not user content.

@@ -144,8 +144,6 @@ export class Delegations {
         let held = null;
         const terms = {
             reads: false,
-            // The session's own stores are written synchronously, and never leased.
-            excludes: SESSION_KERNEL_ROOTS,
             lapsed: () => {
                 if (held === null || this.held.get(held.owner) !== held)
                     return true;

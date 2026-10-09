@@ -43,6 +43,7 @@ import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
 import { posixAccess } from './posix-access.js';
 import { RecallRequired, withRecall } from './recall.js';
+import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../_shared/read-lease-cover.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { readDeclaredSource } from './vfs.js';
 import { SYSCALL_VERDICTS } from './vfs-error.js';
@@ -947,6 +948,8 @@ export class SqliteVFS {
     heldPipelines = 0;
     /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
     activeWrite = false;
+    /** Whether the running call is a view's synchronous mutation, whose writes to the session's stores a read recall holds rather than refuses (readRecallAt). */
+    activeStoreHolding = false;
     /** Whether the running call reads what has landed (a `landed` view): its reads ask no holder to send. */
     activeLanded = false;
     /** Shared by every concurrent stream targeting this session's VFS. */
@@ -2247,19 +2250,23 @@ export class SqliteVFS {
             if (typeof method !== 'function' || key === 'holds')
                 continue;
             const settles = !LEAF_READS.has(key);
-            const writes = OWNED_MUTATIONS.has(key) || SPANNING_MUTATIONS.has(key);
-            const owned = mutationOwner !== undefined && OWNED_MUTATIONS.has(key);
+            const synchronous = OWNED_MUTATIONS.has(key);
+            const writes = synchronous || SPANNING_MUTATIONS.has(key);
+            const owned = mutationOwner !== undefined && synchronous;
             Reflect.set(view, key, (...args) => {
                 const prior = this.privileged;
                 const priorHolds = this.activeHolds;
                 const priorWrite = this.activeWrite;
                 const priorLanded = this.activeLanded;
+                const priorStoreHolding = this.activeStoreHolding;
+                const priorPipeline = this.activePipeline;
                 if (privileged)
                     this.privileged = true;
                 if (holds !== null)
                     this.activeHolds = holds();
                 this.activeLanded = landed;
                 this.activeWrite = writes;
+                this.activeStoreHolding = synchronous;
                 try {
                     if (settles)
                         this.settleAppends();
@@ -2271,6 +2278,13 @@ export class SqliteVFS {
                     this.activeHolds = priorHolds;
                     this.activeWrite = priorWrite;
                     this.activeLanded = priorLanded;
+                    this.activeStoreHolding = priorStoreHolding;
+                    // A store write it held (readRecallAt) is published once the recalls it met are over.
+                    if (this.activePipeline !== priorPipeline) {
+                        const held = this.activePipeline;
+                        this.activePipeline = priorPipeline;
+                        void this.endPipeline(held);
+                    }
                 }
             });
         }
@@ -2657,8 +2671,10 @@ export class SqliteVFS {
      */
     breakUnrecalledReadLeases(paths) {
         const keys = paths.map((path) => normalizeVfsPath(path)).filter((key) => key !== '');
+        if (keys.length === 0)
+            return;
         for (const [owner, lease] of [...this.readLeases]) {
-            if (this.isHolder(owner) || !keys.some((key) => this.readCovers(lease, key)))
+            if (this.isHolder(owner))
                 continue;
             this.breakReadLease(owner, lease);
             console.error(`[nimbus] a publication at /${keys[0]} did not recall the read lease it covers; ended`);
@@ -2990,10 +3006,10 @@ export class SqliteVFS {
         this.endLease(owner);
     }
     /**
-     * A read lease of the whole namespace, but the subtrees `terms.excludes`
-     * names, granted at `at`: refused (ESTALE) when anything was published
-     * since, so its holder is current at the moment it holds it. Its holder
-     * reads its own copy, asking nothing, until it is recalled.
+     * A read lease of the whole namespace, granted at `at`: refused (ESTALE)
+     * when anything was published since, so its holder is current at the
+     * moment it holds it. Its holder reads its own copy, asking nothing, until
+     * it is recalled.
      */
     acquireReadLease(terms, at) {
         this.settleAppends();
@@ -3011,19 +3027,24 @@ export class SqliteVFS {
     readLeaseStats() {
         return { held: this.readLeases.size, broken: this.readLeasesBroken };
     }
-    /** Whether `lease` covers `key`: the whole namespace, but what it excludes. */
-    readCovers(lease, key) {
-        return !(lease.delegation.excludes ?? []).some((excluded) => key === excluded || key.startsWith(`${excluded}/`) || excluded === '');
-    }
     /**
      * The read leases a mutation at `key` must recall first (every holder's
      * but the caller's own), as one recall: each asked at once, all answered
      * (or their trust run out) before the retry, so a writer meets each at most once.
+     * A write to the session's own stores (the kernel's, as it launches a
+     * process), which cannot wait, is never refused: the view's synchronous
+     * mutation making it is held instead, its own pipeline published once the
+     * recalls are over (callerView), and a check ahead of it asks nothing.
      */
     readRecallAt(key) {
-        const met = [...this.readLeases].filter(([owner, lease]) => (this.readCovers(lease, key) && !this.isHolder(owner) && lease.delegation.lapsed?.() !== true));
+        const met = [...this.readLeases].filter(([owner, lease]) => !this.isHolder(owner) && lease.delegation.lapsed?.() !== true);
         if (met.length === 0)
             return null;
+        if (this.activePipeline === null && !readLeaseCovers(key, false, SESSION_KERNEL_ROOTS)) {
+            if (!this.activeStoreHolding)
+                return null;
+            this.activePipeline = this.newPipeline(this.activeHolds, true);
+        }
         const recallOne = ([owner, lease]) => {
             lease.recalling ??= (async () => {
                 if (this.readLeases.get(owner) !== lease)
@@ -3053,7 +3074,7 @@ export class SqliteVFS {
      * pass what it holds.
      */
     pipelined(run) {
-        const pipeline = this.newPipeline(this.activeHolds);
+        const pipeline = this.newPipeline(this.activeHolds, false);
         let value;
         try {
             value = this.inPipeline(pipeline, run);
@@ -3063,11 +3084,11 @@ export class SqliteVFS {
         }
         return { value, published: this.endPipeline(pipeline) };
     }
-    /** A pipeline for `writer`'s commits (pipelined, or a wave's). */
-    newPipeline(writer) {
+    /** A pipeline for `writer`'s commits (pipelined, a wave's, or a `store` write's). */
+    newPipeline(writer, store) {
         let settle;
         const published = new Promise((resolve) => { settle = resolve; });
-        return { recalls: new Set(), publication: null, committed: 0, roots: new Map(), writer, published, settle };
+        return { recalls: new Set(), publication: null, committed: 0, roots: new Map(), writer, store, published, settle };
     }
     /** `run`, its commits `pipeline`'s. */
     inPipeline(pipeline, run) {
@@ -3287,9 +3308,10 @@ export class SqliteVFS {
     isHolder(owner) {
         if (this.activeMutationOwner === owner || this.activeHolds?.has(owner) === true)
             return true;
-        // A held commit's writer: the pipelined call that made it, and its later calls.
+        // A held commit's writer: the pipelined call that made it, and its later
+        // calls; a store write's, uid 0 too, which owns the stores.
         const held = this.exclusiveMutationLeases.get(owner)?.held;
-        return held !== undefined && (held === this.activePipeline || (held.writer !== null && held.writer === this.activeHolds));
+        return held !== undefined && (held === this.activePipeline || (held.writer !== null && held.writer === this.activeHolds) || (held.store && this.privileged));
     }
     /**
      * Give up every delegation of another holder that a write at `key`
@@ -7890,7 +7912,7 @@ export class SqliteVFS {
         const owner = options.mutationOwner;
         const holds = owner !== undefined && caller?.has(owner) !== true ? new Set([owner, ...(caller ?? [])]) : caller;
         // Its records commit ahead of the read recalls they meet; its answer waits for their publication.
-        const pipeline = this.newPipeline(holds);
+        const pipeline = this.newPipeline(holds, false);
         return this.spanning(async () => {
             try {
                 return await this.consumeStream(stream, options, cred, origin, holds, pipeline);

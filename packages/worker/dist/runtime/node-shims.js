@@ -1054,20 +1054,15 @@ const __fsMod = (() => {
 
   // What the view answers for under a trusted read lease, compiled from
   // @nimbus-sh/core _shared/read-lease-cover.ts (READ_LEASE_COVER_PREAMBLE):
-  // declares SESSION_KERNEL_ROOTS, READ_LEASE_UNCOVERED_ROOTS and readLeaseCovers.
+  // declares READ_LEASE_UNCOVERED_ROOTS and readLeaseCovers (and SESSION_KERNEL_ROOTS).
 ${READ_LEASE_COVER_PREAMBLE}
   /** Lookups that landed where the lease does not vouch: a leased answer that made one is the session's (_leasedRead). */
   let _uncoveredLandings = 0;
-  /** Whether the view has answered for the session's stores, which change with no recall: its barriers are asked from then on. */
-  let _storesViewed = false;
   /** \`__nsResolve\`, where it landed counted: \`k\`'s entry, or with \`listing\` its names, through any link. */
   function _nsResolveViewed(k, follow, listing) {
     const found = __nsLookup(k, follow);
     if (found === "ELOOP") return found;
-    if (!readLeaseCovers(found.path, listing, READ_LEASE_UNCOVERED_ROOTS)) {
-      _uncoveredLandings++;
-      if (!readLeaseCovers(found.path, listing, SESSION_KERNEL_ROOTS)) _storesViewed = true;
-    }
+    if (!readLeaseCovers(found.path, listing, READ_LEASE_UNCOVERED_ROOTS)) _uncoveredLandings++;
     return found.row !== undefined ? found : null;
   }
 
@@ -2350,7 +2345,7 @@ ${READ_LEASE_COVER_PREAMBLE}
     // change waits for the lease's recall, and the recall untrusts it first
     // (ProcessFsClient.readTrusted). A delivered answer is still applied,
     // and a store owed a repair still asks.
-    if (!delivered && !_storeRepairOwed && !_storesViewed && _nsActive() && __nimbusProcessFs().readTrusted()) {
+    if (!delivered && !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted()) {
       _stats.leasedBarriers++;
       return [];
     }
