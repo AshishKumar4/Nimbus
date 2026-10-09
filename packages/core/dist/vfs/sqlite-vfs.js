@@ -7562,8 +7562,10 @@ export class SqliteVFS {
         if (size <= CHUNK_SIZE) {
             // One chunk, named from its inode: no cut to stream into.
             const data = await readDeclaredSource(source, size, sourceMismatch);
-            asCaller(() => this.writeFile(path, data, options, cred));
-            return this._revision;
+            return withRecall(() => asCaller(() => {
+                this.writeFile(path, data, options, cred);
+                return this._revision;
+            }));
         }
         const staging = { id: 0, size: 0, count: 0, hashed: true, digest: new ManifestDigest() };
         const writer = this.stagingWriter(() => staging, target, (plan) => asCaller(() => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' })));
@@ -7586,9 +7588,13 @@ export class SqliteVFS {
             for (const data of cutter.finish())
                 stage(data);
             flush();
-            asCaller(() => this.publishStagedFile(this.fileWriteInode(path, size, options, cred), staging));
-            // Read in the turn that published it: after an await it could be a peer's.
-            return this._revision;
+            // Refused again as it publishes: what it meets now (a lease taken while
+            // it streamed) is recalled first, and the staging waits for it.
+            return await withRecall(() => asCaller(() => {
+                this.publishStagedFile(this.fileWriteInode(path, size, options, cred), staging);
+                // Read in the turn that published it: after an await it could be a peer's.
+                return this._revision;
+            }));
         }
         catch (error) {
             if (staging.id !== 0)
