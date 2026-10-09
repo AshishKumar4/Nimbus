@@ -5,6 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -37,6 +38,7 @@ export const manifest = JSON.parse(readFileSync(new URL('manifest.json', root), 
 export function readBlob(file) { return new Uint8Array(readFileSync(new URL(file.content, root))); }
 export default { manifest, readBlob };
 `);
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: NAME, version: '1.0.0-2', type: 'module', files: ['manifest.json', 'index.js', 'blobs'] }));
   return dir;
 }
 
@@ -53,6 +55,19 @@ try {
   const builtSha = sha256(readFileSync(join(good, 'manifest.json')));
   const check = (dir, registry) =>
     checkRuntimePackage({ name: NAME, version: '1.0.0-2', dir, registry, runThroughCore });
+
+  const pack = (dir) => {
+    const result = spawnSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', root], { cwd: dir, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return join(root, JSON.parse(result.stdout)[0].filename);
+  };
+  const unavailable = { packument() { throw new Error('a built artifact must not depend on already being published'); } };
+  assert.deepEqual(await checkRuntimePackage({ name: NAME, version: '1.0.0-2', dir: good, registry: unavailable, runThroughCore, tarball: pack(good) }), []);
+  const wrong = packageDir('wrong-archive', 'bash-runner');
+  const wrongProblems = await checkRuntimePackage({ name: NAME, version: '1.0.0-2', dir: good, registry: unavailable, runThroughCore, tarball: pack(wrong) });
+  assert.ok(wrongProblems.some((item) => /core being published refuses/.test(item.problem)), 'the actual packed runner is installed through core, not the build directory');
+  assert.ok(wrongProblems.some((item) => /carries manifest.json sha256/.test(item.problem)), 'a different packed manifest cannot satisfy the gate');
+  assert.deepEqual(await check(good, fakeRegistry(null)), [{ problem: `${NAME}@1.0.0-2 is not on the registry`, fix: publishCommand(good) }], 'ordinary prepublish still requires the real public release');
 
   // ── Released: on the registry, same manifest, latest ───────────────────
   assert.deepEqual(await check(good, fakeRegistry({ '1.0.0': 'old', '1.0.0-2': builtSha }, '1.0.0-2')), []);
