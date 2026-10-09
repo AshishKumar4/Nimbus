@@ -510,11 +510,28 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         for (const specifier of deferrals)
             defer({ specifier, fromDir, alternatives: deferrals.size });
         // What a require wrapper's calls name (@vitejs/plugin-vue's
-        // `tryRequire("vue/compiler-sfc", root)`): optional loads, as the
-        // wrapper's try says, so phase 2's, resolved as require() resolves them.
+        // `tryRequire("vue/compiler-sfc", root)`), resolved as require() resolves
+        // them: loads the module makes synchronously when the wrapper runs. In
+        // the launch's required closure they are optional, as the wrapper's try
+        // says, so phase 2's. A module staged on its own (a dependency closure,
+        // or phase 2's) carries them, whole or not at all: it runs as the map's
+        // own, and no import() prefetch fetches for it (node-shims.ts
+        // __nimbusImportStager), so a load the map lacks fails its synchronous
+        // read ("Failed to resolve vue/compiler-sfc", a learned plugin-vue).
         const loads = (await requireWrapperCalls(code)).filter((specifier) => !isFacetProvided(specifier));
-        for (const specifier of loads)
-            defer({ specifier, fromDir, alternatives: loads.length, require: true });
+        if (policy || lazy) {
+            for (const specifier of loads) {
+                if (closureExceeded || declined)
+                    break;
+                const staged = await resolveStaticDependency(specifier, fromDir);
+                if (staged)
+                    await addFile(staged.resolved);
+            }
+        }
+        else {
+            for (const specifier of loads)
+                defer({ specifier, fromDir, alternatives: loads.length, require: true });
+        }
     }
     // A dynamic `import()` loads what Node's ESM resolver names (the process's
     // loader resolves it the same way, core/_shared/esm-resolver.ts): the

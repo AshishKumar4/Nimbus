@@ -3469,31 +3469,33 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
         budgetState.fileCount++;
         added++;
     }
-    // A module brings its static imports: learned one miss per launch, nuxt's
-    // on-change alone would have cost a relaunch for each of its files.
+    // A module brings what it loads synchronously, as one dependency closure
+    // staged whole or not at all: its static imports (learned one miss per
+    // launch, nuxt's on-change alone would have cost a relaunch for each of
+    // its files) and its require wrappers' loads (a learned @vitejs/plugin-vue
+    // without vue/compiler-sfc failed "Failed to resolve vue/compiler-sfc").
+    // A part of a closure is no use: the module it leaves out fails its
+    // synchronous read. What the module defers with import() is fetched when
+    // it runs, and what the runs executed is evidence of its own.
     for (const path of observed) {
         if (!/\.[cm]?js$/.test(path) || bundle[path] === undefined)
             continue;
-        const cell = bundle[path];
-        const source = typeof cell === 'string' ? cell : new TextDecoder().decode(cell);
-        const closure = await prefetchForRequire(requireFsOverBridge(vfs), source, '/' + path.slice(0, path.lastIndexOf('/')), '/' + path, undefined, pacer?.spend.bind(pacer));
+        const closure = await prefetchForRequire(requireFsOverBridge(vfs), '', '/' + path.slice(0, path.lastIndexOf('/')), '/' + path, undefined, pacer?.spend.bind(pacer), {
+            purpose: 'dependency-closure', held: bundle,
+            // UTF-8 bytes, which bound both the raw bytes `room` counts and the
+            // cell lengths the bundle's own cap counts.
+            maxAdditionalBytes: Math.max(0, Math.min(room - bytes, VFS_BUNDLE_MAX_BYTES - budgetState.totalBytes)),
+            maxAdditionalFiles: Math.max(0, VFS_BUNDLE_MAX_FILES - budgetState.fileCount),
+        });
         if ('kind' in closure)
             continue;
         for (const [dep, content] of Object.entries(closure.bundle)) {
-            if (closure.speculative.has(dep))
-                continue;
             if (bundle[dep] !== undefined) {
                 requiredPaths.add(dep);
                 continue;
             }
             const cellLen = _bundleCellLength(content);
-            if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
-                break;
-            if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
-                continue;
             const raw = _bundleCellRawBytes(content);
-            if (bytes + raw > room)
-                continue;
             bundle[dep] = content;
             requiredPaths.add(dep);
             bytes += raw;
