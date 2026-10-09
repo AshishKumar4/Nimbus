@@ -56,7 +56,7 @@ function __nimbusFrontPath(path) {
 
 function __nimbusFrontUrl(url) {
   __nimbusFront(url, "pathToFileURL", (real) => function (path, options) {
-    if (typeof path !== "string") throw invalidArgType("paths[0]", "string", path);
+    if (typeof path !== "string") throw invalidArgType("path", "string", path);
     return Reflect.apply(real, this, arguments);
   });
   __nimbusFront(url, "fileURLToPath", (real) => function (path, options) {
