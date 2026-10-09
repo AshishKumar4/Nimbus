@@ -3,6 +3,23 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
+## Unreleased
+
+- Fixed: a second `astro dev` in the same session reset the session (the
+  dev server never answered, 502). The launch carries what the first one
+  learned, and its larger code pack outgrew the session's memory twice:
+  writing it encoded the whole pack beside the module text it came from,
+  and booting it read the pack's bytes beside the process's wasm images and
+  decoded them into one string, two bytes a character throughout if any
+  module held a non-Latin-1 one. A code pack is now written a module at a
+  time, and read first at boot and decoded a module at a time. Past those,
+  its module map, 68.5 MB with what the first run learned beside 39.4 MB of
+  wasm, was over the platform's 64 MiB ceiling on a dynamic Worker's map:
+  it was refused at start, and the session reset holding it. A launch's map
+  now carries what earlier runs learned only as far as that ceiling allows,
+  what they needed first kept first; what does not fit runs as it did in
+  the run that learned it.
+
 ## 2026-10-09: platform 0.8.0, config 0.2.4, core 0.16.0, fabric 0.11.0, worker 0.14.0, loom 0.2.3, sdk 0.12.0, react 0.2.3, cli 0.2.3, create-nimbus-app 0.2.1, runtime-cpython 3.13.14-1
 
 - Changed: `util`, `assert`, `querystring` and `punycode` in node programs
