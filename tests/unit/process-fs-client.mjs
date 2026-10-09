@@ -100,6 +100,31 @@ const writeFile = (path, text) => ({ type: 'call', call: { call: 'writeFile', pa
 const appendFile = (path, text) => ({ type: 'call', call: { call: 'appendFile', path, mode: 0o644, data: enc.encode(text) } });
 const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o755 } });
 
+// ── A read lease under a frozen clock: trusted while it shows the event before expiry, never after the next one ──
+{
+  const s = session();
+  let clock = 1_000;
+  const recalls = [];
+  const c = processFsClient({
+    session: { ...s.port, grants: {
+      acquire: async () => null, release: async () => {},
+      awaitRecall: () => new Promise((resolve) => recalls.push(resolve)), recalled: async () => {},
+    } },
+    retry: RETRY,
+    now: () => clock,
+  });
+  const ask = c.readLeaseAsk();
+  c.readLeaseAnswered({ owner: 'L' });
+  c.readLeased({ owner: 'L', trustMs: 500 }, ask);
+  // A stretch of answers with no event between them: the clock stands at the event's time.
+  for (let i = 0; i < 10_000; i++) assert.equal(c.readTrusted(), true);
+  // The next event shows the time past the trust: nothing is trusted from it on.
+  clock = 1_500;
+  assert.equal(c.readTrusted(), false, 'a lease past its trust was trusted at the next event');
+  await c.settle();
+  assert.equal(c.readTrusted(), false, 'a settled client trusted its lease');
+}
+
 // ── A synchronous loop: program order across files, in as few waves as W7 allows ──
 {
   const s = session();

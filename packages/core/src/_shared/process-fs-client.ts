@@ -1218,6 +1218,16 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return failures.splice(0, failures.length);
     },
     readTrusted() {
+      // Judged by this isolate's clock, which a Worker moves only as an event
+      // (I/O) is delivered, to that event's time E. What it answers until the
+      // next event is one view, the one as of E, since only events change it.
+      // Trusted means E < asked + trust, and the session publishes past an
+      // unanswered lease no earlier than confirmed + trust + margin, with
+      // confirmed no earlier than asked: everything answered under a frozen
+      // clock is before that publication, and the next event, showing a
+      // clock past the trust, ends trust before anything is answered again.
+      // Assumes this clock and the session's agree within the margin
+      // (READ_LEASE_MARGIN_MS, 50 ms; the session's isolates share its host).
       return readLease !== null && readLease.logged === logged && now() < readLease.until;
     },
     readLeaseAsk() {
