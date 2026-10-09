@@ -716,9 +716,46 @@ const plain = util.deprecate(() => 4, 'no code');
 console.log(plain(), plain());
 attempt('deprecate code', () => util.deprecate(() => {}, 'm', 5));
 `,
+  // zlib as Node's lib/zlib.js exports it: the functions, the classes,
+  // `constants` and `codes` enumerable; each constant but Brotli's on the
+  // module as well, read-only and not enumerable (deprecated); no `default`.
+  // Before, workerd's 172 constants were each an enumerable, writable export,
+  // with `default` and two zstd names of workerd's own (ZSTD_ENCODE,
+  // ZSTD_DECODE). Two values are the engine's own: the zlib it builds and its
+  // chunk ceiling.
+  'zlib.cjs': String.raw`
+const zlib = require('zlib');
+const ENGINE = new Set(['ZLIB_VERNUM', 'Z_MAX_CHUNK']);
+const flags = (o, k) => { const d = Object.getOwnPropertyDescriptor(o, k); return 'value' in d ? [d.enumerable, d.writable, d.configurable].map(Number).join('') : 'accessor'; };
+const value = (v, k) => (ENGINE.has(k) ? 'engine' : typeof v === 'number' ? v : typeof v);
+const strictly = (f) => { try { f(); return 'no error'; } catch (e) { return e.name + ': ' + e.message; } };
+const names = Object.getOwnPropertyNames(zlib).sort();
+console.log('enumerable: ' + JSON.stringify(Object.keys(zlib).sort()));
+console.log('own names: ' + names.length + ' ' + JSON.stringify(names));
+console.log('flags: ' + JSON.stringify(names.map((k) => k + ' ' + flags(zlib, k) + ' ' + value(zlib[k], k))));
+const constants = Object.keys(zlib.constants).sort();
+console.log('constants: ' + constants.length + ' ' + JSON.stringify(constants.map((k) => k + ' ' + flags(zlib.constants, k) + ' ' + value(zlib.constants[k], k))));
+console.log('constants object: ' + [Object.getPrototypeOf(zlib.constants), Object.isExtensible(zlib.constants), flags(zlib, 'constants'), flags(zlib, 'codes'), Object.isFrozen(zlib.codes)].join(' '));
+console.log('codes: ' + JSON.stringify(zlib.codes));
+console.log('mirrored: ' + JSON.stringify(names.filter((k) => k in zlib.constants && zlib[k] !== zlib.constants[k])));
+console.log('default: ' + typeof zlib.default + ' ' + ('default' in zlib));
+console.log('assign: ' + strictly(function () { 'use strict'; zlib.Z_SYNC_FLUSH = 1; }));
+console.log('assign constant: ' + strictly(function () { 'use strict'; zlib.constants.Z_SYNC_FLUSH = 1; }));
+console.log('delete: ' + strictly(function () { 'use strict'; delete zlib.Z_SYNC_FLUSH; }));
+console.log('define: ' + strictly(() => Object.defineProperty(zlib, 'Z_SYNC_FLUSH', { value: 1 })));
+console.log('use: ' + JSON.stringify([
+  zlib.gunzipSync(zlib.gzipSync('data', { level: zlib.constants.Z_BEST_COMPRESSION, strategy: zlib.constants.Z_HUFFMAN_ONLY })).toString(),
+  zlib.inflateSync(zlib.deflateSync('x'.repeat(100), { flush: zlib.Z_SYNC_FLUSH, windowBits: zlib.Z_DEFAULT_WINDOWBITS })).length,
+  zlib.brotliDecompressSync(zlib.brotliCompressSync('br', { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 } })).toString(),
+]));
+import('zlib').then((ns) => {
+  const keys = Object.keys(ns).sort();
+  console.log('esm: ' + keys.length + ' ' + JSON.stringify(keys) + ' ' + ('Z_SYNC_FLUSH' in ns) + ' ' + (ns.default === zlib));
+});
+`,
 };
 // Each program's command line, after \`node\`.
-const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs', 'process.cjs', 'capture.cjs', 'fsstats.cjs', 'dnsconst.cjs', 'fronts.cjs', 'random.cjs'];
+const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs', 'process.cjs', 'capture.cjs', 'fsstats.cjs', 'dnsconst.cjs', 'fronts.cjs', 'random.cjs', 'zlib.cjs'];
 
 const host = mkdtempSync(join(tmpdir(), 'node-lib-'));
 process.on('exit', () => rmSync(host, { recursive: true, force: true }));
