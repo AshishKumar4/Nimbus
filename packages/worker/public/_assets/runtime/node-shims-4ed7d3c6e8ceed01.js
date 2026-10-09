@@ -16051,7 +16051,7 @@ builtins.dns = (() => {
     return error;
   }
   function isIPv4(s) {
-    if (typeof s !== "string" || !/^(?:d{1,3}.){3}d{1,3}$/.test(s)) return false;
+    if (typeof s !== "string" || !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(s)) return false;
     return s.split(".").every((n) => Number(n) <= 255);
   }
   function isIPv6(s) {
@@ -16174,7 +16174,7 @@ builtins.dns = (() => {
     };
   }
   function normalizeNaptr(data, name, syscall) {
-    const match = /^(d+)s+(d+)s+"([^"]*)"s+"([^"]*)"s+"([^"]*)"s+(S+)s*$/.exec(data);
+    const match = /^(\d+)\s+(\d+)\s+"([^"]*)"\s+"([^"]*)"\s+"([^"]*)"\s+(\S+)\s*$/.exec(data);
     if (!match) throw dnsError(syscall, "EBADRESP", name);
     return {
       flags: match[3], service: match[4], regexp: match[5], replacement: stripDot(match[6]),
@@ -16182,12 +16182,12 @@ builtins.dns = (() => {
     };
   }
   function normalizeCaa(data, name, syscall) {
-    const match = /^(d+)s+(S+)s+"?([^"]*)"?s*$/.exec(data);
+    const match = /^(\d+)\s+(\S+)\s+"?([^"]*)"?\s*$/.exec(data);
     if (!match) throw dnsError(syscall, "EBADRESP", name);
     return { critical: parseInt(match[1], 10), [match[2]]: match[3] };
   }
   function normalizeTlsa(data, name, syscall) {
-    const parts = data.replace(/[()]/g, " ").split(/s+/).filter((p) => p !== "");
+    const parts = data.replace(/[()]/g, " ").split(/\s+/).filter((p) => p !== "");
     if (parts.length < 4) throw dnsError(syscall, "EBADRESP", name);
     const bytes = new Uint8Array((parts.slice(3).join("").match(/../g) || []).map((b) => parseInt(b, 16)));
     return { certUsage: parseInt(parts[0], 10), selector: parseInt(parts[1], 10), match: parseInt(parts[2], 10), data: bytes.buffer };
@@ -16233,7 +16233,7 @@ builtins.dns = (() => {
   };
   // A query over DoH JSON; empty answers classified by status.
   function queryType(resolver, name, type, syscall, shape, ttl, signal) {
-    if (/^localhost.?$/i.test(name) && (type === "A" || type === "AAAA")) {
+    if (/^localhost\.?$/i.test(name) && (type === "A" || type === "AAAA")) {
       if (type === "A") return Promise.resolve(shape([{ data: "127.0.0.1", TTL: 0 }]));
       return Promise.reject(dnsError(syscall, "ENODATA", name));
     }
@@ -16269,7 +16269,7 @@ builtins.dns = (() => {
   // A query's completion through a resolver: native transport for A/AAAA
   // without TTL, DoH JSON otherwise; empty native answers classified.
   function runQuery(resolver, name, type, syscall, ttl, callback) {
-    if (/^localhost.?$/i.test(name) && (type === "A" || type === "AAAA")) {
+    if (/^localhost\.?$/i.test(name) && (type === "A" || type === "AAAA")) {
       queryType(resolver, name, type, syscall, SHAPES[type](name, syscall, ttl), ttl, new AbortController()).then(
         (result) => callback(null, result),
         (error) => callback(error),
@@ -16393,7 +16393,7 @@ builtins.dns = (() => {
   function lookupAddresses(resolver, hostname, family, order, signal) {
     const literal = isIP(hostname);
     if (literal !== 0) return Promise.resolve([{ address: hostname, family: literal }]);
-    if (/^localhost.?$/i.test(hostname)) {
+    if (/^localhost\.?$/i.test(hostname)) {
       // Resolvers synthesize A localhost but answer NOERROR-empty for AAAA.
       if (family === 6) return Promise.reject(dnsError("getaddrinfo", "ENOTFOUND", hostname, EAI_NODATA));
       return Promise.resolve([{ address: "127.0.0.1", family: 4 }]);
@@ -16503,12 +16503,12 @@ builtins.dns = (() => {
     if (typeof server !== "string") throw invalidArgType("servers[" + index + "]", "string", server);
     const familyOf = isIP(server);
     if (familyOf !== 0) return [familyOf, server, 53];
-    let match = /^[([^[]]*)](?::(d+))?$/.exec(server);
+    let match = /^\[([^\[\]]*)\](?::(\d+))?$/.exec(server);
     if (match) {
       const family = isIP(match[1]);
       if (family !== 0) return [family, match[1], match[2] === undefined ? 53 : Number(match[2]) & 0xffff];
     } else {
-      match = /(^.+?)(?::(d+))?$/.exec(server);
+      match = /(^.+?)(?::(\d+))?$/.exec(server);
       if (match) {
         const family = isIP(match[1]);
         if (family !== 0) return [family, match[1], match[2] === undefined ? 53 : Number(match[2]) & 0xffff];
