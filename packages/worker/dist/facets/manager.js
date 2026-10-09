@@ -16,7 +16,7 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, columnMapModuleName, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, columnMapModuleName, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, RUNTIME_NODE_LIB_MODULE, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
 import { isTypescriptDeclarationFile } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
@@ -602,16 +602,19 @@ const SQLITE_FACET_IMPORT = `import __nimbusSqliteWasmModule from "${SQLITE_WASM
     `globalThis.__nimbusSqliteWasmModule = __nimbusSqliteWasmModule;\n` +
     generateSqliteFacetPreamble();
 /**
- * The runtime-code interpreter, its primordials and its host module, in every
- * launch's map: the primordials load at the launch's start, the other two
- * only when the program first produces code no launch staged
- * (core/_shared/commonjs-cell.ts, RUNTIME CODE).
+ * The runtime's own modules in every launch's map: the runtime-code
+ * interpreter, its primordials and its host module, whose primordials load at
+ * the launch's start and the other two only when the program first produces
+ * code no launch staged (core/_shared/commonjs-cell.ts, RUNTIME CODE); and
+ * Node's library, loaded when the program first needs it (node-shims.ts
+ * __nimbusNodeLib).
  */
-function interpreterModules(sources) {
+function runtimeModules(sources) {
     return {
         [RUNTIME_INTERPRETER_PRIMORDIALS_MODULE]: sources.interpreterPrimordials,
         [RUNTIME_INTERPRETER_MODULE]: sources.interpreter,
         [RUNTIME_INTERPRETER_OPS_MODULE]: sources.interpreterOps,
+        [RUNTIME_NODE_LIB_MODULE]: sources.nodeLib,
     };
 }
 /**
@@ -997,7 +1000,7 @@ ${RESIDENCY_MISS_REPORT}
 };
 `,
         modules: bundleSource.modules,
-        codeModules: { ...bundleSource.codeModules, ...interpreterModules(sources), ...entry.modules },
+        codeModules: { ...bundleSource.codeModules, ...runtimeModules(sources), ...entry.modules },
     };
 }
 /**
@@ -1618,7 +1621,7 @@ export class NimbusProcess extends DurableObject {
 }
 `,
         modules: bundleSource.modules,
-        codeModules: { ...bundleSource.codeModules, ...interpreterModules(sources), ...entry.modules },
+        codeModules: { ...bundleSource.codeModules, ...runtimeModules(sources), ...entry.modules },
     };
 }
 /**

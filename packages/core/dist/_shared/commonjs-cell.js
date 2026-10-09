@@ -409,6 +409,8 @@ export function runtimeCodeCharge(entry) {
 export const RUNTIME_INTERPRETER_MODULE = 'nimbus/interpreter.js';
 export const RUNTIME_INTERPRETER_OPS_MODULE = 'nimbus/interpreter-ops.js';
 export const RUNTIME_INTERPRETER_PRIMORDIALS_MODULE = 'nimbus/interpreter-primordials.js';
+/** Node's library in every node launch's map (worker runtime/node-lib-module.ts), compiled when a program first needs it. */
+export const RUNTIME_NODE_LIB_MODULE = 'nimbus/node-lib.js';
 /** The module name of the runtime code with key `key`. */
 export function runtimeCodeModuleName(key) {
     return `gen/${key}.js`;

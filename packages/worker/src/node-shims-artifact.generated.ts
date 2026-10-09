@@ -3,16 +3,16 @@
  * scripts/bundle-node-shims.mjs. DO NOT EDIT.
  *
  * Pins the staged sources of the node-compat layer, promoted out of the worker
- * bundle: the shims, the VFS write ledger, the resident store, and the
- * runtime-code interpreter with its host module. Each
+ * bundle: the shims, the VFS write ledger, the resident store, the
+ * runtime-code interpreter with its host module, and Node's library. Each
  * <NAME>_BUILD_ID is a content-hash prefix so cache layers never serve stale
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */
 
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-a23ff4e8b157b169.js";
-export const NODE_SHIMS_BUILD_ID: string = "a23ff4e8b157b169";
-export const NODE_SHIMS_SHA256: string = "a23ff4e8b157b1696d6185a4e3a36f178abbb63987c2a831796e5e86e31e4c17";
+export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-85c3dcbf9fcb3a21.js";
+export const NODE_SHIMS_BUILD_ID: string = "85c3dcbf9fcb3a21";
+export const NODE_SHIMS_SHA256: string = "85c3dcbf9fcb3a213823cfe12b22549c1aa870308c45848d573c48901c61514b";
 
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
 export const VFS_WRITE_LEDGER_ENTRY: string = "/_assets/runtime/vfs-write-ledger-6949e9269dc59d18.js";
@@ -38,3 +38,8 @@ export const JS_INTERPRETER_SHA256: string = "b4d8e74a569fef1031015b14c4527bd473
 export const JS_INTERPRETER_OPS_ENTRY: string = "/_assets/runtime/js-interpreter-ops-2f4dfec6798e70fc.js";
 export const JS_INTERPRETER_OPS_BUILD_ID: string = "2f4dfec6798e70fc";
 export const JS_INTERPRETER_OPS_SHA256: string = "2f4dfec6798e70fcb11871ff1f57fa56336f33bfd5f31dfb3414f10433e4914c";
+
+/** dist/runtime/node-lib-module.js generateNodeLibModule() */
+export const NODE_LIB_ENTRY: string = "/_assets/runtime/node-lib-7e100f5c93584121.js";
+export const NODE_LIB_BUILD_ID: string = "7e100f5c93584121";
+export const NODE_LIB_SHA256: string = "7e100f5c935841213b7b9f53eb616792140dbe08cd470a2dc48cc0fccc53073d";

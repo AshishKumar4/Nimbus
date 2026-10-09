@@ -61,11 +61,9 @@ import { FACET_PROVIDED_PACKAGES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUES
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
 import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
-import { NODE_LIB_HOST_SOURCE, WORKERD_SLOTS_SOURCE } from './node-lib-host.js';
-import { EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_LIB_SOURCES, NODE_PRIMORDIALS_SOURCE, NODE_UV_ERRORS } from './node-lib-source.js';
 import { NODE_SOURCE_MAPS_SOURCE } from './node-source-maps.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
-import { RUNTIME_INTERPRETER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
@@ -6846,31 +6844,32 @@ const __realUtil = typeof __real_util !== "undefined"
   ? (__real_util.default ?? __real_util) : globalThis.process.getBuiltinModule("util");
 // ── Node's library ──
 // Node's own modules (node-lib-source.ts), run over node-lib-host.ts the
-// first time a program needs one: util.inspect, assert, querystring,
-// punycode and what they require.
-// Node's primordials, taken when the process starts, before the program can
-// change what they capture, as Node's bootstrap takes them.
-const __nimbusPrimordials = {};
-(function (primordials, globalThis) {
-${NODE_PRIMORDIALS_SOURCE}
-})(__nimbusPrimordials, globalThis);
+// first time a program needs one: util.inspect, util, assert, querystring,
+// punycode and what they require. Their module of the launch's map
+// (node-lib-module.ts) is compiled then, not before. Named limit: Node's
+// primordials are taken then too, where Node takes them at bootstrap, so a
+// builtin the program replaced before that first use is the one they hold.
 let __nimbusNodeLibrary = null;
 function __nimbusNodeLib() {
   if (__nimbusNodeLibrary !== null) return __nimbusNodeLibrary;
+  const lib = __nimbusRegistryRequire("./${RUNTIME_NODE_LIB_MODULE}");
+  const primordials = {};
+  lib.primordialsOf(primordials, globalThis);
   // The East Asian Wide and Fullwidth ranges, ascending: [first, last] pairs.
-  const wide = ${JSON.stringify(EAST_ASIAN_WIDE_RANGES)}.split(",").flatMap((range) => {
+  const wide = lib.eastAsianWideRanges.split(",").flatMap((range) => {
     const [first, last = first] = range.split("-");
     return [parseInt(first, 16), parseInt(last, 16)];
   });
-  __nimbusNodeLibrary = (${NODE_LIB_HOST_SOURCE})({
+  __nimbusNodeLibrary = lib.createNodeLib({
     util: __realUtil,
+    errors: { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable },
     // V8's slots, as workerd's inspect reaches them (node-lib-host.ts THE BINDING).
-    slots: (${WORKERD_SLOTS_SOURCE})(__realUtil),
+    slots: lib.createWorkerdSlots(__realUtil),
     Buffer: __BufferMod,
     url: { pathToFileURL: __urlMod.pathToFileURL, URL: __urlMod.URL },
     process: __processMod,
     builtinModules: __NodeModule.builtinModules,
-    builtinObjects: ${JSON.stringify(NODE_BUILTIN_OBJECTS)},
+    builtinObjects: lib.builtinObjects,
     eastAsianWide(code) {
       let low = 0;
       let high = wide.length / 2 - 1;
@@ -6889,16 +6888,14 @@ function __nimbusNodeLib() {
     sourceMaps: { getSourceMapsSupport: () => __nimbusSourceMapsSupport, findSourceMap: __nimbusFindSourceMap, getSourceLine: __nimbusOriginalSourceLine },
     colorDepth: () => __nimbusColorDepth(),
     customPromisifyArgs: __nimbusCustomPromisifyArgs,
-    uvErrors: ${JSON.stringify(NODE_UV_ERRORS)},
+    uvErrors: lib.uvErrors,
     optionValue: __nimbusOptionValue,
     console: __consoleMod,
     workerThreads: builtins.worker_threads,
     nodeDebug: __nimbusNodeDebugAtLaunch,
     callSites: (count, above) => (typeof __nimbusStackSites === "function" ? __nimbusStackSites({}, count, above) : []),
-    primordials: __nimbusPrimordials,
-    sources: {
-${Object.entries(NODE_LIB_SOURCES).map(([id, text]) => `      ${JSON.stringify(id)}: function (exports, require, module, process, internalBinding, primordials) {\n${text}\n      },`).join('\n')}
-    },
+    primordials,
+    sources: lib.sources,
   });
   return __nimbusNodeLibrary;
 }
