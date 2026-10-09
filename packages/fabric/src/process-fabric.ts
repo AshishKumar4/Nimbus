@@ -346,7 +346,8 @@ export function encodeCommonJsPack(modules: Record<string, string>): string[] {
 export function decodeCommonJsPackBytes(pack: Uint8Array): Record<string, { cjs: string }> {
   const newline = pack.indexOf(0x0a);
   if (newline < 0) throw new Error('Nimbus: a CommonJS pack has no index');
-  const decoder = new TextDecoder();
+  // A module's text is what the index counts, a leading byte order mark included.
+  const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
   const index = z.array(z.tuple([z.string(), z.number().int().nonnegative()])).parse(JSON.parse(decoder.decode(pack.subarray(0, newline))));
   const modules: Record<string, { cjs: string }> = {};
   let offset = newline + 1;
