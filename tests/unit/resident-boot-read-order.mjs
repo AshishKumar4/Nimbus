@@ -25,6 +25,8 @@ const modules = {};
 for (let i = 0; i < 40; i++) {
   modules[`node_modules/pkg/${i}.js`] = i % 9 === 0 ? `module.exports = "${'é€😀'.repeat(2048)}";` : `module.exports = ${i};\n`.repeat(2048);
 }
+// A module that opens with a byte order mark keeps it: it is part of the text the index counts.
+modules['node_modules/pkg/bom.js'] = '\ufeffmodule.exports = "bom";\n';
 const packPath = await store(encoder.encode(encodeCommonJsPack(modules).join('')));
 const mainPath = await store(encoder.encode('export default {};'));
 const wasm = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
