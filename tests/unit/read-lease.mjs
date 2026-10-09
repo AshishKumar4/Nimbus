@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { READ_LEASE_MARGIN_MS, READ_LEASE_TRUST_MS } from '../../packages/core/src/runtime/delegations.ts';
-import { READ_LEASE_UNCOVERED_ROOTS, readLeaseCovers } from '../../packages/core/src/_shared/read-lease-cover.ts';
+import { READ_LEASE_UNCOVERED_ROOTS, SESSION_KERNEL_ROOTS, readLeaseCovers } from '../../packages/core/src/_shared/read-lease-cover.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -45,13 +45,17 @@ function barrier(s, bridge, from) {
   return bridge.acquire(s.engine.epoch, from?.rev ?? s.engine.revision(), { lease: true });
 }
 
-// ── What a lease vouches for: nothing at or under an uncovered root, nor the names of a directory above one ──
+// ── What a lease vouches for: all but the kernel's mounts, at or under them, and the names above them ──
 {
   const covers = (key, listing = false) => readLeaseCovers(key, listing, READ_LEASE_UNCOVERED_ROOTS);
-  assert.deepEqual(['.nimbus', '.nimbus/images/x', 'var/lib/nimbus', 'var/lib/nimbus/staged', 'dev', 'dev/null', 'proc/self'].filter((key) => covers(key)), []);
-  assert.deepEqual(['', 'var', 'var/lib'].filter((key) => covers(key, true)), []);
-  assert.deepEqual(['', 'var', 'var/lib', '.nimbusx', 'var/lib/nimbus2', 'devices', 'home/user/a'].filter((key) => !covers(key)), []);
-  assert.deepEqual(['var/lib/x', 'home', 'devices', 'var/library'].filter((key) => !covers(key, true)), []);
+  assert.deepEqual(['dev', 'dev/null', 'proc', 'proc/self'].filter((key) => covers(key)), []);
+  assert.equal(covers('', true), false);
+  assert.deepEqual(['', '.nimbus/images/x', 'var/lib/nimbus', 'devices', 'process', 'home/user/a'].filter((key) => !covers(key)), []);
+  assert.deepEqual(['var', 'devices', 'home'].filter((key) => !covers(key, true)), []);
+  // Where a synchronous write is held rather than refused (SqliteVFS.readRecallAt): the stores, and the directories they are made in.
+  const store = (key) => !readLeaseCovers(key, true, SESSION_KERNEL_ROOTS);
+  assert.deepEqual(['', 'var', 'var/lib', 'var/lib/nimbus', 'var/lib/nimbus/staged/x', '.nimbus', '.nimbus/images/x'].filter((key) => !store(key)), []);
+  assert.deepEqual(['var/log', 'var/library', 'var/lib/nimbus2', '.nimbusx', 'home/user'].filter(store), []);
 }
 
 // ── Taken by a barrier, at its revision; confirmed by the next ──
