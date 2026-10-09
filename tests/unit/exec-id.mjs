@@ -67,12 +67,23 @@ const processes = new bundle.SessionProcessSupervisor();
 processes.setPidBase(bundle.PID_GEN_STRIDE);
 const ports = new bundle.PortRegistry();
 const workspace = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes, generation: 1 });
+const alarms = new Map();
 const runtime = await bundle.composeHostedRuntime({
   workspace,
   ctx,
   env,
   ports,
-  lifecycle: { waitUntil: (task) => facetCtx.waitUntil(task), async schedule() {}, async cancel() {} },
+  lifecycle: {
+    waitUntil: (task) => facetCtx.waitUntil(task),
+    async schedule(task, at) {
+      clearTimeout(alarms.get(task));
+      alarms.set(task, setTimeout(async () => {
+        alarms.delete(task);
+        await runtime.onScheduled(task);
+      }, Math.max(0, at - Date.now())));
+    },
+    async cancel(task) { clearTimeout(alarms.get(task)); alarms.delete(task); },
+  },
 });
 
 const kernel = runtime.files.as(bundle.CRED_KERNEL);
