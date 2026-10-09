@@ -83,6 +83,36 @@ await runScenarios(import.meta.path, {
     assert.equal(asked(log), before + 1, 'the timer after its own write asked nothing');
   },
 
+  async 'async stats and listings are the view\'s under a trusted lease, and the session\'s after a change'() {
+    const { authority, probe, log } = await boot();
+    await authority.peer.mkdir('home/user/app/sub', { mode: 0o755 });
+    await authority.peer.writeFile('home/user/app/sub/a.txt', 'aa');
+    await probe.resume();
+    await probe.resume();
+    assert.ok(globalThis.__nimbusProcessFs.readTrusted(), 'the barrier took no lease');
+    const calls = () => Object.values(log.calls).reduce((sum, n) => sum + n, 0);
+    const before = calls();
+    const names = await probe.fs.promises.readdir('/home/user/app');
+    const typed = await probe.fs.promises.readdir('/home/user/app/sub', { withFileTypes: true });
+    const stat = await probe.fs.promises.stat('/home/user/app/sub/a.txt');
+    const lstat = await probe.fs.promises.lstat('/home/user/app/sub');
+    await assert.rejects(probe.fs.promises.stat('/home/user/app/missing'), { code: 'ENOENT', syscall: 'stat' });
+    await assert.rejects(probe.fs.promises.readdir('/home/user/app/f.txt'), { code: 'ENOTDIR', syscall: 'scandir' });
+    assert.equal(calls() - before, 0, `the session was asked ${JSON.stringify(log.calls)}`);
+    assert.ok(globalThis.__nimbusVfsCoherence.leasedReads >= 6);
+    // As the session lists and stats them.
+    const session = authority.rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
+    assert.deepEqual(names, session.readdir('home/user/app').map((entry) => entry.name).sort());
+    assert.deepEqual(typed.map((entry) => [entry.name, entry.isFile()]), [['a.txt', true]]);
+    const want = session.stat('home/user/app/sub/a.txt');
+    assert.deepEqual([stat.size, stat.mode, stat.ino, stat.uid, stat.mtimeMs], [want.size, want.mode, want.ino, want.uid, want.mtime]);
+    assert.equal(lstat.isDirectory(), true);
+    // Another's change recalls the lease: the listing after it has the new name.
+    await authority.peer.writeFile('home/user/app/sub/b.txt', 'b');
+    assert.deepEqual((await probe.fs.promises.readdir('/home/user/app/sub')).sort(), ['a.txt', 'b.txt']);
+    assert.equal((await probe.fs.promises.stat('/home/user/app/sub/b.txt')).size, 1);
+  },
+
   async 'past its trust, the next timer asks again'() {
     const { probe, log } = await boot();
     await probe.resume();

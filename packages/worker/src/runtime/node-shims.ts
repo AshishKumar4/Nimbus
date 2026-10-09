@@ -1919,6 +1919,8 @@ const __fsMod = (() => {
       barrierFailures: 0, lastBarrierFailure: "",
       // Barriers a trusted read lease answered, asking nothing (_acquireBarrier).
       leasedBarriers: 0,
+      // Async stats and listings the sync view answered under a trusted read lease (_leasedView).
+      leasedReads: 0,
       // Barriers that held their resumption on an own write's acknowledgement
       // (_awaitReportedOwnWrites).
       ownWriteWaits: 0,
@@ -3455,11 +3457,55 @@ const __fsMod = (() => {
     return answer ? answer.value : null;
   }
 
+  /**
+   * Whether the sync view answers an async metadata call (a stat, a
+   * listing) in the session's place: under a trusted read lease nothing has
+   * changed since the barrier that confirmed it, and nothing of the
+   * process's own since (ProcessFsClient.readTrusted), so the namespace is
+   * what the session would answer. Where the process's own effects are over
+   * a path (its overlay, a write parked there), the session answers it.
+   */
+  function _leasedView() {
+    return !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted();
+  }
+  /** Whether the process's own effects are at \`k\` (or its landing, \`follow\`): what the session answers, not the view. */
+  function _ownAt(k, follow) {
+    if (_nsOwnView(k) !== null || (__vfsWrites && k in __vfsWrites)) return true;
+    if (!follow) return false;
+    const landing = _nsLandingKey(k);
+    return landing !== null && landing !== k && _ownAt(landing, false);
+  }
+  /** Whether the process's own effects are at \`k\` or anywhere under it. */
+  function _ownUnder(k) {
+    if (_ownAt(k, false)) return true;
+    const prefix = k ? k + "/" : "";
+    for (const own of _nsOwn.keys()) if (own.startsWith(prefix)) return true;
+    for (const local of Object.keys(__vfsWrites || {})) if (local.startsWith(prefix)) return true;
+    for (const local of Object.keys(__vfsDirs || {})) if (local === k || local.startsWith(prefix)) return true;
+    return false;
+  }
+  /** \`read\`, the sync view's answer, counted; undefined when the view cannot say (EAGAIN: a mount it did not list). */
+  function _leasedRead(read) {
+    try {
+      const value = read();
+      _stats.leasedReads++;
+      return value;
+    } catch (error) {
+      if (error && error.code === "EAGAIN") return undefined;
+      _stats.leasedReads++;
+      throw error;
+    }
+  }
+
   async function _statAsync(p) { return _statAsyncAs("stat", p); }
   async function _lstatAsync(p) { return _statAsyncAs("lstat", p); }
   async function _statAsyncAs(syscall, p) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
+    if (supervisor && _leasedView() && !_ownAt(_strip(absPath), syscall === "stat")) {
+      const local = _leasedRead(() => (syscall === "stat" ? statSync(p) : lstatSync(p)));
+      if (local !== undefined) return local;
+    }
     if (supervisor && typeof supervisor[syscall] === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor, syscall === "stat");
       const rpc = (promise) => _fsRpc(promise, syscall, p, (result) => result);
@@ -3479,6 +3525,11 @@ const __fsMod = (() => {
   async function _readdirAsync(p, opts) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
+    if (supervisor && _leasedView() && !_ownUnder(_strip(absPath))) {
+      const local = _leasedRead(() => readdirSync(p, opts));
+      // In the order the session's listing is given in.
+      if (local !== undefined) return opts?.withFileTypes ? local.sort((a, b) => a.name.localeCompare(b.name)) : local;
+    }
     if (supervisor && typeof supervisor.readdir === "function") {
       const key = _strip(absPath);
       const prefix = key ? key + "/" : "";
