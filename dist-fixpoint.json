@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "54f0d017291d3b1ca81bea45f67adff703fa6806b9c1fbbbf14affddab20f565",
+  "fingerprint": "e9c76443a3e87fb1ecbbd8bc0ddbf352d3f3c950e2ccf354c24da89dff173bf4",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1171,7 +1171,7 @@
     "packages/core/src/_shared/loopback.ts": "cdfb047ff48ddd6ff4478c122a16876b4e69d12cc922f9907fd0f3821d77d538",
     "packages/core/src/_shared/lru-map.ts": "150e61abaf5f96c392862e0f96d17e27e20302a38076bc206179e13b24cfc1cc",
     "packages/core/src/_shared/module-importer.ts": "4c8511b1ddfa8e83c20e1cd3e17f3c0a12afa03b2c580d296aece4e924c15696",
-    "packages/core/src/_shared/node-error.ts": "f26f7f6d96389b8e30892e0a64e71e28773bb03efcd9ea0db30de674ec11a7f1",
+    "packages/core/src/_shared/node-error.ts": "66c2bfb206e780e1ae8512c166a2a719524d49554378e288478bc407b9ecfcea",
     "packages/core/src/_shared/node-shim-resolution.ts": "b3af783bf7d8cb04e4c9579f8e0e835368abfcf2ec581a52b5cc7afab3c2af92",
     "packages/core/src/_shared/npm-semver.ts": "173dd392e2d932bff2a5348d806f698350f7a9524bc49b9b76413c11ad12276d",
     "packages/core/src/_shared/npm-spec.ts": "aa67ac6300b915befeba03022ab7290c4cbaee9af47fec7cd910edd6b7d04d7f",
