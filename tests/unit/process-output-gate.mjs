@@ -196,6 +196,15 @@ function holdingGate() {
   assert.equal(broker.kill(hung, 'SIGTERM'), false, 'its end is decided: a second kill finds it ending');
   assert.deepEqual(killed, [hung]);
   await unpublished(hung, 'a killed child');
+  // Reaping the ended lifecycle publishes nothing: the session's and the
+  // broker's prunes keep a held end, which every view still shows running.
+  processes.setRelease(async () => {});
+  const reaped = await processes.reap(-1);
+  const forgotten = broker.reap(-1);
+  await unpublished(hung, 'a killed child after the reaps');
+  assert.ok(processes.publishedAll().some((p) => p.pid === hung && p.state === 'running'), 'still listed running');
+  assert.equal(reaped, 1, 'the session reaps the child whose end is published (silent), not the held one');
+  assert.equal(forgotten, 1, 'and so does the broker');
   gate.release(hung);
   const ended = await broker.wait(hung, 1000);
   assert.equal(ended.done, true);
