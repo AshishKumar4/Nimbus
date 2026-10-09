@@ -739,8 +739,10 @@ export class FacetProcessManager {
           if (child.exitCode !== null) throw Object.assign(new Error('EPIPE: child output reader is gone'), { code: 'EPIPE' });
           await new Promise<void>(resolve => child.outputDrained.push(resolve));
         }
-        if (child.exitCode !== null) throw Object.assign(new Error('EPIPE: child output reader is gone'), { code: 'EPIPE' });
-        this._pushOutput(child, fd, piece);
+        await this.deps.processes.releaseOutput(child.pid, () => {
+          if (child.exitCode !== null) throw Object.assign(new Error('EPIPE: child output reader is gone'), { code: 'EPIPE' });
+          this._pushOutput(child, fd, piece);
+        });
       }
     });
     child.outputWrites[fd] = task.catch(() => {});

@@ -38,10 +38,13 @@ export class WebSocketTerminal {
    *  into nimbus_terminal_scrollback. Single-frame granularity (not
    *  per-write) coalesces writes from one JavaScript turn. */
   private onFlush: ((data: string) => void) | null;
+  /** Sends a frame once the shell's output may go (SessionProcessSupervisor.releaseOutput), in order. */
+  private readonly release: (send: () => void) => void;
 
-  constructor(ws: WebSocket | null = null, onFlush?: (data: string) => void) {
+  constructor(ws: WebSocket | null = null, onFlush?: (data: string) => void, release: (send: () => void) => void = (send) => send()) {
     this.ws = ws;
     this.onFlush = onFlush ?? null;
+    this.release = release;
   }
 
   /**
@@ -130,14 +133,16 @@ export class WebSocketTerminal {
     if (this.buffer.length === 0) return;
     const combined = this.buffer.join('');
     this.buffer = [];
-    try { this.ws?.send(JSON.stringify({ type: 'output', data: combined })); } catch {}
-    // [B'.3] Tee to scrollback. Runs AFTER the WS send so a thrown
-    // tee can't break the live stream. Fail-soft on the call: any
-    // throw is swallowed; appendScrollback itself catches its own
-    // SQL errors via try/catch in initSession's wrapper.
-    if (this.onFlush) {
-      try { this.onFlush(combined); } catch {}
-    }
+    this.release(() => {
+      try { this.ws?.send(JSON.stringify({ type: 'output', data: combined })); } catch {}
+      // [B'.3] Tee to scrollback. Runs AFTER the WS send so a thrown
+      // tee can't break the live stream. Fail-soft on the call: any
+      // throw is swallowed; appendScrollback itself catches its own
+      // SQL errors via try/catch in initSession's wrapper.
+      if (this.onFlush) {
+        try { this.onFlush(combined); } catch {}
+      }
+    });
   }
 
   onData(callback: (data: string, submission?: ShellInputSubmission) => void | Promise<void>): void { this.dataCallback = callback; }
@@ -148,7 +153,9 @@ export class WebSocketTerminal {
 
   shellIntegration(event: ShellIntegrationEvent): void {
     this.flushNow();
-    try { this.ws?.send(JSON.stringify(event)); } catch { /* the socket closed */ }
+    this.release(() => {
+      try { this.ws?.send(JSON.stringify(event)); } catch { /* the socket closed */ }
+    });
   }
 
   handleMessage(msg: { type: string; data?: string; submissionId?: string; cols?: number; rows?: number; path?: string; content?: string; dir?: string; recursive?: boolean }): void | Promise<void> {

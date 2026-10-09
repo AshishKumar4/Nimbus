@@ -1181,22 +1181,30 @@ export async function _rpcReportExit(
       self.processes.markExit(pid, code, PRIOR_GENERATION_EXIT_REASON);
       return;
     }
+    try { self.processes.closeInput(pid); } catch {}
+    // A relayed socket is held open by the supervisor on the process's behalf,
+    // so it does not die when the facet does. Nothing else would ever close
+    // it, and a live one keeps buffering into the supervisor's heap.
+    try { self.webSocketRelay?.closeForPid(pid); } catch {}
+    self.supervisorForgetBridge?.(pid);
+    await self.processes.releaseOutput(pid, () => reportExit(self, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules));
+}
+
+/** A process's own exit report, to everything that observes it. */
+function reportExit(
+  self: ExitRpcHost, pid: number, code: number, tail: string, dataReads?: string[], profileUnread?: string[] | null,
+  runtimeCode?: unknown[], executedModules?: string[],
+): void {
     // Exit callbacks may release the foreground launch; capture its ownership first.
     const entry = self.processes.get(pid);
     const normalForeground = code === 0
       && (entry?.foreground === true || entry?.attachedTty === true || entry?.longRunning !== true);
-    try { self.processes.closeInput(pid); } catch {}
     for (const stream of ['stdout', 'stderr'] as const) {
       const rest = _terminalTeeDecoders.drop(`${pid}:${stream}`);
       if (rest.length > 0 && self.terminal && shouldMirrorProcessOutputToShell(self, pid)) {
         self.terminal.write(normalizeTerminalNewlines(rest));
       }
     }
-    // A relayed socket is held open by the supervisor on the process's behalf,
-    // so it does not die when the facet does. Nothing else would ever close
-    // it, and a live one keeps buffering into the supervisor's heap.
-    try { self.webSocketRelay?.closeForPid(pid); } catch {}
-    self.supervisorForgetBridge?.(pid);
     if (tail) self.processes.appendOutput(pid, 'stderr', tail);
     // Guard against double-reporting: if we've already recorded exit
     // (e.g. from an external kill path) don't dump twice.
@@ -1252,10 +1260,12 @@ export function _emitExitDump(self: RpcHost, pid: number, code: number): void {
 
 export function _emitShellExecDone(self: RpcHost, pid: number, _cmd: string, code: number, durationMs: number): void {
     if (code === 0) return;
-    if (self.processes.logSize(pid) > 0) {
-      self._emitExitDump(pid, code);
-    }
-    queueExitNotice(self, { pid, code, kind: 'shell', durationMs });
+    void self.processes.releaseOutput(pid, () => {
+      if (self.processes.logSize(pid) > 0) {
+        self._emitExitDump(pid, code);
+      }
+      queueExitNotice(self, { pid, code, kind: 'shell', durationMs });
+    });
 }
 
   /**
@@ -1272,6 +1282,12 @@ export function _reportExternalExit(self: RpcHost, pid: number, code: number, re
     // it, and a live one keeps buffering into the supervisor's heap.
     try { self.webSocketRelay?.closeForPid(pid); } catch {}
     self.supervisorForgetBridge?.(pid);
+    void self.processes.releaseOutput(pid, () => reportExternalExit(self, pid, code, reason));
+}
+
+/** An exit the process did not report itself, to everything that observes it. */
+function reportExternalExit(self: RpcHost, pid: number, code: number, reason: string): void {
+    if (self.processes.getExit(pid)) return;
     if (reason) {
       self.processes.appendOutput(pid, 'stderr', `[process killed: ${reason}]\n`);
     }
