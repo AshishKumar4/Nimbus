@@ -234,7 +234,9 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
  * `stalledMs`, or at `timeoutMs` however it moves.
  */
 export function terminalCommandRunner(terminal) {
-  const strip = (text) => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r/g, '');
+  // The driver the terminal came from, already loaded with the probe's BASE.
+  const driver = import('../../behavioral/_driver.mjs');
+  const strip = async (text) => (await driver).stripAnsi(text).replace(/\r/g, '');
   /** Its answer, or `undefined` if it has none within `ms` (a session too busy to answer has not moved). */
   const within = (promise, ms) => {
     let timer;
@@ -255,8 +257,9 @@ export function terminalCommandRunner(terminal) {
       if (now !== seen) { seen = now; moved = Date.now(); }
       const still = Date.now() - moved;
       if (still >= stalledMs || Date.now() - started >= timeoutMs) {
+        const tail = (await strip(terminal.buf)).slice(-400);
         throw new Error(`${line}: ${still >= stalledMs ? `nothing moved for ${still} ms` : `not done after ${timeoutMs} ms, still moving`}; `
-          + `progress ${seen.slice(0, 1500)}; tail: ${JSON.stringify(strip(terminal.buf).slice(-400))}`);
+          + `progress ${seen.slice(0, 1500)}; tail: ${JSON.stringify(tail)}`);
       }
     }
   };
@@ -278,7 +281,7 @@ export function terminalCommandRunner(terminal) {
       if (event.event === 'start') start = event.at;
       if (event.event === 'finish') stdout += terminal.stream.slice(start, event.at);
     }
-    return { stdout: strip(stdout), status: result.exitCode };
+    return { stdout: await strip(stdout), status: result.exitCode };
   };
   return run;
 }
