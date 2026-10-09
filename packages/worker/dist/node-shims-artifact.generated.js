@@ -9,13 +9,13 @@
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-26dc1f6e629b1458.js";
-export const NODE_SHIMS_BUILD_ID = "26dc1f6e629b1458";
-export const NODE_SHIMS_SHA256 = "26dc1f6e629b14581dfbf945bb3352ac8411a92e965fd43df761c1a572789b52";
+export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-761d4f572148103c.js";
+export const NODE_SHIMS_BUILD_ID = "761d4f572148103c";
+export const NODE_SHIMS_SHA256 = "761d4f572148103c275c290d9504f033e2539b31ef77df77e81a8b4b12f42744";
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
-export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-6949e9269dc59d18.js";
-export const VFS_WRITE_LEDGER_BUILD_ID = "6949e9269dc59d18";
-export const VFS_WRITE_LEDGER_SHA256 = "6949e9269dc59d18e73d563fe5bceaa98074ccff4ea3a8db23eb78bd034546b8";
+export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-f7f72f7127fdc31f.js";
+export const VFS_WRITE_LEDGER_BUILD_ID = "f7f72f7127fdc31f";
+export const VFS_WRITE_LEDGER_SHA256 = "f7f72f7127fdc31f199d3f068aae1f75215dc5b883d6fa3cd82562710b072e3a";
 /** dist/vfs/facet-resident-store.js FACET_RESIDENT_STORE_SOURCE */
 export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-65ab5cb8ace65118.js";
 export const RESIDENT_STORE_BUILD_ID = "65ab5cb8ace65118";

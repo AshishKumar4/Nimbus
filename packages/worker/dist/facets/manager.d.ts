@@ -34,6 +34,7 @@ import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type BundleCellResultStore, type BundleCellTransformStats } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
 import { StdinTaken } from '../runtime/stop-replay-host.js';
+import { type ReplayLaunch } from '../runtime/stop-replay-contracts.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
 import { type ProcessHostFactory, type ResidentCodeSpec, type Supervise } from '@nimbus-sh/fabric/process-fabric.js';
 import { ProcessJournals } from '../session/process-journals.js';
@@ -62,6 +63,8 @@ export interface FacetExecResult {
     exitCode: number;
     stdout: string;
     stderr: string;
+    /** It listened, and runs on as this resident (FacetManager._promote): no exit yet. */
+    promotedPid?: number;
     /**
      * VFS paths whose content the process read synchronously and did not have.
      *
@@ -999,11 +1002,17 @@ export interface ResidentSpawnOptions {
     dirname?: string;
     /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
     esModule?: boolean;
+    esModuleMap?: string;
     /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
     moduleScope?: ModuleScope;
     command?: string;
     port?: number;
     attachedTty?: boolean;
+    /**
+     * A one-shot that stopped at its first listen (FacetManager._promote): its
+     * run, which this boot replays up to that listen before it serves.
+     */
+    replay?: ReplayLaunch;
     /**
      * Its launcher writes its stdin and ends it, and does not wait for the
      * boot (RuntimeRunOpts.stdinWriter): the boot may stop at a synchronous
@@ -1663,6 +1672,14 @@ export declare class FacetManager {
         /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
         node?: NodeLaunch;
     }): Promise<FacetExecResult>;
+    /**
+     * A one-shot that stopped at its first listen (stop-replay.ts listen) runs
+     * on as a resident, the same process: the resident replays the run up to
+     * that listen, checked against it, then listens and serves. What the
+     * one-shot printed is shown once; the resident prints it again only to be
+     * checked (the prefix).
+     */
+    private _promote;
     /**
      * A process stopped at a synchronous read of stdin that needs input not
      * there yet (runtime/stop-replay.ts): deliver what its record carries of

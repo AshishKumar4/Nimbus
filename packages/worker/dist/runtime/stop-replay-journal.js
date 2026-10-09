@@ -286,6 +286,9 @@ export class ReplayJournal {
         if (this.boundaryPassed && this.entries === null)
             return dispatch();
         const policy = operationPolicy(op);
+        // The changes it carries are the guest's to record and check (stop-replay.ts).
+        if (policy.kind === 'mutation')
+            return dispatch();
         if (op === 'stdinFileRead') {
             const prep = this.preparation;
             const [path, offset, length] = args ?? [];

@@ -23,6 +23,7 @@ const read = { kind: 'observation' };
 const effect = { kind: 'effect' };
 const output = { kind: 'output' };
 const control = { kind: 'control' };
+const mutation = { kind: 'mutation' };
 /**
  * The complete session-boundary policy. New operations fail closed both at
  * compile time (the Record) and at runtime (a missing entry is an effect).
@@ -52,11 +53,11 @@ export const REPLAY_OPERATION_POLICY = {
     fsOpen: { kind: 'open' }, fsRead: read, fsWrite: effect, fsClose: read,
     fsReadRange: read, fsReadRangeUncached: read, fsReadBatch: read,
     fsWriteRange: effect,
-    fsTruncate: effect, writeBatch: effect, writeBatchStream: effect,
+    fsTruncate: effect, writeBatch: effect, writeBatchStream: mutation,
     // Mints a write-wave epoch the session holds open for the live process (state on the host, not a read).
-    openWaveWriter: effect,
+    openWaveWriter: mutation,
     // Ends a write-wave epoch the session holds open for the process.
-    retireWaveWriter: effect,
+    retireWaveWriter: mutation,
     putRegistryEntries: effect, stdout: output, stderr: output, prefetch: read,
     registerPort: effect, allocatePort: effect, unregisterPort: effect,
     reportExit: output, routeLoopback: effect, transform: read,
@@ -75,9 +76,9 @@ export const REPLAY_OPERATION_POLICY = {
     fsSetStatus: effect, fsReaddirHandle: read, fsFtruncate: effect,
     fsFchmod: effect, fsFchown: effect, fsFutimes: effect, fsSync: read,
     fsRealpath: read, fsRemove: effect, fsCopyFile: effect, fsCopyTree: effect,
-    fsAcquireExclusiveMutation: effect, fsReleaseExclusiveMutation: effect,
+    fsAcquireExclusiveMutation: mutation, fsReleaseExclusiveMutation: mutation,
     // A recall is the session asking; the answer to one changes what it holds.
-    fsAwaitRecall: { kind: 'input' }, fsRecalled: effect,
+    fsAwaitRecall: { kind: 'input' }, fsRecalled: mutation,
     innerDoFetch: effect, innerDoCall: effect, fanoutExecute: effect, processHostProbe: effect,
     hostProcess: effect, awaitHostedOpen: effect, awaitHostedBoot: effect,
     routeHostedHttp: effect, cancelHostProcess: effect, hostLost: effect, hmrRelay: effect,

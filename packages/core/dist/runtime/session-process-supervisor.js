@@ -44,6 +44,7 @@ export class SessionProcessSupervisor {
     isLogOrphan = (pid) => !this.table.get(pid);
     /** Fires once per pid on its first terminal transition; see setOnTerminal. */
     onTerminalCb = null;
+    endWaiters = new Map();
     /** Releases an ended process's filesystem binding; see setRelease. */
     release = null;
     /** Ends a process by a signal's default action; see setDefaultSignalAction. */
@@ -234,10 +235,31 @@ export class SessionProcessSupervisor {
     setOnTerminal(cb) {
         this.onTerminalCb = cb;
     }
+    /**
+     * `pid`'s exit status once it leaves `running`, however it leaves: what a
+     * caller whose program ran on as a resident (FacetManager._promote) waits
+     * on for that program's exit.
+     */
+    whenEnded(pid) {
+        const entry = this.table.get(pid);
+        if (entry?.state !== 'running')
+            return Promise.resolve(entry?.exitCode ?? 0);
+        return new Promise((resolve) => {
+            const waiters = this.endWaiters.get(pid);
+            if (waiters)
+                waiters.push(resolve);
+            else
+                this.endWaiters.set(pid, [resolve]);
+        });
+    }
     fireTerminal(pid, wasRunning) {
         if (!wasRunning || this.table.get(pid)?.state === 'running')
             return;
         this.forgetWaits(pid);
+        const waiters = this.endWaiters.get(pid);
+        this.endWaiters.delete(pid);
+        for (const resolve of waiters ?? [])
+            resolve(this.table.get(pid)?.exitCode ?? 0);
         if (!this.onTerminalCb)
             return;
         try {

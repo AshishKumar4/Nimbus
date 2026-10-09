@@ -19370,6 +19370,10 @@ Object.defineProperty(builtins, "http", {
         if (this.listening || owners.get(this)?.pending) {
           throw nodeError(Error, "ERR_SERVER_ALREADY_LISTEN", "Listen method has been called more than once without closing.");
         }
+        // A one-shot's first listen stops it here, before it binds or reserves
+        // anything, to run on as a resident that serves; that resident's run
+        // again passes here at its boundary (stop-replay.ts listen).
+        __nimbusReplay?.listen();
         const state = { ctx, pending: false, cancelled: false, port: null };
         owners.set(this, state);
         const requested = options.port === undefined ? 0 : Number(options.port);

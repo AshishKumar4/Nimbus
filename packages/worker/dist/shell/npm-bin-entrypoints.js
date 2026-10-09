@@ -192,7 +192,9 @@ export function installNpmBinFallbackResolver(registry, deps) {
                 exitCode = 1;
             }
             finally {
-                const handedOffToLongRunningFacet = longRunning && exitCode === 0;
+                // Still running: a resident has it now, started as one or run on as
+                // one once it listened (FacetManager._promote).
+                const handedOffToLongRunningFacet = exitCode === 0 && deps.processes.get(pid)?.state === 'running';
                 if (!handedOffToLongRunningFacet) {
                     try {
                         deps.processes.exit(pid, exitCode);
