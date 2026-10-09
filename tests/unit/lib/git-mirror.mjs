@@ -121,27 +121,25 @@ export function createMirror(label) {
   /**
    * The mirrored index of the repository at `repo` (a VFS path) made to
    * describe our copies: each tracked file there with the index's content
-   * takes our copy's stat, as git's refresh_index records a file it proved
-   * clean. Our copies are new files to the VFS, their inodes and change
-   * times its own; without this our first status or diff would refresh, and
-   * rewrite, an index git's left alone. Nothing else changes, the
-   * skip-worktree bits as written included, and the index keeps host git's
-   * time.
+   * takes our copy's stat as our git reads it (the process view's), as git's
+   * refresh_index records a file it proved clean. Our copies are new files
+   * to the VFS, their inodes and change times its own; without this our
+   * first status or diff would refresh, and rewrite, an index git's left
+   * alone. Nothing else changes, the skip-worktree bits as written included,
+   * and the index keeps host git's time.
    */
-  const syncIndexStat = (repo) => {
+  const syncIndexStat = async (repo) => {
     const index = `${repo}/.git/index`;
     if (!user.exists(index)) return;
+    const view = files.view({ pid: 1, cred: CRED_SESSION_USER });
     const { atimeMs, mtimeMs } = user.lstat(index);
     const dc = DirCache.parse(user.readFile(index), 0);
     for (let i = 0; i < dc.count; i++) {
       if (dc.stage(i) !== 0 || dc.skipWorktree(i)) continue;
       const path = `${repo}/${dc.path(i)}`;
-      let st;
-      try { st = user.lstat(path); } catch { continue; }
-      if (st.type === 'directory' || contentId(path) !== dc.oid(i)) continue;
-      dc.refresh(i, {
-        ctimeMs: st.ctimeMs ?? 0, mtimeMs: st.mtimeMs, dev: st.dev ?? 0, ino: st.ino ?? 0, uid: st.uid ?? 0, gid: st.gid ?? 0, size: st.size,
-      });
+      const st = await view.stat(path, { follow: false });
+      if (st === null || st.type === 'directory' || contentId(path) !== dc.oid(i)) continue;
+      dc.refresh(i, { ctimeMs: st.ctimeMs, mtimeMs: st.mtimeMs, dev: st.dev, ino: st.ino, uid: st.uid, gid: st.gid, size: st.size });
     }
     user.writeFile(index, dc.encode());
     user.utimes(index, atimeMs ?? mtimeMs, mtimeMs);
@@ -196,7 +194,9 @@ export function createMirror(label) {
       this.disk = disk;
       this.virtual = `/home/user/${name}`;
       mirror(disk, this.virtual);
-      syncIndexStat(this.virtual);
+      // Awaited by the first step, before any command reads the index.
+      this.synced = false;
+      this.ready = syncIndexStat(this.virtual).then(() => { this.synced = true; });
     }
 
     /**
@@ -205,6 +205,7 @@ export function createMirror(label) {
      * `branchNotes` drops, its top named as ours), and stdout, where asked.
      */
     async run(args, { stderr = true, stdout = false, sub = '' } = {}) {
+      await this.ready;
       const label = `${this.name}: git ${args.join(' ')}`;
       const host = realGit(sub ? join(this.disk, sub) : this.disk, args.map((arg) => arg.replaceAll('{root}', this.disk)));
       const ours = await nimbusGit(sub ? `${this.virtual}/${sub}` : this.virtual, args.map((arg) => arg.replaceAll('{root}', this.virtual)));
@@ -246,6 +247,7 @@ export function createMirror(label) {
     /** The same worktree and index: entries, stages and skip-worktree bits, as read and as written. */
     same(step) {
       const label = `${this.name}: after ${step}`;
+      assert.ok(this.synced, `${label}: a step ran first`);
       const ours = this.copy();
       assert.deepEqual(worktreeOf(ours), worktreeOf(this.disk), `${label}: the worktree`);
       for (const args of [['ls-files', '-s', '-t'], ['-c', 'sparse.expectFilesOutsideOfPatterns=true', 'ls-files', '-t'], ['status', '--porcelain']]) {
