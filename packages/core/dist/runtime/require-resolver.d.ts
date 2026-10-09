@@ -28,6 +28,7 @@
  */
 import { type RequireFs, type WalkProgress } from './require-resolution.js';
 export { requireFsOverBridge, type BridgeRequireFs, type RequireFs } from './require-resolution.js';
+export { requireWrapperCalls } from './require-wrappers.js';
 /**
  * Result of a prefetch walk: path → content for every reachable file.
  *
@@ -74,6 +75,8 @@ export interface DeferredImport {
     alternatives: number;
     /** The file, when the walk resolved it already (a tool config and what it names). */
     path?: string;
+    /** Loaded by a require wrapper's call (requireWrapperCalls): resolved as require() resolves it, not import(). */
+    require?: true;
 }
 /**
  * The walk stopped at the snapshot bound. `bytesSeen` is content

@@ -4,6 +4,7 @@
 // runtime and generated code reach them as __nimbusNodeError and
 // __nimbusNodeSystemError.
 var nodeErrorClasses =   new Map();
+var classCodes =   new WeakMap();
 function nodeError(Base, code, message, props, above = nodeError) {
   return made(Base, code, message, props, above);
 }
@@ -31,6 +32,7 @@ function nodeErrorClass(Base, code) {
       }
     };
     Object.defineProperty(NodeError.prototype, "constructor", { get: () => Base, enumerable: false, configurable: true });
+    classCodes.set(NodeError.prototype, code);
     classes.set(code, NodeError);
   }
   return NodeError;
@@ -101,6 +103,9 @@ function determineSpecificType(value) {
   }
 }
 function invalidArgType(name, expected, actual) {
+  return made(TypeError, "ERR_INVALID_ARG_TYPE", invalidArgTypeMessage(name, expected, actual), void 0, invalidArgType);
+}
+function invalidArgTypeMessage(name, expected, actual) {
   const types = [];
   const instances = [];
   const other = [];
@@ -124,7 +129,109 @@ function invalidArgType(name, expected, actual) {
   }
   if (other.length > 1) message += `one of ${formatList(other, "or")}`;
   else if (other.length === 1) message += `${other[0].toLowerCase() !== other[0] ? "an " : ""}${other[0]}`;
-  return made(TypeError, "ERR_INVALID_ARG_TYPE", `${message}. Received ${determineSpecificType(actual)}`, void 0, invalidArgType);
+  return `${message}. Received ${determineSpecificType(actual)}`;
+}
+function addNumericalSeparator(value) {
+  let result = "";
+  let i = value.length;
+  const start = value[0] === "-" ? 1 : 0;
+  for (; i >= start + 4; i -= 3) result = `_${value.slice(i - 3, i)}${result}`;
+  return `${value.slice(0, i)}${result}`;
+}
+function formatNodeMessage(template, args) {
+  let i = 0;
+  return template.replace(/%s/g, () => {
+    const value = args[i++];
+    return typeof value === "number" && Object.is(value, -0) ? "-0" : String(value);
+  });
+}
+var nodeErrorMessages = {
+  ERR_AMBIGUOUS_ARGUMENT: ['The "%s" argument is ambiguous. %s', TypeError],
+  ERR_CONSTRUCT_CALL_REQUIRED: ["Class constructor %s cannot be invoked without `new`", TypeError],
+  ERR_FALSY_VALUE_REJECTION: [function(reason) {
+    this.reason = reason;
+    return "Promise was rejected with falsy value";
+  }, Error],
+  ERR_INTERNAL_ASSERTION: [(message) => {
+    const suffix = "This is caused by either a bug in Node.js or incorrect usage of Node.js internals.\nPlease open an issue with this stack trace at https://github.com/nodejs/node/issues\n";
+    return message === void 0 ? suffix : `${message}
+${suffix}`;
+  }, Error],
+  ERR_INVALID_ARG_TYPE: [invalidArgTypeMessage, TypeError],
+  ERR_INVALID_MIME_SYNTAX: [(production, str, invalidIndex) => `The MIME syntax for a ${production} in "${str}" is invalid${invalidIndex !== -1 ? ` at ${invalidIndex}` : ""}`, TypeError],
+  ERR_INVALID_ARG_VALUE: [(name, value, reason = "is invalid") => {
+    let inspected = inspectValue(value, {});
+    if (inspected.length > 128) inspected = `${inspected.slice(0, 128)}...`;
+    return `The ${name.includes(".") ? "property" : "argument"} '${name}' ${reason}. Received ${inspected}`;
+  }, TypeError, RangeError],
+  ERR_INVALID_RETURN_VALUE: [(input, name, value) => `Expected ${input} to be returned from the "${name}" function but got ${determineSpecificType(value)}.`, TypeError, RangeError],
+  ERR_INVALID_THIS: ['Value of "this" must be of type %s', TypeError],
+  ERR_INVALID_URI: ["URI malformed", URIError],
+  ERR_MISSING_ARGS: [(...names) => {
+    const wrapped = names.map((name) => Array.isArray(name) ? name.map((n) => `"${n}"`).join(" or ") : `"${name}"`);
+    return `The ${formatList(wrapped, "and")} argument${names.length > 1 ? "s" : ""} must be specified`;
+  }, TypeError],
+  ERR_PARSE_ARGS_INVALID_OPTION_VALUE: ["%s", TypeError],
+  ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL: ["Unexpected argument '%s'. This command does not take positional arguments", TypeError],
+  ERR_PARSE_ARGS_UNKNOWN_OPTION: [(option, allowPositionals) => `Unknown option '${option}'${allowPositionals ? `. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- ${JSON.stringify(option)}` : ""}`, TypeError],
+  ERR_OUT_OF_RANGE: [(str, range, input, replaceDefaultBoolean = false) => {
+    let received;
+    if (Number.isInteger(input) && Math.abs(input) > 2 ** 32) {
+      received = addNumericalSeparator(String(input));
+    } else if (typeof input === "bigint") {
+      received = String(input);
+      if (input > 2n ** 32n || input < -(2n ** 32n)) received = addNumericalSeparator(received);
+      received += "n";
+    } else {
+      received = inspectValue(input, {});
+    }
+    return `${replaceDefaultBoolean ? str : `The value of "${str}" is out of range.`} It must be ${range}. Received ${received}`;
+  }, RangeError],
+  ERR_SOCKET_BAD_PORT: [(name, port, allowZero = true) => `${name} should be ${allowZero ? ">=" : ">"} 0 and < 65536. Received ${determineSpecificType(port)}.`, RangeError],
+  ERR_UNAVAILABLE_DURING_EXIT: ["Cannot call function in process exit handler", Error],
+  ERR_UNKNOWN_SIGNAL: ["Unknown signal: %s", TypeError],
+  ERR_WORKER_UNSUPPORTED_OPERATION: ["%s is not supported in workers", TypeError]
+};
+function nodeErrorCodeConstructor(code, message, Base) {
+  const make = function(...args) {
+    if (typeof message === "string") return made(Base, code, formatNodeMessage(message, args), void 0, make);
+    const fields = {};
+    const text = Reflect.apply(message, fields, args);
+    return made(Base, code, text, Object.keys(fields).length > 0 ? fields : void 0, make);
+  };
+  Object.defineProperty(make, "name", { value: "NodeError" });
+  return make;
+}
+var nodeErrorCodes = Object.fromEntries(Object.entries(nodeErrorMessages).map(([code, [message, Base, ...others]]) => {
+  const constructor = nodeErrorCodeConstructor(code, message, Base);
+  constructor.HideStackFramesError = constructor;
+  for (const Other of others) {
+    const other = nodeErrorCodeConstructor(code, message, Other);
+    other.HideStackFramesError = other;
+    constructor[Other.name] = other;
+  }
+  return [code, constructor];
+}));
+function hideStackFrames(fn) {
+  const wrapped = function(...args) {
+    try {
+      return Reflect.apply(fn, this, args);
+    } catch (error) {
+      if (Reflect.get(Error, "stackTraceLimit") && error !== null && typeof error === "object") {
+        const code = classCodes.get(Object.getPrototypeOf(error));
+        if (code !== void 0) headStack(error, `${error.name} [${code}]`, wrapped);
+        else captureStack(error, wrapped);
+      }
+      throw error;
+    }
+  };
+  wrapped.withoutStackTrace = fn;
+  return wrapped;
+}
+function isErrorStackTraceLimitWritable() {
+  const descriptor = Object.getOwnPropertyDescriptor(Error, "stackTraceLimit");
+  if (descriptor === void 0) return Object.isExtensible(Error);
+  return Object.prototype.hasOwnProperty.call(descriptor, "writable") ? descriptor.writable === true : descriptor.set !== void 0;
 }
 var SystemErrorClass;
 function nodeSystemError(code, prefix, context) {
@@ -167,12 +274,15 @@ function nodeSystemError(code, prefix, context) {
 }
 function headStack(error, name, above) {
   const own = Object.getOwnPropertyDescriptor(error, "name");
-  const capture = Reflect.get(Error, "captureStackTrace");
-  if (typeof capture === "function") Reflect.apply(capture, Error, [error, above]);
+  captureStack(error, above);
   Object.defineProperty(error, "name", { value: name, enumerable: false, writable: true, configurable: true });
   void error.stack;
   if (own === void 0) Reflect.deleteProperty(error, "name");
   else Object.defineProperty(error, "name", own);
+}
+function captureStack(error, above) {
+  const capture = Reflect.get(Error, "captureStackTrace");
+  if (typeof capture === "function") Reflect.apply(capture, Error, [error, above]);
 }
 Object.defineProperties(globalThis, {
   __nimbusNodeError: { value: __nimbusGeneratedNodeError, configurable: true },
@@ -3328,13 +3438,19 @@ const __fsMod = (() => {
    *     answered, so the program's result rests on a read that failed. It
    *     names the files and exits non-zero rather than let that report
    *     success.
-   *   - The supervisor, from the exit envelope: the next bundle built for
-   *     the same entry stages exactly these paths, so the miss stops
-   *     recurring. Observation, not a guess about what a program will read.
+   *   - The supervisor, as the misses happen (the runtime-code report) and
+   *     from the exit envelope: the next bundle built for the same entry
+   *     stages exactly these paths, so the miss stops recurring. Observation,
+   *     not a guess about what a program will read. A run the platform kills
+   *     sends no envelope, so the report as they happen is what teaches it.
    *
-   * An entry clears only when the PROGRAM is handed the bytes for that path.
-   * Residency repaired behind its back does not un-answer the access that
-   * already failed.
+   * An entry clears only when the program takes the remedy its error names:
+   * an asynchronous read of the path, which waits for the bytes. No later
+   * synchronous answer clears it, neither a read the fault-in has since made
+   * succeed nor a stat or existence check: by then the program may have
+   * built on the refusal. vite's resolver swallows the EAGAIN of a
+   * package.json, bundles the package it took to be missing, and asks about
+   * the same path again later, successfully.
    */
   const _residencyMisses = globalThis.__nimbusVfsResidencyMisses
     || (globalThis.__nimbusVfsResidencyMisses = new Set());
@@ -3411,6 +3527,7 @@ const __fsMod = (() => {
     if (speculation && speculation.issued.has(landing)) speculation.issued.add(k);
   }
 
+  // The asynchronous read of a refused path answered it (the ledger above).
   function _residencySatisfied(absPath) {
     if (_residencyMisses.size === 0 || _speculation()) return;
     const k = _strip(absPath);
@@ -5478,6 +5595,16 @@ const __fsMod = (() => {
     return readdirSync(p, opts);
   }
 
+  // fs.promises.copyFile, and fs.promises.cp of a file: the source read as
+  // fs.promises.readFile reads it, the copy written as writeFile writes it.
+  async function _copyFileAsync(src, dest, mode) {
+    if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && await _existsAsync(dest)) {
+      throw _fsErr("EEXIST", "copyfile", src, dest);
+    }
+    try { await _writeFileAsync(dest, await _readFileAsync(src)); }
+    catch (error) { throw _asCallError(error, "copyfile", src, dest); }
+  }
+
   async function _existsAsync(p) {
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor.exists === "function") {
@@ -5839,6 +5966,19 @@ const __fsMod = (() => {
     }
   }
 
+  /**
+   * The file's own read permission, judged on its mode and owner as statSync
+   * reports them now (this process's own chmod included), for bytes this
+   * process holds: they may predate a chmod or a chown that revoked the read
+   * (the store keeps its own writes whatever a barrier reports), and holding
+   * them is no grant. The check a read open(2) makes, as _ensureWritable is
+   * a write's.
+   */
+  function _ensureReadable(absPath, syscall, p) {
+    const stat = _statLadder(absPath);
+    if (stat !== undefined && !_modeAllows(stat, 4)) throw _fsErr("EACCES", syscall, p);
+  }
+
   /** `live`: the caller asks the authority next, so a path the namespace cannot judge is left to it. */
   function _ensureWritable(absPath, syscall, p, live, dest) {
     _ensureAncestorsTraversable(absPath, syscall, p, dest);
@@ -5937,7 +6077,7 @@ const __fsMod = (() => {
     }
     const denial = _denialCode(content);
     if (denial) throw _fsErr(denial, "open", p);
-    _residencySatisfied(absPath);
+    _ensureReadable(absPath, "open", p);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     if (encoding) {
       // An encoding requested: a string, whatever the cell's shape.
@@ -6035,7 +6175,6 @@ const __fsMod = (() => {
   function existsSync(p) {
     const absPath = _resolve(p);
     _nsRequire("access", p, "fs.promises.access");
-    _residencySatisfied(absPath);
     return _statLadder(absPath) !== undefined;
   }
 
@@ -6059,9 +6198,6 @@ const __fsMod = (() => {
       const mount = _nsUnlisted(absPath, true, false);
       if (mount !== null) throw _nsUnlistedErr(mount, "stat", p, "fs.promises.stat");
     }
-    // An answer settles the path, including the honest "not there": the
-    // namespace names every path this credential can see.
-    _residencySatisfied(absPath);
     if (stat !== undefined) return stat;
     // Node's statSync honors { throwIfNoEntry: false } by returning undefined
     // for a missing path instead of throwing.
@@ -6119,7 +6255,6 @@ const __fsMod = (() => {
       const mount = _nsUnlisted(absPath, true, true);
       if (mount !== null) throw _nsUnlistedErr(mount, "scandir", p, "fs.promises.readdir");
     }
-    _residencySatisfied(absPath);
     const listed = _nsList(k);
     const sorted = [...listed.keys()].sort();
     if (!opts?.withFileTypes) return sorted;
@@ -6634,7 +6769,6 @@ const __fsMod = (() => {
     if (cell !== undefined) {
       const denial = _denialCode(cell);
       if (denial) throw _fsErr(denial, syscall, p);
-      _residencySatisfied(absPath);
       return _asBytes(cell);
     }
     const asyncForm = "the async fs." + syscall + "/fs.promises form";
@@ -6814,7 +6948,6 @@ const __fsMod = (() => {
       if (cell === undefined) return undefined;
       const denial = _denialCode(cell);
       if (denial) throw _fsErr(denial, syscall, this._path);
-      _residencySatisfied(this._abs);
       return _asBytes(cell);
     }
     _notResident(syscall) {
@@ -6968,6 +7101,7 @@ const __fsMod = (() => {
     if (!exists && !fl.create) throw _fsErr("ENOENT", "open", path);
     // O_EXCL does not follow a final symlink: a dangling link is there.
     if (fl.create && fl.exclusive && (exists || lstatSync(path, { throwIfNoEntry: false }) !== undefined)) throw _fsErr("EEXIST", "open", path);
+    if (fl.read && exists) _ensureReadable(absPath, "open", path);
     if (fl.write || !exists) _ensureWritable(absPath, "open", path);
     if (!exists) _noteCreation(_strip(absPath));
     let size = exists ? st.size : 0;
@@ -7197,9 +7331,8 @@ const __fsMod = (() => {
     catch (e) { queueMicrotask(() => cb(e)); return; }
     const n = Number(fd);
     if (n === 1 || n === 2) {
-      try {
-        (n === 2 ? __processMod.stderr : __processMod.stdout).write(norm.bytes, error => cb(error || null, error ? 0 : norm.bytes.byteLength, data));
-      } catch (error) { queueMicrotask(() => cb(error, 0, data)); }
+      (n === 2 ? __processMod.stderr : __processMod.stdout).write(_dec.decode(norm.bytes));
+      queueMicrotask(() => cb(null, norm.bytes.byteLength, data));
       return;
     }
     const handle = _fdFor(fd, "write", cb);
@@ -7986,8 +8119,11 @@ const __fsMod = (() => {
       const srcAbs = _resolve(src);
       const srcK = _strip(srcAbs);
       const destK = _strip(_resolve(dest));
-      const content = _bundleLookup(srcAbs);
-      if (content !== undefined) { await _writeFileAsync(dest, content); return; }
+      // A file is copied as copyFile copies it: read through the read that
+      // judges it (the session's, or readFileSync's), never from the cell
+      // held under its name, which may be a write-only file's bytes or the
+      // session's denial of the read.
+      if (_bundleLookup(srcAbs) !== undefined) { await _copyFileAsync(src, dest); return; }
       if (!o.recursive) {
         const err = new Error("EISDIR: cp without recursive on directory: " + src);
         err.code = "EISDIR"; throw err;
@@ -8017,13 +8153,7 @@ const __fsMod = (() => {
       };
       await walk("");
     },
-    copyFile: async (src, dest, mode) => {
-      if ((Number(mode) & __fsConstants.COPYFILE_EXCL) !== 0 && await _existsAsync(dest)) {
-        throw _fsErr("EEXIST", "copyfile", src, dest);
-      }
-      try { await _writeFileAsync(dest, await _readFileAsync(src)); }
-      catch (error) { throw _asCallError(error, "copyfile", src, dest); }
-    },
+    copyFile: (src, dest, mode) => _copyFileAsync(src, dest, mode),
     rename: async (oldP, newP) => { await _renameAsync(oldP, newP); },
     rmdir: async (p) => { await _rmdirAsync(p); },
     realpath: async (p) => __pathMod.resolve(String(p)),
@@ -8121,13 +8251,7 @@ const __fsMod = (() => {
       }
       async _pull() {
         if (this._pos > this._last) { this.push(null); return; }
-        // A resolved ranged RPC can feed the next read in the same task
-        // indefinitely. Yield between windows so other session traffic and
-        // other processes can run; this is a scheduling boundary, not a
-        // backoff or a timeout that pretends I/O completed.
-        if (this.bytesRead > 0) await new Promise((nextTurn) => globalThis.setTimeout(nextTurn, 0));
-        if (this._readableState.destroyed) return;
-        const want = Math.min(this._readableState.highWaterMark, READ_BATCH_REQUEST_BYTES, this._last - this._pos + 1);
+        const want = Math.min(READ_STREAM_CHUNK_BYTES, this._last - this._pos + 1);
         const chunk = await _readRangeAt(this._abs, this.path, this._pos, want);
         if (chunk === null) { this.push(null); return; }
         this._pos += chunk.byteLength;
@@ -8837,11 +8961,6 @@ const __streamMod = (() => {
   const _enc = new TextEncoder();
   const _dec = new TextDecoder();
   const _Decoder = TextDecoder;
-  function _byteBuffer(chunk) {
-    const Buffer = typeof __BufferMod !== 'undefined' ? __BufferMod : globalThis.Buffer;
-    if (!Buffer) throw new Error('Nimbus byte streams require node:buffer');
-    return Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-  }
 
   /** Node's ERR_STREAM_DESTROYED, for a write or end() a destroyed stream refuses. */
   function _destroyedError(method) {
@@ -8879,12 +8998,6 @@ const __streamMod = (() => {
     if (r) { r.destroyed = true; stream.readable = false; }
     if (w) {
       w.destroyed = true;
-      stream.writable = false;
-      if (stream.__nimbusTransformReadCallback) {
-        const pending = stream.__nimbusTransformReadCallback;
-        stream.__nimbusTransformReadCallback = null;
-        queueMicrotask(() => pending(err ?? _destroyedError('write')));
-      }
       // A write in flight answers the queue when it calls back.
       if (!w.writing) queueMicrotask(() => _errorBuffer(w));
     }
@@ -8983,11 +9096,6 @@ const __streamMod = (() => {
       const state = this._readableState;
       const chunk = state.buffer.shift();
       state.readableLength -= (chunk?.length || 0);
-      if (this.__nimbusTransformReadCallback && state.readableLength < state.highWaterMark) {
-        const pending = this.__nimbusTransformReadCallback;
-        this.__nimbusTransformReadCallback = null;
-        queueMicrotask(() => pending());
-      }
       return this._decode(chunk);
     }
 
@@ -9073,11 +9181,6 @@ const __streamMod = (() => {
       }
       if (typeof chunk === 'string' && !state.objectMode) {
         chunk = _enc.encode(chunk);
-      }
-      if (!state.objectMode && chunk instanceof Uint8Array) {
-        // The channel carries Uint8Array; Node's byte-mode readable edge
-        // publishes Buffer. Object mode and setEncoding keep their own API.
-        chunk = _byteBuffer(chunk);
       }
       state.buffer.push(chunk);
       state.readableLength += (chunk?.length || 0);
@@ -9262,7 +9365,6 @@ const __streamMod = (() => {
   // Transform's output delivered, before 'finish' and 'close'.
   function _writableState(opts, highWaterMark) {
     return {
-      objectMode: opts?.objectMode === true || opts?.writableObjectMode === true,
       buffer: [],
       writing: false,
       // Writes and _final not yet called back.
@@ -9296,7 +9398,6 @@ const __streamMod = (() => {
       return false;
     }
     if (typeof chunk === 'string') chunk = _enc.encode(chunk);
-    if (!state.objectMode && chunk instanceof Uint8Array) chunk = _byteBuffer(chunk);
     state.bufferedLength += (chunk?.length || 0);
     state.pending++;
     const request = { chunk, encoding, callback };
@@ -9426,13 +9527,9 @@ const __streamMod = (() => {
     uncork() { _uncork(this); }
     destroy(err) { return _destroyStream(this, err); }
 
-    get destroyed() { return this._writableState.destroyed; }
-    set destroyed(value) { this._writableState.destroyed = !!value; }
     get writableEnded() { return this._writableState.ending; }
     get writableFinished() { return this._writableState.finished; }
     get writableLength() { return this._writableState.bufferedLength; }
-    get writableNeedDrain() { return this._writableState.needDrain; }
-    get writableHighWaterMark() { return this._writableState.highWaterMark; }
   }
   const Writable = __legacyConstructor(WritableClass, 'Writable', (stream, opts) => {
     __eventsMod.call(stream, opts);
@@ -9465,8 +9562,6 @@ const __streamMod = (() => {
     get writableEnded() { return this._writableState.ending; }
     get writableFinished() { return this._writableState.finished; }
     get writableLength() { return this._writableState.bufferedLength; }
-    get writableNeedDrain() { return this._writableState.needDrain; }
-    get writableHighWaterMark() { return this._writableState.highWaterMark; }
   }
   const Duplex = __legacyConstructor(DuplexClass, 'Duplex', _initDuplex);
 
@@ -9493,11 +9588,7 @@ const __streamMod = (() => {
       this._transform(chunk, encoding, (err, data) => {
         if (err) return callback(err);
         if (data !== null && data !== undefined) this.push(data);
-        // A Transform's two sides are one bounded pipe: completing this
-        // write while the readable side is full would drain the broker into
-        // an unbounded local buffer. The consumer's _shift releases it.
-        if (this._readableState.readableLength >= this._readableState.highWaterMark) this.__nimbusTransformReadCallback = callback;
-        else callback();
+        callback();
       });
     }
 
@@ -10459,8 +10550,8 @@ const __undiciMod = (() => {
 // ──  util module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
 // util.inspect, format and formatWithOptions are Node v22.22.3's own
-// lib/internal/util/inspect.js (node-inspect-source.ts), evaluated the first
-// time a program formats a value, over what node-inspect-host.ts gives it in
+// lib/internal/util/inspect.js (node-lib-source.ts), evaluated the first
+// time a program formats a value, over what node-lib-host.ts gives it in
 // place of Node's internals: what a program prints of a value, through util
 // or console, is what Node prints (node-inspect-matches-node,
 // console-format-matches-node-workerd). workerd's own node:util gives
@@ -10469,440 +10560,34 @@ const __undiciMod = (() => {
 // calls formatWithOptions directly (nuxi init).
 const __realUtil = typeof __real_util !== "undefined"
   ? (__real_util.default ?? __real_util) : globalThis.process.getBuiltinModule("util");
-let __nimbusNodeInspectExports = null;
-function __nimbusNodeInspect() {
-  if (__nimbusNodeInspectExports !== null) return __nimbusNodeInspectExports;
+// ── Node's library ──
+// Node's own modules (node-lib-source.ts), run over node-lib-host.ts the
+// first time a program needs one: util.inspect, util, assert, querystring,
+// punycode and what they require. Their module of the launch's map
+// (node-lib-module.ts) is compiled then, not before. Named limit: Node's
+// primordials are taken then too, where Node takes them at bootstrap, so a
+// builtin the program replaced before that first use is the one they hold.
+let __nimbusNodeLibrary = null;
+function __nimbusNodeLib() {
+  if (__nimbusNodeLibrary !== null) return __nimbusNodeLibrary;
+  const lib = __nimbusRegistryRequire("./nimbus/node-lib.js");
+  const primordials = {};
+  lib.primordialsOf(primordials, globalThis);
   // The East Asian Wide and Fullwidth ranges, ascending: [first, last] pairs.
-  const wide = "1100-115f,231a-231b,2329-232a,23e9-23ec,23f0,23f3,25fd-25fe,2614-2615,2630-2637,2648-2653,267f,268a-268f,2693,26a1,26aa-26ab,26bd-26be,26c4-26c5,26ce,26d4,26ea,26f2-26f3,26f5,26fa,26fd,2705,270a-270b,2728,274c,274e,2753-2755,2757,2795-2797,27b0,27bf,2b1b-2b1c,2b50,2b55,2e80-2e99,2e9b-2ef3,2f00-2fd5,2ff0-303e,3041-3096,3099-30ff,3105-312f,3131-318e,3190-31e5,31ef-321e,3220-3247,3250-a48c,a490-a4c6,a960-a97c,ac00-d7a3,f900-faff,fe10-fe19,fe30-fe52,fe54-fe66,fe68-fe6b,ff01-ff60,ffe0-ffe6,16fe0-16fe4,16ff0-16ff6,17000-18cd5,18cff-18d1e,18d80-18df2,1aff0-1aff3,1aff5-1affb,1affd-1affe,1b000-1b122,1b132,1b150-1b152,1b155,1b164-1b167,1b170-1b2fb,1d300-1d356,1d360-1d376,1f004,1f0cf,1f18e,1f191-1f19a,1f200-1f202,1f210-1f23b,1f240-1f248,1f250-1f251,1f260-1f265,1f300-1f320,1f32d-1f335,1f337-1f37c,1f37e-1f393,1f3a0-1f3ca,1f3cf-1f3d3,1f3e0-1f3f0,1f3f4,1f3f8-1f43e,1f440,1f442-1f4fc,1f4ff-1f53d,1f54b-1f54e,1f550-1f567,1f57a,1f595-1f596,1f5a4,1f5fb-1f64f,1f680-1f6c5,1f6cc,1f6d0-1f6d2,1f6d5-1f6d8,1f6dc-1f6df,1f6eb-1f6ec,1f6f4-1f6fc,1f7e0-1f7eb,1f7f0,1f90c-1f93a,1f93c-1f945,1f947-1f9ff,1fa70-1fa7c,1fa80-1fa8a,1fa8e-1fac6,1fac8,1facd-1fadc,1fadf-1faea,1faef-1faf8,20000-2fffd,30000-3fffd".split(",").flatMap((range) => {
+  const wide = lib.eastAsianWideRanges.split(",").flatMap((range) => {
     const [first, last = first] = range.split("-");
     return [parseInt(first, 16), parseInt(last, 16)];
   });
-  __nimbusNodeInspectExports = (function createNodeInspect(platform) {
-  "use strict";
-  const platformUtil = platform.util;
-  const types = platformUtil.types;
-  const primordials = {};
-  platform.primordialsOf(primordials, globalThis);
-  const customInspectSymbol = Symbol.for("nodejs.util.inspect.custom");
-
-  // lib/internal/errors.js: the errors inspect.js and its validators raise
-  // are the shims' (core _shared/node-error.ts nodeError, invalidArgType).
-  let maxStackErrorName;
-  let maxStackErrorMessage;
-  function isStackOverflowError(err) {
-    if (maxStackErrorMessage === undefined) {
-      try {
-        function overflowStack() { overflowStack(); }
-        overflowStack();
-      } catch (e) {
-        maxStackErrorMessage = e.message;
-        maxStackErrorName = e.name;
-      }
-    }
-    return !!err && err.name === maxStackErrorName && err.message === maxStackErrorMessage;
-  }
-  function assert(value, message) {
-    if (!value) {
-      throw nodeError(Error, "ERR_INTERNAL_ASSERTION", message ?? "This is caused by either a bug in Node.js or incorrect usage of Node.js internals.\nPlease open an issue with this stack trace at https://github.com/nodejs/node/issues\n");
-    }
-  }
-  assert.fail = (message) => assert(false, message);
-
-  // lib/internal/validators.js
-  const kValidateObjectNone = 0;
-  const kValidateObjectAllowNullable = 1 << 0;
-  const kValidateObjectAllowArray = 1 << 1;
-  const kValidateObjectAllowFunction = 1 << 2;
-  function validateObject(value, name, options = kValidateObjectNone) {
-    if (options === kValidateObjectNone) {
-      if (value === null || Array.isArray(value) || typeof value !== "object") throw invalidArgType(name, "object", value);
-      return;
-    }
-    if ((kValidateObjectAllowNullable & options) === 0 && value === null) throw invalidArgType(name, "object", value);
-    if ((kValidateObjectAllowArray & options) === 0 && Array.isArray(value)) throw invalidArgType(name, "object", value);
-    const throwOnFunction = (kValidateObjectAllowFunction & options) === 0;
-    if (typeof value !== "object" && (throwOnFunction || typeof value !== "function")) throw invalidArgType(name, "object", value);
-  }
-  function validateString(value, name) {
-    if (typeof value !== "string") throw invalidArgType(name, "string", value);
-  }
-
-  // lib/internal/util.js
-  const colorRegExp = /\u001b\[\d\d?m/g;
-  const internalUtil = {
-    customInspectSymbol,
-    isError: (e) => types.isNativeError(e) || e instanceof Error,
-    join(output, separator) {
-      let str = "";
-      if (output.length !== 0) {
-        const lastIndex = output.length - 1;
-        for (let i = 0; i < lastIndex; i++) {
-          str += output[i];
-          str += separator;
-        }
-        str += output[lastIndex];
-      }
-      return str;
-    },
-    removeColors: (str) => String.prototype.replace.call(str, colorRegExp, ""),
-  };
-
-  // THE BINDING's V8 slots (a promise's state and result, a proxy's target
-  // and handler, an iterator's and a weak collection's entries) are
-  // platform.slots', after an intrinsic brand check: values, which
-  // inspect.js formats itself.
-  const slots = platform.slots;
-
-  // V8's names (Object::GetConstructorName) for objects inspect.js finds no named constructor for.
-  const builtinNames = [
-    ["isMap", "Map"], ["isSet", "Set"], ["isWeakMap", "WeakMap"], ["isWeakSet", "WeakSet"], ["isDate", "Date"],
-    ["isRegExp", "RegExp"], ["isPromise", "Promise"], ["isNativeError", "Error"], ["isArrayBuffer", "ArrayBuffer"],
-    ["isSharedArrayBuffer", "SharedArrayBuffer"], ["isDataView", "DataView"], ["isNumberObject", "Number"],
-    ["isStringObject", "String"], ["isBooleanObject", "Boolean"], ["isBigIntObject", "BigInt"], ["isSymbolObject", "Symbol"],
-  ];
-  const typedArrayTag = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;
-  const isArrayIndex = (key) => /^(?:0|[1-9][0-9]*)$/.test(key) && Number(key) < 4294967295;
-  const utilBinding = {
-    constants: { ALL_PROPERTIES: 0, ONLY_ENUMERABLE: 2, kPending: 0, kRejected: 2 },
-    getOwnNonIndexProperties(object, filter) {
-      // An object's own keys list its array indices first, ascending
-      // (OrdinaryOwnPropertyKeys, and an array's, a typed array's and a
-      // String object's alike): the rest start where they end.
-      const all = Reflect.ownKeys(object);
-      let low = 0;
-      let high = all.length;
-      while (low < high) {
-        const mid = (low + high) >> 1;
-        if (typeof all[mid] === "string" && isArrayIndex(all[mid])) low = mid + 1;
-        else high = mid;
-      }
-      const keys = [];
-      for (let i = low; i < all.length; i++) {
-        const key = all[i];
-        if (filter === 2 && !Object.prototype.propertyIsEnumerable.call(object, key)) continue;
-        keys.push(key);
-      }
-      return keys;
-    },
-    getProxyDetails: (value, showProxy) => (types.isProxy(value) ? slots.getProxyDetails(value, showProxy) : undefined),
-    getPromiseDetails: (promise) => slots.getPromiseDetails(promise),
-    // As inspect.js asks: a weak collection's entries alone, an iterator's with whether they pair.
-    previewEntries: (...args) => Reflect.apply(slots.previewEntries, slots, args),
-    getConstructorName(value) {
-      if (Array.isArray(value)) return "Array";
-      if (types.isTypedArray(value)) return String(Reflect.apply(typedArrayTag, value, []));
-      for (const [test, name] of builtinNames) if (types[test](value)) return name;
-      return typeof value === "function" ? "Function" : "Object";
-    },
-    getExternalValue: () => 0n,
-  };
-
-  // src/node_i18n.cc GetStringWidth, as Node built with ICU counts columns:
-  // an East Asian Wide or Fullwidth character two, a default-emoji-
-  // presentation character two, a control, format character, enclosing or
-  // nonspacing mark or emoji modifier none (SOFT HYPHEN one), any other one.
-  const zeroWidth = /^(?!\u00AD)[\p{Cc}\p{Cf}\p{Me}\p{Mn}\p{Emoji_Modifier}]$/u;
-  const emojiPresentation = /^\p{Emoji_Presentation}$/u;
-  const icuBinding = {
-    getStringWidth(str) {
-      let width = 0;
-      for (const char of str) {
-        if (platform.eastAsianWide(char.codePointAt(0)) || emojiPresentation.test(char)) width += 2;
-        else if (!zeroWidth.test(char)) width += 1;
-      }
-      return width;
-    },
-  };
-
-  function evaluate() {
-    const modules = {
-      "internal/util": internalUtil,
-      "internal/errors": { isStackOverflowError },
-      "internal/util/types": types,
-      "internal/assert": assert,
-      // Node's own modules, whose frames read node:<id> (colored grey).
-      "internal/bootstrap/realm": { BuiltinModule: { exists: (id) => id.startsWith("internal/") || platform.builtinModules.includes(id) } },
-      "internal/validators": { validateObject, validateString, kValidateObjectAllowArray },
-      "internal/url": platform.url,
-      buffer: { Buffer: platform.Buffer },
-    };
-    const bindings = { util: utilBinding, config: { hasIntl: true }, icu: icuBinding };
-    const module = { exports: {} };
-    platform.inspectOf(module.exports, (id) => modules[id], module, platform.process, (name) => bindings[name], inspectPrimordials);
-    return module.exports;
-  }
-  // inspect.js reads primordials.globalThis once, for the names it counts as
-  // built-in (showHidden shows a prototype's properties when its
-  // constructor's name is not one): the capitalised globals there were when
-  // Node loaded it, measured (node-inspect-source.ts NODE_BUILTIN_OBJECTS).
-  const bootGlobal = Object.create(null);
-  for (const name of platform.builtinObjects) bootGlobal[name] = globalThis[name];
-  const inspectPrimordials = Object.create(null);
-  for (const key of Reflect.ownKeys(primordials)) inspectPrimordials[key] = primordials[key];
-  inspectPrimordials.globalThis = bootGlobal;
-  return evaluate();
-})({
+  __nimbusNodeLibrary = lib.createNodeLib({
     util: __realUtil,
-    // V8's slots, as workerd's inspect reaches them (node-inspect-host.ts THE BINDING).
-    slots: (function createWorkerdSlots(util) {
-  "use strict";
-  const kPending = 0;
-  const kFulfilled = 1;
-  const kRejected = 2;
-  const PROXY = "Proxy [Array]";
-  const REVOKED = "<Revoked Proxy>";
-  const arrayPrototype = Array.prototype;
-  const customInspect = Symbol.for("nodejs.util.inspect.custom");
-  const isProxy = util.types.isProxy;
-  const escapes = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", "'": "'", "\\": "\\" };
-  // The primitive workerd's formatPrimitive handed stylize as 'text', or null for any other mark.
-  function primitiveOf(text, style) {
-    switch (style) {
-      case "number": return /^(?:-?(?:[0-9]|Infinity)|NaN$)/.test(text) ? { primitive: Number(text) } : null;
-      case "bigint": return /^-?[0-9]+n$/.test(text) ? { primitive: BigInt(text.slice(0, -1)) } : null;
-      case "boolean": return text === "true" || text === "false" ? { primitive: text === "true" } : null;
-      case "undefined": return text === "undefined" ? { primitive: undefined } : null;
-      case "null": return text === "null" ? { primitive: null } : null;
-      case "symbol": return text.startsWith("Symbol(") && text.endsWith(")") ? { primitive: Symbol(text.slice(7, -1)) } : null;
-      case "string":
-        if (!/^['"\u0060]/.test(text)) return null;
-        // strEscape's escapes: the meta table's and a lone surrogate's.
-        return { primitive: text.slice(1, -1).replace(/\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|[btnfr'\\])/g, (all, escape) => (escape.length > 1 ? String.fromCharCode(parseInt(escape.slice(1), 16)) : escapes[escape])) };
-      default: return null;
-    }
-  }
-  // What workerd's inspect of 'value' formats 'level' deep: objects,
-  // primitives and marks, in order, and the text, for an iterator's brace.
-  // Its 'seen' (the objects being formatted, outermost first) holds 'level'
-  // of them then: a prototype's properties showHidden adds are formatted
-  // before the value is pushed, and a proxy (showProxy) pushes none.
-  // Array.prototype.includes is held only until workerd's first cycle
-  // check, which no program code runs before; from then the hook is that
-  // call's own 'seen' array's, where no program can reach it. What program
-  // code still runs while workerd formats (the value's own toStringTag
-  // getter, a proxy in its prototype chain) sees every built-in as it was,
-  // and can inspect: a nested read holds and lets go of its own.
-  function capture(value, options, level) {
-    const events = [];
-    const previous = arrayPrototype.includes;
-    let seen = null;
-    let referenced = false;
-    const isObject = (item) => (typeof item === "object" && item !== null) || typeof item === "function";
-    // An object 'level' deep is taken, and answered as seen: workerd marks
-    // it circular and formats none of it, so no code of it runs (a getter,
-    // a trap). Answered so for the value itself, workerd marks the value a
-    // reference too, last.
-    function record(item) {
-      if (this !== seen || seen.length !== level || !isObject(item)) return Reflect.apply(previous, this, arguments);
-      events.push({ object: item });
-      if (item === value) referenced = true;
-      return true;
-    }
-    const first = function includes(item) {
-      arrayPrototype.includes = previous;
-      seen = this;
-      Object.defineProperty(seen, "includes", { value: record, writable: true, configurable: true });
-      return Reflect.apply(record, this, arguments);
-    };
-    arrayPrototype.includes = first;
-    let text;
-    try {
-      text = util.inspect(value, {
-        showHidden: false, depth: 0, ...options,
-        showProxy: true, colors: false, customInspect: false, getters: false, maxStringLength: Infinity,
-        breakLength: Infinity, compact: 3, sorted: false, numericSeparator: false,
-        stylize(mark, style) {
-          if ((seen === null ? 0 : seen.length) === level) events.push(primitiveOf(mark, style) ?? { mark });
-          return mark;
-        },
-      });
-    } finally {
-      if (arrayPrototype.includes === first) arrayPrototype.includes = previous;
-    }
-    if (referenced) events.pop();
-    return { events, text };
-  }
-  // The values a slot holds, read from 'read(depth)' (capture's events),
-  // each a value, a proxy (its parts, read a level deeper each time, until
-  // none is left past the depth) or a revoked proxy. 'count' values, or as
-  // many as the first read holds.
-  function slotValues(read, count) {
-    let nodes;
-    for (let depth = 0; ; depth++) {
-      const events = read(depth);
-      let at = 0;
-      let deeper = false;
-      // A node 'r' levels in, as this read formats it ('known' from the last).
-      const node = (known, r) => {
-        if (known !== undefined && known.parts !== undefined) {
-          if (r > depth) {
-            if (events[at++]?.mark !== PROXY) throw unreadable("a proxy");
-            deeper = true;
-            return known;
-          }
-          return { parts: [node(known.parts?.[0], r + 1), node(known.parts?.[1], r + 1)] };
-        }
-        const event = events[at++];
-        if (event === undefined) throw unreadable("a value");
-        if ("primitive" in event) return { value: event.primitive };
-        if ("object" in event) {
-          // Its own mark, past the depth.
-          while (at < events.length && "mark" in events[at] && events[at].mark !== PROXY && events[at].mark !== REVOKED) at++;
-          return { value: event.object };
-        }
-        if (event.mark === REVOKED) return { revoked: true };
-        if (event.mark === PROXY) {
-          deeper = true;
-          return { parts: null };
-        }
-        throw unreadable("a mark (" + event.mark + ")");
-      };
-      const next = [];
-      for (let i = 0; nodes === undefined ? at < events.length : i < nodes.length; i++) {
-        next.push(node(nodes?.[i], 1));
-        if (count !== undefined && nodes === undefined && next.length === count) break;
-      }
-      nodes = next;
-      if (!deeper) return nodes.map(standIn);
-      if (depth === 64) throw unreadable("a proxy 64 deep");
-    }
-  }
-  // Stand-ins: a proxy among a slot's values, rebuilt over its target with a
-  // handler of none of a program's traps, and the [target, handler] it
-  // stands for (null, revoked). inspect.js never formats one as an object:
-  // it asks getProxyDetails first, which unwraps it (below).
-  const standIns = new WeakMap();
-  function standIn(node) {
-    if (node.revoked) {
-      const revocable = Proxy.revocable({}, {});
-      revocable.revoke();
-      standIns.set(revocable.proxy, null);
-      return revocable.proxy;
-    }
-    if (node.parts === undefined) return node.value;
-    const parts = [standIn(node.parts[0]), standIn(node.parts[1])];
-    const proxy = new Proxy(parts[0], {});
-    standIns.set(proxy, parts);
-    return proxy;
-  }
-  // What inspect.js formats for a proxy, showProxy off: its innermost target
-  // (no stand-in is formatted as an object, nor any proxy trap run), or a
-  // revoked proxy, which throws there as in Node.
-  function innermostTarget(target) {
-    while (standIns.get(target)) target = standIns.get(target)[0];
-    return target;
-  }
-  // Whether inspect.js would find a custom inspect on 'object', read without
-  // running a program's code; a proxy on the way may hold one.
-  function reachesCustomInspect(object) {
-    for (let at = object; at !== null; at = Object.getPrototypeOf(at)) {
-      if (isProxy(at)) return true;
-      const own = Object.getOwnPropertyDescriptor(at, customInspect);
-      if (own !== undefined) return own.get !== undefined || typeof own.value === "function";
-    }
-    return false;
-  }
-  // The prototypes workerd's constructor discovery names without asking
-  // their constructors anything (its well-known prototypes).
-  const intrinsicPrototypes = new Set([
-    Object.prototype, Function.prototype, Array.prototype, Error.prototype,
-    Promise.prototype, Map.prototype, Set.prototype, WeakMap.prototype, WeakSet.prototype,
-  ]);
-  // Whether reading 'key' of 'object' runs none of a program's code: no
-  // proxy on the way to the first object holding it, whose descriptor is
-  // data; or, given 'intrinsicHolder', that first holder is it.
-  function readsInertly(object, key, intrinsicHolder) {
-    for (let at = object; at !== null; at = Object.getPrototypeOf(at)) {
-      if (isProxy(at)) return false;
-      const own = Object.getOwnPropertyDescriptor(at, key);
-      if (own === undefined) continue;
-      if (intrinsicHolder !== undefined) return at === intrinsicHolder;
-      return own.get === undefined && own.set === undefined;
-    }
-    return true;
-  }
-  // Whether workerd formats 'holder' with none of a program's code run, as
-  // its inspect reads the chain: no proxy on it; no accessor for its
-  // Symbol.toStringTag; and, for its constructor discovery, no constructor
-  // whose name is read through an accessor or whose instanceof check is a
-  // program's (Symbol.hasInstance held anywhere but Function.prototype).
-  function formatsInertly(holder) {
-    let tag = false;
-    for (let at = holder; at !== null; at = Object.getPrototypeOf(at)) {
-      if (isProxy(at)) return false;
-      const own = tag ? undefined : Object.getOwnPropertyDescriptor(at, Symbol.toStringTag);
-      if (own !== undefined) {
-        if (own.get !== undefined || own.set !== undefined) return false;
-        tag = true;
-      }
-      if (intrinsicPrototypes.has(at)) continue;
-      const constructor = Object.getOwnPropertyDescriptor(at, "constructor");
-      if (constructor === undefined || typeof constructor.value !== "function") continue;
-      if (!readsInertly(constructor.value, "name") || !readsInertly(constructor.value, Symbol.hasInstance, Function.prototype)) return false;
-    }
-    return true;
-  }
-  // What a slot whose holder cannot be read inertly shows (formatsInertly).
-  function unknown(text) {
-    return Object.freeze(Object.create(null, {
-      [customInspect]: { value: (depth, options) => options.stylize(text, "special") },
-      [Symbol.toStringTag]: { value: text },
-    }));
-  }
-  const ITEMS_UNKNOWN = unknown("<items unknown>");
-  const UNKNOWN = unknown("<unknown>");
-  function unreadable(what) {
-    return new Error("util.inspect: workerd's inspect did not hand over " + what + " in a V8 slot");
-  }
-  function getPromiseDetails(promise) {
-    if (!formatsInertly(promise)) return [kFulfilled, UNKNOWN];
-    const first = capture(promise, {}, 1);
-    if (first.events.length > 0 && first.events[0].mark === "<pending>") return [kPending];
-    const rejected = first.events.some((event) => event.mark === "<rejected>");
-    // Its result, the first value formatted (before the promise's own properties).
-    const [result] = slotValues((depth) => (depth === 0 ? first : capture(promise, { depth }, 1)).events, 1);
-    return [rejected ? kRejected : kFulfilled, result];
-  }
-  function getProxyDetails(proxy, showProxy) {
-    let parts = standIns.get(proxy);
-    if (parts === undefined) {
-      const first = capture(proxy, {}, 0);
-      // Revoked itself: its one mark (a revoked target's is the first of two parts').
-      if (first.events.length === 1 && first.events[0].mark === REVOKED) parts = null;
-      else parts = slotValues((depth) => (depth === 0 ? first : capture(proxy, { depth }, 0)).events, 2);
-    }
-    if (parts === null) return showProxy ? [null, null] : null;
-    if (showProxy) return parts;
-    // inspect.js calls the target's custom inspect with the proxy as this: a
-    // program's own proxy is that; a stand-in must never be, so the target of
-    // one, if it has such a hook, is not shown (nor its constructor's checks run).
-    const target = innermostTarget(parts[0]);
-    return standIns.has(proxy) && !standIns.has(target) && reachesCustomInspect(target) ? UNKNOWN : target;
-  }
-  function previewEntries(value, isKeyValue) {
-    if (!formatsInertly(value)) return isKeyValue === undefined ? [ITEMS_UNKNOWN] : [[ITEMS_UNKNOWN], false];
-    // A weak collection's entries are what showHidden shows. The value's own
-    // properties follow its entries: counted off by a read showing none.
-    const options = { showHidden: isKeyValue === undefined };
-    let text;
-    const entries = slotValues((depth) => {
-      const all = capture(value, { ...options, depth, maxArrayLength: Infinity }, 1);
-      const own = capture(value, { ...options, depth, maxArrayLength: 0 }, 1).events;
-      text ??= all.text;
-      return all.events.slice(0, all.events.length - own.length);
-    });
-    if (isKeyValue === undefined) return entries;
-    const pairs = /^[^{]*\[(?:Map|Set) Entries\] \{/.test(text);
-    if (pairs && entries.length % 2 !== 0) throw unreadable("an iterator's pairs");
-    return [entries, pairs];
-  }
-  return { getPromiseDetails, getProxyDetails, previewEntries };
-})(__realUtil),
+    errors: { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable },
+    // V8's slots, as workerd's inspect reaches them (node-lib-host.ts THE BINDING).
+    slots: lib.createWorkerdSlots(__realUtil),
     Buffer: __BufferMod,
     url: { pathToFileURL: __urlMod.pathToFileURL, URL: __urlMod.URL },
     process: __processMod,
     builtinModules: __NodeModule.builtinModules,
-    builtinObjects: ["Object","Function","Array","Number","Infinity","NaN","Boolean","String","Symbol","Date","Promise","RegExp","Error","AggregateError","EvalError","RangeError","ReferenceError","SyntaxError","TypeError","URIError","JSON","Math","Intl","ArrayBuffer","Atomics","Uint8Array","Int8Array","Uint16Array","Int16Array","Uint32Array","Int32Array","Float32Array","Float64Array","Uint8ClampedArray","BigUint64Array","BigInt64Array","DataView","Map","BigInt","Set","WeakMap","WeakSet","Proxy","Reflect","FinalizationRegistry","WeakRef"],
+    builtinObjects: lib.builtinObjects,
     eastAsianWide(code) {
       let low = 0;
       let high = wide.length / 2 - 1;
@@ -10914,3532 +10599,59 @@ function __nimbusNodeInspect() {
       }
       return false;
     },
-    primordialsOf: function (primordials, globalThis) {
-'use strict';
-
-/* eslint-disable node-core/prefer-primordials */
-
-// This file subclasses and stores the JS builtins that come from the VM
-// so that Node.js's builtin modules do not need to later look these up from
-// the global proxy, which can be mutated by users.
-
-// Use of primordials have sometimes a dramatic impact on performance, please
-// benchmark all changes made in performance-sensitive areas of the codebase.
-// See: https://github.com/nodejs/node/pull/38248
-
-const {
-  defineProperty: ReflectDefineProperty,
-  getOwnPropertyDescriptor: ReflectGetOwnPropertyDescriptor,
-  ownKeys: ReflectOwnKeys,
-} = Reflect;
-
-// `uncurryThis` is equivalent to `func => Function.prototype.call.bind(func)`.
-// It is using `bind.bind(call)` to avoid using `Function.prototype.bind`
-// and `Function.prototype.call` after it may have been mutated by users.
-const { apply, bind, call } = Function.prototype;
-const uncurryThis = bind.bind(call);
-primordials.uncurryThis = uncurryThis;
-
-// `applyBind` is equivalent to `func => Function.prototype.apply.bind(func)`.
-// It is using `bind.bind(apply)` to avoid using `Function.prototype.bind`
-// and `Function.prototype.apply` after it may have been mutated by users.
-const applyBind = bind.bind(apply);
-primordials.applyBind = applyBind;
-
-// Methods that accept a variable number of arguments, and thus it's useful to
-// also create `${prefix}${key}Apply`, which uses `Function.prototype.apply`,
-// instead of `Function.prototype.call`, and thus doesn't require iterator
-// destructuring.
-const varargsMethods = [
-  // 'ArrayPrototypeConcat' is omitted, because it performs the spread
-  // on its own for arrays and array-likes with a truthy
-  // @@isConcatSpreadable symbol property.
-  'ArrayOf',
-  'ArrayPrototypePush',
-  'ArrayPrototypeUnshift',
-  // 'FunctionPrototypeCall' is omitted, since there's 'ReflectApply'
-  // and 'FunctionPrototypeApply'.
-  'MathHypot',
-  'MathMax',
-  'MathMin',
-  'StringFromCharCode',
-  'StringFromCodePoint',
-  'StringPrototypeConcat',
-  'TypedArrayOf',
-];
-
-function getNewKey(key) {
-  return typeof key === 'symbol' ?
-    `Symbol${key.description[7].toUpperCase()}${key.description.slice(8)}` :
-    `${key[0].toUpperCase()}${key.slice(1)}`;
-}
-
-function copyAccessor(dest, prefix, key, { enumerable, get, set }) {
-  ReflectDefineProperty(dest, `${prefix}Get${key}`, {
-    __proto__: null,
-    value: uncurryThis(get),
-    enumerable,
+    signals: __osMod.constants.signals,
+    insideNodeModules: __nimbusInsideNodeModules,
+    errorSourcePositions: __nimbusErrorSourcePositions,
+    tokenizer: (code, options) => __nimbusRegistryRequire("./nimbus/interpreter.js").tokenizer(code, options),
+    sourceMaps: { getSourceMapsSupport: () => __nimbusSourceMapsSupport, findSourceMap: __nimbusFindSourceMap, getSourceLine: __nimbusOriginalSourceLine },
+    colorDepth: () => __nimbusColorDepth(),
+    customPromisifyArgs: __nimbusCustomPromisifyArgs,
+    uvErrors: lib.uvErrors,
+    optionValue: __nimbusOptionValue,
+    console: __consoleMod,
+    workerThreads: builtins.worker_threads,
+    nodeDebug: __nimbusNodeDebugAtLaunch,
+    callSites: (count, above) => __nimbusStackSites({}, count, above),
+    primordials,
+    sources: lib.sources,
   });
-  if (set !== undefined) {
-    ReflectDefineProperty(dest, `${prefix}Set${key}`, {
-      __proto__: null,
-      value: uncurryThis(set),
-      enumerable,
-    });
+  return __nimbusNodeLibrary;
+}
+function __nimbusNodeInspect() {
+  return __nimbusNodeLib().require("internal/util/inspect");
+}
+// What util.promisify makes an object of when a callback is given several
+// values (lib/internal/util.js customPromisifyArgs): fs.read's bytesRead and
+// buffer, dns.lookup's address and family.
+const __nimbusCustomPromisifyArgs = Symbol("customPromisifyArgs");
+// internal/options getOptionValue, for the options Node's library reads.
+function __nimbusOptionValue(name) {
+  switch (name) {
+    case "--eval": return typeof __nimbusNodeCommandLine?.eval === "string" ? __nimbusNodeCommandLine.eval : "";
+    case "--enable-source-maps": return __nimbusNodeCommandLine?.enableSourceMaps === true;
+    default: return undefined;
+  }
+}
+// isInsideNodeModules (the util binding): whether the program's innermost
+// frame on the stack is a package's.
+function __nimbusInsideNodeModules() {
+  for (const site of __nimbusStackSites({}, Infinity, __nimbusInsideNodeModules)) {
+    const file = site.getFileName();
+    if (typeof file === "string" && __nimbusModuleOfFile(file) !== null) return /[\\/]node_modules[\\/]/.test(file);
   }
-}
-
-function copyPropsRenamed(src, dest, prefix) {
-  for (const key of ReflectOwnKeys(src)) {
-    const newKey = getNewKey(key);
-    const desc = ReflectGetOwnPropertyDescriptor(src, key);
-    if ('get' in desc) {
-      copyAccessor(dest, prefix, newKey, desc);
-    } else {
-      const name = `${prefix}${newKey}`;
-      ReflectDefineProperty(dest, name, { __proto__: null, ...desc });
-      if (varargsMethods.includes(name)) {
-        ReflectDefineProperty(dest, `${name}Apply`, {
-          __proto__: null,
-          // `src` is bound as the `this` so that the static `this` points
-          // to the object it was defined on,
-          // e.g.: `ArrayOfApply` gets a `this` of `Array`:
-          value: applyBind(desc.value, src),
-        });
-      }
-    }
-  }
-}
-
-function copyPropsRenamedBound(src, dest, prefix) {
-  for (const key of ReflectOwnKeys(src)) {
-    const newKey = getNewKey(key);
-    const desc = ReflectGetOwnPropertyDescriptor(src, key);
-    if ('get' in desc) {
-      copyAccessor(dest, prefix, newKey, desc);
-    } else {
-      const { value } = desc;
-      if (typeof value === 'function') {
-        desc.value = value.bind(src);
-      }
-
-      const name = `${prefix}${newKey}`;
-      ReflectDefineProperty(dest, name, { __proto__: null, ...desc });
-      if (varargsMethods.includes(name)) {
-        ReflectDefineProperty(dest, `${name}Apply`, {
-          __proto__: null,
-          value: applyBind(value, src),
-        });
-      }
-    }
-  }
-}
-
-function copyPrototype(src, dest, prefix) {
-  for (const key of ReflectOwnKeys(src)) {
-    const newKey = getNewKey(key);
-    const desc = ReflectGetOwnPropertyDescriptor(src, key);
-    if ('get' in desc) {
-      copyAccessor(dest, prefix, newKey, desc);
-    } else {
-      const { value } = desc;
-      if (typeof value === 'function') {
-        desc.value = uncurryThis(value);
-      }
-
-      const name = `${prefix}${newKey}`;
-      ReflectDefineProperty(dest, name, { __proto__: null, ...desc });
-      if (varargsMethods.includes(name)) {
-        ReflectDefineProperty(dest, `${name}Apply`, {
-          __proto__: null,
-          value: applyBind(value),
-        });
-      }
-    }
-  }
-}
-
-// Create copies of configurable value properties of the global object
-[
-  'Proxy',
-  'globalThis',
-].forEach((name) => {
-  // eslint-disable-next-line no-restricted-globals
-  primordials[name] = globalThis[name];
-});
-
-// Create copies of URI handling functions
-[
-  decodeURI,
-  decodeURIComponent,
-  encodeURI,
-  encodeURIComponent,
-].forEach((fn) => {
-  primordials[fn.name] = fn;
-});
-
-// Create copies of legacy functions
-[
-  escape,
-  eval,
-  unescape,
-].forEach((fn) => {
-  primordials[fn.name] = fn;
-});
-
-// Create copies of the namespace objects
-[
-  'Atomics',
-  'JSON',
-  'Math',
-  'Proxy',
-  'Reflect',
-].forEach((name) => {
-  // eslint-disable-next-line no-restricted-globals
-  copyPropsRenamed(globalThis[name], primordials, name);
-});
-
-// Create copies of intrinsic objects
-[
-  'AggregateError',
-  'Array',
-  'ArrayBuffer',
-  'BigInt',
-  'BigInt64Array',
-  'BigUint64Array',
-  'Boolean',
-  'DataView',
-  'Date',
-  'Error',
-  'EvalError',
-  'FinalizationRegistry',
-  'Float32Array',
-  'Float64Array',
-  'Function',
-  'Int16Array',
-  'Int32Array',
-  'Int8Array',
-  'Map',
-  'Number',
-  'Object',
-  'RangeError',
-  'ReferenceError',
-  'RegExp',
-  'Set',
-  'String',
-  'Symbol',
-  'SyntaxError',
-  'TypeError',
-  'URIError',
-  'Uint16Array',
-  'Uint32Array',
-  'Uint8Array',
-  'Uint8ClampedArray',
-  'WeakMap',
-  'WeakRef',
-  'WeakSet',
-].forEach((name) => {
-  // eslint-disable-next-line no-restricted-globals
-  const original = globalThis[name];
-  primordials[name] = original;
-  copyPropsRenamed(original, primordials, name);
-  copyPrototype(original.prototype, primordials, `${name}Prototype`);
-});
-
-
-// Create copies of intrinsic objects that require a valid `this` to call
-// static methods.
-// Refs: https://www.ecma-international.org/ecma-262/#sec-promise.all
-[
-  'Promise',
-].forEach((name) => {
-  // eslint-disable-next-line no-restricted-globals
-  const original = globalThis[name];
-  primordials[name] = original;
-  copyPropsRenamedBound(original, primordials, name);
-  copyPrototype(original.prototype, primordials, `${name}Prototype`);
-});
-
-// Create copies of abstract intrinsic objects that are not directly exposed
-// on the global object.
-// Refs: https://tc39.es/ecma262/#sec-%typedarray%-intrinsic-object
-[
-  { name: 'TypedArray', original: Reflect.getPrototypeOf(Uint8Array) },
-  { name: 'ArrayIterator', original: {
-    prototype: Reflect.getPrototypeOf(Array.prototype[Symbol.iterator]()),
-  } },
-  { name: 'StringIterator', original: {
-    prototype: Reflect.getPrototypeOf(String.prototype[Symbol.iterator]()),
-  } },
-].forEach(({ name, original }) => {
-  primordials[name] = original;
-  // The static %TypedArray% methods require a valid `this`, but can't be bound,
-  // as they need a subclass constructor as the receiver:
-  copyPrototype(original, primordials, name);
-  copyPrototype(original.prototype, primordials, `${name}Prototype`);
-});
-
-primordials.IteratorPrototype = Reflect.getPrototypeOf(primordials.ArrayIteratorPrototype);
-
-/* eslint-enable node-core/prefer-primordials */
-
-const {
-  Array: ArrayConstructor,
-  ArrayPrototypeForEach,
-  ArrayPrototypeMap,
-  ArrayPrototypePushApply,
-  ArrayPrototypeSlice,
-  FinalizationRegistry,
-  FunctionPrototypeCall,
-  Map,
-  ObjectDefineProperties,
-  ObjectDefineProperty,
-  ObjectFreeze,
-  ObjectSetPrototypeOf,
-  Promise,
-  PromisePrototypeThen,
-  PromiseResolve,
-  ReflectApply,
-  ReflectConstruct,
-  ReflectGet,
-  ReflectSet,
-  RegExp,
-  RegExpPrototype,
-  RegExpPrototypeExec,
-  RegExpPrototypeGetDotAll,
-  RegExpPrototypeGetFlags,
-  RegExpPrototypeGetGlobal,
-  RegExpPrototypeGetHasIndices,
-  RegExpPrototypeGetIgnoreCase,
-  RegExpPrototypeGetMultiline,
-  RegExpPrototypeGetSource,
-  RegExpPrototypeGetSticky,
-  RegExpPrototypeGetUnicode,
-  Set,
-  SymbolIterator,
-  SymbolMatch,
-  SymbolMatchAll,
-  SymbolReplace,
-  SymbolSearch,
-  SymbolSpecies,
-  SymbolSplit,
-  WeakMap,
-  WeakRef,
-  WeakSet,
-} = primordials;
-
-
-/**
- * Creates a class that can be safely iterated over.
- *
- * Because these functions are used by `makeSafe`, which is exposed on the
- * `primordials` object, it's important to use const references to the
- * primordials that they use.
- * @template {Iterable} T
- * @template {*} TReturn
- * @template {*} TNext
- * @param {(self: T) => IterableIterator<T>} factory
- * @param {(...args: [] | [TNext]) => IteratorResult<T, TReturn>} next
- * @returns {Iterator<T, TReturn, TNext>}
- */
-const createSafeIterator = (factory, next) => {
-  class SafeIterator {
-    constructor(iterable) {
-      this._iterator = factory(iterable);
-    }
-    next() {
-      return next(this._iterator);
-    }
-    [SymbolIterator]() {
-      return this;
-    }
-  }
-  ObjectSetPrototypeOf(SafeIterator.prototype, null);
-  ObjectFreeze(SafeIterator.prototype);
-  ObjectFreeze(SafeIterator);
-  return SafeIterator;
-};
-
-primordials.SafeArrayIterator = createSafeIterator(
-  primordials.ArrayPrototypeSymbolIterator,
-  primordials.ArrayIteratorPrototypeNext,
-);
-primordials.SafeStringIterator = createSafeIterator(
-  primordials.StringPrototypeSymbolIterator,
-  primordials.StringIteratorPrototypeNext,
-);
-
-const copyProps = (src, dest) => {
-  ArrayPrototypeForEach(ReflectOwnKeys(src), (key) => {
-    if (!ReflectGetOwnPropertyDescriptor(dest, key)) {
-      ReflectDefineProperty(
-        dest,
-        key,
-        { __proto__: null, ...ReflectGetOwnPropertyDescriptor(src, key) });
-    }
-  });
-};
-
-/**
- * @type {typeof primordials.makeSafe}
- */
-const makeSafe = (unsafe, safe) => {
-  if (SymbolIterator in unsafe.prototype) {
-    const dummy = new unsafe();
-    let next; // We can reuse the same `next` method.
-
-    ArrayPrototypeForEach(ReflectOwnKeys(unsafe.prototype), (key) => {
-      if (!ReflectGetOwnPropertyDescriptor(safe.prototype, key)) {
-        const desc = ReflectGetOwnPropertyDescriptor(unsafe.prototype, key);
-        if (
-          typeof desc.value === 'function' &&
-          desc.value.length === 0 &&
-          SymbolIterator in (FunctionPrototypeCall(desc.value, dummy) ?? {})
-        ) {
-          const createIterator = uncurryThis(desc.value);
-          next ??= uncurryThis(createIterator(dummy).next);
-          const SafeIterator = createSafeIterator(createIterator, next);
-          desc.value = function() {
-            return new SafeIterator(this);
-          };
-        }
-        ReflectDefineProperty(safe.prototype, key, { __proto__: null, ...desc });
-      }
-    });
-  } else {
-    copyProps(unsafe.prototype, safe.prototype);
-  }
-  copyProps(unsafe, safe);
-
-  ObjectSetPrototypeOf(safe.prototype, null);
-  ObjectFreeze(safe.prototype);
-  ObjectFreeze(safe);
-  return safe;
-};
-primordials.makeSafe = makeSafe;
-
-// Subclass the constructors because we need to use their prototype
-// methods later.
-primordials.SafeMap = makeSafe(
-  Map,
-  class SafeMap extends Map {},
-);
-primordials.SafeWeakMap = makeSafe(
-  WeakMap,
-  class SafeWeakMap extends WeakMap {},
-);
-
-primordials.SafeSet = makeSafe(
-  Set,
-  class SafeSet extends Set {},
-);
-primordials.SafeWeakSet = makeSafe(
-  WeakSet,
-  class SafeWeakSet extends WeakSet {},
-);
-
-primordials.SafeFinalizationRegistry = makeSafe(
-  FinalizationRegistry,
-  class SafeFinalizationRegistry extends FinalizationRegistry {},
-);
-primordials.SafeWeakRef = makeSafe(
-  WeakRef,
-  class SafeWeakRef extends WeakRef {},
-);
-
-const SafePromise = makeSafe(
-  Promise,
-  class SafePromise extends Promise {},
-);
-
-/**
- * Attaches a callback that is invoked when the Promise is settled (fulfilled or
- * rejected). The resolved value cannot be modified from the callback.
- * Prefer using async functions when possible.
- * @param {Promise<any>} thisPromise
- * @param {(() => void) | undefined | null} onFinally The callback to execute
- *        when the Promise is settled (fulfilled or rejected).
- * @returns {Promise} A Promise for the completion of the callback.
- */
-primordials.SafePromisePrototypeFinally = (thisPromise, onFinally) =>
-  // Wrapping on a new Promise is necessary to not expose the SafePromise
-  // prototype to user-land.
-  new Promise((a, b) =>
-    new SafePromise((a, b) => PromisePrototypeThen(thisPromise, a, b))
-      .finally(onFinally)
-      .then(a, b),
-  );
-
-primordials.AsyncIteratorPrototype =
-  primordials.ReflectGetPrototypeOf(
-    primordials.ReflectGetPrototypeOf(
-      async function* () {}).prototype);
-
-const arrayToSafePromiseIterable = (promises, mapFn) =>
-  new primordials.SafeArrayIterator(
-    ArrayPrototypeMap(
-      promises,
-      (promise, i) =>
-        new SafePromise((a, b) => PromisePrototypeThen(mapFn == null ? promise : mapFn(promise, i), a, b)),
-    ),
-  );
-
-/**
- * @template T,U
- * @param {Array<T | PromiseLike<T>>} promises
- * @param {(v: T|PromiseLike<T>, k: number) => U|PromiseLike<U>} [mapFn]
- * @returns {Promise<Awaited<U>[]>}
- */
-primordials.SafePromiseAll = (promises, mapFn) =>
-  // Wrapping on a new Promise is necessary to not expose the SafePromise
-  // prototype to user-land.
-  new Promise((a, b) =>
-    SafePromise.all(arrayToSafePromiseIterable(promises, mapFn)).then(a, b),
-  );
-
-/**
- * Should only be used for internal functions, this would produce similar
- * results as `Promise.all` but without prototype pollution, and the return
- * value is not a genuine Array but an array-like object.
- * @template T,U
- * @param {ArrayLike<T | PromiseLike<T>>} promises
- * @param {(v: T|PromiseLike<T>, k: number) => U|PromiseLike<U>} [mapFn]
- * @returns {Promise<ArrayLike<Awaited<U>>>}
- */
-primordials.SafePromiseAllReturnArrayLike = (promises, mapFn) =>
-  new Promise((resolve, reject) => {
-    const { length } = promises;
-
-    const returnVal = ArrayConstructor(length);
-    ObjectSetPrototypeOf(returnVal, null);
-    if (length === 0) resolve(returnVal);
-
-    let pendingPromises = length;
-    for (let i = 0; i < length; i++) {
-      const promise = mapFn != null ? mapFn(promises[i], i) : promises[i];
-      PromisePrototypeThen(PromiseResolve(promise), (result) => {
-        returnVal[i] = result;
-        if (--pendingPromises === 0) resolve(returnVal);
-      }, reject);
-    }
-  });
-
-/**
- * Should only be used when we only care about waiting for all the promises to
- * resolve, not what value they resolve to.
- * @template T,U
- * @param {ArrayLike<T | PromiseLike<T>>} promises
- * @param {(v: T|PromiseLike<T>, k: number) => U|PromiseLike<U>} [mapFn]
- * @returns {Promise<void>}
- */
-primordials.SafePromiseAllReturnVoid = (promises, mapFn) =>
-  new Promise((resolve, reject) => {
-    let pendingPromises = promises.length;
-    if (pendingPromises === 0) resolve();
-    const onFulfilled = () => {
-      if (--pendingPromises === 0) {
-        resolve();
-      }
-    };
-    for (let i = 0; i < promises.length; i++) {
-      const promise = mapFn != null ? mapFn(promises[i], i) : promises[i];
-      PromisePrototypeThen(PromiseResolve(promise), onFulfilled, reject);
-    }
-  });
-
-/**
- * @template T,U
- * @param {Array<T|PromiseLike<T>>} promises
- * @param {(v: T|PromiseLike<T>, k: number) => U|PromiseLike<U>} [mapFn]
- * @returns {Promise<PromiseSettledResult<any>[]>}
- */
-primordials.SafePromiseAllSettled = (promises, mapFn) =>
-  // Wrapping on a new Promise is necessary to not expose the SafePromise
-  // prototype to user-land.
-  new Promise((a, b) =>
-    SafePromise.allSettled(arrayToSafePromiseIterable(promises, mapFn)).then(a, b),
-  );
-
-/**
- * Should only be used when we only care about waiting for all the promises to
- * settle, not what value they resolve or reject to.
- * @template T,U
- * @param {ArrayLike<T|PromiseLike<T>>} promises
- * @param {(v: T|PromiseLike<T>, k: number) => U|PromiseLike<U>} [mapFn]
- * @returns {Promise<void>}
- */
-primordials.SafePromiseAllSettledReturnVoid = (promises, mapFn) => new Promise((resolve) => {
-  let pendingPromises = promises.length;
-  if (pendingPromises === 0) resolve();
-  const onSettle = () => {
-    if (--pendingPromises === 0) resolve();
-  };
-  for (let i = 0; i < promises.length; i++) {
-    const promise = mapFn != null ? mapFn(promises[i], i) : promises[i];
-    PromisePrototypeThen(PromiseResolve(promise), onSettle, onSettle);
-  }
-});
-
-/**
- * @template T,U
- * @param {Array<T|PromiseLike<T>>} promises
- * @param {(v: T|PromiseLike<T>, k: number) => U|PromiseLike<U>} [mapFn]
- * @returns {Promise<Awaited<U>>}
- */
-primordials.SafePromiseAny = (promises, mapFn) =>
-  // Wrapping on a new Promise is necessary to not expose the SafePromise
-  // prototype to user-land.
-  new Promise((a, b) =>
-    SafePromise.any(arrayToSafePromiseIterable(promises, mapFn)).then(a, b),
-  );
-
-/**
- * @template T,U
- * @param {Array<T|PromiseLike<T>>} promises
- * @param {(v: T|PromiseLike<T>, k: number) => U|PromiseLike<U>} [mapFn]
- * @returns {Promise<Awaited<U>>}
- */
-primordials.SafePromiseRace = (promises, mapFn) =>
-  // Wrapping on a new Promise is necessary to not expose the SafePromise
-  // prototype to user-land.
-  new Promise((a, b) =>
-    SafePromise.race(arrayToSafePromiseIterable(promises, mapFn)).then(a, b),
-  );
-
-
-const {
-  exec: OriginalRegExpPrototypeExec,
-  [SymbolMatch]: OriginalRegExpPrototypeSymbolMatch,
-  [SymbolMatchAll]: OriginalRegExpPrototypeSymbolMatchAll,
-  [SymbolReplace]: OriginalRegExpPrototypeSymbolReplace,
-  [SymbolSearch]: OriginalRegExpPrototypeSymbolSearch,
-  [SymbolSplit]: OriginalRegExpPrototypeSymbolSplit,
-} = RegExpPrototype;
-
-class RegExpLikeForStringSplitting {
-  #regex;
-  constructor() {
-    this.#regex = ReflectConstruct(RegExp, arguments);
-  }
-
-  get lastIndex() {
-    return ReflectGet(this.#regex, 'lastIndex');
-  }
-  set lastIndex(value) {
-    ReflectSet(this.#regex, 'lastIndex', value);
-  }
-
-  exec() {
-    return ReflectApply(OriginalRegExpPrototypeExec, this.#regex, arguments);
-  }
-}
-ObjectSetPrototypeOf(RegExpLikeForStringSplitting.prototype, null);
-
-/**
- * @param {RegExp} pattern
- * @returns {RegExp}
- */
-primordials.hardenRegExp = function hardenRegExp(pattern) {
-  ObjectDefineProperties(pattern, {
-    [SymbolMatch]: {
-      __proto__: null,
-      configurable: true,
-      value: OriginalRegExpPrototypeSymbolMatch,
-    },
-    [SymbolMatchAll]: {
-      __proto__: null,
-      configurable: true,
-      value: OriginalRegExpPrototypeSymbolMatchAll,
-    },
-    [SymbolReplace]: {
-      __proto__: null,
-      configurable: true,
-      value: OriginalRegExpPrototypeSymbolReplace,
-    },
-    [SymbolSearch]: {
-      __proto__: null,
-      configurable: true,
-      value: OriginalRegExpPrototypeSymbolSearch,
-    },
-    [SymbolSplit]: {
-      __proto__: null,
-      configurable: true,
-      value: OriginalRegExpPrototypeSymbolSplit,
-    },
-    constructor: {
-      __proto__: null,
-      configurable: true,
-      value: {
-        [SymbolSpecies]: RegExpLikeForStringSplitting,
-      },
-    },
-    dotAll: {
-      __proto__: null,
-      configurable: true,
-      value: RegExpPrototypeGetDotAll(pattern),
-    },
-    exec: {
-      __proto__: null,
-      configurable: true,
-      value: OriginalRegExpPrototypeExec,
-    },
-    global: {
-      __proto__: null,
-      configurable: true,
-      value: RegExpPrototypeGetGlobal(pattern),
-    },
-    hasIndices: {
-      __proto__: null,
-      configurable: true,
-      value: RegExpPrototypeGetHasIndices(pattern),
-    },
-    ignoreCase: {
-      __proto__: null,
-      configurable: true,
-      value: RegExpPrototypeGetIgnoreCase(pattern),
-    },
-    multiline: {
-      __proto__: null,
-      configurable: true,
-      value: RegExpPrototypeGetMultiline(pattern),
-    },
-    source: {
-      __proto__: null,
-      configurable: true,
-      value: RegExpPrototypeGetSource(pattern),
-    },
-    sticky: {
-      __proto__: null,
-      configurable: true,
-      value: RegExpPrototypeGetSticky(pattern),
-    },
-    unicode: {
-      __proto__: null,
-      configurable: true,
-      value: RegExpPrototypeGetUnicode(pattern),
-    },
-  });
-  ObjectDefineProperty(pattern, 'flags', {
-    __proto__: null,
-    configurable: true,
-    value: RegExpPrototypeGetFlags(pattern),
-  });
-  return pattern;
-};
-
-
-/**
- * @param {string} str
- * @param {RegExp} regexp
- * @returns {number}
- */
-primordials.SafeStringPrototypeSearch = (str, regexp) => {
-  regexp.lastIndex = 0;
-  const match = RegExpPrototypeExec(regexp, str);
-  return match ? match.index : -1;
-};
-
-/**
- * Variadic functions with lots of arguments will cause stack overflow errors.
- * Use this function when `items` can be arbitrarily large, this function splits
- * it into chunks of size 2**16 making stack overflow less likely.
- * @param {Array<unknown>} arr
- * @param {Parameters<typeof Array.prototype.push>} items
- * @returns {ReturnType<typeof Array.prototype.push>}
- */
-primordials.SafeArrayPrototypePushApply = (arr, items) => {
-  let end = 0x10000;
-  if (end < items.length) {
-    let start = 0;
-    do {
-      ArrayPrototypePushApply(arr, ArrayPrototypeSlice(items, start, start = end));
-      end += 0x10000;
-    } while (end < items.length);
-    items = ArrayPrototypeSlice(items, start);
-  }
-  return ArrayPrototypePushApply(arr, items);
-};
-
-ObjectSetPrototypeOf(primordials, null);
-ObjectFreeze(primordials);
-
-    },
-    inspectOf: function (exports, require, module, process, internalBinding, primordials) {
-'use strict';
-
-const {
-  AggregateError,
-  AggregateErrorPrototype,
-  Array,
-  ArrayBuffer,
-  ArrayBufferPrototype,
-  ArrayIsArray,
-  ArrayPrototype,
-  ArrayPrototypeFilter,
-  ArrayPrototypeForEach,
-  ArrayPrototypeIncludes,
-  ArrayPrototypeIndexOf,
-  ArrayPrototypeJoin,
-  ArrayPrototypeMap,
-  ArrayPrototypePop,
-  ArrayPrototypePush,
-  ArrayPrototypePushApply,
-  ArrayPrototypeSlice,
-  ArrayPrototypeSort,
-  ArrayPrototypeSplice,
-  ArrayPrototypeUnshift,
-  BigIntPrototypeValueOf,
-  Boolean,
-  BooleanPrototype,
-  BooleanPrototypeValueOf,
-  DataView,
-  DataViewPrototype,
-  Date,
-  DatePrototype,
-  DatePrototypeGetTime,
-  DatePrototypeToISOString,
-  DatePrototypeToString,
-  Error,
-  ErrorPrototype,
-  ErrorPrototypeToString,
-  Function,
-  FunctionPrototype,
-  FunctionPrototypeBind,
-  FunctionPrototypeCall,
-  FunctionPrototypeSymbolHasInstance,
-  FunctionPrototypeToString,
-  JSONStringify,
-  Map,
-  MapPrototype,
-  MapPrototypeEntries,
-  MapPrototypeGetSize,
-  MathFloor,
-  MathMax,
-  MathMin,
-  MathRound,
-  MathSqrt,
-  MathTrunc,
-  Number,
-  NumberIsFinite,
-  NumberIsNaN,
-  NumberParseFloat,
-  NumberParseInt,
-  NumberPrototype,
-  NumberPrototypeToString,
-  NumberPrototypeValueOf,
-  Object,
-  ObjectAssign,
-  ObjectDefineProperty,
-  ObjectGetOwnPropertyDescriptor,
-  ObjectGetOwnPropertyNames,
-  ObjectGetOwnPropertySymbols,
-  ObjectGetPrototypeOf,
-  ObjectIs,
-  ObjectKeys,
-  ObjectPrototype,
-  ObjectPrototypeHasOwnProperty,
-  ObjectPrototypePropertyIsEnumerable,
-  ObjectPrototypeToString,
-  ObjectSeal,
-  ObjectSetPrototypeOf,
-  Promise,
-  PromisePrototype,
-  RangeError,
-  RangeErrorPrototype,
-  ReflectApply,
-  ReflectOwnKeys,
-  RegExp,
-  RegExpPrototype,
-  RegExpPrototypeExec,
-  RegExpPrototypeSymbolReplace,
-  RegExpPrototypeSymbolSplit,
-  RegExpPrototypeToString,
-  SafeMap,
-  SafeSet,
-  SafeStringIterator,
-  Set,
-  SetPrototype,
-  SetPrototypeGetSize,
-  SetPrototypeValues,
-  String,
-  StringPrototype,
-  StringPrototypeCharCodeAt,
-  StringPrototypeCodePointAt,
-  StringPrototypeEndsWith,
-  StringPrototypeIncludes,
-  StringPrototypeIndexOf,
-  StringPrototypeLastIndexOf,
-  StringPrototypeNormalize,
-  StringPrototypePadEnd,
-  StringPrototypePadStart,
-  StringPrototypeRepeat,
-  StringPrototypeReplace,
-  StringPrototypeReplaceAll,
-  StringPrototypeSlice,
-  StringPrototypeSplit,
-  StringPrototypeStartsWith,
-  StringPrototypeToLowerCase,
-  StringPrototypeValueOf,
-  SymbolIterator,
-  SymbolPrototypeToString,
-  SymbolPrototypeValueOf,
-  SymbolToPrimitive,
-  SymbolToStringTag,
-  TypeError,
-  TypeErrorPrototype,
-  TypedArray,
-  TypedArrayPrototype,
-  TypedArrayPrototypeGetLength,
-  TypedArrayPrototypeGetSymbolToStringTag,
-  Uint8Array,
-  WeakMap,
-  WeakMapPrototype,
-  WeakSet,
-  WeakSetPrototype,
-  globalThis,
-  uncurryThis,
-} = primordials;
-
-const {
-  constants: {
-    ALL_PROPERTIES,
-    ONLY_ENUMERABLE,
-    kPending,
-    kRejected,
-  },
-  getOwnNonIndexProperties,
-  getPromiseDetails,
-  getProxyDetails,
-  previewEntries,
-  getConstructorName: internalGetConstructorName,
-  getExternalValue,
-} = internalBinding('util');
-
-const {
-  customInspectSymbol,
-  isError,
-  join,
-  removeColors,
-} = require('internal/util');
-
-const {
-  isStackOverflowError,
-} = require('internal/errors');
-
-const {
-  isAsyncFunction,
-  isGeneratorFunction,
-  isAnyArrayBuffer,
-  isArrayBuffer,
-  isArgumentsObject,
-  isBoxedPrimitive,
-  isDataView,
-  isExternal,
-  isMap,
-  isMapIterator,
-  isModuleNamespaceObject,
-  isNativeError,
-  isPromise,
-  isSet,
-  isSetIterator,
-  isWeakMap,
-  isWeakSet,
-  isRegExp,
-  isDate,
-  isTypedArray,
-  isStringObject,
-  isNumberObject,
-  isBooleanObject,
-  isBigIntObject,
-} = require('internal/util/types');
-
-const assert = require('internal/assert');
-
-const { BuiltinModule } = require('internal/bootstrap/realm');
-const {
-  validateObject,
-  validateString,
-  kValidateObjectAllowArray,
-} = require('internal/validators');
-
-let hexSlice;
-let internalUrl;
-
-function pathToFileUrlHref(filepath) {
-  internalUrl ??= require('internal/url');
-  return internalUrl.pathToFileURL(filepath).href;
-}
-
-function isURL(value) {
-  internalUrl ??= require('internal/url');
-  return typeof value.href === 'string' && value instanceof internalUrl.URL;
-}
-
-const builtInObjects = new SafeSet(
-  ArrayPrototypeFilter(
-    ObjectGetOwnPropertyNames(globalThis),
-    (e) => RegExpPrototypeExec(/^[A-Z][a-zA-Z0-9]+$/, e) !== null,
-  ),
-);
-
-// https://tc39.es/ecma262/#sec-IsHTMLDDA-internal-slot
-const isUndetectableObject = (v) => typeof v === 'undefined' && v !== undefined;
-
-// These options must stay in sync with `getUserOptions`. So if any option will
-// be added or removed, `getUserOptions` must also be updated accordingly.
-const inspectDefaultOptions = ObjectSeal({
-  showHidden: false,
-  depth: 2,
-  colors: false,
-  customInspect: true,
-  showProxy: false,
-  maxArrayLength: 100,
-  maxStringLength: 10000,
-  breakLength: 80,
-  compact: 3,
-  sorted: false,
-  getters: false,
-  numericSeparator: false,
-});
-
-const kObjectType = 0;
-const kArrayType = 1;
-const kArrayExtrasType = 2;
-
-/* eslint-disable no-control-regex */
-const strEscapeSequencesRegExp = /[\x00-\x1f\x27\x5c\x7f-\x9f]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
-const strEscapeSequencesReplacer = /[\x00-\x1f\x27\x5c\x7f-\x9f]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
-const strEscapeSequencesRegExpSingle = /[\x00-\x1f\x5c\x7f-\x9f]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
-const strEscapeSequencesReplacerSingle = /[\x00-\x1f\x5c\x7f-\x9f]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
-/* eslint-enable no-control-regex */
-
-const keyStrRegExp = /^[a-zA-Z_][a-zA-Z_0-9]*$/;
-const numberRegExp = /^(0|[1-9][0-9]*)$/;
-
-const coreModuleRegExp = /^ {4}at (?:[^/\\(]+ \(|)node:(.+):\d+:\d+\)?$/;
-
-const classRegExp = /^(\s+[^(]*?)\s*{/;
-// eslint-disable-next-line node-core/no-unescaped-regexp-dot
-const stripCommentsRegExp = /(\/\/.*?\n)|(\/\*(.|\n)*?\*\/)/g;
-
-const kMinLineLength = 16;
-
-// Constants to map the iterator state.
-const kWeak = 0;
-const kIterator = 1;
-const kMapEntries = 2;
-
-// Escaped control characters (plus the single quote and the backslash). Use
-// empty strings to fill up unused entries.
-const meta = [
-  '\\x00', '\\x01', '\\x02', '\\x03', '\\x04', '\\x05', '\\x06', '\\x07', // x07
-  '\\b', '\\t', '\\n', '\\x0B', '\\f', '\\r', '\\x0E', '\\x0F',           // x0F
-  '\\x10', '\\x11', '\\x12', '\\x13', '\\x14', '\\x15', '\\x16', '\\x17', // x17
-  '\\x18', '\\x19', '\\x1A', '\\x1B', '\\x1C', '\\x1D', '\\x1E', '\\x1F', // x1F
-  '', '', '', '', '', '', '', "\\'", '', '', '', '', '', '', '', '',      // x2F
-  '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',         // x3F
-  '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',         // x4F
-  '', '', '', '', '', '', '', '', '', '', '', '', '\\\\', '', '', '',     // x5F
-  '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',         // x6F
-  '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '\\x7F',    // x7F
-  '\\x80', '\\x81', '\\x82', '\\x83', '\\x84', '\\x85', '\\x86', '\\x87', // x87
-  '\\x88', '\\x89', '\\x8A', '\\x8B', '\\x8C', '\\x8D', '\\x8E', '\\x8F', // x8F
-  '\\x90', '\\x91', '\\x92', '\\x93', '\\x94', '\\x95', '\\x96', '\\x97', // x97
-  '\\x98', '\\x99', '\\x9A', '\\x9B', '\\x9C', '\\x9D', '\\x9E', '\\x9F', // x9F
-];
-
-// Regex used for ansi escape code splitting
-// Ref: https://github.com/chalk/ansi-regex/blob/f338e1814144efb950276aac84135ff86b72dc8e/index.js
-// License: MIT by Sindre Sorhus <sindresorhus@gmail.com>
-// Matches all ansi escape code sequences in a string
-const ansi = new RegExp(
-  '[\\u001B\\u009B][[\\]()#;?]*' +
-  '(?:(?:(?:(?:;[-a-zA-Z\\d\\/\\#&.:=?%@~_]+)*' +
-  '|[a-zA-Z\\d]+(?:;[-a-zA-Z\\d\\/\\#&.:=?%@~_]*)*)?' +
-  '(?:\\u0007|\\u001B\\u005C|\\u009C))' +
-  '|(?:(?:\\d{1,4}(?:;\\d{0,4})*)?' +
-  '[\\dA-PR-TZcf-nq-uy=><~]))', 'g',
-);
-
-let getStringWidth;
-
-function getUserOptions(ctx, isCrossContext) {
-  const ret = {
-    stylize: ctx.stylize,
-    showHidden: ctx.showHidden,
-    depth: ctx.depth,
-    colors: ctx.colors,
-    customInspect: ctx.customInspect,
-    showProxy: ctx.showProxy,
-    maxArrayLength: ctx.maxArrayLength,
-    maxStringLength: ctx.maxStringLength,
-    breakLength: ctx.breakLength,
-    compact: ctx.compact,
-    sorted: ctx.sorted,
-    getters: ctx.getters,
-    numericSeparator: ctx.numericSeparator,
-    ...ctx.userOptions,
-  };
-
-  // Typically, the target value will be an instance of `Object`. If that is
-  // *not* the case, the object may come from another vm.Context, and we want
-  // to avoid passing it objects from this Context in that case, so we remove
-  // the prototype from the returned object itself + the `stylize()` function,
-  // and remove all other non-primitives, including non-primitive user options.
-  if (isCrossContext) {
-    ObjectSetPrototypeOf(ret, null);
-    for (const key of ObjectKeys(ret)) {
-      if ((typeof ret[key] === 'object' || typeof ret[key] === 'function') &&
-          ret[key] !== null) {
-        delete ret[key];
-      }
-    }
-    ret.stylize = ObjectSetPrototypeOf((value, flavour) => {
-      let stylized;
-      try {
-        stylized = `${ctx.stylize(value, flavour)}`;
-      } catch {
-        // Continue regardless of error.
-      }
-
-      if (typeof stylized !== 'string') return value;
-      // `stylized` is a string as it should be, which is safe to pass along.
-      return stylized;
-    }, null);
-  }
-
-  return ret;
-}
-
-/**
- * Echos the value of any input. Tries to print the value out
- * in the best way possible given the different types.
- * @param {any} value The value to print out.
- * @param {object} opts Optional options object that alters the output.
- */
-/* Legacy: value, showHidden, depth, colors */
-function inspect(value, opts) {
-  // Default options
-  const ctx = {
-    budget: {},
-    indentationLvl: 0,
-    seen: [],
-    currentDepth: 0,
-    stylize: stylizeNoColor,
-    showHidden: inspectDefaultOptions.showHidden,
-    depth: inspectDefaultOptions.depth,
-    colors: inspectDefaultOptions.colors,
-    customInspect: inspectDefaultOptions.customInspect,
-    showProxy: inspectDefaultOptions.showProxy,
-    maxArrayLength: inspectDefaultOptions.maxArrayLength,
-    maxStringLength: inspectDefaultOptions.maxStringLength,
-    breakLength: inspectDefaultOptions.breakLength,
-    compact: inspectDefaultOptions.compact,
-    sorted: inspectDefaultOptions.sorted,
-    getters: inspectDefaultOptions.getters,
-    numericSeparator: inspectDefaultOptions.numericSeparator,
-  };
-  if (arguments.length > 1) {
-    // Legacy...
-    if (arguments.length > 2) {
-      if (arguments[2] !== undefined) {
-        ctx.depth = arguments[2];
-      }
-      if (arguments.length > 3 && arguments[3] !== undefined) {
-        ctx.colors = arguments[3];
-      }
-    }
-    // Set user-specified options
-    if (typeof opts === 'boolean') {
-      ctx.showHidden = opts;
-    } else if (opts) {
-      const optKeys = ObjectKeys(opts);
-      for (let i = 0; i < optKeys.length; ++i) {
-        const key = optKeys[i];
-        // TODO(BridgeAR): Find a solution what to do about stylize. Either make
-        // this function public or add a new API with a similar or better
-        // functionality.
-        if (
-          ObjectPrototypeHasOwnProperty(inspectDefaultOptions, key) ||
-          key === 'stylize') {
-          ctx[key] = opts[key];
-        } else if (ctx.userOptions === undefined) {
-          // This is required to pass through the actual user input.
-          ctx.userOptions = opts;
-        }
-      }
-    }
-  }
-  if (ctx.colors) ctx.stylize = stylizeWithColor;
-  if (ctx.maxArrayLength === null) ctx.maxArrayLength = Infinity;
-  if (ctx.maxStringLength === null) ctx.maxStringLength = Infinity;
-  return formatValue(ctx, value, 0);
-}
-inspect.custom = customInspectSymbol;
-
-ObjectDefineProperty(inspect, 'defaultOptions', {
-  __proto__: null,
-  get() {
-    return inspectDefaultOptions;
-  },
-  set(options) {
-    validateObject(options, 'options');
-    return ObjectAssign(inspectDefaultOptions, options);
-  },
-});
-
-// Set Graphics Rendition https://en.wikipedia.org/wiki/ANSI_escape_code#graphics
-// Each color consists of an array with the color code as first entry and the
-// reset code as second entry.
-const defaultFG = 39;
-const defaultBG = 49;
-inspect.colors = {
-  __proto__: null,
-  reset: [0, 0],
-  bold: [1, 22],
-  dim: [2, 22], // Alias: faint
-  italic: [3, 23],
-  underline: [4, 24],
-  blink: [5, 25],
-  // Swap foreground and background colors
-  inverse: [7, 27], // Alias: swapcolors, swapColors
-  hidden: [8, 28], // Alias: conceal
-  strikethrough: [9, 29], // Alias: strikeThrough, crossedout, crossedOut
-  doubleunderline: [21, 24], // Alias: doubleUnderline
-  black: [30, defaultFG],
-  red: [31, defaultFG],
-  green: [32, defaultFG],
-  yellow: [33, defaultFG],
-  blue: [34, defaultFG],
-  magenta: [35, defaultFG],
-  cyan: [36, defaultFG],
-  white: [37, defaultFG],
-  bgBlack: [40, defaultBG],
-  bgRed: [41, defaultBG],
-  bgGreen: [42, defaultBG],
-  bgYellow: [43, defaultBG],
-  bgBlue: [44, defaultBG],
-  bgMagenta: [45, defaultBG],
-  bgCyan: [46, defaultBG],
-  bgWhite: [47, defaultBG],
-  framed: [51, 54],
-  overlined: [53, 55],
-  gray: [90, defaultFG], // Alias: grey, blackBright
-  redBright: [91, defaultFG],
-  greenBright: [92, defaultFG],
-  yellowBright: [93, defaultFG],
-  blueBright: [94, defaultFG],
-  magentaBright: [95, defaultFG],
-  cyanBright: [96, defaultFG],
-  whiteBright: [97, defaultFG],
-  bgGray: [100, defaultBG], // Alias: bgGrey, bgBlackBright
-  bgRedBright: [101, defaultBG],
-  bgGreenBright: [102, defaultBG],
-  bgYellowBright: [103, defaultBG],
-  bgBlueBright: [104, defaultBG],
-  bgMagentaBright: [105, defaultBG],
-  bgCyanBright: [106, defaultBG],
-  bgWhiteBright: [107, defaultBG],
-};
-
-function defineColorAlias(target, alias) {
-  ObjectDefineProperty(inspect.colors, alias, {
-    __proto__: null,
-    get() {
-      return this[target];
-    },
-    set(value) {
-      this[target] = value;
-    },
-    configurable: true,
-    enumerable: false,
-  });
-}
-
-defineColorAlias('gray', 'grey');
-defineColorAlias('gray', 'blackBright');
-defineColorAlias('bgGray', 'bgGrey');
-defineColorAlias('bgGray', 'bgBlackBright');
-defineColorAlias('dim', 'faint');
-defineColorAlias('strikethrough', 'crossedout');
-defineColorAlias('strikethrough', 'strikeThrough');
-defineColorAlias('strikethrough', 'crossedOut');
-defineColorAlias('hidden', 'conceal');
-defineColorAlias('inverse', 'swapColors');
-defineColorAlias('inverse', 'swapcolors');
-defineColorAlias('doubleunderline', 'doubleUnderline');
-
-// TODO(BridgeAR): Add function style support for more complex styles.
-// Don't use 'blue' not visible on cmd.exe
-inspect.styles = ObjectAssign({ __proto__: null }, {
-  special: 'cyan',
-  number: 'yellow',
-  bigint: 'yellow',
-  boolean: 'yellow',
-  undefined: 'grey',
-  null: 'bold',
-  string: 'green',
-  symbol: 'green',
-  date: 'magenta',
-  // "name": intentionally not styling
-  // TODO(BridgeAR): Highlight regular expressions properly.
-  regexp: 'red',
-  module: 'underline',
-});
-
-function addQuotes(str, quotes) {
-  if (quotes === -1) {
-    return `"${str}"`;
-  }
-  if (quotes === -2) {
-    return `\`${str}\``;
-  }
-  return `'${str}'`;
-}
-
-function escapeFn(str) {
-  const charCode = StringPrototypeCharCodeAt(str);
-  return meta.length > charCode ? meta[charCode] : `\\u${NumberPrototypeToString(charCode, 16)}`;
-}
-
-// Escape control characters, single quotes and the backslash.
-// This is similar to JSON stringify escaping.
-function strEscape(str) {
-  let escapeTest = strEscapeSequencesRegExp;
-  let escapeReplace = strEscapeSequencesReplacer;
-  let singleQuote = 39;
-
-  // Check for double quotes. If not present, do not escape single quotes and
-  // instead wrap the text in double quotes. If double quotes exist, check for
-  // backticks. If they do not exist, use those as fallback instead of the
-  // double quotes.
-  if (StringPrototypeIncludes(str, "'")) {
-    // This invalidates the charCode and therefore can not be matched for
-    // anymore.
-    if (!StringPrototypeIncludes(str, '"')) {
-      singleQuote = -1;
-    } else if (!StringPrototypeIncludes(str, '`') &&
-               !StringPrototypeIncludes(str, '${')) {
-      singleQuote = -2;
-    }
-    if (singleQuote !== 39) {
-      escapeTest = strEscapeSequencesRegExpSingle;
-      escapeReplace = strEscapeSequencesReplacerSingle;
-    }
-  }
-
-  // Some magic numbers that worked out fine while benchmarking with v8 6.0
-  if (str.length < 5000 && RegExpPrototypeExec(escapeTest, str) === null)
-    return addQuotes(str, singleQuote);
-  if (str.length > 100) {
-    str = RegExpPrototypeSymbolReplace(escapeReplace, str, escapeFn);
-    return addQuotes(str, singleQuote);
-  }
-
-  let result = '';
-  let last = 0;
-  for (let i = 0; i < str.length; i++) {
-    const point = StringPrototypeCharCodeAt(str, i);
-    if (point === singleQuote ||
-        point === 92 ||
-        point < 32 ||
-        (point > 126 && point < 160)) {
-      if (last === i) {
-        result += meta[point];
-      } else {
-        result += `${StringPrototypeSlice(str, last, i)}${meta[point]}`;
-      }
-      last = i + 1;
-    } else if (point >= 0xd800 && point <= 0xdfff) {
-      if (point <= 0xdbff && i + 1 < str.length) {
-        const point = StringPrototypeCharCodeAt(str, i + 1);
-        if (point >= 0xdc00 && point <= 0xdfff) {
-          i++;
-          continue;
-        }
-      }
-      result += `${StringPrototypeSlice(str, last, i)}\\u${NumberPrototypeToString(point, 16)}`;
-      last = i + 1;
-    }
-  }
-
-  if (last !== str.length) {
-    result += StringPrototypeSlice(str, last);
-  }
-  return addQuotes(result, singleQuote);
-}
-
-function stylizeWithColor(str, styleType) {
-  const style = inspect.styles[styleType];
-  if (style !== undefined) {
-    const color = inspect.colors[style];
-    if (color !== undefined)
-      return `\u001b[${color[0]}m${str}\u001b[${color[1]}m`;
-  }
-  return str;
-}
-
-function stylizeNoColor(str) {
-  return str;
-}
-
-// Return a new empty array to push in the results of the default formatter.
-function getEmptyFormatArray() {
-  return [];
-}
-
-function isInstanceof(object, proto) {
-  try {
-    return object instanceof proto;
-  } catch {
-    return false;
-  }
-}
-
-// Special-case for some builtin prototypes in case their `constructor` property has been tampered.
-const wellKnownPrototypes = new SafeMap()
-  .set(ArrayPrototype, { name: 'Array', constructor: Array })
-  .set(ArrayBufferPrototype, { name: 'ArrayBuffer', constructor: ArrayBuffer })
-  .set(FunctionPrototype, { name: 'Function', constructor: Function })
-  .set(MapPrototype, { name: 'Map', constructor: Map })
-  .set(SetPrototype, { name: 'Set', constructor: Set })
-  .set(ObjectPrototype, { name: 'Object', constructor: Object })
-  .set(TypedArrayPrototype, { name: 'TypedArray', constructor: TypedArray })
-  .set(RegExpPrototype, { name: 'RegExp', constructor: RegExp })
-  .set(DatePrototype, { name: 'Date', constructor: Date })
-  .set(DataViewPrototype, { name: 'DataView', constructor: DataView })
-
-  .set(ErrorPrototype, { name: 'Error', constructor: Error })
-  .set(AggregateErrorPrototype, { name: 'AggregateError', constructor: AggregateError })
-  .set(RangeErrorPrototype, { name: 'RangeError', constructor: RangeError })
-  .set(TypeErrorPrototype, { name: 'TypeError', constructor: TypeError })
-
-  .set(BooleanPrototype, { name: 'Boolean', constructor: Boolean })
-  .set(NumberPrototype, { name: 'Number', constructor: Number })
-  .set(StringPrototype, { name: 'String', constructor: String })
-  .set(PromisePrototype, { name: 'Promise', constructor: Promise })
-  .set(WeakMapPrototype, { name: 'WeakMap', constructor: WeakMap })
-  .set(WeakSetPrototype, { name: 'WeakSet', constructor: WeakSet });
-
-function getConstructorName(obj, ctx, recurseTimes, protoProps) {
-  let firstProto;
-  const tmp = obj;
-  while (obj || isUndetectableObject(obj)) {
-    const wellKnownPrototypeNameAndConstructor = wellKnownPrototypes.get(obj);
-    if (wellKnownPrototypeNameAndConstructor !== undefined) {
-      const { name, constructor } = wellKnownPrototypeNameAndConstructor;
-      if (FunctionPrototypeSymbolHasInstance(constructor, tmp)) {
-        if (protoProps !== undefined && firstProto !== obj) {
-          addPrototypeProperties(
-            ctx, tmp, firstProto || tmp, recurseTimes, protoProps);
-        }
-        return name;
-      }
-    }
-    const descriptor = ObjectGetOwnPropertyDescriptor(obj, 'constructor');
-    if (descriptor !== undefined &&
-        typeof descriptor.value === 'function' &&
-        descriptor.value.name !== '' &&
-        isInstanceof(tmp, descriptor.value)) {
-      if (protoProps !== undefined &&
-         (firstProto !== obj ||
-         !builtInObjects.has(descriptor.value.name))) {
-        addPrototypeProperties(
-          ctx, tmp, firstProto || tmp, recurseTimes, protoProps);
-      }
-      return String(descriptor.value.name);
-    }
-
-    obj = ObjectGetPrototypeOf(obj);
-    if (firstProto === undefined) {
-      firstProto = obj;
-    }
-  }
-
-  if (firstProto === null) {
-    return null;
-  }
-
-  const res = internalGetConstructorName(tmp);
-
-  if (recurseTimes > ctx.depth && ctx.depth !== null) {
-    return `${res} <Complex prototype>`;
-  }
-
-  const protoConstr = getConstructorName(
-    firstProto, ctx, recurseTimes + 1, protoProps);
-
-  if (protoConstr === null) {
-    return `${res} <${inspect(firstProto, {
-      ...ctx,
-      customInspect: false,
-      depth: -1,
-    })}>`;
-  }
-
-  return `${res} <${protoConstr}>`;
-}
-
-// This function has the side effect of adding prototype properties to the
-// `output` argument (which is an array). This is intended to highlight user
-// defined prototype properties.
-function addPrototypeProperties(ctx, main, obj, recurseTimes, output) {
-  let depth = 0;
-  let keys;
-  let keySet;
-  do {
-    if (depth !== 0 || main === obj) {
-      obj = ObjectGetPrototypeOf(obj);
-      // Stop as soon as a null prototype is encountered.
-      if (obj === null) {
-        return;
-      }
-      // Stop as soon as a built-in object type is detected.
-      const descriptor = ObjectGetOwnPropertyDescriptor(obj, 'constructor');
-      if (descriptor !== undefined &&
-          typeof descriptor.value === 'function' &&
-          builtInObjects.has(descriptor.value.name)) {
-        return;
-      }
-    }
-
-    if (depth === 0) {
-      keySet = new SafeSet();
-    } else {
-      ArrayPrototypeForEach(keys, (key) => keySet.add(key));
-    }
-    // Get all own property names and symbols.
-    keys = ReflectOwnKeys(obj);
-    ArrayPrototypePush(ctx.seen, main);
-    for (const key of keys) {
-      // Ignore the `constructor` property and keys that exist on layers above.
-      if (key === 'constructor' ||
-          ObjectPrototypeHasOwnProperty(main, key) ||
-          (depth !== 0 && keySet.has(key))) {
-        continue;
-      }
-      const desc = ObjectGetOwnPropertyDescriptor(obj, key);
-      if (typeof desc.value === 'function') {
-        continue;
-      }
-      const value = formatProperty(
-        ctx, obj, recurseTimes, key, kObjectType, desc, main);
-      if (ctx.colors) {
-        // Faint!
-        ArrayPrototypePush(output, `\u001b[2m${value}\u001b[22m`);
-      } else {
-        ArrayPrototypePush(output, value);
-      }
-    }
-    ArrayPrototypePop(ctx.seen);
-  // Limit the inspection to up to three prototype layers. Using `recurseTimes`
-  // is not a good choice here, because it's as if the properties are declared
-  // on the current object from the users perspective.
-  } while (++depth !== 3);
-}
-
-/** @type {(constructor: string, tag: string, fallback: string, size?: string) => string} */
-function getPrefix(constructor, tag, fallback, size = '') {
-  if (constructor === null) {
-    if (tag !== '' && fallback !== tag) {
-      return `[${fallback}${size}: null prototype] [${tag}] `;
-    }
-    return `[${fallback}${size}: null prototype] `;
-  }
-
-  let result = `${constructor}${size} `;
-  if (tag !== '') {
-    const position = constructor.indexOf(tag);
-    if (position === -1) {
-      result += `[${tag}] `;
-    } else {
-      const endPos = position + tag.length;
-      if (endPos !== constructor.length &&
-        constructor[endPos] === constructor[endPos].toLowerCase()) {
-        result += `[${tag}] `;
-      }
-    }
-  }
-  return result;
-}
-
-// Look up the keys of the object.
-function getKeys(value, showHidden) {
-  let keys;
-  const symbols = ObjectGetOwnPropertySymbols(value);
-  if (showHidden) {
-    keys = ObjectGetOwnPropertyNames(value);
-    if (symbols.length !== 0)
-      ArrayPrototypePushApply(keys, symbols);
-  } else {
-    // This might throw if `value` is a Module Namespace Object from an
-    // unevaluated module, but we don't want to perform the actual type
-    // check because it's expensive.
-    // TODO(devsnek): track https://github.com/tc39/ecma262/issues/1209
-    // and modify this logic as needed.
-    try {
-      keys = ObjectKeys(value);
-    } catch (err) {
-      assert(isNativeError(err) && err.name === 'ReferenceError' &&
-             isModuleNamespaceObject(value));
-      keys = ObjectGetOwnPropertyNames(value);
-    }
-    if (symbols.length !== 0) {
-      const filter = (key) => ObjectPrototypePropertyIsEnumerable(value, key);
-      ArrayPrototypePushApply(keys, ArrayPrototypeFilter(symbols, filter));
-    }
-  }
-  return keys;
-}
-
-function getCtxStyle(value, constructor, tag) {
-  let fallback = '';
-  if (constructor === null) {
-    fallback = internalGetConstructorName(value);
-    if (fallback === tag) {
-      fallback = 'Object';
-    }
-  }
-  return getPrefix(constructor, tag, fallback);
-}
-
-function formatProxy(ctx, proxy, recurseTimes) {
-  if (recurseTimes > ctx.depth && ctx.depth !== null) {
-    return ctx.stylize('Proxy [Array]', 'special');
-  }
-  recurseTimes += 1;
-  ctx.indentationLvl += 2;
-  const res = [
-    formatValue(ctx, proxy[0], recurseTimes),
-    formatValue(ctx, proxy[1], recurseTimes),
-  ];
-  ctx.indentationLvl -= 2;
-  return reduceToSingleString(
-    ctx, res, '', ['Proxy [', ']'], kArrayExtrasType, recurseTimes);
-}
-
-// Note: using `formatValue` directly requires the indentation level to be
-// corrected by setting `ctx.indentationLvL += diff` and then to decrease the
-// value afterwards again.
-function formatValue(ctx, value, recurseTimes, typedArray) {
-  // Primitive types cannot have properties.
-  if (typeof value !== 'object' &&
-      typeof value !== 'function' &&
-      !isUndetectableObject(value)) {
-    return formatPrimitive(ctx.stylize, value, ctx);
-  }
-  if (value === null) {
-    return ctx.stylize('null', 'null');
-  }
-
-  // Memorize the context for custom inspection on proxies.
-  const context = value;
-  // Always check for proxies to prevent side effects and to prevent triggering
-  // any proxy handlers.
-  const proxy = getProxyDetails(value, !!ctx.showProxy);
-  if (proxy !== undefined) {
-    if (proxy === null || proxy[0] === null) {
-      return ctx.stylize('<Revoked Proxy>', 'special');
-    }
-    if (ctx.showProxy) {
-      return formatProxy(ctx, proxy, recurseTimes);
-    }
-    value = proxy;
-  }
-
-  // Provide a hook for user-specified inspect functions.
-  // Check that value is an object with an inspect function on it.
-  if (ctx.customInspect) {
-    const maybeCustom = value[customInspectSymbol];
-    if (typeof maybeCustom === 'function' &&
-        // Filter out the util module, its inspect function is special.
-        maybeCustom !== inspect &&
-        // Also filter out any prototype objects using the circular check.
-        ObjectGetOwnPropertyDescriptor(value, 'constructor')?.value?.prototype !== value) {
-      // This makes sure the recurseTimes are reported as before while using
-      // a counter internally.
-      const depth = ctx.depth === null ? null : ctx.depth - recurseTimes;
-      const isCrossContext =
-        proxy !== undefined || !FunctionPrototypeSymbolHasInstance(Object, context);
-      const ret = FunctionPrototypeCall(
-        maybeCustom,
-        context,
-        depth,
-        getUserOptions(ctx, isCrossContext),
-        inspect,
-      );
-      // If the custom inspection method returned `this`, don't go into
-      // infinite recursion.
-      if (ret !== context) {
-        if (typeof ret !== 'string') {
-          return formatValue(ctx, ret, recurseTimes);
-        }
-        return StringPrototypeReplaceAll(ret, '\n', `\n${StringPrototypeRepeat(' ', ctx.indentationLvl)}`);
-      }
-    }
-  }
-
-  // Using an array here is actually better for the average case than using
-  // a Set. `seen` will only check for the depth and will never grow too large.
-  if (ctx.seen.includes(value)) {
-    let index = 1;
-    if (ctx.circular === undefined) {
-      ctx.circular = new SafeMap();
-      ctx.circular.set(value, index);
-    } else {
-      index = ctx.circular.get(value);
-      if (index === undefined) {
-        index = ctx.circular.size + 1;
-        ctx.circular.set(value, index);
-      }
-    }
-    return ctx.stylize(`[Circular *${index}]`, 'special');
-  }
-
-  return formatRaw(ctx, value, recurseTimes, typedArray);
-}
-
-function formatRaw(ctx, value, recurseTimes, typedArray) {
-  let keys;
-  let protoProps;
-  if (ctx.showHidden && (recurseTimes <= ctx.depth || ctx.depth === null)) {
-    protoProps = [];
-  }
-
-  const constructor = getConstructorName(value, ctx, recurseTimes, protoProps);
-  // Reset the variable to check for this later on.
-  if (protoProps !== undefined && protoProps.length === 0) {
-    protoProps = undefined;
-  }
-
-  let tag = value[SymbolToStringTag];
-  // Only list the tag in case it's non-enumerable / not an own property.
-  // Otherwise we'd print this twice.
-  if (typeof tag !== 'string' ||
-      (tag !== '' &&
-      (ctx.showHidden ?
-        ObjectPrototypeHasOwnProperty :
-        ObjectPrototypePropertyIsEnumerable)(
-        value, SymbolToStringTag,
-      ))) {
-    tag = '';
-  }
-  let base = '';
-  let formatter = getEmptyFormatArray;
-  let braces;
-  let noIterator = true;
-  let i = 0;
-  const filter = ctx.showHidden ? ALL_PROPERTIES : ONLY_ENUMERABLE;
-
-  let extrasType = kObjectType;
-  let extraKeys;
-
-  // Iterators and the rest are split to reduce checks.
-  // We have to check all values in case the constructor is set to null.
-  // Otherwise it would not possible to identify all types properly.
-  if (SymbolIterator in value || constructor === null) {
-    noIterator = false;
-    if (ArrayIsArray(value)) {
-      // Only set the constructor for non ordinary ("Array [...]") arrays.
-      const prefix = (constructor !== 'Array' || tag !== '') ?
-        getPrefix(constructor, tag, 'Array', `(${value.length})`) :
-        '';
-      keys = getOwnNonIndexProperties(value, filter);
-      braces = [`${prefix}[`, ']'];
-      if (value.length === 0 && keys.length === 0 && protoProps === undefined)
-        return `${braces[0]}]`;
-      extrasType = kArrayExtrasType;
-      formatter = formatArray;
-    } else if (isSet(value)) {
-      const size = SetPrototypeGetSize(value);
-      const prefix = getPrefix(constructor, tag, 'Set', `(${size})`);
-      keys = getKeys(value, ctx.showHidden);
-      formatter = constructor !== null ?
-        FunctionPrototypeBind(formatSet, null, value) :
-        FunctionPrototypeBind(formatSet, null, SetPrototypeValues(value));
-      if (size === 0 && keys.length === 0 && protoProps === undefined)
-        return `${prefix}{}`;
-      braces = [`${prefix}{`, '}'];
-    } else if (isMap(value)) {
-      const size = MapPrototypeGetSize(value);
-      const prefix = getPrefix(constructor, tag, 'Map', `(${size})`);
-      keys = getKeys(value, ctx.showHidden);
-      formatter = constructor !== null ?
-        FunctionPrototypeBind(formatMap, null, value) :
-        FunctionPrototypeBind(formatMap, null, MapPrototypeEntries(value));
-      if (size === 0 && keys.length === 0 && protoProps === undefined)
-        return `${prefix}{}`;
-      braces = [`${prefix}{`, '}'];
-    } else if (isTypedArray(value)) {
-      keys = getOwnNonIndexProperties(value, filter);
-      let bound = value;
-      let fallback = '';
-      if (constructor === null) {
-        fallback = TypedArrayPrototypeGetSymbolToStringTag(value);
-        // Reconstruct the array information.
-        bound = new primordials[fallback](value);
-      }
-      const size = TypedArrayPrototypeGetLength(value);
-      const prefix = getPrefix(constructor, tag, fallback, `(${size})`);
-      braces = [`${prefix}[`, ']'];
-      if (value.length === 0 && keys.length === 0 && !ctx.showHidden)
-        return `${braces[0]}]`;
-      // Special handle the value. The original value is required below. The
-      // bound function is required to reconstruct missing information.
-      formatter = FunctionPrototypeBind(formatTypedArray, null, bound, size);
-      extrasType = kArrayExtrasType;
-
-      if (ctx.showHidden) {
-        extraKeys = ['BYTES_PER_ELEMENT', 'length', 'byteLength', 'byteOffset', 'buffer'];
-        typedArray = true;
-      }
-    } else if (isMapIterator(value)) {
-      keys = getKeys(value, ctx.showHidden);
-      braces = getIteratorBraces('Map', tag);
-      // Add braces to the formatter parameters.
-      formatter = FunctionPrototypeBind(formatIterator, null, braces);
-    } else if (isSetIterator(value)) {
-      keys = getKeys(value, ctx.showHidden);
-      braces = getIteratorBraces('Set', tag);
-      // Add braces to the formatter parameters.
-      formatter = FunctionPrototypeBind(formatIterator, null, braces);
-    } else {
-      noIterator = true;
-    }
-  }
-  if (noIterator) {
-    keys = getKeys(value, ctx.showHidden);
-    braces = ['{', '}'];
-    if (typeof value === 'function') {
-      base = getFunctionBase(ctx, value, constructor, tag);
-      if (keys.length === 0 && protoProps === undefined)
-        return ctx.stylize(base, 'special');
-    } else if (constructor === 'Object') {
-      if (isArgumentsObject(value)) {
-        braces[0] = '[Arguments] {';
-      } else if (tag !== '') {
-        braces[0] = `${getPrefix(constructor, tag, 'Object')}{`;
-      }
-      if (keys.length === 0 && protoProps === undefined) {
-        return `${braces[0]}}`;
-      }
-    } else if (isRegExp(value)) {
-      // Make RegExps say that they are RegExps
-      base = RegExpPrototypeToString(
-        constructor !== null ? value : new RegExp(value),
-      );
-      const prefix = getPrefix(constructor, tag, 'RegExp');
-      if (prefix !== 'RegExp ')
-        base = `${prefix}${base}`;
-      if ((keys.length === 0 && protoProps === undefined) ||
-          (recurseTimes > ctx.depth && ctx.depth !== null)) {
-        return ctx.stylize(base, 'regexp');
-      }
-    } else if (isDate(value)) {
-      // Make dates with properties first say the date
-      base = NumberIsNaN(DatePrototypeGetTime(value)) ?
-        DatePrototypeToString(value) :
-        DatePrototypeToISOString(value);
-      const prefix = getPrefix(constructor, tag, 'Date');
-      if (prefix !== 'Date ')
-        base = `${prefix}${base}`;
-      if (keys.length === 0 && protoProps === undefined) {
-        return ctx.stylize(base, 'date');
-      }
-    } else if (isError(value)) {
-      base = formatError(value, constructor, tag, ctx, keys);
-      if (keys.length === 0 && protoProps === undefined)
-        return base;
-    } else if (isAnyArrayBuffer(value)) {
-      // Fast path for ArrayBuffer and SharedArrayBuffer.
-      // Can't do the same for DataView because it has a non-primitive
-      // .buffer property that we need to recurse for.
-      const arrayType = isArrayBuffer(value) ? 'ArrayBuffer' :
-        'SharedArrayBuffer';
-      const prefix = getPrefix(constructor, tag, arrayType);
-      if (typedArray === undefined) {
-        formatter = formatArrayBuffer;
-      } else if (keys.length === 0 && protoProps === undefined) {
-        return prefix +
-              `{ [byteLength]: ${formatNumber(ctx.stylize, value.byteLength, false)} }`;
-      }
-      braces[0] = `${prefix}{`;
-      extraKeys = ['byteLength'];
-    } else if (isDataView(value)) {
-      braces[0] = `${getPrefix(constructor, tag, 'DataView')}{`;
-      // .buffer goes last, it's not a primitive like the others.
-      extraKeys = ['byteLength', 'byteOffset', 'buffer'];
-    } else if (isPromise(value)) {
-      braces[0] = `${getPrefix(constructor, tag, 'Promise')}{`;
-      formatter = formatPromise;
-    } else if (isWeakSet(value)) {
-      braces[0] = `${getPrefix(constructor, tag, 'WeakSet')}{`;
-      formatter = ctx.showHidden ? formatWeakSet : formatWeakCollection;
-    } else if (isWeakMap(value)) {
-      braces[0] = `${getPrefix(constructor, tag, 'WeakMap')}{`;
-      formatter = ctx.showHidden ? formatWeakMap : formatWeakCollection;
-    } else if (isModuleNamespaceObject(value)) {
-      braces[0] = `${getPrefix(constructor, tag, 'Module')}{`;
-      // Special handle keys for namespace objects.
-      formatter = formatNamespaceObject.bind(null, keys);
-    } else if (isBoxedPrimitive(value)) {
-      base = getBoxedBase(value, ctx, keys, constructor, tag);
-      if (keys.length === 0 && protoProps === undefined) {
-        return base;
-      }
-    } else if (isURL(value) && !(recurseTimes > ctx.depth && ctx.depth !== null)) {
-      base = value.href;
-      if (keys.length === 0 && protoProps === undefined) {
-        return base;
-      }
-    } else {
-      if (keys.length === 0 && protoProps === undefined) {
-        if (isExternal(value)) {
-          const address = getExternalValue(value).toString(16);
-          return ctx.stylize(`[External: ${address}]`, 'special');
-        }
-        return `${getCtxStyle(value, constructor, tag)}{}`;
-      }
-      braces[0] = `${getCtxStyle(value, constructor, tag)}{`;
-    }
-  }
-
-  if (recurseTimes > ctx.depth && ctx.depth !== null) {
-    let constructorName = StringPrototypeSlice(getCtxStyle(value, constructor, tag), 0, -1);
-    if (constructor !== null)
-      constructorName = `[${constructorName}]`;
-    return ctx.stylize(constructorName, 'special');
-  }
-  recurseTimes += 1;
-
-  ctx.seen.push(value);
-  ctx.currentDepth = recurseTimes;
-  let output;
-  const indentationLvl = ctx.indentationLvl;
-  try {
-    output = formatter(ctx, value, recurseTimes);
-    if (extraKeys !== undefined) {
-      for (i = 0; i < extraKeys.length; i++) {
-        let formatted;
-        try {
-          formatted = formatExtraProperties(ctx, value, recurseTimes, extraKeys[i], typedArray);
-        } catch {
-          const tempValue = { [extraKeys[i]]: value.buffer[extraKeys[i]] };
-          formatted = formatExtraProperties(ctx, tempValue, recurseTimes, extraKeys[i], typedArray);
-        }
-        ArrayPrototypePush(output, formatted);
-      }
-    }
-    for (i = 0; i < keys.length; i++) {
-      ArrayPrototypePush(
-        output,
-        formatProperty(ctx, value, recurseTimes, keys[i], extrasType),
-      );
-    }
-    if (protoProps !== undefined) {
-      ArrayPrototypePushApply(output, protoProps);
-    }
-  } catch (err) {
-    if (!isStackOverflowError(err)) throw err;
-    const constructorName = StringPrototypeSlice(getCtxStyle(value, constructor, tag), 0, -1);
-    return handleMaxCallStackSize(ctx, err, constructorName, indentationLvl);
-  }
-  if (ctx.circular !== undefined) {
-    const index = ctx.circular.get(value);
-    if (index !== undefined) {
-      const reference = ctx.stylize(`<ref *${index}>`, 'special');
-      // Add reference always to the very beginning of the output.
-      if (ctx.compact !== true) {
-        base = base === '' ? reference : `${reference} ${base}`;
-      } else {
-        braces[0] = `${reference} ${braces[0]}`;
-      }
-    }
-  }
-  ctx.seen.pop();
-
-  if (ctx.sorted) {
-    const comparator = ctx.sorted === true ? undefined : ctx.sorted;
-    if (extrasType === kObjectType) {
-      ArrayPrototypeSort(output, comparator);
-    } else if (keys.length > 1) {
-      const sorted = ArrayPrototypeSort(ArrayPrototypeSlice(output, output.length - keys.length), comparator);
-      ArrayPrototypeUnshift(sorted, output, output.length - keys.length, keys.length);
-      ReflectApply(ArrayPrototypeSplice, null, sorted);
-    }
-  }
-
-  const res = reduceToSingleString(
-    ctx, output, base, braces, extrasType, recurseTimes, value);
-  const budget = ctx.budget[ctx.indentationLvl] || 0;
-  const newLength = budget + res.length;
-  ctx.budget[ctx.indentationLvl] = newLength;
-  // If any indentationLvl exceeds this limit, limit further inspecting to the
-  // minimum. Otherwise the recursive algorithm might continue inspecting the
-  // object even though the maximum string size (~2 ** 28 on 32 bit systems and
-  // ~2 ** 30 on 64 bit systems) exceeded. The actual output is not limited at
-  // exactly 2 ** 27 but a bit higher. This depends on the object shape.
-  // This limit also makes sure that huge objects don't block the event loop
-  // significantly.
-  if (newLength > 2 ** 27) {
-    ctx.depth = -1;
-  }
-  return res;
-}
-
-function getIteratorBraces(type, tag) {
-  if (tag !== `${type} Iterator`) {
-    if (tag !== '')
-      tag += '] [';
-    tag += `${type} Iterator`;
-  }
-  return [`[${tag}] {`, '}'];
-}
-
-function getBoxedBase(value, ctx, keys, constructor, tag) {
-  let fn;
-  let type;
-  if (isNumberObject(value)) {
-    fn = NumberPrototypeValueOf;
-    type = 'Number';
-  } else if (isStringObject(value)) {
-    fn = StringPrototypeValueOf;
-    type = 'String';
-    // For boxed Strings, we have to remove the 0-n indexed entries,
-    // since they just noisy up the output and are redundant
-    // Make boxed primitive Strings look like such
-    keys.splice(0, value.length);
-  } else if (isBooleanObject(value)) {
-    fn = BooleanPrototypeValueOf;
-    type = 'Boolean';
-  } else if (isBigIntObject(value)) {
-    fn = BigIntPrototypeValueOf;
-    type = 'BigInt';
-  } else {
-    fn = SymbolPrototypeValueOf;
-    type = 'Symbol';
-  }
-  let base = `[${type}`;
-  if (type !== constructor) {
-    if (constructor === null) {
-      base += ' (null prototype)';
-    } else {
-      base += ` (${constructor})`;
-    }
-  }
-  base += `: ${formatPrimitive(stylizeNoColor, fn(value), ctx)}]`;
-  if (tag !== '' && tag !== constructor) {
-    base += ` [${tag}]`;
-  }
-  if (keys.length !== 0 || ctx.stylize === stylizeNoColor)
-    return base;
-  return ctx.stylize(base, StringPrototypeToLowerCase(type));
-}
-
-function getClassBase(value, constructor, tag) {
-  const hasName = ObjectPrototypeHasOwnProperty(value, 'name');
-  const name = (hasName && value.name) || '(anonymous)';
-  let base = `class ${name}`;
-  if (constructor !== 'Function' && constructor !== null) {
-    base += ` [${constructor}]`;
-  }
-  if (tag !== '' && constructor !== tag) {
-    base += ` [${tag}]`;
-  }
-  if (constructor !== null) {
-    const superName = ObjectGetPrototypeOf(value).name;
-    if (superName) {
-      base += ` extends ${superName}`;
-    }
-  } else {
-    base += ' extends [null prototype]';
-  }
-  return `[${base}]`;
-}
-
-function getFunctionBase(ctx, value, constructor, tag) {
-  const stringified = FunctionPrototypeToString(value);
-  if (StringPrototypeStartsWith(stringified, 'class') && stringified[stringified.length - 1] === '}') {
-    const slice = StringPrototypeSlice(stringified, 5, -1);
-    const bracketIndex = StringPrototypeIndexOf(slice, '{');
-    if (bracketIndex !== -1 &&
-        (!StringPrototypeIncludes(StringPrototypeSlice(slice, 0, bracketIndex), '(') ||
-        // Slow path to guarantee that it's indeed a class.
-        RegExpPrototypeExec(classRegExp, RegExpPrototypeSymbolReplace(stripCommentsRegExp, slice)) !== null)
-    ) {
-      return getClassBase(value, constructor, tag);
-    }
-  }
-  let type = 'Function';
-  if (isGeneratorFunction(value)) {
-    type = `Generator${type}`;
-  }
-  if (isAsyncFunction(value)) {
-    type = `Async${type}`;
-  }
-  let base = `[${type}`;
-  if (constructor === null) {
-    base += ' (null prototype)';
-  }
-  if (value.name === '') {
-    base += ' (anonymous)';
-  } else {
-    base += `: ${typeof value.name === 'string' ? value.name : formatValue(ctx, value.name)}`;
-  }
-  base += ']';
-  if (constructor !== type && constructor !== null) {
-    base += ` ${constructor}`;
-  }
-  if (tag !== '' && constructor !== tag) {
-    base += ` [${tag}]`;
-  }
-  return base;
-}
-
-function identicalSequenceRange(a, b) {
-  for (let i = 0; i < a.length - 3; i++) {
-    // Find the first entry of b that matches the current entry of a.
-    const pos = ArrayPrototypeIndexOf(b, a[i]);
-    if (pos !== -1) {
-      const rest = b.length - pos;
-      if (rest > 3) {
-        let len = 1;
-        const maxLen = MathMin(a.length - i, rest);
-        // Count the number of consecutive entries.
-        while (maxLen > len && a[i + len] === b[pos + len]) {
-          len++;
-        }
-        if (len > 3) {
-          return [len, i];
-        }
-      }
-    }
-  }
-
-  return [0, 0];
-}
-
-function getDuplicateErrorFrameRanges(frames) {
-  // Build a map: frame line -> sorted list of indices where it occurs
-  const result = [];
-  const lineToPositions = new SafeMap();
-
-  for (let i = 0; i < frames.length; i++) {
-    const positions = lineToPositions.get(frames[i]);
-    if (positions === undefined) {
-      lineToPositions.set(frames[i], [i]);
-    } else {
-      positions[positions.length] = i;
-    }
-  }
-
-  const minimumDuplicateRange = 3;
-  // Not enough duplicate lines to consider collapsing
-  if (frames.length - lineToPositions.size <= minimumDuplicateRange) {
-    return result;
-  }
-
-  for (let i = 0; i < frames.length - minimumDuplicateRange; i++) {
-    const positions = lineToPositions.get(frames[i]);
-    // Find the next occurrence of the same line after i, if any
-    if (positions.length === 1 || positions[positions.length - 1] === i) {
-      continue;
-    }
-
-    const current = positions.indexOf(i) + 1;
-    if (current === positions.length) {
-      continue;
-    }
-
-    // Theoretical maximum range, adjusted while iterating
-    let range = positions[positions.length - 1] - i;
-    if (range < minimumDuplicateRange) {
-      continue;
-    }
-    let extraSteps;
-    if (current + 1 < positions.length) {
-      // Optimize initial step size by choosing the greatest common divisor (GCD)
-      // of all candidate distances to the same frame line. This tends to match
-      // the true repeating block size and minimizes fallback iterations.
-      let gcdRange = 0;
-      for (let j = current; j < positions.length; j++) {
-        let distance = positions[j] - i;
-        while (distance !== 0) {
-          const remainder = gcdRange % distance;
-          if (gcdRange !== 0) {
-            // Add other possible ranges as fallback
-            extraSteps ??= new SafeSet();
-            extraSteps.add(gcdRange);
-          }
-          gcdRange = distance;
-          distance = remainder;
-        }
-        if (gcdRange === 1) break;
-      }
-      range = gcdRange;
-      if (extraSteps) {
-        extraSteps.delete(range);
-        extraSteps = [...extraSteps];
-      }
-    }
-    let maxRange = range;
-    let maxDuplicates = 0;
-
-    let duplicateRanges = 0;
-
-    for (let nextStart = i + range; /* ignored */ ; nextStart += range) {
-      let equalFrames = 0;
-      for (let j = 0; j < range; j++) {
-        if (frames[i + j] !== frames[nextStart + j]) {
-          break;
-        }
-        equalFrames++;
-      }
-      // Adjust the range to match different type of ranges.
-      if (equalFrames !== range) {
-        if (!extraSteps?.length) {
-          break;
-        }
-        // Memorize former range in case the smaller one would hide less.
-        if (duplicateRanges !== 0 && maxRange * maxDuplicates < range * duplicateRanges) {
-          maxRange = range;
-          maxDuplicates = duplicateRanges;
-        }
-        range = extraSteps.pop();
-        nextStart = i;
-        duplicateRanges = 0;
-        continue;
-      }
-      duplicateRanges++;
-    }
-
-    if (maxDuplicates !== 0 && maxRange * maxDuplicates >= range * duplicateRanges) {
-      range = maxRange;
-      duplicateRanges = maxDuplicates;
-    }
-
-    if (duplicateRanges * range >= 3) {
-      result.push(i + range, range, duplicateRanges);
-      // Skip over the collapsed portion to avoid overlapping matches.
-      i += range * (duplicateRanges + 1) - 1;
-    }
-  }
-
-  return result;
-}
-
-function getStackString(ctx, error) {
-  let stack;
-  try {
-    stack = error.stack;
-  } catch {
-    // If stack is getter that throws, we ignore the error.
-  }
-  if (stack) {
-    if (typeof stack === 'string') {
-      return stack;
-    }
-    ctx.seen.push(error);
-    ctx.indentationLvl += 4;
-    const result = formatValue(ctx, stack);
-    ctx.indentationLvl -= 4;
-    ctx.seen.pop();
-    return `${ErrorPrototypeToString(error)}\n    ${result}`;
-  }
-  return ErrorPrototypeToString(error);
-}
-
-function getStackFrames(ctx, err, stack) {
-  const frames = StringPrototypeSplit(stack, '\n');
-
-  let cause;
-  try {
-    ({ cause } = err);
-  } catch {
-    // If 'cause' is a getter that throws, ignore it.
-  }
-
-  // Remove stack frames identical to frames in cause.
-  if (cause != null && isError(cause)) {
-    const causeStack = getStackString(ctx, cause);
-    const causeStackStart = StringPrototypeIndexOf(causeStack, '\n    at');
-    if (causeStackStart !== -1) {
-      const causeFrames = StringPrototypeSplit(StringPrototypeSlice(causeStack, causeStackStart + 1), '\n');
-      const { 0: len, 1: offset } = identicalSequenceRange(frames, causeFrames);
-      if (len > 0) {
-        const skipped = len - 2;
-        const msg = `    ... ${skipped} lines matching cause stack trace ...`;
-        frames.splice(offset + 1, skipped, ctx.stylize(msg, 'undefined'));
-      }
-    }
-  }
-
-  // Remove recursive repetitive stack frames in long stacks
-  if (frames.length > 10) {
-    const ranges = getDuplicateErrorFrameRanges(frames);
-
-    for (let i = ranges.length - 3; i >= 0; i -= 3) {
-      const offset = ranges[i];
-      const length = ranges[i + 1];
-      const duplicateRanges = ranges[i + 2];
-
-      const msg = `    ... collapsed ${length * duplicateRanges} duplicate lines ` +
-        'matching above ' +
-        (duplicateRanges > 1 ?
-          `${length} lines ${duplicateRanges} times...` :
-          'lines ...');
-      frames.splice(offset, length * duplicateRanges, ctx.stylize(msg, 'undefined'));
-    }
-  }
-
-  return frames;
-}
-
-/** @type {(stack: string, constructor: string | null, name: unknown, tag: string) => string} */
-function improveStack(stack, constructor, name, tag) {
-  // A stack trace may contain arbitrary data. Only manipulate the output
-  // for "regular errors" (errors that "look normal") for now.
-  let len = name.length;
-
-  if (typeof name !== 'string') {
-    stack = StringPrototypeReplace(
-      stack,
-      `${name}`,
-      `${name} [${StringPrototypeSlice(getPrefix(constructor, tag, 'Error'), 0, -1)}]`,
-    );
-  }
-
-  if (constructor === null ||
-      (StringPrototypeEndsWith(name, 'Error') &&
-      StringPrototypeStartsWith(stack, name) &&
-      (stack.length === len || stack[len] === ':' || stack[len] === '\n'))) {
-    let fallback = 'Error';
-    if (constructor === null) {
-      const start = RegExpPrototypeExec(/^([A-Z][a-z_ A-Z0-9[\]()-]+)(?::|\n {4}at)/, stack) ||
-      RegExpPrototypeExec(/^([a-z_A-Z0-9-]*Error)$/, stack);
-      fallback = (start?.[1]) || '';
-      len = fallback.length;
-      fallback ||= 'Error';
-    }
-    const prefix = StringPrototypeSlice(getPrefix(constructor, tag, fallback), 0, -1);
-    if (name !== prefix) {
-      if (StringPrototypeIncludes(prefix, name)) {
-        if (len === 0) {
-          stack = `${prefix}: ${stack}`;
-        } else {
-          stack = `${prefix}${StringPrototypeSlice(stack, len)}`;
-        }
-      } else {
-        stack = `${prefix} [${name}]${StringPrototypeSlice(stack, len)}`;
-      }
-    }
-  }
-  return stack;
-}
-
-function markNodeModules(ctx, line) {
-  let tempLine = '';
-  let lastPos = 0;
-  let searchFrom = 0;
-
-  while (true) {
-    const nodeModulePosition = StringPrototypeIndexOf(line, 'node_modules', searchFrom);
-    if (nodeModulePosition === -1) {
-      break;
-    }
-
-    // Ensure it's a path segment: must have a path separator before and after
-    const separator = line[nodeModulePosition - 1];
-    const after = line[nodeModulePosition + 12]; // 'node_modules'.length === 12
-
-    if ((after !== '/' && after !== '\\') || (separator !== '/' && separator !== '\\')) {
-      // Not a proper segment; continue searching
-      searchFrom = nodeModulePosition + 1;
-      continue;
-    }
-
-    const moduleStart = nodeModulePosition + 13; // Include trailing separator
-
-    // Append up to and including '/node_modules/'
-    tempLine += StringPrototypeSlice(line, lastPos, moduleStart);
-
-    let moduleEnd = StringPrototypeIndexOf(line, separator, moduleStart);
-    if (line[moduleStart] === '@') {
-      // Namespaced modules have an extra slash: @namespace/package
-      moduleEnd = StringPrototypeIndexOf(line, separator, moduleEnd + 1);
-    }
-
-    const nodeModule = StringPrototypeSlice(line, moduleStart, moduleEnd);
-    tempLine += ctx.stylize(nodeModule, 'module');
-
-    lastPos = moduleEnd;
-    searchFrom = moduleEnd;
-  }
-
-  if (lastPos !== 0) {
-    line = tempLine + StringPrototypeSlice(line, lastPos);
-  }
-  return line;
-}
-
-function markCwd(ctx, line, workingDirectory) {
-  let cwdStartPos = StringPrototypeIndexOf(line, workingDirectory);
-  let tempLine = '';
-  let cwdLength = workingDirectory.length;
-  if (cwdStartPos !== -1) {
-    if (StringPrototypeSlice(line, cwdStartPos - 7, cwdStartPos) === 'file://') {
-      cwdLength += 7;
-      cwdStartPos -= 7;
-    }
-    const start = line[cwdStartPos - 1] === '(' ? cwdStartPos - 1 : cwdStartPos;
-    const end = start !== cwdStartPos && StringPrototypeEndsWith(line, ')') ? -1 : line.length;
-    const workingDirectoryEndPos = cwdStartPos + cwdLength + 1;
-    const cwdSlice = StringPrototypeSlice(line, start, workingDirectoryEndPos);
-
-    tempLine += StringPrototypeSlice(line, 0, start);
-    tempLine += ctx.stylize(cwdSlice, 'undefined');
-    tempLine += StringPrototypeSlice(line, workingDirectoryEndPos, end);
-    if (end === -1) {
-      tempLine += ctx.stylize(')', 'undefined');
-    }
-  } else {
-    tempLine += line;
-  }
-  return tempLine;
-}
-
-function safeGetCWD() {
-  let workingDirectory;
-  try {
-    workingDirectory = process.cwd();
-  } catch {
-    return;
-  }
-  return workingDirectory;
-}
-
-function formatError(err, constructor, tag, ctx, keys) {
-  let message, name, stack;
-  try {
-    stack = getStackString(ctx, err);
-  } catch {
-    return ObjectPrototypeToString(err);
-  }
-
-  let messageIsGetterThatThrows = false;
-  try {
-    message = err.message;
-  } catch {
-    messageIsGetterThatThrows = true;
-  }
-  let nameIsGetterThatThrows = false;
-  try {
-    name = err.name;
-  } catch {
-    nameIsGetterThatThrows = true;
-  }
-
-  if (!ctx.showHidden && keys.length !== 0) {
-    const index = ArrayPrototypeIndexOf(keys, 'stack');
-    if (index !== -1) {
-      ArrayPrototypeSplice(keys, index, 1);
-    }
-
-    if (!messageIsGetterThatThrows) {
-      const index = ArrayPrototypeIndexOf(keys, 'message');
-      // Only hide the property if it's a string and if it's part of the original stack
-      if (index !== -1 && (typeof message !== 'string' || StringPrototypeIncludes(stack, message))) {
-        ArrayPrototypeSplice(keys, index, 1);
-      }
-    }
-
-    if (!nameIsGetterThatThrows) {
-      const index = ArrayPrototypeIndexOf(keys, 'name');
-      // Only hide the property if it's a string and if it's part of the original stack
-      if (index !== -1 && (typeof name !== 'string' || StringPrototypeIncludes(stack, name))) {
-        ArrayPrototypeSplice(keys, index, 1);
-      }
-    }
-  }
-  name ??= 'Error';
-
-  if (ObjectPrototypeHasOwnProperty(err, 'cause') &&
-      (keys.length === 0 || !ArrayPrototypeIncludes(keys, 'cause'))) {
-    ArrayPrototypePush(keys, 'cause');
-  }
-
-  // Print errors aggregated into AggregateError
-  try {
-    const errors = err.errors;
-    if (ArrayIsArray(errors) && ObjectPrototypeHasOwnProperty(err, 'errors') &&
-      (keys.length === 0 || !ArrayPrototypeIncludes(keys, 'errors'))) {
-      ArrayPrototypePush(keys, 'errors');
-    }
-  } catch {
-    // If errors is a getter that throws, we ignore the error.
-  }
-
-  stack = improveStack(stack, constructor, name, tag);
-
-  // Ignore the error message if it's contained in the stack.
-  let pos = (message && StringPrototypeIndexOf(stack, message)) || -1;
-  if (pos !== -1)
-    pos += message.length;
-  // Wrap the error in brackets in case it has no stack trace.
-  const stackStart = StringPrototypeIndexOf(stack, '\n    at', pos);
-  if (stackStart === -1) {
-    stack = `[${stack}]`;
-  } else {
-    let newStack = StringPrototypeSlice(stack, 0, stackStart);
-    const stackFramePart = StringPrototypeSlice(stack, stackStart + 1);
-    const lines = getStackFrames(ctx, err, stackFramePart);
-    if (ctx.colors) {
-      // Highlight userland code and node modules.
-      const workingDirectory = safeGetCWD();
-      let esmWorkingDirectory;
-      for (let line of lines) {
-        const core = RegExpPrototypeExec(coreModuleRegExp, line);
-        if (core !== null && BuiltinModule.exists(core[1])) {
-          newStack += `\n${ctx.stylize(line, 'undefined')}`;
-        } else {
-          newStack += '\n';
-
-          line = markNodeModules(ctx, line);
-          if (workingDirectory !== undefined) {
-            let newLine = markCwd(ctx, line, workingDirectory);
-            if (newLine === line) {
-              esmWorkingDirectory ??= pathToFileUrlHref(workingDirectory);
-              newLine = markCwd(ctx, line, esmWorkingDirectory);
-            }
-            line = newLine;
-          }
-
-          newStack += line;
-        }
-      }
-    } else {
-      newStack += `\n${ArrayPrototypeJoin(lines, '\n')}`;
-    }
-    stack = newStack;
-  }
-  // The message and the stack have to be indented as well!
-  if (ctx.indentationLvl !== 0) {
-    const indentation = StringPrototypeRepeat(' ', ctx.indentationLvl);
-    stack = StringPrototypeReplaceAll(stack, '\n', `\n${indentation}`);
-  }
-  return stack;
-}
-
-function groupArrayElements(ctx, output, value) {
-  let totalLength = 0;
-  let maxLength = 0;
-  let i = 0;
-  let outputLength = output.length;
-  if (ctx.maxArrayLength < output.length) {
-    // This makes sure the "... n more items" part is not taken into account.
-    outputLength--;
-  }
-  const separatorSpace = 2; // Add 1 for the space and 1 for the separator.
-  const dataLen = new Array(outputLength);
-  // Calculate the total length of all output entries and the individual max
-  // entries length of all output entries. We have to remove colors first,
-  // otherwise the length would not be calculated properly.
-  for (; i < outputLength; i++) {
-    const len = getStringWidth(output[i], ctx.colors);
-    dataLen[i] = len;
-    totalLength += len + separatorSpace;
-    if (maxLength < len)
-      maxLength = len;
-  }
-  // Add two to `maxLength` as we add a single whitespace character plus a comma
-  // in-between two entries.
-  const actualMax = maxLength + separatorSpace;
-  // Check if at least three entries fit next to each other and prevent grouping
-  // of arrays that contains entries of very different length (i.e., if a single
-  // entry is longer than 1/5 of all other entries combined). Otherwise the
-  // space in-between small entries would be enormous.
-  if (actualMax * 3 + ctx.indentationLvl < ctx.breakLength &&
-      (totalLength / actualMax > 5 || maxLength <= 6)) {
-
-    const approxCharHeights = 2.5;
-    const averageBias = MathSqrt(actualMax - totalLength / output.length);
-    const biasedMax = MathMax(actualMax - 3 - averageBias, 1);
-    // Dynamically check how many columns seem possible.
-    const columns = MathMin(
-      // Ideally a square should be drawn. We expect a character to be about 2.5
-      // times as high as wide. This is the area formula to calculate a square
-      // which contains n rectangles of size `actualMax * approxCharHeights`.
-      // Divide that by `actualMax` to receive the correct number of columns.
-      // The added bias increases the columns for short entries.
-      MathRound(
-        MathSqrt(
-          approxCharHeights * biasedMax * outputLength,
-        ) / biasedMax,
-      ),
-      // Do not exceed the breakLength.
-      MathFloor((ctx.breakLength - ctx.indentationLvl) / actualMax),
-      // Limit array grouping for small `compact` modes as the user requested
-      // minimal grouping.
-      ctx.compact * 4,
-      // Limit the columns to a maximum of fifteen.
-      15,
-    );
-    // Return with the original output if no grouping should happen.
-    if (columns <= 1) {
-      return output;
-    }
-    const tmp = [];
-    const maxLineLength = [];
-    for (let i = 0; i < columns; i++) {
-      let lineMaxLength = 0;
-      for (let j = i; j < output.length; j += columns) {
-        if (dataLen[j] > lineMaxLength)
-          lineMaxLength = dataLen[j];
-      }
-      lineMaxLength += separatorSpace;
-      maxLineLength[i] = lineMaxLength;
-    }
-    let order = StringPrototypePadStart;
-    if (value !== undefined) {
-      for (let i = 0; i < output.length; i++) {
-        if (typeof value[i] !== 'number' && typeof value[i] !== 'bigint') {
-          order = StringPrototypePadEnd;
-          break;
-        }
-      }
-    }
-    // Each iteration creates a single line of grouped entries.
-    for (let i = 0; i < outputLength; i += columns) {
-      // The last lines may contain less entries than columns.
-      const max = MathMin(i + columns, outputLength);
-      let str = '';
-      let j = i;
-      for (; j < max - 1; j++) {
-        // Calculate extra color padding in case it's active. This has to be
-        // done line by line as some lines might contain more colors than
-        // others.
-        const padding = maxLineLength[j - i] + output[j].length - dataLen[j];
-        str += order(`${output[j]}, `, padding, ' ');
-      }
-      if (order === StringPrototypePadStart) {
-        const padding = maxLineLength[j - i] +
-                        output[j].length -
-                        dataLen[j] -
-                        separatorSpace;
-        str += StringPrototypePadStart(output[j], padding, ' ');
-      } else {
-        str += output[j];
-      }
-      ArrayPrototypePush(tmp, str);
-    }
-    if (ctx.maxArrayLength < output.length) {
-      ArrayPrototypePush(tmp, output[outputLength]);
-    }
-    output = tmp;
-  }
-  return output;
-}
-
-function handleMaxCallStackSize(ctx, err, constructorName, indentationLvl) {
-  ctx.seen.pop();
-  ctx.indentationLvl = indentationLvl;
-  return ctx.stylize(
-    `[${constructorName}: Inspection interrupted ` +
-      'prematurely. Maximum call stack size exceeded.]',
-    'special',
-  );
-}
-
-function addNumericSeparator(integerString) {
-  let result = '';
-  let i = integerString.length;
-  assert(i !== 0);
-  const start = integerString[0] === '-' ? 1 : 0;
-  for (; i >= start + 4; i -= 3) {
-    result = `_${StringPrototypeSlice(integerString, i - 3, i)}${result}`;
-  }
-  return i === integerString.length ?
-    integerString :
-    `${StringPrototypeSlice(integerString, 0, i)}${result}`;
-}
-
-function addNumericSeparatorEnd(integerString) {
-  let result = '';
-  let i = 0;
-  for (; i < integerString.length - 3; i += 3) {
-    result += `${StringPrototypeSlice(integerString, i, i + 3)}_`;
-  }
-  return i === 0 ?
-    integerString :
-    `${result}${StringPrototypeSlice(integerString, i)}`;
-}
-
-const remainingText = (remaining) => `... ${remaining} more item${remaining > 1 ? 's' : ''}`;
-
-function formatNumber(fn, number, numericSeparator) {
-  if (!numericSeparator) {
-    // Format -0 as '-0'. Checking `number === -0` won't distinguish 0 from -0.
-    if (ObjectIs(number, -0)) {
-      return fn('-0', 'number');
-    }
-    return fn(`${number}`, 'number');
-  }
-
-  const numberString = String(number);
-  const integer = MathTrunc(number);
-
-  if (integer === number) {
-    if (!NumberIsFinite(number) || StringPrototypeIncludes(numberString, 'e')) {
-      return fn(numberString, 'number');
-    }
-    return fn(addNumericSeparator(numberString), 'number');
-  }
-  if (NumberIsNaN(number)) {
-    return fn(numberString, 'number');
-  }
-
-  const decimalIndex = StringPrototypeIndexOf(numberString, '.');
-  const integerPart = StringPrototypeSlice(numberString, 0, decimalIndex);
-  const fractionalPart = StringPrototypeSlice(numberString, decimalIndex + 1);
-
-  return fn(`${
-    addNumericSeparator(integerPart)
-  }.${
-    addNumericSeparatorEnd(fractionalPart)
-  }`, 'number');
-}
-
-function formatBigInt(fn, bigint, numericSeparator) {
-  const string = String(bigint);
-  if (!numericSeparator) {
-    return fn(`${string}n`, 'bigint');
-  }
-  return fn(`${addNumericSeparator(string)}n`, 'bigint');
-}
-
-function formatPrimitive(fn, value, ctx) {
-  if (typeof value === 'string') {
-    let trailer = '';
-    if (value.length > ctx.maxStringLength) {
-      const remaining = value.length - ctx.maxStringLength;
-      value = StringPrototypeSlice(value, 0, ctx.maxStringLength);
-      trailer = `... ${remaining} more character${remaining > 1 ? 's' : ''}`;
-    }
-    if (ctx.compact !== true &&
-        // We do not support handling unicode characters width with
-        // the readline getStringWidth function as there are
-        // performance implications.
-        value.length > kMinLineLength &&
-        value.length > ctx.breakLength - ctx.indentationLvl - 4) {
-      return ArrayPrototypeJoin(
-        ArrayPrototypeMap(
-          RegExpPrototypeSymbolSplit(/(?<=\n)/, value),
-          (line) => fn(strEscape(line), 'string'),
-        ),
-        ` +\n${StringPrototypeRepeat(' ', ctx.indentationLvl + 2)}`,
-      ) + trailer;
-    }
-    return fn(strEscape(value), 'string') + trailer;
-  }
-  if (typeof value === 'number')
-    return formatNumber(fn, value, ctx.numericSeparator);
-  if (typeof value === 'bigint')
-    return formatBigInt(fn, value, ctx.numericSeparator);
-  if (typeof value === 'boolean')
-    return fn(`${value}`, 'boolean');
-  if (typeof value === 'undefined')
-    return fn('undefined', 'undefined');
-  // es6 symbol primitive
-  return fn(SymbolPrototypeToString(value), 'symbol');
-}
-
-function formatNamespaceObject(keys, ctx, value, recurseTimes) {
-  const output = new Array(keys.length);
-  for (let i = 0; i < keys.length; i++) {
-    try {
-      output[i] = formatProperty(ctx, value, recurseTimes, keys[i],
-                                 kObjectType);
-    } catch (err) {
-      assert(isNativeError(err) && err.name === 'ReferenceError');
-      // Use the existing functionality. This makes sure the indentation and
-      // line breaks are always correct. Otherwise it is very difficult to keep
-      // this aligned, even though this is a hacky way of dealing with this.
-      const tmp = { [keys[i]]: '' };
-      output[i] = formatProperty(ctx, tmp, recurseTimes, keys[i], kObjectType);
-      const pos = StringPrototypeLastIndexOf(output[i], ' ');
-      // We have to find the last whitespace and have to replace that value as
-      // it will be visualized as a regular string.
-      output[i] = StringPrototypeSlice(output[i], 0, pos + 1) +
-                  ctx.stylize('<uninitialized>', 'special');
-    }
-  }
-  // Reset the keys to an empty array. This prevents duplicated inspection.
-  keys.length = 0;
-  return output;
-}
-
-// The array is sparse and/or has extra keys
-function formatSpecialArray(ctx, value, recurseTimes, maxLength, output, i) {
-  const keys = ObjectKeys(value);
-  let index = i;
-  for (; i < keys.length && output.length < maxLength; i++) {
-    const key = keys[i];
-    const tmp = +key;
-    // Arrays can only have up to 2^32 - 1 entries
-    if (tmp > 2 ** 32 - 2) {
-      break;
-    }
-    if (`${index}` !== key) {
-      if (RegExpPrototypeExec(numberRegExp, key) === null) {
-        break;
-      }
-      const emptyItems = tmp - index;
-      const ending = emptyItems > 1 ? 's' : '';
-      const message = `<${emptyItems} empty item${ending}>`;
-      ArrayPrototypePush(output, ctx.stylize(message, 'undefined'));
-      index = tmp;
-      if (output.length === maxLength) {
-        break;
-      }
-    }
-    ArrayPrototypePush(output, formatProperty(ctx, value, recurseTimes, key, kArrayType));
-    index++;
-  }
-  const remaining = value.length - index;
-  if (output.length !== maxLength) {
-    if (remaining > 0) {
-      const ending = remaining > 1 ? 's' : '';
-      const message = `<${remaining} empty item${ending}>`;
-      ArrayPrototypePush(output, ctx.stylize(message, 'undefined'));
-    }
-  } else if (remaining > 0) {
-    ArrayPrototypePush(output, remainingText(remaining));
-  }
-  return output;
-}
-
-function formatArrayBuffer(ctx, value) {
-  let buffer;
-  try {
-    buffer = new Uint8Array(value);
-  } catch {
-    return [ctx.stylize('(detached)', 'special')];
-  }
-  if (hexSlice === undefined)
-    hexSlice = uncurryThis(require('buffer').Buffer.prototype.hexSlice);
-  const rawString = hexSlice(buffer, 0, MathMin(ctx.maxArrayLength, buffer.length));
-  let str = '';
-  let i = 0;
-  for (; i < rawString.length - 2; i += 2) {
-    str += `${rawString[i]}${rawString[i + 1]} `;
-  }
-  if (rawString.length > 0) {
-    str += `${rawString[i]}${rawString[i + 1]}`;
-  }
-  const remaining = buffer.length - ctx.maxArrayLength;
-  if (remaining > 0)
-    str += ` ... ${remaining} more byte${remaining > 1 ? 's' : ''}`;
-  return [`${ctx.stylize('[Uint8Contents]', 'special')}: <${str}>`];
-}
-
-function formatArray(ctx, value, recurseTimes) {
-  const valLen = value.length;
-  const len = MathMin(MathMax(0, ctx.maxArrayLength), valLen);
-
-  const remaining = valLen - len;
-  const output = [];
-  for (let i = 0; i < len; i++) {
-    const desc = ObjectGetOwnPropertyDescriptor(value, i);
-    if (desc === undefined) {
-      // Special handle sparse arrays.
-      return formatSpecialArray(ctx, value, recurseTimes, len, output, i);
-    }
-    ArrayPrototypePush(output, formatProperty(ctx, value, recurseTimes, i, kArrayType, desc));
-  }
-  if (remaining > 0) {
-    ArrayPrototypePush(output, remainingText(remaining));
-  }
-  return output;
-}
-
-function formatTypedArray(value, length, ctx) {
-  const maxLength = MathMin(MathMax(0, ctx.maxArrayLength), length);
-  const remaining = value.length - maxLength;
-  const output = new Array(maxLength);
-  const elementFormatter = value.length > 0 && typeof value[0] === 'number' ?
-    formatNumber :
-    formatBigInt;
-  for (let i = 0; i < maxLength; ++i) {
-    output[i] = elementFormatter(ctx.stylize, value[i], ctx.numericSeparator);
-  }
-  if (remaining > 0) {
-    output[maxLength] = remainingText(remaining);
-  }
-  return output;
-}
-
-function formatSet(value, ctx, ignored, recurseTimes) {
-  const length = value.size;
-  const maxLength = MathMin(MathMax(0, ctx.maxArrayLength), length);
-  const remaining = length - maxLength;
-  const output = [];
-  ctx.indentationLvl += 2;
-  let i = 0;
-  for (const v of value) {
-    if (i >= maxLength) break;
-    ArrayPrototypePush(output, formatValue(ctx, v, recurseTimes));
-    i++;
-  }
-  if (remaining > 0) {
-    ArrayPrototypePush(output, remainingText(remaining));
-  }
-  ctx.indentationLvl -= 2;
-  return output;
-}
-
-function formatMap(value, ctx, ignored, recurseTimes) {
-  const length = value.size;
-  const maxLength = MathMin(MathMax(0, ctx.maxArrayLength), length);
-  const remaining = length - maxLength;
-  const output = [];
-  ctx.indentationLvl += 2;
-  let i = 0;
-  for (const { 0: k, 1: v } of value) {
-    if (i >= maxLength) break;
-    ArrayPrototypePush(
-      output,
-      `${formatValue(ctx, k, recurseTimes)} => ${formatValue(ctx, v, recurseTimes)}`,
-    );
-    i++;
-  }
-  if (remaining > 0) {
-    ArrayPrototypePush(output, remainingText(remaining));
-  }
-  ctx.indentationLvl -= 2;
-  return output;
-}
-
-function formatSetIterInner(ctx, recurseTimes, entries, state) {
-  const maxArrayLength = MathMax(ctx.maxArrayLength, 0);
-  const maxLength = MathMin(maxArrayLength, entries.length);
-  const output = new Array(maxLength);
-  ctx.indentationLvl += 2;
-  for (let i = 0; i < maxLength; i++) {
-    output[i] = formatValue(ctx, entries[i], recurseTimes);
-  }
-  ctx.indentationLvl -= 2;
-  if (state === kWeak && !ctx.sorted) {
-    // Sort all entries to have a halfway reliable output (if more entries than
-    // retrieved ones exist, we can not reliably return the same output) if the
-    // output is not sorted anyway.
-    ArrayPrototypeSort(output);
-  }
-  const remaining = entries.length - maxLength;
-  if (remaining > 0) {
-    ArrayPrototypePush(output, remainingText(remaining));
-  }
-  return output;
-}
-
-function formatMapIterInner(ctx, recurseTimes, entries, state) {
-  const maxArrayLength = MathMax(ctx.maxArrayLength, 0);
-  // Entries exist as [key1, val1, key2, val2, ...]
-  const len = entries.length / 2;
-  const remaining = len - maxArrayLength;
-  const maxLength = MathMin(maxArrayLength, len);
-  const output = new Array(maxLength);
-  let i = 0;
-  ctx.indentationLvl += 2;
-  if (state === kWeak) {
-    for (; i < maxLength; i++) {
-      const pos = i * 2;
-      output[i] =
-        `${formatValue(ctx, entries[pos], recurseTimes)} => ${formatValue(ctx, entries[pos + 1], recurseTimes)}`;
-    }
-    // Sort all entries to have a halfway reliable output (if more entries than
-    // retrieved ones exist, we can not reliably return the same output) if the
-    // output is not sorted anyway.
-    if (!ctx.sorted)
-      ArrayPrototypeSort(output);
-  } else {
-    for (; i < maxLength; i++) {
-      const pos = i * 2;
-      const res = [
-        formatValue(ctx, entries[pos], recurseTimes),
-        formatValue(ctx, entries[pos + 1], recurseTimes),
-      ];
-      output[i] = reduceToSingleString(
-        ctx, res, '', ['[', ']'], kArrayExtrasType, recurseTimes);
-    }
-  }
-  ctx.indentationLvl -= 2;
-  if (remaining > 0) {
-    ArrayPrototypePush(output, remainingText(remaining));
-  }
-  return output;
-}
-
-function formatWeakCollection(ctx) {
-  return [ctx.stylize('<items unknown>', 'special')];
-}
-
-function formatWeakSet(ctx, value, recurseTimes) {
-  const entries = previewEntries(value);
-  return formatSetIterInner(ctx, recurseTimes, entries, kWeak);
-}
-
-function formatWeakMap(ctx, value, recurseTimes) {
-  const entries = previewEntries(value);
-  return formatMapIterInner(ctx, recurseTimes, entries, kWeak);
-}
-
-function formatIterator(braces, ctx, value, recurseTimes) {
-  const { 0: entries, 1: isKeyValue } = previewEntries(value, true);
-  if (isKeyValue) {
-    // Mark entry iterators as such.
-    braces[0] = RegExpPrototypeSymbolReplace(/ Iterator] {$/, braces[0], ' Entries] {');
-    return formatMapIterInner(ctx, recurseTimes, entries, kMapEntries);
-  }
-
-  return formatSetIterInner(ctx, recurseTimes, entries, kIterator);
-}
-
-function formatPromise(ctx, value, recurseTimes) {
-  let output;
-  const { 0: state, 1: result } = getPromiseDetails(value);
-  if (state === kPending) {
-    output = [ctx.stylize('<pending>', 'special')];
-  } else {
-    ctx.indentationLvl += 2;
-    const str = formatValue(ctx, result, recurseTimes);
-    ctx.indentationLvl -= 2;
-    output = [
-      state === kRejected ?
-        `${ctx.stylize('<rejected>', 'special')} ${str}` :
-        str,
-    ];
-  }
-  return output;
-}
-
-function formatExtraProperties(ctx, value, recurseTimes, key, typedArray) {
-  ctx.indentationLvl += 2;
-  const str = formatValue(ctx, value[key], recurseTimes, typedArray);
-  ctx.indentationLvl -= 2;
-
-  // These entries are mainly getters. Should they be formatted like getters?
-  const name = ctx.stylize(`[${key}]`, 'string');
-  return `${name}: ${str}`;
-}
-
-function formatProperty(ctx, value, recurseTimes, key, type, desc,
-                        original = value) {
-  let name, str;
-  let extra = ' ';
-  desc ??= ObjectGetOwnPropertyDescriptor(value, key);
-  if (desc.value !== undefined) {
-    const diff = (ctx.compact !== true || type !== kObjectType) ? 2 : 3;
-    ctx.indentationLvl += diff;
-    str = formatValue(ctx, desc.value, recurseTimes);
-    if (diff === 3 && ctx.breakLength < getStringWidth(str, ctx.colors)) {
-      extra = `\n${StringPrototypeRepeat(' ', ctx.indentationLvl)}`;
-    }
-    ctx.indentationLvl -= diff;
-  } else if (desc.get !== undefined) {
-    const label = desc.set !== undefined ? 'Getter/Setter' : 'Getter';
-    const s = ctx.stylize;
-    const sp = 'special';
-    if (ctx.getters && (ctx.getters === true ||
-          (ctx.getters === 'get' && desc.set === undefined) ||
-          (ctx.getters === 'set' && desc.set !== undefined))) {
-      try {
-        const tmp = FunctionPrototypeCall(desc.get, original);
-        ctx.indentationLvl += 2;
-        if (tmp === null) {
-          str = `${s(`[${label}:`, sp)} ${s('null', 'null')}${s(']', sp)}`;
-        } else if (typeof tmp === 'object') {
-          str = `${s(`[${label}]`, sp)} ${formatValue(ctx, tmp, recurseTimes)}`;
-        } else {
-          const primitive = formatPrimitive(s, tmp, ctx);
-          str = `${s(`[${label}:`, sp)} ${primitive}${s(']', sp)}`;
-        }
-        ctx.indentationLvl -= 2;
-      } catch (err) {
-        const message = `<Inspection threw (${err.message})>`;
-        str = `${s(`[${label}:`, sp)} ${message}${s(']', sp)}`;
-      }
-    } else {
-      str = ctx.stylize(`[${label}]`, sp);
-    }
-  } else if (desc.set !== undefined) {
-    str = ctx.stylize('[Setter]', 'special');
-  } else {
-    str = ctx.stylize('undefined', 'undefined');
-  }
-  if (type === kArrayType) {
-    return str;
-  }
-  if (typeof key === 'symbol') {
-    const tmp = RegExpPrototypeSymbolReplace(
-      strEscapeSequencesReplacer,
-      SymbolPrototypeToString(key),
-      escapeFn,
-    );
-    name = `[${ctx.stylize(tmp, 'symbol')}]`;
-  } else if (key === '__proto__') {
-    name = "['__proto__']";
-  } else if (desc.enumerable === false) {
-    const tmp = RegExpPrototypeSymbolReplace(
-      strEscapeSequencesReplacer,
-      key,
-      escapeFn,
-    );
-    name = `[${tmp}]`;
-  } else if (RegExpPrototypeExec(keyStrRegExp, key) !== null) {
-    name = ctx.stylize(key, 'name');
-  } else {
-    name = ctx.stylize(strEscape(key), 'string');
-  }
-  return `${name}:${extra}${str}`;
-}
-
-function isBelowBreakLength(ctx, output, start, base) {
-  // Each entry is separated by at least a comma. Thus, we start with a total
-  // length of at least `output.length`. In addition, some cases have a
-  // whitespace in-between each other that is added to the total as well.
-  // TODO(BridgeAR): Add unicode support. Use the readline getStringWidth
-  // function. Check the performance overhead and make it an opt-in in case it's
-  // significant.
-  let totalLength = output.length + start;
-  if (totalLength + output.length > ctx.breakLength)
-    return false;
-  for (let i = 0; i < output.length; i++) {
-    if (ctx.colors) {
-      totalLength += removeColors(output[i]).length;
-    } else {
-      totalLength += output[i].length;
-    }
-    if (totalLength > ctx.breakLength) {
-      return false;
-    }
-  }
-  // Do not line up properties on the same line if `base` contains line breaks.
-  return base === '' || !StringPrototypeIncludes(base, '\n');
-}
-
-function reduceToSingleString(
-  ctx, output, base, braces, extrasType, recurseTimes, value) {
-  if (ctx.compact !== true) {
-    if (typeof ctx.compact === 'number' && ctx.compact >= 1) {
-      // Memorize the original output length. In case the output is grouped,
-      // prevent lining up the entries on a single line.
-      const entries = output.length;
-      // Group array elements together if the array contains at least six
-      // separate entries.
-      if (extrasType === kArrayExtrasType && entries > 6) {
-        output = groupArrayElements(ctx, output, value);
-      }
-      // `ctx.currentDepth` is set to the most inner depth of the currently
-      // inspected object part while `recurseTimes` is the actual current depth
-      // that is inspected.
-      //
-      // Example:
-      //
-      // const a = { first: [ 1, 2, 3 ], second: { inner: [ 1, 2, 3 ] } }
-      //
-      // The deepest depth of `a` is 2 (a.second.inner) and `a.first` has a max
-      // depth of 1.
-      //
-      // Consolidate all entries of the local most inner depth up to
-      // `ctx.compact`, as long as the properties are smaller than
-      // `ctx.breakLength`.
-      if (ctx.currentDepth - recurseTimes < ctx.compact &&
-          entries === output.length) {
-        // Line up all entries on a single line in case the entries do not
-        // exceed `breakLength`. Add 10 as constant to start next to all other
-        // factors that may reduce `breakLength`.
-        const start = output.length + ctx.indentationLvl +
-                      braces[0].length + base.length + 10;
-        if (isBelowBreakLength(ctx, output, start, base)) {
-          const joinedOutput = join(output, ', ');
-          if (!StringPrototypeIncludes(joinedOutput, '\n')) {
-            return `${base ? `${base} ` : ''}${braces[0]} ${joinedOutput}` +
-              ` ${braces[1]}`;
-          }
-        }
-      }
-    }
-    // Line up each entry on an individual line.
-    const indentation = `\n${StringPrototypeRepeat(' ', ctx.indentationLvl)}`;
-    return `${base ? `${base} ` : ''}${braces[0]}${indentation}  ` +
-      `${join(output, `,${indentation}  `)}${indentation}${braces[1]}`;
-  }
-  // Line up all entries on a single line in case the entries do not exceed
-  // `breakLength`.
-  if (isBelowBreakLength(ctx, output, 0, base)) {
-    return `${braces[0]}${base ? ` ${base}` : ''} ${join(output, ', ')} ` +
-      braces[1];
-  }
-  const indentation = StringPrototypeRepeat(' ', ctx.indentationLvl);
-  // If the opening "brace" is too large, like in the case of "Set {",
-  // we need to force the first item to be on the next line or the
-  // items will not line up correctly.
-  const ln = base === '' && braces[0].length === 1 ?
-    ' ' : `${base ? ` ${base}` : ''}\n${indentation}  `;
-  // Line up each entry on an individual line.
-  return `${braces[0]}${ln}${join(output, `,\n${indentation}  `)} ${braces[1]}`;
-}
-
-function hasBuiltInToString(value) {
-  // Prevent triggering proxy traps.
-  const getFullProxy = false;
-  const proxyTarget = getProxyDetails(value, getFullProxy);
-  if (proxyTarget !== undefined) {
-    if (proxyTarget === null) {
-      return true;
-    }
-    value = proxyTarget;
-  }
-
-  let hasOwnToString = ObjectPrototypeHasOwnProperty;
-  let hasOwnToPrimitive = ObjectPrototypeHasOwnProperty;
-
-  // Count objects without `toString` and `Symbol.toPrimitive` function as built-in.
-  if (typeof value.toString !== 'function') {
-    if (typeof value[SymbolToPrimitive] !== 'function') {
-      return true;
-    } else if (ObjectPrototypeHasOwnProperty(value, SymbolToPrimitive)) {
-      return false;
-    }
-    hasOwnToString = returnFalse;
-  } else if (ObjectPrototypeHasOwnProperty(value, 'toString')) {
-    return false;
-  } else if (typeof value[SymbolToPrimitive] !== 'function') {
-    hasOwnToPrimitive = returnFalse;
-  } else if (ObjectPrototypeHasOwnProperty(value, SymbolToPrimitive)) {
-    return false;
-  }
-
-  // Find the object that has the `toString` property or `Symbol.toPrimitive` property
-  // as own property in the prototype chain.
-  let pointer = value;
-  do {
-    pointer = ObjectGetPrototypeOf(pointer);
-  } while (!hasOwnToString(pointer, 'toString') &&
-    !hasOwnToPrimitive(pointer, SymbolToPrimitive));
-
-  // Check closer if the object is a built-in.
-  const descriptor = ObjectGetOwnPropertyDescriptor(pointer, 'constructor');
-  return descriptor !== undefined &&
-    typeof descriptor.value === 'function' &&
-    builtInObjects.has(descriptor.value.name);
-}
-
-function returnFalse() {
   return false;
 }
-
-const firstErrorLine = (error) => StringPrototypeSplit(error.message, '\n', 1)[0];
-let CIRCULAR_ERROR_MESSAGE;
-function tryStringify(arg) {
-  try {
-    return JSONStringify(arg);
-  } catch (err) {
-    // Populate the circular error message lazily
-    if (!CIRCULAR_ERROR_MESSAGE) {
-      try {
-        const a = {};
-        a.a = a;
-        JSONStringify(a);
-      } catch (circularError) {
-        CIRCULAR_ERROR_MESSAGE = firstErrorLine(circularError);
-      }
-    }
-    if (err.name === 'TypeError' &&
-        firstErrorLine(err) === CIRCULAR_ERROR_MESSAGE) {
-      return '[Circular]';
-    }
-    throw err;
-  }
-}
-
-function format(...args) {
-  return formatWithOptionsInternal(undefined, args);
-}
-
-function formatWithOptions(inspectOptions, ...args) {
-  validateObject(inspectOptions, 'inspectOptions', kValidateObjectAllowArray);
-  return formatWithOptionsInternal(inspectOptions, args);
-}
-
-function formatNumberNoColor(number, options) {
-  return formatNumber(
-    stylizeNoColor,
-    number,
-    options?.numericSeparator ?? inspectDefaultOptions.numericSeparator,
-  );
-}
-
-function formatBigIntNoColor(bigint, options) {
-  return formatBigInt(
-    stylizeNoColor,
-    bigint,
-    options?.numericSeparator ?? inspectDefaultOptions.numericSeparator,
-  );
-}
-
-function formatWithOptionsInternal(inspectOptions, args) {
-  const first = args[0];
-  let a = 0;
-  let str = '';
-  let join = '';
-
-  if (typeof first === 'string') {
-    if (args.length === 1) {
-      return first;
-    }
-    let tempStr;
-    let lastPos = 0;
-
-    for (let i = 0; i < first.length - 1; i++) {
-      if (StringPrototypeCharCodeAt(first, i) === 37) { // '%'
-        const nextChar = StringPrototypeCharCodeAt(first, ++i);
-        if (a + 1 !== args.length) {
-          switch (nextChar) {
-            case 115: { // 's'
-              const tempArg = args[++a];
-              if (typeof tempArg === 'number') {
-                tempStr = formatNumberNoColor(tempArg, inspectOptions);
-              } else if (typeof tempArg === 'bigint') {
-                tempStr = formatBigIntNoColor(tempArg, inspectOptions);
-              } else if (typeof tempArg !== 'object' ||
-                         tempArg === null ||
-                         !hasBuiltInToString(tempArg)) {
-                tempStr = String(tempArg);
-              } else {
-                tempStr = inspect(tempArg, {
-                  ...inspectOptions,
-                  compact: 3,
-                  colors: false,
-                  depth: 0,
-                });
-              }
-              break;
-            }
-            case 106: // 'j'
-              tempStr = tryStringify(args[++a]);
-              break;
-            case 100: { // 'd'
-              const tempNum = args[++a];
-              if (typeof tempNum === 'bigint') {
-                tempStr = formatBigIntNoColor(tempNum, inspectOptions);
-              } else if (typeof tempNum === 'symbol') {
-                tempStr = 'NaN';
-              } else {
-                tempStr = formatNumberNoColor(Number(tempNum), inspectOptions);
-              }
-              break;
-            }
-            case 79: // 'O'
-              tempStr = inspect(args[++a], inspectOptions);
-              break;
-            case 111: // 'o'
-              tempStr = inspect(args[++a], {
-                ...inspectOptions,
-                showHidden: true,
-                showProxy: true,
-                depth: 4,
-              });
-              break;
-            case 105: { // 'i'
-              const tempInteger = args[++a];
-              if (typeof tempInteger === 'bigint') {
-                tempStr = formatBigIntNoColor(tempInteger, inspectOptions);
-              } else if (typeof tempInteger === 'symbol') {
-                tempStr = 'NaN';
-              } else {
-                tempStr = formatNumberNoColor(
-                  NumberParseInt(tempInteger), inspectOptions);
-              }
-              break;
-            }
-            case 102: { // 'f'
-              const tempFloat = args[++a];
-              if (typeof tempFloat === 'symbol') {
-                tempStr = 'NaN';
-              } else {
-                tempStr = formatNumberNoColor(
-                  NumberParseFloat(tempFloat), inspectOptions);
-              }
-              break;
-            }
-            case 99: // 'c'
-              a += 1;
-              tempStr = '';
-              break;
-            case 37: // '%'
-              str += StringPrototypeSlice(first, lastPos, i);
-              lastPos = i + 1;
-              continue;
-            default: // Any other character is not a correct placeholder
-              continue;
-          }
-          if (lastPos !== i - 1) {
-            str += StringPrototypeSlice(first, lastPos, i - 1);
-          }
-          str += tempStr;
-          lastPos = i + 1;
-        } else if (nextChar === 37) {
-          str += StringPrototypeSlice(first, lastPos, i);
-          lastPos = i + 1;
-        }
-      }
-    }
-    if (lastPos !== 0) {
-      a++;
-      join = ' ';
-      if (lastPos < first.length) {
-        str += StringPrototypeSlice(first, lastPos);
-      }
-    }
-  }
-
-  while (a < args.length) {
-    const value = args[a];
-    str += join;
-    str += typeof value !== 'string' ? inspect(value, inspectOptions) : value;
-    join = ' ';
-    a++;
-  }
-  return str;
-}
-
-function isZeroWidthCodePoint(code) {
-  return code <= 0x1F || // C0 control codes
-    (code >= 0x7F && code <= 0x9F) || // C1 control codes
-    (code >= 0x300 && code <= 0x36F) || // Combining Diacritical Marks
-    (code >= 0x200B && code <= 0x200F) || // Modifying Invisible Characters
-    // Combining Diacritical Marks for Symbols
-    (code >= 0x20D0 && code <= 0x20FF) ||
-    (code >= 0xFE00 && code <= 0xFE0F) || // Variation Selectors
-    (code >= 0xFE20 && code <= 0xFE2F) || // Combining Half Marks
-    (code >= 0xE0100 && code <= 0xE01EF); // Variation Selectors
-}
-
-if (internalBinding('config').hasIntl) {
-  const icu = internalBinding('icu');
-  // icu.getStringWidth(string, ambiguousAsFullWidth, expandEmojiSequence)
-  // Defaults: ambiguousAsFullWidth = false; expandEmojiSequence = true;
-  // TODO(BridgeAR): Expose the options to the user. That is probably the
-  // best thing possible at the moment, since it's difficult to know what
-  // the receiving end supports.
-  getStringWidth = function getStringWidth(str, removeControlChars = true) {
-    let width = 0;
-
-    if (removeControlChars) {
-      str = stripVTControlCharacters(str);
-    }
-    for (let i = 0; i < str.length; i++) {
-      // Try to avoid calling into C++ by first handling the ASCII portion of
-      // the string. If it is fully ASCII, we skip the C++ part.
-      const code = str.charCodeAt(i);
-      if (code >= 127) {
-        width += icu.getStringWidth(StringPrototypeNormalize(StringPrototypeSlice(str, i), 'NFC'));
-        break;
-      }
-      width += code >= 32 ? 1 : 0;
-    }
-    return width;
-  };
-} else {
-  /**
-   * Returns the number of columns required to display the given string.
-   */
-  getStringWidth = function getStringWidth(str, removeControlChars = true) {
-    let width = 0;
-
-    if (removeControlChars)
-      str = stripVTControlCharacters(str);
-    str = StringPrototypeNormalize(str, 'NFC');
-    for (const char of new SafeStringIterator(str)) {
-      const code = StringPrototypeCodePointAt(char, 0);
-      if (isFullWidthCodePoint(code)) {
-        width += 2;
-      } else if (!isZeroWidthCodePoint(code)) {
-        width++;
-      }
-    }
-
-    return width;
-  };
-
-  /**
-   * Returns true if the character represented by a given
-   * Unicode code point is full-width. Otherwise returns false.
-   */
-  const isFullWidthCodePoint = (code) => {
-    // Code points are partially derived from:
-    // https://www.unicode.org/Public/UNIDATA/EastAsianWidth.txt
-    return code >= 0x1100 && (
-      code <= 0x115f ||  // Hangul Jamo
-      code === 0x2329 || // LEFT-POINTING ANGLE BRACKET
-      code === 0x232a || // RIGHT-POINTING ANGLE BRACKET
-      // CJK Radicals Supplement .. Enclosed CJK Letters and Months
-      (code >= 0x2e80 && code <= 0x3247 && code !== 0x303f) ||
-      // Enclosed CJK Letters and Months .. CJK Unified Ideographs Extension A
-      (code >= 0x3250 && code <= 0x4dbf) ||
-      // CJK Unified Ideographs .. Yi Radicals
-      (code >= 0x4e00 && code <= 0xa4c6) ||
-      // Hangul Jamo Extended-A
-      (code >= 0xa960 && code <= 0xa97c) ||
-      // Hangul Syllables
-      (code >= 0xac00 && code <= 0xd7a3) ||
-      // CJK Compatibility Ideographs
-      (code >= 0xf900 && code <= 0xfaff) ||
-      // Vertical Forms
-      (code >= 0xfe10 && code <= 0xfe19) ||
-      // CJK Compatibility Forms .. Small Form Variants
-      (code >= 0xfe30 && code <= 0xfe6b) ||
-      // Halfwidth and Fullwidth Forms
-      (code >= 0xff01 && code <= 0xff60) ||
-      (code >= 0xffe0 && code <= 0xffe6) ||
-      // Kana Supplement
-      (code >= 0x1b000 && code <= 0x1b001) ||
-      // Enclosed Ideographic Supplement
-      (code >= 0x1f200 && code <= 0x1f251) ||
-      // Miscellaneous Symbols and Pictographs 0x1f300 - 0x1f5ff
-      // Emoticons 0x1f600 - 0x1f64f
-      (code >= 0x1f300 && code <= 0x1f64f) ||
-      // CJK Unified Ideographs Extension B .. Tertiary Ideographic Plane
-      (code >= 0x20000 && code <= 0x3fffd)
-    );
-  };
-
-}
-
-/**
- * Remove all VT control characters. Use to estimate displayed string width.
- */
-function stripVTControlCharacters(str) {
-  validateString(str, 'str');
-
-  return RegExpPrototypeSymbolReplace(ansi, str, '');
-}
-
-module.exports = {
-  identicalSequenceRange,
-  inspect,
-  inspectDefaultOptions,
-  format,
-  formatWithOptions,
-  getStringWidth,
-  stripVTControlCharacters,
-  isZeroWidthCodePoint,
-};
-
-    },
-  });
-  return __nimbusNodeInspectExports;
+// getErrorSourcePositions (the errors binding): where V8 placed the first
+// frame of a stack `error` captured and nothing read yet, in its file's text
+// as the program wrote it; an empty line where the runtime has no text for it.
+function __nimbusErrorSourcePositions(error) {
+  const site = typeof __nimbusStackSites === "function" ? __nimbusStackSites(error)[0] : undefined;
+  const scriptResourceName = site?.getFileName() ?? "";
+  const lineNumber = site?.getLineNumber() ?? 0;
+  const startColumn = Math.max(0, (site?.getColumnNumber() ?? 1) - 1);
+  const text = scriptResourceName === "" ? null : __nimbusModuleSourceText(__nimbusModuleOfFile(scriptResourceName));
+  const sourceLine = text?.split(/\r\n|[\n\r\u2028\u2029]/, lineNumber)[lineNumber - 1] ?? "";
+  return { sourceLine, scriptResourceName, lineNumber, startColumn };
 }
 // Node's errors describe a value only inspect can (a null-prototype
 // object) with it, as Node's do.
@@ -14460,184 +10672,6 @@ Object.defineProperties(__nimbusInspect, {
   colors: { get() { return __nimbusNodeInspect().inspect.colors; }, set(value) { __nimbusNodeInspect().inspect.colors = value; }, enumerable: true, configurable: true },
   styles: { get() { return __nimbusNodeInspect().inspect.styles; }, set(value) { __nimbusNodeInspect().inspect.styles = value; }, enumerable: true, configurable: true },
 });
-const __utilMod = {
-  inspect: __nimbusInspect,
-  format: function format(...args) { return __nimbusNodeInspect().format(...args); },
-  formatWithOptions: function formatWithOptions(options, ...args) { return __nimbusNodeInspect().formatWithOptions(options, ...args); },
-  stripVTControlCharacters: function stripVTControlCharacters(str) { return __nimbusNodeInspect().stripVTControlCharacters(str); },
-  promisify: (fn) => (...a) => new Promise((res, rej) => fn(...a, (e, r) => e ? rej(e) : res(r))),
-  callbackify: (fn) => (...a) => { const cb = a.pop(); fn(...a).then(r => cb(null, r), e => cb(e)); },
-  types: __realUtil.types,
-  inherits: (c, s) => {
-    // X.5-Z5 Defect-B fix: guard against null/undefined superCtor or a
-    // superCtor whose .prototype is null/undefined. Without this guard,
-    // Object.create(undefined.prototype, ...) and Object.create(null, ...)
-    // both throw 'Object prototype may only be an Object or null: undefined'
-    // — same surface as Defect A but for shim namespaces with no synthetic
-    // .prototype. Mirrors the canonical inherits_browser.js fallback.
-    if (s == null || s.prototype == null) return;
-    c.super_ = s;
-    c.prototype = Object.create(s.prototype, { constructor: { value: c, enumerable: false, writable: true, configurable: true } });
-  },
-  deprecate: (fn, msg) => fn,
-  debuglog: () => () => {},
-  isDeepStrictEqual: (a, b) => JSON.stringify(a) === JSON.stringify(b),
-  TextEncoder: globalThis.TextEncoder,
-  TextDecoder: globalThis.TextDecoder,
-  // util.styleText(format, text [, opts]) — Node 20.12+. Returns text
-  // wrapped in ANSI escape sequences for terminal styling. Used by
-  // create-vite and many modern CLIs.
-  //
-  // Surface: format may be a single style string or an array of style
-  // strings; in either case we apply each style's open code, then the
-  // text, then the closing code. The Nimbus terminal renders ANSI;
-  // unrecognised formats pass through as plain text (Node's docs say
-  // it throws TypeError in strict mode, but our facet code may emit
-  // styled error messages even for unrecognised foreground colors
-  // — choose the lenient pass-through to keep CLIs functioning).
-  styleText: (format, text /*, _opts */) => {
-    // ANSI lookup. Mirrors Node's util.inspect.colors keys.
-    const codes = {
-      reset:           [0, 0],
-      bold:            [1, 22],
-      italic:          [3, 23],
-      underline:       [4, 24],
-      strikethrough:   [9, 29],
-      hidden:          [8, 28],
-      dim:             [2, 22],
-      overlined:       [53, 55],
-      blink:           [5, 25],
-      inverse:         [7, 27],
-      doubleunderline: [21, 24],
-      framed:          [51, 54],
-      black:           [30, 39], red:    [31, 39], green:   [32, 39],
-      yellow:          [33, 39], blue:   [34, 39], magenta: [35, 39],
-      cyan:            [36, 39], white:  [37, 39], gray:    [90, 39],
-      grey:            [90, 39],
-      blackBright:     [90, 39], redBright:    [91, 39], greenBright: [92, 39],
-      yellowBright:    [93, 39], blueBright:   [94, 39], magentaBright: [95, 39],
-      cyanBright:      [96, 39], whiteBright:  [97, 39],
-      bgBlack:         [40, 49], bgRed:        [41, 49], bgGreen: [42, 49],
-      bgYellow:        [43, 49], bgBlue:       [44, 49], bgMagenta: [45, 49],
-      bgCyan:          [46, 49], bgWhite:      [47, 49], bgGray: [100, 49],
-      bgGrey:          [100, 49],
-      bgBlackBright:   [100, 49], bgRedBright: [101, 49], bgGreenBright: [102, 49],
-      bgYellowBright:  [103, 49], bgBlueBright: [104, 49], bgMagentaBright: [105, 49],
-      bgCyanBright:    [106, 49], bgWhiteBright: [107, 49],
-    };
-    const formats = Array.isArray(format) ? format : [format];
-    let opens = "";
-    let closes = "";
-    for (const f of formats) {
-      const c = codes[f];
-      if (c) {
-        opens += "\x1b[" + c[0] + "m";
-        closes = "\x1b[" + c[1] + "m" + closes;
-      }
-    }
-    return opens + String(text) + closes;
-  },
-  // util.parseArgs({ args, options, strict, allowPositionals, allowNegative })
-  // — Node 18.3+. The CLI argument parser modern npm bins reach for instead
-  // of a dependency: json-server's lib/bin.js destructures it at module
-  // init, so its absence crashed the bin at "parseArgs is not a function"
-  // before --version could answer. Node's contract, minus the tokens
-  // debugging output:
-  //   - --name, --name=value, --name value for string options;
-  //   - -s, -s value, -svalue, and grouped booleans -abc for shorts;
-  //   - --no-name sets a boolean false when allowNegative is on;
-  //   - -- ends option parsing, the rest are positionals;
-  //   - strict (default true) throws Node's own error codes for an unknown
-  //     option, a string option with no value, or a positional when they
-  //     are not allowed; lax mode records unknown options as booleans.
-  parseArgs: (config) => {
-    const cfg = config || {};
-    const args = Array.isArray(cfg.args) ? cfg.args.slice() : (__processMod.argv || []).slice(2);
-    const options = cfg.options || {};
-    const strict = cfg.strict !== false;
-    const allowPositionals = cfg.allowPositionals === undefined ? !strict : !!cfg.allowPositionals;
-    const allowNegative = !!cfg.allowNegative;
-    const values = {};
-    const positionals = [];
-    const err = (code, message) => nodeError(TypeError, code, message);
-    const shortToLong = {};
-    for (const [name, spec] of Object.entries(options)) {
-      if (spec === null || typeof spec !== "object" || Array.isArray(spec)) throw invalidArgType("options." + name, "object", spec);
-      const type = Object.hasOwn(spec, "type") ? spec.type : undefined;
-      if (type !== "string" && type !== "boolean") throw invalidArgType("options." + name + ".type", "('string|boolean')", type);
-      if (spec.short) shortToLong[spec.short] = name;
-      if (spec.default !== undefined) values[name] = spec.default;
-    }
-    const store = (name, value) => {
-      const spec = options[name];
-      if (spec && spec.multiple) {
-        if (!Array.isArray(values[name]) || (spec.default !== undefined && values[name] === spec.default)) values[name] = [];
-        values[name].push(value);
-      } else {
-        values[name] = value;
-      }
-    };
-    const optionValue = (name, inlineValue, next, raw) => {
-      const spec = options[name];
-      if (!spec) {
-        if (strict) throw err("ERR_PARSE_ARGS_UNKNOWN_OPTION", "Unknown option '" + raw + "'" + (allowPositionals ? ". To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- " + JSON.stringify(raw) : ""));
-        if (inlineValue !== undefined) return { value: inlineValue, consumed: 0 };
-        return { value: true, consumed: 0 };
-      }
-      if (spec.type === "boolean") {
-        if (inlineValue !== undefined && strict) throw err("ERR_PARSE_ARGS_INVALID_OPTION_VALUE", "Option '" + raw + "' does not take an argument.");
-        return { value: inlineValue !== undefined ? inlineValue : true, consumed: 0 };
-      }
-      if (inlineValue !== undefined) return { value: inlineValue, consumed: 0 };
-      if (next === undefined || (strict && next.startsWith("-") && next !== "-")) {
-        if (strict) throw err("ERR_PARSE_ARGS_INVALID_OPTION_VALUE", "Option '" + raw + " <value>' argument missing");
-        return { value: undefined, consumed: 0 };
-      }
-      return { value: next, consumed: 1 };
-    };
-    for (let i = 0; i < args.length; i++) {
-      const arg = args[i];
-      if (arg === "--") { positionals.push(...args.slice(i + 1)); break; }
-      if (arg.startsWith("--") && arg.length > 2) {
-        const eq = arg.indexOf("=");
-        let name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
-        const inline = eq === -1 ? undefined : arg.slice(eq + 1);
-        if (allowNegative && name.startsWith("no-") && options[name.slice(3)] && options[name.slice(3)].type === "boolean") {
-          store(name.slice(3), false);
-          continue;
-        }
-        const r = optionValue(name, inline, args[i + 1], "--" + name);
-        store(name, r.value);
-        i += r.consumed;
-        continue;
-      }
-      if (arg.startsWith("-") && arg.length > 1 && arg !== "-") {
-        // Short: -s, -s value, -svalue (string) or grouped -abc (booleans).
-        const first = arg[1];
-        const long = shortToLong[first] || first;
-        const spec = options[long];
-        if (spec && spec.type === "string") {
-          const inline = arg.length > 2 ? arg.slice(2) : undefined;
-          const r = optionValue(long, inline, args[i + 1], "-" + first);
-          store(long, r.value);
-          i += r.consumed;
-          continue;
-        }
-        for (const ch of arg.slice(1)) {
-          const l = shortToLong[ch] || ch;
-          const r = optionValue(l, undefined, undefined, "-" + ch);
-          store(l, r.value);
-        }
-        continue;
-      }
-      if (!allowPositionals) {
-        throw err("ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL", "Unexpected argument '" + arg + "'. This command does not take positional arguments");
-      }
-      positionals.push(arg);
-    }
-    return { values, positionals };
-  },
-};
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  url module ─────────────────────────────────────────────────────
@@ -14743,7 +10777,7 @@ const __utilMod = {
       obj.search = this.search;
       obj.searchParams = this.searchParams;
       obj.hash = this.hash;
-      return constructor.name + " " + __utilMod.inspect(obj, opts);
+      return constructor.name + " " + __nimbusInspect(obj, opts);
     }
   }
   for (const k of Object.getOwnPropertyNames(_Orig)) {
@@ -14763,7 +10797,7 @@ const __utilMod = {
       const separator = ", ";
       const innerOpts = { ...ctx };
       if (recurseTimes !== null) innerOpts.depth = recurseTimes - 1;
-      const innerInspect = (v) => __utilMod.inspect(v, innerOpts);
+      const innerInspect = (v) => __nimbusInspect(v, innerOpts);
       const output = [];
       for (const [name, value] of this) output.push(innerInspect(name) + " => " + innerInspect(value));
       let length = -separator.length;
@@ -15995,36 +12029,13 @@ const __inspectorMod = (() => {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  assert module ──────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-const __assertMod = Object.assign(
-  (v, m) => { if (!v) { const e = new Error(m || "AssertionError"); e.code = "ERR_ASSERTION"; throw e; } },
-  {
-    ok: (v, m) => { if (!v) { const e = new Error(m || "The expression evaluated to a falsy value"); e.code = "ERR_ASSERTION"; throw e; } },
-    equal: (a, b, m) => { if (a != b) { const e = new Error(m || __utilMod.inspect(a) + " != " + __utilMod.inspect(b)); e.code = "ERR_ASSERTION"; throw e; } },
-    notEqual: (a, b, m) => { if (a == b) { const e = new Error(m || __utilMod.inspect(a) + " == " + __utilMod.inspect(b)); e.code = "ERR_ASSERTION"; throw e; } },
-    strictEqual: (a, b, m) => { if (a !== b) { const e = new Error(m || __utilMod.inspect(a) + " !== " + __utilMod.inspect(b)); e.code = "ERR_ASSERTION"; throw e; } },
-    notStrictEqual: (a, b, m) => { if (a === b) { const e = new Error(m || "Values are strictly equal"); e.code = "ERR_ASSERTION"; throw e; } },
-    deepEqual: (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { const e = new Error(m || "deepEqual failed"); e.code = "ERR_ASSERTION"; throw e; } },
-    deepStrictEqual: (a, b, m) => __assertMod.deepEqual(a, b, m),
-    throws: (fn, m) => { try { fn(); } catch { return; } const e = new Error(m || "Missing expected exception"); e.code = "ERR_ASSERTION"; throw e; },
-    doesNotThrow: (fn, m) => { try { fn(); } catch (ex) { const e = new Error(m || "Got unwanted exception: " + ex.message); e.code = "ERR_ASSERTION"; throw e; } },
-    ifError: (v) => { if (v) throw v; },
-    fail: (m) => { const e = new Error(m || "Failed"); e.code = "ERR_ASSERTION"; throw e; },
-  }
-);
-
 // ═══════════════════════════════════════════════════════════════════════
-// ──  querystring, string_decoder, child_process ─────────────────────
+// ──  string_decoder, child_process ──────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-const __qsMod = {
-  stringify: (o, sep, eq) => Object.entries(o || {}).map(([k,v]) => encodeURIComponent(k) + (eq||"=") + encodeURIComponent(String(v))).join(sep||"&"),
-  parse: (s, sep, eq) => Object.fromEntries(new URLSearchParams(s)),
-  escape: encodeURIComponent,
-  unescape: decodeURIComponent,
-};
-
-const __stringDecoderMod = {
-  StringDecoder: class { constructor(enc) { this.enc = enc || "utf8"; this._dec = new TextDecoder(this.enc); } write(buf) { return this._dec.decode(buf, { stream: true }); } end(buf) { return buf ? this._dec.decode(buf) : ""; } },
-};
+// workerd's node:string_decoder, Node's StringDecoder: hex, base64, latin1
+// and UTF-16 as well as UTF-8, a character split across writes held over.
+const __stringDecoderMod = typeof __real_string_decoder !== "undefined"
+  ? (__real_string_decoder.default ?? __real_string_decoder) : globalThis.process.getBuiltinModule("string_decoder");
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  child_process — W8 facet-mapped impl ──────────────────────────
@@ -16141,8 +12152,7 @@ const __childProcessMod = (() => {
       const piece = data.subarray(at, Math.min(data.byteLength, at + __NIMBUS_STDIN_PIECE_BYTES));
       for (let wait = 10; ; wait = Math.min(wait * 2, 250)) {
         const answer = await __nimbusUseRpcResult(__supervisor.cpStdinWrite(child._brokerPid, piece), (result) => result);
-        if (__nimbusProgramStopped) return;
-        if (!answer || (!answer.ok && !answer.full)) throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE', errno: -32, syscall: 'write' });
+        if (!answer || (!answer.ok && !answer.full) || __nimbusProgramStopped) return;
         if (answer.ok) break;
         await new Promise((resolve) => setTimeout(resolve, wait));
       }
@@ -16195,9 +12205,7 @@ const __childProcessMod = (() => {
     let ended = false;
     return {
       write(bytes) {
-        if (ended) return;
-        const parent = fd === 1 ? __processMod.stdout : __processMod.stderr;
-        if (!parent.write(bytes)) return new Promise((resolve) => parent.once('drain', resolve));
+        if (!ended) (fd === 1 ? __processMod.stdout : __processMod.stderr).write(bytes);
       },
       end() {
         if (ended) return;
@@ -16410,14 +12418,7 @@ const __childProcessMod = (() => {
           for (const c of chunks) {
             // The queue hands back bytes; a Readable given a string would
             // encode it again.
-            const written = stream.write(__BufferMod.from(c.data));
-            if (written && typeof written.then === 'function') await written;
-            else if (written === false && stream.writableNeedDrain) {
-              await new Promise((resolve) => {
-                const done = () => { stream.removeListener('drain', done); stream.removeListener('close', done); resolve(); };
-                stream.once('drain', done); stream.once('close', done);
-              });
-            }
+            stream.write(__BufferMod.from(c.data));
             if (typeof c.seq === "number" && c.seq > sinceSeqRef.value) {
               sinceSeqRef.value = c.seq;
             }
@@ -16481,13 +12482,6 @@ const __childProcessMod = (() => {
     });
   }
 
-  // Node destroys the parent's pipe to fd0 before announcing the child's
-  // exit. A later stdin.end(data) is a write to a destroyed stream, not a
-  // fresh RPC to an input reader the session has already removed.
-  function _closeChildInput(child) {
-    try { child.stdin && child.stdin.destroy(); } catch {}
-  }
-
   function _applyWait(child, r) {
     // Settled already (both the wait loop and the exit-time drain can hear
     // of the same exit or refusal): nothing more to emit.
@@ -16503,7 +12497,6 @@ const __childProcessMod = (() => {
     child.exitCode = r.exitCode;
     child.signalCode = r.signal || null;
     child._exitFired = true;
-    _closeChildInput(child);
     try { child.emit("exit", r.exitCode, r.signal || null); } catch {}
     _flushStdio(child);
     _maybeFireClose(child);
@@ -16531,7 +12524,6 @@ const __childProcessMod = (() => {
         // Couldn't wait — synthesize an error exit.
         child.exitCode = 1;
         child._exitFired = true;
-        _closeChildInput(child);
         try { child.emit("exit", 1, null); } catch {}
         _flushStdio(child);
         _maybeFireClose(child);
@@ -16557,7 +12549,6 @@ const __childProcessMod = (() => {
     __cpChildren.delete(child._brokerPid);
     child.exitCode = errno;
     child._exitFired = true;
-    _closeChildInput(child);
     try { child.emit("error", err); } catch {}
     try { child._stdoutSink && child._stdoutSink.end(); } catch {}
     try { child._stderrSink && child._stderrSink.end(); } catch {}
@@ -16593,7 +12584,6 @@ const __childProcessMod = (() => {
         const err = nodeError(Error, "ERR_CHILD_PROCESS_UNAVAILABLE", "child_process: no supervisor runs this process's children", { cmd });
         try { child.emit("error", err); } catch {}
         child._exitFired = true;
-        _closeChildInput(child);
         try { child.emit("exit", 1, null); } catch {}
         // End the streams synchronously; their 'end' listeners flip the
         // _stdoutEnded/_stderrEnded flags and trigger _maybeFireClose.
@@ -16615,10 +12605,7 @@ const __childProcessMod = (() => {
             args,
             env: { ...(__processMod.env || {}), ...(opts.env || {}) },
             cwd: opts.cwd || cwd || "/home/user",
-            // Node has already buffered stdin in the guest. Its inherited
-            // descriptor is a byte source into the SAME broker pipe, whereas
-            // a WASI fd is inherited directly from the supervisor channel.
-            stdio: child._stdioModes[0] === 'inherit' ? ['pipe', ...child._stdioModes.slice(1)] : child._stdioModes,
+            stdio: opts.stdio || ["pipe", "pipe", "pipe"],
             detached: !!opts.detached,
             shell: opts.shell || false,
           }),
@@ -16677,7 +12664,6 @@ const __childProcessMod = (() => {
         }
         try { child.emit("error", e); } catch {}
         child._exitFired = true;
-        _closeChildInput(child);
         try { child.emit("exit", 1, null); } catch {}
         try { child._stdoutSink && child._stdoutSink.end(); } catch {}
         try { child._stderrSink && child._stderrSink.end(); } catch {}
@@ -16745,6 +12731,28 @@ const __childProcessMod = (() => {
     const child = _spawn(file, args, { ...opts, shell: false });
     _execCallback(child, [String(file), ...args.map(String)].join(" "), cb);
     return child;
+  }
+  // util.promisify's (lib/child_process.js customPromiseExecFunction): its
+  // stdout and stderr, or the error with both; the child is the promise's.
+  for (const fn of [exec, execFile]) {
+    Object.defineProperty(fn, Symbol.for("nodejs.util.promisify.custom"), {
+      enumerable: false,
+      value: { [fn.name](...args) {
+        let resolve;
+        let reject;
+        const promise = new Promise((onResolve, onReject) => { resolve = onResolve; reject = onReject; });
+        promise.child = fn(...args, (err, stdout, stderr) => {
+          if (err !== null) {
+            err.stdout = stdout;
+            err.stderr = stderr;
+            reject(err);
+          } else {
+            resolve({ stdout, stderr });
+          }
+        });
+        return promise;
+      } }[fn.name],
+    });
   }
 
   /**
@@ -16970,7 +12978,6 @@ const __childProcessMod = (() => {
             if (!settled) {
               child.exitCode = child.exitCode == null ? 0 : child.exitCode;
               child._exitFired = true;
-              _closeChildInput(child);
               try { child.emit("exit", child.exitCode, child.signalCode); } catch {}
               _flushStdio(child);
             }
@@ -17093,7 +13100,7 @@ function __nimbusHasColors(count, env) {
     throw invalidArgType("count", "number", count);
   } else if (!Number.isInteger(count) || count < 2 || count > Number.MAX_SAFE_INTEGER) {
     const range = Number.isInteger(count) ? ">= 2 && <= 9007199254740991" : "an integer";
-    throw nodeError(RangeError, "ERR_OUT_OF_RANGE", "The value of \"count\" is out of range. It must be " + range + ". Received " + __utilMod.inspect(count));
+    throw new nodeErrorCodes.ERR_OUT_OF_RANGE("count", range, count);
   }
   return count <= 2 ** __nimbusColorDepth(env);
 }
@@ -17198,7 +13205,7 @@ class __NimbusConsole {
     // Strings with no format directive are joined as formatWithOptions
     // joins them, without loading Node's inspect for a line it never needs.
     if (args.every((arg) => typeof arg === "string") && (args.length < 2 || !args[0].includes("%"))) return args.join(" ");
-    return __utilMod.formatWithOptions(this.#optionsFor(stream), ...args);
+    return __nimbusNodeInspect().formatWithOptions(this.#optionsFor(stream), ...args);
   }
   #write(stream, string) {
     const indent = this.#groupIndent;
@@ -17220,7 +13227,7 @@ class __NimbusConsole {
   error(...args) { const err = this.#stderr(); this.#write(err, this.#format(err, args)); }
   dir(object, options) {
     const out = this.#stdout();
-    this.#write(out, __utilMod.inspect(object, { customInspect: false, ...this.#optionsFor(out), ...options }));
+    this.#write(out, __nimbusInspect(object, { customInspect: false, ...this.#optionsFor(out), ...options }));
   }
   trace(...args) {
     const err = { name: "Trace", message: this.#format(this.#stderr(), args) };
@@ -17293,7 +13300,7 @@ class __NimbusConsole {
     }
     if (data === null || typeof data !== "object") return this.log(data);
     const options = this.#optionsFor(this.#stdout());
-    const show = (v) => __utilMod.inspect(v, {
+    const show = (v) => __nimbusInspect(v, {
       depth: v !== null && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length > 2 ? -1 : 0,
       maxArrayLength: 3,
       breakLength: Infinity,
@@ -17667,7 +13674,7 @@ async function __nimbusPrepareStdin() {
   const file = __nimbusStdinFileSource();
   if (file !== null) {
     if (!file.syncRead) { await __nimbusUseRpcResult(__supervisor.stdinPrepared(), () => undefined); return; }
-    const prepared = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset, 1048576), (r) => r);
+    const prepared = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset, 65536), (r) => r);
     const want = Math.max(0, Math.min(prepared.size - file.offset, 16777216));
     const bytes = __BufferMod.allocUnsafe(want);
     let got = 0, packet = prepared;
@@ -17676,7 +13683,7 @@ async function __nimbusPrepareStdin() {
       if (!n) break;
       bytes.set(packet.data.subarray(0, n), got);
       got += n;
-      if (got < want) packet = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset + got, Math.min(1048576, want - got)), (r) => r);
+      if (got < want) packet = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset + got, Math.min(65536, want - got)), (r) => r);
     }
     __nimbusQueuedStdin = { bytes: bytes.subarray(0, got), ended: file.offset + got >= prepared.size, from: file.offset + got };
     await __nimbusUseRpcResult(__supervisor.stdinPrepared(), () => undefined);
@@ -17826,7 +13833,7 @@ function __makeProcessStdin() {
       } else {
         __nimbusStdinTaken = true;
       }
-      const source = __fsMod.createReadStream(file.path, { start: from, highWaterMark: 1048576 });
+      const source = __fsMod.createReadStream(file.path, { start: from });
       source.on("error", (err) => r.destroy(err));
       source.pipe(r);
       return;
@@ -17992,36 +13999,6 @@ function __makeProcessOutputStream(streamName) {
   Object.defineProperty(stream, "rows", { enumerable: true, get() { return __nimbusTtyRows; } });
   __nimbusTerminalOutputStreams.push(stream);
   return stream;
-}
-
-// Every live output stream uses the same Writable accounting. The producer
-// gets false at its existing high-water mark and drain only once the
-// supervisor/foreground pipe has acknowledged the bytes, not at enqueue.
-function __nimbusWriteLiveOutput(streamName, data, encoding, callback, send) {
-  if (typeof encoding === 'function') callback = encoding;
-  if (__nimbusProgramStopped) return true;
-  const bytes = __nimbusOutBytes(data, encoding);
-  const stream = __processMod[streamName];
-  // Live output belongs to the byte delivery/replay ledger, not also to an
-  // unbounded returned-result string. Explicit capture uses its own writer.
-  stream.writableLength += bytes.byteLength;
-  const ready = stream.writableLength < stream.writableHighWaterMark;
-  if (!ready) stream.writableNeedDrain = true;
-  const sent = Promise.resolve(send(streamName, bytes));
-  stream.__nimbusOutputPending = sent;
-  sent.then(() => {
-    stream.writableLength -= bytes.byteLength;
-    if (typeof callback === 'function') callback();
-    if (stream.writableLength === 0 && stream.writableNeedDrain) {
-      stream.writableNeedDrain = false;
-      stream.emit('drain');
-    }
-  }, (error) => {
-    stream.writableLength -= bytes.byteLength;
-    if (typeof callback === 'function') callback(error);
-    else stream.emit('error', error);
-  });
-  return ready;
 }
 
 // The gate an output or exit leaving the process is released at, taken when
@@ -18197,9 +14174,10 @@ const __processMod = {
     openssl_is_boringssl: true,
     ...(__nimbusNodeCommandLine ? { typescript: __nimbusNodeCommandLine.transformTypes ? "transform" : __nimbusNodeCommandLine.stripTypes !== false && "strip" } : {}),
   }),
-  getBuiltinModule: (specifier) => {
-    const key = String(specifier).replace(/^node:/, "");
-    return Object.prototype.hasOwnProperty.call(builtins, key) ? builtins[key] : undefined;
+  getBuiltinModule: (id) => {
+    if (typeof id !== "string") throw invalidArgType("id", "string", id);
+    const builtin = __nimbusBuiltinId(id);
+    return builtin === null ? undefined : builtins[builtin];
   },
   execPath: "/usr/local/bin/node",
   execArgv: __nimbusExecArgv,
@@ -18324,31 +14302,15 @@ Object.defineProperty(__processMod, "exitCode", {
     let value = code;
     if (typeof code === "string" && code !== "" && Number.isNaN((value = Number(code)))) value = code;
     if (typeof value !== "number") throw invalidArgType("code", "number", value);
-    if (!Number.isInteger(value)) throw __nimbusOutOfRange("code", "an integer", value);
+    if (!Number.isInteger(value)) throw new nodeErrorCodes.ERR_OUT_OF_RANGE("code", "an integer", value);
     if (value < Number.MIN_SAFE_INTEGER || value > Number.MAX_SAFE_INTEGER) {
-      throw __nimbusOutOfRange("code", ">= " + Number.MIN_SAFE_INTEGER + " && <= " + Number.MAX_SAFE_INTEGER, value);
+      throw new nodeErrorCodes.ERR_OUT_OF_RANGE("code", ">= " + Number.MIN_SAFE_INTEGER + " && <= " + Number.MAX_SAFE_INTEGER, value);
     }
     __nimbusExitCodeField = value | 0;
   },
   enumerable: true,
   configurable: false,
 });
-// Node's ERR_OUT_OF_RANGE for `name` (lib/internal/errors.js): an integer
-// past 2 ** 32 with its digits grouped, anything else as inspect shows it.
-function __nimbusOutOfRange(name, range, input) {
-  let received;
-  if (Number.isInteger(input) && Math.abs(input) > 2 ** 32) {
-    const digits = String(input);
-    const start = digits[0] === "-" ? 1 : 0;
-    let grouped = "";
-    let i = digits.length;
-    for (; i >= start + 4; i -= 3) grouped = "_" + digits.slice(i - 3, i) + grouped;
-    received = digits.slice(0, i) + grouped;
-  } else {
-    received = __utilMod.inspect(input);
-  }
-  return nodeError(RangeError, "ERR_OUT_OF_RANGE", "The value of \"" + name + "\" is out of range. It must be " + range + ". Received " + received);
-}
 // The natural end: 'exit' with process.exitCode, once, and the code its
 // listeners leave (Node's EmitProcessExit).
 function __nimbusExitAtEnd() {
@@ -18395,18 +14357,18 @@ function __nimbusNoSideEffectsToString(value) {
     try { return Function.prototype.toString.call(value); } catch { return "function () { [native code] }"; }
   }
   if (value === null || typeof value !== "object") return String(value);
-  if (__utilMod.types.isProxy(value)) return "#<Object>";
+  if (__realUtil.types.isProxy(value)) return "#<Object>";
   // A data property, own or inherited, never a getter.
   const dataProperty = (key) => {
     for (let o = value; o !== null; o = Object.getPrototypeOf(o)) {
-      if (__utilMod.types.isProxy(o)) return undefined;
+      if (__realUtil.types.isProxy(o)) return undefined;
       const d = Object.getOwnPropertyDescriptor(o, key);
       if (d) return "value" in d ? d.value : undefined;
     }
     return undefined;
   };
   const toString = dataProperty("toString");
-  if (__utilMod.types.isNativeError(value) || toString === Error.prototype.toString) {
+  if (__realUtil.types.isNativeError(value) || toString === Error.prototype.toString) {
     const name = dataProperty("name");
     const message = dataProperty("message");
     const n = typeof name === "string" ? name : "Error";
@@ -18417,7 +14379,7 @@ function __nimbusNoSideEffectsToString(value) {
     const ctor = dataProperty("constructor");
     if (typeof ctor === "function" && typeof ctor.name === "string" && ctor.name !== "") return "#<" + ctor.name + ">";
   }
-  const types = __utilMod.types;
+  const types = __realUtil.types;
   const builtin = Array.isArray(value) ? "Array" : types.isArgumentsObject(value) ? "Arguments"
     : types.isNativeError(value) ? "Error" : types.isDate(value) ? "Date" : types.isRegExp(value) ? "RegExp"
     : types.isBooleanObject(value) ? "Boolean" : types.isNumberObject(value) ? "Number"
@@ -18435,422 +14397,10 @@ const __NimbusUnhandledPromiseRejection = class UnhandledPromiseRejection extend
 // A frame of a stack's text: [url, line, column], or null for one without a
 // place (a builtin's).
 
-const __NimbusSourceMap = (() => {
-  const uncurryThis = (fn) => Function.prototype.call.bind(fn);
-  const primordials = {
-    ArrayIsArray: Array.isArray,
-    ArrayPrototypePush: uncurryThis(Array.prototype.push),
-    ArrayPrototypeSlice: uncurryThis(Array.prototype.slice),
-    ArrayPrototypeSort: uncurryThis(Array.prototype.sort),
-    ObjectPrototypeHasOwnProperty: uncurryThis(Object.prototype.hasOwnProperty),
-    StringPrototypeCharAt: uncurryThis(String.prototype.charAt),
-    Symbol,
-  };
-  const validators = {
-    validateObject(value, name) {
-      if (value === null || typeof value !== "object" || Array.isArray(value)) throw invalidArgType(name, "object", value);
-    },
-  };
-  const module = { exports: {} };
-  (function (exports, require, module, primordials) {
-// This file is a modified version of:
-// https://cs.chromium.org/chromium/src/v8/tools/SourceMap.js?rcl=dd10454c1d
-// from the V8 codebase. Logic specific to WebInspector is removed and linting
-// is made to match the Node.js style guide.
-
-// Copyright 2013 the V8 project authors. All rights reserved.
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-//       notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-//       copyright notice, this list of conditions and the following
-//       disclaimer in the documentation and/or other materials provided
-//       with the distribution.
-//     * Neither the name of Google Inc. nor the names of its
-//       contributors may be used to endorse or promote products derived
-//       from this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-// This is a copy from blink dev tools, see:
-// http://src.chromium.org/viewvc/blink/trunk/Source/devtools/front_end/SourceMap.js
-// revision: 153407
-
-/*
- * Copyright (C) 2012 Google Inc. All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are
- * met:
- *
- *     * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above
- * copyright notice, this list of conditions and the following disclaimer
- * in the documentation and/or other materials provided with the
- * distribution.
- *     * Neither the name of Google Inc. nor the names of its
- * contributors may be used to endorse or promote products derived from
- * this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-
-'use strict';
-
-const {
-  ArrayIsArray,
-  ArrayPrototypePush,
-  ArrayPrototypeSlice,
-  ArrayPrototypeSort,
-  ObjectPrototypeHasOwnProperty,
-  StringPrototypeCharAt,
-  Symbol,
-} = primordials;
-
-const { validateObject } = require('internal/validators');
-
-let base64Map;
-
-const VLQ_BASE_SHIFT = 5;
-const VLQ_BASE_MASK = (1 << 5) - 1;
-const VLQ_CONTINUATION_MASK = 1 << 5;
-
-const kMappings = Symbol('kMappings');
-
-class StringCharIterator {
-  /**
-   * @constructor
-   * @param {string} string
-   */
-  constructor(string) {
-    this._string = string;
-    this._position = 0;
-  }
-
-  /**
-   * @return {string}
-   */
-  next() {
-    return StringPrototypeCharAt(this._string, this._position++);
-  }
-
-  /**
-   * @return {string}
-   */
-  peek() {
-    return StringPrototypeCharAt(this._string, this._position);
-  }
-
-  /**
-   * @return {boolean}
-   */
-  hasNext() {
-    return this._position < this._string.length;
-  }
+// Node's SourceMap (lib/internal/source_map/source_map.js), from Node's library.
+function __nimbusSourceMapClass() {
+  return __nimbusNodeLib().require("internal/source_map/source_map").SourceMap;
 }
-
-/**
- * Implements Source Map V3 model.
- * See https://github.com/google/closure-compiler/wiki/Source-Maps
- * for format description.
- */
-class SourceMap {
-  #payload;
-  #mappings = [];
-  #sources = {};
-  #sourceContentByURL = {};
-  #lineLengths = undefined;
-
-  /**
-   * @constructor
-   * @param {SourceMapV3} payload
-   */
-  constructor(payload, { lineLengths } = { __proto__: null }) {
-    if (!base64Map) {
-      const base64Digits =
-             'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-      base64Map = {};
-      for (let i = 0; i < base64Digits.length; ++i)
-        base64Map[base64Digits[i]] = i;
-    }
-    this.#payload = cloneSourceMapV3(payload);
-    this.#parseMappingPayload();
-    if (ArrayIsArray(lineLengths) && lineLengths.length) {
-      this.#lineLengths = lineLengths;
-    }
-  }
-
-  /**
-   * @return {object} raw source map v3 payload.
-   */
-  get payload() {
-    return cloneSourceMapV3(this.#payload);
-  }
-
-  get [kMappings]() {
-    return this.#mappings;
-  }
-
-  /**
-   * @return {number[] | undefined} line lengths of generated source code
-   */
-  get lineLengths() {
-    if (this.#lineLengths) {
-      return ArrayPrototypeSlice(this.#lineLengths);
-    }
-    return undefined;
-  }
-
-  #parseMappingPayload = () => {
-    if (this.#payload.sections) {
-      this.#parseSections(this.#payload.sections);
-    } else {
-      this.#parseMap(this.#payload, 0, 0);
-    }
-    ArrayPrototypeSort(this.#mappings, compareSourceMapEntry);
-  };
-
-  /**
-   * @param {Array.<SourceMapV3.Section>} sections
-   */
-  #parseSections = (sections) => {
-    for (let i = 0; i < sections.length; ++i) {
-      const section = sections[i];
-      this.#parseMap(section.map, section.offset.line, section.offset.column);
-    }
-  };
-
-  /**
-   * @param {number} lineOffset 0-indexed line offset in compiled resource
-   * @param {number} columnOffset 0-indexed column offset in compiled resource
-   * @return {object} representing start of range if found, or empty object
-   */
-  findEntry(lineOffset, columnOffset) {
-    let first = 0;
-    let count = this.#mappings.length;
-    while (count > 1) {
-      const step = count >> 1;
-      const middle = first + step;
-      const mapping = this.#mappings[middle];
-      if (lineOffset < mapping[0] ||
-          (lineOffset === mapping[0] && columnOffset < mapping[1])) {
-        count = step;
-      } else {
-        first = middle;
-        count -= step;
-      }
-    }
-    const entry = this.#mappings[first];
-    if (!first && entry && (lineOffset < entry[0] ||
-        (lineOffset === entry[0] && columnOffset < entry[1]))) {
-      return {};
-    } else if (!entry) {
-      return {};
-    }
-    return {
-      generatedLine: entry[0],
-      generatedColumn: entry[1],
-      originalSource: entry[2],
-      originalLine: entry[3],
-      originalColumn: entry[4],
-      name: entry[5],
-    };
-  }
-
-  /**
-   * @param {number} lineNumber 1-indexed line number in compiled resource call site
-   * @param {number} columnNumber 1-indexed column number in compiled resource call site
-   * @return {object} representing origin call site if found, or empty object
-   */
-  findOrigin(lineNumber, columnNumber) {
-    const range = this.findEntry(lineNumber - 1, columnNumber - 1);
-    if (
-      range.originalSource === undefined ||
-      range.originalLine === undefined ||
-      range.originalColumn === undefined ||
-      range.generatedLine === undefined ||
-      range.generatedColumn === undefined
-    ) {
-      return {};
-    }
-    const lineOffset = lineNumber - range.generatedLine;
-    const columnOffset = columnNumber - range.generatedColumn;
-    return {
-      name: range.name,
-      fileName: range.originalSource,
-      lineNumber: range.originalLine + lineOffset,
-      columnNumber: range.originalColumn + columnOffset,
-    };
-  }
-
-  /**
-   * @override
-   */
-  #parseMap(map, lineNumber, columnNumber) {
-    let sourceIndex = 0;
-    let sourceLineNumber = 0;
-    let sourceColumnNumber = 0;
-    let nameIndex = 0;
-
-    const sources = [];
-    const originalToCanonicalURLMap = {};
-    for (let i = 0; i < map.sources.length; ++i) {
-      const url = map.sources[i];
-      originalToCanonicalURLMap[url] = url;
-      ArrayPrototypePush(sources, url);
-      this.#sources[url] = true;
-
-      if (map.sourcesContent?.[i])
-        this.#sourceContentByURL[url] = map.sourcesContent[i];
-    }
-
-    const stringCharIterator = new StringCharIterator(map.mappings);
-    let sourceURL = sources[sourceIndex];
-    while (true) {
-      if (stringCharIterator.peek() === ',')
-        stringCharIterator.next();
-      else {
-        while (stringCharIterator.peek() === ';') {
-          lineNumber += 1;
-          columnNumber = 0;
-          stringCharIterator.next();
-        }
-        if (!stringCharIterator.hasNext())
-          break;
-      }
-
-      columnNumber += decodeVLQ(stringCharIterator);
-      if (isSeparator(stringCharIterator.peek())) {
-        ArrayPrototypePush(this.#mappings, [lineNumber, columnNumber]);
-        continue;
-      }
-
-      const sourceIndexDelta = decodeVLQ(stringCharIterator);
-      if (sourceIndexDelta) {
-        sourceIndex += sourceIndexDelta;
-        sourceURL = sources[sourceIndex];
-      }
-      sourceLineNumber += decodeVLQ(stringCharIterator);
-      sourceColumnNumber += decodeVLQ(stringCharIterator);
-
-      let name;
-      if (!isSeparator(stringCharIterator.peek())) {
-        nameIndex += decodeVLQ(stringCharIterator);
-        name = map.names?.[nameIndex];
-      }
-
-      ArrayPrototypePush(
-        this.#mappings,
-        [lineNumber, columnNumber, sourceURL, sourceLineNumber,
-         sourceColumnNumber, name],
-      );
-    }
-  }
-}
-
-/**
- * @param {string} char
- * @return {boolean}
- */
-function isSeparator(char) {
-  return char === ',' || char === ';';
-}
-
-/**
- * @param {SourceMap.StringCharIterator} stringCharIterator
- * @return {number}
- */
-function decodeVLQ(stringCharIterator) {
-  // Read unsigned value.
-  let result = 0;
-  let shift = 0;
-  let digit;
-  do {
-    digit = base64Map[stringCharIterator.next()];
-    result += (digit & VLQ_BASE_MASK) << shift;
-    shift += VLQ_BASE_SHIFT;
-  } while (digit & VLQ_CONTINUATION_MASK);
-
-  // Fix the sign.
-  const negative = result & 1;
-  // Use unsigned right shift, so that the 32nd bit is properly shifted to the
-  // 31st, and the 32nd becomes unset.
-  result >>>= 1;
-  if (!negative) {
-    return result;
-  }
-
-  // We need to OR here to ensure the 32nd bit (the sign bit in an Int32) is
-  // always set for negative numbers. If `result` were 1, (meaning `negate` is
-  // true and all other bits were zeros), `result` would now be 0. But -0
-  // doesn't flip the 32nd bit as intended. All other numbers will successfully
-  // set the 32nd bit without issue, so doing this is a noop for them.
-  return -result | (1 << 31);
-}
-
-/**
- * @param {SourceMapV3} payload
- * @return {SourceMapV3}
- */
-function cloneSourceMapV3(payload) {
-  validateObject(payload, 'payload');
-  payload = { ...payload };
-  for (const key in payload) {
-    if (ObjectPrototypeHasOwnProperty(payload, key) &&
-        ArrayIsArray(payload[key])) {
-      payload[key] = ArrayPrototypeSlice(payload[key]);
-    }
-  }
-  return payload;
-}
-
-/**
- * @param {Array} entry1 source map entry [lineNumber, columnNumber, sourceURL,
- *  sourceLineNumber, sourceColumnNumber]
- * @param {Array} entry2 source map entry.
- * @return {number}
- */
-function compareSourceMapEntry(entry1, entry2) {
-  const { 0: lineNumber1, 1: columnNumber1 } = entry1;
-  const { 0: lineNumber2, 1: columnNumber2 } = entry2;
-  if (lineNumber1 !== lineNumber2) {
-    return lineNumber1 - lineNumber2;
-  }
-  return columnNumber1 - columnNumber2;
-}
-
-module.exports = {
-  kMappings,
-  SourceMap,
-};
-
-  })(module.exports, () => validators, module, primordials);
-  return module.exports.SourceMap;
-})();
 const __nimbusSourceMapsAtLaunch = __nimbusNodeCommandLine?.enableSourceMaps === true;
 let __nimbusSourceMapsSupport = Object.freeze({
   __proto__: null, enabled: __nimbusSourceMapsAtLaunch, nodeModules: __nimbusSourceMapsAtLaunch, generatedCode: __nimbusSourceMapsAtLaunch,
@@ -18916,7 +14466,7 @@ function __nimbusFindSourceMap(sourceURL) {
   try {
     const entry = __nimbusSourceMapEntries.get(/^\w+:\/\//.test(sourceURL) ? sourceURL : __urlMod.pathToFileURL(sourceURL).href);
     if (entry?.data == null) return undefined;
-    entry.sourceMap ??= new __NimbusSourceMap(entry.data, { lineLengths: entry.lineLengths });
+    entry.sourceMap ??= new (__nimbusSourceMapClass())(entry.data, { lineLengths: entry.lineLengths });
     return entry.sourceMap;
   } catch {
     return undefined;
@@ -19025,12 +14575,7 @@ function __nimbusSourceMappedArrow(module, text, offset) {
     const emittedLine = lines.length;
     const emitted = lines[emittedLine - 1].length - (emittedLine === 1 ? module.head : 0);
     const { originalLine, originalColumn, originalSource } = sm.findEntry(emittedLine - 1, __nimbusSourceColumn(module, emittedLine, emitted + 1) - 1);
-    const { sources, sourcesContent } = sm.payload;
-    const index = sources.indexOf(originalSource);
-    const source = sourcesContent?.[index]
-      || (originalSource.startsWith("file://") ? __readFileOr(builtins.url.fileURLToPath(originalSource), undefined) : undefined);
-    if (typeof source !== "string") return null;
-    const line = source.split(/\r?\n/, originalLine + 1)[originalLine];
+    const line = __nimbusOriginalSourceLine(sm, originalSource, originalLine);
     if (!line) return null;
     const getStringWidth = __nimbusNodeInspect().getStringWidth;
     let prefix = "";
@@ -19040,6 +14585,15 @@ function __nimbusSourceMappedArrow(module, text, offset) {
   } catch {
     return null;
   }
+}
+// Node's getSourceLine (source_map_cache.js): an original source's line, from
+// the map's sourcesContent or, for a file: URL, the file.
+function __nimbusOriginalSourceLine(sm, originalSource, originalLine) {
+  const index = sm.payload.sources.indexOf(originalSource);
+  const source = sm.payload.sourcesContent?.[index]
+    || (originalSource.startsWith("file://") ? __readFileOr(builtins.url.fileURLToPath(originalSource), undefined) : undefined);
+  if (typeof source !== "string") return undefined;
+  return source.split(/\r?\n/, originalLine + 1)[originalLine];
 }
 
 // Node's "Transform Types" warning, once, when its loader first parses
@@ -19177,7 +14731,7 @@ function __nimbusFatalReport(error, fromPromise, enhance) {
   // AppendExceptionLine: an error keeps its arrow for below; for anything
   // else it is printed at once.
   if (arrow !== null) {
-    if (isObject && __utilMod.types.isNativeError(error)) attached = arrow;
+    if (isObject && __realUtil.types.isNativeError(error)) attached = arrow;
     else report += "\n" + arrow;
   }
   let trace;
@@ -19185,7 +14739,7 @@ function __nimbusFatalReport(error, fromPromise, enhance) {
     try { trace = error.stack; } catch {}
     if (enhance) {
       try {
-        const inspect = __utilMod.inspect;
+        const inspect = __nimbusInspect;
         const colors = __nimbusShouldColorize(__processMod.stderr) || inspect.defaultOptions.colors;
         trace = inspect(error, { colors, customInspect: false, depth: Math.max(inspect.defaultOptions.depth, 5) });
       } catch {}
@@ -19295,10 +14849,6 @@ builtins.os = __osMod;
 // constants.UV_FS_O_FILEMAP at module init; that crash blocked the entire
 // scaffold flow. See __constantsMod definition above for the full shape.
 builtins.constants = __constantsMod;
-// Also register under the 'node:'-prefixed key. __requireFrom (this
-// file ~line 2900) has a fast-path strip but the explicit registration
-// matches the dns/promises + util/types convention.
-builtins["node:constants"] = __constantsMod;
 builtins.events = __eventsMod;
 builtins.stream = __streamMod;
 // X.5-R: real Node's `require('stream')` re-exports EventEmitter
@@ -19312,11 +14862,38 @@ builtins.stream = __streamMod;
 // EventEmitter doesn't get clobbered.
 if (!__streamMod.EventEmitter) __streamMod.EventEmitter = __eventsMod;
 builtins.buffer = __bufferModule;
-builtins.util = __utilMod;
 builtins.url = __urlMod;
 builtins.crypto = __cryptoMod;
-builtins.assert = __assertMod;
-builtins.querystring = __qsMod;
+// Node's own (Node's library above), each run the first time it is required.
+for (const [name, read] of [
+  ["assert", () => __nimbusNodeLib().require("assert")],
+  ["assert/strict", () => __nimbusNodeLib().require("assert").strict],
+  ["querystring", () => __nimbusNodeLib().require("querystring")],
+  ["punycode", () => __nimbusNodeLib().require("punycode")],
+  ["util", () => __nimbusNodeLib().require("util")],
+  ["util/types", () => __nimbusNodeLib().require("util").types],
+  ["path/posix", () => builtins.path.posix],
+  ["path/win32", () => builtins.path.win32],
+  ["_stream_duplex", () => __streamMod.Duplex],
+  ["_stream_passthrough", () => __streamMod.PassThrough],
+  ["_stream_readable", () => __streamMod.Readable],
+  ["_stream_transform", () => __streamMod.Transform],
+  ["_stream_writable", () => __streamMod.Writable],
+]) {
+  Object.defineProperty(builtins, name, { get: read, enumerable: true, configurable: true });
+}
+// lib/sys.js: util, deprecated (DEP0025) the first time it loads.
+let __nimbusSysWarned = false;
+Object.defineProperty(builtins, "sys", {
+  get() {
+    if (!__nimbusSysWarned) {
+      __nimbusSysWarned = true;
+      __processMod.emitWarning("sys is deprecated. Use util instead.", "DeprecationWarning", "DEP0025");
+    }
+    return builtins.util;
+  },
+  enumerable: true, configurable: true,
+});
 builtins.string_decoder = __stringDecoderMod;
 // node:sqlite (sql.js-backed). Dual-registered like node:fs/promises; the
 // resolver strips the node: prefix but the explicit key matches the
@@ -19324,9 +14901,10 @@ builtins.string_decoder = __stringDecoderMod;
 // synchronously on the first DatabaseSync open (sqlite-shim.ts __getSQL) —
 // the ~48 MiB boot must not be paid by processes that never open a DB.
 builtins.sqlite = __sqliteMod;
-builtins["node:sqlite"] = __sqliteMod;
 builtins.child_process = __childProcessMod;
 builtins.process = __processMod;
+// NODE_DEBUG as the program started with it: what util.debuglog reads (Node's bootstrap).
+const __nimbusNodeDebugAtLaunch = __processMod.env?.NODE_DEBUG;
 builtins.console = __consoleMod;
 
 const __nativeHttpResponse = globalThis.Response;
@@ -20235,7 +15813,7 @@ builtins.dgram = (() => {
 })();
 builtins.dns = (() => {
   async function _doh(h, t) { try { const r = await fetch("https://cloudflare-dns.com/dns-query?name="+encodeURIComponent(h)+"&type="+(t||"A"),{headers:{"Accept":"application/dns-json"}}); const d = await r.json(); return (d.Answer||[]).map(a=>a.data).filter(Boolean); } catch { return []; } }
-  return { resolve: (h,t,cb) => { if (typeof t==="function"){cb=t;t="A";} _doh(h,t).then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)); }, resolve4: (h,cb) => _doh(h,"A").then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)), resolve6: (h,cb) => _doh(h,"AAAA").then(a=>cb(null,a)).catch(e=>cb(e)), lookup: (h,o,cb) => { if(typeof o==="function"){cb=o;} if(h==="localhost"){cb(null,"127.0.0.1",4);return;} _doh(h,"A").then(a=>cb(null,a[0]||"127.0.0.1",4)).catch(e=>cb(e)); }, promises: { resolve: (h,t) => _doh(h,t||"A"), resolve4: (h) => _doh(h,"A"), lookup: async(h) => { if(h==="localhost") return {address:"127.0.0.1",family:4}; const a=await _doh(h,"A"); return {address:a[0]||"127.0.0.1",family:4}; } } };
+  return { resolve: (h,t,cb) => { if (typeof t==="function"){cb=t;t="A";} _doh(h,t).then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)); }, resolve4: (h,cb) => _doh(h,"A").then(a=>cb(null,a.length?a:["127.0.0.1"])).catch(e=>cb(e)), resolve6: (h,cb) => _doh(h,"AAAA").then(a=>cb(null,a)).catch(e=>cb(e)), lookup: Object.defineProperty((h,o,cb) => { if(typeof o==="function"){cb=o;} if(h==="localhost"){cb(null,"127.0.0.1",4);return;} _doh(h,"A").then(a=>cb(null,a[0]||"127.0.0.1",4)).catch(e=>cb(e)); }, __nimbusCustomPromisifyArgs, { value: ["address", "family"], enumerable: false }), promises: { resolve: (h,t) => _doh(h,t||"A"), resolve4: (h) => _doh(h,"A"), lookup: async(h) => { if(h==="localhost") return {address:"127.0.0.1",family:4}; const a=await _doh(h,"A"); return {address:a[0]||"127.0.0.1",family:4}; } } };
 })();
 builtins.tty = {
   isatty: () => __nimbusAttachedTty,
@@ -20261,6 +15839,18 @@ builtins.tty = {
 // core and must not be reported as such — a package that sniffs this list
 // would otherwise conclude e.g. undici ships with node.
 const __nimbusFacetProvidedPackages = new Set(["undici"]);
+// Node's builtins that exist only with the scheme (lib/internal/bootstrap/realm.js schemelessBlockList).
+const __NODE_SCHEME_ONLY_BUILTINS = new Set(["sea", "sqlite", "test", "test/reporters"]);
+// The Node builtin `specifier` names, by its id, or null: what require,
+// import, module.isBuiltin, module.builtinModules and
+// process.getBuiltinModule read. The packages the process provides are in
+// the table but are not Node's.
+function __nimbusBuiltinId(specifier) {
+  const scheme = specifier.startsWith("node:");
+  const id = scheme ? specifier.slice(5) : specifier;
+  if (!Object.prototype.hasOwnProperty.call(builtins, id) || __nimbusFacetProvidedPackages.has(id)) return null;
+  return scheme || !__NODE_SCHEME_ONLY_BUILTINS.has(id) ? id : null;
+}
 // node:module. In Node `require('module')` IS the Module constructor, its
 // statics the module API, and `Module.Module` the same function: loaders
 // such as jiti (Nuxt's nuxt.config, c12) build a module by hand —
@@ -20273,23 +15863,33 @@ const __nimbusFacetProvidedPackages = new Set(["undici"]);
 // file honestly.
 function __NodeModule(id = "", parent) {
   if (!new.target) throw new TypeError("Class constructor Module cannot be invoked without 'new'");
-  this.id = String(id);
-  this.path = __pathMod.dirname(this.id || ".");
+  this.id = id;
+  this.path = __pathMod.dirname(id);
   this.exports = {};
+  __nimbusModuleParents.set(this, parent);
+  __nimbusUpdateChildren(parent, this, false);
   this.filename = null;
   this.loaded = false;
   this.children = [];
-  this.paths = [];
-  Object.defineProperty(this, "parent", { value: parent, writable: true, configurable: true, enumerable: false });
-  if (parent && Array.isArray(parent.children)) parent.children.push(this);
 }
-__NodeModule.prototype.require = function require(request) {
-  if (typeof request !== "string" || request === "") {
-    throw request === ""
-      ? nodeError(TypeError, "ERR_INVALID_ARG_VALUE", "The argument 'id' must be a non-empty string. Received ''")
-      : invalidArgType("id", "string", request);
-  }
-  return __requireFrom(request, __pathMod.dirname(this.filename || this.id || (cwd || "/home/user") + "/[module]").replace(/^\/+/, ""));
+// The module that first required each (lib/internal/modules/cjs/loader.js moduleParentCache).
+const __nimbusModuleParents = new WeakMap();
+Object.defineProperty(__NodeModule.prototype, "parent", {
+  get() { return __nimbusModuleParents.get(this); },
+  set(value) { __nimbusModuleParents.set(this, value); },
+  configurable: true,
+});
+function __nimbusUpdateChildren(parent, child, scan) {
+  const children = parent?.children;
+  if (children && !(scan && children.includes(child))) children.push(child);
+}
+// Where a module's requests resolve from: its file's directory, or for one
+// with no file (Node's REPL, a hand-made Module) the working directory.
+function __nimbusModuleDir(module) {
+  return module?.filename ? __pathMod.dirname(module.filename) : (cwd || "/home/user");
+}
+__NodeModule.prototype.require = function require(id) {
+  return __requireFrom(id, __nimbusModuleDir(this), this);
 };
 __NodeModule.prototype._compile = function _compile(content, filename) {
   const file = String(filename ?? this.filename ?? this.id);
@@ -20310,18 +15910,35 @@ __NodeModule.prototype._compile = function _compile(content, filename) {
       throw e;
     }
   }
-  const moduleRequire = (request) => this.require(request);
-  moduleRequire.resolve = (request) => __NodeModule._resolveFilename(request, this);
-  moduleRequire.cache = __moduleCache;
-  moduleRequire.main = __require.main;
-  return wrapper.call(this.exports, this.exports, moduleRequire, this, file, dir);
+  return wrapper.call(this.exports, this.exports, __nimbusMakeRequire(this), this, file, dir);
 };
 Object.defineProperty(__NodeModule, "builtinModules", {
-  get() { return Object.keys(builtins).filter((n) => !__nimbusFacetProvidedPackages.has(n)); },
+  get() { return Object.keys(builtins).filter((id) => __nimbusBuiltinId(id) !== null); },
   enumerable: true, configurable: true,
 });
-__NodeModule.createRequire = (specifier) => __makeRequire(__requireBaseDir(specifier));
-__NodeModule.isBuiltin = (specifier) => Object.hasOwn(builtins, String(specifier).replace(/^node:/, '')) && !__nimbusFacetProvidedPackages.has(String(specifier).replace(/^node:/, ''));
+// lib/internal/modules/cjs/loader.js createRequire: the require of a module at
+// `filename` (a file URL or an absolute path; a directory's, with a trailing slash).
+__NodeModule.createRequire = function createRequire(filename) {
+  let filepath;
+  const url = filename !== null && typeof filename === "object" && filename.href && filename.protocol && filename.auth === undefined && filename.path === undefined;
+  if (url || (typeof filename === "string" && !filename.startsWith("/"))) {
+    try {
+      filepath = builtins.url.fileURLToPath(filename);
+    } catch {
+      throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("filename", filename, "must be a file URL object, file URL string, or absolute path string");
+    }
+  } else if (typeof filename !== "string") {
+    throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("filename", filename, "must be a file URL object, file URL string, or absolute path string");
+  } else {
+    filepath = filename;
+  }
+  const proxyPath = filepath.endsWith("/") ? __pathMod.join(filepath, "noop.js") : filepath;
+  const module = new __NodeModule(proxyPath);
+  module.filename = proxyPath;
+  module.paths = __NodeModule._nodeModulePaths(module.path);
+  return __nimbusMakeRequire(module);
+};
+__NodeModule.isBuiltin = (specifier) => typeof specifier === "string" && __nimbusBuiltinId(specifier) !== null;
 // Node 22.1's on-disk compile cache. There is no disk to cache into and
 // nothing to compile ahead: callers (pi's CLI entry calls it
 // unconditionally) get Node's own answer for a cache that is off.
@@ -20332,7 +15949,8 @@ __NodeModule.constants = { compileCacheStatus: { FAILED: 0, ENABLED: 1, ALREADY_
 __NodeModule.wrapper = ["(function (exports, require, module, __filename, __dirname) { ", "\n});"];
 __NodeModule.wrap = (script) => __NodeModule.wrapper[0] + script + __NodeModule.wrapper[1];
 __NodeModule._extensions = { ".js": () => {}, ".json": () => {}, ".node": () => {} };
-__NodeModule._cache = {};
+// require.cache: each CommonJS module by its file, as it loads.
+__NodeModule._cache = { __proto__: null };
 __NodeModule.globalPaths = [];
 // Node's lookup path list: every ancestor's node_modules, nearest first,
 // never a node_modules/node_modules.
@@ -20348,23 +15966,83 @@ __NodeModule._nodeModulePaths = (from) => {
   }
   return paths;
 };
-__NodeModule._resolveFilename = (request, parent) => {
-  const id = String(request).replace(/^node:/, "");
-  if (Object.hasOwn(builtins, id) && !__nimbusFacetProvidedPackages.has(id)) return String(request);
-  const from = parent && (parent.filename || parent.id)
-    ? __pathMod.dirname(parent.filename || parent.id)
-    : (cwd || "/home/user");
-  const resolved = __resolveFrom(String(request), from.replace(/^\/+/, ""));
-  if (!resolved) {
-    const e = new Error("Cannot find module '" + request + "'");
-    e.code = "MODULE_NOT_FOUND";
-    throw e;
+// Module._resolveFilename: a builtin's id as asked, a staged binding's name,
+// or the file `request` names from `parent` (or from each of
+// `options.paths`, in order); MODULE_NOT_FOUND with its require stack.
+__NodeModule._resolveFilename = function _resolveFilename(request, parent, isMain, options) {
+  if (__nimbusBuiltinId(request) !== null || __stagedBinding(request)) return request;
+  let dirs = [__nimbusModuleDir(parent)];
+  // options.paths' directories, from the working directory, each validated as
+  // path.resolve does: a relative request's as it is searched, a bare one's first.
+  const relative = request.startsWith("./") || request.startsWith("../");
+  const absolute = (dir) => {
+    if (typeof dir !== "string") throw invalidArgType("paths[0]", "string", dir);
+    return __pathMod.resolve(dir);
+  };
+  if (options !== null && typeof options === "object") {
+    if (Array.isArray(options.paths)) dirs = relative ? options.paths : options.paths.map(absolute);
+    else if (options.paths !== undefined) throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("options.paths", options.paths);
   }
-  return "/" + String(resolved).replace(/^\/+/, "");
+  for (const dir of dirs) {
+    const resolved = __resolveFrom(request, absolute(dir));
+    if (resolved) return "/" + resolved.replace(/^\/+/, "");
+  }
+  throw __nimbusModuleNotFound(request, parent);
 };
-__NodeModule._load = (request, parent) => (parent instanceof __NodeModule ? parent.require(request) : __require(request));
+// Module._resolveLookupPaths: where a bare request is looked for (the
+// module's node_modules folders), a relative one's directory, or null for a
+// builtin. Named limit: NODE_PATH and Node's global folders ($HOME/.node_modules,
+// $HOME/.node_libraries, <prefix>/lib/node) are neither searched nor listed.
+__NodeModule._resolveLookupPaths = function _resolveLookupPaths(request, parent) {
+  if (__nimbusBuiltinId(request) !== null) return null;
+  if (request[0] !== "." || (request.length > 1 && request[1] !== "." && request[1] !== "/")) {
+    return parent?.paths?.length ? [...parent.paths] : null;
+  }
+  return [parent?.id && parent.filename ? __pathMod.dirname(parent.filename) : "."];
+};
+// Node's MODULE_NOT_FOUND: the request, and the files that required down to it.
+function __nimbusModuleNotFound(request, parent) {
+  const requireStack = [];
+  for (let cursor = parent; cursor; cursor = __nimbusModuleParents.get(cursor)) requireStack.push(cursor.filename || cursor.id);
+  let message = "Cannot find module '" + request + "'";
+  if (requireStack.length > 0) message += "\nRequire stack:\n- " + requireStack.join("\n- ");
+  const error = new Error(message);
+  error.code = "MODULE_NOT_FOUND";
+  error.requireStack = requireStack;
+  return error;
+}
+// lib/internal/modules/helpers.js makeRequireFunction: `module`'s require,
+// resolving from `fromDir` (its file's directory). `required` false is an
+// ES module's, which only its static imports call.
+function __nimbusMakeRequire(module, fromDir = __nimbusModuleDir(module), required = true) {
+  const require = function require(id) {
+    return __requireFrom(id, fromDir, module, required);
+  };
+  function resolve(request, options) {
+    if (typeof request !== "string") throw invalidArgType("request", "string", request);
+    return __NodeModule._resolveFilename(request, module, false, options);
+  }
+  resolve.paths = function paths(request) {
+    if (typeof request !== "string") throw invalidArgType("request", "string", request);
+    return __NodeModule._resolveLookupPaths(request, module);
+  };
+  require.resolve = resolve;
+  require.main = __processMod.mainModule;
+  require.extensions = __NodeModule._extensions;
+  require.cache = __NodeModule._cache;
+  return require;
+}
+__NodeModule._load = (request, parent) => __requireFrom(request, __nimbusModuleDir(parent), parent ?? undefined);
 __NodeModule.Module = __NodeModule;
-__NodeModule.SourceMap = __NimbusSourceMap;
+// Node's class, from its library the first time it is read: then a value, as Node's.
+Object.defineProperty(__NodeModule, "SourceMap", {
+  get() {
+    const SourceMap = __nimbusSourceMapClass();
+    Object.defineProperty(__NodeModule, "SourceMap", { value: SourceMap, writable: true, enumerable: true, configurable: true });
+    return SourceMap;
+  },
+  enumerable: true, configurable: true,
+});
 __NodeModule.findSourceMap = function findSourceMap(sourceURL) { return __nimbusFindSourceMap(sourceURL); };
 __NodeModule.getSourceMapsSupport = function getSourceMapsSupport() { return __nimbusSourceMapsSupport; };
 __NodeModule.setSourceMapsSupport = function setSourceMapsSupport(enabled, options = {}) { __nimbusSetSourceMapsSupport(enabled, options); };
@@ -20375,6 +16053,7 @@ builtins.module = __NodeModule;
 // timers.setInterval(...)), which clack's spinner — used by
 // create-cloudflare — triggers.
 builtins.timers = { setTimeout: globalThis.setTimeout.bind(globalThis), setInterval: globalThis.setInterval.bind(globalThis), clearTimeout: globalThis.clearTimeout.bind(globalThis), clearInterval: globalThis.clearInterval.bind(globalThis), setImmediate: (fn,...a) => globalThis.setTimeout(fn,0,...a), clearImmediate: globalThis.clearTimeout.bind(globalThis) };
+Object.defineProperty(builtins.timers, "promises", { get: () => builtins["timers/promises"], enumerable: true, configurable: true });
 // ──  zlib ───────────────────────────────────────────────────────────
 //
 // Two runtimes, one surface:
@@ -20841,10 +16520,6 @@ builtins.v8 = {
 const __BroadcastChannel = (() => {
   const open = new Map();
   const state = new WeakMap();
-  const missing = (name) => {
-    const error = nodeError(TypeError, "ERR_MISSING_ARGS", 'The "' + name + '" argument must be specified');
-    return error;
-  };
   const own = (channel) => {
     const s = state.get(channel);
     if (s === undefined) {
@@ -20858,7 +16533,7 @@ const __BroadcastChannel = (() => {
   };
   class BroadcastChannel extends EventTarget {
     constructor(name) {
-      if (arguments.length === 0) throw missing("name");
+      if (arguments.length === 0) throw new nodeErrorCodes.ERR_MISSING_ARGS("name");
       super();
       const s = { name: String(name), open: true, hold: null, handlers: { message: null, messageerror: null } };
       state.set(this, s);
@@ -20878,7 +16553,7 @@ const __BroadcastChannel = (() => {
     set onmessageerror(handler) { own(this).handlers.messageerror = typeof handler === "function" ? handler : null; }
     postMessage(message) {
       const s = own(this);
-      if (arguments.length === 0) throw missing("message");
+      if (arguments.length === 0) throw new nodeErrorCodes.ERR_MISSING_ARGS("message");
       if (!s.open) throw new DOMException("BroadcastChannel is closed.", "InvalidStateError");
       const data = structuredClone(message);
       const schedule = globalThis.__nimbusRawSetTimeout || globalThis.setTimeout;
@@ -20965,15 +16640,12 @@ builtins["inspector/promises"] = (() => {
     open: __inspectorMod.open, close: __inspectorMod.close, waitForDebugger: __inspectorMod.waitForDebugger,
   };
 })();
-builtins["node:inspector/promises"] = builtins["inspector/promises"];
 // Subpath-style require() — the shim's __requireFrom strips a 'node:'
 // prefix to look up bare names, so we expose both bare and prefixed
 // keys explicitly for grep-friendliness and to handle any future call
 // site that bypasses the strip path.
 builtins["fs/promises"] = __fsMod.promises;
-builtins["node:fs/promises"] = __fsMod.promises;
 builtins["readline/promises"] = builtins.readline.promises;
-builtins["node:readline/promises"] = builtins.readline.promises;
 
 // stream/promises — promise-wrapped versions of pipeline + finished.
 // Surfaced by sv (svelte CLI, the new replacement for create-svelte
@@ -21001,7 +16673,6 @@ builtins["stream/promises"] = (() => {
     finished: promisifyOp(__streamMod.finished),
   };
 })();
-builtins["node:stream/promises"] = builtins["stream/promises"];
 
 // stream/consumers — Promise-returning helpers that drain a Readable.
 // Node 16.7+. Used by undici, tar-stream, multiple "consume the whole
@@ -21049,7 +16720,6 @@ builtins["stream/consumers"] = (() => {
     },
   };
 })();
-builtins["node:stream/consumers"] = builtins["stream/consumers"];
 
 // stream/web — Web Streams API namespace. Node 17+. Userland CLIs
 // occasionally pull `ReadableStream` from here for portability. The
@@ -21064,7 +16734,6 @@ builtins["stream/web"] = {
   ReadableStreamDefaultController: globalThis.ReadableStreamDefaultController,
   WritableStreamDefaultWriter: globalThis.WritableStreamDefaultWriter,
 };
-builtins["node:stream/web"] = builtins["stream/web"];
 builtins["timers/promises"] = (() => {
   return {
     setTimeout: (ms, value) => new Promise(res => setTimeout(() => res(value), ms || 0)),
@@ -21074,7 +16743,13 @@ builtins["timers/promises"] = (() => {
     },
   };
 })();
-builtins["node:timers/promises"] = builtins["timers/promises"];
+// util.promisify's for the timers: timers/promises' (lib/timers.js).
+for (const [owner, name] of [[builtins.timers, "setTimeout"], [builtins.timers, "setImmediate"], [globalThis, "setTimeout"], [globalThis, "setImmediate"]]) {
+  const fn = owner[name];
+  if (typeof fn === "function" && Object.isExtensible(fn) && !Object.hasOwn(fn, Symbol.for("nodejs.util.promisify.custom"))) {
+    Object.defineProperty(fn, Symbol.for("nodejs.util.promisify.custom"), { enumerable: true, get: () => builtins["timers/promises"][name] });
+  }
+}
 
 // X.5-M (M-2): dns/promises subpath registration for redis.
 // @redis/client/dist/lib/client does require('dns/promises') to do
@@ -21085,10 +16760,7 @@ builtins["node:timers/promises"] = builtins["timers/promises"];
 // already a complete object (DoH-backed lookup/resolve/resolve4) —
 // re-exposing it as a subpath builtin is a 2-line registration.
 builtins["dns/promises"] = builtins.dns.promises;
-builtins["node:dns/promises"] = builtins["dns/promises"];
 
-builtins["util/types"] = builtins.util.types;
-builtins["node:util/types"] = builtins["util/types"];
 
 // undici (npm, not node core) — Nimbus provides it instead of node_modules.
 // __requireFrom checks this table BEFORE resolving, so this wins over any
@@ -21201,6 +16873,7 @@ function __nimbusNodeErrorsAt(mod, { callbacks = false, prototypes = false, inPl
 }
 // Those whose functions throw workerd's NodeError (node-builtin-errors-match-node-workerd).
 for (const name of ["zlib", "crypto"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name], { callbacks: true, prototypes: true });
+builtins.string_decoder = __nimbusNodeErrorsAt(builtins.string_decoder, { prototypes: true });
 for (const name of ["url", "path", "vm"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name]);
 __nimbusNodeErrorsAt(builtins.events, { inPlace: true });
 __nimbusNodeErrorsAt(__BufferMod, { inPlace: true });
@@ -21208,7 +16881,11 @@ __nimbusNodeErrorsAt(__BufferMod, { inPlace: true });
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-const __moduleCache = new Map();
+// A module's exports as a require() that meets it while it loads (a cycle)
+// reads them (__makeLoadingExports), by its Module.
+const __nimbusLoadingExports = new WeakMap();
+// The ES modules this process loaded, by file (or an import's URL with a query).
+const __nimbusEsModules = new Map();
 // A module cell's evaluation when it completes later (top-level await), by
 // its evaluation key: what an import of it waits for.
 const __moduleEvaluations = new Map();
@@ -21786,36 +17463,63 @@ function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filen
 const __nimbusAdvised = new WeakSet();
 // `required`: loaded by a require() call, not by an ES module's static
 // import, which the lowering makes a call of the module's own require.
-function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true) {
+function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true, parent = undefined) {
   if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\/+/, ""));
-  if (__moduleCache.has(evaluationKey)) return __moduleCache.get(evaluationKey);
+  const filename = "/" + resolvedPath.replace(/^\/+/, "");
+  // A query's or fragment's import is a job of its own, kept by its URL.
+  const cacheKey = evaluationKey === resolvedPath ? filename : evaluationKey;
+  // An ES module is the ES loader's (__nimbusEsModules); require.cache has
+  // it once a require() loads it (require(esm)), as Node's has.
+  const esModule = __nimbusModuleCellIsEsModule(resolvedPath.replace(/^\/+/, ""));
+  const modules = esModule ? __nimbusEsModules : __NodeModule._cache;
+  const cached = esModule ? modules.get(cacheKey) : modules[cacheKey];
+  if (cached !== undefined) {
+    if (esModule && required) __NodeModule._cache[cacheKey] ??= cached;
+    __nimbusUpdateChildren(parent, cached, true);
+    return cached.loaded ? cached.exports : (__nimbusLoadingExports.get(cached) ?? cached.exports);
+  }
 
-  const mod = { exports: {} };
-  __moduleCache.set(evaluationKey, __makeLoadingExports(mod));
+  const mod = new __NodeModule(filename, parent);
+  mod.filename = filename;
+  mod.paths = __NodeModule._nodeModulePaths(mod.path);
+  if (esModule) modules.set(cacheKey, mod);
+  else modules[cacheKey] = mod;
+  if (esModule && required) __NodeModule._cache[cacheKey] = mod;
+  __nimbusLoadingExports.set(mod, __makeLoadingExports(mod));
+  const unload = () => {
+    if (esModule) modules.delete(cacheKey);
+    if (__NodeModule._cache[cacheKey] === mod) delete __NodeModule._cache[cacheKey];
+    __nimbusLoadingExports.delete(mod);
+    const siblings = parent?.children;
+    const at = Array.isArray(siblings) ? siblings.indexOf(mod) : -1;
+    if (at !== -1) siblings.splice(at, 1);
+  };
 
-  // JSON
+  // JSON (Module._extensions[".json"])
   if (resolvedPath.endsWith(".json")) {
     const code = __readFileOr(resolvedPath, null);
-    if (code === null) throw new Error("Cannot read module: " + resolvedPath);
-    mod.exports = JSON.parse(code);
-    __moduleCache.set(evaluationKey, mod.exports);
+    try {
+      if (code === null) throw new Error("Cannot read module: " + resolvedPath);
+      try {
+        mod.exports = JSON.parse(code.charCodeAt(0) === 0xFEFF ? code.slice(1) : code);
+      } catch (error) {
+        error.message = filename + ": " + error.message;
+        throw error;
+      }
+    } catch (error) {
+      unload();
+      throw error;
+    }
+    mod.loaded = true;
+    __nimbusLoadingExports.delete(mod);
     return mod.exports;
   }
 
-  // JS — the cell's wrapper, called with a scoped require
-  const modDir = resolvedPath.includes("/") ? resolvedPath.substring(0, resolvedPath.lastIndexOf("/")) : ".";
-  // A lowered ES module calls its require for its static imports only: it
-  // has no require of its own (module-format.ts ES_MODULE_UNBOUND_NAMES).
-  const esModule = __nimbusModuleCellIsEsModule(resolvedPath.replace(/^\/+/, ""));
-  const scopedRequire = (id) => __requireFrom(id, modDir, !esModule);
-  scopedRequire.resolve = (id) => {
-    const r = __resolveFrom(id, modDir);
-    if (!r) throw new Error("Cannot resolve '" + id + "'");
-    return r;
-  };
-  scopedRequire.cache = __moduleCache;
-  scopedRequire.main = __require.main;
-  mod.require = scopedRequire;
+  // JS — the cell's wrapper, called with the module's require. A lowered ES
+  // module calls its require for its static imports only: it has no require
+  // of its own (module-format.ts ES_MODULE_UNBOUND_NAMES).
+  const modDir = __pathMod.dirname(filename);
+  const scopedRequire = __nimbusMakeRequire(mod, modDir, !esModule);
 
   // X.5-M3: thread currently-loading module path through globalThis so the
   // URL shim null-base fallback (in node-shims url module) can compose
@@ -21849,13 +17553,13 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
     }
     __nimbusCompiling("/" + normalizedPath, () => compiledText ?? __nimbusModuleSourceText(__nimbusModuleAtPath(normalizedPath)));
     // A CommonJS module's `this` is its exports, as Node calls its wrapper.
-    const evaluation = __nimbusReflectApply(cell, esModule ? undefined : mod.exports, [mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir]);
+    const evaluation = __nimbusReflectApply(cell, esModule ? undefined : mod.exports, [mod.exports, scopedRequire, mod, filename, modDir]);
     // A module with top-level await completes later. require() returns its
     // exports now (static imports lowered to require cannot wait); import()
     // waits for it (__esmLoad).
     if (evaluation && typeof evaluation.then === "function") __moduleEvaluations.set(evaluationKey, evaluation);
   } catch (e) {
-    __moduleCache.delete(evaluationKey);
+    unload();
     // A ReferenceError for a CommonJS name is the module loader's to explain
     // where it leaves an ES module's job, and nothing else's: a require() of
     // an ES module is that module's job (Node's ModuleJobSync).
@@ -21884,8 +17588,8 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
     globalThis.__currentModulePath = __prevModulePath;
   }
 
-  // Update cache with final exports (module.exports may have been reassigned)
-  __moduleCache.set(evaluationKey, mod.exports);
+  mod.loaded = true;
+  __nimbusLoadingExports.delete(mod);
   return mod.exports;
 }
 
@@ -21961,10 +17665,6 @@ function __resolveFrom(id, fromDir) {
 // conditions, no extension probing, a directory refused by name, file: URLs,
 // Node's error codes and messages. What resolves loads through the same
 // module cache require uses, shaped as the namespace Node would give.
-// Node's builtins that exist only with the scheme; the rest of the table is
-// the process's own builtins, undici among them, which the process provides
-// in place of any installed copy (see builtins.undici above).
-const __ESM_SCHEME_ONLY_BUILTINS = new Set(["test", "test/reporters", "sqlite", "sea"]);
 // Node's ESM resolver (core/_shared/esm-resolver.ts, compiled once by
 // scripts/bundle-facet-workers.mjs): declares createEsmResolver.
 function unknownFileExtensionMessage(path) {
@@ -22485,11 +18185,10 @@ const __esmResolver = createEsmResolver({
     try { return __fsMod.realpathSync(path); } catch { return path; }
   },
   readText(path) { return __readFileOr(path, null); },
+  // Node's builtins, and the packages the process provides in place of any
+  // installed copy (builtins.undici), which load as builtins do.
   isBuiltin(specifier) {
-    const scheme = specifier.startsWith("node:");
-    const name = scheme ? specifier.slice(5) : specifier;
-    if (!scheme && __ESM_SCHEME_ONLY_BUILTINS.has(name)) return false;
-    return Object.prototype.hasOwnProperty.call(builtins, name);
+    return __nimbusBuiltinId(specifier) !== null || __nimbusFacetProvidedPackages.has(specifier.replace(/^node:/, ""));
   },
   cjsResolve(specifier, parentPath) {
     try {
@@ -22521,7 +18220,7 @@ function __esmLoad(resolution) {
   if (cached) return cached;
   let ns;
   if (resolution.format === "builtin") {
-    const mod = __requireFrom("node:" + resolution.builtin, "");
+    const mod = builtins[resolution.builtin];
     const names = new Set(mod && (typeof mod === "object" || typeof mod === "function") ? Object.keys(mod) : []);
     names.add("default");
     ns = __esmNamespaceOf(names, (name) => name === "default" ? mod : mod[name]);
@@ -22549,7 +18248,7 @@ function __esmLoad(resolution) {
       const requireData = (id) => {
         const resolved = __esmResolver.resolveSync(String(id), resolution.url);
         __esmResolver.assertLoadable(resolved);
-        if (resolved.format === "builtin") return __requireFrom("node:" + resolved.builtin, "");
+        if (resolved.format === "builtin") return builtins[resolved.builtin];
         if (resolved.path) return __loadModule(resolved.path.replace(/^\/+/, ""), resolved.url);
         throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "Synchronous nested data-module import is unsupported");
       };
@@ -22626,7 +18325,7 @@ function __esmLoad(resolution) {
 // A bundled copy of a package the runtime provides, bound to the runtime's
 // (provided-packages.ts rewriteProvidedCommonJsModules, PROVIDED_PACKAGE_HOOK):
 // what require() serves for it, from any module, an ES module included.
-globalThis.__nimbusProvidedPackage = (name) => __require(name);
+globalThis.__nimbusProvidedPackage = (name) => builtins[name];
 
 // import() may reach installed files the launch did not stage. A launch's
 // store holds its closure and its data plan; anything else on disk is named
@@ -22742,7 +18441,7 @@ function __nimbusRequestTarget(kind, specifier, importer) {
     const resolution = __esmResolver.resolveSync(specifier, builtins.url.pathToFileURL("/" + importer).href);
     return resolution && resolution.path ? resolution.path : null;
   }
-  if (Object.prototype.hasOwnProperty.call(builtins, specifier) || (specifier.startsWith("node:") && Object.prototype.hasOwnProperty.call(builtins, specifier.slice(5)))) return null;
+  if (__nimbusBuiltinId(specifier) !== null || __nimbusFacetProvidedPackages.has(specifier)) return null;
   if (__stagedBinding(specifier)) return null;
   return __resolveFrom(specifier, importer.includes("/") ? importer.slice(0, importer.lastIndexOf("/")) : "");
 }
@@ -22851,7 +18550,9 @@ globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, spe
 // directory in order, then `--import` ones imported from it, each awaited.
 async function __nimbusPreload() {
   const fromDir = String(cwd || "/home/user").replace(/^\/+/, "");
-  for (const specifier of __nimbusNodeCommandLine?.require ?? []) __requireFrom(String(specifier), fromDir);
+  const preload = new __NodeModule("internal/preload", null);
+  preload.paths = __NodeModule._nodeModulePaths("/" + fromDir);
+  for (const specifier of __nimbusNodeCommandLine?.require ?? []) __requireFrom(String(specifier), fromDir, preload);
   const imports = __nimbusNodeCommandLine?.import ?? [];
   if (imports.length === 0) return;
   const parentUrl = builtins.url.pathToFileURL("/" + fromDir + "/").href;
@@ -23003,24 +18704,23 @@ function __loadStagedBinding(builds, fromDir) {
 // Whether the ES loader has the module at `path`: an ES module require() loaded
 // (require(esm)), whose job it keeps. A CommonJS module require() loaded is no job of its.
 function __nimbusEsmJobCached(path) {
-  if (typeof path !== "string") return false;
-  const key = path.replace(/^\/+/, "");
-  return __moduleCache.has(key) && __nimbusModuleCellIsEsModule(key);
+  return typeof path === "string" && __nimbusEsModules.has("/" + path.replace(/^\/+/, ""));
 }
-function __requireFrom(id, fromDir, required = true) {
-  // Check builtins first (always takes priority)
-  if (builtins[id]) return builtins[id];
-  if (id.startsWith("node:")) {
-    const bare = id.substring(5);
-    if (builtins[bare]) return builtins[bare];
-  }
+// Module.prototype.require from `parent`, its requests resolving from `fromDir`.
+function __requireFrom(id, fromDir, parent, required = true) {
+  if (typeof id !== "string") throw invalidArgType("id", "string", id);
+  if (id === "") throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("id", id, "must be a non-empty string");
+  const builtin = __nimbusBuiltinId(id);
+  if (builtin !== null) return builtins[builtin];
+  if (__nimbusFacetProvidedPackages.has(id)) return builtins[id];
+  if (id.startsWith("node:")) throw nodeError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", "No such built-in module: " + id);
   const staged = __stagedBinding(id);
   if (staged) return __loadStagedBinding(staged, fromDir);
   const notCarried = __stagedBindingNotCarried(id, fromDir);
   if (notCarried) throw notCarried;
 
   const resolved = __resolveFrom(id, fromDir);
-  if (!resolved) throw new Error("Cannot find module '" + id + "' (from " + fromDir + ")");
+  if (!resolved) throw __nimbusModuleNotFound(id, parent);
   // An ES module's static import is the ES loader's, which refuses it before the importer runs: no arrow of the importer's.
   if (!required && __nimbusTypeScriptAsJavaScript && stripsTypeScript(resolved) && !__nimbusEsmJobCached(resolved)) {
     try {
@@ -23030,44 +18730,9 @@ function __requireFrom(id, fromDir, required = true) {
       throw error;
     }
   }
-  return __loadModule(resolved, resolved, required);
+  return __loadModule(resolved, resolved, required, parent);
 }
 
-function __requireBaseDir(specifier) {
-  const text = String(specifier || "");
-  const filePath = text.startsWith("file:")
-    ? builtins.url.fileURLToPath(text)
-    : text;
-  const normalized = filePath.replace(/^\/+/, "");
-  const fullPath = normalized || (dirname || cwd || "/home/user").replace(/^\/+/, "");
-  const slash = fullPath.lastIndexOf("/");
-  return slash >= 0 ? fullPath.substring(0, slash) : "";
-}
-
-function __makeRequire(fromDir) {
-  const localRequire = (id) => __requireFrom(id, fromDir);
-  localRequire.resolve = (id) => {
-    if (__stagedBinding(id)) return id;
-    const r = __resolveFrom(id, fromDir);
-    if (!r) throw new Error("Cannot resolve '" + id + "'");
-    return "/" + r;
-  };
-  localRequire.cache = __moduleCache;
-  localRequire.main = __require.main;
-  return localRequire;
-}
-
-/**
- * Top-level require() — resolves from cwd/dirname.
- * This is the require passed to the user's entry script.
- */
-function __require(id) {
-  return __requireFrom(id, dirname || cwd || "/home/user");
-}
-// An ES entry's own require: its static imports, part of its job.
-function __nimbusEntryImport(id) {
-  return __requireFrom(id, dirname || cwd || "/home/user", false);
-}
 // The program's entry evaluated as Node's loader runs it (manager.ts
 // entryModule): a CommonJS entry with require(); an ES entry as a job of its
 // own, its require its static imports, and what escapes its evaluation
@@ -23078,13 +18743,30 @@ function __nimbusEvaluateEntry(wrapper, mod, filename, dirname, esModule) {
   // A file's `this` is its exports, as Node's wrapper is called; -e and
   // stdin code is a script, whose `this` is the global object.
   if (!esModule) {
-    const self = filename === "<eval>" || filename === "[stdin]" ? globalThis : mod.exports;
-    return __nimbusReflectApply(wrapper, self, [mod.exports, __require, mod, filename, dirname]);
+    const evaluated = filename === "<eval>" || filename === "[stdin]";
+    // A file entry is process.mainModule and require.main (Module._load's
+    // isMain), after the preloads, whose are undefined; -e's and stdin's are too.
+    if (!evaluated) {
+      Object.defineProperty(__processMod, "mainModule", { value: mod, writable: true, enumerable: true, configurable: true });
+      mod.id = ".";
+      __NodeModule._cache[mod.filename] = mod;
+    }
+    const self = evaluated ? globalThis : mod.exports;
+    let threw = true;
+    try {
+      const result = __nimbusReflectApply(wrapper, self, [mod.exports, __nimbusMakeRequire(mod), mod, evaluated ? mod.id : filename, evaluated ? "." : dirname]);
+      threw = false;
+      return result;
+    } finally {
+      // Module._load: a module whose load threw leaves the cache.
+      if (!evaluated && threw) delete __NodeModule._cache[mod.filename];
+      else if (!evaluated) mod.loaded = true;
+    }
   }
   const url = builtins.url.pathToFileURL(filename).href;
   let result;
   try {
-    result = wrapper(mod.exports, __nimbusEntryImport, mod, filename, dirname);
+    result = wrapper(mod.exports, __nimbusMakeRequire(mod, undefined, false), mod, filename, dirname);
   } catch (e) {
     __nimbusExplainCommonJSGlobalLike(e, url, false);
     throw e;
@@ -23094,15 +18776,19 @@ function __nimbusEvaluateEntry(wrapper, mod, filename, dirname, esModule) {
   }
   return result;
 }
-__require.resolve = (id) => {
-  if (__stagedBinding(id)) return id;
-  const r = __resolveFrom(id, dirname || cwd || "/home/user");
-  if (!r) throw new Error("Cannot resolve '" + id + "'");
-  return "/" + r;
-};
-__require.cache = __moduleCache;
-// Node's process.mainModule: none until the entry runs, so a `-r` module's is undefined.
-__require.main = undefined;
+// The program's entry as Node's run_main makes it: a file's Module; -e's
+// and stdin's "[eval]" and "[stdin]" at the working directory, an ES one's
+// import.meta there as "[eval1]".
+function __nimbusEntryModuleOf(filename, esModule) {
+  const evaluated = filename === undefined || filename === "<eval>" || filename === "[stdin]";
+  const id = evaluated ? (filename === "[stdin]" ? "[stdin]" : "[eval]") : filename;
+  const mod = new __NodeModule(id, evaluated ? undefined : null);
+  mod.filename = evaluated ? __pathMod.join(cwd || "/home/user", id) : filename;
+  mod.paths = __NodeModule._nodeModulePaths(__pathMod.dirname(mod.filename));
+  const metaFile = evaluated && esModule ? __pathMod.join(cwd || "/home/user", "[eval1]") : mod.filename;
+  Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta(metaFile) });
+  return mod;
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // ── END OF GENERATED SHIMS — closing marker ─────────────────────────

@@ -23,9 +23,10 @@
 // armada is reached as scripts/ci/lib/armada.mjs says.
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mapOnArmada } from './lib/armada.mjs';
+import { NIMBUS_STATE } from './lib/state-dir.mjs';
 
 const git = (cwd, args, options = {}) => {
   const done = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1 << 30, ...options });
@@ -120,7 +121,7 @@ if (import.meta.main) {
   const { jobId, verdict, exitCode } = built;
 
   try {
-    const state = join(homedir(), '.local', 'state', 'nimbus', 'remote-builds');
+    const state = join(NIMBUS_STATE, 'remote-builds');
     mkdirSync(state, { recursive: true });
     const stem = join(state, `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}-${sha.slice(0, 12)}-${jobId}`);
     writeFileSync(`${stem}.json`, `${JSON.stringify({ commit: sha, job: jobId, ...verdict }, null, 2)}\n`);

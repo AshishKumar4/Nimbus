@@ -43,9 +43,11 @@ import { isNativeBinPath } from './os-contracts.js';
 import { stripCommentsForImports } from './comment-strip.js';
 import { createEsmResolver } from '../_shared/esm-resolver.js';
 import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
+import { requireWrapperCalls } from './require-wrappers.js';
 
 // The CommonJS resolver this walk stages from (require-resolution.ts).
 export { requireFsOverBridge, type BridgeRequireFs, type RequireFs } from './require-resolution.js';
+export { requireWrapperCalls } from './require-wrappers.js';
 
 // Match literal-string require/require.resolve with single, double, or
 // template-literal-no-interp specifier. The plain-string variant is by
@@ -125,6 +127,7 @@ const CREATE_REQUIRE_CALL_RE = /\bcreateRequire\s*\([^)]*\)\s*\(\s*(['"`])([^'"`
 // minor wasted-work cost, not a correctness issue.
 const IMPORT_RE = /(?:^|[\n;}])\s*(?:import|export)(?:[\s{][\w*${}\s,]*?\s*from)?\s*(['"])([^'"]+)\1/g;
 
+
 // Only the speculative ESM resolution boundary catches traversal failures.
 // Keep scheduling errors distinct there, then return the original cause.
 class WalkControlFailure extends Error {}
@@ -173,6 +176,8 @@ export interface DeferredImport {
   alternatives: number;
   /** The file, when the walk resolved it already (a tool config and what it names). */
   path?: string;
+  /** Loaded by a require wrapper's call (requireWrapperCalls): resolved as require() resolves it, not import(). */
+  require?: true;
 }
 
 /**
@@ -395,11 +400,11 @@ export async function prefetchForRequire(
   // that defers hundreds (Shiki's grammar table, one `import()` per language)
   // loads the few its input names. Walking a table first spent the bound on
   // grammars the program never loads, and cut the deferral it does.
-  const deferredDynamic = new Map<number, Array<{ specifier: string; fromDir: string; path?: string }>>();
-  function defer({ specifier, fromDir, alternatives, path }: DeferredImport): void {
+  const deferredDynamic = new Map<number, Array<Omit<DeferredImport, 'alternatives'>>>();
+  function defer({ specifier, fromDir, alternatives, path, require }: DeferredImport): void {
     let queue = deferredDynamic.get(alternatives);
     if (queue === undefined) deferredDynamic.set(alternatives, queue = []);
-    queue.push({ specifier, fromDir, ...(path !== undefined ? { path } : {}) });
+    queue.push({ specifier, fromDir, ...(path !== undefined ? { path } : {}), ...(require ? { require } : {}) });
   }
   function nextDeferred(): DeferredImport | undefined {
     let fewest = Infinity;
@@ -596,6 +601,11 @@ export async function prefetchForRequire(
       if (resolved) await addFile(resolved);
     }
     for (const specifier of deferrals) defer({ specifier, fromDir, alternatives: deferrals.size });
+    // What a require wrapper's calls name (@vitejs/plugin-vue's
+    // `tryRequire("vue/compiler-sfc", root)`): optional loads, as the
+    // wrapper's try says, so phase 2's, resolved as require() resolves them.
+    const loads = (await requireWrapperCalls(code)).filter((specifier) => !isFacetProvided(specifier));
+    for (const specifier of loads) defer({ specifier, fromDir, alternatives: loads.length, require: true });
   }
 
   // A dynamic `import()` loads what Node's ESM resolver names (the process's
@@ -703,7 +713,9 @@ export async function prefetchForRequire(
     // Phase 2: dynamic-import subtrees, fewest alternatives first; the queue grows as they are walked.
     lazy = true;
     for (let next = nextDeferred(); next !== undefined && bytesSeen < maxBundleBytes; next = nextDeferred()) {
-      const resolved = next.path ?? await resolveDynamicImport(next.specifier, next.fromDir);
+      const resolved = next.path ?? (next.require
+        ? (await resolveStaticDependency(next.specifier, next.fromDir))?.resolved ?? null
+        : await resolveDynamicImport(next.specifier, next.fromDir));
       if (!resolved) continue;
       // An optional learned root is staged whole or not at all: a module in
       // the map without what it imports fails where the module's late load
@@ -808,10 +820,14 @@ export async function resolveDeferredImport(
   const paced = progress && (async (work: number) => {
     try { await progress(work); } catch (cause) { throw new WalkControlFailure('Dependency walk interrupted', { cause }); }
   });
-  const esm = walkEsmResolver(vfs, paced, async (path) => {
+  const read = async (path: string) => {
     try { return await vfs.readFileString(stripLeadingSlashes(path)); } catch { return null; }
-  }, conditions);
-  try { return await resolveImportWith(esm, deferral.specifier, deferral.fromDir); }
+  };
+  const esm = walkEsmResolver(vfs, paced, read, conditions);
+  try {
+    if (deferral.require) return (await resolveRequireEx(vfs, deferral.specifier, deferral.fromDir, read, paced, conditions))?.resolved ?? null;
+    return await resolveImportWith(esm, deferral.specifier, deferral.fromDir);
+  }
   catch (error) {
     if (error instanceof WalkControlFailure) throw error.cause;
     throw error;
@@ -845,6 +861,7 @@ export function configPackageNames(source: string): string[] {
   });
   return [...names];
 }
+
 
 /**
  * Phase 2's tier for a package's "import" branch beside the "require" branch

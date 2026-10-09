@@ -44,6 +44,26 @@ export declare function determineSpecificType(value: unknown): string;
  * (`Buffer`) or anything else (`Array-like Object`) — and was `actual`.
  */
 export declare function invalidArgType(name: string, expected: string | readonly string[], actual: unknown): Error;
+/** `new codes.ERR_X(...args)`: Node's error for the code, its stack from where it was made. */
+export type NodeErrorConstructor = ((...args: never[]) => Error) & {
+    [base: string]: NodeErrorConstructor;
+};
+/**
+ * lib/internal/errors.js `codes` for the codes in nodeErrorMessages: each a
+ * constructor of its class, its other bases' beside it by name, and the
+ * HideStackFramesError Node's validators construct (the same error here;
+ * hideStackFrames moves its stack).
+ */
+export declare const nodeErrorCodes: Readonly<Record<string, NodeErrorConstructor>>;
+/**
+ * lib/internal/errors.js hideStackFrames: `fn`, whose error's stack starts
+ * where the wrapper was called; a Node error's stack keeps its code.
+ */
+export declare function hideStackFrames<F extends (...args: never[]) => unknown>(fn: F): F & {
+    withoutStackTrace: F;
+};
+/** lib/internal/errors.js isErrorStackTraceLimitWritable. */
+export declare function isErrorStackTraceLimitWritable(): boolean;
 /** A system call's context, as Node's SystemError holds it (`info`), its keys in the order the call names them. */
 export interface SystemErrorContext {
     code: string;
