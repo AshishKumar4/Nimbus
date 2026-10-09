@@ -43,11 +43,14 @@
  * pathToFileURL }), process, builtinModules, builtinObjects (Node's
  * NODE_BUILTIN_OBJECTS), eastAsianWide(code), signals (os.constants.signals),
  * insideNodeModules() (whether the caller's code is a package's),
+ * currentFrames(count, skip) (the current stack's \`count\` frames below
+ * \`skip\` of the caller's callers: { functionName, scriptName, lineNumber,
+ * columnNumber }),
  * errorSourcePositions(error) (where V8 places the frame an error was
  * captured at: { sourceLine, scriptResourceName, lineNumber, startColumn }),
  * tokenizer(code, options) (acorn's), sourceMaps
  * ({ getSourceMapsSupport, findSourceMap, getSourceLine }), colorDepth()
- * (internal/tty getColorDepth), primordials (built when the process starts), and
+ * (internal/tty getColorDepth), primordials (Node's, built as the library loads), and
  * sources: { [id]: (exports, require, module, process, internalBinding,
  * primordials) => void } }, the last two running the upstream text.
  */

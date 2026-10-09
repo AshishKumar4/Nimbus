@@ -43,11 +43,12 @@
  * pathToFileURL }), process, builtinModules, builtinObjects (Node's
  * NODE_BUILTIN_OBJECTS), eastAsianWide(code), signals (os.constants.signals),
  * insideNodeModules() (whether the caller's code is a package's),
+ * callSites(count, above) (V8's call sites of \`count\` frames below \`above\`),
  * errorSourcePositions(error) (where V8 places the frame an error was
  * captured at: { sourceLine, scriptResourceName, lineNumber, startColumn }),
  * tokenizer(code, options) (acorn's), sourceMaps
  * ({ getSourceMapsSupport, findSourceMap, getSourceLine }), colorDepth()
- * (internal/tty getColorDepth), primordials (built when the process starts), and
+ * (internal/tty getColorDepth), primordials (Node's, built as the library loads), and
  * sources: { [id]: (exports, require, module, process, internalBinding,
  * primordials) => void } }, the last two running the upstream text.
  */
@@ -372,10 +373,11 @@ export const NODE_LIB_HOST_SOURCE = String.raw`function createNodeLib(platform) 
       require("internal/validators").validateAbortSignal(signal, "signal");
       require("internal/validators").validateObject(resource, "resource", require("internal/validators").kValidateObjectAllowObjects);
       if (signal.aborted) return Promise.resolve();
-      // On a signal that follows it, which none of the signal's own
-      // listeners can stop (Node's kResistStopPropagation), kept as long as it is.
-      const follower = AbortSignal.any([signal]);
-      followers.set(signal, [...(followers.get(signal) ?? []), follower]);
+      // On the signal's one follower, which none of the signal's own
+      // listeners can stop (Node's kResistStopPropagation), kept as long as
+      // the signal is.
+      let follower = followers.get(signal);
+      if (follower === undefined) followers.set(signal, (follower = AbortSignal.any([signal])));
       return new Promise((resolve) => follower.addEventListener("abort", () => resolve(), { once: true }));
     },
     transferableAbortSignal(signal) {

@@ -320,10 +320,11 @@ module.exports = {
       require("internal/validators").validateAbortSignal(signal, "signal");
       require("internal/validators").validateObject(resource, "resource", require("internal/validators").kValidateObjectAllowObjects);
       if (signal.aborted) return Promise.resolve();
-      // On a signal that follows it, which none of the signal's own
-      // listeners can stop (Node's kResistStopPropagation), kept as long as it is.
-      const follower = AbortSignal.any([signal]);
-      followers.set(signal, [...(followers.get(signal) ?? []), follower]);
+      // On the signal's one follower, which none of the signal's own
+      // listeners can stop (Node's kResistStopPropagation), kept as long as
+      // the signal is.
+      let follower = followers.get(signal);
+      if (follower === undefined) followers.set(signal, (follower = AbortSignal.any([signal])));
       return new Promise((resolve) => follower.addEventListener("abort", () => resolve(), { once: true }));
     },
     transferableAbortSignal(signal) {
@@ -414,22 +415,14 @@ module.exports = {
     return result;
   }
   utilBinding.parseEnv = parseEnv;
-  // Node's util binding GetCallSites: the frames below util.getCallSites, as
-  // V8's StackFrame reads them; a script's id is its own number here.
+  // Node's util binding GetCallSites: the frames below util.getCallSites (it
+  // and this binding skipped), as V8's StackFrame reads them; a script's id
+  // is its own number here.
   const scriptIds = new Map();
   utilBinding.getCallSites = function getCallSites(frameCount) {
-    return platform.callSites(frameCount + 1, getCallSites).slice(1).map((site) => {
-      const scriptName = site.getScriptNameOrSourceURL?.() ?? site.getFileName() ?? "";
+    return platform.currentFrames(frameCount, 2).map(({ functionName, scriptName, lineNumber, columnNumber }) => {
       if (!scriptIds.has(scriptName)) scriptIds.set(scriptName, String(scriptIds.size + 1));
-      const column = site.getColumnNumber() ?? 0;
-      return {
-        functionName: site.getFunctionName() ?? "",
-        scriptId: scriptIds.get(scriptName),
-        scriptName,
-        lineNumber: site.getLineNumber() ?? 0,
-        columnNumber: column,
-        column,
-      };
+      return { functionName, scriptId: scriptIds.get(scriptName), scriptName, lineNumber, columnNumber, column: columnNumber };
     });
   };
 

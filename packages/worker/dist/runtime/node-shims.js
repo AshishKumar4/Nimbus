@@ -6914,7 +6914,7 @@ function __nimbusNodeLib() {
     console: __consoleMod,
     workerThreads: builtins.worker_threads,
     nodeDebug: __nimbusNodeDebugAtLaunch,
-    callSites: (count, above) => (typeof __nimbusStackSites === "function" ? __nimbusStackSites({}, count, above) : []),
+    currentFrames: (count, skip) => __nimbusCurrentFrames(__realUtil.getCallSites, count, skip + 1),
     primordials,
     sources: lib.sources,
   });
@@ -6938,10 +6938,8 @@ function __nimbusOptionValue(name) {
 // isInsideNodeModules (the util binding): whether the program's innermost
 // frame on the stack is a package's.
 function __nimbusInsideNodeModules() {
-  if (typeof __nimbusStackSites !== "function") return false;
-  for (const site of __nimbusStackSites({}, Infinity, __nimbusInsideNodeModules)) {
-    const file = site.getFileName();
-    if (typeof file === "string" && __nimbusModuleOfFile(file) !== null) return /[\\\\/]node_modules[\\\\/]/.test(file);
+  for (const { scriptName } of __nimbusCurrentFrames(__realUtil.getCallSites, 200, 0)) {
+    if (__nimbusModuleOfFile(scriptName) !== null) return /[\\\\/]node_modules[\\\\/]/.test(scriptName);
   }
   return false;
 }

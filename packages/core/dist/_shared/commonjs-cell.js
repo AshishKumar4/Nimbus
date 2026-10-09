@@ -788,38 +788,43 @@ class __NimbusCallSite {
 }
 // What a runtime's shims format a stack with instead (node --enable-source-maps): null to keep the hook's own.
 let __nimbusStackFormatter = null;
-// V8's call sites of \`holder\`'s stack, the program's at their file's places,
-// as Node's bindings read them natively: captured here \`count\` frames below
-// \`above\` when \`count\` is given, else as \`holder\` captured them before
-// anything read its stack. Neither the program's Error.prepareStackTrace nor
-// its Error.stackTraceLimit or Error.captureStackTrace takes part, and
-// Error's own properties are left as they were.
-const __nimbusCaptureStackTrace = Error.captureStackTrace;
+// V8's call sites of the stack \`holder\` captured and nothing read yet, the
+// program's at their file's places, as Node's errors binding reads them
+// natively: the program's Error.prepareStackTrace takes no part, and is left
+// as it was. JavaScript reads a captured stack's sites only through that hook:
+// named limit, a hook the program made non-configurable is the one that
+// formats it, and the holder has no sites here.
 const __nimbusSites = (error, sites) => sites.map(__NimbusCallSite.of);
-function __nimbusStackSites(holder, count, above) {
+function __nimbusStackSites(holder) {
   const prepare = Object.getOwnPropertyDescriptor(Error, "prepareStackTrace");
-  const limit = Object.getOwnPropertyDescriptor(Error, "stackTraceLimit");
-  const define = (name, value) => {
-    try { Object.defineProperty(Error, name, { value, writable: true, enumerable: name === "stackTraceLimit", configurable: true }); } catch {}
-  };
-  const restore = (name, descriptor) => {
-    try {
-      if (descriptor === undefined) delete Error[name];
-      else Object.defineProperty(Error, name, descriptor);
-    } catch {}
-  };
   try {
-    define("prepareStackTrace", __nimbusSites);
-    if (count !== undefined) {
-      define("stackTraceLimit", count);
-      Reflect.apply(__nimbusCaptureStackTrace, Error, [holder, above]);
-    }
+    Object.defineProperty(Error, "prepareStackTrace", { value: __nimbusSites, writable: true, configurable: true });
+  } catch {
+    return [];
+  }
+  try {
     const sites = holder.stack;
     return Array.isArray(sites) ? sites : [];
   } finally {
-    restore("prepareStackTrace", prepare);
-    restore("stackTraceLimit", limit);
+    if (prepare === undefined) delete Error.prepareStackTrace;
+    else Object.defineProperty(Error, "prepareStackTrace", prepare);
   }
+}
+// The current stack as V8 holds it, whatever Error's hooks and limit are, as
+// Node's util binding reads it (workerd's node:util getCallSites, native):
+// \`count\` frames below \`skip\` frames of this function's callers, each
+// { functionName, scriptName, lineNumber, columnNumber }, the program's at
+// their file's places. Named limit: workerd reads at most 200 frames, the
+// callers skipped among them.
+function __nimbusCurrentFrames(getCallSites, count, skip) {
+  return getCallSites(Math.min(200, count + skip + 1)).slice(skip + 1).map((frame) => {
+    const location = __nimbusFrameLocation({
+      getFileName: () => frame.scriptName,
+      getLineNumber: () => frame.lineNumber,
+      getColumnNumber: () => frame.columnNumber,
+    });
+    return location === null ? frame : { functionName: frame.functionName, scriptName: location.file, lineNumber: location.line, columnNumber: location.column };
+  });
 }
 function __nimbusUseStackFormatter(format) {
   __nimbusStackFormatter = format;

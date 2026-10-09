@@ -335,6 +335,27 @@ const keys = () => JSON.stringify(Object.keys(require.cache).map((k) => path.rel
   console.log('required again ' + (require('./r.mjs').r) + ' ' + globalThis.rCount + ' ' + keys());
 })();
 `,
+  // What util.aborted keeps for waiters on one signal: here one follower
+  // signal (AbortSignal.any) however many wait, as Node keeps one listener each.
+  'aborted-bound.cjs': String.raw`
+const util = require('util');
+const any = AbortSignal.any;
+let followers = 0;
+AbortSignal.any = function (...args) { followers++; return Reflect.apply(any, this, args); };
+const controller = new AbortController();
+const waits = Array.from({ length: 1000 }, () => util.aborted(controller.signal, {}));
+controller.abort();
+Promise.all(waits).then(() => console.log('BOUND ' + JSON.stringify({ followers, settled: waits.length })));
+`,
+  // Both made non-configurable and non-writable: no JavaScript path reads the
+  // stack (commonjs-cell.ts __nimbusStackSites names the limit), and the
+  // answer is none, not made-up frames.
+  'locked.cjs': String.raw`
+const util = require('util');
+Object.defineProperty(Error, 'prepareStackTrace', { value: () => 'locked', writable: false, enumerable: false, configurable: false });
+Object.defineProperty(Error, 'stackTraceLimit', { value: 0, writable: false, enumerable: true, configurable: false });
+console.log('LOCKED ' + JSON.stringify(util.getCallSites(3)));
+`,
   'mods/esm/e.mjs': 'export const e = 1;\n',
   'mods/esm/r.mjs': 'globalThis.rCount = (globalThis.rCount ?? 0) + 1;\nexport const r = 2;\n',
   'mods/esm/c.cjs': 'exports.c = 1;\n',
@@ -368,6 +389,10 @@ console.log('capture replaced ' + JSON.stringify(sites()) + ' ' + message());
 Error.captureStackTrace = capture;
 Object.defineProperty(Error, 'stackTraceLimit', { value: 3, writable: false, enumerable: true, configurable: true });
 console.log('limit locked ' + JSON.stringify(sites()) + ' ' + descriptors());
+// Pinned for good but still writable.
+Object.defineProperty(Error, 'stackTraceLimit', { value: 0, writable: true, enumerable: true, configurable: false });
+Object.defineProperty(Error, 'prepareStackTrace', { value: (e, s) => { formatted++; return 'pinned'; }, writable: true, enumerable: false, configurable: false });
+console.log('pinned writable ' + JSON.stringify(sites()) + ' ' + message() + ' ' + formatted + ' ' + descriptors() + ' ' + new Error('e').stack);
 `,
   'deprecate.cjs': SHOW + String.raw`
 const util = require('util');
@@ -409,6 +434,11 @@ try {
       const got = `${splitScenarioOutput(r.stdout).lines.join('\n')}\n`;
       if (got !== expected.get(program)) differences.push({ program, node: expected.get(program), here: got });
     }
+    const bound = await session.run(`cd ${W} && node aborted-bound.cjs 2>&1`, 120_000);
+    const line = splitScenarioOutput(bound.stdout).lines.find((l) => l.startsWith('BOUND '));
+    assert.deepEqual(line && JSON.parse(line.slice(6)), { followers: 1, settled: 1000 }, `util.aborted keeps one follower per signal: ${bound.stdout.slice(-400)}`);
+    const locked = await session.run(`cd ${W} && node locked.cjs 2>&1`, 120_000);
+    assert.ok(splitScenarioOutput(locked.stdout).lines.includes('LOCKED []'), `a locked Error reads no sites: ${locked.stdout.slice(-400)}`);
   } finally {
     await session.close().catch(() => {});
   }
