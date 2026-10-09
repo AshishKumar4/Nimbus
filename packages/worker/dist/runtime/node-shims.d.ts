@@ -18,7 +18,9 @@
  *   - https: fetch()-backed request/get
  *   - net: Socket/Server with connect/write/end
  *   - child_process: ChildProcess objects (execution requires supervisor RPC)
- *   - assert, util, url, querystring, string_decoder, readline, tty, timers
+ *   - assert, querystring, punycode and util.inspect: Node's own modules
+ *     (node-lib-source.ts) over node-lib-host.ts
+ *   - util, url, string_decoder, readline, tty, timers
  *
  * VFS access: sync reads use __vfsBundle (pre-bundled by FacetManager);
  * async reads use the supervisor bridge as their source of truth whenever it

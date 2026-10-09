@@ -20,8 +20,8 @@ licenses remain in effect.
 | Oxc (`oxc` crates), rolldown, `@oxc-project/runtime` | The transform facet's wasm (`packages/worker/scripts/oxc-wasm`, built from Oxc, with esbuild's and @oxc-project/runtime's helpers it inlines into output), the build facet's rolldown binding. | MIT; @oxc-project/runtime's `decorate`, `decorateParam` and `decorateMetadata` are TypeScript's emit helpers, Apache-2.0. |
 | `tsconfck` (dominikg), `strip-json-comments` and `strip-bom` (Sindre Sorhus) | Finding and reading a module's tsconfig for the built-in Vite dev server as Vite does; tsconfck 3.1's parse, with the JSON helpers it carries, ported to `packages/core/src/runtime/tsconfck.ts`. | MIT, Copyright (c) 2021-present dominikg and tsconfck contributors; MIT, Copyright (c) Sindre Sorhus. |
 | `es-module-lexer` (Guy Bedford) | Finding `import()` and `import.meta` in Node cells; its CSP build is vendored in `packages/core/src/runtime/module-lexer.ts`. | MIT, Copyright (C) 2018-2022 Guy Bedford. |
-| Node.js `lib/internal/util/inspect.js` and `lib/internal/per_context/primordials.js` (v22.22.3) | The node shims' `util.inspect`, `util.format` and console formatting: both files vendored byte for byte in `packages/worker/src/runtime/node-inspect-source.ts`, with Node internals they import ported in `packages/worker/src/runtime/node-inspect-host.ts`. | MIT, Copyright Node.js contributors. |
-| Unicode Character Database `EastAsianWidth.txt` (17.0.0) | The East Asian Wide and Fullwidth ranges the node shims count two columns for, in `packages/worker/src/runtime/node-inspect-source.ts`. | Unicode License v3 (full text under "Unicode License v3" below), Copyright © 1991-2025 Unicode, Inc. |
+| Node.js `lib/` modules (v22.22.3): `internal/util/inspect.js`, `internal/per_context/primordials.js`, `assert.js` and `internal/assert/*`, `internal/util/comparisons.js`, `internal/validators.js`, `querystring.js`, `punycode.js` and the others `scripts/vendor-node-lib.mjs` pins | The node shims' `util.inspect`, `util.format` and console formatting, `assert`, `querystring` and `punycode`: the files vendored byte for byte in `packages/worker/src/runtime/node-lib-source.ts`, with Node internals they import ported in `packages/worker/src/runtime/node-lib-host.ts`. `punycode.js` is Mathias Bynens's. | MIT, Copyright Node.js contributors; punycode.js MIT, Copyright Mathias Bynens. |
+| Unicode Character Database `EastAsianWidth.txt` (17.0.0) | The East Asian Wide and Fullwidth ranges the node shims count two columns for, in `packages/worker/src/runtime/node-lib-source.ts`. | Unicode License v3 (full text under "Unicode License v3" below), Copyright © 1991-2025 Unicode, Inc. |
 | `minimatch` (Isaac Z. Schlueter), with `brace-expansion` and `balanced-match`; Node.js's `lib/internal/fs/glob.js` | The node shims' `fs.glob`: minimatch 10.2.4 vendored as Node v22.22.3 bundles it, in `packages/worker/src/runtime/node-minimatch-source.ts`, and Node's Glob ported into `packages/worker/src/runtime/node-shims.ts`. | minimatch Blue Oak Model License 1.0.0 (<https://blueoakcouncil.org/license/1.0.0>), Copyright Isaac Z. Schlueter and Contributors; brace-expansion and balanced-match MIT, Copyright (c) 2013 Julian Gruber; Node.js MIT, Copyright Node.js contributors. |
 | `wabt` / wabt.js | Test and WASM tooling support. | Apache-2.0. |
 | Cloudflare `workerd`, Wrangler, and Workers types | Local development and Worker runtime compatibility. | Apache-2.0 and/or MIT, depending on package. |
@@ -38,7 +38,7 @@ the upstream license files and notices with the redistributed artifacts.
 
 ## Unicode License v3
 
-The Unicode data vendored in `packages/worker/src/runtime/node-inspect-source.ts`
+The Unicode data vendored in `packages/worker/src/runtime/node-lib-source.ts`
 (from `https://www.unicode.org/Public/17.0.0/ucd/EastAsianWidth.txt`) is
 provided under this license (`https://www.unicode.org/license.txt`):
 
