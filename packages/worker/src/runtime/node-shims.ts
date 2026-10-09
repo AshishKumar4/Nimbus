@@ -3470,7 +3470,7 @@ const __fsMod = (() => {
   }
   /** Whether the process's own effects are at \`k\` (or its landing, \`follow\`): what the session answers, not the view. */
   function _ownAt(k, follow) {
-    if (_nsOwnView(k) !== null || (__vfsWrites && k in __vfsWrites)) return true;
+    if (_nsOwnView(k) !== null || (__vfsWrites && k in __vfsWrites) || _pendingModes.has(k)) return true;
     if (!follow) return false;
     const landing = _nsLandingKey(k);
     return landing !== null && landing !== k && _ownAt(landing, false);

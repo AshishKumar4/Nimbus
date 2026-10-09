@@ -41,7 +41,17 @@ async function boot(overrides = {}, seed = () => {}) {
   authority.kfs.writeFile('home/user/app/f.txt', 'v1');
   authority.kfs.writeFile('home/user/app/g.txt', 'g1');
   let forward;
-  const handle = facetSupervisor(authority, typeof overrides === 'function' ? overrides((name, args) => forward(name, args)) : overrides);
+  const given = typeof overrides === 'function' ? overrides((name, args) => forward(name, args)) : overrides;
+  // Every call here is the session's: it grants no read lease (whose async
+  // stats are the process's own view; node-read-lease).
+  const asked = Object.hasOwn(given, 'fsAcquire') ? {} : {
+    fsAcquire: (epoch, cursor, options) => {
+      if (options?.lease !== true) return forward('fsAcquire', options === undefined ? [epoch, cursor] : [epoch, cursor, options]);
+      const { lease: _lease, ...rest } = options;
+      return forward('fsAcquire', [epoch, cursor, rest]);
+    },
+  };
+  const handle = facetSupervisor(authority, { ...asked, ...given });
   forward = handle.forward;
   await launchResident({
     authority,
@@ -109,11 +119,9 @@ await runScenarios(import.meta.path, {
       await authority.peer.writeFile('home/user/app/f.txt', 'v2');
       assert.equal(await probe.fs.promises.readFile(F, 'utf8'), 'v2', `readFile still reads (${refusal})`);
       assert.equal((await probe.fs.promises.stat(F)).size, 2, 'stat still stats');
-      const leased = globalThis.__nimbusVfsCoherence.leasedBarriers;
       const later = await callsOf(log, () => probe.fs.promises.stat(F));
       assert.equal(later.made.fsAcquired, undefined, 'and fsAcquired is not asked again');
-      // Asked, or answered by the read lease the barrier before it took.
-      assert.equal((later.made.fsAcquire ?? 0) + globalThis.__nimbusVfsCoherence.leasedBarriers - leased, 1, 'the barrier is taken on its own');
+      assert.equal(later.made.fsAcquire, 1, 'the barrier is asked on its own');
     }
   },
 
