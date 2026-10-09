@@ -21,12 +21,12 @@
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
 const W = '/home/user/promote';
-// The server is made where no static check sees it: through a name built at
-// run time.
+// The server is made and listens where no static check sees it: through
+// names built at run time. Each is started as a one-shot, and promoted.
 const SERVE = (port, body) => [
   "const http = require('h' + 'ttp');",
   `const server = http['create' + 'Server']((req, res) => res.end(${JSON.stringify(body)}));`,
-  `server.listen(${port}, () => console.log('LISTENING ${port}'));`,
+  `server['li' + 'sten'](${port}, () => console.log('LISTENING ${port}'));`,
 ].join('\n');
 const FILES = {
   'plain.js': SERVE(4101, 'plain'),
@@ -70,6 +70,7 @@ try {
     for (const [name, content] of Object.entries(FILES)) await client.writeFile(`${W}/${name}`, content);
 
     const plain = await run(`cd ${W} && node plain.js`, 120_000);
+    check(!/facet started \(long-running\)/.test(plain.stdout), `plain: started as a one-shot (no static check names it a server)\n  ${JSON.stringify(plain.stdout.slice(-400))}`);
     check(plain.status === 0 && /LISTENING 4101/.test(plain.stdout), `plain: started and listened once\n  ${JSON.stringify(plain.stdout.slice(-400))}`);
     check((plain.stdout.match(/LISTENING 4101/g) ?? []).length === 1, `plain: what it printed before its listen is shown once\n  ${JSON.stringify(plain.stdout.slice(-400))}`);
     const plainGot = await curl(4101);
