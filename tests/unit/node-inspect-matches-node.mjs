@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 // The shims' util.inspect is Node v22.22.3's own: lib/internal/util/inspect.js
 // over the primordials lib/internal/per_context/primordials.js builds, byte
-// for byte (their digests are pinned), given ports of the Node internals they
-// import (node-inspect-host.ts).
+// for byte (every vendored module's digest is pinned), given ports of the Node
+// internals they import (node-lib-host.ts).
 //
 // Here the shims' composition runs in real node, with node's own util as the
 // platform and node's util binding as its V8 slot readers (THE BINDING),
@@ -19,14 +19,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_INSPECT_SHA256, NODE_INSPECT_SOURCE, NODE_PRIMORDIALS_SHA256, NODE_PRIMORDIALS_SOURCE,
-} from '../../packages/worker/src/runtime/node-inspect-source.ts';
-import { NODE_INSPECT_HOST_SOURCE } from '../../packages/worker/src/runtime/node-inspect-host.ts';
+  EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_LIB_SHA256, NODE_LIB_SOURCES, NODE_PRIMORDIALS_SHA256, NODE_PRIMORDIALS_SOURCE,
+} from '../../packages/worker/src/runtime/node-lib-source.ts';
+import { NODE_LIB_HOST_SOURCE } from '../../packages/worker/src/runtime/node-lib-host.ts';
 import { NODE_ERROR_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
 
 const sha256 = (text) => createHash('sha256').update(text).digest('hex');
-assert.equal(sha256(NODE_INSPECT_SOURCE), '2f2f01d7077800f8565d1be2bd1e6800f8ac02759482dc080eb6bc6005d67dd1', 'inspect.js is v22.22.3\'s, byte for byte');
-assert.equal(sha256(NODE_INSPECT_SOURCE), NODE_INSPECT_SHA256);
+assert.equal(NODE_LIB_SHA256['internal/util/inspect'], '2f2f01d7077800f8565d1be2bd1e6800f8ac02759482dc080eb6bc6005d67dd1', 'inspect.js is v22.22.3\'s, byte for byte');
+assert.deepEqual(Object.keys(NODE_LIB_SOURCES), Object.keys(NODE_LIB_SHA256));
+for (const [id, text] of Object.entries(NODE_LIB_SOURCES)) assert.equal(sha256(text), NODE_LIB_SHA256[id], `lib/${id}.js is v22.22.3's, byte for byte`);
 assert.equal(sha256(NODE_PRIMORDIALS_SOURCE), '9e3fe2fe051667172d6ed9d997eee99b3454a7e4ec779dd63c1f19d44b25b1ca', 'primordials.js is v22.22.3\'s, byte for byte');
 assert.equal(sha256(NODE_PRIMORDIALS_SOURCE), NODE_PRIMORDIALS_SHA256);
 
@@ -43,9 +44,11 @@ const port = (__HOST__)({
     for (let i = 0; i < wide.length; i += 2) if (code >= wide[i] && code <= wide[i + 1]) return true;
     return false;
   },
-  primordialsOf: new Function('primordials', 'globalThis', __PRIMORDIALS__),
-  inspectOf: new Function('exports', 'require', 'module', 'process', 'internalBinding', 'primordials', __INSPECT__),
-});
+  signals: require('os').constants.signals,
+  errors: { codes: nodeErrorCodes, hideStackFrames, isErrorStackTraceLimitWritable },
+  primordials: ((primordials) => (new Function('primordials', 'globalThis', __PRIMORDIALS__)(primordials, globalThis), primordials))({}),
+  sources: Object.fromEntries(Object.entries(__SOURCES__).map(([id, text]) => [id, new Function('exports', 'require', 'module', 'process', 'internalBinding', 'primordials', text)])),
+}).require('internal/util/inspect');
 
 const circular = { name: 'c' }; circular.self = circular; circular.list = [circular];
 class Point { constructor() { this.x = 1; this.y = 2; } }
@@ -124,9 +127,9 @@ try {
     .replace('__WIDE__', JSON.stringify(EAST_ASIAN_WIDE_RANGES))
     .replace('__BUILTINS__', JSON.stringify(NODE_BUILTIN_OBJECTS))
     .replace('__ERRORS__', () => NODE_ERROR_PREAMBLE)
-    .replace('__HOST__', () => NODE_INSPECT_HOST_SOURCE)
+    .replace('__HOST__', () => NODE_LIB_HOST_SOURCE)
     .replace('__PRIMORDIALS__', () => JSON.stringify(NODE_PRIMORDIALS_SOURCE))
-    .replace('__INSPECT__', () => JSON.stringify(NODE_INSPECT_SOURCE));
+    .replace('__SOURCES__', () => JSON.stringify(NODE_LIB_SOURCES));
   writeFileSync(join(dir, 'compare.cjs'), program);
   const { NO_COLOR, FORCE_COLOR, NODE_DISABLE_COLORS, ...env } = process.env;
   const node = spawnSync('node', ['--expose-internals', '--no-warnings', 'compare.cjs'], { cwd: dir, env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });

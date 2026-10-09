@@ -10,12 +10,13 @@
 
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 function makeUtil() {
   const code = generateShimsCode();
   const factory = new Function(
     '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + code + '\n;return builtins.util;',
+    '"use strict";' + SHIMS_STORE_PRELUDE + code + '\n;return builtins.util;',
   );
   return factory(
     {},

@@ -45,6 +45,8 @@
  *                         block in node-shims.ts; results are the host
  *                         realm's own Buffers, which the widened
  *                         __BufferMod.isBuffer recognizes.
+ *   - node:string_decoder — Node's StringDecoder, every encoding; forwarded
+ *                         as the string_decoder builtin.
  *   - node:url          — full surface, including the legacy parse/format/
  *                         resolve/resolveObject/Url API (workerd's
  *                         node-internal:legacy_url, v1.20260926.1). The url

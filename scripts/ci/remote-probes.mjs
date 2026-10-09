@@ -43,11 +43,11 @@
 // Exit: 0, every row green; 1, a red row; 2, a task not graded.
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PROBE_TARGET_SKIPS } from '../../tests/behavioral/_probe-target-skips.mjs';
 import { mapOnArmada } from './lib/armada.mjs';
 import { assertInstalled } from './lib/installed.mjs';
+import { NIMBUS_STATE } from './lib/state-dir.mjs';
 import { writeScreenshots } from './lib/probe-screenshots.mjs';
 
 /** A task's limit on armada, and so the job's: every part runs at once. */
@@ -187,7 +187,7 @@ const tasks = mapped.outcomes.map((outcome, i) => {
   return { ...item, outcome, rows: verdict.rows, ...(flags.screenshots ? { screenshots } : {}) };
 });
 
-const state = join(homedir(), '.local', 'state', 'nimbus', 'remote-probes');
+const state = join(NIMBUS_STATE, 'remote-probes');
 try {
   mkdirSync(state, { recursive: true });
   const report = join(state, `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}-${sha.slice(0, 12)}-${mapped.jobId}.json`);

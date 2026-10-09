@@ -1,20 +1,24 @@
 /**
- * Source of what Node's util.inspect (node-inspect-source.ts) is given in a
+ * Source of what Node's own modules (node-lib-source.ts) are given in a
  * Worker in place of Node's internal modules and bindings:
- * `createNodeInspect(platform)`, which runs inspect.js and returns its
- * exports. generateShimsCode embeds this text (node-shims.ts,
- * "util.inspect"), and tests/unit/node-inspect-matches-node.mjs evaluates
- * the same text beside Node's own. A string, not a function's toString():
- * tsc and bun print function source differently (see
- * javascript-string-literal.ts).
+ * `createNodeLib(platform)`, whose `require(id)` runs a module of Node's
+ * library once, the first time it is asked for, and returns its exports.
+ * generateShimsCode embeds this text (node-shims.ts, "Node's library"), and
+ * tests/unit/node-inspect-matches-node.mjs evaluates the same text beside
+ * Node's own. A string, not a function's toString(): tsc and bun print
+ * function source differently (see javascript-string-literal.ts).
  *
- * Node's own functions are ported: lib/internal/util.js join, removeColors
- * and isError; lib/internal/errors.js isStackOverflowError;
- * lib/internal/validators.js validateObject and validateString; src/
- * node_i18n.cc GetStringWidth. Its errors are the shims' (core _shared/
- * node-error.ts), which the text calls by name. Of the util binding, the
- * property and constructor-name readers are JavaScript, and every brand
- * check is intrinsic (util.types), never the prototype chain.
+ * What Node's modules require of its internals that is not itself one of
+ * them is ported here: lib/internal/util.js join, removeColors, isError,
+ * deprecate, setOwnProperty and normalizeEncoding; lib/internal/errors.js
+ * codes, hideStackFrames and isErrorStackTraceLimitWritable (platform.errors:
+ * core _shared/node-error.ts's, Node's messages) and isStackOverflowError;
+ * lib/internal/url.js isURL; lib/internal/util/types.js's typed-array
+ * checks; src/node_i18n.cc GetStringWidth; and the bindings below. The
+ * errors are the shims' (node-error.ts), which the text calls by name. Of
+ * the util binding, the property and constructor-name readers are
+ * JavaScript, and every brand check is intrinsic (util.types), never the
+ * prototype chain.
  *
  * THE BINDING. A promise's state and result, a proxy's target and handler,
  * a Map or Set iterator's and a weak collection's entries are V8 slots no
@@ -34,14 +38,21 @@
  * a proxy on its prototype chain, shows its slot as unknown, since reading
  * it would run that code once more than Node.
  *
- * `platform`: { util (the platform's node:util), slots, Buffer, url ({ URL,
+ * `platform`: { util (the platform's node:util), errors ({ codes,
+ * hideStackFrames, isErrorStackTraceLimitWritable }), slots, Buffer, url ({ URL,
  * pathToFileURL }), process, builtinModules, builtinObjects (Node's
- * NODE_BUILTIN_OBJECTS), eastAsianWide(code),
- * primordialsOf(primordials, globalThis), inspectOf(exports, require, module,
- * process, internalBinding, primordials) }, the last two running the
- * upstream sources.
+ * NODE_BUILTIN_OBJECTS), eastAsianWide(code), signals (os.constants.signals),
+ * insideNodeModules() (whether the caller's code is a package's),
+ * callSites(count, above) (V8's call sites of \`count\` frames below \`above\`),
+ * errorSourcePositions(error) (where V8 places the frame an error was
+ * captured at: { sourceLine, scriptResourceName, lineNumber, startColumn }),
+ * tokenizer(code, options) (acorn's), sourceMaps
+ * ({ getSourceMapsSupport, findSourceMap, getSourceLine }), colorDepth()
+ * (internal/tty getColorDepth), primordials (Node's, built as the library loads), and
+ * sources: { [id]: (exports, require, module, process, internalBinding,
+ * primordials) => void } }, the last two running the upstream text.
  */
-export declare const NODE_INSPECT_HOST_SOURCE: string;
+export declare const NODE_LIB_HOST_SOURCE: string;
 /**
  * Source of `createWorkerdSlots(util)`: Node's util binding's V8 slot
  * readers (getPromiseDetails, getProxyDetails, previewEntries) over
@@ -65,4 +76,4 @@ export declare const NODE_INSPECT_HOST_SOURCE: string;
  * read: its slot shows as unknown.
  */
 export declare const WORKERD_SLOTS_SOURCE: string;
-//# sourceMappingURL=node-inspect-host.d.ts.map
+//# sourceMappingURL=node-lib-host.d.ts.map

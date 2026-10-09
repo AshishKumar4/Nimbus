@@ -17,8 +17,11 @@
 //   2. the miss FAULTS THE CONTENT IN, so the next touch of the same path is
 //      not refused a second time for a reason that was repairable after the
 //      first;
-//   3. the record clears only when the PROGRAM is handed the bytes — residency
-//      repaired behind its back does not un-answer the read that failed;
+//   3. the record clears only when the program takes the remedy the error
+//      names, an asynchronous read — residency repaired behind its back does
+//      not un-answer the read that failed, and neither does a later
+//      synchronous read that succeeds, a stat or an existence check: the
+//      program may already have built on the refusal (vite's resolver does);
 //   4. a path that genuinely does not exist is still ENOENT, and is not
 //      recorded, because a missing file is not a residency failure.
 
@@ -137,15 +140,18 @@ assert.deepEqual(
 // ── 4. The miss faults the content in ───────────────────────────────────────
 // The access that missed cannot be served. The next one can, and a program
 // that reads the same file twice — or a later phase that reaches it for the
-// first time — must not be refused for a reason already repaired.
+// first time — must not be refused for a reason already repaired. But the
+// first refusal stands: what the program did with it is not undone.
 await settle();
 assert.equal(
   fs.readFileSync(staged, 'utf8'), STAGED_BODY,
   'the miss must have made the content resident for the next read',
 );
+assert.equal(fs.existsSync(staged), true);
+assert.equal(fs.statSync(staged).size, STAGED_BODY.length);
 assert.deepEqual(
-  missed(), [],
-  'handing the program the bytes is what clears the record',
+  missed(), ['home/user/example-app/lib.data.d.ts'],
+  'a later synchronous answer does not clear the refusal the program may have built on',
 );
 
 // ── 5. Repeated misses cost one fetch per path, not one per read ────────────
@@ -159,7 +165,7 @@ for (let i = 0; i < 3; i++) {
   try { fs.readFileSync(alsoStaged, 'utf8'); } catch { /* the miss under test */ }
 }
 assert.deepEqual(
-  missed(), ['home/user/example-app/second.data'],
+  missed(), ['home/user/example-app/lib.data.d.ts', 'home/user/example-app/second.data'],
   'three refused reads of one path are one unanswered path',
 );
 await settle();
@@ -173,7 +179,7 @@ assert.equal(
 // was never handed those bytes. It read three times and got nothing three
 // times, so the run is not honest and must not be allowed to end quietly.
 assert.deepEqual(
-  missed(), ['home/user/example-app/second.data'],
+  missed(), ['home/user/example-app/lib.data.d.ts', 'home/user/example-app/second.data'],
   'residency repaired after the fact does not un-answer the reads that failed',
 );
 
@@ -188,16 +194,22 @@ assert.equal(
   'a path the supervisor can see is present, not missing',
 );
 assert.deepEqual(
-  missed(), ['home/user/example-app/second.data', 'home/user/example-app/third.data'],
+  missed(), ['home/user/example-app/lib.data.d.ts', 'home/user/example-app/second.data', 'home/user/example-app/third.data'],
   'each unanswered path is listed once, in the order the program hit them',
 );
 assert.equal(await fs.promises.readFile(asyncOnly, 'utf8'), THIRD_BODY);
 assert.deepEqual(
-  missed(), ['home/user/example-app/second.data'],
+  missed(), ['home/user/example-app/lib.data.d.ts', 'home/user/example-app/second.data'],
   'the async form is the documented remedy, so taking it must settle that miss',
 );
 assert.equal(fs.readFileSync(alsoStaged, 'utf8'), SECOND_BODY);
-assert.deepEqual(missed(), [], 'a retried sync read that succeeds settles its own miss');
+assert.deepEqual(
+  missed(), ['home/user/example-app/lib.data.d.ts', 'home/user/example-app/second.data'],
+  'a retried sync read that succeeds does not settle the read that was refused',
+);
+assert.equal(await fs.promises.readFile(staged, 'utf8'), STAGED_BODY);
+assert.equal(await fs.promises.readFile(alsoStaged, 'utf8'), SECOND_BODY);
+assert.deepEqual(missed(), [], 'the async form settles each of them');
 
 // ── 8. The miss count is reported alongside the other coherence numbers ─────
 // Whether residency is working is a measurement, not an opinion, and it rides

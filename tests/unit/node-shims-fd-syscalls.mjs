@@ -430,7 +430,7 @@ for (const [k, v] of Object.entries({
   EXTENSIONLESS_FORMAT_WASM: 1, F_OK: 0, X_OK: 1,
 })) assert.equal(C[k], v, `fs.constants.${k}`);
 // node:constants is the union of os/fs/crypto constants and reads the SAME table.
-const nodeConstants = sandbox.builtins['node:constants'];
+const nodeConstants = sandbox.process.getBuiltinModule('node:constants');
 assert.equal(nodeConstants.O_CREAT, C.O_CREAT);
 assert.equal(nodeConstants.O_NOFOLLOW, C.O_NOFOLLOW);
 assert.equal(sandbox.process.binding('fs').constants.O_CREAT, C.O_CREAT);

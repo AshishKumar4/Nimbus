@@ -34,16 +34,18 @@ import { type FunctionScope, analyzeCommonJs, analyzeFunction, analyzeProgram, r
 import { type Owned, ownFunctionExpression, ownProgram } from './tree.js';
 import { own } from './parser-realm.js';
 import {
-  Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, arrayIsArray, charCodeAt, isWhitespaceCode, objectCreate, objectKeys,
+  Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, objectCreate, objectKeys,
   reflectGet, reflectGetOwnPropertyDescriptor, reflectSet, someItem, stringLastIndexOf, stringOf, stringSlice, withElement,
 } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
+import { type ModuleRequest, programRequests } from './module-requests.js';
 import type { AcornParser } from '../runtime/javascript-ast.js';
 
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
 export type { ModuleCell } from './modules.js';
+export type { ModuleRequest } from './module-requests.js';
 
 export interface InterpreterHost {
   /** `import(specifier, options)` from code whose module URL is `parentUrl`, for code compiled without an origin. */
@@ -152,42 +154,11 @@ function leadingSlashes(path: string): number {
 }
 
 /**
- * One module a module's text asks for, and how: `static` (an import or
- * export-from declaration), `dynamic` (import()) or `require`. The kind
- * decides the resolution, as the loader makes it: a static import is
- * evaluated through the module's scoped require (modules.ts), so it resolves
- * under require's conditions; import() resolves under import's.
- */
-export interface ModuleRequest {
-  readonly specifier: string;
-  readonly kind: 'static' | 'dynamic' | 'require';
-}
-
-/** A string literal, or a template with no substitutions: the specifier a request spells. */
-function spelledString(node: unknown): string | undefined {
-  if (typeof node !== 'object' || node === null) return undefined;
-  const type = reflectGet(node, 'type');
-  if (type === 'Literal') {
-    const value = reflectGet(node, 'value');
-    return typeof value === 'string' ? value : undefined;
-  }
-  if (type !== 'TemplateLiteral') return undefined;
-  const expressions = reflectGet(node, 'expressions');
-  const quasis = reflectGet(node, 'quasis');
-  if (!arrayIsArray(expressions) || expressions.length !== 0 || !arrayIsArray(quasis) || quasis.length !== 1) return undefined;
-  const value = reflectGet(quasis[0], 'value');
-  const cooked = typeof value === 'object' && value !== null ? reflectGet(value, 'cooked') : undefined;
-  return typeof cooked === 'string' ? cooked : undefined;
-}
-
-/**
- * The modules a file's text asks for, as this parser reads it: import and
- * export-from sources, `import()` of a string, and `require()` of a string
- * (any call of a `require` binding, the module's own or one createRequire
- * made). A specifier spelled with escapes or in a template is read as the
- * language reads it; one in a comment or a string is not a request. Text the
- * parser cannot read (TypeScript, JSX, a syntax error) asks for nothing.
- * The import() prefetch (node-shims.ts) finds what to fetch with it.
+ * The modules a file's text asks for, as this parser reads it
+ * (module-requests.ts programRequests: imports, import() and require() of a
+ * string, a createRequire binding's calls, and a require wrapper's). Text the
+ * parser cannot read (TypeScript, JSX, a syntax error) asks for nothing. The
+ * import() prefetch (node-shims.ts) finds what to fetch with it.
  */
 export function moduleRequests(path: string, text: string): ModuleRequest[] {
   if (UNPARSED_EXTENSIONS[extensionOf(path)]) return [];
@@ -201,43 +172,7 @@ export function moduleRequests(path: string, text: string): ModuleRequest[] {
       return [];
     }
   }
-  const requests: ModuleRequest[] = [];
-  const add = (specifier: string | undefined, kind: ModuleRequest['kind']) => {
-    if (specifier !== undefined) requests[requests.length] = { specifier, kind };
-  };
-  const pending: unknown[] = [program];
-  while (pending.length > 0) {
-    const node = pending[pending.length - 1];
-    pending.length -= 1;
-    if (typeof node !== 'object' || node === null) continue;
-    if (arrayIsArray(node)) {
-      for (let i = 0; i < node.length; i++) pending[pending.length] = node[i];
-      continue;
-    }
-    const type = reflectGet(node, 'type');
-    if (typeof type !== 'string') continue;
-    if (type === 'ImportDeclaration' || type === 'ExportAllDeclaration' || type === 'ExportNamedDeclaration') {
-      add(spelledString(reflectGet(node, 'source')), 'static');
-    } else if (type === 'ImportExpression') {
-      add(spelledString(reflectGet(node, 'source')), 'dynamic');
-    } else if (type === 'CallExpression') {
-      const callee = reflectGet(node, 'callee');
-      const args = reflectGet(node, 'arguments');
-      if (typeof callee === 'object' && callee !== null && reflectGet(callee, 'type') === 'Identifier'
-        && reflectGet(callee, 'name') === 'require' && arrayIsArray(args) && args.length > 0) {
-        add(spelledString(args[0]), 'require');
-      }
-    }
-    const keys = objectKeys(node);
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      if (key === 'type' || key === 'start' || key === 'end' || key === 'loc' || key === 'range') continue;
-      // A literal's or template element's value is data; elsewhere `value` holds a node (a property's).
-      if ((key === 'value' || key === 'regex') && (type === 'Literal' || type === 'TemplateElement')) continue;
-      pending[pending.length] = reflectGet(node, key);
-    }
-  }
-  return requests;
+  return programRequests(program);
 }
 
 interface BlockParser extends AcornParser {
@@ -344,6 +279,11 @@ class ThrowFinder extends AcornParserClass {
  *   - `offset` -1: the syntax error that stops the parse, as [start, end]
  *     of the token it stops at; null when the text parses.
  */
+/** acorn's tokenizer, which Node's error_source.js reads an assert.ok() call's expression with. */
+export function tokenizer(code: string, options: Options): ReturnType<typeof Parser.tokenizer> {
+  return Parser.tokenizer(code, options);
+}
+
 export function fatalLocation(text: string, goal: 'script' | 'module', offset: number): [number, number] | null {
   const finder = new ThrowFinder(goal === 'module' ? MODULE_OPTIONS : COMMONJS_OPTIONS, text);
   finder.offset = offset;

@@ -1,10 +1,36 @@
+/**
+ * The interpreter for code a program produces after its launch.
+ *
+ * A Worker compiles code only from the module map it was launched with, so
+ * text handed to a Function constructor, or a module file written while the
+ * program runs, cannot be compiled natively in that launch (see RUNTIME CODE
+ * in _shared/commonjs-cell.ts, which records such code so the next launch
+ * compiles it into its map). This runs it in the meantime, in the same realm
+ * as the program: values, objects, prototypes and functions are the
+ * program's own, never copies or proxies.
+ *
+ * The code is parsed once (acorn, bundled to reach only the built-ins the
+ * launch captured at its start: parser-realm.ts), analyzed once (scope.ts)
+ * and compiled once into closures (compile.ts); calling an interpreted
+ * function runs those closures. host-ops.ts supplies the operators and the
+ * native function objects interpreted functions are.
+ *
+ * Not supported, refused with UnsupportedSyntax before any of the code runs:
+ * `using` declarations, TypeScript and JSX, and the bodies of `with`
+ * statements in strict code (a SyntaxError anyway). A direct `eval(...)` is
+ * an ordinary call of the global eval, which a Worker refuses at request time
+ * natively too.
+ */
+import { Parser, type Options } from 'acorn';
 import { type RuntimeFunctionKind } from '../_shared/runtime-function-source.js';
 import { type ModuleCell } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
+import { type ModuleRequest } from './module-requests.js';
 export type { HostOps } from './host-ops.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
 export type { ModuleCell } from './modules.js';
+export type { ModuleRequest } from './module-requests.js';
 export interface InterpreterHost {
     /** `import(specifier, options)` from code whose module URL is `parentUrl`, for code compiled without an origin. */
     dynamicImport(parentUrl: string | undefined, specifier: unknown, options: unknown): Promise<unknown>;
@@ -48,24 +74,11 @@ export interface Interpreter {
     runScript(text: string): void;
 }
 /**
- * One module a module's text asks for, and how: `static` (an import or
- * export-from declaration), `dynamic` (import()) or `require`. The kind
- * decides the resolution, as the loader makes it: a static import is
- * evaluated through the module's scoped require (modules.ts), so it resolves
- * under require's conditions; import() resolves under import's.
- */
-export interface ModuleRequest {
-    readonly specifier: string;
-    readonly kind: 'static' | 'dynamic' | 'require';
-}
-/**
- * The modules a file's text asks for, as this parser reads it: import and
- * export-from sources, `import()` of a string, and `require()` of a string
- * (any call of a `require` binding, the module's own or one createRequire
- * made). A specifier spelled with escapes or in a template is read as the
- * language reads it; one in a comment or a string is not a request. Text the
- * parser cannot read (TypeScript, JSX, a syntax error) asks for nothing.
- * The import() prefetch (node-shims.ts) finds what to fetch with it.
+ * The modules a file's text asks for, as this parser reads it
+ * (module-requests.ts programRequests: imports, import() and require() of a
+ * string, a createRequire binding's calls, and a require wrapper's). Text the
+ * parser cannot read (TypeScript, JSX, a syntax error) asks for nothing. The
+ * import() prefetch (node-shims.ts) finds what to fetch with it.
  */
 export declare function moduleRequests(path: string, text: string): ModuleRequest[];
 /**
@@ -78,6 +91,8 @@ export declare function moduleRequests(path: string, text: string): ModuleReques
  *   - `offset` -1: the syntax error that stops the parse, as [start, end]
  *     of the token it stops at; null when the text parses.
  */
+/** acorn's tokenizer, which Node's error_source.js reads an assert.ok() call's expression with. */
+export declare function tokenizer(code: string, options: Options): ReturnType<typeof Parser.tokenizer>;
 export declare function fatalLocation(text: string, goal: 'script' | 'module', offset: number): [number, number] | null;
 export declare function createInterpreter(hostOps: HostOps, host: InterpreterHost): Interpreter;
 //# sourceMappingURL=index.d.ts.map

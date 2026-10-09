@@ -443,6 +443,8 @@ export function runtimeCodeCharge(entry: RuntimeCodeEntry): number {
 export const RUNTIME_INTERPRETER_MODULE = 'nimbus/interpreter.js';
 export const RUNTIME_INTERPRETER_OPS_MODULE = 'nimbus/interpreter-ops.js';
 export const RUNTIME_INTERPRETER_PRIMORDIALS_MODULE = 'nimbus/interpreter-primordials.js';
+/** Node's library in every node launch's map (worker runtime/node-lib-module.ts), compiled when a program first needs it. */
+export const RUNTIME_NODE_LIB_MODULE = 'nimbus/node-lib.js';
 
 /** The module name of the runtime code with key `key`. */
 export function runtimeCodeModuleName(key: string): string {
@@ -806,6 +808,53 @@ class __NimbusCallSite {
 }
 // What a runtime's shims format a stack with instead (node --enable-source-maps): null to keep the hook's own.
 let __nimbusStackFormatter = null;
+// V8's call sites, the program's at their file's places, as Node's bindings
+// read them natively: of the stack \`holder\` captured and nothing read yet,
+// or, given \`count\`, of \`count\` frames captured now below \`above\`. The
+// program's Error.prepareStackTrace, Error.stackTraceLimit and
+// Error.captureStackTrace take no part, and Error's own properties are left
+// as they were.
+//
+// Named limit: V8 hands JavaScript a stack's sites only through those two
+// properties, so with either made non-configurable and non-writable there is
+// none to read, and this answers [] (util.getCallSites [],
+// isInsideNodeModules false, assert's message without its source
+// expression) where Node's bindings read V8 directly. workerd's native
+// node:util getCallSites ignores both, but drops every frame with no function
+// name (an arrow, a module's top level), which Node keeps.
+const __nimbusCaptureStackTrace = Error.captureStackTrace;
+const __nimbusSites = (error, sites) => sites.map(__NimbusCallSite.of);
+function __nimbusStackSites(holder, count, above) {
+  const set = (name, value) => {
+    const descriptor = Object.getOwnPropertyDescriptor(Error, name);
+    if (descriptor === undefined || descriptor.configurable) {
+      Object.defineProperty(Error, name, { value, writable: true, enumerable: name === "stackTraceLimit", configurable: true });
+    } else if (descriptor.writable) {
+      Error[name] = value;
+    } else {
+      throw new TypeError("Error." + name + " is locked");
+    }
+    return () => {
+      if (descriptor === undefined) delete Error[name];
+      else if (descriptor.configurable) Object.defineProperty(Error, name, descriptor);
+      else Error[name] = descriptor.value;
+    };
+  };
+  const restores = [];
+  try {
+    restores.push(set("prepareStackTrace", __nimbusSites));
+    if (count !== undefined) {
+      restores.push(set("stackTraceLimit", count));
+      Reflect.apply(__nimbusCaptureStackTrace, Error, [holder, above]);
+    }
+    const sites = holder.stack;
+    return Array.isArray(sites) ? sites : [];
+  } catch {
+    return [];
+  } finally {
+    for (const restore of restores.reverse()) restore();
+  }
+}
 function __nimbusUseStackFormatter(format) {
   __nimbusStackFormatter = format;
 }

@@ -1182,8 +1182,10 @@ function __residentAdmit(result) {
         __residentForgetHeld(path);
       }
       // The same bytes under a newer revision (a chmod, a touch, a rewrite
-      // with identical content): kept, and dated at the report.
-      if (held && heldKey !== null && entry.contentKey != null && heldKey === String(entry.contentKey)) {
+      // with identical content): kept, and dated at the report, while the
+      // report says this credential may still read them. A chmod or chown
+      // that revoked the read drops them, and the session answers the read.
+      if (held && heldKey !== null && entry.contentKey != null && heldKey === String(entry.contentKey) && __nsReadable(entry.stat)) {
         t.fileSetRev(path, Number(entry.rev));
         kept++;
         continue;
@@ -1759,17 +1761,41 @@ function __nsChildren(k) {
   return __residentRequire().nsChildren(k).map((row) => ({ name: String(row.name), kind: Number(row.kind), mode: Number(row.mode) }));
 }
 
+/**
+ * Whether the credential may \`want\` (r=4, w=2, x=1) what \`meta\` describes
+ * (a namespace row, or a listing's or a delta's stat): POSIX's owner, group,
+ * other rule over its mode, uid and gid, as the session's own check answers
+ * a read (SqliteVFS.checkAccess). Root reads and writes anything, and
+ * searches what anyone may.
+ */
+function __nsAllows(meta, want) {
+  const cred = __nsCred;
+  if (!cred) return true;
+  const mode = Number(meta?.mode) & 0o777;
+  if (Number(cred.uid) === 0) return (want & 1) === 0 || (mode & 0o111) !== 0;
+  const groups = Array.isArray(cred.groups) ? cred.groups.map(Number) : [];
+  const shift = Number(cred.uid) === Number(meta?.uid) ? 6
+    : (Number(cred.gid) === Number(meta?.gid) || groups.includes(Number(meta?.gid))) ? 3 : 0;
+  return ((mode >> shift) & want) === want;
+}
+
 /** Whether the credential may search directory \`row\` (POSIX x). */
 function __nsTraversable(row) {
-  const cred = __nsCred;
   if (!row || Number(row.kind) !== __NS_DIR) return false;
-  const mode = Number(row.mode) & 0o777;
-  if (!cred) return true;
-  if (Number(cred.uid) === 0) return (mode & 0o111) !== 0;
-  const groups = Array.isArray(cred.groups) ? cred.groups.map(Number) : [];
-  const shift = Number(cred.uid) === Number(row.uid) ? 6
-    : (Number(cred.gid) === Number(row.gid) || groups.includes(Number(row.gid))) ? 3 : 0;
-  return ((mode >> shift) & 1) === 1;
+  return __nsAllows(row, 1);
+}
+
+/**
+ * Whether the credential may read the file \`stat\` describes: what decides
+ * whether bytes the store already has are kept for it under a new revision,
+ * or a copy is held for it, rather than asked of the session. Equal content
+ * keys prove the bytes are the file's, not that this credential may read
+ * them, and a chmod or a chown changes no byte. A stat that does not state
+ * the mode and owner is no grant: the session is asked instead, and answers.
+ */
+function __nsReadable(stat) {
+  if (!stat || !Number.isInteger(Number(stat.mode)) || !Number.isInteger(Number(stat.uid)) || !Number.isInteger(Number(stat.gid))) return false;
+  return __nsAllows(stat, 4);
 }
 
 /**
@@ -2463,6 +2489,32 @@ function __residentSetPlan(paths) {
 }
 
 /**
+ * Every package.json the launch's listing names, held from boot: the data
+ * plan's \`package-json\` rule (facets/data-plan.ts) for a launch the session
+ * plans without a listing (a one-shot). Package resolution reads manifests
+ * synchronously, for whatever names a program resolves, which no closure
+ * walk bounds: vite's config load resolves every import of the config to
+ * decide what to externalize, and took each manifest it was refused for a
+ * package that is not installed.
+ *
+ * The launch hands over the manifests the session read once per install
+ * (manager.ts _installedManifests), by path, each with its content key. A
+ * listed manifest whose content key is its copy's, and whose listed mode and
+ * owner let this credential read it, is held from the copy, so a copy is
+ * never older than the file nor readable where the file is not; any other
+ * is fetched with the plan.
+ * Null: no such rule (a resident's plan names its manifests itself).
+ */
+let __residentManifests = null;
+function __residentSetManifests(manifests) {
+  const files = manifests && typeof manifests === "object" && manifests.files && typeof manifests.files === "object" ? manifests.files : null;
+  __residentManifests = files === null ? null : new Map(Object.entries(files));
+}
+function __residentIsManifest(path) {
+  return (path === "package.json" || path.endsWith("/package.json")) && !("/" + path).includes("/.git/");
+}
+
+/**
  * Adopt the module map's bundle into an EMPTY store — the first fill, and the
  * one that costs nothing extra, because those bytes are already in the facet.
  * The cursor the bundle was read at becomes the store's.
@@ -2568,7 +2620,8 @@ async function __residentEnumerate(supervisor) {
       if (!Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(rev) || rev < 0) {
         throw new Error("Nimbus: fsList returned unusable metadata for '" + path + "'");
       }
-      entries.push({ path, size, rev, epoch: cursor.epoch, ckey: entry.contentKey == null ? null : String(entry.contentKey) });
+      // Its stat, for the bytes the store already has: who may read them (__nsReadable).
+      entries.push({ path, size, rev, epoch: cursor.epoch, ckey: entry.contentKey == null ? null : String(entry.contentKey), stat: entry.stat ?? null });
     }
     if (listed.next === null || listed.next === undefined) {
       return { entries, names, namespaceBytes, cursor, complete: true, reason: null };
@@ -2847,9 +2900,11 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
     const keep = vouches(entry, row.rev) || !judgeable;
     if (keep) { current.add(row.path); continue; }
     // The listing names the same bytes (a revision moved, the content did
-    // not, or another epoch): kept and dated at the listing. Equal keys are
-    // equal bytes, so this needs no comparable clock.
-    if (entry !== undefined && row.ckey !== null && entry.ckey != null && row.ckey === entry.ckey) {
+    // not, or another epoch): kept and dated at the listing, while its stat
+    // says this credential may read them (a chmod or chown moves the
+    // revision and no byte). Equal keys are equal bytes, so this needs no
+    // comparable clock.
+    if (entry !== undefined && row.ckey !== null && entry.ckey != null && row.ckey === entry.ckey && __nsReadable(entry.stat)) {
       t.fileSetRev(row.path, entry.rev);
       current.add(row.path);
       rekeyed++;
@@ -2895,10 +2950,21 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   // would have carried: files under the push roots changed since the cursor
   // (all of them there, when the revisions are not comparable).
   const plan = __residentPlan;
+  const manifests = __residentManifests;
   const wanted = new Set(dropped);
   const fetch = [];
+  const copied = [];
   for (const file of listing.entries) {
     if (current.has(file.path)) continue;
+    if (manifests !== null && __residentIsManifest(file.path)) {
+      // A copy is the file's bytes (equal content keys) and is held only
+      // where the listing says this credential may read them; otherwise the
+      // session is asked, and answers.
+      const copy = manifests.get(file.path);
+      if (Array.isArray(copy) && file.ckey !== null && copy[0] === file.ckey && __nsReadable(file.stat)) copied.push({ file, text: String(copy[1]) });
+      else fetch.push(file);
+      continue;
+    }
     if (plan.has(file.path) || wanted.has(file.path)
       || (__residentPushable(file.path) && (!comparable || file.rev > held.rev))) fetch.push(file);
   }
@@ -2912,7 +2978,17 @@ async function __residentSynchronizeFromSupervisor(supervisor) {
   }
   __residentNamespaceReserveBytes += namespaceGrowth;
   let filled;
-  try { filled = await __residentFetchFiles(supervisor, fetch); }
+  try {
+    // A copy holds the bytes the listing names (equal content keys), dated at
+    // its revision; one the store has no room for is fetched like the rest.
+    let copiedBytes = 0;
+    for (const { text } of copied) copiedBytes += __residentCellCost(text);
+    if (copiedBytes > 0) await __residentEnsureRoom(copiedBytes);
+    for (const { file, text } of copied) {
+      if (!__residentPut(t, file.path, text, file.rev, file.ckey)) fetch.push(file);
+    }
+    filled = await __residentFetchFiles(supervisor, fetch);
+  }
   finally { __residentNamespaceReserveBytes -= namespaceGrowth; }
 
   // The cursor may only advance to a state the rows actually describe, and
