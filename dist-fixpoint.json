@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "54ac16b1646512adaa7c3f113ace0555e4fb84ccb5c8e6cdf08d5d0cb5952413",
+  "fingerprint": "64cee88ad4dd64427d0a05e75dd1df25fc10426abbdc0bd82318b039559f7cfb",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -526,7 +526,7 @@
     "packages/core/dist/runtime/server-launch.js": "2ddb08cd839f8a82fde07b918dcb8292d985cdd72f43abe703f6a3498eda68da",
     "packages/core/dist/runtime/session-process-supervisor.d.ts": "1b490b4c8ea439921cfa0761d63d1d22326aeef79dc8908b5100ff5d444f34db",
     "packages/core/dist/runtime/session-process-supervisor.d.ts.map": "cf3277db30e2979648aa850ad7fd43eca9cfe2e94971e6ea605704954c68832c",
-    "packages/core/dist/runtime/session-process-supervisor.js": "6c95db79ba79b5a4c41001dd1a041b45bfa033c8a9108d330d595e884e7b2266",
+    "packages/core/dist/runtime/session-process-supervisor.js": "ac0fb40ab5ca2e6cae1d940580224a0c756adb3b0f23d19a624cbbee96b318c3",
     "packages/core/dist/runtime/sqlite-runtime-fs-bridge.d.ts": "d50d26150b7c9e052ae6a6d72ccc2a07802f86068e2dd8448dc071c4124575da",
     "packages/core/dist/runtime/sqlite-runtime-fs-bridge.d.ts.map": "b2a435b580663b5b871acefec6199880ce64691d432b2ec0a323c295ce81e862",
     "packages/core/dist/runtime/sqlite-runtime-fs-bridge.js": "23f1e7b7b3605e505e020c59c8e63c325cfa4340bb2070b3c34ea88524749019",
@@ -1327,7 +1327,7 @@
     "packages/core/src/runtime/runtime-registry.ts": "3c2f52186442389082b79e270ccb9c744e19d4e4d5afcd2394238580bf1098c2",
     "packages/core/src/runtime/runtime-stdio.ts": "762a27aec181c3c707e9896bf233d7f4809eae20fe1ebcdcf133164a11d49401",
     "packages/core/src/runtime/server-launch.ts": "8c355b6a686eb7a8c9240c49fc59a0e6f7409efa202388a37b97ebc0455aad18",
-    "packages/core/src/runtime/session-process-supervisor.ts": "f797a6dfaed85011a537f6a5228175abbecd0c82d64554c79a2fb1db279ab29e",
+    "packages/core/src/runtime/session-process-supervisor.ts": "9418cf7baad16ca345c1d1df456d37d7ea3885f7d0ad6b8a788e47d87408bf5b",
     "packages/core/src/runtime/sqlite-runtime-fs-bridge.ts": "759942e0fec2de603b64d863861dcfc09363a72933b5f678e5624e28d81a74c8",
     "packages/core/src/runtime/static-fs-refs.ts": "cd2da6c308315050ee73a6fec20f66c0dc947abfa8bdb05a2edccd19220ff5ac",
     "packages/core/src/runtime/stdin-read.ts": "f8c3dec82f62e77375f77bd4950e3891133a1b15b3d38ed0eea6a298117a939b",
