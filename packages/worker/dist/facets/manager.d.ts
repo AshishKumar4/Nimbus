@@ -1781,7 +1781,10 @@ export declare class FacetManager {
      * one-shot printed is shown once; the resident prints it again only to be
      * checked (the prefix).
      */
-    /** A file's identity as the process sees it: which file, and its version (null: none). */
+    /**
+     * A file's identity as the process sees it: which file, and its version;
+     * null when it has none to see (gone, or refused, synchronously or not).
+     */
     private _stdinFileIdentity;
     private _promote;
     /**
