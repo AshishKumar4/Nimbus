@@ -86,6 +86,7 @@ import * as __real_repl from 'node:repl';
 import * as __real_vm from 'node:vm';
 import * as __real_inspector from 'node:inspector';
 import * as __real_zlib from 'node:zlib';
+import * as __real_string_decoder from 'node:string_decoder';
 import * as __real_perf_hooks from 'node:perf_hooks';
 ${getRealNodeSharedImportsCode()}
 `.trim();

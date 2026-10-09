@@ -586,7 +586,6 @@ const dns = require('dns');
 const P = require('dns/promises');
 const util = require('util');
 const show = async (label, fn) => { try { const r = await fn(); console.log(label + ' ok ' + JSON.stringify(r)); } catch (e) { console.log(label + ' threw ' + e.constructor.name + ' ' + JSON.stringify({ code: e.code, message: e.message, syscall: e.syscall, hostname: e.hostname, errno: e.errno }) + ' keys=' + JSON.stringify(Object.keys(e)) + ' stack0=' + JSON.stringify(String(e.stack).split('\n')[0])); } };
-const showSync = (label, fn) => { try { const r = fn(); console.log(label + ' returned ' + JSON.stringify(r)); } catch (e) { console.log(label + ' threw ' + e.constructor.name + ' ' + JSON.stringify({ code: e.code, message: e.message }) + ' stack0=' + JSON.stringify(String(e.stack).split('\n')[0])); } };
 const sorted = (a, f) => [...a].sort(f);
 async function main() {
 // validation (offline)
@@ -609,7 +608,7 @@ await show('v-setorder-bad', () => { dns.setDefaultResultOrder('xx'); return 'no
 await show('v-reverse-nonip', () => P.reverse('not-an-ip'));
 await show('v-reverse-zone', () => P.reverse('fe80::1%lo'));
 await show('v-resolve-undefcb', () => new Promise((res) => { try { dns.resolve4('example.com', 'cb'); res('no-throw'); } catch (e) { res('threw ' + e.code); } }));
-// shape: classes, prototypes, servers round-trip, constants parity
+// shape: classes, prototypes, constants parity
 console.log('shape-resolver-proto ' + JSON.stringify(Object.getOwnPropertyNames(Object.getPrototypeOf(new dns.Resolver())).sort()));
 console.log('shape-resolverbase-proto ' + JSON.stringify(Object.getOwnPropertyNames(Object.getPrototypeOf(Object.getPrototypeOf(new dns.Resolver()))).sort()));
 console.log('shape-resolver-ident ' + (dns.Resolver === P.Resolver));

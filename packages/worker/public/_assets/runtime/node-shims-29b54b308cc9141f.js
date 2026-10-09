@@ -165,7 +165,7 @@ ${suffix}`;
   }, Error],
   ERR_INVALID_IP_ADDRESS: ["Invalid IP address: %s", TypeError],
   ERR_INVALID_ARG_TYPE: [invalidArgTypeMessage, TypeError],
-  ERR_DNS_SET_SERVERS_FAILED: ['c-ares failed to set servers: "%s" [%s]', Error],
+  ERR_DNS_SET_SERVERS_FAILED: [(error, servers) => `c-ares failed to set servers: "${error}" [${inspectValue(servers, {})}]`, Error],
   ERR_INVALID_MIME_SYNTAX: [(production, str, invalidIndex) => `The MIME syntax for a ${production} in "${str}" is invalid${invalidIndex !== -1 ? ` at ${invalidIndex}` : ""}`, TypeError],
   ERR_INVALID_ARG_VALUE: [(name, value, reason = "is invalid") => {
     let inspected = inspectValue(value, {});
@@ -10781,7 +10781,6 @@ function __nimbusNodeLib() {
     callSites: (count, above) => __nimbusStackSites({}, count, above),
     timers: builtins.timers,
     fetch: globalThis.fetch.bind(globalThis),
-    error: nodeError,
     primordials,
     sources: lib.sources,
   });
@@ -17201,7 +17200,7 @@ function __nimbusFrontUrl(url) {
     if (!windows) return decoded;
     if (path.hostname !== "") return __BufferMod.concat([__BufferMod.from("\\\\" + url.domainToUnicode(path.hostname)), decoded]);
     const letter = decoded[1] | 0x20;
-    if (letter < 97 || letter > 122 || decoded[2] !== 58) throw nodeError(TypeError, "ERR_INVALID_FILE_URL_PATH", "File URL path must be absolute", { input: String(path) });
+    if (letter < 97 || letter > 122 || decoded[2] !== 58) throw nodeError(TypeError, "ERR_INVALID_FILE_URL_PATH", "File URL path must be absolute", { input: path });
     return decoded.subarray(1);
   };
   delete url.toPathIfFileURL;

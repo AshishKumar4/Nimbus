@@ -787,8 +787,8 @@ module.exports = {
     }
     setLocalAddress(first, second) {
       const family = first.includes("%") ? 0 : isIP(first), other = second === undefined ? 0 : second.includes("%") ? 0 : isIP(second);
-      if (!family || (second !== undefined && !other)) throw platform.error(TypeError, "ERR_INVALID_ARG_VALUE", "Invalid IP address.");
-      if (family === other) throw platform.error(TypeError, "ERR_INVALID_ARG_VALUE", "Cannot specify two IPv" + family + " addresses.");
+      if (!family || (second !== undefined && !other)) throw Object.assign(new TypeError("Invalid IP address."), { code: "ERR_INVALID_ARG_VALUE" });
+      if (family === other) throw Object.assign(new TypeError("Cannot specify two IPv" + family + " addresses."), { code: "ERR_INVALID_ARG_VALUE" });
       this.local = [first, second].some((address) => address !== undefined && address !== "0.0.0.0" && address !== "::");
     }
     run(req, name, type) {
