@@ -551,7 +551,6 @@ const VM_SCRIPT_UNSUPPORTED = 'vm.runInThisContext: a Worker runs code compiled 
 /** The main module's imports the runtime below reads through. */
 export const COMMONJS_CELL_IMPORTS = [
   'import { createRequire as __nimbusCreateRequire } from "node:module";',
-  'import { readFileSync as __nimbusReadBundleFile } from "node:fs";',
   'import { createHash as __nimbusCreateHash } from "node:crypto";',
 ].join('\n');
 
@@ -569,6 +568,10 @@ export const COMMONJS_CELL_IMPORTS = [
  */
 export const COMMONJS_CELL_RUNTIME_SOURCE = `
 const __nimbusRegistryRequire = __nimbusCreateRequire(import.meta.url);
+// A bridged filesystem links only after its runner has installed the shims.
+function __nimbusReadBundleFile(path, encoding) {
+  return __nimbusRegistryRequire("node:fs").readFileSync(path, encoding);
+}
 // The built-ins the interpreter calls, captured now, before any program code
 // runs (core interpreter/primordials.ts): the interpreter itself loads only
 // when the program first produces code, by when it may have replaced them.
