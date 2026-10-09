@@ -15,6 +15,10 @@ published independently in the `@nimbus-sh` npm scope.
   - `crypto.createECDH` and `getDiffieHellman` name an unknown curve or
     group as Node does.
   - `crypto.setEngine` reports that no engine is found.
+- Fixed: `crypto.randomBytes`, `randomFillSync` and `randomFill` in node
+  programs threw `QuotaExceededError` past 65536 bytes. They fill up to
+  2^31-1 bytes, as Node's do. `crypto.getRandomValues` keeps the Web
+  Crypto quota, as in Node.
 - Fixed: `fs.stat(path, options, callback)` treated the options object as
   the callback. `{ bigint: true }` was ignored by every stat call; it now
   returns `BigIntStats` in nanoseconds.

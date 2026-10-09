@@ -304,12 +304,78 @@ function __nimbusFrontCrypto(crypto) {
     callback(done);
     return Reflect.apply(real, this, arguments);
   });
-  // lib/internal/crypto/random.js randomFill, randomFillSync, randomInt and getRandomValues.
-  for (const name of ["randomFill", "randomFillSync"]) {
-    __nimbusFront(crypto, name, (real) => function (buf) {
-      if (!isAnyArrayBuffer(buf) && !ArrayBuffer.isView(buf)) throw invalidArgType("buf", ["ArrayBuffer", "ArrayBufferView"], buf);
-      return Reflect.apply(real, this, arguments);
-    });
+  // lib/internal/crypto/random.js randomBytes, randomFillSync and randomFill.
+  // The platform's randomFillSync is the one random source: it hands its
+  // region to getRandomValues, which takes 65536 bytes a call (the Web Crypto
+  // quota), where Node's fill up to 2 ** 31 - 1. A region is filled through
+  // it 65536 bytes at a time, as a byte view, so a wider element counts in
+  // bytes (the native-esm port passed element offsets as byte offsets).
+  const RANDOM_CALL_BYTES = 65536;
+  const kMaxPossibleLength = 2 ** 31 - 1;
+  const platformFillSync = crypto.randomFillSync;
+  const number = (value, name) => {
+    if (typeof value !== "number") __nimbusNodeValidator("validateNumber")(value, name);
+  };
+  const assertOffset = (offset, elementSize, length) => {
+    number(offset, "offset");
+    offset *= elementSize;
+    const maxLength = Math.min(length, kMaxPossibleLength);
+    if (Number.isNaN(offset) || offset > maxLength || offset < 0) throw new nodeErrorCodes.ERR_OUT_OF_RANGE("offset", ">= 0 && <= " + maxLength, offset);
+    return offset >>> 0;
+  };
+  const assertSize = (size, elementSize, offset, length) => {
+    number(size, "size");
+    size *= elementSize;
+    if (Number.isNaN(size) || size > kMaxPossibleLength || size < 0) throw new nodeErrorCodes.ERR_OUT_OF_RANGE("size", ">= 0 && <= " + kMaxPossibleLength, size);
+    if (size + offset > length) throw new nodeErrorCodes.ERR_OUT_OF_RANGE("size + offset", "<= " + length, size + offset);
+    return size >>> 0;
+  };
+  const randomBuffer = (buf) => {
+    if (!isAnyArrayBuffer(buf) && !ArrayBuffer.isView(buf)) throw invalidArgType("buf", ["ArrayBuffer", "ArrayBufferView"], buf);
+  };
+  // \`buf\`'s bytes from \`offset\` for \`size\`, filled 65536 at a time.
+  const fillBytes = (buf, offset, size) => {
+    const bytes = ArrayBuffer.isView(buf) ? new Uint8Array(buf.buffer, buf.byteOffset + offset, size) : new Uint8Array(buf, offset, size);
+    for (let at = 0; at < size; at += RANDOM_CALL_BYTES) Reflect.apply(platformFillSync, crypto, [bytes.subarray(at, at + RANDOM_CALL_BYTES)]);
+    return buf;
+  };
+  __nimbusFront(crypto, "randomFillSync", () => function (buf, offset = 0, size) {
+    randomBuffer(buf);
+    const elementSize = buf.BYTES_PER_ELEMENT || 1;
+    offset = assertOffset(offset, elementSize, buf.byteLength);
+    size = size === undefined ? buf.byteLength - offset : assertSize(size, elementSize, offset, buf.byteLength);
+    return size === 0 ? buf : fillBytes(buf, offset, size);
+  });
+  __nimbusFront(crypto, "randomFill", () => function (buf, offset, size, done) {
+    randomBuffer(buf);
+    const elementSize = buf.BYTES_PER_ELEMENT || 1;
+    if (typeof offset === "function") {
+      done = offset;
+      offset = 0;
+      size = buf.length;
+    } else if (typeof size === "function") {
+      done = size;
+      size = buf.length - offset;
+    } else {
+      callback(done);
+    }
+    offset = assertOffset(offset, elementSize, buf.byteLength);
+    size = size === undefined ? buf.byteLength - offset : assertSize(size, elementSize, offset, buf.byteLength);
+    if (size !== 0) fillBytes(buf, offset, size);
+    __processMod.nextTick(done, null, buf);
+  });
+  __nimbusFront(crypto, "randomBytes", () => function (size, done) {
+    size = assertSize(size, 1, 0, Infinity);
+    if (done !== undefined) callback(done);
+    const buf = fillBytes(__BufferMod.allocUnsafe(size), 0, size);
+    if (done === undefined) return buf;
+    __processMod.nextTick(done, null, buf);
+  });
+  // Node's deprecated names for randomBytes are the same function.
+  for (const name of ["pseudoRandomBytes", "prng", "rng"]) {
+    if (typeof crypto[name] === "function" && Object.getOwnPropertyDescriptor(crypto, name)?.configurable !== false) {
+      Object.defineProperty(crypto, name, { value: crypto.randomBytes, writable: true, enumerable: true, configurable: true });
+    }
   }
   __nimbusFront(crypto, "randomInt", (real) => function (min, max, done) {
     const minNotSpecified = typeof max === "undefined" || typeof max === "function";
@@ -329,6 +395,7 @@ function __nimbusFrontCrypto(crypto) {
     if (!__nimbusTypes.isTypedArray(data) || /^Float(16|32|64)Array$/.test(Object.prototype.toString.call(data).slice(8, -1))) {
       throw new DOMException("The data argument must be an integer-type TypedArray", "TypeMismatchError");
     }
+    if (data.byteLength > 65536) throw new DOMException("The requested length exceeds 65,536 bytes", "QuotaExceededError");
     return Reflect.apply(real, this, arguments);
   });
   // lib/internal/crypto/sig.js Sign, Verify, signOneShot and verifyOneShot.

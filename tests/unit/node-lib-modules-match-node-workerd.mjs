@@ -654,6 +654,53 @@ show2('sign unknown', () => crypto.createSign('nope'));
   await new Promise((resolve) => crypto.randomInt(10, (e, n) => { console.log('randomInt cb: ' + (e ? e.code : n < 10)); resolve(); }));
 })();
 `,
+  // Node's random fills past the Web Crypto quota (65536 bytes a call), as
+  // its randomBytes, randomFillSync and randomFill take up to 2 ** 31 - 1;
+  // every 65536-byte piece filled (a piece left zero would be a gap in the chunking).
+  'random.cjs': SHOW + String.raw`
+const crypto = require('crypto');
+const show2 = (label, f) => { try { const r = f(); console.log(label + ': ' + (typeof r === 'string' ? r : JSON.stringify(r))); } catch (e) { show(label, e); } };
+const dom = (label, f) => { try { f(); console.log(label + ': no error'); } catch (e) { console.log(label + ': ' + e.constructor.name + ' ' + e.name + ' ' + e.code); } };
+const PIECE = 65536;
+// Each piece's bytes (from \`from\` to \`to\`) hold a nonzero one.
+const filled = (bytes, from = 0, to = bytes.length) => {
+  for (let at = from; at < to; at += PIECE) {
+    let any = false;
+    for (let i = at; i < Math.min(to, at + PIECE); i++) if (bytes[i] !== 0) { any = true; break; }
+    if (!any) return false;
+  }
+  return true;
+};
+const bytesOf = (view) => new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+for (const size of [PIECE + 1, 1 << 20, 16 << 20]) {
+  show2('randomBytes ' + size, () => { const b = crypto.randomBytes(size); return [b.length, Buffer.isBuffer(b), filled(b)]; });
+  show2('randomFillSync ' + size, () => { const b = Buffer.alloc(size); const r = crypto.randomFillSync(b); return [r === b, filled(b)]; });
+  show2('pseudoRandomBytes ' + size, () => crypto.pseudoRandomBytes(size).length);
+}
+show2('randomFillSync region', () => { const b = Buffer.alloc(3 * PIECE); const r = crypto.randomFillSync(b, PIECE / 2, 2 * PIECE); return [r === b, r.length, b.subarray(0, PIECE / 2).every((x) => x === 0), filled(b, PIECE / 2, PIECE / 2 + 2 * PIECE), b.subarray(PIECE / 2 + 2 * PIECE).every((x) => x === 0)]; });
+show2('randomFillSync elements', () => { const u = new Uint32Array(PIECE); crypto.randomFillSync(u, 1, PIECE - 2); return [u[0], u[PIECE - 1], filled(bytesOf(u), 4, 4 * (PIECE - 1))]; });
+show2('randomFillSync array buffer', () => { const a = new ArrayBuffer(PIECE * 2 + 7); return [crypto.randomFillSync(a) === a, filled(new Uint8Array(a))]; });
+show2('randomFillSync small', () => crypto.randomFillSync(Buffer.alloc(10), 2, 3).length);
+show2('randomFillSync offset range', () => crypto.randomFillSync(new Uint32Array(4), 5));
+show2('randomFillSync size range', () => crypto.randomFillSync(new Uint32Array(4), 3, 2));
+show2('randomFillSync offset type', () => crypto.randomFillSync(Buffer.alloc(4), 'x'));
+show2('randomBytes too big', () => crypto.randomBytes(2 ** 31));
+show2('randomBytes type', () => crypto.randomBytes('4'));
+show2('randomFill callback', () => crypto.randomFill(Buffer.alloc(4), 0, 4));
+dom('getRandomValues quota', () => crypto.getRandomValues(new Uint8Array(PIECE + 1)));
+show2('getRandomValues quota words', () => { try { crypto.getRandomValues(new Uint8Array(PIECE + 1)); } catch (e) { return e.message; } });
+dom('webcrypto quota', () => crypto.webcrypto.getRandomValues(new Uint8Array(PIECE + 1)));
+dom('global quota', () => globalThis.crypto.getRandomValues(new Uint8Array(PIECE + 1)));
+show2('getRandomValues at quota', () => crypto.getRandomValues(new Uint8Array(PIECE)).length);
+(async () => {
+  for (const size of [PIECE + 1, 1 << 20, 16 << 20]) {
+    await new Promise((resolve) => crypto.randomBytes(size, (e, b) => { console.log('randomBytes cb ' + size + ': ' + (e ? e.code : [b.length, filled(b)])); resolve(); }));
+    await new Promise((resolve) => crypto.randomFill(new Uint16Array(size / 2 >>> 0), (e, u) => { console.log('randomFill cb ' + size + ': ' + (e ? e.code : [u.length, filled(bytesOf(u))])); resolve(); }));
+  }
+  await new Promise((resolve) => crypto.randomFill(Buffer.alloc(3 * PIECE), PIECE, (e, b) => { console.log('randomFill offset cb: ' + (e ? e.code : [b.subarray(0, PIECE).every((x) => x === 0), filled(b, PIECE)])); resolve(); }));
+  console.log('randomBytes promisified: ' + (await require('util').promisify(crypto.randomBytes)(PIECE + 1)).length);
+})();
+`,
   'deprecate.cjs': SHOW + String.raw`
 const util = require('util');
 const old = util.deprecate(function old(a, b) { return a + b; }, 'old() is going away', 'DEP_NIMBUS');
@@ -666,7 +713,7 @@ attempt('deprecate code', () => util.deprecate(() => {}, 'm', 5));
 `,
 };
 // Each program's command line, after \`node\`.
-const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs', 'process.cjs', 'capture.cjs', 'fsstats.cjs', 'dnsconst.cjs', 'fronts.cjs'];
+const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs', 'process.cjs', 'capture.cjs', 'fsstats.cjs', 'dnsconst.cjs', 'fronts.cjs', 'random.cjs'];
 
 const host = mkdtempSync(join(tmpdir(), 'node-lib-'));
 process.on('exit', () => rmSync(host, { recursive: true, force: true }));
