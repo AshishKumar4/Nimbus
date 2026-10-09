@@ -581,6 +581,79 @@ const names = Object.keys(dns).filter((k) => /^[A-Z0-9_]+$/.test(k));
 console.log(JSON.stringify(names.map((k) => [k, dns[k]])));
 console.log(JSON.stringify(Object.keys(p).filter((k) => /^[A-Z0-9_]+$/.test(k)).map((k) => [k, p[k] === dns[k]])));
 `,
+  // The builtins workerd provides behind Node's argument checks
+  // (node-builtin-fronts.ts): what they take still works as Node's does, and
+  // the classes and globals keep their identities.
+  'fronts.cjs': SHOW + String.raw`
+const zlib = require('zlib');
+const buffer = require('buffer');
+const crypto = require('crypto');
+const show2 = (label, f) => { try { const r = f(); console.log(label + ': ' + (typeof r === 'string' ? r : JSON.stringify(r))); } catch (e) { show(label, e); } };
+// A DOMException's own keys are workerd's (node-builtin-errors-match-node-workerd records them).
+const dom = (label, f) => { try { f(); console.log(label + ': no error'); } catch (e) { console.log(label + ': ' + e.constructor.name + ' ' + e.name + ' ' + e.code + ' ' + JSON.stringify(e.message)); } };
+show2('zlib round trip', () => zlib.inflateSync(zlib.deflateSync('hello')).toString());
+show2('zlib options ignored', () => zlib.gunzipSync(zlib.gzipSync('x', 5)).toString());
+show2('zlib array buffer', () => zlib.inflateRawSync(new Uint8Array(zlib.deflateRawSync(Buffer.from('ab'))).buffer).toString());
+show2('zlib brotli', () => zlib.brotliDecompressSync(zlib.brotliCompressSync('br')).toString());
+show2('crc32', () => [zlib.crc32('abc'), zlib.crc32(Buffer.from('abc'), 7)]);
+show2('crc32 value', () => zlib.crc32('abc', -1));
+show2('isUtf8', () => [buffer.isUtf8(Buffer.from('é')), buffer.isUtf8(new Uint8Array([0xff])), buffer.isAscii(new Uint8Array([65]).buffer), buffer.isUtf8(new Uint16Array([0x4141]))]);
+show2('isUtf8 dataview', () => buffer.isUtf8(new DataView(new ArrayBuffer(1))));
+show2('transcode', () => buffer.transcode(Buffer.from('é'), 'utf8', 'latin1'));
+show2('SlowBuffer', () => buffer.SlowBuffer(4).length);
+// (Its upper bound is the platform's kMaxLength, workerd's 2 ** 31 - 1.)
+show2('SlowBuffer string', () => buffer.SlowBuffer('4'));
+show2('atob btoa', () => [atob(btoa('hi')), buffer.atob === atob, buffer.btoa === btoa, atob(' aGk= ')]);
+dom('atob bad', () => atob('a=b='));
+dom('atob one left', () => atob('abcde'));
+dom('btoa wide', () => btoa('\u0100'));
+show2('btoa symbol', () => btoa(Symbol('s')));
+show2('Blob', () => { const b = new buffer.Blob(['ab', new Uint8Array([99])], { type: 'text/plain' }); return [b.size, b.type, b instanceof Blob, b.constructor === Blob, buffer.Blob === Blob, Blob.name]; });
+show2('File', () => { const f = new buffer.File(['x'], 'a.txt'); return [f.name, f.size, f instanceof Blob, f instanceof File, f.constructor === File]; });
+show2('Blob options', () => new Blob([], 5));
+show2('Blob subclass', () => { class MyBlob extends Blob {} const b = new MyBlob(['z']); return [b instanceof MyBlob, b instanceof Blob, b.size]; });
+show2('hash', () => [crypto.hash('sha1', 'abc'), crypto.createHmac('sha256', 'k').update('d').digest('hex').slice(0, 8)]);
+show2('cipher', () => { const key = Buffer.alloc(32, 1); const iv = Buffer.alloc(16, 2); const c = crypto.createCipheriv('aes-256-cbc', key, iv); const enc = Buffer.concat([c.update(Buffer.from('secret')), c.final()]); const d = crypto.createDecipheriv('aes-256-cbc', key, iv); return Buffer.concat([d.update(enc), d.final()]).toString(); });
+show2('cipher key object', () => crypto.createCipheriv('aes-128-cbc', crypto.createSecretKey(Buffer.alloc(16)), Buffer.alloc(16)).update(Buffer.from('x')).length);
+show2('cipher wrong key object', () => { const { publicKey } = crypto.generateKeyPairSync('ed25519'); return crypto.createCipheriv('aes-128-ecb', publicKey, null); });
+show2('secret key', () => [crypto.createSecretKey(Buffer.alloc(8)).symmetricKeySize, crypto.createSecretKey('abc', 'utf8').symmetricKeySize]);
+show2('ecdh', () => crypto.createECDH('prime256v1').generateKeys().length);
+show2('ecdh unknown', () => crypto.createECDH('nope'));
+show2('dh group', () => crypto.getDiffieHellman('modp14').getPrime().length);
+show2('dh unknown', () => crypto.createDiffieHellmanGroup('modp99'));
+show2('random', () => [crypto.randomFillSync(Buffer.alloc(4)).length, crypto.randomInt(5) < 5, crypto.randomInt(2, 3), crypto.getRandomValues(new Uint8Array(2)).length]);
+show2('randomInt range', () => crypto.randomInt(3, 2));
+show2('randomInt too wide', () => crypto.randomInt(0, 2 ** 49));
+dom('getRandomValues float', () => crypto.getRandomValues(new Float64Array(1)));
+show2('timingSafeEqual', () => [crypto.timingSafeEqual(Buffer.from('a'), Buffer.from('a')), crypto.timingSafeEqual(new Uint8Array(1), new ArrayBuffer(1))]);
+show2('timingSafeEqual length', () => crypto.timingSafeEqual(Buffer.from('a'), Buffer.from('ab')));
+show2('timingSafeEqual buf2', () => crypto.timingSafeEqual(Buffer.from('a'), 'a'));
+show2('pbkdf2Sync', () => crypto.pbkdf2Sync('p', 's', 1, 8, 'sha256').toString('hex'));
+show2('pbkdf2 iterations', () => crypto.pbkdf2('p', 's', 0, 8, 'sha256', () => {}));
+show2('pbkdf2 callback', () => crypto.pbkdf2('p', 's', 1, 8, 'sha256'));
+show2('keys', () => { const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  return [crypto.createPrivateKey(privateKey.export({ type: 'pkcs8', format: 'pem' })).asymmetricKeyType, crypto.createPublicKey(publicKey.export({ type: 'spki', format: 'pem' })).type,
+    crypto.createPublicKey(privateKey).type, crypto.createPublicKey({ key: publicKey }).type]; });
+show2('private key from key object', () => crypto.createPrivateKey(crypto.createSecretKey(Buffer.alloc(8))));
+show2('sign no key', () => crypto.sign('sha256', Buffer.from('d')));
+show2('verify array buffer', () => crypto.verify('sha256', new ArrayBuffer(1), 'k', Buffer.alloc(1)));
+show2('rsa', () => { const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 }); return crypto.privateDecrypt(privateKey, crypto.publicEncrypt(publicKey, Buffer.from('m'))).toString(); });
+show2('rsa oaepHash', () => crypto.publicEncrypt({ key: 'k', oaepHash: 5 }, Buffer.from('m')));
+show2('keygen options', () => crypto.generateKeySync('hmac'));
+show2('keygen null options', () => crypto.generateKeyPairSync('ed25519', null));
+show2('keygen', () => [crypto.generateKeySync('hmac', { length: 64 }).symmetricKeySize, crypto.generateKeyPairSync('ed25519').publicKey.asymmetricKeyType]);
+show2('getCipherInfo', () => [crypto.getCipherInfo('aes-128-cbc').keyLength, crypto.getCipherInfo('nope')]);
+show2('setEngine', () => crypto.setEngine('nimbus-none'));
+show2('setEngine flags', () => crypto.setEngine('x', 'y'));
+show2('sign verify', () => { const s = crypto.createSign('sha256'); s.update('d'); return typeof s.sign; });
+show2('sign unknown', () => crypto.createSign('nope'));
+(async () => {
+  await new Promise((resolve) => crypto.generateKey('hmac', { length: 64 }, (e, k) => { console.log('generateKey: ' + (e ? e.code : k.symmetricKeySize)); resolve(); }));
+  await new Promise((resolve) => crypto.pbkdf2('p', 's', 1, 8, 'sha256', (e, k) => { console.log('pbkdf2: ' + (e ? e.code : k.toString('hex'))); resolve(); }));
+  await new Promise((resolve) => crypto.randomFill(new Uint8Array(4), (e, b) => { console.log('randomFill: ' + (e ? e.code : b.length)); resolve(); }));
+  await new Promise((resolve) => crypto.randomInt(10, (e, n) => { console.log('randomInt cb: ' + (e ? e.code : n < 10)); resolve(); }));
+})();
+`,
   'deprecate.cjs': SHOW + String.raw`
 const util = require('util');
 const old = util.deprecate(function old(a, b) { return a + b; }, 'old() is going away', 'DEP_NIMBUS');
@@ -593,7 +666,7 @@ attempt('deprecate code', () => util.deprecate(() => {}, 'm', 5));
 `,
 };
 // Each program's command line, after \`node\`.
-const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs', 'process.cjs', 'capture.cjs', 'fsstats.cjs', 'dnsconst.cjs'];
+const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs', 'process.cjs', 'capture.cjs', 'fsstats.cjs', 'dnsconst.cjs', 'fronts.cjs'];
 
 const host = mkdtempSync(join(tmpdir(), 'node-lib-'));
 process.on('exit', () => rmSync(host, { recursive: true, force: true }));

@@ -74,6 +74,7 @@ import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
 import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
 import { NODE_SOURCE_MAPS_SOURCE } from './node-source-maps.js';
+import { NODE_BUILTIN_FRONTS_SOURCE } from './node-builtin-fronts.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
 import { RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
@@ -11884,6 +11885,11 @@ builtins.string_decoder = __nimbusNodeErrorsAt(builtins.string_decoder, { protot
 for (const name of ["url", "path", "vm"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name]);
 __nimbusNodeErrorsAt(builtins.events, { inPlace: true });
 __nimbusNodeErrorsAt(__BufferMod, { inPlace: true });
+// Node's argument checks in front of them (node-builtin-fronts.ts).
+${NODE_BUILTIN_FRONTS_SOURCE}
+__nimbusFrontZlib(builtins.zlib);
+__nimbusFrontBuffer(builtins.buffer);
+__nimbusFrontCrypto(builtins.crypto);
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────
