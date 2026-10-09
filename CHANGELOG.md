@@ -5,6 +5,27 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `fs.stat(path, options, callback)` treated the options object as
+  the callback. `{ bigint: true }` was ignored by every stat call; it now
+  returns `BigIntStats` in nanoseconds.
+- Changed: `process` and `fs` in node programs are closer to Node's.
+  - `process` is an `EventEmitter` (`process instanceof EventEmitter`).
+  - `process.hrtime`, `cpuUsage`, `threadCpuUsage`, `resourceUsage`,
+    `memoryUsage`, `kill`, `_rawDebug`, `loadEnvFile`, `assert`, `ref`,
+    `unref` and `allowedNodeEnvironmentFlags` are Node's own code
+    (`lib/internal/process/per_thread.js`), with Node's argument checks.
+    `process.hrtime` now has sub-millisecond resolution and a correct
+    difference.
+  - `setUncaughtExceptionCaptureCallback` is present, along with `argv0`,
+    `release`, `debugPort`, `availableMemory` and `constrainedMemory`.
+    `process.argv[0]` is `process.execPath`, and `uptime()` counts up.
+  - Every `fs` stat result is an `fs.Stats` with Node's fields (`dev`,
+    `nlink`, `blksize`, `blocks` and the rest).
+  - `fs.F_OK`, `R_OK`, `W_OK`, `X_OK` and `fs._toUnixTimestamp` are present.
+  - `fs.lchmod` is undefined, as on Linux.
+  - `dns` has Node's constants.
+  - Known limits: `cpuUsage`, `resourceUsage` and `memoryUsage` read 0. A
+    Worker has no CPU or memory readings.
 - Fixed: a second `astro dev` in the same session reset the session (the
   dev server never answered, 502). The launch carries what the first one
   learned, and its larger code pack outgrew the session's memory twice:
