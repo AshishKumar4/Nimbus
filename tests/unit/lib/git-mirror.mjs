@@ -132,7 +132,7 @@ export function createMirror(label) {
     const index = `${repo}/.git/index`;
     if (!user.exists(index)) return;
     const view = files.view({ pid: 1, cred: CRED_SESSION_USER });
-    const { atimeMs, mtimeMs } = user.lstat(index);
+    const { atime, mtime } = user.lstat(index);
     const dc = DirCache.parse(user.readFile(index), 0);
     for (let i = 0; i < dc.count; i++) {
       if (dc.stage(i) !== 0 || dc.skipWorktree(i)) continue;
@@ -142,7 +142,7 @@ export function createMirror(label) {
       dc.refresh(i, { ctimeMs: st.ctimeMs, mtimeMs: st.mtimeMs, dev: st.dev, ino: st.ino, uid: st.uid, gid: st.gid, size: st.size });
     }
     user.writeFile(index, dc.encode());
-    user.utimes(index, atimeMs ?? mtimeMs, mtimeMs);
+    user.utimes(index, atime, mtime);
   };
 
   /** Copy a VFS tree (its .git included) back to disk, links as links. */
@@ -187,16 +187,23 @@ export function createMirror(label) {
     return { code, stdout, stderr };
   };
 
-  /** One repository, on disk for host git and in the VFS for ours, each step run in both. */
+  /** One repository, on disk for host git and in the VFS for ours, each step run in both (made by Pair.of). */
   class Pair {
     constructor(name, disk) {
       this.name = name;
       this.disk = disk;
       this.virtual = `/home/user/${name}`;
       mirror(disk, this.virtual);
-      // Awaited by the first step, before any command reads the index.
-      this.synced = false;
-      this.ready = syncIndexStat(this.virtual).then(() => { this.synced = true; });
+    }
+
+    /**
+     * The repository at `disk`, mirrored, its index made to describe our
+     * copies (syncIndexStat) before the caller touches either side.
+     */
+    static async of(name, disk) {
+      const pair = new Pair(name, disk);
+      await syncIndexStat(pair.virtual);
+      return pair;
     }
 
     /**
@@ -205,7 +212,6 @@ export function createMirror(label) {
      * `branchNotes` drops, its top named as ours), and stdout, where asked.
      */
     async run(args, { stderr = true, stdout = false, sub = '' } = {}) {
-      await this.ready;
       const label = `${this.name}: git ${args.join(' ')}`;
       const host = realGit(sub ? join(this.disk, sub) : this.disk, args.map((arg) => arg.replaceAll('{root}', this.disk)));
       const ours = await nimbusGit(sub ? `${this.virtual}/${sub}` : this.virtual, args.map((arg) => arg.replaceAll('{root}', this.virtual)));
@@ -247,7 +253,6 @@ export function createMirror(label) {
     /** The same worktree and index: entries, stages and skip-worktree bits, as read and as written. */
     same(step) {
       const label = `${this.name}: after ${step}`;
-      assert.ok(this.synced, `${label}: a step ran first`);
       const ours = this.copy();
       assert.deepEqual(worktreeOf(ours), worktreeOf(this.disk), `${label}: the worktree`);
       for (const args of [['ls-files', '-s', '-t'], ['-c', 'sparse.expectFilesOutsideOfPatterns=true', 'ls-files', '-t'], ['status', '--porcelain']]) {

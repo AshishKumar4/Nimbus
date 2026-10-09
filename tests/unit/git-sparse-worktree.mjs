@@ -86,7 +86,7 @@ function seed(name, cone = ['a']) {
 try {
   {
     // A skipped file made by hand: shown, protected, and gone with the checkout when unchanged.
-    const p = new Pair('present', seed('present'));
+    const p = await Pair.of('present', seed('present'));
     p.write('b/x.txt', 'changed\n');
     await p.run(['status', '--porcelain'], { stdout: true });
     await p.run(['diff'], { stdout: true });
@@ -103,7 +103,7 @@ try {
   {
     // A status that refreshes an entry rewrites the index, and its present file's cleared
     // skip-worktree bit with it, as git's does; one that refreshes nothing (above) writes none.
-    const p = new Pair('present-refreshed', seed('present-refreshed'));
+    const p = await Pair.of('present-refreshed', seed('present-refreshed'));
     p.write('b/x.txt', 'changed\n');
     p.touch('a/x.txt', SEEDED_AT + 60);
     await p.run(['status', '--porcelain'], { stdout: true });
@@ -114,7 +114,7 @@ try {
   {
     // A racy index (written no later than an entry it records) is rewritten by a status that
     // refreshes nothing, as git's has_racy_timestamp has it; the cleared bit with it.
-    const p = new Pair('present-racy', seed('present-racy'));
+    const p = await Pair.of('present-racy', seed('present-racy'));
     p.write('b/x.txt', 'changed\n');
     p.touch('.git/index', SEEDED_AT);
     await p.run(['status', '--porcelain'], { stdout: true });
@@ -124,7 +124,7 @@ try {
 
   {
     // The cone applied to what the switch leaves alone.
-    const p = new Pair('cone', seed('cone'));
+    const p = await Pair.of('cone', seed('cone'));
     p.write('b/keep.txt', 'bk\n');
     await p.run(['checkout', 'other']);
     p.same('a switch with an unchanged file outside the cone');
@@ -142,10 +142,10 @@ try {
 
   {
     // What the target adds outside the cone, untracked files in its way: indexed skip-worktree, left alone.
-    const q = new Pair('dir-to-file', seed('dir-to-file'));
+    const q = await Pair.of('dir-to-file', seed('dir-to-file'));
     await q.run(['checkout', 'other']);
     q.same('a directory outside the cone become a file');
-    const p = new Pair('added', seed('added'));
+    const p = await Pair.of('added', seed('added'));
     p.write('b/new.txt', 'mine\n');
     p.write('b/d/u', 'untracked\n');
     await p.run(['checkout', 'other']);
@@ -155,7 +155,7 @@ try {
 
   {
     // reset keeps skip-worktree bits: add -A then stages nothing outside the cone.
-    const p = new Pair('reset', seed('reset'));
+    const p = await Pair.of('reset', seed('reset'));
     await p.run(['reset', '-q', 'other']);
     p.same('reset (mixed) to other');
     await p.run(['add', '-A']);
@@ -169,7 +169,7 @@ try {
 
   {
     // add leaves what is outside the cone alone, and names it.
-    const p = new Pair('add', seed('add'));
+    const p = await Pair.of('add', seed('add'));
     p.write('b/keep.txt', 'changed\n');
     p.write('b/u.txt', 'untracked\n');
     p.write('n.txt', 'new\n');
@@ -192,7 +192,7 @@ try {
 
   {
     // checkout -- <paths> does not check out skip-worktree entries.
-    const p = new Pair('paths', seed('paths'));
+    const p = await Pair.of('paths', seed('paths'));
     for (const args of [['checkout', '--', 'b/x.txt'], ['checkout', 'HEAD', '--', 'b/x.txt'], ['checkout', '--', 'b'], ['checkout', '--', '.']]) {
       await p.run(args);
     }
@@ -206,7 +206,7 @@ try {
 
   {
     // "/*" alone is the full cone.
-    const p = new Pair('full', seed('full'));
+    const p = await Pair.of('full', seed('full'));
     p.write('.git/info/sparse-checkout', '/*\n');
     await p.run(['checkout', 'main']);
     p.same('a switch under the full cone');
@@ -217,7 +217,7 @@ try {
     // core.ignoreCase folds the cone's names.
     const folded = seed('fold');
     sh(folded, ['config', 'core.ignorecase', 'true']);
-    const q = new Pair('fold', folded);
+    const q = await Pair.of('fold', folded);
     q.write('.git/info/sparse-checkout', '/*\n!/*/\n/B/\n');
     await q.run(['checkout', 'main']);
     q.same('a switch under core.ignoreCase');
@@ -238,7 +238,7 @@ try {
     mkdirSync(join(disk, 'elsewhere/b'), { recursive: true });
     writeFileSync(join(disk, 'elsewhere/b/y'), 'changed\n');
     symlinkSync('elsewhere', join(disk, 'out'));
-    const p = new Pair('linked', disk);
+    const p = await Pair.of('linked', disk);
     await p.run(['status', '--porcelain', '-uno'], { stdout: true });
     console.log('  ok  behind a link to a directory: a file outside the cone is there, its missing sibling first');
   }
@@ -247,7 +247,7 @@ try {
     // config.worktree's core.sparseCheckout: a bare key is true, an explicit empty value false.
     const disk = seed('config-' + name);
     writeFileSync(join(disk, '.git/config.worktree'), `[core]\n\t${line}\n\tsparseCheckoutCone = true\n`);
-    const p = new Pair('config-' + name, disk);
+    const p = await Pair.of('config-' + name, disk);
     p.write('b/x.txt', 'changed\n');
     await p.run(['status', '--porcelain'], { stdout: true });
     console.log(`  ok  core.sparseCheckout as ${name === 'bare' ? 'a bare key: true' : 'an explicit empty value: false'}, as git reads it`);
