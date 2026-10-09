@@ -1,9 +1,9 @@
 type Projection = (value: unknown) => unknown;
 export interface ReplayPolicy {
     /**
-     * `mutation`: carries the process's filesystem changes, which the guest
-     * records as it makes them and a run again checks one by one (stop-replay.ts
-     * mutation): passed through, never journaled.
+     * `mutation`: carries the process's filesystem changes. The guest counts
+     * each change as the program makes it (stop-replay.ts mutation), not its
+     * transport; the session counts the transport as an effect.
      */
     kind: 'observation' | 'effect' | 'open' | 'output' | 'input' | 'control' | 'mutation';
     /** Exact, operation-local rules; never strip a property by its name globally. */

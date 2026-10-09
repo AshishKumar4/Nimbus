@@ -8515,6 +8515,9 @@ const __childProcessMod = (() => {
       return child;
     }
 
+    // A child is started as spawn() returns, whenever its cpSpawn is sent: a
+    // run started again would start it again.
+    __nimbusReplay?.effect("cpSpawn " + cmd);
     // Issue cpSpawn asynchronously. Return the emitter immediately so
     // callers can attach 'data' listeners before any chunk arrives.
     __pendingIO.push((async () => {

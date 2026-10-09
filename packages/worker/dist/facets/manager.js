@@ -5930,7 +5930,7 @@ export class FacetManager {
                         }
                         if (outcome.stop.kind === 'listen') {
                             promoted = true;
-                            return await this._promote(entry, code, opts, outcome.stop, journal);
+                            return await this._promote(entry, code, opts, outcome.stop);
                         }
                         // The session decides whether the run may go again: what it did
                         // outside itself is counted here, whatever the guest counted.
@@ -6076,7 +6076,7 @@ export class FacetManager {
      * one-shot printed is shown once; the resident prints it again only to be
      * checked (the prefix).
      */
-    async _promote(entry, code, opts, stop, journal) {
+    async _promote(entry, code, opts, stop) {
         const pid = entry.pid;
         const gate = this.outputGates.get(pid);
         const stopped = gate?.stopped(stop) ?? { fresh: [], prefix: null };
@@ -6100,7 +6100,6 @@ export class FacetManager {
             tape: stop.tape,
             listen: true,
             prefix: { stdout: encodeBase64(stopped.prefix.stdout), stderr: encodeBase64(stopped.prefix.stderr) },
-            ...(journal ? { observations: journal.observations } : {}),
         };
         await this.spawnNode(code, {
             argv: opts.argv, env: opts.env, cwd: opts.cwd, filename: opts.filename, dirname: opts.dirname,

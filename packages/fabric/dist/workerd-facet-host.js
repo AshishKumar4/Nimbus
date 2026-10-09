@@ -511,7 +511,9 @@ async function runOneShot(ctx, env, supervisor, supervise, params, consume) {
             entrypoint = staged;
             if (typeof staged.fetch !== 'function')
                 throw new Error('Nimbus: staged one-shot entrypoint has no fetch method');
-            enter = (request) => staged.fetch(request);
+            // A fetch is cancelled as a fetch is: the run's end reaches the program
+            // through the hop as its request's (NimbusLoadedEntrypoint.fetch).
+            enter = (request) => staged.fetch(new Request(request, { signal: params.request.signal }));
         }
         else {
             capability = supervise(supervisor);

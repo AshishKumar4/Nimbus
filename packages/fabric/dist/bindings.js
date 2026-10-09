@@ -593,7 +593,9 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
     async fetch(request) {
         const ep = await this._resolveEntrypoint();
         try {
-            const response = await ep.fetch(await materializeNestedRpcRequest(request));
+            // Cancelled with the request it forwards (a staged run its host ended).
+            const forwarded = new Request(await materializeNestedRpcRequest(request), { signal: request.signal });
+            const response = await ep.fetch(forwarded);
             return this._relayNestedRpcResponse(ep, response);
         }
         catch (e) {
