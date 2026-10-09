@@ -60,6 +60,34 @@ export interface StdinChannel {
     /** Put packets taken from it back in front of it, in order. */
     unread(packets: readonly ProcessInputPacket[]): void;
 }
+/**
+ * One run of a one-shot: what `exec` was asked, and for a run after a stop
+ * (runtime/stop-replay.ts), what it replays of the run before and whether
+ * its channel has ended, so it takes all of it before it starts.
+ */
+type ExecLaunchOpts = Parameters<FacetManager['exec']>[1] & {
+    replay?: ReplayLaunch;
+    stdinWhole?: boolean;
+    /** The stdin a run after a stop is handed back, which it takes whole before it starts. */
+    stdinAtLeast?: number;
+    /** This run's stop nonce: a stop record counts only with it (stop-replay.ts stopRecordOf). */
+    stopNonce?: string;
+    /** Its first listen stops it, to be run again as a resident that serves (FacetManager._promote). */
+    promote?: boolean;
+    /** Its network goes through the session (SupervisorRPC as its globalOutbound). */
+    outbound?: boolean;
+    /**
+     * A digest of the module map the first run loaded: a run after a stop
+     * whose map differs (its code or data changed while it waited) does not run.
+     */
+    codeDigest?: {
+        value: string | undefined;
+    };
+};
+/** How a process stopped at a read of stdin runs again. */
+type StoppedRunNext = Pick<ExecLaunchOpts, 'stdinWhole' | 'stdinFile' | 'stdinAtLeast'> & {
+    replay: ReplayLaunch;
+};
 /** Result returned from a facet execution */
 export interface FacetExecResult {
     exitCode: number;
@@ -1050,9 +1078,10 @@ export interface ResidentSpawnOptions {
     attachedTty?: boolean;
     /**
      * A one-shot that stopped at its first listen (FacetManager._promote): its
-     * run, which this boot replays up to that listen before it serves.
+     * run, which this boot replays up to that listen before it serves, and the
+     * stdin that run took, handed back.
      */
-    replay?: ReplayLaunch;
+    resume?: StoppedRunNext;
     /**
      * Its launcher writes its stdin and ends it, and does not wait for the
      * boot (RuntimeRunOpts.stdinWriter): the boot may stop at a synchronous

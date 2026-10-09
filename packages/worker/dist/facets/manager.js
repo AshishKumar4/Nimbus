@@ -1381,10 +1381,11 @@ ${nodeProgramRuntime(sources, entry.esModule)}
     let __nimbusEndedAtBoot = false;
     // A resident whose launcher writes its stdin takes what has arrived
     // before the entry runs, and a boot after a stop takes all of it (it has
-    // ended), for its synchronous reads of fd 0. Any other resident's stdin
-    // is read only as the program reads it: an attached one's carries the
-    // terminal's resizes and signals too.
-    if (__startArgs && __startArgs.stdinWriter) await __nimbusPrepareStdin();
+    // ended), for its synchronous reads of fd 0; so does a one-shot run on
+    // as a server, the stdin it read before it listened. Any other
+    // resident's stdin is read only as the program reads it: an attached
+    // one's carries the terminal's resizes and signals too.
+    if (__startArgs && (__startArgs.stdinWriter || __nimbusStdinAtLeast > 0)) await __nimbusPrepareStdin();
     // From here on the program runs. Its boot can stop while stdin can still
     // come short of a read, when its launcher writes that stdin
     // (FacetManager._residentLaunchBody); nothing else would ever end it.
@@ -1459,6 +1460,13 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         stderr += __residencyReport;
         if (Number(code ?? 0) === 0) code = 1;
         await __nimbusReleaseStderr(__residencyReport);
+      }
+      // A server run again that ended before its listen did not retrace it.
+      const __replayShort = __nimbusStopReplay.finish();
+      if (__replayShort) {
+        stderr += __replayShort;
+        code = 1;
+        await __nimbusReleaseStderr(__replayShort);
       }
       await __supervisor.reportExit(code, reason || "", __nimbusDataReadMisses(), [...(globalThis.__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger(), __nimbusExecutedModuleMisses());
       __nimbusProcessExitReported = true;
@@ -6156,8 +6164,9 @@ export class FacetManager {
                             break;
                         }
                         if (outcome.stop.kind === 'listen') {
-                            promoted = true;
-                            return await this._promote(entry, code, opts, outcome.stop);
+                            const promotion = await this._promote(entry, code, opts, outcome.stop, { inputChannel, held, signal: abortController.signal });
+                            promoted = promotion.promotedPid !== undefined;
+                            return promotion;
                         }
                         // The session decides whether the run may go again: what it did
                         // outside itself is counted here, whatever the guest counted.
@@ -6303,8 +6312,16 @@ export class FacetManager {
      * one-shot printed is shown once; the resident prints it again only to be
      * checked (the prefix).
      */
-    async _promote(entry, code, opts, stop) {
+    async _promote(entry, code, opts, stop, 
+    /** The run's input channel and read-ahead account, and its abort (a kill, Ctrl-C). */
+    run) {
         const pid = entry.pid;
+        const fail = async (message) => {
+            const text = `node: this program listens as a server, so Nimbus runs it again as one, but ${message}\n`;
+            await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(text));
+            this._end(pid, { code: 1, cause: text.trimEnd() });
+            return { exitCode: 1, stdout: '', stderr: '' };
+        };
         // The gate stays while the resident boots: a late chunk of the stopped
         // run is dropped, the resident's are delivered (exec's finally ends it).
         const gate = this.outputGates.get(pid);
@@ -6312,28 +6329,59 @@ export class FacetManager {
         for (const { stream, bytes } of stopped.fresh)
             await this._deliverOutput(pid, stream, bytes);
         if (stopped.prefix === null) {
-            const message = `node: this program listens as a server, so Nimbus runs it again as one, but it printed more than `
-                + `${REPLAY_PREFIX_MAX_BYTES / 1048576} MiB before it listened, more than a second run is checked against.\n`;
-            await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(message));
-            this._end(pid, { code: 1, cause: message.trimEnd() });
-            return { exitCode: 1, stdout: '', stderr: '' };
+            return fail(`it printed more than ${REPLAY_PREFIX_MAX_BYTES / 1048576} MiB before it listened, more than a second run is checked against.`);
+        }
+        // The stdin it took goes back in front of its channel, and the resident
+        // takes at least as much before it replays the reads that took it.
+        const taken = run.inputChannel > 0 ? this.stdinTaken.get(run.inputChannel) : undefined;
+        taken?.retire();
+        const before = taken ? taken.take() : { chunks: [], bytes: 0 };
+        if (before === null)
+            return fail(`it read more than ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB of stdin before it listened, more than a second run is handed back.`);
+        if (opts.stdinFile && stop.tape.reads.length > 0)
+            return fail('it read its redirected stdin before it listened, which a server is not handed again.');
+        if (before.bytes > 0) {
+            const channel = this._stdinChannel(run.inputChannel);
+            if (channel === null)
+                return fail('the stdin it read before it listened has no channel to be handed back on.');
+            channel.unread(before.chunks.map((data) => ({ data, ended: false })));
+            run.held.give(before.bytes);
         }
         // The stopped run's descriptors go with it: the resident opens its own.
         await this.hooks.rewindProcessFiles?.(pid);
         // Every long-running process has an input channel on its pid.
         this.processes.openInput(pid);
-        const replay = {
-            run: stop.run + 1,
-            tape: stop.tape,
-            listen: true,
-            prefix: { stdout: encodeBase64(stopped.prefix.stdout), stderr: encodeBase64(stopped.prefix.stderr) },
+        const resume = {
+            replay: {
+                run: stop.run + 1,
+                tape: stop.tape,
+                listen: true,
+                prefix: { stdout: encodeBase64(stopped.prefix.stdout), stderr: encodeBase64(stopped.prefix.stderr) },
+            },
+            ...(before.bytes > 0 ? { stdinAtLeast: before.bytes } : {}),
         };
-        await this.spawnNode(code, {
-            argv: opts.argv, env: opts.env, cwd: opts.cwd, filename: opts.filename, dirname: opts.dirname,
-            esModule: opts.esModule, esModuleMap: opts.esModuleMap, moduleScope: opts.moduleScope,
-            command: opts.command, invokerPid: opts.invokerPid, bundleProfile: opts.bundleProfile, node: opts.node,
-            skipSpawn: true, callerPid: pid, replay,
-        });
+        // Its abort during the hand-off ends it: the resident's launch stops at
+        // its next ownership gate.
+        const abort = () => this._end(pid, { code: 137, killed: true });
+        if (run.signal.aborted)
+            abort();
+        run.signal.addEventListener('abort', abort, { once: true });
+        try {
+            await this.spawnNode(code, {
+                argv: opts.argv, env: opts.env, cwd: opts.cwd, filename: opts.filename, dirname: opts.dirname,
+                esModule: opts.esModule, esModuleMap: opts.esModuleMap, moduleScope: opts.moduleScope,
+                command: opts.command, invokerPid: opts.invokerPid, bundleProfile: opts.bundleProfile, node: opts.node,
+                skipSpawn: true, callerPid: pid, resume,
+            });
+            run.signal.throwIfAborted();
+        }
+        finally {
+            run.signal.removeEventListener('abort', abort);
+        }
+        // Ended while it booted: that is its exit, and it is no server.
+        const ended = this.processExitCode(pid);
+        if (ended !== null)
+            return { exitCode: ended, stdout: '', stderr: '' };
         // Said as any resident's start is: it runs on, and serves.
         try {
             this.hooks.onSpawn?.(pid, entry.command, true);
@@ -7916,8 +7964,8 @@ export class FacetManager {
             // Each boot starts from the umask the process started with.
             const startUmask = entry.cred.umask;
             // A promoted one-shot's boot replays its run up to its listen (_promote).
-            let rerun = opts.replay ? { replay: opts.replay } : null;
-            const stoppable = stdinWriter || opts.replay !== undefined;
+            let rerun = opts.resume ?? null;
+            const stoppable = stdinWriter || opts.resume !== undefined;
             let stopNonce = crypto.randomUUID();
             try {
                 for (let stops = 0;; stops++) {
@@ -8037,7 +8085,7 @@ export class FacetManager {
                         await handle?.done.catch(() => { });
                         handle = undefined;
                         this.portRegistry.unregisterByPid(entry.pid);
-                        if (opts.replay && stop.kind === 'diverged') {
+                        if (opts.resume && stop.kind === 'diverged') {
                             const message = `node: this program listens as a server, so Nimbus ran it again as one, and it did not retrace `
                                 + `its run before up to its listen (${stop.why}), so it was ended.\n`;
                             await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(message));
