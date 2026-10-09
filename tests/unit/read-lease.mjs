@@ -34,7 +34,7 @@ function session() {
   kernel.chown('home/user/d/a.txt', USER.uid, USER.gid);
   const revoked = [];
   const files = new ProcessFiles(engine, { delegationRevoked: (event) => revoked.push(event) });
-  return { engine, kernel, files, revoked };
+  return { harness, engine, kernel, files, revoked };
 }
 
 /** A barrier of `bridge`'s that asks for the lease, from `from` (an answer it applied) or from now. */
@@ -161,6 +161,28 @@ function barrier(s, bridge, from) {
   reader.recalled(readLease.owner, 'revoke');
   await ending;
   assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/a.txt')), 'two');
+}
+
+// ── Held writes acked together publish at the generations they committed: no write of their own ──
+{
+  const s = session();
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const writer = s.files.bind({ pid: 8, cred: USER });
+  const other = s.files.bind({ pid: 9, cred: USER });
+  const { readLease } = barrier(s, reader);
+  const from = other.acquire(s.engine.epoch, s.engine.revision());
+  const held = new Set();
+  await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'one'), undefined, held);
+  await withRecall(() => writer.writeFile('/home/user/d/b.txt', 'two'), undefined, held);
+  const before = s.harness.statements.length;
+  assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
+  reader.recalled(readLease.owner, 'revoke');
+  await Promise.all(held);
+  const written = s.harness.statements.slice(before).filter((statement) => /^\s*(INSERT|UPDATE|DELETE|REPLACE)/i.test(statement.sql));
+  assert.deepEqual(written.map((statement) => statement.sql), [], 'publishing what was held wrote to storage');
+  const after = other.acquire(s.engine.epoch, from.rev);
+  assert.deepEqual(after.paths.map((entry) => entry.path).filter((path) => path.startsWith('home/user/d/')).sort(), ['home/user/d/a.txt', 'home/user/d/b.txt']);
+  assert.equal(after.rev, s.engine.revision());
 }
 
 // ── A held write is published after a later one elsewhere, at a revision of its own ──

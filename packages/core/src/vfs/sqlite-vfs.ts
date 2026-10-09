@@ -260,6 +260,8 @@ interface Pipeline {
   readonly recalls: Set<Promise<void>>;
   /** What it committed and has not published. */
   publication: Publication | null;
+  /** The generation its last commit reached: its publication's revision, when no publication since has passed it. */
+  committed: number;
   /** The leases holding what it changed, by root. */
   readonly roots: Map<string, string>;
   /** Its writer, by the delegations it presents (as its first held commit presents them): its later calls pass what it holds. None for a writer that presents none. */
@@ -3693,6 +3695,7 @@ export class SqliteVFS {
   private bumpRevision(
     paths: readonly string[],
     structural: ReadonlyMap<string, StructuralChange> = NO_STRUCTURAL_CHANGES,
+    committed?: number,
   ): void {
     this.resolutionEpoch++;
     for (const opened of this.openNodes) {
@@ -3717,8 +3720,12 @@ export class SqliteVFS {
       return;
     }
     if (this.readLeases.size > 0) this.breakUnrecalledReadLeases(paths);
-    if (this._gen <= this._revision) this.advanceGeneration();
-    const rev = this._gen;
+    // A held commit's publication is at the generation it committed, while
+    // nothing published since passed it: a later commit still held is not in
+    // it, and it needs no generation (no write) of its own.
+    const own = committed !== undefined && committed > this._revision ? committed : null;
+    if (own === null && this._gen <= this._revision) this.advanceGeneration();
+    const rev = own ?? this._gen;
     this._revision = rev;
     const keys = paths.map((path) => normalizeVfsPath(path)).filter((key) => key !== '');
     this.pathRevisions.stamp(keys, rev);
@@ -4159,7 +4166,7 @@ export class SqliteVFS {
   private newPipeline(writer: ReadonlySet<string> | null): Pipeline {
     let settle!: () => void;
     const published = new Promise<void>((resolve) => { settle = resolve; });
-    return { recalls: new Set(), publication: null, roots: new Map(), writer, published, settle };
+    return { recalls: new Set(), publication: null, committed: 0, roots: new Map(), writer, published, settle };
   }
 
   /** `run`, its commits `pipeline`'s. */
@@ -4199,6 +4206,7 @@ export class SqliteVFS {
       pipeline.writer ??= this.activeHolds;
       this.heldPipelines++;
     }
+    pipeline.committed = this._gen;
     const publication = pipeline.publication;
     for (const path of paths) {
       publication.paths.add(path);
@@ -4228,7 +4236,7 @@ export class SqliteVFS {
     // Logged at its publication's revision: a cursor handed out since its
     // commit (another's publication) is below it, so every reader hears of it.
     try {
-      if (publication.paths.size > 0) this.bumpRevision([...publication.paths], publication.structural);
+      if (publication.paths.size > 0) this.bumpRevision([...publication.paths], publication.structural, pipeline.committed);
       this.deliverEvents(publication.removedDirectories, () => {
         for (const event of publication.events) this.deliverMutation(event);
       });
