@@ -181,6 +181,8 @@ function holdingGate() {
     const drained = await broker.drainOutput(childPid);
     assert.equal(drained.stdoutClosed || drained.stderrClosed, false, `${what}: not closed to a drain while held`);
     assert.equal(processes.getExit(childPid), null, `${what}: no exit recorded while held`);
+    assert.equal(processes.published(childPid)?.state, 'running', `${what}: shown running while held`);
+    assert.notEqual(processes.get(childPid)?.state, 'running', `${what}: its lifecycle ended, what it held released`);
   };
   const silent = (await broker.spawn({ parentPid: parent, command: 'silent', args: [], env: {}, cwd: '/', stdio: ['ignore', 'pipe', 'pipe'] })).childPid;
   await turns();
