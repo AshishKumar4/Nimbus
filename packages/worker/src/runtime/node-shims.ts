@@ -57,6 +57,7 @@ import { LOOPBACK_HOSTNAMES } from '@nimbus-sh/core/_shared/loopback.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { SYSTEM_IDENTITY } from '@nimbus-sh/core/constants.js';
+import { READ_LEASE_UNCOVERED_ROOTS, readLeaseCovers } from '@nimbus-sh/core/runtime/delegations.js';
 import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
@@ -1081,6 +1082,18 @@ const __fsMod = (() => {
    * namespace cannot say: it is not active, or this process's own unsettled
    * rename, unlink or mkdir is on the path, which the table does not show.
    */
+  /**
+   * What a process's read lease vouches for (core runtime/delegations.ts
+   * readLeaseCovers): its view answers anything else only from a barrier.
+   */
+  const _readLeaseCovers = ${readLeaseCovers.toString()};
+  const _READ_LEASE_UNCOVERED = ${JSON.stringify(READ_LEASE_UNCOVERED_ROOTS)};
+  /** Whether the view has answered for what the lease does not cover: its barriers are asked from then on. */
+  let _uncoveredViewed = false;
+  function _viewed(k, listing) {
+    if (!_uncoveredViewed && !_readLeaseCovers(k, listing, _READ_LEASE_UNCOVERED)) _uncoveredViewed = true;
+  }
+
   function _nsLandingKey(k) {
     if (!_nsActive() || _nsOwnView(k) !== null) return k;
     const found = __nsLookup(k, true);
@@ -1151,6 +1164,11 @@ const __fsMod = (() => {
    * caught up with.
    */
   function _nsMeta(k, follow) {
+    _viewed(k, false);
+    if (follow && _nsActive()) {
+      const found = __nsLookup(k, true);
+      if (found !== "ELOOP") _viewed(found.path, false);
+    }
     if (k === "") return _nsRowMeta(__nsResolve("", true).row);
     if (__vfsWrites && k in __vfsWrites && _denialCode(__vfsWrites[k]) === null) {
       const size = _byteLen(__vfsWrites[k]);
@@ -1194,6 +1212,7 @@ const __fsMod = (() => {
 
   /** Names directly under directory \`k\`: Map name → type. */
   function _nsList(k) {
+    _viewed(k, true);
     const names = new Map();
     const own = _nsOwnView(k);
     if (own !== "absent" && !(own && own.hide) && !(own && own.dir && _nsOwn.get(k)?.hide)) {
@@ -2347,7 +2366,7 @@ const __fsMod = (() => {
     // change waits for the lease's recall, and the recall untrusts it first
     // (ProcessFsClient.readTrusted). A delivered answer is still applied,
     // and a store owed a repair still asks.
-    if (!delivered && !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted()) {
+    if (!delivered && !_storeRepairOwed && !_uncoveredViewed && _nsActive() && __nimbusProcessFs().readTrusted()) {
       _stats.leasedBarriers++;
       return [];
     }
@@ -3466,7 +3485,7 @@ const __fsMod = (() => {
    * a path (its overlay, a write parked there), the session answers it.
    */
   function _leasedView() {
-    return !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted();
+    return !_storeRepairOwed && !_uncoveredViewed && _nsActive() && __nimbusProcessFs().readTrusted();
   }
   /** Whether the process's own effects are at \`k\` (or its landing, \`follow\`): what the session answers, not the view. */
   function _ownAt(k, follow) {
@@ -3486,12 +3505,15 @@ const __fsMod = (() => {
   }
   /** \`read\`, the sync view's answer, counted; undefined when the view cannot say (EAGAIN: a mount it did not list). */
   function _leasedRead(read) {
+    // An answer that reached what the lease does not cover (a link out of it) is the session's.
+    const covered = () => !_uncoveredViewed;
     try {
       const value = read();
+      if (!covered()) return undefined;
       _stats.leasedReads++;
       return value;
     } catch (error) {
-      if (error && error.code === "EAGAIN") return undefined;
+      if ((error && error.code === "EAGAIN") || !covered()) return undefined;
       _stats.leasedReads++;
       throw error;
     }
@@ -3502,7 +3524,7 @@ const __fsMod = (() => {
   async function _statAsyncAs(syscall, p) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    if (supervisor && _leasedView() && !_ownAt(_strip(absPath), syscall === "stat")) {
+    if (supervisor && _leasedView() && _readLeaseCovers(_strip(absPath), false, _READ_LEASE_UNCOVERED) && !_ownAt(_strip(absPath), syscall === "stat")) {
       const local = _leasedRead(() => (syscall === "stat" ? statSync(p) : lstatSync(p)));
       if (local !== undefined) return local;
     }
@@ -3525,7 +3547,7 @@ const __fsMod = (() => {
   async function _readdirAsync(p, opts) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    if (supervisor && _leasedView() && !_ownUnder(_strip(absPath))) {
+    if (supervisor && _leasedView() && _readLeaseCovers(_strip(absPath), true, _READ_LEASE_UNCOVERED) && !_ownUnder(_strip(absPath))) {
       const local = _leasedRead(() => readdirSync(p, opts));
       // In the order the session's listing is given in.
       if (local !== undefined) return opts?.withFileTypes ? local.sort((a, b) => a.name.localeCompare(b.name)) : local;

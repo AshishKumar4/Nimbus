@@ -116,6 +116,23 @@ await runScenarios(import.meta.path, {
     assert.equal((await probe.fs.promises.stat('/home/user/app/sub/b.txt')).size, 1);
   },
 
+  async 'what the lease does not cover is not the view\'s: the session\'s stores and the kernel\'s mounts'() {
+    const { authority, probe } = await boot();
+    authority.kfs.mkdir('.nimbus/state', { recursive: true });
+    await rawSleep(READ_LEASE_TRUST_MS + 20);
+    await probe.resume();
+    await probe.resume();
+    assert.ok(globalThis.__nimbusProcessFs.readTrusted(), 'the barrier took no lease');
+    // The kernel's mounts and the root's names are the session's, under a trusted lease too.
+    assert.equal((await probe.fs.promises.stat('/dev/null')).isCharacterDevice(), true);
+    assert.ok((await probe.fs.promises.readdir('/')).includes('dev'));
+    // The session's store changes with no recall: once it was read, the next timer asks.
+    assert.deepEqual(probe.fs.readdirSync('/.nimbus/state'), []);
+    authority.kfs.writeFile('.nimbus/state/x', 'x');
+    await probe.resume();
+    assert.deepEqual(probe.fs.readdirSync('/.nimbus/state'), ['x'], 'the view answered for the session\'s store from a barrier it skipped');
+  },
+
   async 'past its trust, the next timer asks again'() {
     const { probe, log } = await boot();
     await probe.resume();

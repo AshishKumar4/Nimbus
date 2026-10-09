@@ -25,7 +25,7 @@ import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
-import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
@@ -898,6 +898,9 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
   async _rpcFsList(after: string | null, limit: number | null, pid?: number): Promise<VfsListPage> {
     return _rpc._rpcFsList(this as any, after, limit, pid);
+  }
+  async _rpcFsListTree(root: string, maxEntries: number, pid?: number): Promise<VfsListTree> {
+    return _rpc._rpcFsListTree(this as any, root, maxEntries, pid);
   }
   async _rpcWsOpen(url: string, protocols: string[], headers?: [string, string][] | null, refusalBody?: boolean | null, pid?: number): Promise<any> {
     return _rpc._rpcWsOpen(this as any, url, protocols, headers, refusalBody, pid);

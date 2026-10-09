@@ -207,6 +207,55 @@ function barrier(s, bridge, from) {
   const reported = last.paths.find((entry) => entry.path === 'home/user/d/a.txt');
   assert.ok(reported !== undefined, 'a barrier at the later write\'s revision never hears of the held one');
   assert.ok(last.rev > later.rev);
+  // What the barrier reports is the revision the file has: a read expecting it is answered.
+  assert.equal(other.revision('/home/user/d/a.txt'), reported.rev, 'the file reports another revision than its delta');
+}
+
+// ── Held for publication: a description, a parent's names and a listing wait for it ──
+{
+  const s = session();
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const writer = s.files.bind({ pid: 8, cred: USER });
+  const other = s.files.bind({ pid: 9, cred: USER });
+  const opened = other.open('/home/user/d/a.txt', { read: true });
+  const { readLease } = barrier(s, reader);
+  const held = new Set();
+  await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'replaced'), undefined, held);
+  await withRecall(() => writer.writeFile('/home/user/d/made.txt', 'made'), undefined, held);
+  const refused = (call, what) => assert.throws(call, (error) => error.code === 'EAGAIN', `${what} saw what is held for publication`);
+  refused(() => other.read(opened.id, 0, 64), 'a description\'s read');
+  refused(() => other.fstat(opened.id), 'a description\'s stat');
+  refused(() => other.readdir('/home/user/d'), 'the parent\'s names');
+  refused(() => other.list(null), 'a listing');
+  // Its writer sees its own.
+  assert.ok(writer.readdir('/home/user/d').some((entry) => entry.name === 'made.txt'));
+  assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
+  reader.recalled(readLease.owner, 'revoke');
+  await Promise.all(held);
+  assert.equal(new TextDecoder().decode(other.read(opened.id, 0, 64)), 'replaced');
+  assert.ok(other.readdir('/home/user/d').some((entry) => entry.name === 'made.txt'));
+  assert.ok(other.list(null).entries.some((entry) => entry.path.replace(/^\/+/, '') === 'home/user/d/made.txt'));
+  other.close(opened.id);
+}
+
+// ── A retry whose commit is past an await is made again after the recall, not pipelined again ──
+{
+  const s = session();
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const writer = s.files.bind({ pid: 8, cred: USER });
+  const { readLease } = barrier(s, reader);
+  let attempts = 0;
+  const writing = withRecall(async () => {
+    attempts++;
+    await sleep(1);
+    return writer.writeFile('/home/user/d/a.txt', 'later');
+  });
+  await sleep(20);
+  assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
+  reader.recalled(readLease.owner, 'revoke');
+  await writing;
+  assert.ok(attempts <= 3, `made ${attempts} times`);
+  assert.equal(new TextDecoder().decode(s.kernel.readFile('home/user/d/a.txt')), 'later');
 }
 
 // ── Recalled, a reader is leased nothing for its trust: the writer's next change waits on no one ──

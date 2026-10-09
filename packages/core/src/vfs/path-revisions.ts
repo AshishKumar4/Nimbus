@@ -69,9 +69,11 @@ export class PathRevisions {
    * holds a stamp already: a stamp answers for its path before the path's row
    * does, so it moves too. A walk stops at a directory this call has already
    * stamped, since every directory above it was stamped with it. Then drop
-   * the oldest stamps while over budget.
+   * the oldest stamps while over budget. With `own`, each key is stamped
+   * itself: its row's generation is not what it reports (a commit published
+   * after one that passed it, SqliteVFS.publishHeld).
    */
-  stamp(keys: readonly string[], rev: number): void {
+  stamp(keys: readonly string[], rev: number, own = false): void {
     for (const key of keys) {
       for (let p = parentKey(key); p !== ''; p = parentKey(p)) {
         const stamped = this.stamps.get(p);
@@ -79,7 +81,8 @@ export class PathRevisions {
         if (stamped === undefined) this.bytes += entryBytes(p);
         this.stamps.set(p, rev);
       }
-      if (this.stamps.has(key)) this.stamps.set(key, rev);
+      if (own && !this.stamps.has(key)) this.bytes += entryBytes(key);
+      if (own || this.stamps.has(key)) this.stamps.set(key, rev);
     }
     // A quarter at a time, so the sort is paid once per quarter of the
     // budget, not once per mutation.

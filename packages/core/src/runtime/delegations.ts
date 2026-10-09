@@ -48,6 +48,29 @@ export const DELEGATION_RECALL_TIMEOUT_MS = 5_000;
 export const SESSION_KERNEL_ROOTS: readonly string[] = ['.nimbus', 'var/lib/nimbus'];
 
 /**
+ * What a process's read lease does not vouch for (engine keys): the
+ * session's own stores, which its synchronous writers change without a
+ * recall, and the kernel's mounts, which are not SQLite's.
+ */
+export const READ_LEASE_UNCOVERED_ROOTS: readonly string[] = [...SESSION_KERNEL_ROOTS, 'proc', 'dev'];
+
+/**
+ * Whether a process's read lease vouches for what it knows of `key`: its
+ * entry, or with `listing` its names. Nothing at or under an uncovered root
+ * is, nor the names of a directory above one (they include the root's own).
+ * The one rule a process's view answers by under a trusted lease; written
+ * without references beyond its arguments, so a runtime prelude carries it
+ * as source.
+ */
+export function readLeaseCovers(key: string, listing: boolean, uncovered: readonly string[]): boolean {
+  for (const root of uncovered) {
+    if (key === root || key.startsWith(root + '/')) return false;
+    if (listing && (key === '' || root.startsWith(key + '/'))) return false;
+  }
+  return true;
+}
+
+/**
  * The session's own timers, taken when this module is evaluated: a program
  * that shares the realm (a resident body run in-process) wraps the global
  * ones as its own resumptions, and a recall's wait is not one of them.
