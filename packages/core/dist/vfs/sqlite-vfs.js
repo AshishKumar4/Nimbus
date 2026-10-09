@@ -1607,11 +1607,20 @@ export class SqliteVFS {
             this.raiseAppendFailure(opened);
             return node;
         };
+        // What another opener reads of a file held for publication (at the name
+        // it was last committed at, which an unlink or a rename over it leaves
+        // on its inode) waits for it; its writer's reads see its own.
+        const published = () => {
+            if (this.heldPipelines > 0)
+                asOpener(() => this.recallHeld(opened.inode.path))();
+        };
         const stat = () => {
+            published();
             const node = current();
             return { ...this.statOf(node), nlink: opened.path === null ? 0 : 1 };
         };
         const read = (offset, length) => {
+            published();
             const node = current();
             if (!rights.read)
                 throw vfsKeyError('EBADF', path);
@@ -1625,6 +1634,7 @@ export class SqliteVFS {
             // resolve beneath: the key would put them in a different view.
             path: () => {
                 live();
+                published();
                 const name = opened.path === null ? null : this.logicalPath(opened.path, cred);
                 if (name === null)
                     throw vfsKeyError('ENOENT', path);
@@ -1632,6 +1642,7 @@ export class SqliteVFS {
             },
             stat, read,
             end: () => {
+                published();
                 const node = live();
                 const run = this.appendRuns.get(node.ino);
                 return run === undefined ? node.size : run.base + run.bytes;
@@ -1674,6 +1685,7 @@ export class SqliteVFS {
                     this.rewriteFile(node, null, size, null);
             }),
             readdir: () => {
+                published();
                 if (!current().isDir)
                     throw vfsKeyError('ENOTDIR', path);
                 if (!rights.read)
@@ -2609,7 +2621,10 @@ export class SqliteVFS {
         const rev = own ?? this._gen;
         this._revision = rev;
         const keys = paths.map((path) => normalizeVfsPath(path)).filter((key) => key !== '');
-        this.pathRevisions.stamp(keys, rev);
+        // One passed it: its paths are at the revision it is published at, which
+        // the log says and the path reports (its row says the generation it was
+        // committed at, below a cursor handed out since).
+        this.pathRevisions.stamp(keys, rev, committed !== undefined && own === null);
         for (const key of keys) {
             // A path no transaction of this publication wrote a row for is at the
             // generation advanceGeneration committed, the clock.
@@ -2932,7 +2947,7 @@ export class SqliteVFS {
             throw vfsError('EPERM', root, 'a subtree with a default ACL or a shared directory is not delegated');
         }
         for (const [held, lease] of this.exclusiveMutationLeases) {
-            if (!pathsOverlap(root, lease.root))
+            if (!this.mutationMeets(lease, root))
                 continue;
             // A delegation it overlaps is given up first (its holder's decided operations stored).
             if (lease.delegation !== null && !this.isHolder(held))
@@ -3096,21 +3111,26 @@ export class SqliteVFS {
         }
         pipeline.committed = this._gen;
         const publication = pipeline.publication;
+        // Each path whole, and its directory's names (a name it made, moved or
+        // removed is in them): held by leases whose recall is the publication.
+        const holdAt = (root, entries) => {
+            const id = entries ? `${root}\0names` : root;
+            if (pipeline.roots.has(id))
+                return;
+            const owner = crypto.randomUUID();
+            this.exclusiveMutationLeases.set(owner, {
+                root, delegation: { reads: true, recall: () => pipeline.published }, inos: null, numbered: new Map(),
+                reservation: null, shared: false, recalling: null, reason: null, held: pipeline, ...(entries ? { entries: true } : {}),
+            });
+            pipeline.roots.set(id, owner);
+        };
         for (const path of paths) {
             publication.paths.add(path);
             const key = normalizeVfsPath(path);
             if (key === '')
                 continue;
-            const parent = structural.has(path) ? this.parentPath(key) : '';
-            const root = parent === '' ? key : parent;
-            if (pipeline.roots.has(root))
-                continue;
-            const owner = crypto.randomUUID();
-            this.exclusiveMutationLeases.set(owner, {
-                root, delegation: { reads: true, recall: () => pipeline.published }, inos: null, numbered: new Map(),
-                reservation: null, shared: false, recalling: null, reason: null, held: pipeline,
-            });
-            pipeline.roots.set(root, owner);
+            holdAt(key, false);
+            holdAt(this.parentPath(key), true);
         }
         for (const [path, change] of structural) {
             if (publication.structural.get(path) !== 'removed')
@@ -3177,9 +3197,40 @@ export class SqliteVFS {
         for (const [owner, lease] of this.exclusiveMutationLeases) {
             if (lease.delegation === null || !lease.delegation.reads || lease.shared || this.isHolder(owner))
                 continue;
-            const { root } = lease;
-            if (root === '' || key === root || key.startsWith(`${root}/`))
+            if (this.holdsKey(lease, key))
                 throw this.recallRequired(owner, lease, this.activeWrite ? 'revoke' : 'share', key);
+        }
+    }
+    /** Whether a read at `key` meets `lease`: its subtree, or its root's own entry and names only (entries). */
+    holdsKey(lease, key) {
+        const { root } = lease;
+        if (key === root)
+            return true;
+        return lease.entries !== true && (root === '' || key.startsWith(`${root}/`));
+    }
+    /**
+     * Whether a mutation at `key`, or a lease of it, meets `lease`: anything
+     * at, under or above its root. A held directory's names (entries) meet
+     * none: the held name's own lease meets the directory and all above it,
+     * and a change beside that name reads none of the names.
+     */
+    mutationMeets(lease, key) {
+        return lease.entries !== true && pathsOverlap(key, lease.root);
+    }
+    /**
+     * Another caller's access at `key` (null: anywhere, a listing's) to what a
+     * pipelined commit holds waits for its publication (RecallRequired), as
+     * for any held subtree: the one check the paths that skip resolvePath
+     * make (a description, a listing).
+     */
+    recallHeld(key) {
+        if (this.heldPipelines === 0)
+            return;
+        for (const [owner, lease] of this.exclusiveMutationLeases) {
+            if (lease.held === undefined || this.isHolder(owner))
+                continue;
+            if (key === null || this.holdsKey(lease, key))
+                throw this.recallRequired(owner, lease, 'share', key ?? lease.root);
         }
     }
     /** Whether a create under `root` (it, or anything under it) would take permissions from a default ACL or a shared directory. */
@@ -3254,7 +3305,7 @@ export class SqliteVFS {
         }
         for (;;) {
             const normalized = normalizeVfsPath(key);
-            const met = [...this.exclusiveMutationLeases].find(([id, lease]) => (lease.delegation !== null && holds?.has(id) !== true && pathsOverlap(normalized, lease.root)
+            const met = [...this.exclusiveMutationLeases].find(([id, lease]) => (lease.delegation !== null && holds?.has(id) !== true && this.mutationMeets(lease, normalized)
                 // What the writer itself holds for its publication.
                 && !(lease.held !== undefined && (lease.held === pipeline || (lease.held.writer !== null && lease.held.writer === holds)))));
             if (met === undefined)
@@ -3349,7 +3400,7 @@ export class SqliteVFS {
         }
         for (const [holder, lease] of this.exclusiveMutationLeases) {
             const { root } = lease;
-            if (!pathsOverlap(normalized, root) || holder === owner)
+            if (!this.mutationMeets(lease, normalized) || holder === owner)
                 continue;
             if (lease.delegation !== null) {
                 // Its holder decides there: a call it makes itself rather than sends
@@ -4390,6 +4441,8 @@ export class SqliteVFS {
      * has no permission to see.
      */
     list(after, limit, cred) {
+        // A page is of what is published: one walked while a commit is held waits for it.
+        this.recallHeld(null);
         // Before the walk, deliberately — see VfsListPage.
         const epoch = this._epoch;
         const rev = this._revision;

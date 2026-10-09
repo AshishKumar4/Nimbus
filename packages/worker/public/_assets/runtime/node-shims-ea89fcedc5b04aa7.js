@@ -3167,6 +3167,33 @@ const __fsMod = (() => {
     return null;
   }
 
+  /** What the view answers for under a trusted read lease (core runtime/delegations.ts readLeaseCovers). */
+  const _readLeaseCovers = function readLeaseCovers(key, listing, roots) {
+    for (const root of roots) {
+        if (key.startsWith(root) && (key.length === root.length || key.charCodeAt(root.length) === 47))
+            return false;
+        if (listing && (key === '' || (root.startsWith(key) && root.charCodeAt(key.length) === 47)))
+            return false;
+    }
+    return true;
+};
+  const _READ_LEASE_UNCOVERED = [".nimbus","var/lib/nimbus","proc","dev"];
+  const _SESSION_STORES = [".nimbus","var/lib/nimbus"];
+  /** Lookups that landed where the lease does not vouch: a leased answer that made one is the session's (_leasedRead). */
+  let _uncoveredLandings = 0;
+  /** Whether the view has answered for the session's stores, which change with no recall: its barriers are asked from then on. */
+  let _storesViewed = false;
+  /** `__nsResolve`, where it landed counted: `k`'s entry, or with `listing` its names, through any link. */
+  function _nsResolveViewed(k, follow, listing) {
+    const found = __nsLookup(k, follow);
+    if (found === "ELOOP") return found;
+    if (!_readLeaseCovers(found.path, listing, _READ_LEASE_UNCOVERED)) {
+      _uncoveredLandings++;
+      if (!_readLeaseCovers(found.path, listing, _SESSION_STORES)) _storesViewed = true;
+    }
+    return found.row !== undefined ? found : null;
+  }
+
   /**
    * The key an operation that follows symlinks lands on: every link on `k`
    * followed, the last one too, as open(2) and chmod(2) follow them; null on
@@ -3259,7 +3286,7 @@ const __fsMod = (() => {
       // A rewrite of a file that was there: its owner and mode stay what the
       // authority says they are, under the name it had before a rename.
       const renamed = _nsOwnView(k);
-      const found = __nsResolve(renamed && renamed.alias !== undefined ? renamed.alias : k, follow);
+      const found = _nsResolveViewed(renamed && renamed.alias !== undefined ? renamed.alias : k, follow, false);
       if (found && found !== "ELOOP" && Number(found.row.kind) === 0) return { ..._nsRowMeta(found.row), size };
     }
     const own = _nsOwnView(k);
@@ -3267,7 +3294,7 @@ const __fsMod = (() => {
     if (own && own.dir) return { type: "directory", size: 0, mode: 0o40777 & ~__processUmask, uid: cred.uid, gid: cred.gid, own: true };
     // A symlink this process moved is still a link to lstat.
     if (!follow && own && own.link !== undefined) {
-      const found = __nsResolve(_nsMovedEntry(k, own), false);
+      const found = _nsResolveViewed(_nsMovedEntry(k, own), false, false);
       if (found === "ELOOP") return "ELOOP";
       return found ? _nsRowMeta(found.row) : "absent";
     }
@@ -3275,7 +3302,7 @@ const __fsMod = (() => {
     // name before, but not what this process has put there since: those rows
     // are its own writes, recorded when the authority accepted them.
     if (!own || own.alias !== undefined || (own.hide && _createdHere.has(k))) {
-      const found = __nsResolve(own && own.alias !== undefined ? own.alias : k, follow);
+      const found = _nsResolveViewed(own && own.alias !== undefined ? own.alias : k, follow, false);
       if (found === "ELOOP") return "ELOOP";
       if (found) return _nsRowMeta(found.row);
       // Followed to a name the table does not list yet: a file this process
@@ -3296,7 +3323,7 @@ const __fsMod = (() => {
     const names = new Map();
     const own = _nsOwnView(k);
     if (own !== "absent" && !(own && own.hide) && !(own && own.dir && _nsOwn.get(k)?.hide)) {
-      const real = __nsResolve(own && own.alias !== undefined ? own.alias : k, true);
+      const real = _nsResolveViewed(own && own.alias !== undefined ? own.alias : k, true, true);
       if (real && real !== "ELOOP") {
         for (const child of __nsChildren(real.path)) {
           names.set(child.name, child.kind === 1 ? "directory" : child.kind === 2 ? "symlink" : _direntTypeOfMode(child.mode, "file"));
@@ -4446,7 +4473,7 @@ const __fsMod = (() => {
     // change waits for the lease's recall, and the recall untrusts it first
     // (ProcessFsClient.readTrusted). A delivered answer is still applied,
     // and a store owed a repair still asks.
-    if (!delivered && !_storeRepairOwed && _nsActive() && __nimbusProcessFs().readTrusted()) {
+    if (!delivered && !_storeRepairOwed && !_storesViewed && _nsActive() && __nimbusProcessFs().readTrusted()) {
       _stats.leasedBarriers++;
       return [];
     }
@@ -5585,12 +5612,15 @@ const __fsMod = (() => {
   }
   /** `read`, the sync view's answer, counted; undefined when the view cannot say (EAGAIN: a mount it did not list). */
   function _leasedRead(read) {
+    // An answer that landed where the lease does not vouch (a link out of it) is the session's.
+    const landings = _uncoveredLandings;
     try {
       const value = read();
+      if (_uncoveredLandings !== landings) return undefined;
       _stats.leasedReads++;
       return value;
     } catch (error) {
-      if (error && error.code === "EAGAIN") return undefined;
+      if ((error && error.code === "EAGAIN") || _uncoveredLandings !== landings) return undefined;
       _stats.leasedReads++;
       throw error;
     }
@@ -5601,7 +5631,7 @@ const __fsMod = (() => {
   async function _statAsyncAs(syscall, p) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    if (supervisor && _leasedView() && !_ownAt(_strip(absPath), syscall === "stat")) {
+    if (supervisor && _leasedView() && _readLeaseCovers(_strip(absPath), false, _READ_LEASE_UNCOVERED) && !_ownAt(_strip(absPath), syscall === "stat")) {
       const local = _leasedRead(() => (syscall === "stat" ? statSync(p) : lstatSync(p)));
       if (local !== undefined) return local;
     }
@@ -5624,7 +5654,7 @@ const __fsMod = (() => {
   async function _readdirAsync(p, opts) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    if (supervisor && _leasedView() && !_ownUnder(_strip(absPath))) {
+    if (supervisor && _leasedView() && _readLeaseCovers(_strip(absPath), true, _READ_LEASE_UNCOVERED) && !_ownUnder(_strip(absPath))) {
       const local = _leasedRead(() => readdirSync(p, opts));
       // In the order the session's listing is given in.
       if (local !== undefined) return opts?.withFileTypes ? local.sort((a, b) => a.name.localeCompare(b.name)) : local;
@@ -8446,7 +8476,7 @@ const __fsMod = (() => {
           // to byte cells here invents two changes: leaving and re-entering
           // the namespace, even when the watched inode never changed.
           if (!_nsActive()) return null;
-          const found = __nsResolve(key, true);
+          const found = _nsResolveViewed(key, true, false);
           if (!found || found === "ELOOP") return { stamp: "absent", absent: true };
           const row = found.row;
           return { stamp: [row.ino, row.kind, row.size, row.mtime, row.ctime, row.mode, row.uid, row.gid].join(":"), absent: false };

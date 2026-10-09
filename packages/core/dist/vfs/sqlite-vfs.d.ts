@@ -1446,6 +1446,22 @@ export declare class SqliteVFS {
      * holder (the lease a mutation scope or a view presents).
      */
     private recallReads;
+    /** Whether a read at `key` meets `lease`: its subtree, or its root's own entry and names only (entries). */
+    private holdsKey;
+    /**
+     * Whether a mutation at `key`, or a lease of it, meets `lease`: anything
+     * at, under or above its root. A held directory's names (entries) meet
+     * none: the held name's own lease meets the directory and all above it,
+     * and a change beside that name reads none of the names.
+     */
+    private mutationMeets;
+    /**
+     * Another caller's access at `key` (null: anywhere, a listing's) to what a
+     * pipelined commit holds waits for its publication (RecallRequired), as
+     * for any held subtree: the one check the paths that skip resolvePath
+     * make (a description, a listing).
+     */
+    private recallHeld;
     /** Whether a create under `root` (it, or anything under it) would take permissions from a default ACL or a shared directory. */
     private inheritsPermissions;
     /** `count` inode numbers no one else will be given, in one transaction: a gap if unused, never a reuse. */

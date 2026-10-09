@@ -59,10 +59,15 @@ export async function withRecall(run, attempts = 8, held) {
                 held.add(published);
     };
     let met = null;
+    // What a pipelined attempt runs ahead of is its synchronous part: a call
+    // whose commit comes after an await meets the recall again, and is made
+    // again once the recall is over.
+    let pipelined = false;
     for (let attempt = 1;; attempt++) {
         try {
             let value;
-            if (met?.pipeline !== undefined) {
+            if (met?.pipeline !== undefined && !pipelined) {
+                pipelined = true;
                 await new Promise((resolve) => callerSetTimeout(resolve, 0));
                 const ran = met.pipeline(run);
                 publications.push(ran.published);

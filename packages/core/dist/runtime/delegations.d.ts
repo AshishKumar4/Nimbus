@@ -42,6 +42,24 @@ export declare const DELEGATION_RECALL_TIMEOUT_MS = 5000;
  * one is not delegated (EPERM).
  */
 export declare const SESSION_KERNEL_ROOTS: readonly string[];
+/**
+ * What a process's read lease does not vouch for (engine keys): the
+ * session's own stores, which its synchronous writers change without a
+ * recall, and the kernel's mounts, which are not SQLite's.
+ */
+export declare const READ_LEASE_UNCOVERED_ROOTS: readonly string[];
+/**
+ * Whether what a process knows of `key`, its entry or with `listing` its
+ * names, is clear of every root in `roots`: nothing at or under one is, nor
+ * the names of a directory above one (they include the root's own). Under a
+ * trusted read lease a process's view answers in the session's place only
+ * what is clear of READ_LEASE_UNCOVERED_ROOTS, and once it has answered what
+ * is not clear of SESSION_KERNEL_ROOTS (changed with no recall) it asks every
+ * barrier. Asked on every lookup a view makes, so it allocates nothing; and
+ * written without references beyond its arguments, so a runtime prelude
+ * carries it as source.
+ */
+export declare function readLeaseCovers(key: string, listing: boolean, roots: readonly string[]): boolean;
 /** How long one awaitRecall waits before it answers that nothing is asked (the holder asks again). */
 export declare const DELEGATION_RECALL_POLL_MS = 25000;
 /**

@@ -63,9 +63,11 @@ export declare class PathRevisions {
      * holds a stamp already: a stamp answers for its path before the path's row
      * does, so it moves too. A walk stops at a directory this call has already
      * stamped, since every directory above it was stamped with it. Then drop
-     * the oldest stamps while over budget.
+     * the oldest stamps while over budget. With `own`, each key is stamped
+     * itself: its row's generation is not what it reports (a commit published
+     * after one that passed it, SqliteVFS.publishHeld).
      */
-    stamp(keys: readonly string[], rev: number): void;
+    stamp(keys: readonly string[], rev: number, own?: boolean): void;
     /**
      * Drop every stamp at or below `cutoff` and raise the floor to it. A stamp
      * left at or below the floor would report its directory below a missing

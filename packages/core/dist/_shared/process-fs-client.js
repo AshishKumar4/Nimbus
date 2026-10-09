@@ -995,6 +995,9 @@ export function processFsClient(options) {
             return failures.splice(0, failures.length);
         },
         readTrusted() {
+            // A Worker's clock stands still between events: trusted at one, it is
+            // before asked + trust, and the session publishes past this lease
+            // unanswered only after confirmed + trust + margin (confirmed >= asked).
             return readLease !== null && readLease.logged === logged && now() < readLease.until;
         },
         readLeaseAsk() {
