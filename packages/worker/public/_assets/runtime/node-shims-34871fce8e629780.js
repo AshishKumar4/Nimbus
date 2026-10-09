@@ -3167,18 +3167,18 @@ const __fsMod = (() => {
     return null;
   }
 
-  /** What the view answers for under a trusted read lease (core runtime/delegations.ts readLeaseCovers). */
-  const _readLeaseCovers = function readLeaseCovers(key, listing, roots) {
-    for (const root of roots) {
-        if (key.startsWith(root) && (key.length === root.length || key.charCodeAt(root.length) === 47))
-            return false;
-        if (listing && (key === '' || (root.startsWith(key) && root.charCodeAt(key.length) === 47)))
-            return false;
-    }
-    return true;
-};
-  const _READ_LEASE_UNCOVERED = [".nimbus","var/lib/nimbus","proc","dev"];
-  const _SESSION_STORES = [".nimbus","var/lib/nimbus"];
+  // What the view answers for under a trusted read lease, compiled from
+  // @nimbus-sh/core _shared/read-lease-cover.ts (READ_LEASE_COVER_PREAMBLE):
+  // declares SESSION_KERNEL_ROOTS, READ_LEASE_UNCOVERED_ROOTS and readLeaseCovers.
+var SESSION_KERNEL_ROOTS = [".nimbus", "var/lib/nimbus"];
+var READ_LEASE_UNCOVERED_ROOTS = [...SESSION_KERNEL_ROOTS, "proc", "dev"];
+function readLeaseCovers(key, listing, roots) {
+  for (const root of roots) {
+    if (key.startsWith(root) && (key.length === root.length || key.charCodeAt(root.length) === 47)) return false;
+    if (listing && (key === "" || root.startsWith(key) && root.charCodeAt(key.length) === 47)) return false;
+  }
+  return true;
+}
   /** Lookups that landed where the lease does not vouch: a leased answer that made one is the session's (_leasedRead). */
   let _uncoveredLandings = 0;
   /** Whether the view has answered for the session's stores, which change with no recall: its barriers are asked from then on. */
@@ -3187,9 +3187,9 @@ const __fsMod = (() => {
   function _nsResolveViewed(k, follow, listing) {
     const found = __nsLookup(k, follow);
     if (found === "ELOOP") return found;
-    if (!_readLeaseCovers(found.path, listing, _READ_LEASE_UNCOVERED)) {
+    if (!readLeaseCovers(found.path, listing, READ_LEASE_UNCOVERED_ROOTS)) {
       _uncoveredLandings++;
-      if (!_readLeaseCovers(found.path, listing, _SESSION_STORES)) _storesViewed = true;
+      if (!readLeaseCovers(found.path, listing, SESSION_KERNEL_ROOTS)) _storesViewed = true;
     }
     return found.row !== undefined ? found : null;
   }
@@ -5631,7 +5631,7 @@ const __fsMod = (() => {
   async function _statAsyncAs(syscall, p) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    if (supervisor && _leasedView() && _readLeaseCovers(_strip(absPath), false, _READ_LEASE_UNCOVERED) && !_ownAt(_strip(absPath), syscall === "stat")) {
+    if (supervisor && _leasedView() && readLeaseCovers(_strip(absPath), false, READ_LEASE_UNCOVERED_ROOTS) && !_ownAt(_strip(absPath), syscall === "stat")) {
       const local = _leasedRead(() => (syscall === "stat" ? statSync(p) : lstatSync(p)));
       if (local !== undefined) return local;
     }
@@ -5654,7 +5654,7 @@ const __fsMod = (() => {
   async function _readdirAsync(p, opts) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    if (supervisor && _leasedView() && _readLeaseCovers(_strip(absPath), true, _READ_LEASE_UNCOVERED) && !_ownUnder(_strip(absPath))) {
+    if (supervisor && _leasedView() && readLeaseCovers(_strip(absPath), true, READ_LEASE_UNCOVERED_ROOTS) && !_ownUnder(_strip(absPath))) {
       const local = _leasedRead(() => readdirSync(p, opts));
       // In the order the session's listing is given in.
       if (local !== undefined) return opts?.withFileTypes ? local.sort((a, b) => a.name.localeCompare(b.name)) : local;

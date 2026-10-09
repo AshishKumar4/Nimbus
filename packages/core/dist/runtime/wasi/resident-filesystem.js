@@ -37,7 +37,7 @@
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { delegationHolder } from './delegation-holder.js';
-import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../delegations.js';
+import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../../_shared/read-lease-cover.js';
 /** A held write goes to the session in pieces of this size: each fits one call. */
 const WRITE_PIECE_BYTES = 1024 * 1024;
 /** Listings one call may take before it gives the question to the authority. */

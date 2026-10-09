@@ -3201,12 +3201,16 @@ export class SqliteVFS {
                 throw this.recallRequired(owner, lease, this.activeWrite ? 'revoke' : 'share', key);
         }
     }
-    /** Whether a read at `key` meets `lease`: its subtree, or its root's own entry and names only (entries). */
+    /**
+     * Whether an access at `key` meets `lease`: anything in its subtree; for a
+     * held directory's names (entries), a read of the directory itself, and
+     * never a mutation's, whose own walk reads it (mutationMeets).
+     */
     holdsKey(lease, key) {
         const { root } = lease;
-        if (key === root)
-            return true;
-        return lease.entries !== true && (root === '' || key.startsWith(`${root}/`));
+        if (lease.entries === true)
+            return key === root && !this.activeWrite;
+        return key === root || root === '' || key.startsWith(`${root}/`);
     }
     /**
      * Whether a mutation at `key`, or a lease of it, meets `lease`: anything

@@ -21,6 +21,7 @@
  * it (its subscriptions are the scope's to dispose).
  */
 import { pathsOverlap } from '../vfs/path.js';
+import { SESSION_KERNEL_ROOTS } from '../_shared/read-lease-cover.js';
 /**
  * How long a holder has to answer a recall (T): send what it decided and
  * say so. A holder making syscalls answers within one recall round trip and
@@ -34,39 +35,6 @@ import { pathsOverlap } from '../vfs/path.js';
  * documents it.
  */
 export const DELEGATION_RECALL_TIMEOUT_MS = 5_000;
-/**
- * The session's own stores (engine keys): a process may not hold them, so
- * the session's synchronous use of them (durable launch images, inline wasm
- * images, staged bindings) never meets a delegation. A subtree at or above
- * one is not delegated (EPERM).
- */
-export const SESSION_KERNEL_ROOTS = ['.nimbus', 'var/lib/nimbus'];
-/**
- * What a process's read lease does not vouch for (engine keys): the
- * session's own stores, which its synchronous writers change without a
- * recall, and the kernel's mounts, which are not SQLite's.
- */
-export const READ_LEASE_UNCOVERED_ROOTS = [...SESSION_KERNEL_ROOTS, 'proc', 'dev'];
-/**
- * Whether what a process knows of `key`, its entry or with `listing` its
- * names, is clear of every root in `roots`: nothing at or under one is, nor
- * the names of a directory above one (they include the root's own). Under a
- * trusted read lease a process's view answers in the session's place only
- * what is clear of READ_LEASE_UNCOVERED_ROOTS, and once it has answered what
- * is not clear of SESSION_KERNEL_ROOTS (changed with no recall) it asks every
- * barrier. Asked on every lookup a view makes, so it allocates nothing; and
- * written without references beyond its arguments, so a runtime prelude
- * carries it as source.
- */
-export function readLeaseCovers(key, listing, roots) {
-    for (const root of roots) {
-        if (key.startsWith(root) && (key.length === root.length || key.charCodeAt(root.length) === 47))
-            return false;
-        if (listing && (key === '' || (root.startsWith(key) && root.charCodeAt(key.length) === 47)))
-            return false;
-    }
-    return true;
-}
 /**
  * The session's own timers, taken when this module is evaluated: a program
  * that shares the realm (a resident body run in-process) wraps the global

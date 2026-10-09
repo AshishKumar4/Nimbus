@@ -1446,7 +1446,11 @@ export declare class SqliteVFS {
      * holder (the lease a mutation scope or a view presents).
      */
     private recallReads;
-    /** Whether a read at `key` meets `lease`: its subtree, or its root's own entry and names only (entries). */
+    /**
+     * Whether an access at `key` meets `lease`: anything in its subtree; for a
+     * held directory's names (entries), a read of the directory itself, and
+     * never a mutation's, whose own walk reads it (mutationMeets).
+     */
     private holdsKey;
     /**
      * Whether a mutation at `key`, or a lease of it, meets `lease`: anything

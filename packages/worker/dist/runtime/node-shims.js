@@ -47,14 +47,13 @@ import { generateSqliteShimCode } from './sqlite-shim.js';
 import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
 import { CHILD_NEWS_SOURCE } from './child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
-import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE, } from '../loaders/generated-workers.js';
+import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE, READ_LEASE_COVER_PREAMBLE, } from '../loaders/generated-workers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { LOOPBACK_HOSTNAMES } from '@nimbus-sh/core/_shared/loopback.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { SYSTEM_IDENTITY } from '@nimbus-sh/core/constants.js';
-import { READ_LEASE_UNCOVERED_ROOTS, SESSION_KERNEL_ROOTS, readLeaseCovers } from '@nimbus-sh/core/runtime/delegations.js';
 import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
@@ -1053,10 +1052,10 @@ const __fsMod = (() => {
     return null;
   }
 
-  /** What the view answers for under a trusted read lease (core runtime/delegations.ts readLeaseCovers). */
-  const _readLeaseCovers = ${readLeaseCovers.toString()};
-  const _READ_LEASE_UNCOVERED = ${JSON.stringify(READ_LEASE_UNCOVERED_ROOTS)};
-  const _SESSION_STORES = ${JSON.stringify(SESSION_KERNEL_ROOTS)};
+  // What the view answers for under a trusted read lease, compiled from
+  // @nimbus-sh/core _shared/read-lease-cover.ts (READ_LEASE_COVER_PREAMBLE):
+  // declares SESSION_KERNEL_ROOTS, READ_LEASE_UNCOVERED_ROOTS and readLeaseCovers.
+${READ_LEASE_COVER_PREAMBLE}
   /** Lookups that landed where the lease does not vouch: a leased answer that made one is the session's (_leasedRead). */
   let _uncoveredLandings = 0;
   /** Whether the view has answered for the session's stores, which change with no recall: its barriers are asked from then on. */
@@ -1065,9 +1064,9 @@ const __fsMod = (() => {
   function _nsResolveViewed(k, follow, listing) {
     const found = __nsLookup(k, follow);
     if (found === "ELOOP") return found;
-    if (!_readLeaseCovers(found.path, listing, _READ_LEASE_UNCOVERED)) {
+    if (!readLeaseCovers(found.path, listing, READ_LEASE_UNCOVERED_ROOTS)) {
       _uncoveredLandings++;
-      if (!_readLeaseCovers(found.path, listing, _SESSION_STORES)) _storesViewed = true;
+      if (!readLeaseCovers(found.path, listing, SESSION_KERNEL_ROOTS)) _storesViewed = true;
     }
     return found.row !== undefined ? found : null;
   }
@@ -3509,7 +3508,7 @@ const __fsMod = (() => {
   async function _statAsyncAs(syscall, p) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    if (supervisor && _leasedView() && _readLeaseCovers(_strip(absPath), false, _READ_LEASE_UNCOVERED) && !_ownAt(_strip(absPath), syscall === "stat")) {
+    if (supervisor && _leasedView() && readLeaseCovers(_strip(absPath), false, READ_LEASE_UNCOVERED_ROOTS) && !_ownAt(_strip(absPath), syscall === "stat")) {
       const local = _leasedRead(() => (syscall === "stat" ? statSync(p) : lstatSync(p)));
       if (local !== undefined) return local;
     }
@@ -3532,7 +3531,7 @@ const __fsMod = (() => {
   async function _readdirAsync(p, opts) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
-    if (supervisor && _leasedView() && _readLeaseCovers(_strip(absPath), true, _READ_LEASE_UNCOVERED) && !_ownUnder(_strip(absPath))) {
+    if (supervisor && _leasedView() && readLeaseCovers(_strip(absPath), true, READ_LEASE_UNCOVERED_ROOTS) && !_ownUnder(_strip(absPath))) {
       const local = _leasedRead(() => readdirSync(p, opts));
       // In the order the session's listing is given in.
       if (local !== undefined) return opts?.withFileTypes ? local.sort((a, b) => a.name.localeCompare(b.name)) : local;
