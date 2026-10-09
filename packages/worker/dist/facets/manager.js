@@ -16,7 +16,7 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, columnMapModuleName, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, columnMapModuleName, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, RUNTIME_NODE_LIB_MODULE, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
 import { isTypescriptDeclarationFile } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
@@ -615,16 +615,19 @@ const SQLITE_FACET_IMPORT = `import __nimbusSqliteWasmModule from "${SQLITE_WASM
     `globalThis.__nimbusSqliteWasmModule = __nimbusSqliteWasmModule;\n` +
     generateSqliteFacetPreamble();
 /**
- * The runtime-code interpreter, its primordials and its host module, in every
- * launch's map: the primordials load at the launch's start, the other two
- * only when the program first produces code no launch staged
- * (core/_shared/commonjs-cell.ts, RUNTIME CODE).
+ * The runtime's own modules in every launch's map: the runtime-code
+ * interpreter, its primordials and its host module, whose primordials load at
+ * the launch's start and the other two only when the program first produces
+ * code no launch staged (core/_shared/commonjs-cell.ts, RUNTIME CODE); and
+ * Node's library, loaded when the program first needs it (node-shims.ts
+ * __nimbusNodeLib).
  */
-function interpreterModules(sources) {
+function runtimeModules(sources) {
     return {
         [RUNTIME_INTERPRETER_PRIMORDIALS_MODULE]: sources.interpreterPrimordials,
         [RUNTIME_INTERPRETER_MODULE]: sources.interpreter,
         [RUNTIME_INTERPRETER_OPS_MODULE]: sources.interpreterOps,
+        [RUNTIME_NODE_LIB_MODULE]: sources.nodeLib,
     };
 }
 /**
@@ -722,7 +725,7 @@ ${COMMONJS_CELL_RUNTIME_SOURCE}
  * lifetimes: its output relayed to the SUPERVISOR, the shims, the event loop
  * and the globals, up to its entry module (`mod`).
  */
-function nodeProgramRuntime(sources) {
+function nodeProgramRuntime(sources, esModule) {
     return `
     const __vfsBundle = __nimbusResidentBundle;
     const __pendingIO = [];
@@ -803,8 +806,7 @@ ${RESIDENCY_MISS_REPORT}
         __perf.markResourceTiming = __perf.markResourceTiming.bind(__perf);
       }
     } catch {}
-    const mod = { exports: {} };
-    Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta(filename || "/home/user/script.js") });
+    const mod = __nimbusEntryModuleOf(filename, ${esModule});
 `;
 }
 /**
@@ -906,7 +908,7 @@ ${sources.residentStore}
     if (__namespaceFailure) {
       return __NimbusHostResponse.json({ exitCode: 1, stdout: "", stderr: __namespaceFailure + "\\n", residencyMisses: [] });
     }
-${nodeProgramRuntime(sources)}
+${nodeProgramRuntime(sources, entry.esModule)}
     try {
       await __nimbusPrepareStdin();
       // From here on the program runs: a stop is possible while stdin can
@@ -914,8 +916,6 @@ ${nodeProgramRuntime(sources)}
       __nimbusStopReplay.arm(__nimbusStdinCanStop());
       // \`-r\` and \`--import\` modules first, before the entry is require.main.
       await __nimbusPreload();
-      // G2 (runtime-pkg wave): see corresponding comment in NodeProcess.run.
-      __require.main = mod;
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
       // where it is, as Node does. \`-p\`'s returns the value it prints.
@@ -1037,7 +1037,7 @@ ${nodeProgramRuntime(sources)}
 };
 `,
         modules: bundleSource.modules,
-        codeModules: { ...bundleSource.codeModules, ...interpreterModules(sources), ...entry.modules },
+        codeModules: { ...bundleSource.codeModules, ...runtimeModules(sources), ...entry.modules },
     };
 }
 /**
@@ -1327,7 +1327,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // namespace cannot be listed fails here, naming why.
     const __namespaceFailure = await __residentRequireNamespace(__supervisor, __residentBooted.failure);
     if (__namespaceFailure) throw new Error(__namespaceFailure);
-${nodeProgramRuntime(sources)}
+${nodeProgramRuntime(sources, entry.esModule)}
     if (attachedTty) {
       try { __processMod.stdin.__nimbusStartLivePump?.(); } catch {}
     }
@@ -1356,7 +1356,6 @@ ${nodeProgramRuntime(sources)}
     try {
       // \`-r\` and \`--import\` modules first, before the entry is require.main.
       await __nimbusPreload();
-      __require.main = mod;
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
       // where it is, as Node does. \`-p\`'s returns the value it prints.
@@ -1559,7 +1558,7 @@ export class NimbusProcess extends DurableObject {
 }
 `,
         modules: bundleSource.modules,
-        codeModules: { ...bundleSource.codeModules, ...interpreterModules(sources), ...entry.modules },
+        codeModules: { ...bundleSource.codeModules, ...runtimeModules(sources), ...entry.modules },
     };
 }
 /**
@@ -6097,8 +6096,7 @@ export class FacetManager {
         // The stopped run's descriptors go with it: the resident opens its own.
         await this.hooks.rewindProcessFiles?.(pid);
         // Every long-running process has an input channel on its pid.
-        if (!this.processes.hasInput(pid))
-            this.processes.openInput(pid);
+        this.processes.openInput(pid);
         const replay = {
             run: stop.run + 1,
             tape: stop.tape,
@@ -6111,6 +6109,11 @@ export class FacetManager {
             command: opts.command, invokerPid: opts.invokerPid, bundleProfile: opts.bundleProfile, node: opts.node,
             skipSpawn: true, callerPid: pid, replay,
         });
+        // Said as any resident's start is: it runs on, and serves.
+        try {
+            this.hooks.onSpawn?.(pid, entry.command, true);
+        }
+        catch { }
         // Its next launch starts as a server directly (server-hints.ts).
         if (opts.server)
             await this.learnedServers.learn(opts.server).catch((error) => this._learningLost(pid, error));

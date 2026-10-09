@@ -86,10 +86,9 @@ export async function runFresh(facetMgr, code, opts) {
         const stdinOpts = stdinFile ? { stdinFile: { ...stdinFile, syncRead: false } }
             : stdin ? { stdinPipe: stdinBytesOf(stdin) } : {};
         const r = await facetMgr.exec(code, { ...execOpts, ...stdinOpts });
-        // It listened, and runs on as a resident (FacetManager._promote).
-        if (r.promotedPid !== undefined) {
-            return residentStarted(facetMgr, r.promotedPid, opts.command || `node ${opts.filename || '<script>'}`, opts.skipSpawn);
-        }
+        // It listened, and runs on as a resident, whose start was said (FacetManager._promote).
+        if (r.promotedPid !== undefined)
+            return residentStarted(facetMgr, r.promotedPid, '');
         return {
             exitCode: r.exitCode,
             stdout: r.stdout,
@@ -145,19 +144,19 @@ export async function runFresh(facetMgr, code, opts) {
             longRunning: true,
         };
     }
-    return residentStarted(facetMgr, spawned.pid, command, opts.skipSpawn);
+    return residentStarted(facetMgr, spawned.pid, opts.skipSpawn ? '' : `\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}"]\x1b[0m\n`);
 }
 /**
- * Resident `pid` started. A server-shaped program that finished during its
- * boot (`--version`, `--help`, a one-shot run of a CLI that also serves) is
- * an ordinary completed command: its own exit code, no "started" notice.
+ * Resident `pid` started, said by `notice`. A server-shaped program that
+ * finished during its boot (`--version`, `--help`, a one-shot run of a CLI
+ * that also serves) is an ordinary completed command: its own exit code, no
+ * notice.
  */
-function residentStarted(facetMgr, pid, command, quiet) {
+function residentStarted(facetMgr, pid, notice) {
     const finished = facetMgr.processExitCode?.(pid) ?? null;
     if (finished !== null)
         return { exitCode: finished, stdout: '', stderr: '', longRunning: false };
-    const noticeLine = quiet ? '' : `\x1b[2m[started (long-running): pid=${pid} cmd="${command}"]\x1b[0m\n`;
-    return { exitCode: 0, stdout: noticeLine, stderr: '', spawnedPid: pid, longRunning: true };
+    return { exitCode: 0, stdout: notice, stderr: '', spawnedPid: pid, longRunning: true };
 }
 function isByteStream(stream) {
     return !!stream.readBytes;
