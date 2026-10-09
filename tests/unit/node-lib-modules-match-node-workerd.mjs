@@ -621,10 +621,15 @@ show2('ecdh', () => crypto.createECDH('prime256v1').generateKeys().length);
 show2('ecdh unknown', () => crypto.createECDH('nope'));
 show2('dh group', () => crypto.getDiffieHellman('modp14').getPrime().length);
 show2('dh unknown', () => crypto.createDiffieHellmanGroup('modp99'));
+show2('dh group any case', () => [crypto.getDiffieHellman('MODP14').getPrime().length, crypto.createDiffieHellmanGroup('Modp15').getPrime().length]);
 show2('random', () => [crypto.randomFillSync(Buffer.alloc(4)).length, crypto.randomInt(5) < 5, crypto.randomInt(2, 3), crypto.getRandomValues(new Uint8Array(2)).length]);
 show2('randomInt range', () => crypto.randomInt(3, 2));
 show2('randomInt too wide', () => crypto.randomInt(0, 2 ** 49));
 dom('getRandomValues float', () => crypto.getRandomValues(new Float64Array(1)));
+// Its kind is its internal slot's, whatever tag it carries.
+show2('getRandomValues tagged', () => { const u = new Uint8Array(4); Object.defineProperty(u, Symbol.toStringTag, { value: 'Float64Array' }); return crypto.getRandomValues(u).length; });
+show2('getRandomValues tagged subclass', () => { class Tagged extends Uint16Array { get [Symbol.toStringTag]() { return 'Float32Array'; } } return crypto.getRandomValues(new Tagged(2)).length; });
+dom('getRandomValues float tagged', () => { const f = new Float32Array(1); Object.defineProperty(f, Symbol.toStringTag, { value: 'Uint8Array' }); return crypto.getRandomValues(f); });
 show2('timingSafeEqual', () => [crypto.timingSafeEqual(Buffer.from('a'), Buffer.from('a')), crypto.timingSafeEqual(new Uint8Array(1), new ArrayBuffer(1))]);
 show2('timingSafeEqual length', () => crypto.timingSafeEqual(Buffer.from('a'), Buffer.from('ab')));
 show2('timingSafeEqual buf2', () => crypto.timingSafeEqual(Buffer.from('a'), 'a'));

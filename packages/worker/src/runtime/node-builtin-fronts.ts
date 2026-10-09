@@ -232,12 +232,14 @@ function __nimbusFrontCrypto(crypto) {
       throw error;
     }
   });
-  // src/crypto/crypto_dh.cc FindDiffieHellmanGroup: the groups Node knows.
+  // src/crypto/crypto_dh.cc FindDiffieHellmanGroup: the groups Node knows,
+  // their names compared ASCII case-insensitively (StringEqualNoCase).
   const knownGroups = new Set(["modp1", "modp2", "modp5", "modp14", "modp15", "modp16", "modp17", "modp18"]);
+  const asciiLower = (text) => text.replace(/[A-Z]/g, (letter) => String.fromCharCode(letter.charCodeAt(0) + 32));
   for (const name of ["createDiffieHellmanGroup", "getDiffieHellman"]) {
     __nimbusFront(crypto, name, (real) => function (groupName) {
       if (typeof groupName !== "string") throw bindingError(TypeError, "ERR_INVALID_ARG_TYPE", "Group name must be a string");
-      if (!knownGroups.has(groupName)) throw bindingError(Error, "ERR_CRYPTO_UNKNOWN_DH_GROUP", "Unknown DH group");
+      if (!knownGroups.has(asciiLower(groupName))) throw bindingError(Error, "ERR_CRYPTO_UNKNOWN_DH_GROUP", "Unknown DH group");
       return Reflect.apply(real, this, arguments);
     });
   }
@@ -391,8 +393,12 @@ function __nimbusFrontCrypto(crypto) {
     if (!(max - min <= 0xFFFFFFFFFFFF)) throw new nodeErrorCodes.ERR_OUT_OF_RANGE("max" + (minNotSpecified ? "" : " - min"), "<= 281474976710655", max - min);
     return Reflect.apply(real, this, arguments);
   });
+  // A typed array's kind from its internal slot ([[TypedArrayName]]), whatever
+  // Symbol.toStringTag it carries, as Node's isFloat32Array and the rest read it.
+  const typedArrayKind = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;
+  const floatKinds = new Set(["Float16Array", "Float32Array", "Float64Array"]);
   __nimbusFront(crypto, "getRandomValues", (real) => function (data) {
-    if (!__nimbusTypes.isTypedArray(data) || /^Float(16|32|64)Array$/.test(Object.prototype.toString.call(data).slice(8, -1))) {
+    if (!__nimbusTypes.isTypedArray(data) || floatKinds.has(Reflect.apply(typedArrayKind, data, []))) {
       throw new DOMException("The data argument must be an integer-type TypedArray", "TypeMismatchError");
     }
     if (data.byteLength > 65536) throw new DOMException("The requested length exceeds 65,536 bytes", "QuotaExceededError");
