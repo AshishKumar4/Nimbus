@@ -6409,6 +6409,15 @@ export class FacetManager {
         try { source = await filesOf(vfs).readFileString(path); } catch { continue; }
         await pacer.spend(source.length);
         refs = findStaticFsReferences(source, '/' + path);
+        // A registered sibling image is also bytes its loader may read.
+        // CommonJS import.meta.url polyfills can hide that path from folding;
+        // the image collector's same relative-literal rule still names it.
+        for (const image of relativeWasmPaths(source, path)) {
+          const name = '/' + image;
+          const existing = refs.exact.find((ref) => ref.path === name);
+          if (existing) existing.sync = true;
+          else refs.exact.push({ path: name, sync: true });
+        }
         this.staticRefsMemo.delete(path);
         this.staticRefsMemo.set(path, { rev, refs });
         for (const oldest of this.staticRefsMemo.keys()) {
