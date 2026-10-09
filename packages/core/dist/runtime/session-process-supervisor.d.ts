@@ -76,6 +76,8 @@ export declare class SessionProcessSupervisor {
     private readonly heldOutput;
     /** The pids whose output is being delivered now: their own output made meanwhile goes with it. */
     private readonly releasing;
+    /** The pids whose end is decided but not yet published: observers are told they run. */
+    private readonly unpublishedEnds;
     /** Allocate a PID and register a new process. */
     spawn(command: string, argv: string[], cwd: string, opts?: ProcessSpawnOptions): ProcessEntry;
     /** Mark an existing entry as long-running. Idempotent. */
@@ -83,7 +85,17 @@ export declare class SessionProcessSupervisor {
     /** Mark an existing entry as an attached terminal process. Idempotent. */
     setAttachedTty(pid: number): void;
     setForeground(pid: number, foreground: boolean): void;
+    /** `pid`'s lifecycle: ended as soon as its end is decided, which is what releases what it held. */
     get(pid: number): ProcessEntry | undefined;
+    /**
+     * `pid`'s status as observers are told it (ps, process listings, a parent
+     * waiting on it): its end once published, after the output before it
+     * (releaseOutput); running until then.
+     */
+    published(pid: number): ProcessEntry | undefined;
+    /** Every process, as observers are told it (see {@link published}). */
+    publishedAll(): ProcessEntry[];
+    private asPublished;
     getRunning(): ProcessEntry[];
     getAll(): ProcessEntry[];
     /** Every process spawned under `pid`, transitively, oldest first. */
@@ -151,6 +163,8 @@ export declare class SessionProcessSupervisor {
      * genuine owner exists.
      */
     setOnTerminal(cb: (pid: number) => void): void;
+    /** A decided end is told to observers (published) once the output before it is. */
+    private publishEnd;
     private fireTerminal;
     /** Mark a process as exited. First terminal state wins. */
     exit(pid: number, exitCode: number): void;

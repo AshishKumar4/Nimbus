@@ -47,6 +47,8 @@ export class SessionProcessSupervisor {
     heldOutput = new Map();
     /** The pids whose output is being delivered now: their own output made meanwhile goes with it. */
     releasing = new Set();
+    /** The pids whose end is decided but not yet published: observers are told they run. */
+    unpublishedEnds = new Set();
     // ── Lifecycle / PID authority ─────────────────────────────────────────
     /** Allocate a PID and register a new process. */
     spawn(command, argv, cwd, opts = {}) {
@@ -68,8 +70,25 @@ export class SessionProcessSupervisor {
     setForeground(pid, foreground) {
         this.table.setForeground(pid, foreground);
     }
+    /** `pid`'s lifecycle: ended as soon as its end is decided, which is what releases what it held. */
     get(pid) {
         return this.table.get(pid);
+    }
+    /**
+     * `pid`'s status as observers are told it (ps, process listings, a parent
+     * waiting on it): its end once published, after the output before it
+     * (releaseOutput); running until then.
+     */
+    published(pid) {
+        const entry = this.table.get(pid);
+        return entry && this.asPublished(entry);
+    }
+    /** Every process, as observers are told it (see {@link published}). */
+    publishedAll() {
+        return this.table.getAll().map((entry) => this.asPublished(entry));
+    }
+    asPublished(entry) {
+        return this.unpublishedEnds.has(entry.pid) ? { ...entry, state: 'running', exitCode: null, endTime: null } : entry;
     }
     getRunning() {
         return this.table.getRunning();
@@ -233,6 +252,13 @@ export class SessionProcessSupervisor {
     setOnTerminal(cb) {
         this.onTerminalCb = cb;
     }
+    /** A decided end is told to observers (published) once the output before it is. */
+    publishEnd(pid, wasRunning) {
+        if (!wasRunning || this.table.get(pid)?.state === 'running')
+            return;
+        this.unpublishedEnds.add(pid);
+        void this.releaseOutput(pid, () => { this.unpublishedEnds.delete(pid); });
+    }
     fireTerminal(pid, wasRunning) {
         if (!wasRunning || this.table.get(pid)?.state === 'running')
             return;
@@ -248,6 +274,7 @@ export class SessionProcessSupervisor {
     exit(pid, exitCode) {
         const wasRunning = this.table.get(pid)?.state === 'running';
         this.table.exit(pid, exitCode);
+        this.publishEnd(pid, wasRunning);
         this.terminators.delete(pid);
         this.fireTerminal(pid, wasRunning);
     }
@@ -259,6 +286,7 @@ export class SessionProcessSupervisor {
     kill(pid, exitCode) {
         const wasRunning = this.table.get(pid)?.state === 'running';
         const killed = this.table.kill(pid, exitCode);
+        this.publishEnd(pid, wasRunning);
         this.terminate(pid);
         this.input.close(pid);
         this.fireTerminal(pid, wasRunning);

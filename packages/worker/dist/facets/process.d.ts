@@ -33,9 +33,10 @@
  * (a facet program's Dynamic Worker is admitted by the fabric's ledger).
  *
  * Lifecycle invariants:
- *   - A child's end is decided once (first writer wins), kill() and
- *     reportExit() race-free, and published (exitCode) with its output,
- *     once the session's output gate lets it through.
+ *   - A child's end is decided once (first writer wins: exitCode), kill()
+ *     and reportExit() race-free, and its parent told of it (wait, a closed
+ *     stream) only once it is published, with its output, as everything
+ *     else that observes it is (SessionProcessSupervisor.published).
  *   - kill() runs the session's kill of the pid (its launch's terminator,
  *     and the release of what it held) before it stamps the exit, which
  *     wakes every pending waiter, so cpWait/cpReadOutput don't hang and
@@ -105,8 +106,6 @@ interface ChildEntry {
         resolve: (r: ReadOutputResult) => void;
         expiresAt: number;
     }>;
-    /** Its end is decided (first writer wins); exitCode publishes it once its output is let through. */
-    ending: boolean;
     exitCode: number | null;
     signal: string | null;
     killed: boolean;
@@ -351,15 +350,15 @@ export declare class FacetProcessManager {
      */
     kill(childPid: number, signal?: string | number): boolean;
     /**
-     * Decide the child's end. Idempotent: the first call wins. A normal exit
-     * waits for the writes the command issued without awaiting them; a kill
-     * cuts them off. The end is published as the child's output is, after the
-     * output before it, once the session's output gate lets it through
-     * (SessionProcessSupervisor.releaseOutput): no reader sees it ended sooner.
+     * Stamp the exit slot. Idempotent — first call wins. What the child held
+     * is released now (the process table's lifecycle); its parent is told
+     * once the end is published (_ended).
      */
     private _stampExit;
-    /** The child's end, to every reader: wakes all waiters (exit, output, stdin) so callers don't hang. */
-    private _publishExit;
+    /** Whether the child's end is published (SessionProcessSupervisor.published): what wait and its streams report. */
+    private _ended;
+    /** The child's published end, to its waiters: wakes all of them (exit, output, stdin) so callers don't hang. */
+    private _announceExit;
     /** A stamped child's end, as Node reports it (ChildExitStatus), with the news it delivers. */
     private _exitStatus;
     /**

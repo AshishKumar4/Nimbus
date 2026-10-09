@@ -936,7 +936,8 @@ export async function _rpcStderr(self, pid, data, at, run) {
 function shouldMirrorProcessOutputToShell(self, pid) {
     if (pid <= 0)
         return true;
-    const entry = self.processes.get(pid);
+    // As published: output the gate held is delivered before the end it preceded.
+    const entry = self.processes.published(pid);
     // No table entry: either a reaped process's late flush or a facet that
     // outlived an instance reset. Neither owns the user's shell anymore — the
     // output still lands in the log ring above, never on the shell WS (an

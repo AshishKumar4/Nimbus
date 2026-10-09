@@ -1231,7 +1231,7 @@ export async function registerHostedCommands(self, workspace) {
     registry.register('ps', async (ctx) => {
         // Pids are generation-strided (see PID_GEN_STRIDE) so they can be 7+
         // digits; size the column to the widest pid in this listing.
-        const procs = self.processes.getAll();
+        const procs = self.processes.publishedAll();
         const pidWidth = Math.max(3, ...procs.map((p) => String(p.pid).length));
         ctx.stdout.write(`  ${'PID'.padStart(pidWidth)}  STATUS              COMMAND\n`);
         for (const proc of procs) {
@@ -1258,7 +1258,7 @@ export async function registerHostedCommands(self, workspace) {
         if (self.viteDevServer?.isRunning) {
             ctx.stdout.write(`  \x1b[33m${'---'.padStart(pidWidth)}\x1b[0m  \x1b[32mrunning\x1b[0m                     vite dev server (${self.viteBasePath}/)\n`);
         }
-        if (self.processes.getAll().length === 0 && !self.viteDevServer?.isRunning) {
+        if (procs.length === 0 && !self.viteDevServer?.isRunning) {
             ctx.stdout.write('  (no processes)\n');
         }
         return 0;
@@ -1396,7 +1396,7 @@ export async function registerHostedCommands(self, workspace) {
         });
     });
     registry.register('jobs', async (ctx) => {
-        const running = self.processes.getRunning();
+        const running = self.processes.publishedAll().filter((p) => p.state === 'running');
         if (running.length === 0 && !self.viteDevServer?.isRunning) {
             ctx.stdout.write('No background jobs.\n');
             return 0;
