@@ -337,6 +337,34 @@ function barrier(s, bridge, from) {
   assert.equal(barrier(s, reader, { rev: s.engine.revision() }).readLease?.owner, readLease.owner, 'its lease did not survive its own wave');
 }
 
+// ── A sequenced wave writes nothing before the recall it meets is sent, and its publication keeps its writer's own lease ──
+{
+  const s = session();
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const writer = s.files.bind({ pid: 8, cred: USER });
+  const { encodeWriteBatchStream } = await import('../../packages/platform/src/w7-frame.ts');
+  const wave = (name, first) => {
+    const data = new TextEncoder().encode(name);
+    return writer.writeStream(encodeWriteBatchStream({
+      inodes: [{ path: `home/user/d/${name}`, parentPath: 'home/user/d', kind: 'file', isDir: false, size: data.length, mtime: 1, mode: 0o644, chunkCount: 1 }],
+      chunks: [{ path: `home/user/d/${name}`, chunkId: 0, data }],
+    }), { sequence: { writer: '8:w', first, ack: first - 1, pid: 8 } });
+  };
+  assert.equal((await wave('first', 1)).ok, true);
+  // The writer reads too: its own lease.
+  const own = barrier(s, writer);
+  const { readLease } = barrier(s, reader);
+  const begun = s.harness.statements.length;
+  const second = wave('second', 2);
+  assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
+  const before = s.harness.statements.slice(begun).filter((statement) => /^\s*(INSERT|UPDATE|DELETE|REPLACE)/i.test(statement.sql));
+  assert.deepEqual(before.map((statement) => statement.sql), [], 'the wave wrote before the recall it met was sent');
+  reader.recalled(readLease.owner, 'revoke');
+  assert.equal((await second).ok, true);
+  assert.equal(s.engine.readLeaseStats().broken, 0, 'its publication broke its writer\'s own lease');
+  assert.equal(barrier(s, writer, { rev: s.engine.revision() }).readLease?.owner, own.readLease.owner, 'the writer\'s own lease did not survive its wave');
+}
+
 // ── A lease the engine ends without waiting (a new incarnation) is recalled: its holder is told ──
 {
   const s = session();
