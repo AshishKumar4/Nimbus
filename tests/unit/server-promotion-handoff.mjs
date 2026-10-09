@@ -17,12 +17,12 @@ const { FacetManager } = await import('../../packages/worker/src/facets/manager.
 
 const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [5], writes: [] };
 
-function handoff({ took = null, resident = async () => {}, signal } = {}) {
+function handoff({ took = null, resident = async () => {}, signal, stdin, stdinFile, stat = () => ({ ino: 1, size: 5, mtimeMs: 1 }) } = {}) {
   const processes = new SessionProcessSupervisor();
   const entry = processes.spawn('node srv.js', ['node', 'srv.js'], '/');
   const unread = [], spawned = [], announced = [], learned = [];
   const manager = Object.assign(Object.create(FacetManager.prototype), {
-    ctx: {}, processes, filesystem: null,
+    ctx: {}, processes, filesystem: { bind: () => ({ stat: async (path) => stat(path) }) },
     hooks: {
       rewindProcessFiles: async () => {},
       onSpawn: (pid) => announced.push(pid),
@@ -59,7 +59,9 @@ function handoff({ took = null, resident = async () => {}, signal } = {}) {
   });
   const done = manager.exec('', {
     skipSpawn: true, callerPid: entry.pid, command: 'node srv.js',
-    env: { NIMBUS_CP_CHILD_PID: String(entry.pid) }, signal,
+    env: stdin === undefined && stdinFile === undefined ? { NIMBUS_CP_CHILD_PID: String(entry.pid) } : {}, signal,
+    ...(stdin !== undefined ? { stdin } : {}),
+    ...(stdinFile !== undefined ? { stdinFile } : {}),
     server: { package: 'srv@1.0.0', bin: 'srv', arg0: '' },
   });
   return { processes, entry, done, unread, spawned, announced, learned };
@@ -76,6 +78,33 @@ function handoff({ took = null, resident = async () => {}, signal } = {}) {
   assert.equal(h.spawned[0].resume.stdinAtLeast, 5, 'the resident takes it again before it replays');
   assert.deepEqual(h.announced, [h.entry.pid]);
   assert.equal(h.learned.length, 1);
+}
+
+// Its stdin given whole: the resident is given it again.
+{
+  const h = handoff({ stdin: 'hello' });
+  assert.equal((await h.done).promotedPid, h.entry.pid);
+  assert.equal(h.spawned[0].stdin, 'hello', 'the resident reads the same stdin');
+}
+
+// Its \`< file\`: read again by the resident from where the run read it.
+{
+  const h = handoff({ stdinFile: { path: '/home/user/in.txt', offset: 3, syncRead: false } });
+  assert.equal((await h.done).promotedPid, h.entry.pid);
+  assert.deepEqual(h.spawned[0].resume.stdinFile, { path: '/home/user/in.txt', offset: 3, syncRead: true }, 'the resident reads the same file, from the same offset');
+}
+
+// The file changed between the run and the resident: it fails, naming that.
+{
+  let version = 1;
+  const h = handoff({
+    stdinFile: { path: '/home/user/in.txt', offset: 0, syncRead: false },
+    stat: () => ({ ino: 1, size: 5, mtimeMs: version }),
+    resident: async () => { version = 2; },
+  });
+  const result = await h.done;
+  assert.equal(result.exitCode, 1, JSON.stringify(result));
+  assert.match(h.processes.getExit(h.entry.pid)?.reason ?? '', /its stdin, \/home\/user\/in\.txt, changed while it was run again/);
 }
 
 // A resident that ended while it booted: its exit, no server.

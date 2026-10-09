@@ -16,6 +16,7 @@
 //     and its listen fails, naming why.
 //   piped: it reads its piped stdin before it listens, and serves what it
 //     read: the resident is handed the same bytes.
+//   redirected: the same from a \`< file\`: the resident reads the file again.
 //   once: it awaits a write of a marker, and ends instead of listening when
 //     the marker is there. Run again, it ends before its listen: it fails,
 //     naming that, rather than ending 0 with no server.
@@ -59,6 +60,10 @@ const FILES = {
   'piped.js': [
     "const config = require('fs').readFileSync(0, 'utf8').trim();",
     SERVE(4106, 'piped').replace(JSON.stringify('piped'), 'config'),
+  ].join('\n'),
+  'redirected.js': [
+    "const config = require('fs').readFileSync(0, 'utf8').trim();",
+    SERVE(4108, 'redirected').replace(JSON.stringify('redirected'), 'config'),
   ].join('\n'),
   'once.js': [
     "const fs = require('fs');",
@@ -113,6 +118,12 @@ try {
     check(/LISTENING 4106/.test(piped.stdout), `piped: started and listened\n  ${JSON.stringify(piped.stdout.slice(-400))}`);
     const pipedGot = await curl(4106);
     check(/GOT 200 from-stdin/.test(pipedGot), `piped: the resident read the same stdin\n  ${JSON.stringify(pipedGot)}\n  ${JSON.stringify(piped.stdout.slice(-400))}`);
+
+    await client.writeFile(`${W}/config.txt`, 'from-file\n');
+    const redirected = await run(`cd ${W} && node redirected.js < config.txt`, 120_000);
+    check(/LISTENING 4108/.test(redirected.stdout), `redirected: a \`< file\` server started and listened\n  ${JSON.stringify(redirected.stdout.slice(-400))}`);
+    const redirectedGot = await curl(4108);
+    check(/GOT 200 from-file/.test(redirectedGot), `redirected: the resident read the same file\n  ${JSON.stringify(redirectedGot)}\n  ${JSON.stringify(redirected.stdout.slice(-400))}`);
 
     const once = await run(`cd ${W} && node once.js; echo ONCE_RC=$?`, 120_000);
     check(/ONCE_RC=1/.test(once.stdout) && /ended before it listened/.test(once.stdout),
