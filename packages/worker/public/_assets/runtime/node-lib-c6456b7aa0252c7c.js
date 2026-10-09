@@ -700,6 +700,7 @@ module.exports = {
   function createCaresBinding(platform, isIP) {
   const statusCodes = [null, "EFORMERR", "ESERVFAIL", "ENOTFOUND", "ENOTIMP", "EREFUSED"];
   const servers = ["1.1.1.1", "2606:4700:4700::1111", "1.0.0.1", "2606:4700:4700::1001"];
+  const decoder = new TextDecoder();
   const trimDot = (name) => name.endsWith(".") ? name.slice(0, -1) : name;
   const number = (text) => {
     const value = Number(text);
@@ -716,9 +717,17 @@ module.exports = {
         if (++i === text.length) throw "EBADRESP";
         const octet = text.slice(i, i + 3);
         if (/^[0-9]{3}$/.test(octet)) {
-          if (Number(octet) > 255) throw "EBADRESP";
-          value += String.fromCharCode(Number(octet));
-          i += 2;
+          const bytes = [];
+          for (;;) {
+            const value = Number(text.slice(i, i + 3));
+            if (value > 255) throw "EBADRESP";
+            bytes.push(value);
+            i += 3;
+            if (text[i] !== "\\" || !/^[0-9]{3}$/.test(text.slice(i + 1, i + 4))) break;
+            i++;
+          }
+          value += decoder.decode(Uint8Array.from(bytes));
+          i--;
         } else value += text[i];
         active = true;
       } else if (char === '"') {
@@ -761,9 +770,14 @@ module.exports = {
     if (result.Status !== 0) throw statusCodes[result.Status] || "EBADRESP";
     if (result.TC) throw "EBADRESP";
     if (result.Answer !== undefined && (!Array.isArray(result.Answer) || result.Answer.some((answer) => !answer || !Number.isInteger(answer.type)))) throw "EBADRESP";
-    const answers = (result.Answer || []).filter((answer) => answer.type === type);
+    const answers = [];
+    let cnameTtl = Infinity;
+    for (const answer of result.Answer || []) {
+      if (answer.type === type && (type !== 5 || answers.length === 0)) answers.push(answer);
+      if ((type === 1 || type === 28) && answer.type === 5) cnameTtl = Math.min(cnameTtl, number(answer.TTL));
+    }
     if (answers.length === 0) throw "ENODATA";
-    return { values: answers.map((answer) => record(type, answer.data)), ttls: answers.map((answer) => number(answer.TTL)) };
+    return { values: answers.map((answer) => record(type, answer.data)), ttls: answers.map((answer) => Math.min(cnameTtl, number(answer.TTL))) };
   }
   class QueryReqWrap {}
   class GetAddrInfoReqWrap {}
@@ -867,7 +881,7 @@ module.exports = {
         const lookup = new QueryReqWrap();
         lookup.oncomplete = (error, values) => resolve({ error, values });
         channel.run(lookup, name, type);
-      }))).then((answers) => {
+      }))).then((answers) => platform.process.nextTick(() => {
         const addresses = answers.flatMap((answer) => answer.values || []);
         if (family === 6 && (hints & 8)) {
           const ipv6 = addresses.filter((address) => isIP(address) === 6);
@@ -880,7 +894,7 @@ module.exports = {
             : errors.some((error) => ["ETIMEOUT", "ESERVFAIL"].includes(error)) ? -3001
             : errors.some((error) => ["ECONNREFUSED", "EBADRESP", "EREFUSED"].includes(error)) ? -3004 : -3008, addresses);
         }
-      });
+      }));
       return 0;
     },
   };

@@ -2,7 +2,6 @@
 export const NODE_DNS_BINDING_SOURCE = String.raw`function createCaresBinding(platform, isIP) {
   const statusCodes = [null, "EFORMERR", "ESERVFAIL", "ENOTFOUND", "ENOTIMP", "EREFUSED"];
   const servers = ["1.1.1.1", "2606:4700:4700::1111", "1.0.0.1", "2606:4700:4700::1001"];
-  const decoder = new TextDecoder();
   const trimDot = (name) => name.endsWith(".") ? name.slice(0, -1) : name;
   const number = (text) => {
     const value = Number(text);
@@ -19,17 +18,9 @@ export const NODE_DNS_BINDING_SOURCE = String.raw`function createCaresBinding(pl
         if (++i === text.length) throw "EBADRESP";
         const octet = text.slice(i, i + 3);
         if (/^[0-9]{3}$/.test(octet)) {
-          const bytes = [];
-          for (;;) {
-            const value = Number(text.slice(i, i + 3));
-            if (value > 255) throw "EBADRESP";
-            bytes.push(value);
-            i += 3;
-            if (text[i] !== "\\" || !/^[0-9]{3}$/.test(text.slice(i + 1, i + 4))) break;
-            i++;
-          }
-          value += decoder.decode(Uint8Array.from(bytes));
-          i--;
+          if (Number(octet) > 255) throw "EBADRESP";
+          value += String.fromCharCode(Number(octet));
+          i += 2;
         } else value += text[i];
         active = true;
       } else if (char === '"') {
@@ -113,7 +104,7 @@ export const NODE_DNS_BINDING_SOURCE = String.raw`function createCaresBinding(pl
       const finish = (error, result) => {
         if (!this.pending.delete(controller)) return;
         if (timer !== undefined) platform.timers.clearTimeout(timer);
-        platform.process.nextTick(() => req.oncomplete(error, result && (type === 6 ? result.values[0] : result.values), result?.ttls));
+        platform.process.nextTick(() => req.oncomplete(error, result && (type === 6 ? result.values[0] : result.values), type === 1 || type === 28 ? result?.ttls : undefined));
       };
       this.pending.set(controller, finish);
       if (this.local || type === 255 || type === 52) {
