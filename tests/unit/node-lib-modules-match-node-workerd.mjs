@@ -607,6 +607,7 @@ await show('v-resolver-badopt', () => { new dns.Resolver({ timeout: 'x' }); retu
 await show('v-resolver-tries0', () => { new dns.Resolver({ tries: 0 }); return 'no-throw'; });
 await show('v-setorder-bad', () => { dns.setDefaultResultOrder('xx'); return 'no-throw'; });
 await show('v-reverse-nonip', () => P.reverse('not-an-ip'));
+await show('v-reverse-zone', () => P.reverse('fe80::1%lo'));
 await show('v-resolve-undefcb', () => new Promise((res) => { try { dns.resolve4('example.com', 'cb'); res('no-throw'); } catch (e) { res('threw ' + e.code); } }));
 // shape: classes, prototypes, servers round-trip, constants parity
 console.log('shape-resolver-proto ' + JSON.stringify(Object.getOwnPropertyNames(Object.getPrototypeOf(new dns.Resolver())).sort()));
@@ -678,7 +679,7 @@ const show = async (name, work) => { try { console.log(name + ' value ' + JSON.s
   await show('getnameinfo promise', () => p.lookupService('127.0.0.1', 80));
   await show('setservers', () => new dns.Resolver().setServers(['8.8.8.8']));
   await show('empty servers', () => new dns.Resolver().setServers([]));
-  for (const args of [['bad'], ['1.2.3.4', '5.6.7.8'], ['::1', '::2'], [7], ['1.2.3.4', 7]]) await show('setlocal ' + args.join(','), () => new dns.Resolver().setLocalAddress(...args));
+  for (const args of [['bad'], ['fe80::1%lo'], ['1.2.3.4', '5.6.7.8'], ['::1', '::2'], [7], ['1.2.3.4', 7]]) await show('setlocal ' + args.join(','), () => new dns.Resolver().setLocalAddress(...args));
   await show('unavailable local', () => { const r = new p.Resolver(); r.setLocalAddress('192.0.2.1'); return r.resolve4('example.com'); });
   await show('cancel', () => { const r = new p.Resolver(); const result = r.resolve4('example.com'); r.cancel(); return result; });
 })();
