@@ -33,9 +33,10 @@
  * (a facet program's Dynamic Worker is admitted by the fabric's ledger).
  *
  * Lifecycle invariants:
- *   - A child's end is decided once (first writer wins), kill() and
- *     reportExit() race-free, and published (exitCode) with its output,
- *     once the session's output gate lets it through.
+ *   - A child's end is decided once (first writer wins: exitCode), kill()
+ *     and reportExit() race-free, and its parent told of it (wait, a closed
+ *     stream) only once it is published, with its output, as everything
+ *     else that observes it is (SessionProcessSupervisor.published).
  *   - kill() runs the session's kill of the pid (its launch's terminator,
  *     and the release of what it held) before it stamps the exit, which
  *     wakes every pending waiter, so cpWait/cpReadOutput don't hang and
@@ -108,11 +109,10 @@ interface ChildEntry {
   parentClosed: (() => void) | null;
   outputWaiters: Array<{ fd: 1 | 2; sinceSeq: number; resolve: (r: ReadOutputResult) => void; expiresAt: number }>;
 
-  /** Its end is decided (first writer wins); exitCode publishes it once its output is let through. */
-  ending: boolean;
-  // Exit slot. A child a signal ended keeps the shell's status (128+signo)
-  // here, for the process table; its parent is told what Node tells, the
-  // signal with no status (ChildExitStatus).
+  // Exit slot (first-writer-wins): its end, decided. A child a signal ended
+  // keeps the shell's status (128+signo) here, for the process table; its
+  // parent is told what Node tells, the signal with no status
+  // (ChildExitStatus), once the end is published (_ended).
   exitCode: number | null;
   signal: string | null;
   killed: boolean;
@@ -433,7 +433,6 @@ export class FacetProcessManager {
       outputWrites: { 1: Promise.resolve(), 2: Promise.resolve() },
       parentClosed: null,
       outputWaiters: [],
-      ending: false,
       exitCode: null,
       signal: null,
       killed: false,
@@ -447,7 +446,7 @@ export class FacetProcessManager {
     };
     this.children.set(pid, child);
     child.parentClosed = this.deps.processes.subscribeExit(req.parentPid, () => {
-      if (!child.ending) this.kill(pid, 'SIGTERM');
+      if (child.exitCode === null) this.kill(pid, 'SIGTERM');
     });
     // Every child kind owns an fd onto the same input store. Runners in
     // this isolate consume it through _stdinOf; facets through cpReadStdin.
@@ -504,7 +503,7 @@ export class FacetProcessManager {
    * spawn queued behind it, a kill included.)
    */
   private async _dispatch(child: ChildEntry, kind: CommandKind, req: SpawnReq): Promise<void> {
-    if (child.ending) return;
+    if (child.exitCode !== null) return;
     if (kind === 'unknown') {
       this._markStarted(child);
       this._appendText(child, 2, `${req.command}: command not found\n`);
@@ -683,7 +682,7 @@ export class FacetProcessManager {
 
   async stdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean }> {
     const child = this.children.get(childPid);
-    if (!child || child.ending) return { ok: false };
+    if (!child || child.exitCode !== null) return { ok: false };
     return this.deps.processes.writeInputBytesWait(childPid, data);
   }
 
@@ -724,13 +723,13 @@ export class FacetProcessManager {
   isChild(pid: number): boolean { return this.children.has(pid); }
 
   /** Whether this pid is a child of this broker that has not ended. */
-  isRunning(pid: number): boolean { return this.children.get(pid)?.ending === false; }
+  isRunning(pid: number): boolean { return this.children.get(pid)?.exitCode === null; }
 
   /** Runtime stdout/stderr for a broker-owned pid goes to its parent, not the shell. */
   routeOutput(pid: number, fd: 1 | 2, bytes: Uint8Array): Promise<void> | null {
     const child = this.children.get(pid);
     if (!child) return null;
-    return child.ending ? Promise.resolve() : this._appendOutput(child, fd, bytes);
+    return child.exitCode === null ? this._appendOutput(child, fd, bytes) : Promise.resolve();
   }
 
   /** Internal: push a chunk to fd 1 or 2, fire log-store + waiters. */
@@ -740,11 +739,11 @@ export class FacetProcessManager {
       for (let at = 0; at < data.byteLength; at += CHILD_STDIO_QUEUE_MAX_BYTES) {
         const piece = data.subarray(at, Math.min(data.byteLength, at + CHILD_STDIO_QUEUE_MAX_BYTES));
         while (child.outputBytes[fd] + piece.byteLength > CHILD_STDIO_QUEUE_MAX_BYTES) {
-          if (child.ending) throw Object.assign(new Error('EPIPE: child output reader is gone'), { code: 'EPIPE' });
+          if (child.exitCode !== null) throw Object.assign(new Error('EPIPE: child output reader is gone'), { code: 'EPIPE' });
           await new Promise<void>(resolve => child.outputDrained.push(resolve));
         }
         await this.deps.processes.releaseOutput(child.pid, () => {
-          if (child.ending) throw Object.assign(new Error('EPIPE: child output reader is gone'), { code: 'EPIPE' });
+          if (child.exitCode !== null) throw Object.assign(new Error('EPIPE: child output reader is gone'), { code: 'EPIPE' });
           this._pushOutput(child, fd, piece);
         });
       }
@@ -783,7 +782,7 @@ export class FacetProcessManager {
    */
   private _readResult(child: ChildEntry, fd: 1 | 2, sinceSeq: number): ReadOutputResult {
     const fresh = child.outputs[fd].filter((c) => c.seq > sinceSeq);
-    const closed = child.exitCode !== null;
+    const closed = this._ended(child);
     const news = fresh.map((c) => c.news);
     if (fresh.length > 0) news.push(child.startNews);
     if (closed) news.push(child.closedNews[fd]);
@@ -817,7 +816,7 @@ export class FacetProcessManager {
       for (const chunk of acknowledged) child.outputBytes[fd] -= chunk.data.byteLength;
       for (const wake of child.outputDrained.splice(0)) wake();
     }
-    if (child.exitCode !== null || child.outputs[fd].some((c) => c.seq > sinceSeq)) {
+    if (this._ended(child) || child.outputs[fd].some((c) => c.seq > sinceSeq)) {
       return this._readResult(child, fd, sinceSeq);
     }
     return new Promise<ReadOutputResult>((resolve) => {
@@ -855,14 +854,15 @@ export class FacetProcessManager {
     // hasn't exited yet — without this, drain races against the spawn's
     // queueMicrotask in the test interpreter / real facet startup.
     const t0 = Date.now();
-    while (child.exitCode === null && Date.now() - t0 < 100) {
+    while (!this._ended(child) && Date.now() - t0 < 100) {
       await new Promise((r) => setTimeout(r, 5));
     }
+    const closed = this._ended(child);
     return {
       stdout: concatBytes(child.outputs[1].map((c) => c.data)),
       stderr: concatBytes(child.outputs[2].map((c) => c.data)),
-      stdoutClosed: child.exitCode !== null,
-      stderrClosed: child.exitCode !== null,
+      stdoutClosed: closed,
+      stderrClosed: closed,
     };
   }
 
@@ -880,7 +880,7 @@ export class FacetProcessManager {
    */
   kill(childPid: number, signal: string | number = 'SIGTERM'): boolean {
     const child = this.children.get(childPid);
-    if (!child || child.ending) return false;
+    if (!child || child.exitCode !== null) return false;
     // A name with or without SIG, or a number. One whose default action
     // does not end a process (SIGCHLD, SIGSTOP), the probe 0, or a name no
     // signal has ends nothing here.
@@ -894,19 +894,21 @@ export class FacetProcessManager {
   }
 
   /**
-   * Decide the child's end. Idempotent: the first call wins. A normal exit
-   * waits for the writes the command issued without awaiting them; a kill
-   * cuts them off. The end is published as the child's output is, after the
-   * output before it, once the session's output gate lets it through
-   * (SessionProcessSupervisor.releaseOutput): no reader sees it ended sooner.
+   * Stamp the exit slot. Idempotent — first call wins. What the child held
+   * is released now (the process table's lifecycle); its parent is told
+   * once the end is published (_ended).
    */
   private _stampExit(child: ChildEntry, exitCode: number, signal: string | null, flushed = false): void {
-    if (child.ending) return;
+    if (child.exitCode !== null) return; // first writer wins
+    // A command may issue writes without awaiting them. Its normal exit
+    // waits for those bounded pipes; a kill cuts them off and wakes them.
     if (!flushed && signal === null) {
       void Promise.all([child.outputWrites[1], child.outputWrites[2]]).then(() => this._stampExit(child, exitCode, signal, true));
       return;
     }
-    child.ending = true;
+    child.exitCode = exitCode;
+    child.signal = signal;
+    child.endedAt = Date.now();
     for (const wake of child.outputDrained.splice(0)) wake();
     // Numbered before the process table hears of the exit, so the parent's
     // report is stale before its child is gone from the table. A refused
@@ -915,17 +917,19 @@ export class FacetProcessManager {
     if (child.spawnError === null) {
       for (const fd of [1, 2] as const) if (child.stdio[fd] !== 'ignore') child.closedNews[fd] = this._news(child);
     }
-    // The process table's lifecycle moves now, as every end's does.
     try { this.deps.processes.exit(child.pid, exitCode); } catch {}
-    void this.deps.processes.releaseOutput(child.pid, () => this._publishExit(child, exitCode, signal));
+    // After the end's publication, which exit() queued first.
+    void this.deps.processes.releaseOutput(child.pid, () => this._announceExit(child));
   }
 
-  /** The child's end, to every reader: wakes all waiters (exit, output, stdin) so callers don't hang. */
-  private _publishExit(child: ChildEntry, exitCode: number, signal: string | null): void {
-    child.exitCode = exitCode;
-    child.signal = signal;
-    child.endedAt = Date.now();
-    try { this.deps.processes.markExit(child.pid, exitCode); } catch {}
+  /** Whether the child's end is published (SessionProcessSupervisor.published): what wait and its streams report. */
+  private _ended(child: ChildEntry): boolean {
+    return child.exitCode !== null && this.deps.processes.published(child.pid)?.state !== 'running';
+  }
+
+  /** The child's published end, to its waiters: wakes all of them (exit, output, stdin) so callers don't hang. */
+  private _announceExit(child: ChildEntry): void {
+    try { this.deps.processes.markExit(child.pid, child.exitCode!); } catch {}
 
     // Wake exit waiters.
     const status = this._exitStatus(child);
@@ -963,7 +967,7 @@ export class FacetProcessManager {
     if (!child) {
       return { done: true, exitCode: 1, signal: null };
     }
-    if (child.exitCode !== null) return this._exitStatus(child);
+    if (this._ended(child)) return this._exitStatus(child);
     // A caller that has not heard of the start (a parent's ChildProcess,
     // which emits 'spawn' on it) is told of it as soon as it comes.
     const startNews = (): ChildExitStatus => ({
@@ -981,7 +985,7 @@ export class FacetProcessManager {
       };
       const timer = setTimeout(() => settle({ done: false, exitCode: null, signal: null }), Math.min(waitMs, WAIT_MAX_MS));
       const onExit = (r: ChildExitStatus) => settle(r);
-      const onStart = () => { if (child.exitCode === null) settle(startNews()); };
+      const onStart = () => { if (!this._ended(child)) settle(startNews()); };
       child.exitWaiters.push(onExit);
       if (!knownStarted) child.startWaiters.push(onStart);
     });
@@ -1019,8 +1023,8 @@ export class FacetProcessManager {
     const all = [...this.children.values()];
     return {
       total: all.length,
-      running: all.filter((c) => c.exitCode === null).length,
-      exited: all.filter((c) => c.exitCode !== null && !c.killed).length,
+      running: all.filter((c) => !this._ended(c)).length,
+      exited: all.filter((c) => this._ended(c) && !c.killed).length,
       killed: all.filter((c) => c.killed).length,
     };
   }

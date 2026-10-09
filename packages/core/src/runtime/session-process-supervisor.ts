@@ -91,6 +91,8 @@ export class SessionProcessSupervisor {
   private readonly heldOutput = new Map<number, Promise<void>>();
   /** The pids whose output is being delivered now: their own output made meanwhile goes with it. */
   private readonly releasing = new Set<number>();
+  /** The pids whose end is decided but not yet published: observers are told they run. */
+  private readonly unpublishedEnds = new Set<number>();
 
   // ── Lifecycle / PID authority ─────────────────────────────────────────
 
@@ -116,8 +118,28 @@ export class SessionProcessSupervisor {
     this.table.setForeground(pid, foreground);
   }
 
+  /** `pid`'s lifecycle: ended as soon as its end is decided, which is what releases what it held. */
   get(pid: number): ProcessEntry | undefined {
     return this.table.get(pid);
+  }
+
+  /**
+   * `pid`'s status as observers are told it (ps, process listings, a parent
+   * waiting on it): its end once published, after the output before it
+   * (releaseOutput); running until then.
+   */
+  published(pid: number): ProcessEntry | undefined {
+    const entry = this.table.get(pid);
+    return entry && this.asPublished(entry);
+  }
+
+  /** Every process, as observers are told it (see {@link published}). */
+  publishedAll(): ProcessEntry[] {
+    return this.table.getAll().map((entry) => this.asPublished(entry));
+  }
+
+  private asPublished(entry: ProcessEntry): ProcessEntry {
+    return this.unpublishedEnds.has(entry.pid) ? { ...entry, state: 'running', exitCode: null, endTime: null } : entry;
   }
 
   getRunning(): ProcessEntry[] {
@@ -286,6 +308,13 @@ export class SessionProcessSupervisor {
     this.onTerminalCb = cb;
   }
 
+  /** A decided end is told to observers (published) once the output before it is. */
+  private publishEnd(pid: number, wasRunning: boolean): void {
+    if (!wasRunning || this.table.get(pid)?.state === 'running') return;
+    this.unpublishedEnds.add(pid);
+    void this.releaseOutput(pid, () => { this.unpublishedEnds.delete(pid); });
+  }
+
   private fireTerminal(pid: number, wasRunning: boolean): void {
     if (!wasRunning || this.table.get(pid)?.state === 'running') return;
     this.forgetWaits(pid);
@@ -297,6 +326,7 @@ export class SessionProcessSupervisor {
   exit(pid: number, exitCode: number): void {
     const wasRunning = this.table.get(pid)?.state === 'running';
     this.table.exit(pid, exitCode);
+    this.publishEnd(pid, wasRunning);
     this.terminators.delete(pid);
     this.fireTerminal(pid, wasRunning);
   }
@@ -309,6 +339,7 @@ export class SessionProcessSupervisor {
   kill(pid: number, exitCode?: number): boolean {
     const wasRunning = this.table.get(pid)?.state === 'running';
     const killed = this.table.kill(pid, exitCode);
+    this.publishEnd(pid, wasRunning);
     this.terminate(pid);
     this.input.close(pid);
     this.fireTerminal(pid, wasRunning);
