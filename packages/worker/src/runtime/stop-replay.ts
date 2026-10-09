@@ -529,15 +529,16 @@ const __nimbusStopReplay = (() => {
     // cannot be run again as a server.
     listen() {
       if (!run || !run.armed || run.listened) return;
-      run.listened = true;
       if (run.replay !== null && run.replay.listen === true && !run.boundaryPassed) {
         if (run.writesAt !== run.replayedWrites) {
           diverge("by its listen it had changed the filesystem " + run.writesAt + " times, where the run before it had " + run.replayedWrites);
         }
         boundary();
+        run.listened = true;
         return;
       }
-      if (!run.promote) return;
+      if (!run.promote) { run.listened = true; return; }
+      // Refused, every time it is asked: a listen in the one-shot is unroutable.
       let why = run.why;
       for (const body of run.bodies) if (why === null && body !== null) why = "received headers of " + body + ", but its response body was still unfinished";
       if (why === null && capturedLength() > PREFIX_MAX) why = "printed more than " + PREFIX_MAX + " bytes first, more than a stop can keep";
@@ -561,6 +562,7 @@ const __nimbusStopReplay = (() => {
     },
     finish() {
       if (!run || run.replay === null || run.boundaryPassed) return "";
+      if (run.replay.listen === true) return "node: this program listens as a server, so Nimbus ran it again as one, and it ended before it listened, where the run before it listened; it did not retrace that run, and is not a server.\\n";
       return "node: this program ended before the read of stdin it stopped at when Nimbus ran it again, so it did not retrace its run before; what it printed past that is not shown.\\n";
     },
     booted() {
