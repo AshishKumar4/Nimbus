@@ -145,7 +145,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
     }>;
     stdinPrepared(): Promise<void>;
     netTls(action: "open" | "upgrade", token: string, payload: Record<string, unknown>): Promise<unknown>;
-    cpReadStdin(childPid: number, waitMs: number, acquire?: import("./rpc.js").FsAcquireArgs): Promise<{
+    cpReadStdin(childPid: number, waitMs: number, acquire?: import("./rpc.js").FsAcquireArgs, maxBytes?: number): Promise<{
         data: Uint8Array;
         ended: boolean;
         resize?: {

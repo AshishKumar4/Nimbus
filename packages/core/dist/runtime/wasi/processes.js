@@ -31,7 +31,7 @@
  * Every import answers 0 or a positive WASI errno; the C side
  * (git-wasi-compat.c) turns that into errno.
  */
-import { filesystemErrno } from './filesystem.js';
+import { refusalErrno as filesystemErrno } from './filesystem.js';
 import { PIPE_CAPACITY, decideWrite } from '../bash/pipe-rules.js';
 /** WASI errno values these imports answer with. */
 const E = { SUCCESS: 0, AGAIN: 6, BADF: 8, CHILD: 12, INTR: 27, INVAL: 28, IO: 29, NOSYS: 52, PIPE: 64, SRCH: 71 };
