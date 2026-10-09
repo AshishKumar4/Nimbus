@@ -44,12 +44,13 @@ export function mintProcessSupervisor(mint, props) {
 }
 /**
  * A process's SUPERVISOR as its binding, minted through the composed
- * entrypoint: a resident's, a run's network (its globalOutbound), and what a
- * host that answers none in-process hands its one-shots (Supervise). Each
+ * entrypoint: a resident's, a run's network (its globalOutbound), a staged
+ * run's (minted in its stateless hop, from that isolate's `exports`), and what
+ * a host that answers none in-process hands its one-shots (Supervise). Each
  * call on it is a request to the host.
  */
-export function bindingSupervisor(props) {
-    const mint = supervisorEntrypoint(undefined, props.route?.supervisorEntrypoint);
+export function bindingSupervisor(props, exports) {
+    const mint = supervisorEntrypoint(exports, props.route?.supervisorEntrypoint);
     if (!mint) {
         throw new Error(`Nimbus: ctx.exports.${props.route?.supervisorEntrypoint ?? supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`);
     }

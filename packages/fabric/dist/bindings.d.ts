@@ -26,6 +26,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import type { HostRoute } from './composition.js';
 import { type FacetCodePolicy } from './facet-limits.js';
+import { type SupervisorBindingProps } from './supervisor-props.js';
 import type { WorkerCode, EntrypointOptions } from './vendor/types.js';
 /**
  * A dynamic worker's entrypoint, as hop 3 relays to it. `fetch` is the
@@ -120,6 +121,7 @@ declare const NimbusLoadedEntrypointPropsSchema: z.ZodObject<{
         }, z.core.$strip>>;
     }, z.core.$loose>>;
     stage: z.ZodOptional<z.ZodUnknown>;
+    supervisor: z.ZodOptional<z.ZodCustom<SupervisorBindingProps, SupervisorBindingProps>>;
 }, z.core.$loose>;
 type NimbusLoadedEntrypointProps = z.infer<typeof NimbusLoadedEntrypointPropsSchema>;
 /**
@@ -221,11 +223,6 @@ export declare class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoade
      * cross-request-I/O limitation.
      */
     fetch(request: Request): Promise<Response>;
-    /**
-     * A staged one-shot's run (runOneShot): forwarded to the program assembled
-     * here, with its host's capability and its `ended`, in this one request.
-     */
-    run(request: Request, supervisor: unknown, ended: unknown): Promise<Response>;
 }
 /** Props the synthesized namespace carries: which binding, on which supervisor. */
 interface NimbusDoNamespaceProps {

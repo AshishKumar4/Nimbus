@@ -4494,8 +4494,15 @@ export class FacetManager {
      * boot that failed.
      */
     _end(pid, ending) {
-        if (this.processes.get(pid)?.state !== 'running' || this.endsAfterDrain.has(pid))
+        if (this.processes.get(pid)?.state !== 'running')
             return;
+        // An end waiting for the drain is already this process's, unless a kill
+        // comes: that takes effect at once, in its place.
+        if (this.endsAfterDrain.has(pid)) {
+            if (!ending.killed)
+                return;
+            this.endsAfterDrain.delete(pid);
+        }
         this.portRegistry.unregisterByPid(pid, ending.portEnding);
         // A lifetime run reports its own exit before its call ends: its
         // resources and writers go as that call does (_watchLifetime).
