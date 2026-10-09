@@ -2,7 +2,12 @@ import type { SupervisorOpName } from '@nimbus-sh/core/workspace/supervisor-op.j
 
 type Projection = (value: unknown) => unknown;
 export interface ReplayPolicy {
-  kind: 'observation' | 'effect' | 'open' | 'output' | 'input' | 'control';
+  /**
+   * `mutation`: carries the process's filesystem changes, which the guest
+   * records as it makes them and a run again checks one by one (stop-replay.ts
+   * mutation): passed through, never journaled.
+   */
+  kind: 'observation' | 'effect' | 'open' | 'output' | 'input' | 'control' | 'mutation';
   /** Exact, operation-local rules; never strip a property by its name globally. */
   answer?: Projection;
   args?: (args: readonly unknown[]) => readonly unknown[];
@@ -31,6 +36,7 @@ const read = { kind: 'observation' } as const;
 const effect = { kind: 'effect' } as const;
 const output = { kind: 'output' } as const;
 const control = { kind: 'control' } as const;
+const mutation = { kind: 'mutation' } as const;
 
 /**
  * The complete session-boundary policy. New operations fail closed both at
@@ -61,11 +67,11 @@ export const REPLAY_OPERATION_POLICY = {
   fsOpen: { kind: 'open' }, fsRead: read, fsWrite: effect, fsClose: read,
   fsReadRange: read, fsReadRangeUncached: read, fsReadBatch: read,
   fsWriteRange: effect,
-  fsTruncate: effect, writeBatch: effect, writeBatchStream: effect,
+  fsTruncate: effect, writeBatch: effect, writeBatchStream: mutation,
   // Mints a write-wave epoch the session holds open for the live process (state on the host, not a read).
-  openWaveWriter: effect,
+  openWaveWriter: mutation,
   // Ends a write-wave epoch the session holds open for the process.
-  retireWaveWriter: effect,
+  retireWaveWriter: mutation,
   putRegistryEntries: effect, stdout: output, stderr: output, prefetch: read,
   registerPort: effect, allocatePort: effect, unregisterPort: effect,
   reportExit: output, routeLoopback: effect, transform: read,
@@ -84,9 +90,9 @@ export const REPLAY_OPERATION_POLICY = {
   fsSetStatus: effect, fsReaddirHandle: read, fsFtruncate: effect,
   fsFchmod: effect, fsFchown: effect, fsFutimes: effect, fsSync: read,
   fsRealpath: read, fsRemove: effect, fsCopyFile: effect, fsCopyTree: effect,
-  fsAcquireExclusiveMutation: effect, fsReleaseExclusiveMutation: effect,
+  fsAcquireExclusiveMutation: mutation, fsReleaseExclusiveMutation: mutation,
   // A recall is the session asking; the answer to one changes what it holds.
-  fsAwaitRecall: { kind: 'input' }, fsRecalled: effect,
+  fsAwaitRecall: { kind: 'input' }, fsRecalled: mutation,
   innerDoFetch: effect, innerDoCall: effect, fanoutExecute: effect, processHostProbe: effect,
   hostProcess: effect, awaitHostedOpen: effect, awaitHostedBoot: effect,
   routeHostedHttp: effect, cancelHostProcess: effect, hostLost: effect, hmrRelay: effect,

@@ -1,5 +1,9 @@
-import { STOP_RECORD_PREFIX, REPLAY_PREFIX_MAX_BYTES, REPLAY_TAPE_MAX_READINGS, REPLAY_TAPE_MAX_RANDOM_BYTES } from './stop-replay-contracts.js';
+import {
+  STOP_RECORD_PREFIX, REPLAY_PREFIX_MAX_BYTES, REPLAY_TAPE_MAX_READINGS, REPLAY_TAPE_MAX_RANDOM_BYTES,
+  REPLAY_TAPE_MAX_WRITES, REPLAY_TAPE_MAX_WRITE_BYTES, REPLAY_WRITE_ENTRY_MAX_CHARS,
+} from './stop-replay-contracts.js';
 import { SUPERVISOR_CALLS_WITHOUT_EFFECTS, REPLAY_OBSERVATION_CALLS } from './stop-replay-policy.js';
+import { answerDigest } from './stop-replay-journal.js';
 
 /**
  * The guest half, spliced at module level into a facet runner before the
@@ -10,12 +14,15 @@ import { SUPERVISOR_CALLS_WITHOUT_EFFECTS, REPLAY_OBSERVATION_CALLS } from './st
  *                        read fails where the program can catch it. The
  *                        session counts them too, and is what decides.
  *   begin(launch)        per run: { replay, abort, captured, capturedText,
- *                        nonce, boundary, outbound }.
+ *                        nonce, boundary, outbound, promote }.
  *   arm(canStop, whyNot) before the entry: records the run's draws when it can
  *                        stop, replays the stopped run's.
  *   write / acked        each streamed chunk of output on its way out.
  *   readSome / readAll   how many bytes a synchronous read of stdin returns.
  *   block(until, syscall)  a read cannot complete: stops the run, or says why it cannot.
+ *   mutation(op)         a change to the filesystem: recorded, and checked when replayed.
+ *   listen()             a server's first listen: a promotable run stops there,
+ *                        to be run again as a resident that serves.
  *   effect(what) / unreplayable(why)  why a stop could not be replayed.
  *   finish() / booted()  at exit, or when a resident is up: a replay that
  *                        never reached the read it stopped at.
@@ -44,6 +51,11 @@ const __nimbusStopReplay = (() => {
   const PREFIX_MAX = ${REPLAY_PREFIX_MAX_BYTES};
   const READINGS_MAX = ${REPLAY_TAPE_MAX_READINGS};
   const RANDOM_MAX = ${REPLAY_TAPE_MAX_RANDOM_BYTES};
+  const WRITES_MAX = ${REPLAY_TAPE_MAX_WRITES};
+  const WRITE_BYTES_MAX = ${REPLAY_TAPE_MAX_WRITE_BYTES};
+  const WRITE_ENTRY_MAX = ${REPLAY_WRITE_ENTRY_MAX_CHARS};
+  // The session's digest (stop-replay-journal.ts), the same function.
+  const digest = ${answerDigest};
   const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   const lengthOf = (bytes) => ReflectApply(TypedArrayLength, bytes, []);
 
@@ -101,6 +113,12 @@ const __nimbusStopReplay = (() => {
     if (!run.captured || run.capturedText === null) return 0;
     const text = run.capturedText();
     return ("" + text.stdout).length + ("" + text.stderr).length;
+  }
+  // The run's tape, as a stop hands it back.
+  function tapeOut() {
+    const t = run.tape;
+    return ",\\"tape\\":{\\"seed\\":" + list(t.seed, num) + ",\\"now\\":" + pairs(t.now) + ",\\"perf\\":" + pairs(t.perf)
+      + ",\\"random\\":" + str(b64(t.drawn)) + ",\\"reads\\":" + list(t.reads, num) + ",\\"writes\\":" + list(t.writes, str) + "}";
   }
   // The stop: never returns when it stops.
   function stop(body) {
@@ -218,8 +236,10 @@ const __nimbusStopReplay = (() => {
     const drawn = given.byteLength > 0 ? [given] : [];
     let drawnBytes = given.byteLength;
     let givenAt = 0;
-    run.tape = { seed, now, perf, drawn, reads: tape ? tape.reads.slice() : [] };
+    const writes = tape && tape.writes ? tape.writes.slice() : [];
+    run.tape = { seed, now, perf, drawn, reads: tape ? tape.reads.slice() : [], writes };
     run.replayedReads = tape ? tape.reads.length : 0;
+    run.replayedWrites = writes.length;
     run.recordTape = record;
 
     Math.random = seeded(seed);
@@ -333,6 +353,11 @@ const __nimbusStopReplay = (() => {
         capturedText: typeof launch.capturedText === "function" ? launch.capturedText : null,
         onBoundary: typeof launch.boundary === "function" ? launch.boundary : null,
         outbound: !!launch.outbound,
+        // A one-shot: its first listen stops it, to be run again as a resident.
+        promote: !!launch.promote,
+        listened: false,
+        writesAt: 0,
+        writeBytes: 0,
         replay,
         armed: false,
         canStop: false,
@@ -356,8 +381,8 @@ const __nimbusStopReplay = (() => {
       run.armed = true;
       run.canStop = !!canStop;
       run.whyNot = whyNot || "cannot be stopped where it reads";
-      if (run.canStop && (!run.abort || run.nonce.length < 16)) run.why = "runs where Nimbus cannot stop it";
-      if (run.canStop || run.replay) installTape(run.replay ? run.replay.tape : null, run.canStop);
+      if ((run.canStop || run.promote) && (!run.abort || run.nonce.length < 16)) run.why = "runs where Nimbus cannot stop it";
+      if (run.canStop || run.promote || run.replay) installTape(run.replay ? run.replay.tape : null, run.canStop || run.promote);
     },
     get armed() { return !!(run && run.armed); },
     // Whether this run's network goes through the session (which records what
@@ -429,6 +454,52 @@ const __nimbusStopReplay = (() => {
       run.readAt++;
       if (recording() && run.tape.reads.length < run.readAt) run.tape.reads[run.tape.reads.length] = length;
     },
+    // A change the program made to the filesystem (the process client's op):
+    // recorded while the run can be run again, which makes it again, as it
+    // made it; a run again checks each against the run before it.
+    mutation(op) {
+      if (!run || !run.armed || !run.tape) return;
+      const call = op.type === "call" ? op.call : op;
+      const name = op.type === "call" ? "" + call.call : "" + op.type;
+      const path = typeof call.path === "string" ? call.path : typeof call.from === "string" ? call.from : "";
+      const data = call.data;
+      const size = data && typeof data.byteLength === "number" ? data.byteLength : 0;
+      if (replaying() && run.writesAt < run.replayedWrites) {
+        const entry = name + " " + path + " " + digest(op);
+        const recorded = run.tape.writes[run.writesAt];
+        if (recorded !== entry) diverge("it changed the filesystem otherwise than the run before it: " + entry + " where that run made " + recorded);
+        run.writesAt++;
+        return;
+      }
+      if (replaying()) diverge("it changed the filesystem more than the run before it had by then (" + name + " " + path + ")");
+      if (!recording()) return;
+      run.writeBytes += size;
+      if (run.tape.writes.length >= WRITES_MAX) unreplayable("changed the filesystem more than " + WRITES_MAX + " times first");
+      else if (run.writeBytes > WRITE_BYTES_MAX) unreplayable("wrote more than " + WRITE_BYTES_MAX + " bytes first, more than a second run is checked against");
+      else if (path.length > WRITE_ENTRY_MAX - 64) unreplayable("changed a file whose path is longer than " + (WRITE_ENTRY_MAX - 64) + " characters first");
+      else run.tape.writes[run.tape.writes.length] = name + " " + path + " " + digest(op);
+    },
+    // A server's first listen, before it binds or reserves anything. A run
+    // again of a run that stopped here has reached where it stopped; a
+    // promotable run stops (and never comes back here), or throws why it
+    // cannot be run again as a server.
+    listen() {
+      if (!run || !run.armed || run.listened) return;
+      run.listened = true;
+      if (run.replay !== null && run.replay.listen === true && !run.boundaryPassed) {
+        if (run.writesAt !== run.replayedWrites) {
+          diverge("by its listen it had changed the filesystem " + run.writesAt + " times, where the run before it had " + run.replayedWrites);
+        }
+        boundary();
+        return;
+      }
+      if (!run.promote) return;
+      let why = run.why;
+      for (const body of run.bodies) if (why === null && body !== null) why = "received headers of " + body + ", but its response body was still unfinished";
+      if (why === null && capturedLength() > PREFIX_MAX) why = "printed more than " + PREFIX_MAX + " bytes first, more than a stop can keep";
+      if (why !== null) throw new Error("node: this program listens as a server, so Nimbus runs it again as one, but it cannot: before it listened it " + why);
+      stop(",\\"kind\\":\\"listen\\"" + tapeOut());
+    },
     // A read that needs input not there yet: the run stops (and never comes
     // back here), or this says why it cannot.
     block(until, syscall) {
@@ -440,10 +511,7 @@ const __nimbusStopReplay = (() => {
       // Captured output rides the stop, so a stop that cannot go on still
       // hands it back: bounded.
       if (capturedLength() > PREFIX_MAX) return "printed more than " + PREFIX_MAX + " bytes first, more than a stop can keep";
-      const t = run.tape;
-      stop(",\\"kind\\":\\"stdin\\",\\"until\\":" + str("" + until) + ",\\"stopAt\\":" + num(run.readAt)
-        + ",\\"tape\\":{\\"seed\\":" + list(t.seed, num) + ",\\"now\\":" + pairs(t.now) + ",\\"perf\\":" + pairs(t.perf)
-        + ",\\"random\\":" + str(b64(t.drawn)) + ",\\"reads\\":" + list(t.reads, num) + "}");
+      stop(",\\"kind\\":\\"stdin\\",\\"until\\":" + str("" + until) + ",\\"stopAt\\":" + num(run.readAt) + tapeOut());
       return "could not be stopped";
     },
     finish() {
