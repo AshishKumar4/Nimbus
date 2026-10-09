@@ -70,7 +70,9 @@ try {
     for (const [name, content] of Object.entries(FILES)) await client.writeFile(`${W}/${name}`, content);
 
     const plain = await run(`cd ${W} && node plain.js`, 120_000);
-    check(!/facet started \(long-running\)/.test(plain.stdout), `plain: started as a one-shot (no static check names it a server)\n  ${JSON.stringify(plain.stdout.slice(-400))}`);
+    check(/\[facet started: pid=(\d+)[^\n]*\n[\s\S]*LISTENING 4101[\s\S]*\[facet started \(long-running\): pid=\1 cmd="node plain\.js"\]/.test(plain.stdout)
+      && (plain.stdout.match(/long-running/g) ?? []).length === 1,
+      `plain: started as a one-shot (no static check names it a server), then said once to run on as a resident\n  ${JSON.stringify(plain.stdout.slice(-400))}`);
     check(plain.status === 0 && /LISTENING 4101/.test(plain.stdout), `plain: started and listened once\n  ${JSON.stringify(plain.stdout.slice(-400))}`);
     check((plain.stdout.match(/LISTENING 4101/g) ?? []).length === 1, `plain: what it printed before its listen is shown once\n  ${JSON.stringify(plain.stdout.slice(-400))}`);
     const plainGot = await curl(4101);

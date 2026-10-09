@@ -7061,7 +7061,7 @@ export class FacetManager {
     // The stopped run's descriptors go with it: the resident opens its own.
     await this.hooks.rewindProcessFiles?.(pid);
     // Every long-running process has an input channel on its pid.
-    if (!this.processes.hasInput(pid)) this.processes.openInput(pid);
+    this.processes.openInput(pid);
     const replay: ReplayLaunch = {
       run: stop.run + 1,
       tape: stop.tape!,
@@ -7074,6 +7074,8 @@ export class FacetManager {
       command: opts.command, invokerPid: opts.invokerPid, bundleProfile: opts.bundleProfile, node: opts.node,
       skipSpawn: true, callerPid: pid, replay,
     });
+    // Said as any resident's start is: it runs on, and serves.
+    try { this.hooks.onSpawn?.(pid, entry.command, true); } catch {}
     // Its next launch starts as a server directly (server-hints.ts).
     if (opts.server) await this.learnedServers.learn(opts.server).catch((error) => this._learningLost(pid, error));
     return { exitCode: 0, stdout: '', stderr: '', promotedPid: pid };
