@@ -7306,7 +7306,7 @@ export class FacetManager {
   private async _stdinFileIdentity(entry: ProcessEntry, path: string): Promise<string | null> {
     if (!this.filesystem) return null;
     const stat = await Promise.resolve(this.filesystem.bind({ pid: entry.pid, cred: entry.cred }).stat(path)).catch(() => null);
-    return stat ? `${stat.ino ?? ''}:${stat.revision ?? ''}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs ?? ''}` : null;
+    return stat ? `${stat.ino}:${stat.revision}:${stat.size}:${stat.mtime}:${stat.ctime}` : null;
   }
 
   private async _promote(

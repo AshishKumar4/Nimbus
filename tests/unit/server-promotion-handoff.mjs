@@ -17,7 +17,7 @@ const { FacetManager } = await import('../../packages/worker/src/facets/manager.
 
 const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [5], writes: [] };
 
-function handoff({ took = null, resident = async () => {}, signal, stdin, stdinFile, stat = () => ({ ino: 1, size: 5, mtimeMs: 1 }) } = {}) {
+function handoff({ took = null, resident = async () => {}, signal, stdin, stdinFile, stat = () => ({ ino: 1, revision: 1, size: 5, mtime: 1, ctime: 1 }) } = {}) {
   const processes = new SessionProcessSupervisor();
   const entry = processes.spawn('node srv.js', ['node', 'srv.js'], '/');
   const unread = [], spawned = [], announced = [], learned = [];
@@ -99,7 +99,7 @@ function handoff({ took = null, resident = async () => {}, signal, stdin, stdinF
   let version = 1;
   const h = handoff({
     stdinFile: { path: '/home/user/in.txt', offset: 0, syncRead: false },
-    stat: () => ({ ino: 1, size: 5, mtimeMs: version }),
+    stat: () => ({ ino: 1, revision: version, size: 5, mtime: version, ctime: version }),
     resident: async () => { version = 2; },
   });
   const result = await h.done;
