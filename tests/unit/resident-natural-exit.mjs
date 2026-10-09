@@ -75,6 +75,32 @@ await runScenarios(import.meta.filename, {
     assert.ok(events.indexOf('stderr') >= 0 && events.indexOf('stderr') < events.indexOf('exit'), 'error bytes precede the nonzero exit');
   },
 
+  // react-router dev's relaunched CLI: its startup goes on in a global
+  // immediate the platform runs after the boot's settle budget, then fails
+  // and says so. An immediate that was not a handle ended it at boot, exit 0
+  // and silent.
+  async startupPastBootFailsLoudly() {
+    globalThis.setImmediate = (callback, ...args) => rawSetTimeout(callback, 1_500, ...args);
+    const { log } = await launch(`(async () => {
+  await new Promise((resolve) => setImmediate(resolve));
+  throw new RangeError("CONFIG_LOAD_FAILED");
+})().then(() => process.exit(0), (error) => { console.error(String(error)); process.exit(1); });`);
+    assert.equal(log.exit, null, 'still starting when its boot answered: an immediate is pending');
+    await until(() => log.exit !== null, 'the exit after the immediate', 5_000);
+    assert.equal(log.stderr, 'RangeError: CONFIG_LOAD_FAILED\n');
+    assert.equal(log.exit.code, 1);
+  },
+
+  async startupPastBootServes() {
+    globalThis.setImmediate = (callback, ...args) => rawSetTimeout(callback, 1_500, ...args);
+    const { log, proc } = await launch(`setImmediate(() => { ${SERVER} server.listen(5173); });`);
+    assert.equal(log.exit, null, 'still starting when its boot answered: an immediate is pending');
+    await until(() => log.ports.has(5173), 'the listener after the immediate', 5_000);
+    const response = await proc.fetch(new Request('http://facet/', { headers: { 'X-Nimbus-Port': '5173' } }));
+    assert.equal(await response.text(), 'hi');
+    assert.equal(log.exit, null);
+  },
+
   async finishedProgramExits() {
     const { log } = await launch('console.log("done");');
     assert.deepEqual(log.exit, { code: 0, reason: '' }, 'reported before its boot answered');
