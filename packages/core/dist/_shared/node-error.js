@@ -213,6 +213,9 @@ const nodeErrorMessages = {
     ERR_ASSERTION: ['%s', Error],
     ERR_FEATURE_UNAVAILABLE_ON_PLATFORM: ['The feature %s is unavailable on the current platform, which is being used to run Node.js', TypeError],
     ERR_CONSTRUCT_CALL_REQUIRED: ['Class constructor %s cannot be invoked without `new`', TypeError],
+    ERR_CRYPTO_ENGINE_UNKNOWN: ['Engine "%s" was not found', Error],
+    ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE: ['Invalid key object type %s, expected %s.', TypeError],
+    ERR_CRYPTO_SIGN_KEY_REQUIRED: ['No key provided to sign', Error],
     ERR_FALSY_VALUE_REJECTION: [function (reason) {
             this.reason = reason;
             return 'Promise was rejected with falsy value';
