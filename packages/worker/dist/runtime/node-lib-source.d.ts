@@ -26,6 +26,12 @@
  *   https://raw.githubusercontent.com/nodejs/node/v22.22.3/lib/internal/util/trace_sigint.js
  *   https://raw.githubusercontent.com/nodejs/node/v22.22.3/lib/internal/process/per_thread.js
  *   https://raw.githubusercontent.com/nodejs/node/v22.22.3/lib/util.js
+ *   https://raw.githubusercontent.com/nodejs/node/v22.22.3/lib/dns.js
+ *   https://raw.githubusercontent.com/nodejs/node/v22.22.3/lib/dns/promises.js
+ *   https://raw.githubusercontent.com/nodejs/node/v22.22.3/lib/internal/dns/utils.js
+ *   https://raw.githubusercontent.com/nodejs/node/v22.22.3/lib/internal/dns/callback_resolver.js
+ *   https://raw.githubusercontent.com/nodejs/node/v22.22.3/lib/internal/dns/promises.js
+ *   https://raw.githubusercontent.com/nodejs/node/v22.22.3/lib/internal/net.js
  *   https://raw.githubusercontent.com/nodejs/node/v22.22.3/lib/internal/per_context/primordials.js
  *   sha256 9e3fe2fe051667172d6ed9d997eee99b3454a7e4ec779dd63c1f19d44b25b1ca (NODE_PRIMORDIALS_SHA256)
  * The shims evaluate each the first time a program needs it, over what

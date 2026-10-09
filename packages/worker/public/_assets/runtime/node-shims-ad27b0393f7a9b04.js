@@ -164,6 +164,7 @@ var nodeErrorMessages = {
 ${suffix}`;
   }, Error],
   ERR_INVALID_IP_ADDRESS: ["Invalid IP address: %s", TypeError],
+  ERR_DNS_SET_SERVERS_FAILED: ['c-ares failed to set servers: "%s" [%s]', Error],
   ERR_INVALID_MIME_SYNTAX: [(production, str, invalidIndex) => `The MIME syntax for a ${production} in "${str}" is invalid${invalidIndex !== -1 ? ` at ${invalidIndex}` : ""}`, TypeError],
   ERR_INVALID_ARG_VALUE: [(name, value, reason = "is invalid") => {
     let inspected = inspectValue(value, {});
@@ -10778,6 +10779,8 @@ function __nimbusNodeLib() {
     nodeDebug: __nimbusNodeDebugAtLaunch,
     callSites: (count, above) => __nimbusStackSites({}, count, above),
     timers: builtins.timers,
+    fetch: globalThis.fetch.bind(globalThis),
+    error: nodeError,
     primordials,
     sources: lib.sources,
   });
@@ -10902,6 +10905,8 @@ Object.defineProperties(__nimbusInspect, {
   // Named URL, as Node's class is: its name is what inspect and errors print.
   class URL extends _Orig {
     constructor(input, base) {
+      if (arguments.length === 0) throw new nodeErrorCodes.ERR_MISSING_ARGS("url");
+      const inputText = "".concat(input);
       if (arguments.length >= 2 && base == null && typeof input === "string") {
         try { super(input); return; }
         catch {
@@ -10916,7 +10921,12 @@ Object.defineProperties(__nimbusInspect, {
           return;
         }
       }
-      super(input, base);
+      const baseText = base === undefined ? undefined : "".concat(base);
+      try { super(inputText, baseText); }
+      catch (error) {
+        if (!(error instanceof TypeError)) throw error;
+        throw nodeError(TypeError, "ERR_INVALID_URL", "Invalid URL", { input: inputText, ...(baseText !== undefined ? { base: baseText } : {}) });
+      }
     }
     // Node's (lib/internal/url.js, v22.22.3), but for showHidden's internal
     // context, which workerd's URL has none of.
@@ -10999,7 +11009,7 @@ const __urlMod = {
     let resolved = __pathMod.resolve(input);
     if (input.endsWith("/") && !resolved.endsWith("/")) resolved += "/";
     const url = new URL("file:///");
-    url.pathname = resolved.replace(/%/g, "%25").replace(/\n/g, "%0A").replace(/\r/g, "%0D").replace(/\t/g, "%09");
+    url.pathname = resolved.replace(/%/g, "%25").replace(/\\/g, "%5C").replace(/\n/g, "%0A").replace(/\r/g, "%0D").replace(/\t/g, "%09");
     return url;
   },
 };
@@ -15093,6 +15103,8 @@ for (const [name, read] of [
   ["punycode", () => __nimbusNodeLib().require("punycode")],
   ["util", () => __nimbusNodeLib().require("util")],
   ["util/types", () => __nimbusNodeLib().require("util").types],
+  ["dns", () => __nimbusNodeLib().require("dns")],
+  ["dns/promises", () => __nimbusNodeLib().require("dns/promises")],
   ["timers/promises", () => __nimbusNodeLib().require("timers/promises")],
   ["path/posix", () => builtins.path.posix],
   ["path/win32", () => builtins.path.win32],
@@ -16033,757 +16045,7 @@ builtins.dgram = (() => {
   }
   return { Socket, createSocket: (opts, cb) => { const s = new Socket(opts); if (typeof cb === "function") s.on("message", cb); return s; } };
 })();
-builtins.dns = (() => {
-  const __real = (typeof __real_dns !== "undefined") ? (__real_dns.default ?? __real_dns) : null;
-  // Node's DNSException (lib/internal/errors.js): an Error whose constructor
-  // is Error, errno/code/syscall/hostname its own enumerable keys, headed
-  // `Error: <syscall> <code> <hostname>`.
-  function dnsError(syscall, code, hostname, errno) {
-    const error = new Error(syscall + " " + code + (hostname !== undefined ? " " + hostname : ""));
-    Object.defineProperties(error, {
-      errno: { value: errno, enumerable: true, writable: true, configurable: true },
-      code: { value: code, enumerable: true, writable: true, configurable: true },
-      syscall: { value: syscall, enumerable: true, writable: true, configurable: true },
-    });
-    if (hostname !== undefined) {
-      Object.defineProperty(error, "hostname", { value: hostname, enumerable: true, writable: true, configurable: true });
-    }
-    return error;
-  }
-  function isIPv4(s) {
-    if (typeof s !== "string" || !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(s)) return false;
-    return s.split(".").every((n) => Number(n) <= 255);
-  }
-  function isIPv6(s) {
-    if (typeof s !== "string") return false;
-    const halves = s.split("::");
-    if (halves.length > 2) return false;
-    const head = halves[0] === "" ? [] : halves[0].split(":");
-    const tail = halves.length === 1 ? [] : halves[1] === "" ? [] : halves[1].split(":");
-    if (halves.length === 1 && head.length !== 8) return false;
-    if (halves.length === 2 && head.length + tail.length > 7) return false;
-    const all = [...head, ...tail];
-    for (let i = 0; i < all.length; i++) {
-      if (/^[0-9a-fA-F]{1,4}$/.test(all[i])) continue;
-      if (i === all.length - 1 && isIPv4(all[i]) && head.length + tail.length <= 6) continue;
-      return false;
-    }
-    return true;
-  }
-  const isIP = (s) => (isIPv4(s) ? 4 : isIPv6(s) ? 6 : 0);
-  // An IPv6 text expanded to its 8 groups (for reverse names).
-  function expandIPv6(s) {
-    const halves = s.split("::");
-    const head = halves[0] === "" ? [] : halves[0].split(":");
-    const tail = halves.length === 1 ? [] : halves[1] === "" ? [] : halves[1].split(":");
-    const groups = [...head];
-    while (groups.length < 8 - tail.length) groups.push("0");
-    return [...groups, ...tail];
-  }
-  const DEFAULT_SERVERS = [[4, "1.1.1.1", 53], [4, "1.0.0.1", 53], [6, "2606:4700:4700::1111", 53], [6, "2606:4700:4700::1001", 53]];
-  let defaultOrder = "verbatim";
-  const ORDERS = ["verbatim", "ipv4first", "ipv6first"];
-  const EAI_NONAME = -3008, EAI_NODATA = -3007;
-  const GOOGLE_IPS = ["8.8.8.8", "8.8.4.4", "2001:4860:4860::8888", "2001:4860:4860::8844"];
-  // A server pair's DoH JSON endpoint: Cloudflare's name for its own
-  // addresses (its certificate answers for the name), the address itself
-  // otherwise.
-  function endpoint([family, address, port]) {
-    if (port === 53 && (address === "1.1.1.1" || address === "1.0.0.1"
-      || address === "2606:4700:4700::1111" || address === "2606:4700:4700::1001")) {
-      return "https://cloudflare-dns.com/dns-query";
-    }
-    // Google's JSON API lives at /resolve, not /dns-query.
-    if (port === 53 && GOOGLE_IPS.includes(address)) return "https://dns.google/resolve";
-    return "https://" + (family === 6 ? "[" + address + "]" : address) + (port === 53 ? "" : ":" + port) + "/dns-query";
-  }
-  // One question of one server: the parsed JSON. A refusal to answer (a
-  // transport failure, a bad status, garbage) throws shaped for the caller.
-  async function doh(server, name, type, syscall, signal) {
-    let response;
-    try {
-      response = await fetch(endpoint(server) + "?name=" + encodeURIComponent(name) + "&type=" + type, {
-        headers: { Accept: "application/dns-json" }, signal,
-      });
-    } catch (error) {
-      if (signal && signal.aborted) throw dnsError(syscall, "ECANCELLED", name);
-      throw dnsError(syscall, "ECONNREFUSED", name);
-    }
-    if (!response.ok) throw dnsError(syscall, "EBADRESP", name);
-    let json;
-    try {
-      json = await response.json();
-    } catch (error) {
-      throw dnsError(syscall, "EBADRESP", name);
-    }
-    if (!json || typeof json.Status !== "number") throw dnsError(syscall, "EBADRESP", name);
-    return json;
-  }
-  // The servers in turn, tries times round: the first answer that is not a
-  // retryable refusal; every server failing is the last failure.
-  // { status, answer } with answer null when absent.
-  async function ask(servers, name, type, syscall, tries, signal) {
-    if (servers.length === 0) throw dnsError(syscall, "UNKNOWN_ARES_ERROR", name);
-    let failed = null;
-    for (let attempt = 0; attempt < Math.max(1, tries); attempt++) {
-      for (const server of servers) {
-        let json;
-        try {
-          json = await doh(server, name, type, syscall, signal);
-        } catch (error) {
-          failed = error;
-          if (error && error.code === "ECANCELLED") throw error;
-          continue;
-        }
-        if (json.Status === 2 || json.Status === 4 || json.Status === 5) {
-          failed = dnsError(syscall, json.Status === 2 ? "ESERVFAIL" : json.Status === 4 ? "ENOTIMP" : "EREFUSED", name);
-          continue;
-        }
-        return { status: json.Status, answer: json.Answer || null };
-      }
-    }
-    throw failed || dnsError(syscall, "ECONNREFUSED", name);
-  }
-  // The query's error, if any: NXDOMAIN is ENOTFOUND, no answer is ENODATA.
-  function answerError(syscall, name, status, answer) {
-    if (status === 3 || (answer !== null && answer.length > 0 && answer[0].name === "")) {
-      return dnsError(syscall, "ENOTFOUND", name);
-    }
-    if (status === 1) return dnsError(syscall, "EFORMERR", name);
-    if (answer === null || answer.length === 0) return dnsError(syscall, "ENODATA", name);
-    return null;
-  }
-  const stripDot = (s) => (s.endsWith(".") ? s.slice(0, -1) : s);
-  // Cloudflare's TXT data is quoted strings; Node answers the array of them.
-  const TXT_SPLIT = /"([^"]|"(?!"))*"/g;
-  function normalizeTxt(data) {
-    if (data.startsWith('"') && data.endsWith('"')) {
-      return (data.match(TXT_SPLIT) || []).map((s) => s.slice(1, -1));
-    }
-    return [data];
-  }
-  function normalizeSoa(data, name, syscall) {
-    const [nsname, hostmaster, serial, refresh, retry, expire, minttl] = data.split(" ");
-    if (nsname === undefined || hostmaster === undefined || serial === undefined || refresh === undefined
-      || retry === undefined || expire === undefined || minttl === undefined) {
-      throw dnsError(syscall, "EBADRESP", name);
-    }
-    return {
-      nsname: stripDot(nsname), hostmaster: stripDot(hostmaster), serial: parseInt(serial, 10),
-      refresh: parseInt(refresh, 10), retry: parseInt(retry, 10), expire: parseInt(expire, 10), minttl: parseInt(minttl, 10),
-    };
-  }
-  function normalizeNaptr(data, name, syscall) {
-    const match = /^(\d+)\s+(\d+)\s+"([^"]*)"\s+"([^"]*)"\s+"([^"]*)"\s+(\S+)\s*$/.exec(data);
-    if (!match) throw dnsError(syscall, "EBADRESP", name);
-    return {
-      flags: match[3], service: match[4], regexp: match[5], replacement: stripDot(match[6]),
-      order: parseInt(match[1], 10), preference: parseInt(match[2], 10),
-    };
-  }
-  function normalizeCaa(data, name, syscall) {
-    const match = /^(\d+)\s+(\S+)\s+"?([^"]*)"?\s*$/.exec(data);
-    if (!match) throw dnsError(syscall, "EBADRESP", name);
-    return { critical: parseInt(match[1], 10), [match[2]]: match[3] };
-  }
-  function normalizeTlsa(data, name, syscall) {
-    const parts = data.replace(/[()]/g, " ").split(/\s+/).filter((p) => p !== "");
-    if (parts.length < 4) throw dnsError(syscall, "EBADRESP", name);
-    const bytes = new Uint8Array((parts.slice(3).join("").match(/../g) || []).map((b) => parseInt(b, 16)));
-    return { certUsage: parseInt(parts[0], 10), selector: parseInt(parts[1], 10), match: parseInt(parts[2], 10), data: bytes.buffer };
-  }
-  function normalizeMx(data, name, syscall) {
-    const space = data.indexOf(" ");
-    if (space === -1) throw dnsError(syscall, "EBADRESP", name);
-    return { exchange: stripDot(data.slice(space + 1)), priority: parseInt(data.slice(0, space), 10) };
-  }
-  function normalizeSrv(data, name, syscall) {
-    const [priority, weight, port, host] = data.split(" ");
-    if (priority === undefined || weight === undefined || port === undefined || host === undefined) {
-      throw dnsError(syscall, "EBADRESP", name);
-    }
-    return { name: stripDot(host), port: parseInt(port, 10), priority: parseInt(priority, 10), weight: parseInt(weight, 10) };
-  }
-  const addrs = (answer) => answer.map((a) => a.data);
-  function withTtl(answer, ttl) {
-    if (!ttl) return addrs(answer);
-    return answer.map((a) => ({ address: a.data, ttl: a.TTL }));
-  }
-  // Each typed query's result from an answer; SHAPES[type](name, syscall, ttl).
-  const SHAPES = {
-    A: (name, syscall, ttl) => (answer) => withTtl(answer, ttl),
-    AAAA: (name, syscall, ttl) => (answer) => withTtl(answer, ttl),
-    MX: () => (answer) => answer.map((a) => normalizeMx(a.data, a.name, "queryMx")),
-    TXT: () => (answer) => answer.map((a) => normalizeTxt(a.data)),
-    NS: () => (answer) => answer.map((a) => stripDot(a.data)),
-    CNAME: () => (answer) => answer.map((a) => stripDot(a.data)),
-    PTR: () => (answer) => answer.map((a) => stripDot(a.data)),
-    SOA: (name, syscall) => (answer) => normalizeSoa(answer[0].data, name, syscall),
-    SRV: (name, syscall) => (answer) => answer.map((a) => normalizeSrv(a.data, name, syscall)),
-    NAPTR: (name, syscall) => (answer) => answer.map((a) => normalizeNaptr(a.data, name, syscall)),
-    CAA: (name, syscall) => (answer) => answer.map((a) => normalizeCaa(a.data, name, syscall)),
-    TLSA: (name, syscall) => (answer) => answer.map((a) => normalizeTlsa(a.data, name, syscall)),
-  };
-  // c-ares binding names: queryA, queryAaaa, queryCname... (first letter caps).
-  const syscallFor = (type) => "query" + type[0] + type.slice(1).toLowerCase();
-  const METHOD_FOR_TYPE = {
-    A: "resolve4", AAAA: "resolve6", CNAME: "resolveCname", MX: "resolveMx", NS: "resolveNs",
-    PTR: "resolvePtr", SOA: "resolveSoa", SRV: "resolveSrv", TXT: "resolveTxt",
-    NAPTR: "resolveNaptr", CAA: "resolveCaa", TLSA: "resolveTlsa", ANY: "resolveAny",
-  };
-  // A query over DoH JSON; empty answers classified by status.
-  function queryType(resolver, name, type, syscall, shape, ttl, signal) {
-    if (/^localhost\.?$/i.test(name) && (type === "A" || type === "AAAA")) {
-      if (type === "A") return Promise.resolve(shape([{ data: "127.0.0.1", TTL: 0 }]));
-      return Promise.reject(dnsError(syscall, "ENODATA", name));
-    }
-    const controller = signal || new AbortController();
-    resolver._pending.add(controller);
-    let timer = null;
-    if (resolver._timeout > 0) {
-      timer = setTimeout(() => {
-        controller._timedOut = true;
-        controller.abort();
-      }, resolver._timeout);
-    }
-    const finish = (fn) => (value) => {
-      resolver._pending.delete(controller);
-      if (timer !== null) clearTimeout(timer);
-      return fn(value);
-    };
-    const timedOut = () => controller._timedOut === true;
-    return ask(resolver._servers, name, type, syscall, resolver._tries, controller.signal).then(
-      finish(({ status, answer }) => {
-        if (controller.signal.aborted) throw dnsError(syscall, timedOut() ? "ETIMEOUT" : "ECANCELLED", name);
-        const error = answerError(syscall, name, status, answer);
-        if (error) throw error;
-        return shape(answer);
-      }),
-      finish((error) => {
-        if (controller.signal.aborted) throw dnsError(syscall, timedOut() ? "ETIMEOUT" : "ECANCELLED", name);
-        if (timedOut()) throw dnsError(syscall, "ETIMEOUT", name);
-        throw error;
-      }),
-    );
-  }
-  // A query's completion through a resolver: native transport for A/AAAA
-  // without TTL, DoH JSON otherwise; empty native answers classified.
-  function runQuery(resolver, name, type, syscall, ttl, callback) {
-    if (/^localhost\.?$/i.test(name) && (type === "A" || type === "AAAA")) {
-      queryType(resolver, name, type, syscall, SHAPES[type](name, syscall, ttl), ttl, new AbortController()).then(
-        (result) => callback(null, result),
-        (error) => callback(error),
-      );
-      return;
-    }
-    const shape = SHAPES[type](name, syscall, ttl);
-    const finish = (error, result) => {
-      if (error) callback(error);
-      else callback(null, result);
-    };
-    const useNative = __real && !ttl && (type === "A" || type === "AAAA") && !resolver._customServers;
-    const natives = { A: "resolve4", AAAA: "resolve6" };
-    if (useNative && typeof __real[natives[type]] === "function") {
-      let settled = false;
-      let timer = null;
-      if (resolver._timeout > 0) {
-        timer = setTimeout(() => {
-          if (!settled) {
-            settled = true;
-            finish(dnsError(syscall, "ETIMEOUT", name));
-          }
-        }, resolver._timeout);
-      }
-      try {
-        __real[natives[type]].call(__real, name, (error, addresses) => {
-          if (settled) return;
-          settled = true;
-          if (timer !== null) clearTimeout(timer);
-          if (error) finish(error);
-          else if (addresses && addresses.length > 0) finish(null, shape(addresses.map((data) => ({ data }))));
-          else classifyEmpty(resolver, name, type, syscall, shape).then((r) => finish(null, r), finish);
-        });
-      } catch (error) {
-        if (!settled) {
-          settled = true;
-          if (timer !== null) clearTimeout(timer);
-          finish(error);
-        }
-      }
-      return;
-    }
-    queryType(resolver, name, type, syscall, shape, ttl, new AbortController()).then(
-      (result) => finish(null, result),
-      (error) => finish(error),
-    );
-  }
-  // An empty native answer, classified: NXDOMAIN is ENOTFOUND, else ENODATA.
-  // A dead transport classifies as ENOTFOUND (offline guests unsupported).
-  function classifyEmpty(resolver, name, type, syscall, shape) {
-    return ask(resolver._servers, name, type, syscall, 1, undefined).then(
-      ({ status, answer }) => {
-        const error = answerError(syscall, name, status, answer);
-        if (error) throw error;
-        return shape(answer);
-      },
-      () => {
-        throw dnsError(syscall, "ENOTFOUND", name);
-      },
-    );
-  }
-  function queryCallback(resolver, name, type, syscall, options, callback) {
-    if (typeof name !== "string") throw invalidArgType("name", "string", name);
-    if (typeof options === "function") {
-      callback = options;
-      options = undefined;
-    }
-    if (typeof callback !== "function") throw invalidArgType("callback", "function", callback);
-    runQuery(resolver, name, type, syscall, !!options?.ttl, (error, result) => {
-      if (error) callback(error);
-      else callback(null, result);
-    });
-    return {};
-  }
-  // lookup's parsed options; nargs is how many arguments lookup got.
-  function validateLookupOptions(options, callback, nargs) {
-    let hints = 0, family = 0, all = false, order = defaultOrder;
-    if (typeof options === "function") {
-      callback = options;
-    } else if (typeof options === "number") {
-      if (options !== 0 && options !== 4 && options !== 6) {
-        throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("family", options, "must be one of: 0, 4, 6");
-      }
-      family = options;
-    } else if (options !== undefined && typeof options !== "object") {
-      if (nargs === 2) throw invalidArgType("callback", "function", options);
-      if (typeof callback !== "function") throw invalidArgType("callback", "function", callback);
-      throw invalidArgType("options", ["integer", "object"], options);
-    } else if (options !== undefined && options !== null) {
-      if (options.hints != null) {
-        if (typeof options.hints !== "number") throw invalidArgType("options.hints", "number", options.hints);
-        hints = options.hints >>> 0;
-        if ((hints & ~(32 | 16 | 8)) !== 0) throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("hints", options.hints);
-      }
-      if (options.family != null) {
-        if (options.family === "IPv4") family = 4;
-        else if (options.family === "IPv6") family = 6;
-        else if (options.family !== 0 && options.family !== 4 && options.family !== 6) {
-          throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("options.family", options.family, "must be one of: 0, 4, 6");
-        } else family = options.family;
-      }
-      if (options.all != null) {
-        if (typeof options.all !== "boolean") throw invalidArgType("options.all", "boolean", options.all);
-        all = options.all;
-      }
-      if (options.verbatim != null) {
-        if (typeof options.verbatim !== "boolean") throw invalidArgType("options.verbatim", "boolean", options.verbatim);
-        order = options.verbatim ? "verbatim" : "ipv4first";
-      }
-      if (options.order != null) {
-        if (!ORDERS.includes(options.order)) {
-          throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("options.order", options.order, "must be one of: 'verbatim', 'ipv4first', 'ipv6first'");
-        }
-        order = options.order;
-      }
-    }
-    if (typeof callback !== "function") throw invalidArgType("callback", "function", callback);
-    return { hints, family, all, order, callback };
-  }
-  // lookup's addresses: literals echo; localhost is hosts'; else A/AAAA.
-  function lookupAddresses(resolver, hostname, family, order, signal) {
-    const literal = isIP(hostname);
-    if (literal !== 0) return Promise.resolve([{ address: hostname, family: literal }]);
-    if (/^localhost\.?$/i.test(hostname)) {
-      // Resolvers synthesize A localhost but answer NOERROR-empty for AAAA.
-      if (family === 6) return Promise.reject(dnsError("getaddrinfo", "ENOTFOUND", hostname, EAI_NODATA));
-      return Promise.resolve([{ address: "127.0.0.1", family: 4 }]);
-    }
-    const want4 = family === 0 || family === 4;
-    const want6 = family === 0 || family === 6;
-    return Promise.all([
-      want4 ? ask(resolver._servers, hostname, "A", "getaddrinfo", resolver._tries, signal).catch((e) => e) : null,
-      want6 ? ask(resolver._servers, hostname, "AAAA", "getaddrinfo", resolver._tries, signal).catch((e) => e) : null,
-    ]).then(([v4, v6]) => {
-      const ok = (r) => r && !(r instanceof Error) && r.status === 0 && r.answer;
-      const a4 = ok(v4) ? v4.answer.map((a) => a.data) : [];
-      const a6 = ok(v6) ? v6.answer.map((a) => a.data) : [];
-      if (a4.length + a6.length === 0) {
-        const answered = [v4, v6].some((r) => ok(r));
-        throw dnsError("getaddrinfo", "ENOTFOUND", hostname, answered ? EAI_NODATA : EAI_NONAME);
-      }
-      const ordered = order === "ipv4first"
-        ? [...a4.map((a) => [a, 4]), ...a6.map((a) => [a, 6])]
-        : [...a6.map((a) => [a, 6]), ...a4.map((a) => [a, 4])];
-      return ordered.map(([address, f]) => ({ address, family: f }));
-    });
-  }
-  function doLookup(resolver, hostname, options, callback, nargs) {
-    if (hostname) {
-      if (typeof hostname !== "string") throw invalidArgType("hostname", "string", hostname);
-    }
-    const parsed = validateLookupOptions(options, callback, nargs);
-    callback = parsed.callback;
-    if (!hostname) {
-      __processMod.emitWarning(
-        'The provided hostname "" is not a valid hostname, and is supported in the dns module solely for compatibility.',
-        "DeprecationWarning", "DEP0118");
-      if (parsed.all) __processMod.nextTick(callback, null, []);
-      else __processMod.nextTick(callback, null, null, parsed.family === 6 ? 6 : 4);
-      return {};
-    }
-    const controller = new AbortController();
-    resolver._pending.add(controller);
-    lookupAddresses(resolver, hostname, parsed.family, parsed.order, controller.signal).then(
-      (found) => {
-        resolver._pending.delete(controller);
-        if (parsed.all) callback(null, found);
-        else callback(null, found[0].address, found[0].family);
-      },
-      (error) => {
-        resolver._pending.delete(controller);
-        callback(error);
-      },
-    );
-    return {};
-  }
-  // /etc/services' well-known TCP names, as getservbyport answers them here.
-  const SERVICES = {
-    21: "ftp", 22: "ssh", 23: "telnet", 25: "smtp", 53: "domain", 80: "http",
-    110: "pop3", 143: "imap2", 443: "https", 465: "submissions", 587: "submission",
-    993: "imaps", 995: "pop3s", 3306: "mysql", 5432: "postgresql", 6379: "redis", 8080: "http-alt",
-  };
-  function arpaName(address) {
-    if (isIPv4(address)) return address.split(".").reverse().join(".") + ".in-addr.arpa";
-    const nibbles = [];
-    for (const group of expandIPv6(address)) {
-      if (group.includes(".")) {
-        for (const byte of group.split(".").map(Number)) nibbles.push(byte >> 4, byte & 15);
-      } else {
-        for (const ch of group) nibbles.push(parseInt(ch, 16));
-      }
-    }
-    return nibbles.reverse().map((n) => n.toString(16)).join(".") + ".ip6.arpa";
-  }
-  function doLookupService(resolver, address, port, callback, nargs) {
-    if (nargs !== 3) {
-      throw nargs === 2
-        ? new nodeErrorCodes.ERR_MISSING_ARGS("address", "port")
-        : new nodeErrorCodes.ERR_MISSING_ARGS("address", "port", "callback");
-    }
-    if (isIP(address) === 0) throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("address", address);
-    const original = port;
-    port = Number(port);
-    if (!Number.isInteger(port) || port < 0 || port > 65535) throw new nodeErrorCodes.ERR_SOCKET_BAD_PORT("Port", original);
-    if (typeof callback !== "function") throw invalidArgType("callback", "function", callback);
-    const service = SERVICES[port] || String(port);
-    if (address === "127.0.0.1") {
-      __processMod.nextTick(callback, null, "localhost", service);
-      return {};
-    }
-    queryType(resolver, arpaName(address), "PTR", "getnameinfo", SHAPES.PTR(), undefined, new AbortController()).then(
-      (names) => callback(null, names[0], service),
-      (error) => {
-        if (error && (error.code === "ENOTFOUND" || error.code === "ENODATA")) {
-          callback(dnsError("getnameinfo", "ENOTFOUND", undefined, EAI_NONAME));
-        } else callback(error);
-      },
-    );
-    return {};
-  }
-  // A Resolver option: an integer in range.
-  function checkTimeout(value, name, min, max) {
-    if (typeof value !== "number") throw invalidArgType(name, "number", value);
-    if (!Number.isInteger(value)) throw new nodeErrorCodes.ERR_OUT_OF_RANGE(name, "an integer", value);
-    if (value < min || value > max) {
-      throw new nodeErrorCodes.ERR_OUT_OF_RANGE(name, ">= " + min + " && <= " + max, value);
-    }
-  }
-  // A server string as [family, address, port], as c-ares parses it.
-  function parseServer(server, index) {
-    if (typeof server !== "string") throw invalidArgType("servers[" + index + "]", "string", server);
-    const familyOf = isIP(server);
-    if (familyOf !== 0) return [familyOf, server, 53];
-    let match = /^\[([^\[\]]*)\](?::(\d+))?$/.exec(server);
-    if (match) {
-      const family = isIP(match[1]);
-      if (family !== 0) return [family, match[1], match[2] === undefined ? 53 : Number(match[2]) & 0xffff];
-    } else {
-      match = /(^.+?)(?::(\d+))?$/.exec(server);
-      if (match) {
-        const family = isIP(match[1]);
-        if (family !== 0) return [family, match[1], match[2] === undefined ? 53 : Number(match[2]) & 0xffff];
-      }
-    }
-    throw new nodeErrorCodes.ERR_INVALID_IP_ADDRESS(server);
-  }
-  function formatServer([family, address, port]) {
-    if (port === 53) return address;
-    return (family === 6 ? "[" + address + "]" : address) + ":" + port;
-  }
-  class ResolverBase {
-    constructor(options) {
-      const timeout = options?.timeout ?? -1, tries = options?.tries ?? 4, maxTimeout = options?.maxTimeout ?? 0;
-      checkTimeout(timeout, "options.timeout", -1, 2147483647);
-      checkTimeout(tries, "options.tries", 1, 2147483647);
-      if (typeof maxTimeout !== "number") throw invalidArgType("options.maxTimeout", "number", maxTimeout);
-      if (!Number.isInteger(maxTimeout)) throw new nodeErrorCodes.ERR_OUT_OF_RANGE("options.maxTimeout", "an integer", maxTimeout);
-      if (maxTimeout < 0 || maxTimeout > 4294967295) {
-        throw new nodeErrorCodes.ERR_OUT_OF_RANGE("options.maxTimeout", ">= 0 && <= 4294967295", maxTimeout);
-      }
-      this._servers = DEFAULT_SERVERS.map((server) => [...server]);
-      this._customServers = false;
-      this._timeout = timeout === -1 ? 0 : timeout;
-      this._tries = tries;
-      this._pending = new Set();
-    }
-    cancel() {
-      for (const controller of [...this._pending]) controller.abort();
-      this._pending.clear();
-    }
-    getServers() {
-      return this._servers.map(formatServer);
-    }
-    setServers(servers) {
-      if (!Array.isArray(servers)) throw invalidArgType("servers", "Array", servers);
-      this._servers = servers.map(parseServer);
-      this._customServers = true;
-    }
-    setLocalAddress(ipv4, ipv6) {
-      if (typeof ipv4 !== "string") throw invalidArgType("ipv4", "string", ipv4);
-      if (ipv6 !== undefined && typeof ipv6 !== "string") throw invalidArgType("ipv6", "string", ipv6);
-    }
-  }
-  class Resolver extends ResolverBase {}
-  const PROTO_QUERY_DEFS = [
-    ["resolve4", "A"], ["resolve6", "AAAA"], ["resolveCname", "CNAME"], ["resolveMx", "MX"],
-    ["resolveNs", "NS"], ["resolvePtr", "PTR"], ["resolveSoa", "SOA"], ["resolveSrv", "SRV"],
-    ["resolveTxt", "TXT"], ["resolveNaptr", "NAPTR"], ["resolveCaa", "CAA"], ["resolveTlsa", "TLSA"],
-  ];
-  for (const [method, type] of PROTO_QUERY_DEFS) {
-    const syscall = syscallFor(type);
-    const fn = function (name, options, callback) {
-      return queryCallback(this, name, type, syscall, options, callback);
-    };
-    Object.defineProperty(fn, "name", { value: syscall, configurable: true });
-    Resolver.prototype[method] = fn;
-  }
-  Resolver.prototype.resolveAny = function (name, callback) {
-    return queryAnyCallback(this, name, callback);
-  };
-  Object.defineProperty(Resolver.prototype.resolveAny, "name", { value: "queryAny", configurable: true });
-  // ANY: Cloudflare's resolver refuses it; Node reports the refusal.
-  function queryAnyCallback(resolver, name, callback) {
-    if (typeof name !== "string") throw invalidArgType("name", "string", name);
-    if (typeof callback !== "function") throw invalidArgType("callback", "function", callback);
-    queryType(resolver, name, "ANY", "queryAny", (answer) => answer, undefined, new AbortController()).then(
-      () => callback(dnsError("queryAny", "ENOTIMP", name)),
-      (error) => {
-        if (error.code === "ENOTFOUND" || error.code === "ENODATA") return callback(error);
-        if (error.code !== "ENOTIMP") return callback(error);
-        // A refusal may hide a nonexistent name; resolvers that check first report ENOTFOUND.
-        queryType(resolver, name, "A", "queryAny", (answer) => answer, undefined, new AbortController()).then(
-          () => callback(dnsError("queryAny", "ENOTIMP", name)),
-          (check) => callback(check.code === "ENOTFOUND" ? dnsError("queryAny", "ENOTFOUND", name) : dnsError("queryAny", "ENOTIMP", name)),
-        );
-      },
-    );
-    return {};
-  }
-  Resolver.prototype.reverse = function (address, callback) {
-    if (typeof address !== "string") throw invalidArgType("address", "string", address);
-    if (typeof callback !== "function") throw invalidArgType("callback", "function", callback);
-    if (isIP(address) === 0) throw dnsError("getHostByAddr", "EINVAL", address, -22);
-    if (address === "127.0.0.1") {
-      __processMod.nextTick(callback, null, ["localhost"]);
-      return {};
-    }
-    queryType(this, arpaName(address), "PTR", "getHostByAddr", SHAPES.PTR(), undefined, new AbortController()).then(
-      (names) => callback(null, names),
-      (error) => callback(error && error.code ? dnsError("getHostByAddr", error.code, address, error.errno) : error),
-    );
-    return {};
-  };
-  Resolver.prototype.resolve = function (hostname, rrtype, callback) {
-    if (typeof rrtype === "function") {
-      callback = rrtype;
-      rrtype = "A";
-    } else if (typeof rrtype === "string") {
-      if (!(rrtype in METHOD_FOR_TYPE)) throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("rrtype", rrtype);
-    } else if (rrtype === undefined) {
-      rrtype = "A";
-    } else {
-      throw invalidArgType("rrtype", "string", rrtype);
-    }
-    return this[METHOD_FOR_TYPE[rrtype]](hostname, callback);
-  };
-  function queryCallback(resolver, name, type, syscall, options, callback) {
-    if (typeof name !== "string") throw invalidArgType("name", "string", name);
-    if (typeof options === "function") {
-      callback = options;
-      options = undefined;
-    }
-    if (typeof callback !== "function") throw invalidArgType("callback", "function", callback);
-    runQuery(resolver, name, type, syscall, !!options?.ttl, (error, result) => {
-      if (error) callback(error);
-      else callback(null, result);
-    });
-    return {};
-  }
-  // dns/promises' Resolver: the same names, as promises over its own servers.
-  class PromiseResolver extends ResolverBase {}
-  for (const [method, type] of PROTO_QUERY_DEFS) {
-    const syscall = syscallFor(type);
-    PromiseResolver.prototype[method] = function (name, options) {
-      const self = this;
-      return new Promise((resolve, reject) => {
-        try {
-          queryCallback(self, name, type, syscall, options, (e, r) => (e ? reject(e) : resolve(r)));
-        } catch (error) {
-          reject(error);
-        }
-      });
-    };
-  }
-  PromiseResolver.prototype.resolveAny = function (name) {
-    const self = this;
-    return new Promise((resolve, reject) => {
-      try {
-        queryAnyCallback(self, name, (e, r) => (e ? reject(e) : resolve(r)));
-      } catch (error) {
-        reject(error);
-      }
-    });
-  };
-  PromiseResolver.prototype.reverse = function (address) {
-    const self = this;
-    return new Promise((resolve, reject) => {
-      try {
-        Resolver.prototype.reverse.call(self, address, (e, r) => (e ? reject(e) : resolve(r)));
-      } catch (error) {
-        reject(error);
-      }
-    });
-  };
-  PromiseResolver.prototype.resolve = function (hostname, rrtype) {
-    const self = this;
-    return new Promise((resolve, reject) => {
-      try {
-        Resolver.prototype.resolve.call(self, hostname, rrtype, (e, r) => (e ? reject(e) : resolve(r)));
-      } catch (error) {
-        reject(error);
-      }
-    });
-  };
-  // The default resolver behind the module's functions.
-  const defaultResolver = new Resolver();
-  const dns = { Resolver };
-  for (const [method] of PROTO_QUERY_DEFS) {
-    dns[method] = Resolver.prototype[method].bind(defaultResolver);
-  }
-  dns.resolveAny = Resolver.prototype.resolveAny.bind(defaultResolver);
-  dns.resolve = Resolver.prototype.resolve.bind(defaultResolver);
-  dns.reverse = Resolver.prototype.reverse.bind(defaultResolver);
-  dns.lookup = function (hostname, options, callback) {
-    return doLookup(defaultResolver, hostname, options, callback, arguments.length);
-  };
-  dns.lookupService = function (address, port, callback) {
-    return doLookupService(defaultResolver, address, port, callback, arguments.length);
-  };
-  dns.getServers = () => defaultResolver.getServers();
-  dns.setServers = (servers) => {
-    const fresh = new Resolver();
-    fresh.setServers(servers);
-    defaultResolver._servers = fresh._servers;
-    defaultResolver._customServers = true;
-  };
-  dns.getDefaultResultOrder = () => defaultOrder;
-  dns.setDefaultResultOrder = (order) => {
-    if (!ORDERS.includes(order)) {
-      throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("dnsOrder", order, "must be one of: 'verbatim', 'ipv4first', 'ipv6first'");
-    }
-    defaultOrder = order;
-  };
-  Object.assign(dns, { ADDRCONFIG: 32, ALL: 16, V4MAPPED: 8 });
-  Object.assign(dns, Object.fromEntries(["NODATA", "FORMERR", "SERVFAIL", "NOTFOUND", "NOTIMP", "REFUSED", "BADQUERY", "BADNAME", "BADFAMILY",
-    "BADRESP", "CONNREFUSED", "TIMEOUT", "EOF", "FILE", "NOMEM", "DESTRUCTION", "BADSTR", "BADFLAGS", "NONAME", "BADHINTS",
-    "NOTINITIALIZED", "LOADIPHLPAPI", "ADDRGETNETWORKPARAMS", "CANCELLED"].map((name) => [name, name === "EOF" ? "EOF" : "E" + name])));
-  // dns/promises: the same queries over the default resolver, as promises.
-  const promises = { Resolver: PromiseResolver };
-  for (const [method] of PROTO_QUERY_DEFS) {
-    promises[method] = (name, options) => new Promise((resolve, reject) => {
-      try {
-        defaultResolver[method](name, options, (e, r) => (e ? reject(e) : resolve(r)));
-      } catch (error) {
-        reject(error);
-      }
-    });
-  }
-  promises.resolveAny = (name) => new Promise((resolve, reject) => {
-    try {
-      queryAnyCallback(defaultResolver, name, (e, r) => (e ? reject(e) : resolve(r)));
-    } catch (error) {
-      reject(error);
-    }
-  });
-  promises.resolve = (hostname, rrtype) => new Promise((resolve, reject) => {
-    try {
-      defaultResolver.resolve(hostname, rrtype, (e, r) => (e ? reject(e) : resolve(r)));
-    } catch (error) {
-      reject(error);
-    }
-  });
-  promises.reverse = (address) => new Promise((resolve, reject) => {
-    try {
-      defaultResolver.reverse(address, (e, r) => (e ? reject(e) : resolve(r)));
-    } catch (error) {
-      reject(error);
-    }
-  });
-  promises.lookup = (hostname, options) => new Promise((resolve, reject) => {
-    try {
-      const all = typeof options === "object" && options !== null && options.all === true;
-      doLookup(defaultResolver, hostname, options, (e, a, f) => {
-        if (e) reject(e);
-        else if (all) resolve(a);
-        else resolve({ address: a, family: f });
-      }, 3);
-    } catch (error) {
-      reject(error);
-    }
-  });
-  promises.lookupService = (address, port) => new Promise((resolve, reject) => {
-    try {
-      doLookupService(defaultResolver, address, port, (e, hostname, service) => {
-        if (e) reject(e);
-        else resolve({ hostname, service });
-      }, address === undefined || port === undefined ? 2 : 3);
-    } catch (error) {
-      reject(error);
-    }
-  });
-  promises.getServers = () => defaultResolver.getServers();
-  promises.setServers = dns.setServers;
-  promises.getDefaultResultOrder = dns.getDefaultResultOrder;
-  promises.setDefaultResultOrder = dns.setDefaultResultOrder;
-  Object.assign(promises, Object.fromEntries(Object.keys(dns).filter((k) => /^[A-Z_]+$/.test(k)).map((k) => [k, dns[k]])));
-  dns.promises = promises;
-  // util.promisify's custom implementations (own lookupService/lookup shape
-  // what the promisified calls answer; the args symbol names them).
-  const promisifyCustom = Symbol.for("nodejs.util.promisify.custom");
-  const argsSymbol = Symbol("customPromisifyArgs");
-  Object.defineProperty(dns.lookup, promisifyCustom, {
-    enumerable: false,
-    value: (hostname, options) => promises.lookup(hostname, options),
-  });
-  Object.defineProperty(dns.lookup, argsSymbol, { value: ["address", "family"], enumerable: false });
-  Object.defineProperty(dns.lookupService, promisifyCustom, {
-    enumerable: false,
-    value: (address, port) => promises.lookupService(address, port),
-  });
-  Object.defineProperty(dns.lookupService, argsSymbol, { value: ["hostname", "service"], enumerable: false });
-  void __real;
-  return dns;
-})();
+
 builtins.tty = {
   isatty: () => __nimbusAttachedTty,
   ReadStream: class extends __streamMod.Readable {
@@ -17750,17 +17012,6 @@ for (const [owner, name] of [[builtins.timers, "setTimeout"], [builtins.timers, 
   }
 }
 
-// X.5-M (M-2): dns/promises subpath registration for redis.
-// @redis/client/dist/lib/client does require('dns/promises') to do
-// hostname → IP resolution. Pre-fix the only exposure was
-// builtins.dns.promises (an object property of the parent dns shim);
-// __requireFrom matches keys exactly, so 'dns/promises' missed.
-// Mirror the timers/promises pattern above. builtins.dns.promises is
-// already a complete object (DoH-backed lookup/resolve/resolve4) —
-// re-exposing it as a subpath builtin is a 2-line registration.
-builtins["dns/promises"] = builtins.dns.promises;
-
-
 // undici (npm, not node core) — Nimbus provides it instead of node_modules.
 // __requireFrom checks this table BEFORE resolving, so this wins over any
 // installed copy, and esbuild lowers every ESM import of "undici" into the
@@ -17892,6 +17143,88 @@ function __nimbusFront(target, name, make) {
   const fronted = make(real);
   Object.defineProperty(fronted, "name", { value: name, configurable: true });
   Object.defineProperty(target, name, { value: fronted, writable: true, enumerable: descriptor?.enumerable ?? true, configurable: true });
+}
+
+// lib/path.js: validate from the right until an absolute path ends resolution.
+function __nimbusFrontPath(path) {
+  __nimbusFront(path, "resolve", (real) => function (...paths) {
+    for (let i = paths.length - 1; i >= 0; i--) {
+      if (typeof paths[i] !== "string") throw invalidArgType("paths[" + i + "]", "string", paths[i]);
+      if (paths[i].charCodeAt(0) === 47) break;
+    }
+    return Reflect.apply(real, this, paths);
+  });
+  __nimbusFront(path, "relative", (real) => function (from, to) {
+    if (typeof from !== "string") throw invalidArgType("from", "string", from);
+    if (typeof to !== "string") throw invalidArgType("to", "string", to);
+    return Reflect.apply(real, this, arguments);
+  });
+  for (const mod of [path, path.win32]) {
+    __nimbusFront(mod, "basename", (real) => function (path, suffix) {
+      if (suffix !== undefined && typeof suffix !== "string") throw invalidArgType("suffix", "string", suffix);
+      return Reflect.apply(real, this, arguments);
+    });
+    __nimbusFront(mod, "matchesGlob", (real) => function (path, pattern) {
+      if (typeof path !== "string") throw invalidArgType("path", "string", path);
+      if (typeof pattern !== "string") throw invalidArgType("pattern", "string", pattern);
+      return Reflect.apply(real, this, arguments);
+    });
+    mod._makeLong = mod.toNamespacedPath;
+  }
+}
+
+function __nimbusFrontUrl(url) {
+  __nimbusFront(url, "pathToFileURL", (real) => function (path, options) {
+    if (typeof path !== "string") throw invalidArgType("paths[0]", "string", path);
+    return Reflect.apply(real, this, arguments);
+  });
+  __nimbusFront(url, "fileURLToPath", (real) => function (path, options) {
+    if (typeof path === "string") path = new url.URL(path);
+    return Reflect.apply(real, this, [path, options]);
+  });
+  __nimbusFront(url, "urlToHttpOptions", (real) => function (value) {
+    if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+      __nimbusNodeValidator("validateObject")(value, "url", __nimbusNodeLib().require("internal/validators").kValidateObjectAllowObjects);
+    }
+    return Reflect.apply(real, this, arguments);
+  });
+  // lib/internal/url.js fileURLToPathBuffer: percent decoding preserves non-UTF8 bytes.
+  url.fileURLToPathBuffer = function fileURLToPathBuffer(path, options) {
+    const windows = options?.windows ?? false;
+    if (typeof path === "string") path = new url.URL(path);
+    else if (!(path instanceof url.URL)) throw invalidArgType("path", ["string", "URL"], path);
+    if (path.protocol !== "file:") throw nodeError(TypeError, "ERR_INVALID_URL_SCHEME", "The URL must be of scheme file");
+    if (!windows && path.hostname !== "") throw nodeError(TypeError, "ERR_INVALID_FILE_URL_HOST", 'File URL host must be "localhost" or empty on linux');
+    const pathname = windows ? path.pathname.replace(/\//g, "\\") : path.pathname;
+    const decoded = __nimbusNodeLib().require("querystring").unescapeBuffer(pathname, false);
+    if (!windows) return decoded;
+    if (path.hostname !== "") return __BufferMod.concat([__BufferMod.from("\\\\" + url.domainToUnicode(path.hostname)), decoded]);
+    const letter = decoded[1] | 0x20;
+    if (letter < 97 || letter > 122 || decoded[2] !== 58) throw nodeError(TypeError, "ERR_INVALID_FILE_URL_PATH", "File URL path must be absolute", { input: String(path) });
+    return decoded.subarray(1);
+  };
+  delete url.toPathIfFileURL;
+}
+
+function __nimbusFrontEvents(events) {
+  __nimbusFront(events, "setMaxListeners", (real) => function (n = events.defaultMaxListeners, ...targets) {
+    if (typeof n !== "number" || n < 0 || Number.isNaN(n)) __nimbusNodeValidator("validateNumber")(n, "setMaxListeners", 0);
+    return Reflect.apply(real, this, [n, ...targets]);
+  });
+  __nimbusFront(events, "getMaxListeners", (real) => function (emitter) {
+    if (typeof emitter?.getMaxListeners === "function") return Reflect.apply(real, this, arguments);
+    if (emitter instanceof EventTarget) return emitter[events.kMaxEventTargetListeners] ?? events.defaultMaxListeners;
+    throw invalidArgType("emitter", ["EventEmitter", "EventTarget"], emitter);
+  });
+  const RealResource = events.EventEmitterAsyncResource;
+  class EventEmitterAsyncResource extends RealResource {
+    constructor(options) {
+      if (typeof options === "string") options = { name: options };
+      else if (new.target === EventEmitterAsyncResource && typeof options?.name !== "string") throw invalidArgType("options.name", "string", options?.name);
+      super(options);
+    }
+  }
+  events.EventEmitterAsyncResource = EventEmitterAsyncResource;
 }
 
 // zlib
@@ -18319,6 +17652,9 @@ function __nimbusFrontCrypto(crypto) {
 __nimbusFrontZlib(builtins.zlib);
 __nimbusFrontBuffer(builtins.buffer);
 __nimbusFrontCrypto(builtins.crypto);
+__nimbusFrontPath(builtins.path);
+__nimbusFrontUrl(builtins.url);
+__nimbusFrontEvents(builtins.events);
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────
