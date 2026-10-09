@@ -126,6 +126,13 @@ export declare class NpmCache {
      * the integrity its tarball was pinned to, across projects.
      */
     installedIntegrities(): Map<string, string>;
+    /**
+     * What changes when anything is installed in or removed from any project:
+     * a digest of every lockfile row. What is kept of what installs put on disk
+     * (the manifests a launch is handed, facets/manager.ts _installedManifests)
+     * is reread when it changes.
+     */
+    installRevision(): string;
     /** Write/overwrite the lockfile for a project. Atomic via transaction. */
     writeLockfile(projectPath: string, entries: Map<string, LockfileEntry>, ctx?: DurableObjectState): void;
     /** Get a pre-bundled ESM module. */

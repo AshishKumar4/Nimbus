@@ -1,12 +1,18 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
-export function publishPackages(root) {
-  const packages = readdirSync(join(root, 'packages'), { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => {
-      const dir = join(root, 'packages', entry.name);
-      try { return { dir, ...JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) }; }
+export function publishPackages(root, commit) {
+  const git = (args) => {
+    const done = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+    if (done.status !== 0) throw new Error(done.stderr.trim());
+    return done.stdout.trim();
+  };
+  const dirs = commit ? git(['ls-tree', '-d', '--name-only', `${commit}:packages`]).split('\n')
+    : readdirSync(join(root, 'packages'), { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  const packages = dirs.map((name) => {
+      const dir = join(root, 'packages', name);
+      try { return { dir, ...JSON.parse(commit ? git(['show', `${commit}:packages/${name}/package.json`]) : readFileSync(join(dir, 'package.json'), 'utf8')) }; }
       catch (error) { if (error.code === 'ENOENT') return null; throw error; }
     })
     .filter((pkg) => pkg && !pkg.private && pkg.publishConfig?.access === 'public'
