@@ -343,14 +343,13 @@ function barrier(s, bridge, from) {
   const reader = s.files.bind({ pid: 7, cred: USER });
   const writer = s.files.bind({ pid: 8, cred: USER });
   const { encodeWriteBatchStream } = await import('../../packages/platform/src/w7-frame.ts');
-  const wave = (name, first) => {
-    const data = new TextEncoder().encode(name);
-    return writer.writeStream(encodeWriteBatchStream({
-      inodes: [{ path: `home/user/d/${name}`, parentPath: 'home/user/d', kind: 'file', isDir: false, size: data.length, mtime: 1, mode: 0o644, chunkCount: 1 }],
-      chunks: [{ path: `home/user/d/${name}`, chunkId: 0, data }],
-    }), { sequence: { writer: '8:w', first, ack: first - 1, pid: 8 } });
-  };
-  assert.equal((await wave('first', 1)).ok, true);
+  // A process's sequenced wave: one numbered op.
+  const wave = (name, first) => writer.writeStream(encodeWriteBatchStream({
+    inodes: [], chunks: [],
+    ops: [{ type: 'call', call: { call: 'writeFile', path: `home/user/d/${name}`, mode: 0o644, data: new TextEncoder().encode(name) } }],
+  }), { sequence: { writer: '8:w', first, ack: first - 1, pid: 8 } });
+  const firstWave = await wave('first', 1);
+  assert.equal(firstWave.ok, true, JSON.stringify(firstWave.error));
   // The writer reads too: its own lease.
   const own = barrier(s, writer);
   const { readLease } = barrier(s, reader);
@@ -360,7 +359,8 @@ function barrier(s, bridge, from) {
   const before = s.harness.statements.slice(begun).filter((statement) => /^\s*(INSERT|UPDATE|DELETE|REPLACE)/i.test(statement.sql));
   assert.deepEqual(before.map((statement) => statement.sql), [], 'the wave wrote before the recall it met was sent');
   reader.recalled(readLease.owner, 'revoke');
-  assert.equal((await second).ok, true);
+  const secondWave = await second;
+  assert.equal(secondWave.ok, true, JSON.stringify(secondWave.error));
   assert.equal(s.engine.readLeaseStats().broken, 0, 'its publication broke its writer\'s own lease');
   assert.equal(barrier(s, writer, { rev: s.engine.revision() }).readLease?.owner, own.readLease.owner, 'the writer\'s own lease did not survive its wave');
 }
