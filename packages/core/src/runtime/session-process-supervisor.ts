@@ -544,8 +544,8 @@ export class SessionProcessSupervisor {
     if ((this.outputGate === null && this.heldOutput.size === 0) || this.releasing.has(pid)) return deliver();
     const prior = this.heldOutput.get(pid);
     const gated = this.outputGate?.before(pid) ?? null;
-    if (prior === undefined && gated === null) return this.deliverOutput(pid, deliver);
-    const turn: Promise<unknown> = prior === undefined ? gated! : gated === null ? prior : Promise.all([prior, gated]);
+    const turn = prior === undefined ? gated : gated === null ? prior : Promise.all([prior, gated]);
+    if (turn === null) return this.deliverOutput(pid, deliver);
     let delivery!: T;
     const admitted = turn.then(() => { delivery = this.deliverOutput(pid, deliver); });
     // What comes after waits for this to be let through, not for its readers.
