@@ -899,6 +899,14 @@ async function main() {
     }
   }
 
+  const relativeWasm = await bundleAsPreamble(
+    join(coreRoot, 'src', '_shared', 'relative-wasm-paths.ts'),
+    'relative-wasm-paths',
+  );
+  if (!/^function relativeWasmPaths\(/m.test(relativeWasm)) {
+    throw new Error('[bundle-facet-workers/relative-wasm-paths] the bundle no longer declares function relativeWasmPaths');
+  }
+
   const waveWriter = await bundleWaveWriter();
 
   const tarEncoded = JSON.stringify(tarStripped);
@@ -962,6 +970,9 @@ async function main() {
     ' * TYPESCRIPT_INDEX_CANDIDATES and presentedCredential; the node shims call them.',
     ' */',
     `export const NODE_SHIM_RESOLUTION_PREAMBLE: string = ${JSON.stringify(shimResolution)};`,
+    '',
+    '/** Declares `function relativeWasmPaths(source, filename)`; the node shims call it. */',
+    `export const RELATIVE_WASM_PATHS_PREAMBLE: string = ${JSON.stringify(relativeWasm)};`,
     '',
   ].join('\n');
 

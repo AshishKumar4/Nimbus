@@ -50,6 +50,7 @@ import { CHILD_NEWS_SOURCE } from './child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import {
   ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE,
+  RELATIVE_WASM_PATHS_PREAMBLE,
 } from '../loaders/generated-workers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
@@ -77,7 +78,6 @@ import { NODE_SOURCE_MAPS_SOURCE } from './node-source-maps.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
 import { RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
-import { relativeWasmPaths } from '@nimbus-sh/core/_shared/relative-wasm-paths.js';
 
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
@@ -12654,7 +12654,10 @@ function __nimbusRequestTarget(kind, specifier, importer) {
   return __resolveFrom(specifier, importer.includes("/") ? importer.slice(0, importer.lastIndexOf("/")) : "");
 }
 
-const __nimbusRelativeWasmPaths = ${relativeWasmPaths.toString()};
+// core/_shared/relative-wasm-paths.ts, compiled once by the build (a
+// function's own text differs between compilers, so it is never spliced).
+${RELATIVE_WASM_PATHS_PREAMBLE}
+const __nimbusRelativeWasmPaths = relativeWasmPaths;
 function __nimbusImportStager(quota) {
   // The fill a synchronous read's miss starts (the fs's residency fault-in),
   // which only a process with a supervisor has.
