@@ -297,6 +297,8 @@ type ExecLaunchOpts = Parameters<FacetManager['exec']>[1] & {
   stdinAtLeast?: number;
   /** This run's stop nonce: a stop record counts only with it (stop-replay.ts stopRecordOf). */
   stopNonce?: string;
+  /** Its first listen stops it, to be run again as a resident that serves (FacetManager._promote). */
+  promote?: boolean;
   /** Its network goes through the session (SupervisorRPC as its globalOutbound). */
   outbound?: boolean;
   /**
@@ -321,6 +323,8 @@ export interface FacetExecResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  /** It listened, and runs on as this resident (FacetManager._promote): no exit yet. */
+  promotedPid?: number;
   /**
    * VFS paths whose content the process read synchronously and did not have.
    *
@@ -1183,6 +1187,8 @@ export default {
       nonce: args.stopNonce,
       // Its network goes through the session, which records what it reads.
       outbound: args.outbound === true,
+      // Its first listen stops it, to be run again as a resident that serves.
+      promote: args.promote === true,
       // The session holds what it answers past the read the run before
       // stopped at until the replay gets there.
       boundary: () => { const b = __supervisor && __supervisor.replayBoundary; return typeof b === "function" ? Reflect.apply(b, __supervisor, []) : undefined; },
@@ -4902,11 +4908,17 @@ export interface ResidentSpawnOptions {
   dirname?: string;
   /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
   esModule?: boolean;
+  esModuleMap?: string;
   /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
   moduleScope?: ModuleScope;
   command?: string;
   port?: number;
   attachedTty?: boolean;
+  /**
+   * A one-shot that stopped at its first listen (FacetManager._promote): its
+   * run, which this boot replays up to that listen before it serves.
+   */
+  replay?: ReplayLaunch;
   /**
    * Its launcher writes its stdin and ends it, and does not wait for the
    * boot (RuntimeRunOpts.stdinWriter): the boot may stop at a synchronous
@@ -6824,12 +6836,16 @@ export class FacetManager {
         // and the gate that delivers its output once across its runs.
         const inputChannel = opts.stdinPipe ? entry.pid : Number(opts.env?.NIMBUS_CP_CHILD_PID || 0);
         const stoppable = inputChannel > 0 || opts.stdinFile !== undefined;
+        // A run whose output is not captured stops at its first listen, to be
+        // run again as a resident that serves (_promote): its output is
+        // delivered once across the two, through the same gate.
+        const promotable = !opts.captureOutput;
         const held = this.stdinReadAhead.open();
         // A run after a stop that strays is ended here, as a kill ends one, but
         // it is not a kill: the process fails, naming how it strayed.
         const divergence = new AbortController();
+        if (stoppable || promotable) this.outputGates.set(entry.pid, new ReplayOutputGate());
         if (stoppable) {
-          this.outputGates.set(entry.pid, new ReplayOutputGate());
           this.journals.set(entry.pid, new ReplayJournal(() => {
             this.outputGates.get(entry.pid)?.close();
             divergence.abort();
@@ -6841,6 +6857,7 @@ export class FacetManager {
         // program set is its run's own.
         const startUmask = entry.cred.umask;
         const runSignal = AbortSignal.any([abortController.signal, divergence.signal]);
+        let promoted = false;
         try {
           // A one-shot holds its module map and what it was seen to read (both in
           // the bundle), and plans no listing of the namespace (§2.8: the
@@ -6856,6 +6873,7 @@ export class FacetManager {
           let launch: ExecLaunchOpts = {
             ...opts,
             stopNonce: crypto.randomUUID(),
+            ...(promotable ? { promote: true } : {}),
             ...(stoppable ? { outbound: true, codeDigest: { value: undefined } } : {}),
           };
           let result: FacetExecResult;
@@ -6876,6 +6894,10 @@ export class FacetManager {
               outcome = { stop: { v: 3, kind: 'diverged', run: launch.replay?.run ?? 1, out: [], why: journal.diverged } };
             }
             if (!('stop' in outcome)) { result = outcome; break; }
+            if (outcome.stop.kind === 'listen') {
+              promoted = true;
+              return await this._promote(entry, code, opts, outcome.stop, journal);
+            }
             // The session decides whether the run may go again: what it did
             // outside itself is counted here, whatever the guest counted.
             const refused = outcome.stop.kind === 'stdin' && journal ? journal.unreplayable : null;
@@ -6977,7 +6999,8 @@ export class FacetManager {
           return { exitCode: 1, stdout: '', stderr: `${errorMessage(err)}\n${unsettled}${refused}` };
         } finally {
           pacer.settle();
-          stdinPump?.stop();
+          // A promoted process reads on, as the resident.
+          if (!promoted) stdinPump?.stop();
           if (inputChannel > 0) this.stdinTaken.get(inputChannel)?.release();
           this.stdinTaken.delete(inputChannel);
           held.give();
@@ -7001,6 +7024,52 @@ export class FacetManager {
     } finally {
       opts.signal?.removeEventListener('abort', onShellAbort);
     }
+  }
+
+  /**
+   * A one-shot that stopped at its first listen (stop-replay.ts listen) runs
+   * on as a resident, the same process: the resident replays the run up to
+   * that listen, checked against it, then listens and serves. What the
+   * one-shot printed is shown once; the resident prints it again only to be
+   * checked (the prefix).
+   */
+  private async _promote(
+    entry: ProcessEntry,
+    code: string,
+    opts: Parameters<FacetManager['exec']>[1],
+    stop: StopRecord,
+    journal: ReplayJournal | undefined,
+  ): Promise<FacetExecResult> {
+    const pid = entry.pid;
+    const gate = this.outputGates.get(pid);
+    const stopped = gate?.stopped(stop) ?? { fresh: [], prefix: null };
+    this.outputGates.delete(pid);
+    for (const { stream, bytes } of stopped.fresh) await this._deliverOutput(pid, stream, bytes);
+    if (stopped.prefix === null) {
+      const message = `node: this program listens as a server, so Nimbus runs it again as one, but it printed more than `
+        + `${REPLAY_PREFIX_MAX_BYTES / 1048576} MiB before it listened, more than a second run is checked against.\n`;
+      await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(message));
+      this._end(pid, { code: 1, cause: message.trimEnd() });
+      return { exitCode: 1, stdout: '', stderr: '' };
+    }
+    // The stopped run's descriptors go with it: the resident opens its own.
+    await this.hooks.rewindProcessFiles?.(pid);
+    // Every long-running process has an input channel on its pid.
+    if (!this.processes.hasInput(pid)) this.processes.openInput(pid);
+    const replay: ReplayLaunch = {
+      run: stop.run + 1,
+      tape: stop.tape!,
+      listen: true,
+      prefix: { stdout: encodeBase64(stopped.prefix.stdout), stderr: encodeBase64(stopped.prefix.stderr) },
+      ...(journal ? { observations: journal.observations } : {}),
+    };
+    await this.spawnNode(code, {
+      argv: opts.argv, env: opts.env, cwd: opts.cwd, filename: opts.filename, dirname: opts.dirname,
+      esModule: opts.esModule, esModuleMap: opts.esModuleMap, moduleScope: opts.moduleScope,
+      command: opts.command, invokerPid: opts.invokerPid, bundleProfile: opts.bundleProfile, node: opts.node,
+      skipSpawn: true, callerPid: pid, replay,
+    });
+    return { exitCode: 0, stdout: '', stderr: '', promotedPid: pid };
   }
 
   /**
@@ -7512,6 +7581,7 @@ export class FacetManager {
       ...(opts.stdinAtLeast ? { stdinAtLeast: opts.stdinAtLeast } : {}),
       // Only this run's stop counts (stop-replay.ts stopRecordOf).
       ...(opts.stopNonce ? { stopNonce: opts.stopNonce } : {}),
+      ...(opts.promote ? { promote: true } : {}),
       // Its network goes through the session (runOnce's outbound below).
       ...(opts.outbound ? { outbound: true } : {}),
       captureOutput: !!opts.captureOutput,
@@ -8600,7 +8670,9 @@ export class FacetManager {
       }
       // Each boot starts from the umask the process started with.
       const startUmask = entry.cred.umask;
-      let rerun: StoppedRunNext | null = null;
+      // A promoted one-shot's boot replays its run up to its listen (_promote).
+      let rerun: StoppedRunNext | null = opts.replay ? { replay: opts.replay } : null;
+      const stoppable = stdinWriter || opts.replay !== undefined;
       let stopNonce: string = crypto.randomUUID();
       try {
       for (let stops = 0; ; stops++) {
@@ -8620,7 +8692,8 @@ export class FacetManager {
           ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
           ...(profileOffer !== undefined && profileOffer.staged.length > 0 ? { profileStaged: profileOffer.staged.map((e) => e.path) } : {}),
           ...(this.debugEnabled ? { diag: true } : {}),
-          ...(stdinWriter ? { stdinWriter: true, stopNonce } : {}),
+          ...(stdinWriter ? { stdinWriter: true } : {}),
+          ...(stoppable ? { stopNonce } : {}),
           // A boot after a stop: what the stopped boot drew and printed, and
           // the stdin it is handed back.
           ...(rerun !== null ? { replay: rerun.replay, stdinAtLeast: rerun.stdinAtLeast ?? 0, ...(rerun.stdinWhole ? { stdinWhole: true } : {}) } : {}),
@@ -8707,7 +8780,7 @@ export class FacetManager {
         // The boot stopped itself at a synchronous read of stdin that has to
         // wait: wait for the input, then boot it again.
         const journal = this.journals.get(entry.pid);
-        let stop = stdinWriter ? stopRecordOf(e, stopNonce, rerun?.replay.run ?? 1) : null;
+        let stop = stoppable ? stopRecordOf(e, stopNonce, rerun?.replay.run ?? 1) : null;
         if (stop === null && journal?.diverged) stop = { v: 3, kind: 'diverged', run: rerun?.replay.run ?? 1, out: [], why: journal.diverged };
         if (stop === null) throw e;
         this.stdinTaken.get(entry.pid)?.retire();
@@ -8720,6 +8793,13 @@ export class FacetManager {
         await handle?.done.catch(() => {});
         handle = undefined;
         this.portRegistry.unregisterByPid(entry.pid);
+        if (opts.replay && stop.kind === 'diverged') {
+          const message = `node: this program listens as a server, so Nimbus ran it again as one, and it did not retrace `
+            + `its run before up to its listen (${stop.why}), so it was ended.\n`;
+          await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(message));
+          this._end(entry.pid, { code: 1, cause: message.trimEnd() });
+          return;
+        }
         const waiting = new AbortController();
         this.processes.setTerminator(entry.pid, () => waiting.abort());
         const resumed = await this._resumeStoppedRun(entry, stop, stops, entry.pid, {}, waiting.signal, heldStdin,

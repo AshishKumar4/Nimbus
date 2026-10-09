@@ -519,7 +519,8 @@ const __nimbusStopReplay = (() => {
       return "node: this program ended before the read of stdin it stopped at when Nimbus ran it again, so it did not retrace its run before; what it printed past that is not shown.\\n";
     },
     booted() {
-      if (!run || run.replay === null || run.boundaryPassed) return "";
+      // A server run again replays on past its boot until it listens.
+      if (!run || run.replay === null || run.boundaryPassed || run.replay.listen === true) return "";
       return "node: this program finished starting before the read of stdin it stopped at when Nimbus booted it again, so it did not retrace its boot before";
     },
   };
