@@ -50,7 +50,7 @@ import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { generation, onColdStart } from '@nimbus-sh/fabric/generation.js';
-import { isDynamicWorkerDeadlock, suspendLaunchAdmission, withLaunchAdmission } from '@nimbus-sh/fabric/budgets.js';
+import { DYNAMIC_WORKER_CODE_LIMIT_BYTES, isDynamicWorkerDeadlock, suspendLaunchAdmission, withLaunchAdmission } from '@nimbus-sh/fabric/budgets.js';
 import { FencedWork, FENCED_WORK_KEY_PREFIX, RESIDENT_PROVEN_MS, } from '@nimbus-sh/fabric/fenced-work.js';
 import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/provided-packages.js';
 import { bundleTypescriptLoader, esbuildDiagnosticShim, isBundleModuleCandidate, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
@@ -401,43 +401,83 @@ async function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {
 `;
 /**
  * Patch the global timer functions so the startup drain can tell when
- * macrotask work is still in flight. One-shot setTimeout decrements the
- * pending count when it fires or is cleared; setInterval counts as one
- * live handle until cleared (the drain deadline bounds genuinely-infinite
- * intervals). Without this the drain — which only follows promise chains
- * — abandons sequential awaited timer work and the facet exits before
- * timer-driven CLIs (create-astro, nuxi) finish scaffolding.
+ * macrotask work is still in flight. A timer, interval or immediate is a live
+ * handle until it fires (an interval until it is cleared), as in Node, and
+ * holds the process open while it is referenced: unref() lets the program
+ * end without it and ref() holds it again. Without this the drain, which
+ * only follows promise chains, abandons sequential awaited timer work and the
+ * facet exits before timer-driven CLIs (create-astro, nuxi) finish
+ * scaffolding.
  */
 const ENTRYPOINT_TIMER_TRACKER = `
 (function(g){
   if (g.__nimbusTimerTrackerInstalled) return;
   g.__nimbusTimerTrackerInstalled = true; g.__nimbusPendingTimers = 0;
-  const st = g.setTimeout, ct = g.clearTimeout, si = g.setInterval, ci = g.clearInterval;
+  const st = g.setTimeout, ct = g.clearTimeout, si = g.setInterval, ci = g.clearInterval, sim = g.setImmediate, cim = g.clearImmediate;
   if (typeof st !== "function") return;
   g.__nimbusRawSetTimeout = st;
   g.__nimbusRawClearTimeout = ct;
-  const one = new Set(), iv = new Set();
+  // Each live handle: the call that clears it, and whether it holds the process.
+  const live = new Map();
+  const drop = () => { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); };
+  const release = (id) => {
+    const entry = live.get(id);
+    if (entry === undefined) return;
+    live.delete(id);
+    if (entry.held) drop();
+  };
+  // The platform's handle classes, their ref() and unref() made to count.
+  const patched = new WeakSet();
+  const patch = (handle) => {
+    const proto = Object.getPrototypeOf(handle);
+    if (proto === null || patched.has(proto)) return;
+    patched.add(proto);
+    const { ref, unref } = proto;
+    const counted = {
+      unref() {
+        const entry = live.get(this);
+        if (entry?.held) { entry.held = false; drop(); }
+        return Reflect.apply(unref, this, arguments);
+      },
+      ref() {
+        const entry = live.get(this);
+        if (entry !== undefined && !entry.held) { entry.held = true; g.__nimbusPendingTimers++; }
+        return Reflect.apply(ref, this, arguments);
+      },
+    };
+    if (typeof unref === "function") proto.unref = counted.unref;
+    if (typeof ref === "function") proto.ref = counted.ref;
+  };
+  const hold = (id, clear) => {
+    live.set(id, { clear, held: true });
+    g.__nimbusPendingTimers++;
+    if (id !== null && typeof id === "object") patch(id);
+    return id;
+  };
   g.setTimeout = function(fn, ms, ...a){
     if (typeof fn !== "function") return st(fn, ms, ...a);
     // Counted once the timer exists: a delay the platform refuses throws, and
     // a caught throw leaves no timer to wait for.
-    const id = st(function(){
-      if (one.delete(id)) { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); }
-      return fn.apply(this, arguments);
-    }, ms, ...a);
-    g.__nimbusPendingTimers++; one.add(id); return id;
+    const id = st(function(){ release(id); return fn.apply(this, arguments); }, ms, ...a);
+    return hold(id, ct);
   };
-  g.clearTimeout = function(id){ if (one.delete(id)) { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); } return ct(id); };
+  g.clearTimeout = function(id){ release(id); return ct(id); };
   if (typeof si === "function") {
-    g.setInterval = function(fn, ms, ...a){ const id = si(fn, ms, ...a); iv.add(id); g.__nimbusPendingTimers++; return id; };
-    g.clearInterval = function(id){ if (iv.delete(id)) { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); } return ci(id); };
+    g.setInterval = function(fn, ms, ...a){ return hold(si(fn, ms, ...a), ci); };
+    g.clearInterval = function(id){ release(id); return ci(id); };
   }
-  // process.exit: the program's pending timers and intervals never fire again.
+  if (typeof sim === "function") {
+    g.setImmediate = function(fn, ...a){
+      if (typeof fn !== "function") return sim(fn, ...a);
+      const id = sim(function(){ release(id); return fn.apply(this, arguments); }, ...a);
+      return hold(id, cim);
+    };
+    g.clearImmediate = function(id){ release(id); return cim(id); };
+  }
+  // process.exit: the program's pending timers, intervals and immediates never fire again.
   g.__nimbusStopProgramTimers = function(){
-    for (const id of one) ct(id);
-    one.clear();
-    if (typeof ci === "function") for (const id of iv) ci(id);
-    iv.clear();
+    for (const [id, entry] of live) entry.clear(id);
+    live.clear();
     g.__nimbusPendingTimers = 0;
   };
 })(globalThis);
@@ -1630,6 +1670,106 @@ export function releaseGeneratedSources(vfsState) {
     vfsState.bundleSource = undefined;
     vfsState.generatedSourcesReleased = true;
 }
+// ── The ceiling on a module map ─────────────────────────────────────────────
+//
+// A dynamic Worker's module map is refused past DYNAMIC_WORKER_CODE_LIMIT_BYTES
+// (fabric budgets.ts), a total every member shares: the main module, the data
+// and code modules, the wasm images, the staged bindings and the sidecars.
+// What a map must carry is its program's closure and the runtime. What earlier
+// runs learned rides beside them as far as the ceiling allows: an astro
+// project's second `astro dev` carried its first run's runtime code beside
+// 39.4 MB of wasm, and its map, 68.5 MB, was refused at facet start.
+/**
+ * A launch's map is over the ceiling with none of the runtime code earlier
+ * runs learned in it, by `over` bytes: its walked modules take it there. The
+ * launch is built again once under a bound that much lower
+ * (_rebuildUnderCeiling); a map still over fails the launch here, by name,
+ * before any of it is stored or loaded.
+ */
+export class ModuleMapOverCeilingError extends Error {
+    over;
+    constructor(over) {
+        super(`Nimbus: the module map is ${(DYNAMIC_WORKER_CODE_LIMIT_BYTES + over).toLocaleString('en-US')} bytes without `
+            + `the code earlier runs learned, over the ${DYNAMIC_WORKER_CODE_LIMIT_BYTES.toLocaleString('en-US')}-byte `
+            + 'platform ceiling shared by every member');
+        this.over = over;
+        this.name = 'ModuleMapOverCeilingError';
+    }
+}
+/**
+ * The UTF-8 bytes of a generated map's text (its main module, data modules
+ * and code modules), as the platform counts them; null when they cannot
+ * reach `room`. Text of N UTF-16 units is at most 3N bytes, so a map that
+ * small is answered without being read.
+ */
+export function generatedMapTextBytes(generated, room) {
+    const texts = [generated.code, ...Object.values(generated.modules), ...Object.values(generated.codeModules)];
+    let units = 0;
+    for (const text of texts)
+        units += text.length;
+    if (units * 3 <= room)
+        return null;
+    let bytes = 0;
+    for (const text of texts)
+        bytes += mapTextBytes(text);
+    return bytes;
+}
+const NON_ASCII = /[^\x00-\x7f]/;
+const mapTextEncoder = new TextEncoder();
+let mapTextScratch;
+/**
+ * The UTF-8 bytes of a map's text, at native speed: ASCII text, most of a
+ * map, is its length, which one scan finds; other text is encoded a slice at
+ * a time into one reused buffer, only the count kept. For 31 M units, an
+ * astro-sized map, Node's V8 took 40-60 ms counting a unit at a time
+ * (_encodedSourceBytes) and 11 ms this way.
+ */
+function mapTextBytes(text) {
+    if (!NON_ASCII.test(text))
+        return text.length;
+    mapTextScratch ??= new Uint8Array(256 * 1024);
+    let bytes = 0;
+    for (let read = 0; read < text.length;) {
+        const done = mapTextEncoder.encodeInto(read === 0 ? text : text.slice(read), mapTextScratch);
+        read += done.read;
+        bytes += done.written;
+    }
+    return bytes;
+}
+/**
+ * The learned runtime code (`gen/<key>.js`) a map of `bytes` keeps under
+ * `room`: in the order its runs first needed it (the guest's ledger, kept by
+ * the launch's profile), each piece that still fits beside what the map holds
+ * without any of it. `learned` is each piece's key and module bytes; a piece
+ * also costs its key in the main module's list of staged keys (`"<key>"`, and
+ * a comma after the first). `over` is what the map holds past `room` with
+ * none of it. What is not kept runs as it did in the run that learned it:
+ * interpreted (core/_shared/commonjs-cell.ts, RUNTIME CODE).
+ */
+export function learnedRuntimeCodeWithin(bytes, learned, room) {
+    let held = bytes - Math.max(0, learned.length - 1);
+    for (const [key, size] of learned)
+        held -= size + key.length + 2;
+    const over = Math.max(0, held - room);
+    const kept = [];
+    for (const [key, size] of learned) {
+        const cost = size + key.length + 2 + (kept.length > 0 ? 1 : 0);
+        if (held + cost > room)
+            continue;
+        held += cost;
+        kept.push(key);
+    }
+    return { kept, over };
+}
+/** What a map's members hold that are not its generated text: sidecars and staged bindings by value. */
+function moduleMemberBytes(members) {
+    let bytes = 0;
+    for (const member of Object.values(members))
+        bytes += typeof member === 'string' ? mapTextBytes(member) : member.wasm.byteLength;
+    return bytes;
+}
+/** The entry the one-shot host adds to a map (fabric workerd-facet-host.ts oneShotEntry, about 600 bytes): at most this. */
+const ONE_SHOT_HOST_ENTRY_BYTES = 4096;
 /**
  * The module-map source for a state, memoized form first.
  *
@@ -4140,6 +4280,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
         cursor,
         reachableCount: fileCount,
         truncated,
+        rawBytes: rawTotal,
         ...(transforms ? { transforms } : {}),
         ...(lazyModules.length > 0 ? { lazyModules, lazyImporters } : {}),
         ...(readers.length > 0 ? { evictedReaders: readers } : {}),
@@ -5384,7 +5525,7 @@ export class FacetManager {
         // A report still being recorded may drop this entry: let it land first.
         await this.learning.settled();
         const cached = this.prefetchBundleCache.get(key);
-        if (cached && cached.revision === revision) {
+        if (cached && cached.revision === revision && spec.maxBundleBytes === undefined) {
             // Refresh LRU recency.
             this.prefetchBundleCache.delete(key);
             this.prefetchBundleCache.set(key, cached);
@@ -5420,7 +5561,9 @@ export class FacetManager {
             observedReads: new Set(learning.dataReads),
             pacer,
             learnedFor,
-            executedModules: executed,
+            // Under the ceiling's bound, what earlier runs executed is staged as far as it allows (_rebuildUnderCeiling).
+            executedModules: spec.maxBundleBytes === undefined ? executed : executed.map((root) => ({ ...root, optional: true })),
+            ...(spec.maxBundleBytes !== undefined ? { maxBundleBytes: spec.maxBundleBytes } : {}),
             transformStore: this._transformStore(),
             conditions: launch.conditions,
             stripTypes: launch.stripTypes,
@@ -5497,6 +5640,79 @@ export class FacetManager {
         releaseSerializedSources(vfsState);
         vfsState.cacheRetained = this._admitPrefetchCacheEntry(key, revision, vfsState);
         return vfsState;
+    }
+    /**
+     * Generate a launch's map under the ceiling on it. `others` is what the rest
+     * of the map holds (its wasm images, staged bindings and sidecars), sized
+     * by the caller; `generate` makes the map's text from a state. A map over
+     * the ceiling keeps the learned runtime code learnedRuntimeCodeWithin
+     * keeps and is made again from the state without the rest; one over it
+     * with none of it throws ModuleMapOverCeilingError.
+     */
+    async _generateUnderCeiling(pid, vfsState, others, generate) {
+        const room = DYNAMIC_WORKER_CODE_LIMIT_BYTES - others;
+        let generated = await generate(vfsState);
+        const bytes = generatedMapTextBytes(generated, room);
+        if (bytes === null || bytes <= room)
+            return generated;
+        const source = vfsState.bundleSource;
+        const keys = source ? JSON.parse(source.runtimeCode) : [];
+        const learned = keys.map((key) => [key, mapTextBytes(generated.codeModules[runtimeCodeModuleName(key)] ?? '')]);
+        generated = undefined;
+        const { kept, over } = learnedRuntimeCodeWithin(bytes, learned, room);
+        if (over > 0 || !source)
+            throw new ModuleMapOverCeilingError(over);
+        const keep = new Set(kept);
+        const codeModules = { ...source.codeModules };
+        for (const key of keys)
+            if (!keep.has(key))
+                delete codeModules[runtimeCodeModuleName(key)];
+        const message = `the module map is ${(bytes + others).toLocaleString('en-US')} bytes with the code earlier runs learned, over the `
+            + `${DYNAMIC_WORKER_CODE_LIMIT_BYTES.toLocaleString('en-US')}-byte ceiling: it stages ${kept.length} of its ${keys.length} pieces, `
+            + 'the first its runs needed, and runs the rest interpreted, as the run that learned them did';
+        console.warn(`[facet-manager] pid ${pid}: ${message}`);
+        if (this.debugEnabled)
+            this.processes.appendOutput(pid, 'stderr', `[nimbus-debug] ${message}\n`);
+        return generate({ ...vfsState, bundleSource: { ...source, codeModules, runtimeCode: JSON.stringify(kept) } });
+    }
+    /**
+     * Build a launch's state again when its map was over the ceiling with none
+     * of its learned code (ModuleMapOverCeilingError), `over` bytes past it:
+     * under a bound on its walked modules that much below what the state's
+     * took, what earlier runs executed as optional roots (staged as far as the
+     * bound allows, the first-learned first; the rest load late, as the run
+     * that learned them loaded them), in place of what the cache held. Every
+     * cell costs the map at least its raw bytes, so the map comes in at least
+     * `over` lower; a closure that does not fit the bound fails by name
+     * (ClosureBoundExceededError), as one past its bound always has.
+     */
+    async _rebuildUnderCeiling(entry, spec, vfsState, error, pacer) {
+        if (vfsState.bundleKey !== undefined)
+            this._dropPrefetchCacheEntry(vfsState.bundleKey);
+        releaseGeneratedSources(vfsState);
+        const maxBundleBytes = Math.max(0, (vfsState.rawBytes ?? 0) - error.over);
+        console.warn(`[facet-manager] pid ${entry.pid}: ${error.message}; building it again with its walked modules bounded at `
+            + `${maxBundleBytes.toLocaleString('en-US')} bytes, what earlier runs executed staged as far as that allows`);
+        return this._buildProcessBundle(entry, { ...spec, maxBundleBytes }, pacer);
+    }
+    /**
+     * What a resident's map holds beside its generated text: its sidecars, its
+     * staged bindings' loader and trampoline, and the wasm images and bindings
+     * it reads by path at boot, at their size on the session's disk.
+     */
+    _residentMemberBytes(sqliteModules, staged, wasmImports) {
+        let bytes = moduleMemberBytes(sqliteModules);
+        if (staged)
+            bytes += mapTextBytes(staged.loader) + staged.trampoline.byteLength;
+        const fs = this.vfs?.as(CRED_KERNEL);
+        for (const path of [...wasmImports.map((image) => image.vfsPath), ...Object.values(staged?.bindingPaths ?? {})]) {
+            // One that is not there fails the boot, which reads it; it holds nothing here.
+            try {
+                bytes += fs?.stat(path).size ?? 0;
+            }
+            catch { /* absent */ }
+        }
+        return bytes;
     }
     /**
      * Admit an entry and evict, oldest first, until the LRU is inside BOTH its
@@ -5820,9 +6036,10 @@ export class FacetManager {
                 // the program ran, so a child it launched and waited on, needing a turn
                 // of its own, never got one.
                 const pacer = this._launchPacer(entry.pid);
+                const bundleSpec = { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node };
                 let vfsState;
                 try {
-                    vfsState = await this._buildProcessBundle(entry, { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node }, pacer);
+                    vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
                 }
                 catch (err) {
                     // The require closure that cannot fit the snapshot bound is the
@@ -5916,7 +6133,14 @@ export class FacetManager {
                     for (let stops = 0;; stops++) {
                         let outcome;
                         try {
-                            outcome = await this._execViaLoader(code, launch, entry, vfsState, dataPlan, manifests, runSignal, pacer, diagSink);
+                            outcome = await this._execViaLoader(code, launch, entry, vfsState, dataPlan, manifests, runSignal, pacer, diagSink).catch(async (error) => {
+                                // Over the ceiling with none of its learned code: built again, once, with fewer walked modules.
+                                if (!(error instanceof ModuleMapOverCeilingError))
+                                    throw error;
+                                vfsState = await this._rebuildUnderCeiling(entry, bundleSpec, vfsState, error, pacer);
+                                dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+                                return this._execViaLoader(code, launch, entry, vfsState, dataPlan, manifests, runSignal, pacer, diagSink);
+                            });
                         }
                         catch (error) {
                             const changed = error instanceof ReplayCodeChanged;
@@ -5976,7 +6200,7 @@ export class FacetManager {
                         // the prefetch cache keeps it: the next run builds it again, a hit
                         // when nothing it holds has changed since.
                         if (vfsState.generatedSourcesReleased) {
-                            vfsState = await this._buildProcessBundle(entry, { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node }, pacer);
+                            vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
                             dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
                         }
                     }
@@ -6047,8 +6271,8 @@ export class FacetManager {
                         this.stdinTaken.get(inputChannel)?.release();
                     this.stdinTaken.delete(inputChannel);
                     held.give();
+                    this.outputGates.delete(entry.pid);
                     if (stoppable) {
-                        this.outputGates.delete(entry.pid);
                         this.journals.get(entry.pid)?.close();
                         this.journals.delete(entry.pid);
                         this._dropNetTargets(entry.pid);
@@ -6081,9 +6305,10 @@ export class FacetManager {
      */
     async _promote(entry, code, opts, stop) {
         const pid = entry.pid;
+        // The gate stays while the resident boots: a late chunk of the stopped
+        // run is dropped, the resident's are delivered (exec's finally ends it).
         const gate = this.outputGates.get(pid);
         const stopped = gate?.stopped(stop) ?? { fresh: [], prefix: null };
-        this.outputGates.delete(pid);
         for (const { stream, bytes } of stopped.fresh)
             await this._deliverOutput(pid, stream, bytes);
         if (stopped.prefix === null) {
@@ -6686,7 +6911,7 @@ export class FacetManager {
                     // own assets, for the same reason.
                     const stagedModules = await this._stagedBindingModulesByValue(vfsState.stagedBindings ?? []);
                     const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user', pacer);
-                    const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.esModuleMap);
+                    const generatedWorker = await this._generateUnderCeiling(entry.pid, vfsState, moduleMemberBytes({ ...sqliteModules, ...wasmModules, ...stagedModules }) + ONE_SHOT_HOST_ENTRY_BYTES, (state) => generateEntrypointCode(entryCode, state, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.esModuleMap));
                     const codeModules = {};
                     for (const [name, text] of Object.entries(generatedWorker.codeModules))
                         codeModules[name] = { cjs: text };
@@ -7554,16 +7779,21 @@ export class FacetManager {
         const __bundleStart = diagOn ? Date.now() : 0;
         if (this.debugEnabled)
             this.processes.appendOutput(entry.pid, 'stderr', '[nimbus-debug] launch: building the module map\n');
-        const vfsState = await this._buildProcessBundle(entry, { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node }, pacer);
-        if (this.debugEnabled) {
-            this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] module map: ${vfsState.reachableCount} files${vfsState.cacheHit ? ' (prefetch cache)' : ''}, `
-                + `transforms ${JSON.stringify(vfsState.transforms ?? null)} (${pacer.chunks} turns so far)\n`);
-        }
-        const planStart = Date.now();
-        const { paths: dataPlan, storageBytes, lazyReads } = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename);
-        if (this.debugEnabled) {
-            this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] data plan: ${dataPlan.length} paths in ${Date.now() - planStart} ms (${pacer.chunks} turns so far)\n`);
-        }
+        const spec = { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node };
+        let vfsState = await this._buildProcessBundle(entry, spec, pacer);
+        const plan = async () => {
+            if (this.debugEnabled) {
+                this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] module map: ${vfsState.reachableCount} files${vfsState.cacheHit ? ' (prefetch cache)' : ''}, `
+                    + `transforms ${JSON.stringify(vfsState.transforms ?? null)} (${pacer.chunks} turns so far)\n`);
+            }
+            const planStart = Date.now();
+            const planned = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename);
+            if (this.debugEnabled) {
+                this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] data plan: ${planned.paths.length} paths in ${Date.now() - planStart} ms (${pacer.chunks} turns so far)\n`);
+            }
+            return planned;
+        };
+        let { paths: dataPlan, storageBytes, lazyReads } = await plan();
         const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
         // The launch-time overlay (`$PORT`, `$NIMBUS_APP` under a reservation)
         // rides on top of the recipe's env and is never journalled: it is
@@ -7590,15 +7820,35 @@ export class FacetManager {
                 FORCE_COLOR: opts.env?.FORCE_COLOR || '1',
             }
             : spawnEnv;
-        // Answered by _buildProcessBundle while the raw cells were still in hand.
-        const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
-        const [sqliteModules, sources] = await Promise.all([
-            this.sqliteModuleEntry(usesSqlite),
-            fetchNodeFacetSources(this.env),
-        ]);
-        // Each image is read by path when the facet loads, never by value here.
-        const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
-        let generatedWorker = await generateLongRunningNodeCode(await this._entryDynamicImports(code, opts.filename, cwd, pacer), vfsState, { ...opts, env: processEnv, cred: entry.cred, wasmImports }, usesSqlite, sources, pacer);
+        const userCode = await this._entryDynamicImports(code, opts.filename, cwd, pacer);
+        let sqliteModules;
+        let staged;
+        let wasmImports;
+        let generatedWorker;
+        for (let rebuilt = false;; rebuilt = true) {
+            // Answered by _buildProcessBundle while the raw cells were still in hand.
+            const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
+            const [sqlite, sources] = await Promise.all([
+                this.sqliteModuleEntry(usesSqlite),
+                fetchNodeFacetSources(this.env),
+            ]);
+            sqliteModules = sqlite;
+            // Each image is read by path when the facet loads, never by value here.
+            const images = wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
+            // The staged napi bindings: the shared loader is module text like the
+            // rest of the map, the trampoline a 2 KB asset, each binding a path.
+            staged = await this._residentStagedBindingMembers(vfsState.stagedBindings ?? [], pacer);
+            try {
+                generatedWorker = await this._generateUnderCeiling(entry.pid, vfsState, this._residentMemberBytes(sqlite, staged, images), (state) => generateLongRunningNodeCode(userCode, state, { ...opts, env: processEnv, cred: entry.cred, wasmImports: images }, usesSqlite, sources, pacer));
+                break;
+            }
+            catch (error) {
+                if (!(error instanceof ModuleMapOverCeilingError) || rebuilt)
+                    throw error;
+                vfsState = await this._rebuildUnderCeiling(entry, spec, vfsState, error, pacer);
+                ({ paths: dataPlan, storageBytes, lazyReads } = await plan());
+            }
+        }
         // Sized here, while the map is still in hand. Reading these after the load
         // would itself be what keeps the map alive, and the whole point of the
         // scoping below is that nothing does.
@@ -7640,9 +7890,6 @@ export class FacetManager {
             // names a path, not thousands, and the loader slices them out at load.
             const codePack = encodeCommonJsPack(generatedWorker.codeModules);
             generatedWorker = undefined;
-            // The staged napi bindings: the shared loader is module text like the
-            // rest of the map, the trampoline a 2 KB asset, each binding a path.
-            const staged = await this._residentStagedBindingMembers(vfsState.stagedBindings ?? [], pacer);
             if (staged)
                 sources[STAGED_BINDING_LOADER_MODULE] = staged.loader;
             const { [CODE_PACK_IMAGE]: codePackPath, ...vfsTextModules } = await this.imageStore.materialize(entry.pid, (function* () { yield* drainSources(sources); yield [CODE_PACK_IMAGE, codePack.splice(0)]; })(), pacer);
