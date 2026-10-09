@@ -120,55 +120,6 @@
   "extra": [],
   "type": []
  },
- "dns": {
-  "missing": [
-   "Resolver",
-   "getDefaultResultOrder",
-   "getServers",
-   "lookupService",
-   "resolveAny",
-   "resolveCaa",
-   "resolveCname",
-   "resolveMx",
-   "resolveNaptr",
-   "resolveNs",
-   "resolvePtr",
-   "resolveSoa",
-   "resolveSrv",
-   "resolveTlsa",
-   "resolveTxt",
-   "reverse",
-   "setDefaultResultOrder",
-   "setServers"
-  ],
-  "extra": [],
-  "type": []
- },
- "dns/promises": {
-  "missing": [
-   "Resolver",
-   "getDefaultResultOrder",
-   "getServers",
-   "lookupService",
-   "resolve6",
-   "resolveAny",
-   "resolveCaa",
-   "resolveCname",
-   "resolveMx",
-   "resolveNaptr",
-   "resolveNs",
-   "resolvePtr",
-   "resolveSoa",
-   "resolveSrv",
-   "resolveTlsa",
-   "resolveTxt",
-   "reverse",
-   "setDefaultResultOrder",
-   "setServers"
-  ],
-  "extra": [],
-  "type": []
- },
  "domain": "absent",
  "fs": {
   "missing": [

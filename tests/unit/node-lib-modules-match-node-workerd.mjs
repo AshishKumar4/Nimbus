@@ -581,6 +581,91 @@ const names = Object.keys(dns).filter((k) => /^[A-Z0-9_]+$/.test(k));
 console.log(JSON.stringify(names.map((k) => [k, dns[k]])));
 console.log(JSON.stringify(Object.keys(p).filter((k) => /^[A-Z0-9_]+$/.test(k)).map((k) => [k, p[k] === dns[k]])));
 `,
+  'dns.cjs': String.raw`
+const dns = require('dns');
+const P = require('dns/promises');
+const util = require('util');
+const show = async (label, fn) => { try { const r = await fn(); console.log(label + ' ok ' + JSON.stringify(r)); } catch (e) { console.log(label + ' threw ' + e.constructor.name + ' ' + JSON.stringify({ code: e.code, message: e.message, syscall: e.syscall, hostname: e.hostname, errno: e.errno }) + ' keys=' + JSON.stringify(Object.keys(e)) + ' stack0=' + JSON.stringify(String(e.stack).split('\n')[0])); } };
+const showSync = (label, fn) => { try { const r = fn(); console.log(label + ' returned ' + JSON.stringify(r)); } catch (e) { console.log(label + ' threw ' + e.constructor.name + ' ' + JSON.stringify({ code: e.code, message: e.message }) + ' stack0=' + JSON.stringify(String(e.stack).split('\n')[0])); } };
+const sorted = (a, f) => [...a].sort(f);
+async function main() {
+// validation (offline)
+await show('v-resolve4-num', () => P.resolve4(42));
+await show('v-resolve-badtype', () => P.resolve('example.com', 'XX'));
+await show('v-resolve-nocb', () => new Promise((res) => { try { dns.resolve4('example.com'); res('no-throw'); } catch (e) { res('threw ' + e.code + ' ' + e.message); } }));
+await show('v-lookup-badfam', () => new Promise((res, rej) => dns.lookup('example.com', 5, (e, a) => e ? rej(e) : res(a))));
+await show('v-lookup-badhints', () => new Promise((res, rej) => dns.lookup('example.com', { hints: 1024 }, (e, a) => e ? rej(e) : res(a))));
+await show('v-lookup-badorder', () => new Promise((res, rej) => dns.lookup('example.com', { order: 'xx' }, (e, a) => e ? rej(e) : res(a))));
+await show('v-lookup-allnum', () => new Promise((res, rej) => dns.lookup('example.com', { all: 1 }, (e, a) => e ? rej(e) : res(a))));
+await show('v-lookup-famstr', () => new Promise((res, rej) => dns.lookup('example.com', { family: '4' }, (e, a) => e ? rej(e) : res(a))));
+await show('v-ls-missing', () => P.lookupService('8.8.8.8'));
+await show('v-ls-nonip', () => P.lookupService('dns.google', 443));
+await show('v-ls-badport', () => P.lookupService('8.8.8.8', 99999));
+await show('v-setservers-bad', () => { new dns.Resolver().setServers(['not-an-ip']); return 'no-throw'; });
+await show('v-setservers-nonarray', () => { new dns.Resolver().setServers('8.8.8.8'); return 'no-throw'; });
+await show('v-resolver-badopt', () => { new dns.Resolver({ timeout: 'x' }); return 'no-throw'; });
+await show('v-resolver-tries0', () => { new dns.Resolver({ tries: 0 }); return 'no-throw'; });
+await show('v-setorder-bad', () => { dns.setDefaultResultOrder('xx'); return 'no-throw'; });
+await show('v-reverse-nonip', () => P.reverse('not-an-ip'));
+await show('v-resolve-undefcb', () => new Promise((res) => { try { dns.resolve4('example.com', 'cb'); res('no-throw'); } catch (e) { res('threw ' + e.code); } }));
+// shape: classes, prototypes, servers round-trip, constants parity
+console.log('shape-resolver-proto ' + JSON.stringify(Object.getOwnPropertyNames(Object.getPrototypeOf(new dns.Resolver())).sort()));
+console.log('shape-resolverbase-proto ' + JSON.stringify(Object.getOwnPropertyNames(Object.getPrototypeOf(Object.getPrototypeOf(new dns.Resolver()))).sort()));
+console.log('shape-resolver-ident ' + (dns.Resolver === P.Resolver));
+console.log('shape-servers-roundtrip ' + JSON.stringify((() => { const r = new dns.Resolver(); r.setServers(['8.8.8.8', '[2001:db8::1]:5353']); return r.getServers(); })()));
+console.log('shape-default-servers ' + JSON.stringify([Array.isArray(new dns.Resolver().getServers())]));
+console.log('shape-order-default ' + JSON.stringify(dns.getDefaultResultOrder()));
+console.log('shape-promisify-lookup ' + String(typeof util.promisify(dns.lookup) === 'function'));
+console.log('shape-cancel-undef ' + JSON.stringify(new dns.Resolver().cancel()));
+console.log('shape-setlocal-undef ' + JSON.stringify(new dns.Resolver().setLocalAddress('1.2.3.4')));
+// live: NXDOMAIN shapes
+await show('nx-resolve4', () => P.resolve4('no-such-host-zzz.invalid'));
+await show('nx-any', () => P.resolveAny('no-such-host-zzz.invalid'));
+await show('nx-lookup', () => new Promise((res, rej) => dns.lookup('no-such-host-zzz.invalid', (e, a, f) => e ? rej(e) : res([a, f]))));
+await show('nx-reverse', () => P.reverse('192.0.2.1'));
+// live: values (sorted where order rotates)
+await show('a4', () => P.resolve4('example.com').then(sorted));
+await show('a6', () => P.resolve6('example.com').then(sorted));
+await show('a4-ttl', () => P.resolve4('example.com', { ttl: true }).then((a) => sorted(a.map((x) => x.address)) + ' ttl-num=' + a.every((x) => typeof x.ttl === 'number')));
+await show('mx', () => P.resolveMx('gmail.com').then((a) => sorted(a.map((x) => x.exchange)).join(',')));
+await show('ns', () => P.resolveNs('example.com').then(sorted));
+await show('soa', () => P.resolveSoa('example.com').then((s) => ({ ...s, serial: typeof s.serial })));
+await show('txt-dmarc', () => P.resolveTxt('_dmarc.google.com'));
+await show('txt-spf', () => P.resolveTxt('google.com').then((a) => 'has-spf=' + a.some((t) => t.some((s) => s.startsWith('v=spf1')))));
+await show('cname-nodata', () => P.resolveCname('example.com'));
+await show('naptr-nodata', () => P.resolveNaptr('example.com'));
+await show('caa-nodata', () => P.resolveCaa('example.com'));
+await show('caa-pos', () => P.resolveCaa('google.com'));
+await show('naptr-pos', () => P.resolveNaptr('sip2sip.info').then((a) => sorted(a, (x, y) => x.order - y.order)));
+await show('srv-pos', () => P.resolveSrv('_sip._tcp.sip2sip.info'));
+await show('ptr-arpa', () => P.resolvePtr('8.8.8.8.in-addr.arpa'));
+await show('reverse-google', () => P.reverse('8.8.8.8'));
+await show('any-enotimp', () => P.resolveAny('example.com'));
+await show('tlsa-missing', () => P.resolveTlsa('_443._tcp.dns.google'));
+await show('tlsa-pos', () => P.resolveTlsa('_443._tcp.fedoraproject.org').then((a) => a.map((r) => [r.certUsage, r.selector, r.match, r.data.byteLength])));
+await show('resolve-generic', () => P.resolve('example.com').then(sorted));
+await show('resolve-any-type', () => P.resolve('example.com', 'ANY'));
+await show('lookup-single', () => new Promise((res, rej) => dns.lookup('example.com', (e, a, f) => e ? rej(e) : res([typeof a === 'string', f]))));
+await show('lookup-fam4', () => new Promise((res, rej) => dns.lookup('example.com', 4, (e, a, f) => e ? rej(e) : res([typeof a === 'string', f]))));
+await show('lookup-all4', () => new Promise((res, rej) => dns.lookup('example.com', { all: true, family: 4 }, (e, a) => e ? rej(e) : res(a.every((x) => x.family === 4) && a.length > 0))));
+await show('lookup-order6', () => new Promise((res, rej) => dns.lookup('example.com', { all: true, order: 'ipv6first' }, (e, a) => e ? rej(e) : res(a.map((x) => x.family)))));
+await show('lookup-localhost', () => new Promise((res, rej) => dns.lookup('localhost', (e, a, f) => e ? rej(e) : res([a, f]))));
+await show('lookup-ip4lit', () => new Promise((res, rej) => dns.lookup('8.8.8.8', (e, a, f) => e ? rej(e) : res([a, f]))));
+await show('lookup-ip6lit', () => new Promise((res, rej) => dns.lookup('::1', (e, a, f) => e ? rej(e) : res([a, f]))));
+await show('lookup-empty', () => new Promise((res, rej) => dns.lookup('', (e, a, f) => e ? rej(e) : res([a, f]))));
+await show('ls-local', () => P.lookupService('127.0.0.1', 80));
+await show('ls-highport', () => P.lookupService('8.8.8.8', 54321));
+await show('ls-strport', () => P.lookupService('8.8.8.8', '53'));
+await show('prom-lookup', () => P.lookup('localhost'));
+await show('prom-lookupservice', () => P.lookupService('127.0.0.1', 443));
+await show('promisified-lookup', () => util.promisify(dns.lookup)('localhost'));
+await show('prom-resolve6', () => P.resolve6('example.com').then(sorted));
+await show('resolver-instance', () => new Promise((res, rej) => new dns.Resolver().resolve4('example.com', (e, a) => e ? rej(e) : res(sorted(a)))));
+await show('empty-servers', () => new Promise((res, rej) => { const r = new dns.Resolver(); r.setServers([]); r.resolve4('example.com', (e, a) => e ? rej(e) : res(a)); }));
+await show('custom-server', () => new Promise((res, rej) => { const r = new dns.Resolver(); r.setServers(['8.8.8.8']); r.resolve4('example.com', (e, a) => e ? rej(e) : res(sorted(a))); }));
+}
+main().then(() => process.exit(0), (e) => { console.error('FATAL', e); process.exit(1); });
+`,
   // The builtins workerd provides behind Node's argument checks
   // (node-builtin-fronts.ts): what they take still works as Node's does, and
   // the classes and globals keep their identities.
@@ -755,7 +840,7 @@ import('zlib').then((ns) => {
 `,
 };
 // Each program's command line, after \`node\`.
-const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs', 'process.cjs', 'capture.cjs', 'fsstats.cjs', 'dnsconst.cjs', 'fronts.cjs', 'random.cjs', 'zlib.cjs'];
+const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs', 'process.cjs', 'capture.cjs', 'fsstats.cjs', 'dnsconst.cjs', 'dns.cjs', 'fronts.cjs', 'random.cjs', 'zlib.cjs'];
 
 const host = mkdtempSync(join(tmpdir(), 'node-lib-'));
 process.on('exit', () => rmSync(host, { recursive: true, force: true }));
