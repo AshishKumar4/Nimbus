@@ -21,7 +21,7 @@ import { createRequire } from 'node:module';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { buildWithRolldown } from '../../packages/core/src/runtime/rolldown-build.ts';
 import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
-import { SESSION_KERNEL_ROOTS } from '../../packages/core/src/runtime/delegations.ts';
+import { SESSION_KERNEL_ROOTS } from '../../packages/core/src/_shared/read-lease-cover.ts';
 import { DURABLE_IMAGE_DIR } from '../../packages/worker/src/facets/durable-images.ts';
 import { STAGED_BINDINGS } from '../../packages/worker/src/runtime/staged-bindings.ts';
 

@@ -899,6 +899,22 @@ async function main() {
     }
   }
 
+  // 7. What a read lease vouches for, which the node shims embed as source
+  //    inside their fs scope: the WASI instance's body bundles the same
+  //    module at its top level, and the two meet in one module (opencode's).
+  const readLeaseCover = await bundleAsPreamble(
+    join(coreRoot, 'src', '_shared', 'read-lease-cover.ts'),
+    'read-lease-cover',
+  );
+  if (!/^function readLeaseCovers\(/m.test(readLeaseCover)) {
+    throw new Error('[bundle-facet-workers/read-lease-cover] the bundle no longer declares function readLeaseCovers');
+  }
+  for (const name of ['SESSION_KERNEL_ROOTS', 'READ_LEASE_UNCOVERED_ROOTS']) {
+    if (!new RegExp(`^(?:var|const|let) ${name}\\b`, 'm').test(readLeaseCover)) {
+      throw new Error(`[bundle-facet-workers/read-lease-cover] the bundle no longer declares ${name}`);
+    }
+  }
+
   const waveWriter = await bundleWaveWriter();
 
   const tarEncoded = JSON.stringify(tarStripped);
@@ -917,6 +933,7 @@ async function main() {
     ' *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node\'s ESM resolver, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/node-shim-resolution.ts (resolution and credential rules, for the node shims)',
+    ' *   - @nimbus-sh/core src/_shared/read-lease-cover.ts (what a read lease vouches for, for the node shims)',
     ' *',
     ' * Consumed by fabric/isolate-pool.ts callers via the `preamble`',
     ' * option. The preamble is injected at the top of every generated',
@@ -962,6 +979,12 @@ async function main() {
     ' * TYPESCRIPT_INDEX_CANDIDATES and presentedCredential; the node shims call them.',
     ' */',
     `export const NODE_SHIM_RESOLUTION_PREAMBLE: string = ${JSON.stringify(shimResolution)};`,
+    '',
+    '/**',
+    ' * Declares SESSION_KERNEL_ROOTS, READ_LEASE_UNCOVERED_ROOTS and readLeaseCovers;',
+    ' * the node shims splice it inside their fs scope, not at their top level.',
+    ' */',
+    `export const READ_LEASE_COVER_PREAMBLE: string = ${JSON.stringify(readLeaseCover)};`,
     '',
   ].join('\n');
 

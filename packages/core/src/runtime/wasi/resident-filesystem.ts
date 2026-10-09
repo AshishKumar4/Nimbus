@@ -47,7 +47,7 @@ import type {
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { delegationHolder, type DelegationHolder } from './delegation-holder.js';
-import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../delegations.js';
+import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../../_shared/read-lease-cover.js';
 import type { ProcessFsJournal, ProcessFsOp, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
