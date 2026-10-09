@@ -1,7 +1,7 @@
 /**
  * node-shims-artifact.ts — supervisor-side fetcher for the staged sources of
  * the node-compat layer: the shims, the VFS write ledger, the resident store,
- * and the runtime-code interpreter with its host module.
+ * the runtime-code interpreter with its host module, and Node's library.
  *
  * All three are staged as static assets by scripts/bundle-node-shims.mjs and
  * promoted out of the worker bundle for its size gate: only a node facet ever
@@ -26,6 +26,8 @@ export interface NodeFacetSources {
     interpreter: string;
     /** The interpreter's host module (core interpreter/host-ops.ts HOST_OPS_SOURCE), a module of the map. */
     interpreterOps: string;
+    /** Node's library (runtime/node-lib-module.ts generateNodeLibModule()), a module of the map. */
+    nodeLib: string;
 }
 /**
  * The node-compat layer's sources for facet worker codegen. Memoized per

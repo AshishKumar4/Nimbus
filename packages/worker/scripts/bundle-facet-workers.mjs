@@ -852,7 +852,7 @@ async function main() {
     join(coreRoot, 'src', '_shared', 'node-error.ts'),
     'node-error',
   );
-  for (const name of ['nodeError', 'nodeSystemError', 'invalidArgType', 'useNodeErrorInspect']) {
+  for (const name of ['nodeError', 'nodeSystemError', 'invalidArgType', 'useNodeErrorInspect', 'hideStackFrames', 'isErrorStackTraceLimitWritable']) {
     if (!new RegExp(`^function ${name}\\(`, 'm').test(nodeErrors)) {
       throw new Error(`[bundle-facet-workers/node-error] the bundle no longer declares function ${name}`);
     }
@@ -942,8 +942,10 @@ async function main() {
     '/**',
     ' * Declares `function nodeError(Base, code, message, props)`,',
     ' * `function nodeSystemError(code, prefix, context)`,',
-    ' * `function invalidArgType(name, expected, actual)` and',
-    ' * `function useNodeErrorInspect(inspect)`: the node shims declare them',
+    ' * `function invalidArgType(name, expected, actual)`,',
+    ' * `function useNodeErrorInspect(inspect)`, `nodeErrorCodes`,',
+    ' * `function hideStackFrames(fn)` and',
+    ' * `function isErrorStackTraceLimitWritable()`: the node shims declare them',
     ' * first, for themselves and the preambles below, which use them by name.',
     ' */',
     `export const NODE_ERROR_PREAMBLE: string = ${JSON.stringify(nodeErrors)};`,

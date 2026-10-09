@@ -3,6 +3,17 @@
 All notable Nimbus releases are summarized here. Package-level versions are
 published independently in the `@nimbus-sh` npm scope.
 
+## Unreleased
+
+- Changed: `util`, `assert`, `querystring` and `punycode` in node programs
+  are Node 22.22.3's own library code, loaded on first use. Modules are
+  Node's `Module` objects (`require.cache` is `Module._cache`), and a
+  missing module throws `MODULE_NOT_FOUND` with its `requireStack`, so the
+  try/catch pattern for optional dependencies works. Known limit:
+  `util.getCallSites` returns `[]` when a program has made both
+  `Error.stackTraceLimit` and `Error.prepareStackTrace` non-writable and
+  non-configurable.
+
 ## 2026-10-08: platform 0.8.0, config 0.2.4, core 0.16.0, fabric 0.11.0, worker 0.14.0, loom 0.2.3, sdk 0.12.0, react 0.2.3, cli 0.2.3, create-nimbus-app 0.2.1, runtime-cpython 3.13.14-1
 
 - Fixed: the first `vite` or `vite build` of a create-vite Vue project
