@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { NATIVE_HTTP_SOURCE } from '../../packages/worker/src/runtime/native-http.ts';
 import { ENTRYPOINT_EVENT_LOOP } from '../../packages/worker/src/facets/manager.ts';
 import { clientLifetime, pendingListenLifetime, pendingCloseLifetime, exchangeLifetime } from './lib/native-http-lifetimes.mjs';
+import { httpFetchCases } from './lib/http-fetch-cases.mjs';
 
 async function exercise(http, serve) {
   const opened = [];
@@ -125,14 +126,15 @@ async function exercise(http, serve) {
 const node = spawnSync('node', ['--input-type=module', '-e', `
   import http from 'node:http';
   const exercise = ${exercise.toString()};
+  const httpFetchCases = ${httpFetchCases.toString()};
   const result = await exercise(http, (port, request) => {
     const url = new URL(request.url); url.hostname = '127.0.0.1'; url.port = String(port);
     return fetch(url, { method: request.method, headers: request.headers, body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body, duplex: 'half' });
   });
-  console.log(JSON.stringify(result));
+  console.log(JSON.stringify({ result, client: await httpFetchCases(http) }));
 `], { encoding: 'utf8', timeout: 30000 });
 assert.equal(node.status, 0, node.stderr);
-const expected = JSON.parse(node.stdout);
+const { result: expected, client: expectedClient } = JSON.parse(node.stdout);
 assert.equal(expected.duplicateCode, 'EADDRINUSE');
 assert.equal(expected.allocated, true);
 assert.deepEqual(expected.stream, ['first', 'second']);
@@ -214,6 +216,7 @@ globalThis.__nimbusRawSetTimeout = setTimeout;
 ${ENTRYPOINT_EVENT_LOOP}
 ${NATIVE_HTTP_SOURCE}
 const exercise = ${exercise.toString()};
+const httpFetchCases = ${httpFetchCases.toString()};
 const clientLifetime = ${clientLifetime.toString()};
 const pendingListenLifetime = ${pendingListenLifetime.toString()};
 const pendingCloseLifetime = ${pendingCloseLifetime.toString()};
@@ -223,6 +226,17 @@ export default { async fetch(request) {
   if (new URL(request.url).pathname === '/ready') return new Response('ready');
   const http = builtins.http;
   const mode = new URL(request.url).searchParams.get('case');
+  if (mode === 'client-parity') {
+    const nativeFetch = globalThis.fetch;
+    globalThis.fetch = (url, init) => {
+      const incoming = new Request(url, init);
+      const headers = new Headers(incoming.headers);
+      headers.set('X-Nimbus-Port', new URL(incoming.url).port);
+      return globalThis.__nimbusServeHttp(new Request(incoming, { headers }));
+    };
+    try { return Response.json(await httpFetchCases(http)); }
+    finally { globalThis.fetch = nativeFetch; }
+  }
   if (mode === 'client' || mode === 'error' || mode === 'cancel') return Response.json(await clientLifetime(builtins.https, __nimbusRunEntrypointToExit, mode));
   if (mode === 'pending') return Response.json(await pendingListenLifetime(http, __nimbusRunEntrypointToExit, __supervisor, drain));
   if (mode === 'close') return Response.json(await pendingCloseLifetime(http, __supervisor, registered, drain));
@@ -253,6 +267,11 @@ try {
   const actual = await response.json();
   assert.deepEqual(actual.result, expected, logs);
   assert.deepEqual(actual.registered, [], 'closing native servers releases Nimbus ports');
+  const clientResponse = await fetch(`http://127.0.0.1:${port}/run?case=client-parity`, { signal: AbortSignal.timeout(15000) });
+  assert.equal(clientResponse.status, 200, logs);
+  const actualClient = await clientResponse.json();
+  console.log('HTTP_CLIENT_PARITY ' + JSON.stringify({ node: expectedClient, ours: actualClient }));
+  assert.deepEqual(actualClient.parity, expectedClient.parity, 'client headers, upload, abort and bound addresses match Node');
   const snapshots = {};
   for (const mode of ['client', 'error', 'cancel', 'pending', 'close', 'exchange', 'ignored']) {
     const reply = await fetch(`http://127.0.0.1:${port}/run?case=${mode}`, { signal: AbortSignal.timeout(5000) });
