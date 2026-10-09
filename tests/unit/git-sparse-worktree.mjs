@@ -4,6 +4,11 @@
 // into a SqliteVFS, .git and all): the exit code, git's own messages, and
 // after each step the same worktree and index (`ls-files -s -t`, and the
 // skip-worktree bits as written).
+//   - Whether a status or diff rewrites the index (persisting a present
+//     file's cleared skip-worktree bit) is git's choice: only when it
+//     refreshed an entry or the index is racy. The seed pins its clock and
+//     the mirror is the same repository to git, so that choice is the same
+//     on both sides in every run.
 //   - A file outside the cone that is there (materialized, or made by hand)
 //     is no longer skip-worktree once the index is read: status and diff
 //     show it, a checkout that would lose its change refuses, and an
@@ -104,6 +109,17 @@ try {
     await p.run(['status', '--porcelain'], { stdout: true });
     p.same('a status that refreshed an entry');
     console.log('  ok  a status that refreshes an entry: the index rewritten, the present file\'s skip-worktree bit cleared in it');
+  }
+
+  {
+    // A racy index (written no later than an entry it records) is rewritten by a status that
+    // refreshes nothing, as git's has_racy_timestamp has it; the cleared bit with it.
+    const p = new Pair('present-racy', seed('present-racy'));
+    p.write('b/x.txt', 'changed\n');
+    p.touch('.git/index', SEEDED_AT);
+    await p.run(['status', '--porcelain'], { stdout: true });
+    p.same('a status of a racy index');
+    console.log('  ok  a status of a racy index: rewritten, the present file\'s skip-worktree bit cleared in it');
   }
 
   {
