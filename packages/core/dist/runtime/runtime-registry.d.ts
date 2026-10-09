@@ -43,6 +43,7 @@ import { type FacetBundleProfile } from './bundle-profile.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { type ModuleScope } from './module-format.js';
+import { type ServerIdentity } from './server-launch.js';
 import { type NodeLaunch } from './node-cli.js';
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
@@ -73,6 +74,8 @@ export interface RuntimeRunOpts {
     captureOutput?: boolean;
     forceLongRunning?: boolean;
     attachedTty?: boolean;
+    /** The bin it runs, learned a server when it runs on as one (worker facets/server-hints.ts). */
+    server?: ServerIdentity;
     /**
      * A resident whose stdin its launcher writes and ends without waiting for
      * the boot: a synchronous read of stdin while it boots waits for that

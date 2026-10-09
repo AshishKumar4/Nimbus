@@ -171,6 +171,7 @@ export function buildRuntimeHandler(spec, ctx0) {
         const reservedProcess = binSpawn ? {
             skipSpawn: true, callerPid: binSpawn.callerPid,
             forceLongRunning: binSpawn.forceLongRunning === true, attachedTty: binSpawn.attachedTty === true,
+            ...(binSpawn.server ? { server: binSpawn.server } : {}),
             ...(binSpawn.stdinWriter === true ? { stdinWriter: true } : {}),
         } : {};
         const bundleProfile = parseFacetBundleProfile(nimbusCtx.__nimbusBundleProfile);

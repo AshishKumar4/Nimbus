@@ -4,6 +4,7 @@ import { projectFs } from '../runtime/project-fs.js';
 import { resolveNpmBin, resolveNpmBinPath, isStagedArtifactTarget, stagedArtifactId, } from '../npm/bin-links.js';
 import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { OPENCODE_TREE_SITTER_DIAG_ARG } from '../runtime/opencode-facet-runner.js';
+import { firstPositional, isNonInteractiveArg, knownServerBin } from '../facets/server-hints.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { resolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
@@ -14,6 +15,7 @@ export function isRuntimeInstallHint(command) {
 }
 const NpmBinPackageMetadataSchema = z.object({
     name: z.string().optional(),
+    version: z.string().optional(),
     keywords: z.array(z.string()).optional(),
     dependencies: z.record(z.string(), z.string()).optional(),
     optionalDependencies: z.record(z.string(), z.string()).optional(),
@@ -138,7 +140,9 @@ export function installNpmBinFallbackResolver(registry, deps) {
             const bundleProfile = bundleProfileForNpmBin(bin);
             const metadata = await readNpmBinPackageMetadata(vfs, bin.packagePath);
             const attachedTty = looksAttachedTtyNpmBin(metadata, argv, ctx.env);
-            const longRunning = attachedTty || looksLongRunningNpmBin(name, argv);
+            // A hint: a bin that listens runs on as a resident however it started.
+            const server = { package: `${metadata?.name ?? bin.packagePath}@${metadata?.version ?? ''}`, bin: name, arg0: firstPositional(argv) };
+            const longRunning = attachedTty || knownServerBin(name, argv) || await deps.getFacetManager().learnedServers.has(server);
             const runtimeCmd = await upstreamResolve(runtimeName, from);
             if (typeof runtimeCmd !== 'function') {
                 ctx.stderr.write(`${name}: ${runtimeName} command unavailable\n`);
@@ -183,6 +187,7 @@ export function installNpmBinFallbackResolver(registry, deps) {
                         command: shellLine,
                         forceLongRunning: longRunning,
                         attachedTty,
+                        server,
                     },
                     __nimbusBundleProfile: bundleProfile,
                 });
@@ -273,7 +278,7 @@ function stagedArtifactWork(fm, artifact, base, disposition) {
 export function classifyStagedArtifact(artifact, argv) {
     if (artifact !== 'opencode')
         return 'oneshot';
-    if (argv.some(isNonInteractiveBinArg))
+    if (argv.some(isNonInteractiveArg))
         return 'oneshot';
     if (argv.includes(OPENCODE_TREE_SITTER_DIAG_ARG))
         return 'oneshot';
@@ -339,19 +344,6 @@ function shebangWords(text) {
         words.push(current);
     return words;
 }
-const LONG_RUNNING_BIN_NAMES = new Set([
-    'vite', 'vinext', 'next', 'astro', 'nuxt', 'remix', 'serve', 'http-server',
-    'wrangler', 'nodemon', 'tsx', 'ts-node-dev', 'webpack-dev-server',
-    'parcel', 'rollup', 'esbuild', 'turbo',
-]);
-const NON_INTERACTIVE_BIN_FLAGS = new Set([
-    '--help',
-    '-h',
-    'help',
-    '--version',
-    '-v',
-    'version',
-]);
 const ATTACHED_TTY_KEYWORDS = new Set([
     'tui',
     'terminal',
@@ -376,38 +368,8 @@ const ATTACHED_TTY_DEPENDENCIES = new Set([
 const ATTACHED_TTY_DEPENDENCY_PREFIXES = [
     '@opentui/',
 ];
-/**
- * Whether this invocation stays resident. Only the keyed long-running facet
- * exposes a re-resolvable route stub, so getting this wrong for a server means
- * its port is never reachable — it runs in the one-shot facet until the facet
- * lifetime expires and reports the limit it hit.
- *
- * A server-shaped CLI serves by default; the exception is the subcommand that
- * ends. `build` is that verb, and it means the same thing in every one of
- * these CLIs: produce an artifact, exit. `preview` does not end — it binds a
- * port and serves the built output, exactly as `dev` binds one and serves the
- * source.
- *
- * The exclusion stays narrow because the two errors are not symmetric. A
- * missed server costs a dead port for one facet lifetime; a resident process
- * that exits 0 is never reaped (`handedOffToLongRunningFacet` above), so it
- * stays `running` in `ps` for the life of the session. Only verbs that
- * certainly terminate belong here.
- */
-export function looksLongRunningNpmBin(binName, argv) {
-    if (LONG_RUNNING_BIN_NAMES.has(binName)) {
-        for (const arg of argv) {
-            if (isNonInteractiveBinArg(arg))
-                return false;
-            if (arg === 'build')
-                return false;
-        }
-        return true;
-    }
-    return argv.some((arg) => arg === '--watch' || arg === '-w' || arg === '--serve' || arg === '--dev');
-}
 function looksAttachedTtyNpmBin(metadata, argv, env) {
-    if (argv.some(isNonInteractiveBinArg))
+    if (argv.some(isNonInteractiveArg))
         return false;
     if (env?.NIMBUS_ATTACHED_TTY === '1')
         return true;
@@ -419,9 +381,6 @@ function looksAttachedTtyNpmBin(metadata, argv, env) {
     if (!metadata)
         return false;
     return hasAttachedTtyKeyword(metadata) || hasAttachedTtyDependency(metadata);
-}
-function isNonInteractiveBinArg(arg) {
-    return NON_INTERACTIVE_BIN_FLAGS.has(arg.trim().toLowerCase());
 }
 async function readNpmBinPackageMetadata(vfs, packagePath) {
     try {

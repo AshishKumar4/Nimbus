@@ -33,6 +33,8 @@ import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type BundleCellResultStore, type BundleCellTransformStats } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
+import { LearnedServers } from './server-hints.js';
+import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
 import { StdinTaken } from '../runtime/stop-replay-host.js';
 import { type ReplayLaunch } from '../runtime/stop-replay-contracts.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
@@ -1217,6 +1219,8 @@ export declare class FacetManager {
      * same file again (Vite's node_modules/ms/index.js on every launch).
      */
     private learning;
+    /** The bins this workspace learned are servers (server-hints.ts). */
+    readonly learnedServers: LearnedServers;
     /**
      * Misses shared across sessions per installed package (read-profile.ts),
      * kept in the npm tarball cache bucket (NPM_TARBALL_CACHE) beside the
@@ -1671,6 +1675,8 @@ export declare class FacetManager {
         };
         /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
         node?: NodeLaunch;
+        /** The bin it runs: learned a server when it runs on as one (_promote). */
+        server?: ServerIdentity;
     }): Promise<FacetExecResult>;
     /**
      * A one-shot that stopped at its first listen (stop-replay.ts listen) runs
