@@ -134,6 +134,31 @@ const params = (request) => ({
   assert.equal(hops[0].props.supervisor, PROPS, 'with the props its binding is minted from');
   assert.equal(hops[0].args.length, 1, 'entered by fetch, with its request alone');
   assert.equal(minted, 0, 'and no capability is minted for it');
+
+  // Killed mid-run: its fetch is cancelled, so the program hears it and
+  // stops, and writes nothing more once the session has let it go.
+  const writes = [];
+  let stoppedAt = null;
+  stagedHop = ({ props }) => ({ props, fetch: (request) => new Promise((_, reject) => {
+    const timer = setInterval(() => writes.push(Date.now()), 5);
+    request.signal.addEventListener('abort', () => {
+      clearInterval(timer);
+      stoppedAt = writes.length;
+      reject(request.signal.reason);
+    }, { once: true });
+  }) });
+  const kill = new AbortController();
+  const running = processes(ctx, env).run(PROPS, () => ({}), {
+    ...params(new Request('http://run.local/', { method: 'POST', signal: kill.signal })),
+    code: async () => ({ stage: { argv: ['opencode', 'run'] } }),
+  }, (response) => response.json());
+  while (writes.length < 3) await new Promise((resolve) => setTimeout(resolve, 5));
+  kill.abort(new Error('killed mid-run'));
+  await assert.rejects(running, /killed mid-run/);
+  assert.notEqual(stoppedAt, null, 'the staged program heard its run end');
+  const written = writes.length;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(writes.length, written, 'and wrote nothing after it');
 }
 
 // ── 3. A run the platform refused is sent again; one the program failed, never ──

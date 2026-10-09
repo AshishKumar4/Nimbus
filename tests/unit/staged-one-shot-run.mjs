@@ -30,7 +30,7 @@ const env = { LOADER: {
     loads.push({ key, code });
     return {
       async getEntrypoint() {
-        return { async fetch(request) { fetches.push(request); return new Response(null, { status: 200, headers: { 'x-exit': '0' } }); } };
+        return { async fetch(request) { fetches.push(request); return new Response(null, { status: 200, headers: { 'x-exit': '0' } }); }, [Symbol.dispose]() {} };
       },
     };
   },
@@ -45,7 +45,8 @@ const hop = Object.assign(Object.create(NimbusLoadedEntrypoint.prototype), {
   env,
 });
 
-const response = await hop.fetch(new Request('http://nimbus-runtime.local/run', { method: 'POST', body: '{}' }));
+const run = new AbortController();
+const response = await hop.fetch(new Request('http://nimbus-runtime.local/run', { method: 'POST', body: '{}', signal: run.signal }));
 assert.equal(response.headers.get('x-exit'), '0', 'the run\'s answer is handed back');
 
 assert.equal(loads.length, 1);
@@ -58,5 +59,7 @@ assert.equal(typeof hop.run, 'undefined', 'and the hop takes no run, so no stub 
 
 assert.equal(fetches.length, 1);
 assert.equal(await fetches[0].text(), '{}');
+run.abort(new Error('killed'));
+assert.equal(fetches[0].signal.aborted, true, 'the run\'s end reaches the program\'s request through the hop');
 
 console.log('staged-one-shot-run: ok');
