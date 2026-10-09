@@ -489,6 +489,13 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
       ? new Request(input, { ...(init || {}), signal: null })
       : new Request(url.href, { ...(init || {}), signal: null })
   );
+  // The port a loopback URL names, or 0: the one reading of it that the route
+  // below and a process's own server (__ownPortOf) both go by.
+  const __loopbackPortOf = (url) => {
+    if (!__loopbackHosts.has(url.hostname)) return 0;
+    const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
+    return Number.isFinite(port) && port > 0 ? port : 0;
+  };
   // In-session loopback: a facet's fetch to 127.0.0.1/localhost:<port> is routed
   // to the facet that owns <port> through the supervisor's port registry (the
   // same routing the shell curl/node loopback uses), so a facet can reach another
@@ -496,10 +503,22 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
   // the target's Response (streamed over RPC, so SSE flows). Anything non-
   // loopback, or when no supervisor is bound, falls through to real fetch.
   const __maybeRouteLoopback = (url, input, init) => {
-    if (!__loopbackHosts.has(url.hostname)) return null;
-    const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
-    if (!Number.isFinite(port) || port <= 0) return null;
+    const port = __loopbackPortOf(url);
+    if (!port) return null;
     return Promise.resolve(__supervisor.routeLoopback(port, __supervisorRequest(url, input, init)));
+  };
+  // The port of a request this process's own server may answer by itself: a
+  // loopback http(s) request that the route would also take for ordinary HTTP.
+  // The session's gateway port is not one, and neither is an upgrade, which is
+  // the route's by its own rule (isWebSocketUpgradeRequest) on the Headers it
+  // would be handed: those of init when given, else the Request's.
+  const __ownPortOf = (input, init) => {
+    const url = __fetchUrl(input);
+    if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) return 0;
+    const port = __loopbackPortOf(url);
+    if (!port || port === ${NIMBUS_AI_GATEWAY_PORT}) return 0;
+    const headers = new Headers((init && init.headers) || (input instanceof Request ? input.headers : undefined));
+    return isWebSocketUpgradeRequest(headers) ? 0 : port;
   };
   // AI-egress mediation: a request addressed anywhere on the network that
   // presents this session's AI capability token is inference the session owns,
@@ -565,9 +584,22 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
   //
   // The RELEASE barrier lives on globalThis because the fs module installs it
   // and is evaluated after this one; the ACQUIRE is __nimbusInboundBarrier.
-  const __resumeCoherent = async (pending) => {
+  //
+  // A request to a server this process itself runs (__barriered's claim) has
+  // no outside to resume from: the client, the handler and the response are
+  // one process's, and what the handler took in from outside took its own
+  // barrier on the way in. Except a foreign body read raw (piped, through a
+  // reader, by the native http client): no barrier covers its chunks, and a
+  // response of the process's own can carry them to a reader owed the
+  // ACQUIRE after them. So while a foreign body has not been read to the end
+  // through a barriered method (below) nothing is skipped: the claim is not
+  // made, and a response already on its way takes the ACQUIRE. A body read
+  // raw, or never read, stays open for the life of the process.
+  const __foreignBodies = new WeakSet();
+  let __foreignOpen = 0;
+  const __resumeCoherent = async (pending, own = false) => {
     const value = await pending;
-    await __nimbusInboundBarrier();
+    if (!own || __foreignOpen !== 0) await __nimbusInboundBarrier();
     return value;
   };
   const __barriered = async (input, init) => {
@@ -585,18 +617,16 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     // through the guest's proxy, it cannot pass the replay boundary notice.
     const afterRead = __nimbusReplay && __nimbusReplay.afterBoundary();
     if (afterRead) await afterRead;
-    const url = __fetchUrl(input);
-    if (url && (url.protocol === "http:" || url.protocol === "https:") && __loopbackHosts.has(url.hostname)
-      && __headerOf(input, init, "upgrade")?.toLowerCase() !== "websocket") {
-      const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
-      const own = __nimbusTryOwnHttp(port, input, init);
-      // No transport or coherence boundary: the client, native HTTP handler
-      // and response body all live in one process. Other ports still route.
-      if (own) return own;
-    }
+    // No transport or coherence boundary: the client, native HTTP handler and
+    // response body all live in one process. Other ports still route.
+    const own = __foreignOpen === 0 ? __nimbusTryOwnHttp(__ownPortOf(input, init), input, init) : null;
+    if (own) return __resumeCoherent(own, true);
     const release = globalThis.__nimbusVfsReleaseBarrier;
     if (typeof release === "function") await release();
-    const pending = __resumeCoherent(__dispatch(input, init));
+    const pending = __resumeCoherent(__dispatch(input, init)).then((response) => {
+      if (response instanceof Response) { __foreignBodies.add(response); __foreignOpen++; }
+      return response;
+    });
     if (!__recordingNetwork) return pending;
     let response;
     try { response = await pending; }
@@ -625,11 +655,12 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     if (typeof __orig !== "function") continue;
     try {
       Response.prototype[__name] = function(...args) {
-        if (__nimbusOwnHttpResponses.has(this)) return __nimbusTrackOp(__orig.apply(this, args));
-        if (!__recordingNetwork) return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args)));
+        const own = __nimbusOwnHttpResponses.has(this);
+        const closed = () => { if (__foreignBodies.delete(this)) __foreignOpen--; };
+        if (!__recordingNetwork) return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args), own).finally(closed));
         const body = this.body;
         const pending = __orig.apply(this, args).then((value) => { __observeBody(body); return value; }, (error) => { __observeBody(body); throw error; });
-        return __nimbusTrackOp(__resumeCoherent(pending));
+        return __nimbusTrackOp(__resumeCoherent(pending, own).finally(closed));
       };
     } catch { /* host object is sealed — the drain still sees the fetch itself */ }
   }
@@ -12062,12 +12093,12 @@ function __resolveFile(base) {
   return null;
 }
 
-// ── Resolution and credential rules, compiled from @nimbus-sh/core ──────
+// ── Resolution, credential and upgrade rules, compiled from @nimbus-sh/core ──
 // _shared/node-shim-resolution.ts (NODE_SHIM_RESOLUTION_PREAMBLE). Declares
 // resolveExports, resolvePackageEntry, packageSelfReferenceSubpath,
 // DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates,
-// TYPESCRIPT_INDEX_CANDIDATES and presentedCredential (a function declaration,
-// so the fetch patch above can call it).
+// TYPESCRIPT_INDEX_CANDIDATES, presentedCredential and isWebSocketUpgradeRequest
+// (function declarations, so the fetch patch above can call them).
 ${NODE_SHIM_RESOLUTION_PREAMBLE}
 
 /** Conditions for runtime CJS resolution (user-shell node): require's, and the program's own (--conditions). */
