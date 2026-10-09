@@ -1,22 +1,4 @@
 {
- "builtinModules": {
-  "missing": [
-   "_http_agent",
-   "_http_client",
-   "_http_common",
-   "_http_incoming",
-   "_http_outgoing",
-   "_http_server",
-   "_stream_wrap",
-   "_tls_common",
-   "_tls_wrap",
-   "cluster",
-   "domain",
-   "trace_events",
-   "wasi"
-  ],
-  "extra": []
- },
  "_http_agent": "absent",
  "_http_client": "absent",
  "_http_common": "absent",
@@ -54,6 +36,24 @@
  },
  "_tls_common": "absent",
  "_tls_wrap": "absent",
+ "builtinModules": {
+  "missing": [
+   "_http_agent",
+   "_http_client",
+   "_http_common",
+   "_http_incoming",
+   "_http_outgoing",
+   "_http_server",
+   "_stream_wrap",
+   "_tls_common",
+   "_tls_wrap",
+   "cluster",
+   "domain",
+   "trace_events",
+   "wasi"
+  ],
+  "extra": []
+ },
  "child_process": {
   "missing": [
    "_forkChild"
@@ -181,27 +181,6 @@
   "extra": [],
   "type": []
  },
- "path": {
-  "missing": [
-   "_makeLong"
-  ],
-  "extra": [],
-  "type": []
- },
- "path/posix": {
-  "missing": [
-   "_makeLong"
-  ],
-  "extra": [],
-  "type": []
- },
- "path/win32": {
-  "missing": [
-   "_makeLong"
-  ],
-  "extra": [],
-  "type": []
- },
  "process": {
   "missing": [
    "_debugEnd",
@@ -292,15 +271,6 @@
   ]
  },
  "trace_events": "absent",
- "url": {
-  "missing": [
-   "fileURLToPathBuffer"
-  ],
-  "extra": [
-   "toPathIfFileURL"
-  ],
-  "type": []
- },
  "v8": {
   "missing": [
    "DefaultDeserializer",

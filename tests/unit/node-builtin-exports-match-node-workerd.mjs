@@ -90,7 +90,6 @@ for (const [name, theirs] of Object.entries(node.modules)) {
   if (missing.length + extra.length + type.length > 0) gaps[name] = { missing, extra, type };
 }
 const GAPS = JSON.parse(readFileSync(new URL('../fixtures/node-builtin-exports-gaps.json', import.meta.url), 'utf8'));
-console.log('BUILTIN_EXPORT_GAPS ' + JSON.stringify(gaps));
 const changed = [...new Set([...Object.keys(gaps), ...Object.keys(GAPS)])].sort()
   .filter((name) => JSON.stringify(gaps[name]) !== JSON.stringify(GAPS[name]))
   .map((name) => `${name}: recorded ${JSON.stringify(GAPS[name] ?? null)}, now ${JSON.stringify(gaps[name] ?? null)}`);

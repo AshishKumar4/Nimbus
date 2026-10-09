@@ -33,6 +33,6 @@ export const JS_INTERPRETER_OPS_ENTRY = "/_assets/runtime/js-interpreter-ops-2f4
 export const JS_INTERPRETER_OPS_BUILD_ID = "2f4dfec6798e70fc";
 export const JS_INTERPRETER_OPS_SHA256 = "2f4dfec6798e70fcb11871ff1f57fa56336f33bfd5f31dfb3414f10433e4914c";
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
-export const NODE_LIB_ENTRY = "/_assets/runtime/node-lib-67b1d48a7bbf73f5.js";
-export const NODE_LIB_BUILD_ID = "67b1d48a7bbf73f5";
-export const NODE_LIB_SHA256 = "67b1d48a7bbf73f563b7ff281ba7cd02e23ef0b6ad02218038206896681e161b";
+export const NODE_LIB_ENTRY = "/_assets/runtime/node-lib-c593f92f0607f857.js";
+export const NODE_LIB_BUILD_ID = "c593f92f0607f857";
+export const NODE_LIB_SHA256 = "c593f92f0607f857ec27ae48889baefaf8ad3302391f888069a6fae649081303";

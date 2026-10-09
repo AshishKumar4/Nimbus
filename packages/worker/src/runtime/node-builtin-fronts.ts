@@ -81,7 +81,7 @@ function __nimbusFrontUrl(url) {
     if (!windows) return decoded;
     if (path.hostname !== "") return __BufferMod.concat([__BufferMod.from("\\\\" + url.domainToUnicode(path.hostname)), decoded]);
     const letter = decoded[1] | 0x20;
-    if (letter < 97 || letter > 122 || decoded[2] !== 58) throw nodeError(TypeError, "ERR_INVALID_FILE_URL_PATH", "File URL path must be absolute", { input: String(path) });
+    if (letter < 97 || letter > 122 || decoded[2] !== 58) throw nodeError(TypeError, "ERR_INVALID_FILE_URL_PATH", "File URL path must be absolute", { input: path });
     return decoded.subarray(1);
   };
   delete url.toPathIfFileURL;

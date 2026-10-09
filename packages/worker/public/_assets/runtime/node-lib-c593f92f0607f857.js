@@ -760,7 +760,7 @@ module.exports = {
     if (!result || !Number.isInteger(result.Status)) throw "EBADRESP";
     if (result.Status !== 0) throw statusCodes[result.Status] || "EBADRESP";
     if (result.TC) throw "EBADRESP";
-    if (result.Answer !== undefined && !Array.isArray(result.Answer)) throw "EBADRESP";
+    if (result.Answer !== undefined && (!Array.isArray(result.Answer) || result.Answer.some((answer) => !answer || !Number.isInteger(answer.type)))) throw "EBADRESP";
     const answers = (result.Answer || []).filter((answer) => answer.type === type);
     if (answers.length === 0) throw "ENODATA";
     return { values: answers.map((answer) => record(type, answer.data)), ttls: answers.map((answer) => number(answer.TTL)) };
@@ -786,7 +786,7 @@ module.exports = {
       return value.length === servers.length && value.every((entry, i) => entry[1] === servers[i] && entry[2] === 53) ? 0 : 5;
     }
     setLocalAddress(first, second) {
-      const family = isIP(first), other = second === undefined ? 0 : isIP(second);
+      const family = first.includes("%") ? 0 : isIP(first), other = second === undefined ? 0 : second.includes("%") ? 0 : isIP(second);
       if (!family || (second !== undefined && !other)) throw platform.error(TypeError, "ERR_INVALID_ARG_VALUE", "Invalid IP address.");
       if (family === other) throw platform.error(TypeError, "ERR_INVALID_ARG_VALUE", "Cannot specify two IPv" + family + " addresses.");
       this.local = [first, second].some((address) => address !== undefined && address !== "0.0.0.0" && address !== "::");
@@ -832,9 +832,9 @@ module.exports = {
     }
     getHostByAddr(req, address) {
       const family = isIP(address);
-      if (!family) return -22;
+      if (!family || address.includes("%")) return -22;
       if (family === 4) return this.run(req, address.split(".").reverse().join(".") + ".in-addr.arpa", 12);
-      let ip = address.split("%")[0];
+      let ip = address;
       if (ip.includes(".")) {
         const colon = ip.lastIndexOf(":");
         const bytes = ip.slice(colon + 1).split(".").map(Number);
@@ -861,9 +861,13 @@ module.exports = {
         platform.process.nextTick(() => req.oncomplete(0, family === 6 ? ["::1"] : ["127.0.0.1"]));
         return 0;
       }
-      const controller = new AbortController();
       const types = family === 4 ? [1] : family === 6 && !(hints & 8) ? [28] : order === 2 ? [28, 1] : [1, 28];
-      Promise.all(types.map((type) => query(name, type, controller.signal).then((result) => ({ type, ...result }), (error) => ({ type, error })))).then((answers) => {
+      const channel = new ChannelWrap(-1, 4, 0);
+      Promise.all(types.map((type) => new Promise((resolve) => {
+        const lookup = new QueryReqWrap();
+        lookup.oncomplete = (error, values) => resolve({ error, values });
+        channel.run(lookup, name, type);
+      }))).then((answers) => {
         const addresses = answers.flatMap((answer) => answer.values || []);
         if (family === 6 && (hints & 8)) {
           const ipv6 = addresses.filter((address) => isIP(address) === 6);
@@ -871,7 +875,10 @@ module.exports = {
           req.oncomplete(ipv6.length || mapped.length ? 0 : -3008, hints & 16 ? [...ipv6, ...mapped] : ipv6.length ? ipv6 : mapped);
         } else {
           const errors = answers.map((answer) => answer.error);
-          req.oncomplete(addresses.length ? 0 : errors.includes("ETIMEOUT") ? -3001 : errors.includes("ECONNREFUSED") ? -3001 : -3008, addresses);
+          req.oncomplete(addresses.length ? 0
+            : errors.every((error) => error === "ENODATA") ? -3007
+            : errors.some((error) => ["ETIMEOUT", "ESERVFAIL"].includes(error)) ? -3001
+            : errors.some((error) => ["ECONNREFUSED", "EBADRESP", "EREFUSED"].includes(error)) ? -3004 : -3008, addresses);
         }
       });
       return 0;
