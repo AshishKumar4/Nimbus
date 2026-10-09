@@ -523,6 +523,15 @@ assert.match(guest(`
   try { sr.listen(); } catch (e) { thrown = e.message; }
   console.log(JSON.stringify({ thrown, stopped }));
 `).thrown, /listens as a server, so Nimbus runs it again as one, but it cannot: before it listened it did something outside itself first \(cpSpawn node\)/);
+// Refused once, refused every time: a caught refusal is no way to bind in the one-shot.
+assert.deepEqual(guest(`
+  sr.begin({ replay: null, abort, captured: false, nonce: NONCE, promote: true });
+  sr.arm(false);
+  sr.effect('cpSpawn node');
+  const thrown = [];
+  for (let i = 0; i < 2; i++) { try { sr.listen(); thrown.push(null); } catch (e) { thrown.push(/cannot: before it listened/.test(e.message)); } }
+  console.log(JSON.stringify({ thrown, stopped }));
+`), { thrown: [true, true], stopped: null });
 // A process that is not promotable (a resident) listens as it is.
 assert.deepEqual(guest(`
   sr.begin({ replay: null, abort, captured: false, nonce: NONCE });
@@ -553,6 +562,12 @@ assert.equal(retraced.after, 9, 'past its listen its output is its own');
 const rewritten = listenReplay(`sr.mutation({ type: 'call', call: { call: 'writeFile', path: 'home/user/out.txt', data: enc('two'), mode: 0o644 } });`);
 assert.equal(rewritten.stopped.kind, 'diverged');
 assert.match(rewritten.stopped.why, /changed the filesystem otherwise than the run before it: writeFile home\/user\/out\.txt/);
+// Run again, it ends without reaching its listen: said at its end.
+assert.match(guest(`
+  sr.begin({ replay: { run: 2, tape: ${JSON.stringify(listened.stopped.tape)}, listen: true, prefix: { stdout: '', stderr: '' } }, abort, captured: false, nonce: NONCE });
+  sr.arm(false);
+  console.log(JSON.stringify({ ended: sr.finish() }));
+`).ended, /ended before it listened, where the run before it listened/);
 const skipped = listenReplay('');
 assert.equal(skipped.stopped.kind, 'diverged');
 assert.match(skipped.stopped.why, /by its listen it had changed the filesystem 0 times, where the run before it had 1/);

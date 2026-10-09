@@ -14,6 +14,11 @@
 //   child: a child_process child that listens: its parent reaches it.
 //   spawned: it starts a child before it listens: it cannot be run again,
 //     and its listen fails, naming why.
+//   piped: it reads its piped stdin before it listens, and serves what it
+//     read: the resident is handed the same bytes.
+//   once: it awaits a write of a marker, and ends instead of listening when
+//     the marker is there. Run again, it ends before its listen: it fails,
+//     naming that, rather than ending 0 with no server.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -50,6 +55,18 @@ const FILES = {
     "  console.log('PARENT GOT ' + r.status + ' ' + await r.text());",
     '  child.kill();',
     '});',
+  ].join('\n'),
+  'piped.js': [
+    "const config = require('fs').readFileSync(0, 'utf8').trim();",
+    SERVE(4106, 'piped').replace(JSON.stringify('piped'), 'config'),
+  ].join('\n'),
+  'once.js': [
+    "const fs = require('fs');",
+    '(async () => {',
+    "  if (fs.existsSync('once.marker')) return;",
+    "  await fs.promises.writeFile('once.marker', 'x');",
+    '  ' + SERVE(4107, 'once').split('\n').join('\n  '),
+    '})();',
   ].join('\n'),
   'spawned.js': [
     "require('child_process').spawnSync('true');",
@@ -91,6 +108,15 @@ try {
 
     const child = await run(`cd ${W} && node parent.js`, 120_000);
     check(/PARENT GOT 200 child/.test(child.stdout), `child: a child_process child that listens is reachable\n  ${JSON.stringify(child.stdout.slice(-600))}`);
+
+    const piped = await run(`cd ${W} && echo from-stdin | node piped.js`, 120_000);
+    check(/LISTENING 4106/.test(piped.stdout), `piped: started and listened\n  ${JSON.stringify(piped.stdout.slice(-400))}`);
+    const pipedGot = await curl(4106);
+    check(/GOT 200 from-stdin/.test(pipedGot), `piped: the resident read the same stdin\n  ${JSON.stringify(pipedGot)}\n  ${JSON.stringify(piped.stdout.slice(-400))}`);
+
+    const once = await run(`cd ${W} && node once.js; echo ONCE_RC=$?`, 120_000);
+    check(/ONCE_RC=1/.test(once.stdout) && /ended before it listened/.test(once.stdout),
+      `once: run again, it ended before its listen, and says so\n  ${JSON.stringify(once.stdout.slice(-600))}`);
 
     const spawned = await run(`cd ${W} && node spawned.js`, 120_000);
     check(spawned.status !== 0 && /listens as a server, so Nimbus runs it again as one, but it cannot: before it listened it did something outside itself first \(cpSpawn/.test(spawned.stdout),
