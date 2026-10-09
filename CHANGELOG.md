@@ -13,6 +13,24 @@ published independently in the `@nimbus-sh` npm scope.
   `util.getCallSites` returns `[]` when a program has made both
   `Error.stackTraceLimit` and `Error.prepareStackTrace` non-writable and
   non-configurable.
+- Fixed: an unreferenced timer, interval or immediate (`.unref()`) kept a
+  node program running until it fired, and an unreferenced interval kept it
+  running forever. They now let the program exit, as in Node.
+- Changed: `timers`, `timers/promises`, `os`, `perf_hooks` and `stream/web`
+  in node programs are Node's.
+  - `require('timers').setTimeout` is the global `setTimeout`.
+  - `timers/promises` validates its arguments, rejects with `AbortError` when
+    its signal aborts, and has `scheduler`.
+  - The deprecated `timers.enroll`, `unenroll`, `active` and `_unrefActive`
+    are present.
+  - `os` adds `machine()`, `version()`, `devNull`, `getPriority()` and
+    `setPriority()`. `os.release()` and `uname -r` now report the same
+    release, `6.0.0-nimbus`; `uname -r` used to print `1.0.0`.
+  - `perf_hooks` adds Node's classes and `constants`.
+  - `stream/web` exports every Node class.
+  - Known limits: `perf_hooks.createHistogram` and `monitorEventLoopDelay`
+    throw `ERR_METHOD_NOT_IMPLEMENTED`. `os.getPriority` and `setPriority`
+    on another process throw ENOSYS.
 
 ## 2026-10-08: platform 0.8.0, config 0.2.4, core 0.16.0, fabric 0.11.0, worker 0.14.0, loom 0.2.3, sdk 0.12.0, react 0.2.3, cli 0.2.3, create-nimbus-app 0.2.1, runtime-cpython 3.13.14-1
 
