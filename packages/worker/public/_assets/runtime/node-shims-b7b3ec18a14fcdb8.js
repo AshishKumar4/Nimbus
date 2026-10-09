@@ -164,6 +164,7 @@ var nodeErrorMessages = {
 ${suffix}`;
   }, Error],
   ERR_INVALID_IP_ADDRESS: ["Invalid IP address: %s", TypeError],
+  ERR_INVALID_ARG_TYPE: [invalidArgTypeMessage, TypeError],
   ERR_DNS_SET_SERVERS_FAILED: ['c-ares failed to set servers: "%s" [%s]', Error],
   ERR_INVALID_MIME_SYNTAX: [(production, str, invalidIndex) => `The MIME syntax for a ${production} in "${str}" is invalid${invalidIndex !== -1 ? ` at ${invalidIndex}` : ""}`, TypeError],
   ERR_INVALID_ARG_VALUE: [(name, value, reason = "is invalid") => {
@@ -10925,7 +10926,7 @@ Object.defineProperties(__nimbusInspect, {
       try { super(inputText, baseText); }
       catch (error) {
         if (!(error instanceof TypeError)) throw error;
-        throw nodeError(TypeError, "ERR_INVALID_URL", "Invalid URL", { input: inputText, ...(baseText !== undefined ? { base: baseText } : {}) });
+        throw Object.assign(new TypeError("Invalid URL"), { code: "ERR_INVALID_URL", input: inputText, ...(baseText !== undefined ? { base: baseText } : {}) });
       }
     }
     // Node's (lib/internal/url.js, v22.22.3), but for showHidden's internal
@@ -17175,7 +17176,7 @@ function __nimbusFrontPath(path) {
 
 function __nimbusFrontUrl(url) {
   __nimbusFront(url, "pathToFileURL", (real) => function (path, options) {
-    if (typeof path !== "string") throw invalidArgType("paths[0]", "string", path);
+    if (typeof path !== "string") throw invalidArgType("path", "string", path);
     return Reflect.apply(real, this, arguments);
   });
   __nimbusFront(url, "fileURLToPath", (real) => function (path, options) {
@@ -17192,7 +17193,7 @@ function __nimbusFrontUrl(url) {
   url.fileURLToPathBuffer = function fileURLToPathBuffer(path, options) {
     const windows = options?.windows ?? false;
     if (typeof path === "string") path = new url.URL(path);
-    else if (!(path instanceof url.URL)) throw invalidArgType("path", ["string", "URL"], path);
+    else if (!(path?.href && path.protocol && path.auth === undefined && path.path === undefined)) throw invalidArgType("path", ["string", "URL"], path);
     if (path.protocol !== "file:") throw nodeError(TypeError, "ERR_INVALID_URL_SCHEME", "The URL must be of scheme file");
     if (!windows && path.hostname !== "") throw nodeError(TypeError, "ERR_INVALID_FILE_URL_HOST", 'File URL host must be "localhost" or empty on linux');
     const pathname = windows ? path.pathname.replace(/\//g, "\\") : path.pathname;

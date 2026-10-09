@@ -7220,7 +7220,7 @@ Object.defineProperties(__nimbusInspect, {
       try { super(inputText, baseText); }
       catch (error) {
         if (!(error instanceof TypeError)) throw error;
-        throw nodeError(TypeError, "ERR_INVALID_URL", "Invalid URL", { input: inputText, ...(baseText !== undefined ? { base: baseText } : {}) });
+        throw Object.assign(new TypeError("Invalid URL"), { code: "ERR_INVALID_URL", input: inputText, ...(baseText !== undefined ? { base: baseText } : {}) });
       }
     }
     // Node's (lib/internal/url.js, v22.22.3), but for showHidden's internal
