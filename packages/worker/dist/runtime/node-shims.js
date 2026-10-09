@@ -53,6 +53,7 @@ import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js
 import { LOOPBACK_HOSTNAMES } from '@nimbus-sh/core/_shared/loopback.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { SYSTEM_IDENTITY } from '@nimbus-sh/core/constants.js';
 import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
@@ -837,6 +838,8 @@ const __fsConstants = Object.freeze({
 // ═══════════════════════════════════════════════════════════════════════
 // ──  fs shim (VFS-backed) ───────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
+// libuv's words for each code (core vfs-error.ts ERRNO_DESCRIPTION).
+const __nimbusErrnoDescription = ${JSON.stringify(ERRNO_DESCRIPTION)};
 const __fsMod = (() => {
   const _enc = new TextEncoder();
   const _dec = new TextDecoder();
@@ -1633,11 +1636,10 @@ const __fsMod = (() => {
     }
   }
 
-  // libuv's words for each code: Node's message is "ENOENT: no such file or
-  // directory, open 'x'", and "rename 'a' -> 'b'" for a call naming two paths.
-  const _errnoDescription = ${JSON.stringify(ERRNO_DESCRIPTION)};
+  // Node's message is "ENOENT: no such file or directory, open 'x'", and
+  // "rename 'a' -> 'b'" for a call naming two paths.
   function _fsErr(code, syscall, p, dest) {
-    const described = Object.prototype.hasOwnProperty.call(_errnoDescription, code) ? _errnoDescription[code] + ", " : "";
+    const described = Object.prototype.hasOwnProperty.call(__nimbusErrnoDescription, code) ? __nimbusErrnoDescription[code] + ", " : "";
     const second = dest === undefined ? "" : " -> '" + dest + "'";
     const err = new Error(code + ": " + described + syscall + " '" + p + "'" + second);
     err.code = code;
@@ -6800,10 +6802,44 @@ const __constantsMod = {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  os module ──────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
+// This process's nice value (os.getPriority/setPriority), as Linux keeps it.
+let __nimbusNice = 0;
+// lib/os.js's ERR_SYSTEM_ERROR for a priority call libuv refused.
+function __nimbusPriorityError(syscall, code) {
+  return nodeSystemError("ERR_SYSTEM_ERROR", "A system error occurred", {
+    errno: -__errnoConstants[code], code, message: __nimbusErrnoDescription[code], syscall,
+  });
+}
+// The system as uname(2) reports it (core constants.ts SYSTEM_IDENTITY): \`uname\` prints the same.
+const __nimbusSystem = ${JSON.stringify(SYSTEM_IDENTITY)};
 const __osMod = {
-  platform: () => "linux", arch: () => "x64", type: () => "Linux",
-  release: () => "6.0.0-nimbus", tmpdir: () => "/tmp", homedir: () => "/home/user",
-  hostname: () => "nimbus", userInfo: () => {
+  platform: () => "linux", arch: () => "x64", type: () => __nimbusSystem.sysname,
+  release: () => __nimbusSystem.release, version: () => __nimbusSystem.version, machine: () => __nimbusSystem.machine,
+  tmpdir: () => "/tmp", homedir: () => "/home/user",
+  hostname: () => __nimbusSystem.nodename, devNull: "/dev/null",
+  // lib/os.js: this process's priority. Linux lets anyone raise its nice
+  // value and only root lower it (RLIMIT_NICE 0). Named limit: another
+  // process's is not readable from here, as process.kill's signal is not,
+  // and the call raises ENOSYS.
+  getPriority(pid) {
+    if (pid === undefined) pid = 0;
+    else __nimbusNodeLib().require("internal/validators").validateInt32(pid, "pid");
+    if (pid !== 0 && pid !== __processMod.pid) throw __nimbusPriorityError("uv_os_getpriority", "ENOSYS");
+    return __nimbusNice;
+  },
+  setPriority(pid, priority) {
+    if (priority === undefined) {
+      priority = pid;
+      pid = 0;
+    }
+    const { validateInt32 } = __nimbusNodeLib().require("internal/validators");
+    validateInt32(pid, "pid");
+    validateInt32(priority, "priority", -20, 19);
+    if (pid !== 0 && pid !== __processMod.pid) throw __nimbusPriorityError("uv_os_setpriority", "ENOSYS");
+    if (priority < __nimbusNice && Number(cred.uid) !== 0) throw __nimbusPriorityError("uv_os_setpriority", "EACCES");
+    __nimbusNice = priority;
+  },
+  userInfo: () => {
     const uid = Number(cred.uid);
     const gid = Number(cred.gid);
     const root = uid === 0;
@@ -6938,6 +6974,7 @@ function __nimbusNodeLib() {
     workerThreads: builtins.worker_threads,
     nodeDebug: __nimbusNodeDebugAtLaunch,
     callSites: (count, above) => __nimbusStackSites({}, count, above),
+    timers: builtins.timers,
     primordials,
     sources: lib.sources,
   });
@@ -10467,6 +10504,7 @@ for (const [name, read] of [
   ["punycode", () => __nimbusNodeLib().require("punycode")],
   ["util", () => __nimbusNodeLib().require("util")],
   ["util/types", () => __nimbusNodeLib().require("util").types],
+  ["timers/promises", () => __nimbusNodeLib().require("timers/promises")],
   ["path/posix", () => builtins.path.posix],
   ["path/win32", () => builtins.path.win32],
   ["_stream_duplex", () => __streamMod.Duplex],
@@ -10837,8 +10875,23 @@ builtins.module = __NodeModule;
 // when called with a receiver other than globalThis (i.e. as
 // timers.setInterval(...)), which clack's spinner — used by
 // create-cloudflare — triggers.
-builtins.timers = { setTimeout: globalThis.setTimeout.bind(globalThis), setInterval: globalThis.setInterval.bind(globalThis), clearTimeout: globalThis.clearTimeout.bind(globalThis), clearInterval: globalThis.clearInterval.bind(globalThis), setImmediate: (fn,...a) => globalThis.setTimeout(fn,0,...a), clearImmediate: globalThis.clearTimeout.bind(globalThis) };
-Object.defineProperty(builtins.timers, "promises", { get: () => builtins["timers/promises"], enumerable: true, configurable: true });
+// lib/timers.js: the global timer functions themselves, as Node's are; its
+// deprecated item timers and timers.promises from Node's library, when first read.
+builtins.timers = {
+  setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
+  setImmediate: globalThis.setImmediate, clearImmediate: globalThis.clearImmediate,
+  setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval,
+};
+for (const name of ["_unrefActive", "active", "unenroll", "enroll", "promises"]) {
+  Object.defineProperty(builtins.timers, name, {
+    get() {
+      const value = name === "promises" ? builtins["timers/promises"] : __nimbusNodeLib().require("internal/timers/legacy")[name];
+      if (name !== "promises") Object.defineProperty(builtins.timers, name, { value, writable: true, enumerable: true, configurable: true });
+      return value;
+    },
+    enumerable: true, configurable: true,
+  });
+}
 // ──  zlib ───────────────────────────────────────────────────────────
 //
 // Two runtimes, one surface:
@@ -11274,7 +11327,14 @@ builtins.readline = (() => {
     promises,
   };
 })();
-builtins.perf_hooks = { performance: globalThis.performance || { now:()=>Date.now(), mark:()=>{}, measure:()=>{}, getEntriesByName:()=>[], clearMarks:()=>{}, clearMeasures:()=>{} } };
+// perf_hooks: Node's names, from workerd's node:perf_hooks (Node's surface
+// over the platform's performance, its classes the globals). Named limit:
+// createHistogram and monitorEventLoopDelay throw ERR_METHOD_NOT_IMPLEMENTED.
+builtins.perf_hooks = ((perfHooks) => Object.fromEntries([
+  "Performance", "PerformanceEntry", "PerformanceMark", "PerformanceMeasure", "PerformanceObserver", "PerformanceObserverEntryList",
+  "PerformanceResourceTiming", "monitorEventLoopDelay", "createHistogram", "performance", "constants",
+].map((name) => [name, perfHooks[name]])))(typeof __real_perf_hooks !== "undefined"
+  ? (__real_perf_hooks.default ?? __real_perf_hooks) : globalThis.process.getBuiltinModule("perf_hooks"));
 // X.5-Z5 §3 follow-on: minimal v8 stub for jiti (used transitively by
 // @tailwindcss/vite). jiti reads v8.startupSnapshot.isBuildingSnapshot()
 // to decide whether to skip JIT compilation; workerd never builds v8
@@ -11506,28 +11566,13 @@ builtins["stream/consumers"] = (() => {
   };
 })();
 
-// stream/web — Web Streams API namespace. Node 17+. Userland CLIs
-// occasionally pull \`ReadableStream\` from here for portability. The
-// platform exposes these globals already; we just re-export them.
-builtins["stream/web"] = {
-  ReadableStream: globalThis.ReadableStream,
-  WritableStream: globalThis.WritableStream,
-  TransformStream: globalThis.TransformStream,
-  ByteLengthQueuingStrategy: globalThis.ByteLengthQueuingStrategy,
-  CountQueuingStrategy: globalThis.CountQueuingStrategy,
-  ReadableStreamDefaultReader: globalThis.ReadableStreamDefaultReader,
-  ReadableStreamDefaultController: globalThis.ReadableStreamDefaultController,
-  WritableStreamDefaultWriter: globalThis.WritableStreamDefaultWriter,
-};
-builtins["timers/promises"] = (() => {
-  return {
-    setTimeout: (ms, value) => new Promise(res => setTimeout(() => res(value), ms || 0)),
-    setImmediate: (value) => new Promise(res => queueMicrotask(() => res(value))),
-    setInterval: async function* (ms, value) {
-      while (true) { await new Promise(r => setTimeout(r, ms || 0)); yield value; }
-    },
-  };
-})();
+// stream/web: Node's names, each the platform's global class, as Node's are.
+builtins["stream/web"] = Object.fromEntries([
+  "ReadableStream", "ReadableStreamDefaultReader", "ReadableStreamBYOBReader", "ReadableStreamBYOBRequest",
+  "ReadableByteStreamController", "ReadableStreamDefaultController", "TransformStream", "TransformStreamDefaultController",
+  "WritableStream", "WritableStreamDefaultWriter", "WritableStreamDefaultController", "ByteLengthQueuingStrategy",
+  "CountQueuingStrategy", "TextEncoderStream", "TextDecoderStream", "CompressionStream", "DecompressionStream",
+].map((name) => [name, globalThis[name]]));
 // util.promisify's for the timers: timers/promises' (lib/timers.js).
 for (const [owner, name] of [[builtins.timers, "setTimeout"], [builtins.timers, "setImmediate"], [globalThis, "setTimeout"], [globalThis, "setImmediate"]]) {
   const fn = owner[name];

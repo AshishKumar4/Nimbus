@@ -222,6 +222,15 @@ export function facetImagePathDigest(path) {
  */
 export async function residentLoaderConfig(spec, disk) {
     const resolved = {};
+    // The loader is handed every module at once, so the session holds them all
+    // while the facet loads. A pack is read first, and its bytes let go once
+    // its modules are decoded, before any other image is in hand: read after
+    // the wasm images, an astro project's second launch held its 38 MiB of
+    // wasm, its pack's 25.7 MB of bytes and their 48 MiB decoded at once, and
+    // reset the session's isolate.
+    for (const path of spec.vfsCommonJsPacks ?? []) {
+        Object.assign(resolved, decodeCommonJsPackBytes(await readFacetImageBytes(disk, path)));
+    }
     for (const [moduleName, path] of Object.entries(spec.vfsWasmModules ?? {})) {
         const bytes = await disk.readFile(path);
         // The read's own buffer when it fits exactly, and only otherwise a copy.
@@ -237,10 +246,7 @@ export async function residentLoaderConfig(spec, disk) {
         };
     }
     for (const [moduleName, path] of Object.entries(spec.vfsTextModules ?? {})) {
-        resolved[moduleName] = await readFacetImage(disk, path);
-    }
-    for (const path of spec.vfsCommonJsPacks ?? []) {
-        Object.assign(resolved, decodeCommonJsPack(await readFacetImage(disk, path)));
+        resolved[moduleName] = new TextDecoder().decode(await readFacetImageBytes(disk, path));
     }
     return {
         compatibilityDate: spec.compatibilityDate,
@@ -254,8 +260,8 @@ export async function residentLoaderConfig(spec, disk) {
 /**
  * One image holding many `{ cjs }` modules: a JSON index of `[name, length]`
  * rows, a newline, and the module texts back to back. Lengths are UTF-16 code
- * units, the unit the decoded text is sliced in, so decoding copies nothing:
- * each module is a slice of the one string read.
+ * units, each module's length as a string (decodeCommonJsPackBytes reads the
+ * bytes they end at).
  *
  * Encoded as its parts, in order, never joined: the image store encodes them
  * straight into the image's bytes, and a joined copy would be a second full
@@ -271,14 +277,38 @@ export function encodeCommonJsPack(modules) {
     parts[0] = JSON.stringify(index) + '\n';
     return parts;
 }
-export function decodeCommonJsPack(pack) {
-    const newline = pack.indexOf('\n');
-    const index = z.array(z.tuple([z.string(), z.number().int().nonnegative()])).parse(JSON.parse(pack.slice(0, newline)));
+/**
+ * A pack's modules decoded from its UTF-8 bytes, each from its own: decoded
+ * whole, one non-Latin-1 character makes the pack's string two-byte
+ * throughout, and every module a slice holding it alive (an astro project's
+ * 24.2 M characters: 48 MiB, where its modules apart are 33.6). The index
+ * counts UTF-16 units, so each module's bytes end where its units do: a
+ * four-byte sequence is two units, any other lead byte one.
+ */
+export function decodeCommonJsPackBytes(pack) {
+    const newline = pack.indexOf(0x0a);
+    if (newline < 0)
+        throw new Error('Nimbus: a CommonJS pack has no index');
+    // A module's text is what the index counts, a leading byte order mark included.
+    const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
+    const index = z.array(z.tuple([z.string(), z.number().int().nonnegative()])).parse(JSON.parse(decoder.decode(pack.subarray(0, newline))));
     const modules = {};
     let offset = newline + 1;
     for (const [name, length] of index) {
-        modules[name] = { cjs: pack.slice(offset, offset + length) };
-        offset += length;
+        let end = offset;
+        for (let units = 0; units < length && end < pack.length; end++) {
+            const byte = pack[end];
+            if ((byte & 0xc0) !== 0x80)
+                units += byte >= 0xf0 ? 2 : 1;
+        }
+        // The rest of the last character: its continuation bytes.
+        while (end < pack.length && (pack[end] & 0xc0) === 0x80)
+            end++;
+        const text = decoder.decode(pack.subarray(offset, end));
+        if (text.length !== length)
+            throw new Error(`Nimbus: CommonJS pack module '${name}' decodes to ${text.length} units, its index says ${length}`);
+        modules[name] = { cjs: text };
+        offset = end;
     }
     if (offset !== pack.length)
         throw new Error(`Nimbus: CommonJS pack holds ${pack.length - offset} bytes its index does not name`);
@@ -291,19 +321,19 @@ export function decodeCommonJsPack(pack) {
  * replaced by something the generator never wrote, would otherwise be loaded
  * as the program and fail somewhere inside it with no way back to the cause.
  */
-async function readFacetImage(disk, path) {
+async function readFacetImageBytes(disk, path) {
     const expected = facetImagePathDigest(path);
     if (!expected) {
         throw new Error(`Nimbus: '${path}' is not a content-addressed facet image path`);
     }
-    // Verified from the bytes read, and decoded only after: re-encoding the decoded string held a third copy of the largest member.
+    // Verified from the bytes read, and decoded by the caller: re-encoding the decoded string held a third copy of the largest member.
     const bytes = await disk.readFile(path);
     const actual = await facetImageDigest(bytes);
     if (actual !== expected) {
         throw new Error(`Nimbus: facet image '${path}' does not match its digest (read ${actual}); `
             + 'the image store is corrupt and the process cannot boot from it');
     }
-    return new TextDecoder().decode(bytes);
+    return bytes;
 }
 /**
  * The platform reset the Durable Object a running process was hosted on, and

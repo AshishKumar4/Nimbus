@@ -221,15 +221,23 @@ export declare function residentLoaderConfig(spec: ResidentCodeSpec, disk: Resid
 /**
  * One image holding many `{ cjs }` modules: a JSON index of `[name, length]`
  * rows, a newline, and the module texts back to back. Lengths are UTF-16 code
- * units, the unit the decoded text is sliced in, so decoding copies nothing:
- * each module is a slice of the one string read.
+ * units, each module's length as a string (decodeCommonJsPackBytes reads the
+ * bytes they end at).
  *
  * Encoded as its parts, in order, never joined: the image store encodes them
  * straight into the image's bytes, and a joined copy would be a second full
  * copy of the program's code on the coordinator.
  */
 export declare function encodeCommonJsPack(modules: Record<string, string>): string[];
-export declare function decodeCommonJsPack(pack: string): Record<string, {
+/**
+ * A pack's modules decoded from its UTF-8 bytes, each from its own: decoded
+ * whole, one non-Latin-1 character makes the pack's string two-byte
+ * throughout, and every module a slice holding it alive (an astro project's
+ * 24.2 M characters: 48 MiB, where its modules apart are 33.6). The index
+ * counts UTF-16 units, so each module's bytes end where its units do: a
+ * four-byte sequence is two units, any other lead byte one.
+ */
+export declare function decodeCommonJsPackBytes(pack: Uint8Array): Record<string, {
     cjs: string;
 }>;
 /**

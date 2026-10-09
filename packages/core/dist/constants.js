@@ -276,6 +276,20 @@ export const NIMBUS_AI_GATEWAY_PORT = 8790;
 export const CF_COMPAT_DATE = '2026-09-26';
 // ── OS Defaults ─────────────────────────────────────────────────────────
 export const DEFAULT_HOSTNAME = 'nimbus';
+/**
+ * The system Nimbus presents, as uname(2) reports it: the shell's `uname`
+ * and node's os (type, hostname, release, version, machine) read it. Linux,
+ * since third-party install scripts gate on `uname -s`; a Linux release
+ * string, which release parsers read a major version from; the machine
+ * honest: the code that runs is wasm, not x86_64.
+ */
+export const SYSTEM_IDENTITY = {
+    sysname: 'Linux',
+    nodename: DEFAULT_HOSTNAME,
+    release: '6.0.0-nimbus',
+    version: '#1 Nimbus',
+    machine: 'wasm',
+};
 export const DEFAULT_HOME = '/home/user';
 export const DEFAULT_USER = 'user';
 export const DEFAULT_SHELL = '/bin/sh';

@@ -50,6 +50,20 @@ export declare const DEFAULT_VITE_PORT = 5173;
 export declare const NIMBUS_AI_GATEWAY_PORT = 8790;
 export declare const CF_COMPAT_DATE = "2026-09-26";
 export declare const DEFAULT_HOSTNAME = "nimbus";
+/**
+ * The system Nimbus presents, as uname(2) reports it: the shell's `uname`
+ * and node's os (type, hostname, release, version, machine) read it. Linux,
+ * since third-party install scripts gate on `uname -s`; a Linux release
+ * string, which release parsers read a major version from; the machine
+ * honest: the code that runs is wasm, not x86_64.
+ */
+export declare const SYSTEM_IDENTITY: {
+    readonly sysname: "Linux";
+    readonly nodename: "nimbus";
+    readonly release: "6.0.0-nimbus";
+    readonly version: "#1 Nimbus";
+    readonly machine: "wasm";
+};
 export declare const DEFAULT_HOME = "/home/user";
 export declare const DEFAULT_USER = "user";
 export declare const DEFAULT_SHELL = "/bin/sh";

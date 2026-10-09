@@ -12,3 +12,8 @@ curl -fsSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh
   | sh -s -- -y --no-modify-path --default-toolchain "$(cat lean/lean-toolchain)"
 mkdir -p "$HOME/tmp"
 bun scripts/install-deps.mjs
+bun --version
+node --version
+redis-server --version
+"$HOME/.elan/bin/lean" --version
+gnurealpath --version > /dev/null

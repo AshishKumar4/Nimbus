@@ -39,9 +39,12 @@ export interface ImageBlobStore {
     mkdirp(dir: string): void;
     /** The file's current size in bytes, or null when it does not exist. */
     sizeOf(path: string): number | null;
-    /** Create or REPLACE the file with exactly these bytes (truncating). */
+    /**
+     * Create or REPLACE the file with exactly these bytes (truncating). The
+     * bytes are taken during the call: the store reuses their buffer after.
+     */
     writeFile(path: string, bytes: Uint8Array): void;
-    /** Write bytes at an offset, growing the file. */
+    /** Write bytes at an offset, growing the file; taken during the call, as writeFile's. */
     writeRange(path: string, offset: number, bytes: Uint8Array): void;
     /** Entry names directly under `dir`. Throws when the dir is unreadable. */
     list(dir: string): string[];
@@ -104,8 +107,27 @@ export declare class ImageStore {
      *
      * Writing the sources here, once, is what lets the session stop holding
      * them: after this returns, the only thing it keeps is a path.
+     *
+     * An image given as parts (a code pack: process-fabric.ts
+     * encodeCommonJsPack) is never encoded whole: it is digested a part at a
+     * time, and written a part at a time only if no complete image is stored
+     * at that digest, each part released (emptied in place) as it is written.
+     * Encoded whole, an astro project's second launch held its pack's 33.6 MiB
+     * of strings and their 25 MiB of UTF-8 at once, and reset the session's
+     * isolate.
      */
-    materialize(pid: number, images: AsyncIterable<readonly [string, string | readonly string[]]> | Iterable<readonly [string, string | readonly string[]]>, pacer: TurnBudget): Promise<Record<string, string>>;
+    materialize(pid: number, images: AsyncIterable<readonly [string, string | string[]]> | Iterable<readonly [string, string | string[]]>, pacer: TurnBudget): Promise<Record<string, string>>;
+    /**
+     * One image given as parts: its digest read a slice at a time, then, unless
+     * a complete image is already stored there, its bytes written a slice at a
+     * time, each part emptied once it is written. Both passes encode the parts
+     * into one slice-sized buffer (encodeInto: no part's encoding is made on
+     * its own) and hand it on whole, so the digest is fed and the disk written
+     * a slice at a time. The root is claimed before the first byte, as every
+     * image's is. What it holds at once is that buffer, whatever the image's
+     * size.
+     */
+    private materializeParts;
     /**
      * Drop every image no running process boots from.
      *

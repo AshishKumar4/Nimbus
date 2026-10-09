@@ -9,17 +9,17 @@
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-64a56b0d30662039.js";
-export const NODE_SHIMS_BUILD_ID = "64a56b0d30662039";
-export const NODE_SHIMS_SHA256 = "64a56b0d30662039d2ac0a5c20fd74c1549f9176177cd7595bcbaa160c57461b";
+export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-d7de220728b7238b.js";
+export const NODE_SHIMS_BUILD_ID = "d7de220728b7238b";
+export const NODE_SHIMS_SHA256 = "d7de220728b7238b3de541f8263a6bd0b0bccbb4b69f873d97d42713c502e675";
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
-export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-c29ecea49e926a5a.js";
-export const VFS_WRITE_LEDGER_BUILD_ID = "c29ecea49e926a5a";
-export const VFS_WRITE_LEDGER_SHA256 = "c29ecea49e926a5ac2f72a63b3975aab130a776f71979adac5eb5bbf10aaec07";
+export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-6949e9269dc59d18.js";
+export const VFS_WRITE_LEDGER_BUILD_ID = "6949e9269dc59d18";
+export const VFS_WRITE_LEDGER_SHA256 = "6949e9269dc59d18e73d563fe5bceaa98074ccff4ea3a8db23eb78bd034546b8";
 /** dist/vfs/facet-resident-store.js FACET_RESIDENT_STORE_SOURCE */
-export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-5c3e6e4d8b0665f5.js";
-export const RESIDENT_STORE_BUILD_ID = "5c3e6e4d8b0665f5";
-export const RESIDENT_STORE_SHA256 = "5c3e6e4d8b0665f5ceaa1c85d567065cce50037b3282d5cadebe708a1d58a295";
+export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-f3dfed10a0465a6f.js";
+export const RESIDENT_STORE_BUILD_ID = "f3dfed10a0465a6f";
+export const RESIDENT_STORE_SHA256 = "f3dfed10a0465a6f78fcea7c0f736c21a6148df3298c6fb0ca930319025c879f";
 /** @nimbus-sh/core src/interpreter/primordials.ts, bundled by scripts/interpreter-bundle.mjs */
 export const JS_INTERPRETER_PRIMORDIALS_ENTRY = "/_assets/runtime/js-interpreter-primordials-e620a61b7e9800fa.js";
 export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID = "e620a61b7e9800fa";
@@ -33,6 +33,6 @@ export const JS_INTERPRETER_OPS_ENTRY = "/_assets/runtime/js-interpreter-ops-2f4
 export const JS_INTERPRETER_OPS_BUILD_ID = "2f4dfec6798e70fc";
 export const JS_INTERPRETER_OPS_SHA256 = "2f4dfec6798e70fcb11871ff1f57fa56336f33bfd5f31dfb3414f10433e4914c";
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
-export const NODE_LIB_ENTRY = "/_assets/runtime/node-lib-cbf7e8a555b1800a.js";
-export const NODE_LIB_BUILD_ID = "cbf7e8a555b1800a";
-export const NODE_LIB_SHA256 = "cbf7e8a555b1800a8f8e7c786c538f985e53e8f4930cd2c70ac993f2f8fc9b40";
+export const NODE_LIB_ENTRY = "/_assets/runtime/node-lib-ad1b066834de9c8e.js";
+export const NODE_LIB_BUILD_ID = "ad1b066834de9c8e";
+export const NODE_LIB_SHA256 = "ad1b066834de9c8e47e56f356a47a964cd9cb7da657413da3cd42b50899389fd";

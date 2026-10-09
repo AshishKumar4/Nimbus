@@ -390,11 +390,11 @@ again.
 - The armada client is pinned to one commit of
   github.com/AshishKumar4/armada (`ARMADA_CLIENT` in
   `scripts/ci/lib/armada.mjs`): a clean checkout at `ARMADA_DIR`, by
-  default `~/.local/share/nimbus/armada-client`. A run on any other
+  default `~/.local/share/nimbus/armada-client-v2`. A run on any other
   client is refused, with the commands that make one, and so is a pin no
   longer on that repository's main (a rewritten history). It runs on
-  Nimbus's own armada deployment, `nimbus-armada` (its own Worker, bucket
-  and fleet cap), through `~/.config/armada/nimbus-armada.json`
+  Nimbus's own armada deployment, `nimbus-armada-v2` (its own Worker, bucket
+  and fleet cap), through `~/.config/armada/nimbus-armada-v2.json`
   (`ARMADA_CONNECTION` in `scripts/ci/lib/armada.mjs`). `ARMADA_CONNECTION`
   overrides the connection file. Never print its token.
 
