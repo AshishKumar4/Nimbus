@@ -155,6 +155,52 @@ function holdingGate() {
   assert.equal((await broker.wait(childPid, 1000)).exitCode, 0);
 }
 
+// A child's end is published with its output: a child that printed nothing,
+// and a killed one, are neither done (cpWait) nor closed (cpReadOutput,
+// cpDrainOutput) while the gate holds them.
+{
+  const processes = new SessionProcessSupervisor();
+  const parent = processes.spawn('parent', [], '/').pid;
+  const gate = holdingGate();
+  processes.setOutputGate(gate.gate);
+  const killed = [];
+  const broker = new FacetProcessManager({
+    processes, vfsForProcess() {}, facetMgr: { kill(pid) { killed.push(pid); return true; } },
+    commandRegistry: {
+      async resolve() { return { kind: 'pure-builtin' }; },
+      async runPureBuiltin(pid, name) {
+        gate.hold(pid);
+        if (name === 'silent') return 0;
+        await new Promise(() => {});
+      },
+    },
+  });
+  const unpublished = async (childPid, what) => {
+    assert.equal((await broker.wait(childPid, 0)).done, false, `${what}: not done while held`);
+    assert.equal((await broker.readOutput(childPid, 1, 0, 0)).closed, false, `${what}: its stdout not closed while held`);
+    const drained = await broker.drainOutput(childPid);
+    assert.equal(drained.stdoutClosed || drained.stderrClosed, false, `${what}: not closed to a drain while held`);
+    assert.equal(processes.getExit(childPid), null, `${what}: no exit recorded while held`);
+  };
+  const silent = (await broker.spawn({ parentPid: parent, command: 'silent', args: [], env: {}, cwd: '/', stdio: ['ignore', 'pipe', 'pipe'] })).childPid;
+  await turns();
+  await unpublished(silent, 'a child that printed nothing');
+  gate.release(silent);
+  assert.deepEqual(await broker.wait(silent, 1000), { done: true, exitCode: 0, signal: null });
+
+  const hung = (await broker.spawn({ parentPid: parent, command: 'hung', args: [], env: {}, cwd: '/', stdio: ['ignore', 'pipe', 'pipe'] })).childPid;
+  await turns();
+  assert.equal(broker.kill(hung, 'SIGKILL'), true);
+  assert.equal(broker.kill(hung, 'SIGTERM'), false, 'its end is decided: a second kill finds it ending');
+  assert.deepEqual(killed, [hung]);
+  await unpublished(hung, 'a killed child');
+  gate.release(hung);
+  const ended = await broker.wait(hung, 1000);
+  assert.equal(ended.done, true);
+  assert.equal(ended.signal, 'SIGKILL');
+  assert.equal((await broker.readOutput(hung, 1, 0, 0)).closed, true);
+}
+
 // The shell's own frames: its output and its completion events go out in order, once released.
 {
   const processes = new SessionProcessSupervisor();
