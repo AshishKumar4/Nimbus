@@ -594,7 +594,8 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
   // ACQUIRE after them. So while a foreign body has not been read to the end
   // through a barriered method (below) nothing is skipped: the claim is not
   // made, and a response already on its way takes the ACQUIRE. A body read
-  // raw, or never read, stays open for the life of the process.
+  // raw, read by a method that failed, or never read, stays open for the life
+  // of the process; a response with no body has nothing to carry.
   const __foreignBodies = new WeakSet();
   let __foreignOpen = 0;
   const __resumeCoherent = async (pending, own = false) => {
@@ -624,7 +625,7 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     const release = globalThis.__nimbusVfsReleaseBarrier;
     if (typeof release === "function") await release();
     const pending = __resumeCoherent(__dispatch(input, init)).then((response) => {
-      if (response instanceof Response) { __foreignBodies.add(response); __foreignOpen++; }
+      if (response && response.body) { __foreignBodies.add(response); __foreignOpen++; }
       return response;
     });
     if (!__recordingNetwork) return pending;
@@ -656,11 +657,11 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     try {
       Response.prototype[__name] = function(...args) {
         const own = __nimbusOwnHttpResponses.has(this);
-        const closed = () => { if (__foreignBodies.delete(this)) __foreignOpen--; };
-        if (!__recordingNetwork) return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args), own).finally(closed));
+        const drained = (value) => { if (__foreignBodies.delete(this)) __foreignOpen--; return value; };
+        if (!__recordingNetwork) return __nimbusTrackOp(__resumeCoherent(__orig.apply(this, args), own).then(drained));
         const body = this.body;
         const pending = __orig.apply(this, args).then((value) => { __observeBody(body); return value; }, (error) => { __observeBody(body); throw error; });
-        return __nimbusTrackOp(__resumeCoherent(pending, own).finally(closed));
+        return __nimbusTrackOp(__resumeCoherent(pending, own).then(drained));
       };
     } catch { /* host object is sealed — the drain still sees the fetch itself */ }
   }
