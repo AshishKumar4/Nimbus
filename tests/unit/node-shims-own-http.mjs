@@ -91,7 +91,7 @@ try {
     ['a Headers', target, { headers: new Headers({ upgrade: ' websocket ' }) }, true],
     ['a Request', new Request(target, { headers: { upgrade: ' websocket ' } }), undefined, true],
     ['init over a Request', new Request(target, { headers: { upgrade: 'h2c' } }), { headers: { upgrade: ' websocket ' } }, true],
-    ['init clearing a Request', new Request(target, { headers: { upgrade: ' websocket ' } }), { headers: {} }, false],
+    ['init replacing a Request\'s', new Request(target, { headers: { upgrade: ' websocket ' } }), { headers: { 'x-other': '1' } }, false],
     ['a list', target, { headers: { upgrade: 'websocket, h2c' } }, false],
     ['a longer token', target, { headers: { upgrade: 'websockets' } }, false],
     ['another protocol', target, { headers: { upgrade: 'h2c' } }, false],
