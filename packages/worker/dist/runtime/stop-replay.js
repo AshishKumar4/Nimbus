@@ -1,6 +1,5 @@
 import { STOP_RECORD_PREFIX, REPLAY_PREFIX_MAX_BYTES, REPLAY_TAPE_MAX_READINGS, REPLAY_TAPE_MAX_RANDOM_BYTES, REPLAY_TAPE_MAX_WRITES, REPLAY_TAPE_MAX_WRITE_BYTES, REPLAY_WRITE_ENTRY_MAX_CHARS, } from './stop-replay-contracts.js';
 import { SUPERVISOR_CALLS_WITHOUT_EFFECTS, REPLAY_OBSERVATION_CALLS } from './stop-replay-policy.js';
-import { answerDigest } from './stop-replay-journal.js';
 /**
  * The guest half, spliced at module level into a facet runner before the
  * node shims: `const __nimbusStopReplay`, private to the runner module.
@@ -50,8 +49,9 @@ const __nimbusStopReplay = (() => {
   const WRITES_MAX = ${REPLAY_TAPE_MAX_WRITES};
   const WRITE_BYTES_MAX = ${REPLAY_TAPE_MAX_WRITE_BYTES};
   const WRITE_ENTRY_MAX = ${REPLAY_WRITE_ENTRY_MAX_CHARS};
-  // The session's digest (stop-replay-journal.ts), the same function.
-  const digest = ${answerDigest.toString()};
+  const ObjectKeys = Object.keys;
+  const ArraySort = Array.prototype.sort;
+  const ArrayBufferIsView = ArrayBuffer.isView;
   const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   const lengthOf = (bytes) => ReflectApply(TypedArrayLength, bytes, []);
 
@@ -96,6 +96,41 @@ const __nimbusStopReplay = (() => {
     return out + "]";
   }
   function pairs(items) { return list(items, (p) => "[" + num(p[0]) + "," + num(p[1]) + "]"); }
+  // A change to the filesystem, as its call carries it: every field, bytes
+  // as bytes, in two FNV-1a lanes (64 bits). It is to notice a run again
+  // that changed something otherwise, not to resist a chosen collision.
+  function digest(op) {
+    let a = 0x811c9dc5, b = 0x050c5d1f;
+    const mix = (code) => { a = Math.imul(a ^ code, 16777619) >>> 0; b = Math.imul(b ^ (code + 0x9e), 2246822519) >>> 0; };
+    const walk = (v, depth) => {
+      if (depth > 8 || v === null || typeof v !== "object") {
+        const text = typeof v + ":" + (typeof v === "symbol" ? "" : v);
+        for (let i = 0; i < text.length; i++) mix(ReflectApply(StringCharCodeAt, text, [i]));
+        mix(0xffff);
+        return;
+      }
+      if (ReflectApply(ArrayBufferIsView, ArrayBuffer, [v])) {
+        const bytes = new U8(v.buffer, v.byteOffset, v.byteLength);
+        const n = lengthOf(bytes);
+        mix(0x1fe);
+        for (let i = 0; i < n; i++) mix(bytes[i]);
+        mix(0x1ff);
+        return;
+      }
+      const keys = ReflectApply(ArraySort, ObjectKeys(v), []);
+      for (let i = 0; i < keys.length; i++) {
+        walk(keys[i], depth + 1);
+        walk(v[keys[i]], depth + 1);
+      }
+      mix(0x1fd);
+    };
+    walk(op, 0);
+    const h = "0123456789abcdef";
+    let out = "";
+    for (let shift = 28; shift >= 0; shift -= 4) out += h[(a >>> shift) & 15];
+    for (let shift = 28; shift >= 0; shift -= 4) out += h[(b >>> shift) & 15];
+    return out;
+  }
   function pendingOut() {
     if (run.captured) return "[]";
     return list(run.pending, (c) => "{\\"s\\":" + str(c.s) + ",\\"at\\":" + num(c.at) + ",\\"b\\":" + str(b64([c.b])) + "}");
