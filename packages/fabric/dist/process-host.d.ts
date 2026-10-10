@@ -66,7 +66,7 @@
  */
 import { type WorkspaceEgress, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { z } from 'zod/v4';
-import { type ProcessHost, type ResidentDiskReader, type Supervise } from './process-fabric.js';
+import { type ProcessHost, type ResidentBootSpec, type ResidentDiskReader, type Supervise } from './process-fabric.js';
 /** The substrates this deployment can be configured for. */
 export type ProcessHostMode = 'facet' | 'peer';
 /**
@@ -137,8 +137,12 @@ export declare const HOSTED_WEBSOCKET_KEY_HEADER = "x-nimbus-hosted-websocket";
 export declare const HOSTED_WEBSOCKET_CAPABILITY_HEADER = "x-nimbus-hosted-websocket-capability";
 /** What the object hosting processes supplies: the two things the fabric cannot know. */
 export interface PeerHostOptions {
-    /** The embedder's stage schema: the host leg is this peer's trust boundary for a staged boot spec. */
-    stage: z.ZodType;
+    /**
+     * The boot-spec schema with the embedder's own stage
+     * (residentBootSpecSchema): the host leg is this peer's trust boundary for
+     * what it boots.
+     */
+    bootSpec: z.ZodType<ResidentBootSpec>;
     /**
      * Arm the hosting watch through the object's own scheduler: a session's
      * timer mux, or an embedder's lifecycle, which owns its alarm.
@@ -162,7 +166,6 @@ export declare class PeerHost {
     private readonly records;
     private readonly waiters;
     private readonly env;
-    private readonly bootSpec;
     constructor(ctx: DurableObjectState, env: unknown, options: PeerHostOptions);
     /**
      * Placement probe: this peer's module-scope isolate token, so the

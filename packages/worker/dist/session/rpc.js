@@ -34,6 +34,7 @@ import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { setProcessBlocked } from '@nimbus-sh/fabric/budgets.js';
 import { executeFanoutShard } from '@nimbus-sh/fabric/fanout.js';
 import { residentFacetOf } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { residentBootSpecSchema } from '@nimbus-sh/fabric/process-fabric.js';
 import { readHydrating } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
@@ -1315,13 +1316,14 @@ export function _rpcFanoutExecute(self, fnSource, args, shardOpts) {
 // What a sibling coordinator asks of THIS object when its deployment set
 // NIMBUS_PROCESS_HOST=peer (loaders/process-host.ts), served by the object's
 // one fabric PeerHost.
+/** The fabric's boot-spec shape, with the staged arm validated as Nimbus's opencode stage. */
+const ResidentBootSpecSchema = residentBootSpecSchema(OpencodeStageSpecSchema);
 /**
- * The PeerHost an object serves its siblings with: a staged boot is validated
- * as Nimbus's opencode stage, and the hosting watch is armed through the
- * object's own scheduler.
+ * The PeerHost an object serves its siblings with: Nimbus's boot specs, and
+ * the hosting watch armed through the object's own scheduler.
  */
 export function peerHostFor(ctx, env, scheduleWatch) {
-    return new PeerHost(ctx, env, { stage: OpencodeStageSpecSchema, scheduleWatch });
+    return new PeerHost(ctx, env, { bootSpec: ResidentBootSpecSchema, scheduleWatch });
 }
 export function _rpcProcessHostProbe(self) {
     return self.peerHost.probe();

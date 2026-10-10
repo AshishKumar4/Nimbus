@@ -1438,11 +1438,6 @@ export declare class FacetManager {
      * store itself decides nothing about modes.
      */
     private _imageBlobs;
-    /**
-     * The kernel-scoped VFS the durable image store reads and writes through —
-     * `.nimbus/images/<sha256>` is session kernel data, not user content.
-     */
-    private _imageVfs;
     /** Give the bundle's ESM→CJS pass the host's esbuild, as composeFacetManager does. */
     setEsbuildService(esbuild: EsbuildService): void;
     /**

@@ -73,7 +73,7 @@ import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
 import { z } from 'zod/v4';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
-import { ProcessHostLost, residentBootSpecSchema, } from './process-fabric.js';
+import { ProcessHostLost, } from './process-fabric.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import { BindingError } from './vendor/errors.js';
 import { processes, } from './workerd-facet-host.js';
@@ -578,12 +578,10 @@ export class PeerHost {
     records = new Map();
     waiters = new Map();
     env;
-    bootSpec;
     constructor(ctx, env, options) {
         this.ctx = ctx;
         this.options = options;
         this.env = (env ?? {});
-        this.bootSpec = residentBootSpecSchema(options.stage);
     }
     /**
      * Placement probe: this peer's module-scope isolate token, so the
@@ -612,7 +610,7 @@ export class PeerHost {
      */
     async host(boot, opts) {
         const hostOpts = HostProcessOptsSchema.parse(opts);
-        const spec = this.bootSpec.parse(boot);
+        const spec = this.options.bootSpec.parse(boot);
         const { workerKey } = hostOpts;
         const supervisor = {
             ...supervisorBindingProps(this.ctx, hostOpts.pid, {

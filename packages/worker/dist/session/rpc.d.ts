@@ -445,9 +445,8 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
     results: unknown[];
 }>;
 /**
- * The PeerHost an object serves its siblings with: a staged boot is validated
- * as Nimbus's opencode stage, and the hosting watch is armed through the
- * object's own scheduler.
+ * The PeerHost an object serves its siblings with: Nimbus's boot specs, and
+ * the hosting watch armed through the object's own scheduler.
  */
 export declare function peerHostFor(ctx: DurableObjectState, env: unknown, scheduleWatch: (at: number) => Promise<void>): PeerHost;
 interface PeerHostRpcHost {
