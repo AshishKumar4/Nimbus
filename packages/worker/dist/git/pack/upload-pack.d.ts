@@ -41,6 +41,8 @@ export interface PackRequest {
     /** The receiver's shallow commits (its .git/shallow). */
     shallows?: readonly string[];
     depth?: number;
+    /** Deepen from the receiver's shallow boundary rather than from the tips (git fetch --deepen). */
+    relative?: boolean;
     filter?: string;
     /** Ask for a thin pack: deltas against `haves` the server need not send. */
     thin?: boolean;

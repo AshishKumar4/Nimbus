@@ -215,6 +215,11 @@ function requestCapabilities(advertised, request) {
             throw new UploadPackError('the server does not support shallow fetches');
         capabilities.push('shallow');
     }
+    if (request.relative) {
+        if (!advertised.has('deepen-relative'))
+            throw new UploadPackError('the server does not support --deepen');
+        capabilities.push('deepen-relative');
+    }
     if (request.filter !== undefined) {
         if (!advertised.has('filter'))
             throw new UploadPackError('the server does not support --filter');

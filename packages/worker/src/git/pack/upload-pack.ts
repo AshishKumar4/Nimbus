@@ -48,6 +48,8 @@ export interface PackRequest {
   /** The receiver's shallow commits (its .git/shallow). */
   shallows?: readonly string[];
   depth?: number;
+  /** Deepen from the receiver's shallow boundary rather than from the tips (git fetch --deepen). */
+  relative?: boolean;
   filter?: string;
   /** Ask for a thin pack: deltas against `haves` the server need not send. */
   thin?: boolean;
@@ -253,6 +255,10 @@ function requestCapabilities(advertised: Set<string>, request: PackRequest): str
   if (request.depth !== undefined || (request.shallows?.length ?? 0) > 0) {
     if (!advertised.has('shallow')) throw new UploadPackError('the server does not support shallow fetches');
     capabilities.push('shallow');
+  }
+  if (request.relative) {
+    if (!advertised.has('deepen-relative')) throw new UploadPackError('the server does not support --deepen');
+    capabilities.push('deepen-relative');
   }
   if (request.filter !== undefined) {
     if (!advertised.has('filter')) throw new UploadPackError('the server does not support --filter');

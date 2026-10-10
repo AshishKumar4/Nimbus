@@ -13,7 +13,8 @@
 //     shallow file, objects and history host git's do (a single stream);
 //   - refs and the shallow file change only after the pack is stored: while
 //     it is still arriving, another command sees the old tip and boundary;
-//   - a fetch whose pack turns out corrupt fails, and leaves no temporary file.
+//   - a fetch whose pack turns out corrupt fails, and leaves no temporary file;
+//   - a fetch the server refuses fails naming the refusal, as a clone's does.
 
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -154,6 +155,18 @@ try {
     assert.equal((await session.git('/home/user/shallow', ['fetch', '--depth', '1', '--unshallow'])).code, 128);
   } finally {
     server.stop();
+  }
+
+  // A server that refuses: the fetch fails as a clone would, naming the refusal.
+  const refusing = startGitHttpServer(served, { refuse: () => true });
+  try {
+    const repo = '/home/user/repo';
+    assert.equal((await session.git(repo, ['remote', 'add', 'refusing', refusing.url + '/repo.git'])).code, 0);
+    const refused = await session.git(repo, ['fetch', 'refusing']);
+    assert.equal(refused.code, 1);
+    assert.match(refused.stderr, /fetch failed: git upload-pack: authentication failed \(HTTP 403\)/);
+  } finally {
+    refusing.stop();
   }
   console.log('git-fetch-stream: ok');
 } finally {
