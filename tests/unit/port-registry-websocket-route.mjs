@@ -18,7 +18,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import {
   HOSTED_WEBSOCKET_CAPABILITY_HEADER,
   HOSTED_WEBSOCKET_KEY_HEADER,
-} from '../../packages/fabric/src/process-host.ts';
+} from '../../packages/fabric/src/peer-host.ts';
 import { createFacetWorld, createProcessHost } from './facet-host-harness.mjs';
 
 const UPGRADE = { upgrade: 'websocket', connection: 'Upgrade' };

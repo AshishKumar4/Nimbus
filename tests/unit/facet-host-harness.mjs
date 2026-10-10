@@ -256,7 +256,7 @@ import {
   _rpcRouteHostedHttp,
   peerHostFor,
 } from '../../packages/worker/src/session/rpc.ts';
-import { isolateToken } from '../../packages/fabric/src/process-host.ts';
+import { isolateToken } from '../../packages/fabric/src/peer-host.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { timers } from '../../packages/fabric/src/timers.ts';
 import { composeFabric } from '../../packages/fabric/src/composition.ts';

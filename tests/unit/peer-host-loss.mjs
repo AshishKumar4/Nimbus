@@ -24,7 +24,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { routeToSessionPort } from '../../packages/worker/src/session/port-capability.ts';
 import { _rpcHostLost, peerHostFor } from '../../packages/worker/src/session/rpc.ts';
-import { HOSTING_WATCH_MS } from '../../packages/fabric/src/process-host.ts';
+import { HOSTING_WATCH_MS } from '../../packages/fabric/src/peer-host.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld, createPeerNamespace } from './facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';

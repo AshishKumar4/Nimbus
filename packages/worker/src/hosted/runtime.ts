@@ -17,7 +17,7 @@ import type { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { ViteDevServer } from '../facets/vite-dev-server.js';
 import type { ServiceStub } from '@nimbus-sh/fabric/vendor/types.js';
-import type { PeerHost } from '@nimbus-sh/fabric/process-host.js';
+import type { PeerHost } from '@nimbus-sh/fabric/peer-host.js';
 import type { WebSocketRelay } from '../session/ws-relay.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { answerSupervisorOp, buildSessionSupervisorOps, type SessionSupervisorOps } from '../session/supervisor-op.js';
