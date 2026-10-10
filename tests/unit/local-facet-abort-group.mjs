@@ -50,15 +50,24 @@ if (!process.env.ABORT_GROUP_CHILD) {
     const controller = new AbortController();
     const started = Date.now();
     let aborted;
-    const timer = setTimeout(() => { aborted = Date.now(); controller.abort(); }, 500);
-    const result = await ws.exec('bash -c "while :; do :; done"', { signal: controller.signal });
-    clearTimeout(timer);
+    let spinning;
+    const files = ws.vfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
+    const timer = setInterval(() => {
+      if (spinning === undefined && files.exists('home/user/spinning')) spinning = Date.now();
+      if (spinning !== undefined && Date.now() - spinning >= 500 && aborted === undefined) {
+        aborted = Date.now(); controller.abort();
+      }
+    }, 10);
+    let result;
+    try {
+      result = await ws.exec('bash -c "printf ready > /home/user/spinning; while :; do :; done"', { signal: controller.signal });
+    } finally { clearInterval(timer); }
     const left = family().filter(id => !before.includes(id));
     console.log('ABORT_GROUP ' + JSON.stringify({ caller: process.env.ABORT_GROUP_CHILD, exitCode: result.exitCode,
       elapsedMs: Date.now() - started, abortToSettleMs: aborted === undefined ? null : Date.now() - aborted,
       left: left.map(id => ({ pid: id, state: stat(id)?.[0], group: stat(id)?.[2] })) }));
     assert.equal(result.exitCode, 130);
-    assert.ok(aborted !== undefined, 'the abort actually fired under load');
+    assert.ok(spinning !== undefined && aborted !== undefined, 'the real bash marked its loop before abort fired under load');
     assert.deepEqual(left, [], 'no child/group member is alive when abort settles');
     assert.equal((await ws.exec('bash -c "echo again"')).stdout, 'again\n');
   } finally { await ws.close(); }
