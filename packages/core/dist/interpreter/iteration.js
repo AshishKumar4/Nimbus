@@ -8,7 +8,7 @@
  * read by index instead, which reads exactly what its iterator would.
  */
 import { ArrayIteratorNext, ArrayIteratorPrototype, ArrayValues, TypeError, append, arrayIsArray, promiseReject, promiseResolve, reflectApply, reflectGet, safeGenerator, stringOf, symbolDescriptiveString, symbolIterator, } from './intrinsics.js';
-import { isObject, operators } from './runtime.js';
+import { isObject } from './runtime.js';
 /** A value as an error message names it, without running its code. */
 export function describe(value) {
     if (typeof value === 'function')
@@ -20,8 +20,8 @@ export function describe(value) {
     return stringOf(value);
 }
 /** GetMethod(value, @@iterator), or the TypeError for spreading or iterating what has none. */
-export function iteratorMethod(value) {
-    const method = value === null || value === undefined ? undefined : operators().get(value, symbolIterator);
+export function iteratorMethod(ops, value) {
+    const method = value === null || value === undefined ? undefined : ops.get(value, symbolIterator);
     if (typeof method !== 'function')
         throw new TypeError(`${describe(value)} is not iterable`);
     return method;
@@ -85,12 +85,12 @@ export function iteratorFrom(value, method) {
         throw new TypeError('Result of the Symbol.iterator method is not an object');
     return new IteratorRecord(iterator, reflectGet(iterator, 'next'));
 }
-export function getIterator(value) {
-    return iteratorFrom(value, iteratorMethod(value));
+export function getIterator(ops, value) {
+    return iteratorFrom(value, iteratorMethod(ops, value));
 }
 /** Append to `out` what spreading `value` yields. */
-export function spreadInto(out, value) {
-    const method = iteratorMethod(value);
+export function spreadInto(ops, out, value) {
+    const method = iteratorMethod(ops, value);
     if (arrayIteration(value, method)) {
         for (let i = 0; i < value.length; i++)
             append(out, value[i]);

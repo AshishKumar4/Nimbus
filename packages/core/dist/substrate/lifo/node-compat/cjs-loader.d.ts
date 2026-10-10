@@ -6,19 +6,21 @@ export declare function moduleNotFound(name: string): Error;
 export declare function stripShebang(src: string): string;
 /**
  * `source` as the module wrapper's function text: a CommonJS body as written
- * but for its import() calls, or an ES module lowered (ESM when `esm`).
+ * but for its import() calls (rewriteDynamicImports), or an ES module lowered
+ * (ESM when `esm`) from its one reading (readEsmModule). Either one's
+ * import() loads through this loader, from the workspace, as the module at
+ * `parentUrl`.
  *
  * The loader's values reach the body under names drawn, with the emitter's
  * own, from one generatedNames over the source, so none is a name the
- * source holds: import.meta, import() (which loads through this loader, from
- * the workspace, in either body), and the require and module the lowering's
- * lines use. A lowered module is one block, so its own bindings (`const
- * __dirname`, `import process from`, `const require = createRequire(...)`)
- * shadow the wrapper's parameters as module scope does.
+ * source holds: import.meta, import(), and the require and module the
+ * lowering's lines use. A lowered module is one block, so its own bindings
+ * (`const __dirname`, `import process from`, `const require =
+ * createRequire(...)`) shadow the wrapper's parameters as module scope does.
  *
  * Throws a SyntaxError for an ES module that does not parse.
  */
-export declare function moduleWrapper(source: string, esm: boolean, async?: boolean): string;
+export declare function moduleWrapper(source: string, esm: boolean, parentUrl: string, async?: boolean): string;
 /** What one module's wrapper receives as console and process. */
 export interface ModuleScope {
     readonly console: unknown;
