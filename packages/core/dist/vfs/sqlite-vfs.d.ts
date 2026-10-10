@@ -794,6 +794,8 @@ export declare class SqliteVFS {
      * generations back under cursors facets still hold.
      */
     rotateIncarnation(): string;
+    /** A new clock epoch, stored: every cursor held against the old one poisons. */
+    private newIncarnation;
     private readonly exclusiveMutationLeases;
     /** Read leases (acquireReadLease), by owner. */
     private readonly readLeases;
@@ -1442,6 +1444,18 @@ export declare class SqliteVFS {
     private hold;
     /** `pipeline`'s recalls are over: what it holds is let go, and what it committed published. */
     private publishHeld;
+    /** `pipeline`'s holds end: what it holds is another caller's to read. */
+    private letGo;
+    /** The events of what `publication` changed, held with it, to the session's observers. */
+    private deliverHeld;
+    /**
+     * What `pipeline` committed cannot be published (its promotion failed): it
+     * stands in SQLite, and no reader would hear of it. Its holds end, every
+     * reader starts again (a new incarnation: each cursor poisons, each read
+     * lease ends), what it changed is told to the session's observers, and its
+     * writer is failed.
+     */
+    private unpublishable;
     /**
      * Rewrite the row (or tombstone) at each of `paths`, unchanged, at a new
      * generation, in the engine's bounded plans (a transaction each, as many as
@@ -2499,8 +2513,8 @@ export declare class SqliteVFS {
     /**
      * N18: a transaction that can grow the database is admitted by the
      * session's ledger before it runs (ENOSPC, nothing written, when it would
-     * cross the storage limit). Collection and pure removals only free, and are
-     * never refused.
+     * cross the storage limit). Collection and pure removals only free, and
+     * rows rewritten as they stand only keep: neither is ever refused.
      */
     private admitTransaction;
     /**
