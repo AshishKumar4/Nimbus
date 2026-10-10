@@ -296,7 +296,7 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const later = other.acquire(s.engine.epoch, s.engine.revision());
   // The store is full: nothing that grows it is admitted now, the kernel's included.
   s.engine.ledger.report('proc-full', 64_000_000);
-  assert.throws(() => s.kernel.writeFile('home/user/more', 'x'), (error) => error.code === 'ENOSPC');
+  assert.throws(() => s.engine.ledger.admit(1, true), (error) => error.code === 'ENOSPC');
   reader.recalled(readLease.owner, 'revoke');
   await writing;
   const reported = other.acquire(s.engine.epoch, later.rev).paths.find((entry) => entry.path === 'home/user/d/a.txt');
