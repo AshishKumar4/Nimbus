@@ -65,8 +65,7 @@ try {
   assert.equal(reservations.length - count, 1, 'same-key waiters use the published cache after admission instead of gathering again');
   fs.writeFile('home/user/shared/cell.js', '// PREFETCH_LEASE_EVIDENCE\nmodule.exports=2;', { mode: 0o644 });
   failSerialization = true;
-  const failed = await manager.exec("require('./cell.js')", options);
-  assert.notEqual(failed.exitCode, 0);
+  await assert.rejects(manager.exec("require('./cell.js')", options), /injected serializer failure/);
   assert.equal(readSupervisorAllocationBudget().current, 0, 'a serializer failure cannot leak its lease');
   failSerialization = false;
   assert.equal((await manager.exec("require('./cell.js')", options)).exitCode, 0, 'the next launch can be admitted after failure');
