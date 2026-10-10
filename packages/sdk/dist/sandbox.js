@@ -3,6 +3,7 @@
  */
 import { isPreviewHostSafeSid, previewHostUrl, readPreviewHostSuffix, } from '@nimbus-sh/worker/preview-host';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream, } from '@nimbus-sh/core/runtime/exec-stream.js';
+import { SessionResults, SessionSuccessSchema, SessionFailureSchema, } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { z } from 'zod/v4';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
@@ -13,8 +14,6 @@ import { codeRuntimeRequirement, runtimePolicyError, } from '@nimbus-sh/config/s
 function fileWireOptions(cred) {
     return cred === undefined ? [] : [{ cred }];
 }
-const hostedSessionServesTheSurface = true;
-void hostedSessionServesTheSurface;
 export class NimbusRemoteError extends Error {
     status;
     code;
@@ -27,16 +26,6 @@ export class NimbusRemoteError extends Error {
         this.body = options.body;
     }
 }
-const RemoteRpcSuccessSchema = z.object({
-    ok: z.literal(true),
-    result: z.unknown().optional(),
-}).passthrough();
-const RemoteRpcFailureSchema = z.object({
-    ok: z.boolean().optional(),
-    error: z.string().optional(),
-    message: z.string().optional(),
-    code: z.string().optional(),
-}).passthrough();
 async function remotePayload(response) {
     const text = await response.text();
     if (!text)
@@ -52,7 +41,7 @@ async function remotePayload(response) {
     }
 }
 function remoteFailure(response, payload) {
-    const failure = RemoteRpcFailureSchema.safeParse(payload);
+    const failure = SessionFailureSchema.safeParse(payload);
     const fallback = `Nimbus remote API request failed (${response.status})`;
     return new NimbusRemoteError(failure.success ? failure.data.error ?? failure.data.message ?? fallback : fallback, {
         status: response.status,
@@ -60,165 +49,6 @@ function remoteFailure(response, payload) {
         body: payload,
     });
 }
-const UndefinedResultSchema = z.undefined();
-const UnknownResultSchema = z.unknown();
-/** `_rpcWriteFile` answers with the byte count the VFS wrote. */
-const WriteFileResultSchema = z.number();
-const StringOrNullSchema = z.string().nullable();
-const Uint8ArrayOrNullSchema = z.instanceof(Uint8Array).nullable();
-const BooleanResultSchema = z.boolean();
-const ReadyResultSchema = z.object({
-    ok: z.literal(true),
-    preinstalled: z.array(z.string()),
-});
-const ExecResultSchema = z.object({
-    command: z.string(),
-    exitCode: z.number(),
-    success: z.boolean(),
-    stdout: z.string(),
-    stderr: z.string(),
-    duration: z.number(),
-    timestamp: z.number(),
-});
-const ProcessSchema = z.object({
-    pid: z.number(),
-    command: z.string(),
-    argv: z.array(z.string()),
-    cwd: z.string(),
-    state: z.string(),
-    exitCode: z.number().nullable(),
-    startTime: z.number(),
-    endTime: z.number().nullable(),
-    longRunning: z.boolean(),
-    attachedTty: z.boolean().optional().default(false),
-    execId: z.string().optional(),
-});
-const PortSchema = z.object({
-    port: z.number(),
-    pid: z.number(),
-    registeredAt: z.number(),
-    capability: z.string(),
-    execId: z.string().optional(),
-});
-const StartResultSchema = z.object({
-    command: z.string(),
-    pid: z.number(),
-    process: ProcessSchema,
-    ports: z.array(PortSchema),
-    startedAt: z.number(),
-});
-const FileStatSchema = z.object({
-    type: z.string(),
-    size: z.number(),
-    ctime: z.number().optional(),
-    mtime: z.number(),
-    mode: z.number(),
-});
-const DirectoryEntrySchema = z.object({
-    name: z.string(),
-    type: z.string(),
-});
-const RuntimeSummarySchema = z.object({
-    name: z.string(),
-    version: z.string(),
-    root: z.string(),
-    abi: z.string(),
-    bins: z.array(z.string()),
-    sizeBytes: z.number(),
-    license: z.string(),
-});
-const AvailableRuntimeSchema = z.object({
-    name: z.string(),
-    abi: z.string(),
-    defaultVersion: z.string(),
-    versions: z.array(z.object({
-        version: z.string(),
-        sizeBytes: z.number(),
-        license: z.string(),
-    })),
-});
-const RuntimeListSchema = z.object({
-    installed: z.array(RuntimeSummarySchema),
-    available: z.array(AvailableRuntimeSchema),
-});
-const ProcessControlResultSchema = z.object({
-    ok: z.boolean(),
-    pid: z.number(),
-});
-const ProcessLogChunkSchema = z.object({
-    seq: z.number(),
-    ts: z.number(),
-    stream: z.enum(['stdout', 'stderr']),
-    data: z.string(),
-    binary: z.boolean().optional(),
-});
-const ProcessExitInfoSchema = z.object({
-    code: z.number(),
-    at: z.number(),
-    reason: z.string().optional(),
-});
-const ProcessLogsResultSchema = z.object({
-    pid: z.number(),
-    chunks: z.array(ProcessLogChunkSchema),
-    text: z.string(),
-    cursor: z.number(),
-    truncated: z.boolean(),
-    exit: ProcessExitInfoSchema.nullable(),
-});
-const ExposedPortSchema = z.object({
-    port: z.number(),
-    listening: z.boolean(),
-    pid: z.number().nullable(),
-    registeredAt: z.number().nullable(),
-    capability: z.string().nullable(),
-    visibility: z.enum(['scoped', 'public']).optional(),
-    owner: z.string().nullable().optional(),
-    name: z.string().nullable().optional(),
-    execId: z.string().optional(),
-});
-const ExposedAppSchema = z.object({
-    owner: z.string(),
-    name: z.string().nullable(),
-    port: z.number(),
-    pid: z.number().nullable(),
-    capability: z.string().nullable(),
-    visibility: z.enum(['scoped', 'public']),
-    url: z.string().nullable(),
-    execId: z.string().optional(),
-});
-const AppSchema = z.object({
-    owner: z.string(),
-    name: z.string().nullable(),
-    port: z.number().nullable(),
-    pid: z.number().nullable(),
-    status: z.enum(['running', 'starting', 'stopped', 'failed']),
-    visibility: z.enum(['scoped', 'public']),
-    capability: z.string().nullable(),
-    restart: z.enum(['never', 'on-failure']),
-    diagnostic: z.string().nullable(),
-    url: z.string().nullable(),
-    execId: z.string().optional(),
-});
-const EnsureDurableAppSchema = z.object({
-    port: z.number(),
-    capability: z.string().nullable(),
-    visibility: z.enum(['scoped', 'public']),
-});
-const RemoveDurableAppSchema = z.object({
-    owner: z.string(),
-    removed: z.boolean(),
-    port: z.number().nullable(),
-});
-const UnexposedPortSchema = z.object({
-    port: z.number(),
-    ok: z.boolean(),
-});
-const DestroyResultSchema = z.object({
-    ok: z.literal(true),
-    killed: z.number(),
-    destroyedAt: z.number(),
-    reason: z.string().nullable(),
-});
 const ToolPathInputSchema = z.object({
     path: z.string().optional(),
 }).passthrough();
@@ -328,59 +158,54 @@ export class NimbusSandbox {
     }
     remoteStub() {
         return {
-            _rpcReady: (options) => this.remoteRpc('ready', [options], ReadyResultSchema),
+            _rpcReady: (options) => this.remoteRpc('ready', [options]),
             _rpcExecStream: (command, options) => this.remoteExecStream([command, options]),
-            _rpcStartProcess: (command, options) => this.remoteRpc('startProcess', [command, options], StartResultSchema),
-            _rpcRunCode: (code, options) => this.remoteRpc('runCode', [code, options], ExecResultSchema),
+            _rpcStartProcess: (command, options) => this.remoteRpc('startProcess', [command, options]),
+            _rpcRunCode: (code, options) => this.remoteRpc('runCode', [code, options]),
             // A credential rides the wire as a trailing `{ cred }` options object
             // so the payload names it explicitly; the remote dispatcher decides
             // what to do with it (today: refuse, as it refuses `cred` on exec).
-            _rpcReadFile: (path, _pid, cred) => this.remoteRpc('readFile', [path, ...fileWireOptions(cred)], StringOrNullSchema),
-            _rpcReadFileBytes: (path, _pid, cred) => this.remoteRpc('readFileBytes', [path, ...fileWireOptions(cred)], Uint8ArrayOrNullSchema),
-            _rpcWriteFile: async (path, content, _pid, cred) => {
-                // The byte count is the wire contract but not part of the public
-                // `files.write` surface, so it is validated and dropped. Declaring
-                // this `undefined` made every remote write throw after succeeding.
-                await this.remoteRpc('writeFile', [path, content, ...fileWireOptions(cred)], WriteFileResultSchema);
-            },
-            _rpcStat: (path, _pid, cred) => this.remoteRpc('stat', [path, ...fileWireOptions(cred)], FileStatSchema.nullable()),
-            _rpcLstat: (path, _pid, cred) => this.remoteRpc('lstat', [path, ...fileWireOptions(cred)], FileStatSchema.nullable()),
-            _rpcRename: (from, to, _pid, cred) => this.remoteRpc('rename', [from, to, ...fileWireOptions(cred)], UndefinedResultSchema),
-            _rpcChmod: (path, mode, _pid, cred) => this.remoteRpc('chmod', [path, mode, ...fileWireOptions(cred)], UndefinedResultSchema),
-            _rpcFsReadRange: (path, offset, length, _pid, cred) => this.remoteRpc('readRange', [path, offset, length, ...fileWireOptions(cred)], Uint8ArrayOrNullSchema),
-            _rpcReaddir: (path, _pid, cred) => this.remoteRpc('readdir', [path, ...fileWireOptions(cred)], z.array(DirectoryEntrySchema)),
-            _rpcExists: (path, _pid, cred) => this.remoteRpc('exists', [path, ...fileWireOptions(cred)], BooleanResultSchema),
-            _rpcMkdir: (path, _pid, cred) => this.remoteRpc('mkdir', [path, ...fileWireOptions(cred)], UndefinedResultSchema),
-            _rpcDeleteFile: (path, options, cred) => this.remoteRpc('deleteFile', [path, { ...(options ?? {}), ...(cred !== undefined ? { cred } : {}) }], UndefinedResultSchema),
-            _rpcInstallRuntime: (spec, options) => this.remoteRpc('installRuntime', [spec, options], UnknownResultSchema),
-            _rpcEnsureRuntimes: (specs, options) => this.remoteRpc('ensureRuntimes', [specs, options], UnknownResultSchema),
-            _rpcListRuntimes: () => this.remoteRpc('listRuntimes', [], RuntimeListSchema),
-            _rpcListProcesses: () => this.remoteRpc('listProcesses', [], z.array(ProcessSchema)),
-            _rpcKillProcess: (pid) => this.remoteRpc('killProcess', [pid], ProcessControlResultSchema),
-            _rpcWriteProcessInput: (pid, data) => this.remoteRpc('writeProcessInput', [pid, data], ProcessControlResultSchema),
-            _rpcEndProcessInput: (pid) => this.remoteRpc('endProcessInput', [pid], ProcessControlResultSchema),
-            _rpcResizeProcess: (pid, size) => this.remoteRpc('resizeProcess', [pid, size], ProcessControlResultSchema),
-            _rpcSignalProcess: (pid, signal) => this.remoteRpc('signalProcess', [pid, signal], ProcessControlResultSchema),
-            _rpcProcessLogs: (pid, options) => this.remoteRpc('processLogs', [pid, options], ProcessLogsResultSchema),
-            _rpcListPorts: () => this.remoteRpc('listPorts', [], z.array(PortSchema)),
-            _rpcExposePort: (port, options) => this.remoteRpc('exposePort', [port, options], ExposedPortSchema),
-            _rpcEnsureDurableApp: (input) => this.remoteRpc('ensureDurableApp', [input], EnsureDurableAppSchema),
-            _rpcRemoveDurableApp: (owner) => this.remoteRpc('removeDurableApp', [{ owner }], RemoveDurableAppSchema),
-            _rpcExposeApp: (target, options) => this.remoteRpc('exposeApp', [target, options], ExposedAppSchema),
-            _rpcListApps: () => this.remoteRpc('listApps', [], z.array(AppSchema)),
-            _rpcRotateLink: (target) => this.remoteRpc('rotateLink', [target], ExposedAppSchema),
-            _rpcRemoveApp: (target) => this.remoteRpc('removeApp', [target], RemoveDurableAppSchema),
-            _rpcUnexposePort: (port) => this.remoteRpc('unexposePort', [port], UnexposedPortSchema),
-            _rpcDestroy: (options) => this.remoteRpc('destroy', [options], DestroyResultSchema),
+            _rpcReadFile: (path, _pid, cred) => this.remoteRpc('readFile', [path, ...fileWireOptions(cred)]),
+            _rpcReadFileBytes: (path, _pid, cred) => this.remoteRpc('readFileBytes', [path, ...fileWireOptions(cred)]),
+            _rpcWriteFile: (path, content, _pid, cred) => this.remoteRpc('writeFile', [path, content, ...fileWireOptions(cred)]),
+            _rpcStat: (path, _pid, cred) => this.remoteRpc('stat', [path, ...fileWireOptions(cred)]),
+            _rpcLstat: (path, _pid, cred) => this.remoteRpc('lstat', [path, ...fileWireOptions(cred)]),
+            _rpcRename: (from, to, _pid, cred) => this.remoteRpc('rename', [from, to, ...fileWireOptions(cred)]),
+            _rpcChmod: (path, mode, _pid, cred) => this.remoteRpc('chmod', [path, mode, ...fileWireOptions(cred)]),
+            _rpcFsReadRange: (path, offset, length, _pid, cred) => this.remoteRpc('readRange', [path, offset, length, ...fileWireOptions(cred)]),
+            _rpcReaddir: (path, _pid, cred) => this.remoteRpc('readdir', [path, ...fileWireOptions(cred)]),
+            _rpcExists: (path, _pid, cred) => this.remoteRpc('exists', [path, ...fileWireOptions(cred)]),
+            _rpcMkdir: (path, _pid, cred) => this.remoteRpc('mkdir', [path, ...fileWireOptions(cred)]),
+            _rpcDeleteFile: (path, options, cred) => this.remoteRpc('deleteFile', [path, { ...(options ?? {}), ...(cred !== undefined ? { cred } : {}) }]),
+            _rpcInstallRuntime: (spec, options) => this.remoteRpc('installRuntime', [spec, options]),
+            _rpcEnsureRuntimes: (specs, options) => this.remoteRpc('ensureRuntimes', [specs, options]),
+            _rpcListRuntimes: () => this.remoteRpc('listRuntimes', []),
+            _rpcListProcesses: () => this.remoteRpc('listProcesses', []),
+            _rpcKillProcess: (pid) => this.remoteRpc('killProcess', [pid]),
+            _rpcWriteProcessInput: (pid, data) => this.remoteRpc('writeProcessInput', [pid, data]),
+            _rpcEndProcessInput: (pid) => this.remoteRpc('endProcessInput', [pid]),
+            _rpcResizeProcess: (pid, size) => this.remoteRpc('resizeProcess', [pid, size]),
+            _rpcSignalProcess: (pid, signal) => this.remoteRpc('signalProcess', [pid, signal]),
+            _rpcProcessLogs: (pid, options) => this.remoteRpc('processLogs', [pid, options]),
+            _rpcListPorts: () => this.remoteRpc('listPorts', []),
+            _rpcExposePort: (port, options) => this.remoteRpc('exposePort', [port, options]),
+            _rpcEnsureDurableApp: (input) => this.remoteRpc('ensureDurableApp', [input]),
+            _rpcRemoveDurableApp: (owner) => this.remoteRpc('removeDurableApp', [{ owner }]),
+            _rpcExposeApp: (target, options) => this.remoteRpc('exposeApp', [target, options]),
+            _rpcListApps: () => this.remoteRpc('listApps', []),
+            _rpcRotateLink: (target) => this.remoteRpc('rotateLink', [target]),
+            _rpcRemoveApp: (target) => this.remoteRpc('removeApp', [target]),
+            _rpcUnexposePort: (port) => this.remoteRpc('unexposePort', [port]),
+            _rpcDestroy: (options) => this.remoteRpc('destroy', [options]),
         };
     }
-    async remoteRpc(op, args, resultSchema) {
+    async remoteRpc(op, args) {
         const response = await this.remoteFetch(op, args, 'application/json');
         const payload = await remotePayload(response);
-        const success = RemoteRpcSuccessSchema.safeParse(payload);
+        const success = SessionSuccessSchema.safeParse(payload);
         if (!response.ok || !success.success)
             throw remoteFailure(response, payload);
-        return resultSchema.parse(WireDecoder.parse(success.data.result));
+        return SessionResults[op].parse(WireDecoder.parse(success.data.result));
     }
     /** The `execStream` op answers with the encoded stream as its body, or a JSON error. */
     async remoteExecStream(args) {
@@ -484,7 +309,7 @@ export class NimbusSandbox {
             },
             write: async (path, content) => {
                 await this.ready();
-                return this.rpc(this.stub()._rpcWriteFile(path, content, undefined, cred));
+                await this.rpc(this.stub()._rpcWriteFile(path, content, undefined, cred));
             },
             stat: async (path) => {
                 await this.ready();
