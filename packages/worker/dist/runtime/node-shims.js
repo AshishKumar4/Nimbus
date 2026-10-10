@@ -191,6 +191,11 @@ if (typeof __real_net !== "undefined") {
           // The native implementation owns its own false -> true transition
           // and refuses a second connect while already connecting.
           socket.connecting = false;
+          // workerd's connect undestroys every stream it opens, Node's only a
+          // destroyed one: what the program did to this one while it waited
+          // (its end) stands.
+          const undestroy = socket._undestroy;
+          socket._undestroy = function () { if (this.destroyed) Reflect.apply(undestroy, this, arguments); };
           try { Reflect.apply(__nativeConnect, socket, [options]); }
           catch (error) { fail(error); }
         }, fail));
