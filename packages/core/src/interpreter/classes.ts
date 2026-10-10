@@ -11,7 +11,7 @@ import {
 } from './intrinsics.js';
 import { defineAccessor, defineMethod, toPropertyKey } from './operations.js';
 import {
-  ClassRecord, type Env, type FunctionInfo, PrivateName, type Sync, functionName, isObject, makeClass, makeFunction,
+  ClassRecord, type Env, type FunctionInfo, type InterpreterRuntime, PrivateName, type Sync, functionName, isObject,
 } from './runtime.js';
 
 /**
@@ -27,8 +27,9 @@ export type ElementKey =
   | { readonly kind: 'computed'; readonly computed: number };
 
 /** A class's making at runtime: its scope entered, private names made, heritage and keys evaluated, then defined. */
-export function classMaking(entry: ((env: Env) => Env) | null, heritage: Code | null, plan: ClassPlan): ClassMaker {
-  const define = classDefiner(plan);
+export function classMaking(rt: InterpreterRuntime, entry: ((env: Env) => Env) | null, heritage: Code | null, plan: ClassPlan): ClassMaker {
+  const define = classDefiner(rt, plan);
+  const ops = rt.ops;
   const keys = plan.computedKeys;
   const privateNames = plan.privateNames;
   // The class's private names exist from its scope's start: its heritage and keys can name them.
@@ -50,7 +51,7 @@ export function classMaking(entry: ((env: Env) => Env) | null, heritage: Code | 
         const classEnv = enter(env);
         const parent = h ? h(classEnv) : undefined;
         const computed = newSafeList<PropertyKey>();
-        for (let i = 0; i < ks.length; i++) append(computed, toPropertyKey(ks[i](classEnv)));
+        for (let i = 0; i < ks.length; i++) append(computed, toPropertyKey(ops, ks[i](classEnv)));
         return define(classEnv, parent, name, computed);
       },
       g: null,
@@ -64,7 +65,7 @@ export function classMaking(entry: ((env: Env) => Env) | null, heritage: Code | 
       const classEnv = enter(env);
       const parent = hg ? yield* hg(classEnv) : undefined;
       const computed = newSafeList<PropertyKey>();
-      for (let i = 0; i < kgs.length; i++) append(computed, toPropertyKey(yield* kgs[i](classEnv)));
+      for (let i = 0; i < kgs.length; i++) append(computed, toPropertyKey(ops, yield* kgs[i](classEnv)));
       return define(classEnv, parent, name, computed);
     }),
   };
@@ -106,11 +107,11 @@ export function fieldFrame(fi: FunctionInfo, scope: Env, thisArg: unknown, home:
 }
 
 /** ClassDefinitionEvaluation's runtime half, from a compiled plan. */
-export function classDefiner(plan: ClassPlan): (classEnv: Env, parent: unknown, name: string, computed: readonly PropertyKey[]) => Function {
+export function classDefiner(rt: InterpreterRuntime, plan: ClassPlan): (classEnv: Env, parent: unknown, name: string, computed: readonly PropertyKey[]) => Function {
   const { ctorInfo, writeInner, elements, instanceFi, staticFi } = plan;
   return (classEnv: Env, parent: unknown, name: string, computed: readonly PropertyKey[]): Function => {
     const record = new ClassRecord();
-    const C = makeClass(ctorInfo, classEnv, parent, name, record);
+    const C = rt.makeClass(ctorInfo, classEnv, parent, name, record);
     const protoValue: unknown = reflectGet(C, 'prototype');
     if (!isObject(protoValue)) throw new Error('interpreter: class without a prototype');
     const proto = protoValue;
@@ -130,7 +131,7 @@ export function classDefiner(plan: ClassPlan): (classEnv: Env, parent: unknown, 
       if (el.kind === 'method') {
         const fname = key instanceof PrivateName ? (el.accessor ? `${el.accessor} ${key.description}` : key.description)
           : functionName(key, el.accessor ?? undefined);
-        const fn = makeFunction(el.fi, classEnv, target, fname);
+        const fn = rt.makeFunction(el.fi, classEnv, target, fname);
         if (key instanceof PrivateName) {
           if (el.accessor === 'get') key.getter = fn;
           else if (el.accessor === 'set') key.setter = fn;

@@ -23,6 +23,11 @@ import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type {
+  SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions,
+  SessionDestroyOptions, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions,
+  SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget,
+} from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -292,7 +297,7 @@ The editor opens this file in Markdown preview mode by default. Use
 
 type SessionEnv = runtimeServices.HostedRuntimeEnv & SessionAiHost['env'];
 
-export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
+export class NimbusSession extends CloudflareDurableObject<SessionEnv> implements SessionRouterRpc {
   #runtimeServices: ReturnType<typeof runtimeServices.bindRuntimeServices>;
   // this.ctx and this.env are provided by the DurableObject base class
   runtimeWorkspace: NimbusWorkspace | null = null;
@@ -839,15 +844,15 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcWriteProtectedRootFile(rootPath: string, path: string, content: string | Uint8Array) {
     return _rpc._rpcWriteProtectedRootFile(this as any, rootPath, path, content);
   }
-  async _rpcStat(path: string, pid?: number, cred?: VfsCred): Promise<any> { return _rpc._rpcStat(this as any, path, pid, cred); }
-  async _rpcLstat(path: string, pid?: number, cred?: VfsCred): Promise<any> { return _rpc._rpcLstat(this as any, path, pid, cred); }
+  async _rpcStat(path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> { return _rpc._rpcStat(this as any, path, pid, cred); }
+  async _rpcLstat(path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> { return _rpc._rpcLstat(this as any, path, pid, cred); }
   async _rpcChmod(path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void> {
     return _rpc._rpcChmod(this as any, path, mode, pid, cred);
   }
   async _rpcSetUmask(mask: number, pid?: number): Promise<number> {
     return _rpc._rpcSetUmask(this as any, mask, pid);
   }
-  async _rpcReaddir(path: string, pid?: number, cred?: VfsCred): Promise<{ name: string; type: string }[]> { return _rpc._rpcReaddir(this as any, path, pid, cred); }
+  async _rpcReaddir(path: string, pid?: number, cred?: VfsCred): Promise<SessionDirectoryEntry[]> { return _rpc._rpcReaddir(this as any, path, pid, cred); }
   async _rpcExists(path: string, pid?: number, cred?: VfsCred): Promise<boolean> { return _rpc._rpcExists(this as any, path, pid, cred); }
   async _rpcMkdir(path: string, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcMkdir(this as any, path, pid, cred); }
   async _rpcRename(from: string, to: string, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcRename(this as any, from, to, pid, cred); }
@@ -973,7 +978,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcCpBlocked(pid: number, report: unknown) { return _rpc._rpcCpBlocked(this as any, pid, report); }
 
   // Programmatic sandbox SDK RPC
-  async _rpcReady(options?: _programmatic.ProgrammaticReadyOptions) { return _programmatic.ensureProgrammaticReady(this as any, options); }
+  async _rpcReady(options?: SessionReadyOptions) { return _programmatic.ensureProgrammaticReady(this as any, options); }
   /** perf(boot): cold placement + constructor probe. First access runs the
    *  DO constructor (placement + blockConcurrencyWhile storage I/O) but this
    *  method does NOT run initSession, so measuring its `rpcMs` against a
@@ -981,36 +986,36 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    *  initSession build cost. */
   async _rpcBootProbe(): Promise<{ ok: true }> { return { ok: true }; }
   /** The command's output as it is written: an encoded exec stream (`@nimbus-sh/core/runtime/exec-stream`). */
-  async _rpcExecStream(command: string, options?: _programmatic.ProgrammaticExecOptions): Promise<ReadableStream<Uint8Array>> {
+  async _rpcExecStream(command: string, options?: SessionExecOptions): Promise<ReadableStream<Uint8Array>> {
     return encodeExecStream(await _programmatic.rpcExecStream(this as any, command, options));
   }
-  async _rpcStartProcess(command: string, options?: _programmatic.ProgrammaticExecOptions) { return _programmatic.rpcStartProcess(this as any, command, options); }
-  async _rpcRunCode(code: string, options?: _programmatic.ProgrammaticExecOptions & { language?: 'javascript' | 'typescript' | 'python' | 'ruby' | 'shell'; install?: 'never' | 'ifMissing' }) {
+  async _rpcStartProcess(command: string, options?: SessionExecOptions) { return _programmatic.rpcStartProcess(this as any, command, options); }
+  async _rpcRunCode(code: string, options?: SessionRunCodeOptions) {
     return _programmatic.rpcRunCode(this as any, code, options);
   }
-  async _rpcInstallRuntime(spec: string, options?: { force?: boolean }) { return _programmatic.rpcInstallRuntime(this as any, spec, options); }
-  async _rpcEnsureRuntimes(specs: string[], options?: { force?: boolean }) { return _programmatic.rpcEnsureRuntimes(this as any, specs, options); }
+  async _rpcInstallRuntime(spec: string, options?: SessionRuntimeInstallOptions) { return _programmatic.rpcInstallRuntime(this as any, spec, options); }
+  async _rpcEnsureRuntimes(specs: string[], options?: SessionRuntimeInstallOptions) { return _programmatic.rpcEnsureRuntimes(this as any, specs, options); }
   async _rpcListRuntimes() { return (await _programmatic.rpcListRuntimes(this as any)); }
   async _rpcListProcesses() { return _programmatic.rpcListProcesses(this as any); }
   async _rpcKillProcess(pid: number) { return _programmatic.rpcKillProcess(this as any, pid); }
   async _rpcWriteProcessInput(pid: number, data: string) { return _programmatic.rpcWriteProcessInput(this as any, pid, data); }
   async _rpcEndProcessInput(pid: number) { return _programmatic.rpcEndProcessInput(this as any, pid); }
-  async _rpcResizeProcess(pid: number, size: { columns: number; rows: number }) { return _programmatic.rpcResizeProcess(this as any, pid, size); }
+  async _rpcResizeProcess(pid: number, size: SessionTerminalSize) { return _programmatic.rpcResizeProcess(this as any, pid, size); }
   async _rpcSignalProcess(pid: number, signal: string) { return _programmatic.rpcSignalProcess(this as any, pid, signal); }
-  async _rpcProcessLogs(pid: number, options?: { cursor?: number; lines?: number; bytes?: number }) { return _programmatic.rpcProcessLogs(this as any, pid, options); }
+  async _rpcProcessLogs(pid: number, options?: SessionProcessLogsOptions) { return _programmatic.rpcProcessLogs(this as any, pid, options); }
   async _rpcListPorts() { return _programmatic.rpcListPorts(this as any); }
-  async _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public'; name?: string }) {
+  async _rpcExposePort(port: number, options?: SessionExposeOptions) {
     return _programmatic.rpcExposePort(this as any, port, options);
   }
   // The identity-centric application surface: one implementation each in
   // programmatic.ts, addressed by port, pid, name or owner.
-  async _rpcExposeApp(target: _programmatic.AppTarget, options?: { visibility?: 'scoped' | 'public'; name?: string }) {
+  async _rpcExposeApp(target: SessionAppTarget, options?: SessionExposeOptions) {
     return _programmatic.rpcExposeApp(this as any, target, options);
   }
   async _rpcListApps() { return _programmatic.rpcListApps(this as any); }
-  async _rpcRotateLink(target: _programmatic.AppTarget) { return _programmatic.rpcRotateLink(this as any, target); }
-  async _rpcRemoveApp(target: _programmatic.AppTarget) { return _programmatic.rpcRemoveApp(this as any, target); }
-  async _rpcEnsureDurableApp(input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public'; name?: string }) {
+  async _rpcRotateLink(target: SessionAppTarget) { return _programmatic.rpcRotateLink(this as any, target); }
+  async _rpcRemoveApp(target: SessionAppTarget) { return _programmatic.rpcRemoveApp(this as any, target); }
+  async _rpcEnsureDurableApp(input: SessionDurableAppOptions) {
     return _programmatic.rpcEnsureDurableApp(this as any, input);
   }
   async _rpcRemoveDurableApp(owner: string) {
@@ -1056,7 +1061,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   ) {
     return _programmatic.rpcSpawnWorker(this as any, workerCode, command, cwd, opts);
   }
-  async _rpcDestroy(options?: _programmatic.ProgrammaticDestroyOptions) { return _programmatic.rpcDestroy(this as any, options); }
+  async _rpcDestroy(options?: SessionDestroyOptions) { return _programmatic.rpcDestroy(this as any, options); }
 
 
   // ── HTTP handler ──────────────────────────────────────────────────────

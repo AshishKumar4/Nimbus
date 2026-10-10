@@ -9541,20 +9541,23 @@ error: the Oxc transform crashed (${reason})`);
   function isLexerError(error) {
     return error instanceof Error && typeof Reflect.get(error, "idx") === "number";
   }
-  function rewriteDynamicImports(code, parentUrl, moduleMetadata = false, routeImports = true) {
+  function rewriteDynamicImports(code, parentUrl, moduleMetadata = false, routeImports = true, loader = DYNAMIC_IMPORT_HELPER) {
     const metadata = moduleMetadata && /\bimport\s*(?:\.|\/[/*])/.test(code);
     const imports = routeImports && mayHaveDynamicImport(code);
     if (!imports && !metadata) return code;
     let lexed;
     try {
-      lexed = rewriteFromLexer(code, parentUrl, metadata, imports);
+      lexed = rewriteFromLexer(code, loaderCall(loader, parentUrl), metadata, imports);
     } catch (error) {
       if (!(isLexerError(error) || error instanceof SyntaxError || error instanceof RangeError)) throw error;
       lexed = null;
     }
-    return lexed ?? rewriteWithGrammar(code, parentUrl, metadata, imports);
+    return lexed ?? rewriteWithGrammar(code, loaderCall(loader, parentUrl), metadata, imports);
   }
-  function rewriteFromLexer(code, parentUrl, metadata, imports) {
+  function loaderCall(loader, parentUrl) {
+    return loader + "(" + JSON.stringify(parentUrl) + ", ";
+  }
+  function rewriteFromLexer(code, call, metadata, imports) {
     const hashbang = code.startsWith("#!") ? lineEnd(code, 0) : 0;
     const source = hashbang ? " ".repeat(hashbang) + code.slice(hashbang) : code;
     const lexed = lexImports(source);
@@ -9575,7 +9578,6 @@ error: the Oxc transform crashed (${reason})`);
       calls.push({ ss: at2, se: end, d: open, lexed: false });
     }
     calls.sort((a, b) => a.ss - b.ss);
-    const call = DYNAMIC_IMPORT_HELPER + "(" + JSON.stringify(parentUrl) + ", ";
     const edits = [];
     let validatedEnd = -1;
     for (const site of calls) {
@@ -9783,9 +9785,9 @@ error: the Oxc transform crashed (${reason})`);
       return node;
     }
   };
-  function rewriteWithGrammar(code, parentUrl, metadata, imports) {
+  function rewriteWithGrammar(code, call, metadata, imports) {
     const collected = {
-      call: DYNAMIC_IMPORT_HELPER + "(" + JSON.stringify(parentUrl) + ", ",
+      call,
       edits: [],
       metas: [],
       names: metadata ?   new Set() : null
@@ -9830,6 +9832,174 @@ error: the Oxc transform crashed (${reason})`);
     return applySourceEdits(code, edits);
   }
 
+  function bindingIdentifiers(pattern, out) {
+    if (pattern === null) return out;
+    switch (pattern.type) {
+      case "Identifier":
+        out[out.length] = pattern;
+        return out;
+      case "ObjectPattern":
+        for (let i = 0; i < pattern.properties.length; i++) {
+          const property = pattern.properties[i];
+          bindingIdentifiers(property.type === "RestElement" ? property.argument : property.value, out);
+        }
+        return out;
+      case "ArrayPattern":
+        for (let i = 0; i < pattern.elements.length; i++) bindingIdentifiers(pattern.elements[i], out);
+        return out;
+      case "RestElement":
+        return bindingIdentifiers(pattern.argument, out);
+      case "AssignmentPattern":
+        return bindingIdentifiers(pattern.left, out);
+      default:
+        return out;
+    }
+  }
+
+  var ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, "__esModule", { value: true }); O.defineProperty(exports, tag, { value: "Module" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })()';
+  var ESM_INTEROP_HELPER = "(m) => m && m.__esModule ? m : { default: m }";
+  var ESM_NAMESPACE_HELPER = '(m) => { if (m && m.__esModule) return m; const O = ({}).constructor; const ns = O.create(m != null ? O.getPrototypeOf(m) : null); O.defineProperty(ns, "default", { value: m, enumerable: true }); if (m != null) for (const k of O.getOwnPropertyNames(m)) if (k !== "default") O.defineProperty(ns, k, { get: () => m[k], enumerable: O.getOwnPropertyDescriptor(m, k).enumerable }); return ns; }';
+  var ESM_STAR_HELPER = '(exports, define, m) => { for (const k in m) if (k !== "default" && !({}).hasOwnProperty.call(exports, k)) define(k, () => m[k]); }';
+  var ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, interop: ${ESM_INTEROP_HELPER}, namespace: ${ESM_NAMESPACE_HELPER}, star: ${ESM_STAR_HELPER} }`;
+  function exportName(node) {
+    return node.type === "Identifier" ? node.name : `${node.value}`;
+  }
+  function esmRecord(node, lists) {
+    switch (node.type) {
+      case "ImportDeclaration": {
+        const bindings = lists.list();
+        for (let i = 0; i < node.specifiers.length; i++) {
+          const specifier = node.specifiers[i];
+          lists.push(bindings, specifier.type === "ImportNamespaceSpecifier" ? { kind: "namespace", local: specifier.local.name } : {
+            kind: "named",
+            local: specifier.local.name,
+            imported: specifier.type === "ImportDefaultSpecifier" ? "default" : exportName(specifier.imported)
+          });
+        }
+        return { kind: "import", start: node.start, end: node.end, source: `${node.source.value}`, bindings };
+      }
+      case "ExportNamedDeclaration": {
+        const names = lists.list();
+        const declaration = node.declaration;
+        if (declaration) {
+          if (declaration.type === "VariableDeclaration") {
+            const ids = lists.list();
+            for (let i = 0; i < declaration.declarations.length; i++) bindingIdentifiers(declaration.declarations[i].id, ids);
+            for (let i = 0; i < ids.length; i++) lists.push(names, { kind: "named", exported: ids[i].name, local: ids[i].name });
+          } else {
+            lists.push(names, { kind: "named", exported: declaration.id.name, local: declaration.id.name });
+          }
+          return { kind: "export", start: node.start, end: declaration.start, source: null, names };
+        }
+        for (let i = 0; i < node.specifiers.length; i++) {
+          const specifier = node.specifiers[i];
+          lists.push(names, { kind: "named", exported: exportName(specifier.exported), local: exportName(specifier.local) });
+        }
+        return { kind: "export", start: node.start, end: node.end, source: node.source ? `${node.source.value}` : null, names };
+      }
+      case "ExportDefaultDeclaration": {
+        const declaration = node.declaration;
+        if ((declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration") && declaration.id) {
+          const names = lists.list();
+          lists.push(names, { kind: "named", exported: "default", local: declaration.id.name });
+          return { kind: "export", start: node.start, end: declaration.start, source: null, names };
+        }
+        return { kind: "export-default", start: node.start, end: node.end, expression: { start: declaration.start, end: declaration.end } };
+      }
+      case "ExportAllDeclaration": {
+        if (node.exported) {
+          const names = lists.list();
+          lists.push(names, { kind: "namespace", exported: exportName(node.exported) });
+          return { kind: "export", start: node.start, end: node.end, source: `${node.source.value}`, names };
+        }
+        return { kind: "export-all", start: node.start, end: node.end, source: `${node.source.value}` };
+      }
+      default:
+        return null;
+    }
+  }
+  function esmLink(records, lists) {
+    const exports = lists.list();
+    const requests = lists.list();
+    const namespaces = lists.list();
+    const stars = lists.list();
+    const none = lists.list();
+    const request = (source, kept, interop, bindings) => {
+      lists.push(requests, { source, kept, interop, bindings });
+      return requests.length - 1;
+    };
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i];
+      switch (record.kind) {
+        case "import": {
+          let interop = false;
+          for (let j = 0; j < record.bindings.length; j++) {
+            const binding = record.bindings[j];
+            if (binding.kind === "named" && binding.imported === "default") interop = true;
+          }
+          const at2 = request(record.source, record.bindings.length > 0, interop, record.bindings);
+          for (let j = 0; j < record.bindings.length; j++) {
+            const binding = record.bindings[j];
+            if (binding.kind === "namespace") lists.push(namespaces, { request: at2, local: binding.local });
+          }
+          break;
+        }
+        case "export": {
+          if (record.source === null) {
+            for (let j = 0; j < record.names.length; j++) {
+              const name = record.names[j];
+              if (name.kind === "named") lists.push(exports, { kind: "binding", exported: name.exported, local: name.local });
+            }
+            break;
+          }
+          const at2 = request(record.source, true, false, none);
+          for (let j = 0; j < record.names.length; j++) {
+            const name = record.names[j];
+            if (name.kind === "named") {
+              lists.push(exports, { kind: "reexport", exported: name.exported, request: at2, name: name.local });
+            } else {
+              lists.push(namespaces, { request: at2, local: null });
+              lists.push(exports, { kind: "namespace", exported: name.exported, namespace: namespaces.length - 1 });
+            }
+          }
+          break;
+        }
+        case "export-default":
+          lists.push(exports, { kind: "default", exported: "default" });
+          break;
+        case "export-all":
+          lists.push(stars, request(record.source, true, false, none));
+          break;
+      }
+    }
+    return { exports: byExportedName(exports, lists), requests, namespaces, stars };
+  }
+  function byExportedName(entries, lists) {
+    const n = entries.length;
+    let sorted = true;
+    for (let i = 1; i < n && sorted; i++) sorted = !(entries[i].exported < entries[i - 1].exported);
+    if (sorted) return entries;
+    let from = entries;
+    let to = lists.list();
+    for (let i = 0; i < n; i++) lists.push(to, entries[i]);
+    for (let width = 1; width < n; width *= 2) {
+      for (let low = 0; low < n; low += 2 * width) {
+        const middle = low + width < n ? low + width : n;
+        const high = low + 2 * width < n ? low + 2 * width : n;
+        let i = low;
+        let j = middle;
+        let k = low;
+        while (i < middle && j < high) to[k++] = from[j].exported < from[i].exported ? from[j++] : from[i++];
+        while (i < middle) to[k++] = from[i++];
+        while (j < high) to[k++] = from[j++];
+      }
+      const merged = to;
+      to = from;
+      from = merged;
+    }
+    return from;
+  }
+
   function isNode(value) {
     return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string" && "start" in value && typeof value.start === "number" && "end" in value && typeof value.end === "number";
   }
@@ -9845,32 +10015,12 @@ error: the Oxc transform crashed (${reason})`);
     const value = node?.[key];
     return typeof value === "string" ? value : null;
   }
-  function* patternNames(node) {
-    switch (node?.type) {
-      case "Identifier": {
-        const name = stringOf(node, "name");
-        if (name !== null) yield name;
-        return;
-      }
-      case "ObjectPattern":
-        for (const property of list(node, "properties")) yield* patternNames(child(property, property.type === "RestElement" ? "argument" : "value"));
-        return;
-      case "ArrayPattern":
-        for (const element of list(node, "elements")) yield* patternNames(element);
-        return;
-      case "RestElement":
-        yield* patternNames(child(node, "argument"));
-        return;
-      case "AssignmentPattern":
-        yield* patternNames(child(node, "left"));
-        return;
-      case "TSParameterProperty":
-        yield* patternNames(child(node, "parameter"));
-        return;
-      case "TSQualifiedName":
-        yield* patternNames(child(node, "left"));
-        return;
+  function patternNames(node) {
+    let binding = node;
+    while (binding !== null && (binding.type === "TSParameterProperty" || binding.type === "TSQualifiedName")) {
+      binding = child(binding, binding.type === "TSParameterProperty" ? "parameter" : "left");
     }
+    return bindingIdentifiers(binding, []).map((identifier) => identifier.name);
   }
   var FUNCTIONS =   new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
   function programNames(statement) {
@@ -10023,6 +10173,9 @@ error: the Oxc transform crashed (${reason})`);
     return source + "\nexport {};\n";
   }
 
+  var ARRAYS = { list: () => [], push: (list2, value) => {
+    list2.push(value);
+  } };
   function blank(text) {
     return text.replace(/[^\n\r\u2028\u2029]/g, " ");
   }
@@ -10084,7 +10237,6 @@ error: the Oxc transform crashed (${reason})`);
     return { records, wrapperUses, topLevelAwait, metas, dynamicImports, names };
   }
   function readModule(source, known) {
-    const nameOf = (node) => node.type === "Identifier" ? String(node.name) : String(node.value);
     const imported = new Set(known ?? []);
     const tracked =   new Set([...imported, ...COMMONJS_WRAPPER_NAMES]);
     const declared =   new Set();
@@ -10148,83 +10300,18 @@ error: the Oxc transform crashed (${reason})`);
           found.push({ start, end, use });
         }
       }
-      switch (node.type) {
-        case "ImportDeclaration": {
-          for (const specifier of node.specifiers) {
-            if (specifier.type === "ImportNamespaceSpecifier") continue;
-            if (code && !imported.has(specifier.local.name)) importsAfterCode = true;
-            imported.add(specifier.local.name);
-            tracked.add(specifier.local.name);
-          }
-          records.push({
-            kind: "import",
-            start: node.start,
-            end: node.end,
-            source: String(node.source.value),
-            bindings: node.specifiers.map((specifier) => specifier.type === "ImportNamespaceSpecifier" ? { kind: "namespace", local: specifier.local.name } : {
-              kind: "named",
-              local: specifier.local.name,
-              imported: specifier.type === "ImportDefaultSpecifier" ? "default" : nameOf(specifier.imported),
-              references: []
-            })
-          });
-          return;
+      const record = esmRecord(node, ARRAYS);
+      if (record?.kind === "import") {
+        for (const binding of record.bindings) {
+          if (binding.kind === "namespace") continue;
+          if (code && !imported.has(binding.local)) importsAfterCode = true;
+          imported.add(binding.local);
+          tracked.add(binding.local);
         }
-        case "ExportNamedDeclaration":
-          if (node.declaration) {
-            records.push({
-              kind: "export",
-              start: node.start,
-              end: node.declaration.start,
-              source: null,
-              names: declaredNames(node.declaration).map((name) => ({ kind: "named", exported: name, local: name }))
-            });
-          } else {
-            records.push({
-              kind: "export",
-              start: node.start,
-              end: node.end,
-              source: node.source ? String(node.source.value) : null,
-              names: node.specifiers.map((s) => ({ kind: "named", exported: nameOf(s.exported), local: nameOf(s.local) }))
-            });
-          }
-          break;
-        case "ExportDefaultDeclaration": {
-          const declaration = node.declaration;
-          if ((declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration") && declaration.id) {
-            records.push({
-              kind: "export",
-              start: node.start,
-              end: declaration.start,
-              source: null,
-              names: [{ kind: "named", exported: "default", local: declaration.id.name }]
-            });
-          } else {
-            records.push({
-              kind: "export-default",
-              start: node.start,
-              end: node.end,
-              expression: { start: declaration.start, end: declaration.end }
-            });
-          }
-          break;
-        }
-        case "ExportAllDeclaration":
-          if (node.exported) {
-            records.push({
-              kind: "export",
-              start: node.start,
-              end: node.end,
-              source: String(node.source.value),
-              names: [{ kind: "namespace", exported: nameOf(node.exported) }]
-            });
-          } else {
-            records.push({ kind: "export-all", start: node.start, end: node.end, source: String(node.source.value) });
-          }
-          break;
-        default:
-          break;
+        records.push(record);
+        return;
       }
+      if (record) records.push(record);
       code = true;
     };
     parseStatements(source, MODULE_PARSE_OPTIONS, {
@@ -10287,114 +10374,95 @@ error: the Oxc transform crashed (${reason})`);
   function emitModule(source, records, options) {
     const temp = options.names ?? generatedNames(source);
     const key = (name) => `[${JSON.stringify(name)}]`;
-    const requireRef = temp();
-    const requireOf = (specifier) => `${requireRef}(${JSON.stringify(specifier)})`;
-    const exportsRef = temp();
-    const exportGetter = temp();
-    const ownKey = temp();
-    const namespaceOf = temp();
-    let namespaces = false;
-    const namespace = (mod) => {
-      namespaces = true;
-      return `${namespaceOf}(${mod})`;
+    const link = esmLink(records, ARRAYS);
+    const header = [];
+    const helpers =   new Map();
+    const helper = (text) => {
+      let name = helpers.get(text);
+      if (name === void 0) {
+        name = temp();
+        helpers.set(text, name);
+        header.push(`const ${name} = ${text};`);
+      }
+      return name;
     };
-    const importModules =   new Map();
+    let requireRef = "";
+    if (link.requests.length > 0) {
+      requireRef = temp();
+      header.push(`const ${requireRef} = (specifier) => ${options.requireFunction ?? "require"}(specifier);`);
+    }
+    let exportsRef = "";
+    let exportGetter = "";
+    if (records.some((record) => record.kind !== "import")) {
+      exportsRef = temp();
+      exportGetter = temp();
+      header.push(`const ${exportsRef} = ${options.exportsObject ?? "module.exports"}; const ${exportGetter} = (${ESM_EXPORTS_HELPER})(${exportsRef});`);
+    }
+    const requires = [];
+    const modules = [];
     const reads =   new Map();
-    const uses = [];
-    for (const record of records) {
-      if (record.kind !== "import" || record.bindings.length === 0) continue;
+    for (const request of link.requests) {
+      if (!request.kept) {
+        requires.push(`${requireRef}(${JSON.stringify(request.source)});`);
+        modules.push("");
+        continue;
+      }
       const mod = temp();
-      const interop = record.bindings.some((binding) => binding.kind === "named" && binding.imported === "default") ? temp() : null;
-      importModules.set(record, { mod, interop });
-      for (const binding of record.bindings) {
+      modules.push(mod);
+      requires.push(`const ${mod} = ${requireRef}(${JSON.stringify(request.source)});`);
+      const interop = request.interop ? temp() : null;
+      if (interop) requires.push(`const ${interop} = ${helper(ESM_INTEROP_HELPER)}(${mod});`);
+      for (const binding of request.bindings) {
+        if (binding.kind === "named") reads.set(binding.local, binding.imported === "default" ? `${interop}.default` : `${mod}${key(binding.imported)}`);
+      }
+    }
+    const imported = [];
+    const lazy = [];
+    const namespaces = link.namespaces.map(({ request, local }) => {
+      const namespace = helper(ESM_NAMESPACE_HELPER);
+      if (local !== null) {
+        imported.push(`const ${local} = ${namespace}(${modules[request]});`);
+        return local;
+      }
+      const value = temp();
+      lazy.push(`let ${value};`);
+      return `${value} ??= ${namespace}(${modules[request]})`;
+    });
+    const uses = [];
+    const useImports = (bindings) => {
+      for (const binding of bindings) {
         if (binding.kind === "namespace") continue;
-        const read = binding.imported === "default" ? `${interop}.default` : `${mod}${key(binding.imported)}`;
-        reads.set(binding.local, read);
+        const read = reads.get(binding.local);
         for (const { start, end: end2, use } of binding.references) {
           if (use === "write") continue;
           const callee = use === "call" ? `(0, ${read})` : use === "leading-call" ? `void 0, (0, ${read})` : null;
           uses.push(callee === null ? { start, end: end2, text: use === "shorthand" ? `${binding.local}: ${read}` : read } : { start, end: end2, text: callee, call: true });
         }
+        if (binding.references.some(({ use }) => use === "write")) imported.push(`const ${binding.local} = void 0;`);
       }
-    }
-    const requires = [];
-    const imported = [];
-    const getters = [];
-    const stars = [];
+    };
     const edits = [...options.edits ?? []];
-    let exportsAnything = false;
     if (source.startsWith("#!")) edits.push({ start: 0, end: 2, text: "//" });
     const remove = (start, end2) => edits.push({ start, end: end2, text: ";" + blank(source.slice(start + 1, end2)) });
+    let defaultValue = "";
     for (const record of records) {
-      switch (record.kind) {
-        case "import": {
-          remove(record.start, record.end);
-          const module = importModules.get(record);
-          if (!module) {
-            requires.push(`${requireOf(record.source)};`);
-            break;
-          }
-          const { mod, interop } = module;
-          requires.push(`const ${mod} = ${requireOf(record.source)};`);
-          if (interop) requires.push(`const ${interop} = ${mod} && ${mod}.__esModule ? ${mod} : { default: ${mod} };`);
-          for (const binding of record.bindings) {
-            const { local } = binding;
-            if (binding.kind === "namespace") imported.push(`const ${local} = ${namespace(mod)};`);
-            else if (binding.references.some(({ use }) => use === "write")) imported.push(`const ${local} = void 0;`);
-          }
-          break;
-        }
-        case "export": {
-          exportsAnything = true;
-          remove(record.start, record.end);
-          if (record.source === null) {
-            for (const name of record.names) {
-              if (name.kind !== "named") throw new Error(`export of the namespace ${name.exported} without a source module`);
-              getters.push([name.exported, reads.get(name.local) ?? name.local]);
-            }
-            break;
-          }
-          const mod = temp();
-          requires.push(`const ${mod} = ${requireOf(record.source)};`);
-          for (const name of record.names) {
-            getters.push([name.exported, name.kind === "namespace" ? namespace(mod) : `${mod}${key(name.local)}`]);
-          }
-          break;
-        }
-        case "export-default": {
-          exportsAnything = true;
-          const value = temp();
-          const { start, end: end2 } = record.expression;
-          const keyword = blank(source.slice(record.start, start));
-          const lineBreak2 = keyword.search(/[\n\r\u2028\u2029]/);
-          edits.push({ start: record.start, end: start, text: `var ${value} = ({ default: (` + (lineBreak2 === -1 ? "" : keyword.slice(lineBreak2)) });
-          edits.push({ start: end2, end: record.end, text: ") }).default;" + blank(source.slice(end2, record.end)) });
-          getters.push(["default", value]);
-          break;
-        }
-        case "export-all": {
-          exportsAnything = true;
-          const mod = temp();
-          remove(record.start, record.end);
-          requires.push(`const ${mod} = ${requireOf(record.source)};`);
-          stars.push(
-            `for (const k in ${mod}) if (k !== "default" && !${ownKey}(${exportsRef}, k)) ${exportGetter}(k, () => ${mod}[k]);`
-          );
-          break;
-        }
+      if (record.kind !== "export-default") {
+        remove(record.start, record.end);
+        if (record.kind === "import") useImports(record.bindings);
+        continue;
       }
+      defaultValue = temp();
+      const { start, end: end2 } = record.expression;
+      const keyword = blank(source.slice(record.start, start));
+      const lineBreak2 = keyword.search(/[\n\r\u2028\u2029]/);
+      edits.push({ start: record.start, end: start, text: `var ${defaultValue} = ({ default: (` + (lineBreak2 === -1 ? "" : keyword.slice(lineBreak2)) });
+      edits.push({ start: end2, end: record.end, text: ") }).default;" + blank(source.slice(end2, record.end)) });
     }
-    const header = exportsAnything ? [
-      `const ${exportsRef} = ${options.exportsObject ?? "module.exports"}; ({}).constructor.defineProperty(${exportsRef}, "__esModule", { value: true }); ({}).constructor.defineProperty(${exportsRef}, ({}).constructor.getOwnPropertySymbols(({}).constructor.getPrototypeOf(async () => {}))[0], { value: "Module" });`,
-      `const ${exportGetter} = (name, get) => ({}).constructor.defineProperty(${exportsRef}, name, { enumerable: true, get });`,
-      `const ${ownKey} = (o, k) => ({}).hasOwnProperty.call(o, k);`
-    ] : [];
-    if (namespaces) {
-      header.push(
-        `const ${namespaceOf} = (m) => { if (m && m.__esModule) return m; const O = ({}).constructor; const ns = O.create(m != null ? O.getPrototypeOf(m) : null); O.defineProperty(ns, "default", { value: m, enumerable: true }); if (m != null) for (const k of O.getOwnPropertyNames(m)) if (k !== "default") O.defineProperty(ns, k, { get: () => m[k], enumerable: O.getOwnPropertyDescriptor(m, k).enumerable }); return ns; };`
-      );
-    }
-    if (requires.length > 0) header.push(`const ${requireRef} = (specifier) => ${options.requireFunction ?? "require"}(specifier);`);
+    const installed = link.exports.map((entry) => {
+      const read = entry.kind === "binding" ? reads.get(entry.local) ?? entry.local : entry.kind === "default" ? defaultValue : entry.kind === "reexport" ? `${modules[entry.request]}${key(entry.name)}` : namespaces[entry.namespace];
+      return `${exportGetter}(${JSON.stringify(entry.exported)}, () => ${read});`;
+    });
+    const stars = link.stars.map((request) => `${helper(ESM_STAR_HELPER)}(${exportsRef}, ${exportGetter}, ${modules[request]});`);
     const bind = options.bind;
     if (bind && bind.metas.length > 0) {
       const meta = temp();
@@ -10403,12 +10471,11 @@ error: the Oxc transform crashed (${reason})`);
     }
     if (bind && bind.dynamicImports.length > 0) {
       const load = temp();
-      header.push(`const ${load} = (...args) => ${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(bind.parentUrl)}, ...args);`);
+      header.push(`const ${load} = (...args) => ${bind.loader ?? DYNAMIC_IMPORT_HELPER}(${JSON.stringify(bind.parentUrl)}, ...args);`);
       for (const start of bind.dynamicImports) edits.push({ start, end: start + "import".length, text: load });
     }
-    const installed = getters.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([exported, value]) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`);
     const allEdits = [...edits, ...uses];
-    const prologue = [...installed, ...requires, ...imported, ...stars].join(" ");
+    const prologue = [...lazy, ...installed, ...requires, ...imported, ...stars].join(" ");
     const lead = options.body === "async" ? `"use strict";${header.join(" ")} return (async () => { ${prologue}` : `"use strict";${header.join(" ")} ${prologue}`;
     const code = lead + applySourceEdits(source, allEdits) + (options.body === "async" ? "\n})();\n" : "\n");
     const sourceLength = options.sourceLength ?? source.length;
@@ -10440,34 +10507,6 @@ error: the Oxc transform crashed (${reason})`);
       }
     }
     return entries;
-  }
-  function declaredNames(declaration) {
-    if (declaration.type !== "VariableDeclaration") return declaration.id ? [declaration.id.name] : [];
-    const names = [];
-    const visit = (pattern) => {
-      if (pattern === null) return;
-      switch (pattern.type) {
-        case "Identifier":
-          names.push(pattern.name);
-          break;
-        case "ObjectPattern":
-          for (const property of pattern.properties) visit(property.type === "RestElement" ? property.argument : property.value);
-          break;
-        case "ArrayPattern":
-          for (const element of pattern.elements) visit(element);
-          break;
-        case "RestElement":
-          visit(pattern.argument);
-          break;
-        case "AssignmentPattern":
-          visit(pattern.left);
-          break;
-        default:
-          break;
-      }
-    };
-    for (const declarator of declaration.declarations ?? []) visit(declarator.id);
-    return names;
   }
 
   var NODE_RELEASE = "22.22.3";

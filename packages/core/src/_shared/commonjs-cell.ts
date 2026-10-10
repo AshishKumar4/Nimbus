@@ -124,13 +124,15 @@
  * the interpreter's cost and behaviour are compared with V8's.
  */
 import { createHash } from 'node:crypto';
-import { parse, tokenizer, tokTypes, type Pattern, type Program, type Token } from 'acorn';
+import { parse, tokenizer, tokTypes, type Identifier, type Program, type Token } from 'acorn';
 import {
   RUNTIME_FUNCTION_HEADS, expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource,
   type RuntimeFunctionKind, type ScriptExpression, scriptExpression, type SourceRealm,
 } from './runtime-function-source.js';
 import { INTERPRETER_UNSUPPORTED } from '../interpreter/unsupported-code.js';
-import { applySourceEdits, forEachNode, type SourceEdit } from '../runtime/javascript-ast.js';
+import { applySourceEdits, COMMONJS_WRAPPER_NAMES, forEachNode, type SourceEdit } from '../runtime/javascript-ast.js';
+import { bindingIdentifiers } from '../runtime/binding-pattern.js';
+import { ESM_MODULE_HELPERS } from '../runtime/esm-interop.js';
 import { moduleImporterUrl } from './module-importer.js';
 
 export type { RuntimeFunctionKind } from './runtime-function-source.js';
@@ -246,7 +248,6 @@ export function columnMapModuleName(name: string): string {
 }
 const COLUMN_MAP_SUFFIX = '.columns';
 
-const WRAPPER_NAMES = new Set(['exports', 'require', 'module', '__filename', '__dirname']);
 /** Could the text declare a wrapper name lexically at all: the cheap test before a parse. */
 const LEXICAL_WRAPPER_NAME = /\b(?:const|let|class)\b[\s\S]{0,4096}?\b(?:exports|require|module|__filename|__dirname)\b/;
 /** Largest source declaresWrapperBinding parses; above it the answer is `true`. */
@@ -278,27 +279,14 @@ export function declaresWrapperBinding(source: string): boolean {
   if (!program) return false;
   for (const statement of program.body) {
     if (statement.type === 'ClassDeclaration') {
-      if (statement.id && WRAPPER_NAMES.has(statement.id.name)) return true;
+      if (statement.id && COMMONJS_WRAPPER_NAMES.has(statement.id.name)) return true;
     } else if (statement.type === 'VariableDeclaration' && statement.kind !== 'var') {
-      for (const declarator of statement.declarations) {
-        if (patternBinds(declarator.id)) return true;
-      }
+      const bound: Identifier[] = [];
+      for (const declarator of statement.declarations) bindingIdentifiers(declarator.id, bound);
+      if (bound.some((identifier) => COMMONJS_WRAPPER_NAMES.has(identifier.name))) return true;
     }
   }
   return false;
-}
-
-/** Whether a binding pattern binds one of the wrapper's names. */
-function patternBinds(node: Pattern | null | undefined): boolean {
-  if (!node) return false;
-  switch (node.type) {
-    case 'Identifier': return WRAPPER_NAMES.has(node.name);
-    case 'ObjectPattern': return node.properties.some((p) => patternBinds(p.type === 'RestElement' ? p.argument : p.value));
-    case 'ArrayPattern': return node.elements.some((e) => patternBinds(e));
-    case 'RestElement': return patternBinds(node.argument);
-    case 'AssignmentPattern': return patternBinds(node.left);
-    default: return false;
-  }
 }
 
 /** Tokens that continue an expression across a line break, so ASI does not end a directive there. */
@@ -1007,6 +995,7 @@ function __nimbusRuntimeInterpreter() {
     __nimbusInterpreter = createInterpreter(__nimbusRegistryRequire("./${RUNTIME_INTERPRETER_OPS_MODULE}"), {
       dynamicImport: (parentUrl, specifier, options) => globalThis.__nimbusDynamicImport(parentUrl, specifier, options),
       primordials: __nimbusLaunchPrimordials,
+      moduleHelpers: ${ESM_MODULE_HELPERS},
     });
   }
   return __nimbusInterpreter;

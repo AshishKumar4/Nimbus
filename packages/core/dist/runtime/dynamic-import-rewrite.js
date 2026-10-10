@@ -54,21 +54,21 @@ function isLexerError(error) {
     return error instanceof Error && typeof Reflect.get(error, 'idx') === 'number';
 }
 /**
- * Route the cell's import() calls to the process's loader and, with
- * `moduleMetadata`, bind its import.meta to the module's own. `routeImports`
- * false binds metadata alone: a transform that lowers module syntax binds
- * import.meta before lowering (CommonJS output would make it {}) and routes
- * import() after, once the cell's import bindings are member reads that
- * cannot capture the loader's name.
+ * Route the cell's import() calls to the process's loader, `loader(parentUrl,
+ * ...arguments)`, and, with `moduleMetadata`, bind its import.meta to the
+ * module's own. `routeImports` false binds metadata alone: a transform that
+ * lowers module syntax binds import.meta before lowering (CommonJS output
+ * would make it {}) and routes import() after, once the cell's import
+ * bindings are member reads that cannot capture the loader's name.
  */
-export function rewriteDynamicImports(code, parentUrl, moduleMetadata = false, routeImports = true) {
+export function rewriteDynamicImports(code, parentUrl, moduleMetadata = false, routeImports = true, loader = DYNAMIC_IMPORT_HELPER) {
     const metadata = moduleMetadata && /\bimport\s*(?:\.|\/[/*])/.test(code);
     const imports = routeImports && mayHaveDynamicImport(code);
     if (!imports && !metadata)
         return code;
     let lexed;
     try {
-        lexed = rewriteFromLexer(code, parentUrl, metadata, imports);
+        lexed = rewriteFromLexer(code, loaderCall(loader, parentUrl), metadata, imports);
     }
     catch (error) {
         // A lexing or a probe that cannot finish settles nothing; the grammar decides.
@@ -76,10 +76,14 @@ export function rewriteDynamicImports(code, parentUrl, moduleMetadata = false, r
             throw error;
         lexed = null;
     }
-    return lexed ?? rewriteWithGrammar(code, parentUrl, metadata, imports);
+    return lexed ?? rewriteWithGrammar(code, loaderCall(loader, parentUrl), metadata, imports);
+}
+/** The text an import() call's `import(` becomes. */
+function loaderCall(loader, parentUrl) {
+    return loader + '(' + JSON.stringify(parentUrl) + ', ';
 }
 /** The cell rewritten from the lexer's reading, or null where only the grammar can decide. */
-function rewriteFromLexer(code, parentUrl, metadata, imports) {
+function rewriteFromLexer(code, call, metadata, imports) {
     // The lexer reads a hashbang line as code. Blank it: lengths, and so
     // every position, stay the cell's.
     const hashbang = code.startsWith('#!') ? lineEnd(code, 0) : 0;
@@ -107,7 +111,6 @@ function rewriteFromLexer(code, parentUrl, metadata, imports) {
         calls.push({ ss: at, se: end, d: open, lexed: false });
     }
     calls.sort((a, b) => a.ss - b.ss);
-    const call = DYNAMIC_IMPORT_HELPER + '(' + JSON.stringify(parentUrl) + ', ';
     const edits = [];
     let validatedEnd = -1;
     for (const site of calls) {
@@ -408,9 +411,9 @@ class MetadataCollector extends ImportCollector {
  * The grammar's reading of the cell. A cell it cannot parse in either goal is
  * returned as written, for its compile to report.
  */
-function rewriteWithGrammar(code, parentUrl, metadata, imports) {
+function rewriteWithGrammar(code, call, metadata, imports) {
     const collected = {
-        call: DYNAMIC_IMPORT_HELPER + '(' + JSON.stringify(parentUrl) + ', ',
+        call,
         edits: [],
         metas: [],
         names: metadata ? new Set() : null,
