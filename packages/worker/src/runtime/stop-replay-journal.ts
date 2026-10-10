@@ -14,7 +14,7 @@ export function supervisorCallEffect(op: string, args: readonly unknown[] | unde
     if (!(flags && (flags.write || flags.append || flags.create || flags.truncate))) return null;
     return describeCall(op, args) + ' for writing';
   }
-  return policy && policy.kind !== 'effect' ? null : describeCall(op, args);
+  return policy && policy.kind !== 'effect' && policy.kind !== 'mutation' ? null : describeCall(op, args);
 }
 
 /**

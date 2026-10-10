@@ -89,7 +89,7 @@ try {
   const run = await t.run('async-exit', 30_000);
   const output = stripAnsi(run.output);
   a.check('foreground npm bin returns after explicit process.exit',
-    /async exit ok/.test(output) && /\[bin started: pid=\d+ cmd="async-exit"\]/.test(output),
+    /async exit ok/.test(output) && /\[facet started: pid=\d+ cmd="async-exit"\]/.test(output),
     JSON.stringify(output.slice(-1000)));
 
   await t.run('mkdir -p /home/user/node_modules/@nimbus-fixtures/pending-promise /home/user/node_modules/.bin', 10_000);
@@ -100,7 +100,7 @@ try {
   const pendingRun = await t.run('pending-promise', 30_000);
   const pendingOutput = stripAnsi(pendingRun.output);
   a.check('foreground npm bin returns when startup leaves only a pending Promise',
-    /pending promise ok/.test(pendingOutput) && /\[bin started: pid=\d+ cmd="pending-promise"\]/.test(pendingOutput),
+    /pending promise ok/.test(pendingOutput) && /\[facet started: pid=\d+ cmd="pending-promise"\]/.test(pendingOutput),
     JSON.stringify(pendingOutput.slice(-1000)));
 
   await t.run('mkdir -p /home/user/node_modules/@nimbus-fixtures/async-main-exit /home/user/node_modules/.bin', 10_000);

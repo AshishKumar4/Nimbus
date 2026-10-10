@@ -12,7 +12,7 @@ export function supervisorCallEffect(op, args) {
             return null;
         return describeCall(op, args) + ' for writing';
     }
-    return policy && policy.kind !== 'effect' ? null : describeCall(op, args);
+    return policy && policy.kind !== 'effect' && policy.kind !== 'mutation' ? null : describeCall(op, args);
 }
 /**
  * A digest of what a value carries, the same for the same contents however it

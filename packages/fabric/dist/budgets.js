@@ -556,6 +556,10 @@ export async function readmitRefused(refused, options) {
  * concurrent launch's never do. Requires `nodejs_compat` (or `nodejs_als`).
  */
 const launchAdmission = new AsyncLocalStorage();
+/** The one Dynamic Worker a process puts in flight, on the ledger: its launch, then its run or its residency. */
+export function launchWorkerKey(pid) {
+    return `launch:${pid}`;
+}
 /**
  * Run a launch admitted once on the ledger. It waits, as
  * {@link beginLoaderFetchWhenFree} with its process does, for one Dynamic
@@ -570,7 +574,11 @@ const launchAdmission = new AsyncLocalStorage();
  * wait no release can satisfy is refused with {@link DynamicWorkerDeadlockError}.
  */
 export async function withLaunchAdmission(ctx, process, signal, body) {
-    const end = await beginLoaderFetchWhenFree(ctx, `launch:${process.pid}`, { signal, process });
+    // Already this process's launch (a broker admitted the child it runs): the one admission.
+    const current = launchAdmission.getStore();
+    if (current?.ctx === ctx && current.process.pid === process.pid && !current.closed)
+        return body();
+    const end = await beginLoaderFetchWhenFree(ctx, launchWorkerKey(process.pid), { signal, process });
     const admission = { ctx, process, end, claimed: false, closed: false };
     try {
         return await launchAdmission.run(admission, body);
@@ -605,7 +613,7 @@ export function suspendLaunchAdmission(ctx) {
     return (signal) => resumed ??= (async () => {
         if (admission.closed)
             throw new Error('Nimbus: a finished launch cannot regain its admission');
-        const hold = await beginLoaderFetchWhenFree(ctx, `launch:${admission.process.pid}`, { signal, process: admission.process });
+        const hold = await beginLoaderFetchWhenFree(ctx, launchWorkerKey(admission.process.pid), { signal, process: admission.process });
         // A kill may arrive after admission but before this continuation runs.
         if (signal?.aborted || admission.closed) {
             hold();
@@ -626,7 +634,7 @@ export function beginAdmittedFetch(ctx) {
     const admission = launchAdmission.getStore();
     if (admission?.ctx !== ctx || admission.end === undefined)
         return undefined;
-    return beginLoaderFetch(ctx, `launch:${admission.process.pid}`, undefined, admission.process.pid);
+    return beginLoaderFetch(ctx, launchWorkerKey(admission.process.pid), undefined, admission.process.pid);
 }
 /**
  * Within an admitted launch on `ctx`'s ledger, the admission's worker for the
@@ -642,7 +650,7 @@ export function claimAdmission(ctx, pid) {
     const admission = launchAdmission.getStore();
     if (admission?.ctx !== ctx || admission.end === undefined || admission.claimed)
         return undefined;
-    return claimed(admission, beginLoaderFetch(ctx, `launch:${admission.process.pid}`, undefined, pid ?? admission.process.pid));
+    return claimed(admission, beginLoaderFetch(ctx, launchWorkerKey(admission.process.pid), undefined, pid ?? admission.process.pid));
 }
 /** `runner`, a hold on `admission`'s worker, as that launch's run: claimed until it ends. */
 function claimed(admission, runner) {

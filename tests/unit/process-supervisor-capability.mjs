@@ -23,7 +23,9 @@ const { adoptCtxExports, composeFabric } = await import('../../packages/fabric/s
 
 const PROPS = { doId: 'session-do', pid: 7, writerId: 'run-1', bindingKind: 'process' };
 composeFabric({ supervisorEntrypoint: 'SupervisorRPC' });
-adoptCtxExports({ SupervisorRPC: ({ props }) => ({ binding: props }) });
+/** The stateless hop a staged run goes through (NimbusLoadedEntrypoint): set by the case that expects one. */
+let stagedHop = () => { throw new Error('no staged run expected'); };
+adoptCtxExports({ SupervisorRPC: ({ props }) => ({ binding: props }), NimbusLoadedEntrypoint: (options) => stagedHop(options) });
 
 // ── 1. Answered by the host's own supervisorOp, as the process, once ───────
 {
@@ -107,6 +109,56 @@ const params = (request) => ({
   const unheard = new Promise((resolve) => setTimeout(() => resolve('still reading'), 2000));
   await assert.rejects(Promise.race([running, unheard]), /killed mid-body/);
   assert.match(await loaded.args[2](), /killed mid-body/);
+}
+
+{
+  // A staged program (opencode) is assembled in the stateless hop, never
+  // here, and entered there by fetch, with the binding props the hop mints
+  // its SUPERVISOR from: no stub of this host's crosses that hop.
+  const hops = [];
+  stagedHop = ({ props }) => {
+    const hop = { props, async fetch(...args) { hop.args = args; return Response.json({ exitCode: 0 }); } };
+    hops.push(hop);
+    return hop;
+  };
+  let minted = 0;
+  const env = { LOADER: { load() { throw new Error('a staged program is never loaded here'); } } };
+  const result = await processes(ctx, env).run(PROPS, () => { minted++; return { capability: 'staged' }; }, {
+    ...params(new Request('http://run.local/', { method: 'POST' })),
+    code: async () => ({ stage: { argv: ['opencode', '--version'] } }),
+  }, (response) => response.json());
+  assert.deepEqual(result, { exitCode: 0 });
+  assert.equal(hops.length, 1);
+  assert.deepEqual(hops[0].props.stage, { argv: ['opencode', '--version'] }, 'its stage goes to the hop');
+  assert.equal(hops[0].props.key, 'nimbus-run:session-do:7:run-1', 'keyed by its run');
+  assert.equal(hops[0].props.supervisor, PROPS, 'with the props its binding is minted from');
+  assert.equal(hops[0].args.length, 1, 'entered by fetch, with its request alone');
+  assert.equal(minted, 0, 'and no capability is minted for it');
+
+  // Killed mid-run: its fetch is cancelled, so the program hears it and
+  // stops, and writes nothing more once the session has let it go.
+  const writes = [];
+  let stoppedAt = null;
+  stagedHop = ({ props }) => ({ props, fetch: (request) => new Promise((_, reject) => {
+    const timer = setInterval(() => writes.push(Date.now()), 5);
+    request.signal.addEventListener('abort', () => {
+      clearInterval(timer);
+      stoppedAt = writes.length;
+      reject(request.signal.reason);
+    }, { once: true });
+  }) });
+  const kill = new AbortController();
+  const running = processes(ctx, env).run(PROPS, () => ({}), {
+    ...params(new Request('http://run.local/', { method: 'POST', signal: kill.signal })),
+    code: async () => ({ stage: { argv: ['opencode', 'run'] } }),
+  }, (response) => response.json());
+  while (writes.length < 3) await new Promise((resolve) => setTimeout(resolve, 5));
+  kill.abort(new Error('killed mid-run'));
+  await assert.rejects(running, /killed mid-run/);
+  assert.notEqual(stoppedAt, null, 'the staged program heard its run end');
+  const written = writes.length;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(writes.length, written, 'and wrote nothing after it');
 }
 
 // ── 3. A run the platform refused is sent again; one the program failed, never ──

@@ -21,25 +21,6 @@ export interface LoadedWorkerEntrypointStub {
     handleHttpRequest?: (request: Request) => Promise<Response>;
     fetch?(request: Request): Promise<Response>;
 }
-export interface NimbusCtxExports {
-    NimbusLoadedEntrypoint?: (options: {
-        props: {
-            key: string;
-            name: string | null;
-            depth: number;
-            supervisor: ResidentSupervisorProps;
-            stage?: unknown;
-        };
-    }) => LoadedWorkerEntrypointStub;
-}
-export declare function getNimbusCtxExports(): NimbusCtxExports;
-/**
- * Mint a NimbusLoadedEntrypoint stub for a keyed dynamic worker. Used by the
- * one-shot runtime paths, which run a program to completion inside a single
- * request rather than leaving it resident: their module map is assembled in
- * that stateless entrypoint's own isolate, never in a session DO.
- */
-export declare function createLoadedWorkerEntrypoint(ctxExports: NimbusCtxExports, supervisor: ResidentSupervisorProps, stage: unknown, name?: string | null): Promise<LoadedWorkerEntrypointStub>;
 /** What an unkeyed `LOADER.load` hands back. */
 interface LoadedWorkerStub {
     getEntrypoint(name?: string, opts?: {

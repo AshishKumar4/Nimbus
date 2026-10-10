@@ -1121,11 +1121,13 @@ function __residentAdmit(result) {
   // The namespace moves with the cursor or not at all: a delta without stats,
   // or a poison, leaves it describing a revision the cursor has left, so it
   // stops answering until a listing restores it.
-  // An answer naming no path changes no name, with or without stats.
-  const namespaced = __nsOk && !!result && !result.poison
+  // An answer naming no path changes no name, with or without stats. One
+  // that arrives while the namespace is not answering keeps why it is not.
+  const followable = !!result && !result.poison
     && (result.namespace === true || (Array.isArray(result.paths) && result.paths.length === 0))
     && (!Array.isArray(result.paths) || result.paths.every((entry) => entry.stat === null || __nsDescribes(entry.stat)));
-  if (!namespaced) {
+  const namespaced = __nsOk && followable;
+  if (__nsOk && !followable) {
     __nsMarkReady(t, false, !result || result.poison ? "the session's change log was truncated past this process's cursor"
       : "a change reported without the stat every name needs");
   }
@@ -2046,7 +2048,7 @@ async function __residentBoot(takeBundle, moduleCursor, supervisor, moduleBytes)
   try { pass = await __residentSynchronizeFromSupervisor(supervisor); }
   catch (e) { failure = (e && e.message) || String(e); }
   if (pass && pass.cursor) return { cursor: await __residentCatchUp(supervisor, pass.cursor), failure };
-  return { cursor: adopted, failure };
+  return { cursor: adopted, failure: failure || (pass && (pass.skipped || pass.incomplete)) || null };
 }
 
 /**
@@ -3082,10 +3084,15 @@ async function __residentRefillFromNamespace(supervisor, dropped) {
  */
 async function __residentRequireNamespace(supervisor, bootFailure) {
   if (__nsReady()) return null;
-  try { await __residentSynchronizeFromSupervisor(supervisor); } catch {}
+  // What stopped the repair, else the boot: why the namespace still does not answer.
+  let failure = bootFailure;
+  try {
+    const repaired = await __residentSynchronizeFromSupervisor(supervisor);
+    failure = (repaired && (repaired.skipped || repaired.incomplete)) || failure;
+  } catch (e) { failure = (e && e.message) || String(e); }
   if (__nsReady()) return null;
   return "node: the process was not started: its view of the filesystem could not be listed ("
-    + __nsNotReadyCause() + (bootFailure ? "; " + bootFailure : "") + ")";
+    + (failure || __nsNotReadyCause()) + ")";
 }
 
 /**

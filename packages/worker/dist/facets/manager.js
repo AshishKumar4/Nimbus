@@ -22,8 +22,7 @@ import { isTypescriptDeclarationFile } from '@nimbus-sh/core/_shared/typescript-
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
-import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource } from '../runtime/node-shims-artifact.js';
-import { moduleSource } from '@nimbus-sh/platform/module-source.js';
+import { createNodeFacetRuntime, fetchNodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { getRealNodeImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
 import { VFS_CURSOR_SEED_SOURCE, serializeFacetVfsCursor, } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
@@ -45,13 +44,15 @@ import { principalTag, profilePrincipal, ReadProfile, verifiedEvidence, } from '
 /** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
 const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
 import { NpmCache } from '../npm/cache.js';
+import { NPM_BIN_MANIFEST_NAME, parseNpmBinManifest } from '../npm/bin-links.js';
 import { mayHaveDynamicImport } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
+import { relativeWasmPaths } from '@nimbus-sh/core/_shared/relative-wasm-paths.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { generation, onColdStart } from '@nimbus-sh/fabric/generation.js';
-import { DYNAMIC_WORKER_CODE_LIMIT_BYTES, isDynamicWorkerDeadlock, suspendLaunchAdmission } from '@nimbus-sh/fabric/budgets.js';
+import { DYNAMIC_WORKER_CODE_LIMIT_BYTES, isDynamicWorkerDeadlock, suspendLaunchAdmission, withLaunchAdmission } from '@nimbus-sh/fabric/budgets.js';
 import { FencedWork, FENCED_WORK_KEY_PREFIX, RESIDENT_PROVEN_MS, } from '@nimbus-sh/fabric/fenced-work.js';
 import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/provided-packages.js';
 import { bundleTypescriptLoader, esbuildDiagnosticShim, isBundleModuleCandidate, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
@@ -60,7 +61,8 @@ import { parseResolvablePackageJson, } from '@nimbus-sh/core/_shared/exports-res
 import { requirePackageEntry } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { LAUNCH_PROFILE_MAX_PATHS, LaunchLearningStore } from './launch-learning-store.js';
-import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
+import { LearnedServers } from './server-hints.js';
+import { disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
 import { encodeBase64, OwnedPieces, ReplayOutputGate, StdinTaken, stopRecordOf } from '../runtime/stop-replay-host.js';
@@ -71,7 +73,7 @@ import { sqliteWasmModuleEntry } from './opencode-staging.js';
 import { FACET_IMAGE_WRITE_SLICE_BYTES, ImageStore, } from '@nimbus-sh/fabric/image-store.js';
 import { fetchStagedBindingAsset, NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_LOADER_MODULE, STAGED_BINDING_TRAMPOLINE_MODULE, stagedBinding, stagedBindingsFacetImport, stagedBindingsRequiredBy, stagedBindingsDeclaredBy, STAGED_BINDINGS, } from '../runtime/staged-bindings.js';
 import { encodeCommonJsPack, ProcessFabric, ProcessHostLost, } from '@nimbus-sh/fabric/process-fabric.js';
-import { createLoadedWorkerEntrypoint, getNimbusCtxExports, deleteFacetStorage, facetJournal, reservedFacetNames, } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { deleteFacetStorage, facetJournal, reservedFacetNames, } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { drainProcessFsJournal, UNSETTLED_END_NOTE } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { journalDrainSession } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { ProcessJournals } from '../session/process-journals.js';
@@ -86,7 +88,6 @@ import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { CRED_KERNEL, isNativeBinPath, launchNamedPaths } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
-import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { streamedWasmImageDigest, wasmImageDigest } from './wasm-image-digest.js';
 import { prefetchBundleStart, prefetchBundleEnd, setPrefetchCacheBytes, } from '@nimbus-sh/platform/diag-counters.js';
 const launchAdapters = new WeakMap();
@@ -713,132 +714,48 @@ function entryFrameFile(filename, cwd, esModule) {
     return url.href;
 }
 /**
- * Generate one-shot runtime code with a plain fetch handler. `filename`
- * names the entry's module, and so its stack frames; with `cwd` it is the
- * entry's importer (entryImporterUrl).
+ * A node program's module head, the same for both lifetimes: its imports,
+ * the SUPERVISOR's answering and the stop's replay, and its code cells.
  */
-export async function generateEntrypointCode(userCode, vfsState, usesSqlite, sources, wasmImports = [], filename, cwd = DEFAULT_HOME, esModule, esModuleMap) {
-    const entry = entryModule(userCode, filename, cwd, esModule, esModuleMap);
-    const bundleSource = await facetVfsBundleSourceFor(vfsState);
-    const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
-    const source = moduleSource `
+function nodeProgramModule(bundleSource, runtime, usesSqlite, stagedBindings, wasmImports) {
+    return `
 ${bundleSource.imports}
 ${REAL_NODE_IMPORTS}
 ${runtime.imports}
 ${usesSqlite ? SQLITE_FACET_IMPORT : ''}
-${stagedBindingsFacetImport(vfsState.stagedBindings)}
+${stagedBindingsFacetImport(stagedBindings)}
 ${facetWasmImportsSource(wasmImports)}
 const __NimbusHostResponse = globalThis.Response;
 // The SUPERVISOR binding's filesystem calls answer a refusal as a value
 // (core vfs-supervisor.ts answeringSupervisor).
 ${SUPERVISOR_ANSWERING_SRC}
-// A synchronous read of stdin that has to wait stops the run, which is run
-// again once the input is there (runtime/stop-replay.ts).
+// A synchronous read of stdin that has to wait stops the run with the
+// isolate's ctx.abort; the run is run again once the input is there
+// (runtime/stop-replay.ts).
 ${STOP_REPLAY_SOURCE}
 
-// The process's code: a module per cell, compiled when first required.
+// The process's code: a module per cell, compiled when first required. The
+// only other way a string becomes code in a Worker is \`new Function\` at
+// module evaluation, which compiled the whole closure before the program ran.
 ${runtime.code}
-
-// The module bundle, at module level (startup time); the code cells the store
-// adopts are getters over the map's own text.
-const __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
-
-class __ProcessExit extends Error {
-  constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
+`;
 }
-
-export default {
-  async fetch(request, workerEnv, workerCtx) {
-    const args = await request.json();
-    const { argv, nodeCommandLine, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan, manifests } = args;
-    const __nimbusProcessId = Number(args.pid || 1);
-    // A pipe or redirect streams through this input channel (exec's
-    // _pumpStdinPipe); node-shims' process.stdin and fd 0 read it.
-    const __nimbusLiveInputPid = Number(args.stdinPid || 0);
-    // The channel has ended, and what it holds is taken whole before the
-    // entry runs: a run after a stop that waited for the end of stdin.
-    const __nimbusStdinWhole = args.stdinWhole === true;
-    // A run after a stop is handed back the stdin the run before it took, and
-    // takes all of that before it starts, whatever its size.
-    const __nimbusStdinAtLeast = Number(args.stdinAtLeast || 0);
-    // This run's stop, and what it replays of the run that stopped before it.
-    // ctx.abort ends the isolate's JavaScript where it stands, so the program
-    // never sees the stop; the session believes a stop only with this run's
-    // nonce, which only this module holds.
-    // ctx.abort is taken now, before the program runs, and handed a string.
-    const __ctxAbort = workerCtx && typeof workerCtx.abort === "function" ? workerCtx.abort : null;
-    const __apply = Reflect.apply;
-    __nimbusStopReplay.begin({
-      replay: args.replay || null,
-      abort: __ctxAbort ? (reason) => __apply(__ctxAbort, workerCtx, [reason]) : null,
-      captured: !!captureOutput || !workerEnv?.SUPERVISOR,
-      // Read at a stop, after the run has printed (declared below).
-      capturedText: () => ({ stdout, stderr }),
-      nonce: args.stopNonce,
-      // Its network goes through the session, which records what it reads.
-      outbound: args.outbound === true,
-      // The session holds what it answers past the read the run before
-      // stopped at until the replay gets there.
-      boundary: () => { const b = __supervisor && __supervisor.replayBoundary; return typeof b === "function" ? Reflect.apply(b, __supervisor, []) : undefined; },
-    });
-    // A \`< file\` redirect: fd 0 is this file (node-shims' stdin helpers).
-    const __nimbusStdinFile = args.stdinFile && typeof args.stdinFile.path === "string" ? args.stdinFile : null;
-    // Per invocation, not per module: this body is cached on
-    // hash(code + bundle + manifest) and reused by any session whose snapshot
-    // hashes the same, and epochs are per supervisor incarnation.
-    const __MODULE_VFS_CURSOR = vfsCursor || null;
-${VFS_CURSOR_SEED_SOURCE}
-    // A user-invoked program has no wall-clock lifetime: the drain runs the
-    // entrypoint's event loop until Node would exit, and only a kill (Ctrl-C)
-    // ends it early.
-    const __entryBudgetMs = Infinity;
-    let __drainPasses = 0;
-    // Every call that changes something outside the process is counted: a
-    // run that made one cannot stop to be run again.
-    const __supervisor = workerEnv?.SUPERVISOR
-      ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
-    // What the run misses, and the code it produces, reach the session as they
-    // happen, as a resident's do: a run the platform kills (its memory limit)
-    // sends no exit envelope, and its next launch must still stage what it
-    // lacked. The envelope stays the record of a run that ends, so a report
-    // that fails here is not this run's failure.
-    __nimbusRuntimeCodeReporter = () => __nimbusFlushRuntimeCode(__supervisor).catch(() => {});
-    // Its network goes through its workspace's egress: node:tls refuses a TLS socket by name.
-    globalThis.__nimbusEgress = workerEnv?.NIMBUS_EGRESS === true;
-    // The same store, namespace and data plan a resident boots on, backed by
-    // this run's heap (runOnce hosts no SQLite; vfs/facet-resident-store.ts).
-    // Declared inside the request, beside the shims, so a loader that reuses
-    // this isolate for another run starts it from an empty store.
-${nodeFacetSource(sources, "residentStore")}
-    __residentBindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
-    __residentSetStorage(undefined, __supervisor);
-    __nsSetCred(cred);
-    __residentSetPlan(dataPlan);
-    __residentSetManifests(manifests);
-    __residentSetPushRoots([_cwd || "/home/user", "/tmp"]);
-    // The module bundle stays at module scope: a reused isolate adopts it
-    // again on its next run, and its text cells are shared, not copied.
-    const __residentBooted = await __residentBoot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor, ${bundleSource.storageBytes});
-    if (__residentBooted.cursor) {
-      globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
-    }
-    // No user code runs before the namespace answers: it is the view every
-    // synchronous stat, exists and readdir reads (CUTOVER #13).
-    const __namespaceFailure = await __residentRequireNamespace(__supervisor, __residentBooted.failure);
-    if (__namespaceFailure) {
-      return __NimbusHostResponse.json({ exitCode: 1, stdout: "", stderr: __namespaceFailure + "\\n", residencyMisses: [] });
-    }
+/**
+ * A node program's runtime once its store has booted, the same for both
+ * lifetimes: its output relayed to the SUPERVISOR, the shims, the event loop
+ * and the globals, up to its entry module (`mod`).
+ */
+function nodeProgramRuntime(sources, esModule) {
+    return `
     const __vfsBundle = __nimbusResidentBundle;
     const __pendingIO = [];
-    // Fix 6 orphan counters (same as NodeProcess.run) — count RPC writes
-    // that get dropped during isolate teardown so reportExit can report them.
     let __rpcDrops = 0;
     let __rpcDropBytes = 0;
     let __rpcLastError = "";
     const __onRpcDrop = (bytes, e) => {
       __rpcDrops++;
       __rpcDropBytes += bytes | 0;
-      if (e) { __rpcLastError = (e && e.message) || String(e); }
+      if (e) __rpcLastError = (e && e.message) || String(e);
     };
     let __rpcWriteChain = Promise.resolve();
     let __rpcWriteCount = 0;
@@ -867,11 +784,11 @@ ${nodeFacetSource(sources, "residentStore")}
     let stdout = "", stderr = "";
     let exitCode = 0;
     const __nimbusDeferProcessExitReport = true;
-${nodeFacetSource(sources, "ledger")}
+${sources.ledger}
     const __vfsDirs = {};
 
 ${ENTRYPOINT_TIMER_TRACKER}
-${nodeFacetSource(sources, "shims")}
+${sources.shims}
 
 ${ENTRYPOINT_EVENT_LOOP}
 ${RESIDENCY_MISS_REPORT}
@@ -910,8 +827,110 @@ ${RESIDENCY_MISS_REPORT}
         __perf.markResourceTiming = __perf.markResourceTiming.bind(__perf);
       }
     } catch {}
+    const mod = __nimbusEntryModuleOf(filename, ${esModule});
+`;
+}
+/**
+ * Generate one-shot runtime code with a plain fetch handler. `filename`
+ * names the entry's module, and so its stack frames; with `cwd` it is the
+ * entry's importer (entryImporterUrl).
+ */
+export async function generateEntrypointCode(userCode, vfsState, usesSqlite, sources, wasmImports = [], filename, cwd = DEFAULT_HOME, esModule, esModuleMap) {
+    const entry = entryModule(userCode, filename, cwd, esModule, esModuleMap);
+    const bundleSource = await facetVfsBundleSourceFor(vfsState);
+    const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
+    return {
+        code: `
+${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, wasmImports)}
 
-    const mod = __nimbusEntryModuleOf(filename, ${entry.esModule});
+// The module bundle, at module level (startup time); the code cells the store
+// adopts are getters over the map's own text.
+const __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
+
+export default {
+  async fetch(request, workerEnv, workerCtx) {
+    const args = await request.json();
+    const { argv, nodeCommandLine, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan, manifests } = args;
+    const __nimbusProcessId = Number(args.pid || 1);
+    // A pipe or redirect streams through this input channel (exec's
+    // _pumpStdinPipe); node-shims' process.stdin and fd 0 read it.
+    const __nimbusLiveInputPid = Number(args.stdinPid || 0);
+    // The channel has ended, and what it holds is taken whole before the
+    // entry runs: a run after a stop that waited for the end of stdin.
+    const __nimbusStdinWhole = args.stdinWhole === true;
+    // A run after a stop is handed back the stdin the run before it took, and
+    // takes all of that before it starts, whatever its size.
+    const __nimbusStdinAtLeast = Number(args.stdinAtLeast || 0);
+    // This run's stop, and what it replays of the run that stopped before it.
+    // ctx.abort ends the isolate's JavaScript where it stands, so the program
+    // never sees the stop; the session believes a stop only with this run's
+    // nonce, which only this module holds.
+    // ctx.abort is taken now, before the program runs, and handed a string.
+    const __ctxAbort = workerCtx && typeof workerCtx.abort === "function" ? workerCtx.abort : null;
+    const __apply = Reflect.apply;
+    __nimbusStopReplay.begin({
+      replay: args.replay || null,
+      abort: __ctxAbort ? (reason) => __apply(__ctxAbort, workerCtx, [reason]) : null,
+      captured: !!captureOutput || !workerEnv?.SUPERVISOR,
+      // Read at a stop, after the run has printed (declared below).
+      capturedText: () => ({ stdout, stderr }),
+      nonce: args.stopNonce,
+      // Its network goes through the session, which records what it reads.
+      outbound: args.outbound === true,
+      // Its first listen stops it, to be run again as a resident that serves.
+      promote: args.promote === true,
+      // The session holds what it answers past the read the run before
+      // stopped at until the replay gets there.
+      boundary: () => { const b = __supervisor && __supervisor.replayBoundary; return typeof b === "function" ? Reflect.apply(b, __supervisor, []) : undefined; },
+    });
+    // A \`< file\` redirect: fd 0 is this file (node-shims' stdin helpers).
+    const __nimbusStdinFile = args.stdinFile && typeof args.stdinFile.path === "string" ? args.stdinFile : null;
+    // Per invocation, not per module: this body is cached on
+    // hash(code + bundle + manifest) and reused by any session whose snapshot
+    // hashes the same, and epochs are per supervisor incarnation.
+    const __MODULE_VFS_CURSOR = vfsCursor || null;
+${VFS_CURSOR_SEED_SOURCE}
+    // A user-invoked program has no wall-clock lifetime: the drain runs the
+    // entrypoint's event loop until Node would exit, and only a kill (Ctrl-C)
+    // ends it early.
+    const __entryBudgetMs = Infinity;
+    let __drainPasses = 0;
+    // Every call that changes something outside the process is counted: a
+    // run that made one cannot stop to be run again.
+    const __supervisor = workerEnv?.SUPERVISOR
+      ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
+    // What the run misses, and the code it produces, reach the session as they
+    // happen, as a resident's do: a run the platform kills (its memory limit)
+    // sends no exit envelope, and its next launch must still stage what it
+    // lacked. The envelope stays the record of a run that ends, so a report
+    // that fails here is not this run's failure.
+    __nimbusRuntimeCodeReporter = () => __nimbusFlushRuntimeCode(__supervisor).catch(() => {});
+    // Its network goes through its workspace's egress: node:tls refuses a TLS socket by name.
+    globalThis.__nimbusEgress = workerEnv?.NIMBUS_EGRESS === true;
+    // The same store, namespace and data plan a resident boots on, backed by
+    // this run's heap (runOnce hosts no SQLite; vfs/facet-resident-store.ts).
+    // Declared inside the request, beside the shims, so a loader that reuses
+    // this isolate for another run starts it from an empty store.
+${sources.residentStore}
+    __residentBindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
+    __residentSetStorage(undefined, __supervisor);
+    __nsSetCred(cred);
+    __residentSetPlan(dataPlan);
+    __residentSetManifests(manifests);
+    __residentSetPushRoots([_cwd || "/home/user", "/tmp"]);
+    // The module bundle stays at module scope: a reused isolate adopts it
+    // again on its next run, and its text cells are shared, not copied.
+    const __residentBooted = await __residentBoot(() => __MODULE_VFS_BUNDLE, __MODULE_VFS_CURSOR, __supervisor, ${bundleSource.storageBytes});
+    if (__residentBooted.cursor) {
+      globalThis.__nimbusVfsCursor = { epoch: __residentBooted.cursor.epoch, rev: __residentBooted.cursor.rev };
+    }
+    // No user code runs before the namespace answers: it is the view every
+    // synchronous stat, exists and readdir reads (CUTOVER #13).
+    const __namespaceFailure = await __residentRequireNamespace(__supervisor, __residentBooted.failure);
+    if (__namespaceFailure) {
+      return __NimbusHostResponse.json({ exitCode: 1, stdout: "", stderr: __namespaceFailure + "\\n", residencyMisses: [] });
+    }
+${nodeProgramRuntime(sources, entry.esModule)}
     try {
       await __nimbusPrepareStdin();
       // From here on the program runs: a stop is possible while stdin can
@@ -1038,11 +1057,7 @@ ${RESIDENCY_MISS_REPORT}
     });
   }
 };
-`;
-    return {
-        source,
-        get code() { return source.text; },
-        immutableModules: runtime.immutableModules,
+`,
         modules: bundleSource.modules,
         codeModules: { ...bundleSource.codeModules, ...runtime.modules, ...entry.modules },
     };
@@ -1152,27 +1167,11 @@ export async function generateLongRunningNodeCode(userCode, vfsState, opts, uses
     });
     const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
     const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
-    const source = moduleSource `
-${bundleSource.imports}
+    return {
+        code: `
 import { DurableObject } from "cloudflare:workers";
-${REAL_NODE_IMPORTS}
-${runtime.imports}
-${usesSqlite ? SQLITE_FACET_IMPORT : ''}
-${stagedBindingsFacetImport(vfsState.stagedBindings)}
-${facetWasmImportsSource(opts.wasmImports ?? [])}
+${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, opts.wasmImports ?? [])}
 const __NIMBUS_ARGS = ${safeArgs};
-const __NimbusHostResponse = globalThis.Response;
-// The SUPERVISOR binding's filesystem calls answer a refusal as a value
-// (core vfs-supervisor.ts answeringSupervisor).
-${SUPERVISOR_ANSWERING_SRC}
-// A synchronous read of stdin that has to wait stops the run with the
-// facet's ctx.abort (runtime/stop-replay.ts).
-${STOP_REPLAY_SOURCE}
-
-// The process's code: a module per cell, compiled when first required. The
-// only other way a string becomes code in a Worker is \`new Function\` at
-// module evaluation, which compiled the whole closure before the program ran.
-${runtime.code}
 
 // \`let\`, not \`const\`, so the parsed bundle can be dropped once the store has
 // adopted it. Holding both is the double materialisation: the module map's text
@@ -1180,11 +1179,7 @@ ${runtime.code}
 // are getters over the map's own module text.
 let __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
 
-${nodeFacetSource(sources, "residentStore")}
-
-class __ProcessExit extends Error {
-  constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
-}
+${sources.residentStore}
 
 let __nimbusStarted = false;
 let __nimbusStarting = null;
@@ -1271,6 +1266,8 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
     const __MODULE_VFS_CURSOR = (__startArgs && __startArgs.vfsCursor) || null;
 ${VFS_CURSOR_SEED_SOURCE}
     const __nimbusStdinAtLeast = Number((__startArgs && __startArgs.stdinAtLeast) || 0);
+    // A \`< file\` redirect: fd 0 is this file (node-shims' stdin helpers).
+    const __nimbusStdinFile = __startArgs && __startArgs.stdinFile && typeof __startArgs.stdinFile.path === "string" ? __startArgs.stdinFile : null;
     const __ctxAbort = workerCtx && typeof workerCtx.abort === "function" ? workerCtx.abort : null;
     const __apply = Reflect.apply;
     __nimbusStopReplay.begin({
@@ -1355,88 +1352,11 @@ ${VFS_CURSOR_SEED_SOURCE}
     // namespace cannot be listed fails here, naming why.
     const __namespaceFailure = await __residentRequireNamespace(__supervisor, __residentBooted.failure);
     if (__namespaceFailure) throw new Error(__namespaceFailure);
-    const __vfsBundle = __nimbusResidentBundle;
-    const __pendingIO = [];
-    let __rpcDrops = 0;
-    let __rpcDropBytes = 0;
-    let __rpcLastError = "";
-    const __onRpcDrop = (bytes, e) => {
-      __rpcDrops++;
-      __rpcDropBytes += bytes | 0;
-      if (e) __rpcLastError = (e && e.message) || String(e);
-    };
-    let __rpcWriteChain = Promise.resolve();
-    let __rpcWriteCount = 0;
-    // The relay carries bytes (see "Process output is bytes" in the shims),
-    // each chunk placed in what this run printed (runtime/stop-replay.ts).
-    const __queueRpcWrite = (method, bytes) => {
-      const __chunk = __nimbusStopReplay.write(method, bytes);
-      if (__chunk === null) return;
-      __rpcWriteCount++;
-      // Released at the filesystem client's gate, taken now: once every
-      // change logged ahead of it is answered (ProcessFsClient.effect).
-      const __gate = __nimbusOutputGate();
-      const __task = __rpcWriteChain
-        .then(() => __gate)
-        .then(() => __supervisor[method](__chunk.b, __chunk.at, __chunk.run))
-        .then(() => __nimbusStopReplay.acked(__chunk))
-        .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
-      __rpcWriteChain = __task.then(() => {}, () => {});
-      __pendingIO.push(__task);
-      return __task;
-    };
-    let cwd = _cwd || "/home/user";
-    let stdout = "", stderr = "";
-    let exitCode = 0;
-    const __nimbusDeferProcessExitReport = true;
-${nodeFacetSource(sources, "ledger")}
-    const __vfsDirs = {};
-
-${ENTRYPOINT_TIMER_TRACKER}
-${nodeFacetSource(sources, "shims")}
-
-${ENTRYPOINT_EVENT_LOOP}
-${RESIDENCY_MISS_REPORT}
-
-    // process.stdout/stderr stream live to the SUPERVISOR; console writes through them.
-    if (__supervisor && !captureOutput) {
-      __processMod.stdout.write = (d, enc, cb) => __nimbusWriteLiveOutput("stdout", d, enc, cb, __queueRpcWrite);
-      __processMod.stderr.write = (d, enc, cb) => __nimbusWriteLiveOutput("stderr", d, enc, cb, __queueRpcWrite);
-    }
-    // A fatal report goes to fd 2 as Node's does: past any write a program
-    // installs, after what the program wrote, and not program output that
-    // a stopped run's replay retraces (runtime/stop-replay.ts).
-    __nimbusFatalStderr = (__text) => {
-      stderr += __text;
-      if (!__supervisor || captureOutput) return;
-      const __bytes = __nimbusOutEnc.encode(__text);
-      // At the output gate, as all of the process's output is.
-      const __gate = __nimbusOutputGate();
-      const __task = __rpcWriteChain.then(() => __gate).then(() => __supervisor.stderr(__bytes)).catch((e) => __onRpcDrop(__bytes.byteLength, e));
-      __rpcWriteChain = __task.then(() => {}, () => {});
-      __pendingIO.push(__task);
-    };
-
-    try { globalThis.console = __consoleMod; } catch {}
-    try { globalThis.process = __processMod; } catch {}
-    try { globalThis.Buffer = __BufferMod; } catch {}
-    try { globalThis.global = globalThis; } catch {}
-    // undici's fetch (bundled by e.g. create-cloudflare) detaches
-    // performance.markResourceTiming and calls it with no receiver,
-    // which workerd rejects with "Illegal invocation" and crashes the
-    // process from an unhandled fetch-timing callback. Rebind it so a
-    // detached call keeps the correct receiver.
-    try {
-      const __perf = globalThis.performance;
-      if (__perf && typeof __perf.markResourceTiming === "function") {
-        __perf.markResourceTiming = __perf.markResourceTiming.bind(__perf);
-      }
-    } catch {}
+${nodeProgramRuntime(sources, entry.esModule)}
     if (attachedTty) {
       try { __processMod.stdin.__nimbusStartLivePump?.(); } catch {}
     }
 
-    const mod = __nimbusEntryModuleOf(filename, ${entry.esModule});
     let __attachedCompletion = null;
     let __attachedExplicitExit = false;
     // \`--watch\` and \`--inspect-brk\` hold a process that has no handle left
@@ -1446,10 +1366,11 @@ ${RESIDENCY_MISS_REPORT}
     let __nimbusEndedAtBoot = false;
     // A resident whose launcher writes its stdin takes what has arrived
     // before the entry runs, and a boot after a stop takes all of it (it has
-    // ended), for its synchronous reads of fd 0. Any other resident's stdin
-    // is read only as the program reads it: an attached one's carries the
-    // terminal's resizes and signals too.
-    if (__startArgs && __startArgs.stdinWriter) await __nimbusPrepareStdin();
+    // ended), for its synchronous reads of fd 0; so does a one-shot run on
+    // as a server, the stdin it read before it listened, or its file. Any other
+    // resident's stdin is read only as the program reads it: an attached
+    // one's carries the terminal's resizes and signals too.
+    if (__startArgs && (__startArgs.stdinWriter || __nimbusStdinAtLeast > 0 || __nimbusStdinFile)) await __nimbusPrepareStdin();
     // From here on the program runs. Its boot can stop while stdin can still
     // come short of a read, when its launcher writes that stdin
     // (FacetManager._residentLaunchBody); nothing else would ever end it.
@@ -1524,6 +1445,13 @@ ${RESIDENCY_MISS_REPORT}
         stderr += __residencyReport;
         if (Number(code ?? 0) === 0) code = 1;
         await __nimbusReleaseStderr(__residencyReport);
+      }
+      // A server run again that ended before its listen did not retrace it.
+      const __replayShort = __nimbusStopReplay.finish();
+      if (__replayShort) {
+        stderr += __replayShort;
+        code = 1;
+        await __nimbusReleaseStderr(__replayShort);
       }
       await __supervisor.reportExit(code, reason || "", __nimbusDataReadMisses(), [...(globalThis.__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger(), __nimbusExecutedModuleMisses());
       __nimbusProcessExitReported = true;
@@ -1661,11 +1589,7 @@ export class NimbusProcess extends DurableObject {
   async fetch(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
   async handleHttpRequest(req) { return __nimbusDispatchHttp(req, this.env, this.ctx); }
 }
-`;
-    return {
-        source,
-        get code() { return source.text; },
-        immutableModules: runtime.immutableModules,
+`,
         modules: bundleSource.modules,
         codeModules: { ...bundleSource.codeModules, ...runtime.modules, ...entry.modules },
     };
@@ -1772,14 +1696,13 @@ export class ModuleMapOverCeilingError extends Error {
  * small is answered without being read.
  */
 export function generatedMapTextBytes(generated, room) {
-    const sharedBytes = generated.source.byteLength + Object.values(generated.immutableModules).reduce((bytes, source) => bytes + source.byteLength, 0);
-    const texts = [...Object.values(generated.modules), ...Object.values(generated.codeModules)];
+    const texts = [generated.code, ...Object.values(generated.modules), ...Object.values(generated.codeModules)];
     let units = 0;
     for (const text of texts)
         units += text.length;
-    if (sharedBytes + units * 3 <= room)
+    if (units * 3 <= room)
         return null;
-    let bytes = sharedBytes;
+    let bytes = 0;
     for (const text of texts)
         bytes += mapTextBytes(text);
     return bytes;
@@ -3293,12 +3216,6 @@ export async function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState,
     return { added, wasmPaths };
 }
 /**
- * A string literal naming a `.wasm` file by a relative path: how a package
- * loads its image from beside its own module (`new URL('x.wasm',
- * import.meta.url)`, `path.join(__dirname, 'x.wasm')`).
- */
-const RELATIVE_WASM_LITERAL_RE = /["'`]((?:\.{1,2}\/)*[\w@.-]+(?:\/[\w@.-]+)*\.wasm)["'`]/g;
-/**
  * The table an \`import()\` reads its target's lazy synchronous reads from
  * (FacetVfsState.lazyModules): for each lazy module that an \`import()\` may
  * target, the synchronous reads (static-fs-refs' exact, sync) of every lazy
@@ -3365,17 +3282,8 @@ export async function collectClosureWasmImages(vfs, bundle, unstagedPaths) {
             if (ref.path.endsWith('.wasm'))
                 named.add(stripLeadingSlashes(ref.path));
         }
-        const dir = stripLeadingSlashes(path).split('/').slice(0, -1);
-        for (const match of cell.matchAll(RELATIVE_WASM_LITERAL_RE)) {
-            const segments = [...dir];
-            for (const segment of match[1].split('/')) {
-                if (segment === '..')
-                    segments.pop();
-                else if (segment !== '.')
-                    segments.push(segment);
-            }
-            named.add(segments.join('/'));
-        }
+        for (const image of relativeWasmPaths(cell, path))
+            named.add(image);
     }
     for (const path of named) {
         if (byPath.has(path))
@@ -3876,6 +3784,19 @@ export async function toolConfigRoots(vfs, cwd, scriptPath) {
     }
     catch {
         return [];
+    }
+    // Nimbus's bins are require() shims, not links: realpath still names
+    // .bin/tool. Its manifest names the package entry whose tool dependencies
+    // decide which configs to stage, exactly as a direct invocation does.
+    const slash = script.lastIndexOf('/');
+    if (slash >= 0) {
+        try {
+            const manifest = parseNpmBinManifest(await filesOf(vfs).readFileString(`${script.slice(0, slash)}/${NPM_BIN_MANIFEST_NAME}`));
+            const linked = manifest?.bins[script.slice(slash + 1)];
+            if (linked && await filesOf(vfs).exists(linked.targetPath))
+                script = await vfs.realpath(linked.targetPath);
+        }
+        catch { /* no readable bin manifest: an ordinary script */ }
     }
     const root = packageRootOf(script.replace(/^\/+/, ''));
     if (root === null)
@@ -4565,6 +4486,8 @@ export class FacetManager {
      * same file again (Vite's node_modules/ms/index.js on every launch).
      */
     learning;
+    /** The bins this workspace learned are servers (server-hints.ts). */
+    learnedServers;
     /**
      * Misses shared across sessions per installed package (read-profile.ts),
      * kept in the npm tarball cache bucket (NPM_TARBALL_CACHE) beside the
@@ -4618,6 +4541,7 @@ export class FacetManager {
     constructor(ctx, env, processes, portRegistry, host, hooks = {}) {
         this.ctx = ctx;
         this.learning = new LaunchLearningStore(ctx.storage);
+        this.learnedServers = new LearnedServers(ctx.storage);
         this.env = parseFacetManagerEnv(env);
         this.processes = processes;
         this.portRegistry = portRegistry;
@@ -4726,38 +4650,67 @@ export class FacetManager {
      * or already booted (its resources are released like a kill).
      */
     _endBySignal(pid, code, signal) {
-        this._endFromOutside(pid, code, signal);
+        this._end(pid, { code, cause: signal });
     }
     /**
-     * End a running process from outside it (a signal, a lost host): its ports,
-     * RPC resources and writers go, it exits with `code` and `reason`, and the
-     * host hears of it. `portEnding` is what a request to one of its ports is
-     * told from then on (PortRegistry.ended).
+     * The process is over: its ports, writers and RPC resources go, and its
+     * end is recorded, once. Every way a process ends comes here: its own exit
+     * (reportExit, a run's answer), a signal, a kill, a lost host, a launch or
+     * boot that failed.
      */
-    _endFromOutside(pid, code, reason, portEnding) {
-        if (this.processes.get(pid)?.state !== 'running' || this.endsAfterDrain.has(pid))
+    _end(pid, ending) {
+        if (this.processes.get(pid)?.state !== 'running')
             return;
-        this.portRegistry.unregisterByPid(pid, portEnding);
-        this.releaseProcessRpcResources(pid);
-        this.revokeProcessVfsWriters(pid);
-        const end = () => {
+        // An end waiting for the drain is already this process's, unless a kill
+        // comes: that takes effect at once, in its place.
+        if (this.endsAfterDrain.has(pid)) {
+            if (!ending.killed)
+                return;
+            this.endsAfterDrain.delete(pid);
+        }
+        this.portRegistry.unregisterByPid(pid, ending.portEnding);
+        // A lifetime run reports its own exit before its call ends: its
+        // resources and writers go as that call does (_watchLifetime).
+        if (ending.cause !== undefined || this.processRpcResources.get(pid)?.releaseOnReportExit !== false) {
+            this.releaseProcessRpcResources(pid);
+            this.revokeProcessVfsWriters(pid);
+        }
+        const record = () => {
             if (this.processes.get(pid)?.state !== 'running')
                 return;
-            this.processes.exit(pid, code);
-            this.processes.markExit(pid, code, reason);
-            this.processes.closeInput(pid);
-            try {
-                this.hooks.onExternalExit?.(pid, code, reason);
+            if (ending.killed)
+                this.processes.kill(pid, ending.code);
+            else
+                this.processes.exit(pid, ending.code);
+            if (ending.cause !== undefined) {
+                this.processes.markExit(pid, ending.code, ending.cause);
+                this.processes.closeInput(pid);
+                this._w5RecordTermination(pid, ending.code, 'facet', ending.cause);
+                try {
+                    this.hooks.onExternalExit?.(pid, ending.code, ending.cause);
+                }
+                catch { }
             }
-            catch { }
             this._teardownPairedServeFacet(pid);
         };
-        // A resident's release drains its write log: its exit is told after,
-        // so what reads its files next (the next prompt, its parent) sees them.
-        if (this.journalDraining.has(pid))
-            this.endsAfterDrain.set(pid, end);
+        // A resident's release drains its write log: an end from outside it is
+        // told after, so what reads its files next (the next prompt, its parent)
+        // sees them. A kill is recorded at once.
+        if (ending.cause !== undefined && !ending.killed && this.journalDraining.has(pid))
+            this.endsAfterDrain.set(pid, record);
         else
-            end();
+            record();
+    }
+    /**
+     * A lifetime run (its start call held open for its life): when that call
+     * ends, so do its resources; one that fails while the process still runs
+     * ends it, as `what` failing. One already over (its own exit, a kill)
+     * rejects the call as an echo of that end, which records nothing again.
+     */
+    _watchLifetime(pid, handle, what) {
+        this.ctx.waitUntil(handle.done
+            .catch((e) => this._end(pid, { code: 1, cause: `${what} failed: ${errorMessage(e)}` }))
+            .finally(() => this.releaseProcessRpcResources(pid)));
     }
     /**
      * The actor hosting `workerKey` reports, from its own next incarnation,
@@ -4780,8 +4733,7 @@ export class FacetManager {
             return;
         console.warn(`[facet-manager] pid ${pid} ("${entry.command}") ended: ${lost.message}`);
         this.hostLosses.set(pid, lost);
-        this._w5RecordTermination(pid, HOST_LOST_EXIT_CODE, 'facet', lost.message);
-        this._endFromOutside(pid, HOST_LOST_EXIT_CODE, lost.message, `"${entry.command}" (pid ${pid}) ended: ${lost.message}`);
+        this._end(pid, { code: HOST_LOST_EXIT_CODE, cause: lost.message, portEnding: `"${entry.command}" (pid ${pid}) ended: ${lost.message}` });
     }
     /**
      * The process is over. Every end-of-life passes through here: a clean
@@ -5516,6 +5468,17 @@ export class FacetManager {
                 }
                 await pacer.spend(source.length);
                 refs = findStaticFsReferences(source, '/' + path);
+                // A registered sibling image is also bytes its loader may read.
+                // CommonJS import.meta.url polyfills can hide that path from folding;
+                // the image collector's same relative-literal rule still names it.
+                for (const image of relativeWasmPaths(source, path)) {
+                    const name = '/' + image;
+                    const existing = refs.exact.find((ref) => ref.path === name);
+                    if (existing)
+                        existing.sync = true;
+                    else
+                        refs.exact.push({ path: name, sync: true });
+                }
                 this.staticRefsMemo.delete(path);
                 this.staticRefsMemo.set(path, { rev, refs });
                 for (const oldest of this.staticRefsMemo.keys()) {
@@ -5985,17 +5948,7 @@ export class FacetManager {
                 }
             })().catch(() => undefined));
         }
-        this.portRegistry.unregisterByPid(pid);
-        this.processes.exit(pid, exitCode);
-        const tracked = this.processRpcResources.get(pid);
-        if (tracked?.releaseOnReportExit) {
-            this.releaseProcessRpcResources(pid);
-            this.revokeProcessVfsWriters(pid);
-        }
-        else if (!tracked) {
-            this.revokeProcessVfsWriters(pid);
-        }
-        this._teardownPairedServeFacet(pid);
+        this._end(pid, { code: exitCode });
     }
     /**
      * Tear down the serve facet a dual (`opencode`) spawn paired with this pid.
@@ -6061,67 +6014,6 @@ export class FacetManager {
         // (node-shims.ts, __nimbusPrepareStdin).
         const stdinPump = opts.stdinPipe ? this._pumpStdinPipe(entry.pid, opts.stdinPipe) : null;
         const foreground = opts.foreground ? this._holdForeground(entry.pid, opts.foreground) : null;
-        const diagOn = isExecDiagEnabled();
-        const __bundleStart = diagOn ? Date.now() : 0;
-        // Paced like a resident launch: a tree too large for one turn costs
-        // turns, and the pacer's stillWanted check ends a build whose process was
-        // killed while it was suspended. The invocation that granted the last
-        // chunk awaits `chunkEnded` (PacedWork.pump), so it owns the launch until
-        // the pacer settles: once the program is loaded and about to be entered
-        // (_execViaLoader's onLoaded), as a resident launch settles once its
-        // process has booted, and in the finally below for a launch that ends
-        // sooner. Not at the end of the build, which would release that turn
-        // with the module map still to assemble and load on it; and not at the
-        // end of the run, which held the session's launch alarm for as long as
-        // the program ran, so a child it launched and waited on, needing a turn
-        // of its own, never got one.
-        const pacer = this._launchPacer(entry.pid);
-        const bundleSpec = { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node };
-        let vfsState;
-        try {
-            vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
-        }
-        catch (err) {
-            // The require closure that cannot fit the snapshot bound is the
-            // process's own answer, not a build failure: exit 1 with a stderr
-            // that names the entry, the staged bytes at the stop, the bound,
-            // and the remedy — the same shape the got/next guards print.
-            pacer.settle();
-            stdinPump?.stop();
-            foreground?.release();
-            if (err instanceof ClosureBoundExceededError) {
-                const o = err.outcome;
-                const mib = (n) => `${(n / 1048576).toFixed(1)} MiB`;
-                const stderr = `require closure for ${o.entry} exceeds the snapshot bound: ` +
-                    `${mib(o.bytesSeen)} staged when ${o.lastPath} crossed the ` +
-                    `${mib(o.bound)} bound; the process was not started.\n` +
-                    `Run it as a server or split the entry; there is no flag to bypass.`;
-                if (this.processes.get(entry.pid)?.state === 'running') {
-                    this._failLaunch(entry.pid, stderr);
-                }
-                return { exitCode: 1, stdout: '', stderr };
-            }
-            // A failed build is thrown to the caller exactly as before. What must
-            // not be left behind is the process entry: it was spawned above and
-            // would otherwise sit 'running' forever for a process that never
-            // started. A build ended by a kill finds its entry already exited and
-            // reports nothing twice.
-            if (this.processes.get(entry.pid)?.state === 'running') {
-                this._failLaunch(entry.pid, `assembling the filesystem bundle for \`${command}\` failed: ${errorMessage(err)}`);
-            }
-            throw err;
-        }
-        // What it reports missing as it runs is filed against this bundle.
-        if (vfsState.bundleKey)
-            this.launchBundles.set(entry.pid, { key: vfsState.bundleKey, refused: new Set() });
-        // Where the one-shot's listing of its namespace walks mounts: what its
-        // launch names, the literal paths of its own code included.
-        const cwd = opts.cwd || '/home/user';
-        this.filesystem?.nameLaunch?.(entry, () => launchNames(cwd, opts.filename, opts.argv ?? [], vfsState.bundlePaths ?? [], [findStaticFsReferences(code, opts.filename?.startsWith('/') ? opts.filename : `${cwd}/[eval]`)]));
-        const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
-        const diagSink = diagOn
-            ? { loadMs: 0, runMs: 0, moduleMapBytes: 0, bundleBytes: 0 }
-            : undefined;
         const abortController = new AbortController();
         // Ctrl-C / kill on a user program has to end the in-flight run, not just
         // mark the table row: the runOnce request carries this signal.
@@ -6130,203 +6022,412 @@ export class FacetManager {
         // same kill, forwarded onto the controller the runOnce request carries.
         const onShellAbort = () => abortController.abort();
         opts.signal?.addEventListener('abort', onShellAbort, { once: true });
-        // A process whose stdin a read could find short can stop at that read and
-        // run again (runtime/stop-replay.ts): its input channel, if it has one,
-        // and the gate that delivers its output once across its runs.
-        const inputChannel = opts.stdinPipe ? entry.pid : Number(opts.env?.NIMBUS_CP_CHILD_PID || 0);
-        const stoppable = inputChannel > 0 || opts.stdinFile !== undefined;
-        const held = this.stdinReadAhead.open();
-        // A run after a stop that strays is ended here, as a kill ends one, but
-        // it is not a kill: the process fails, naming how it strayed.
-        const divergence = new AbortController();
-        if (stoppable) {
-            this.outputGates.set(entry.pid, new ReplayOutputGate());
-            this.journals.set(entry.pid, new ReplayJournal(() => {
-                this.outputGates.get(entry.pid)?.close();
-                divergence.abort();
-            }));
-            if (opts.stdinFile)
-                this.journals.get(entry.pid).bindStdinFile({ path: opts.stdinFile.path, offset: opts.stdinFile.offset, limit: STDIN_SYNC_READ_BYTES });
-        }
-        if (inputChannel > 0)
-            this.stdinTaken.set(inputChannel, new StdinTaken(held, STDIN_SYNC_READ_BYTES));
-        // Each run starts from the umask the process started with: a umask the
-        // program set is its run's own.
-        const startUmask = entry.cred.umask;
-        const runSignal = AbortSignal.any([abortController.signal, divergence.signal]);
+        // Let in once on the ledger, as its launch, before its preparation: the
+        // run claims that admission (runOneShot), and a burst of programs builds
+        // no more maps at once than may run. Killed or refused while it waits, it
+        // never ran.
+        let admitted = false;
         try {
-            // A one-shot holds its module map and what it was seen to read (both in
-            // the bundle), and plans no listing of the namespace (§2.8: the
-            // principal's image is where that comes from). What its closure reads
-            // synchronously by a path its code spells out needs no listing, and is
-            // its data plan.
-            let dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
-            // And every manifest it can see, from what the session read once per install.
-            const manifests = await this._installedManifests(entry, pacer);
-            // A stoppable run's network goes through the session (SupervisorRPC's
-            // fetch and connect), which records what it answers; its code is
-            // digested, so a run after a stop that would load other code does not.
-            let launch = {
-                ...opts,
-                stopNonce: crypto.randomUUID(),
-                ...(stoppable ? { outbound: true, codeDigest: { value: undefined } } : {}),
-            };
-            let result;
-            // What the session has of a captured run's output: the last stopped
-            // run's, until a run after it gets past the read it stopped at (N8).
-            let acceptedCapture = { stdout: '', stderr: '' };
-            const journal = this.journals.get(entry.pid);
-            for (let stops = 0;; stops++) {
-                let outcome;
+            return await withLaunchAdmission(this.ctx, { pid: entry.pid }, abortController.signal, async () => {
+                admitted = true;
+                const diagOn = isExecDiagEnabled();
+                const __bundleStart = diagOn ? Date.now() : 0;
+                // Paced like a resident launch: a tree too large for one turn costs
+                // turns, and the pacer's stillWanted check ends a build whose process was
+                // killed while it was suspended. The invocation that granted the last
+                // chunk awaits `chunkEnded` (PacedWork.pump), so it owns the launch until
+                // the pacer settles: once the program is loaded and about to be entered
+                // (_execViaLoader's onLoaded), as a resident launch settles once its
+                // process has booted, and in the finally below for a launch that ends
+                // sooner. Not at the end of the build, which would release that turn
+                // with the module map still to assemble and load on it; and not at the
+                // end of the run, which held the session's launch alarm for as long as
+                // the program ran, so a child it launched and waited on, needing a turn
+                // of its own, never got one.
+                const pacer = this._launchPacer(entry.pid);
+                const bundleSpec = { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, bundleProfile: opts.bundleProfile, moduleScope: opts.moduleScope, node: opts.node };
+                let vfsState;
                 try {
-                    outcome = await this._execViaLoader(code, launch, entry, vfsState, dataPlan, manifests, runSignal, pacer, diagSink).catch(async (error) => {
-                        // Over the ceiling with none of its learned code: built again, once, with fewer walked modules.
-                        if (!(error instanceof ModuleMapOverCeilingError))
-                            throw error;
-                        vfsState = await this._rebuildUnderCeiling(entry, bundleSpec, vfsState, error, pacer);
-                        dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
-                        return this._execViaLoader(code, launch, entry, vfsState, dataPlan, manifests, runSignal, pacer, diagSink);
-                    });
-                }
-                catch (error) {
-                    const changed = error instanceof ReplayCodeChanged;
-                    if (!changed && (!divergence.signal.aborted || abortController.signal.aborted))
-                        throw error;
-                    outcome = { stop: { v: 3, kind: 'diverged', run: launch.replay?.run ?? 1, out: [], why: changed ? error.message : journal?.diverged ?? errorMessage(error) } };
-                }
-                if (!('stop' in outcome) && journal?.diverged) {
-                    outcome = { stop: { v: 3, kind: 'diverged', run: launch.replay?.run ?? 1, out: [], why: journal.diverged } };
-                }
-                if (!('stop' in outcome)) {
-                    result = outcome;
-                    break;
-                }
-                // The session decides whether the run may go again: what it did
-                // outside itself is counted here, whatever the guest counted.
-                const refused = outcome.stop.kind === 'stdin' && journal ? journal.unreplayable : null;
-                if (outcome.stop.kind === 'stdin' && outcome.stop.captured)
-                    acceptedCapture = outcome.stop.captured;
-                journal?.stopped();
-                // runOneShot released the stopped Worker's nested hold. The child's
-                // outer launch admission must go too: only the session waits on its
-                // stdin now, and keeping that slot could prevent the parent starting
-                // the child whose exit tells it to close this stdin.
-                const resumeAdmission = suspendLaunchAdmission(this.ctx);
-                // The stopped run's descriptors go with it: the next run opens its
-                // own, numbered as the stopped run's were.
-                await this.hooks.rewindProcessFiles?.(entry.pid);
-                const resumed = await this._resumeStoppedRun(entry, outcome.stop, stops, inputChannel, launch, abortController.signal, held, { accepted: acceptedCapture, refused });
-                if ('exit' in resumed) {
-                    result = resumed.exit;
-                    break;
-                }
-                // The replay is a new Worker in flight. Rejoin the admission queue
-                // before rebuilding its module map or asking a preparation helper.
-                try {
-                    await resumeAdmission?.(abortController.signal);
-                }
-                catch (error) {
-                    if (abortController.signal.aborted || !isDynamicWorkerDeadlock(error))
-                        throw error;
-                    // This program already ran and printed before its read. A refusal
-                    // to run it AGAIN ends that existing process, never its spawn.
-                    const message = `node: could not resume after waiting for stdin (${error.code}): ${error.message}\n`;
-                    if (!launch.captureOutput)
-                        await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(message));
-                    result = { exitCode: 1, stdout: acceptedCapture.stdout, stderr: launch.captureOutput ? acceptedCapture.stderr + message : '' };
-                    break;
-                }
-                this.processes.setUmask(entry.pid, startUmask);
-                launch = { ...launch, ...resumed.next, stopNonce: crypto.randomUUID() };
-                // The stopped run's module map was released once it loaded, unless
-                // the prefetch cache keeps it: the next run builds it again, a hit
-                // when nothing it holds has changed since.
-                if (vfsState.generatedSourcesReleased) {
                     vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
-                    dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
                 }
-            }
-            await this._recordLaunchLearning(vfsState.bundleKey, {
-                code: result.runtimeCode, executedModules: result.moduleMisses, dataReads: result.residencyMisses,
-            }).catch((error) => this._learningLost(entry.pid, error));
-            this.processes.exit(entry.pid, result.exitCode);
-            if (result.exitCode !== 0) {
-                this._w5RecordTermination(entry.pid, result.exitCode, 'runtime-worker', result.stderr || `exit ${result.exitCode}`);
-            }
-            if (diagOn && diagSink) {
-                recordExecTelemetry({
-                    command,
-                    bundleMs,
-                    loadMs: diagSink.loadMs,
-                    runMs: diagSink.runMs,
-                    drainPasses: result.diag?.drainPasses ?? 0,
-                    moduleMapBytes: diagSink.moduleMapBytes,
-                    bundleBytes: diagSink.bundleBytes,
-                    namespaceRefusals: result.diag?.namespaceRefusals ?? 0,
-                    rpcWrites: result.diag?.rpcWrites ?? 0,
-                    fsRpcReads: result.diag?.fsRpcReads ?? 0,
-                    cacheHit: vfsState.cacheHit ?? false,
-                    turns: pacer.chunks,
-                    exitCode: result.exitCode,
-                    at: Date.now(),
-                });
-            }
-            return result;
+                catch (err) {
+                    // The require closure that cannot fit the snapshot bound is the
+                    // process's own answer, not a build failure: exit 1 with a stderr
+                    // that names the entry, the staged bytes at the stop, the bound,
+                    // and the remedy — the same shape the got/next guards print.
+                    pacer.settle();
+                    stdinPump?.stop();
+                    foreground?.release();
+                    if (err instanceof ClosureBoundExceededError) {
+                        const o = err.outcome;
+                        const mib = (n) => `${(n / 1048576).toFixed(1)} MiB`;
+                        const stderr = `require closure for ${o.entry} exceeds the snapshot bound: ` +
+                            `${mib(o.bytesSeen)} staged when ${o.lastPath} crossed the ` +
+                            `${mib(o.bound)} bound; the process was not started.\n` +
+                            `Run it as a server or split the entry; there is no flag to bypass.`;
+                        this._end(entry.pid, { code: 1, cause: stderr });
+                        return { exitCode: 1, stdout: '', stderr };
+                    }
+                    // A failed build is thrown to the caller exactly as before. What must
+                    // not be left behind is the process entry: it was spawned above and
+                    // would otherwise sit 'running' forever for a process that never
+                    // started. A build ended by a kill finds its entry already exited and
+                    // reports nothing twice.
+                    this._end(entry.pid, { code: 1, cause: `assembling the filesystem bundle for \`${command}\` failed: ${errorMessage(err)}` });
+                    throw err;
+                }
+                // What it reports missing as it runs is filed against this bundle.
+                if (vfsState.bundleKey)
+                    this.launchBundles.set(entry.pid, { key: vfsState.bundleKey, refused: new Set() });
+                // Where the one-shot's listing of its namespace walks mounts: what its
+                // launch names, the literal paths of its own code included.
+                const cwd = opts.cwd || '/home/user';
+                this.filesystem?.nameLaunch?.(entry, () => launchNames(cwd, opts.filename, opts.argv ?? [], vfsState.bundlePaths ?? [], [findStaticFsReferences(code, opts.filename?.startsWith('/') ? opts.filename : `${cwd}/[eval]`)]));
+                const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
+                const diagSink = diagOn
+                    ? { loadMs: 0, runMs: 0, moduleMapBytes: 0, bundleBytes: 0 }
+                    : undefined;
+                // A process whose stdin a read could find short can stop at that read and
+                // run again (runtime/stop-replay.ts): its input channel, if it has one,
+                // and the gate that delivers its output once across its runs.
+                const inputChannel = opts.stdinPipe ? entry.pid : Number(opts.env?.NIMBUS_CP_CHILD_PID || 0);
+                const stoppable = inputChannel > 0 || opts.stdinFile !== undefined;
+                // A run whose output is not captured stops at its first listen, to be
+                // run again as a resident that serves (_promote): its output is
+                // delivered once across the two, through the same gate.
+                const promotable = !opts.captureOutput;
+                // What its \`< file\` is as it starts: a promoted run reads it again.
+                const stdinFileIdentity = promotable && opts.stdinFile ? await this._stdinFileIdentity(entry, opts.stdinFile.path) : undefined;
+                const held = this.stdinReadAhead.open();
+                // A run after a stop that strays is ended here, as a kill ends one, but
+                // it is not a kill: the process fails, naming how it strayed.
+                const divergence = new AbortController();
+                if (stoppable || promotable)
+                    this.outputGates.set(entry.pid, new ReplayOutputGate());
+                if (stoppable) {
+                    this.journals.set(entry.pid, new ReplayJournal(() => {
+                        this.outputGates.get(entry.pid)?.close();
+                        divergence.abort();
+                    }));
+                    if (opts.stdinFile)
+                        this.journals.get(entry.pid).bindStdinFile({ path: opts.stdinFile.path, offset: opts.stdinFile.offset, limit: STDIN_SYNC_READ_BYTES });
+                }
+                if (inputChannel > 0)
+                    this.stdinTaken.set(inputChannel, new StdinTaken(held, STDIN_SYNC_READ_BYTES));
+                // Each run starts from the umask the process started with: a umask the
+                // program set is its run's own.
+                const startUmask = entry.cred.umask;
+                const runSignal = AbortSignal.any([abortController.signal, divergence.signal]);
+                let promoted = false;
+                try {
+                    // A one-shot holds its module map and what it was seen to read (both in
+                    // the bundle), and plans no listing of the namespace (§2.8: the
+                    // principal's image is where that comes from). What its closure reads
+                    // synchronously by a path its code spells out needs no listing, and is
+                    // its data plan.
+                    let dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+                    // And every manifest it can see, from what the session read once per install.
+                    const manifests = await this._installedManifests(entry, pacer);
+                    // A stoppable run's network goes through the session (SupervisorRPC's
+                    // fetch and connect), which records what it answers; its code is
+                    // digested, so a run after a stop that would load other code does not.
+                    let launch = {
+                        ...opts,
+                        stopNonce: crypto.randomUUID(),
+                        ...(promotable ? { promote: true } : {}),
+                        ...(stoppable ? { outbound: true, codeDigest: { value: undefined } } : {}),
+                    };
+                    let result;
+                    // What the session has of a captured run's output: the last stopped
+                    // run's, until a run after it gets past the read it stopped at (N8).
+                    let acceptedCapture = { stdout: '', stderr: '' };
+                    const journal = this.journals.get(entry.pid);
+                    for (let stops = 0;; stops++) {
+                        let outcome;
+                        try {
+                            outcome = await this._execViaLoader(code, launch, entry, vfsState, dataPlan, manifests, runSignal, pacer, diagSink).catch(async (error) => {
+                                // Over the ceiling with none of its learned code: built again, once, with fewer walked modules.
+                                if (!(error instanceof ModuleMapOverCeilingError))
+                                    throw error;
+                                vfsState = await this._rebuildUnderCeiling(entry, bundleSpec, vfsState, error, pacer);
+                                dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+                                return this._execViaLoader(code, launch, entry, vfsState, dataPlan, manifests, runSignal, pacer, diagSink);
+                            });
+                        }
+                        catch (error) {
+                            const changed = error instanceof ReplayCodeChanged;
+                            if (!changed && (!divergence.signal.aborted || abortController.signal.aborted))
+                                throw error;
+                            outcome = { stop: { v: 3, kind: 'diverged', run: launch.replay?.run ?? 1, out: [], why: changed ? error.message : journal?.diverged ?? errorMessage(error) } };
+                        }
+                        if (!('stop' in outcome) && journal?.diverged) {
+                            outcome = { stop: { v: 3, kind: 'diverged', run: launch.replay?.run ?? 1, out: [], why: journal.diverged } };
+                        }
+                        if (!('stop' in outcome)) {
+                            result = outcome;
+                            break;
+                        }
+                        if (outcome.stop.kind === 'listen') {
+                            const promotion = await this._promote(entry, code, opts, outcome.stop, { inputChannel, held, signal: abortController.signal, stdinFile: stdinFileIdentity });
+                            promoted = promotion.promotedPid !== undefined;
+                            return promotion;
+                        }
+                        // The session decides whether the run may go again: what it did
+                        // outside itself is counted here, whatever the guest counted.
+                        const refused = outcome.stop.kind === 'stdin' && journal ? journal.unreplayable : null;
+                        if (outcome.stop.kind === 'stdin' && outcome.stop.captured)
+                            acceptedCapture = outcome.stop.captured;
+                        journal?.stopped();
+                        // runOneShot released the stopped Worker's nested hold. The child's
+                        // outer launch admission must go too: only the session waits on its
+                        // stdin now, and keeping that slot could prevent the parent starting
+                        // the child whose exit tells it to close this stdin.
+                        const resumeAdmission = suspendLaunchAdmission(this.ctx);
+                        // The stopped run's descriptors go with it: the next run opens its
+                        // own, numbered as the stopped run's were.
+                        await this.hooks.rewindProcessFiles?.(entry.pid);
+                        const resumed = await this._resumeStoppedRun(entry, outcome.stop, stops, inputChannel, launch, abortController.signal, held, { accepted: acceptedCapture, refused });
+                        if ('exit' in resumed) {
+                            result = resumed.exit;
+                            break;
+                        }
+                        // The replay is a new Worker in flight. Rejoin the admission queue
+                        // before rebuilding its module map or asking a preparation helper.
+                        try {
+                            await resumeAdmission?.(abortController.signal);
+                        }
+                        catch (error) {
+                            if (abortController.signal.aborted || !isDynamicWorkerDeadlock(error))
+                                throw error;
+                            // This program already ran and printed before its read. A refusal
+                            // to run it AGAIN ends that existing process, never its spawn.
+                            const message = `node: could not resume after waiting for stdin (${error.code}): ${error.message}\n`;
+                            if (!launch.captureOutput)
+                                await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(message));
+                            result = { exitCode: 1, stdout: acceptedCapture.stdout, stderr: launch.captureOutput ? acceptedCapture.stderr + message : '' };
+                            break;
+                        }
+                        this.processes.setUmask(entry.pid, startUmask);
+                        launch = { ...launch, ...resumed.next, stopNonce: crypto.randomUUID() };
+                        // The stopped run's module map was released once it loaded, unless
+                        // the prefetch cache keeps it: the next run builds it again, a hit
+                        // when nothing it holds has changed since.
+                        if (vfsState.generatedSourcesReleased) {
+                            vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
+                            dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+                        }
+                    }
+                    await this._recordLaunchLearning(vfsState.bundleKey, {
+                        code: result.runtimeCode, executedModules: result.moduleMisses, dataReads: result.residencyMisses,
+                    }).catch((error) => this._learningLost(entry.pid, error));
+                    if (result.exitCode !== 0 && this.processes.get(entry.pid)?.state === 'running') {
+                        this._w5RecordTermination(entry.pid, result.exitCode, 'runtime-worker', result.stderr || `exit ${result.exitCode}`);
+                    }
+                    this._end(entry.pid, { code: result.exitCode });
+                    if (diagOn && diagSink) {
+                        recordExecTelemetry({
+                            command,
+                            bundleMs,
+                            loadMs: diagSink.loadMs,
+                            runMs: diagSink.runMs,
+                            drainPasses: result.diag?.drainPasses ?? 0,
+                            moduleMapBytes: diagSink.moduleMapBytes,
+                            bundleBytes: diagSink.bundleBytes,
+                            namespaceRefusals: result.diag?.namespaceRefusals ?? 0,
+                            rpcWrites: result.diag?.rpcWrites ?? 0,
+                            fsRpcReads: result.diag?.fsRpcReads ?? 0,
+                            cacheHit: vfsState.cacheHit ?? false,
+                            turns: pacer.chunks,
+                            exitCode: result.exitCode,
+                            at: Date.now(),
+                        });
+                    }
+                    return result;
+                }
+                catch (err) {
+                    // The abort controller firing means this run ended BY a kill — the
+                    // shell's Ctrl+C or `kill <pid>`. The process was not a crash and the
+                    // abort text is not its stderr: mark it killed and hand back 130 (the
+                    // shell's signalled status) with nothing for the terminal to print.
+                    // A one-shot that ended abnormally may have lost writes it
+                    // acknowledged and never sent: said, with the bound, every time (the
+                    // session cannot know whether there were any: they never left).
+                    const unsettled = `${UNSETTLED_END_NOTE}\n`;
+                    if (abortController.signal.aborted) {
+                        this._end(entry.pid, { code: 137, killed: true });
+                        if (!opts.captureOutput)
+                            await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(unsettled));
+                        return { exitCode: 130, stdout: '', stderr: opts.captureOutput ? unsettled : '' };
+                    }
+                    // The ledger refused to start it (EAGAIN): it never ran. That is its
+                    // spawn failing, for whoever spawned it to report: a child_process
+                    // parent as an 'error' event. A pid the caller allocated is the
+                    // caller's to mark; one spawned here ends with status 1.
+                    if (isDynamicWorkerDeadlock(err)) {
+                        if (!opts.skipSpawn)
+                            this._end(entry.pid, { code: 1 });
+                        throw err;
+                    }
+                    // The run ended without its exit report (the platform killed it), so it
+                    // is failed here naming what it reported refused as it ran: a cause the
+                    // next launch removes, and one the platform's error does not name.
+                    const refused = residencyMissReport([...(this.launchBundles.get(entry.pid)?.refused ?? [])]);
+                    this._end(entry.pid, { code: 1, cause: `runtime worker error: ${errorMessage(err)}` });
+                    return { exitCode: 1, stdout: '', stderr: `${errorMessage(err)}\n${unsettled}${refused}` };
+                }
+                finally {
+                    pacer.settle();
+                    // A promoted process reads on, as the resident.
+                    if (!promoted)
+                        stdinPump?.stop();
+                    foreground?.release();
+                    if (inputChannel > 0)
+                        this.stdinTaken.get(inputChannel)?.release();
+                    this.stdinTaken.delete(inputChannel);
+                    held.give();
+                    this.outputGates.delete(entry.pid);
+                    if (stoppable) {
+                        this.journals.get(entry.pid)?.close();
+                        this.journals.delete(entry.pid);
+                        this._dropNetTargets(entry.pid);
+                    }
+                }
+            });
         }
         catch (err) {
-            // The abort controller firing means this run ended BY a kill — the
-            // shell's Ctrl+C or `kill <pid>`. The process was not a crash and the
-            // abort text is not its stderr: mark it killed and hand back 130 (the
-            // shell's signalled status) with nothing for the terminal to print.
-            // A one-shot that ended abnormally may have lost writes it
-            // acknowledged and never sent: said, with the bound, every time (the
-            // session cannot know whether there were any: they never left).
-            const unsettled = `${UNSETTLED_END_NOTE}\n`;
-            if (abortController.signal.aborted) {
-                this.processes.kill(entry.pid);
-                if (unsettled && !opts.captureOutput)
-                    await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(unsettled));
-                return { exitCode: 130, stdout: '', stderr: opts.captureOutput ? unsettled : '' };
-            }
-            // The ledger refused to start it (EAGAIN): it never ran. That is its
-            // spawn failing, for whoever spawned it to report: a child_process
-            // parent as an 'error' event. A pid the caller allocated is the
-            // caller's to mark; one spawned here ends with status 1.
-            if (isDynamicWorkerDeadlock(err)) {
-                if (!opts.skipSpawn)
-                    this.processes.exit(entry.pid, 1);
+            if (admitted)
                 throw err;
+            stdinPump?.stop();
+            foreground?.release();
+            if (abortController.signal.aborted) {
+                this._end(entry.pid, { code: 137, killed: true });
+                return { exitCode: 130, stdout: '', stderr: '' };
             }
-            const exitCode = 1;
-            const reason = `runtime worker error: ${errorMessage(err)}`;
-            // The run ended without its exit report (the platform killed it), so it
-            // is failed here naming what it reported refused as it ran: a cause the
-            // next launch removes, and one the platform's error does not name.
-            const refused = residencyMissReport([...(this.launchBundles.get(entry.pid)?.refused ?? [])]);
-            this.processes.exit(entry.pid, exitCode);
-            this._w5RecordTermination(entry.pid, exitCode, 'runtime-worker', reason);
-            try {
-                this.hooks.onExternalExit?.(entry.pid, exitCode, reason);
-            }
-            catch { }
-            return { exitCode, stdout: '', stderr: `${errorMessage(err)}${unsettled ? `\n${unsettled}` : ''}${refused}` };
+            if (isDynamicWorkerDeadlock(err) && !opts.skipSpawn)
+                this._end(entry.pid, { code: 1 });
+            throw err;
         }
         finally {
             opts.signal?.removeEventListener('abort', onShellAbort);
-            pacer.settle();
-            stdinPump?.stop();
-            foreground?.release();
-            if (inputChannel > 0)
-                this.stdinTaken.get(inputChannel)?.release();
-            this.stdinTaken.delete(inputChannel);
-            held.give();
-            if (stoppable) {
-                this.outputGates.delete(entry.pid);
-                this.journals.get(entry.pid)?.close();
-                this.journals.delete(entry.pid);
-                this._dropNetTargets(entry.pid);
-            }
         }
+    }
+    /**
+     * A one-shot that stopped at its first listen (stop-replay.ts listen) runs
+     * on as a resident, the same process: the resident replays the run up to
+     * that listen, checked against it, then listens and serves. What the
+     * one-shot printed is shown once; the resident prints it again only to be
+     * checked (the prefix).
+     */
+    /**
+     * A file's identity as the process sees it: which file, and its version;
+     * null when it has none to see (gone, or refused, synchronously or not).
+     */
+    async _stdinFileIdentity(entry, path) {
+        if (!this.filesystem)
+            return null;
+        try {
+            const stat = await this.filesystem.bind({ pid: entry.pid, cred: entry.cred }).stat(path);
+            return stat ? `${stat.ino}:${stat.revision}:${stat.size}:${stat.mtime}:${stat.ctime}` : null;
+        }
+        catch {
+            return null;
+        }
+    }
+    async _promote(entry, code, opts, stop, 
+    /**
+     * The run's input channel and read-ahead account, its abort (a kill,
+     * Ctrl-C), and the identity its \`< file\` had when it started.
+     */
+    run) {
+        const pid = entry.pid;
+        // `killed`: its resident is running, and is stopped.
+        const fail = async (message, killed = false) => {
+            const text = `node: this program listens as a server, so Nimbus runs it again as one, but ${message}\n`;
+            await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(text));
+            this._end(pid, { code: 1, cause: text.trimEnd(), killed });
+            return { exitCode: 1, stdout: '', stderr: '' };
+        };
+        // The gate stays while the resident boots: a late chunk of the stopped
+        // run is dropped, the resident's are delivered (exec's finally ends it).
+        const gate = this.outputGates.get(pid);
+        const stopped = gate?.stopped(stop) ?? { fresh: [], prefix: null };
+        for (const { stream, bytes } of stopped.fresh)
+            await this._deliverOutput(pid, stream, bytes);
+        if (stopped.prefix === null) {
+            return fail(`it printed more than ${REPLAY_PREFIX_MAX_BYTES / 1048576} MiB before it listened, more than a second run is checked against.`);
+        }
+        // The stdin it took goes back in front of its channel, and the resident
+        // takes at least as much before it replays the reads that took it.
+        const taken = run.inputChannel > 0 ? this.stdinTaken.get(run.inputChannel) : undefined;
+        taken?.retire();
+        const before = taken ? taken.take() : { chunks: [], bytes: 0 };
+        if (before === null)
+            return fail(`it read more than ${Math.round(STDIN_SYNC_READ_BYTES / 1048576)} MiB of stdin before it listened, more than a second run is handed back.`);
+        if (before.bytes > 0) {
+            const channel = this._stdinChannel(run.inputChannel);
+            if (channel === null)
+                return fail('the stdin it read before it listened has no channel to be handed back on.');
+            channel.unread(before.chunks.map((data) => ({ data, ended: false })));
+            run.held.give(before.bytes);
+        }
+        // The stopped run's descriptors go with it: the resident opens its own.
+        await this.hooks.rewindProcessFiles?.(pid);
+        // Every long-running process has an input channel on its pid.
+        this.processes.openInput(pid);
+        const resume = {
+            replay: {
+                run: stop.run + 1,
+                tape: stop.tape,
+                listen: true,
+                prefix: { stdout: encodeBase64(stopped.prefix.stdout), stderr: encodeBase64(stopped.prefix.stderr) },
+            },
+            ...(before.bytes > 0 ? { stdinAtLeast: before.bytes } : {}),
+            // A \`< file\` is read again from where the run read it: the same
+            // bytes, unless the file changed since the run started (checked below).
+            ...(opts.stdinFile ? { stdinFile: { ...opts.stdinFile, syncRead: true } } : {}),
+        };
+        // Its abort during the hand-off ends it: the resident's launch stops at
+        // its next ownership gate.
+        const abort = () => this._end(pid, { code: 137, killed: true });
+        if (run.signal.aborted)
+            abort();
+        run.signal.addEventListener('abort', abort, { once: true });
+        // Held until the resident is accepted as the process: through its boot
+        // and the check of what it read.
+        let changed = false;
+        try {
+            await this.spawnNode(code, {
+                argv: opts.argv, env: opts.env, cwd: opts.cwd, filename: opts.filename, dirname: opts.dirname,
+                esModule: opts.esModule, esModuleMap: opts.esModuleMap, moduleScope: opts.moduleScope,
+                command: opts.command, invokerPid: opts.invokerPid, bundleProfile: opts.bundleProfile, node: opts.node,
+                ...(opts.stdin !== undefined ? { stdin: opts.stdin } : {}),
+                skipSpawn: true, callerPid: pid, resume,
+            });
+            // Its \`< file\` changed between the run that read it and the resident
+            // that read it again: they did not read the same input.
+            changed = this.processExitCode(pid) === null && run.stdinFile !== undefined
+                && await this._stdinFileIdentity(entry, opts.stdinFile.path) !== run.stdinFile;
+            run.signal.throwIfAborted();
+        }
+        finally {
+            run.signal.removeEventListener('abort', abort);
+        }
+        // Ended while it booted: that is its exit, and it is no server.
+        const ended = this.processExitCode(pid);
+        if (ended !== null)
+            return { exitCode: ended, stdout: '', stderr: '' };
+        if (changed) {
+            return fail(`its stdin, ${opts.stdinFile.path}, changed while it was run again, so the two runs did not read the same input.`, true);
+        }
+        // Said as any resident's start is: it runs on, and serves.
+        try {
+            this.hooks.onSpawn?.(pid, entry.command, true);
+        }
+        catch { }
+        // Its next launch starts as a server directly (server-hints.ts).
+        if (opts.server)
+            await this.learnedServers.learn(opts.server).catch((error) => this._learningLost(pid, error));
+        return { exitCode: 0, stdout: '', stderr: '', promotedPid: pid };
     }
     /**
      * A process stopped at a synchronous read of stdin that needs input not
@@ -6402,7 +6503,7 @@ export class FacetManager {
             return fail(full);
         const input = await this._awaitStoppedInput(channel, stop.until === 'data' ? 'data' : 'end', signal, held, before.bytes);
         if ('aborted' in input) {
-            this.processes.kill(pid);
+            this._end(pid, { code: 137, killed: true });
             return ends(130);
         }
         if ('signal' in input)
@@ -6833,6 +6934,7 @@ export class FacetManager {
             ...(opts.stdinAtLeast ? { stdinAtLeast: opts.stdinAtLeast } : {}),
             // Only this run's stop counts (stop-replay.ts stopRecordOf).
             ...(opts.stopNonce ? { stopNonce: opts.stopNonce } : {}),
+            ...(opts.promote ? { promote: true } : {}),
             // Its network goes through the session (runOnce's outbound below).
             ...(opts.outbound ? { outbound: true } : {}),
             captureOutput: !!opts.captureOutput,
@@ -6870,18 +6972,14 @@ export class FacetManager {
                     const codeModules = {};
                     for (const [name, text] of Object.entries(generatedWorker.codeModules))
                         codeModules[name] = { cjs: text };
-                    for (const [name, source] of Object.entries(generatedWorker.immutableModules))
-                        codeModules[name] = { cjs: source.text };
                     if (diagSink) {
-                        diagSink.moduleMapBytes = generatedWorker.source.byteLength;
+                        diagSink.moduleMapBytes = _encodedSourceBytes(generatedWorker.code);
                         for (const source of Object.values(generatedWorker.modules)) {
                             diagSink.moduleMapBytes += _encodedSourceBytes(source);
                         }
                         for (const text of Object.values(generatedWorker.codeModules)) {
                             diagSink.moduleMapBytes += _encodedSourceBytes(text);
                         }
-                        for (const source of Object.values(generatedWorker.immutableModules))
-                            diagSink.moduleMapBytes += source.byteLength;
                         for (const m of [...Object.values(sqliteModules), ...Object.values(wasmModules)]) {
                             diagSink.moduleMapBytes += m.wasm.byteLength;
                         }
@@ -6899,8 +6997,7 @@ export class FacetManager {
                     // a module map rebuilt from files that changed while it waited
                     // would answer it differently with nothing to show for it.
                     if (opts.codeDigest) {
-                        const digest = answerDigest([generatedWorker.source.recipe(), generatedWorker.modules, generatedWorker.codeModules,
-                            Object.fromEntries(Object.entries(generatedWorker.immutableModules).map(([name, source]) => [name, source.asset]))]);
+                        const digest = answerDigest([generatedWorker.code, generatedWorker.modules, generatedWorker.codeModules]);
                         if (opts.codeDigest.value === undefined)
                             opts.codeDigest.value = digest;
                         else if (opts.codeDigest.value !== digest)
@@ -6975,41 +7072,31 @@ export class FacetManager {
     async execStagedArtifact(artifact, opts) {
         const mode = opts.attachedTty === true ? 'attached' : 'oneshot';
         const staged = await this._stageOpencodeFacet(artifact, opts, mode);
-        if (mode === 'attached') {
-            return await this._execStagedArtifactAttached(staged.pid, staged.command, staged.stageSpec);
-        }
-        // One-shot: run through a keyed, stage-carrying NimbusLoadedEntrypoint —
-        // the ~23 MB module map is assembled inside the stateless entrypoint on
-        // the Worker-Loader cache-miss path (with SUPERVISOR bound to THIS call's
-        // context, which stays open for the whole run), never in this DO.
+        if (mode === 'attached')
+            return await this._startStagedResident(staged);
+        // One-shot: a run like every other (runOneShot), whose ~23 MB module map
+        // is assembled from its stage in a stateless isolate, never in this DO.
         const writerId = crypto.randomUUID();
-        const supervisor = supervisorBindingProps(this.ctx, staged.pid, { writerId, network: this.network() });
-        const ctxExports = getNimbusCtxExports();
-        let entrypoint;
         let writerActivated = false;
         try {
-            this._activateProcessVfsWriter(staged.pid, writerId);
-            writerActivated = true;
-            entrypoint = await createLoadedWorkerEntrypoint(ctxExports, supervisor, staged.stageSpec);
-            if (typeof entrypoint.fetch !== 'function') {
-                throw new Error('Nimbus: opencode runner entrypoint has no fetch method');
-            }
-            const response = await entrypoint.fetch(new Request('http://nimbus-runtime.local/run', { method: 'POST' }));
-            try {
-                const result = await response.json();
-                this.processes.exit(staged.pid, result.exitCode);
-                return { ...result, pid: staged.pid };
-            }
-            finally {
-                disposeRpcResource(response);
-            }
+            const result = await this.processHost.runOnce({
+                pid: staged.pid,
+                writerId,
+                code: async () => ({ stage: staged.stageSpec }),
+                request: new Request('http://nimbus-runtime.local/run', { method: 'POST' }),
+                onWriterActivated: (id) => {
+                    this._activateProcessVfsWriter(staged.pid, id);
+                    writerActivated = true;
+                },
+            }, async (response) => await response.json());
+            this._end(staged.pid, { code: result.exitCode });
+            return { ...result, pid: staged.pid };
         }
         catch (e) {
-            this.processes.exit(staged.pid, 1);
+            this._end(staged.pid, { code: 1 });
             throw e;
         }
         finally {
-            disposeRpcResource(entrypoint);
             if (writerActivated)
                 this.revokeProcessVfsWriters(staged.pid, writerId);
         }
@@ -7079,71 +7166,7 @@ export class FacetManager {
             vfsBundle,
             vfsCursor: serializeFacetVfsCursor(vfsState.cursor),
         };
-        return { pid, command, stageSpec };
-    }
-    /**
-     * Attached-TTY staged-artifact lifecycle (the interactive opencode TUI). Boots
-     * the runner's startProcess() — which holds the facet open via ctx.waitUntil
-     * while opencode's createCliRenderer loop streams ANSI frames to the terminal
-     * RPC and the live stdin pump feeds keystrokes — and returns immediately with
-     * the pid. The facet reports its own exit via SUPERVISOR.reportExit; resources
-     * release on report-exit, the same contract the long-running node path uses.
-     */
-    async _execStagedArtifactAttached(pid, command, stageSpec) {
-        let handle;
-        try {
-            // The opencode runner holds its startProcess open for the process's
-            // whole life, so that one call IS the lifecycle.
-            const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
-            handle = await this.processFabric.startResidentProcess({
-                startContract: 'lifetime',
-                journaled: true,
-                pid,
-                workerKey,
-                boot: { kind: 'staged', stage: stageSpec },
-                onWriterActivated: (writerId) => {
-                    this._activateProcessVfsWriter(pid, writerId);
-                },
-                onWriterRetired: (writerId) => {
-                    this.revokeProcessVfsWriters(pid, writerId);
-                },
-            });
-            this._watchHost(pid, handle, false);
-            this.trackProcessRpcResources(pid, [handle], { releaseOnReportExit: false });
-            this.ctx.waitUntil(handle.done
-                .catch((e) => {
-                // A pid that is already terminal (killed by session teardown, or
-                // exited via its own reportExit) rejects the held-open call as a
-                // teardown ECHO — recording it again would double-count the
-                // termination with a misleading code-1 entry.
-                const entry = this.processes.get(pid);
-                if (!entry || entry.state !== 'running')
-                    return;
-                const reason = 'opencode TUI process failed: ' + errorMessage(e);
-                try {
-                    this.processes.exit(pid, 1);
-                }
-                catch { }
-                try {
-                    this._w5RecordTermination(pid, 1, 'facet', reason);
-                }
-                catch { }
-                try {
-                    this.hooks.onExternalExit?.(pid, 1, reason);
-                }
-                catch { }
-            })
-                .finally(() => {
-                this.releaseProcessRpcResources(pid);
-            }));
-            return { pid, exitCode: 0, stdout: '', stderr: '' };
-        }
-        catch (e) {
-            this.releaseProcessRpcResources(pid);
-            handle?.kill();
-            this.processes.exit(pid, 1);
-            throw e;
-        }
+        return { pid, stageSpec };
     }
     /**
      * Run a headless `opencode serve` as a resident, routeable server facet. The
@@ -7163,7 +7186,7 @@ export class FacetManager {
             ? opts.argv
             : [...opts.argv, '--port', String(port)];
         const staged = await this._stageOpencodeFacet(artifact, { ...opts, argv }, 'server');
-        const result = await this._runOpencodeServerFacet(staged, port);
+        const result = await this._startStagedResident(staged, port);
         return { ...result, port };
     }
     /**
@@ -7186,7 +7209,7 @@ export class FacetManager {
         }, 'server');
         const servePid = serveStaged.pid;
         try {
-            await this._runOpencodeServerFacet(serveStaged, port);
+            await this._startStagedResident(serveStaged, port);
             // (b) health-gate: wait for the server to answer /doc through the loopback
             // router (fail loud with the server's log tail on timeout / early exit).
             await this._awaitOpencodeServerReady(servePid, port);
@@ -7225,19 +7248,24 @@ export class FacetManager {
         this._pairedServeFacet.set(attach.pid, servePid);
         return attach;
     }
-    async _runOpencodeServerFacet(staged, port) {
+    /**
+     * A staged opencode resident: the attached TUI, or with `port` a headless
+     * serve routed on it. Its runner holds startProcess open for the process's
+     * whole life, so that one call is the lifecycle; it reports its own exit.
+     * The module map is assembled on the Worker-Loader cache-miss path, so the
+     * artifact sources exist only while this facet is loading.
+     */
+    async _startStagedResident(staged, port) {
         const { pid, stageSpec } = staged;
+        const what = port === undefined ? 'opencode TUI' : 'opencode serve';
         let handle;
         let resourcesTracked = false;
         try {
-            const workerKey = `nimbus-process:${this.ctx.id.toString()}:${pid}`;
-            // The module map is assembled on the Worker-Loader cache-miss path, so
-            // the artifact sources exist only while this facet is loading.
             handle = await this.processFabric.startResidentProcess({
                 startContract: 'lifetime',
                 journaled: true,
                 pid,
-                workerKey,
+                workerKey: `nimbus-process:${this.ctx.id.toString()}:${pid}`,
                 boot: { kind: 'staged', stage: stageSpec },
                 onWriterActivated: (writerId) => {
                     this._activateProcessVfsWriter(pid, writerId);
@@ -7247,52 +7275,24 @@ export class FacetManager {
                 },
             });
             this._watchHost(pid, handle, false);
-            // The handle's route target resolves the RUNNING facet wherever it is
-            // hosted; binding it for the pid before the port is announced is what
-            // lets the shim's listen()→SUPERVISOR.registerPort back-fill.
-            // The opencode runner dispatches through node-shims' __nimbusServeHttp, which strips the ACQUIRE.
-            this.portRegistry.bindFacetStub(pid, handle.routeTarget, { deliversAcquire: true });
+            // Bound before the port is announced, so the shim's
+            // listen()→SUPERVISOR.registerPort back-fills it. The opencode runner
+            // dispatches through node-shims' __nimbusServeHttp, which strips the ACQUIRE.
+            if (port !== undefined)
+                this.portRegistry.bindFacetStub(pid, handle.routeTarget, { deliversAcquire: true });
             this.trackProcessRpcResources(pid, [handle], { releaseOnReportExit: false });
             resourcesTracked = true;
-            this.ctx.waitUntil(handle.done
-                .catch((e) => {
-                const current = this.processes.get(pid);
-                if (!current || current.state !== 'running')
-                    return;
-                const reason = 'opencode serve process failed: ' + errorMessage(e);
-                try {
-                    this.processes.exit(pid, 1);
-                }
-                catch { }
-                try {
-                    this._w5RecordTermination(pid, 1, 'facet', reason);
-                }
-                catch { }
-                try {
-                    this.hooks.onExternalExit?.(pid, 1, reason);
-                }
-                catch { }
-            })
-                .finally(() => {
-                this.releaseProcessRpcResources(pid);
-            }));
-            await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, port);
-            this.portRegistry.register(port, pid);
+            this._watchLifetime(pid, handle, `${what} process`);
+            if (port !== undefined) {
+                await clearPortCapability({ ctx: this.ctx, portRegistry: this.portRegistry }, port);
+                this.portRegistry.register(port, pid);
+            }
             return { pid, exitCode: 0, stdout: '', stderr: '' };
         }
         catch (e) {
-            this.portRegistry.unregisterByPid(pid);
-            if (resourcesTracked)
-                this.releaseProcessRpcResources(pid);
-            else
+            if (!resourcesTracked)
                 handle?.kill();
-            this.processes.exit(pid, 1);
-            const reason = 'opencode serve boot failed: ' + errorMessage(e);
-            this._w5RecordTermination(pid, 1, 'facet', reason);
-            try {
-                this.hooks.onExternalExit?.(pid, 1, reason);
-            }
-            catch { }
+            this._end(pid, { code: 1, cause: `${what} launch failed: ${errorMessage(e)}` });
             throw e;
         }
     }
@@ -7389,19 +7389,7 @@ export class FacetManager {
             return;
         const reason = `resident process died: ${errorMessage(error)}`;
         this.processes.appendOutput(pid, 'stderr', `[nimbus] ${reason}\n`);
-        try {
-            this.processes.exit(pid, 1);
-        }
-        catch { }
-        try {
-            this._w5RecordTermination(pid, 1, 'facet', reason);
-        }
-        catch { }
-        try {
-            this.hooks.onExternalExit?.(pid, 1, reason);
-        }
-        catch { }
-        this.releaseProcessRpcResources(pid);
+        this._end(pid, { code: 1, cause: reason });
     }
     _activateProcessVfsWriter(pid, writerId) {
         // The run this writer is reads the process's stdin, and no run before it,
@@ -7555,21 +7543,6 @@ export class FacetManager {
         }
     }
     /**
-     * A launch that fails before its process is running reports the same way
-     * regardless of which phase failed: the pid is exited, the terminal event
-     * recorded, and the session notified. Callers do their phase-specific
-     * cleanup (ports, tracked RPC resources) first and pass a reason that names
-     * the phase.
-     */
-    _failLaunch(pid, reason) {
-        this.processes.exit(pid, 1);
-        this._w5RecordTermination(pid, 1, 'facet', reason);
-        try {
-            this.hooks.onExternalExit?.(pid, 1, reason);
-        }
-        catch { }
-    }
-    /**
      * Re-drive a journalled launch after an instance reset. What the journal
      * row carries is the recipe, and who the launch ran as (its credential and
      * exec id); env and secrets are never written to storage, so a worker
@@ -7686,6 +7659,9 @@ export class FacetManager {
             entry = this._spawnLaunchEntry(command, launchArgv({ execArgv: opts.node?.execArgv, argv: opts.argv }), cwd, opts.invokerPid, redriven);
         }
         this.processes.setLongRunning(entry.pid);
+        // Every long-running process has an input channel on its pid, one a
+        // launcher reserved included.
+        this.processes.openInput(entry.pid);
         if (opts.attachedTty)
             this.processes.setAttachedTty(entry.pid);
         if (!opts.skipSpawn) {
@@ -7799,7 +7775,7 @@ export class FacetManager {
             pacer.settle();
             await this._releaseResidentClaim(entry.pid);
             await this.launchJournal.release(entry.pid);
-            this._failLaunch(entry.pid, 'long-running node launch failed: ' + errorMessage(e));
+            this._end(entry.pid, { code: 1, cause: 'long-running node launch failed: ' + errorMessage(e) });
             throw e;
         }
         const ephemeral = duplicateOf !== null;
@@ -7827,7 +7803,7 @@ export class FacetManager {
             // A resident that cannot be journalled does not start; the failure is
             // reported the way a boot failure is.
             pacer.settle();
-            this._failLaunch(entry.pid, 'long-running node launch failed: ' + errorMessage(e));
+            this._end(entry.pid, { code: 1, cause: 'long-running node launch failed: ' + errorMessage(e) });
             throw e;
         }
         try {
@@ -7839,7 +7815,7 @@ export class FacetManager {
             // rejecting our background task alone leaves that pid running forever.
             pacer.settle();
             if (entry.exitCode === null) {
-                this._failLaunch(entry.pid, "long-running node launch failed: " + errorMessage(e));
+                this._end(entry.pid, { code: 1, cause: "long-running node launch failed: " + errorMessage(e) });
             }
             await this.launchJournal.release(entry.pid);
             throw e;
@@ -7942,8 +7918,7 @@ export class FacetManager {
             for (const source of [...Object.values(generatedWorker.modules), ...Object.values(generatedWorker.codeModules)]) {
                 bundleBytes += _encodedSourceBytes(source);
             }
-            moduleMapBytes = generatedWorker.source.byteLength + bundleBytes
-                + Object.values(generatedWorker.immutableModules).reduce((bytes, source) => bytes + source.byteLength, 0);
+            moduleMapBytes = _encodedSourceBytes(generatedWorker.code) + bundleBytes;
         }
         const cacheHit = vfsState.cacheHit ?? false;
         const vfsCursor = vfsState.cursor;
@@ -7968,18 +7943,16 @@ export class FacetManager {
             // source as the store takes it, so one image's text is resident rather
             // than every image's twice over.
             const sources = {
-                'worker.js': JSON.stringify(generatedWorker.source.recipe()),
+                'worker.js': generatedWorker.code,
                 ...generatedWorker.modules,
             };
-            const assetModules = Object.fromEntries(Object.entries(generatedWorker.immutableModules)
-                .map(([name, source]) => [name, { kind: 'cjs', source: source.asset }]));
             // The code cells travel as ONE image of many modules: the boot spec
             // names a path, not thousands, and the loader slices them out at load.
             const codePack = encodeCommonJsPack(generatedWorker.codeModules);
             generatedWorker = undefined;
             if (staged)
                 sources[STAGED_BINDING_LOADER_MODULE] = staged.loader;
-            const { [CODE_PACK_IMAGE]: codePackPath, 'worker.js': mainSourcePath, ...vfsTextModules } = await this.imageStore.materialize(entry.pid, (function* () { yield* drainSources(sources); yield [CODE_PACK_IMAGE, codePack.splice(0)]; })(), pacer);
+            const { [CODE_PACK_IMAGE]: codePackPath, ...vfsTextModules } = await this.imageStore.materialize(entry.pid, (function* () { yield* drainSources(sources); yield [CODE_PACK_IMAGE, codePack.splice(0)]; })(), pacer);
             if (this.debugEnabled)
                 this.processes.appendOutput(entry.pid, 'stderr', '[nimbus-debug] launch: images stored, starting the facet\n');
             // A resident whose launcher writes its stdin can stop at a synchronous
@@ -8002,7 +7975,9 @@ export class FacetManager {
             }
             // Each boot starts from the umask the process started with.
             const startUmask = entry.cred.umask;
-            let rerun = null;
+            // A promoted one-shot's boot replays its run up to its listen (_promote).
+            let rerun = opts.resume ?? null;
+            const stoppable = stdinWriter || opts.resume !== undefined;
             let stopNonce = crypto.randomUUID();
             try {
                 for (let stops = 0;; stops++) {
@@ -8022,10 +7997,12 @@ export class FacetManager {
                                 ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
                                 ...(profileOffer !== undefined && profileOffer.staged.length > 0 ? { profileStaged: profileOffer.staged.map((e) => e.path) } : {}),
                                 ...(this.debugEnabled ? { diag: true } : {}),
-                                ...(stdinWriter ? { stdinWriter: true, stopNonce } : {}),
+                                ...(stdinWriter ? { stdinWriter: true } : {}),
+                                ...(stoppable ? { stopNonce } : {}),
                                 // A boot after a stop: what the stopped boot drew and printed, and
                                 // the stdin it is handed back.
                                 ...(rerun !== null ? { replay: rerun.replay, stdinAtLeast: rerun.stdinAtLeast ?? 0, ...(rerun.stdinWhole ? { stdinWhole: true } : {}) } : {}),
+                                ...(rerun?.stdinFile ? { stdinFile: rerun.stdinFile } : {}),
                             },
                             // Each boot after a stop is a fresh isolate: a keyed loader keeps the
                             // stopped one's module state.
@@ -8047,8 +8024,6 @@ export class FacetManager {
                                     // sqlite sidecar and the staged bindings' trampoline.
                                     modules: staged ? { ...sqliteModules, [STAGED_BINDING_TRAMPOLINE_MODULE]: { wasm: staged.trampoline } } : sqliteModules,
                                     vfsTextModules,
-                                    vfsComposedModules: { 'worker.js': mainSourcePath },
-                                    assetModules,
                                     // Wasm images are read by path when the facet loads: the closure's
                                     // own, and the staged bindings' kernel-owned copies.
                                     vfsWasmModules: {
@@ -8097,32 +8072,7 @@ export class FacetManager {
                         // A node-shims resident: its __nimbusServeHttp takes the delivered ACQUIRE off each request.
                         this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget, { deliversAcquire: true });
                         if (opts.attachedTty) {
-                            this.ctx.waitUntil(handle.done
-                                .catch((e) => {
-                                // Teardown echo guard (same as the staged-artifact path): a pid
-                                // that is already terminal rejects the held-open call as an
-                                // ECHO of its own kill — don't double-record it as a code-1
-                                // failure.
-                                const current = this.processes.get(entry.pid);
-                                if (!current || current.state !== 'running')
-                                    return;
-                                const reason = 'long-running node process failed: ' + errorMessage(e);
-                                try {
-                                    this.processes.exit(entry.pid, 1);
-                                }
-                                catch { }
-                                try {
-                                    this._w5RecordTermination(entry.pid, 1, 'facet', reason);
-                                }
-                                catch { }
-                                try {
-                                    this.hooks.onExternalExit?.(entry.pid, 1, reason);
-                                }
-                                catch { }
-                            })
-                                .finally(() => {
-                                this.releaseProcessRpcResources(entry.pid);
-                            }));
+                            this._watchLifetime(entry.pid, handle, 'long-running node process');
                         }
                         else {
                             await handle.booted();
@@ -8133,7 +8083,7 @@ export class FacetManager {
                         // The boot stopped itself at a synchronous read of stdin that has to
                         // wait: wait for the input, then boot it again.
                         const journal = this.journals.get(entry.pid);
-                        let stop = stdinWriter ? stopRecordOf(e, stopNonce, rerun?.replay.run ?? 1) : null;
+                        let stop = stoppable ? stopRecordOf(e, stopNonce, rerun?.replay.run ?? 1) : null;
                         if (stop === null && journal?.diverged)
                             stop = { v: 3, kind: 'diverged', run: rerun?.replay.run ?? 1, out: [], why: journal.diverged };
                         if (stop === null)
@@ -8148,17 +8098,18 @@ export class FacetManager {
                         await handle?.done.catch(() => { });
                         handle = undefined;
                         this.portRegistry.unregisterByPid(entry.pid);
+                        if (opts.resume && stop.kind === 'diverged') {
+                            const message = `node: this program listens as a server, so Nimbus ran it again as one, and it did not retrace `
+                                + `its run before up to its listen (${stop.why}), so it was ended.\n`;
+                            await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(message));
+                            this._end(entry.pid, { code: 1, cause: message.trimEnd() });
+                            return;
+                        }
                         const waiting = new AbortController();
                         this.processes.setTerminator(entry.pid, () => waiting.abort());
                         const resumed = await this._resumeStoppedRun(entry, stop, stops, entry.pid, {}, waiting.signal, heldStdin, { accepted: { stdout: '', stderr: '' }, refused });
                         if ('exit' in resumed) {
-                            if (this.processes.get(entry.pid)?.state === 'running') {
-                                this.processes.exit(entry.pid, resumed.exit.exitCode);
-                                try {
-                                    this.hooks.onExternalExit?.(entry.pid, resumed.exit.exitCode, 'stopped at a synchronous read of stdin');
-                                }
-                                catch { }
-                            }
+                            this._end(entry.pid, { code: resumed.exit.exitCode, cause: 'stopped at a synchronous read of stdin' });
                             return;
                         }
                         this.processes.setUmask(entry.pid, startUmask);
@@ -8196,7 +8147,7 @@ export class FacetManager {
             if (this.processExitCode(entry.pid) !== null)
                 return;
             handle?.kill();
-            this._failLaunch(entry.pid, 'long-running node boot failed: ' + errorMessage(e));
+            this._end(entry.pid, { code: 1, cause: 'long-running node boot failed: ' + errorMessage(e) });
             throw e;
         }
     }
@@ -8434,7 +8385,7 @@ export class FacetManager {
                 handle?.kill();
             // An interrupt already killed the process; it did not fail.
             if (!opts.foreground?.signal.aborted)
-                this._failLaunch(entry.pid, 'long-running worker boot failed: ' + errorMessage(e));
+                this._end(entry.pid, { code: 1, cause: 'long-running worker boot failed: ' + errorMessage(e) });
             throw e;
         }
         finally {
@@ -8692,18 +8643,7 @@ export class FacetManager {
         return this.portRegistry.waitForRouteablePortsByPid(pid, timeoutMs);
     }
     finishProcess(pid, exitCode, reason = 'exited') {
-        this.portRegistry.unregisterByPid(pid);
-        this.processes.exit(pid, exitCode);
-        this.releaseProcessRpcResources(pid);
-        this.revokeProcessVfsWriters(pid);
-        this._teardownPairedServeFacet(pid);
-        if (exitCode !== 0) {
-            this._w5RecordTermination(pid, exitCode, 'facet', reason);
-            try {
-                this.hooks.onExternalExit?.(pid, exitCode, reason);
-            }
-            catch { }
-        }
+        this._end(pid, { code: exitCode, ...(exitCode !== 0 ? { cause: reason } : {}) });
     }
     /**
      * Kill a running process by PID. Given the signal that ends it (a name
@@ -8714,19 +8654,8 @@ export class FacetManager {
         const entry = this.processes.get(pid);
         if (!entry || entry.state !== 'running')
             return false;
-        const code = signal === undefined ? 137 : exitCodeForSignal(signal);
-        this.portRegistry.unregisterByPid(pid);
-        this.releaseProcessRpcResources(pid);
-        this.revokeProcessVfsWriters(pid);
-        const result = this.processes.kill(pid, code);
-        if (result) {
-            try {
-                this.hooks.onExternalExit?.(pid, code, signal === undefined ? 'killed' : `SIG${signal}`);
-            }
-            catch { }
-        }
-        this._teardownPairedServeFacet(pid);
-        return result;
+        this._end(pid, { code: signal === undefined ? 137 : exitCodeForSignal(signal), cause: signal === undefined ? 'killed' : `SIG${signal}`, killed: true });
+        return true;
     }
     /**
      * Remove a durable application: the ONLY path that deletes durable facet

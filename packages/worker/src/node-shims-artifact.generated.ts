@@ -10,19 +10,19 @@
  */
 
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-6f7e2d09f4a49b24.js";
-export const NODE_SHIMS_BUILD_ID: string = "6f7e2d09f4a49b24";
-export const NODE_SHIMS_SHA256: string = "6f7e2d09f4a49b2401ef8dad423091bc8ae15920ba9369994a00e3ffa63ac4f0";
+export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-2bf830a2ee644bac.js";
+export const NODE_SHIMS_BUILD_ID: string = "2bf830a2ee644bac";
+export const NODE_SHIMS_SHA256: string = "2bf830a2ee644bac03fc99cafa8d9e947c4f337a158c32fba24f4aad6d86dbe3";
 
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
-export const VFS_WRITE_LEDGER_ENTRY: string = "/_assets/runtime/vfs-write-ledger-6949e9269dc59d18.js";
-export const VFS_WRITE_LEDGER_BUILD_ID: string = "6949e9269dc59d18";
-export const VFS_WRITE_LEDGER_SHA256: string = "6949e9269dc59d18e73d563fe5bceaa98074ccff4ea3a8db23eb78bd034546b8";
+export const VFS_WRITE_LEDGER_ENTRY: string = "/_assets/runtime/vfs-write-ledger-f7f72f7127fdc31f.js";
+export const VFS_WRITE_LEDGER_BUILD_ID: string = "f7f72f7127fdc31f";
+export const VFS_WRITE_LEDGER_SHA256: string = "f7f72f7127fdc31f199d3f068aae1f75215dc5b883d6fa3cd82562710b072e3a";
 
 /** dist/vfs/facet-resident-store.js FACET_RESIDENT_STORE_SOURCE */
-export const RESIDENT_STORE_ENTRY: string = "/_assets/runtime/resident-store-f3dfed10a0465a6f.js";
-export const RESIDENT_STORE_BUILD_ID: string = "f3dfed10a0465a6f";
-export const RESIDENT_STORE_SHA256: string = "f3dfed10a0465a6f78fcea7c0f736c21a6148df3298c6fb0ca930319025c879f";
+export const RESIDENT_STORE_ENTRY: string = "/_assets/runtime/resident-store-65ab5cb8ace65118.js";
+export const RESIDENT_STORE_BUILD_ID: string = "65ab5cb8ace65118";
+export const RESIDENT_STORE_SHA256: string = "65ab5cb8ace651182caae1c776fdf9948fdf7ec1a291846b37b88108f6c53f38";
 
 /** @nimbus-sh/core src/interpreter/primordials.ts, bundled by scripts/interpreter-bundle.mjs */
 export const JS_INTERPRETER_PRIMORDIALS_ENTRY: string = "/_assets/runtime/js-interpreter-primordials-e620a61b7e9800fa.js";

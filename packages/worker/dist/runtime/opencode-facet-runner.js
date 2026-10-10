@@ -39,8 +39,7 @@ import { generateSqliteFacetPreamble } from './sqlite-shim.js';
 import { VFS_CURSOR_SEED_SOURCE } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { getRealNodeSharedImportsCode } from '@nimbus-sh/core/_shared/real-node-imports.js';
-import { createNodeFacetRuntime, nodeFacetSource } from './node-shims-artifact.js';
-import { moduleSource } from '@nimbus-sh/platform/module-source.js';
+import { createNodeFacetRuntime } from './node-shims-artifact.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES } from '../vfs/facet-resident-limits.js';
 import { OPENTUI_BACKEND_FACET_SRC, OPENTUI_BACKEND_GLOBAL, OPENTUI_WASM_MODULE_NAME, generateOpenTUIBackendBootCode, } from './opentui-facet-backend.js';
 import { OPENCODE_TREE_SITTER_WASMS, OPENCODE_YOGA_WASM } from '../opencode-artifact.generated.js';
@@ -620,13 +619,13 @@ export function generateOpencodeRunnerCode(opts) {
     const attachedTty = mode === 'attached';
     const resident = mode === 'attached' || mode === 'server';
     const runtime = createNodeFacetRuntime(opts.sources);
-    const source = moduleSource `
+    return { codeModules: runtime.modules, code: `
 // Two bases for two lifecycles, over one module scope. A resident run (the
 // attached TUI, opencode serve) is a DO Facet of the session, so NimbusProcess
 // extends DurableObject and its startProcess() holds the process open. A
 // one-shot run is a single fetch into a stateless entrypoint, which cannot be a
 // Durable Object; it keeps the WorkerEntrypoint default export.
-import { DurableObject as __NimbusDurableObject, WorkerEntrypoint as __NimbusWorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject as __NimbusDurableObject } from "cloudflare:workers";
 ${getRealNodeSharedImportsCode()}
 ${runtime.imports}
 ${runtime.code}
@@ -695,10 +694,10 @@ ${SUPERVISOR_ANSWERING_SRC}
 // __nimbusResidentBundle.
 let __MODULE_VFS_BUNDLE = ${opts.vfsBundle};
 const __MODULE_VFS_CURSOR = ${opts.vfsCursor};
-${nodeFacetSource(opts.sources, 'residentStore')}
+${opts.sources.residentStore}
 const __vfsBundle = __nimbusResidentBundle;
 ${VFS_CURSOR_SEED_SOURCE}
-${nodeFacetSource(opts.sources, 'ledger')}
+${opts.sources.ledger}
 const __vfsDirs = {};
 const __nimbusDeferProcessExitReport = true;
 // Ledger of in-flight facet I/O the teardown drain must await. The shims push
@@ -718,16 +717,7 @@ __pendingIO.push = (p) => {
   return __pendingIO.length;
 };
 
-// The shim (node-shims.ts) throws/catches this sentinel for process.exit and
-// the SIGINT stdin-pump teardown; the host runner must provide the class (same
-// contract as the long-running node entrypoint). Only exercised when the shim
-// process is authoritative (attachedTty), but defined unconditionally so the
-// shim's references always resolve.
-class __ProcessExit extends Error {
-  constructor(code) { super("process.exit(" + code + ")"); this.code = code; }
-}
-
-${nodeFacetSource(opts.sources, 'shims')}
+${opts.sources.shims}
 
 globalThis.${BUILTINS_GLOBAL} = builtins;
 // Patch native HTTP listen/close before the staged ESM graph links. Its
@@ -1257,9 +1247,7 @@ export class NimbusProcess extends __NimbusDurableObject {
   async handleHttpRequest(request) { return __ocDispatchHttp(request); }
 }
 
-export default class NimbusOpencodeOneShot extends __NimbusWorkerEntrypoint {
-  async fetch(request) { return __ocOneShotFetch(request, this.env); }
-}
+export default { fetch: (request, env) => __ocOneShotFetch(request, env) };
 
 // Headless resident lifecycle for the opencode serve command. Boots the
 // bundle's serve command (nimbusMain), whose http server binds via listen() → it
@@ -1387,6 +1375,5 @@ async function __ocOneShotFetch(request, workerEnv) {
     await __ocDrainVfsWrites();
     return __ocHostResponse.json({ exitCode, stdout, stderr });
 }
-`;
-    return { source, get code() { return source.text; }, codeModules: runtime.modules, immutableModules: runtime.immutableModules };
+` };
 }

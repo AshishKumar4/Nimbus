@@ -321,7 +321,10 @@ export class FacetProcessManager {
         });
         try {
             const code = await this.deps.facetMgr.execStream(payload, { cwd, env, argv: req.args, stdin: this._stdinOf(child) }, hooks);
-            this._stampExit(child, typeof code === 'number' ? code : 0, null);
+            // A resident now (it listened, FacetManager._promote): its exit is its own.
+            const entry = this.deps.processes.get(child.pid);
+            const ended = entry?.longRunning === true && entry.state === 'running' ? await this.deps.processes.whenEnded(child.pid) : code;
+            this._stampExit(child, typeof ended === 'number' ? ended : 0, null);
         }
         catch (e) {
             // An initial admission refused before onStarted is a failed spawn.

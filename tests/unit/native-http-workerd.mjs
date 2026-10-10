@@ -209,6 +209,8 @@ const __supervisor = {
   async unregisterPort(port) { registered.delete(port); },
 };
 const __nimbusInboundBarrier = async () => {};
+// The shims' stop and replay control (node-shims.ts): none in this runner.
+const __nimbusReplay = null;
 const __nimbusProcessExitPromise = Promise.withResolvers().promise;
 globalThis.__nimbusRawSetTimeout = setTimeout;
 ${ENTRYPOINT_EVENT_LOOP}

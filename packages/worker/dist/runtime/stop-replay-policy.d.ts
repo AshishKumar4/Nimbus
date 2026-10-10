@@ -1,6 +1,11 @@
 type Projection = (value: unknown) => unknown;
 export interface ReplayPolicy {
-    kind: 'observation' | 'effect' | 'open' | 'output' | 'input' | 'control';
+    /**
+     * `mutation`: carries the process's filesystem changes. The guest counts
+     * each change as the program makes it (stop-replay.ts mutation), not its
+     * transport; the session counts the transport as an effect.
+     */
+    kind: 'observation' | 'effect' | 'open' | 'output' | 'input' | 'control' | 'mutation';
     /** Exact, operation-local rules; never strip a property by its name globally. */
     answer?: Projection;
     args?: (args: readonly unknown[]) => readonly unknown[];
@@ -147,13 +152,13 @@ export declare const REPLAY_OPERATION_POLICY: {
         readonly kind: "effect";
     };
     writeBatchStream: {
-        readonly kind: "effect";
+        readonly kind: "mutation";
     };
     openWaveWriter: {
-        readonly kind: "effect";
+        readonly kind: "mutation";
     };
     retireWaveWriter: {
-        readonly kind: "effect";
+        readonly kind: "mutation";
     };
     putRegistryEntries: {
         readonly kind: "effect";
@@ -282,16 +287,16 @@ export declare const REPLAY_OPERATION_POLICY: {
         readonly kind: "effect";
     };
     fsAcquireExclusiveMutation: {
-        readonly kind: "effect";
+        readonly kind: "mutation";
     };
     fsReleaseExclusiveMutation: {
-        readonly kind: "effect";
+        readonly kind: "mutation";
     };
     fsAwaitRecall: {
         kind: "input";
     };
     fsRecalled: {
-        readonly kind: "effect";
+        readonly kind: "mutation";
     };
     innerDoFetch: {
         readonly kind: "effect";
