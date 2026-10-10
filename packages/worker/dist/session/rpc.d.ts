@@ -24,7 +24,7 @@
 import type { InnerDoFetchAnswer } from '@nimbus-sh/fabric/bindings.js';
 import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
-import { PeerHost, type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
+import { PeerHost, type HostedHttpRequest, type HostedHttpResponse } from '@nimbus-sh/fabric/peer-host.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { z } from 'zod/v4';

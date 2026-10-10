@@ -44,7 +44,7 @@ import { type InitSessionOptions } from './init.js';
 import * as _rpc from './rpc.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
-import type { HostedHttpRequest, HostedHttpResponse, PeerHost } from '@nimbus-sh/fabric/process-host.js';
+import type { HostedHttpRequest, HostedHttpResponse, PeerHost } from '@nimbus-sh/fabric/peer-host.js';
 import type { FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 import { WebSocketRelay } from './ws-relay.js';
 import * as _programmatic from './programmatic.js';

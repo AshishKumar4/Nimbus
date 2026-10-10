@@ -38,7 +38,7 @@ import { residentBootSpecSchema } from '@nimbus-sh/fabric/process-fabric.js';
 import { readHydrating } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
-import { PeerHost } from '@nimbus-sh/fabric/process-host.js';
+import { PeerHost } from '@nimbus-sh/fabric/peer-host.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
