@@ -1465,11 +1465,11 @@ export declare class SqliteVFS {
     private publishHeld;
     /**
      * Settled once every commit `writer` (the delegations a process's views
-     * present) holds for its publication is published, or failed to be and
-     * every reader started again; null while it holds none. What a process's
-     * output waits for (ProcessFiles.outputGate).
+     * present; any writer, when none is named) holds for its publication is
+     * published, or failed to be and every reader started again; null while
+     * it holds none. What a process's output waits for (ProcessFiles.outputGate).
      */
-    publishedFor(writer: ReadonlySet<string>): Promise<void> | null;
+    publishedFor(writer?: ReadonlySet<string>): Promise<void> | null;
     /** `pipeline`'s holds end: what it holds is another caller's to read. */
     private letGo;
     /** The events of what `publication` changed, held with it, to the session's observers. */

@@ -3239,14 +3239,14 @@ export class SqliteVFS {
     }
     /**
      * Settled once every commit `writer` (the delegations a process's views
-     * present) holds for its publication is published, or failed to be and
-     * every reader started again; null while it holds none. What a process's
-     * output waits for (ProcessFiles.outputGate).
+     * present; any writer, when none is named) holds for its publication is
+     * published, or failed to be and every reader started again; null while
+     * it holds none. What a process's output waits for (ProcessFiles.outputGate).
      */
     publishedFor(writer) {
         let pending = null;
         for (const pipeline of this.heldPipelines) {
-            if (pipeline.writer === writer)
+            if (writer === undefined || pipeline.writer === writer)
                 (pending ??= []).push(pipeline.published.catch(() => { }));
         }
         return pending === null ? null : Promise.all(pending).then(() => { });
