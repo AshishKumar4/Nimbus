@@ -30,12 +30,12 @@ globalThis.__probe = { fs, read, resume };
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
-/** Booted; `prepare` runs before the launch, with the process's pid. */
-async function boot(prepare) {
+/** Booted; `prepare` runs before the launch, with the process's pid; `overrides`, the supervisor calls a test answers itself. */
+async function boot(prepare, overrides) {
   const authority = createAuthority();
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
   authority.kfs.writeFile('home/user/app/f.txt', 'v1');
-  const handle = facetSupervisor(authority);
+  const handle = facetSupervisor(authority, overrides);
   await prepare?.(authority, handle.log.pid);
   await launchResident({
     authority,
@@ -154,6 +154,41 @@ await runScenarios(import.meta.path, {
     await drive.writeFile('/g', bytes('g'));
     assert.equal((await probe.fs.promises.stat('/m/f')).size, 5, 'the view answered for the mount');
     assert.deepEqual((await probe.fs.promises.readdir('/m')).sort(), ['f', 'g'], 'the view listed the mount');
+  },
+
+  async 'a gated process\'s request out waits for what it wrote to be published; an answer that upgrades ends its gate'() {
+    const out = [];
+    const { authority, probe } = await boot((authority, pid) => {
+      authority.files.holdOutput(authority.host.processes);
+      authority.files.gateOutput(pid);
+    }, {
+      routeLoopback: async (port, request) => {
+        out.push(new URL(request.url).pathname);
+        // An upgrade hands the process a socket no gate of the session's sees.
+        return out.at(-1) === '/upgrade' ? Object.defineProperty(new Response(null), 'webSocket', { value: {} }) : new Response('ok');
+      },
+    });
+    // Another process reads under its lease, which the process's write meets.
+    const reader = authority.files.bind({ pid: 99, cred: CRED });
+    const leased = () => reader.acquire(authority.rawVfs.epoch, authority.rawVfs.revision(), { lease: true }).readLease;
+    let lease = leased();
+    probe.fs.writeFileSync(F, 'v2');
+    const sent = fetch('http://localhost:4321/');
+    await sleep(50);
+    assert.deepEqual(out, [], 'its request left before what it wrote was published');
+    reader.recalled(lease.owner, 'revoke');
+    assert.equal(await (await sent).text(), 'ok');
+    assert.equal(new TextDecoder().decode(reader.readFile(F)), 'v2');
+    await fetch('http://localhost:4321/upgrade');
+    await rawSleep(READ_LEASE_TRUST_MS + 20);
+    lease = leased();
+    assert.ok(lease, 'no lease to meet');
+    let answered = false;
+    const writing = probe.fs.promises.writeFile(F, 'v3').then(() => { answered = true; });
+    await sleep(50);
+    assert.equal(answered, false, 'a process handed a raw socket was answered before its publication');
+    reader.recalled(lease.owner, 'revoke');
+    await writing;
   },
 
   async 'a look at the kernel\'s mounts, which no barrier reports, leaves timers to the lease'() {
