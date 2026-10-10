@@ -1,6 +1,6 @@
 // How a release matrix is graded: from the rows of its remote-probes
 // verdicts (scripts/ci/remote-probes.mjs writes them), against the user's
-// record of deferred probes (tests/behavioral/_deferred.mjs).
+// record of release exceptions (tests/behavioral/_deferred.mjs).
 //
 // Green if and only if every task was graded, every red row is a deferred
 // probe's own row that failed exactly as approved (outcomeOf: it ran to its
@@ -8,10 +8,28 @@
 // assertion passed), and every deferred probe ran and failed. A deferred
 // probe that passes, or that did not run, is red: its deferral has ended,
 // or no longer names anything. The session ledger and a not-graded task are
-// never deferrable (and _deferred.mjs refuses to list them).
+// never deferrable or excludable (and _deferred.mjs refuses to list them).
+// Excluded probes must not run; they are recorded and printed, not graded.
+import { PROBE_TARGET_SKIPS } from '../../../tests/behavioral/_probe-target-skips.mjs';
 
 /** A row's probe, as _deferred.mjs names it: `tests/behavioral/a/b.mjs` → `a/b`. */
 const probeOf = (name) => name.replace(/^tests\/behavioral\//, '').replace(/\.mjs$/, '');
+
+/** The release suite's selection: target-capability skips plus exclusions, including in requested repeats. */
+export function matrixProbeArgs(entries, { repeat = '', times = '5' } = {}) {
+  const excluded = entries.filter((entry) => entry.excluded === true).map((entry) => entry.probe);
+  const excludedSelectors = new Set(excluded.flatMap((probe) => [probe, probe.split('/').at(-1)]));
+  const repeated = repeat.split(',').filter((probe) => probe && !excludedSelectors.has(probeOf(probe))).join(',');
+  return ['--target', 'staging', '--skip', [...PROBE_TARGET_SKIPS, ...excluded].join(','),
+    ...(repeated ? ['--repeat', repeated, '--times', times] : [])];
+}
+
+/** The approved exception staging records, printed with the same information at release and promotion. */
+export function describeReleaseException(entry) {
+  const approval = `(approved ${entry.approved}; owner ${entry.owner}; tracking ${entry.tracking})`;
+  if (entry.excluded === true) return `EXCLUDED ${entry.probe} — ${entry.reason} ${approval}`;
+  return `DEFERRED ${entry.probe} — red in ${entry.rows.length} row${entry.rows.length === 1 ? '' : 's'}, shipped by deferral of ✗ ${entry.assertion} with ${JSON.stringify(entry.failure)} only: ${entry.reason} ${approval}`;
+}
 
 /**
  * What a probe's output says it asserted, structurally: makeAsserter
@@ -61,10 +79,10 @@ function beyondDeferral(row, entry) {
 /**
  * @param {Array<{ tasks: Array<{ task: string, outcome?: { kind: string }, rows: Array<{ name: string, exitCode: number, seconds: number, output: string }> | null }> } | null>} verdicts
  *   the matrix's remote-probes verdicts (null for one that wrote none)
- * @param {import('../../../tests/behavioral/_deferred.mjs').Deferral[]} deferred
+ * @param {import('../../../tests/behavioral/_deferred.mjs').ReleaseException[]} deferred
  * @returns {{ exitCode: 0 | 1 | 2, red: string[], applied: Array<object>, problems: string[] }}
  *   exitCode 0 green, 1 red, 2 not graded; red, the red rows no deferral
- *   covers; applied, each deferral that covered red rows, with those rows;
+ *   covers; applied, exclusions plus each deferral that covered red rows, with those rows;
  *   problems, every reason the matrix is not green.
  */
 export function gradeMatrix(verdicts, deferred) {
@@ -93,7 +111,7 @@ export function gradeMatrix(verdicts, deferred) {
     }
   }
 
-  const byProbe = new Map(deferred.map((entry) => [entry.probe, entry]));
+  const byProbe = new Map(deferred.filter((entry) => entry.excluded !== true).map((entry) => [entry.probe, entry]));
   const red = [];
   const covered = new Map();
   for (const row of rows) {
@@ -110,12 +128,18 @@ export function gradeMatrix(verdicts, deferred) {
   if (red.length > 0) problems.push(`red: ${red.join('; ')}`);
   for (const entry of deferred) {
     const own = rows.filter((row) => row.name.startsWith('tests/behavioral/') && probeOf(row.name) === entry.probe);
+    if (entry.excluded === true) {
+      if (own.length > 0) problems.push(`${entry.probe} ran despite its release exclusion (tests/behavioral/_deferred.mjs)`);
+      continue;
+    }
     if (own.some((row) => row.exitCode === 0)) problems.push(`${entry.probe} passes; remove its deferral (tests/behavioral/_deferred.mjs)`);
     else if (own.length === 0 && !notGraded) problems.push(`${entry.probe} did not run; its deferral names nothing the matrix ran (tests/behavioral/_deferred.mjs)`);
   }
-  const applied = deferred.filter((entry) => covered.has(entry.probe) && !rows.some((row) => probeOf(row.name) === entry.probe && row.exitCode === 0)
+  const applied = deferred.filter((entry) => entry.excluded === true
+    ? !rows.some((row) => probeOf(row.name) === entry.probe)
+    : covered.has(entry.probe) && !rows.some((row) => probeOf(row.name) === entry.probe && row.exitCode === 0)
     && !red.some((line) => probeOf(line.split(' ')[0]) === entry.probe))
-    .map((entry) => ({ ...entry, rows: covered.get(entry.probe) }));
+    .map((entry) => entry.excluded === true ? { ...entry } : { ...entry, rows: covered.get(entry.probe) });
   const exitCode = notGraded ? 2 : problems.length > 0 ? 1 : 0;
   return { exitCode, red, applied, problems };
 }

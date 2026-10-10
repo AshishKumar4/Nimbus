@@ -5,21 +5,23 @@
 // assertion, and nothing else, setup and cleanup included), and every
 // deferred probe ran and failed. And the record itself: every entry names an
 // existing probe, its assertion, the user's approval, an owner and a
-// tracking item, and none is a check that can never be deferred.
+// tracking item, and none is a check that can never be deferred or excluded.
+// Exclusions skip release-only selection and keep their approval in staged.json.
 
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { gradeMatrix, outcomeOf } from '../../scripts/ci/lib/matrix.mjs';
+import { describeReleaseException, gradeMatrix, matrixProbeArgs, outcomeOf } from '../../scripts/ci/lib/matrix.mjs';
 import { DEFERRED, validateDeferrals } from '../behavioral/_deferred.mjs';
-import { HOSTED_DEMO_CHECKS, PRODUCTION_ONLY_CHECKS } from '../behavioral/_probe-target-skips.mjs';
+import { HOSTED_DEMO_CHECKS, PROBE_TARGET_SKIPS, PRODUCTION_ONLY_CHECKS } from '../behavioral/_probe-target-skips.mjs';
 
 const BEHAVIORAL = join(import.meta.dirname, '..', 'behavioral');
 
 {
   for (const entry of DEFERRED) {
     assert.ok(existsSync(join(BEHAVIORAL, `${entry.probe}.mjs`)), `${entry.probe}: no such probe`);
+    if (entry.excluded === true) continue;
     const source = readFileSync(join(BEHAVIORAL, `${entry.probe}.mjs`), 'utf8');
     assert.ok(source.includes(`'${entry.assertion}'`) || source.includes(`"${entry.assertion}"`), `${entry.probe}: it asserts no ${JSON.stringify(entry.assertion)}`);
   }
@@ -37,7 +39,23 @@ const BEHAVIORAL = join(import.meta.dirname, '..', 'behavioral');
     assert.throws(() => validateDeferrals([entry]), refused, JSON.stringify(entry));
   }
   assert.throws(() => validateDeferrals([good, good]), /listed twice/);
-  console.log(`  ok  _deferred.mjs: ${DEFERRED.length} entr${DEFERRED.length === 1 ? 'y' : 'ies'}, each naming an assertion its probe makes; the loader refuses a missing field, an approval not the user's and dated, an unknown probe, a duplicate, and every never-deferrable check`);
+  const excluded = { probe: good.probe, excluded: true, reason: 'r', approved: 'user, 2026-10-10', owner: 'o', tracking: 't' };
+  assert.deepEqual(validateDeferrals([excluded]), [excluded], 'an exclusion needs no approved assertion or failure');
+  for (const field of ['probe', 'reason', 'approved', 'owner', 'tracking']) {
+    assert.throws(() => validateDeferrals([{ ...excluded, [field]: '' }]), new RegExp(`${field} is required`));
+  }
+  for (const failure of [good.failure, undefined]) {
+    assert.throws(() => validateDeferrals([{ ...excluded, failure }]), /excluded probe must not specify a failure/);
+  }
+  assert.throws(() => validateDeferrals([{ ...excluded, assertion: 'a' }]), /excluded probe must not specify a failure or assertion/);
+  for (const probe of [...HOSTED_DEMO_CHECKS, ...PRODUCTION_ONLY_CHECKS, 'session-ledger']) {
+    assert.throws(() => validateDeferrals([{ ...excluded, probe }]), /can never be deferred or excluded/);
+  }
+  assert.throws(() => validateDeferrals([{ ...excluded, approved: 'main, 2026-10-10' }]), /approved must be the user's, dated/);
+  assert.throws(() => validateDeferrals([{ ...excluded, probe: 'frameworks/no-such-probe' }]), /no such probe/);
+  assert.throws(() => validateDeferrals([good, excluded]), /listed twice/);
+  assert.throws(() => validateDeferrals([{ ...excluded, excluded: 'true' }]), /excluded must be true or false/);
+  console.log(`  ok  _deferred.mjs: ${DEFERRED.length} approved entries; exact failures and exclusions share required metadata, duplicate and never-deferrable checks`);
 }
 
 const PINNED = 'nuxt dev SSR serves the Vue app through the port route on its first run';
@@ -56,6 +74,36 @@ const withPinned = (detail) => nuxt([[true, 'nuxi creates the real minimal proje
 const asApproved = withPinned(NITRO_503);
 const verdict = (...tasks) => ({ tasks: tasks.map((rows, i) => ({ task: `part ${i + 1}/${tasks.length}`, outcome: { kind: 'exited' }, rows })) });
 const ledger = row('session-ledger', 0);
+
+{
+  const excluded = validateDeferrals([{ probe: 'frameworks/nuxt-real', excluded: true, reason: 'memory failure varies',
+    approved: 'user, 2026-10-10', owner: 'Main', tracking: 'memory' }])[0];
+  const args = matrixProbeArgs([excluded], { repeat: 'frameworks/nuxt-real,nuxt-real.mjs,tests/behavioral/frameworks/nuxt-real.mjs,git-local', times: '3' });
+  assert.deepEqual(args, ['--target', 'staging', '--skip', [...PROBE_TARGET_SKIPS, excluded.probe].join(','), '--repeat', 'git-local', '--times', '3'],
+    'release-only skips preserve target capabilities and omit excluded repeats in every runner spelling');
+  assert.deepEqual(matrixProbeArgs([excluded], { repeat: excluded.probe }), ['--target', 'staging', '--skip', [...PROBE_TARGET_SKIPS, excluded.probe].join(',')]);
+  const graded = gradeMatrix([verdict([row('git-local', 0), ledger])], [excluded]);
+  assert.equal(graded.exitCode, 0, graded.problems.join('\n'));
+  assert.deepEqual(graded.applied, [excluded], 'the staged record carries the exclusion without invented rows or failure');
+  const stored = JSON.parse(JSON.stringify({ matrix: { deferrals: graded.applied } }));
+  assert.equal(describeReleaseException(stored.matrix.deferrals[0]),
+    'EXCLUDED frameworks/nuxt-real — memory failure varies (approved user, 2026-10-10; owner Main; tracking memory)',
+    'release and promotion describe the same persisted exclusion');
+  for (const exitCode of [0, 1, 2]) {
+    const ran = gradeMatrix([verdict([row(excluded.probe, exitCode, 'unexpected run'), ledger])], [excluded]);
+    assert.equal(ran.exitCode, 1, 'an exclusion never covers a row that actually ran');
+    assert.match(ran.problems.join('\n'), /ran despite its release exclusion/);
+    assert.deepEqual(ran.applied, []);
+  }
+  assert.equal(gradeMatrix([verdict([row('session-ledger', 1)])], [excluded]).exitCode, 1, 'exclusion does not hide a leaked session');
+  assert.equal(gradeMatrix([null], [excluded]).exitCode, 2, 'exclusion does not grade a missing verdict');
+  const deferred = { ...deferral, probe: 'frameworks/remix-real' };
+  const mixed = gradeMatrix([verdict([row(deferred.probe, 1, asApproved), ledger])], [excluded, deferred]);
+  assert.equal(mixed.exitCode, 0, mixed.problems.join('\n'));
+  assert.deepEqual(mixed.applied.map(entry => entry.probe), [excluded.probe, deferred.probe]);
+  assert.match(describeReleaseException(mixed.applied[1]), /^DEFERRED frameworks\/remix-real — red in 1 row/);
+  console.log('  ok  exclusions share validation, release selection, grading and staged reporting with exact deferrals');
+}
 
 {
   const assertion = 'boundary: only this launch failure';

@@ -28,6 +28,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { describeReleaseException } from './lib/matrix.mjs';
 import { HOSTED_DEMO_CHECKS, PRODUCTION_ONLY_CHECKS } from '../../tests/behavioral/_probe-target-skips.mjs';
 import { assertInstalled } from './lib/installed.mjs';
 
@@ -92,7 +93,7 @@ if (!module || module !== release.bundles[`${PRODUCTION.app}:staging`]?.sha256) 
 log(`release ${dir}: manifest ${sealed.slice(0, 16)}…, graded green on staging ${staged(dir).at}; ${target} sha256 ${module}`);
 // What the user agreed this release may ship with (tests/behavioral/_deferred.mjs).
 for (const entry of staged(dir).matrix.deferrals ?? []) {
-  console.log(`promote: ships with a DEFERRED probe, ${entry.probe}, ✗ ${entry.assertion} with ${JSON.stringify(entry.failure)}: ${entry.reason} (approved ${entry.approved}; owner ${entry.owner}; tracking ${entry.tracking}; red in ${entry.rows.length} staging row${entry.rows.length === 1 ? '' : 's'})`);
+  console.log(`promote: ${describeReleaseException(entry)}`);
 }
 
 // 2. The preflight.
