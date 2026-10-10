@@ -71,6 +71,8 @@ export declare class PortRegistry {
     /** Pids whose target takes a delivered ACQUIRE off the request (see DELIVERED_ACQUIRE_HEADER). */
     private acquireDeliveredPids;
     private portWaitersByPid;
+    /** Holds a process's answers until what it wrote is published (setOutputGate). */
+    private outputGate;
     /**
      * @param deliveredAcquire What the owner of the filesystem attaches to a
      *   request routed to process `pid`: the ACQUIRE answer the process applies
@@ -79,8 +81,6 @@ export declare class PortRegistry {
      *   `_acquireOnDelivery`). Undefined attaches nothing, and without it every
      *   request is forwarded bare; either way the process then asks.
      */
-    /** Holds a process's answers until what it wrote is published (setOutputGate). */
-    private outputGate;
     constructor(deliveredAcquire?: ((pid: number) => Promise<unknown>) | null);
     /**
      * Hold each process's answers (status and headers, and each piece of its

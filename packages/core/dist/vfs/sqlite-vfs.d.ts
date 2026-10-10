@@ -1165,6 +1165,9 @@ export declare class SqliteVFS {
      * none of them). `landed`: the view reads what has landed, never asking a
      * holder to send first (an observer that is told when a wave lands, the
      * editor's file tree, reads after it); its writes still recall.
+     * `continues`, asked at each call: whether a write of the view's that a
+     * read recall holds answers at its commit, ahead of its publication (its
+     * writer's effects wait for it instead: ProcessFiles.gateOutput).
      */
     as(cred: VfsCred, options?: {
         mutationOwner?: string;
