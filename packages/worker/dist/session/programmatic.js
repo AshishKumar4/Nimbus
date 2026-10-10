@@ -1226,7 +1226,6 @@ async function resetInMemorySessionState(self) {
     self._cirrusHmrWsClients = null;
     self.nimbusWrangler = null;
     self.npmInstaller = null;
-    self.fetchProxyEntrypoint = null;
     self._supervisorOps = null;
     self._cpRegistry = null;
     self._viteShimPid = null;

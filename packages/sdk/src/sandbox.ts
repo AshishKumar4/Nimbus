@@ -20,6 +20,8 @@ import {
 import { z } from 'zod/v4';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
+import { isNimbusIdComponent } from '@nimbus-sh/core/_shared/id-component.js';
+import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 
 export type RuntimeSpec = string;
 export type RuntimeName =
@@ -1300,7 +1302,7 @@ export class NimbusSandbox {
 
   private async rpc<T>(promise: Promise<T>): Promise<T> {
     const value = await promise;
-    disposeSdkRpcResult(value);
+    disposeRpcResource(value);
     return value;
   }
 }
@@ -1381,23 +1383,10 @@ export class NimbusProcessAttachment implements AsyncIterable<NimbusProcessLogCh
 
 function idComponent(value: string, field: string): string {
   const text = String(value);
-  if (!isIdComponent(text)) {
+  if (!isNimbusIdComponent(text)) {
     throw new Error(`Nimbus ${field} must be 1-128 ASCII letters, digits, dot, underscore, or hyphen`);
   }
   return text;
-}
-
-function isIdComponent(value: string): boolean {
-  if (value.length < 1 || value.length > 128) return false;
-  for (let i = 0; i < value.length; i++) {
-    const code = value.charCodeAt(i);
-    const isDigit = code >= 48 && code <= 57;
-    const isUpper = code >= 65 && code <= 90;
-    const isLower = code >= 97 && code <= 122;
-    const isPunctuation = code === 45 || code === 46 || code === 95;
-    if (!isDigit && !isUpper && !isLower && !isPunctuation) return false;
-  }
-  return true;
 }
 
 function boundedPollInterval(value: number | undefined): number {
@@ -1465,21 +1454,6 @@ function resolveSandboxCwd(root: string, cwd: string): string {
     }
   }
   return '/' + segments.join('/');
-}
-
-type DisposableSymbolConstructor = SymbolConstructor & { readonly dispose?: symbol };
-
-function disposeSdkRpcResult(value: unknown): void {
-  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return;
-  const disposerKey = (Symbol as DisposableSymbolConstructor).dispose;
-  if (!disposerKey) return;
-  const disposer = Reflect.get(value, disposerKey);
-  if (typeof disposer !== 'function') return;
-  try {
-    Reflect.apply(disposer, value, []);
-  } catch {
-    // Disposal only releases Worker RPC bookkeeping. Preserve SDK behavior.
-  }
 }
 
 async function resolveHeaders(input: NimbusHeaders | undefined): Promise<HeadersInit | undefined> {

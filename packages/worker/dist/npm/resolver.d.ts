@@ -8,7 +8,6 @@
  * Injectable fetch function used by the installer's facet-backed registry
  * transport.
  */
-export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 export interface ResolvedPackage {
     name: string;
     version: string;

@@ -16,7 +16,6 @@ import type { NpmInstaller } from '../npm/installer.js';
 import type { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { ViteDevServer } from '../facets/vite-dev-server.js';
-import type { ServiceStub } from '@nimbus-sh/fabric/vendor/types.js';
 import type { PeerHost } from '@nimbus-sh/fabric/peer-host.js';
 import type { WebSocketRelay } from '../session/ws-relay.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
@@ -83,7 +82,6 @@ class RuntimeOwner {
   esbuildService: EsbuildService | null = null;
   bundlePool: PrebundlePool | null = null;
   npmInstaller: NpmInstaller | null = null;
-  fetchProxyEntrypoint: ServiceStub | null = null;
   viteDevServer: ViteDevServer | null = null;
   cirrusReal: CirrusReal | null = null;
   nimbusWrangler: NimbusWrangler | null = null;
@@ -176,11 +174,8 @@ class RuntimeOwner {
   }
   ensureBundlePool() { this.assertOpen(); return this.services.ensureBundlePool(); }
   ensureFacetManager() { this.assertOpen(); return this.services.ensureFacetManager(); }
-  ensureFetchProxy(log?: (message: string) => void) { return this.services.ensureFetchProxy(log); }
-  buildFetchFn(log?: (message: string) => void) { return this.services.buildFetchFn(log); }
   ensureNpmInstaller(onProgress?: (message: string) => void) { this.assertOpen(); return this.services.ensureNpmInstaller(onProgress); }
   ensureGlobalPrefixDirs(prefix: string) { return this.services.ensureGlobalPrefixDirs(prefix); }
-  _envFlagDefaultOn(name: string) { return this.services._envFlagDefaultOn(name); }
   _ensureFacetProcessManager() { this.assertOpen(); return this.services._ensureFacetProcessManager(); }
   _ensureWebSocketRelay() { this.assertOpen(); return this.services._ensureWebSocketRelay(); }
   _setCpRegistry(registry: CommandRegistry) {

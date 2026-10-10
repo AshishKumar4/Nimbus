@@ -34,7 +34,7 @@ import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { fetchGitBundleSource } from '../runtime/git-bundle-artifact.js';
-import { W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
+import { W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE, RPC_DISPOSE_PREAMBLE } from '../loaders/generated-workers.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -1446,7 +1446,7 @@ export async function execGitNetwork(
  * fs adapter, and flushes writes through W7 v3.
  */
 export function assembleGitNetworkFacetSource(): string {
-  return GIT_PACK_NODE_IMPORTS + '\n' + W7_FRAME_PREAMBLE + '\n' + WAVE_WRITER_PREAMBLE + '\n' + GIT_PACK_SRC + '\n' +
+  return GIT_PACK_NODE_IMPORTS + '\n' + W7_FRAME_PREAMBLE + '\n' + WAVE_WRITER_PREAMBLE + '\n' + RPC_DISPOSE_PREAMBLE + '\n' + GIT_PACK_SRC + '\n' +
     generateGitNetworkFacetCode();
 }
 
@@ -1502,18 +1502,6 @@ function cloneJobMarkerPath(dir) {
 /** The marker a clone's phases write first: it names the job that owns .git (git/clone-job.ts reads it). */
 function cloneJobMarker(opts) {
   return JSON.stringify({ version: 1, jobId: opts.jobId, optionsHash: opts.optionsHash });
-}
-
-function disposeRpcResult(value) {
-  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return;
-  const dispose = value[Symbol.dispose];
-  if (typeof dispose === 'function') { try { dispose.call(value); } catch {} }
-}
-
-async function useRpcResult(promise, use) {
-  const value = await promise;
-  try { return await use(value); }
-  finally { disposeRpcResult(value); }
 }
 
 // normalizePath is provided by the W7 frame preamble (from _shared/w7-frame.ts),
@@ -1672,7 +1660,7 @@ function facetPacksSupervisor(supervisor, stats, ensureDirectory) {
   // Paths reach the supervisor as this facet's fs sends them: normalized.
   const counted = (name, call) => {
     stats.supervisorRpc[name]++;
-    return useRpcResult(call(), (result) => result);
+    return useRpcResource(call(), (result) => result);
   };
   return {
     // Pack bytes bypass the session's content cache: a cached range pins its
@@ -1686,7 +1674,7 @@ function facetPacksSupervisor(supervisor, stats, ensureDirectory) {
     async readdir(path) {
       stats.supervisorRpc.readdir++;
       try {
-        const entries = await useRpcResult(supervisor.readdir(normalizePath(path)), (result) => result);
+        const entries = await useRpcResource(supervisor.readdir(normalizePath(path)), (result) => result);
         return entries.map((entry) => typeof entry === 'string' ? entry : entry.name);
       } catch {
         return [];
@@ -1704,7 +1692,7 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
   const dir = normalizePath(opts.dir);
   const counted = (name, call) => {
     stats.supervisorRpc[name]++;
-    return useRpcResult(call(), (result) => result);
+    return useRpcResource(call(), (result) => result);
   };
   // A pack's ranged writes, as its waves (the wave writer's deadline), stop at the phase deadline.
   const mutation = (name, call) => {
@@ -1728,7 +1716,7 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
       async readdir(path) {
         stats.supervisorRpc.readdir++;
         try {
-          const entries = await useRpcResult(supervisor.readdir(normalizePath(path)), (result) => result);
+          const entries = await useRpcResource(supervisor.readdir(normalizePath(path)), (result) => result);
           return entries.map((entry) => typeof entry === 'string' ? entry : entry.name);
         } catch {
           return [];
@@ -1783,7 +1771,7 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
 function facetFileApi(supervisor, stats, deadline = null) {
   const call = (counter, fn) => {
     stats.supervisorRpc[counter]++;
-    return useRpcResult(fn(), (result) => result);
+    return useRpcResource(fn(), (result) => result);
   };
   return __nimbusGitPack.withinDeadline({
     mkdir: (path, options) => call('fileApi', () => supervisor.mkdir(path, options)),
@@ -2124,7 +2112,7 @@ function createBufferedFs(
           : null;
         if (size === null) {
           stats.supervisorRpc.stat++;
-          size = await useRpcResult(
+          size = await useRpcResource(
             supervisor.stat(durablePath),
             (result) => result === null || result === undefined ? null : Number(result.size),
           );
@@ -2140,7 +2128,7 @@ function createBufferedFs(
           for (let offset = 0; offset < size;) {
             const expected = Math.min(READ_RANGE_BYTES, size - offset);
             stats.supervisorRpc.fsReadRange++;
-            const bytesRead = await useRpcResult(
+            const bytesRead = await useRpcResource(
               supervisor.fsReadRange(durablePath, offset, expected),
               (result) => {
                 if (result === null || result === undefined) {
@@ -2162,7 +2150,7 @@ function createBufferedFs(
           }
         } else {
           stats.supervisorRpc.readFile++;
-          data = await useRpcResult(supervisor.readFileBytes(durablePath), (result) => {
+          data = await useRpcResource(supervisor.readFileBytes(durablePath), (result) => {
             if (result === null || result === undefined) throw enoent(filepath);
             const content = result instanceof Uint8Array ? result : new Uint8Array(result);
             return content.slice();
@@ -2239,7 +2227,7 @@ function createBufferedFs(
         // Start with supervisor's view
         let names = [];
         stats.supervisorRpc.readdir++;
-        const entries = await useRpcResult(supervisor.readdir(resolved.path), (result) => result);
+        const entries = await useRpcResource(supervisor.readdir(resolved.path), (result) => result);
         names = Array.isArray(entries) ? entries.map(e => e.name) : [];
         const set = new Set(names);
         // Add buffered children: anything whose parent == p
@@ -2311,7 +2299,7 @@ function createBufferedFs(
         if (!p) return bufferedDirectoryStat(true);
         await awaitSupervisorReadable();
         stats.supervisorRpc.stat++;
-        const st = await useRpcResult(supervisor.stat(resolved.path), (result) => result);
+        const st = await useRpcResource(supervisor.stat(resolved.path), (result) => result);
         if (!st) throw enoent(filepath);
         return convertSupervisorStat(st);
       },
@@ -2333,7 +2321,7 @@ function createBufferedFs(
         if (!resolved.path) return bufferedDirectoryStat(false);
         await awaitSupervisorReadable();
         stats.supervisorRpc.lstat++;
-        const st = await useRpcResult(supervisor.lstat(resolved.path), (result) => result);
+        const st = await useRpcResource(supervisor.lstat(resolved.path), (result) => result);
         if (!st) throw enoent(filepath);
         return convertSupervisorStat(st);
       },
@@ -2367,7 +2355,7 @@ function createBufferedFs(
         if (isAuthoritativePath(resolved.path)) throw enoent(filepath);
         await awaitSupervisorReadable();
         stats.supervisorRpc.readlink++;
-        return useRpcResult(supervisor.readlink(resolved.path), result => {
+        return useRpcResource(supervisor.readlink(resolved.path), result => {
           if (result === null || result === undefined) throw enoent(filepath);
           return String(result);
         });
@@ -2467,7 +2455,7 @@ export default {
     const log = (msg) => {
       if (opts.quiet) return;
       stats.supervisorRpc.stdout++;
-      try { useRpcResult(supervisor.stdout(new TextEncoder().encode(msg)), () => undefined).catch(() => {}); } catch {}
+      try { useRpcResource(supervisor.stdout(new TextEncoder().encode(msg)), () => undefined).catch(() => {}); } catch {}
     };
 
     // Import the pre-bundled isomorphic-git + http/web.
@@ -2615,7 +2603,7 @@ export default {
           const candidate = cloneRootParts.slice(0, index + 1).join('/');
           const isFinal = index === cloneRootParts.length - 1;
           stats.supervisorRpc.lstat++;
-          const candidateStat = await useRpcResult(
+          const candidateStat = await useRpcResource(
             supervisor.lstat(candidate),
             result => result,
           );
@@ -2636,7 +2624,7 @@ export default {
           throw new Error('git clone exclusive mutation root does not cover its destination');
         }
         stats.supervisorRpc.legacySymlinkSubtree++;
-        const hasLegacySymlink = await useRpcResult(
+        const hasLegacySymlink = await useRpcResource(
           supervisor.hasLegacySymlinkUnder(exclusiveRoot),
           result => result === true,
         );
@@ -2651,7 +2639,7 @@ export default {
               "' already exists and is not an empty directory.");
           }
           stats.supervisorRpc.readdir++;
-          const entries = await useRpcResult(supervisor.readdir(cloneRoot), result => result);
+          const entries = await useRpcResource(supervisor.readdir(cloneRoot), result => result);
           if (!Array.isArray(entries) || entries.length !== 0) {
             throw new Error("fatal: destination path '" + opts.dir +
               "' already exists and is not an empty directory.");

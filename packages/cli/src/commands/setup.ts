@@ -1,20 +1,28 @@
 import { spawn } from 'node:child_process';
 import { syncRuntimes } from './runtime-sync.js';
-
-interface SetupOptions {
-  name?: string;
-  bucketPrefix?: string;
-  runtimeBucket?: string;
-  skipRuntimes: boolean;
-}
+import { parseArgs } from 'node:util';
 
 export async function setupCloudflare(args: string[]): Promise<number> {
-  if (args[0] === '--help' || args[0] === '-h') {
+  let parsed;
+  try {
+    parsed = parseArgs({ args, options: {
+      name: { type: 'string' }, 'bucket-prefix': { type: 'string' },
+      'runtime-bucket': { type: 'string' }, 'skip-runtimes': { type: 'boolean', default: false },
+      help: { type: 'boolean', short: 'h' },
+    } }).values;
+  } catch (error) {
+    process.stderr.write(`nimbus setup cloudflare: ${error instanceof Error ? error.message : error}\n`);
+    return 64;
+  }
+  if (parsed.help) {
     printHelp();
     return 0;
   }
 
-  const opts = parseFlags(args);
+  const opts = {
+    name: parsed.name, bucketPrefix: parsed['bucket-prefix'],
+    runtimeBucket: parsed['runtime-bucket'], skipRuntimes: parsed['skip-runtimes'],
+  };
   if (!opts.name) {
     process.stderr.write('nimbus setup cloudflare: --name <worker-name> required\n');
     printHelp();
@@ -47,7 +55,7 @@ export async function setupCloudflare(args: string[]): Promise<number> {
   }
 
   if (!opts.skipRuntimes) {
-    const code = await syncRuntimes(['--bucket', runtimeBucket, 'clang', 'python', 'ruby']);
+    const code = await syncRuntimes(['--bucket', runtimeBucket]);
     if (code !== 0) return code;
   }
 
@@ -59,30 +67,6 @@ export async function setupCloudflare(args: string[]): Promise<number> {
     runtimesSynced: !opts.skipRuntimes,
   }) + '\n');
   return 0;
-}
-
-function parseFlags(args: string[]): SetupOptions {
-  const out: SetupOptions = { skipRuntimes: false };
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === '--name') {
-      out.name = args[++i] || '';
-      continue;
-    }
-    if (a === '--bucket-prefix') {
-      out.bucketPrefix = args[++i] || '';
-      continue;
-    }
-    if (a === '--runtime-bucket') {
-      out.runtimeBucket = args[++i] || '';
-      continue;
-    }
-    if (a === '--skip-runtimes') {
-      out.skipRuntimes = true;
-      continue;
-    }
-  }
-  return out;
 }
 
 function runWrangler(args: string[], opts: { okOnAlreadyExists?: boolean } = {}): Promise<number> {

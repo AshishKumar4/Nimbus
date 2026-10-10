@@ -11,19 +11,9 @@
  * The class re-exports let wrangler and `enable_ctx_exports` discover
  * the DO/RPC classes from the main module — see apps/hosted-demo.
  */
-import {
-  NimbusSession as SdkNimbusSession,
-  NimbusPublicDirectory,
-  SupervisorRPC,
-  NimbusAssetsRPC,
-  NimbusLoaderRPC,
-  NimbusLoadedWorker,
-  NimbusLoadedEntrypoint,
-  NimbusDurableObjectNamespace,
-  NimbusDOStub,
-  CirrusHmrRPC,
-  createNimbusHandler,
-} from '@nimbus-sh/sdk/worker';
+import { createNimbusHandler } from '@nimbus-sh/sdk/worker';
+import { NimbusSession as SdkNimbusSession } from '@nimbus-sh/sdk/entrypoints';
+export * from '@nimbus-sh/sdk/entrypoints';
 import { Nimbus } from '@nimbus-sh/sdk';
 import {
   verifyRequestToken,
@@ -186,18 +176,6 @@ export class NimbusSession extends SdkNimbusSession {
       .exports.TestEgress({ props: { session: this.ctx.id.toString() } });
   }
 }
-
-export {
-  NimbusPublicDirectory,
-  SupervisorRPC,
-  NimbusAssetsRPC,
-  NimbusLoaderRPC,
-  NimbusLoadedWorker,
-  NimbusLoadedEntrypoint,
-  NimbusDurableObjectNamespace,
-  NimbusDOStub,
-  CirrusHmrRPC,
-};
 
 const nimbus = createNimbusHandler({
   auth: { mode: 'enforce' },
