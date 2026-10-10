@@ -46,14 +46,16 @@ function remote(options) {
 function withoutSlash(url) {
     return url.endsWith('/') ? url.slice(0, -1) : url;
 }
-/** A URL's username or password as written: percent-escapes decoded, a stray `%` kept. */
+/** A URL's username or password as written: each run of percent-escapes decoded, a stray `%` kept. */
 function unescapeUserinfo(text) {
-    try {
-        return decodeURIComponent(text);
-    }
-    catch {
-        return text;
-    }
+    return text.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => {
+        try {
+            return decodeURIComponent(run);
+        }
+        catch {
+            return run;
+        }
+    });
 }
 function headers(auth, extra) {
     const result = { 'user-agent': 'git/nimbus', ...extra };
