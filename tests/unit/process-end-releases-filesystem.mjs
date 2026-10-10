@@ -15,7 +15,7 @@
 import assert from 'node:assert/strict';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
+import { rpcDestroy, rpcExec, rpcKillProcess, rpcProcessLogs, rpcStartProcess } from '../../packages/worker/src/session/programmatic.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
@@ -28,6 +28,7 @@ import { routeToSessionPort } from '../../packages/worker/src/session/port-capab
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld, createPeerNamespace } from './facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
+import { programmaticHost } from './lib/programmatic-host.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -185,6 +186,66 @@ for (const [what, end] of [
   assert.equal(s.processes.get(pid)?.state, 'running', 'nothing was stopped');
   s.engine.releaseExclusiveMutation(lease.owner);
   console.log('  work of the session\'s own still refuses a destroy, before anything is stopped');
+}
+
+// ── A process the session runs is stopped, and its own cleanup closes its
+//    descriptors before its end releases them: a shell job killed, or timed
+//    out, with a redirection open closes its redirections and meets nothing
+//    the release closed under it ─────────────────────────────────────────────
+// Red before (RoughWallaby, c4aff8167): the kill's release closed the job's
+// scope first; its redirection's close then failed EBADF, and the shell
+// wrote that stack and exited 1. A timeout that ended the process before the
+// shell's cleanup settled did the same.
+{
+  let asleep = null;
+  const box = await programmaticHost({
+    commands: {
+      // Sleeps until it is stopped, then says so a moment later, still stopping.
+      async sleep(ctx) {
+        await new Promise((resolve) => {
+          asleep?.();
+          if (ctx.signal.aborted) resolve();
+          ctx.signal.addEventListener('abort', resolve, { once: true });
+        });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await ctx.stdout.write('stopped\n');
+        return 130;
+      },
+    },
+  });
+  try {
+    const { ws, host, held } = box;
+    await ws.fs.writeFile('/home/user/in', 'input');
+    const cred = ws.processes.cred(ws.shellProcessPid);
+    for (const line of ['sleep 10 < /home/user/in', 'sleep 10 > /home/user/out']) {
+      const sleeping = new Promise((resolve) => { asleep = resolve; });
+      const { pid } = await rpcStartProcess(host, line);
+      await sleeping;
+      assert.equal((await rpcKillProcess(host, pid)).ok, true);
+      await Promise.all(held.splice(0));
+      const logged = (await rpcProcessLogs(host, pid)).chunks.map((chunk) => chunk.data).join('');
+      assert.doesNotMatch(logged, /EBADF|Error/, `killed \`${line}\`: its cleanup met nothing closed under it: ${logged}`);
+      if (!line.includes('>')) assert.match(logged, /stopped/, `killed \`${line}\`: what it wrote on being stopped is in its log`);
+      assert.equal(ws.processes.get(pid)?.exitCode, 137, `killed \`${line}\`: it ends as killed`);
+      assert.throws(() => ws.filesystem.bind({ pid, cred }), { code: 'ESTALE' }, `killed \`${line}\`: released once it had unwound`);
+    }
+    // A timed-out exec answers at its timeout, while its shell is still
+    // stopping (the command takes a moment): what the job bound stays until
+    // that shell has closed it, and goes after.
+    const result = await rpcExec(host, 'sleep 10 > /home/user/out', { timeoutMs: 200 });
+    assert.equal(result.exitCode, 124);
+    assert.doesNotMatch(result.stderr, /EBADF|Error/, `a timed-out job's cleanup met nothing closed under it: ${result.stderr}`);
+    const timedOut = Math.max(...ws.processes.getAll().filter((entry) => entry.command === 'sleep 10 > /home/user/out').map((entry) => entry.pid));
+    assert.doesNotThrow(() => ws.filesystem.bind({ pid: timedOut, cred }), 'not released while its shell is still stopping');
+    for (const deadline = Date.now() + 2_000; ;) {
+      try { ws.filesystem.bind({ pid: timedOut, cred }); } catch (error) { if (error.code === 'ESTALE') break; throw error; }
+      if (Date.now() > deadline) throw new Error('a timed-out job was never released');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    console.log('  a killed or timed-out shell job closes its own descriptors before its end releases them');
+  } finally {
+    box.close();
+  }
 }
 
 console.log('process-end-releases-filesystem: ok');

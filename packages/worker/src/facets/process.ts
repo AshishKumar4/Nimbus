@@ -519,6 +519,8 @@ export class FacetProcessManager {
     if (kind !== 'facet-direct') this._markStarted(child);
     if (kind === 'pure-builtin') {
       const stdin = this._stdinOf(child);
+      // It runs here, on the child's own descriptors, until it returns.
+      const stopped = this.deps.processes.holdWork(child.pid, () => {});
       try {
         const code = await this.deps.commandRegistry.runPureBuiltin(
           child.pid, req.command, req.args, { ...child.env }, cwd, stdin, hooks,
@@ -527,11 +529,15 @@ export class FacetProcessManager {
       } catch (e: any) {
         this._appendText(child, 2, `Error: ${e?.message || String(e)}\n`);
         this._stampExit(child, 1, null);
+      } finally {
+        stopped();
       }
       return;
     }
     const env = { ...child.env, NIMBUS_CP_CHILD_PID: String(child.pid) };
     if (kind === 'shell-direct') {
+      // Its shell runs here, on the child's own descriptors, until it returns.
+      const stopped = this.deps.processes.holdWork(child.pid, () => {});
       try {
         const plan = this._shellPlanFor(req);
         if (!plan) {
@@ -551,6 +557,8 @@ export class FacetProcessManager {
       } catch (e: any) {
         this._appendText(child, 2, `shell error: ${e?.message || String(e)}\n`);
         this._stampExit(child, 1, null);
+      } finally {
+        stopped();
       }
       return;
     }

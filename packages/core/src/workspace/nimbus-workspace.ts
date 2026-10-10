@@ -549,19 +549,22 @@ export class NimbusWorkspace {
     // shell takes them for the call only: passed as its state they would pin
     // it there, and its `cd` would not survive the call.
     const shell = named?.open(pid) ?? this.shellFor(pid, { cwd, env: options.env });
+    // The call is this workspace's work behind the pid until its shell has
+    // closed what it opened: only then is what it bound released.
+    const stopped = this.processes.holdWork(pid, () => {});
     let exitCode = 1;
     try {
       const result = await runCommand(shell, command, named ? options : { ...options, cwd: undefined, env: undefined });
       exitCode = result.exitCode;
       return result;
     } finally {
-      // Its descriptors close as it exits, before its end releases what it
-      // bound in the filesystem; it ends, and its entry goes, even if one
-      // fails to.
+      this.processes.exit(pid, exitCode);
+      // Its descriptors close as it exits; its entry, and what it bound in
+      // the filesystem, go even if one fails to.
       try {
         await shell.closeDescriptors();
       } finally {
-        this.processes.exit(pid, exitCode);
+        stopped();
         await this.processes.reapTree(pid);
       }
     }
@@ -728,6 +731,7 @@ function workspaceShellIdentity(
     // them doing nothing but await a program (SessionProcessSupervisor).
     const endAwait = processes.beginAwait(parent.pid, child.pid);
     const endWork = processes.beginWork(child.pid);
+    const stopped = processes.holdWork(child.pid, () => {});
     let exitCode = 1;
     try {
       // The child inherits its parent's descriptors, environment and directory.
@@ -750,6 +754,7 @@ function workspaceShellIdentity(
       endWork();
       endAwait();
       processes.exit(child.pid, exitCode);
+      stopped();
     }
   };
 
