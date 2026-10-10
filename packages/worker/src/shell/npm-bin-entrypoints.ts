@@ -1,8 +1,6 @@
 import { CRED_KERNEL, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { ProcessView, X_OK, type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
-import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { FacetManager, StagedArtifactExecResult } from '../facets/manager.js';
 import {
   resolveNpmBin, resolveNpmBinPath,
@@ -13,15 +11,13 @@ import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.j
 import { OPENCODE_TREE_SITTER_DIAG_ARG } from '../runtime/opencode-facet-runner.js';
 import { firstPositional, isNonInteractiveArg, knownServerBin } from '../facets/server-hints.js';
 import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
+import type { BinLaunch } from '@nimbus-sh/core/runtime/runtime-registry.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { resolveContext, type ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { z } from 'zod/v4';
 
-type Output = {
-  write(data: string): void | Promise<void>;
-  writeBytes?(data: Uint8Array): void | Promise<void>;
-};
+type Output = { write(data: string): void };
 
 
 type CommandContext = {
@@ -34,15 +30,6 @@ type CommandContext = {
   env?: Record<string, string>;
   /** The command's view of the namespace, as its credential. */
   vfs: ProcessView;
-  __nimbusBinSpawn?: {
-    skipSpawn?: boolean;
-    callerPid?: number;
-    command?: string;
-    forceLongRunning?: boolean;
-    attachedTty?: boolean;
-    liveInput?: boolean;
-    stdinWriter?: boolean;
-  };
   [key: string]: unknown;
 };
 
@@ -81,7 +68,6 @@ export function installNpmBinFallbackResolver(
     /** The session's namespace: bins are found in it, as the running command when one runs. */
     filesystem: ProcessFiles;
     getCwd(): string;
-    processes: SessionProcessSupervisor;
     getFacetManager(): FacetManager;
     /** Whether this workspace learned the bin is a server (facets/server-hints.ts). */
     learnedServer(server: ServerIdentity): Promise<boolean>;
@@ -204,11 +190,6 @@ export function installNpmBinFallbackResolver(
 
       const bundleProfile = bundleProfileForNpmBin(bin);
       const metadata = await readNpmBinPackageMetadata(vfs, bin.packagePath);
-      const reserved = ctx.__nimbusBinSpawn;
-      const attachedTty = reserved?.attachedTty ?? looksAttachedTtyNpmBin(metadata, argv, ctx.env);
-      // A hint: a bin that listens runs on as a resident however it started.
-      const server = { package: `${metadata?.name ?? bin.packagePath}@${metadata?.version ?? ''}`, bin: name, arg0: firstPositional(argv) };
-      const longRunning = reserved?.forceLongRunning === true || attachedTty || knownServerBin(name, argv) || await deps.learnedServer(server);
       const runtimeCmd = await upstreamResolve(runtimeName, from);
       if (typeof runtimeCmd !== 'function') {
         ctx.stderr.write(`${name}: ${runtimeName} command unavailable\n`);
@@ -216,84 +197,23 @@ export function installNpmBinFallbackResolver(
       }
       const runRuntime = runtimeCmd as NodeCommandHandler;
 
-      const shellLine = `${name} ${argv.join(' ')}`.trim();
-      // A broker or launch wrapper may already own the process and fd0.
-      // An npm entrypoint is that program, not a second child incarnation.
-      const ownsEntry = reserved?.callerPid === undefined;
-      const entry = ownsEntry ? deps.processes.spawn(
-        shellLine, [name, ...argv], invocationCwd,
-        { longRunning, attachedTty, parentPid: ctx.pid },
-      ) : deps.processes.get(reserved.callerPid!);
-      if (!entry || entry.state !== 'running') throw new Error(`${name}: reserved process is not running`);
-      const pid = entry.pid;
-      const startedAt = Date.now();
-      if (longRunning && !deps.processes.hasInput(pid)) deps.processes.openInput(pid);
-
-      const label = longRunning ? 'started (long-running)' : 'started';
-      if (ownsEntry) {
-        deps.terminal?.write(`\x1b[2m[bin ${label}: pid=${pid} cmd="${shellLine}"]\x1b[0m\r\n`);
-        deps.notifyTerminalEvent({ type: 'spawn', pid, command: shellLine, longRunning, attachedTty });
-      }
-
-      // Live runtime bytes have already reached this reserved pid's log and
-      // its foreground subscriber. Forward them to the launching fd without
-      // re-appending to that pid (which would feed the subscriber back into
-      // itself). Text returned by a non-streaming command still needs a log.
-      const writeThrough = (stream: 'stdout' | 'stderr', target: Output): Output => {
-        const decoded = textSink((text) => target.write(text));
-        return {
-          async write(data) {
-            const text = String(data);
-            await deps.processes.appendOutputBytes(pid, stream, new TextEncoder().encode(text));
-            await target.write(text);
-          },
-          writeBytes: (data) => target.writeBytes ? target.writeBytes(data) : decoded(data),
-        };
+      // The bin's program runs as `node <target>` does: the runtime owns its
+      // process, output and exit. The bin adds how it is shown, and hints to
+      // start it as a resident (a bin that listens runs on as one however it
+      // started).
+      const server = { package: `${metadata?.name ?? bin.packagePath}@${metadata?.version ?? ''}`, bin: name, arg0: firstPositional(argv) };
+      const launch: BinLaunch = {
+        command: `${name} ${argv.join(' ')}`.trim(),
+        attachedTty: looksAttachedTtyNpmBin(metadata, argv, ctx.env),
+        serves: knownServerBin(name, argv) || await deps.learnedServer(server),
+        server,
       };
-      const stdout = writeThrough('stdout', ctx.stdout);
-      const stderr = writeThrough('stderr', ctx.stderr);
-
-      let exitCode = 1;
-      try {
-        // A user-invoked bin is a foreground program: the shell waits for its
-        // real exit — no dispatch timeout. Ctrl-C ends it through the
-        // terminator the exec path registers on the pid.
-        exitCode = await runRuntime({
-          ...ctx,
-          args: ['/' + bin.targetPath, ...argv],
-          stdout,
-          stderr,
-          __nimbusBinSpawn: {
-            ...reserved,
-            skipSpawn: true,
-            callerPid: pid,
-            command: reserved?.command ?? shellLine,
-            forceLongRunning: longRunning,
-            attachedTty,
-            server,
-          },
-          __nimbusBundleProfile: bundleProfile,
-        });
-      } catch (e: unknown) {
-        await stderr.write(`bin error: ${formatError(e)}\n`);
-        exitCode = 1;
-      } finally {
-        // A resident has it now, started as one or run on as one once it
-        // listened (FacetManager._promote).
-        const resident = deps.processes.get(pid);
-        const handedOffToLongRunningFacet = exitCode === 0 && resident?.longRunning === true && resident.state === 'running';
-        if (!handedOffToLongRunningFacet) {
-          try { deps.processes.exit(pid, exitCode); } catch {}
-          try {
-            if (!deps.processes.getExit(pid)) deps.processes.markExit(pid, exitCode);
-          } catch {}
-          if (ownsEntry) {
-            deps.notifyTerminalEvent({ type: 'exit', pid, code: exitCode, command: shellLine });
-            deps.emitShellExecDone(pid, shellLine, exitCode, Date.now() - startedAt);
-          }
-        }
-      }
-      return exitCode;
+      return await runRuntime({
+        ...ctx,
+        args: ['/' + bin.targetPath, ...argv],
+        __nimbusBin: launch,
+        __nimbusBundleProfile: bundleProfile,
+      });
     };
   }
 }

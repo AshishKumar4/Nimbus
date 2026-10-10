@@ -8662,6 +8662,9 @@ export class FacetManager {
       entry = this._spawnLaunchEntry(command, launchArgv({ execArgv: opts.node?.execArgv, argv: opts.argv }), cwd, opts.invokerPid, redriven);
     }
     this.processes.setLongRunning(entry.pid);
+    // Every long-running process has an input channel on its pid, one a
+    // launcher reserved included.
+    this.processes.openInput(entry.pid);
     if (opts.attachedTty) this.processes.setAttachedTty(entry.pid);
     if (!opts.skipSpawn) {
       try { this.hooks.onSpawn?.(entry.pid, command, true); } catch {}

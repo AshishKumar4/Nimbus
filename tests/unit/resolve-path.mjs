@@ -37,7 +37,6 @@ async function workspace(env) {
   installNpmBinFallbackResolver(ws.registry, {
     filesystem: ws.filesystem,
     getCwd: () => ws.shell.getCwd(),
-    processes: ws.processes,
     getFacetManager() { throw new Error('unexpected staged artifact'); },
     async learnedServer() { return false; },
     notifyTerminalEvent() {},

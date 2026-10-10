@@ -89,12 +89,9 @@ export interface RunFreshOpts {
    *  notice + /api/processes listing. */
   command?: string;
   /**
-   * G4 (runtime-pkg wave): caller has already allocated a
-   * process supervisor PID for this invocation; runFresh / facetMgr.exec
-   * should reuse it instead of spawning a duplicate. Used by the
-   * .bin handler in src/session/init.ts to keep `ps` showing ONE
-   * row per bin invocation instead of two (the wrapper + the inner
-   * node script).
+   * The caller has already allocated the process supervisor PID for this
+   * invocation (a child_process broker's child, a launch wrapper's process);
+   * runFresh / facetMgr.exec reuse it instead of spawning another.
    */
   skipSpawn?: boolean;
   callerPid?: number;
@@ -133,12 +130,14 @@ export async function runFresh(
   // A program that starts a server runs in the keyed long-running facet even
   // without --watch: only its route stub is re-resolvable across requests
   // (the one-shot facet is LOADER.load, unkeyed), so only there is the port it
-  // binds reachable. The runtime handler judges that from the code this
-  // invocation runs (server-launch.ts), its arguments included. .bin wrapper
-  // invocations (skipSpawn) keep the one-shot fast path — those are CLIs, and
-  // their PID accounting assumes a single foreground exec.
+  // binds reachable. The runtime handler judges that from a bin's hints or the
+  // code this invocation runs (server-launch.ts), its arguments included; one
+  // it misses runs on as a resident once it listens (FacetManager._promote).
+  // A process a launcher reserved (skipSpawn) is its launcher's to judge. A
+  // program attached to the terminal holds it until it exits.
   const wantsLongRunning =
     opts.forceLongRunning ||
+    opts.attachedTty === true ||
     // Node's options are its execArgv now, not its argv (node-cli.ts).
     isLongRunningInvocation([...(opts.node?.execArgv ?? []), ...args]) ||
     (!opts.skipSpawn && opts.launchesServer === true);
@@ -217,8 +216,10 @@ export async function runFresh(
       longRunning: true,
     };
   }
-  return residentStarted(facetMgr, spawned.pid,
-    opts.skipSpawn ? '' : `\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}"]\x1b[0m\n`);
+  // A process a launcher reserved is its to announce; one attached to the
+  // terminal has it already.
+  return residentStarted(facetMgr, spawned.pid, opts.skipSpawn || opts.attachedTty
+    ? '' : `\x1b[2m[started (long-running): pid=${spawned.pid} cmd="${command}"]\x1b[0m\n`);
 }
 
 /**

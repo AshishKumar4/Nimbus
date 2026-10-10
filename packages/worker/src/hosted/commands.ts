@@ -361,7 +361,7 @@ workspace.runtimes.registerRunner(
 //     before script path)
 //   - primitive #1 shebang strip
 //   - .ts/.tsx/.jsx esbuild auto-transform
-//   - G4 binSpawn ctx propagation (when the .bin handler set
+//   - G4 binSpawn ctx propagation (when a broker or launch wrapper set
 //     ctx.__nimbusBinSpawn, runFresh reuses the caller's PID
 //     instead of double-spawning)
 //   - --watch/--inspect/--inspect-brk routing via runFresh →
@@ -1042,7 +1042,6 @@ const runtimeCommandHint = createRuntimeCommandHintResolver(self.env as any);
 installNpmBinFallbackResolver(registry, {
   filesystem: workspace.filesystem,
   getCwd: () => (shell as any)?.cwd || '/home/user',
-  processes: self.processes,
   getFacetManager: () => {
     self.ensureFacetManager();
     return facetMgr!;

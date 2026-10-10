@@ -67,7 +67,7 @@ try {
   // install.sh). It prints the offer on /dev/tty and reads the answer from
   // /dev/tty, so it holds the terminal until a person answers: a command
   // typed here instead is read as the answer, is not `n`, and starts pi (the
-  // shell then shows `[bin started (long-running)…]` in place of the command's
+  // shell then shows `[facet started (long-running)…]` in place of the command's
   // output). Answer as someone who wants the shell back would, and check the
   // installer, not the shell, consumed the answer.
   let offered = true;
@@ -84,7 +84,7 @@ try {
     await t.waitForPrompt(30_000);
     const afterAnswer = stripAnsi(t.buf).slice(offerAt);
     a.check('declining the offer returns the shell without starting pi',
-      !/\[bin started|command not found/.test(afterAnswer),
+      !/\[facet started|command not found/.test(afterAnswer),
       JSON.stringify(afterAnswer.slice(-600)));
   }
 
@@ -94,12 +94,12 @@ try {
     /\/home\/user\/\.local\/bin\/pi|\/usr\/local\/bin\/pi/.test(checkText),
     JSON.stringify(checkText.slice(-1000)));
   a.check('pi --version exits as a short command after official install',
-    /^\d+\.\d+\.\d+\r?$/m.test(checkText) && !/\[bin started \(long-running\)/.test(checkText),
+    /^\d+\.\d+\.\d+\r?$/m.test(checkText) && !/\[facet started \(long-running\)/.test(checkText),
     JSON.stringify(checkText.slice(-1200)));
 
   const launch = await t.run('pi', 60_000);
   const launchText = stripAnsi(launch.output);
-  const pid = Number(launchText.match(/\[bin started \(long-running\): pid=(\d+) cmd="pi"\]/)?.[1] || 0);
+  const pid = Number(launchText.match(/\[facet started \(long-running\): pid=(\d+) cmd="pi"\]/)?.[1] || 0);
   a.check('official install launches Pi as an attached TUI', pid > 0, JSON.stringify(launchText.slice(-1000)));
   if (pid > 0) {
     const proc = await connectProcessTerminal(sid, pid);

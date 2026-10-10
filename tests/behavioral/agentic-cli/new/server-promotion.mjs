@@ -48,10 +48,10 @@ try {
   const bin = termBody((await t.run('./node_modules/.bin/mysrv serve', 120_000)).output);
   const binServed = await viaPort(4202);
   a.check('an unlisted bin serves on its first launch', binServed.status === 200 && binServed.body === 'bin', `${binServed.status} ${binServed.body}\n${bin.slice(-600)}`);
-  a.check('its first launch was no resident until it listened', /\[bin started: pid=/.test(bin), bin.slice(-600));
+  a.check('its first launch was no resident until it listened', /\[facet started: pid=/.test(bin), bin.slice(-600));
   await t.run(`kill ${pidOf(bin)}`, 15_000);
   const again = termBody((await t.run('./node_modules/.bin/mysrv serve', 120_000)).output);
-  a.check('it is learned: its next launch starts as a server', /\[bin started \(long-running\): pid=/.test(again), again.slice(-600));
+  a.check('it is learned: its next launch starts as a server', /\[facet started \(long-running\): pid=/.test(again), again.slice(-600));
   const againServed = await viaPort(4202);
   a.check('and serves', againServed.status === 200 && againServed.body === 'bin', `${againServed.status} ${againServed.body}`);
 
