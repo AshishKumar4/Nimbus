@@ -35,7 +35,7 @@ function App() {
   const [error, setError] = useState(null);
   window.reloadTerminal = () => ref.current.reload();
   window.terminalUrl = () => ref.current.getUrl();
-  return <><output id="ready-count">{readyCount}</output><output id="error">{error?.code ?? ''}</output>
+  return <><output id="ready-count">{readyCount}</output><output id="error" data-message={error?.message ?? ''}>{error?.code ?? ''}</output>
     <NimbusTerminal ref={ref} className="component" endpoint={endpoint} token={token} tenant="probe" sessionId=${JSON.stringify(box.id)}
       onReady={() => setReadyCount((count) => count + 1)} onError={setError} style={{ height: 400 }} />
     <Headless />
@@ -70,13 +70,16 @@ createRoot(document.getElementById('root')).render(<App />);
   a.check('the headless controller discovers the session allocated by /new', allocated !== box.id && sessions.has(allocated));
   const url = new URL(await page.evaluate(() => window.terminalUrl()));
   a.check('the component consumes the canonical SDK attach URL', url.pathname === `/s/${box.id}/` && url.searchParams.get('nimbus_token') === AUTH_TOKEN);
+  const beforeError = await page.$eval('#error', (element) => ({ code: element.textContent, message: element.dataset.message }));
   await page.evaluate(() => new Promise((resolve) => {
     const barrier = (event) => { if (event.data?.type === 'probe:barrier') { window.removeEventListener('message', barrier); requestAnimationFrame(resolve); } };
     window.addEventListener('message', barrier);
     window.postMessage({ type: 'nimbus:error', code: 'E_WS_CLOSED', message: 'wrong source' }, location.origin);
     window.postMessage({ type: 'probe:barrier' }, location.origin);
   }));
-  a.check('same-origin events from outside each iframe are ignored', await page.$eval('#error', (element) => element.textContent) === '');
+  const afterError = await page.$eval('#error', (element) => ({ code: element.textContent, message: element.dataset.message }));
+  a.check('same-origin events from outside each iframe are ignored',
+    afterError.code === beforeError.code && afterError.message === beforeError.message, JSON.stringify({ beforeError, afterError }));
   await page.evaluate(() => window.reloadTerminal());
   await page.waitForFunction(() => document.getElementById('ready-count').textContent === '2', { timeout: 90_000 });
   a.check('imperative reload goes through the shared controller and reconnects', true);
