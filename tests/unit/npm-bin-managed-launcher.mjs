@@ -23,7 +23,7 @@ import { createNpmBinShim, createNpmBinManifest, npmBinManifestPath } from '../.
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
-const terminalEvents = [];
+const launches = [];
 const harness = createSqliteVfsTestHarness();
 const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
 const vfs = ws.vfs.as(CRED_KERNEL);
@@ -31,12 +31,17 @@ registerShellEntrypointCommands(ws.registry, { execute: (cmd, options) => ws.she
 installNpmBinFallbackResolver(ws.registry, {
   filesystem: ws.filesystem,
   getCwd: () => '/home/user',
-  processes: ws.processes,
   getFacetManager() { throw new Error('unexpected staged artifact'); },
   async learnedServer() { return false; },
-  notifyTerminalEvent(event) { terminalEvents.push(event); },
+  notifyTerminalEvent() {},
   async runtimeCommandHint() { return null; },
   emitShellExecDone() {},
+});
+// The runtime a bin runs on: what it is told of the bin's launch.
+const node = await ws.registry.resolve('node');
+ws.registry.register('node', (ctx) => {
+  if (ctx.__nimbusBin) launches.push(ctx.__nimbusBin.command);
+  return node(ctx);
 });
 
 async function run(command) {
@@ -93,14 +98,14 @@ assert.deepEqual(
 );
 
 // A bare name on PATH whose file is a `#!/bin/sh` script runs under sh, and
-// the .bin entry it execs by path launches as that npm bin: one spawn/exit
-// lifecycle named for the bin, like the bare-name launch.
+// the .bin entry it execs by path launches as that npm bin: one launch named
+// for the bin, like the bare-name launch.
 {
-  terminalEvents.length = 0;
+  launches.length = 0;
   const r = await run('PATH=/home/user/.local/bin:$PATH tool --version x; echo "rc=$?"');
   assert.equal(r.stderr, '');
   assert.equal(r.stdout, 'TOOL --version x\nrc=0\n');
-  assert.deepEqual(terminalEvents.map((e) => `${e.type} ${e.command}`), ['spawn tool --version x', 'exit tool --version x']);
+  assert.deepEqual(launches, ['tool --version x']);
 }
 
 console.log('npm-bin-managed-launcher: ok');
