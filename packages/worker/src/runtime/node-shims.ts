@@ -12925,6 +12925,21 @@ async function __nimbusHydrated(step, quota) {
   }
 }
 
+// Read data files ahead of the modules that will read them synchronously,
+// under the import()'s quota, and wait for the fills that issues. Nothing
+// rests on these reads: one that does not land (a file the store has no room
+// for) is left to the module's own read, which reports it as any refused read.
+async function __nimbusReadAhead(paths, quota) {
+  const speculation = { misses: new Set(), repairs: [], issued: new Set(), quota };
+  const outer = globalThis.__nimbusVfsSpeculation;
+  globalThis.__nimbusVfsSpeculation = speculation;
+  try {
+    for (const path of paths) { try { __fsMod.readFileSync("/" + path); } catch {} }
+  } finally { globalThis.__nimbusVfsSpeculation = outer; }
+  await Promise.allSettled(speculation.repairs);
+  if (quota.error) throw quota.error;
+}
+
 // What a module's text requests (import and export-from sources, import()
 // and require() of a string), as the runtime-code interpreter's parser reads
 // it (core/interpreter moduleRequests): a request in a comment is none, one
@@ -12992,9 +13007,7 @@ function __nimbusImportStager(quota) {
           // An import() in the closure is its own: it prefetches when it runs.
           for (const request of __nimbusModuleRequests(round[i], text)) if (request.kind !== "dynamic") wanted.push([request, round[i]]);
         }
-        if (images.size > 0) await __nimbusHydrated(() => {
-          for (const image of images) { try { __fsMod.readFileSync("/" + image); } catch {} }
-        }, quota);
+        if (images.size > 0) await __nimbusReadAhead(images, quota);
         const found = await __nimbusHydrated(() => wanted.map(([request, k]) => target(request, k)), quota);
         const next = new Set();
         for (const path of found) if (path !== null && !visited.has(path)) next.add(path);
@@ -13025,14 +13038,8 @@ async function __nimbusStageImport(specifier, parentUrl) {
         if (reads) for (const read of reads) lazyReads.push(read);
       }
     }
-    if (lazyReads.length > 0) {
-      await __nimbusHydrated(() => {
-        for (const k of lazyReads) {
-          if (k in __vfsBundle || (__vfsWrites && k in __vfsWrites)) continue;
-          try { __fsMod.readFileSync("/" + k); } catch {}
-        }
-      }, quota);
-    }
+    const unheld = lazyReads.filter((k) => !(k in __vfsBundle || (__vfsWrites && k in __vfsWrites)));
+    if (unheld.length > 0) await __nimbusReadAhead(unheld, quota);
   }
   return resolution;
 }
