@@ -343,6 +343,8 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         // workspace's runAs counts them).
         const endAwait = self.processes.beginAwait(parent.pid, child.pid);
         const endWork = self.processes.beginWork(child.pid);
+        // Its program is this session's work behind its pid until it returns.
+        const stopped = self.processes.holdWork(child.pid, () => { });
         let exitCode = 1;
         try {
             const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr, isFdTerminal: parent.isFdTerminal });
@@ -353,6 +355,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
             endWork();
             endAwait();
             self.processes.exit(child.pid, exitCode);
+            stopped();
         }
     };
     // The Dynamic Worker ledger's wait-for edges are the session's own

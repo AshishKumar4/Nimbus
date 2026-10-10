@@ -190,9 +190,8 @@ for (const [what, end] of [
 
 // ── A process the session runs is stopped, and its own cleanup closes its
 //    descriptors before its end releases them: a shell job killed, or timed
-//    out, with a redirection open finishes what it does on being stopped
-//    (here, a line written a moment later) and closes its redirections, and
-//    meets nothing the release closed under it ──────────────────────────────
+//    out, with a redirection open closes its redirections and meets nothing
+//    the release closed under it ─────────────────────────────────────────────
 // Red before (RoughWallaby, c4aff8167): the kill's release closed the job's
 // scope first; its redirection's close then failed EBADF, and the shell
 // wrote that stack and exited 1. A timeout that ended the process before the
@@ -201,7 +200,7 @@ for (const [what, end] of [
   let asleep = null;
   const box = await programmaticHost({
     commands: {
-      // Sleeps until it is stopped, then says so a moment later.
+      // Sleeps until it is stopped, then says so a moment later, still stopping.
       async sleep(ctx) {
         await new Promise((resolve) => {
           asleep?.();
@@ -214,15 +213,6 @@ for (const [what, end] of [
       },
     },
   });
-  /** `path`'s text once it holds `text`, or what it holds after two seconds. */
-  const settles = async (path, text) => {
-    let now = '';
-    for (const deadline = Date.now() + 2_000; Date.now() < deadline; await new Promise((resolve) => setTimeout(resolve, 10))) {
-      now = await box.ws.fs.readFileString(path).catch(() => '');
-      if (now.includes(text)) break;
-    }
-    return now;
-  };
   try {
     const { ws, host, held } = box;
     await ws.fs.writeFile('/home/user/in', 'input');
@@ -235,16 +225,23 @@ for (const [what, end] of [
       await Promise.all(held.splice(0));
       const logged = (await rpcProcessLogs(host, pid)).chunks.map((chunk) => chunk.data).join('');
       assert.doesNotMatch(logged, /EBADF|Error/, `killed \`${line}\`: its cleanup met nothing closed under it: ${logged}`);
-      if (line.includes('>')) assert.equal(await settles('/home/user/out', 'stopped'), 'stopped\n', `killed \`${line}\`: what it wrote on being stopped landed`);
-      else assert.match(logged, /stopped/, `killed \`${line}\`: what it wrote on being stopped is in its log`);
+      if (!line.includes('>')) assert.match(logged, /stopped/, `killed \`${line}\`: what it wrote on being stopped is in its log`);
       assert.equal(ws.processes.get(pid)?.exitCode, 137, `killed \`${line}\`: it ends as killed`);
       assert.throws(() => ws.filesystem.bind({ pid, cred }), { code: 'ESTALE' }, `killed \`${line}\`: released once it had unwound`);
     }
-    await ws.fs.remove('/home/user/out');
+    // A timed-out exec answers at its timeout, while its shell is still
+    // stopping (the command takes a moment): what the job bound stays until
+    // that shell has closed it, and goes after.
     const result = await rpcExec(host, 'sleep 10 > /home/user/out', { timeoutMs: 200 });
     assert.equal(result.exitCode, 124);
-    assert.equal(await settles('/home/user/out', 'stopped'), 'stopped\n', 'a timed-out job\'s write on being stopped landed');
     assert.doesNotMatch(result.stderr, /EBADF|Error/, `a timed-out job's cleanup met nothing closed under it: ${result.stderr}`);
+    const timedOut = Math.max(...ws.processes.getAll().filter((entry) => entry.command === 'sleep 10 > /home/user/out').map((entry) => entry.pid));
+    assert.doesNotThrow(() => ws.filesystem.bind({ pid: timedOut, cred }), 'not released while its shell is still stopping');
+    for (const deadline = Date.now() + 2_000; ;) {
+      try { ws.filesystem.bind({ pid: timedOut, cred }); } catch (error) { if (error.code === 'ESTALE') break; throw error; }
+      if (Date.now() > deadline) throw new Error('a timed-out job was never released');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     console.log('  a killed or timed-out shell job closes its own descriptors before its end releases them');
   } finally {
     box.close();

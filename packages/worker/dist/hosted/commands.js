@@ -794,8 +794,10 @@ export async function registerHostedCommands(self, workspace) {
                 throw new Error('shell entrypoint requires a parent process');
             }
             const childProcess = self.processes.spawn('sh', ['sh'], options?.cwd || '/home/user', { parentPid });
-            // The command that runs the script (`sh x.sh`) awaits its shell.
+            // The command that runs the script (`sh x.sh`) awaits its shell, which is
+            // this session's work behind the child's pid until it returns.
             const endAwait = self.processes.beginAwait(parentPid, childProcess.pid);
+            const stopped = self.processes.holdWork(childProcess.pid, () => { });
             let exitCode = 1;
             try {
                 const identity = commandIdentityFor(childProcess.pid);
@@ -821,6 +823,7 @@ export async function registerHostedCommands(self, workspace) {
             finally {
                 endAwait();
                 self.processes.exit(childProcess.pid, exitCode);
+                stopped();
             }
         },
     };
@@ -864,6 +867,9 @@ export async function registerHostedCommands(self, workspace) {
         // nothing but await a program is told as such.
         const scriptShell = workspace.shellFor(pid, { cwd: cmdCtx.cwd || '/home/user', env: cmdCtx.env });
         const endAwait = self.processes.beginAwait(cmdCtx.pid, pid);
+        // The script is this session's work behind the pid until its shell has
+        // closed what it opened: only then is what it bound released.
+        const stopped = self.processes.holdWork(pid, () => { });
         let exitCode = 1;
         try {
             const result = await scriptShell.execute(cmd, {
@@ -922,6 +928,7 @@ export async function registerHostedCommands(self, workspace) {
                 await scriptShell.closeDescriptors();
             }
             catch { }
+            stopped();
             // When a long-running script handed off to a live server (the registry
             // command adopted this pid and returned 0), the process stays running;
             // emitting an immediate exit would print a false `[shell exited]` and

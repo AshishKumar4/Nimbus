@@ -58,6 +58,8 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     private logs;
     /** Terminators for processes whose work is a promise this session owns. */
     private terminators;
+    /** The work this session runs on each pid's own descriptors (holdWork): how to stop each piece, and whether it was. */
+    private readonly held;
     /** Fires after every appendOutput/markExit once log persistence is wired. */
     private logActivity;
     /** Fires when a log retention deadline may have appeared; see setLogPersist. */
@@ -150,12 +152,28 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      */
     private forgetWaits;
     /**
-     * Register how to stop the work behind `pid`. Background jobs started
-     * through the programmatic API run as a promise held by this session, so
-     * `kill` has to abort them rather than only marking the table entry.
-     * Cleared once the process reaches a terminal state.
+     * Register how to stop the work behind `pid`: a program run elsewhere (a
+     * facet) whose run this session holds as a promise, so `kill` has to abort
+     * it rather than only marking the table entry. What such a process bound
+     * in the filesystem is its program's, and is released at its end. Cleared
+     * once the process reaches a terminal state.
      */
     setTerminator(pid: number, terminate: () => void): void;
+    /**
+     * This session runs work on `pid`'s own descriptors (a shell job, a
+     * command run in the session): `stop` ends it, and the function returned
+     * says it has stopped, its own cleanup done. A kill stops it rather than
+     * only marking the table entry.
+     *
+     * The work owns those descriptors while it runs and closes them itself, so
+     * the process's release (setRelease) comes after: once its end is marked
+     * and every piece of work held for it has stopped, whichever is last. A
+     * process with nothing held for it (a program run elsewhere, or one whose
+     * host was lost: nothing of it here is left to unwind) is released at its
+     * end.
+     */
+    holdWork(pid: number, stop: () => void): () => void;
+    /** Stop the work behind `pid`: its terminator, and every piece held for it, once each. */
     private terminate;
     cred(pid: number): VfsCred;
     liveCred(pid: number): VfsCred;
@@ -201,7 +219,8 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * release that failed goes to that process's own stderr log, where its
      * output is read; every expired entry is still forgotten. One whose end is
      * still held from its observers has not ended to them, and waits for a
-     * prune after it is published.
+     * prune after it is published; one whose work is still stopping (holdWork)
+     * waits for a prune after it has.
      */
     reap(maxAge?: number): Promise<number>;
     /**
@@ -220,13 +239,15 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * that waited for its children does: what a caller ran to completion has
      * nothing left to report. Each one's release is waited for (see
      * {@link setRelease}) before its entry goes; with no release set this
-     * refuses. One still running, or whose end is still held from its
-     * observers, is kept. Logs are orphaned as by {@link reap}.
+     * refuses. One still running, whose end is still held from its observers,
+     * or whose work is still stopping, is kept. Logs are orphaned as by
+     * {@link reap}.
      */
     reapTree(pid: number): Promise<number>;
     /**
-     * A process ended: its release begins now, in the turn that ended it. One
-     * that ended before a release was set is released when it is pruned.
+     * `pid` has ended and no work held for it is still stopping: its release
+     * begins now, in the turn that settled the last of them. One that ended
+     * before a release was set is released when it is pruned.
      */
     private releaseEnded;
     /** `pid`'s release, begun once: how it went, a failure included. */
