@@ -8,13 +8,14 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { createRequire } from 'node:module';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NATIVE_HTTP_SOURCE } from '../../packages/worker/src/runtime/native-http.ts';
 import { ENTRYPOINT_EVENT_LOOP } from '../../packages/worker/src/facets/manager.ts';
 import { clientLifetime, pendingListenLifetime, pendingCloseLifetime, exchangeLifetime } from './lib/native-http-lifetimes.mjs';
 import { httpFetchCases } from './lib/http-fetch-cases.mjs';
+import { NODE_ERROR_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
 
 async function exercise(http, serve) {
   const opened = [];
@@ -213,6 +214,7 @@ const __supervisor = {
 const __nimbusInboundBarrier = async () => {};
 const __nimbusProcessExitPromise = Promise.withResolvers().promise;
 globalThis.__nimbusRawSetTimeout = setTimeout;
+${NODE_ERROR_PREAMBLE}
 ${ENTRYPOINT_EVENT_LOOP}
 ${NATIVE_HTTP_SOURCE}
 const exercise = ${exercise.toString()};
@@ -272,6 +274,8 @@ try {
   const actualClient = await clientResponse.json();
   console.log('HTTP_CLIENT_PARITY ' + JSON.stringify({ node: expectedClient, ours: actualClient }));
   assert.deepEqual(actualClient.parity, expectedClient.parity, 'client headers, upload, abort and bound addresses match Node');
+  const gaps = JSON.parse(readFileSync(new URL('../fixtures/node-http-fetch-gaps.json', import.meta.url), 'utf8'));
+  assert.deepEqual({ node: expectedClient.gaps, nimbus: actualClient.gaps }, gaps, 'physical socket gaps stay pinned until Outbound TCP');
   const snapshots = {};
   for (const mode of ['client', 'error', 'cancel', 'pending', 'close', 'exchange', 'ignored']) {
     const reply = await fetch(`http://127.0.0.1:${port}/run?case=${mode}`, { signal: AbortSignal.timeout(5000) });

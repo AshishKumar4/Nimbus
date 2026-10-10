@@ -1,6 +1,6 @@
 /**
- * Nimbus owns port numbers and request admission; workerd owns the Node HTTP
- * protocol and stream implementation. Inserted into the generated node shims.
+ * Nimbus owns port numbers, request admission and the fetch client transport;
+ * workerd owns the server protocol and Node streams. Inserted into node shims.
  *
  * Platform contract: https://developers.cloudflare.com/workers/runtime-apis/nodejs/http/
  * and workerd v1.20260926.1 src/node/internal/internal_http_server.ts:
@@ -14,7 +14,10 @@
  * path. A client's WebSocket upgrade (a request with `Upgrade: websocket`) is
  * answered by node-ws-upgrade.ts, which the shims install over both modules.
  */
+import { FETCH_HTTP_CLIENT_SOURCE } from './fetch-http-client.js';
+
 export const NATIVE_HTTP_SOURCE = `
+${FETCH_HTTP_CLIENT_SOURCE}
 const __nativeHttpResponse = globalThis.Response;
 const __nativeHttpRequest = globalThis.Request;
 const __nativeSplitHeaderFields = new Set(["host", "content-type", "user-agent", "referer", "authorization",
@@ -26,49 +29,27 @@ Object.defineProperty(builtins, "http", {
       ? (__real_http.default ?? __real_http) : globalThis.process.getBuiltinModule("http");
     const net = typeof __real_net !== "undefined"
       ? (__real_net.default ?? __real_net) : globalThis.process.getBuiltinModule("net");
+    const https = typeof __real_https !== "undefined"
+      ? (__real_https.default ?? __real_https) : globalThis.process.getBuiltinModule("https");
+    const url = typeof __real_url !== "undefined"
+      ? (__real_url.default ?? __real_url) : globalThis.process.getBuiltinModule("url");
+    const buffer = typeof __real_buffer !== "undefined" ? __real_buffer : globalThis.process.getBuiltinModule("buffer");
     const ports = globalThis.__portRegistry ??= new Map();
     const pendingListeners = globalThis.__nimbusPendingHttpListeners ??= new Set();
     const context = { ports, get supervisor() { return __supervisor; }, get pending() { return __pendingIO; } };
-    // Native clients keep consuming their IncomingMessage after fetch has
-    // returned headers. Their close event is the end of the exchange (EOF,
-    // body error or cancellation), not the request-body finish event.
-    // https.get/request use this same ClientRequest class; prototype hooks
-    // cover named ESM imports and direct construction too. No response/error
-    // listeners are installed, preserving native auto-drain and error rules.
-    // workerd src/node/internal/internal_http_client.ts #handleFetchResponse
-    // and #emitClose, v1.20260926.1.
-    const clientProto = http.ClientRequest.prototype;
-    const clientPatch = Symbol.for("nimbus.native-http.client-lifetime");
-    if (!clientProto[clientPatch]) {
-      const inFlight = new WeakSet();
-      const end = clientProto.end, emit = clientProto.emit;
-      const release = request => {
-        if (inFlight.delete(request)) { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); }
-      };
-      Object.defineProperty(clientProto, clientPatch, { value: true });
-      clientProto.end = function () {
-        const started = !this.destroyed && !inFlight.has(this);
-        // A request is something a second run would send again
-        // (runtime/stop-replay.ts): counted before it leaves.
-        // \`__nimbusReplay\` is the shims' own; this source also runs without them.
-        // A read is recorded by the session when the run's network goes through
-        // it (fetch carries it there); anything else is counted.
-        if (started && typeof __nimbusReplay !== "undefined" && __nimbusReplay
-          && (!__nimbusReplay.outbound || !/^(GET|HEAD)$/i.test(String(this.method || "GET")))) {
-          __nimbusReplay.effect("http " + String(this.method || "GET") + " " + String(this.host || "") + String(this.path || ""));
+    __nimbusInstallFetchHttpClient(http, https, url, buffer.Buffer, {
+      started(request) {
+        if (typeof __nimbusReplay !== "undefined" && __nimbusReplay
+          && (!__nimbusReplay.outbound || !/^(GET|HEAD)$/i.test(request.method))) {
+          __nimbusReplay.effect("http " + request.method + " " + request.host + request.path);
         }
-        if (started) {
-          inFlight.add(this);
-          globalThis.__nimbusPendingOps = (globalThis.__nimbusPendingOps || 0) + 1;
-        }
-        try { return Reflect.apply(end, this, arguments); }
-        catch (error) { if (started) release(this); throw error; }
-      };
-      clientProto.emit = function (event) {
-        if (event === "close" && this.destroyed) release(this);
-        return Reflect.apply(emit, this, arguments);
-      };
-    }
+        globalThis.__nimbusPendingOps = (globalThis.__nimbusPendingOps || 0) + 1;
+      },
+      finished() {
+        globalThis.__nimbusPendingOps--;
+        globalThis.__nimbusHandleReleased?.();
+      },
+    });
     const patchKey = Symbol.for("nimbus.native-http.patch");
     if (!http.Server.prototype[patchKey]) {
       const proto = http.Server.prototype;
@@ -91,7 +72,7 @@ Object.defineProperty(builtins, "http", {
           return Reflect.apply(writeHead, this, arguments);
         };
       }
-      const listen = proto.listen, close = proto.close, ref = proto.ref, unref = proto.unref, emit = proto.emit;
+      const listen = proto.listen, close = proto.close, ref = proto.ref, unref = proto.unref, emit = proto.emit, address = proto.address;
       // An HTTP exchange keeps its process alive until it completes, as its
       // connection does in Node, whether or not the server is still listening
       // (a bound port is counted on its own): from 'request' until the response
@@ -119,6 +100,11 @@ Object.defineProperty(builtins, "http", {
       // when an isolate is reused, without revealing its current value.
       let activeContext = context;
       const owners = new WeakMap();
+      proto.address = function () {
+        const bound = Reflect.apply(address, this, []);
+        const owner = owners.get(this);
+        return bound && owner ? { ...bound, address: owner.host, family: net.isIP(owner.host) === 6 ? "IPv6" : "IPv4" } : bound;
+      };
       Object.defineProperty(proto, patchKey, { value: next => { activeContext = next; } });
       proto.listen = function (...args) {
         const ctx = activeContext;
@@ -126,7 +112,7 @@ Object.defineProperty(builtins, "http", {
         if (this.listening || owners.get(this)?.pending) {
           throw nodeError(Error, "ERR_SERVER_ALREADY_LISTEN", "Listen method has been called more than once without closing.");
         }
-        const state = { ctx, pending: false, cancelled: false, port: null };
+        const state = { ctx, pending: false, cancelled: false, port: null, host: options.host || "::" };
         owners.set(this, state);
         const requested = options.port === undefined ? 0 : Number(options.port);
         const allocationSettled = () => {
