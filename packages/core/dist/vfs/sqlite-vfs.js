@@ -2177,7 +2177,7 @@ export class SqliteVFS {
      * editor's file tree, reads after it); its writes still recall.
      * `continues`, asked at each call: whether a write of the view's that a
      * read recall holds answers at its commit, ahead of its publication (its
-     * writer's effects wait for it instead: ProcessFiles.gateOutput).
+     * writer's effects wait for it instead: ProcessFiles.continueAtCommit).
      */
     as(cred, options) {
         const engine = this;

@@ -460,12 +460,12 @@ export class ProcessFiles {
             const holds = this.delegations.holdsAt(pid);
             return holds === undefined ? null : this.engine.publishedFor(holds);
         },
-        escaped: (pid) => { this.gated.delete(pid); },
+        escaped: (pid) => { this.continuing.delete(pid); },
     };
     /** Whether the session's process output waits at `outputGate` (holdOutput). */
     outputHeld = false;
-    /** The processes whose writes answer at their commit (gateOutput), until one escapes the gate. */
-    gated = new Set();
+    /** The processes whose writes answer at their commit (continueAtCommit), until one escapes the gate. */
+    continuing = new Set();
     /**
      * From now on each process's output (its log, pipes, terminal and exit)
      * waits at `outputGate` for what it wrote to be published. The host gates
@@ -484,13 +484,13 @@ export class ProcessFiles {
      * (RuntimeFsBridge.published, the node shims'), and a raw socket it opens
      * ending this (`escaped`).
      */
-    gateOutput(pid) {
+    continueAtCommit(pid) {
         if (this.outputHeld)
-            this.gated.add(pid);
+            this.continuing.add(pid);
     }
     async releaseProcess(pid) {
         this.retired.add(pid);
-        this.gated.delete(pid);
+        this.continuing.delete(pid);
         this.listings.delete(pid);
         const scope = this.processes.get(pid);
         try {
@@ -589,7 +589,7 @@ export class ProcessFiles {
         // recall none of them, on SQLite and through the namespace alike.
         const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid, scope);
         const view = this.vfs.as(cred).scoped(() => assertScopeLive(scope, signal), undefined, holds);
-        const continues = pid === undefined ? undefined : () => this.gated.has(pid);
+        const continues = pid === undefined ? undefined : () => this.continuing.has(pid);
         const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues }), this.engine, scope, view, this.bufferedWriteBytes);
         const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, () => mountedKeys(view), this.outputGate);
         // Every other method forwards to the guarded bridge.

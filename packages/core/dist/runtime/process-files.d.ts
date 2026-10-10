@@ -118,8 +118,8 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     readonly outputGate: ProcessOutputGate;
     /** Whether the session's process output waits at `outputGate` (holdOutput). */
     private outputHeld;
-    /** The processes whose writes answer at their commit (gateOutput), until one escapes the gate. */
-    private readonly gated;
+    /** The processes whose writes answer at their commit (continueAtCommit), until one escapes the gate. */
+    private readonly continuing;
     /**
      * From now on each process's output (its log, pipes, terminal and exit)
      * waits at `outputGate` for what it wrote to be published. The host gates
@@ -137,7 +137,7 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
      * (RuntimeFsBridge.published, the node shims'), and a raw socket it opens
      * ending this (`escaped`).
      */
-    gateOutput(pid: number): void;
+    continueAtCommit(pid: number): void;
     releaseProcess(pid: number): Promise<void>;
     /** See NimbusFilesystemAuthority.rewindProcess. */
     rewindProcess(pid: number): Promise<void>;
