@@ -22,6 +22,7 @@ const bind = new Function('globalThis', RUBY_RUNNER_PREAMBLE_TAIL + `
   }
   return __nimbusRubyBindOutput;
 `)(scope);
+scope.__rubyBootstrap = Promise.resolve({ ok: true });
 bind({});
 let timer;
 try {

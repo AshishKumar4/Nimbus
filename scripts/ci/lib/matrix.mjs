@@ -68,7 +68,7 @@ function beyondDeferral(row, entry) {
 }
 
 /**
- * @param {Array<{ tasks: Array<{ task: string, outcome?: { kind: string }, rows: Array<{ name: string, exitCode: number, seconds: number, output: string }> | null }> } | null>} verdicts
+ * @param {Array<{ tasks: Array<{ task: string, outcome?: { kind: string }, rows: Array<{ name: string, exitCode: number, seconds: number, output: string, assertions?: any[] | null }> | null }> } | null>} verdicts
  *   the matrix's remote-probes verdicts (null for one that wrote none)
  * @param {import('../../../tests/behavioral/_deferred.mjs').ReleaseException[]} deferred
  * @returns {{ exitCode: 0 | 1 | 2, red: string[], applied: Array<object>, problems: string[] }}

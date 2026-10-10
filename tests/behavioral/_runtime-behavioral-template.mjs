@@ -36,6 +36,7 @@ import puppeteer from 'puppeteer-core';
 import { existsSync } from 'node:fs';
 import { allocateProfileDir, releaseProfileDir } from './_probe-browser.mjs';
 import { mintSession, attachPathFor, probeTarget, Terminal, sleep, stripAnsi, BASE } from './_driver.mjs';
+import { startDevCommand } from './_dev-start.mjs';
 
 export { BASE, mintSession, sleep, stripAnsi };
 
@@ -398,21 +399,8 @@ export async function scaffoldAndStartVite(sid, opts) {
   // Install
   const installR = await t.run(installCmd, installTimeoutMs);
   const installTail = stripAnsi(installR.output).split(/\r?\n/).slice(-6).join('\n');
-
-  // Start dev (long-running — don't await prompt)
-  t.reset();
-  t.cmd(devCmd);
-  let viteReady = false;
-  try {
-    await t.waitFor(
-      (b) => devReadyMarkers.some((m) => b.includes(m)),
-      devReadyTimeoutMs,
-      'vite-ready',
-    );
-    viteReady = true;
-  } catch {
-    // Caller asserts on viteReady.
-  }
+  const { ready: viteReady } = await startDevCommand({ terminal: t, cwd: `/home/user/${opts.workdir}`, command: devCmd,
+    ready: text => devReadyMarkers.some(marker => text.includes(marker)), budgetMs: devReadyTimeoutMs });
   // Bounded settle time so the port-registry registration completes
   // before the iframe loads. NOT a retry — a single bounded yield.
   await sleep(2_000);
@@ -493,21 +481,8 @@ export async function cloneAndStartVite(sid, opts) {
   // Install.
   const installR = await t.run(installCmd, installTimeoutMs);
   const installTail = stripAnsi(installR.output).split(/\r?\n/).slice(-12).join('\n');
-
-  // Start dev (long-running — don't await prompt).
-  t.reset();
-  t.cmd(devCmd);
-  let viteReady = false;
-  try {
-    await t.waitFor(
-      (b) => devReadyMarkers.some((m) => b.includes(m)),
-      devReadyTimeoutMs,
-      'dev-ready',
-    );
-    viteReady = true;
-  } catch {
-    // Caller asserts on viteReady.
-  }
+  const { ready: viteReady } = await startDevCommand({ terminal: t, cwd: `/home/user/${opts.workdir}`, command: devCmd,
+    ready: text => devReadyMarkers.some(marker => text.includes(marker)), budgetMs: devReadyTimeoutMs });
   // Bounded settle so port-registry registration completes.
   await sleep(3_000);
 

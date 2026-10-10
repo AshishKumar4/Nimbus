@@ -1,6 +1,10 @@
 // The loader/named-facet boundary shared by engine harnesses. Engine code and
 // its memory, delivery and cancellation instrumentation stay with the caller.
-export function namedFacetPlatform({ classFor, id, loadDelayMs = 0, brokenStubs = 0, invoke, onAbort } = {}) {
+/**
+ * @param {{classFor: (id: string) => any, id: string, loadDelayMs?: number, brokenStubs?: number,
+ * invoke?: (name: string, method: string, args: any[], instance: Promise<any>) => Promise<any>, onAbort?: (name: string, reason: any) => void}} options
+ */
+export function namedFacetPlatform({ classFor, id, loadDelayMs = 0, brokenStubs = 0, invoke, onAbort }) {
   const counts = { loaderGets: 0, facetInstances: 0, stubs: 0, loaderIds: [], facetNames: [], aborted: [] };
   const instances = new Map();
   const call = invoke ?? (async (_name, method, args, instance) => {

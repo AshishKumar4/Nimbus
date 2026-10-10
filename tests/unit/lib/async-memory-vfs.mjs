@@ -9,6 +9,8 @@ export function asyncMemoryVfs() {
 /**
  * Hide the synchronous face. `deep` defers every call, including principal
  * views returned by as(), to a later microtask like an asynchronous backend.
+ * @param {object} vfs
+ * @param {{deep?: boolean, beforeCall?: (method: string, args: any[]) => any, hide?: string[], methods?: Record<string, Function>}} [options]
  */
 export function asyncOnly(vfs, { deep = false, beforeCall, hide = [], methods = {} } = {}) {
   const options = { deep, beforeCall, hide, methods };
