@@ -166,8 +166,8 @@ if (typeof __real_net !== "undefined") {
           : String(typeof args[1] === "string" ? args[1] : "") + ":" + String(first ?? "");
         __nimbusReplay.effect("net.connect " + where);
       }
-      // Already connecting or aborted: the native connect refuses it, opening nothing.
-      if (this.connecting || this._aborted) return Reflect.apply(__nativeConnect, this, args);
+      // Already connecting: the native connect refuses it, opening nothing.
+      if (this.connecting) return Reflect.apply(__nativeConnect, this, args);
       const [options, cb] = Array.isArray(args[0]) ? args[0] : __realNet._normalizeArgs(args);
       __nativeConnectChecks(options);
       // A synchronous read crossed the replay boundary, but the session
