@@ -78,17 +78,21 @@ class GuardedProcessBridge {
     pid;
     hydrator;
     delegations;
+    mounted;
     constructor(target, scope, signal, pid, 
     /** N17: the lazy-import hydration job, when there is one. */
     hydrator, 
     /** The session's delegations: a process's own are granted, recalled and released here. */
-    delegations) {
+    delegations, 
+    /** What of the process's namespace is not the engine's, so no read lease vouches for it (VfsAcquireResult.readLease). */
+    mounted) {
         this.target = target;
         this.scope = scope;
         this.signal = signal;
         this.pid = pid;
         this.hydrator = hydrator;
         this.delegations = delegations;
+        this.mounted = mounted;
     }
     gateLaunch(named) {
         return this.hydrator === null ? Promise.resolve() : this.hydrator.gate([...named]);
@@ -195,7 +199,7 @@ class GuardedProcessBridge {
                 throw error;
             lease = null;
         }
-        return lease === null ? answer : { ...answer, readLease: lease };
+        return lease === null ? answer : { ...answer, readLease: { ...lease, uncovered: this.mounted() } };
     }
     list(after, limit) { this.guard(); return this.target.list(after, limit); }
     subscribe(path, listener) {
@@ -306,6 +310,8 @@ export class ProcessFiles {
         this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
         this.vfs.mount('/proc', this.proc);
         this.vfs.mount('/dev', new DevVFS());
+        // A read lease vouches for what is the engine's, which a mount or an unmount moves.
+        this.vfs.watchMounts(() => engine.breakReadLeases());
         // Every wave's records, whoever streams it (a process's binding, or a
         // command holding the engine), are placed by this namespace's mutation
         // lookup, and those it places on a mount are applied there by its own
@@ -533,7 +539,7 @@ export class ProcessFiles {
         const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid, scope);
         const view = this.vfs.as(cred).scoped(() => assertScopeLive(scope, signal), undefined, holds);
         const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds }), this.engine, scope, view, this.bufferedWriteBytes);
-        const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations);
+        const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, () => mountedKeys(view));
         // Every other method forwards to the guarded bridge.
         let awaited = this.awaitedDescriptors.get(scope);
         if (!awaited) {
@@ -554,6 +560,10 @@ function isEmbedderMount(point) {
 function underKernelMount(path) {
     const end = path.indexOf('/', 1);
     return KERNEL_MOUNT_POINTS[end === -1 ? path : path.slice(0, end)] === true;
+}
+/** The engine keys of `view`'s mount points: none of what is at or under one is the engine's. */
+function mountedKeys(view) {
+    return view.mounts().flatMap((mount) => (mount.point === '/' ? [] : [mount.point.slice(1)]));
 }
 /** Whether `view` shows a mount an embedder made: only then is a process's listing more than SQLite's. */
 function mountsBeyondSqlite(view) {

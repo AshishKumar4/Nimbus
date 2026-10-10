@@ -531,6 +531,7 @@ export class CompositeVFS {
         this.resynthesize();
         if (this.table.writes !== undefined)
             this.subscribeWrites(mount);
+        this.table.moved?.();
     }
     /** The mount table's generation: it moves with every mount and unmount, in every view of this namespace. */
     mountGeneration() {
@@ -546,6 +547,7 @@ export class CompositeVFS {
         this.table.writes?.subscribed.get(mount)?.();
         this.table.writes?.subscribed.delete(mount);
         this.resynthesize();
+        this.table.moved?.();
     }
     // ── write observation ─────────────────────────────────────────────────
     /**
@@ -948,6 +950,10 @@ export class CompositeVFS {
      */
     guardMutations(guard) {
         this.table.guard = guard;
+    }
+    /** `moved` is told of every mount and unmount after it is made, for every view of this table. */
+    watchMounts(moved) {
+        this.table.moved = moved;
     }
     /**
      * This view, for one holder: `check` is asked right before each mutation

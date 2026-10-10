@@ -952,6 +952,8 @@ export class SqliteVFS {
     activeStoreHolding = false;
     /** Whether the running call reads what has landed (a `landed` view): its reads ask no holder to send. */
     activeLanded = false;
+    /** Whether the running call is the kernel's own (a uid-0 view bound to no process): the stores are its, held or not. */
+    activeKernel = false;
     /** Shared by every concurrent stream targeting this session's VFS. */
     writeStreamCredits = new WeightedCreditPool(MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES);
     _stagedStreamBytes = 0;
@@ -2244,6 +2246,7 @@ export class SqliteVFS {
         const { origin, privileged, mutationOwner, landed } = caller;
         const leased = mutationOwner === undefined ? null : new Set([mutationOwner]);
         const holds = leased !== null ? () => leased : caller.holds ?? null;
+        const kernel = privileged && holds === null;
         for (const key of Object.keys(view)) {
             const method = Reflect.get(view, key);
             // `holds` answers who the caller is; it is no call on the filesystem.
@@ -2259,12 +2262,14 @@ export class SqliteVFS {
                 const priorWrite = this.activeWrite;
                 const priorLanded = this.activeLanded;
                 const priorStoreHolding = this.activeStoreHolding;
+                const priorKernel = this.activeKernel;
                 const priorPipeline = this.activePipeline;
                 if (privileged)
                     this.privileged = true;
                 if (holds !== null)
                     this.activeHolds = holds();
                 this.activeLanded = landed;
+                this.activeKernel = kernel;
                 this.activeWrite = writes;
                 this.activeStoreHolding = synchronous;
                 try {
@@ -2279,6 +2284,7 @@ export class SqliteVFS {
                     this.activeWrite = priorWrite;
                     this.activeLanded = priorLanded;
                     this.activeStoreHolding = priorStoreHolding;
+                    this.activeKernel = priorKernel;
                     // A store write it held (readRecallAt) is published once the recalls it met are over.
                     if (this.activePipeline !== priorPipeline) {
                         const held = this.activePipeline;
@@ -2626,23 +2632,26 @@ export class SqliteVFS {
         }
         if (this.readLeases.size > 0)
             this.breakUnrecalledReadLeases(paths);
+        const keys = paths.map((path) => normalizeVfsPath(path)).filter((key) => key !== '');
         // A held commit's publication is at the generation it committed, while
         // nothing published since passed it: a later commit still held is not in
-        // it, and it needs no generation (no write) of its own.
+        // it, and it needs no generation (no write) of its own. One passed it
+        // (its generation is below a cursor handed out since) is published at a
+        // generation of its own, its rows rewritten at it: what the log says, and
+        // what each path reports from SQLite from then on.
         const own = committed !== undefined && committed > this._revision ? committed : null;
-        if (own === null && this._gen <= this._revision)
+        const passed = committed !== undefined && own === null;
+        if (passed)
+            this.advanceGeneration(keys);
+        else if (own === null && this._gen <= this._revision)
             this.advanceGeneration();
         const rev = own ?? this._gen;
         this._revision = rev;
-        const keys = paths.map((path) => normalizeVfsPath(path)).filter((key) => key !== '');
-        // One passed it: its paths are at the revision it is published at, which
-        // the log says and the path reports (its row says the generation it was
-        // committed at, below a cursor handed out since).
-        this.pathRevisions.stamp(keys, rev, committed !== undefined && own === null);
+        this.pathRevisions.stamp(keys, rev);
         for (const key of keys) {
             // A path no transaction of this publication wrote a row for is at the
             // generation advanceGeneration committed, the clock.
-            const committed = this.committedRows.get(key);
+            const committed = passed ? undefined : this.committedRows.get(key);
             this._record(this.pathRevisions.report(key, committed?.gen ?? rev, committed?.file ?? false, rev), key, structural.get(key));
             // A directory above a mutated path is stamped at the clock, and one
             // whose stamp was dropped since is at the floor, which the drop raised
@@ -2690,12 +2699,34 @@ export class SqliteVFS {
         this.readLeasesBroken++;
         void lease.delegation.recall('revoke').catch(() => { });
     }
-    /** Commit a generation that writes nothing, so a publication has a tick of its own. */
-    advanceGeneration() {
+    /**
+     * End every read lease, each told (breakReadLease): what they vouched for
+     * changed with no publication (a mount or an unmount moved what is the
+     * engine's).
+     */
+    breakReadLeases() {
+        for (const [owner, lease] of [...this.readLeases])
+            this.breakReadLease(owner, lease);
+    }
+    /**
+     * Commit a generation of a publication's own, so it has a tick: one that
+     * writes nothing, or that rewrites the row (or tombstone) at each of
+     * `moved` at it.
+     */
+    advanceGeneration(moved = []) {
         let gen = 0;
         this.transactionSync(() => {
             gen = Number([...this.sql.exec('UPDATE vfs_state SET gen = gen + 1 WHERE slot = 1 RETURNING gen')][0].gen);
+            for (const key of moved) {
+                this.sql.exec('UPDATE vfs_inodes SET gen = ? WHERE path = ?', gen, key);
+                this.sql.exec('UPDATE vfs_tombstones SET gen = ? WHERE path = ?', gen, key);
+            }
         });
+        for (const key of moved) {
+            const inode = this.inodes.peek(key);
+            if (inode !== undefined)
+                inode.gen = gen;
+        }
         this._gen = gen;
     }
     /** UTF-16 payload plus a flat allowance for the entry object itself. */
@@ -3213,11 +3244,12 @@ export class SqliteVFS {
      * holder (the lease a mutation scope or a view presents).
      */
     recallReads(key) {
-        // A read of what has landed asks nothing of a holder; a write still recalls (refusalAt, and below).
-        if (this.activeLanded && !this.activeWrite)
-            return;
+        // A read of what has landed asks nothing of a holder; a write still
+        // recalls (refusalAt, and below). What has landed and is held for its
+        // publication is not landed yet: that waits (recallHeld).
+        const landed = this.activeLanded && !this.activeWrite;
         for (const [owner, lease] of this.exclusiveMutationLeases) {
-            if (lease.delegation === null || !lease.delegation.reads || lease.shared || this.isHolder(owner))
+            if (lease.delegation === null || !lease.delegation.reads || lease.shared || (landed && lease.held === undefined) || this.isHolder(owner))
                 continue;
             if (this.holdsKey(lease, key))
                 throw this.recallRequired(owner, lease, this.activeWrite ? 'revoke' : 'share', key);
@@ -3246,8 +3278,8 @@ export class SqliteVFS {
     /**
      * Another caller's access at `key` (null: anywhere, a listing's) to what a
      * pipelined commit holds waits for its publication (RecallRequired), as
-     * for any held subtree: the one check the paths that skip resolvePath
-     * make (a description, a listing).
+     * for any held subtree: the one check the reads that skip resolvePath
+     * make (a description, a listing, a barrier's stats and pushed bytes).
      */
     recallHeld(key) {
         if (this.heldPipelines === 0)
@@ -3310,9 +3342,9 @@ export class SqliteVFS {
         if (this.activeMutationOwner === owner || this.activeHolds?.has(owner) === true)
             return true;
         // A held commit's writer: the pipelined call that made it, and its later
-        // calls; a store write's, uid 0 too, which owns the stores.
+        // calls; a store write's, the kernel's own calls too, which own the stores.
         const held = this.exclusiveMutationLeases.get(owner)?.held;
-        return held !== undefined && (held === this.activePipeline || (held.writer !== null && held.writer === this.activeHolds) || (held.store && this.privileged));
+        return held !== undefined && (held === this.activePipeline || (held.writer !== null && held.writer === this.activeHolds) || (held.store && this.activeKernel));
     }
     /**
      * Give up every delegation of another holder that a write at `key`
@@ -4576,9 +4608,11 @@ export class SqliteVFS {
         const pushable = (name) => roots.some((pushRoot) => ((pushRoot === '' || name === pushRoot || name.startsWith(pushRoot + '/'))
             && !name.slice(pushRoot.length).split('/').some((segment) => exclude.has(segment))));
         // The directories above every reported name passed the view check, so
-        // the row at its key is what the caller would stat.
+        // the row at its key is what the caller would stat, once what another's
+        // commit holds there is published.
         for (const entry of delta.paths) {
             const key = this.keyOfName(entry.path, root);
+            this.recallHeld(key);
             const inode = this.inodes.get(key);
             if (inode === undefined) {
                 paths.push({ ...entry, stat: null });

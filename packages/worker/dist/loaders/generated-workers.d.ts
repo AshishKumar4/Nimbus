@@ -49,7 +49,7 @@ export declare const HTTP2_MODULE_PREAMBLE: string;
  */
 export declare const NODE_SHIM_RESOLUTION_PREAMBLE: string;
 /**
- * Declares SESSION_KERNEL_ROOTS, READ_LEASE_UNCOVERED_ROOTS and readLeaseCovers;
+ * Declares readLeaseCovers (and SESSION_KERNEL_ROOTS);
  * the node shims splice it into their fs scope.
  */
 export declare const READ_LEASE_COVER_PREAMBLE: string;

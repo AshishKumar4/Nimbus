@@ -15,15 +15,14 @@
  * (SqliteVFS.readRecallAt).
  */
 export const SESSION_KERNEL_ROOTS = ['.nimbus', 'var/lib/nimbus'];
-/** What a process's read lease does not vouch for (engine keys): the kernel's mounts, which are not SQLite's. */
-export const READ_LEASE_UNCOVERED_ROOTS = ['proc', 'dev'];
 /**
  * Whether what a process knows of `key`, its entry or with `listing` its
  * names, is clear of every root in `roots`: nothing at or under one is, nor
  * the names of a directory above one (they include the root's own). Under a
  * trusted read lease a process's view answers in the session's place only
- * what is clear of READ_LEASE_UNCOVERED_ROOTS. Asked on every lookup a view
- * makes, so it allocates nothing.
+ * what is clear of the lease's `uncovered` roots (VfsAcquireResult.readLease:
+ * its namespace's mount points). Asked on every lookup a view makes, so it
+ * allocates nothing.
  */
 export function readLeaseCovers(key, listing, roots) {
     for (const root of roots) {

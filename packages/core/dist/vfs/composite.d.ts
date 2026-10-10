@@ -186,6 +186,8 @@ interface Table {
     synthesized: Map<string, Set<string>>;
     /** Asked before a credentialed view's mutation reaches a backend (guardMutations). */
     guard?: MutationGuard;
+    /** Told of every mount and unmount (watchMounts). */
+    moved?: () => void;
 }
 /**
  * Why a mutation by `cred` at the namespace path `path` is refused (an
@@ -434,6 +436,8 @@ export declare class CompositeVFS implements VFS {
      * (no credential) is not asked.
      */
     guardMutations(guard: MutationGuard): void;
+    /** `moved` is told of every mount and unmount after it is made, for every view of this table. */
+    watchMounts(moved: () => void): void;
     /**
      * This view, for one holder: `check` is asked right before each mutation
      * reaches a backend, after every lookup and read the mutation waited on,

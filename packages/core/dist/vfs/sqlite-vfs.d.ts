@@ -816,6 +816,8 @@ export declare class SqliteVFS {
     private activeStoreHolding;
     /** Whether the running call reads what has landed (a `landed` view): its reads ask no holder to send. */
     private activeLanded;
+    /** Whether the running call is the kernel's own (a uid-0 view bound to no process): the stores are its, held or not. */
+    private activeKernel;
     /** Shared by every concurrent stream targeting this session's VFS. */
     private readonly writeStreamCredits;
     private _stagedStreamBytes;
@@ -1292,7 +1294,17 @@ export declare class SqliteVFS {
      * of its trust (Delegations). Counted.
      */
     private breakReadLease;
-    /** Commit a generation that writes nothing, so a publication has a tick of its own. */
+    /**
+     * End every read lease, each told (breakReadLease): what they vouched for
+     * changed with no publication (a mount or an unmount moved what is the
+     * engine's).
+     */
+    breakReadLeases(): void;
+    /**
+     * Commit a generation of a publication's own, so it has a tick: one that
+     * writes nothing, or that rewrites the row (or tombstone) at each of
+     * `moved` at it.
+     */
     private advanceGeneration;
     /** UTF-16 payload plus a flat allowance for the entry object itself. */
     private static entryBytes;
@@ -1465,8 +1477,8 @@ export declare class SqliteVFS {
     /**
      * Another caller's access at `key` (null: anywhere, a listing's) to what a
      * pipelined commit holds waits for its publication (RecallRequired), as
-     * for any held subtree: the one check the paths that skip resolvePath
-     * make (a description, a listing).
+     * for any held subtree: the one check the reads that skip resolvePath
+     * make (a description, a listing, a barrier's stats and pushed bytes).
      */
     private recallHeld;
     /** Whether a create under `root` (it, or anything under it) would take permissions from a default ACL or a shared directory. */
