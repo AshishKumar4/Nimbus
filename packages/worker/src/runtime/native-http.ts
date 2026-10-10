@@ -113,6 +113,8 @@ Object.defineProperty(builtins, "http", {
           throw nodeError(Error, "ERR_SERVER_ALREADY_LISTEN", "Listen method has been called more than once without closing.");
         }
         const state = { ctx, pending: false, cancelled: false, port: null, host: options.host || "::" };
+        const family = net.isIP(state.host);
+        if (family) state.host = new net.SocketAddress({ address: state.host, family: family === 6 ? "ipv6" : "ipv4" }).address;
         owners.set(this, state);
         const requested = options.port === undefined ? 0 : Number(options.port);
         const allocationSettled = () => {

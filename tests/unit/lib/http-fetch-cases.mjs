@@ -10,6 +10,7 @@ export async function httpFetchCases(http) {
       req.on('end', () => res.end(':' + uploaded));
       return;
     }
+    if (req.url === '/bytes') { req.pipe(res); return; }
     if (req.url === '/abort') { abortResponse = res; arrived.resolve(); req.on('error', () => {}); return; }
     if (req.url === '/connection') {
       const count = await new Promise((resolve, reject) => server.getConnections((error, value) => error ? reject(error) : resolve(value)));
@@ -50,6 +51,26 @@ export async function httpFetchCases(http) {
       const timer = setTimeout(() => { ended = true; req.end('last'); }, 1500);
       req.write('first');
     });
+    parity.bytes = await new Promise((resolve, reject) => {
+      const chunks = [];
+      const req = request('/bytes', (res) => {
+        res.on('data', (bytes) => chunks.push(...bytes));
+        res.on('end', () => resolve(chunks));
+      });
+      req.on('error', reject);
+      req.cork();
+      req.write(new Uint8Array([99, 0, 255, 18, 77, 99]).subarray(1, 5));
+      req.write('é');
+      req.uncork();
+      req.end(new Uint8Array([9, 8, 7]));
+    });
+    const signalled = request('/abort', undefined, { signal: AbortSignal.abort('reason') });
+    const signalEvents = [];
+    const signalledClose = new Promise((resolve) => signalled.on('close', () => { signalEvents.push('close'); resolve(); }));
+    signalled.on('error', (error) => signalEvents.push([error.name, error.code, error.message, error.cause, Object.keys(error)]));
+    signalled.end();
+    await signalledClose;
+    parity.abortedSignal = signalEvents;
     const abort = (request) => {
       const events = [];
       request.on('abort', () => events.push('abort'));
@@ -90,7 +111,7 @@ export async function httpFetchCases(http) {
     agent.destroy();
     await close(server);
     parity.addresses = [];
-    for (const host of ['127.0.0.1', '0.0.0.0', '::1', '::', undefined]) {
+    for (const host of ['127.0.0.1', '0.0.0.0', '::1', '0:0:0:0:0:0:0:1', '::', undefined]) {
       const listener = http.createServer();
       await listen(listener, host);
       parity.addresses.push({ ...listener.address(), port: listener.address().port > 0 });

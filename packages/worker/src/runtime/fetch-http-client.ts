@@ -9,7 +9,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
   const Writable = Object.getPrototypeOf(http.OutgoingMessage.prototype).constructor;
   const fail = (code, message, Base = Error) => nodeError(Base, code, message);
   const reset = (message) => Object.assign(new Error(message), { code: "ECONNRESET" });
-  const abortError = (cause) => Object.assign(new Error("The operation was aborted", { cause }), { name: "AbortError", code: "ABORT_ERR" });
+  const abortError = (cause) => Object.assign(new Error("The operation was aborted", { cause }), { code: "ABORT_ERR", name: "AbortError" });
   const duration = (value) => {
     if (typeof value !== "number") throw invalidArgType("msecs", "number", value);
     if (!Number.isFinite(value) || value < 0) throw fail("ERR_OUT_OF_RANGE", 'The value of "msecs" is out of range. It must be a non-negative finite number. Received ' + value, RangeError);
