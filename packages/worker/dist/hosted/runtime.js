@@ -72,6 +72,8 @@ class RuntimeOwner {
         }
         adoptCtxExports(exports);
         ensureSessionStateSchema(options.ctx);
+        // A process's answers wait for what it wrote, as its output does (ProcessFiles.holdOutput).
+        options.ports.setOutputGate(options.workspace.filesystem.outputGate);
         this.terminal = new WebSocketTerminal(null, (data) => {
             appendScrollback(options.ctx, data, Date.now());
             persistShellState(options.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });

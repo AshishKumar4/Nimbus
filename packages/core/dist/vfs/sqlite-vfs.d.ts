@@ -815,8 +815,8 @@ export declare class SqliteVFS {
     private activeHolds;
     /** The pipelined call running (pipelined): its commits run ahead of the read recalls it meets. */
     private activePipeline;
-    /** Pipelined commits not yet published: no read lease is granted until they are. */
-    private heldPipelines;
+    /** Pipelines whose commits are held, not yet published: no read lease is granted until they are. */
+    private readonly heldPipelines;
     /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
     private activeWrite;
     /** Whether the running call is a view's synchronous mutation, whose writes to the session's stores a read recall holds rather than refuses (readRecallAt). */
@@ -825,6 +825,8 @@ export declare class SqliteVFS {
     private activeLanded;
     /** Whether the running call is the kernel's own (a uid-0 view bound to no process): the stores are its, held or not. */
     private activeKernel;
+    /** Whether the running call's writer continues at commit: its output waits for the publication instead (as's `continues`). */
+    private activeContinues;
     /** Shared by every concurrent stream targeting this session's VFS. */
     private readonly writeStreamCredits;
     private _stagedStreamBytes;
@@ -1162,6 +1164,7 @@ export declare class SqliteVFS {
         actor?: string;
         holds?: () => ReadonlySet<string>;
         landed?: boolean;
+        continues?: () => boolean;
     }): CredentialedVfs;
     /** `run` as `origin`'s call: the principal its write events name. */
     private asOrigin;
@@ -1449,6 +1452,13 @@ export declare class SqliteVFS {
     private hold;
     /** `pipeline`'s recalls are over: what it holds is let go, and what it committed published. */
     private publishHeld;
+    /**
+     * Settled once every commit `writer` (the delegations a process's view
+     * presents) holds for its publication is published, or failed to be and
+     * every reader started again; null while it holds none. What a process's
+     * output waits for (ProcessFiles.outputGate).
+     */
+    publishedFor(writer: ReadonlySet<string>): Promise<void> | null;
     /** `pipeline`'s holds end: what it holds is another caller's to read. */
     private letGo;
     /** The events of what `publication` changed, held with it, to the session's observers. */
@@ -1458,7 +1468,8 @@ export declare class SqliteVFS {
      * stands in SQLite, and no reader would hear of it. Its holds end, every
      * reader starts again (a new incarnation: each cursor poisons, each read
      * lease ends), what it changed is told to the session's observers, and its
-     * writer is failed.
+     * writer is failed; one that continued at commit has its output let go,
+     * every reader now past it.
      */
     private unpublishable;
     /**

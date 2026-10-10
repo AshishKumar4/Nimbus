@@ -150,6 +150,8 @@ export declare class Delegations {
     holdsOf(pid: number, scope: {
         readonly subscriptions: Set<() => void>;
     }): Set<string>;
+    /** The leases process `pid` holds, while a scope of its lives (holdsOf); undefined otherwise. */
+    holdsAt(pid: number): ReadonlySet<string> | undefined;
     get size(): number;
     stats(): DelegationStats;
     private recall;

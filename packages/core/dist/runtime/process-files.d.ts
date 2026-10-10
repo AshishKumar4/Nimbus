@@ -17,6 +17,7 @@
 import type { SqliteVFS, VfsExportChunk, VfsExportPage } from '../vfs/sqlite-vfs.js';
 import { Hydrator, type HydratorOptions } from './hydration.js';
 import { Delegations, type DelegationRevoked } from './delegations.js';
+import type { OutputGate } from './output-gate.js';
 import { CompositeVFS } from '../vfs/composite.js';
 import { ProcVFS } from '../vfs/proc-vfs.js';
 import type { VFS, VfsDirent, VfsRemoval, VfsStat } from '../vfs/vfs.js';
@@ -109,6 +110,25 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     namespaceFs(cred: Readonly<VfsCred>): NamespaceFs;
     /** Host work over a credentialed lease released when the work settles. */
     withHost<T>(cred: Readonly<VfsCred>, use: (fs: RuntimeFsBridge) => Promise<T>): Promise<T>;
+    /**
+     * What holds a process's output back: the publication of every commit of
+     * its that another reader's recall holds (SqliteVFS.publishedFor). None
+     * held, nothing waits.
+     */
+    readonly outputGate: OutputGate;
+    /** Whether every external channel of a process waits at `outputGate` (holdOutput): its writes continue at commit. */
+    private outputHeld;
+    /**
+     * From now on each process's output waits for what it wrote to be
+     * published (`outputGate`, installed on `processes`), so its writes
+     * answer at commit rather than at their publication: the writer
+     * continues, and what it makes visible after a write is held instead. The
+     * host gates every other channel a process's effects leave by (its ports'
+     * answers) with the same gate.
+     */
+    holdOutput(processes: {
+        setOutputGate(gate: OutputGate | null): void;
+    }): void;
     releaseProcess(pid: number): Promise<void>;
     /** See NimbusFilesystemAuthority.rewindProcess. */
     rewindProcess(pid: number): Promise<void>;

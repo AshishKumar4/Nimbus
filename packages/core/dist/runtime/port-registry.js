@@ -140,8 +140,18 @@ export class PortRegistry {
      *   `_acquireOnDelivery`). Undefined attaches nothing, and without it every
      *   request is forwarded bare; either way the process then asks.
      */
+    /** Holds a process's answers until what it wrote is published (setOutputGate). */
+    outputGate = null;
     constructor(deliveredAcquire = null) {
         this.deliveredAcquire = deliveredAcquire;
+    }
+    /**
+     * Hold each process's answers (status and headers, and each piece of its
+     * body as it comes) until `gate` lets them through: what a process makes
+     * visible after a write waits for the write's publication. One slot.
+     */
+    setOutputGate(gate) {
+        this.outputGate = gate;
     }
     /**
      * Remember the available facet capabilities for a running process.
@@ -399,6 +409,8 @@ export class PortRegistry {
                 return new Response('Port target does not expose a WebSocket fetch route', { status: 501 });
             }
             const response = await handler(forwarded);
+            // What it wrote before answering is published before anyone sees the answer.
+            await this.outputGate?.before(entry.pid);
             if (!(response instanceof Response)) {
                 // Defensive: if a facet ever returns something else (JSON
                 // envelope, string, etc.), treat it as a 502 so the client
