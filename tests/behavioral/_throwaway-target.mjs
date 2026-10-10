@@ -383,7 +383,12 @@ async function deployPreview({ account, token, preview, secret, before, config }
     printed = JSON.parse(stdout.slice(stdout.indexOf('{')));
   } catch { /* reported below */ }
   const deploymentId = printed?.deployment?.id ?? null;
-  const latest = await latestDeployment({ account, token, preview });
+  const settleBy = Date.now() + 30_000;
+  let latest = await latestDeployment({ account, token, preview });
+  while (deploymentId && latest?.id !== deploymentId && Date.now() < settleBy) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    latest = await latestDeployment({ account, token, preview });
+  }
   const after = latest?.id ?? null;
   if (!deploymentId || after !== deploymentId || after === (before?.id ?? null)) {
     process.stderr.write(`${stdout}${result.stderr || ''}`);
