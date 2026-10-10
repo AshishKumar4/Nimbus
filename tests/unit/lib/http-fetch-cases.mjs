@@ -32,7 +32,7 @@ export async function httpFetchCases(http) {
     const parity = {};
     parity.cookies = await new Promise((resolve, reject) => {
       const req = request('/cookies', (res) => {
-        const values = [res.headers['set-cookie'], res.headersDistinct['set-cookie'], res instanceof http.IncomingMessage];
+        const values = [res.headers['set-cookie'], res.headersDistinct['set-cookie'], res instanceof http.IncomingMessage, res.constructor.name];
         res.resume(); res.on('end', () => resolve(values));
       });
       req.on('error', reject); req.end();

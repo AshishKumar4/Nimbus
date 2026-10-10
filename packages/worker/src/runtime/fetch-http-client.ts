@@ -5,10 +5,11 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
   if (http[installed]) { http[installed](context); return; }
   let activeContext = context;
   const NativeClientRequest = http.ClientRequest;
+  const NativeIncomingMessage = http.IncomingMessage;
   const Writable = Object.getPrototypeOf(http.OutgoingMessage.prototype).constructor;
   const fail = (code, message, Base = Error) => nodeError(Base, code, message);
   const reset = (message) => Object.assign(new Error(message), { code: "ECONNRESET" });
-  const abortError = (cause) => Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR", cause });
+  const abortError = (cause) => Object.assign(new Error("The operation was aborted", { cause }), { name: "AbortError", code: "ABORT_ERR" });
   const duration = (value) => {
     if (typeof value !== "number") throw invalidArgType("msecs", "number", value);
     if (!Number.isFinite(value) || value < 0) throw fail("ERR_OUT_OF_RANGE", 'The value of "msecs" is out of range. It must be a non-negative finite number. Received ' + value, RangeError);
@@ -26,7 +27,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     if (/[^\u0021-\u00ff]/.test(path)) throw fail("ERR_UNESCAPED_CHARACTERS", "Request path contains unescaped characters", TypeError);
     if (/^(?:[\\/]{2}|[a-zA-Z][a-zA-Z0-9+.-]*:)/.test(path)) throw fail("ERR_INVALID_ARG_VALUE", "options.path must be a path-only request target", TypeError);
   };
-  class FetchIncomingMessage extends http.IncomingMessage {
+  class IncomingMessage extends NativeIncomingMessage {
     #reader;
     #reading = false;
     #request;
@@ -101,7 +102,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (this.protocol !== expected) throw fail("ERR_INVALID_PROTOCOL", 'Protocol "' + this.protocol + '" not supported. Expected "' + expected + '"', TypeError);
       const defaultPort = options.defaultPort || this.agent?.defaultPort || 80;
       this.port = String(options.port || defaultPort);
-      for (const name of ["hostname", "host"]) if (options[name] != null && typeof options[name] !== "string") throw invalidArgType(name, ["string", "undefined", "null"], options[name]);
+      for (const name of ["hostname", "host"]) if (options[name] != null && typeof options[name] !== "string") throw invalidArgType("options." + name, ["string", "undefined", "null"], options[name]);
       this.host = options.hostname || options.host || "localhost";
       if (options.method != null && typeof options.method !== "string") throw invalidArgType("options.method", "string", options.method);
       this.method = options.method ? options.method.toUpperCase() : "GET";
@@ -169,7 +170,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       } catch (error) { this.destroy(error); return; }
       Promise.resolve(response).then((response) => {
         if (this.destroyed) { response.body?.cancel().catch(() => {}); return; }
-        const incoming = this.#incoming = this.res = new FetchIncomingMessage(response, this);
+        const incoming = this.#incoming = this.res = new IncomingMessage(response, this);
         this.touch();
         incoming.on("error", (error) => { if (!this.destroyed) this.emit("error", error); });
         incoming.once("close", () => this.destroy());
