@@ -33,9 +33,6 @@ export { isPreviewHostRequest } from './_shared/preview-host.js';
 export { NimbusWorkspace } from '@nimbus-sh/core/workspace/nimbus-workspace.js';
 export type { NimbusWorkspaceOptions } from '@nimbus-sh/core/workspace/nimbus-workspace.js';
 export type { SqlDatabase, SqlTransactions, SqlRow, SqlValue, TransactionHost, } from '@nimbus-sh/core/runtime/os-contracts.js';
-export { base64Utf8, base64Url, base64UrlDecode, decodeJsonBase64Url, encodeJsonBase64Url, pkceChallenge, randomBase64Url, sealJson, sha256Base64Url, unsealJson, } from '@nimbus-sh/core/_shared/crypto.js';
-export { clearNimbusAgentOAuthCookie, createNimbusAgentOAuthCookie, fetchNimbusCloudflareAccounts, fetchNimbusCloudflareUserInfo, isNimbusCloudflareAccountId, isNimbusTenantSegment, loadNimbusAgentOAuthFromRequest, nimbusAgentAuthCookiePath, nimbusAgentRouteContext, NIMBUS_AGENT_AUTH_COOKIE, NIMBUS_AGENT_AUTH_COOKIE_PURPOSE, NIMBUS_AGENT_AUTH_COOKIE_TTL_SECONDS, NIMBUS_CF_OAUTH_AUTH_URL, NIMBUS_CF_OAUTH_TOKEN_URL, NIMBUS_CF_OAUTH_USERINFO_URL, NIMBUS_CLOUDFLARE_API, readNimbusAgentCookieSecret, readNimbusCookie, requestNimbusCloudflareOAuthToken, serializeNimbusCookie, } from './session/agent-oauth.js';
-export type { NimbusAgentOAuthCookie, NimbusCloudflareAccount, } from './session/agent-oauth.js';
 export type { NimbusAuthEnv, NimbusTokenClaims, VerifiedNimbusToken, } from './auth/index.js';
 export { NimbusSession, NimbusPublicDirectory, SupervisorRPC, NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, CirrusHmrRPC, };
 /**

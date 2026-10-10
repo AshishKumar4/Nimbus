@@ -15,22 +15,16 @@
 // against a stub wrangler holding the bucket in a directory.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { catalogKey } from '../../packages/worker/src/runtime/runtime-catalog.ts';
 import { syncRuntimes } from '../../packages/cli/src/commands/runtime-sync.ts';
+import { stageDeploymentProject } from './lib/deployment-project.mjs';
 
 const WORKER = new URL('../../packages/worker/', import.meta.url).pathname;
 const CORE = new URL('../../packages/core', import.meta.url).pathname;
 const OLD = 'f'.repeat(64);
-const config = `{
-  // A comment the rewrite keeps.
-  "name": "app",
-  "vars": { "NIMBUS_RUNTIME_CATALOG_SHA256": "${OLD}" },
-  "env": { "production": { "vars": { "NIMBUS_RUNTIME_CATALOG_SHA256": "${OLD}" } } }
-}
-`;
 
 const root = mkdtempSync(join(tmpdir(), 'nimbus-cli-sync-'));
 const cwd = process.cwd();
@@ -47,12 +41,7 @@ try {
   }
   mkdirSync(join(root, 'node_modules/@nimbus-sh'), { recursive: true });
   symlinkSync(CORE, join(root, 'node_modules/@nimbus-sh/core'));
-  // The JSONC editor the production path loads, as the worker package resolves it.
-  symlinkSync(realpathSync(join(WORKER, 'node_modules/jsonc-parser')), join(root, 'node_modules/jsonc-parser'));
-  for (const app of ['hosted-demo', 'probe']) {
-    mkdirSync(join(root, 'apps', app), { recursive: true });
-    writeFileSync(join(root, 'apps', app, 'wrangler.jsonc'), config);
-  }
+  stageDeploymentProject(root, OLD);
 
   // Stub wrangler over a bucket directory: object put/get (--file or --pipe) and bucket info.
   const bucketDir = join(root, 'bucket');
@@ -100,7 +89,7 @@ process.exit(1);
   const sha = createHash('sha256').update(written).digest('hex');
   assert.equal(production.report.catalogSha256, sha, 'it names the catalog the bucket holds');
   assert.deepEqual(object(catalogKey(sha)), written, 'held by its digest too');
-  assert.deepEqual([...pins('hosted-demo'), ...pins('probe')], Array(4).fill(sha), 'and Nimbus\'s configs carry it');
+  assert.deepEqual([...pins('hosted-demo'), ...pins('probe')], Array(5).fill(sha), 'and Nimbus\'s configs carry it');
 
   // Any other bucket: the same report, configs untouched.
   rmSync(bucketDir, { recursive: true });
@@ -109,7 +98,7 @@ process.exit(1);
   assert.equal(other.code, 0);
   const otherSha = createHash('sha256').update(object('catalog/v1.json')).digest('hex');
   assert.equal(other.report.catalogSha256, otherSha);
-  assert.deepEqual([...pins('hosted-demo'), ...pins('probe')], Array(4).fill(sha), 'another bucket leaves Nimbus\'s configs');
+  assert.deepEqual([...pins('hosted-demo'), ...pins('probe')], Array(5).fill(sha), 'another bucket leaves Nimbus\'s configs');
 } finally {
   process.chdir(cwd);
   process.env.PATH = savedPath;

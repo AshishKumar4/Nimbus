@@ -89,12 +89,6 @@ const ProcessLogsOptionsSchema = z.object({
 }).strict();
 function getHome(self) {
     try {
-        const envHome = self.shell?.env?.HOME;
-        if (envHome)
-            return String(envHome);
-    }
-    catch { }
-    try {
         const shellEnv = self.shell?.getEnv?.();
         if (shellEnv?.HOME)
             return String(shellEnv.HOME);

@@ -38,8 +38,8 @@ import {
 } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
-import { JobTable } from './jobs.js';
-import { arrayFor, assignArray, assignVariable, cloneArrays, restoreVariable, saveVariable, type SavedVariable } from './variables.js';
+import { arrayFor, assignArray, assignVariable, restoreVariable, saveVariable, type SavedVariable } from './variables.js';
+import { forkShellState, type ShellState } from './state.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
 import { isBrokenPipe, isRefusedWrite } from '../utils/bytes-io.js';
@@ -101,19 +101,6 @@ function redirectionDiagnostic(error: RedirectionOpenError): string {
   return `sh: ${error.target}: ${reason}\n`;
 }
 
-export interface ShellOptions {
-  errexit: boolean;
-  nounset: boolean;
-  pipefail: boolean;
-}
-
-export interface TrapTable {
-  get(signal: string): string | undefined;
-  set(signal: string, action: string): void;
-  delete(signal: string): void;
-  entries(): IterableIterator<[string, string]>;
-}
-
 export interface BuiltinExecutionContext {
   interactive?: boolean;
   vfs: ProcessView;
@@ -134,7 +121,7 @@ export interface BuiltinExecutionContext {
   /** Remove a function from the shell running the builtin (a child shell's own, after a fork); false when none is defined. */
   unsetFunction(name: string): boolean;
   /** The state of the shell running the builtin: a child shell's own, after a fork. */
-  shell: InterpreterConfig;
+  shell: ShellState;
   getLastExitCode(): number;
 }
 
@@ -146,8 +133,8 @@ export type BuiltinFn = (
   args: string[],
   stdout: CommandOutputStream,
   stderr: CommandOutputStream,
-  stdin?: CommandInputStream,
-  context?: BuiltinExecutionContext,
+  stdin: CommandInputStream | undefined,
+  context: BuiltinExecutionContext,
 ) => Promise<number>;
 
 type FdState = {
@@ -291,29 +278,16 @@ type PositionalFrame = {
 };
 
 
-export interface InterpreterConfig {
-  env: Record<string, string>;
-  /**
-   * Indexed arrays; `env` holds the scalars. A name lives in exactly one of
-   * them, so `$arr` and `${arr[0]}` cannot disagree, and only `unset` moves a
-   * name from one to the other.
-   */
-  arrays: Map<string, (string | undefined)[]>;
-  getCwd: () => string;
-  setCwd: (cwd: string) => void;
+/** A shell's state, and what every shell of the interactive one shares. */
+export interface InterpreterConfig extends ShellState {
   vfs: ProcessView;
   filesystem: NimbusFilesystemAuthority;
   registry: CommandRegistry;
   builtins: Map<string, BuiltinFn>;
-  jobTable: JobTable;
   processRegistry: ProcessRegistry;
   writeToTerminal: (text: string) => void;
-  aliases?: Map<string, string>;
   /** Returns the current abort signal for foreground commands */
   getAbortSignal?: () => AbortSignal;
-  options: ShellOptions;
-  traps: TrapTable;
-  readonlyNames: ReadonlySet<string>;
 }
 
 /**
@@ -354,31 +328,14 @@ export class Interpreter {
   }
 
   /**
-   * A child shell, as fork(2) makes one: its own copy of every piece of shell
-   * state (variables and arrays, cwd, options, traps, readonly names,
-   * aliases, functions, $?, the open descriptors), so nothing it changes
-   * reaches this shell. Shared: the process registry and filesystem,
-   * command registry and terminal; `$$` stays this shell's. Traps reset to
-   * the default, except ignored ones, and the child runs its own EXIT trap
-   * when it finishes (`finishChild`).
+   * A child shell, as fork(2) makes one: its own copy of the shell's state
+   * (forkShellState) and of its functions, $? and open descriptors, so
+   * nothing it changes reaches this shell. Shared: the process registry and
+   * filesystem, command registry and terminal; `$$` stays this shell's. The
+   * child runs its own EXIT trap when it finishes (`finishChild`).
    */
   fork(): Interpreter {
-    const parent = this.config;
-    let cwd = parent.getCwd();
-    const env: Record<string, string> = { ...parent.env };
-    const config: InterpreterConfig = {
-      ...parent,
-      env,
-      jobTable: parent.jobTable.fork(),
-      arrays: cloneArrays(parent.arrays),
-      getCwd: () => cwd,
-      setCwd: (next: string) => { cwd = next; env.PWD = next; },
-      options: { ...parent.options },
-      traps: new Map(Array.from(parent.traps.entries()).filter(([, action]) => action === '')),
-      readonlyNames: new Set(parent.readonlyNames),
-      aliases: parent.aliases ? new Map(parent.aliases) : undefined,
-    };
-    const child = new Interpreter(config);
+    const child = new Interpreter({ ...this.config, ...forkShellState(this.config) });
     child.lastExitCode = this.lastExitCode;
     child.functions = new Map(this.functions);
     child.persistentOutputFds = new Map(this.persistentOutputFds);

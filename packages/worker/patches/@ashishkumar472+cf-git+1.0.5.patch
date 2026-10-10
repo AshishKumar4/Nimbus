@@ -1,5 +1,5 @@
 diff --git a/index.js b/index.js
-index 80a5167..7218fb0 100644
+index 80a5167..35d8a17 100644
 --- a/index.js
 +++ b/index.js
 @@ -1809,0 +1810 @@ class GitConfig {
@@ -238,12 +238,27 @@ index 80a5167..7218fb0 100644
 +    // Nimbus: a detached HEAD resolves to the commit it holds. The ref to move
 +    // is HEAD itself, as git moves it, not a file named after that commit.
 +    if (/^[0-9a-f]{40}$/.test(ref)) ref = 'HEAD';
-@@ -8149,0 +8200 @@ async function hasObjectPacked({
+@@ -5865,2 +5915,5 @@ async function _commit({
+-  return GitIndexManager.acquire(
+-    { fs, gitdir, cache, allowUnmerged: false },
++  // Nimbus: a commit of a tree it is given (a merge's) reads no index.
++  const withIndex = tree
++    ? commit => commit(null)
++    : commit => GitIndexManager.acquire({ fs, gitdir, cache, allowUnmerged: false }, commit);
++  return withIndex(
+@@ -5868,2 +5920,0 @@ async function _commit({
+-      const inodes = flatFileListToDirectoryStructure(index.entries);
+-      const inode = inodes.get('.');
+@@ -5871 +5922,2 @@ async function _commit({
+-        tree = await constructTree({ fs, gitdir, inode, dryRun });
++        const inodes = flatFileListToDirectoryStructure(index.entries);
++        tree = await constructTree({ fs, gitdir, inode: inodes.get('.'), dryRun });
+@@ -8149,0 +8202 @@ async function hasObjectPacked({
 +  if (fs.packs) return fs.packs.has(gitdir, oid)
-@@ -8155 +8206 @@ async function hasObjectPacked({
+@@ -8155 +8208 @@ async function hasObjectPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -8239,0 +8291,9 @@ class FIFO {
+@@ -8239,0 +8293,9 @@ class FIFO {
 +  // Resolves once no more than `limit` chunks wait unread: a writer that
 +  // awaits it moves only as fast as the reader (side-band backpressure).
 +  drained(limit) {
@@ -253,7 +268,7 @@ index 80a5167..7218fb0 100644
 +    })
 +  }
 +
-@@ -8256 +8316,7 @@ class FIFO {
+@@ -8256 +8318,7 @@ class FIFO {
 -      return { value: this._queue.shift() }
 +      const value = this._queue.shift();
 +      if (this._drained && this._queue.length <= this._drained.limit) {
@@ -262,11 +277,11 @@ index 80a5167..7218fb0 100644
 +        resolve();
 +      }
 +      return { value }
-@@ -8353,0 +8420,3 @@ class GitSideBand {
+@@ -8353,0 +8422,3 @@ class GitSideBand {
 +          // A reader that stores the pack as it arrives sets the pace:
 +          // at most 64 packets (4 MiB) wait for it.
 +          await packfile.drained(64);
-@@ -8749,16 +8818,22 @@ async function _fetch({
+@@ -8749,16 +8820,22 @@ async function _fetch({
 -  // Apply all the 'shallow' and 'unshallow' commands
 -  for (const oid of response.shallows) {
 -    if (!oids.has(oid)) {
@@ -305,7 +320,7 @@ index 80a5167..7218fb0 100644
 +            oids.add(oid);
 +          }
 +        } catch (err) {
-@@ -8767,40 +8842 @@ async function _fetch({
+@@ -8767,40 +8844 @@ async function _fetch({
 -      } catch (err) {
 -        oids.add(oid);
 -      }
@@ -347,7 +362,7 @@ index 80a5167..7218fb0 100644
 -    if (prune) {
 -      response.pruned = pruned;
 +      }
-@@ -8808,13 +8844,50 @@ async function _fetch({
+@@ -8808,13 +8846,50 @@ async function _fetch({
 -  } else {
 -    const { pruned } = await GitRefManager.updateRemoteRefs({
 -      fs,
@@ -411,10 +426,10 @@ index 80a5167..7218fb0 100644
 +      if (prune) {
 +        response.pruned = pruned;
 +      }
-@@ -8822 +8895 @@ async function _fetch({
+@@ -8822 +8897 @@ async function _fetch({
 -  }
 +  };
-@@ -8862,0 +8936,17 @@ async function _fetch({
+@@ -8862,0 +8938,17 @@ async function _fetch({
 +  if (fs.packs && fs.packs.ingest) {
 +    // A filesystem that stores packs itself takes this one as it arrives,
 +    // indexes it in the same pass, and names it: never whole in memory.
@@ -432,11 +447,11 @@ index 80a5167..7218fb0 100644
 +    if (packSha) res.packfile = `objects/pack/pack-${packSha}.pack`;
 +    return res
 +  }
-@@ -8874,3 +8963,0 @@ async function _fetch({
+@@ -8874,3 +8965,0 @@ async function _fetch({
 -  if (prune) {
 -    res.pruned = response.pruned;
 -  }
-@@ -8893 +8980,7 @@ async function _fetch({
+@@ -8893 +8982,7 @@ async function _fetch({
 -    await fs.write(fullpath.replace(/\.pack$/, '.idx'), await idx.toBuffer());
 +    const idxPath = fullpath.replace(/\.pack$/, '.idx');
 +    await fs.write(idxPath, await idx.toBuffer());
@@ -445,18 +460,62 @@ index 80a5167..7218fb0 100644
 +  await updateRefs();
 +  if (prune) {
 +    res.pruned = response.pruned;
-@@ -8933,0 +9027 @@ async function _init({
+@@ -8933,0 +9029 @@ async function _init({
 +  // What git init writes where files keep an exec bit, symlinks work and names are case-sensitive.
-@@ -8938 +9032 @@ async function _init({
+@@ -8938 +9034 @@ async function _init({
 -      '\tfilemode = false\n' +
 +      '\tfilemode = true\n' +
-@@ -8940,3 +9034 @@ async function _init({
+@@ -8940,3 +9036 @@ async function _init({
 -      (bare ? '' : '\tlogallrefupdates = true\n') +
 -      '\tsymlinks = false\n' +
 -      '\tignorecase = true\n'
 +      (bare ? '' : '\tlogallrefupdates = true\n')
-@@ -9546,0 +9639 @@ async function expandOidPacked({
+@@ -9546,0 +9641 @@ async function expandOidPacked({
 +  if (fs.packs) return fs.packs.expand(gitdir, short)
-@@ -9552 +9645 @@ async function expandOidPacked({
+@@ -9552 +9647 @@ async function expandOidPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
+@@ -10290,21 +10385,22 @@ async function _merge({
+-    const tree = await GitIndexManager.acquire(
+-      { fs, gitdir, cache, allowUnmerged: false },
+-      async index => {
+-        return mergeTree({
+-          fs,
+-          cache,
+-          dir,
+-          gitdir,
+-          index,
+-          ourOid,
+-          theirOid,
+-          baseOid,
+-          ourName: abbreviateRef(ours),
+-          baseName: 'base',
+-          theirName: abbreviateRef(theirs),
+-          dryRun,
+-          abortOnConflict,
+-          mergeDriver,
+-        })
+-      }
+-    );
++    const merge = index =>
++      mergeTree({
++        fs,
++        cache,
++        dir,
++        gitdir,
++        index,
++        ourOid,
++        theirOid,
++        baseOid,
++        ourName: abbreviateRef(ours),
++        baseName: 'base',
++        theirName: abbreviateRef(theirs),
++        dryRun,
++        abortOnConflict,
++        mergeDriver,
++      });
++    // Nimbus: a merge that stops at a conflict changes no index, so it reads
++    // none; the caller's own index engine checks it and moves the worktree.
++    const tree = abortOnConflict
++      ? await merge(null)
++      : await GitIndexManager.acquire({ fs, gitdir, cache, allowUnmerged: false }, merge);

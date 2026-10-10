@@ -1041,7 +1041,7 @@ const shellExecuteTracked = async (
 const runtimeCommandHint = createRuntimeCommandHintResolver(self.env as any);
 installNpmBinFallbackResolver(registry, {
   filesystem: workspace.filesystem,
-  getCwd: () => (shell as any)?.cwd || '/home/user',
+  getCwd: () => shell?.getCwd() || '/home/user',
   getFacetManager: () => {
     self.ensureFacetManager();
     return facetMgr!;

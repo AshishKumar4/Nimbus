@@ -41,7 +41,7 @@
 import type { LanguageModel } from 'ai';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type EnsurePortServer } from './loopback.js';
-import { type NimbusCloudflareAccount } from './agent-oauth.js';
+import { type NimbusCloudflareAccount } from '@nimbus-sh/core/_shared/oauth.js';
 export interface SessionAiHost {
     env: Record<string, unknown>;
     ctx: {
