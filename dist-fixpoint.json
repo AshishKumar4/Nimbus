@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "9f4966cf78de2168fb16edfd1af33ac52c69eac3a9fa444b03c22e4fa9fb36be",
+  "fingerprint": "a57fdea4f47297c0c81e59b049c1f9c05fafee5d7322555d1984a413e9f1ef58",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2183,7 +2183,7 @@
     "packages/worker/dist/git/worktree/wildmatch.js": "1b0242c7488a5e0146aec495763859dd5c0f78f22bb5f9ded93bb5270ef2752c",
     "packages/worker/dist/hosted/commands.d.ts": "b1779652124f6e2a12c061069cb3ba7571a3b329fc8e4e1a999f5a5c949c03a1",
     "packages/worker/dist/hosted/commands.d.ts.map": "ae2d8da047af3f8e5154c026ea6baf52fd8dd96ca926c148d0b17bddf7656fe8",
-    "packages/worker/dist/hosted/commands.js": "06cfd457b4b134d6174d79979b6d65ffbca9e2ecdb9273d3acf4bb7791f68dc9",
+    "packages/worker/dist/hosted/commands.js": "29a74abf0058e772d64c0c6b8de94c77c4eb06ebb41a975b4b50405c238c8ffd",
     "packages/worker/dist/hosted/runtime.d.ts": "faf2db85e2852a38cb6ebf2fcc4372d1f557c43df5e9b03d7f865d935b3d4946",
     "packages/worker/dist/hosted/runtime.d.ts.map": "620a20d0f5c7e6b5cb4004754842637705235ce6ba06cd5a0ca0c9526c97c10a",
     "packages/worker/dist/hosted/runtime.js": "6ebc5482ea88cb13ba93b6884a18ce8cd6c2ae41fd6490589069c022f32ddaf7",
@@ -2805,7 +2805,7 @@
     "packages/worker/src/git/worktree/tree.ts": "7f3362fdcbcd3a2ccaaafc367faf36c2e72ae976b714e4c35fb2fd1fd6bc5153",
     "packages/worker/src/git/worktree/walk.ts": "b074012ed86e482f2b47900b8007a7a75474bfbf306de51e1b6b9ae42ec2b928",
     "packages/worker/src/git/worktree/wildmatch.ts": "ade00bc5f60c1530410a370f8d6f47c3dc0f2b94a24bcff4c25c646ac66ac367",
-    "packages/worker/src/hosted/commands.ts": "c2e63c2151266a47efe2e2ac1f40dcf5355dba47e4ab74d4e532fc3f6f44a971",
+    "packages/worker/src/hosted/commands.ts": "895b7b3f1360698f350844706dd186145b4484269791e565b5a836c62cb6bf1c",
     "packages/worker/src/hosted/runtime.ts": "8696d512e3607fb25bbb96104bfea544a560039265ca175813505b599f17f909",
     "packages/worker/src/hosted/services.ts": "b6d2f036e4dd575335c3f7e7194233f31aacffc9e27f06ab1fb3cb2f15501304",
     "packages/worker/src/hosted/session.ts": "e1c4d6648022afbcb3f54fe2b0d77d06d77e0f8d0cd5b5bbef2d66892819c9fb",
