@@ -15430,15 +15430,14 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       const target = new URL(this.protocol + "//" + (this.host.includes(":") && !this.host.startsWith("[") ? "[" + this.host + "]" : this.host));
       target.port = this.port;
       const address = this.path && this.path !== "/" ? new URL(this.path, target) : target;
-      const headers = new Headers();
+      const headers = [];
       for (const name of this.getRawHeaderNames()) {
         const value = this.getHeader(name);
-        if (Array.isArray(value)) for (const part of value) headers.append(name, String(part));
-        else headers.set(name, String(value));
+        if (Array.isArray(value)) for (const part of value) headers.push([name, String(part)]);
+        else headers.push([name, String(value)]);
       }
-      if (this.method !== "GET" && this.method !== "HEAD" && !headers.has("content-length") && !headers.has("transfer-encoding")) {
-        if (this.#contentLength === undefined) headers.set("transfer-encoding", "chunked");
-        else headers.set("content-length", String(this.#contentLength));
+      if (this.method !== "GET" && this.method !== "HEAD" && !this.hasHeader("content-length") && !this.hasHeader("transfer-encoding")) {
+        headers.push(this.#contentLength === undefined ? ["transfer-encoding", "chunked"] : ["content-length", String(this.#contentLength)]);
       }
       this._header = this.method + " " + this.path + " HTTP/1.1\r\n";
       this._headerSent = true;
