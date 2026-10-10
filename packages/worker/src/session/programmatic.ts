@@ -1310,8 +1310,10 @@ export async function rpcDestroy(
   self.ensureSqliteFs();
   const guardedVfs = self.sqliteFs!;
   const busy = () => Object.assign(new Error('EBUSY: session has an active exclusive filesystem mutation'), { code: 'EBUSY' });
-  // A holder's exclusive mutation refuses the destroy before anything is stopped.
-  if (guardedVfs.hasExclusiveMutation()) throw busy();
+  // A holder's exclusive mutation refuses the destroy before anything is
+  // stopped, unless the holder is one of the processes it stops: a subtree
+  // delegated to a process goes when that process ends.
+  if (guardedVfs.hasExclusiveMutation({ delegations: false })) throw busy();
   const reason = typeof options.reason === 'string' && options.reason.trim()
     ? options.reason.trim().slice(0, 200)
     : null;

@@ -9,7 +9,8 @@
 // held a delegation and whose facet was reset for its memory left the
 // delegation in the session; the session's DELETE answered 500 EBUSY, since
 // the destroy refuses on an exclusive mutation, until a reap or a read that
-// recalled it (and waited out the dead holder's recall timeout).
+// recalled it (and waited out the dead holder's recall timeout). A live
+// holder refused the DELETE for as long as it ran.
 
 import assert from 'node:assert/strict';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
@@ -65,6 +66,42 @@ function assertReleased(s, pid, what) {
   assert.throws(() => s.filesystem.bind({ pid, cred: user }), /ESTALE/, `${what}: its binding is over`);
 }
 
+/** The session a destroy runs on: its filesystem and process table, and storage to wipe. */
+function sessionHost(s, portRegistry = new PortRegistry()) {
+  const storage = new Map();
+  const host = {
+    _w1SessionDestroyed: false,
+    env: {},
+    ctx: {
+      getWebSockets: () => [],
+      storage: {
+        async get(k) { return storage.get(k); },
+        async put(k, v) { storage.set(k, v); },
+        async delete(k) { storage.delete(k); },
+        async deleteAll() { storage.clear(); },
+        async deleteAlarm() {},
+      },
+    },
+    sqliteFs: s.engine,
+    processes: s.processes,
+    portRegistry,
+    facetManager: null,
+    shell: null,
+    shellProcessPid: null,
+    terminal: null,
+    viteDevServer: null,
+    cirrusReal: null,
+    _cpRegistry: null,
+    _viteShimPid: null,
+    _viteShimPort: null,
+    ensureSqliteFs() {},
+    ensureFacetManager() {},
+    initSession() {},
+  };
+  assumeGeneration(host.ctx, 1);
+  return host;
+}
+
 // ── Every end releases at once, before any prune ────────────────────────────
 for (const [what, end] of [
   ['its exit', (s, pid) => s.processes.exit(pid, 0)],
@@ -110,43 +147,43 @@ for (const [what, end] of [
   const host = { ctx, portRegistry, ensureDurableAppOnPort: (port) => fm.ensureDurableAppOnPort(port) };
   const lost = await routeToSessionPort(host, 21900, new Request('https://app.test/'), '/', '');
   assert.equal(lost.status, 502, 'the request finds its host reset');
-  assert.equal(s.processes.get(pid)?.state, 'exited', 'and the process is over');
+  for (const deadline = Date.now() + 2_000; s.processes.get(pid)?.state === 'running';) {
+    if (Date.now() > deadline) throw new Error('the process never ended when its host was reset');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
   assertReleased(s, pid, 'a lost host');
 
-  const storage = new Map();
-  const destroyHost = {
-    _w1SessionDestroyed: false,
-    env: {},
-    ctx: {
-      getWebSockets: () => [],
-      storage: {
-        async get(k) { return storage.get(k); },
-        async put(k, v) { storage.set(k, v); },
-        async delete(k) { storage.delete(k); },
-        async deleteAll() { storage.clear(); },
-        async deleteAlarm() {},
-      },
-    },
-    sqliteFs: s.engine,
-    processes: s.processes,
-    portRegistry,
-    facetManager: null,
-    shell: null,
-    shellProcessPid: null,
-    terminal: null,
-    viteDevServer: null,
-    cirrusReal: null,
-    _cpRegistry: null,
-    _viteShimPid: null,
-    _viteShimPort: null,
-    ensureSqliteFs() {},
-    ensureFacetManager() {},
-    initSession() {},
-  };
-  assumeGeneration(destroyHost.ctx, 1);
+  const destroyHost = sessionHost(s, portRegistry);
   const destroyed = await rpcDestroy(destroyHost, { reason: 'test' });
   assert.equal(destroyed.ok, true, 'the destroy that follows at once goes ahead');
   console.log('  a lost host releases what its process held, and the destroy after it goes ahead');
+}
+
+// ── A destroy stops a live holder, whose end gives its subtree back: the
+//    user's explicit destroy is not refused for a delegation it ends itself.
+//    Red before: refused EBUSY before anything was stopped, and again after
+//    a read had recalled the subtree, while the holder ran. ─────────────────
+{
+  const s = session();
+  const { pid } = s.processes.spawn('node server.js', [], '/home/user', { cred: user, longRunning: true });
+  await delegate(s, pid);
+  const destroyed = await rpcDestroy(sessionHost(s), { reason: 'test' });
+  assert.equal(destroyed.ok, true, 'the destroy goes ahead');
+  assert.equal(destroyed.killed, 1, 'having stopped the holder');
+  assert.equal(s.engine.hasExclusiveMutation(), false);
+  console.log('  a destroy stops a live holder and goes ahead');
+}
+
+// ── Work of the session's own that holds the filesystem still refuses it,
+//    before anything is stopped ──────────────────────────────────────────────
+{
+  const s = session();
+  const { pid } = s.processes.spawn('node server.js', [], '/home/user', { cred: user, longRunning: true });
+  const lease = s.engine.acquireExclusiveMutation('home/user/repo');
+  await assert.rejects(rpcDestroy(sessionHost(s), { reason: 'test' }), (error) => error.code === 'EBUSY');
+  assert.equal(s.processes.get(pid)?.state, 'running', 'nothing was stopped');
+  s.engine.releaseExclusiveMutation(lease.owner);
+  console.log('  work of the session\'s own still refuses a destroy, before anything is stopped');
 }
 
 console.log('process-end-releases-filesystem: ok');
