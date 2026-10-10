@@ -84,10 +84,7 @@ export class FunctionInfo {
         this.source = source;
     }
 }
-// ── The host module and the function runtime ──
-let host;
-let strictFactories;
-let sloppyFactories;
+// ── The function runtime ──
 /**
  * A frame of `size` slots, `tdz` of them in their TDZ: every slot an own
  * property, so that an environment copied from it (withElement) is read and
@@ -98,9 +95,6 @@ export function frameTemplate(size, tdz) {
     for (let i = 0; i < tdz.length; i++)
         frame[tdz[i]] = TDZ;
     return frame;
-}
-export function operators() {
-    return host;
 }
 function enter(fi, scope, fn, thisArg, args, newTarget, home) {
     if (fi.lazy !== null)
@@ -245,48 +239,59 @@ const runtime = {
  * call's arguments object, which nothing else holds then.
  */
 const pendingFrames = new SafeWeakMap();
-export function installHost(hostOps) {
-    const bound = hostOps.bind(runtime);
-    host = bound.ops;
-    strictFactories = bound.strict;
-    sloppyFactories = bound.sloppy;
-}
-/** A function object of `fi`'s shape over `scope`. */
-export function makeFunction(fi, scope, home, name = fi.name) {
-    const factories = fi.strict ? strictFactories : sloppyFactories;
-    let fn;
-    switch (fi.shape) {
-        case 'plain':
-            fn = factories.plain(fi, scope);
-            break;
-        case 'method':
-            fn = factories.method(fi, scope, home);
-            break;
-        case 'arrow':
-            fn = factories.arrow(fi, scope);
-            break;
-        case 'generator':
-            fn = factories.generator(fi, scope, home);
-            break;
-        case 'async':
-            fn = factories.async(fi, scope, home);
-            break;
-        case 'asyncArrow':
-            fn = factories.asyncArrow(fi, scope);
-            break;
-        case 'asyncGenerator':
-            fn = factories.asyncGenerator(fi, scope, home);
-            break;
-        case 'classBase':
-        case 'classDerived': throw new Error('interpreter: classes are made by makeClass');
+/**
+ * One interpreter's function runtime, bound once by createInterpreter: its
+ * host's operators, and the strict and sloppy factories that make its
+ * interpreted functions. Compiled code reaches it through its unit
+ * (compile.ts UnitContext), so interpreters never share one.
+ */
+export class InterpreterRuntime {
+    ops;
+    strict;
+    sloppy;
+    constructor(hostOps) {
+        const bound = hostOps.bind(runtime);
+        this.ops = bound.ops;
+        this.strict = bound.strict;
+        this.sloppy = bound.sloppy;
     }
-    return finishFunction(fn, fi, name);
-}
-/** A class constructor of `fi` over `scope`, extending `parent` when derived. */
-export function makeClass(fi, scope, parent, name, record) {
-    const ctor = fi.shape === 'classDerived' ? strictFactories.classDerived(fi, scope, parent, record) : strictFactories.classBase(fi, scope, record);
-    registerClass(ctor, record);
-    return finishFunction(ctor, fi, name);
+    /** A function object of `fi`'s shape over `scope`. */
+    makeFunction(fi, scope, home, name = fi.name) {
+        const factories = fi.strict ? this.strict : this.sloppy;
+        let fn;
+        switch (fi.shape) {
+            case 'plain':
+                fn = factories.plain(fi, scope);
+                break;
+            case 'method':
+                fn = factories.method(fi, scope, home);
+                break;
+            case 'arrow':
+                fn = factories.arrow(fi, scope);
+                break;
+            case 'generator':
+                fn = factories.generator(fi, scope, home);
+                break;
+            case 'async':
+                fn = factories.async(fi, scope, home);
+                break;
+            case 'asyncArrow':
+                fn = factories.asyncArrow(fi, scope);
+                break;
+            case 'asyncGenerator':
+                fn = factories.asyncGenerator(fi, scope, home);
+                break;
+            case 'classBase':
+            case 'classDerived': throw new Error('interpreter: classes are made by makeClass');
+        }
+        return finishFunction(fn, fi, name);
+    }
+    /** A class constructor of `fi` over `scope`, extending `parent` when derived. */
+    makeClass(fi, scope, parent, name, record) {
+        const ctor = fi.shape === 'classDerived' ? this.strict.classDerived(fi, scope, parent, record) : this.strict.classBase(fi, scope, record);
+        registerClass(ctor, record);
+        return finishFunction(ctor, fi, name);
+    }
 }
 function finishFunction(fn, fi, name) {
     if (fi.length !== 0)
