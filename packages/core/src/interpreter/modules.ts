@@ -43,8 +43,8 @@ export interface ModulePlan {
   readonly dirnameSlot: number;
   /** The export getters, in the order they are installed. */
   readonly exports: readonly ModuleExport[];
-  /** Each requested module, required in order: the slots it goes to, and those its interop goes to (a default import's). */
-  readonly requests: readonly { readonly source: string; readonly module: readonly number[]; readonly interop: readonly number[] }[];
+  /** Each requested module, required in order: the slot it goes to, and its interop's (a default import's); -1 for none. */
+  readonly requests: readonly { readonly source: string; readonly module: number; readonly interop: number }[];
   /** Each import's namespace, made into `slot` from the module in `from` once every request is required. */
   readonly namespaces: readonly { readonly slot: number; readonly from: number }[];
   /** Slots of the modules whose names `export *` copies. */
@@ -79,10 +79,8 @@ export function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: Module
     for (let i = 0; i < requests.length; i++) {
       const { source, module, interop } = requests[i];
       const m: unknown = reflectApply(requireArg as NativeFunction, undefined, [source]);
-      for (let j = 0; j < module.length; j++) env[module[j]] = m;
-      if (interop.length === 0) continue;
-      const value: unknown = reflectApply(helpers.interop, undefined, [m]);
-      for (let j = 0; j < interop.length; j++) env[interop[j]] = value;
+      if (module >= 0) env[module] = m;
+      if (interop >= 0) env[interop] = reflectApply(helpers.interop, undefined, [m]);
     }
     for (let i = 0; i < namespaces.length; i++) env[namespaces[i].slot] = reflectApply(helpers.namespace, undefined, [env[namespaces[i].from]]);
     for (let i = 0; i < stars.length; i++) reflectApply(helpers.star, undefined, [exportsObject, define, env[stars[i]]]);

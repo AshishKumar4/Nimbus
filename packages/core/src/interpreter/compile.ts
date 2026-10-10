@@ -86,7 +86,12 @@ export interface UnitHost {
 
 /** An import binding's source: the slot holds the module (named, default) or the namespace object. */
 /** A module's import binding: it holds a module (or interop) and reads `name` of it at each use, or holds a namespace. */
-type ImportInfo = { readonly kind: 'named' | 'namespace'; readonly name: string };
+/**
+ * A module's import binding: it reads `name` of the value in `slot` (its
+ * request's module, or for `default` the module's interop) at each use, or
+ * is the namespace in its own slot.
+ */
+type ImportInfo = { readonly kind: 'named' | 'namespace'; readonly name: string; readonly slot: number };
 
 /** What every function of one unit (a module, script or constructed function) shares, compiled now or later. */
 export interface UnitContext {
@@ -1391,9 +1396,9 @@ export class Compiler {
 
   private bindingRead(b: Binding, tdz: boolean): Sync {
     const hops = this.hops(b.scope);
-    const slot = b.slot;
-    const raw = this.slotReader(hops, slot);
     const imported = this.unit.imports.get(b);
+    const slot = imported ? imported.slot : b.slot;
+    const raw = this.slotReader(hops, slot);
     if (imported) {
       const ops = this.ops;
       const name = imported.name;
@@ -3481,28 +3486,18 @@ export class Compiler {
       if (record !== null) append(records, record);
     }
     const link = esmLink(records, SAFE_LISTS);
-    const requests = newSafeList<{ readonly source: string; readonly module: readonly number[]; readonly interop: readonly number[] }>();
+    // Each kept request's module goes to a slot of its own, and its interop
+    // to another; a named import reads its name of one of them at each use.
+    const requests = newSafeList<{ readonly source: string; readonly module: number; readonly interop: number }>();
     const moduleSlots = newSafeList<number>();
-    const none = newSafeList<number>();
     for (let i = 0; i < link.requests.length; i++) {
       const request = link.requests[i];
-      const own = request.kept ? root.size++ : 0;
-      append(moduleSlots, own);
-      let module = none;
-      let interop = none;
-      if (request.kept) {
-        module = newSafeList<number>();
-        append(module, own);
-      }
+      const module = request.kept ? root.size++ : -1;
+      const interop = request.interop ? root.size++ : -1;
+      append(moduleSlots, module);
       for (let j = 0; j < request.bindings.length; j++) {
         const binding = request.bindings[j];
-        if (binding.kind !== 'named') continue;
-        const slot = this.importBinding(root, binding.local, { kind: 'named', name: binding.imported }).slot;
-        if (binding.imported !== 'default') append(module, slot);
-        else {
-          if (interop === none) interop = newSafeList<number>();
-          append(interop, slot);
-        }
+        if (binding.kind === 'named') this.importBinding(root, binding.local, 'named', binding.imported, binding.imported === 'default' ? interop : module);
       }
       append(requests, { source: request.source, module, interop });
     }
@@ -3516,7 +3511,7 @@ export class Compiler {
         append(namespaceSlots, root.size++);
         continue;
       }
-      const slot = this.importBinding(root, local, { kind: 'namespace', name: '*' }).slot;
+      const slot = this.importBinding(root, local, 'namespace', '*', null);
       append(namespaceSlots, slot);
       append(namespaces, { slot, from: moduleSlots[request] });
     }
@@ -3554,12 +3549,16 @@ export class Compiler {
     };
   }
 
-  /** The binding an import declares in the module scope, its reads made `info`'s. */
-  private importBinding(root: FunctionScope, local: string, info: ImportInfo): Binding {
+  /**
+   * The binding an import declares in the module scope: it reads `name` of
+   * the value in `slot`, or a namespace's own slot holds it. That slot.
+   */
+  private importBinding(root: FunctionScope, local: string, kind: ImportInfo['kind'], name: string, slot: number | null): number {
     const binding = root.bindings.get(local);
     if (!binding) throw new Error('interpreter: import binding');
+    const info: ImportInfo = { kind, name, slot: slot === null ? binding.slot : slot };
     this.unit.imports.set(binding, info);
-    return binding;
+    return info.slot;
   }
 
   /** A module's statements, compiled as an async function body (top-level await). */
