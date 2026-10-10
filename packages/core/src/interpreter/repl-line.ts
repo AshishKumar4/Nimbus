@@ -33,7 +33,7 @@
  * captured at its start (intrinsics.ts), as the rest of the interpreter does.
  */
 import {
-  parse, type FunctionDeclaration, type ModuleDeclaration, type Options, type Pattern, type Program, type Statement,
+  parse, type FunctionDeclaration, type Identifier, type ModuleDeclaration, type Options, type Program, type Statement,
   type VariableDeclaration,
 } from 'acorn';
 import {
@@ -43,6 +43,7 @@ import {
 import { own } from './parser-realm.js';
 import { isObject } from './runtime.js';
 import { REPL_IMPORT } from '../runtime/js-repl-names.js';
+import { forEachBindingIdentifier } from '../runtime/binding-pattern.js';
 
 const LINE_OPTIONS: Options = own({ ecmaVersion: 'latest', sourceType: 'script', allowAwaitOutsideFunction: true });
 
@@ -142,6 +143,11 @@ function declareGlobal(line: Line, name: string): void {
   if (line.declared.has(name)) return;
   line.declared.add(name);
   append(line.globals, name);
+}
+
+/** A name a pattern binds, declared a global. */
+function declareIdentifier(identifier: Identifier, line: Line): void {
+  declareGlobal(line, identifier.name);
 }
 
 /** Rewrite the declarations of one statement, outside any function; `top` when it is the line's own. */
@@ -268,7 +274,7 @@ function declaration(node: VariableDeclaration, line: Line, head: 'init' | 'each
   const declarators = node.declarations;
   const first = declarators[0];
   if (node.kind === 'var') {
-    for (let i = 0; i < declarators.length; i++) declarePattern(line, declarators[i].id);
+    for (let i = 0; i < declarators.length; i++) forEachBindingIdentifier(declarators[i].id, declareIdentifier, line);
   }
   if (head !== null) {
     append(line.edits, { start: node.start, end: first.start, text: '' });
@@ -291,33 +297,6 @@ function declaration(node: VariableDeclaration, line: Line, head: 'init' | 'each
     append(line.edits, { start: declarator.end, end: declarator.end, text: ')' });
   }
   append(line.edits, { start: declarators[declarators.length - 1].end, end: declarators[declarators.length - 1].end, text: ')' });
-}
-
-/** Each name `pattern` binds, declared a global. */
-function declarePattern(line: Line, pattern: Pattern | null): void {
-  if (pattern === null) return;
-  switch (pattern.type) {
-    case 'Identifier':
-      declareGlobal(line, pattern.name);
-      return;
-    case 'ObjectPattern':
-      for (let i = 0; i < pattern.properties.length; i++) {
-        const property = pattern.properties[i];
-        declarePattern(line, property.type === 'RestElement' ? property.argument : property.value);
-      }
-      return;
-    case 'ArrayPattern':
-      for (let i = 0; i < pattern.elements.length; i++) declarePattern(line, pattern.elements[i]);
-      return;
-    case 'RestElement':
-      declarePattern(line, pattern.argument);
-      return;
-    case 'AssignmentPattern':
-      declarePattern(line, pattern.left);
-      return;
-    default:
-      return;
-  }
 }
 
 /** Every `import(...)` in `node`, nested functions included, calls REPL_IMPORT instead. */

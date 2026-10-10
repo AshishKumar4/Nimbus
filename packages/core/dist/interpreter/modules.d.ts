@@ -1,42 +1,38 @@
 /**
  * modules.ts — an ES module as a launch's map runs one: Node's CommonJS
- * wrapper function, as esbuild lowers a module for the map. Its imports are
- * requires and its exports the getters of one object, module.exports.
- * compile.ts makes the plan (Compiler.modulePlan); this runs it.
+ * wrapper function, linked as runtime/esm-interop.ts says, the way the next
+ * launch's cell (async-module-lowering.ts) links the same text. Its imports
+ * are requires and its exports the getters of module.exports. compile.ts
+ * makes the plan (Compiler.modulePlan); this runs it, with the interop
+ * helpers the launch compiled from esm-interop.ts's text (InterpreterHost).
  */
 import type { Code } from './code.js';
+import type { HostOperators, NativeFunction } from './host-ops.js';
 import { type Env } from './runtime.js';
 /** A module cell: Node's CommonJS wrapper function. */
 export type ModuleCell = (exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => unknown;
-/** Where an exported name reads its value. */
-export type ExportRead = 
-/** A binding of the module, read live (in its TDZ until its declaration runs: a cycle can read it early). */
-{
-    readonly kind: 'binding';
-    readonly read: (env: Env) => unknown;
+/** esm-interop.ts's helpers, compiled from their text (ESM_MODULE_HELPERS). */
+export interface ModuleHelpers {
+    readonly exports: NativeFunction;
+    readonly interop: NativeFunction;
+    readonly namespace: NativeFunction;
+    readonly star: NativeFunction;
 }
-/** `export { name } from 'm'`: m's export `name`; its `default` is m itself unless m is an ES module. */
- | {
-    readonly kind: 'reexport';
-    readonly slot: number;
+/**
+ * What an export's getter reads: its value from the evaluation's frame, or a
+ * re-exported namespace (`export * as`), made into `slot` from the module in
+ * `from` when first read.
+ */
+export type ModuleExport = {
+    readonly kind: 'read';
     readonly name: string;
-}
-/** `export * as name from 'm'`: m's namespace object. */
- | {
+    readonly read: (env: Env) => unknown;
+} | {
     readonly kind: 'namespace';
+    readonly name: string;
     readonly slot: number;
+    readonly from: number;
 };
-/** An import declaration or a re-export's source, required in source order. */
-export interface ModuleImport {
-    readonly source: string;
-    /** The slot the required module is kept in, for a re-export to read; null for an import declaration. */
-    readonly slot: number | null;
-    /** An import declaration's bindings: the module, or (a namespace import) its namespace object. */
-    readonly bindings: readonly {
-        readonly slot: number;
-        readonly namespace: boolean;
-    }[];
-}
 /** A module, compiled. */
 export interface ModulePlan {
     /** The module scope's frame (runtime.ts frameTemplate). */
@@ -47,13 +43,20 @@ export interface ModulePlan {
     readonly moduleSlot: number;
     readonly filenameSlot: number;
     readonly dirnameSlot: number;
-    readonly imports: readonly ModuleImport[];
-    /** The exported names, in order; the first of a name wins. */
-    readonly exports: readonly {
-        readonly name: string;
-        readonly read: ExportRead;
+    /** The export getters, in the order they are installed. */
+    readonly exports: readonly ModuleExport[];
+    /** Each requested module, required in order: the slots it goes to, and those its interop goes to (a default import's). */
+    readonly requests: readonly {
+        readonly source: string;
+        readonly module: readonly number[];
+        readonly interop: readonly number[];
     }[];
-    /** Slots of `export * from` modules, whose names join the exports after the imports are evaluated. */
+    /** Each import's namespace, made into `slot` from the module in `from` once every request is required. */
+    readonly namespaces: readonly {
+        readonly slot: number;
+        readonly from: number;
+    }[];
+    /** Slots of the modules whose names `export *` copies. */
     readonly stars: readonly number[];
     /** Instantiation: the module scope's function declarations made, its lexical bindings in their TDZ. */
     readonly instantiate: ((env: Env) => Env) | null;
@@ -61,5 +64,5 @@ export interface ModulePlan {
     readonly body: Code;
 }
 /** The wrapper function that runs `plan`. */
-export declare function moduleCell(plan: ModulePlan): ModuleCell;
+export declare function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: ModuleHelpers): ModuleCell;
 //# sourceMappingURL=modules.d.ts.map

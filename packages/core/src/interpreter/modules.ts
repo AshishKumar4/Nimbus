@@ -1,36 +1,35 @@
 /**
  * modules.ts — an ES module as a launch's map runs one: Node's CommonJS
- * wrapper function, as esbuild lowers a module for the map. Its imports are
- * requires and its exports the getters of one object, module.exports.
- * compile.ts makes the plan (Compiler.modulePlan); this runs it.
+ * wrapper function, linked as runtime/esm-interop.ts says, the way the next
+ * launch's cell (async-module-lowering.ts) links the same text. Its imports
+ * are requires and its exports the getters of module.exports. compile.ts
+ * makes the plan (Compiler.modulePlan); this runs it, with the interop
+ * helpers the launch compiled from esm-interop.ts's text (InterpreterHost).
  */
 import type { Code } from './code.js';
-import {
-  TypeError, accessorDescriptor, dataDescriptor, defineOrThrow, isEnumerableOwn, objectCreate, objectGetOwnPropertyNames,
-  objectGetPrototypeOf, objectHasOwn, reflectApply, reflectGet, resume, resumeThrowing, withElement,
-} from './intrinsics.js';
-import { type Env, ROOT_ENV, isObject, operators } from './runtime.js';
+import { reflectApply, resume, resumeThrowing, withElement } from './intrinsics.js';
+import type { HostOperators, NativeFunction } from './host-ops.js';
+import { type Env, ROOT_ENV } from './runtime.js';
 
 /** A module cell: Node's CommonJS wrapper function. */
 export type ModuleCell = (exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => unknown;
 
-/** Where an exported name reads its value. */
-export type ExportRead =
-  /** A binding of the module, read live (in its TDZ until its declaration runs: a cycle can read it early). */
-  | { readonly kind: 'binding'; readonly read: (env: Env) => unknown }
-  /** `export { name } from 'm'`: m's export `name`; its `default` is m itself unless m is an ES module. */
-  | { readonly kind: 'reexport'; readonly slot: number; readonly name: string }
-  /** `export * as name from 'm'`: m's namespace object. */
-  | { readonly kind: 'namespace'; readonly slot: number };
-
-/** An import declaration or a re-export's source, required in source order. */
-export interface ModuleImport {
-  readonly source: string;
-  /** The slot the required module is kept in, for a re-export to read; null for an import declaration. */
-  readonly slot: number | null;
-  /** An import declaration's bindings: the module, or (a namespace import) its namespace object. */
-  readonly bindings: readonly { readonly slot: number; readonly namespace: boolean }[];
+/** esm-interop.ts's helpers, compiled from their text (ESM_MODULE_HELPERS). */
+export interface ModuleHelpers {
+  readonly exports: NativeFunction;
+  readonly interop: NativeFunction;
+  readonly namespace: NativeFunction;
+  readonly star: NativeFunction;
 }
+
+/**
+ * What an export's getter reads: its value from the evaluation's frame, or a
+ * re-exported namespace (`export * as`), made into `slot` from the module in
+ * `from` when first read.
+ */
+export type ModuleExport =
+  | { readonly kind: 'read'; readonly name: string; readonly read: (env: Env) => unknown }
+  | { readonly kind: 'namespace'; readonly name: string; readonly slot: number; readonly from: number };
 
 /** A module, compiled. */
 export interface ModulePlan {
@@ -42,10 +41,13 @@ export interface ModulePlan {
   readonly moduleSlot: number;
   readonly filenameSlot: number;
   readonly dirnameSlot: number;
-  readonly imports: readonly ModuleImport[];
-  /** The exported names, in order; the first of a name wins. */
-  readonly exports: readonly { readonly name: string; readonly read: ExportRead }[];
-  /** Slots of `export * from` modules, whose names join the exports after the imports are evaluated. */
+  /** The export getters, in the order they are installed. */
+  readonly exports: readonly ModuleExport[];
+  /** Each requested module, required in order: the slots it goes to, and those its interop goes to (a default import's). */
+  readonly requests: readonly { readonly source: string; readonly module: readonly number[]; readonly interop: readonly number[] }[];
+  /** Each import's namespace, made into `slot` from the module in `from` once every request is required. */
+  readonly namespaces: readonly { readonly slot: number; readonly from: number }[];
+  /** Slots of the modules whose names `export *` copies. */
   readonly stars: readonly number[];
   /** Instantiation: the module scope's function declarations made, its lexical bindings in their TDZ. */
   readonly instantiate: ((env: Env) => Env) | null;
@@ -53,37 +55,9 @@ export interface ModulePlan {
   readonly body: Code;
 }
 
-/** The export getter for `read`, over one evaluation's environment. */
-function exportGetter(env: Env, read: ExportRead): () => unknown {
-  switch (read.kind) {
-    case 'binding': {
-      const r = read.read;
-      return () => r(env);
-    }
-    case 'reexport': {
-      const { slot, name } = read;
-      const ops = operators();
-      if (name !== 'default') return () => ops.get(env[slot], name);
-      return () => {
-        const m = env[slot];
-        return isObject(m) && reflectGet(m, '__esModule') ? ops.get(m, 'default') : m;
-      };
-    }
-    case 'namespace': {
-      const slot = read.slot;
-      let namespace: object | null = null;
-      return () => {
-        if (namespace === null) namespace = toESM(env[slot]);
-        return namespace;
-      };
-    }
-  }
-}
-
 /** The wrapper function that runs `plan`. */
-export function moduleCell(plan: ModulePlan): ModuleCell {
-  const { frame, exportsSlot, requireSlot, moduleSlot, filenameSlot, dirnameSlot, imports, exports, stars, instantiate, body } = plan;
-  const ops = operators();
+export function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: ModuleHelpers): ModuleCell {
+  const { frame, exportsSlot, requireSlot, moduleSlot, filenameSlot, dirnameSlot, exports, requests, namespaces, stars, instantiate, body } = plan;
   const bs = body.s;
   const bg = body.g;
   return (exportsArg, requireArg, moduleArg, filename, dirname) => {
@@ -93,34 +67,25 @@ export function moduleCell(plan: ModulePlan): ModuleCell {
     env[moduleSlot] = moduleArg;
     env[filenameSlot] = filename;
     env[dirnameSlot] = dirname;
-    if (typeof requireArg !== 'function') throw new TypeError('require is not a function');
+    // A cell's module is always an ES module's: the next launch lowers
+    // esModuleSource's text, which declares an export.
+    const exportsObject: unknown = ops.get(moduleArg, 'exports');
+    const define = reflectApply(helpers.exports, undefined, [exportsObject]) as NativeFunction;
+    for (let i = 0; i < exports.length; i++) reflectApply(define, undefined, [exports[i].name, exportGetter(env, exports[i], helpers)]);
     // Instantiation, before any import is evaluated: an import that
     // imports this module back (a cycle) finds its exports published and
     // its function declarations made, as a module's linking provides.
-    const facade = {};
-    defineOrThrow(facade, '__esModule', dataDescriptor(true, false, false, false));
-    for (let i = 0; i < exports.length; i++) {
-      const { name, read } = exports[i];
-      if (!objectHasOwn(facade, name)) defineOrThrow(facade, name, accessorDescriptor('get', exportGetter(env, read), true, false));
-    }
-    ops.set(moduleArg, 'exports', facade);
     if (instantiate !== null) instantiate(env);
-    for (let i = 0; i < imports.length; i++) {
-      const { source, slot, bindings } = imports[i];
-      const m: unknown = reflectApply(requireArg, undefined, [source]);
-      if (slot !== null) env[slot] = m;
-      for (let j = 0; j < bindings.length; j++) env[bindings[j].slot] = bindings[j].namespace ? toESM(m) : m;
+    for (let i = 0; i < requests.length; i++) {
+      const { source, module, interop } = requests[i];
+      const m: unknown = reflectApply(requireArg as NativeFunction, undefined, [source]);
+      for (let j = 0; j < module.length; j++) env[module[j]] = m;
+      if (interop.length === 0) continue;
+      const value: unknown = reflectApply(helpers.interop, undefined, [m]);
+      for (let j = 0; j < interop.length; j++) env[interop[j]] = value;
     }
-    for (let i = 0; i < stars.length; i++) {
-      const m = env[stars[i]];
-      if (!isObject(m)) continue;
-      const keys = objectGetOwnPropertyNames(m);
-      for (let j = 0; j < keys.length; j++) {
-        const key = keys[j];
-        if (key === 'default' || objectHasOwn(facade, key)) continue;
-        defineOrThrow(facade, key, accessorDescriptor('get', () => ops.get(m, key), isEnumerableOwn(m, key), false));
-      }
-    }
+    for (let i = 0; i < namespaces.length; i++) env[namespaces[i].slot] = reflectApply(helpers.namespace, undefined, [env[namespaces[i].from]]);
+    for (let i = 0; i < stars.length; i++) reflectApply(helpers.star, undefined, [exportsObject, define, env[stars[i]]]);
     if (bg === null) {
       bs(env);
       return undefined;
@@ -129,19 +94,17 @@ export function moduleCell(plan: ModulePlan): ModuleCell {
   };
 }
 
-/** esbuild's __toESM: a namespace object over a CommonJS module's exports. */
-function toESM(m: unknown): object {
-  const target: object = objectCreate(isObject(m) ? objectGetPrototypeOf(m) : null);
-  if (!isObject(m) || !reflectGet(m, '__esModule')) defineOrThrow(target, 'default', dataDescriptor(m, false, true, false));
-  if (isObject(m)) {
-    const keys = objectGetOwnPropertyNames(m);
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      if (objectHasOwn(target, key)) continue;
-      defineOrThrow(target, key, accessorDescriptor('get', () => reflectGet(m, key), isEnumerableOwn(m, key), false));
-    }
+/** The getter of `entry` over one evaluation's frame. */
+function exportGetter(env: Env, entry: ModuleExport, helpers: ModuleHelpers): () => unknown {
+  if (entry.kind === 'read') {
+    const read = entry.read;
+    return () => read(env);
   }
-  return target;
+  const { slot, from } = entry;
+  return () => {
+    if (env[slot] === undefined) env[slot] = reflectApply(helpers.namespace, undefined, [env[from]]);
+    return env[slot];
+  };
 }
 
 /** Runs a module body's generator as an async function would: one await per yielded value. */

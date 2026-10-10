@@ -6,24 +6,17 @@
  * acorn's module parse, a statement at a time: no tree of the whole module
  * is held, so a multi-MiB bundle reads in bounded memory), and emitCommonJs
  * writes the CommonJS for them, as esbuild's and TypeScript's CommonJS
- * output behave:
- *   - every module the source requests is required in source order, before
- *     the body; an import's bindings are read off its module at each use, so
- *     they are live as Node's are (an `export let` its module reassigns later
- *     reads as reassigned): a default import through `__esModule` interop, a
- *     call with `this` undefined, and a namespace of a module not marked
- *     `__esModule` with that module as its `default`;
- *   - `__esModule` is a non-enumerable `true`, and each export is a live,
- *     enumerable getter installed in name order before the body runs, so a
- *     binding the body assigns later (`export let db; db = await connect()`)
- *     reads as assigned; and before the modules it requests are required, as
- *     esbuild installs them, so a module in a cycle with it finds them (a
- *     function it declares is there while the cycle evaluates, as Node
- *     hoists it); `export default <expression>` evaluates where it stands,
- *     into a binding its getter reads;
- *   - `export *` copies the source module's names after the module's own,
- *     skipping `default` and any name already exported: the module's own
- *     names, and an earlier `export *`'s, win.
+ * output behave, linking them as esm-interop.ts says (the interpreter links
+ * a module it runs the same way): an import's bindings are read off its
+ * module at each use, so they are live as Node's are (an `export let` its
+ * module reassigns later reads as reassigned), a call with `this`
+ * undefined; each export's getter is installed before the body runs, so a
+ * binding the body assigns later (`export let db; db = await connect()`)
+ * reads as assigned, and before the modules it requests are required, as
+ * esbuild installs them, so a module in a cycle with it finds them (a
+ * function it declares is there while the cycle evaluates, as Node hoists
+ * it); `export default <expression>` evaluates where it stands, into a
+ * binding its getter reads.
  *
  * Two bodies: `async` runs the module in an async IIFE, the body the
  * CommonJS cell gives a module with top-level await; `sync` is the module's
@@ -42,22 +35,23 @@
  * Runs in the transform facet (installed by oxc-facet/preamble.ts), in
  * esbuild-service.ts, and in the shell's `node` command.
  */
-import { tokenizer, tokTypes, type ModuleDeclaration, type Pattern, type Statement } from 'acorn';
+import { tokenizer, tokTypes, type ModuleDeclaration, type Statement } from 'acorn';
 import { DYNAMIC_IMPORT_HELPER } from './dynamic-import-rewrite.js';
+import {
+  ESM_EXPORTS_HELPER, ESM_INTEROP_HELPER, ESM_NAMESPACE_HELPER, ESM_STAR_HELPER, esmLink, esmRecord, type EsmImportBinding,
+  type EsmLists, type EsmRecord,
+} from './esm-interop.js';
 import { applySourceEdits, COMMONJS_WRAPPER_NAMES, MODULE_PARSE_OPTIONS, parseStatements, type SourceEdit } from './javascript-ast.js';
 import { bindingScope, list, namesBinding, programNames, scoped, stringOf, type EsNode, type Scope } from './javascript-scope.js';
 import { ES_MODULE_UNBOUND_NAMES, esModuleSource, type ModuleScope } from './module-format.js';
 
-/**
- * One name an import binds: the module's namespace, or one of its exports
- * by name (`default` included, which `import d from` binds too). A string
- * name is any string, `"*"` included: only `namespace` is the namespace.
- *
- * A named binding's `references` are where the module uses it.
- */
-export type EsmImportBinding =
-  | { readonly kind: 'namespace'; readonly local: string }
-  | { readonly kind: 'named'; readonly local: string; readonly imported: string; readonly references: readonly EsmReference[] };
+/** An import's binding (esm-interop.ts), a named one with its `references`: where the module uses it. */
+export type EsmUsedBinding =
+  | Extract<EsmImportBinding, { kind: 'namespace' }>
+  | (Extract<EsmImportBinding, { kind: 'named' }> & { readonly references: readonly EsmReference[] });
+
+/** A module's declaration as the emitter reads it: esm-interop.ts's, its named imports' uses found. */
+export type EsmUsedRecord = EsmRecord<EsmUsedBinding>;
 
 /**
  * A use of an imported binding: a read, a call (`this` stays undefined), one
@@ -71,32 +65,8 @@ export interface EsmReference {
   readonly use: 'read' | 'typeof' | 'call' | 'leading-call' | 'shorthand' | 'write';
 }
 
-/**
- * A name a module exports: one of its own bindings, or, re-exported from
- * the record's source, one of that module's exports by name or its
- * namespace (`export * as ns from`).
- */
-export type EsmExportName =
-  | { readonly kind: 'named'; readonly exported: string; readonly local: string }
-  | { readonly kind: 'namespace'; readonly exported: string };
-
-/**
- * An import or export declaration of a module, with the source range the
- * emitter removes or replaces: the whole declaration, except an exported
- * declaration (`export const`, `export function`, `export default class C`),
- * where it is the `export` keywords alone and the declaration stays.
- */
-export type EsmRecord =
-  | { readonly kind: 'import'; readonly start: number; readonly end: number; readonly source: string; readonly bindings: readonly EsmImportBinding[] }
-  | { readonly kind: 'export'; readonly start: number; readonly end: number; readonly source: string | null; readonly names: readonly EsmExportName[] }
-  | { readonly kind: 'export-all'; readonly start: number; readonly end: number; readonly source: string }
-  | {
-    readonly kind: 'export-default';
-    readonly start: number;
-    readonly end: number;
-    /** The default expression's range in the source. */
-    readonly expression: { readonly start: number; readonly end: number };
-  };
+/** The emitter's lists: ordinary arrays. */
+const ARRAYS: EsmLists = { list: () => [], push: (list, value) => { list.push(value); } };
 
 /** `text` as spaces, its line breaks kept. */
 function blank(text: string): string {
@@ -153,13 +123,16 @@ export interface CommonJsEmitOptions {
   /**
    * The module's import.meta (each `metas` span) read from `metadata`, an
    * expression, and its import() calls (each at a `dynamicImports` start)
-   * made through the process's loader with `parentUrl` as their parent.
+   * made through the process's loader, `loader(parentUrl, ...arguments)`
+   * (by default dynamic-import-rewrite.ts's, as rewriteDynamicImports makes
+   * a CommonJS module's).
    */
   readonly bind?: {
     readonly metadata: string;
     readonly parentUrl: string;
     readonly metas: readonly Span[];
     readonly dynamicImports: readonly number[];
+    readonly loader?: string;
   };
   /** Where the module's own text ends in `source` (esModuleSource appends to it): the emit's `end`. */
   readonly sourceLength?: number;
@@ -236,7 +209,7 @@ interface NamedUse extends EsmReference {
  * come first in nearly every module, so one parse does; a module importing
  * a name after code that may use it is parsed again, every name known.
  */
-export function readEsmRecords(source: string): EsmRecord[] {
+export function readEsmRecords(source: string): EsmUsedRecord[] {
   return readEsmModule(source).records;
 }
 
@@ -248,7 +221,7 @@ export function readEsmRecords(source: string): EsmRecord[] {
  * (module-format.ts ES_MODULE_UNBOUND_NAMES).
  */
 export function readEsmModule(source: string): {
-  records: EsmRecord[];
+  records: EsmUsedRecord[];
   wrapperUses: ReadonlyMap<string, readonly EsmReference[]>;
   /** An `await` (or `for await`) outside every function. */
   topLevelAwait: boolean;
@@ -265,7 +238,7 @@ export function readEsmModule(source: string): {
 }
 
 function readModule(source: string, known: ReadonlySet<string> | null): {
-  records: EsmRecord[];
+  records: EsmUsedRecord[];
   imported: Set<string>;
   importsAfterCode: boolean;
   wrapperUses: Map<string, EsmReference[]>;
@@ -274,9 +247,6 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
   dynamicImports: number[];
   names: Set<string>;
 } {
-  // ModuleExportName: an identifier, or a string such as `export { a as "b-c" }`.
-  const nameOf = (node: { type: string; name?: string; value?: unknown }) =>
-    node.type === 'Identifier' ? String(node.name) : String(node.value);
   const imported = new Set<string>(known ?? []);
   // Their uses are tracked as an import's are; a top-level declaration of
   // one (Vite's `const require = createRequire(import.meta.url)`) binds it.
@@ -352,71 +322,18 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
         found.push({ start, end, use });
       }
     }
-    switch (node.type) {
-      case 'ImportDeclaration': {
-        for (const specifier of node.specifiers) {
-          if (specifier.type === 'ImportNamespaceSpecifier') continue;
-          if (code && !imported.has(specifier.local.name)) importsAfterCode = true;
-          imported.add(specifier.local.name);
-          tracked.add(specifier.local.name);
-        }
-        records.push({
-          kind: 'import', start: node.start, end: node.end, source: String(node.source.value),
-          bindings: node.specifiers.map((specifier): EsmImportBinding => (
-            specifier.type === 'ImportNamespaceSpecifier'
-              ? { kind: 'namespace', local: specifier.local.name }
-              : {
-                kind: 'named',
-                local: specifier.local.name,
-                imported: specifier.type === 'ImportDefaultSpecifier' ? 'default' : nameOf(specifier.imported),
-                // Filled in below, once every statement has been read.
-                references: [],
-              }
-          )),
-        });
-        return;
+    const record = esmRecord(node, ARRAYS);
+    if (record?.kind === 'import') {
+      for (const binding of record.bindings) {
+        if (binding.kind === 'namespace') continue;
+        if (code && !imported.has(binding.local)) importsAfterCode = true;
+        imported.add(binding.local);
+        tracked.add(binding.local);
       }
-      case 'ExportNamedDeclaration':
-        if (node.declaration) {
-          records.push({
-            kind: 'export', start: node.start, end: node.declaration.start, source: null,
-            names: declaredNames(node.declaration).map((name): EsmExportName => ({ kind: 'named', exported: name, local: name })),
-          });
-        } else {
-          records.push({
-            kind: 'export', start: node.start, end: node.end, source: node.source ? String(node.source.value) : null,
-            names: node.specifiers.map((s): EsmExportName => ({ kind: 'named', exported: nameOf(s.exported), local: nameOf(s.local) })),
-          });
-        }
-        break;
-      case 'ExportDefaultDeclaration': {
-        const declaration = node.declaration;
-        if ((declaration.type === 'FunctionDeclaration' || declaration.type === 'ClassDeclaration') && declaration.id) {
-          records.push({
-            kind: 'export', start: node.start, end: declaration.start, source: null,
-            names: [{ kind: 'named', exported: 'default', local: declaration.id.name }],
-          });
-        } else {
-          records.push({
-            kind: 'export-default', start: node.start, end: node.end,
-            expression: { start: declaration.start, end: declaration.end },
-          });
-        }
-        break;
-      }
-      case 'ExportAllDeclaration':
-        if (node.exported) {
-          records.push({
-            kind: 'export', start: node.start, end: node.end, source: String(node.source.value),
-            names: [{ kind: 'namespace', exported: nameOf(node.exported) }],
-          });
-        } else {
-          records.push({ kind: 'export-all', start: node.start, end: node.end, source: String(node.source.value) });
-        }
-        break;
-      default:
-        break;
+      records.push(record);
+      return;
     }
+    if (record) records.push(record);
     code = true;
   };
   parseStatements(source, MODULE_PARSE_OPTIONS, {
@@ -440,9 +357,9 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
   const leading = (references: readonly EsmReference[]) => references.map((reference) => (
     reference.use === 'call' && statementStarts.has(reference.start) ? { ...reference, use: 'leading-call' as const } : reference
   ));
-  const withUses = records.map((record): EsmRecord => record.kind !== 'import' ? record : {
+  const withUses = records.map((record): EsmUsedRecord => record.kind !== 'import' ? record : {
     ...record,
-    bindings: record.bindings.map((binding): EsmImportBinding => binding.kind === 'namespace' ? binding : { ...binding, references: leading(uses.get(binding.local) ?? []) }),
+    bindings: record.bindings.map((binding): EsmUsedBinding => binding.kind === 'namespace' ? binding : { ...binding, references: leading(uses.get(binding.local) ?? []) }),
   });
   const wrapperUses = new Map<string, EsmReference[]>();
   for (const name of COMMONJS_WRAPPER_NAMES) {
@@ -480,7 +397,7 @@ function useOf(parent: EsNode, key: string, patternProperties: ReadonlySet<EsNod
 }
 
 /** The CommonJS for ES module `source`, whose import and export declarations are `records`. */
-export function emitCommonJs(source: string, records: readonly EsmRecord[], options: CommonJsEmitOptions): string {
+export function emitCommonJs(source: string, records: readonly EsmUsedRecord[], options: CommonJsEmitOptions): string {
   return emitModule(source, records, options).code;
 }
 
@@ -489,43 +406,85 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
  * the cell wrapper adds to its own) and the columns its edits moved
  * (ColumnMap): what a frame of it reads back as the source's places.
  */
-function emitModule(source: string, records: readonly EsmRecord[], options: CommonJsEmitOptions): { code: string; head: number; end: number; columns: ColumnMap } {
+function emitModule(source: string, records: readonly EsmUsedRecord[], options: CommonJsEmitOptions): { code: string; head: number; end: number; columns: ColumnMap } {
   const temp = options.names ?? generatedNames(source);
   const key = (name: string) => `[${JSON.stringify(name)}]`;
-  // The wrapper's top level holds only generated names (these helpers, and
-  // the require every record calls): in an async body the module's own
+  const link = esmLink(records, ARRAYS);
+  // The wrapper's top level holds only generated names (the helpers, and
+  // the require every request calls): in an async body the module's own
   // bindings, its imports' included, are inside the IIFE, so nothing it
   // declares (`import Object from "dep"`, `const require = createRequire(...)`)
   // reaches what these read.
-  const requireRef = temp();
-  const requireOf = (specifier: string) => `${requireRef}(${JSON.stringify(specifier)})`;
-  const exportsRef = temp();
-  const exportGetter = temp();
-  const ownKey = temp();
-  const namespaceOf = temp();
-  let namespaces = false;
-  /** A required module's namespace: an __esModule one as it is, any other with `default` = its exports. */
-  const namespace = (mod: string) => {
-    namespaces = true;
-    return `${namespaceOf}(${mod})`;
+  const header: string[] = [];
+  const helpers = new Map<string, string>();
+  const helper = (text: string): string => {
+    let name = helpers.get(text);
+    if (name === undefined) {
+      name = temp();
+      helpers.set(text, name);
+      header.push(`const ${name} = ${text};`);
+    }
+    return name;
   };
+  let requireRef = '';
+  if (link.requests.length > 0) {
+    requireRef = temp();
+    header.push(`const ${requireRef} = (specifier) => ${options.requireFunction ?? 'require'}(specifier);`);
+  }
+  // An ES module's exports object, marked so (ESM_EXPORTS_HELPER) when it
+  // declares any export, `export {}` included (esModuleSource gives every
+  // lowered module one).
+  let exportsRef = '';
+  let exportGetter = '';
+  if (records.some((record) => record.kind !== 'import')) {
+    exportsRef = temp();
+    exportGetter = temp();
+    header.push(`const ${exportsRef} = ${options.exportsObject ?? 'module.exports'}; const ${exportGetter} = (${ESM_EXPORTS_HELPER})(${exportsRef});`);
+  }
 
-  // Before anything is emitted, since an export may name an import declared
-  // after it: each import's module and, where it binds `default`, its
-  // interop (the module if marked `__esModule`, else `{ default: module }`);
-  // what the body reads for each named binding; and the edit to each use.
-  const importModules = new Map<EsmRecord, { readonly mod: string; readonly interop: string | null }>();
+  // Each requested module, and a default import's interop, as it is
+  // required; what the body reads for each named binding.
+  const requires: string[] = [];
+  const modules: string[] = [];
   const reads = new Map<string, string>();
-  const uses: ColumnEdit[] = [];
-  for (const record of records) {
-    if (record.kind !== 'import' || record.bindings.length === 0) continue;
+  for (const request of link.requests) {
+    if (!request.kept) {
+      requires.push(`${requireRef}(${JSON.stringify(request.source)});`);
+      modules.push('');
+      continue;
+    }
     const mod = temp();
-    const interop = record.bindings.some((binding) => binding.kind === 'named' && binding.imported === 'default') ? temp() : null;
-    importModules.set(record, { mod, interop });
-    for (const binding of record.bindings) {
+    modules.push(mod);
+    requires.push(`const ${mod} = ${requireRef}(${JSON.stringify(request.source)});`);
+    const interop = request.interop ? temp() : null;
+    if (interop) requires.push(`const ${interop} = ${helper(ESM_INTEROP_HELPER)}(${mod});`);
+    for (const binding of request.bindings) {
+      if (binding.kind === 'named') reads.set(binding.local, binding.imported === 'default' ? `${interop}.default` : `${mod}${key(binding.imported)}`);
+    }
+  }
+
+  // An import's namespace once every request is required; a re-export's
+  // (`export * as`) when first read, once.
+  const imported: string[] = [];
+  const lazy: string[] = [];
+  const namespaces = link.namespaces.map(({ request, local }) => {
+    const namespace = helper(ESM_NAMESPACE_HELPER);
+    if (local !== null) {
+      imported.push(`const ${local} = ${namespace}(${modules[request]});`);
+      return local;
+    }
+    const value = temp();
+    lazy.push(`let ${value};`);
+    return `${value} ??= ${namespace}(${modules[request]})`;
+  });
+
+  // The edit to each use of an import; a const a write to the import throws
+  // on, as the language's assignment to an import does.
+  const uses: ColumnEdit[] = [];
+  const useImports = (bindings: readonly EsmUsedBinding[]) => {
+    for (const binding of bindings) {
       if (binding.kind === 'namespace') continue;
-      const read = binding.imported === 'default' ? `${interop}.default` : `${mod}${key(binding.imported)}`;
-      reads.set(binding.local, read);
+      const read = reads.get(binding.local)!;
       for (const { start, end, use } of binding.references) {
         if (use === 'write') continue;
         // `(` would continue a statement before it that has no `;`; `void` cannot.
@@ -534,112 +493,42 @@ function emitModule(source: string, records: readonly EsmRecord[], options: Comm
           ? { start, end, text: use === 'shorthand' ? `${binding.local}: ${read}` : read }
           : { start, end, text: callee, call: true });
       }
+      if (binding.references.some(({ use }) => use === 'write')) imported.push(`const ${binding.local} = void 0;`);
     }
-  }
-
-  // In the body's scope, before it: a getter per export name in name order;
-  // then, in source order, each requested module; then the bindings an
-  // import declares (a namespace; a const a write to the import throws on,
-  // as the language's assignment to an import does); then each `export *`'s
-  // names.
-  const requires: string[] = [];
-  const imported: string[] = [];
-  const getters: [string, string][] = [];
-  const stars: string[] = [];
+  };
   const edits: SourceEdit[] = [...(options.edits ?? [])];
-  let exportsAnything = false;
   // A hashbang is only valid as the first line of a script; the body moves
   // into a function. Kept as a comment so line numbers stay put.
   if (source.startsWith('#!')) edits.push({ start: 0, end: 2, text: '//' });
   // A declaration is a statement: a `;` in its place ends one before it that has none.
   const remove = (start: number, end: number) => edits.push({ start, end, text: ';' + blank(source.slice(start + 1, end)) });
-
+  let defaultValue = '';
   for (const record of records) {
-    switch (record.kind) {
-      case 'import': {
-        remove(record.start, record.end);
-        const module = importModules.get(record);
-        if (!module) {
-          requires.push(`${requireOf(record.source)};`);
-          break;
-        }
-        const { mod, interop } = module;
-        requires.push(`const ${mod} = ${requireOf(record.source)};`);
-        if (interop) requires.push(`const ${interop} = ${mod} && ${mod}.__esModule ? ${mod} : { default: ${mod} };`);
-        for (const binding of record.bindings) {
-          const { local } = binding;
-          if (binding.kind === 'namespace') imported.push(`const ${local} = ${namespace(mod)};`);
-          else if (binding.references.some(({ use }) => use === 'write')) imported.push(`const ${local} = void 0;`);
-        }
-        break;
-      }
-      case 'export': {
-        exportsAnything = true;
-        remove(record.start, record.end);
-        if (record.source === null) {
-          for (const name of record.names) {
-            // A module's own export names a binding of its own; nothing else parses.
-            if (name.kind !== 'named') throw new Error(`export of the namespace ${name.exported} without a source module`);
-            getters.push([name.exported, reads.get(name.local) ?? name.local]);
-          }
-          break;
-        }
-        const mod = temp();
-        requires.push(`const ${mod} = ${requireOf(record.source)};`);
-        for (const name of record.names) {
-          getters.push([name.exported, name.kind === 'namespace' ? namespace(mod) : `${mod}${key(name.local)}`]);
-        }
-        break;
-      }
-      case 'export-default': {
-        exportsAnything = true;
-        const value = temp();
-        const { start, end } = record.expression;
-        // Through a property named default, an anonymous function or class
-        // is named `default`, as the language names an exported one. The
-        // expression, and every edit in it, stays where the source has it.
-        const keyword = blank(source.slice(record.start, start));
-        const lineBreak = keyword.search(/[\n\r\u2028\u2029]/);
-        edits.push({ start: record.start, end: start, text: `var ${value} = ({ default: (` + (lineBreak === -1 ? '' : keyword.slice(lineBreak)) });
-        edits.push({ start: end, end: record.end, text: ') }).default;' + blank(source.slice(end, record.end)) });
-        getters.push(['default', value]);
-        break;
-      }
-      case 'export-all': {
-        exportsAnything = true;
-        const mod = temp();
-        remove(record.start, record.end);
-        requires.push(`const ${mod} = ${requireOf(record.source)};`);
-        stars.push(
-          `for (const k in ${mod}) if (k !== "default" && !${ownKey}(${exportsRef}, k)) ${exportGetter}(k, () => ${mod}[k]);`,
-        );
-        break;
-      }
+    if (record.kind !== 'export-default') {
+      remove(record.start, record.end);
+      if (record.kind === 'import') useImports(record.bindings);
+      continue;
     }
+    defaultValue = temp();
+    const { start, end } = record.expression;
+    // Through a property named default, an anonymous function or class
+    // is named `default`, as the language names an exported one. The
+    // expression, and every edit in it, stays where the source has it.
+    const keyword = blank(source.slice(record.start, start));
+    const lineBreak = keyword.search(/[\n\r\u2028\u2029]/);
+    edits.push({ start: record.start, end: start, text: `var ${defaultValue} = ({ default: (` + (lineBreak === -1 ? '' : keyword.slice(lineBreak)) });
+    edits.push({ start: end, end: record.end, text: ') }).default;' + blank(source.slice(end, record.end)) });
   }
 
-  // Object and Symbol.toStringTag (AsyncFunction.prototype's one own symbol)
-  // are reached through literals: in a sync body these lines share the
-  // module's scope, where it may declare a binding of either name. Tagged
-  // `Module`, as Node's namespace is, a call on it reads `Module.f` in a stack.
-  const header = exportsAnything
-    ? [
-      `const ${exportsRef} = ${options.exportsObject ?? 'module.exports'}; ({}).constructor.defineProperty(${exportsRef}, "__esModule", { value: true }); `
-        + `({}).constructor.defineProperty(${exportsRef}, ({}).constructor.getOwnPropertySymbols(({}).constructor.getPrototypeOf(async () => {}))[0], { value: "Module" });`,
-      `const ${exportGetter} = (name, get) => ({}).constructor.defineProperty(${exportsRef}, name, { enumerable: true, get });`,
-      `const ${ownKey} = (o, k) => ({}).hasOwnProperty.call(o, k);`,
-    ]
-    : [];
-  // As Node and esbuild read a CommonJS module as a namespace: its exports
-  // object is `default`, its other names read through.
-  if (namespaces) {
-    header.push(
-      `const ${namespaceOf} = (m) => { if (m && m.__esModule) return m; const O = ({}).constructor; ` +
-      `const ns = O.create(m != null ? O.getPrototypeOf(m) : null); O.defineProperty(ns, "default", { value: m, enumerable: true }); ` +
-      `if (m != null) for (const k of O.getOwnPropertyNames(m)) if (k !== "default") O.defineProperty(ns, k, { get: () => m[k], enumerable: O.getOwnPropertyDescriptor(m, k).enumerable }); return ns; };`,
-    );
-  }
-  if (requires.length > 0) header.push(`const ${requireRef} = (specifier) => ${options.requireFunction ?? 'require'}(specifier);`);
+  // Before the requests: each export's getter, in name order.
+  const installed = link.exports.map((entry) => {
+    const read = entry.kind === 'binding' ? reads.get(entry.local) ?? entry.local
+      : entry.kind === 'default' ? defaultValue
+        : entry.kind === 'reexport' ? `${modules[entry.request]}${key(entry.name)}`
+          : namespaces[entry.namespace];
+    return `${exportGetter}(${JSON.stringify(entry.exported)}, () => ${read});`;
+  });
+  const stars = link.stars.map((request) => `${helper(ESM_STAR_HELPER)}(${exportsRef}, ${exportGetter}, ${modules[request]});`);
   const bind = options.bind;
   if (bind && bind.metas.length > 0) {
     const meta = temp();
@@ -648,14 +537,11 @@ function emitModule(source: string, records: readonly EsmRecord[], options: Comm
   }
   if (bind && bind.dynamicImports.length > 0) {
     const load = temp();
-    header.push(`const ${load} = (...args) => ${DYNAMIC_IMPORT_HELPER}(${JSON.stringify(bind.parentUrl)}, ...args);`);
+    header.push(`const ${load} = (...args) => ${bind.loader ?? DYNAMIC_IMPORT_HELPER}(${JSON.stringify(bind.parentUrl)}, ...args);`);
     for (const start of bind.dynamicImports) edits.push({ start, end: start + 'import'.length, text: load });
   }
-  const installed = getters
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([exported, value]) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`);
   const allEdits = [...edits, ...uses];
-  const prologue = [...installed, ...requires, ...imported, ...stars].join(' ');
+  const prologue = [...lazy, ...installed, ...requires, ...imported, ...stars].join(' ');
   // An ES module is strict: the directive opens the first line, where the
   // wrapper finds it (commonjs-cell.ts).
   const lead = options.body === 'async'
@@ -704,25 +590,4 @@ function columnMap(source: string, edits: readonly ColumnEdit[]): ColumnMap {
     }
   }
   return entries;
-}
-
-/** The bindings an exported declaration introduces. */
-function declaredNames(declaration: { type: string; id?: { name: string } | null; declarations?: { id: Pattern }[] }): string[] {
-  if (declaration.type !== 'VariableDeclaration') return declaration.id ? [declaration.id.name] : [];
-  const names: string[] = [];
-  const visit = (pattern: Pattern | null): void => {
-    if (pattern === null) return;
-    switch (pattern.type) {
-      case 'Identifier': names.push(pattern.name); break;
-      case 'ObjectPattern':
-        for (const property of pattern.properties) visit(property.type === 'RestElement' ? property.argument : property.value);
-        break;
-      case 'ArrayPattern': for (const element of pattern.elements) visit(element); break;
-      case 'RestElement': visit(pattern.argument); break;
-      case 'AssignmentPattern': visit(pattern.left); break;
-      default: break;
-    }
-  };
-  for (const declarator of declaration.declarations ?? []) visit(declarator.id);
-  return names;
 }

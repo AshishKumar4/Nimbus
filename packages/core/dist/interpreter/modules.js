@@ -1,37 +1,8 @@
-import { TypeError, accessorDescriptor, dataDescriptor, defineOrThrow, isEnumerableOwn, objectCreate, objectGetOwnPropertyNames, objectGetPrototypeOf, objectHasOwn, reflectApply, reflectGet, resume, resumeThrowing, withElement, } from './intrinsics.js';
-import { ROOT_ENV, isObject, operators } from './runtime.js';
-/** The export getter for `read`, over one evaluation's environment. */
-function exportGetter(env, read) {
-    switch (read.kind) {
-        case 'binding': {
-            const r = read.read;
-            return () => r(env);
-        }
-        case 'reexport': {
-            const { slot, name } = read;
-            const ops = operators();
-            if (name !== 'default')
-                return () => ops.get(env[slot], name);
-            return () => {
-                const m = env[slot];
-                return isObject(m) && reflectGet(m, '__esModule') ? ops.get(m, 'default') : m;
-            };
-        }
-        case 'namespace': {
-            const slot = read.slot;
-            let namespace = null;
-            return () => {
-                if (namespace === null)
-                    namespace = toESM(env[slot]);
-                return namespace;
-            };
-        }
-    }
-}
+import { reflectApply, resume, resumeThrowing, withElement } from './intrinsics.js';
+import { ROOT_ENV } from './runtime.js';
 /** The wrapper function that runs `plan`. */
-export function moduleCell(plan) {
-    const { frame, exportsSlot, requireSlot, moduleSlot, filenameSlot, dirnameSlot, imports, exports, stars, instantiate, body } = plan;
-    const ops = operators();
+export function moduleCell(plan, ops, helpers) {
+    const { frame, exportsSlot, requireSlot, moduleSlot, filenameSlot, dirnameSlot, exports, requests, namespaces, stars, instantiate, body } = plan;
     const bs = body.s;
     const bg = body.g;
     return (exportsArg, requireArg, moduleArg, filename, dirname) => {
@@ -41,41 +12,32 @@ export function moduleCell(plan) {
         env[moduleSlot] = moduleArg;
         env[filenameSlot] = filename;
         env[dirnameSlot] = dirname;
-        if (typeof requireArg !== 'function')
-            throw new TypeError('require is not a function');
+        // A cell's module is always an ES module's: the next launch lowers
+        // esModuleSource's text, which declares an export.
+        const exportsObject = ops.get(moduleArg, 'exports');
+        const define = reflectApply(helpers.exports, undefined, [exportsObject]);
+        for (let i = 0; i < exports.length; i++)
+            reflectApply(define, undefined, [exports[i].name, exportGetter(env, exports[i], helpers)]);
         // Instantiation, before any import is evaluated: an import that
         // imports this module back (a cycle) finds its exports published and
         // its function declarations made, as a module's linking provides.
-        const facade = {};
-        defineOrThrow(facade, '__esModule', dataDescriptor(true, false, false, false));
-        for (let i = 0; i < exports.length; i++) {
-            const { name, read } = exports[i];
-            if (!objectHasOwn(facade, name))
-                defineOrThrow(facade, name, accessorDescriptor('get', exportGetter(env, read), true, false));
-        }
-        ops.set(moduleArg, 'exports', facade);
         if (instantiate !== null)
             instantiate(env);
-        for (let i = 0; i < imports.length; i++) {
-            const { source, slot, bindings } = imports[i];
+        for (let i = 0; i < requests.length; i++) {
+            const { source, module, interop } = requests[i];
             const m = reflectApply(requireArg, undefined, [source]);
-            if (slot !== null)
-                env[slot] = m;
-            for (let j = 0; j < bindings.length; j++)
-                env[bindings[j].slot] = bindings[j].namespace ? toESM(m) : m;
-        }
-        for (let i = 0; i < stars.length; i++) {
-            const m = env[stars[i]];
-            if (!isObject(m))
+            for (let j = 0; j < module.length; j++)
+                env[module[j]] = m;
+            if (interop.length === 0)
                 continue;
-            const keys = objectGetOwnPropertyNames(m);
-            for (let j = 0; j < keys.length; j++) {
-                const key = keys[j];
-                if (key === 'default' || objectHasOwn(facade, key))
-                    continue;
-                defineOrThrow(facade, key, accessorDescriptor('get', () => ops.get(m, key), isEnumerableOwn(m, key), false));
-            }
+            const value = reflectApply(helpers.interop, undefined, [m]);
+            for (let j = 0; j < interop.length; j++)
+                env[interop[j]] = value;
         }
+        for (let i = 0; i < namespaces.length; i++)
+            env[namespaces[i].slot] = reflectApply(helpers.namespace, undefined, [env[namespaces[i].from]]);
+        for (let i = 0; i < stars.length; i++)
+            reflectApply(helpers.star, undefined, [exportsObject, define, env[stars[i]]]);
         if (bg === null) {
             bs(env);
             return undefined;
@@ -83,21 +45,18 @@ export function moduleCell(plan) {
         return drive(bg(env));
     };
 }
-/** esbuild's __toESM: a namespace object over a CommonJS module's exports. */
-function toESM(m) {
-    const target = objectCreate(isObject(m) ? objectGetPrototypeOf(m) : null);
-    if (!isObject(m) || !reflectGet(m, '__esModule'))
-        defineOrThrow(target, 'default', dataDescriptor(m, false, true, false));
-    if (isObject(m)) {
-        const keys = objectGetOwnPropertyNames(m);
-        for (let i = 0; i < keys.length; i++) {
-            const key = keys[i];
-            if (objectHasOwn(target, key))
-                continue;
-            defineOrThrow(target, key, accessorDescriptor('get', () => reflectGet(m, key), isEnumerableOwn(m, key), false));
-        }
+/** The getter of `entry` over one evaluation's frame. */
+function exportGetter(env, entry, helpers) {
+    if (entry.kind === 'read') {
+        const read = entry.read;
+        return () => read(env);
     }
-    return target;
+    const { slot, from } = entry;
+    return () => {
+        if (env[slot] === undefined)
+            env[slot] = reflectApply(helpers.namespace, undefined, [env[from]]);
+        return env[slot];
+    };
 }
 /** Runs a module body's generator as an async function would: one await per yielded value. */
 async function drive(it) {

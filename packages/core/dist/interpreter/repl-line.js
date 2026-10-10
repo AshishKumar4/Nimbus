@@ -37,6 +37,7 @@ import { SafeSet, SyntaxError, append, arrayIsArray, charCodeAt, isWhitespaceCod
 import { own } from './parser-realm.js';
 import { isObject } from './runtime.js';
 import { REPL_IMPORT } from '../runtime/js-repl-names.js';
+import { forEachBindingIdentifier } from '../runtime/binding-pattern.js';
 const LINE_OPTIONS = own({ ecmaVersion: 'latest', sourceType: 'script', allowAwaitOutsideFunction: true });
 /**
  * The body of the async function a REPL line runs as, called with the global
@@ -120,6 +121,10 @@ function declareGlobal(line, name) {
         return;
     line.declared.add(name);
     append(line.globals, name);
+}
+/** A name a pattern binds, declared a global. */
+function declareIdentifier(identifier, line) {
+    declareGlobal(line, identifier.name);
 }
 /** Rewrite the declarations of one statement, outside any function; `top` when it is the line's own. */
 function statement(node, top, line) {
@@ -260,7 +265,7 @@ function declaration(node, line, head) {
     const first = declarators[0];
     if (node.kind === 'var') {
         for (let i = 0; i < declarators.length; i++)
-            declarePattern(line, declarators[i].id);
+            forEachBindingIdentifier(declarators[i].id, declareIdentifier, line);
     }
     if (head !== null) {
         append(line.edits, { start: node.start, end: first.start, text: '' });
@@ -284,34 +289,6 @@ function declaration(node, line, head) {
         append(line.edits, { start: declarator.end, end: declarator.end, text: ')' });
     }
     append(line.edits, { start: declarators[declarators.length - 1].end, end: declarators[declarators.length - 1].end, text: ')' });
-}
-/** Each name `pattern` binds, declared a global. */
-function declarePattern(line, pattern) {
-    if (pattern === null)
-        return;
-    switch (pattern.type) {
-        case 'Identifier':
-            declareGlobal(line, pattern.name);
-            return;
-        case 'ObjectPattern':
-            for (let i = 0; i < pattern.properties.length; i++) {
-                const property = pattern.properties[i];
-                declarePattern(line, property.type === 'RestElement' ? property.argument : property.value);
-            }
-            return;
-        case 'ArrayPattern':
-            for (let i = 0; i < pattern.elements.length; i++)
-                declarePattern(line, pattern.elements[i]);
-            return;
-        case 'RestElement':
-            declarePattern(line, pattern.argument);
-            return;
-        case 'AssignmentPattern':
-            declarePattern(line, pattern.left);
-            return;
-        default:
-            return;
-    }
 }
 /** Every `import(...)` in `node`, nested functions included, calls REPL_IMPORT instead. */
 function routeImports(node, edits) {

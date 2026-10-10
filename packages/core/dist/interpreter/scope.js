@@ -1,4 +1,5 @@
 import { Error, SafeMap, SafeSet, append, arrayIsArray, charCodeAt, newSafeList, objectHasOwn, objectKeys, reflectGet, someItem, } from './intrinsics.js';
+import { forEachBindingIdentifier } from '../runtime/binding-pattern.js';
 import { UnsupportedSyntax } from './unsupported.js';
 /**
  * Kinds that throw when read before their declaration runs: lexical
@@ -138,45 +139,14 @@ function blockLexicalNames(statements) {
         while (node.type === 'LabeledStatement')
             node = node.body;
         if (node.type === 'VariableDeclaration' && node.kind !== 'var') {
-            for (let j = 0; j < node.declarations.length; j++) {
-                const ids = patternIdentifiers(node.declarations[j].id);
-                for (let k = 0; k < ids.length; k++)
-                    names.add(ids[k].name);
-            }
+            for (let j = 0; j < node.declarations.length; j++)
+                forEachBindingIdentifier(node.declarations[j].id, (id) => names.add(id.name));
         }
         else if ((node.type === 'FunctionDeclaration' || node.type === 'ClassDeclaration') && node.id) {
             names.add(node.id.name);
         }
     }
     return names;
-}
-export function patternIdentifiers(pattern, out = newSafeList()) {
-    switch (pattern.type) {
-        case 'Identifier':
-            append(out, pattern);
-            break;
-        case 'ObjectPattern':
-            for (let i = 0; i < pattern.properties.length; i++) {
-                const p = pattern.properties[i];
-                patternIdentifiers(p.type === 'RestElement' ? p.argument : p.value, out);
-            }
-            break;
-        case 'ArrayPattern':
-            for (let i = 0; i < pattern.elements.length; i++) {
-                const e = pattern.elements[i];
-                if (e)
-                    patternIdentifiers(e, out);
-            }
-            break;
-        case 'RestElement':
-            patternIdentifiers(pattern.argument, out);
-            break;
-        case 'AssignmentPattern':
-            patternIdentifiers(pattern.left, out);
-            break;
-        case 'MemberExpression': break;
-    }
-    return out;
 }
 /** The child nodes of `node`, in a new array. */
 export function childNodes(node) {
@@ -439,11 +409,8 @@ class Analyzer {
             switch (node.type) {
                 case 'VariableDeclaration':
                     if (node.kind === 'var') {
-                        for (let i = 0; i < node.declarations.length; i++) {
-                            const ids = patternIdentifiers(node.declarations[i].id);
-                            for (let j = 0; j < ids.length; j++)
-                                declareVar(ids[j]);
-                        }
+                        for (let i = 0; i < node.declarations.length; i++)
+                            forEachBindingIdentifier(node.declarations[i].id, declareVar);
                     }
                     return;
                 case 'FunctionDeclaration':
@@ -569,11 +536,10 @@ class Analyzer {
                     if (node.kind === 'using' || node.kind === 'await using')
                         throw new UnsupportedSyntax(`${node.kind} declarations`);
                     if (node.kind !== 'var') {
+                        const kind = node.kind;
                         for (let j = 0; j < node.declarations.length; j++) {
                             const d = node.declarations[j];
-                            const ids = patternIdentifiers(d.id);
-                            for (let k = 0; k < ids.length; k++)
-                                scope.declare(ids[k].name, node.kind, d.end);
+                            forEachBindingIdentifier(d.id, (id) => scope.declare(id.name, kind, d.end));
                         }
                     }
                     break;
@@ -595,9 +561,7 @@ class Analyzer {
         }
     }
     declarePattern(pattern, kind, scope, declEnd = -1) {
-        const ids = patternIdentifiers(pattern);
-        for (let i = 0; i < ids.length; i++)
-            scope.declare(ids[i].name, kind, declEnd);
+        forEachBindingIdentifier(pattern, (id) => scope.declare(id.name, kind, declEnd));
     }
     // ── References ──
     /**

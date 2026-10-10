@@ -1,22 +1,18 @@
 import { reparseFunction } from './reparse.js';
-import { analyzeLazyFunction, patternIdentifiers, releaseScopes, suspendsInFunction, } from './scope.js';
+import { analyzeLazyFunction, releaseScopes, suspendsInFunction, } from './scope.js';
 import { BigInt, Error, ReferenceError, RegExp, SafeMap, SafeSet, SafeWeakMap, SyntaxError, TypeError, append, arraySliceFrom, contains, copyList, createDataProperty, dataDescriptor, everyItem, globalObject, indexWhere, listOf, mapList, newList, newSafeList, objectFreeze, objectHasOwn, promiseReject, reflectApply, reflectDefineProperty, reflectGet, objectGetPrototypeOf, reflectHas, reflectSet, reflectSetPrototypeOf, safeGenerator, skipTrivia, someItem, stringOf, stringSlice, symbolAsyncIterator, symbolIterator, toObject, withElement, withFirst, withLast, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
-import { AWAIT, BREAK, CONTINUE, Completion, DELEGATE, FunctionInfo, PrivateName, TDZ, THIS_BEFORE_SUPER, YIELD, functionName, initializeInstance, frameTemplate, isObject, makeFunction, operators, signalOperand, superConstruct, tdzError, up, upN, } from './runtime.js';
+import { AWAIT, BREAK, CONTINUE, Completion, DELEGATE, FunctionInfo, PrivateName, TDZ, THIS_BEFORE_SUPER, YIELD, functionName, initializeInstance, frameTemplate, isObject, signalOperand, superConstruct, tdzError, up, upN, } from './runtime.js';
 import { arrayIteration, asyncFromSyncIterator, asyncIteratorClose, closeArrayIteration, describe, getIterator, iteratorFrom, iteratorMethod, spreadInto, } from './iteration.js';
 import { asGen, genCode, suspendedBind, suspendedSync, syncCode } from './code.js';
 import { classMaking, } from './classes.js';
+import { esmLink, esmRecord } from '../runtime/esm-interop.js';
 import { arrayWithHoles, callValue, constructValue, copyDataProperties, defineAccessor, keyOnce, nullBase, requireObjectCoercible, signalOf, templateObject, toPropertyKey, withHas, } from './operations.js';
-/** A module specifier's text. */
-function specifierOf(node) {
-    if (typeof node.value !== 'string')
-        throw new Error('interpreter: module specifier');
-    return node.value;
-}
-/** An imported or exported name: an identifier, or a string such as `export { a as "b-c" }`. */
-function exportedName(node) {
-    return node.type === 'Identifier' ? node.name : stringOf(node.value);
-}
+/** The lists esm-interop.ts makes for the interpreter: SafeLists. */
+const SAFE_LISTS = {
+    list: newSafeList,
+    push: (list, value) => { list[list.length] = value; },
+};
 /** The value an optional chain short-circuits to, inside the chain. */
 const SHORT = objectFreeze({ short: true });
 /** Compile `fi`'s body from `site`: called by the runtime on the function's first call. */
@@ -89,6 +85,8 @@ export class Compiler {
     unit;
     text;
     base;
+    rt;
+    ops;
     scope;
     shape = 'plain';
     suspendCache = new SafeWeakMap();
@@ -103,6 +101,8 @@ export class Compiler {
         this.text = text;
         this.base = base;
         this.scope = root;
+        this.rt = unit.runtime;
+        this.ops = unit.runtime.ops;
     }
     /** The unit's source text at [start, end) of this compile's text: what a function's toString answers. */
     sourceOf(start, end) {
@@ -170,6 +170,7 @@ export class Compiler {
      * own scope, whose environment the call already allocated.
      */
     scopeEntry(scope, frame = false) {
+        const rt = this.rt;
         const tdz = tdzSlots(scope, false);
         const script = scope.fn.functionKind === 'script' && scope === scope.fn;
         const functions = newSafeList();
@@ -186,7 +187,7 @@ export class Compiler {
                 env[tdz[i]] = TDZ;
             for (let i = 0; i < functions.length; i++) {
                 const f = functions[i];
-                const value = makeFunction(f.fi, env, undefined);
+                const value = rt.makeFunction(f.fi, env, undefined);
                 if (f.global !== null) {
                     reflectDefineProperty(G, f.global, dataDescriptor(value, true, true, false)) || reflectSet(G, f.global, value);
                 }
@@ -376,8 +377,9 @@ export class Compiler {
     }
     /** A function or class expression evaluated to a new function object. */
     functionExpr(node, name) {
+        const rt = this.rt;
         const fi = this.functionInfo(node, node.type === 'FunctionExpression' && node.id ? node.id.name : name);
-        return syncCode((env) => makeFunction(fi, env, undefined));
+        return syncCode((env) => rt.makeFunction(fi, env, undefined));
     }
     /** Evaluate `node`, naming it `name` if it is an anonymous function or class (NamedEvaluation). */
     named(node, name) {
@@ -391,6 +393,7 @@ export class Compiler {
     }
     /** Like named(), with the name known only when the code runs (a computed key). */
     namedAtRuntime(node) {
+        const rt = this.rt;
         if (!isAnonymousFunctionDefinition(node)) {
             const c = this.expr(node);
             const cs = c.s;
@@ -401,7 +404,7 @@ export class Compiler {
         if (node.type === 'ClassExpression')
             return this.classMaker(node);
         const fi = this.functionInfo(node, '');
-        return { s: (env, name) => makeFunction(fi, env, undefined, name), g: null };
+        return { s: (env, name) => rt.makeFunction(fi, env, undefined, name), g: null };
     }
     // ── Statements ──
     statementList(list) {
@@ -935,6 +938,7 @@ export class Compiler {
         return syncCode((env) => cs(entry(env)));
     }
     forOf(node, labels) {
+        const ops = this.ops;
         const control = this.loopControl(labels);
         const right = this.rightOfForInOf(node);
         const head = this.forHead(node);
@@ -945,7 +949,7 @@ export class Compiler {
             const r = right.s;
             const b = body.s;
             return syncCode((env) => {
-                const it = getIterator(r(env));
+                const it = getIterator(ops, r(env));
                 for (;;) {
                     const value = it.step();
                     if (it.done)
@@ -974,7 +978,7 @@ export class Compiler {
         const bg = asGen(body);
         const bindGen = head.bindGen;
         return genCode(function* (env) {
-            const it = getIterator(yield* rg(env));
+            const it = getIterator(ops, yield* rg(env));
             // Whether leaving now must close the iterator: a generator's return()
             // while suspended in the body leaves through `finally` alone.
             let open = true;
@@ -1032,9 +1036,9 @@ export class Compiler {
         const bind = head.bind;
         const bindGen = head.bindGen;
         const awaitValue = this.awaiter();
+        const ops = this.ops;
         return genCode(function* (env) {
             const iterable = yield* right(env);
-            const ops = operators();
             let iterator;
             const asyncMethod = iterable === null || iterable === undefined ? undefined : ops.get(iterable, symbolAsyncIterator);
             if (asyncMethod === undefined || asyncMethod === null) {
@@ -1357,17 +1361,9 @@ export class Compiler {
         const raw = this.slotReader(hops, slot);
         const imported = this.unit.imports.get(b);
         if (imported) {
-            const ops = operators();
+            const ops = this.ops;
             const name = imported.name;
-            if (imported.kind === 'named')
-                return (env) => ops.get(raw(env), name);
-            if (imported.kind === 'default') {
-                return (env) => {
-                    const m = raw(env);
-                    return isObject(m) && reflectGet(m, '__esModule') ? ops.get(m, 'default') : m;
-                };
-            }
-            return raw;
+            return imported.kind === 'named' ? (env) => ops.get(raw(env), name) : raw;
         }
         if (!tdz)
             return raw;
@@ -1406,7 +1402,7 @@ export class Compiler {
             return () => NaN;
         if (name === 'Infinity')
             return () => Infinity;
-        const ops = operators();
+        const ops = this.ops;
         const get = ops.globalReader(name) ?? (() => ops.get(G, name));
         if (forTypeof)
             return get;
@@ -1426,7 +1422,7 @@ export class Compiler {
     }
     withRead(ref, name, fallback) {
         const objects = this.withObjects(ref);
-        const ops = operators();
+        const ops = this.ops;
         return (env) => {
             for (let i = 0; i < objects.length; i++) {
                 const o = objects[i](env);
@@ -1441,7 +1437,7 @@ export class Compiler {
         const ref = this.analysis.ref(id);
         const name = id.name;
         const strict = this.scope.strict;
-        const ops = operators();
+        const ops = this.ops;
         let write;
         const b = ref.binding;
         const bound = b === null && name === 'Function' ? this.unit.host.functionBinding : null;
@@ -1541,7 +1537,7 @@ export class Compiler {
     }
     /** A member expression as an assignment target: evaluates its reference, then returns its setter. */
     memberTarget(node) {
-        const ops = operators();
+        const ops = this.ops;
         const strict = this.scope.strict;
         if (this.suspends(node))
             throw new UnsupportedSyntax('await or yield inside a destructuring target');
@@ -1550,7 +1546,7 @@ export class Compiler {
             const home = this.homeObject(node.object);
             const thisValue = this.thisValue(node.object);
             return (env) => {
-                const k = toPropertyKey(key(env));
+                const k = toPropertyKey(ops, key(env));
                 const receiver = thisValue(env);
                 const proto = objectGetPrototypeOf(home(env));
                 return (value) => {
@@ -1592,7 +1588,7 @@ export class Compiler {
     }
     /** One property of an object pattern: reads its key from the source and binds the value. */
     objectPatternStep(p, init) {
-        const ops = operators();
+        const ops = this.ops;
         if (p.type === 'RestElement') {
             const bind = this.patternBinder(p.argument, init);
             if (p.argument.type === 'MemberExpression') {
@@ -1641,11 +1637,12 @@ export class Compiler {
         return { kind: 'one', bind: this.patternBinder(target, init), dflt, member: target.type === 'MemberExpression' ? this.memberTarget(target) : null };
     }
     arrayPatternBinder(pattern, init) {
+        const ops = this.ops;
         const elements = newSafeList();
         for (let i = 0; i < pattern.elements.length; i++)
             append(elements, this.arrayPatternElement(pattern.elements[i], init));
         return (env, value) => {
-            const method = iteratorMethod(value);
+            const method = iteratorMethod(ops, value);
             if (arrayIteration(value, method)) {
                 // The array's iterator, stepped by index: it is done once a step
                 // finds the index at the length, as that step reads it.
@@ -1717,7 +1714,7 @@ export class Compiler {
     }
     /** The generator flavor of patternBinder, for patterns whose defaults, keys or targets await or yield. */
     patternBinderGen(pattern, init) {
-        const ops = operators();
+        const ops = this.ops;
         switch (pattern.type) {
             case 'Identifier': {
                 const bind = this.patternBinder(pattern, init);
@@ -1763,7 +1760,7 @@ export class Compiler {
                     append(elements, e === null ? null : { rest: e.type === 'RestElement', el: this.elementGen(e.type === 'RestElement' ? e.argument : e, init) });
                 }
                 return safeGenerator(function* (env, value) {
-                    const it = getIterator(value);
+                    const it = getIterator(ops, value);
                     // A generator's return() while suspended in here is a return
                     // completion: it closes the iterator, and return()'s error wins.
                     let threw = false;
@@ -1805,11 +1802,12 @@ export class Compiler {
     }
     /** One property of a suspending object pattern: its key (null for a rest element), and its element. */
     objectPatternStepGen(p, init) {
+        const ops = this.ops;
         if (p.type === 'RestElement')
             return { key: null, el: this.elementGen(p.argument, init) };
         if (p.computed) {
             const k = asGen(this.expr(p.key));
-            return { key: safeGenerator(function* (env) { return toPropertyKey(yield* k(env)); }), el: this.elementGen(p.value, init) };
+            return { key: safeGenerator(function* (env) { return toPropertyKey(ops, yield* k(env)); }), el: this.elementGen(p.value, init) };
         }
         const name = this.staticKey(p.key);
         return { key: safeGenerator(function* () { return name; }), el: this.elementGen(p.value, init) };
@@ -1850,7 +1848,7 @@ export class Compiler {
         }
         if (node.object.type === 'Super')
             throw new UnsupportedSyntax('await or yield inside a super member key of a destructuring target');
-        const ops = operators();
+        const ops = this.ops;
         const set = this.scope.strict ? ops.set : ops.setSloppy;
         const og = asGen(this.expr(node.object));
         if (node.property.type === 'PrivateIdentifier') {
@@ -1878,6 +1876,7 @@ export class Compiler {
     }
     /** A property key: static, or computed and converted with ToPropertyKey. */
     propertyKey(key, computed) {
+        const ops = this.ops;
         if (!computed) {
             const k = this.staticKey(key);
             return () => k;
@@ -1885,7 +1884,7 @@ export class Compiler {
         if (key.type === 'PrivateIdentifier')
             throw new Error('interpreter: private key in a pattern');
         const c = this.expr(key).s;
-        return (env) => toPropertyKey(c(env));
+        return (env) => toPropertyKey(ops, c(env));
     }
     // ── Expressions ──
     expr(node) {
@@ -2041,7 +2040,7 @@ export class Compiler {
         if (!moduleScope || !binding)
             throw new UnsupportedSyntax('import.meta outside a module');
         const read = this.slotReader(this.hops(moduleScope), binding.slot);
-        const ops = operators();
+        const ops = this.ops;
         return (env) => ops.get(read(env), '__nimbusImportMeta');
     }
     importExpr(node) {
@@ -2096,7 +2095,7 @@ export class Compiler {
                     return yield DELEGATE;
                 });
             }
-            const ops = operators();
+            const ops = this.ops;
             return genCode(function* (env) {
                 const v = ag ? yield* ag(env) : as ? as(env) : undefined;
                 return yield* ops.delegate(v);
@@ -2171,7 +2170,7 @@ export class Compiler {
         });
     }
     unary(node) {
-        const ops = operators();
+        const ops = this.ops;
         if (node.operator === 'typeof' && node.argument.type === 'Identifier') {
             const read = this.read(node.argument, true);
             return syncCode((env) => typeof read(env));
@@ -2207,7 +2206,7 @@ export class Compiler {
         return syncCode((env) => op(as(env)));
     }
     deleteExpr(argument) {
-        const ops = operators();
+        const ops = this.ops;
         const strict = this.scope.strict;
         const remove = strict ? ops.remove : ops.removeSloppy;
         let target = argument;
@@ -2290,7 +2289,7 @@ export class Compiler {
         return syncCode((env) => { vs(env); return true; });
     }
     binary(node) {
-        const ops = operators();
+        const ops = this.ops;
         if (node.left.type === 'PrivateIdentifier') {
             const name = this.privateName(node.left);
             const right = this.expr(node.right);
@@ -2472,14 +2471,14 @@ export class Compiler {
         };
     }
     member(node, inChain) {
-        const ops = operators();
+        const ops = this.ops;
         if (node.object.type === 'Super') {
             const home = this.homeObject(node.object);
             const thisValue = this.thisValue(node.object);
             const key = this.memberKey(node);
             return syncCode((env) => {
                 const receiver = thisValue(env);
-                const k = toPropertyKey(key(env));
+                const k = toPropertyKey(ops, key(env));
                 const proto = objectGetPrototypeOf(home(env));
                 if (!isObject(proto))
                     throw new TypeError(`Cannot read properties of ${stringOf(proto)} (reading '${stringOf(k)}')`);
@@ -2549,7 +2548,7 @@ export class Compiler {
      * SHORT as soon as an optional link meets null or undefined.
      */
     chainGen(node) {
-        const ops = operators();
+        const ops = this.ops;
         if (node.type === 'MemberExpression' && node.object.type !== 'Super') {
             const object = this.chainGen(node.object);
             const optional = node.optional;
@@ -2632,7 +2631,7 @@ export class Compiler {
      * `with` object holding the name, or undefined.
      */
     callee(node, inChain) {
-        const ops = operators();
+        const ops = this.ops;
         if (node.type === 'MemberExpression') {
             if (node.object.type === 'Super') {
                 const get = this.member(node, false);
@@ -2724,6 +2723,7 @@ export class Compiler {
     }
     /** Arguments evaluated into an array (spreads iterate). */
     argumentList(args) {
+        const ops = this.ops;
         const parts = this.argumentParts(args);
         if (everyItem(parts, (p) => p.code.g === null)) {
             const fns = mapList(parts, (p) => p.code.s);
@@ -2759,7 +2759,7 @@ export class Compiler {
                 for (let i = 0; i < fns.length; i++) {
                     const v = fns[i](env);
                     if (spreads[i])
-                        spreadInto(out, v);
+                        spreadInto(ops, out, v);
                     else
                         append(out, v);
                 }
@@ -2773,7 +2773,7 @@ export class Compiler {
                 const p = gens[i];
                 const v = yield* p.g(env);
                 if (p.spread)
-                    spreadInto(out, v);
+                    spreadInto(ops, out, v);
                 else
                     append(out, v);
             }
@@ -2873,7 +2873,7 @@ export class Compiler {
             return null;
         if (someItem(node.arguments, (a) => a.type === 'SpreadElement'))
             return null;
-        const ops = operators();
+        const ops = this.ops;
         const os = this.expr(callee.object).s;
         const key = callee.computed ? this.expr(callee.property).s : null;
         const name = !callee.computed && callee.property.type === 'Identifier' ? callee.property.name : '';
@@ -2973,6 +2973,7 @@ export class Compiler {
         });
     }
     arrayExpr(node) {
+        const ops = this.ops;
         const parts = this.elementParts(node.elements);
         if (everyItem(parts, (p) => p === null || p.code.g === null)) {
             if (everyItem(parts, (p) => p !== null && !p.spread)) {
@@ -3017,7 +3018,7 @@ export class Compiler {
                         out.length++;
                     }
                     else if (item.spread)
-                        spreadInto(out, item.f(env));
+                        spreadInto(ops, out, item.f(env));
                     else
                         append(out, item.f(env));
                 }
@@ -3037,7 +3038,7 @@ export class Compiler {
                 }
                 const v = yield* item.g(env);
                 if (item.spread)
-                    spreadInto(out, v);
+                    spreadInto(ops, out, v);
                 else
                     append(out, v);
             }
@@ -3066,6 +3067,8 @@ export class Compiler {
         return { kind: 'data', key, value: this.expr(p.value), named: null };
     }
     objectExpr(node) {
+        const rt = this.rt;
+        const ops = this.ops;
         const parts = newSafeList();
         for (let i = 0; i < node.properties.length; i++)
             append(parts, this.propertyPart(node.properties[i]));
@@ -3117,7 +3120,7 @@ export class Compiler {
                             reflectSetPrototypeOf(o, proto);
                     }
                     else if (f.fi !== null) {
-                        o[f.key] = makeFunction(f.fi, env, o);
+                        o[f.key] = rt.makeFunction(f.fi, env, o);
                     }
                     else if (f.value !== null) {
                         o[f.key] = f.value(env);
@@ -3126,12 +3129,12 @@ export class Compiler {
                 return o;
             });
         }
-        const keyOf = (key, env) => (key.kind === 'static' ? key.static : toPropertyKey(key.computed.s(env)));
+        const keyOf = (key, env) => (key.kind === 'static' ? key.static : toPropertyKey(ops, key.computed.s(env)));
         const keyOfGen = safeGenerator(function* (key, env) {
             if (key.kind === 'static')
                 return key.static;
             const g = key.computed.g;
-            return toPropertyKey(g ? yield* g(env) : key.computed.s(env));
+            return toPropertyKey(ops, g ? yield* g(env) : key.computed.s(env));
         });
         const apply = (o, p, k, value, env) => {
             switch (p.kind) {
@@ -3146,13 +3149,13 @@ export class Compiler {
                     createDataProperty(o, k, value);
                     return;
                 case 'method': {
-                    const fn = makeFunction(p.fi, env, o, p.key.kind === 'computed' ? functionName(k) : p.fi.name);
+                    const fn = rt.makeFunction(p.fi, env, o, p.key.kind === 'computed' ? functionName(k) : p.fi.name);
                     createDataProperty(o, k, fn);
                     return;
                 }
                 case 'get':
                 case 'set': {
-                    const fn = makeFunction(p.fi, env, o, p.key.kind === 'computed' ? functionName(k, p.kind) : p.fi.name);
+                    const fn = rt.makeFunction(p.fi, env, o, p.key.kind === 'computed' ? functionName(k, p.kind) : p.fi.name);
                     defineAccessor(o, k, p.kind, fn, true);
                     return;
                 }
@@ -3210,7 +3213,7 @@ export class Compiler {
     }
     // ── Assignment and update ──
     assignment(node) {
-        const ops = operators();
+        const ops = this.ops;
         const left = node.left;
         const operator = node.operator;
         if (operator === '=' && (left.type === 'ObjectPattern' || left.type === 'ArrayPattern')) {
@@ -3283,7 +3286,7 @@ export class Compiler {
                     const raw = ks(env);
                     if (o === null || o === undefined)
                         throw nullBase(o, raw);
-                    const k = keyOnce(raw);
+                    const k = keyOnce(ops, raw);
                     const current = ops.get(o, k);
                     if (op === null && shortCircuit(current))
                         return current;
@@ -3342,7 +3345,7 @@ export class Compiler {
      * key (or binding), and get/set act on them.
      */
     reference(node) {
-        const ops = operators();
+        const ops = this.ops;
         if (node.type === 'Identifier') {
             const read = this.read(node);
             const write = this.writer(node);
@@ -3361,7 +3364,7 @@ export class Compiler {
                     const receiver = thisValue(env);
                     const raw = key(env);
                     let pk = null;
-                    const k = () => (pk === null ? (pk = toPropertyKey(raw)) : pk);
+                    const k = () => (pk === null ? (pk = toPropertyKey(ops, raw)) : pk);
                     const proto = objectGetPrototypeOf(home(env));
                     return {
                         get: () => (isObject(proto) ? reflectGet(proto, k(), receiver) : undefined),
@@ -3392,7 +3395,7 @@ export class Compiler {
             if (o === null || o === undefined)
                 throw nullBase(o, k);
             let pk = null;
-            const key = () => (pk === null ? (pk = toPropertyKey(k)) : pk);
+            const key = () => (pk === null ? (pk = toPropertyKey(ops, k)) : pk);
             return { get: () => ops.get(o, key()), set: (v) => set(o, key(), v) };
         };
         if (key === null) {
@@ -3416,7 +3419,7 @@ export class Compiler {
         return genCode(function* (env) { const o = yield* og(env); return make(o, yield* kg(env)); });
     }
     update(node) {
-        const ops = operators();
+        const ops = this.ops;
         const inc = node.operator === '++';
         const prefix = node.prefix;
         /** The new value and the expression's result, from the old value. */
@@ -3473,7 +3476,7 @@ export class Compiler {
                     const raw = ks ? ks(env) : name;
                     if (o === null || o === undefined)
                         throw nullBase(o, raw);
-                    const k = keyOnce(raw);
+                    const k = keyOnce(ops, raw);
                     const old = ops.get(o, k);
                     if (typeof old === 'number') {
                         const next = inc ? old + 1 : old - 1;
@@ -3512,7 +3515,7 @@ export class Compiler {
         const heritage = node.superClass ? this.expr(node.superClass) : null;
         const plan = this.classPlan(node, scopes.instanceFields, scopes.staticFields, classScope);
         this.scope = outer;
-        return classMaking(entry, heritage, plan);
+        return classMaking(this.rt, entry, heritage, plan);
     }
     /** What defining a class does, compiled: its constructor, elements and private names (classDefiner runs it). */
     classPlan(node, instanceFields, staticFields, classScope) {
@@ -3675,84 +3678,81 @@ export class Compiler {
         return fi;
     }
     /**
-     * An ES module as a module cell: called with the five CommonJS wrapper
-     * arguments, it requires what it imports, replaces module.exports with
-     * its exports (live getters, `__esModule` set), and runs its body. Imports
-     * and exports behave as esbuild's lowering to CommonJS, which is what the
-     * same text becomes in the next launch: a default import is the module's
-     * `default` when it has `__esModule`, else the module itself; a namespace
-     * import is esbuild's __toESM of it. With top-level await, the cell
-     * returns the promise of the body.
+     * An ES module's plan (modules.ts): the link of its declarations
+     * (esm-interop.ts) over its frame's slots, its instantiation and its
+     * statements. A named import's binding holds its module, or for `default`
+     * its interop, and each use reads the name of it (bindingRead); a
+     * namespace import's holds the namespace.
      */
-    /** A module's plan (modules.ts): its imports and exports, its instantiation, its statements. */
     modulePlan(program, root) {
-        const imports = newSafeList();
+        const records = newSafeList();
+        for (let n = 0; n < program.body.length; n++) {
+            const record = esmRecord(program.body[n], SAFE_LISTS);
+            if (record !== null)
+                append(records, record);
+        }
+        const link = esmLink(records, SAFE_LISTS);
+        const requests = newSafeList();
+        const moduleSlots = newSafeList();
+        const none = newSafeList();
+        for (let i = 0; i < link.requests.length; i++) {
+            const request = link.requests[i];
+            const own = request.kept ? root.size++ : 0;
+            append(moduleSlots, own);
+            let module = none;
+            let interop = none;
+            if (request.kept) {
+                module = newSafeList();
+                append(module, own);
+            }
+            for (let j = 0; j < request.bindings.length; j++) {
+                const binding = request.bindings[j];
+                if (binding.kind !== 'named')
+                    continue;
+                const slot = this.importBinding(root, binding.local, { kind: 'named', name: binding.imported }).slot;
+                if (binding.imported !== 'default')
+                    append(module, slot);
+                else {
+                    if (interop === none)
+                        interop = newSafeList();
+                    append(interop, slot);
+                }
+            }
+            append(requests, { source: request.source, module, interop });
+        }
+        // An import's namespace goes to its binding; a re-export's
+        // (`export * as`) to a slot of its own, when first read.
+        const namespaces = newSafeList();
+        const namespaceSlots = newSafeList();
+        for (let i = 0; i < link.namespaces.length; i++) {
+            const { request, local } = link.namespaces[i];
+            if (local === null) {
+                append(namespaceSlots, root.size++);
+                continue;
+            }
+            const slot = this.importBinding(root, local, { kind: 'namespace', name: '*' }).slot;
+            append(namespaceSlots, slot);
+            append(namespaces, { slot, from: moduleSlots[request] });
+        }
+        const ops = this.ops;
         const exports = newSafeList();
+        for (let i = 0; i < link.exports.length; i++) {
+            const entry = link.exports[i];
+            if (entry.kind === 'namespace') {
+                append(exports, { kind: 'namespace', name: entry.exported, slot: namespaceSlots[entry.namespace], from: moduleSlots[link.namespaces[entry.namespace].request] });
+            }
+            else if (entry.kind === 'reexport') {
+                const slot = moduleSlots[entry.request];
+                const name = entry.name;
+                append(exports, { kind: 'read', name: entry.exported, read: (env) => ops.get(env[slot], name) });
+            }
+            else {
+                append(exports, { kind: 'read', name: entry.exported, read: this.rootRead(root, entry.kind === 'default' ? '*default*' : entry.local) });
+            }
+        }
         const stars = newSafeList();
-        for (let n = 0; n < program.body.length; n++) {
-            const statement = program.body[n];
-            if (statement.type === 'ImportDeclaration') {
-                const bindings = newSafeList();
-                for (let k = 0; k < statement.specifiers.length; k++) {
-                    const spec = statement.specifiers[k];
-                    const binding = root.bindings.get(spec.local.name);
-                    if (!binding)
-                        throw new Error('interpreter: import binding');
-                    if (spec.type === 'ImportDefaultSpecifier')
-                        this.unit.imports.set(binding, { kind: 'default', name: 'default' });
-                    else if (spec.type === 'ImportNamespaceSpecifier')
-                        this.unit.imports.set(binding, { kind: 'namespace', name: '*' });
-                    else
-                        this.unit.imports.set(binding, { kind: 'named', name: exportedName(spec.imported) });
-                    append(bindings, { slot: binding.slot, namespace: spec.type === 'ImportNamespaceSpecifier' });
-                }
-                append(imports, { source: specifierOf(statement.source), slot: null, bindings: listOf(bindings) });
-            }
-            else if (statement.type === 'ExportAllDeclaration') {
-                const slot = root.size++;
-                append(imports, { source: specifierOf(statement.source), slot, bindings: [] });
-                if (statement.exported)
-                    append(exports, { name: exportedName(statement.exported), read: { kind: 'namespace', slot } });
-                else
-                    append(stars, slot);
-            }
-            else if (statement.type === 'ExportNamedDeclaration' && statement.source) {
-                const slot = root.size++;
-                append(imports, { source: specifierOf(statement.source), slot, bindings: [] });
-                for (let k = 0; k < statement.specifiers.length; k++) {
-                    const spec = statement.specifiers[k];
-                    append(exports, { name: exportedName(spec.exported), read: { kind: 'reexport', slot, name: exportedName(spec.local) } });
-                }
-            }
-        }
-        // Local exports, read live from their bindings.
-        for (let n = 0; n < program.body.length; n++) {
-            const statement = program.body[n];
-            if (statement.type === 'ExportNamedDeclaration' && !statement.source) {
-                if (statement.declaration) {
-                    const d = statement.declaration;
-                    const ids = newSafeList();
-                    if (d.type === 'VariableDeclaration')
-                        for (let j = 0; j < d.declarations.length; j++)
-                            patternIdentifiers(d.declarations[j].id, ids);
-                    else
-                        append(ids, d.id);
-                    for (let k = 0; k < ids.length; k++)
-                        append(exports, { name: ids[k].name, read: { kind: 'binding', read: this.rootRead(root, ids[k].name) } });
-                }
-                for (let k = 0; k < statement.specifiers.length; k++) {
-                    const spec = statement.specifiers[k];
-                    if (spec.local.type !== 'Identifier')
-                        throw new Error('interpreter: string export of a local');
-                    append(exports, { name: exportedName(spec.exported), read: { kind: 'binding', read: this.rootRead(root, spec.local.name) } });
-                }
-            }
-            else if (statement.type === 'ExportDefaultDeclaration') {
-                const d = statement.declaration;
-                const local = (d.type === 'FunctionDeclaration' || d.type === 'ClassDeclaration') && d.id ? d.id.name : '*default*';
-                append(exports, { name: 'default', read: { kind: 'binding', read: this.rootRead(root, local) } });
-            }
-        }
+        for (let i = 0; i < link.stars.length; i++)
+            append(stars, moduleSlots[link.stars[i]]);
         const instantiate = this.scopeEntry(root, true);
         const body = this.moduleStatements(program);
         return {
@@ -3762,12 +3762,21 @@ export class Compiler {
             moduleSlot: bindingSlot(root, '%module'),
             filenameSlot: bindingSlot(root, '%filename'),
             dirnameSlot: bindingSlot(root, '%dirname'),
-            imports: listOf(imports),
-            exports: listOf(exports),
-            stars: listOf(stars),
+            exports,
+            requests,
+            namespaces,
+            stars,
             instantiate,
             body,
         };
+    }
+    /** The binding an import declares in the module scope, its reads made `info`'s. */
+    importBinding(root, local, info) {
+        const binding = root.bindings.get(local);
+        if (!binding)
+            throw new Error('interpreter: import binding');
+        this.unit.imports.set(binding, info);
+        return binding;
     }
     /** A module's statements, compiled as an async function body (top-level await). */
     moduleStatements(program) {

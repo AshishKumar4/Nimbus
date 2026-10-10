@@ -8,9 +8,12 @@
  * parameters and its body's `var`s, a block's, a switch's, a `for` head's
  * `let` and `const`, a catch clause's, and a class's name inside its body.
  *
- * Self-contained: rolldown-compat.ts (the build facet's runtime) and
- * async-module-lowering.ts (the transform facet's) both bundle it.
+ * rolldown-compat.ts (the build facet's runtime) and async-module-lowering.ts
+ * (the transform facet's) both bundle it, with binding-pattern.ts, its one
+ * import.
  */
+import type { Pattern } from 'acorn';
+import { forEachBindingIdentifier } from './binding-pattern.js';
 
 /** A node of a parsed program. */
 export interface EsNode {
@@ -45,34 +48,19 @@ export function stringOf(node: EsNode | null, key: string): string | null {
   return typeof value === 'string' ? value : null;
 }
 
-/** The names a binding binds: an identifier, or what the parts of a pattern bind. */
-export function* patternNames(node: EsNode | null): Generator<string> {
-  switch (node?.type) {
-    case 'Identifier': {
-      const name = stringOf(node, 'name');
-      if (name !== null) yield name;
-      return;
-    }
-    case 'ObjectPattern':
-      for (const property of list(node, 'properties')) yield* patternNames(child(property, property.type === 'RestElement' ? 'argument' : 'value'));
-      return;
-    case 'ArrayPattern':
-      for (const element of list(node, 'elements')) yield* patternNames(element);
-      return;
-    case 'RestElement':
-      yield* patternNames(child(node, 'argument'));
-      return;
-    case 'AssignmentPattern':
-      yield* patternNames(child(node, 'left'));
-      return;
-    case 'TSParameterProperty':
-      yield* patternNames(child(node, 'parameter'));
-      return;
-    // `namespace A.B {}` binds A.
-    case 'TSQualifiedName':
-      yield* patternNames(child(node, 'left'));
-      return;
+/**
+ * The names a binding binds (binding-pattern.ts), TypeScript's forms
+ * included: a parameter property binds its parameter, and `namespace A.B {}`
+ * binds A.
+ */
+export function patternNames(node: EsNode | null): string[] {
+  let binding = node;
+  while (binding !== null && (binding.type === 'TSParameterProperty' || binding.type === 'TSQualifiedName')) {
+    binding = child(binding, binding.type === 'TSParameterProperty' ? 'parameter' : 'left');
   }
+  const names: string[] = [];
+  forEachBindingIdentifier(binding as unknown as Pattern | null, (identifier) => names.push(identifier.name));
+  return names;
 }
 
 /** A scope of a program: the names it binds, and the scope it is in. */
