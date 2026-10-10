@@ -229,7 +229,7 @@ await runScenarios(import.meta.path, {
     assert.equal(settled, 'waiting', 'a write in a subtree it holds was answered before its publication, its process holding a raw socket');
     reader.recalled(readLease.owner, 'revoke');
     await written;
-    assert.equal(new TextDecoder().decode(reader.readFile('/home/user/app/out/saved')), 'saved');
+    assert.equal(new TextDecoder().decode(await withRecall(() => reader.readFile('/home/user/app/out/saved'))), 'saved');
   },
 
   async 'a look at the kernel\'s mounts, which no barrier reports, leaves timers to the lease'() {
