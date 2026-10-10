@@ -123,7 +123,7 @@ const ProcessControlResultSchema = z.object({ ok: z.boolean(), pid: z.number() }
 const RemovedAppSchema = z.object({ owner: z.string(), removed: z.boolean(), port: z.number().nullable() });
 const FileBytesSchema = z.instanceof(Uint8Array);
 /** JSON answers after the common wire codec; execStream travels as a byte stream. */
-export const SessionResults = {
+const SessionResultSchemas = {
     ready: z.object({ ok: z.literal(true), preinstalled: z.array(z.string()) }),
     bootProbe: z.object({ ok: z.literal(true) }),
     exec: ExecOutputSchema,
@@ -162,6 +162,7 @@ export const SessionResults = {
     unexposePort: z.object({ port: z.number(), ok: z.boolean() }),
     destroy: SessionDestroyResultSchema,
 };
+export const SessionResults = SessionResultSchemas;
 export const SessionRequestSchema = z.object({
     profile: z.string().optional(),
     tenant: z.string().optional(),

@@ -375,7 +375,7 @@ export class NimbusSandbox {
     const payload = await remotePayload(response);
     const success = SessionSuccessSchema.safeParse(payload);
     if (!response.ok || !success.success) throw remoteFailure(response, payload);
-    return SessionResults[op].parse(WireDecoder.parse(success.data.result)) as SessionResult<Op>;
+    return SessionResults[op].parse(WireDecoder.parse(success.data.result));
   }
 
   /** The `execStream` op answers with the encoded stream as its body, or a JSON error. */

@@ -16,6 +16,10 @@ published independently in the `@nimbus-sh` npm scope.
   on every transport, as declared; it no longer leaks the revision on colocated
   calls. Producer-only `Programmatic*`, serialized process/port and app result
   types move from the worker implementation module to the core contract.
+- Breaking: `RuntimeInstallSummary` is removed from
+  `@nimbus-sh/worker/runtime/package-manager`. Use `SessionRuntimeInstallResult`
+  from `@nimbus-sh/core/runtime/session-protocol.js`; no deprecated re-export
+  remains.
 
 - Changed: the shared base64url decoder requires canonical unpadded encodings,
   rejecting nonzero unused padding bits. JWT, signed OAuth state and sealed

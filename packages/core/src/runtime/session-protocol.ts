@@ -152,7 +152,7 @@ const RemovedAppSchema = z.object({ owner: z.string(), removed: z.boolean(), por
 const FileBytesSchema: z.ZodType<Uint8Array> = z.instanceof(Uint8Array);
 
 /** JSON answers after the common wire codec; execStream travels as a byte stream. */
-export const SessionResults = {
+const SessionResultSchemas = {
   ready: z.object({ ok: z.literal(true), preinstalled: z.array(z.string()) }),
   bootProbe: z.object({ ok: z.literal(true) }),
   exec: ExecOutputSchema,
@@ -191,9 +191,10 @@ export const SessionResults = {
   unexposePort: z.object({ port: z.number(), ok: z.boolean() }),
   destroy: SessionDestroyResultSchema,
 };
-export type SessionJsonOperation = keyof typeof SessionResults;
+export type SessionJsonOperation = keyof typeof SessionResultSchemas;
 export type SessionOperation = SessionJsonOperation | 'execStream';
-export type SessionResult<Op extends SessionJsonOperation> = z.infer<(typeof SessionResults)[Op]>;
+export type SessionResult<Op extends SessionJsonOperation> = z.infer<(typeof SessionResultSchemas)[Op]>;
+export const SessionResults: { [Op in SessionJsonOperation]: z.ZodType<SessionResult<Op>> } = SessionResultSchemas;
 
 export const SessionRequestSchema = z.object({
   profile: z.string().optional(),

@@ -207,7 +207,7 @@ export declare const SessionDestroyResultSchema: z.ZodObject<{
 }, z.core.$strip>;
 export type SessionDestroyResult = z.infer<typeof SessionDestroyResultSchema>;
 /** JSON answers after the common wire codec; execStream travels as a byte stream. */
-export declare const SessionResults: {
+declare const SessionResultSchemas: {
     ready: z.ZodObject<{
         ok: z.ZodLiteral<true>;
         preinstalled: z.ZodArray<z.ZodString>;
@@ -472,9 +472,12 @@ export declare const SessionResults: {
         reason: z.ZodNullable<z.ZodString>;
     }, z.core.$strip>;
 };
-export type SessionJsonOperation = keyof typeof SessionResults;
+export type SessionJsonOperation = keyof typeof SessionResultSchemas;
 export type SessionOperation = SessionJsonOperation | 'execStream';
-export type SessionResult<Op extends SessionJsonOperation> = z.infer<(typeof SessionResults)[Op]>;
+export type SessionResult<Op extends SessionJsonOperation> = z.infer<(typeof SessionResultSchemas)[Op]>;
+export declare const SessionResults: {
+    [Op in SessionJsonOperation]: z.ZodType<SessionResult<Op>>;
+};
 export declare const SessionRequestSchema: z.ZodObject<{
     profile: z.ZodOptional<z.ZodString>;
     tenant: z.ZodOptional<z.ZodString>;
@@ -588,4 +591,5 @@ export interface SessionRpc {
 export interface SessionRouterRpc extends SessionRpc {
     _rpcBootProbe(): Promise<SessionResult<'bootProbe'>>;
 }
+export {};
 //# sourceMappingURL=session-protocol.d.ts.map
