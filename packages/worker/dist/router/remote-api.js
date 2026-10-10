@@ -1,6 +1,6 @@
 import { LEGACY_PUBLIC_DO_SEGMENT, parseSessionRoute, } from '../_shared/session-router.js';
 import { isValidSessionId } from '../_shared/session-id.js';
-import { z } from 'zod/v4';
+import { SessionRequestSchema, } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
 import { NimbusAuthError, isNimbusIdComponent, } from '../auth/index.js';
@@ -12,14 +12,6 @@ import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { doUnavailableError } from './do-errors.js';
 import { codeRuntimeRequirement, runtimePolicyError } from '@nimbus-sh/config/sandbox';
 const DEFAULT_REMOTE_BASE_PATH = '/api/nimbus/v1';
-const RemoteRpcBodySchema = z.object({
-    profile: z.string().optional(),
-    tenant: z.string().optional(),
-    subject: z.string().optional(),
-    root: z.string().optional(),
-    op: z.string().optional(),
-    args: z.array(z.unknown()).optional(),
-}).passthrough();
 export async function handleNimbusRemoteApi(request, env, sdk) {
     const remote = normalizeRemoteConfig(sdk?.remote);
     if (!remote.enabled)
@@ -52,7 +44,7 @@ export async function handleNimbusRemoteApi(request, env, sdk) {
     }
     else {
         try {
-            body = RemoteRpcBodySchema.parse(WireDecoder.parse(await request.json()));
+            body = SessionRequestSchema.parse(WireDecoder.parse(await request.json()));
         }
         catch (e) {
             return remoteJson({ ok: false, error: `Invalid JSON body: ${errorMessage(e)}`, code: 'E_BAD_JSON' }, 400);

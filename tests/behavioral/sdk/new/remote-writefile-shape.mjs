@@ -55,8 +55,8 @@ try {
     threw === null,
     threw ? `${threw.constructor.name}: ${String(threw.message).slice(0, 200)}` : '');
 
-  // The byte count is the wire contract, not the public one.
-  a.check('files.write exposes void, not the wire byte count',
+  // The committed revision is the wire contract, not the public one.
+  a.check('files.write exposes void, not the wire revision',
     returned === undefined, `resolved with ${JSON.stringify(returned)}`);
 
   // The write must have actually landed — a client that swallowed the
@@ -64,8 +64,7 @@ try {
   a.check('the bytes the write claimed are readable back',
     (await box.files.read('/home/user/wfshape.txt')) === text);
 
-  // Binary writes take the same op, and their byte count differs from the
-  // string case, so a client that special-cased one length would fail here.
+  // Binary writes take the same operation and commit their own revision.
   const bytes = new Uint8Array([0, 1, 2, 255]);
   let binThrew = null;
   try {
@@ -84,8 +83,7 @@ try {
       && readBack[0] === 0 && readBack[3] === 255,
     `got ${readBack && Array.from(readBack).join(',')}`);
 
-  // An empty write is the degenerate byte count: the server answers 0, which
-  // a `!result`-style guard would treat as absent.
+  // Empty content still commits a write rather than omitting the argument.
   let emptyThrew = null;
   try {
     await box.files.write('/home/user/wfshape-empty.txt', '');
@@ -96,7 +94,8 @@ try {
     emptyThrew === null,
     emptyThrew ? String(emptyThrew.message).slice(0, 200) : '');
 } finally {
-  await box.destroy({ reason: 'remote-writefile-shape-cleanup' }).catch(() => {});
+  const destroyed = await box.destroy({ reason: 'remote-writefile-shape-cleanup' });
+  a.check('sandbox cleanup is confirmed', destroyed.ok === true && typeof destroyed.destroyedAt === 'number');
 }
 
 const sum = a.summary();
