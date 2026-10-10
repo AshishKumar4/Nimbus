@@ -37,10 +37,11 @@ export function createProbeTarget({ base, token = '', cookie = '', request = glo
     async create({ signal, anonymous = false } = {}) {
       const response = await request(`${base}/new`, { method: 'POST', redirect: 'manual', headers: targetHeaders, signal });
       const location = response.headers.get('location');
-      const match = response.status === 302 && location ? /\/s\/([^/?]+)/.exec(location) : null;
+      const attach = location ? new URL(location, base) : null;
+      const match = response.status === 302 && attach?.origin === new URL(base).origin ? /^\/s\/([^/]+)/.exec(attach.pathname) : null;
       let created;
       if (match) {
-        created = { sessionId: match[1], base, headers: targetHeaders, attachPath: location, status: response.status,
+        created = { sessionId: match[1], base, headers: targetHeaders, attachPath: attach.pathname + attach.search + attach.hash, status: response.status,
           versionId: response.headers.get('x-nimbus-probe-version') };
       } else {
         const text = await response.text().catch(() => '');
@@ -50,8 +51,12 @@ export function createProbeTarget({ base, token = '', cookie = '', request = glo
           const opened = await request(`${base}/api/demo/anon-session`, { method: 'POST', signal });
           const body = await opened.json().catch(() => ({}));
           if (!opened.ok) throw new Error(`anon session ${opened.status}: ${redactCredentials(JSON.stringify(body))}`);
-          const attachToken = body.wsUrl && new URL(body.wsUrl, base).searchParams.get('nimbus_token');
-          if (!body.sessionId || !attachToken) throw new Error(`anon session gave no sid/token: ${redactCredentials(JSON.stringify(body))}`);
+          const ws = body.wsUrl ? new URL(body.wsUrl, base) : null;
+          const attachToken = ws?.searchParams.get('nimbus_token');
+          const expectedWsOrigin = new URL(base).origin.replace(/^http/, 'ws');
+          if (!body.sessionId || !attachToken || ws.origin !== expectedWsOrigin || !ws.pathname.startsWith(`/s/${encodeURIComponent(body.sessionId)}/`)) {
+            throw new Error(`anon session gave no target/session-matching sid/token: ${redactCredentials(JSON.stringify(body))}`);
+          }
           created = { sessionId: body.sessionId, base, headers: Object.freeze({ Authorization: `Bearer ${attachToken}` }),
             attachPath: `/s/${encodeURIComponent(body.sessionId)}/?nimbus_token=${encodeURIComponent(attachToken)}`,
             status: opened.status, versionId: opened.headers.get('x-nimbus-probe-version'), reap: 'ttl' };

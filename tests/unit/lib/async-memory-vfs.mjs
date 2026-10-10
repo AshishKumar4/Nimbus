@@ -16,8 +16,8 @@ export function asyncOnly(vfs, { deep = false, beforeCall, hide = [], methods = 
   const options = { deep, beforeCall, hide, methods };
   return new Proxy(vfs, {
     get(target, key) {
-      if (key === 'sync' || hide.includes(key)) return undefined;
-      const value = Object.hasOwn(methods, key) ? methods[key] : target[key];
+      if (key === 'sync' || typeof key === 'string' && hide.includes(key)) return undefined;
+      const value = typeof key === 'string' && Object.hasOwn(methods, key) ? methods[key] : target[key];
       if (typeof value !== 'function') return value;
       if (key === 'as') return (...args) => asyncOnly(value.apply(target, args), options);
       if (!deep && !beforeCall) return value.bind(target);
@@ -26,6 +26,6 @@ export function asyncOnly(vfs, { deep = false, beforeCall, hide = [], methods = 
         return value.apply(target, args);
       });
     },
-    has: (target, key) => key !== 'sync' && !hide.includes(key) && key in target,
+    has: (target, key) => key !== 'sync' && !(typeof key === 'string' && hide.includes(key)) && key in target,
   });
 }

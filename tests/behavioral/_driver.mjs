@@ -431,7 +431,7 @@ export class Terminal {
 export async function connectProcessTerminal(sid, pid, options = {}) {
   const timeoutMs = options.timeoutMs ?? 15_000;
   const wsBase = (options.base ?? BASE).replace(/^http/, 'ws');
-  const ws = new WebSocket(`${wsBase}/s/${sid}/api/logs/${pid}`, options.wsOptions ?? wsHeaders(sid));
+  const ws = new WebSocket(`${wsBase}/s/${sid}/api/logs/${pid}`, options.wsOptions ?? ((options.base ?? BASE) === BASE ? wsHeaders(sid) : undefined));
   keepSocketAlive(ws, options.keepaliveMs);
   let closed = false;
   let closeDetail = null;
