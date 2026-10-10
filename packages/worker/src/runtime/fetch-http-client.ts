@@ -150,6 +150,8 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (this.destroyed || this.#signal?.aborted) return Promise.resolve(false);
       let request;
       try {
+        this.#context.queued();
+        this.#counted = true;
         const headers = [];
         for (const name of this.getRawHeaderNames()) {
           const value = this.getHeader(name);
@@ -187,7 +189,6 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
         }
       }
       this.#context.started(this);
-      this.#counted = true;
       this.#started = true;
       this.#touch();
       const response = fetch(address, { method: request.method, headers, body, signal: this.#controller.signal, redirect: "manual", duplex: "half", encodeResponseBody: "manual" });

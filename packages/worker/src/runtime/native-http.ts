@@ -47,12 +47,14 @@ Object.defineProperty(builtins, "http", {
     const pendingListeners = globalThis.__nimbusPendingHttpListeners ??= new Set();
     const context = { ports, get supervisor() { return __supervisor; }, get pending() { return __pendingIO; } };
     __nimbusInstallFetchHttpClient(http, https, url, buffer.Buffer, {
+      queued() {
+        globalThis.__nimbusPendingOps = (globalThis.__nimbusPendingOps || 0) + 1;
+      },
       started(request) {
         if (typeof __nimbusReplay !== "undefined" && __nimbusReplay
           && (!__nimbusReplay.outbound || !/^(GET|HEAD)$/i.test(request.method))) {
           __nimbusReplay.effect("http " + request.method + " " + request.host + request.path);
         }
-        globalThis.__nimbusPendingOps = (globalThis.__nimbusPendingOps || 0) + 1;
       },
       finished() {
         globalThis.__nimbusPendingOps--;
