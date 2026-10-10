@@ -49,7 +49,7 @@ export const NODE_DNS_ENTRY: string = "/_assets/runtime/node-dns-cb7f3315fd57bcc
 export const NODE_DNS_BUILD_ID: string = "cb7f3315fd57bcc8";
 export const NODE_DNS_SHA256: string = "cb7f3315fd57bcc80cc56f8acb984bb8dc9bdfe9e4fe2e6e7718cfc2ac91bddd";
 
-/** @nimbus-sh/core _shared/commonjs-cell.js COMMONJS_CELL_RUNTIME_SOURCE */
-export const NODE_REGISTRY_ENTRY: string = "/_assets/runtime/node-registry-5be352d0ef9a9ed0.js";
-export const NODE_REGISTRY_BUILD_ID: string = "5be352d0ef9a9ed0";
-export const NODE_REGISTRY_SHA256: string = "5be352d0ef9a9ed0fa0fe0acee8c0b3dae498c678b1355fa0e4ab935315f38b0";
+/** core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs */
+export const NODE_REGISTRY_ENTRY: string = "/_assets/runtime/node-registry-b9a4c4839326eba3.js";
+export const NODE_REGISTRY_BUILD_ID: string = "b9a4c4839326eba3";
+export const NODE_REGISTRY_SHA256: string = "b9a4c4839326eba3af785b03535e4d8f25b3493745381f154cee6d09951b99c5";

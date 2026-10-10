@@ -40,7 +40,7 @@ export declare const NODE_LIB_SHA256: string;
 export declare const NODE_DNS_ENTRY: string;
 export declare const NODE_DNS_BUILD_ID: string;
 export declare const NODE_DNS_SHA256: string;
-/** @nimbus-sh/core _shared/commonjs-cell.js COMMONJS_CELL_RUNTIME_SOURCE */
+/** core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs */
 export declare const NODE_REGISTRY_ENTRY: string;
 export declare const NODE_REGISTRY_BUILD_ID: string;
 export declare const NODE_REGISTRY_SHA256: string;

@@ -16,7 +16,7 @@ const __nimbusCodeCells = new Map(__NIMBUS_CODE_CELLS.map((__row) => [__row[0], 
 const __NIMBUS_BUNDLE_FILES = decodeURIComponent(new URL("./", import.meta.url).pathname);
 // The URL import() in the module at a path resolves against (moduleImporterUrl).
 const __nimbusModuleImporterUrl = function moduleImporterUrl(path) {
-    return path.startsWith('data:') ? 'data:text/javascript,' : 'file:///' + path.replace(/^\/+/, '');
+  return path.startsWith("data:") ? "data:text/javascript," : "file:///" + path.replace(/^\/+/, "");
 };
 // The wrapper function of the cell at a VFS key, compiled by the registry the
 // first time it is asked for, with the module's own Function (THE WRAPPER);
@@ -412,16 +412,12 @@ function __nimbusNotifyRuntimeCode() {
   });
 }
 const __nimbusRuntimeModuleScope = function runtimeModuleScope(path) {
-    // Inline JS modules all have an opaque import base. Their text identifies
-    // compiled code; URL/fragment identity belongs to the evaluated namespace
-    // and import.meta, not to another compiled copy of the same source.
-    if (path.startsWith('data:'))
-        return ['data:', '.mjs'];
-    const p = path.replace(/^\/+/, '');
-    const slash = p.lastIndexOf('/');
-    const base = p.slice(slash + 1);
-    const dot = base.lastIndexOf('.');
-    return [slash < 0 ? '' : p.slice(0, slash), dot > 0 ? base.slice(dot) : ''];
+  if (path.startsWith("data:")) return ["data:", ".mjs"];
+  const p = path.replace(/^\/+/, "");
+  const slash = p.lastIndexOf("/");
+  const base = p.slice(slash + 1);
+  const dot = base.lastIndexOf(".");
+  return [slash < 0 ? "" : p.slice(0, slash), dot > 0 ? base.slice(dot) : ""];
 };
 function __nimbusRuntimeCodeKey(entry) {
   const __source = entry.kind === "module"
