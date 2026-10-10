@@ -135,14 +135,16 @@ export const SUPERVISOR_JOINED_READ_OPS = SUPERVISOR_OPS
  * waits for. Every other op makes something of its process's visible
  * outside it, so it leaves at the process's output gate, in the order the
  * process made it (SessionProcessSupervisor.releaseOutput): an op added
- * without a place here is one.
+ * without a place here is one. So does an op whose answer the binding acts
+ * on outside (getPackument's registry fetch on a miss, putCachedTarball's
+ * write to the shared bucket): what it does there follows that answer.
  */
 const SUPERVISOR_OPS_WITHIN = new Set([
     ...SUPERVISOR_DELIVERED_OPS, ...SUPERVISOR_JOINED_READ_OPS,
     'setUmask', 'fsStorageGrant', 'fsRead', 'writeBatchStream', 'openWaveWriter', 'retireWaveWriter', 'fsAwaitRecall', 'fsPublished',
     'wsPoll', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpWait', 'cpBlocked', 'hmrNextEvent', 'awaitHostedOpen', 'awaitHostedBoot',
     'stdinFileRead', 'stdinPrepared', 'replayBoundary', 'cacheResult', 'reportRuntimeCode', 'processHostProbe', 'hostLost',
-    'transform', 'allocatePort', 'putRegistryEntries', 'getCachedTarball', 'putCachedTarball', 'getPackument',
+    'transform', 'allocatePort', 'putRegistryEntries', 'getCachedTarball',
 ]);
 /** Whether `op` makes something of its process's visible outside the session (SUPERVISOR_OPS_WITHIN). */
 export function supervisorOpLeaves(op) {

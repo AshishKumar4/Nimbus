@@ -231,10 +231,11 @@ export interface ProcessFsClient {
     /**
      * A raw socket opens, which carries whatever the process sends on it from
      * now on, past every gate of the session's. The session is told (once),
-     * and every wave sent from now on goes after that, so each is answered
-     * once published. The socket opens at the gate this answers: once what
-     * was logged before it is answered and published, or null when nothing
-     * waits.
+     * every wave sent from now on goes after that, so each is answered once
+     * published, and no mutation is decided here (holder) any more. The
+     * socket opens at the gate this answers: once the session answered that,
+     * and what was logged before it is answered and published; rejected when
+     * the session was not told. Null when nothing waits (told already).
      */
     rawSocket(): Promise<void> | null;
     /** The end of the run: everything answered; throws naming every failure not yet taken. */

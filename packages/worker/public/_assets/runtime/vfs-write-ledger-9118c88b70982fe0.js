@@ -1329,6 +1329,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     let heldWaves = 0;
     let publishedThrough = 0;
     let escaped = null;
+    let escapeLanded = false;
     const marks = [];
     const counters = {
       ops: 0,
@@ -1759,7 +1760,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         schedule();
       });
     };
-    const heldGrant = (key) => grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root));
+    const heldGrant = (key) => escaped !== null ? void 0 : grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root));
     const client = {
       holder(key) {
         const held = heldGrant(key);
@@ -1768,7 +1769,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           held.lastUsed = now();
           return held;
         }
-        if (session.grants === void 0 || settling) return void 0;
+        if (session.grants === void 0 || settling || escaped !== null) return void 0;
         if (grants.some((grant) => !grant.ended && within(key, grant.root))) return void 0;
         let deepest;
         for (let root = parentKey(key); allowedRoot(root); root = parentKey(root)) {
@@ -1902,12 +1903,17 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         const ask = options.session.published;
         if (processGone !== null || ask === void 0) return null;
         if (escaped === null) {
-          escaped = ask.call(options.session, true);
+          const through = heldWaves;
+          escaped = ask.call(options.session, true).then(() => {
+            escapeLanded = true;
+            publishedThrough = Math.max(publishedThrough, through);
+          });
           escaped.catch(() => {
           });
         }
         const logged2 = client.effect();
-        return logged2 === null ? client.published() : logged2.then(() => client.published() ?? void 0);
+        if (escapeLanded && logged2 === null) return client.published();
+        return Promise.all([escaped, logged2]).then(() => client.published() ?? void 0);
       },
       async settle() {
         settling = true;

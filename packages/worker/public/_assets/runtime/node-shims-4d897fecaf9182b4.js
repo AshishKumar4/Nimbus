@@ -338,17 +338,28 @@ function __nimbusNetworkGate() {
 }
 // A raw socket (one a connect opens, or a response upgrades to) carries
 // whatever the process sends on it from then on: the session is told, whether
-// or not the process wrote anything yet, and the socket opens once what the
-// process wrote before it is published (ProcessFsClient.rawSocket): at once,
-// as Node's does, when nothing waits.
+// or not the process wrote anything yet, and the socket opens once the session
+// answered and what the process wrote before it is published
+// (ProcessFsClient.rawSocket); refused when the session was not told.
 function __nimbusRawSocket() {
   let bound = null;
   try { bound = typeof __supervisor !== "undefined" ? __supervisor : null; } catch {}
   return bound && typeof __nimbusProcessFs === "function" ? __nimbusProcessFs().rawSocket() : null;
 }
 if (typeof __real_net !== "undefined") {
-  const __NativeSocket = (__real_net.default ?? __real_net).Socket;
+  const __realNet = __real_net.default ?? __real_net;
+  const __NativeSocket = __realNet.Socket;
   const __nativeConnect = __NativeSocket && __NativeSocket.prototype ? __NativeSocket.prototype.connect : undefined;
+  // What a connect refuses before it opens anything (a bad port, a missing
+  // one), thrown from connect as Node throws it: the native connect's own
+  // checks, made on a socket that opens nothing, its host one to look up by
+  // a lookup that never answers.
+  const __nativeConnectChecks = (options) => {
+    const probe = new __NativeSocket();
+    probe.on("error", () => {});
+    try { Reflect.apply(__nativeConnect, probe, [{ ...options, host: "nimbus-checks.invalid", lookup: () => {} }]); }
+    finally { probe.destroy(); }
+  };
   if (typeof __nativeConnect === "function") {
     Object.defineProperty(__NativeSocket.prototype, "connect", { configurable: true, writable: true, value: function connect(...args) {
       if (__nimbusReplay && !__nimbusCarrierOpening) {
@@ -358,6 +369,10 @@ if (typeof __real_net !== "undefined") {
           : String(typeof args[1] === "string" ? args[1] : "") + ":" + String(first ?? "");
         __nimbusReplay.effect("net.connect " + where);
       }
+      // Already connecting or aborted: the native connect refuses it, opening nothing.
+      if (this.connecting || this._aborted) return Reflect.apply(__nativeConnect, this, args);
+      const [options, cb] = Array.isArray(args[0]) ? args[0] : __realNet._normalizeArgs(args);
+      __nativeConnectChecks(options);
       // A synchronous read crossed the replay boundary, but the session
       // must acknowledge its notice before any new native transport opens.
       // TLS's carrier joins that same gate AND its target registration.
@@ -367,6 +382,10 @@ if (typeof __real_net !== "undefined") {
       if (ready) {
         const socket = this;
         const fail = __nimbusCarrierFailure || ((error) => socket.destroy(error));
+        // Its callback listens from now, as the native connect's does: ahead
+        // of what the program queues for the connection meanwhile (a TLS
+        // socket's handshake, before the writes it buffers).
+        if (cb) socket.once("connect", cb);
         // Writes/TLS wrapping must see a connecting socket while it waits,
         // just as they do after an ordinary native connect was issued.
         socket.connecting = true;
@@ -375,7 +394,7 @@ if (typeof __real_net !== "undefined") {
           // The native implementation owns its own false -> true transition
           // and refuses a second connect while already connecting.
           socket.connecting = false;
-          try { Reflect.apply(__nativeConnect, socket, args); }
+          try { Reflect.apply(__nativeConnect, socket, [options]); }
           catch (error) { fail(error); }
         }, fail));
         return socket;
@@ -12289,19 +12308,21 @@ const __tlsMod = (() => {
       __nimbusCarrierGate = null;
       __nimbusCarrierFailure = null;
     }
+    // The carrier's connect waits at a gate (the replay boundary's notice, a raw socket's): it has no handle yet.
+    const deferred = raw.connecting && !raw._handle;
     const name = () => {
       // workerd's empty-parent _start listener adopts raw._handle on this
       // same event. Its TLS socket must leave the placeholder connecting
       // state first; native TLS then emits its own connect after upgrading,
       // which releases the native Socket's existing write/end buffers.
-      if (notice && socket && !socket.destroyed) socket.connecting = false;
+      if (deferred && socket && !socket.destroyed) socket.connecting = false;
       const native = raw._handle && raw._handle.socket;
       if (native) { tokens.set(native, token); carriers.set(native, raw); if (note) notes.set(native, note); patchStartTls(native); }
     };
     name();
     raw.once('connect', name);
     socket = real.connect({ ...options, host, port, socket: raw, servername: options.servername ?? host }, cb);
-    if (notice && raw.connecting && !socket.destroyed) socket.connecting = true;
+    if (deferred && raw.connecting && !socket.destroyed) socket.connecting = true;
     // The returned TLS socket owns the carrier, including while its native
     // handle has not been created. Cancelling it cancels that pending work.
     const destroy = socket.destroy;
