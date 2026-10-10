@@ -20,11 +20,10 @@ import { fileURLToPath } from 'node:url';
 
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { generateNodeLibModule, generateNodeDnsModule } from '../../packages/worker/src/runtime/node-lib-module.ts';
-import { COMMONJS_CELL_RUNTIME_SOURCE } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
 import * as pins from '../../packages/worker/src/node-shims-artifact.generated.ts';
-import { bundleInterpreter } from '../../packages/worker/scripts/interpreter-bundle.mjs';
+import { bundleInterpreter, bundleRegistry } from '../../packages/worker/scripts/interpreter-bundle.mjs';
 
 const workerRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -41,7 +40,7 @@ const cases = [
   { name: 'JS_INTERPRETER_OPS', source: 'HOST_OPS_SOURCE', current: interpreter.ops },
   { name: 'NODE_LIB', source: 'generateNodeLibModule()', current: generateNodeLibModule() },
   { name: 'NODE_DNS', source: 'generateNodeDnsModule()', current: generateNodeDnsModule() },
-  { name: 'NODE_REGISTRY', source: 'COMMONJS_CELL_RUNTIME_SOURCE', current: COMMONJS_CELL_RUNTIME_SOURCE },
+  { name: 'NODE_REGISTRY', source: 'the registry bundle of core src', current: await bundleRegistry({ start: workerRoot }) },
 ];
 
 for (const { name, source, current } of cases) {

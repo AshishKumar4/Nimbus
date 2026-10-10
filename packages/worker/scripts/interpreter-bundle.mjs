@@ -37,6 +37,17 @@ import { resolvePackageDir } from './resolve-package-dir.mjs';
 /** How the interpreter requires its primordials: the module beside it. */
 export const PRIMORDIALS_FILE = 'interpreter-primordials.js';
 
+/** Compile the registry's source-generating functions once, independent of Node/Bun's TS formatting. */
+export async function bundleRegistry({ start }) {
+  const entry = join(resolvePackageDir('@nimbus-sh/core', { start }), 'src/_shared/commonjs-cell.ts');
+  const output = await build({
+    stdin: { contents: `export { COMMONJS_CELL_RUNTIME_SOURCE } from ${JSON.stringify(entry)};`, resolveDir: start },
+    bundle: true, format: 'esm', platform: 'node', target: 'esnext', write: false,
+  });
+  const module = await import(`data:text/javascript;base64,${Buffer.from(output.outputFiles[0].text).toString('base64')}`);
+  return module.COMMONJS_CELL_RUNTIME_SOURCE;
+}
+
 /**
  * The interpreter's ES module bundle as a CommonJS module: its import of the
  * primordials becomes a require, its export statement `module.exports`.
