@@ -10863,6 +10863,7 @@ function __nimbusNodeLib() {
     callSites: (count, above) => __nimbusStackSites({}, count, above),
     timers: builtins.timers,
     fetch: globalThis.fetch.bind(globalThis),
+    createCaresBinding: lib.createCaresBinding,
     primordials,
     sources: lib.sources,
   });
@@ -15362,6 +15363,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     #controller = new AbortController();
     #writer;
     #queued = false;
+    #prepared;
     #deferred;
     #started = false;
     #timer;
@@ -15429,7 +15431,6 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     #start() {
       if (this.#queued || this.destroyed || this.#signal?.aborted) return;
       this.#queued = true;
-      let request;
       try {
         this.#context.queued();
         this.#counted = true;
@@ -15439,18 +15440,23 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
           if (Array.isArray(value)) for (const part of value) headers.push([name, String(part)]);
           else headers.push([name, String(value)]);
         }
-        request = { method: this.method, path: this.path, protocol: this.protocol, host: this.host, port: this.port,
+        this.#prepared = { method: this.method, path: this.path, protocol: this.protocol, host: this.host, port: this.port,
           headers, contentLength: this.#contentLength, body: this.#completeBody };
         this._header = this.method + " " + this.path + " HTTP/1.1\r\n";
         this._headerSent = true;
       } catch (error) { this.destroy(error); this.#resume(); return; }
-      queueMicrotask(() => {
-        if (!this.destroyed && !this.#signal?.aborted) {
-          try { this.#open(request); }
-          catch (error) { this.destroy(error); }
-        }
-        this.#resume();
-      });
+      // A complete end body is admitted by Writable's existing deferred finish.
+      // Incremental writes must be admitted before they can finish.
+      if (this.#contentLength === undefined) queueMicrotask(() => this.#admit());
+    }
+    #admit() {
+      const request = this.#prepared;
+      this.#prepared = undefined;
+      if (request && !this.destroyed && !this.#signal?.aborted) {
+        try { this.#open(request); }
+        catch (error) { this.destroy(error); }
+      }
+      this.#resume();
     }
     #open(request) {
       checkPath(request.path);
@@ -15498,12 +15504,14 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (operation) operation();
     }
     _write(chunk, encoding, callback) {
+      if (this.#contentLength !== undefined) { this.#start(); callback(); return; }
       this.#afterAdmission(() => {
         if (!this.destroyed && this.#writer) this.#writer.write(Buffer.from(chunk)).then(() => { this.#touch(); callback(); }, callback);
         else callback();
       });
     }
     _final(callback) {
+      if (this.#contentLength !== undefined) { this.#start(); callback(); return; }
       this.#afterAdmission(() => {
         if (!this.destroyed && this.#writer) this.#writer.close().then(() => callback(), callback);
         else callback();
@@ -15514,11 +15522,14 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (this.destroyed) return this;
       if (typeof chunk === "function") { callback = chunk; chunk = undefined; encoding = undefined; }
       else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
-      if (!this.#queued && this.writableLength === 0 && this.method !== "GET" && this.method !== "HEAD") {
-        if (chunk == null) this.#completeBody = Buffer.alloc(0);
-        else if (typeof chunk === "string") this.#completeBody = Buffer.from(chunk, encoding);
-        else if (chunk instanceof Uint8Array) this.#completeBody = Buffer.from(chunk);
-        this.#contentLength = this.#completeBody?.byteLength;
+      if (!this.#queued && this.writableLength === 0) {
+        this.#contentLength = 0;
+        if (this.method !== "GET" && this.method !== "HEAD") {
+          if (chunk == null) this.#completeBody = Buffer.alloc(0);
+          else if (typeof chunk === "string") this.#completeBody = Buffer.from(chunk, encoding);
+          else if (chunk instanceof Uint8Array) this.#completeBody = Buffer.from(chunk);
+          this.#contentLength = this.#completeBody?.byteLength;
+        }
       }
       if (chunk !== undefined && chunk !== null) Writable.prototype.write.call(this, this.#completeBody ?? chunk, encoding);
       this.#start();
@@ -15527,6 +15538,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       return this;
     }
     emit(event, ...args) {
+      if (event === "finish" && this.#contentLength !== undefined) this.#admit();
       if (event === "close" && this.destroyed) {
         this._closed = true;
         if (this.#counted) { this.#counted = false; this.#context.finished(this); }
@@ -15554,6 +15566,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     destroy(error) { this.destroyed = true; return Writable.prototype.destroy.call(this, error); }
     _destroy(error, callback) {
       clearTimeout(this.#timer);
+      this.#prepared = undefined;
       this.#completeBody = undefined;
       this.#controller.abort(error);
       if (this.#incoming && !this.#incoming.complete) this.#incoming.destroy(reset("aborted"));
@@ -17657,6 +17670,7 @@ function __nimbusFrontPath(path) {
 }
 
 function __nimbusFrontUrl(url) {
+  const hex = (byte) => byte >= 48 && byte <= 57 ? byte - 48 : byte >= 65 && byte <= 70 ? byte - 55 : byte >= 97 && byte <= 102 ? byte - 87 : -1;
   __nimbusFront(url, "pathToFileURL", (real) => function (path, options) {
     if (typeof path !== "string") throw invalidArgType("path", "string", path);
     return Reflect.apply(real, this, arguments);
@@ -17679,7 +17693,17 @@ function __nimbusFrontUrl(url) {
     if (path.protocol !== "file:") throw nodeError(TypeError, "ERR_INVALID_URL_SCHEME", "The URL must be of scheme file");
     if (!windows && path.hostname !== "") throw nodeError(TypeError, "ERR_INVALID_FILE_URL_HOST", 'File URL host must be "localhost" or empty on linux');
     const pathname = windows ? path.pathname.replace(/\//g, "\\") : path.pathname;
-    const decoded = __nimbusNodeLib().require("querystring").unescapeBuffer(pathname, false);
+    // lib/internal/data_url.js percentDecode, after Node's UTF-8 conversion.
+    const input = __BufferMod.from(pathname, "utf8");
+    const bytes = new Uint8Array(input.length);
+    let length = 0;
+    for (let i = 0; i < input.length; i++) {
+      const high = input[i] === 37 ? hex(input[i + 1]) : -1;
+      const low = high >= 0 ? hex(input[i + 2]) : -1;
+      if (low >= 0) { bytes[length++] = (high << 4) | low; i += 2; }
+      else bytes[length++] = input[i];
+    }
+    const decoded = __BufferMod.from(bytes.buffer, bytes.byteOffset, length);
     if (!windows) return decoded;
     if (path.hostname !== "") return __BufferMod.concat([__BufferMod.from("\\\\" + url.domainToUnicode(path.hostname)), decoded]);
     const letter = decoded[1] | 0x20;

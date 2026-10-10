@@ -82,6 +82,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     #controller = new AbortController();
     #writer;
     #queued = false;
+    #prepared;
     #deferred;
     #started = false;
     #timer;
@@ -149,7 +150,6 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     #start() {
       if (this.#queued || this.destroyed || this.#signal?.aborted) return;
       this.#queued = true;
-      let request;
       try {
         this.#context.queued();
         this.#counted = true;
@@ -159,18 +159,23 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
           if (Array.isArray(value)) for (const part of value) headers.push([name, String(part)]);
           else headers.push([name, String(value)]);
         }
-        request = { method: this.method, path: this.path, protocol: this.protocol, host: this.host, port: this.port,
+        this.#prepared = { method: this.method, path: this.path, protocol: this.protocol, host: this.host, port: this.port,
           headers, contentLength: this.#contentLength, body: this.#completeBody };
         this._header = this.method + " " + this.path + " HTTP/1.1\r\n";
         this._headerSent = true;
       } catch (error) { this.destroy(error); this.#resume(); return; }
-      queueMicrotask(() => {
-        if (!this.destroyed && !this.#signal?.aborted) {
-          try { this.#open(request); }
-          catch (error) { this.destroy(error); }
-        }
-        this.#resume();
-      });
+      // A complete end body is admitted by Writable's existing deferred finish.
+      // Incremental writes must be admitted before they can finish.
+      if (this.#contentLength === undefined) queueMicrotask(() => this.#admit());
+    }
+    #admit() {
+      const request = this.#prepared;
+      this.#prepared = undefined;
+      if (request && !this.destroyed && !this.#signal?.aborted) {
+        try { this.#open(request); }
+        catch (error) { this.destroy(error); }
+      }
+      this.#resume();
     }
     #open(request) {
       checkPath(request.path);
@@ -218,12 +223,14 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (operation) operation();
     }
     _write(chunk, encoding, callback) {
+      if (this.#contentLength !== undefined) { this.#start(); callback(); return; }
       this.#afterAdmission(() => {
         if (!this.destroyed && this.#writer) this.#writer.write(Buffer.from(chunk)).then(() => { this.#touch(); callback(); }, callback);
         else callback();
       });
     }
     _final(callback) {
+      if (this.#contentLength !== undefined) { this.#start(); callback(); return; }
       this.#afterAdmission(() => {
         if (!this.destroyed && this.#writer) this.#writer.close().then(() => callback(), callback);
         else callback();
@@ -234,11 +241,14 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (this.destroyed) return this;
       if (typeof chunk === "function") { callback = chunk; chunk = undefined; encoding = undefined; }
       else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
-      if (!this.#queued && this.writableLength === 0 && this.method !== "GET" && this.method !== "HEAD") {
-        if (chunk == null) this.#completeBody = Buffer.alloc(0);
-        else if (typeof chunk === "string") this.#completeBody = Buffer.from(chunk, encoding);
-        else if (chunk instanceof Uint8Array) this.#completeBody = Buffer.from(chunk);
-        this.#contentLength = this.#completeBody?.byteLength;
+      if (!this.#queued && this.writableLength === 0) {
+        this.#contentLength = 0;
+        if (this.method !== "GET" && this.method !== "HEAD") {
+          if (chunk == null) this.#completeBody = Buffer.alloc(0);
+          else if (typeof chunk === "string") this.#completeBody = Buffer.from(chunk, encoding);
+          else if (chunk instanceof Uint8Array) this.#completeBody = Buffer.from(chunk);
+          this.#contentLength = this.#completeBody?.byteLength;
+        }
       }
       if (chunk !== undefined && chunk !== null) Writable.prototype.write.call(this, this.#completeBody ?? chunk, encoding);
       this.#start();
@@ -247,6 +257,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       return this;
     }
     emit(event, ...args) {
+      if (event === "finish" && this.#contentLength !== undefined) this.#admit();
       if (event === "close" && this.destroyed) {
         this._closed = true;
         if (this.#counted) { this.#counted = false; this.#context.finished(this); }
@@ -274,6 +285,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     destroy(error) { this.destroyed = true; return Writable.prototype.destroy.call(this, error); }
     _destroy(error, callback) {
       clearTimeout(this.#timer);
+      this.#prepared = undefined;
       this.#completeBody = undefined;
       this.#controller.abort(error);
       if (this.#incoming && !this.#incoming.complete) this.#incoming.destroy(reset("aborted"));
