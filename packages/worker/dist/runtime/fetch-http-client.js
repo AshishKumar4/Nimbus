@@ -229,11 +229,16 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
         else callback();
       });
     }
-    write(...args) { return Writable.prototype.write.apply(this, args); }
+    write(...args) {
+      return this.finished ? http.OutgoingMessage.prototype.write.apply(this, args) : Writable.prototype.write.apply(this, args);
+    }
     end(chunk, encoding, callback) {
       if (this.destroyed) return this;
       if (typeof chunk === "function") { callback = chunk; chunk = undefined; encoding = undefined; }
       else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+      if (chunk != null && typeof chunk !== "string" && !(chunk instanceof Uint8Array)) {
+        throw invalidArgType("chunk", ["string", "Buffer", "Uint8Array"], chunk);
+      }
       if (!this.#queued && this.writableLength === 0) {
         this.#contentLength = 0;
         if (this.method !== "GET" && this.method !== "HEAD") {
@@ -242,6 +247,10 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
           else if (chunk instanceof Uint8Array) this.#completeBody = Buffer.from(chunk);
           this.#contentLength = this.#completeBody?.byteLength;
         }
+      }
+      if (this.#contentLength !== undefined) {
+        this.#start();
+        return http.OutgoingMessage.prototype.end.call(this, undefined, undefined, callback);
       }
       if (chunk !== undefined && chunk !== null) Writable.prototype.write.call(this, this.#completeBody ?? chunk, encoding);
       this.#start();

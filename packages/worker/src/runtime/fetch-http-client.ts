@@ -207,7 +207,16 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
         }, this.joinDuplicateHeaders);
         this.#touch();
         incoming.on("error", (error) => { if (!this.destroyed) this.emit("error", error); });
-        incoming.once("close", () => this.destroy());
+        incoming.once("close", () => {
+          if (!incoming.complete || !this._writableState.finished) { this.destroy(); return; }
+          // A completed exchange closes its transport, not its already-finished Writable.
+          // OutgoingMessage deliberately disables Writable autoDestroy for this lifetime.
+          if (this.destroyed) return;
+          this.destroyed = true;
+          clearTimeout(this.#timer);
+          this.#writer = undefined;
+          queueMicrotask(() => this.emit("close"));
+        });
         if (!this.emit("response", incoming)) incoming._dump();
       }, (error) => { if (!this.destroyed) this.destroy(error); });
     }
@@ -287,7 +296,11 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
         this.destroy();
       }
     }
-    destroy(error) { this.destroyed = true; return Writable.prototype.destroy.call(this, error); }
+    destroy(error) {
+      if (this.destroyed) return this;
+      this.destroyed = true;
+      return Writable.prototype.destroy.call(this, error);
+    }
     _destroy(error, callback) {
       clearTimeout(this.#timer);
       this.#prepared = undefined;
