@@ -6,7 +6,6 @@ import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { type SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { ComposedFacetManager, FacetManagerHostHooks } from '../facets/compose.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
-import * as operations from '../session/programmatic.js';
 import * as services from './services.js';
 import { HostedSession, type HostedSessionScope } from './session.js';
 import { z } from 'zod/v4';
@@ -45,18 +44,67 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
     terminalClose: (ws: WebSocket) => void;
     close: () => Promise<void>;
     facets: () => ComposedFacetManager;
-    ready: (options?: operations.ProgrammaticReadyOptions | undefined) => Promise<{
+    ready: (options?: import("@nimbus-sh/core/runtime/session-protocol.js").SessionReadyOptions | undefined) => Promise<{
         ok: true;
         preinstalled: string[];
     }>;
-    exec: (command: string, options?: operations.ProgrammaticExecOptions | undefined) => Promise<import("@nimbus-sh/core/runtime/exec-stream.js").ExecOutput>;
-    execStream: (command: string, options?: operations.ProgrammaticExecOptions | undefined) => Promise<import("@nimbus-sh/core/runtime/exec-stream.js").ExecStream>;
-    runCode: (code: string, options?: (operations.ProgrammaticExecOptions & {
-        language?: "javascript" | "typescript" | "python" | "ruby" | "shell";
-        install?: "never" | "ifMissing";
-    }) | undefined) => Promise<import("@nimbus-sh/core/runtime/exec-stream.js").ExecOutput>;
-    startProcess: (command: string, options?: operations.ProgrammaticExecOptions | undefined) => Promise<operations.ProgrammaticStartResult>;
-    listProcesses: () => Promise<operations.SerializedProcess[]>;
+    exec: (command: string, options?: import("@nimbus-sh/core/runtime/session-protocol.js").SessionExecOptions | undefined) => Promise<{
+        command: string;
+        exitCode: number;
+        success: boolean;
+        duration: number;
+        timestamp: number;
+        stdout: string;
+        stderr: string;
+    }>;
+    execStream: (command: string, options?: import("@nimbus-sh/core/runtime/session-protocol.js").SessionExecOptions | undefined) => Promise<import("@nimbus-sh/core/runtime/exec-stream.js").ExecStream>;
+    runCode: (code: string, options?: import("@nimbus-sh/core/runtime/session-protocol.js").SessionRunCodeOptions | undefined) => Promise<{
+        command: string;
+        exitCode: number;
+        success: boolean;
+        duration: number;
+        timestamp: number;
+        stdout: string;
+        stderr: string;
+    }>;
+    startProcess: (command: string, options?: import("@nimbus-sh/core/runtime/session-protocol.js").SessionExecOptions | undefined) => Promise<{
+        command: string;
+        pid: number;
+        process: {
+            pid: number;
+            command: string;
+            argv: string[];
+            cwd: string;
+            state: string;
+            exitCode: number | null;
+            startTime: number;
+            endTime: number | null;
+            longRunning: boolean;
+            attachedTty: boolean;
+            execId?: string | undefined;
+        };
+        ports: {
+            port: number;
+            pid: number;
+            registeredAt: number;
+            capability: string;
+            execId?: string | undefined;
+        }[];
+        startedAt: number;
+    }>;
+    listProcesses: () => Promise<{
+        pid: number;
+        command: string;
+        argv: string[];
+        cwd: string;
+        state: string;
+        exitCode: number | null;
+        startTime: number;
+        endTime: number | null;
+        longRunning: boolean;
+        attachedTty: boolean;
+        execId?: string | undefined;
+    }[]>;
     killProcess: (pid: number) => Promise<{
         ok: boolean;
         pid: number;
@@ -82,23 +130,46 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
     }>;
     processLogs: (pid: number, options?: ProcessLogReadOptions) => Promise<{
         pid: number;
-        chunks: import("@nimbus-sh/core/runtime/process-logs.js").SequencedLogChunk[];
+        chunks: {
+            seq: number;
+            ts: number;
+            stream: "stdout" | "stderr";
+            data: string;
+            binary?: boolean | undefined;
+        }[];
         text: string;
         cursor: number;
         truncated: boolean;
-        exit: import("@nimbus-sh/core/runtime/process-logs.js").ProcessExitInfo | null;
+        exit: {
+            code: number;
+            at: number;
+            reason?: string | undefined;
+        } | null;
     }>;
-    listPorts: () => Promise<operations.SerializedPort[]>;
-    listApps: () => Promise<operations.ListedApp[]>;
-    ensureDurableApp: (input: {
+    listPorts: () => Promise<{
+        port: number;
+        pid: number;
+        registeredAt: number;
+        capability: string;
+        execId?: string | undefined;
+    }[]>;
+    listApps: () => Promise<{
         owner: string;
-        preferredPort?: number;
-        visibility?: "scoped" | "public";
-        name?: string;
-    }) => Promise<{
+        name: string | null;
+        port: number | null;
+        pid: number | null;
+        status: "running" | "starting" | "stopped" | "failed";
+        visibility: "scoped" | "public";
+        capability: string | null;
+        restart: "never" | "on-failure";
+        diagnostic: string | null;
+        url: string | null;
+        execId?: string | undefined;
+    }[]>;
+    ensureDurableApp: (input: import("@nimbus-sh/core/runtime/session-protocol.js").SessionDurableAppOptions) => Promise<{
         port: number;
         capability: string | null;
-        visibility: "scoped" | "public";
+        visibility: import("../session/port-capability.js").PortVisibility;
     }>;
     unexposePort: (port: number) => Promise<{
         port: number;
@@ -109,25 +180,63 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
         removed: boolean;
         port: number | null;
     }>;
-    exposeApp: (target: operations.AppTarget, options?: {
-        visibility?: "scoped" | "public";
-        name?: string;
-    } | undefined) => Promise<operations.ExposedAppResult>;
-    removeApp: (target: operations.AppTarget) => Promise<{
+    exposeApp: (target: import("@nimbus-sh/core/runtime/session-protocol.js").SessionAppTarget, options?: import("@nimbus-sh/core/runtime/session-protocol.js").SessionExposeOptions | undefined) => Promise<{
         owner: string;
+        name: string | null;
+        port: number;
+        pid: number | null;
+        capability: string | null;
+        visibility: "scoped" | "public";
+        url: string | null;
+        execId?: string | undefined;
+    }>;
+    removeApp: (target: import("@nimbus-sh/core/runtime/session-protocol.js").SessionAppTarget) => Promise<{
         removed: boolean;
+        owner: string;
         port: number | null;
     }>;
-    rotateLink: (target: operations.AppTarget) => Promise<operations.ExposedAppResult>;
-    installRuntime: (spec: string, options?: {
-        force?: boolean;
-    } | undefined) => Promise<import("../runtime/package-manager.js").RuntimeInstallSummary>;
-    ensureRuntimes: (specs: string[], options?: {
-        force?: boolean;
-    } | undefined) => Promise<import("../runtime/package-manager.js").RuntimeInstallSummary[]>;
+    rotateLink: (target: import("@nimbus-sh/core/runtime/session-protocol.js").SessionAppTarget) => Promise<{
+        owner: string;
+        name: string | null;
+        port: number;
+        pid: number | null;
+        capability: string | null;
+        visibility: "scoped" | "public";
+        url: string | null;
+        execId?: string | undefined;
+    }>;
+    installRuntime: (spec: string, options?: import("@nimbus-sh/core/runtime/session-protocol.js").SessionRuntimeInstallOptions | undefined) => Promise<{
+        spec: string;
+        exitCode: number;
+        stdout: string;
+        stderr: string;
+    }>;
+    ensureRuntimes: (specs: string[], options?: import("@nimbus-sh/core/runtime/session-protocol.js").SessionRuntimeInstallOptions | undefined) => Promise<{
+        spec: string;
+        exitCode: number;
+        stdout: string;
+        stderr: string;
+    }[]>;
     listRuntimes: () => Promise<{
-        installed: import("@nimbus-sh/core/runtime/installed-runtimes.js").RuntimeSummary[];
-        available: import("@nimbus-sh/core/runtime/runtime-package.js").RuntimeAvailability[];
+        installed: {
+            name: string;
+            version: string;
+            root: string;
+            abi: string;
+            bins: string[];
+            sizeBytes: number;
+            license: string;
+        }[];
+        available: {
+            name: string;
+            abi: string;
+            defaultVersion: string;
+            versions: {
+                version: string;
+                sizeBytes: number;
+                license: string;
+            }[];
+        }[];
     }>;
     spawnWorker: (workerCode: string, command: string, cwd: string, opts?: import("../workspace-host.js").LongRunningWorkerSpawnOptions | undefined) => Promise<import("../facets/manager.js").SpawnedWorker>;
     routeCapabilityPort: (port: number, capability: string, request: Request<unknown, CfProperties<unknown>>, innerPath: string) => Promise<Response>;

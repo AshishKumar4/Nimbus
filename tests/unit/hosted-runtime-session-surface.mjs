@@ -35,6 +35,8 @@ const bundle = await importWorkerBundle({
   'packages/core/src/runtime/process-table.ts': ['PID_GEN_STRIDE'],
   'packages/core/src/runtime/os-contracts.ts': ['CRED_KERNEL', 'CRED_SESSION_USER'],
   'packages/fabric/src/composition.ts': ['composeFabric'],
+  'packages/worker/src/router/index.ts': ['createNimbusHandler'],
+  'packages/worker/src/auth/token.ts': ['issueNimbusToken'],
 });
 
 bundle.composeFabric({ supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'WORKSPACES', hostDispatchMethod: 'supervisorOp' });
@@ -94,10 +96,31 @@ try {
   console.log('  [1] a session scoped to a shell keeps it; another shell is separate');
 
   // ── one filesystem: the session's write is the embedder's file ──────────
-  await a.files.write('/tmp/shared.txt', 'one plane');
+  assert.equal(await a.files.write('/tmp/shared.txt', 'one plane'), undefined, 'the public hosted file API returns void');
+  const surface = runtime.session({ shellId: 'agent-a' });
+  const writtenRevision = await surface._rpcWriteFile('/tmp/raw-bytes.bin', new Uint8Array([0, 255, 128]));
+  assert.equal(writtenRevision, vfs.revision('/tmp/raw-bytes.bin'),
+    'the raw hosted wire reports the committed revision, just as the Durable Object does');
+  assert.deepEqual(await surface._rpcReadFileBytes('/tmp/raw-bytes.bin'), new Uint8Array([0, 255, 128]));
   assert.equal(await runtime.files.readFileString('/tmp/shared.txt'), 'one plane', 'the embedder reads the session\'s write');
   const cat = await a.exec('cat /tmp/shared.txt');
   assert.equal(cat.stdout, 'one plane', 'a command reads it');
+  const rpcEnv = { JWT_SECRET: 'session-protocol-secret', NIMBUS_SESSION: { idFromName: (name) => name, get: () => surface } };
+  const rpcHandler = bundle.createNimbusHandler({ sdk: { remote: true } });
+  const token = await bundle.issueNimbusToken(rpcEnv, { tn: 'hosted', scopes: ['sandbox:use'] });
+  const remote = bundle.Nimbus.connect({
+    endpoint: 'https://hosted.test', token,
+    fetch: (url, init) => rpcHandler.fetch(new Request(url, init), rpcEnv, { waitUntil() {} }),
+  }).sandbox('workspace', { shellId: 'agent-a' });
+  assert.equal(await remote.files.write('/tmp/remote-bytes.bin', new Uint8Array([0, 255, 128])), undefined,
+    'HTTP, hosted and SDK adapters preserve the wire revision but expose void only at files.write');
+  assert.deepEqual(await remote.files.readBytes('/tmp/remote-bytes.bin'), new Uint8Array([0, 255, 128]));
+  assert.deepEqual(await remote.files.readRange('/tmp/remote-bytes.bin', 1, 2), new Uint8Array([255, 128]));
+  assert.equal((await remote.exec('cat /tmp/shared.txt')).stdout, 'one plane', 'the shared stream result survives the HTTP/hosted adapters');
+  const remoteLogs = await remote.processes.logs((await remote.processes.list()).at(-1).pid);
+  assert.equal(typeof remoteLogs.cursor, 'number');
+  assert.ok(Array.isArray(remoteLogs.chunks));
+  await assert.rejects(remote.files.as(STRANGER).read('/tmp/remote-bytes.bin'), /cred is not accepted/, 'the shared protocol does not widen remote authorization');
   console.log('  [2] files written through the session are the workspace\'s files');
 
   // ── identity: the scope's credential acts, and cannot be swapped ────────
