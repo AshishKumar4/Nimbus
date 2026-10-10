@@ -58,9 +58,7 @@ export async function httpFetchReviewCases(http, dns, net, address = (server) =>
     const frozen = http.request({ host: '127.0.0.1', port, method: 'POST', headers: { 'Content-Length': contentLength } });
     frozen.strictContentLength = true;
     frozen.on('error', () => {});
-    frozen.write('a');
-    contentLength[0] = '2';
-    try { frozen.write('b'); result.frozenLength = null; }
+    try { frozen.write('a'); contentLength[0] = '2'; frozen.write('b'); result.frozenLength = null; }
     catch (error) { result.frozenLength = [error.code, error.message]; }
     frozen.abort();
   } finally {
