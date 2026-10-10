@@ -41,6 +41,7 @@
 import type { CommandRegistry } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { SessionRouterRpc } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { FacetManager } from '../facets/manager.js';
@@ -67,7 +68,13 @@ import type { W12EnableResult } from './replica-routes.js';
  * above. Where a helper needs `ctx`/`env`, it takes them as explicit
  * args separately from this `host`.
  */
-export interface SessionInternal {
+export interface SessionInternal extends Pick<SessionRouterRpc,
+  | '_rpcReady' | '_rpcBootProbe' | '_rpcExecStream' | '_rpcStartProcess' | '_rpcRunCode'
+  | '_rpcInstallRuntime' | '_rpcEnsureRuntimes' | '_rpcListRuntimes' | '_rpcListProcesses'
+  | '_rpcKillProcess' | '_rpcWriteProcessInput' | '_rpcEndProcessInput' | '_rpcResizeProcess'
+  | '_rpcSignalProcess' | '_rpcProcessLogs' | '_rpcListPorts' | '_rpcExposePort'
+  | '_rpcEnsureDurableApp' | '_rpcUnexposePort' | '_rpcDeleteFile'
+> {
   routeLoopback(port: number, request: Request): Promise<Response | null>;
   runtimeWorkspace: NimbusWorkspace | null;
   // ── Core session state (always set after first request) ─────────────
@@ -193,26 +200,4 @@ export interface SessionInternal {
   supervisorRewindBridge(pid: number): Promise<void>;
   _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
 
-  // Programmatic sandbox SDK RPC.
-  _rpcReady(options?: { preinstall?: string[] }): Promise<{ ok: true; preinstalled: string[] }>;
-  // perf(boot): cold DO placement + constructor probe (no initSession).
-  _rpcBootProbe(): Promise<{ ok: true }>;
-  _rpcExecStream(command: string, options?: any): Promise<ReadableStream<Uint8Array>>;
-  _rpcStartProcess(command: string, options?: any): Promise<any>;
-  _rpcRunCode(code: string, options?: any): Promise<any>;
-  _rpcInstallRuntime(spec: string, options?: { force?: boolean }): Promise<any>;
-  _rpcEnsureRuntimes(specs: string[], options?: { force?: boolean }): Promise<any>;
-  _rpcListRuntimes(): Promise<any>;
-  _rpcListProcesses(): Promise<any>;
-  _rpcKillProcess(pid: number): Promise<{ ok: boolean; pid: number }>;
-  _rpcWriteProcessInput(pid: number, data: string): Promise<{ ok: boolean; pid: number }>;
-  _rpcEndProcessInput(pid: number): Promise<{ ok: boolean; pid: number }>;
-  _rpcResizeProcess(pid: number, size: { columns: number; rows: number }): Promise<{ ok: boolean; pid: number }>;
-  _rpcSignalProcess(pid: number, signal: string): Promise<{ ok: boolean; pid: number }>;
-  _rpcProcessLogs(pid: number, options?: { cursor?: number; lines?: number; bytes?: number }): Promise<any>;
-  _rpcListPorts(): Promise<any>;
-  _rpcExposePort(port: number, options?: { visibility?: 'scoped' | 'public' }): Promise<any>;
-  _rpcEnsureDurableApp(input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public'; name?: string }): Promise<any>;
-  _rpcUnexposePort(port: number): Promise<any>;
-  _rpcDeleteFile(path: string, options?: { recursive?: boolean }): Promise<void>;
 }

@@ -59,7 +59,7 @@ function makeBinding(calls) {
 
   await mine.read('/a');
   await mine.readBytes('/a');
-  await mine.write('/a', 'x');
+  assert.equal(await mine.write('/a', 'x'), undefined, 'a colocated public write hides the raw revision');
   await mine.stat('/a');
   await mine.lstat('/a');
   await mine.rename('/a', '/b');
