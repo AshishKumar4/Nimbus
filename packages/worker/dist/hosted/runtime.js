@@ -45,7 +45,6 @@ class RuntimeOwner {
     esbuildService = null;
     bundlePool = null;
     npmInstaller = null;
-    fetchProxyEntrypoint = null;
     viteDevServer = null;
     cirrusReal = null;
     nimbusWrangler = null;
@@ -134,11 +133,8 @@ class RuntimeOwner {
     }
     ensureBundlePool() { this.assertOpen(); return this.services.ensureBundlePool(); }
     ensureFacetManager() { this.assertOpen(); return this.services.ensureFacetManager(); }
-    ensureFetchProxy(log) { return this.services.ensureFetchProxy(log); }
-    buildFetchFn(log) { return this.services.buildFetchFn(log); }
     ensureNpmInstaller(onProgress) { this.assertOpen(); return this.services.ensureNpmInstaller(onProgress); }
     ensureGlobalPrefixDirs(prefix) { return this.services.ensureGlobalPrefixDirs(prefix); }
-    _envFlagDefaultOn(name) { return this.services._envFlagDefaultOn(name); }
     _ensureFacetProcessManager() { this.assertOpen(); return this.services._ensureFacetProcessManager(); }
     _ensureWebSocketRelay() { this.assertOpen(); return this.services._ensureWebSocketRelay(); }
     _setCpRegistry(registry) {

@@ -109,7 +109,6 @@ export interface ProgrammaticHost extends TimerHost {
   bundlePool?: { dispose(): void } | null;
   nimbusWrangler?: unknown;
   npmInstaller?: unknown;
-  fetchProxyEntrypoint?: unknown;
   _supervisorOps?: { forget(pid: number): void } | null;
   sessionBasePath?: string;
   sessionBasePathHydrated?: boolean;
@@ -1500,7 +1499,6 @@ async function resetInMemorySessionState(self: ProgrammaticHost): Promise<void> 
   self._cirrusHmrWsClients = null;
   self.nimbusWrangler = null;
   self.npmInstaller = null;
-  self.fetchProxyEntrypoint = null;
   self._supervisorOps = null;
   self._cpRegistry = null;
   self._viteShimPid = null;

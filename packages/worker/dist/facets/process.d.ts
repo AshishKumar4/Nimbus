@@ -288,7 +288,6 @@ export declare class FacetProcessManager {
      */
     private _stdinOf;
     private _shellPlanFor;
-    private _dispatchShell;
     /** The shell's program: its `-c` text, its script, or (`sh` alone) its stdin, which it then has none left of. */
     private _shellCommandLineForPlan;
     private _runShellLine;
