@@ -88,7 +88,6 @@ export declare class FunctionInfo implements FactoryFunctionInfo {
  * written without ever consulting Array.prototype.
  */
 export declare function frameTemplate(size: number, tdz: readonly number[]): Env;
-export declare function operators(): HostOperators;
 /**
  * One evaluation of a class: what constructing an instance initializes, and
  * the home object of its constructor. Filled in once the class's elements
@@ -104,11 +103,22 @@ export declare function superConstruct(ctor: Function, args: unknown[], newTarge
 /** InitializeInstanceElements: the private methods and fields of `ctor`'s class, once `this` is bound. */
 export declare function initializeInstance(ctor: Function, instance: object): void;
 export declare function isObject(value: unknown): value is object;
-export declare function installHost(hostOps: HostOps): void;
-/** A function object of `fi`'s shape over `scope`. */
-export declare function makeFunction(fi: FunctionInfo, scope: Env, home: object | undefined, name?: string): NativeFunction;
-/** A class constructor of `fi` over `scope`, extending `parent` when derived. */
-export declare function makeClass(fi: FunctionInfo, scope: Env, parent: unknown, name: string, record: ClassRecord): NativeFunction;
+/**
+ * One interpreter's function runtime, bound once by createInterpreter: its
+ * host's operators, and the strict and sloppy factories that make its
+ * interpreted functions. Compiled code reaches it through its unit
+ * (compile.ts UnitContext), so interpreters never share one.
+ */
+export declare class InterpreterRuntime {
+    readonly ops: HostOperators;
+    private readonly strict;
+    private readonly sloppy;
+    constructor(hostOps: HostOps);
+    /** A function object of `fi`'s shape over `scope`. */
+    makeFunction(fi: FunctionInfo, scope: Env, home: object | undefined, name?: string): NativeFunction;
+    /** A class constructor of `fi` over `scope`, extending `parent` when derived. */
+    makeClass(fi: FunctionInfo, scope: Env, parent: unknown, name: string, record: ClassRecord): NativeFunction;
+}
 /** SetFunctionName's name for a property key, with an optional get/set prefix. */
 export declare function functionName(key: PropertyKey, prefix?: string): string;
 /** One private name of one evaluation of a class. */

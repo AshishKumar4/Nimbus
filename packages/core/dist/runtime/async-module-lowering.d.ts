@@ -1,21 +1,16 @@
+import { type EsmImportBinding, type EsmRecord } from './esm-interop.js';
 import { type SourceEdit } from './javascript-ast.js';
 import { type ModuleScope } from './module-format.js';
-/**
- * One name an import binds: the module's namespace, or one of its exports
- * by name (`default` included, which `import d from` binds too). A string
- * name is any string, `"*"` included: only `namespace` is the namespace.
- *
- * A named binding's `references` are where the module uses it.
- */
-export type EsmImportBinding = {
-    readonly kind: 'namespace';
-    readonly local: string;
-} | {
-    readonly kind: 'named';
-    readonly local: string;
-    readonly imported: string;
+/** An import's binding (esm-interop.ts), a named one with its `references`: where the module uses it. */
+export type EsmUsedBinding = Extract<EsmImportBinding, {
+    kind: 'namespace';
+}> | (Extract<EsmImportBinding, {
+    kind: 'named';
+}> & {
     readonly references: readonly EsmReference[];
-};
+});
+/** A module's declaration as the emitter reads it: esm-interop.ts's, its named imports' uses found. */
+export type EsmUsedRecord = EsmRecord<EsmUsedBinding>;
 /**
  * A use of an imported binding: a read, a call (`this` stays undefined), one
  * that begins its expression statement (a leading-call), a shorthand property
@@ -27,52 +22,6 @@ export interface EsmReference {
     readonly end: number;
     readonly use: 'read' | 'typeof' | 'call' | 'leading-call' | 'shorthand' | 'write';
 }
-/**
- * A name a module exports: one of its own bindings, or, re-exported from
- * the record's source, one of that module's exports by name or its
- * namespace (`export * as ns from`).
- */
-export type EsmExportName = {
-    readonly kind: 'named';
-    readonly exported: string;
-    readonly local: string;
-} | {
-    readonly kind: 'namespace';
-    readonly exported: string;
-};
-/**
- * An import or export declaration of a module, with the source range the
- * emitter removes or replaces: the whole declaration, except an exported
- * declaration (`export const`, `export function`, `export default class C`),
- * where it is the `export` keywords alone and the declaration stays.
- */
-export type EsmRecord = {
-    readonly kind: 'import';
-    readonly start: number;
-    readonly end: number;
-    readonly source: string;
-    readonly bindings: readonly EsmImportBinding[];
-} | {
-    readonly kind: 'export';
-    readonly start: number;
-    readonly end: number;
-    readonly source: string | null;
-    readonly names: readonly EsmExportName[];
-} | {
-    readonly kind: 'export-all';
-    readonly start: number;
-    readonly end: number;
-    readonly source: string;
-} | {
-    readonly kind: 'export-default';
-    readonly start: number;
-    readonly end: number;
-    /** The default expression's range in the source. */
-    readonly expression: {
-        readonly start: number;
-        readonly end: number;
-    };
-};
 /**
  * Names for code generated around `source`: none of `names`, its identifiers
  * that start as they do, as the parse reads them (unicode escapes decoded);
@@ -99,13 +48,16 @@ export interface CommonJsEmitOptions {
     /**
      * The module's import.meta (each `metas` span) read from `metadata`, an
      * expression, and its import() calls (each at a `dynamicImports` start)
-     * made through the process's loader with `parentUrl` as their parent.
+     * made through the process's loader, `loader(parentUrl, ...arguments)`
+     * (by default dynamic-import-rewrite.ts's, as rewriteDynamicImports makes
+     * a CommonJS module's).
      */
     readonly bind?: {
         readonly metadata: string;
         readonly parentUrl: string;
         readonly metas: readonly Span[];
         readonly dynamicImports: readonly number[];
+        readonly loader?: string;
     };
     /** Where the module's own text ends in `source` (esModuleSource appends to it): the emit's `end`. */
     readonly sourceLength?: number;
@@ -156,7 +108,7 @@ export interface EsModuleMap {
  * come first in nearly every module, so one parse does; a module importing
  * a name after code that may use it is parsed again, every name known.
  */
-export declare function readEsmRecords(source: string): EsmRecord[];
+export declare function readEsmRecords(source: string): EsmUsedRecord[];
 /**
  * readEsmRecords, and where the module uses a name the CommonJS wrapper
  * binds (`require`, `module`, `exports`, `__filename`, `__dirname`) that
@@ -165,7 +117,7 @@ export declare function readEsmRecords(source: string): EsmRecord[];
  * (module-format.ts ES_MODULE_UNBOUND_NAMES).
  */
 export declare function readEsmModule(source: string): {
-    records: EsmRecord[];
+    records: EsmUsedRecord[];
     wrapperUses: ReadonlyMap<string, readonly EsmReference[]>;
     /** An `await` (or `for await`) outside every function. */
     topLevelAwait: boolean;
@@ -176,7 +128,7 @@ export declare function readEsmModule(source: string): {
     names: ReadonlySet<string>;
 };
 /** The CommonJS for ES module `source`, whose import and export declarations are `records`. */
-export declare function emitCommonJs(source: string, records: readonly EsmRecord[], options: CommonJsEmitOptions): string;
+export declare function emitCommonJs(source: string, records: readonly EsmUsedRecord[], options: CommonJsEmitOptions): string;
 /**
  * Where a module's edits change a line, by line: [line, source column,
  * generated length, source text], and 1 for a call (commonjs-cell.ts

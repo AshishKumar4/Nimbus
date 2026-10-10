@@ -23,7 +23,7 @@
  */
 import { Parser, type Options } from 'acorn';
 import { type RuntimeFunctionKind } from '../_shared/runtime-function-source.js';
-import { type ModuleCell } from './modules.js';
+import { type ModuleCell, type ModuleHelpers } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
 import { type ModuleRequest } from './module-requests.js';
 export type { HostOps } from './host-ops.js';
@@ -40,6 +40,8 @@ export interface InterpreterHost {
      * evaluation of it, which would capture what the program has replaced.
      */
     readonly primordials: object;
+    /** esm-interop.ts's helpers (ESM_MODULE_HELPERS), compiled with the launch's map as a lowered cell's are. */
+    readonly moduleHelpers: ModuleHelpers;
 }
 /**
  * Where compiled code comes from (commonjs-cell.ts, RUNTIME CODE): what its
@@ -59,7 +61,8 @@ export interface Interpreter {
     /**
      * The module cell for a file's text: Node's wrapper function of
      * (exports, require, module, __filename, __dirname). CommonJS text runs as
-     * that function's body; an ES module as esbuild lowers it to one.
+     * that function's body; an ES module linked as the next launch's lowering
+     * links it (runtime/esm-interop.ts), with the host's moduleHelpers.
      */
     compileModule(path: string, text: string, origin?: CodeOrigin): ModuleCell;
     /**
