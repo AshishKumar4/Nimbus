@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "f04809dfd9e1061a99993115d3edd75d4c3e98ef2f8b86de1d1f527fcacd70c5",
+  "fingerprint": "04537275d0f64a35c0da241c2197da547e7ed82a3b5b42d1c2cbf30c03c8266e",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1316,7 +1316,7 @@
     "packages/core/src/runtime/import-lexer-hazards.ts": "6c647615bb8fa962400ecba2be91d5ba67fa30ae73d5f6b4ef636a405c9322e8",
     "packages/core/src/runtime/installed-runtimes.ts": "bd52e23ad2b9e78305e72c7b656c0402145892291b2209cfef7ae4657bdbba33",
     "packages/core/src/runtime/javascript-ast.ts": "95158d2e468c42916b61d3ccd739570d9072740d02245d70747a991231cb75f4",
-    "packages/core/src/runtime/javascript-scope.ts": "6e0710eeb38f3a40dd4ec28018a1845087bf6afcf99ac7465ea60bcc63d9bd29",
+    "packages/core/src/runtime/javascript-scope.ts": "a203c33e20258e3c72af6b70aa7391805f28e1fdc71d9124f7ec8b5efeea58a5",
     "packages/core/src/runtime/js-repl-names.ts": "e4e6a8d1a74eccc2920217f4239edc7fa494935d9e08e073be80020909f10698",
     "packages/core/src/runtime/js-repl.ts": "d7013b1f5a9ec08f3a59487a3f76059f2d188702f99eabca6c35d6dc517925f9",
     "packages/core/src/runtime/jsonc.ts": "e699eb47f7330d8da5ff6a52b4d25e0fa5a1948ceb9623bf729a19319960285c",
