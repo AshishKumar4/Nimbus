@@ -82,6 +82,11 @@ try {
   const wrongState = signed.slice(0, middle) + (signed[middle] === 'a' ? 'b' : 'a') + signed.slice(middle + 1);
   await agent(request('/api/agent/oauth/callback?code=agent-code&state=' + encodeURIComponent(wrongState), { Cookie: agentCookie }));
   assert.equal(tokenCalls.length, 1, 'invalid session state does not reach the provider');
+  const cookiePayloadStart = agentCookie.indexOf('.', agentCookie.indexOf('=') + 1) + 1;
+  const cookieMiddle = cookiePayloadStart + Math.floor((agentCookie.length - cookiePayloadStart) / 2);
+  const wrongCookie = agentCookie.slice(0, cookieMiddle) + (agentCookie[cookieMiddle] === 'a' ? 'b' : 'a') + agentCookie.slice(cookieMiddle + 1);
+  await agent(request('/api/agent/oauth/callback?code=agent-code&state=' + encodeURIComponent(signed), { Cookie: wrongCookie }));
+  assert.equal(tokenCalls.length, 1, 'invalid cookie ciphertext does not reach the provider');
   const agentDone = await agent(request('/api/agent/oauth/callback?code=agent-code&state=' + encodeURIComponent(signed), { Cookie: agentCookie }));
   assert.equal(agentDone.status, 200);
   assert.match(await agentDone.text(), /Cloudflare connected/);
