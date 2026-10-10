@@ -15494,7 +15494,7 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
     }
     #afterAdmission(operation) {
       if (this.#started || this.destroyed || this.#signal?.aborted) { operation(); return; }
-      // Native Writable has one outstanding write/final callback, never a second queue.
+      // Native Writable has one outstanding write callback, never a second queue.
       this.#deferred = operation;
       this.#start();
     }
@@ -15507,13 +15507,6 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (this.#contentLength !== undefined) { this.#start(); callback(); return; }
       this.#afterAdmission(() => {
         if (!this.destroyed && this.#writer) this.#writer.write(Buffer.from(chunk)).then(() => { this.#touch(); callback(); }, callback);
-        else callback();
-      });
-    }
-    _final(callback) {
-      if (this.#contentLength !== undefined) { this.#start(); callback(); return; }
-      this.#afterAdmission(() => {
-        if (!this.destroyed && this.#writer) this.#writer.close().then(() => callback(), callback);
         else callback();
       });
     }
@@ -15538,7 +15531,10 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       return this;
     }
     emit(event, ...args) {
-      if (event === "finish" && this.#contentLength !== undefined) this.#admit();
+      if (event === "finish") {
+        this.#admit();
+        if (!this.destroyed && this.#writer) this.#writer.close().catch((error) => this.destroy(error));
+      }
       if (event === "close" && this.destroyed) {
         this._closed = true;
         if (this.#counted) { this.#counted = false; this.#context.finished(this); }
