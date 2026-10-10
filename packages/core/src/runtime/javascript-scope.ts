@@ -12,7 +12,7 @@
  * (the transform facet's) both bundle it, with binding-pattern.ts, its one
  * import.
  */
-import type { Pattern } from 'acorn';
+import type { Identifier, Pattern } from 'acorn';
 import { bindingIdentifiers } from './binding-pattern.js';
 
 /** A node of a parsed program. */
@@ -58,7 +58,7 @@ export function patternNames(node: EsNode | null): string[] {
   while (binding !== null && (binding.type === 'TSParameterProperty' || binding.type === 'TSQualifiedName')) {
     binding = child(binding, binding.type === 'TSParameterProperty' ? 'parameter' : 'left');
   }
-  return bindingIdentifiers(binding as unknown as Pattern | null, []).map((identifier) => identifier.name);
+  return bindingIdentifiers(binding as unknown as Pattern | null, [] as Identifier[]).map((identifier) => identifier.name);
 }
 
 /** A scope of a program: the names it binds, and the scope it is in. */
