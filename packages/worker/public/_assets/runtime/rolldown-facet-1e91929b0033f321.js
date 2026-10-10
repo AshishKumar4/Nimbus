@@ -14524,6 +14524,31 @@ function finish(settings) {
   return settings;
 }
 
+// ../core/src/runtime/binding-pattern.ts
+function bindingIdentifiers(pattern, out) {
+  if (pattern === null) return out;
+  switch (pattern.type) {
+    case "Identifier":
+      out[out.length] = pattern;
+      return out;
+    case "ObjectPattern":
+      for (let i2 = 0; i2 < pattern.properties.length; i2++) {
+        const property = pattern.properties[i2];
+        bindingIdentifiers(property.type === "RestElement" ? property.argument : property.value, out);
+      }
+      return out;
+    case "ArrayPattern":
+      for (let i2 = 0; i2 < pattern.elements.length; i2++) bindingIdentifiers(pattern.elements[i2], out);
+      return out;
+    case "RestElement":
+      return bindingIdentifiers(pattern.argument, out);
+    case "AssignmentPattern":
+      return bindingIdentifiers(pattern.left, out);
+    default:
+      return out;
+  }
+}
+
 // ../core/src/runtime/javascript-scope.ts
 function isNode(value) {
   return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string" && "start" in value && typeof value.start === "number" && "end" in value && typeof value.end === "number";
@@ -14540,33 +14565,12 @@ function stringOf(node, key) {
   const value = node?.[key];
   return typeof value === "string" ? value : null;
 }
-function* patternNames(node) {
-  switch (node?.type) {
-    case "Identifier": {
-      const name50 = stringOf(node, "name");
-      if (name50 !== null) yield name50;
-      return;
-    }
-    case "ObjectPattern":
-      for (const property of list(node, "properties")) yield* patternNames(child(property, property.type === "RestElement" ? "argument" : "value"));
-      return;
-    case "ArrayPattern":
-      for (const element of list(node, "elements")) yield* patternNames(element);
-      return;
-    case "RestElement":
-      yield* patternNames(child(node, "argument"));
-      return;
-    case "AssignmentPattern":
-      yield* patternNames(child(node, "left"));
-      return;
-    case "TSParameterProperty":
-      yield* patternNames(child(node, "parameter"));
-      return;
-    // `namespace A.B {}` binds A.
-    case "TSQualifiedName":
-      yield* patternNames(child(node, "left"));
-      return;
+function patternNames(node) {
+  let binding = node;
+  while (binding !== null && (binding.type === "TSParameterProperty" || binding.type === "TSQualifiedName")) {
+    binding = child(binding, binding.type === "TSParameterProperty" ? "parameter" : "left");
   }
+  return bindingIdentifiers(binding, []).map((identifier) => identifier.name);
 }
 var FUNCTIONS = /* @__PURE__ */ new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
 function* lexicalNames(statements) {

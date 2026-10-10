@@ -23,7 +23,7 @@
 import type { AnyNode, BlockStatement, Expression, FunctionExpression, Pattern, PrivateIdentifier, Program, SpreadElement, Super } from 'acorn';
 import { type Analysis, type Binding, type ClassNode, type FunctionNode, FunctionScope } from './scope.js';
 import { SafeMap } from './intrinsics.js';
-import { type Env, FunctionInfo, type FunctionShape } from './runtime.js';
+import { type Env, FunctionInfo, type FunctionShape, type InterpreterRuntime } from './runtime.js';
 import { type Code } from './code.js';
 import type { ModulePlan } from './modules.js';
 /** What the host gives a compiled unit. */
@@ -40,9 +40,16 @@ export interface UnitHost {
     } | null;
 }
 /** An import binding's source: the slot holds the module (named, default) or the namespace object. */
+/** A module's import binding: it holds a module (or interop) and reads `name` of it at each use, or holds a namespace. */
+/**
+ * A module's import binding: it reads `name` of the value in `slot` (its
+ * request's module, or for `default` the module's interop) at each use, or
+ * is the namespace in its own slot.
+ */
 type ImportInfo = {
-    readonly kind: 'named' | 'default' | 'namespace';
+    readonly kind: 'named' | 'namespace';
     readonly name: string;
+    readonly slot: number;
 };
 /** What every function of one unit (a module, script or constructed function) shares, compiled now or later. */
 export interface UnitContext {
@@ -50,6 +57,8 @@ export interface UnitContext {
     readonly source: string;
     readonly module: boolean;
     readonly host: UnitHost;
+    /** The interpreter's function runtime: its operators and function factories. */
+    readonly runtime: InterpreterRuntime;
     /** A module's import bindings. */
     readonly imports: SafeMap<Binding, ImportInfo>;
     /** A module's own scope, which holds `%module` for import.meta. */
@@ -62,6 +71,8 @@ export declare class Compiler {
     readonly text: string;
     /** The offset in the unit's source of `text`'s first character. */
     readonly base: number;
+    private readonly rt;
+    private readonly ops;
     private scope;
     private shape;
     private readonly suspendCache;
@@ -313,17 +324,18 @@ export declare class Compiler {
     /** A CommonJS body: a function of the wrapper's parameters. */
     commonJsFunction(program: Program, root: FunctionScope, params: readonly string[]): FunctionInfo;
     /**
-     * An ES module as a module cell: called with the five CommonJS wrapper
-     * arguments, it requires what it imports, replaces module.exports with
-     * its exports (live getters, `__esModule` set), and runs its body. Imports
-     * and exports behave as esbuild's lowering to CommonJS, which is what the
-     * same text becomes in the next launch: a default import is the module's
-     * `default` when it has `__esModule`, else the module itself; a namespace
-     * import is esbuild's __toESM of it. With top-level await, the cell
-     * returns the promise of the body.
+     * An ES module's plan (modules.ts): the link of its declarations
+     * (esm-interop.ts) over its frame's slots, its instantiation and its
+     * statements. A named import's binding holds its module, or for `default`
+     * its interop, and each use reads the name of it (bindingRead); a
+     * namespace import's holds the namespace.
      */
-    /** A module's plan (modules.ts): its imports and exports, its instantiation, its statements. */
     modulePlan(program: Program, root: FunctionScope): ModulePlan;
+    /**
+     * The binding an import declares in the module scope: it reads `name` of
+     * the value in `slot`, or a namespace's own slot holds it. That slot.
+     */
+    private importBinding;
     /** A module's statements, compiled as an async function body (top-level await). */
     private moduleStatements;
     /** A live read of a module-scope binding, for an export getter. */
