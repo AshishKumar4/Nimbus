@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "946e774c2c796a897a8574a8e8589ff31b715da89f84baf6fcb1117be6f722e8",
+  "fingerprint": "a30e78ba479230af2e3e37bbf1d46e96e82f418e33ac24875c2da3a83b603363",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2097,8 +2097,8 @@
     "packages/worker/dist/git/pack/facet-packs.d.ts": "6f53f82d50ca1cc0386e2dd93c856da1d7e3f1c5a9dc200e6fdd906ee263f33c",
     "packages/worker/dist/git/pack/facet-packs.d.ts.map": "93a3d320c9dca7aba41983664e38e1088a56d0792c20966446792a88530f110b",
     "packages/worker/dist/git/pack/facet-packs.js": "a0980a36b7f15d77f1a0de851678245db285cc812c486c87aa1cb44c986ce8ef",
-    "packages/worker/dist/git/pack/facet-supervisor.d.ts": "21b4c04b9535a5f6601a40b6c861c53627cd4b56c04da46010c8b48a4ea90321",
-    "packages/worker/dist/git/pack/facet-supervisor.d.ts.map": "99f611dca33abd822c697813a92ea6e442cc6d9d321e4736747a455c24da86a4",
+    "packages/worker/dist/git/pack/facet-supervisor.d.ts": "b7c7f582847a7681b7d247fe399a68ee8a77411bbf34a75900e9276ae886955a",
+    "packages/worker/dist/git/pack/facet-supervisor.d.ts.map": "133169c4d2d36b3da869754f15c3deb1789ce13e1ae61e63e66f44dd092f289c",
     "packages/worker/dist/git/pack/facet-supervisor.js": "f845580a730a543430f2f0fa9c09283cf5acdff96969727e2b949062fcc7067d",
     "packages/worker/dist/git/pack/facet.d.ts": "fd4508dfadccb9d0df605c82f91cd9300654c6b353363371eb2d39e2f398fe3a",
     "packages/worker/dist/git/pack/facet.d.ts.map": "b3f753576dec5e3a8f5c0f28d69b1214b609fb587947d83d83d606f1c1fd41e5",
@@ -2789,7 +2789,7 @@
     "packages/worker/src/git/pack/clone.ts": "d74f9007c5f7ae2038558ef6f109baf009a14edd90a9909f240d4a6854301ff9",
     "packages/worker/src/git/pack/commit-graph.ts": "bd0517ac3abafc2b202514d82dfdc41ac5b80ad452fbce75b32e2dc8a2b007be",
     "packages/worker/src/git/pack/facet-packs.ts": "278594ebc36d3c23c2b7bf5860fcab771c51a6490a3796aa95da02305182673b",
-    "packages/worker/src/git/pack/facet-supervisor.ts": "63ac9ce9561d3c85187697ec0813a5f15a6e5d111a3627ced8bf57531511f66c",
+    "packages/worker/src/git/pack/facet-supervisor.ts": "6ab626d3be55e167e63948fd77538de5141c9e14730f13b9755eeaa4ce29b65b",
     "packages/worker/src/git/pack/facet.generated.ts": "46acbd00e852c495c476ce1d6da987ee0fef82f1dba5484bc91307f78869982a",
     "packages/worker/src/git/pack/facet.ts": "6ce67dda891817b2f619af16ce6b3dc2eb32400b2e3f7c0b490e73cc4685a9de",
     "packages/worker/src/git/pack/format.ts": "a33bf16c889255be5c897f102f612c502672219922d6e1f08a6648775b244b90",

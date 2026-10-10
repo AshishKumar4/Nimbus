@@ -405,7 +405,7 @@ export function createBufferedFs(
           // What the waves hold before it lands first; then the file, as a program writes it.
           await writer.flush();
           const stat = await replaceFile(fileApi, '/' + p, mode, buf);
-          stampEntry(fileMetadata, stat.mtimeMs);
+          stampEntry(fileMetadata, stat.mtime);
           stats.filesWritten++;
           stats.bytesWritten += buf.length;
           return;

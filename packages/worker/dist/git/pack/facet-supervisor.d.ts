@@ -1,8 +1,8 @@
-import type { WaveSupervisor } from '@nimbus-sh/platform/wave-writer.js';
+import type { SupervisorRPC } from '../../session/supervisor-rpc.js';
 import type { GitFsStat } from '../git-fs.js';
 import type { FacetPacksSupervisor } from './facet-packs.js';
-import { type FileApi, type FileStat } from './mount-writer.js';
-/** An inode as the supervisor reports it. */
+import { type FileApi } from './mount-writer.js';
+/** An inode as the supervisor reports it (its stat and lstat). */
 export interface SupervisorStat {
     type?: string;
     size?: number;
@@ -15,39 +15,8 @@ export interface SupervisorStat {
     dev?: number;
     ino?: number;
 }
-/** The SUPERVISOR binding's calls the facet makes. */
-export interface GitFacetSupervisor extends WaveSupervisor {
-    stat(path: string): Promise<SupervisorStat | null>;
-    lstat(path: string): Promise<SupervisorStat | null>;
-    readdir(path: string): Promise<Array<string | {
-        name: string;
-    }>>;
-    readFileBytes(path: string): Promise<Uint8Array | ArrayBuffer | null>;
-    fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | ArrayBuffer | null>;
-    fsReadRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array | null>;
-    readlink(path: string): Promise<string | null>;
-    fsWriteRange(path: string, offset: number, bytes: Uint8Array): Promise<unknown>;
-    fsTruncate(path: string, size: number): Promise<unknown>;
-    rename(from: string, to: string): Promise<void>;
-    unlink(path: string): Promise<void>;
-    mkdir(path: string, options: {
-        recursive: true;
-    }): Promise<void>;
-    fsOpen(path: string, flags: {
-        write: boolean;
-        create: boolean;
-        exclusive: boolean;
-        mode: number;
-    }): Promise<{
-        id: number;
-    }>;
-    fsWrite(handle: number, offset: number, bytes: Uint8Array): Promise<number>;
-    fsFstat(handle: number): Promise<FileStat>;
-    fsClose(handle: number): Promise<void>;
-    chmod(path: string, mode: number): Promise<unknown>;
-    hasLegacySymlinkUnder(path: string): Promise<boolean>;
-    stdout(bytes: Uint8Array): Promise<unknown>;
-}
+/** The SUPERVISOR binding's calls the facet makes: the session's own (session/supervisor-calls.ts). */
+export type GitFacetSupervisor = Pick<SupervisorRPC, 'stat' | 'lstat' | 'readdir' | 'readFileBytes' | 'fsReadRange' | 'fsReadRangeUncached' | 'readlink' | 'fsWriteRange' | 'fsTruncate' | 'rename' | 'unlink' | 'mkdir' | 'fsOpen' | 'fsWrite' | 'fsFstat' | 'fsClose' | 'chmod' | 'hasLegacySymlinkUnder' | 'stdout' | 'writeBatchStream' | 'openWaveWriter'>;
 /** A file larger than this comes back by ranges: an RPC value's structured-clone ceiling. */
 export declare const WHOLE_FILE_RPC_SAFE_BYTES: number;
 export declare const READ_RANGE_BYTES: number;

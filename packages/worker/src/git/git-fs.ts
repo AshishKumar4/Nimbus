@@ -95,24 +95,26 @@ function nodeStats(st: GitFsStat) {
 
 const decoder = new TextDecoder();
 
-/** cf-git's `fs` over `backend`, with `packs` (pack/store.ts) its packs seam. */
+/**
+ * cf-git's `fs` over `backend`, with `packs` (pack/store.ts) its packs seam.
+ * Each call is the backend's promise, shaped by one `then` where it needs
+ * shaping: the adapter adds no await of its own to cf-git's many small calls.
+ */
 export function createGitFs<P>(backend: GitFsBackend, packs: P) {
-  const statOf = async (filepath: string, follow: boolean) => {
-    const st = await backend.stat(normalizeVfsPath(filepath), follow);
+  const statOf = (filepath: string, follow: boolean) => backend.stat(normalizeVfsPath(filepath), follow).then((st) => {
     if (st === null) throw fsError('ENOENT', follow ? 'stat' : 'lstat', filepath);
     return nodeStats(st);
-  };
+  });
   return {
     packs,
     promises: {
-      async readFile(filepath: string, options?: unknown): Promise<Uint8Array | string> {
-        const data = await backend.readFile(normalizeVfsPath(filepath));
+      readFile: (filepath: string, options?: unknown): Promise<Uint8Array | string> => backend.readFile(normalizeVfsPath(filepath)).then((data) => {
         if (data === null) throw fsError('ENOENT', 'open', filepath);
         return wantsUtf8(options) ? decoder.decode(data) : data;
-      },
-      async writeFile(filepath: string, data: Uint8Array | ArrayBuffer | string, options?: { mode?: unknown }): Promise<void> {
+      }),
+      writeFile(filepath: string, data: Uint8Array | ArrayBuffer | string, options?: { mode?: unknown }): Promise<void> {
         const bytes = typeof data === 'string' || data instanceof Uint8Array ? data : new Uint8Array(data);
-        await backend.writeFile(normalizeVfsPath(filepath), bytes, (Number(options?.mode) & 0o111) !== 0);
+        return backend.writeFile(normalizeVfsPath(filepath), bytes, (Number(options?.mode) & 0o111) !== 0);
       },
       unlink: (filepath: string): Promise<void> => backend.unlink(normalizeVfsPath(filepath), filepath),
       readdir: (filepath: string): Promise<string[]> => backend.readdir(normalizeVfsPath(filepath), filepath),

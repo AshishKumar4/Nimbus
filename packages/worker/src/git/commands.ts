@@ -15,7 +15,7 @@ import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import { execGitNetwork, runGraphFilters, type GitNetworkResult } from './network-facet.js';
-import { createGitFs, fsError, type GitFsBackend } from './git-fs.js';
+import { createGitFs, fsError, type GitFsBackend, type GitFsStat } from './git-fs.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import {
   bridgeCleanupFs, cleanUpClone, deleteCloneJob, GIT_CLONE_JOB_MARKER, setCloneJobPhase, writeCloneJob, type CleanupBridge, type CloneJobRecord,
@@ -119,23 +119,26 @@ function sessionGitFs(vfs: ProjectFs, worktree: string | null = null, promisor?:
   }
 
   const backend: GitFsBackend = {
-    async stat(p, follow) {
+    stat(p, follow) {
       if (!p) {
         const now = Date.now();
-        return { type: 'dir', size: 0, mode: 0o755, mtimeMs: now, ctimeMs: now, atimeMs: now, uid: 0, gid: 0, dev: 0, ino: 0, nlink: 1 };
+        return Promise.resolve({ type: 'dir', size: 0, mode: 0o755, mtimeMs: now, ctimeMs: now, atimeMs: now, uid: 0, gid: 0, dev: 0, ino: 0, nlink: 1 });
       }
-      let st: VfsStat;
-      try { st = await (follow ? vfs.stat(p) : vfs.lstat(p)); } catch { return null; }
-      return {
+      // The engine answers some paths at once, its view the rest by promise; either may fail.
+      let st;
+      try { st = follow ? vfs.stat(p) : vfs.lstat(p); } catch { return Promise.resolve(null); }
+      return Promise.resolve(st).then((st): GitFsStat => ({
         type: st.type === 'directory' ? 'dir' : st.type === 'symlink' ? 'symlink' : 'file',
         size: st.size,
         mode: st.mode,
         mtimeMs: st.mtime, ctimeMs: st.ctime, atimeMs: st.atime,
         uid: st.uid, gid: st.gid, dev: st.dev, ino: st.ino, nlink: st.nlink,
-      };
+      }), () => null);
     },
-    async readFile(p) {
-      try { return await vfs.readFile(p); } catch { return null; }
+    readFile(p) {
+      let data;
+      try { data = vfs.readFile(p); } catch { return Promise.resolve(null); }
+      return Promise.resolve(data).then((bytes) => bytes, () => null);
     },
     // A checkout's file modes are the index's: the session writes none here.
     async writeFile(p, data) {
