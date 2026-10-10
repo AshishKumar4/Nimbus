@@ -43,7 +43,7 @@ import {
 import { own } from './parser-realm.js';
 import { isObject } from './runtime.js';
 import { REPL_IMPORT } from '../runtime/js-repl-names.js';
-import { forEachBindingIdentifier } from '../runtime/binding-pattern.js';
+import { bindingIdentifiers } from '../runtime/binding-pattern.js';
 
 const LINE_OPTIONS: Options = own({ ecmaVersion: 'latest', sourceType: 'script', allowAwaitOutsideFunction: true });
 
@@ -143,11 +143,6 @@ function declareGlobal(line: Line, name: string): void {
   if (line.declared.has(name)) return;
   line.declared.add(name);
   append(line.globals, name);
-}
-
-/** A name a pattern binds, declared a global. */
-function declareIdentifier(identifier: Identifier, line: Line): void {
-  declareGlobal(line, identifier.name);
 }
 
 /** Rewrite the declarations of one statement, outside any function; `top` when it is the line's own. */
@@ -274,7 +269,10 @@ function declaration(node: VariableDeclaration, line: Line, head: 'init' | 'each
   const declarators = node.declarations;
   const first = declarators[0];
   if (node.kind === 'var') {
-    for (let i = 0; i < declarators.length; i++) forEachBindingIdentifier(declarators[i].id, declareIdentifier, line);
+    for (let i = 0; i < declarators.length; i++) {
+      const ids = bindingIdentifiers(declarators[i].id, newSafeList<Identifier>());
+      for (let j = 0; j < ids.length; j++) declareGlobal(line, ids[j].name);
+    }
   }
   if (head !== null) {
     append(line.edits, { start: node.start, end: first.start, text: '' });

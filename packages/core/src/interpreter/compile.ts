@@ -1400,9 +1400,21 @@ export class Compiler {
     const slot = imported ? imported.slot : b.slot;
     const raw = this.slotReader(hops, slot);
     if (imported) {
+      // Its slot is in its TDZ until the module is linked: a module in a cycle with this one can read it sooner.
       const ops = this.ops;
       const name = imported.name;
-      return imported.kind === 'named' ? (env) => ops.get(raw(env), name) : raw;
+      const local = b.name;
+      return imported.kind === 'named'
+        ? (env) => {
+          const m = raw(env);
+          if (m === TDZ) throw tdzError(local);
+          return ops.get(m, name);
+        }
+        : (env) => {
+          const v = raw(env);
+          if (v === TDZ) throw tdzError(local);
+          return v;
+        };
     }
     if (!tdz) return raw;
     const name = b.kind === 'special' ? 'this' : b.name;
@@ -3490,10 +3502,14 @@ export class Compiler {
     // to another; a named import reads its name of one of them at each use.
     const requests = newSafeList<{ readonly source: string; readonly module: number; readonly interop: number }>();
     const moduleSlots = newSafeList<number>();
+    // Every slot linking fills starts in its TDZ (bindingRead).
+    const linked = newSafeList<number>();
     for (let i = 0; i < link.requests.length; i++) {
       const request = link.requests[i];
       const module = request.kept ? root.size++ : -1;
       const interop = request.interop ? root.size++ : -1;
+      if (module >= 0) append(linked, module);
+      if (interop >= 0) append(linked, interop);
       append(moduleSlots, module);
       for (let j = 0; j < request.bindings.length; j++) {
         const binding = request.bindings[j];
@@ -3512,6 +3528,7 @@ export class Compiler {
         continue;
       }
       const slot = this.importBinding(root, local, 'namespace', '*', null);
+      append(linked, slot);
       append(namespaceSlots, slot);
       append(namespaces, { slot, from: moduleSlots[request] });
     }
@@ -3524,7 +3541,15 @@ export class Compiler {
       } else if (entry.kind === 'reexport') {
         const slot = moduleSlots[entry.request];
         const name = entry.name;
-        append(exports, { kind: 'read', name: entry.exported, read: (env) => ops.get(env[slot], name) });
+        const exported = entry.exported;
+        append(exports, {
+          kind: 'read',
+          name: exported,
+          read: (env) => {
+            if (env[slot] === TDZ) throw tdzError(exported);
+            return ops.get(env[slot], name);
+          },
+        });
       } else {
         append(exports, { kind: 'read', name: entry.exported, read: this.rootRead(root, entry.kind === 'default' ? '*default*' : entry.local) });
       }
@@ -3534,7 +3559,7 @@ export class Compiler {
     const instantiate = this.scopeEntry(root, true);
     const body = this.moduleStatements(program);
     return {
-      frame: frameTemplate(root.size, []),
+      frame: frameTemplate(root.size, linked),
       exportsSlot: bindingSlot(root, '%exports'),
       requireSlot: bindingSlot(root, '%require'),
       moduleSlot: bindingSlot(root, '%module'),

@@ -13,7 +13,7 @@
  * import.
  */
 import type { Pattern } from 'acorn';
-import { forEachBindingIdentifier } from './binding-pattern.js';
+import { bindingIdentifiers } from './binding-pattern.js';
 
 /** A node of a parsed program. */
 export interface EsNode {
@@ -58,9 +58,7 @@ export function patternNames(node: EsNode | null): string[] {
   while (binding !== null && (binding.type === 'TSParameterProperty' || binding.type === 'TSQualifiedName')) {
     binding = child(binding, binding.type === 'TSParameterProperty' ? 'parameter' : 'left');
   }
-  const names: string[] = [];
-  forEachBindingIdentifier(binding as unknown as Pattern | null, (identifier) => names.push(identifier.name));
-  return names;
+  return bindingIdentifiers(binding as unknown as Pattern | null, []).map((identifier) => identifier.name);
 }
 
 /** A scope of a program: the names it binds, and the scope it is in. */

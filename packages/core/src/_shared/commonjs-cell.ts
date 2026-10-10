@@ -124,14 +124,14 @@
  * the interpreter's cost and behaviour are compared with V8's.
  */
 import { createHash } from 'node:crypto';
-import { parse, tokenizer, tokTypes, type Program, type Token } from 'acorn';
+import { parse, tokenizer, tokTypes, type Identifier, type Program, type Token } from 'acorn';
 import {
   RUNTIME_FUNCTION_HEADS, expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource,
   type RuntimeFunctionKind, type ScriptExpression, scriptExpression, type SourceRealm,
 } from './runtime-function-source.js';
 import { INTERPRETER_UNSUPPORTED } from '../interpreter/unsupported-code.js';
 import { applySourceEdits, COMMONJS_WRAPPER_NAMES, forEachNode, type SourceEdit } from '../runtime/javascript-ast.js';
-import { forEachBindingIdentifier } from '../runtime/binding-pattern.js';
+import { bindingIdentifiers } from '../runtime/binding-pattern.js';
 import { ESM_MODULE_HELPERS } from '../runtime/esm-interop.js';
 import { moduleImporterUrl } from './module-importer.js';
 
@@ -281,11 +281,9 @@ export function declaresWrapperBinding(source: string): boolean {
     if (statement.type === 'ClassDeclaration') {
       if (statement.id && COMMONJS_WRAPPER_NAMES.has(statement.id.name)) return true;
     } else if (statement.type === 'VariableDeclaration' && statement.kind !== 'var') {
-      let binds = false;
-      for (const declarator of statement.declarations) {
-        forEachBindingIdentifier(declarator.id, (identifier) => { binds ||= COMMONJS_WRAPPER_NAMES.has(identifier.name); });
-      }
-      if (binds) return true;
+      const bound: Identifier[] = [];
+      for (const declarator of statement.declarations) bindingIdentifiers(declarator.id, bound);
+      if (bound.some((identifier) => COMMONJS_WRAPPER_NAMES.has(identifier.name))) return true;
     }
   }
   return false;

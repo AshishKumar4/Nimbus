@@ -9,7 +9,7 @@
 import type { Code } from './code.js';
 import { reflectApply, resume, resumeThrowing, withElement } from './intrinsics.js';
 import type { HostOperators, NativeFunction } from './host-ops.js';
-import { type Env, ROOT_ENV } from './runtime.js';
+import { type Env, ROOT_ENV, TDZ, tdzError } from './runtime.js';
 
 /** A module cell: Node's CommonJS wrapper function. */
 export type ModuleCell = (exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => unknown;
@@ -57,7 +57,7 @@ export interface ModulePlan {
 
 /** The wrapper function that runs `plan`. */
 export function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: ModuleHelpers): ModuleCell {
-  const { frame, exportsSlot, requireSlot, moduleSlot, filenameSlot, dirnameSlot, exports, requests, namespaces, stars, instantiate, body } = plan;
+  const { frame, exportsSlot, requireSlot, moduleSlot, filenameSlot, dirnameSlot, exports, instantiate, body } = plan;
   const bs = body.s;
   const bg = body.g;
   return (exportsArg, requireArg, moduleArg, filename, dirname) => {
@@ -76,20 +76,32 @@ export function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: Module
     // imports this module back (a cycle) finds its exports published and
     // its function declarations made, as a module's linking provides.
     if (instantiate !== null) instantiate(env);
-    for (let i = 0; i < requests.length; i++) {
-      const { source, module, interop } = requests[i];
-      const m: unknown = reflectApply(requireArg as NativeFunction, undefined, [source]);
-      if (module >= 0) env[module] = m;
-      if (interop >= 0) env[interop] = reflectApply(helpers.interop, undefined, [m]);
-    }
-    for (let i = 0; i < namespaces.length; i++) env[namespaces[i].slot] = reflectApply(helpers.namespace, undefined, [env[namespaces[i].from]]);
-    for (let i = 0; i < stars.length; i++) reflectApply(helpers.star, undefined, [exportsObject, define, env[stars[i]]]);
+    // The imports are linked where the body runs: a module that suspends
+    // (top-level await) rejects for a failure linking them, as its lowered
+    // cell's async body does, rather than throwing.
     if (bg === null) {
+      link(plan, env, requireArg, helpers, exportsObject, define);
       bs(env);
       return undefined;
     }
-    return drive(bg(env));
+    return drive(() => {
+      link(plan, env, requireArg, helpers, exportsObject, define);
+      return bg(env);
+    });
   };
+}
+
+/** Each request required in order, its interop made; then the import namespaces, then `export *`. */
+function link(plan: ModulePlan, env: Env, requireArg: unknown, helpers: ModuleHelpers, exportsObject: unknown, define: NativeFunction): void {
+  const { requests, namespaces, stars } = plan;
+  for (let i = 0; i < requests.length; i++) {
+    const { source, module, interop } = requests[i];
+    const m: unknown = reflectApply(requireArg as NativeFunction, undefined, [source]);
+    if (module >= 0) env[module] = m;
+    if (interop >= 0) env[interop] = reflectApply(helpers.interop, undefined, [m]);
+  }
+  for (let i = 0; i < namespaces.length; i++) env[namespaces[i].slot] = reflectApply(helpers.namespace, undefined, [env[namespaces[i].from]]);
+  for (let i = 0; i < stars.length; i++) reflectApply(helpers.star, undefined, [exportsObject, define, env[stars[i]]]);
 }
 
 /** The getter of `entry` over one evaluation's frame. */
@@ -98,15 +110,19 @@ function exportGetter(env: Env, entry: ModuleExport, helpers: ModuleHelpers): ()
     const read = entry.read;
     return () => read(env);
   }
-  const { slot, from } = entry;
+  const { name, slot, from } = entry;
   return () => {
-    if (env[slot] === undefined) env[slot] = reflectApply(helpers.namespace, undefined, [env[from]]);
+    if (env[slot] === undefined) {
+      if (env[from] === TDZ) throw tdzError(name);
+      env[slot] = reflectApply(helpers.namespace, undefined, [env[from]]);
+    }
     return env[slot];
   };
 }
 
-/** Runs a module body's generator as an async function would: one await per yielded value. */
-async function drive(it: Generator<unknown, unknown, unknown>): Promise<unknown> {
+/** Runs a module body's generator, made by `start`, as an async function would: one await per yielded value. */
+async function drive(start: () => Generator<unknown, unknown, unknown>): Promise<unknown> {
+  const it = start();
   let r = resume(it, undefined);
   while (!r.done) {
     let value: unknown;

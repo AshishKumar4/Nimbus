@@ -19,7 +19,8 @@ function dependencies() {
   const plain = Object.defineProperty({ n: 'N2', p: 'P2', default: 'D2' }, 'hidden', { value: 'H', enumerable: false });
   const inherits = Object.assign(Object.create({ inherited: 'I' }), { own: 'OWN' });
   const fn = Object.assign(function callable() { return 'called'; }, { tag: 'T' });
-  return { esm, plain, inherits, fn };
+  const throwing = Object.defineProperty({}, '__esModule', { get() { throw new Error('marker read'); } });
+  return { esm, plain, inherits, fn, throwing };
 }
 
 const CASES = {
@@ -56,6 +57,10 @@ const CASES = {
   'an anonymous default class': 'export default class {}',
   'live bindings': 'export let counter = 0;\nexport function inc() { counter++; }',
   'top-level await': "export const v = await Promise.resolve(42);\nexport { default } from 'esm';",
+  // Linking a module that suspends fails as its body would: a rejection, not a throw.
+  'a default import whose interop throws, in a module that awaits': "import d from 'throwing';\nawait 0;\nexport const v = d;",
+  // A module in a cycle reads an import's namespace before linking made it: a TDZ error.
+  'a namespace read back by a module in a cycle': "import * as ns from 'esm';\nimport 'cycle';\nexport function read() { return ns; }",
 };
 
 /** A value as the comparison sees it: the dependency it is, a function's name, or an object's own properties. */
@@ -69,7 +74,13 @@ function describe(value, deps, depth = 0) {
     proto: proto === Object.prototype ? 'Object' : proto === null ? null : describe(proto, deps, depth + 1),
     own: Reflect.ownKeys(value).map((key) => {
       const d = Object.getOwnPropertyDescriptor(value, key);
-      return [String(key), 'get' in d ? 'get' : 'value', d.enumerable, d.configurable, describe(value[key], deps, depth + 1)];
+      let read;
+      try {
+        read = describe(value[key], deps, depth + 1);
+      } catch (error) {
+        read = `threw ${error.constructor.name}`;
+      }
+      return [String(key), 'get' in d ? 'get' : 'value', d.enumerable, d.configurable, read];
     }),
   };
 }
@@ -77,16 +88,35 @@ function describe(value, deps, depth = 0) {
 /** The exports object after one evaluation of `cell`, as a consumer can observe it. */
 async function observe(cell) {
   const deps = dependencies();
+  const module = { exports: {} };
+  let cycle = null;
   const require = (name) => {
+    // 'cycle' requires this module back, as a dependency in a cycle with it does, and calls its read().
+    if (name === 'cycle') {
+      try {
+        cycle = { read: describe(module.exports.read(), deps) };
+      } catch (error) {
+        cycle = { threw: error.constructor.name };
+      }
+      return {};
+    }
     if (!(name in deps)) throw new Error(`no module ${name}`);
     return deps[name];
   };
-  const module = { exports: {} };
-  const done = cell(module.exports, require, module, '/w/m.mjs', '/w');
-  if (done && typeof done.then === 'function') await done;
+  let evaluation;
+  try {
+    const done = cell(module.exports, require, module, '/w/m.mjs', '/w');
+    evaluation = done && typeof done.then === 'function'
+      ? await done.then(() => 'fulfilled', (error) => `rejected: ${error.message}`)
+      : 'returned';
+  } catch (error) {
+    evaluation = `threw: ${error.message}`;
+  }
   const exports = module.exports;
   if (typeof exports.inc === 'function') exports.inc();
   return {
+    evaluation,
+    cycle,
     sameObject: exports === module.exports,
     exports: describe(exports, deps),
     namespaceOnce: !('all' in exports) || exports.all === exports.all,

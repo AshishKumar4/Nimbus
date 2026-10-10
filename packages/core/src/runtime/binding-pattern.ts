@@ -6,40 +6,35 @@
  *
  * Reads only ESTree's fields, so it serves acorn's trees, rolldown's and the
  * interpreter's own copies alike; callers differ only in what they do with
- * each identifier. The interpreter runs it after a program may have replaced
+ * the identifiers. The interpreter runs it after a program may have replaced
  * built-ins, so it names none (tests/unit/interpreter-primordials.mjs).
  */
 import type { Identifier, Pattern } from 'acorn';
 
 /**
- * Calls `visit` with each identifier `pattern` binds, and `context`: a caller
- * whose closures must keep nothing (the interpreter's) passes what it needs
- * there instead of closing over it.
+ * Appends to `out` each identifier `pattern` binds; answers `out`. It
+ * appends by index, so an interpreter SafeList serves as well as an array.
  */
-export function forEachBindingIdentifier(pattern: Pattern | null, visit: (identifier: Identifier) => void): void;
-export function forEachBindingIdentifier<C>(pattern: Pattern | null, visit: (identifier: Identifier, context: C) => void, context: C): void;
-export function forEachBindingIdentifier<C>(pattern: Pattern | null, visit: (identifier: Identifier, context: C) => void, context?: C): void {
-  if (pattern === null) return;
+export function bindingIdentifiers<L extends { length: number; [index: number]: Identifier }>(pattern: Pattern | null, out: L): L {
+  if (pattern === null) return out;
   switch (pattern.type) {
     case 'Identifier':
-      visit(pattern, context as C);
-      return;
+      out[out.length] = pattern;
+      return out;
     case 'ObjectPattern':
       for (let i = 0; i < pattern.properties.length; i++) {
         const property = pattern.properties[i];
-        forEachBindingIdentifier(property.type === 'RestElement' ? property.argument : property.value, visit, context as C);
+        bindingIdentifiers(property.type === 'RestElement' ? property.argument : property.value, out);
       }
-      return;
+      return out;
     case 'ArrayPattern':
-      for (let i = 0; i < pattern.elements.length; i++) forEachBindingIdentifier(pattern.elements[i], visit, context as C);
-      return;
+      for (let i = 0; i < pattern.elements.length; i++) bindingIdentifiers(pattern.elements[i], out);
+      return out;
     case 'RestElement':
-      forEachBindingIdentifier(pattern.argument, visit, context as C);
-      return;
+      return bindingIdentifiers(pattern.argument, out);
     case 'AssignmentPattern':
-      forEachBindingIdentifier(pattern.left, visit, context as C);
-      return;
+      return bindingIdentifiers(pattern.left, out);
     default:
-      return;
+      return out;
   }
 }
