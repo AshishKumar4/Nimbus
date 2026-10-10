@@ -1944,7 +1944,7 @@ export class SqliteVFS {
   // revision(path) instead of the global clock, so unrelated writes no
   // longer invalidate them. The stamps, the floor and the rule a path
   // reports by are PathRevisions (path-revisions.ts); SQLite holds the rest.
-  private readonly pathRevisions: PathRevisions;
+  private pathRevisions: PathRevisions;
   private static readonly PATH_REVISIONS_MAX_BYTES = 1024 * 1024;
   /**
    * What each transaction committed since the last publication wrote at each
@@ -2029,16 +2029,26 @@ export class SqliteVFS {
     return this.newIncarnation();
   }
 
-  /** A new clock epoch, stored: every cursor held against the old one poisons. */
+  /**
+   * A new clock epoch, stored, starting from the store's committed state:
+   * every cursor held against the old one poisons, the clock is the store's
+   * generation (what an operation left part-published committed included),
+   * and no path keeps a revision of the old epoch's.
+   */
   private newIncarnation(): string {
     const incarnation = crypto.randomUUID();
+    let gen = 0;
     this.transactionSync(() => {
-      this.sql.exec('UPDATE vfs_state SET incarnation = ? WHERE slot = 1', incarnation);
+      gen = Number([...this.sql.exec('UPDATE vfs_state SET incarnation = ? WHERE slot = 1 RETURNING gen', incarnation)][0]!.gen);
     });
     this._epoch = incarnation;
+    this._gen = gen;
+    this._revision = gen;
     this._invalidations = [];
     this._invalidationBytes = 0;
-    this._invalidationFloor = this._revision;
+    this._invalidationFloor = gen;
+    this.pathRevisions = new PathRevisions(this.pathRevisions.budget, gen);
+    this.committedRows.clear();
     // Granted at the clock this ends: each holder is told, and asks again.
     this.breakReadLeases();
     return incarnation;

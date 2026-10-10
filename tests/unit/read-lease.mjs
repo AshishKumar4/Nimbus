@@ -303,29 +303,52 @@ for (const pathRevisionBytes of [undefined, 0]) {
   assert.ok(reported !== undefined && reported.rev > later.rev, 'a held commit was never published');
 }
 
-// ── A held commit whose promotion fails is not published: its writer is failed, and every reader starts again ──
+// ── A held wave whose promotion fails after its first group is not published: its writer is failed, and every reader starts again from what the store holds ──
 {
   const s = session();
   const reader = s.files.bind({ pid: 7, cred: USER });
   const writer = s.files.bind({ pid: 8, cred: USER });
   const other = s.files.bind({ pid: 9, cred: USER });
+  const { encodeWriteBatchStream } = await import('../../packages/platform/src/w7-frame.ts');
   const { readLease } = barrier(s, reader);
-  const writing = withRecall(() => writer.writeFile('/home/user/d/a.txt', 'held'));
-  await sleep(10);
+  const names = Array.from({ length: 300 }, (_, i) => `home/user/d/w${i}`);
+  const data = new TextEncoder().encode('waved');
+  const wave = writer.writeStream(encodeWriteBatchStream({
+    inodes: names.map((path) => ({ path, parentPath: 'home/user/d', kind: 'file', isDir: false, size: data.length, mtime: 1, mode: 0o644, chunkCount: 1 })),
+    chunks: names.map((path) => ({ path, chunkId: 0, data })),
+  }));
+  assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
+  // Every record committed ahead of the recall, held.
+  const committed = () => Number(s.harness.db.query("SELECT COUNT(*) AS n FROM vfs_inodes WHERE path LIKE 'home/user/d/w%'").get().n);
+  while (committed() < names.length) await sleep(5);
   reader.writeFile('/home/user/elsewhere', 'x');
   const later = other.acquire(s.engine.epoch, s.engine.revision());
-  let armed = true;
+  // The promotion's second transaction fails: its first group is committed, the rest is not.
+  let groups = 0;
   s.harness.setFaultInjector((statement) => {
-    if (!armed || !statement.sql.startsWith('UPDATE vfs_state SET gen = gen + 1, next_ino')) return null;
-    armed = false;
+    if (!statement.sql.startsWith('UPDATE vfs_state SET gen = gen + 1, next_ino') || ++groups !== 2) return null;
     return new Error('injected: the promotion failed');
   });
   reader.recalled(readLease.owner, 'revoke');
-  await assert.rejects(writing, /injected: the promotion failed/, 'an unpublished commit was reported published');
-  assert.equal(armed, false);
+  await assert.rejects(wave, 'an unpublished commit was reported published');
+  assert.ok(groups >= 2);
   // What it committed stands, its holds let go; no cursor handed out before hears a delta that omits it.
-  assert.equal(new TextDecoder().decode(other.readFile('/home/user/d/a.txt')), 'held');
+  const decode = (bytes) => new TextDecoder().decode(bytes);
+  assert.equal(decode(other.readFile('/home/user/d/w0')), 'waved');
   assert.equal(other.acquire(later.epoch, later.rev).poison, true, 'a reader was left on a view the commit changed');
+  // Repaired from a listing; an unrelated write later, what it listed is still what each file is.
+  const listed = new Map();
+  for (let after = null; ;) {
+    const page = other.list(after);
+    for (const entry of page.entries) listed.set(entry.path.replace(/^\/+/, ''), entry.rev);
+    if (page.next === null) break;
+    after = page.next;
+  }
+  other.writeFile('/home/user/unrelated', 'x');
+  for (const name of [names[0], names[names.length - 1]]) {
+    const fetched = other.readRange(`/${name}`, 0, 64, { expectedEpoch: s.engine.epoch, expectedRevision: listed.get(name) });
+    assert.equal(decode(fetched), 'waved', `${name} at its listed revision`);
+  }
 }
 
 // ── Held for publication: a barrier's stats and pushed bytes, and a landed view's reads, wait for it; its writer's barrier sees its own ──
