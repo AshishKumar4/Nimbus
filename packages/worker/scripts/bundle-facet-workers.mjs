@@ -122,10 +122,11 @@ function withoutComments(text) {
 }
 
 /**
- * Bundle one TS source into a self-contained ESM string suitable for
- * inlining as a facet preamble. Strips the leading `export` on
- * declarations and the aggregate `export { ... };` block so the
- * blob is inlinable into another module without re-export errors.
+ * Bundle one TS source into a self-contained string suitable for inlining
+ * as a facet preamble: its exports become the scope's names, and everything
+ * else stays inside a function of its own, so preambles concatenated into
+ * one module never shadow one another's private names (the tar decoder's
+ * and W7's decoders were both a module-level `UTF8`).
  */
 async function bundleAsPreamble(entryPath, label, { shared = [] } = {}) {
   const result = await build({
@@ -158,9 +159,19 @@ async function bundleAsPreamble(entryPath, label, { shared = [] } = {}) {
     stripped = stripped.replace(new RegExp(`^import \\{[^}]*\\} from "\\./${name}\\.js";\\n`, 'm'), '');
     if (stripped === before) throw new Error(`[bundle-facet-workers/${label}] expected an import of ./${name}.js to leave to the shims`);
   }
-  stripped = stripped.replace(/^export\s+(async\s+function|function|const|class)\b/gm, '$1');
+  // Its exports, exported name to local: declared exported, and listed in the closing clause.
+  const exported = new Map();
+  for (const match of stripped.matchAll(/^export\s+(?:async\s+)?(?:function\*?|const|let|class)\s+([A-Za-z_$][\w$]*)/gm)) exported.set(match[1], match[1]);
+  const clause = /\n?export\s*\{([^}]*)\}\s*;\s*$/.exec(stripped);
+  for (const specifier of clause ? clause[1].split(',') : []) {
+    const [local, name = local] = specifier.trim().split(/\s+as\s+/);
+    if (local) exported.set(name, local);
+  }
+  stripped = stripped.replace(/^export\s+(async\s+function|function|const|let|class)\b/gm, '$1');
   stripped = stripped.replace(/\n?export\s*\{[^}]*\}\s*;\s*$/g, '');
-  return stripped;
+  const names = [...exported.keys()];
+  const returned = [...exported].map(([name, local]) => (name === local ? name : `${name}: ${local}`));
+  return `var { ${names.join(', ')} } = (() => {\n${stripped}\nreturn { ${returned.join(', ')} };\n})();\n`;
 }
 
 /**

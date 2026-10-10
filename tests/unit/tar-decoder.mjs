@@ -9,29 +9,36 @@
 //   - the shell's entries are every directory and file (its policy for any
 //     other type: the entry's bytes as a file), with mode and mtime, and an
 //     entry outside the archive's root (absolute, or escaping by `..`) is
-//     extracted under it or left out, as GNU tar does.
+//     extracted under it or left out, as GNU tar does;
+//   - only a POSIX ustar header has a name prefix (GNU's keeps times there),
+//     a leading U+FEFF is part of a name, and an entry that claims more bytes
+//     than the archive holds is never buffered;
+//   - the decoder's private names stay its own beside W7's, as the npm
+//     facet concatenates their preambles.
 import assert from 'node:assert/strict';
 import {
   MAX_FILE_BYTES, parseTarHeader, streamTarEntries, streamTarRecords, tarBytes,
 } from '../../packages/core/src/_shared/tarball-stream.ts';
 import { createTar, parseTar } from '../../packages/core/src/substrate/lifo/utils/archive.ts';
+import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
 
 const enc = new TextEncoder();
 
 /** One USTAR header block. */
-function header({ name, prefix = '', size = 0, type = '0', mode = 0o644, mtime = 0 }) {
+function header({ name, prefix = '', size = 0, type = '0', mode = 0o644, mtime = 0, magic = 'ustar\0', version = '00', raw = null }) {
   const block = new Uint8Array(512);
   const put = (text, at, length) => block.set(enc.encode(text).slice(0, length), at);
   const octal = (value, at, length) => put(value.toString(8).padStart(length - 1, '0') + '\0', at, length);
-  put(name, 0, 100);
+  if (raw) block.set(raw.slice(0, 100), 0);
+  else put(name, 0, 100);
   octal(mode, 100, 8);
   octal(0, 108, 8);
   octal(0, 116, 8);
   octal(size, 124, 12);
   octal(mtime, 136, 12);
   block[156] = type.charCodeAt(0);
-  put('ustar\0', 257, 6);
-  put('00', 263, 2);
+  put(magic, 257, 6);
+  put(version, 263, 2);
   put(prefix, 345, 155);
   let sum = 0;
   for (let i = 0; i < 512; i++) sum += i >= 148 && i < 156 ? 0x20 : block[i];
@@ -68,6 +75,10 @@ const deep = `${'d'.repeat(70)}/${'e'.repeat(70)}`; // 141 bytes: over a name's 
   assert.equal(parseTarHeader(header({ name: '/etc/passwd' })).name, 'etc/passwd');
   assert.equal(parseTarHeader(header({ name: '../escape' })).name, '');
   assert.equal(parseTarHeader(new Uint8Array(512)), null, 'a zero block ends the archive');
+  // GNU's header ("ustar  \0") keeps atime and ctime where ustar's prefix is.
+  const gnu = header({ name: 'f.txt', magic: 'ustar ', version: ' \0', prefix: '14567012345\0' + '14567012346' });
+  assert.equal(parseTarHeader(gnu).name, 'f.txt');
+  assert.equal(parseTarHeader(header({ name: '\uFEFFindex.js', prefix: 'package/lib' })).name, 'package/lib/\uFEFFindex.js');
   console.log('  [1] a header: prefix, UTF-8, canonical path, mode, mtime, directory');
 }
 
@@ -130,6 +141,15 @@ const deep = `${'d'.repeat(70)}/${'e'.repeat(70)}`; // 141 bytes: over a name's 
     { path: 'd/f.txt', data: enc.encode('leaf'), type: 'file', mode: 0o600, mtime: 1_500_000_001_000 },
   ];
   assert.deepEqual(await parseTar(createTar(written)), written);
+  // A header that claims more than the archive holds (8 GiB in 512 bytes): never buffered.
+  const claims = archive([{ name: 'ok', data: enc.encode('ok') }]);
+  const lying = new Uint8Array(claims.length + 512);
+  lying.set(header({ name: 'huge', size: 0o77777777777 }), 0);
+  lying.set(claims, 512);
+  assert.deepEqual((await parseTar(lying.subarray(0, 512))).map((entry) => entry.path), []);
+  const escaping = new Uint8Array(1024);
+  escaping.set(header({ name: '../../outside', size: 0o77777777777 }), 0);
+  assert.deepEqual(await parseTar(escaping), [], 'an entry it leaves out is never buffered');
   console.log('  [3] shell: directories and files with mode and mtime, long and UTF-8 paths, inside the archive root');
 }
 
@@ -140,6 +160,21 @@ const deep = `${'d'.repeat(70)}/${'e'.repeat(70)}`; // 141 bytes: over a name's 
   for await (const { header: h, data } of streamTarRecords(tarBytes(tar), (h) => h.name === 'b')) records.push([h.name, data && new TextDecoder().decode(data)]);
   assert.deepEqual(records, [['a', null], ['b', 'bb']]);
   console.log('  [4] streamTarRecords: every entry, its bytes only when asked for');
+}
+
+// ── the generated preamble beside W7's, as the npm facet concatenates them ──
+{
+  const facet = new Function(`${TAR_STREAM_PREAMBLE}\n${W7_FRAME_PREAMBLE}\nreturn { streamTarEntries, tarBytes, privateNames: [typeof PATH_DECODER, typeof tarField, typeof UTF8] };`)();
+  assert.deepEqual(facet.privateNames, ['undefined', 'undefined', 'undefined'], 'no preamble\'s private names reach the module scope');
+  // A link record whose name is not UTF-8: skipped by npm's policy, not a failed package.
+  const tar = archive([
+    { name: '', raw: Uint8Array.of(0x70, 0x2f, 0xe9), type: '2' },
+    { name: 'package/a.js', data: enc.encode('a') },
+  ]);
+  const names = [];
+  for await (const { name } of facet.streamTarEntries(facet.tarBytes(tar))) names.push(name);
+  assert.deepEqual(names, ['package/a.js']);
+  console.log('  [5] the decoder\'s preamble keeps its names its own beside W7\'s');
 }
 
 console.log('tar-decoder OK');

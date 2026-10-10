@@ -3,7 +3,7 @@ import { crc32 } from '@nimbus-sh/platform/crc32.js';
 import { resolve, dirname } from './path.js';
 import { encode, decode, concatBytes } from './encoding.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
-import { streamTarRecords, tarBytes } from '../../../_shared/tarball-stream.js';
+import { streamTarRecords, tarBytes, type TarHeader } from '../../../_shared/tarball-stream.js';
 
 // ─── Gzip (CompressionStream/DecompressionStream) ───
 
@@ -112,12 +112,14 @@ export function createTar(entries: TarEntry[]): Uint8Array {
  * The entries of a tar archive, as the shell extracts them
  * (tarball-stream.ts streamTarRecords): a directory, or anything else with
  * its bytes as a file. Paths are canonical and inside the archive's root; an
- * entry that escapes it is left out.
+ * entry that escapes it is left out, and one that claims more bytes than
+ * the archive holds is never read (its buffer would be the claim's size).
  */
 export async function parseTar(data: Uint8Array): Promise<TarEntry[]> {
   const entries: TarEntry[] = [];
-  for await (const { header, data: bytes } of streamTarRecords(tarBytes(data), () => true)) {
-    if (header.name === '') continue;
+  const read = (header: TarHeader) => header.name !== '' && header.size <= data.length;
+  for await (const { header, data: bytes } of streamTarRecords(tarBytes(data), read)) {
+    if (bytes === null) continue;
     entries.push({
       path: header.name,
       data: bytes!,
