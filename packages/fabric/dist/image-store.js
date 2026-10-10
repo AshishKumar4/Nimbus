@@ -194,7 +194,9 @@ export class ImageStore {
  */
 export async function storeContentBlob(fs, source, pathOf, { pacer, root } = {}) {
     const parts = typeof source === 'string' ? [source] : source;
-    const slice = new Uint8Array(FACET_IMAGE_WRITE_SLICE_BYTES);
+    // A UTF-16 unit is at most three bytes of UTF-8, so a small blob's buffer is its own size.
+    const units = parts.reduce((sum, part) => sum + part.length, 0);
+    const slice = new Uint8Array(Math.max(1, Math.min(FACET_IMAGE_WRITE_SLICE_BYTES, 3 * units)));
     const hash = sha256Incremental();
     const length = await encodeSlices(parts, slice, (bytes) => hash.update(bytes), false);
     const digest = await hash.hex();

@@ -18,6 +18,7 @@ import { RESIDENT_KEEPALIVE_MS } from '@nimbus-sh/platform/limits.js';
 import { z } from 'zod/v4';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
 import { bindingSupervisor, supervisorBindingProps } from './supervisor-props.js';
+import { withResolvers } from './turn-budget.js';
 import { processes } from './workerd-facet-host.js';
 /**
  * This workerd process's identity. Module scope, so two Durable Objects
@@ -192,29 +193,18 @@ export class PeerHost {
             }),
             ...(hostOpts.hostIncarnation === undefined ? {} : { hostIncarnation: hostOpts.hostIncarnation }),
         };
-        let cancel = () => { };
-        const cancelled = new Promise((resolve) => { cancel = resolve; });
-        let settleFacet = () => { };
-        let failFacet = () => { };
-        const facetPromise = new Promise((resolve, reject) => {
-            settleFacet = resolve;
-            failFacet = reject;
-        });
-        let settleStarted = () => { };
-        let failStarted = () => { };
-        const startedPromise = new Promise((resolve, reject) => {
-            settleStarted = resolve;
-            failStarted = reject;
-        });
+        const cancelled = withResolvers();
+        const opened = withResolvers();
+        const started = withResolvers();
         // Nothing awaits these unless a leg asks for them; keep the runtime from
         // reporting them as unhandled while the process is healthy.
-        facetPromise.catch(() => { });
-        startedPromise.catch(() => { });
+        opened.promise.catch(() => { });
+        started.promise.catch(() => { });
         this.register(workerKey, {
-            facet: facetPromise,
-            started: startedPromise,
+            facet: opened.promise,
+            started: started.promise,
             webSocketCapability: hostOpts.webSocketCapability,
-            cancel,
+            cancel: () => cancelled.resolve(),
         });
         // What this host's next incarnation needs to tell the session it lost the
         // process: kept while it hosts, with the alarm that will look
@@ -238,15 +228,15 @@ export class PeerHost {
                 writerId: hostOpts.writerId,
                 startArgs: hostOpts.startArgs,
             });
-            settleFacet(facet);
-            facet.started.then(settleStarted, failStarted);
+            opened.resolve(facet);
+            facet.started.then(started.resolve, started.reject);
             // The facet lost here fails the held leg, which is how the session hears of it.
-            await Promise.race([cancelled, facet.lost]);
+            await Promise.race([cancelled.promise, facet.lost]);
             return { ok: true };
         }
         catch (e) {
-            failFacet(e);
-            failStarted(e);
+            opened.reject(e);
+            started.reject(e);
             throw e;
         }
         finally {
