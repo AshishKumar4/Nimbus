@@ -11,11 +11,12 @@ const box = Nimbus.connect({ endpoint: BASE, headers: () => requestHeaders({}, s
 const path = '/home/user/native-startup.txt';
 const content = 'saved after a real native WebSocket handshake\n';
 const proxyErrors = [];
-let pending = false;
+let receivedUpgrade;
+const upgraded = new Promise((resolve) => { receivedUpgrade = resolve; });
 let browser;
 const bridge = spawn('node', [new URL('../_native-socket-bridge.mjs', import.meta.url).pathname], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
 bridge.on('message', (message) => {
-  if (message.type === 'pending') pending = true;
+  if (message.type === 'pending') receivedUpgrade();
   if (message.type === 'error') proxyErrors.push(message.message);
 });
 bridge.stderr.on('data', (message) => proxyErrors.push(String(message)));
@@ -42,9 +43,10 @@ try {
   }, proxyUrl);
   await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await page.waitForFunction(() => document.getElementById('treeBody').textContent.includes('Waiting for connection'), { timeout: 20_000 });
+  await Promise.race([upgraded, new Promise((_, reject) => setTimeout(() => reject(new Error('bridge never received the native HTTP Upgrade')), 10_000))]);
   a.check('the browser owns a native CONNECTING WebSocket, not a facade', await page.evaluate(() =>
     ws === window.__probeNativeSocket && ws instanceof window.__probeNativeWebSocket && ws.readyState === 0));
-  a.check('the real HTTP Upgrade is pending', pending);
+  a.check('the bridge received the real HTTP Upgrade before releasing it', true);
   a.check('the tree waits without a request failure', await page.$eval('#treeBody', (element) => !/failed/i.test(element.textContent)));
   bridge.send({ type: 'accept' });
   await page.waitForSelector(`.tree-node[data-path="${path}"]`, { visible: true, timeout: 30_000 });
