@@ -80,23 +80,21 @@ export const DEFERRED = validateDeferrals([
   {
     probe: 'frameworks/nuxt-real',
     assertion: 'nuxt dev SSR serves the Vue app through the port route on its first run',
-    // Nitro's first-run loading page, as the port route returns it.
-    failure: { status: 503, title: 'Starting Nuxt... | Nuxt' },
-    reason: "On its first run, nuxt dev's port route answers 503 from the Nitro dev builder instead of the server-rendered Vue app. "
-      + 'Scaffolding, npm install and cleanup must still pass; only the first-run serve may fail.',
-    approved: 'user, 2026-10-07',
-    owner: 'ContinuedMackerel',
-    tracking: 'nuxt dev first-run 503 from the Nitro builder (frameworks lane, ContinuedMackerel)',
+    failure: { detail: ['HTTP 502: {"error":"Nimbus: resident process released"}'] },
+    reason: "nuxt dev's own heap plus its wasm bindings exceed a facet's ~112 MiB sustained memory, so its process is released "
+      + 'while the app builds and the port route answers 502. Scaffolding, npm install and cleanup must still pass; only the first-run serve may fail.',
+    approved: 'user, 2026-10-09',
+    owner: 'Main',
+    tracking: 'nuxt dev exceeds the per-facet memory budget (user decision pending: isolate split or platform change)',
   },
   {
     probe: 'frameworks/remix-real',
     assertion: 'react-router dev serves the app through the port route on its first run',
-    failure: { detail: ['"last":"no resident process was launched"', '[restart] Relaunching with --conditions=development'] },
-    reason: "React Router dev's config load exceeds the isolate memory limit after the development-condition relaunch. "
-      + "The memory error is invisible until RealFlea's boot-failure exit fix lands; the changed detail must then be re-pinned. "
-      + 'Only the first-run serve assertion may fail; setup, install, conditional imports and cleanup must pass.',
+    failure: { detail: ['"last":"no resident process was launched"', '@tailwindcss/oxide/index.js'] },
+    reason: "React Router dev's config load fails on @tailwindcss/oxide's missing native binding; its wasm32 build is staged by "
+      + 'work/remix-first-run. Only the first-run serve assertion may fail; setup, install, conditional imports and cleanup must pass.',
     approved: 'user, 2026-10-08',
-    owner: 'ContinuedMackerel',
-    tracking: 'react-router dev config load exceeds the isolate memory limit (frameworks lane, ContinuedMackerel)',
+    owner: 'OutstandingManatee',
+    tracking: 'work/remix-first-run (oxide binding, first-run staging), then one-process for the relaunched child',
   },
 ]);
