@@ -1,16 +1,4 @@
-/**
- * javascript-scope.ts — which scope a name in a parsed program binds to.
- *
- * Reads ESTree as acorn and rolldown's parser give it, structurally (any
- * object with a string `type` and numeric `start` and `end` is a node), so
- * TypeScript's binding forms count where they bind at run time. The scopes
- * are the language's: a program's and a static block's, a function's
- * parameters and its body's `var`s, a block's, a switch's, a `for` head's
- * `let` and `const`, a catch clause's, and a class's name inside its body.
- *
- * Self-contained: rolldown-compat.ts (the build facet's runtime) and
- * async-module-lowering.ts (the transform facet's) both bundle it.
- */
+import { bindingIdentifiers } from './binding-pattern.js';
 export function isNode(value) {
     return typeof value === 'object' && value !== null
         && 'type' in value && typeof value.type === 'string'
@@ -32,37 +20,17 @@ export function stringOf(node, key) {
     const value = node?.[key];
     return typeof value === 'string' ? value : null;
 }
-/** The names a binding binds: an identifier, or what the parts of a pattern bind. */
-export function* patternNames(node) {
-    switch (node?.type) {
-        case 'Identifier': {
-            const name = stringOf(node, 'name');
-            if (name !== null)
-                yield name;
-            return;
-        }
-        case 'ObjectPattern':
-            for (const property of list(node, 'properties'))
-                yield* patternNames(child(property, property.type === 'RestElement' ? 'argument' : 'value'));
-            return;
-        case 'ArrayPattern':
-            for (const element of list(node, 'elements'))
-                yield* patternNames(element);
-            return;
-        case 'RestElement':
-            yield* patternNames(child(node, 'argument'));
-            return;
-        case 'AssignmentPattern':
-            yield* patternNames(child(node, 'left'));
-            return;
-        case 'TSParameterProperty':
-            yield* patternNames(child(node, 'parameter'));
-            return;
-        // `namespace A.B {}` binds A.
-        case 'TSQualifiedName':
-            yield* patternNames(child(node, 'left'));
-            return;
+/**
+ * The names a binding binds (binding-pattern.ts), TypeScript's forms
+ * included: a parameter property binds its parameter, and `namespace A.B {}`
+ * binds A.
+ */
+export function patternNames(node) {
+    let binding = node;
+    while (binding !== null && (binding.type === 'TSParameterProperty' || binding.type === 'TSQualifiedName')) {
+        binding = child(binding, binding.type === 'TSParameterProperty' ? 'parameter' : 'left');
     }
+    return bindingIdentifiers(binding, []).map((identifier) => identifier.name);
 }
 const FUNCTIONS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
 /** The names a program's top-level statement binds in its scope: its `var`s and its lexical declarations. */

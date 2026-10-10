@@ -1,16 +1,3 @@
-/**
- * javascript-scope.ts — which scope a name in a parsed program binds to.
- *
- * Reads ESTree as acorn and rolldown's parser give it, structurally (any
- * object with a string `type` and numeric `start` and `end` is a node), so
- * TypeScript's binding forms count where they bind at run time. The scopes
- * are the language's: a program's and a static block's, a function's
- * parameters and its body's `var`s, a block's, a switch's, a `for` head's
- * `let` and `const`, a catch clause's, and a class's name inside its body.
- *
- * Self-contained: rolldown-compat.ts (the build facet's runtime) and
- * async-module-lowering.ts (the transform facet's) both bundle it.
- */
 /** A node of a parsed program. */
 export interface EsNode {
     readonly type: string;
@@ -25,8 +12,12 @@ export declare function child(node: EsNode | null, key: string): EsNode | null;
 export declare function list(node: EsNode | null, key: string): EsNode[];
 /** `node[key]` when it is a string. */
 export declare function stringOf(node: EsNode | null, key: string): string | null;
-/** The names a binding binds: an identifier, or what the parts of a pattern bind. */
-export declare function patternNames(node: EsNode | null): Generator<string>;
+/**
+ * The names a binding binds (binding-pattern.ts), TypeScript's forms
+ * included: a parameter property binds its parameter, and `namespace A.B {}`
+ * binds A.
+ */
+export declare function patternNames(node: EsNode | null): string[];
 /** A scope of a program: the names it binds, and the scope it is in. */
 export interface Scope {
     readonly names: ReadonlySet<string>;

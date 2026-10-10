@@ -224,7 +224,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 
 		try {
 			// An ES module runs as an async function (its top-level await), strict; one that does not parse is a SyntaxError here.
-			const fn = new Function(`return ${moduleWrapper(cleanMainSource, isEsm, isEsm)}`)();
+			const fn = new Function(`return ${moduleWrapper(cleanMainSource, isEsm, `file://${filename}`, isEsm)}`)();
 			const result = fn(...loader.wrapperArguments(filename, module, main));
 
 			// Await if ESM (async IIFE returns a promise)

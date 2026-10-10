@@ -68,7 +68,7 @@ try {
     } else if (step === 'bin') {
       process.stdout.write(JSON.stringify(looksLikeEsm('/home/user/node_modules/.bin/tool', source, null)));
     } else {
-      const wrapped = moduleWrapper(source + "\\nexport const url = import.meta.url; export const later = () => import('./dep.mjs');", true);
+      const wrapped = moduleWrapper(source + "\\nexport const url = import.meta.url; export const later = () => import('./dep.mjs');", true, 'file:///module.mjs');
       process.stdout.write(JSON.stringify({ meta: wrapped.includes('import.meta'), dynamic: /\\bimport\\(/.test(wrapped) }));
     }
   `);
