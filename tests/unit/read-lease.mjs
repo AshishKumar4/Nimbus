@@ -20,6 +20,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { READ_LEASE_MARGIN_MS, READ_LEASE_TRUST_MS } from '../../packages/core/src/runtime/delegations.ts';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../../packages/core/src/_shared/read-lease-cover.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -57,6 +58,15 @@ function barrier(s, bridge, from) {
   s.files.vfs.mount('/mnt/other', new MemoryVFS());
   assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
   assert.equal(s.engine.readLeaseStats().held, 0);
+  // A backend with a change feed of its own (another database): its changes
+  // recall no lease, so none is granted. A process's cursor follows the
+  // engine's feed alone, so every barrier over another is a poison, which
+  // grants none (CompositeFeed.since).
+  const other = createSqliteVfsTestHarness();
+  s.files.vfs.mount('/mnt/db', sqliteFiles(new SqliteVFS(other.sql, other.ctx), CRED_KERNEL));
+  const fed = barrier(s, s.files.bind({ pid: 11, cred: USER }));
+  assert.equal(fed.readLease, undefined, 'a lease was granted over a feed it does not follow');
+  assert.equal(fed.poison, true);
   const covers = (key, listing = false) => readLeaseCovers(key, listing, readLease.uncovered);
   assert.deepEqual(['dev', 'dev/null', 'proc', 'proc/self', 'mnt/drive', 'mnt/drive/f'].filter((key) => covers(key)), []);
   assert.deepEqual(['', 'mnt'].filter((key) => covers(key, true)), []);
