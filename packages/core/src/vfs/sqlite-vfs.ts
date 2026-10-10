@@ -267,9 +267,10 @@ interface Pipeline {
   writer: ReadonlySet<string> | null;
   /** A synchronous write to the session's own stores, held by the engine itself (readRecallAt): the kernel's own calls, their owner's, pass what it holds too. */
   readonly store: boolean;
-  /** Settled once published. */
+  /** Settled once published; rejected when what it committed cannot be (publishHeld). */
   readonly published: Promise<void>;
   readonly settle: () => void;
+  readonly fail: (error: unknown) => void;
 }
 
 /** A lease: its root, and its terms when it is a delegation. */
@@ -1079,6 +1080,8 @@ interface TransactionPlan {
   /** Directories whose entries the plan may change. */
   entryParents: ReadonlySet<string>;
   metrics: TransactionPlanMetrics;
+  /** Rows rewritten as they stand and nothing else (TransactionPlanBuilder.restamp): it adds nothing, so no admission is asked. */
+  inPlace: boolean;
 }
 
 interface TransactionExecution {
@@ -1132,6 +1135,7 @@ class TransactionPlanBuilder {
   private edits = 0;
   private fileRows = 0;
   private gcRefCount = 0;
+  private restamped = 0;
 
   /** `history`: a snapshot is pinned, so replaced rows keep before-images. */
   constructor(private readonly history: boolean, private readonly commitRow = false) {}
@@ -1192,6 +1196,23 @@ class TransactionPlanBuilder {
       default:
         break;
     }
+  }
+
+  /**
+   * The row at `path`, `inode` (its tombstone, when undefined), rewritten as
+   * it stands at this plan's generation (a held commit's promotion).
+   */
+  restamp(path: string, inode: INode | undefined): void {
+    this.restamped++;
+    if (inode === undefined) {
+      this.addDeletedPath(path, undefined, false, true);
+      return;
+    }
+    this.addInode({
+      path, parentPath: inode.parentPath, kind: inode.kind, isDir: inode.isDir, size: inode.size,
+      atime: inode.atime, mtime: inode.mtime, ctime: inode.ctime, mode: inode.mode, uid: inode.uid, gid: inode.gid, ino: inode.ino,
+      content: { type: 'ref', chunkId: inode.chunkId, contentId: inode.contentId },
+    });
   }
 
   /** Create a staging content's row in this transaction. */
@@ -1309,6 +1330,8 @@ class TransactionPlanBuilder {
       // The checkpoint row a commit callback writes is the plan's: checked
       // and admitted under the one accounting it commits under.
       metrics: this.metricsWith({}),
+      inPlace: this.restamped > 0 && this.restamped === this.inodes.length + this.deletes.length
+        && this.staged.length === 0 && this.stagingCreated.length === 0,
     };
   }
 
@@ -2003,6 +2026,11 @@ export class SqliteVFS {
    */
   rotateIncarnation(): string {
     this.sharedDirectories.clear();
+    return this.newIncarnation();
+  }
+
+  /** A new clock epoch, stored: every cursor held against the old one poisons. */
+  private newIncarnation(): string {
     const incarnation = crypto.randomUUID();
     this.transactionSync(() => {
       this.sql.exec('UPDATE vfs_state SET incarnation = ? WHERE slot = 1', incarnation);
@@ -2012,7 +2040,7 @@ export class SqliteVFS {
     this._invalidationBytes = 0;
     this._invalidationFloor = this._revision;
     // Granted at the clock this ends: each holder is told, and asks again.
-    for (const [owner, lease] of [...this.readLeases]) this.breakReadLease(owner, lease);
+    this.breakReadLeases();
     return incarnation;
   }
 
@@ -3394,7 +3422,7 @@ export class SqliteVFS {
           if (this.activePipeline !== priorPipeline) {
             const held = this.activePipeline!;
             this.activePipeline = priorPipeline;
-            void this.endPipeline(held);
+            this.endPipeline(held).catch(() => {});
           }
         }
       });
@@ -4211,8 +4239,9 @@ export class SqliteVFS {
   /** A pipeline for `writer`'s commits (pipelined, a wave's, or a `store` write's). */
   private newPipeline(writer: ReadonlySet<string> | null, store: boolean): Pipeline {
     let settle!: () => void;
-    const published = new Promise<void>((resolve) => { settle = resolve; });
-    return { recalls: new Set(), publication: null, committed: 0, roots: new Map(), writer, store, published, settle };
+    let fail!: (error: unknown) => void;
+    const published = new Promise<void>((resolve, reject) => { settle = resolve; fail = reject; });
+    return { recalls: new Set(), publication: null, committed: 0, roots: new Map(), writer, store, published, settle, fail };
   }
 
   /** `run`, its commits `pipeline`'s. */
@@ -4261,7 +4290,7 @@ export class SqliteVFS {
       if (pipeline.roots.has(id)) return;
       const owner = crypto.randomUUID();
       this.exclusiveMutationLeases.set(owner, {
-        root, delegation: { reads: true, recall: () => pipeline.published }, inos: null, numbered: new Map(),
+        root, delegation: { reads: true, recall: () => pipeline.published.catch(() => {}) }, inos: null, numbered: new Map(),
         reservation: null, shared: false, recalling: null, reason: null, held: pipeline, ...(entries ? { entries: true as const } : {}),
       });
       pipeline.roots.set(id, owner);
@@ -4283,21 +4312,52 @@ export class SqliteVFS {
   private publishHeld(pipeline: Pipeline): void {
     const publication = pipeline.publication!;
     try {
-      try {
-        // Passed by another's publication (a cursor handed out since is at or
-        // past its commit): promoted past it first, while still held.
-        if (publication.paths.size > 0 && pipeline.committed <= this._revision) pipeline.committed = this.promote(publication.paths);
-      } finally {
-        for (const owner of pipeline.roots.values()) this.endLease(owner);
-        this.heldPipelines--;
-      }
+      // Passed by another's publication (a cursor handed out since is at or
+      // past its commit): promoted past it first, while still held.
+      if (publication.paths.size > 0 && pipeline.committed <= this._revision) pipeline.committed = this.promote(publication.paths);
+    } catch (error) {
+      this.unpublishable(pipeline, error);
+      return;
+    }
+    this.letGo(pipeline);
+    try {
       // As its writer: a read lease of the writer's own is not another's, and stays.
       if (publication.paths.size > 0) this.withHolds(pipeline.writer, () => this.bumpRevision([...publication.paths], publication.structural, pipeline.committed));
-      this.deliverEvents(publication.removedDirectories, () => {
-        for (const event of publication.events) this.deliverMutation(event);
-      });
+      this.deliverHeld(publication);
     } finally {
       pipeline.settle();
+    }
+  }
+
+  /** `pipeline`'s holds end: what it holds is another caller's to read. */
+  private letGo(pipeline: Pipeline): void {
+    for (const owner of pipeline.roots.values()) this.endLease(owner);
+    this.heldPipelines--;
+  }
+
+  /** The events of what `publication` changed, held with it, to the session's observers. */
+  private deliverHeld(publication: Publication): void {
+    this.deliverEvents(publication.removedDirectories, () => {
+      for (const event of publication.events) this.deliverMutation(event);
+    });
+  }
+
+  /**
+   * What `pipeline` committed cannot be published (its promotion failed): it
+   * stands in SQLite, and no reader would hear of it. Its holds end, every
+   * reader starts again (a new incarnation: each cursor poisons, each read
+   * lease ends), what it changed is told to the session's observers, and its
+   * writer is failed.
+   */
+  private unpublishable(pipeline: Pipeline, error: unknown): void {
+    const publication = pipeline.publication!;
+    console.error(`[sqlite-vfs] a held commit could not be published: ${this.errorMessage(error)}`);
+    this.letGo(pipeline);
+    try {
+      this.newIncarnation();
+      this.deliverHeld(publication);
+    } finally {
+      pipeline.fail(error);
     }
   }
 
@@ -4325,15 +4385,7 @@ export class SqliteVFS {
       if (key === '') continue;
       const inode = this.inodes.get(key);
       if ((inode === undefined ? builder.wouldExceedDeletion() : builder.wouldExceedInode()) !== null) commit();
-      if (inode === undefined) {
-        builder.addDeletedPath(key, undefined, false, true);
-        continue;
-      }
-      builder.addInode({
-        path: key, parentPath: inode.parentPath, kind: inode.kind, isDir: inode.isDir, size: inode.size,
-        atime: inode.atime, mtime: inode.mtime, ctime: inode.ctime, mode: inode.mode, uid: inode.uid, gid: inode.gid, ino: inode.ino,
-        content: { type: 'ref', chunkId: inode.chunkId, contentId: inode.contentId },
-      });
+      builder.restamp(key, inode);
     }
     commit();
     return this._gen;
@@ -11479,11 +11531,11 @@ export class SqliteVFS {
   /**
    * N18: a transaction that can grow the database is admitted by the
    * session's ledger before it runs (ENOSPC, nothing written, when it would
-   * cross the storage limit). Collection and pure removals only free, and are
-   * never refused.
+   * cross the storage limit). Collection and pure removals only free, and
+   * rows rewritten as they stand only keep: neither is ever refused.
    */
   private admitTransaction(plan: TransactionPlan, execution: TransactionExecution): { id: string; take: number } | null {
-    if (execution.source === 'content-gc') return null;
+    if (execution.source === 'content-gc' || plan.inPlace) return null;
     const grows = plan.inodes.length > 0 || plan.staged.length > 0 || plan.stagingCreated.length > 0
       || plan.metrics.blobBytes > 0 || plan.deletes.length === 0;
     if (!grows) return null;
@@ -11956,6 +12008,7 @@ export class SqliteVFS {
       affectedPaths: new Set(),
       entryParents: new Set(),
       metrics,
+      inPlace: false,
     };
   }
 

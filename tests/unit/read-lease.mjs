@@ -283,6 +283,51 @@ for (const pathRevisionBytes of [undefined, 0]) {
   assert.equal(other.revision('/home/user/d/many'), reported.rev);
 }
 
+// ── A held commit is promoted past another's publication whatever room is left: rows rewritten as they stand take none ──
+{
+  const s = session({ storageLimit: 64_000_000, storageKernelReserve: 1_000_000 });
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const writer = s.files.bind({ pid: 8, cred: USER });
+  const other = s.files.bind({ pid: 9, cred: USER });
+  const { readLease } = barrier(s, reader);
+  const writing = withRecall(() => writer.writeFile('/home/user/d/a.txt', 'held'));
+  await sleep(10);
+  reader.writeFile('/home/user/elsewhere', 'x');
+  const later = other.acquire(s.engine.epoch, s.engine.revision());
+  // The store is full: nothing that grows it is admitted now, the kernel's included.
+  s.engine.ledger.report('proc-full', 64_000_000);
+  assert.throws(() => s.kernel.writeFile('home/user/more', 'x'), (error) => error.code === 'ENOSPC');
+  reader.recalled(readLease.owner, 'revoke');
+  await writing;
+  const reported = other.acquire(s.engine.epoch, later.rev).paths.find((entry) => entry.path === 'home/user/d/a.txt');
+  assert.ok(reported !== undefined && reported.rev > later.rev, 'a held commit was never published');
+}
+
+// ── A held commit whose promotion fails is not published: its writer is failed, and every reader starts again ──
+{
+  const s = session();
+  const reader = s.files.bind({ pid: 7, cred: USER });
+  const writer = s.files.bind({ pid: 8, cred: USER });
+  const other = s.files.bind({ pid: 9, cred: USER });
+  const { readLease } = barrier(s, reader);
+  const writing = withRecall(() => writer.writeFile('/home/user/d/a.txt', 'held'));
+  await sleep(10);
+  reader.writeFile('/home/user/elsewhere', 'x');
+  const later = other.acquire(s.engine.epoch, s.engine.revision());
+  let armed = true;
+  s.harness.setFaultInjector((statement) => {
+    if (!armed || !statement.sql.startsWith('UPDATE vfs_state SET gen = gen + 1, next_ino')) return null;
+    armed = false;
+    return new Error('injected: the promotion failed');
+  });
+  reader.recalled(readLease.owner, 'revoke');
+  await assert.rejects(writing, /injected: the promotion failed/, 'an unpublished commit was reported published');
+  assert.equal(armed, false);
+  // What it committed stands, its holds let go; no cursor handed out before hears a delta that omits it.
+  assert.equal(new TextDecoder().decode(other.readFile('/home/user/d/a.txt')), 'held');
+  assert.equal(other.acquire(later.epoch, later.rev).poison, true, 'a reader was left on a view the commit changed');
+}
+
 // ── Held for publication: a barrier's stats and pushed bytes, and a landed view's reads, wait for it; its writer's barrier sees its own ──
 {
   const s = session();
