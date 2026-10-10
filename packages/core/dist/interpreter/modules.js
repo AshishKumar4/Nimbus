@@ -2,7 +2,7 @@ import { reflectApply, resume, resumeThrowing, withElement } from './intrinsics.
 import { ROOT_ENV, TDZ, tdzError } from './runtime.js';
 /** The wrapper function that runs `plan`. */
 export function moduleCell(plan, ops, helpers) {
-    const { frame, exportsSlot, requireSlot, moduleSlot, filenameSlot, dirnameSlot, exports, instantiate, body } = plan;
+    const { frame, exportsSlot, requireSlot, moduleSlot, filenameSlot, dirnameSlot, instantiate, body } = plan;
     const bs = body.s;
     const bg = body.g;
     return (exportsArg, requireArg, moduleArg, filename, dirname) => {
@@ -16,15 +16,13 @@ export function moduleCell(plan, ops, helpers) {
         // esModuleSource's text, which declares an export.
         const exportsObject = ops.get(moduleArg, 'exports');
         const define = reflectApply(helpers.exports, undefined, [exportsObject]);
-        for (let i = 0; i < exports.length; i++)
-            reflectApply(define, undefined, [exports[i].name, exportGetter(env, exports[i], helpers)]);
         // Instantiation, before any import is evaluated: an import that
-        // imports this module back (a cycle) finds its exports published and
-        // its function declarations made, as a module's linking provides.
+        // imports this module back (a cycle) finds its function declarations
+        // made, as a module's linking provides, and its exports published (link).
         if (instantiate !== null)
             instantiate(env);
-        // The imports are linked where the body runs: a module that suspends
-        // (top-level await) rejects for a failure linking them, as its lowered
+        // The module is linked where the body runs: a module that suspends
+        // (top-level await) rejects for a failure linking it, as its lowered
         // cell's async body does, rather than throwing.
         if (bg === null) {
             link(plan, env, requireArg, helpers, exportsObject, define);
@@ -37,9 +35,11 @@ export function moduleCell(plan, ops, helpers) {
         });
     };
 }
-/** Each request required in order, its interop made; then the import namespaces, then `export *`. */
+/** The export getters installed; each request required in order, its interop made; then the import namespaces, then `export *`. */
 function link(plan, env, requireArg, helpers, exportsObject, define) {
-    const { requests, namespaces, stars } = plan;
+    const { exports, requests, namespaces, stars } = plan;
+    for (let i = 0; i < exports.length; i++)
+        reflectApply(define, undefined, [exports[i].name, exportGetter(env, exports[i], helpers)]);
     for (let i = 0; i < requests.length; i++) {
         const { source, module, interop } = requests[i];
         const m = reflectApply(requireArg, undefined, [source]);
