@@ -199,7 +199,7 @@ export function apiToken({ cwd, account }) {
  * One API call under the account. Answers `{ ok, status, result, errors }`;
  * a transport failure throws.
  */
-export async function cfApi(path, { account, token, method = 'GET', body, contentType = 'application/json' }) {
+export async function cfApi(path, { account, token, method = 'GET', body, contentType = 'application/json', signal }) {
   const response = await fetch(`${CF_API}/accounts/${account}${path}`, {
     method,
     headers: {
@@ -207,8 +207,13 @@ export async function cfApi(path, { account, token, method = 'GET', body, conten
       ...(body === undefined ? {} : { 'Content-Type': contentType }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
   });
-  const json = await response.json().catch(() => ({}));
+  const json = await response.json().catch((error) => {
+    if (signal?.aborted) throw signal.reason ?? error;
+    return {};
+  });
+  signal?.throwIfAborted();
   return { ok: response.ok && json.success === true, status: response.status, result: json.result ?? null, errors: json.errors ?? [] };
 }
 

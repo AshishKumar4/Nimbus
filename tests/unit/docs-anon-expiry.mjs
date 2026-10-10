@@ -11,10 +11,11 @@ Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
 const realNow = Date.now;
 let now = realNow();
 let expiresAt = now + 600_000;
+let includeExpiry = true;
 let status = 200;
 const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(request) {
   assert.equal(request.method, 'POST');
-  return Response.json({ wsUrl: '/s/job_123/ws?nimbus_token=attach', expiresAt }, { status });
+  return Response.json({ wsUrl: '/s/job_123/ws?nimbus_token=attach', ...(includeExpiry ? { expiresAt } : {}) }, { status });
 } });
 try {
   Date.now = () => now;
@@ -34,11 +35,18 @@ try {
   assert.equal(readCachedSession('cached'), null, 'a shorter server lifetime is honored too');
   records.set('legacy', JSON.stringify({ wsUrl: session.wsUrl, mintedAt: now }));
   assert.equal(readCachedSession('legacy'), null, 'old cached records cannot invent an expiry');
+  includeExpiry = false;
+  const uncacheable = await createSession(new URL('/api/anon-session', server.url).href);
+  assert.equal(new URL(uncacheable.wsUrl).pathname, '/s/job_123/ws', 'the documented wsUrl-only HTTP endpoint still attaches');
+  assert.equal(uncacheable.expiresAt, null);
+  cacheSession('cached', uncacheable);
+  assert.equal(records.has('cached'), false, 'unknown expiry removes any prior reuse record');
+  assert.equal(readCachedSession('cached'), null);
   const direct = await createSession('wss://direct.test/session');
   assert.equal(direct.expiresAt, null, 'a direct WebSocket URL has no invented server lifetime');
   cacheSession('direct', direct);
   now += 1_000_000;
-  assert.deepEqual(readCachedSession('direct'), direct);
+  assert.equal(readCachedSession('direct'), null, 'a direct WebSocket URL without expiry is not cached for reuse');
   clearCachedSession('direct');
   assert.equal(readCachedSession('direct'), null);
   status = 429;
