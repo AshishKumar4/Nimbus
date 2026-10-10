@@ -116,12 +116,15 @@ export function base64Url(bytes) {
         .replace(/\//g, '_')
         .replace(/=+$/g, '');
 }
-/** The bytes unpadded base64url `value` encodes; throws on any other alphabet or a length no encoding has. */
+/** The bytes canonical unpadded base64url `value` encodes. */
 export function base64UrlDecode(value) {
     if (!BASE64URL_RE.test(value) || value.length % 4 === 1) {
         throw new Error('Invalid base64url input');
     }
-    return base64Decode(value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '='));
+    const bytes = base64Decode(value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '='));
+    if (base64Url(bytes) !== value)
+        throw new Error('Invalid base64url input');
+    return bytes;
 }
 export function base64Utf8(value) {
     return base64(enc.encode(value));
