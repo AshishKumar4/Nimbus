@@ -6,7 +6,7 @@ import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 
 const cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const sources = nodeFacetSources('const __nimbusTestShimMarker = true;');
-const source = generateOpencodeRunnerCode({
+const { code: source } = generateOpencodeRunnerCode({
   argv: ['--version'], env: {}, cred, cwd: '/home/user', stdin: '', sources,
   vfsBundle: '{}', mode: 'oneshot',
 });
