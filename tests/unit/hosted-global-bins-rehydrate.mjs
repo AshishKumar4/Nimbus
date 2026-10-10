@@ -27,6 +27,7 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
+import { hostedLifecycle } from './lib/hosted-lifecycle.mjs';
 
 // One graph for the runtime and the workspace it is composed over, so the
 // filesystem authority the runtime checks for is the class it knows.
@@ -86,12 +87,12 @@ processes.setPidBase(bundle.PID_GEN_STRIDE);
 const workspace = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes, generation: 2 });
 // The workspace restores them itself, once, as it is created (CUTOVER §2.9).
 assert.equal(workspace.registry.has('fakebin'), true, 'the global bin is a command once the workspace exists');
-await bundle.composeHostedRuntime({
+const runtime = await bundle.composeHostedRuntime({
   workspace,
   ctx,
   env,
   ports: new bundle.PortRegistry(),
-  lifecycle: { waitUntil: (task) => { facetCtx.waitUntil(task); }, async schedule() {}, async cancel() {} },
+  lifecycle: hostedLifecycle(ctx, () => runtime),
 });
 assert.equal(workspace.registry.has('fakebin'), true, 'the global bin is a command once the runtime is composed');
 assert.equal(workspace.registry.has('tool'), true, 'and a scoped package\'s bin');
