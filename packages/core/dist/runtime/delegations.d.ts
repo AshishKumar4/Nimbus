@@ -48,6 +48,8 @@ export declare const DELEGATION_RECALL_POLL_MS = 25000;
 export declare const READ_LEASE_TRUST_MS = 500;
 /** What a writer waits past a read lease's trust, for the holder's clock against the session's. */
 export declare const READ_LEASE_MARGIN_MS = 50;
+/** The longest a process is granted no read lease after its last was recalled (Delegations.readRecalled). */
+export declare const READ_LEASE_HOLD_OFF_MAX_MS = 16000;
 /** What the host is told when it must stop a holder that did not answer a recall in time. */
 export interface DelegationRevoked {
     readonly pid: number;
@@ -98,9 +100,14 @@ export declare class Delegations {
     /** Each holder's leases. */
     private readonly byPid;
     /**
-     * When each process's read lease was last recalled: it is granted none
-     * for READ_LEASE_TRUST_MS after, so the writer's next change (a save is
-     * several) waits on no one, and the reader asks at each barrier meanwhile.
+     * When each process's read lease was last recalled, and how long it is
+     * granted none after, so the writer's next change (a save is several)
+     * waits on no one and the reader asks at each barrier meanwhile:
+     * READ_LEASE_TRUST_MS, doubled up to READ_LEASE_HOLD_OFF_MAX_MS for each
+     * lease recalled before it outlived the hold-off before it, and back once
+     * one does. A lease recalled soon after it is granted spares its reader
+     * little and costs a writer a round trip: while changes come faster than
+     * one lives, the reader asks at each barrier, as with none.
      */
     private readonly readRecalled;
     private readonly recallTimeoutMs;
