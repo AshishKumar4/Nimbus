@@ -68,8 +68,9 @@ export function getRealNodeSharedImportsCode() {
 import * as __real_events from 'node:events';
 import * as __real_url from 'node:url';
 import * as __real_path from 'node:path';
-import * as __real_http from 'node:http';
-import * as __real_https from 'node:https';
+// Native primitives are captured before any user ESM builtin bridge links.
+const __real_http = globalThis.process.getBuiltinModule('http');
+const __real_https = globalThis.process.getBuiltinModule('https');
 import * as __real_net from 'node:net';
 import * as __real_util from 'node:util';
 import { handleAsNodeRequest as __nimbusHandleAsNodeRequest } from 'cloudflare:node';
