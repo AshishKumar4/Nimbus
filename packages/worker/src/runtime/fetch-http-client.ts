@@ -236,6 +236,9 @@ function __nimbusInstallFetchHttpClient(http, https, url, Buffer, context) {
       if (this.destroyed) return this;
       if (typeof chunk === "function") { callback = chunk; chunk = undefined; encoding = undefined; }
       else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+      if (chunk != null && typeof chunk !== "string" && !(chunk instanceof Uint8Array)) {
+        throw invalidArgType("chunk", ["string", "Buffer", "Uint8Array"], chunk);
+      }
       if (!this.#queued && this.writableLength === 0) {
         this.#contentLength = 0;
         if (this.method !== "GET" && this.method !== "HEAD") {

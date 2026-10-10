@@ -4,6 +4,16 @@ export async function httpFetchReviewCases(http, dns, net, address = (server) =>
   const port = server.address().port;
   const result = { sameTick: [] };
   try {
+    result.invalidEnd = [];
+    for (const method of ['GET', 'POST']) {
+      for (const chunk of [7, {}, new Int16Array([1])]) {
+        const req = http.request({ host: '127.0.0.1', port, method });
+        req.on('error', () => {});
+        try { req.end(chunk); result.invalidEnd.push(null); }
+        catch (error) { result.invalidEnd.push([error.code, error.message]); }
+        req.abort();
+      }
+    }
     for (const begin of ['end', 'write', 'flushHeaders']) {
       const req = http.request({ host: '127.0.0.1', port, path: '/', method: 'POST', agent: false });
       const events = [];
