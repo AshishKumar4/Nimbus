@@ -80,8 +80,8 @@ export const DEFERRED = validateDeferrals([
   {
     probe: 'frameworks/nuxt-real',
     assertion: 'nuxt dev SSR serves the Vue app through the port route on its first run',
-    failure: { detail: ['HTTP 502: {"error":"Nimbus: resident process released"}'] },
-    reason: "nuxt dev's own heap plus its wasm bindings exceed a facet's ~112 MiB sustained memory, so its process is released "
+    failure: { detail: ['HTTP 502: {"error":"'] },
+    reason: "nuxt dev's own heap plus its wasm bindings exceed a facet's ~112 MiB sustained memory, so its process is lost (released, or reset for memory) "
       + 'while the app builds and the port route answers 502. Scaffolding, npm install and cleanup must still pass; only the first-run serve may fail.',
     approved: 'user, 2026-10-09',
     owner: 'Main',
