@@ -28,33 +28,41 @@ const rows = [
   { method: 'resolveMx', type: 15, options: { ttl: true }, answers: [
     { type: 15, TTL: 60, data: '10 mx.fixture.test.', wire: Buffer.concat([u16(10), domain('mx.fixture.test')]) },
   ] },
+  { method: 'resolve4', type: 1, stalledBody: true, answers: [] },
   ...[0, 1, 2, 3, 4, 5].map((Status) => ({ method: 'resolve4', type: 1, Status, answers: [] })),
 ].map((row, index) => ({ ...row, name: 'case' + index + '.fixture.test' }));
 const wire = (id, row) => Buffer.concat([
   id, u16(0x8180 | (row.Status || 0)), u16(1), u16(row.answers.length), u16(0), u16(0), domain(row.name), u16(row.type), u16(1),
   ...row.answers.map((answer) => Buffer.concat([domain(row.name), u16(answer.type), u16(1), u32(answer.TTL), u16(answer.wire.length), answer.wire])),
 ]);
-const binding = __BINDING__({ process, timers: { setTimeout, clearTimeout }, fetch: async () => Response.json({ Status: current.Status || 0, Answer: current.answers }) }, require('net').isIP);
+let nativeAttempts = 0, jsonAttempts = 0;
+const binding = __BINDING__({ process, timers: { setTimeout, clearTimeout }, fetch: async (_url, { signal }) => {
+  jsonAttempts++;
+  if (current.stalledBody) return new Response(new ReadableStream({ start(controller) { signal.addEventListener('abort', () => controller.error(signal.reason), { once: true }); } }));
+  return Response.json({ Status: current.Status || 0, Answer: current.answers });
+} }, require('net').isIP);
 const shape = (err, values) => err ? { code: err.code, syscall: err.syscall, message: err.message, keys: Object.keys(err) } : values;
 let current;
 (async () => {
   const socket = dgram.createSocket('udp4');
-  socket.on('message', (query, peer) => socket.send(wire(query.subarray(0, 2), current), peer.port, peer.address));
+  socket.on('message', (query, peer) => { nativeAttempts++; if (!current.stalledBody) socket.send(wire(query.subarray(0, 2), current), peer.port, peer.address); });
   await new Promise((resolve) => socket.bind(0, '127.0.0.1', resolve));
   try {
-    const native = new dns.Resolver({ tries: 1, timeout: 100 });
+    const native = new dns.Resolver({ tries: 2, timeout: 100 });
     native.setServers(['127.0.0.1:' + socket.address().port]);
     const oldChannel = process.binding('cares_wrap').ChannelWrap;
     process.binding('cares_wrap').ChannelWrap = binding.ChannelWrap;
-    const ours = new dns.Resolver({ tries: 1, timeout: 100 });
+    const ours = new dns.Resolver({ tries: 2, timeout: 100 });
     process.binding('cares_wrap').ChannelWrap = oldChannel;
     const call = (resolver, row) => new Promise((resolve) => resolver[row.method](row.name, row.options, (err, value) => resolve(shape(err, value))));
     for (const row of rows) {
       current = row;
+      nativeAttempts = jsonAttempts = 0;
       const expected = await call(native, row);
       const actual = await call(ours, row);
-      console.log(JSON.stringify({ method: row.method, status: row.Status ?? 0, expected, actual }));
+      console.log(JSON.stringify({ method: row.method, status: row.Status ?? 0, expected, actual, nativeAttempts, jsonAttempts }));
       require('assert/strict').deepEqual(actual, expected);
+      if (row.stalledBody) require('assert/strict').equal(jsonAttempts, nativeAttempts);
     }
   } finally { socket.close(); }
 })().catch((error) => { console.error(error); process.exitCode = 1; });

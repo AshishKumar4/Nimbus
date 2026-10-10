@@ -843,6 +843,10 @@ attempt('URL function', () => url.URL('https://example.com'));
 console.log('url shapes ' + JSON.stringify([url.URL === globalThis.URL, new url.URL('https://example.com').constructor === url.URL, url.pathToFileURL('/a%#?\\b\n').href, url.fileURLToPath('file:///a%20b')]));
 console.log('url bytes ' + JSON.stringify(['file:///a%FF%20b', 'file:///a%2Fb', 'file:///a%ZZ'].map((value) => url.fileURLToPathBuffer(value).toString('hex'))));
 console.log('url windows bytes ' + JSON.stringify(['file:///C:/a%FF%5Cb', 'file://server/share/%FE'].map((value) => url.fileURLToPathBuffer(value, { windows: true }).toString('hex'))));
+class UnicodeURL extends URL { get pathname() { return '/C:/\u00e9/\u20ac/%ff'; } }
+const unicodeURL = new UnicodeURL('file:///ignored');
+const unicodeLike = { href: 'file:///ignored', protocol: 'file:', hostname: '', pathname: '/C:/\u00e9/\u20ac/%ff' };
+console.log('url raw Unicode ' + JSON.stringify([unicodeURL, unicodeLike].flatMap((value) => [false, true].map((windows) => url.fileURLToPathBuffer(value, { windows }).toString('hex')))));
 attempt('url bytes host', () => url.fileURLToPathBuffer('file://server/share'));
 attempt('url bytes scheme', () => url.fileURLToPathBuffer('https://example.com/a'));
 attempt('url bytes relative drive', () => url.fileURLToPathBuffer('file:///a', { windows: true }));

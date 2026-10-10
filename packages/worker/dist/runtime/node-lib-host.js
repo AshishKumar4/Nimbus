@@ -52,7 +52,6 @@
  * sources: { [id]: (exports, require, module, process, internalBinding,
  * primordials) => void } }, the last two running the upstream text.
  */
-import { NODE_DNS_BINDING_SOURCE } from './node-dns-binding.js';
 export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform) {
   "use strict";
   const platformUtil = platform.util;
@@ -751,9 +750,8 @@ export const NODE_LIB_HOST_SOURCE = String.raw `function createNodeLib(platform)
     // Node's tracing is off: no category is enabled, and nothing traces.
     trace_events: { getCategoryEnabledBuffer: () => new Uint8Array(1), trace() {} },
   };
-  ${NODE_DNS_BINDING_SOURCE}
   const internalBinding = (name) => name === "cares_wrap"
-    ? bindings.cares_wrap ??= createCaresBinding(platform, require("internal/net").isIP)
+    ? bindings.cares_wrap ??= platform.createCaresBinding(platform, require("internal/net").isIP)
     : bindings[name];
   // inspect.js reads primordials.globalThis once, for the names it counts as
   // built-in (showHidden shows a prototype's properties when its

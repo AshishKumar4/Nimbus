@@ -9,13 +9,22 @@
  * (scripts/bundle-node-shims.mjs).
  */
 import { NODE_LIB_HOST_SOURCE, WORKERD_SLOTS_SOURCE } from './node-lib-host.js';
+import { NODE_DNS_BINDING_SOURCE } from './node-dns-binding.js';
 import { EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_LIB_SOURCES, NODE_PRIMORDIALS_SOURCE, NODE_UV_ERRORS } from './node-lib-source.js';
 import { NODE_OPTION_ALIASES, NODE_OPTIONS_TABLE } from '@nimbus-sh/core/runtime/node-cli-options.generated.js';
+const dnsModule = (id) => id === 'dns' || id === 'dns/promises' || id.startsWith('internal/dns/') || id === 'internal/net';
+const moduleFactory = (id, text) => `    ${JSON.stringify(id)}: function (exports, require, module, process, internalBinding, primordials) {\n${text}\n    },`;
+export function generateNodeDnsModule() {
+    return `module.exports = { createCaresBinding: ${NODE_DNS_BINDING_SOURCE}, sources: {\n`
+        + Object.entries(NODE_LIB_SOURCES).filter(([id]) => dnsModule(id)).map(([id, text]) => moduleFactory(id, text)).join('\n')
+        + '\n} };';
+}
 export function generateNodeLibModule() {
-    const sources = Object.entries(NODE_LIB_SOURCES)
-        .map(([id, text]) => `    ${JSON.stringify(id)}: function (exports, require, module, process, internalBinding, primordials) {\n${text}\n    },`)
-        .join('\n');
+    const sources = Object.entries(NODE_LIB_SOURCES).map(([id, text]) => dnsModule(id)
+        ? `    get ${JSON.stringify(id)}() { return require("./node-dns.js").sources[${JSON.stringify(id)}]; },`
+        : moduleFactory(id, text)).join('\n');
     return `module.exports = {
+  createCaresBinding: (...args) => require("./node-dns.js").createCaresBinding(...args),
   createNodeLib: ${NODE_LIB_HOST_SOURCE},
   createWorkerdSlots: ${WORKERD_SLOTS_SOURCE},
   primordialsOf: function (primordials, globalThis) {

@@ -12,6 +12,7 @@
  * that is not a Durable Object implements `ProcessHost` against the same
  * `HostedProcess` and never imports this file.
  */
+import type { ModuleSourceEnv } from '@nimbus-sh/platform/module-source.js';
 import { type HostedProcess, type OneShotParams, type ProcessHostParams, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps, type Supervise } from './process-fabric.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import { type FacetResourceLimits } from './facet-limits.js';
@@ -73,7 +74,7 @@ interface WorkerLoaderBinding {
  * staged boot's assembler may read more off the same env (Nimbus's reads
  * ASSETS); the env travels to it whole, so nothing further is named here.
  */
-export interface ResidentFacetEnv {
+export interface ResidentFacetEnv extends ModuleSourceEnv {
     LOADER?: WorkerLoaderBinding;
 }
 /**

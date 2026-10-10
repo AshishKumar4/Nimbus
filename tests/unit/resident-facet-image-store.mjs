@@ -13,7 +13,6 @@
 
 import assert from 'node:assert/strict';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
@@ -25,9 +24,11 @@ import {
   facetImageDigest,
   facetImagePath,
   encodeCommonJsPack,
+  decodeCommonJsPackBytes,
   residentLoaderConfig,
 } from '../../packages/fabric/src/process-fabric.ts';
-import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
+import { createFacetWorld, createFacetCtx, captureProcessBoots } from './facet-host-harness.mjs';
+import { storedBootModules } from './lib/module-map-bundle.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 
@@ -50,7 +51,7 @@ const env = {
 const processes = new SessionProcessSupervisor();
 const manager = new FacetManager(
   createFacetCtx(world, 'image-store-test'),
-  env, processes, new PortRegistry(), processHostFor, {},
+  env, processes, new PortRegistry(), captureProcessBoots(world), {},
 );
 const harness = createSqliteVfsTestHarness();
 const sessionVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -66,15 +67,9 @@ const spawn = (code, name) => manager.spawnNode(code, {
 });
 /** The image the last spawn's facet actually booted its main module from. */
 const bootedImage = async () =>
-  facetImagePath(await facetImageDigest(configs().at(-1).modules['worker.js']));
-/** And the one its code cells came from: the pack of every `{ cjs }` module it loaded. */
-const bootedPack = async () => {
-  const cells = {};
-  for (const [name, member] of Object.entries(configs().at(-1).modules)) {
-    if (member && typeof member === 'object' && typeof member.cjs === 'string') cells[name] = member.cjs;
-  }
-  return facetImagePath(await facetImageDigest(encodeCommonJsPack(cells).join('')));
-};
+  world.bootSpecs.at(-1).code.vfsComposedModules['worker.js'];
+/** And the pack of this process's code cells, excluding immutable runtime modules. */
+const bootedPack = async () => world.bootSpecs.at(-1).code.vfsCommonJsPacks[0];
 const name = (path) => path.split('/').pop();
 
 const a1 = await spawn('const a = 1;', 'a.js');
@@ -89,8 +84,14 @@ assert.ok(Object.values(configs().at(-1).modules).some((m) => m?.cjs?.includes('
 
 // The bytes the loader saw are the bytes on disk, not a copy carried alongside.
 const storedSource = fs.readFileString(imageA.replace(/^\/+/, ''));
-assert.equal(configs().at(-1).modules['worker.js'], storedSource,
-  'the facet booted from the stored image, read when it loaded');
+assert.equal(imageA, facetImagePath(await facetImageDigest(storedSource)), 'the recipe is named by its own bytes');
+assert.deepEqual(await storedBootModules(world, fs), configs().at(-1).modules,
+  'the facet booted from the stored recipe and shared assets, read when it loaded');
+const cells = decodeCommonJsPackBytes(fs.readFileUncached(packA));
+for (const [module, member] of Object.entries(world.bootSpecs.at(-1).code.assetModules)) {
+  assert.equal(cells[module], undefined, 'the process pack never copies an immutable library');
+  assert.equal(storedImages().includes(member.source.sha256 + '.js'), false, 'a library is not written as a process image');
+}
 
 // The image is kernel-owned and world-readable: every process reads it through
 // a supervisor binding that enforces its own credential, so readability has to
