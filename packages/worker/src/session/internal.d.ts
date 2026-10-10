@@ -100,8 +100,6 @@ export interface SessionInternal {
   _fsWatchSubs?: Map<WebSocket, import('./fs-watch.js').FsWatchSub[]>;
   nimbusWrangler: NimbusWrangler | null;
   npmInstaller: NpmInstaller | null;
-  /** Singleton fetch proxy entrypoint for npm installs. */
-  fetchProxyEntrypoint: any;
   /** Process supervisor facade (always present from ctor). */
   processes: SessionProcessSupervisor;
   portRegistry: PortRegistry;
@@ -161,10 +159,7 @@ export interface SessionInternal {
   ensureFacetManager(): ComposedFacetManager;
   ensureBundlePool(): PrebundlePool;
   _ensureFacetProcessManager(): any;
-  ensureFetchProxy(log?: (msg: string) => void): any | null;
-  buildFetchFn(log?: (msg: string) => void): ((url: string, init?: RequestInit) => Promise<Response>) | undefined;
   ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller>;
-  _envFlagDefaultOn(name: string): boolean;
   _setCpRegistry(r: CommandRegistry): void;
   hydrateSessionBasePath(request: Request): Promise<void>;
   ensureGlobalPrefixDirs(prefix: string): void;

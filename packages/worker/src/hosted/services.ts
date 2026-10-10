@@ -1,6 +1,5 @@
 import { staticStdinReader } from "@nimbus-sh/core/shell/stdin-adapter.js";
-import { loaderOutbound, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
+import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { composeFacetManager, type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
 import { FacetProcessManager, textBytes, type ChildOrigin, type OutputHooks } from "../facets/process.js";
 import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
@@ -23,7 +22,6 @@ import { errorText } from "@nimbus-sh/core/_shared/error-text.js";
 import { PrebundlePool } from "../facets/prebundle-pool.js";
 import { supervisorEsbuildService } from "../facets/esbuild-transform.js";
 import type { NpmInstaller } from "../npm/installer.js";
-import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from "@nimbus-sh/core/constants.js";
 import { notifyTerminalEvent } from "../runtime/process-logs-api.js";
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
@@ -57,7 +55,7 @@ export interface HostedRuntimeEnv extends RuntimeCatalogEnv, IsolatePoolEnv {
 }
 
 export type RuntimeServiceHost = Pick<SessionInternal,
-  '_cpRegistry' | '_envFlagDefaultOn' | '_reportExternalExit' | '_rpcStderr' | '_rpcStdout' | 'supervisorRewindBridge' | 'buildFetchFn' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureFetchProxy' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'facetProcessManager' | 'fetchProxyEntrypoint' | 'npmInstaller' | 'portRegistry' | 'processes' | 'runtimeWorkspace' | 'shell' | 'sqliteFs' | 'terminal'
+  '_cpRegistry' | '_reportExternalExit' | '_rpcStderr' | '_rpcStdout' | 'supervisorRewindBridge' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'facetProcessManager' | 'npmInstaller' | 'portRegistry' | 'processes' | 'runtimeWorkspace' | 'shell' | 'sqliteFs' | 'terminal'
 > & { webSocketRelay: WebSocketRelay | null };
 
 export interface RuntimeServiceContext {
@@ -453,108 +451,6 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
     return self.facetProcessManager;
   }
 
-export function ensureFetchProxy(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, log?: (msg: string) => void): any | null {
-    if (self.fetchProxyEntrypoint) return self.fetchProxyEntrypoint;
-
-    try {
-      const env = runtimeContext.env as any;
-      if (!env?.LOADER?.load) {
-        log?.('LOADER.load not available — using global fetch');
-        return null;
-      }
-
-      // Buffered proxy: reads the entire response body into an ArrayBuffer
-      // and returns it in ONE message instead of forwarding a ReadableStream.
-      // In workerd local dev, streaming responses across a service-binding
-      // RPC fabric opens a separate loopback socket PER chunk (~16KB), which
-      // exhausts ephemeral ports for larger installs (npm registry packuments
-      // are 500KB-3MB, tarballs up to 5MB). Buffering to arrayBuffer means
-      // 1 stub call = 1 loopback connection, not N connections.
-      //
-      // 32MB cap prevents a malformed giant response from OOMing the proxy
-      // isolate. Packages with tarballs larger than 32MB will fail to install
-      // cleanly (returned as 413 → caller treats as failed fetch).
-      const proxyCode = [
-        'const MAX_BYTES = 32 * 1024 * 1024;',
-        'export default {',
-        '  async fetch(request, workerEnv) {',
-        '    try {',
-        '      const body = await request.json();',
-        '      const resp = await fetch(body.url, {',
-        '        method: body.method || "GET",',
-        '        headers: body.headers || {},',
-        '      });',
-        '      // Check advertised Content-Length before buffering',
-        '      const clStr = resp.headers.get("content-length");',
-        '      if (clStr) {',
-        '        const cl = parseInt(clStr, 10);',
-        '        if (cl > MAX_BYTES) {',
-        '          return new Response(',
-        '            JSON.stringify({ error: "response too large: " + cl + " bytes (cap " + MAX_BYTES + ")" }),',
-        '            { status: 413, headers: { "Content-Type": "application/json" } }',
-        '          );',
-        '        }',
-        '      }',
-        '      // Buffer entire body — ONE message, not streamed chunks',
-        '      const buf = await resp.arrayBuffer();',
-        '      if (buf.byteLength > MAX_BYTES) {',
-        '        return new Response(',
-        '          JSON.stringify({ error: "response exceeded cap: " + buf.byteLength + " bytes" }),',
-        '          { status: 413, headers: { "Content-Type": "application/json" } }',
-        '        );',
-        '      }',
-        '      return new Response(buf, {',
-        '        status: resp.status,',
-        '        statusText: resp.statusText,',
-        '        headers: Object.fromEntries(resp.headers.entries()),',
-        '      });',
-        '    } catch (e) {',
-        '      return new Response(JSON.stringify({ error: e.message }), {',
-        '        status: 502,',
-        '        headers: { "Content-Type": "application/json" },',
-        '      });',
-        '    }',
-        '  }',
-        '};',
-      ].join('\n');
-
-      const worker = env.LOADER.load(applyFacetLimits('worker', {
-        compatibilityDate: CF_COMPAT_DATE,
-        compatibilityFlags: [...GUEST_COMPAT_FLAGS],
-        mainModule: 'fetch-proxy.js',
-        modules: { 'fetch-proxy.js': proxyCode },
-        // The registry is reached through the workspace's egress, when it has one.
-        ...loaderOutbound(runtimeContext.network()),
-      }));
-      self.fetchProxyEntrypoint = worker.getEntrypoint(undefined, { limits: facetLimits('worker') });
-      log?.('Fetch proxy worker created (singleton)');
-      return self.fetchProxyEntrypoint;
-    } catch (e: any) {
-      log?.(`Fetch proxy creation failed: ${e?.message}`);
-      return null;
-    }
-  }
-
-export function buildFetchFn(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, log?: (msg: string) => void): ((url: string, init?: RequestInit) => Promise<Response>) | undefined {
-    const entrypoint = self.ensureFetchProxy(log);
-    if (!entrypoint) return undefined;
-
-    return async (url: string, init?: RequestInit) => {
-      const headers: Record<string, string> = {};
-      if (init?.headers) {
-        if (init.headers instanceof Headers) {
-          init.headers.forEach((v, k) => { headers[k] = v; });
-        } else if (typeof init.headers === 'object') {
-          Object.assign(headers, init.headers);
-        }
-      }
-      return entrypoint.fetch(new Request('http://fetch-proxy/do-fetch', {
-        method: 'POST',
-        body: JSON.stringify({ url, method: init?.method || 'GET', headers }),
-      }));
-    };
-  }
-
 export async function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, onProgress?: (msg: string) => void): Promise<NpmInstaller> {
     self.ensureSqliteFs();
     if (!self.esbuildService) {
@@ -565,21 +461,6 @@ export async function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContex
     // subgraph) on first npm use so it stays out of the cold script-eval
     // graph. The install command paths that call this are already async.
     const { NpmInstaller } = await import('../npm/installer.js');
-    // ── Lazy fetch-proxy ────────────────────────────────────────────
-    // The fetch-proxy is a singleton dynamic worker (LOADER.load) that
-    // buffers registry responses to dodge wrangler-local-dev port
-    // exhaustion. It is only needed for the in-supervisor npm paths.
-    // When the resolver and install paths run in facets (default-on),
-    // they use bare globalThis.fetch and need no proxy, so the proxy is
-    // built only when a facet path is disabled via its env flag.
-    const useFacetResolver = self._envFlagDefaultOn('NIMBUS_FACET_RESOLVER');
-    const useFacetInstall  = self._envFlagDefaultOn('NIMBUS_FACET_NPM_INSTALL');
-    const useBatchFacet    = self._envFlagDefaultOn('NIMBUS_FACET_NPM_INSTALL_BATCH');
-    const needProxy = !(useFacetResolver && useFacetInstall && useBatchFacet);
-    const fetchFn = needProxy ? self.buildFetchFn(onProgress) : undefined;
-    if (!needProxy) {
-      onProgress?.(`[npm] Lazy fetch-proxy: skipped (all facet paths default-on)`);
-    }
     self.npmInstaller = new NpmInstaller(
       self.getFilesystemAuthority(),
       runtimeContext.ctx.storage.sql,
@@ -589,19 +470,10 @@ export async function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContex
         ctx: runtimeContext.ctx,
         env: runtimeContext.env,
         onProgress,
-        fetchFn,
         network: runtimeContext.network(),
       },
     );
     return self.npmInstaller;
-  }
-
-export function _envFlagDefaultOn(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, name: string): boolean {
-    const raw = (runtimeContext.env as any)?.[name];
-    if (raw === undefined || raw === null) return true;
-    const s = String(raw).toLowerCase();
-    if (s === '0' || s === '' || s === 'false' || s === 'off' || s === 'no') return false;
-    return true;
   }
 
 export function ensureGlobalPrefixDirs(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, prefix: string): void {
@@ -623,10 +495,7 @@ export function bindRuntimeServices(host: RuntimeServiceHost, context: RuntimeSe
     ensureFacetManager: ensureFacetManager.bind(null, host, context),
     _ensureWebSocketRelay: _ensureWebSocketRelay.bind(null, host, context),
     _ensureFacetProcessManager: _ensureFacetProcessManager.bind(null, host, context),
-    ensureFetchProxy: ensureFetchProxy.bind(null, host, context),
-    buildFetchFn: buildFetchFn.bind(null, host, context),
     ensureNpmInstaller: ensureNpmInstaller.bind(null, host, context),
-    _envFlagDefaultOn: _envFlagDefaultOn.bind(null, host, context),
     ensureGlobalPrefixDirs: ensureGlobalPrefixDirs.bind(null, host, context),
   };
 }

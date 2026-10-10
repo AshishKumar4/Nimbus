@@ -16,10 +16,9 @@ import {
   runtimeCodeKey,
   runtimeExpressionModule,
   runtimeFunctionModule,
-  runtimeFunctionSyntaxError,
   wrapCommonJsCell,
 } from '../../packages/core/src/_shared/commonjs-cell.ts';
-import { runtimeFunctionSource } from '../../packages/core/src/_shared/runtime-function-source.ts';
+import { parseRuntimeFunction, runtimeFunctionSource } from '../../packages/core/src/_shared/runtime-function-source.ts';
 
 // Evaluate a `{ cjs }` module body as workerd's CommonJS handler does: a
 // sloppy function body with `module` and `exports` in scope.
@@ -28,6 +27,9 @@ function load(text) {
   new Function('module', 'exports', text)(moduleObject, moduleObject.exports);
   return moduleObject.exports;
 }
+
+/** This realm's built-ins, as runtime-function-source's checks take them. */
+const REALM = { SyntaxError, messageOf: (e) => e.message, scriptOptions: { ecmaVersion: 'latest', sourceType: 'script' } };
 
 /** A stand-in for a module's own Function (THE WRAPPER). */
 const MODULE_FUNCTION = function ModuleFunction() {};
@@ -195,7 +197,7 @@ function staged(text, origin = ORIGIN) {
   for (const [kind, params, body] of refused) {
     const Ctor = kind === 'async' ? (async () => {}).constructor : Function;
     assert.throws(() => new Ctor(...params, body), SyntaxError, `the premise: V8 refuses ${JSON.stringify([params, body])}`);
-    assert.notEqual(runtimeFunctionSyntaxError(kind, params, body), null, `refused: ${JSON.stringify([params, body])}`);
+    assert.throws(() => parseRuntimeFunction(kind, params, body, REALM), SyntaxError, `refused: ${JSON.stringify([params, body])}`);
     assert.throws(() => staged(runtimeFunctionModule(kind, params, body)), SyntaxError);
   }
   assert.equal(globalThis.__nimbusBreakout, undefined, 'no refused text ran');

@@ -51,10 +51,8 @@ import type { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { enc, dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { exitCodeForSignal, parseSignalName, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { isDynamicWorkerDeadlock } from '@nimbus-sh/fabric/budgets.js';
-import { pulledStdinReader, staticStdinReader } from '@nimbus-sh/core/shell/stdin-adapter.js';
+import { pulledStdinReader } from '@nimbus-sh/core/shell/stdin-adapter.js';
 import type { CommandInputStream } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
-import { forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
-import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors
@@ -609,35 +607,6 @@ export class FacetProcessManager {
     }
     if (!isShellCommand(req.command)) return null;
     return parseShellCommandArgs(req.command, args);
-  }
-
-  private async _dispatchShell(child: ChildEntry, req: SpawnReq, hooks: OutputHooks): Promise<void> {
-    const plan = this._shellPlanFor(req);
-    if (!plan) {
-      this._appendText(child, 2, `${req.command}: unsupported shell invocation\n`);
-      this._stampExit(child, 127, null);
-      return;
-    }
-    try {
-      const stdin = this._stdinOf(child);
-      const commandLine = await this._shellCommandLineForPlan(
-        plan,
-        req.cwd,
-        stdin,
-        hooks,
-        shellNameForCommand(req.command),
-        child.pid,
-      );
-      if (commandLine === null) {
-        this._stampExit(child, 127, null);
-        return;
-      }
-      const code = await this._runShellLine(child.pid, commandLine, child.env, req.cwd, stdin, hooks);
-      this._stampExit(child, typeof code === 'number' ? code : 0, null);
-    } catch (e: any) {
-      this._appendText(child, 2, `shell error: ${e?.message || String(e)}\n`);
-      this._stampExit(child, 1, null);
-    }
   }
 
   /** The shell's program: its `-c` text, its script, or (`sh` alone) its stdin, which it then has none left of. */
