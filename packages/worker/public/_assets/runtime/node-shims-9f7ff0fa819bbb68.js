@@ -332,27 +332,19 @@ let __nimbusCarrierGate = null;
 let __nimbusCarrierFailure = null;
 // What leaves by the platform's own network, which no gate of the session's
 // sees, goes once what the process wrote is published (ProcessFsClient.published).
-function __nimbusEgress() {
+function __nimbusNetworkGate() {
   const client = globalThis.__nimbusProcessFs;
   return client ? client.published() : null;
 }
 // A raw socket (one a connect opens, or a response upgrades to) carries
-// whatever the process sends on it from then on. The first is told to the
-// session, whether or not the process wrote anything yet, before what it
-// logged until then is answered: from then on each of its writes waits for
-// its publication, and the socket opens once every one before it is published.
-let __nimbusRawSocketGate;
+// whatever the process sends on it from then on: the session is told, whether
+// or not the process wrote anything yet, and the socket opens once what the
+// process wrote before it is published (ProcessFsClient.rawSocket): at once,
+// as Node's does, when nothing waits.
 function __nimbusRawSocket() {
-  if (__nimbusRawSocketGate === undefined) {
-    let bound = null;
-    try { bound = typeof __supervisor !== "undefined" ? __supervisor : null; } catch {}
-    const client = bound && typeof __nimbusProcessFs === "function" ? __nimbusProcessFs() : null;
-    __nimbusRawSocketGate = client === null ? null : client.published(true).then(() => client.flush()).then(
-      () => { __nimbusRawSocketGate = null; },
-      (error) => { __nimbusRawSocketGate = undefined; throw error; },
-    );
-  }
-  return __nimbusRawSocketGate;
+  let bound = null;
+  try { bound = typeof __supervisor !== "undefined" ? __supervisor : null; } catch {}
+  return bound && typeof __nimbusProcessFs === "function" ? __nimbusProcessFs().rawSocket() : null;
 }
 if (typeof __real_net !== "undefined") {
   const __NativeSocket = (__real_net.default ?? __real_net).Socket;
@@ -2759,10 +2751,11 @@ if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestI
     if (own) return __resumeCoherent(own, true);
     const release = globalThis.__nimbusVfsReleaseBarrier;
     if (typeof release === "function") await release();
-    const published = __nimbusEgress();
+    const published = __nimbusNetworkGate();
     if (published !== null) await published;
     const pending = __resumeCoherent(__dispatch(input, init)).then(async (response) => {
-      if (response && response.webSocket) await __nimbusRawSocket();
+      const raw = response && response.webSocket ? __nimbusRawSocket() : null;
+      if (raw !== null) await raw;
       if (response && response.body) { __foreignBodies.add(response); __foreignOpen++; }
       return response;
     });

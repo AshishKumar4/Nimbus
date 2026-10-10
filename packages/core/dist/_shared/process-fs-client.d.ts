@@ -222,14 +222,21 @@ export interface ProcessFsClient {
     effect(): Promise<void> | null;
     /**
      * The gate an effect leaving by a way the session's gate does not see (a
-     * request out by the runtime's own network, a raw socket) is released at,
-     * after `effect`: once every
-     * write of the process's the session answered ahead of its publication
-     * (WriteBatchStreamResult.held) is published, or null when none is.
-     * `escape` (a raw socket opens): asked whatever is known, and the
-     * process's writes wait for their publication from now on.
+     * request out by the runtime's own network) is released at, after
+     * `effect`: once every write of the process's the session answered ahead
+     * of its publication (WriteBatchStreamResult.held) is published, or null
+     * when none is.
      */
-    published(escape?: boolean): Promise<void> | null;
+    published(): Promise<void> | null;
+    /**
+     * A raw socket opens, which carries whatever the process sends on it from
+     * now on, past every gate of the session's. The session is told (once),
+     * and every wave sent from now on goes after that, so each is answered
+     * once published. The socket opens at the gate this answers: once what
+     * was logged before it is answered and published, or null when nothing
+     * waits.
+     */
+    rawSocket(): Promise<void> | null;
     /** The end of the run: everything answered; throws naming every failure not yet taken. */
     settle(): Promise<void>;
     /** The failures not yet reported, taken (the next effect reports them). */

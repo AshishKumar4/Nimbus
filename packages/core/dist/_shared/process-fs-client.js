@@ -250,6 +250,8 @@ export function processFsClient(options) {
     /** Waves the session answered ahead of their publication, and how many of them it has since said are published (`published`). */
     let heldWaves = 0;
     let publishedThrough = 0;
+    /** The session told of a raw socket (rawSocket): every wave after it is sent once it lands. */
+    let escaped = null;
     const marks = [];
     const counters = {
         ops: 0, waves: 0, resends: 0, epochs: 0, refused: 0, lost: 0, maxWaveOps: 0,
@@ -373,6 +375,8 @@ export function processFsClient(options) {
     const send = async (entries) => {
         let writer;
         try {
+            if (escaped !== null)
+                await escaped;
             writer = await writerFor(entries);
         }
         catch (error) {
@@ -967,15 +971,27 @@ export function processFsClient(options) {
             options.drain?.();
             return answered >= logged ? null : client.flush();
         },
-        published(escape = false) {
+        published() {
             const ask = options.session.published;
-            if (processGone !== null || ask === undefined || (!escape && publishedThrough === heldWaves))
+            if (processGone !== null || ask === undefined || publishedThrough === heldWaves)
                 return null;
             const through = heldWaves;
-            return ask.call(options.session, escape).then(() => {
+            return ask.call(options.session, false).then(() => {
                 if (publishedThrough < through)
                     publishedThrough = through;
             });
+        },
+        rawSocket() {
+            const ask = options.session.published;
+            if (processGone !== null || ask === undefined)
+                return null;
+            if (escaped === null) {
+                escaped = ask.call(options.session, true);
+                // Not told, every write after it fails (send) rather than be answered ahead of its publication.
+                escaped.catch(() => { });
+            }
+            const logged = client.effect();
+            return logged === null ? client.published() : logged.then(() => client.published() ?? undefined);
         },
         async settle() {
             settling = true;

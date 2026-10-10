@@ -1328,6 +1328,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     let answered = 0;
     let heldWaves = 0;
     let publishedThrough = 0;
+    let escaped = null;
     const marks = [];
     const counters = {
       ops: 0,
@@ -1438,6 +1439,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     const send = async (entries) => {
       let writer;
       try {
+        if (escaped !== null) await escaped;
         writer = await writerFor(entries);
       } catch (error2) {
         if (error2 instanceof Error && isProcessGone(error2)) {
@@ -1888,13 +1890,24 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         options.drain?.();
         return answered >= logged ? null : client.flush();
       },
-      published(escape = false) {
+      published() {
         const ask = options.session.published;
-        if (processGone !== null || ask === void 0 || !escape && publishedThrough === heldWaves) return null;
+        if (processGone !== null || ask === void 0 || publishedThrough === heldWaves) return null;
         const through = heldWaves;
-        return ask.call(options.session, escape).then(() => {
+        return ask.call(options.session, false).then(() => {
           if (publishedThrough < through) publishedThrough = through;
         });
+      },
+      rawSocket() {
+        const ask = options.session.published;
+        if (processGone !== null || ask === void 0) return null;
+        if (escaped === null) {
+          escaped = ask.call(options.session, true);
+          escaped.catch(() => {
+          });
+        }
+        const logged2 = client.effect();
+        return logged2 === null ? client.published() : logged2.then(() => client.published() ?? void 0);
       },
       async settle() {
         settling = true;
