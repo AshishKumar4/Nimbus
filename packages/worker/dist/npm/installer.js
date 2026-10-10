@@ -75,14 +75,6 @@ export class NpmInstaller {
     ctx;
     env;
     onProgress;
-    /**
-     * Injectable fetch function. Required because DO fetch() hangs in
-     * wrangler local dev. The caller (NimbusSession) provides a function
-     * that routes fetches through a facet worker. Used only by the resolve
-     * path (packument JSON) — tarball fetches happen inside the facet pool
-     * when the feature flag is on, using the facet's own global fetch.
-     */
-    fetchFn;
     /** The workspace's network: every resolve and install facet (here and in peers) goes out through it. */
     network;
     /**
@@ -100,7 +92,6 @@ export class NpmInstaller {
         this.ctx = opts?.ctx;
         this.env = opts?.env;
         this.onProgress = opts?.onProgress;
-        this.fetchFn = opts?.fetchFn;
         this.network = opts?.network ?? ISOLATE_NETWORK;
     }
     /** Expose cache for external use (e.g., serveModule in vite-dev-server). */
@@ -240,7 +231,7 @@ export class NpmInstaller {
             // wide-layer submitMany.
             phaseStart = Date.now();
             setInstallPhase('resolve');
-            log(`Resolving ${Object.keys(specs).length} dependencies (path: fanout, fetch: ${this.fetchFn ? 'facet-proxy' : 'global'})...`);
+            log(`Resolving ${Object.keys(specs).length} dependencies (path: fanout)...`);
             const tree = await this.resolveTreeViaFanout(specs, log, { optionalRoots, devOnly, advised, registry });
             resolved = tree.resolved;
             nested = tree.nested;

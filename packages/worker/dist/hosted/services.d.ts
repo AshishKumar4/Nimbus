@@ -1,4 +1,4 @@
-import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
 import { type NimbusFilesystemAuthority } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { PrebundlePool } from "../facets/prebundle-pool.js";
@@ -11,7 +11,7 @@ import type { IsolatePoolEnv } from '@nimbus-sh/fabric/isolate-pool.js';
 export interface HostedRuntimeEnv extends RuntimeCatalogEnv, IsolatePoolEnv {
     ASSETS?: Fetcher;
 }
-export type RuntimeServiceHost = Pick<SessionInternal, '_cpRegistry' | '_envFlagDefaultOn' | '_reportExternalExit' | '_rpcStderr' | '_rpcStdout' | 'supervisorRewindBridge' | 'buildFetchFn' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureFetchProxy' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'facetProcessManager' | 'fetchProxyEntrypoint' | 'npmInstaller' | 'portRegistry' | 'processes' | 'runtimeWorkspace' | 'shell' | 'sqliteFs' | 'terminal'> & {
+export type RuntimeServiceHost = Pick<SessionInternal, '_cpRegistry' | '_reportExternalExit' | '_rpcStderr' | '_rpcStdout' | 'supervisorRewindBridge' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'facetProcessManager' | 'npmInstaller' | 'portRegistry' | 'processes' | 'runtimeWorkspace' | 'shell' | 'sqliteFs' | 'terminal'> & {
     webSocketRelay: WebSocketRelay | null;
 };
 export interface RuntimeServiceContext {
@@ -38,20 +38,14 @@ export declare function ensureBundlePool(self: RuntimeServiceHost, runtimeContex
 export declare function ensureFacetManager(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): ComposedFacetManager;
 export declare function _ensureWebSocketRelay(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): WebSocketRelay;
 export declare function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): any;
-export declare function ensureFetchProxy(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, log?: (msg: string) => void): any | null;
-export declare function buildFetchFn(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, log?: (msg: string) => void): ((url: string, init?: RequestInit) => Promise<Response>) | undefined;
 export declare function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, onProgress?: (msg: string) => void): Promise<NpmInstaller>;
-export declare function _envFlagDefaultOn(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, name: string): boolean;
 export declare function ensureGlobalPrefixDirs(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, prefix: string): void;
 export declare function bindRuntimeServices(host: RuntimeServiceHost, context: RuntimeServiceContext): {
     ensureBundlePool: () => PrebundlePool;
     ensureFacetManager: () => ComposedFacetManager;
     _ensureWebSocketRelay: () => WebSocketRelay;
     _ensureFacetProcessManager: () => any;
-    ensureFetchProxy: (log?: ((msg: string) => void) | undefined) => any;
-    buildFetchFn: (log?: ((msg: string) => void) | undefined) => ((url: string, init?: RequestInit) => Promise<Response>) | undefined;
     ensureNpmInstaller: (onProgress?: ((msg: string) => void) | undefined) => Promise<NpmInstaller>;
-    _envFlagDefaultOn: (name: string) => boolean;
     ensureGlobalPrefixDirs: (prefix: string) => void;
 };
 //# sourceMappingURL=services.d.ts.map

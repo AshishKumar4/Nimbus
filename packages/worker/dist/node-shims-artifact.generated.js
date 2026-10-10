@@ -41,6 +41,6 @@ export const NODE_DNS_ENTRY = "/_assets/runtime/node-dns-cb7f3315fd57bcc8.js";
 export const NODE_DNS_BUILD_ID = "cb7f3315fd57bcc8";
 export const NODE_DNS_SHA256 = "cb7f3315fd57bcc80cc56f8acb984bb8dc9bdfe9e4fe2e6e7718cfc2ac91bddd";
 /** core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs */
-export const NODE_REGISTRY_ENTRY = "/_assets/runtime/node-registry-3e3742667a5de548.js";
-export const NODE_REGISTRY_BUILD_ID = "3e3742667a5de548";
-export const NODE_REGISTRY_SHA256 = "3e3742667a5de5482c871751ed2d652674298e0bfd913c807384f31d84c3329a";
+export const NODE_REGISTRY_ENTRY = "/_assets/runtime/node-registry-1acd001fa59c30fb.js";
+export const NODE_REGISTRY_BUILD_ID = "1acd001fa59c30fb";
+export const NODE_REGISTRY_SHA256 = "1acd001fa59c30fb75f403b7fbe1d242b6f3bffe2ab2a1a467e1e44fe0656169";

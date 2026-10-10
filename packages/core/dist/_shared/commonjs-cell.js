@@ -125,7 +125,7 @@
  */
 import { createHash } from 'node:crypto';
 import { parse, tokenizer, tokTypes } from 'acorn';
-import { RUNTIME_FUNCTION_HEADS, expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, runtimeFunctionSyntaxError as syntaxErrorIn, scriptExpression, } from './runtime-function-source.js';
+import { RUNTIME_FUNCTION_HEADS, expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, scriptExpression, } from './runtime-function-source.js';
 import { INTERPRETER_UNSUPPORTED } from '../interpreter/unsupported-code.js';
 import { applySourceEdits, forEachNode } from '../runtime/javascript-ast.js';
 import { moduleImporterUrl } from './module-importer.js';
@@ -137,10 +137,6 @@ const REALM = {
 };
 function isRuntimeFunctionKind(kind) {
     return Object.hasOwn(RUNTIME_FUNCTION_HEADS, kind);
-}
-/** Why V8's constructor would refuse these arguments, or null when it would build the function. */
-export function runtimeFunctionSyntaxError(kind, params, body) {
-    return syntaxErrorIn(kind, params, body, REALM);
 }
 /** Directory under the guest's bundle root that holds a process's cells. */
 const CELL_DIR = 'vfs/';
@@ -348,12 +344,6 @@ export const RUNTIME_CODE_MAX_ENTRIES = 1024;
  */
 export const RUNTIME_WASM_MAX_BYTES = 1024 * 1024;
 /**
- * What each piece is charged beyond its text, against RUNTIME_CODE_MAX_BYTES:
- * its key, its bookkeeping, and the module it becomes. Without it a flood of
- * tiny pieces is nearly free by text and not at all by heap.
- */
-export const RUNTIME_CODE_ENTRY_OVERHEAD = 512;
-/**
  * What of a file's path decides the module its text becomes: its directory
  * (the parent its relative imports and `import.meta.resolve` resolve
  * against) and its extension (how it is lowered: TypeScript, JSX, ESM or
@@ -375,8 +365,8 @@ export function runtimeModuleScope(path) {
 }
 /**
  * What a runtime-code key hashes: a constructor's arguments, or a file's
- * text with its runtimeModuleScope. The guest hashes the same string with the
- * same function (its sync node:crypto), so both sides name the same module.
+ * text with its runtimeModuleScope. The guest embeds this source and hashes
+ * the same string (its sync node:crypto), so both sides name the same module.
  */
 function runtimeCodeKeySource(entry) {
     if (entry.kind === 'module')
@@ -393,13 +383,19 @@ export function runtimeCodeKey(entry) {
     return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 /**
- * What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES:
- * everything it holds. A module keeps its path beside its text, and a data:
- * URL's path is the whole module again, so it is charged for both. The guest
- * ledger charges the same (__nimbusRuntimeCodeCompile).
+ * What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES,
+ * given its runtimeCodeKeySource: everything it holds, and 512 for its key,
+ * its bookkeeping and the module it becomes, without which a flood of tiny
+ * pieces is nearly free by text and not at all by heap. A module keeps its
+ * path beside its text, and a data: URL's path is the whole module again, so
+ * it is charged for both. The guest ledger embeds this source.
  */
+function runtimeCodeSourceCharge(source, entry) {
+    return source.length + (entry.kind === 'module' ? entry.path.length : 0) + 512;
+}
+/** What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES (runtimeCodeSourceCharge). */
 export function runtimeCodeCharge(entry) {
-    return runtimeCodeKeySource(entry).length + (entry.kind === 'module' ? entry.path.length : 0) + RUNTIME_CODE_ENTRY_OVERHEAD;
+    return runtimeCodeSourceCharge(runtimeCodeKeySource(entry), entry);
 }
 /**
  * The module names, in every node launch's map, of the interpreter, the host
@@ -614,11 +610,9 @@ function __nimbusFrameModule(url) {
   return __nimbusModuleNamed(url.slice(__NIMBUS_BUNDLE_URL.length));
 }
 // The module of the launch's cell at \`path\` (no leading slash), and the entry's; null for none.
-let __nimbusCellsByPath = null;
 function __nimbusModuleAtPath(path) {
-  __nimbusCellsByPath ??= new Map(__NIMBUS_CODE_CELLS.map((row) => [row[0], row[1]]));
-  const name = __nimbusCellsByPath.get(path);
-  return name === undefined ? null : __nimbusModuleNamed(name);
+  const row = __nimbusCodeCells.get(path);
+  return row === undefined ? null : __nimbusModuleNamed(row[1]);
 }
 function __nimbusEntryModule() {
   return __nimbusStackEntry === null ? null : __nimbusModuleNamed(__nimbusStackEntry[0]);
@@ -958,15 +952,12 @@ function __nimbusNotifyRuntimeCode() {
     __nimbusRuntimeCodeReporter().catch((error) => console.error("Nimbus: runtime code persistence failed", error));
   });
 }
-const __nimbusRuntimeModuleScope = ${runtimeModuleScope.toString()};
+// The supervisor's key source and charge (runtimeCodeKeySource, runtimeCodeSourceCharge).
+${runtimeModuleScope.toString()}
+const __nimbusRuntimeCodeKeySource = ${runtimeCodeKeySource.toString()};
+const __nimbusRuntimeCodeSourceCharge = ${runtimeCodeSourceCharge.toString()};
 function __nimbusRuntimeCodeKey(entry) {
-  const __source = entry.kind === "module"
-    ? JSON.stringify(["module", ...__nimbusRuntimeModuleScope(entry.path), entry.text])
-    : entry.kind === "expression"
-      ? JSON.stringify(["expression", entry.code])
-      : entry.kind === "wasm"
-        ? JSON.stringify(["wasm", entry.bytes])
-        : JSON.stringify([entry.kind, entry.params, entry.body]);
+  const __source = __nimbusRuntimeCodeKeySource(entry);
   return { source: __source, key: __nimbusCreateHash("sha256").update(__source).digest("hex") };
 }
 // This launch's module for the code, or undefined when it was not staged (or
@@ -978,7 +969,7 @@ function __nimbusRuntimeCodeStaged(key) {
   return __nimbusRegistryRequire("./gen/" + key + ".js");
 }
 function __nimbusRuntimeCodeRecord({ source, key }, entry) {
-  const __charge = source.length + (entry.kind === "module" ? entry.path.length : 0) + ${RUNTIME_CODE_ENTRY_OVERHEAD};
+  const __charge = __nimbusRuntimeCodeSourceCharge(source, entry);
   if (
     !__nimbusRuntimeLedger.has(key)
     && __nimbusRuntimeLedger.size < ${RUNTIME_CODE_MAX_ENTRIES}
