@@ -101,6 +101,38 @@ await runScenarios(import.meta.filename, {
     assert.equal(log.exit, null);
   },
 
+  // A resident whose boot starts a child and waits for its exit (react-router
+  // dev relaunching itself, nodemon): its boot answers while the child runs,
+  // and it ends with the child's status once the child does. The boot used
+  // to drain the child's close with the program's writes, and the child's
+  // own launch could not be built until that boot answered.
+  async childAwaitedPastBoot() {
+    let endChild;
+    const childEnded = new Promise((resolve) => { endChild = resolve; });
+    let ended = false;
+    void childEnded.then(() => { ended = true; });
+    const poll = (waitMs, answer) => Promise.race([childEnded.then(answer), sleep(Math.min(waitMs, 200)).then(() => null)]);
+    const launched = launch(`const child = require('child_process').spawn('node', ['srv.js'], { stdio: ['ignore', 'pipe', 'pipe'] });
+child.on('exit', (code) => process.exit(code ?? 0));`, {
+      supervisorOverrides: {
+        cpSpawn: async () => ({ childPid: 77 }),
+        cpStdinEnd: async () => {},
+        cpWait: async (pid, waitMs) => (await poll(waitMs, () => ({ done: true, exitCode: 3, signal: null })))
+          ?? { done: false, exitCode: null, signal: null, started: true },
+        cpReadOutput: async (pid, fd, sinceSeq, waitMs) => (await poll(waitMs, () => ({ chunks: [], closed: true, maxSeq: 0 })))
+          ?? { chunks: [], closed: ended, maxSeq: 0 },
+        cpDrainOutput: async () => ({ stdout: new Uint8Array(0), stderr: new Uint8Array(0), stdoutClosed: true, stderrClosed: true }),
+      },
+    });
+    const booted = await Promise.race([launched.then(() => true), sleep(8_000).then(() => false)]);
+    assert.equal(booted, true, 'its boot answered while its child runs');
+    const { log } = await launched;
+    assert.equal(log.exit, null, 'it runs while its child does');
+    endChild();
+    await until(() => log.exit !== null, "the exit after its child's", 5_000);
+    assert.equal(log.exit.code, 3);
+  },
+
   async finishedProgramExits() {
     const { log } = await launch('console.log("done");');
     assert.deepEqual(log.exit, { code: 0, reason: '' }, 'reported before its boot answered');
