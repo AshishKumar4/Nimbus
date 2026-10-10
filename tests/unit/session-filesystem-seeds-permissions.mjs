@@ -16,8 +16,9 @@ import { importWorkerBundle } from './lib/worker-bundle.mjs';
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
 
 {
-  const { NimbusSession, ensureGlobalPrefixDirs } = await importWorkerBundle({
+  const { NimbusSession, SessionFilesystem, ensureGlobalPrefixDirs } = await importWorkerBundle({
     'packages/worker/src/session/nimbus-session.ts': ['NimbusSession'],
+    'packages/worker/src/session/session-filesystem.ts': ['SessionFilesystem'],
     'packages/worker/src/hosted/services.ts': ['ensureGlobalPrefixDirs'],
   });
 
@@ -38,7 +39,7 @@ const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000])
   insecureUserVfs.chmod('etc/group', 0o666);
 
   const session = Object.create(NimbusSession.prototype);
-  session.sqliteFs = rawVfs;
+  session.filesystem = new SessionFilesystem(rawVfs, session);
   session.seedFilesystem();
 
   const rootVfs = rawVfs.as(CRED_KERNEL);

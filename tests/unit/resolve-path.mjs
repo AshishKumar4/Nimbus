@@ -257,8 +257,9 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
 
 // ── child_process.spawn in a Worker program searches the child's PATH ─────
 {
-  const { NimbusSession, bindRuntimeServices } = await importWorkerBundle({
+  const { NimbusSession, SessionFilesystem, bindRuntimeServices } = await importWorkerBundle({
     'packages/worker/src/session/nimbus-session.ts': ['NimbusSession'],
+    'packages/worker/src/session/session-filesystem.ts': ['SessionFilesystem'],
     'packages/worker/src/hosted/services.ts': ['bindRuntimeServices'],
   });
 
@@ -271,8 +272,8 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
     notify() {},
     async requestLaunchTurn() { return true; },
   }));
-  session.sqliteFs = main.vfs;
   session.processes = main.processes;
+  session.filesystem = new SessionFilesystem(main.vfs, session);
   session.facetManagerComposed = { manager: { setVfs() {} }, apps: {}, pumpLaunches: async () => {} };
   session.facetProcessManager = null;
   session.esbuildService = null;
