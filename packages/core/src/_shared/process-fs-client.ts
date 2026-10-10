@@ -50,6 +50,8 @@ import type { WaveMutation, WriteBatchStreamResult, WriteStreamReceipt } from '.
 import { memoryJournal, type ProcessFsJournal, type ProcessFsJournalSource, type ProcessFsNumbering } from './process-fs-journal.js';
 
 export { journalSource, memoryJournal, sqlJournal, type JournalSql, type ProcessFsJournal, type ProcessFsJournalSource } from './process-fs-journal.js';
+/** The calls' answers (vfs-error.ts), as the write ledger spliced beside this client classifies what a program caught. */
+export { SYSCALL_VERDICTS };
 
 /** One mutation, as the session applies it: a call, or a rename, truncate or attribute change. */
 export type ProcessFsOp =
