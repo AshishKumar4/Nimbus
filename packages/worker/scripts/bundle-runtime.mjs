@@ -29,7 +29,7 @@
  * above it vouches for, and the top of that chain is each deployment's
  * NIMBUS_RUNTIME_CATALOG_SHA256 var. This script owns both ends: it writes
  * `manifest_sha256` into the catalog, and for the production bucket rewrites
- * that var in Nimbus's own configs (CATALOG_PIN_CONFIGS); for any other bucket
+ * that var through Nimbus's deployment specification; for any other bucket
  * it prints it, for the embedder's config. See the trust-model note in
  * src/runtime/runtime-catalog.ts for what the chain buys.
  *
@@ -51,6 +51,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, openSync, closeSync } from 'node:fs';
 import { execFileSync, execSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -89,11 +90,6 @@ const USAGE =
  *  describes what production reads, so regenerating it from an isolated
  *  test bucket would point the deploy at a catalog it never fetches. */
 const PRODUCTION_BUCKET = 'nimbus-runtime-cache';
-/** The var a deployment reads its catalog by (runtime-catalog.ts). */
-const PIN_VAR = 'NIMBUS_RUNTIME_CATALOG_SHA256';
-
-/** Nimbus's own configs that bind PRODUCTION_BUCKET: every vars block in each carries the pin. */
-const CATALOG_PIN_CONFIGS = ['../../../apps/hosted-demo/wrangler.jsonc', '../../../apps/probe/wrangler.jsonc'];
 
 /** Where a catalog is kept by the digest of its bytes (runtime-catalog.ts catalogKey reads the same). */
 function catalogKey(sha256) {
@@ -506,7 +502,7 @@ function bucketIsReadable() {
  * it).
  *
  * For the production bucket that is also Nimbus's own configs: the value of
- * NIMBUS_RUNTIME_CATALOG_SHA256 in every vars block of CATALOG_PIN_CONFIGS
+ * NIMBUS_RUNTIME_CATALOG_SHA256 through Nimbus's deployment specification
  * (wrangler vars do not inherit, so each environment and each Preview states
  * its own). Each block must already carry the var: one that does not is an
  * environment this script does not know, and is refused rather than guessed
@@ -524,59 +520,16 @@ async function writeCatalogPin(sha256) {
   return true;
 }
 
-/**
- * Where wrangler reads vars in a config (`tree`, jsonc-parser's): the top
- * level, each env, and the `previews` of each. Paths of the blocks present.
- */
-function varsBlocks(jsonc, tree) {
-  const envs = jsonc.findNodeAtLocation(tree, ['env']);
-  const bases = [[], ...(envs?.type === 'object' ? envs.children.map((p) => ['env', p.children[0].value]) : [])];
-  return bases
-    .flatMap((base) => [[...base, 'vars'], [...base, 'previews', 'vars']])
-    .filter((path) => jsonc.findNodeAtLocation(tree, path)?.type === 'object');
-}
-
-/**
- * Set the pin in every vars block of Nimbus's own configs, through a JSONC
- * editor: only the values change, comments and layout stay, and a `"vars"`
- * in a comment is a comment. All configs are checked before any is written;
- * false when one is refused (nothing written), so the caller's cleanup runs.
- */
 async function pinNimbusConfigs(sha256) {
-  // Only Nimbus's own tree pins its configs, so only it needs the editor.
-  const jsonc = await import('jsonc-parser');
-  /** @type {Array<[URL, string]>} */
-  const edits = [];
-  for (const relative of CATALOG_PIN_CONFIGS) {
-    const url = new URL(relative, import.meta.url);
-    const text = readFileSync(url, 'utf8');
-    const errors = [];
-    const tree = jsonc.parseTree(text, errors, { allowTrailingComma: true });
-    if (!tree || errors.length > 0) {
-      console.error(`ERROR: ${url.pathname} is not valid JSONC (${errors.map((e) => jsonc.printParseErrorCode(e.error)).join(', ')}). No config was changed.`);
-      return false;
-    }
-    const blocks = varsBlocks(jsonc, tree);
-    const unpinned = blocks.filter((path) => jsonc.findNodeAtLocation(tree, [...path, PIN_VAR])?.type !== 'string');
-    if (blocks.length === 0 || unpinned.length > 0) {
-      console.error(`ERROR: ${url.pathname}: ${blocks.length === 0 ? 'no vars block' : unpinned.map((p) => p.join('.')).join(', ')} without ${PIN_VAR};`);
-      console.error('       every vars block must carry it. No config was changed.');
-      return false;
-    }
-    let next = text;
-    for (const path of blocks) next = jsonc.applyEdits(next, jsonc.modify(next, [...path, PIN_VAR], sha256, {}));
-    // What changed is the pins and nothing else.
-    const expected = jsonc.parse(text, [], { allowTrailingComma: true });
-    for (const path of blocks) path.reduce((at, key) => at[key], expected)[PIN_VAR] = sha256;
-    if (JSON.stringify(jsonc.parse(next, [], { allowTrailingComma: true })) !== JSON.stringify(expected)) {
-      console.error(`ERROR: rewriting ${url.pathname} changed more than its pins. No config was changed.`);
-      return false;
-    }
-    edits.push([url, next]);
+  try {
+    const { writeNimbusAppConfigs } = await import('../../../scripts/generate-wrangler-configs.mjs');
+    writeNimbusAppConfigs({ root: fileURLToPath(new URL('../../../', import.meta.url)), catalogPin: sha256 });
+  } catch (error) {
+    console.error(`ERROR: cannot project Nimbus deployment configs: ${error.message}`);
+    return false;
   }
-  for (const [url, text] of edits) writeFileSync(url, text, 'utf8');
   console.log(`[bundle-runtime] catalog pin: ${sha256}`);
-  console.log(`[bundle-runtime] commit ${CATALOG_PIN_CONFIGS.map((c) => c.replace('../../../', '')).join(' and ')}, and redeploy`);
+  console.log('[bundle-runtime] commit apps/nimbus-deployments.json and the generated app wrangler.jsonc files, and redeploy');
   return true;
 }
 

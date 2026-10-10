@@ -60,7 +60,7 @@ try {
   assert.equal(tokenCalls[0].fields.code_verifier, demoState.codeVerifier);
   assert.equal(tokenCalls[0].headers.get('Authorization'), 'Basic ' + btoa('public-client:confidential-secret'));
 
-  const routeHeaders = { 'X-Nimbus-Base-Path': '/s/job_123', 'X-Nimbus-Tenant': 'tenant:user' };
+  const routeHeaders = { 'X-Nimbus-Base': '/s/job_123', 'X-Nimbus-Tenant': 'tenant:user' };
   const agentStart = await agent(request('/api/agent/oauth/start', routeHeaders, 'POST'));
   assert.equal(agentStart.status, 200);
   const started = await agentStart.json();

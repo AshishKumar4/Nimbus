@@ -44,7 +44,9 @@ export interface BuildWranglerOptions {
    */
   compatibilityDate?: string;
   /** Smart placement on/off. Default `true`. */
-  placement?: 'smart' | undefined;
+  placement?: 'smart' | false;
+  /** Existing deployments can retain their migration tag namespace. Default `nimbus-`. */
+  migrationTagPrefix?: string;
   /** Prefix for R2 buckets (npm tarball + packument caches). Default = `name`. */
   r2BucketPrefix?: string;
   /**
@@ -114,7 +116,7 @@ export interface WranglerConfig {
   assets: {
     directory: string;
     binding: string;
-    run_worker_first?: string[];
+    run_worker_first?: boolean | string[];
   };
   alias: Record<string, string>;
   durable_objects: {
@@ -181,6 +183,7 @@ export function buildNimbusWranglerConfig(opts: BuildWranglerOptions): WranglerC
     throw new Error(`@nimbus-sh/config: hosting Worker limits.subrequests=${subrequests} is below facet policy maximum subRequests=${MAX_FACET_SUBREQUESTS}`);
   }
   const prefix = opts.r2BucketPrefix ?? opts.name;
+  const migrationTagPrefix = opts.migrationTagPrefix ?? 'nimbus-';
   const runtimeCache = opts.runtimeCache ?? 'shared';
   const runtimeCacheMode = typeof runtimeCache === 'string' ? runtimeCache : runtimeCache.mode;
   const runtimeCacheBucket = typeof runtimeCache === 'object' && runtimeCache.bucket
@@ -207,7 +210,7 @@ export function buildNimbusWranglerConfig(opts: BuildWranglerOptions): WranglerC
       bindings: [{ name: 'NIMBUS_SESSION', class_name: 'NimbusSession' }],
     },
     migrations: [
-      { tag: 'nimbus-v1', new_sqlite_classes: ['NimbusSession'] },
+      { tag: `${migrationTagPrefix}v1`, new_sqlite_classes: ['NimbusSession'] },
     ],
     worker_loaders: [{ binding: 'LOADER' }],
     r2_buckets: [
@@ -222,7 +225,7 @@ export function buildNimbusWranglerConfig(opts: BuildWranglerOptions): WranglerC
       name: 'NIMBUS_PUBLIC_DIRECTORY',
       class_name: 'NimbusPublicDirectory',
     });
-    config.migrations.push({ tag: 'nimbus-v2', new_sqlite_classes: ['NimbusPublicDirectory'] });
+    config.migrations.push({ tag: `${migrationTagPrefix}v2`, new_sqlite_classes: ['NimbusPublicDirectory'] });
   }
   if (opts.placement === 'smart' || opts.placement === undefined) {
     config.placement = { mode: 'smart' };
