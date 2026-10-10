@@ -47,7 +47,7 @@ export declare function _rpcCacheResult(self: RpcHost, ticket: string, result: {
 export declare function _rpcStdinPrepared(self: RpcHost, pid?: number, run?: string): Promise<void>;
 type ProcessRpcHost = Pick<NimbusSession, 'processes'>;
 type ReportRpcHost = ProcessRpcHost & Pick<NimbusSession, 'facetManager'>;
-type ExitRpcHost = ReportRpcHost & Pick<NimbusSession, 'terminal' | 'shell' | 'webSocketRelay' | 'supervisorForgetBridge' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'facetProcessManager'>;
+type ExitRpcHost = ReportRpcHost & Pick<NimbusSession, 'terminal' | 'shell' | 'webSocketRelay' | 'supervisorDeliveries' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'facetProcessManager'>;
 export declare function checkedReadPayloadBytes(bytes: number): number;
 export declare function withReadAllocation<T>(bytes: number, read: () => Promise<T>): Promise<T>;
 /**

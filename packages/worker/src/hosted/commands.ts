@@ -907,7 +907,7 @@ const shellEntrypointExecutor = {
           setUmask: identity.setUmask,
         },
         runAs: runAsProcess,
-        signal: options?.signal ? AbortSignal.any([options.signal, stop.signal]) : stop.signal,
+        signal: stop.signal,
       });
       exitCode = result.exitCode;
       return result;

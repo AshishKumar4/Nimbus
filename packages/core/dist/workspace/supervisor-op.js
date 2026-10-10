@@ -404,7 +404,6 @@ export function createSupervisorBridgeStore(deps) {
             }
             return lease.fs;
         },
-        forget: (pid) => authority.releaseProcess(pid),
         rewind: async (pid) => { await authority.rewindProcess?.(pid); },
         dispose: async () => {
             await Promise.all([...hostLeases.values()].map(lease => lease.dispose()));

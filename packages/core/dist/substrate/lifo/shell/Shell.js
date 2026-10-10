@@ -346,6 +346,8 @@ export class Shell {
         else {
             stdinStream = options?.stdin;
         }
+        const identity = this.resolveCommandIdentity(options?.commandContext);
+        const stopped = identity.holdWork?.(identity.pid, () => abortController.abort());
         try {
             const exitCode = await this.interpreter.executeLine(cmd, options?.terminalStdin, {
                 runExitTrap: options?.runExitTrap === true,
@@ -356,7 +358,7 @@ export class Shell {
                 terminalFds: options?.terminalFds,
                 scriptMode: options?.scriptMode === true,
                 commandContext: options?.commandContext,
-                commandIdentity: this.resolveCommandIdentity(options?.commandContext),
+                commandIdentity: identity,
                 runAs: options?.runAs ?? this.commandIdentity.runAs,
                 signal: abortController.signal,
             });
@@ -368,6 +370,7 @@ export class Shell {
             return { stdout: stdoutBuf, stderr: stderrBuf, exitCode: 1 };
         }
         finally {
+            stopped?.();
             this._executeDepth--;
             // Restore state
             if (options?.signal) {
@@ -395,6 +398,7 @@ export class Shell {
         const resolvedPid = typeof pid === 'number' ? pid : this.commandIdentity.pid;
         const base = this.commandIdentity;
         const accountWork = base.accountWork;
+        const holdWork = base.holdWork;
         return {
             pid: resolvedPid,
             // Read when used, as the shell's own identity is: the process's
@@ -405,6 +409,7 @@ export class Shell {
                 : this.commandIdentity.setUmask,
             runAs: this.commandIdentity.runAs,
             accountWork,
+            ...(holdWork ? { holdWork } : {}),
             // Counted for the pid the command runs as, whichever it is.
             ...(accountWork ? { beginWork: () => accountWork(resolvedPid) } : {}),
         };
@@ -1036,7 +1041,8 @@ export class Shell {
         const release = submission?.retain();
         this.lineSubmission = undefined;
         this.running = true;
-        this.abortController = new AbortController();
+        const lineAbort = new AbortController();
+        this.abortController = lineAbort;
         this.terminalStdin = new TerminalStdin(() => this.consumeQueuedStdin());
         // History expansion
         const expanded = this.historyManager.expand(line);
@@ -1053,6 +1059,8 @@ export class Shell {
         }
         this.terminal.write(COMMAND_START);
         let status = null;
+        const identity = this.resolveCommandIdentity(undefined);
+        const stopped = identity.holdWork?.(identity.pid, () => lineAbort.abort());
         try {
             // Saved beside the line, which does not wait for it: a reader's recall
             // the save meets (core README, process model) costs the line nothing.
@@ -1062,12 +1070,13 @@ export class Shell {
             });
             status = await this.interpreter.executeLine(actualLine, this.terminalStdin, {
                 interactive: true,
-                commandIdentity: this.resolveCommandIdentity(undefined),
+                commandIdentity: identity,
                 runAs: this.commandIdentity.runAs,
-                signal: this.abortController.signal,
+                signal: lineAbort.signal,
             });
         }
         finally {
+            stopped?.();
             this.terminalStdin?.close();
             this.terminalStdin = null;
             this.stdinLineBuffer = '';

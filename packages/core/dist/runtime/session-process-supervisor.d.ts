@@ -73,6 +73,10 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     private release;
     /** Each ended pid's release, begun at its end: what a prune reports and waits for before it forgets the entry. */
     private readonly releases;
+    /** Who waits for a pid's release to run (released), until it begins. */
+    private readonly releaseWaiters;
+    /** Each ended pid whose held work is still stopping: the bound on it (HELD_WORK_STOP_MS). */
+    private readonly stopBounds;
     /** Ends a process by a signal's default action; see setDefaultSignalAction. */
     private defaultSignalAction;
     /** Holds a process's output until its writes are published; see setOutputGate. */
@@ -250,6 +254,21 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * before a release was set is released when it is pruned.
      */
     private releaseEnded;
+    /**
+     * Settles once `pid`'s release has run, however it went; at once when
+     * nothing of it is still to be released (it has, or there is no release
+     * to wait for). What a caller that ended a process waits for before it
+     * relies on what the process held being gone (a destroy), bounded by
+     * HELD_WORK_STOP_MS for work that ignores its stop.
+     */
+    released(pid: number): Promise<void>;
+    /**
+     * The program behind `pid`, run elsewhere, says it has ended, ahead of
+     * the table hearing of it (its exit is told once its output is let out):
+     * what it bound is released now, so what its last closes flush goes with
+     * that output, unless work the session runs on the pid still holds it.
+     */
+    programEnded(pid: number): void;
     /** `pid`'s release, begun once: how it went, a failure included. */
     private releaseOf;
     /**

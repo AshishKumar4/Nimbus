@@ -1022,6 +1022,10 @@ export async function rpcDestroy(self, options = {}) {
             catch { }
         }
     }
+    // What they held goes once the work stopping on them has closed what it
+    // opened (SessionProcessSupervisor.released, bounded for work that ignores
+    // its stop): their delegations among it.
+    await Promise.all(running.map((entry) => self.processes.released(Number(entry.pid))));
     // Its processes stopped, every wave still being read is cut, which ends
     // the commits it held open: each is then published once its reader
     // answers, or its trust runs out. The check and the take after the last
